@@ -34,6 +34,7 @@ Specialized AI agents coordinate like a human engineering team:
 - [System Orchestration](docs/system-orchestration.md) - Backend implementation
 - [Task Persistence](docs/task-persistence.md) - Storage and state
 - [Slack Integration](docs/slack-integration.md) - UX layer
+- [Deployment & Operations](docs/deployment-operations.md) - GCP deployment, security, scaling
 
 **Implementation Plans:**
 - [MVP v1](plans/mvp-v1.md) - Initial 4-week implementation plan
