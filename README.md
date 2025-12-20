@@ -35,8 +35,6 @@ Specialized AI agents coordinate like a human engineering team:
 - **[Task Persistence](docs/task-persistence.md)** - Storage and state
 - **[Slack Integration](docs/slack-integration.md)** - UX layer
 
-Full spec: [ai-engineer-architecture.md](ai-engineer-architecture.md)
-
 ## Technology Stack
 
 - **Runtime:** Node.js with TypeScript
