@@ -134,7 +134,7 @@ Port: 443
 ```bash
 gcloud compute instances create ai-engineer-vm-01 \
   --project=sweatco-ai-engineer \
-  --zone=us-central1-a \
+  --zone=europe-west2-a \
   --machine-type=e2-standard-2 \
   --image-family=ubuntu-2404-lts-amd64 \
   --image-project=ubuntu-os-cloud \
@@ -161,7 +161,7 @@ gcloud compute firewall-rules create allow-slack-webhooks \
 **Initial VM configuration:**
 ```bash
 # SSH into VM
-gcloud compute ssh ai-engineer-vm-01 --zone=us-central1-a
+gcloud compute ssh ai-engineer-vm-01 --zone=europe-west2-a
 
 # Install Docker
 curl -fsSL https://get.docker.com -o get-docker.sh
@@ -172,7 +172,7 @@ sudo usermod -aG docker $USER
 curl https://sdk.cloud.google.com | bash
 
 # Authenticate with artifact registry
-gcloud auth configure-docker us-central1-docker.pkg.dev
+gcloud auth configure-docker europe-west2-docker.pkg.dev
 
 # Setup directories
 sudo mkdir -p /repos /sessions /app
@@ -193,9 +193,9 @@ on:
 
 env:
   PROJECT_ID: sweatco-ai-engineer
-  REGION: us-central1
+  REGION: europe-west2
   VM_NAME: ai-engineer-vm-01
-  VM_ZONE: us-central1-a
+  VM_ZONE: europe-west2-a
 
 jobs:
   deploy:
@@ -267,7 +267,7 @@ ExecStart=/usr/bin/docker run --name ai-engineer-app \
   -v /repos:/repos \
   -v /sessions:/sessions \
   -e GCP_PROJECT_ID=sweatco-ai-engineer \
-  us-central1-docker.pkg.dev/sweatco-ai-engineer/ai-engineer/app:latest
+  europe-west2-docker.pkg.dev/sweatco-ai-engineer/ai-engineer/app:latest
 ExecStop=/usr/bin/docker stop ai-engineer-app
 Restart=always
 RestartSec=10
@@ -387,15 +387,15 @@ app.get('/health', (req, res) => {
 **When CPU/Memory consistently high:**
 ```bash
 # Stop VM
-gcloud compute instances stop ai-engineer-vm-01 --zone=us-central1-a
+gcloud compute instances stop ai-engineer-vm-01 --zone=europe-west2-a
 
 # Change machine type
 gcloud compute instances set-machine-type ai-engineer-vm-01 \
   --machine-type=e2-standard-4 \
-  --zone=us-central1-a
+  --zone=europe-west2-a
 
 # Start VM
-gcloud compute instances start ai-engineer-vm-01 --zone=us-central1-a
+gcloud compute instances start ai-engineer-vm-01 --zone=europe-west2-a
 ```
 
 **Upgrade path:**
@@ -440,20 +440,20 @@ Routing: Hash(task_id) → VM assignment
 gcloud logging read "resource.type=gce_instance" --limit=50
 
 # Via SSH
-gcloud compute ssh ai-engineer-vm-01 --zone=us-central1-a
+gcloud compute ssh ai-engineer-vm-01 --zone=europe-west2-a
 sudo journalctl -u ai-engineer -f
 ```
 
 **Restart service:**
 ```bash
-gcloud compute ssh ai-engineer-vm-01 --zone=us-central1-a
+gcloud compute ssh ai-engineer-vm-01 --zone=europe-west2-a
 sudo systemctl restart ai-engineer
 ```
 
 **Deploy specific version:**
 ```bash
 # SSH to VM
-docker pull us-central1-docker.pkg.dev/sweatco-ai-engineer/ai-engineer/app:COMMIT_SHA
+docker pull europe-west2-docker.pkg.dev/sweatco-ai-engineer/ai-engineer/app:COMMIT_SHA
 # Update systemd to use specific tag
 sudo systemctl restart ai-engineer
 ```
