@@ -1,5 +1,33 @@
 # Local Development Guide
 
+## TL;DR - Quick Setup
+
+```bash
+# 1. Install dependencies
+npm install
+
+# 2. Clone repos (regular, not bare!)
+git clone git@github.com:sweatco/backend.git repos/backend
+git clone git@github.com:sweatco/mobile.git repos/mobile
+
+# 3. Setup environment
+cp .env.example .env
+# Edit .env with your API keys (see below)
+
+# 4. Start server
+npm run dev
+
+# 5. Expose with ngrok (separate terminal)
+ngrok http 3000
+
+# 6. Update Slack app Event URL with ngrok URL
+# https://api.slack.com/apps → Event Subscriptions
+# Set to: https://YOUR-NGROK-URL.ngrok.io/slack/events
+
+# 7. Test in Slack
+# @AI Engineer investigate login timeout
+```
+
 ## Overview
 
 Run the AI Engineer system locally for development and testing without deploying to GCP. Supports testing with or without Slack integration.
@@ -8,11 +36,12 @@ Run the AI Engineer system locally for development and testing without deploying
 
 - Node.js 20+
 - Git
-- Anthropic API key
+- Anthropic API key (from https://console.anthropic.com/settings/keys)
+- Slack workspace (for full integration testing)
 
 **Optional:**
-- ngrok (for Slack webhook testing)
-- Docker (for containerized testing)
+- ngrok (required for Slack webhooks to reach localhost)
+- Slack paid workspace (free workspaces work fine for development)
 
 ## Quick Start
 
@@ -24,54 +53,159 @@ npm install
 
 ### 2. Setup Local Repositories
 
-Clone repositories you want the system to access:
+**IMPORTANT:** For MVP/local development, clone repositories as **regular clones** (not bare) so agents can read actual code files.
 
 ```bash
 mkdir -p repos
 
-# Clone as bare repositories (same as production)
-git clone --bare git@github.com:sweatco/backend.git repos/backend.git
-git clone --bare git@github.com:sweatco/mobile.git repos/mobile.git
-git clone --bare git@github.com:sweatco/website.git repos/website.git
+# Clone as REGULAR repositories (agents need working files)
+git clone git@github.com:sweatco/backend.git repos/backend
+git clone git@github.com:sweatco/mobile.git repos/mobile
 ```
+
+After cloning, verify you can see actual code:
+```bash
+ls repos/backend/app/models/    # Should show Ruby files
+ls repos/mobile/src/screens/    # Should show React Native files
+```
+
+**Why regular clones for MVP?**
+- Agents need to read actual code files (`.rb`, `.tsx`, etc.)
+- Bare repositories (`--bare`) only contain Git data, no working directory
+- Production will use bare repos + Git worktrees, but MVP uses simple regular clones
 
 **For testing without real repos:**
 ```bash
-# Create minimal test repositories
+# Create minimal test repositories with sample code
 ./scripts/create-test-repos.sh
 ```
 
-### 3. Configure Environment
+### 3. Create Slack Bot (Required for Full Testing)
+
+**EASY WAY:** Use the app manifest file at [`slack-manifest.yaml`](../slack-manifest.yaml)
+
+#### Quick Setup with Manifest
+
+1. Go to https://api.slack.com/apps
+2. Click **"Create New App"** → **"From an app manifest"**
+3. Choose your workspace
+4. Select **YAML** tab
+5. Copy/paste the contents from [`slack-manifest.yaml`](../slack-manifest.yaml)
+6. **IMPORTANT:** You'll need to update the Request URL later with your ngrok URL (see Step 5)
+7. Click **"Create"**
+8. Review permissions and click **"Install to Workspace"**
+9. Authorize the app
+
+#### Get Your Credentials
+
+After creating the app, get these two values:
+
+**1. Bot Token** (OAuth & Permissions page):
+```
+xoxb-1234567890-1234567890123-abcdefghijklmnopqrstuvwx
+```
+
+**2. Signing Secret** (Basic Information page → App Credentials):
+```
+a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
+```
+
+**What permissions does the bot get?**
+- `app_mentions:read` - Receive @mentions
+- `chat:write` - Post messages to threads
+- `channels:history` - Read thread history
+- `users:read` - Get user names
+
+**What events does it subscribe to?**
+- `app_mention` - When bot is @mentioned
+- `message.channels` - Thread replies (without @mention)
+
+### 4. Configure Environment
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env`:
+Edit `.env` and fill in your actual values:
 ```bash
-# Required
-ANTHROPIC_API_KEY=sk-ant-...
+# Required - Get from https://console.anthropic.com/settings/keys
+ANTHROPIC_API_KEY=sk-ant-api03-...
 
-# Optional (for Slack testing)
-SLACK_BOT_TOKEN=xoxb-...
-SLACK_SIGNING_SECRET=...
+# Required - From Slack App settings (see Step 3 above)
+SLACK_BOT_TOKEN=xoxb-1234567890-1234567890123-abcdefghijklmnopqrstuvwx
+SLACK_SIGNING_SECRET=a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
 
-# Optional (for GitHub integration)
-GITHUB_APP_ID=123456
-GITHUB_APP_PRIVATE_KEY_PATH=./github-app-key.pem
+# Required - Absolute paths to your repository clones
+BACKEND_REPO_PATH=/Users/khmelev/Projects/swc/ai-engineer/repos/backend
+MOBILE_REPO_PATH=/Users/khmelev/Projects/swc/ai-engineer/repos/mobile
 
-# Local paths
-REPOS_PATH=./repos
-SESSIONS_PATH=./sessions
+# Optional - Server port (default: 3000)
+PORT=3000
 ```
 
-### 4. Run Development Server
+### 5. Expose Local Server to Slack (via ngrok)
+
+For Slack webhooks to reach your local server, you need to expose it publicly:
+
+#### Install ngrok
+
+```bash
+# macOS
+brew install ngrok
+
+# Or download from https://ngrok.com/download
+```
+
+#### Start ngrok tunnel
+
+```bash
+# In a separate terminal
+ngrok http 3000
+```
+
+You'll see output like:
+```
+Forwarding  https://abc123.ngrok.io -> http://localhost:3000
+```
+
+#### Update Slack Event URL
+
+1. Copy your ngrok URL: `https://abc123.ngrok.io`
+2. Go to your Slack App settings: https://api.slack.com/apps
+3. Navigate to **Event Subscriptions**
+4. Update Request URL to: `https://abc123.ngrok.io/slack/events`
+5. Slack will verify the URL (make sure your server is running!)
+6. Click **Save Changes**
+
+**Note:** Free ngrok URLs change each restart. Paid ngrok ($10/month) gives static URLs.
+
+### 6. Run Development Server
 
 ```bash
 npm run dev
 ```
 
 Server starts on `http://localhost:3000`
+
+You should see:
+```
+AI Engineer - Multi-Agent Software Engineering System
+======================================================
+
+Backend repo: /Users/khmelev/Projects/swc/ai-engineer/repos/backend
+Mobile repo: /Users/khmelev/Projects/swc/ai-engineer/repos/mobile
+
+AI Engineer server is running on port 3000
+Webhook endpoint: POST /slack/events
+Health check: GET /health
+```
+
+### 7. Test Slack Integration
+
+1. In Slack, invite the bot to a channel: `/invite @AI Engineer`
+2. Send a test message: `@AI Engineer hello`
+3. Check server logs - you should see the message being processed
+4. Bot should respond in the thread
 
 ## Development Modes
 
@@ -243,29 +377,91 @@ logs/              # Application logs (gitignored)
   agents.log
 ```
 
+## Troubleshooting
+
+### Slack Webhook Not Working
+
+**Problem:** Slack says "Your URL didn't respond with the challenge parameter"
+
+**Solutions:**
+1. Make sure your dev server is running (`npm run dev`)
+2. Check ngrok is forwarding to correct port: `ngrok http 3000`
+3. Verify `.env` has correct `SLACK_SIGNING_SECRET`
+4. Check server logs for errors
+
+**Test webhook manually:**
+```bash
+curl -X POST http://localhost:3000/health
+# Should return: {"status":"ok"}
+```
+
+### Bot Not Responding
+
+**Problem:** Bot doesn't respond to @mentions
+
+**Check:**
+1. Bot is invited to channel: `/invite @AI Engineer`
+2. Event Subscriptions are enabled in Slack App settings
+3. Server logs show the incoming message
+4. Check for errors in console output
+
+**Debug mode:**
+```bash
+# See all Slack events
+npm run dev | grep "\[Slack\]"
+```
+
+### Repository Path Issues
+
+**Problem:** Agents can't read code files
+
+**Check:**
+```bash
+# Verify repos exist and have code
+ls -la repos/backend/app/
+ls -la repos/mobile/src/
+
+# Make sure they're regular clones, not bare
+test -d repos/backend/.git && echo "Regular clone ✓" || echo "Bare repo ✗"
+```
+
+**Fix:**
+See "Fix Bare Repository Issue" section below.
+
+### ANTHROPIC_API_KEY Invalid
+
+**Problem:** API calls fail with authentication error
+
+**Solution:**
+1. Get a valid API key from https://console.anthropic.com/settings/keys
+2. Make sure it starts with `sk-ant-api03-`
+3. Update `.env` file
+4. Restart server
+
 ## Debugging
 
 ### View Logs
 
 ```bash
-# Application logs
-tail -f logs/system.log
+# Server console output (shows all agent activity)
+# Just run: npm run dev
 
-# Agent conversations
-tail -f logs/agents.log
-
-# Specific task
-cat sessions/task-1/shared-knowledge.log
+# Specific task logs
+cat sessions/task-24122025-1430-abc123/shared-knowledge.log
+cat sessions/task-24122025-1430-abc123/metadata.json | jq
 ```
 
 ### Debug Agent Behavior
 
 ```bash
-# Enable verbose logging
-DEBUG=agents:* npm run dev
-
-# Enable SDK debug mode
-ANTHROPIC_LOG=debug npm run dev
+# The server outputs all activity to console by default
+# Look for these log patterns:
+# [Slack] - Incoming messages
+# [Triage] - Classification results
+# [PM Agent] - PM activity
+# [Backend Agent] - Backend agent activity
+# [Mobile Agent] - Mobile agent activity
+# [System] - Task lifecycle events
 ```
 
 ### Inspect Task State
@@ -305,6 +501,23 @@ npm run dev  # Uses nodemon or similar
 # Clear all tasks and state
 rm -rf sessions/*
 npm run dev
+```
+
+### Fix Bare Repository Issue
+
+If you accidentally cloned repositories as bare (no code files visible):
+
+```bash
+# Remove bare repositories
+rm -rf repos/backend repos/mobile
+
+# Clone as regular repositories
+git clone git@github.com:sweatco/backend.git repos/backend
+git clone git@github.com:sweatco/mobile.git repos/mobile
+
+# Verify you can see code
+ls repos/backend/app/
+ls repos/mobile/src/
 ```
 
 ### Test Specific Agent
