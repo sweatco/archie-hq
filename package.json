@@ -1,0 +1,31 @@
+{
+  "name": "ai-engineer",
+  "version": "0.1.0",
+  "description": "Multi-agent AI software engineering system",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "lint": "eslint src/**/*.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.1.0",
+    "@slack/bolt": "^4.6.0",
+    "@slack/web-api": "^7.0.0",
+    "dotenv": "^16.3.0",
+    "slackify-markdown": "^4.5.0",
+    "zod": "^3.22.0",
+    "zod-to-json-schema": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0"
+  }
+}
