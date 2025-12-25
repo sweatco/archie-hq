@@ -1,0 +1,50 @@
+/**
+ * Agent Logging Utilities
+ *
+ * Centralized logging for agent tool calls with path trimming
+ */
+
+import { relative } from 'path';
+
+// Project root path to trim from all file paths
+const PROJECT_ROOT = process.cwd();
+
+/**
+ * Trim a file path to be relative to cwd first, then relative to project root
+ */
+function trimFilePath(filePath: string, cwd: string): string {
+  // First try relative to cwd
+  if (filePath.startsWith(cwd)) {
+    return relative(cwd, filePath);
+  }
+
+  // Then try relative to project root
+  if (filePath.startsWith(PROJECT_ROOT)) {
+    return relative(PROJECT_ROOT, filePath);
+  }
+
+  // Otherwise return as-is
+  return filePath;
+}
+
+/**
+ * Log a tool call from an agent with formatted output
+ */
+export function logAgentToolCall(
+  agentName: string,
+  toolName: string,
+  input: any,
+  cwd: string
+): void {
+  if (toolName === 'Read') {
+    const displayPath = trimFilePath(input.file_path, cwd);
+    console.log(`[${agentName}] Reading: ${displayPath}`);
+  } else if (toolName === 'Grep') {
+    console.log(`[${agentName}] Searching: "${input.pattern}"`);
+  } else if (toolName === 'Glob') {
+    console.log(`[${agentName}] Globbing: ${input.pattern}`);
+  } else {
+    // Generic fallback for any other tools
+    console.log(`[${agentName}] Tool: ${toolName}`);
+  }
+}
