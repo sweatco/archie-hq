@@ -18,8 +18,8 @@ import {
   updateTaskStatus,
 } from './task-manager.js';
 import { spawnPMAgent, PM_PROMPTS } from '../agents/pm.js';
-import { spawnBackendAgent } from '../agents/backend.js';
-import { spawnMobileAgent } from '../agents/mobile.js';
+import { spawnRepoAgent } from '../agents/repo-agent.js';
+import { getRepoConfig, getAllRepoConfigs } from '../agents/repo-configs.js';
 import type { ToolCallbacks } from '../mcp/tools.js';
 
 /**
@@ -194,13 +194,21 @@ function createToolCallbacks(
     /**
      * Assign a task owner (PM only)
      */
-    onAssignTaskOwner: async (agent: 'backend-agent' | 'mobile-agent'): Promise<void> => {
+    onAssignTaskOwner: async (agent: AgentName): Promise<void> => {
       console.log(`[${agentName}] Assigning task owner: ${agent}`);
 
       runtime.lastActivity = new Date();
 
       await setTaskOwner(runtime.taskId, agent);
       await addParticipant(runtime.taskId, agent);
+
+      // Log the assignment to shared knowledge
+      await appendAgentFinding(
+        runtime.taskId,
+        agentName,
+        `Assigned ${agent} as task owner`,
+        'decision'
+      );
 
       // Reload metadata to reflect the change
       const metadata = await loadMetadata(runtime.taskId);
@@ -228,7 +236,6 @@ async function ensureAgentSpawned(runtime: TaskRuntimeState, agentName: AgentNam
   }
 
   const callbacks = createToolCallbacks(runtime, agentName);
-  const isTaskOwner = metadata.task_owner === agentName;
 
   const onSessionId = (sessionId: string) => {
     runtime.sessions.set(agentName, sessionId);
@@ -240,35 +247,28 @@ async function ensureAgentSpawned(runtime: TaskRuntimeState, agentName: AgentNam
 
   let handle: AgentHandle;
 
-  switch (agentName) {
-    case 'backend-agent':
-      await addParticipant(runtime.taskId, 'backend-agent');
-      const backendQueue = runtime.queues.get('backend-agent');
-      if (!backendQueue) {
-        throw new Error('Backend queue not initialized');
-      }
-      handle = await spawnBackendAgent(metadata, backendQueue, callbacks, isTaskOwner, onSessionId, existingSessionId);
-      runtime.handles.set('backend-agent', handle);
-      break;
+  // Check if it's a repo agent
+  const repoConfig = getRepoConfig(agentName);
 
-    case 'mobile-agent':
-      await addParticipant(runtime.taskId, 'mobile-agent');
-      const mobileQueue = runtime.queues.get('mobile-agent');
-      if (!mobileQueue) {
-        throw new Error('Mobile queue not initialized');
-      }
-      handle = await spawnMobileAgent(metadata, mobileQueue, callbacks, isTaskOwner, onSessionId, existingSessionId);
-      runtime.handles.set('mobile-agent', handle);
-      break;
-
-    case 'pm-agent':
-      const pmQueue = runtime.queues.get('pm-agent');
-      if (!pmQueue) {
-        throw new Error('PM queue not initialized');
-      }
-      handle = await spawnPMAgent(metadata, pmQueue, callbacks, onSessionId, existingSessionId);
-      runtime.handles.set('pm-agent', handle);
-      break;
+  if (repoConfig) {
+    // It's a repo agent - use unified spawn
+    await addParticipant(runtime.taskId, agentName);
+    const queue = runtime.queues.get(agentName);
+    if (!queue) {
+      throw new Error(`${agentName} queue not initialized`);
+    }
+    handle = await spawnRepoAgent(repoConfig, metadata, queue, callbacks, onSessionId, existingSessionId);
+    runtime.handles.set(agentName, handle);
+  } else if (agentName === 'pm-agent') {
+    // PM agent
+    const pmQueue = runtime.queues.get('pm-agent');
+    if (!pmQueue) {
+      throw new Error('PM queue not initialized');
+    }
+    handle = await spawnPMAgent(metadata, pmQueue, callbacks, onSessionId, existingSessionId);
+    runtime.handles.set('pm-agent', handle);
+  } else {
+    throw new Error(`Unknown agent: ${agentName}`);
   }
 
   // Log whether we're resuming or starting fresh
@@ -320,23 +320,17 @@ export async function initializeTaskRuntime(taskId: string): Promise<TaskRuntime
     throw new Error(`Task ${taskId} not found`);
   }
 
-  // Initialize queues for all agents
-  const queues = new Map<AgentName, MessageQueue>([
-    ['pm-agent', new MessageQueue()],
-    ['backend-agent', new MessageQueue()],
-    ['mobile-agent', new MessageQueue()],
-  ]);
+  // Initialize queues for PM and all repo agents
+  const queues = new Map<AgentName, MessageQueue>();
+  queues.set('pm-agent', new MessageQueue());
+  for (const config of getAllRepoConfigs()) {
+    queues.set(config.agentId as AgentName, new MessageQueue());
+  }
 
   // Load existing session IDs from metadata
   const sessions = new Map<AgentName, string>();
-  if (metadata.agent_sessions['pm-agent']) {
-    sessions.set('pm-agent', metadata.agent_sessions['pm-agent']);
-  }
-  if (metadata.agent_sessions['backend-agent']) {
-    sessions.set('backend-agent', metadata.agent_sessions['backend-agent']);
-  }
-  if (metadata.agent_sessions['mobile-agent']) {
-    sessions.set('mobile-agent', metadata.agent_sessions['mobile-agent']);
+  for (const [agentId, sessionId] of Object.entries(metadata.agent_sessions)) {
+    sessions.set(agentId as AgentName, sessionId);
   }
 
   const runtime: TaskRuntimeState = {
