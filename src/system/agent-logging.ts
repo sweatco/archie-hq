@@ -48,3 +48,30 @@ export function logAgentToolCall(
     console.log(`[${agentName}] Tool: ${toolName}`);
   }
 }
+
+/**
+ * Process agent events and log file operation tool calls
+ * Filters out MCP tools and only logs Read, Grep, Glob operations
+ */
+export function processAgentEventForLogging(
+  event: any,
+  agentName: string,
+  cwd: string
+): void {
+  if (event.type === 'assistant') {
+    const content = event.message.content;
+    if (typeof content !== 'string') {
+      for (const block of content) {
+        if (block.type === 'tool_use') {
+          const toolName = block.name;
+          const input = block.input as any;
+
+          // Only log file operation tools (not MCP tools)
+          if (['Read', 'Grep', 'Glob'].includes(toolName)) {
+            logAgentToolCall(agentName, toolName, input, cwd);
+          }
+        }
+      }
+    }
+  }
+}
