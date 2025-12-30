@@ -2,7 +2,7 @@
  * Task Manager
  *
  * Handles task persistence: creating task folders, reading/writing metadata,
- * appending to shared-knowledge.log
+ * appending to knowledge.log
  */
 
 import { mkdir, readFile, writeFile, appendFile, readdir } from 'fs/promises';
@@ -10,7 +10,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import type { TaskMetadata, LogEntry, FindingType, SlackThread, AgentName } from '../types/index.js';
 
-const SESSIONS_DIR = 'sessions';
+const SESSIONS_DIR = join(process.cwd(), 'sessions');
 
 /**
  * Generate a unique task ID with human-readable date format
@@ -45,24 +45,38 @@ export function getTaskPath(taskId: string): string {
 }
 
 /**
- * Get the path to a task's metadata file
+ * Get the path to a task's shared directory (PM agent's working directory)
  */
-export function getMetadataPath(taskId: string): string {
-  return join(getTaskPath(taskId), 'metadata.json');
+export function getSharedPath(taskId: string): string {
+  return join(getTaskPath(taskId), 'shared');
 }
 
 /**
- * Get the path to a task's shared knowledge log
+ * Get the path to a task's repos directory (for worktrees in MVP-v2)
  */
-export function getSharedKnowledgePath(taskId: string): string {
-  return join(getTaskPath(taskId), 'shared-knowledge.log');
+export function getReposPath(taskId: string): string {
+  return join(getTaskPath(taskId), 'repos');
+}
+
+/**
+ * Get the path to a task's metadata file
+ */
+export function getMetadataPath(taskId: string): string {
+  return join(getSharedPath(taskId), 'metadata.json');
+}
+
+/**
+ * Get the path to a task's knowledge log
+ */
+export function getKnowledgeLogPath(taskId: string): string {
+  return join(getSharedPath(taskId), 'knowledge.log');
 }
 
 /**
  * Get the path to a task's memory directory
  */
 export function getMemoryPath(taskId: string): string {
-  return join(getTaskPath(taskId), 'memory');
+  return join(getSharedPath(taskId), 'memory');
 }
 
 /**
@@ -85,10 +99,10 @@ export async function createTask(
   await ensureSessionsDir();
 
   const taskId = generateTaskId();
-  const taskPath = getTaskPath(taskId);
+  const sharedPath = getSharedPath(taskId);
 
   // Create task directory structure
-  await mkdir(taskPath, { recursive: true });
+  await mkdir(sharedPath, { recursive: true });
   await mkdir(getMemoryPath(taskId), { recursive: true });
 
   // Create initial metadata
@@ -109,8 +123,8 @@ export async function createTask(
 
   await saveMetadata(taskId, metadata);
 
-  // Create empty shared knowledge log
-  await writeFile(getSharedKnowledgePath(taskId), '');
+  // Create empty knowledge log
+  await writeFile(getKnowledgeLogPath(taskId), '');
 
   return metadata;
 }
@@ -146,7 +160,7 @@ function formatLogEntry(entry: LogEntry): string {
 }
 
 /**
- * Append a Slack message to the shared knowledge log
+ * Append a Slack message to the knowledge log
  */
 export async function appendSlackMessage(
   taskId: string,
@@ -161,11 +175,11 @@ export async function appendSlackMessage(
     message: `[@<${userInfo.id}:${userInfo.realName}>] ${message}`,
   };
 
-  await appendFile(getSharedKnowledgePath(taskId), formatLogEntry(entry));
+  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
 }
 
 /**
- * Append an agent finding to the shared knowledge log
+ * Append an agent finding to the knowledge log
  */
 export async function appendAgentFinding(
   taskId: string,
@@ -180,14 +194,14 @@ export async function appendAgentFinding(
     message: finding,
   };
 
-  await appendFile(getSharedKnowledgePath(taskId), formatLogEntry(entry));
+  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
 }
 
 /**
- * Read the shared knowledge log
+ * Read the knowledge log
  */
-export async function readSharedKnowledge(taskId: string): Promise<string> {
-  const logPath = getSharedKnowledgePath(taskId);
+export async function readKnowledgeLog(taskId: string): Promise<string> {
+  const logPath = getKnowledgeLogPath(taskId);
 
   if (!existsSync(logPath)) {
     return '';
