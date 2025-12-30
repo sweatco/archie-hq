@@ -4,21 +4,21 @@
  * Generic repository agent that adapts its behavior based on context.
  * Specialization is provided via RepoAgentConfig.
  * Agent determines its role (Task Owner, Participant, PR Maintenance) from
- * shared-knowledge.log and incoming messages, not from spawn parameters.
+ * knowledge.log and incoming messages, not from spawn parameters.
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { TaskMetadata } from '../types/index.js';
-import type { AgentHandle } from '../types/agent.js';
-import type { RepoAgentConfig } from '../types/repo-agent.js';
-import { getTaskPath } from '../system/task-manager.js';
+import { query } from "@anthropic-ai/claude-agent-sdk";
+import type { TaskMetadata } from "../types/index.js";
+import type { AgentHandle } from "../types/agent.js";
+import type { RepoAgentConfig } from "../types/repo-agent.js";
+import { getSharedPath } from "../system/task-manager.js";
 import {
   MessageQueue,
   createAgentInputGenerator,
-} from '../system/message-queue.js';
-import { createRepoAgentMcpServer, type ToolCallbacks } from '../mcp/tools.js';
-import { processAgentEventForLogging } from '../system/agent-logging.js';
-import { getAllRepoConfigs } from './repo-configs.js';
+} from "../system/message-queue.js";
+import { createRepoAgentMcpServer, type ToolCallbacks } from "../mcp/tools.js";
+import { processAgentEventForLogging } from "../system/agent-logging.js";
+import { getAllRepoConfigs } from "./repo-configs.js";
 
 /**
  * Generate the system prompt for a repo agent
@@ -29,7 +29,7 @@ function generateRepoAgentPrompt(config: RepoAgentConfig): string {
   const peerList = getAllRepoConfigs()
     .filter((c) => c.agentId !== config.agentId)
     .map((c) => `- ${c.agentId}: ${c.role} (${c.repoKey} repository)`)
-    .join('\n');
+    .join("\n");
 
   return `You are the ${config.agentId}, a ${config.role}.
 
@@ -60,7 +60,7 @@ You will act as either Task Owner or Participant. **Default to Participant role*
 - Log your findings using log_finding
 - Report back to the requesting agent (not PM) when done
 
-Check shared-knowledge.log and your incoming messages to confirm your role. PM can reassign task ownership during execution - adapt accordingly.
+Check knowledge.log and your incoming messages to confirm your role. PM can reassign task ownership during execution - adapt accordingly.
 
 ## Communication Tools
 
@@ -69,12 +69,12 @@ Check shared-knowledge.log and your incoming messages to confirm your role. PM c
 
 ## Investigation Guidelines
 
-1. When you receive a new message, read shared-knowledge.log ONCE to get context
+1. When you receive a new message, read knowledge.log ONCE to get context
 2. Explore the codebase systematically using Read, Grep, and Glob
 3. Log important discoveries as you find them
 4. If the issue involves another repository, coordinate with that repo's agent
 5. When you find the root cause, log it as a "decision" type
-6. Don't keep re-reading shared-knowledge.log in loops - read it once per message, then investigate
+6. Don't keep re-reading knowledge.log in loops - read it once per message, then investigate
 
 ## Completion Behavior
 
@@ -96,7 +96,7 @@ export async function spawnRepoAgent(
 ): Promise<AgentHandle> {
   const repoPath =
     metadata.repositories[config.repoKey]?.path || config.defaultRepoPath;
-  const taskPath = getTaskPath(metadata.task_id);
+  const sharedPath = getSharedPath(metadata.task_id);
 
   // Create MCP server with repo agent tools
   const mcpServer = createRepoAgentMcpServer(callbacks);
@@ -105,13 +105,13 @@ export async function spawnRepoAgent(
   const context = `
 Task: ${metadata.task_id}
 Repository: ${repoPath}
-Task Directory: ${taskPath}
+Shared folder: ${sharedPath}
 
 Live task files (these update as work progresses):
-- ${taskPath}/shared-knowledge.log (conversation history and agent findings)
-- ${taskPath}/metadata.json (task metadata)
+- ${sharedPath}/knowledge.log (conversation history and agent findings)
+- ${sharedPath}/metadata.json (task metadata - PM agent only)
 
-IMPORTANT: The shared-knowledge.log file is continuously updated by other agents and user messages.
+IMPORTANT: The knowledge.log file is continuously updated by other agents and user messages.
 Read it ONCE when you receive a new message, then proceed with your work. Don't poll it repeatedly.
 `;
 
@@ -124,31 +124,31 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
   const agentQuery = query({
     prompt: inputGenerator as any,
     options: {
-      model: (process.env.SONNET_MODEL || 'claude-sonnet-4-5-20250929') as any,
-      betas: ['context-1m-2025-08-07'],
+      model: (process.env.SONNET_MODEL || "claude-sonnet-4-5-20250929") as any,
+      betas: ["context-1m-2025-08-07"],
       systemPrompt: `${systemPrompt}\n\nCurrent Context:\n${context}`,
       cwd: repoPath,
-      additionalDirectories: [repoPath, taskPath] as any,
-      executable: 'node',
-      pathToClaudeCodeExecutable: process.env.CLAUDE_PATH || 'claude',
+      additionalDirectories: [repoPath, sharedPath] as any,
+      executable: "node",
+      pathToClaudeCodeExecutable: process.env.CLAUDE_PATH || "claude",
       env: {
-        NODE_ENV: process.env.NODE_ENV || 'development',
+        NODE_ENV: process.env.NODE_ENV || "development",
         ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
         PATH: process.env.PATH,
       },
-      settingSources: ['project'],
+      settingSources: ["project"],
       resume: existingSessionId,
       maxTurns: 100,
-      permissionMode: 'dontAsk',
+      permissionMode: "dontAsk",
       mcpServers: {
-        'repo-agent-tools': mcpServer,
+        "repo-agent-tools": mcpServer,
       },
       allowedTools: [
-        'mcp__repo-agent-tools__send_message_to_agent',
-        'mcp__repo-agent-tools__log_finding',
-        'Read',
-        'Glob',
-        'Grep',
+        "mcp__repo-agent-tools__send_message_to_agent",
+        "mcp__repo-agent-tools__log_finding",
+        "Read",
+        "Glob",
+        "Grep",
       ],
     },
   });
@@ -164,12 +164,12 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
     try {
       for await (const event of agentQuery) {
         // Capture session ID
-        if (event.type === 'system' && event.subtype === 'init') {
+        if (event.type === "system" && event.subtype === "init") {
           onSessionId(event.session_id);
         }
 
         // Log file operation tool calls
-        processAgentEventForLogging(event, config.agentId, repoPath);
+        processAgentEventForLogging(event, config.agentId, [repoPath, sharedPath]);
       }
     } catch (error) {
       if (!queue.isStopped()) {
