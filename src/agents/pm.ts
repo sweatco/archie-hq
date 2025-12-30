@@ -9,7 +9,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { TaskMetadata } from '../types/index.js';
 import type { AgentHandle } from '../types/agent.js';
-import { getTaskPath } from '../system/task-manager.js';
+import { getSharedPath } from '../system/task-manager.js';
 import { MessageQueue, createAgentInputGenerator } from '../system/message-queue.js';
 import { createPMAgentMcpServer, type ToolCallbacks } from '../mcp/tools.js';
 import { processAgentEventForLogging } from '../system/agent-logging.js';
@@ -62,11 +62,21 @@ Examples:
 
 Think: Delegating work = you're still managing = DON'T complete. Waiting for user = DO complete.
 
-Standard Workflow:
-When you receive a new input message:
-1. Read shared-knowledge.log ONCE to get the latest context
-2. Take your actions based on that context
-3. Don't re-read the log in the same turn - each message triggers one read, then act
+Standard Workflow - Read Once Per Turn:
+1. **Start of EVERY turn**: Read knowledge.log ONCE to get the latest context
+2. Take all your actions based on that single read
+3. **Never re-read the log in the same turn** - one read per turn, that's it
+
+What counts as a "turn":
+- You receive a new message from the system (user input, agent response, etc.)
+- You take multiple actions (post_to_slack, send_message_to_agent, etc.)
+- You finish and wait for the next message
+- That's ONE turn = ONE read of knowledge.log at the start
+
+IMPORTANT:
+- After sending a message to an agent via send_message_to_agent, DO NOT read knowledge.log again while waiting
+- The agent is working - you'll see their findings in the next turn when they respond
+- If you read metadata.json or other files, that's fine, but never re-read knowledge.log in the same turn
 
 When you receive "New task created, assign owner":
 1. Determine what kind of request this is:
@@ -138,8 +148,8 @@ export async function spawnPMAgent(
   agentName: string = 'pm-agent'
 ): Promise<AgentHandle> {
   const PM_SYSTEM_PROMPT = generatePMSystemPrompt();
-  // Get task folder path (contains shared-knowledge.log and metadata.json)
-  const taskPath = getTaskPath(metadata.task_id);
+  // Get task shared folder path (PM's working directory)
+  const sharedPath = getSharedPath(metadata.task_id);
 
   // Create MCP server with PM tools
   const mcpServer = createPMAgentMcpServer(callbacks);
@@ -154,8 +164,10 @@ Slack Channel(s): ${channelInfo}
 Task Owner: ${metadata.task_owner || 'Not assigned'}
 Participants: ${metadata.participants.join(', ') || 'None yet'}
 
-Files available to read:
-- shared-knowledge.log (conversation history and agent findings)
+Your working directory: ${sharedPath}
+
+Files available to read (in your working directory):
+- knowledge.log (conversation history and agent findings)
 - metadata.json (task metadata)
 `;
 
@@ -169,7 +181,7 @@ Files available to read:
       model: (process.env.SONNET_MODEL || 'claude-sonnet-4-5-20250929') as any,
       betas: ['context-1m-2025-08-07'],
       systemPrompt: `${PM_SYSTEM_PROMPT}\n\nCurrent Task Context:\n${context}`,
-      cwd: taskPath,
+      cwd: sharedPath,
       executable: 'node',
       pathToClaudeCodeExecutable: process.env.CLAUDE_PATH || 'claude',
       env: {
@@ -211,7 +223,7 @@ Files available to read:
         }
 
         // Log file operation tool calls
-        processAgentEventForLogging(event, agentName, taskPath);
+        processAgentEventForLogging(event, agentName, [sharedPath]);
       }
     } catch (error) {
       if (!queue.isStopped()) {
@@ -230,7 +242,7 @@ Files available to read:
  */
 export const PM_PROMPTS = {
   newTask: 'New task created, assign owner',
-  newUserInput: 'New user input in the Slack thread. Check shared-knowledge.log for the update.',
-  taskCompleted: 'Task owner completed investigation. Read shared-knowledge.log and post a summary to Slack.',
-  statusRequest: 'User asked for status. Read shared-knowledge.log and post a brief update to Slack.',
+  newUserInput: 'New user input in the Slack thread. Check knowledge.log for the update.',
+  taskCompleted: 'Task owner completed investigation. Read knowledge.log and post a summary to Slack.',
+  statusRequest: 'User asked for status. Read knowledge.log and post a brief update to Slack.',
 };
