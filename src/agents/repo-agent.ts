@@ -11,7 +11,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { TaskMetadata } from "../types/index.js";
 import type { AgentHandle } from "../types/agent.js";
 import type { RepoAgentConfig } from "../types/repo-agent.js";
-import { getSharedPath } from "../system/task-manager.js";
+import { getSharedPath, getReposPath, saveMetadata } from "../system/task-manager.js";
 import {
   MessageQueue,
   createAgentInputGenerator,
@@ -19,10 +19,12 @@ import {
 import { createRepoAgentMcpServer, type ToolCallbacks } from "../mcp/tools.js";
 import { processAgentEventForLogging } from "../system/agent-logging.js";
 import { getAllRepoConfigs } from "./repo-configs.js";
+import { setupWorktree, worktreeExists } from "../system/worktree-manager.js";
 
 /**
  * Generate the system prompt for a repo agent
  * Includes all roles - agent determines which to use from context
+ * Agent discovers its mode (readonly vs edit) from available tools
  */
 function generateRepoAgentPrompt(config: RepoAgentConfig): string {
   // Build peer list from all other repo agents
@@ -79,12 +81,39 @@ Check knowledge.log and your incoming messages to confirm your role. PM can reas
 ## Completion Behavior
 
 - As Task Owner: After sending final findings to pm-agent, STOP. Wait for further instructions.
-- As Participant: After sending findings to the requesting agent, STOP. Wait for further instructions.`;
+- As Participant: After sending findings to the requesting agent, STOP. Wait for further instructions.
+
+## Operating Modes
+
+Your mode depends on which tools are available to you:
+
+**Read-Only Mode** (default - no Write/Edit tools):
+- You can explore and investigate but cannot make changes
+- If changes are needed, document what needs to change and why
+- Report findings to pm-agent - they will request edit mode approval from the user
+
+**Edit Mode** (Write and Edit tools available):
+- You have Write and Edit tools - use them to make code changes
+- You are working in an isolated git worktree (feature branch)
+- Changes are LOCAL ONLY - no commits or pushes yet
+- Make the changes requested by PM
+- Test your changes if possible (read related files, check for obvious errors)
+- Log your changes using log_finding with type "decision"
+- Report completion to PM when done
+- Do NOT commit (git commit) or push (git push) - that's a future feature
+- Do NOT modify files outside your repository`;
 }
 
 /**
  * Spawn a repo agent with streaming input from a message queue
  * Returns an AgentHandle to track the running agent
+ *
+ * In edit mode:
+ * - Creates/reuses worktree for isolated work
+ * - Adds Write and Edit to allowed tools
+ * - cwd is set to worktree path
+ *
+ * @param onMetadataUpdate - Optional callback when metadata changes (worktree created)
  */
 export async function spawnRepoAgent(
   config: RepoAgentConfig,
@@ -92,11 +121,59 @@ export async function spawnRepoAgent(
   queue: MessageQueue,
   callbacks: ToolCallbacks,
   onSessionId: (sessionId: string) => void,
-  existingSessionId?: string
+  existingSessionId?: string,
+  onMetadataUpdate?: (metadata: TaskMetadata) => Promise<void>
 ): Promise<AgentHandle> {
-  const repoPath =
-    metadata.repositories[config.repoKey]?.path || config.defaultRepoPath;
+  const repoInfo = metadata.repositories[config.repoKey];
+  const baseRepoPath = repoInfo?.path || config.defaultRepoPath;
   const sharedPath = getSharedPath(metadata.task_id);
+  const editAllowed = metadata.edit_allowed === true;
+
+  // Determine working directory based on mode
+  let repoPath: string;
+  let startFreshSession = false; // Track if we need a fresh session (cwd is changing to non-child path)
+
+  if (editAllowed) {
+    // Edit mode - use or create worktree
+    if (repoInfo?.worktree_path && await worktreeExists(repoInfo.worktree_path)) {
+      // Worktree already exists - reuse it (no fetch needed)
+      repoPath = repoInfo.worktree_path;
+      console.log(`[${config.agentId}] Reusing existing worktree at ${repoPath}`);
+    } else {
+      // Create new worktree (includes fetch)
+      // This means we're switching from readonly to edit mode - need to fork session
+      console.log(`[${config.agentId}] Creating worktree for edit mode`);
+      startFreshSession = true; // cwd is changing to non-child path, need fresh session
+
+      const reposPath = getReposPath(metadata.task_id);
+      const { worktree_path, feature_branch } = await setupWorktree(
+        metadata.task_id,
+        config.repoKey,
+        reposPath,
+        baseRepoPath
+      );
+
+      // Update metadata with worktree info
+      metadata.repositories[config.repoKey] = {
+        ...repoInfo,
+        path: baseRepoPath,
+        worktree_path,
+        feature_branch,
+      };
+
+      // Save metadata and notify caller
+      await saveMetadata(metadata.task_id, metadata);
+      if (onMetadataUpdate) {
+        await onMetadataUpdate(metadata);
+      }
+
+      repoPath = worktree_path;
+      console.log(`[${config.agentId}] Worktree created at ${repoPath} (branch: ${feature_branch})`);
+    }
+  } else {
+    // Readonly mode - use base repo
+    repoPath = baseRepoPath;
+  }
 
   // Create MCP server with repo agent tools
   const mcpServer = createRepoAgentMcpServer(callbacks);
@@ -137,7 +214,8 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
         PATH: process.env.PATH,
       },
       settingSources: ["project"],
-      resume: existingSessionId,
+      // Don't resume if cwd is changing to non-child path (worktree) - Claude Code blocks this
+      resume: startFreshSession ? undefined : existingSessionId,
       maxTurns: 100,
       permissionMode: "dontAsk",
       mcpServers: {
@@ -149,6 +227,8 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
         "Read",
         "Glob",
         "Grep",
+        // Edit mode adds Write and Edit tools
+        ...(editAllowed ? ["Write", "Edit"] : []),
       ],
     },
   });
@@ -165,6 +245,9 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
       for await (const event of agentQuery) {
         // Capture session ID
         if (event.type === "system" && event.subtype === "init") {
+          if (startFreshSession) {
+            console.log(`[${config.agentId}] Started fresh session for edit mode: ${event.session_id}`);
+          }
           onSessionId(event.session_id);
         }
 
