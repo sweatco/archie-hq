@@ -14,17 +14,17 @@ const SESSIONS_DIR = join(process.cwd(), 'sessions');
 
 /**
  * Generate a unique task ID with human-readable date format
- * Format: task-DDMMYYYY-HHMM-xxxxxx
- * Example: task-23122025-1712-a3f9k2
+ * Format: task-YYYYMMDD-HHMM-xxxxxx
+ * Example: task-20251223-1712-a3f9k2
  */
 export function generateTaskId(): string {
   const now = new Date();
 
-  // Format: DDMMYYYY
-  const day = String(now.getDate()).padStart(2, '0');
-  const month = String(now.getMonth() + 1).padStart(2, '0');
+  // Format: YYYYMMDD (ISO-style for natural sorting)
   const year = now.getFullYear();
-  const date = `${day}${month}${year}`;
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const date = `${year}${month}${day}`;
 
   // Format: HHMM
   const hours = String(now.getHours()).padStart(2, '0');

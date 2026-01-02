@@ -23,6 +23,8 @@ export interface RepositoryInfo {
   branch?: string;
   base_branch?: string;
   base_sha?: string;
+  worktree_path?: string;     // Path to active worktree (edit mode)
+  feature_branch?: string;    // Branch name in worktree (feature/task-{id})
 }
 
 export interface TaskMetadata {
@@ -33,6 +35,7 @@ export interface TaskMetadata {
   agent_sessions: Record<string, string>;
   repositories: Record<string, RepositoryInfo>;
   status: TaskStatus;
+  edit_allowed?: boolean;     // Has user approved edit mode for this task?
   created_at: string;
   updated_at: string;
 }
