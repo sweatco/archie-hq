@@ -13,9 +13,9 @@ const { App, ExpressReceiver } = require('@slack/bolt');
 import type { App as AppType } from '@slack/bolt';
 import type { ExpressReceiver as ExpressReceiverType } from '@slack/bolt';
 
-import { initSlackClient, postToThreads } from '../slack/client.js';
+import { initSlackClient, postToThreads, postInteractiveToThreads, updateMessage } from '../slack/client.js';
 import { handleSlackMessage, setRepoPaths } from '../slack/events.js';
-import { setSlackCallbacks } from './task-runtime.js';
+import { setSlackCallbacks, handleEditModeApproval, handleEditModeDenial } from './task-runtime.js';
 import { loadMetadata } from './task-manager.js';
 
 /**
@@ -41,13 +41,23 @@ export async function startServer(config: ServerConfig): Promise<void> {
   // Set repository paths
   setRepoPaths(config.backendRepoPath, config.mobileRepoPath);
 
-  // Set up Slack callback once globally (works for all tasks since it uses taskId parameter)
-  setSlackCallbacks(async (taskId: string, slackMessage: string) => {
-    const taskMetadata = await loadMetadata(taskId);
-    if (taskMetadata) {
-      await postToThreads(taskMetadata.slack_threads, slackMessage);
+  // Set up Slack callbacks once globally (works for all tasks since it uses taskId parameter)
+  setSlackCallbacks(
+    // Regular message callback
+    async (taskId: string, slackMessage: string) => {
+      const taskMetadata = await loadMetadata(taskId);
+      if (taskMetadata) {
+        await postToThreads(taskMetadata.slack_threads, slackMessage);
+      }
+    },
+    // Interactive message callback (for buttons)
+    async (taskId: string, text: string, blocks: unknown[]) => {
+      const taskMetadata = await loadMetadata(taskId);
+      if (taskMetadata) {
+        await postInteractiveToThreads(taskMetadata.slack_threads, text, blocks);
+      }
     }
-  });
+  );
 
   // Create Express receiver for HTTP mode
   const receiver: ExpressReceiverType = new ExpressReceiver({
@@ -113,6 +123,62 @@ export async function startServer(config: ServerConfig): Promise<void> {
       } catch (error) {
         console.error('[Server] Error handling message:', error);
       }
+    }
+  });
+
+  // Handle edit mode approval button
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  app!.action('approve_edit_mode', async ({ action, ack, body }: any) => {
+    await ack();
+
+    const taskId = action.value;
+    const userId = body.user?.id || 'unknown';
+
+    console.log(`[Server] Edit mode approved by ${userId} for task ${taskId}`);
+
+    try {
+      // Update the original message to show approval
+      if (body.channel?.id && body.message?.ts) {
+        await updateMessage(
+          body.channel.id,
+          body.message.ts,
+          `✅ *Edit mode approved* by <@${userId}>`,
+          [] // Remove buttons
+        );
+      }
+
+      // Handle the approval
+      await handleEditModeApproval(taskId);
+    } catch (error) {
+      console.error('[Server] Error handling edit mode approval:', error);
+    }
+  });
+
+  // Handle edit mode denial button
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  app!.action('deny_edit_mode', async ({ action, ack, body }: any) => {
+    await ack();
+
+    const taskId = action.value;
+    const userId = body.user?.id || 'unknown';
+
+    console.log(`[Server] Edit mode denied by ${userId} for task ${taskId}`);
+
+    try {
+      // Update the original message to show denial
+      if (body.channel?.id && body.message?.ts) {
+        await updateMessage(
+          body.channel.id,
+          body.message.ts,
+          `❌ *Edit mode denied* by <@${userId}>`,
+          [] // Remove buttons
+        );
+      }
+
+      // Handle the denial
+      await handleEditModeDenial(taskId);
+    } catch (error) {
+      console.error('[Server] Error handling edit mode denial:', error);
     }
   });
 
