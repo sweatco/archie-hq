@@ -20,6 +20,7 @@ export interface ToolCallbacks {
   onPostToSlack: (message: string) => Promise<void>;
   onReportCompletion: () => Promise<void>;
   onAssignTaskOwner: (agent: AgentName) => Promise<void>;
+  onRequestEditMode: (reason: string) => Promise<void>;
 }
 
 /**
@@ -145,6 +146,38 @@ export function createAssignTaskOwnerTool(callbacks: ToolCallbacks) {
 }
 
 /**
+ * Create the request_edit_mode tool
+ *
+ * This tool allows PM to request task-level edit mode approval from the user.
+ * When called, it:
+ * 1. Logs the request to shared-knowledge.log
+ * 2. Posts a Slack message with Approve/Deny buttons
+ * 3. Stops the task runtime (pauses all agents)
+ *
+ * PM should explain findings to user via Slack BEFORE calling this tool.
+ */
+export function createRequestEditModeTool(callbacks: ToolCallbacks) {
+  return tool(
+    'request_edit_mode',
+    'Request permission to make code changes. Call this AFTER explaining to the user what changes are needed and why. Task will pause until user approves or denies.',
+    {
+      reason: z.string().describe('Brief summary of what changes need to be made (shown in approval buttons)'),
+    },
+    async (args) => {
+      await callbacks.onRequestEditMode(args.reason);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Edit mode request sent. Task paused pending user approval.',
+          },
+        ],
+      };
+    }
+  );
+}
+
+/**
  * Create the report_completion tool
  *
  * This tool allows PM to send a final message to the user and complete the task.
@@ -188,6 +221,7 @@ export function createPMAgentMcpServer(callbacks: ToolCallbacks) {
       createPostToSlackTool(callbacks),
       createAssignTaskOwnerTool(callbacks),
       createReportCompletionTool(callbacks),
+      createRequestEditModeTool(callbacks),
     ],
   });
 }
