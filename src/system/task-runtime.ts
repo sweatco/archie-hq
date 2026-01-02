@@ -11,6 +11,7 @@ import type { AgentHandle } from '../types/agent.js';
 import { MessageQueue } from './message-queue.js';
 import {
   loadMetadata,
+  saveMetadata,
   appendAgentFinding,
   setTaskOwner,
   addParticipant,
@@ -58,12 +59,25 @@ const activeTasks = new Map<string, TaskRuntimeState>();
 let slackPostCallback: ((taskId: string, message: string) => Promise<void>) | null = null;
 
 /**
- * Set the Slack callback function
+ * Callback for Slack interactive messages (injected by server)
+ */
+let slackPostInteractiveCallback: ((
+  taskId: string,
+  text: string,
+  blocks: unknown[]
+) => Promise<void>) | null = null;
+
+/**
+ * Set the Slack callback functions
  */
 export function setSlackCallbacks(
-  postFn: (taskId: string, message: string) => Promise<void>
+  postFn: (taskId: string, message: string) => Promise<void>,
+  postInteractiveFn?: (taskId: string, text: string, blocks: unknown[]) => Promise<void>
 ): void {
   slackPostCallback = postFn;
+  if (postInteractiveFn) {
+    slackPostInteractiveCallback = postInteractiveFn;
+  }
 }
 
 /**
@@ -218,6 +232,71 @@ function createToolCallbacks(
 
       console.log(`[System] Task ${runtime.taskId} owner set to ${agent}`);
     },
+
+    /**
+     * Request edit mode (PM only)
+     * Logs the request, posts to Slack with buttons, and pauses the task
+     */
+    onRequestEditMode: async (reason: string): Promise<void> => {
+      console.log(`[${agentName}] Requesting edit mode: ${reason}`);
+
+      runtime.lastActivity = new Date();
+
+      // Log the request to shared knowledge
+      await appendAgentFinding(
+        runtime.taskId,
+        'system',
+        `Edit mode requested: ${reason}`,
+        'decision'
+      );
+
+      // Post to Slack with interactive buttons
+      if (slackPostInteractiveCallback) {
+        const blocks = [
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: `*Edit mode request:* ${reason}`,
+            },
+          },
+          {
+            type: 'actions',
+            elements: [
+              {
+                type: 'button',
+                text: { type: 'plain_text', text: 'Approve' },
+                action_id: 'approve_edit_mode',
+                value: runtime.taskId,
+                style: 'primary',
+              },
+              {
+                type: 'button',
+                text: { type: 'plain_text', text: 'Deny' },
+                action_id: 'deny_edit_mode',
+                value: runtime.taskId,
+                style: 'danger',
+              },
+            ],
+          },
+        ];
+
+        await slackPostInteractiveCallback(
+          runtime.taskId,
+          `Edit mode request: ${reason}`,
+          blocks
+        );
+      } else if (slackPostCallback) {
+        // Fallback to regular message if interactive not available
+        await slackPostCallback(
+          runtime.taskId,
+          `Edit mode request: ${reason}\n\n(Interactive buttons not available - please respond with "approve" or "deny")`
+        );
+      }
+
+      // Stop the task - it will be reactivated on approval/denial
+      await stopTask(runtime.taskId);
+    },
   };
 }
 
@@ -271,15 +350,14 @@ async function ensureAgentSpawned(runtime: TaskRuntimeState, agentName: AgentNam
     throw new Error(`Unknown agent: ${agentName}`);
   }
 
-  // Log whether we're resuming or starting fresh
-  if (existingSessionId) {
-    console.log(`[System] Resuming ${agentName} for task ${runtime.taskId} (session: ${existingSessionId})`);
-  } else {
-    console.log(`[System] Starting new ${agentName} session for task ${runtime.taskId}`);
-  }
-
   runtime.spawned.add(agentName);
-  console.log(`[System] Spawned ${agentName} for task ${runtime.taskId}`);
+
+  // Log spawning (single consolidated message)
+  if (existingSessionId) {
+    console.log(`[System] Resumed ${agentName} for task ${runtime.taskId} (session: ${existingSessionId})`);
+  } else {
+    console.log(`[System] Spawned ${agentName} for task ${runtime.taskId}`);
+  }
 }
 
 /**
@@ -464,6 +542,67 @@ export async function completeTask(taskId: string): Promise<void> {
   activeTasks.delete(taskId);
 
   console.log(`[System] Task ${taskId} completed`);
+}
+
+/**
+ * Handle edit mode approval from Slack button
+ * Sets edit_allowed, logs approval, reactivates task with PM message
+ */
+export async function handleEditModeApproval(taskId: string): Promise<void> {
+  // Load metadata and set edit_allowed
+  const metadata = await loadMetadata(taskId);
+  if (!metadata) {
+    console.error(`[System] Task ${taskId} not found for edit approval`);
+    return;
+  }
+
+  // Update metadata with edit_allowed
+  metadata.edit_allowed = true;
+  await saveMetadata(taskId, metadata);
+
+  // Log approval to shared knowledge
+  await appendAgentFinding(taskId, 'system', 'Edit mode approved by user', 'decision');
+
+  // Reactivate task (this will reinitialize runtime and spawn PM)
+  await reactivateTaskWithMessage(taskId, 'Edit mode has been approved.');
+}
+
+/**
+ * Handle edit mode denial from Slack button
+ * Logs denial, reactivates task with PM message
+ */
+export async function handleEditModeDenial(taskId: string): Promise<void> {
+  // Log denial to shared knowledge
+  await appendAgentFinding(taskId, 'system', 'Edit mode denied by user', 'decision');
+
+  // Reactivate task with denial message
+  await reactivateTaskWithMessage(taskId, 'Edit mode was denied.');
+}
+
+/**
+ * Reactivate a task with a specific message for PM
+ */
+async function reactivateTaskWithMessage(taskId: string, message: string): Promise<void> {
+  // Ensure Slack callbacks are set
+  if (!slackPostCallback) {
+    console.error(`[System] Cannot reactivate task ${taskId} - Slack callbacks not set`);
+    return;
+  }
+
+  // Remove old runtime if it exists
+  activeTasks.delete(taskId);
+
+  // Reinitialize with fresh queues and state
+  const runtime = await initializeTaskRuntime(taskId);
+
+  // Add the message to PM queue BEFORE spawning
+  const pmQueue = runtime.queues.get('pm-agent');
+  if (pmQueue) {
+    pmQueue.addMessage(message);
+  }
+
+  // Spawn PM agent - it will process the message from its queue
+  await ensureAgentSpawned(runtime, 'pm-agent');
 }
 
 /**

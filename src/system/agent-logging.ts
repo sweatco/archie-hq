@@ -52,6 +52,12 @@ export function logAgentToolCall(
   if (toolName === 'Read') {
     const displayPath = trimFilePath(input.file_path, cwds);
     console.log(`[${agentName}] Reading: ${displayPath}`);
+  } else if (toolName === 'Write') {
+    const displayPath = trimFilePath(input.file_path, cwds);
+    console.log(`[${agentName}] Writing: ${displayPath}`);
+  } else if (toolName === 'Edit') {
+    const displayPath = trimFilePath(input.file_path, cwds);
+    console.log(`[${agentName}] Editing: ${displayPath}`);
   } else if (toolName === 'Grep') {
     console.log(`[${agentName}] Searching: "${input.pattern}"`);
   } else if (toolName === 'Glob') {
@@ -64,7 +70,7 @@ export function logAgentToolCall(
 
 /**
  * Process agent events and log file operation tool calls
- * Filters out MCP tools and only logs Read, Grep, Glob operations
+ * Filters out MCP tools and only logs Read, Write, Edit, Grep, Glob operations
  */
 export function processAgentEventForLogging(
   event: any,
@@ -80,7 +86,7 @@ export function processAgentEventForLogging(
           const input = block.input as any;
 
           // Only log file operation tools (not MCP tools)
-          if (['Read', 'Grep', 'Glob'].includes(toolName)) {
+          if (['Read', 'Write', 'Edit', 'Grep', 'Glob'].includes(toolName)) {
             logAgentToolCall(agentName, toolName, input, cwds);
           }
         }
