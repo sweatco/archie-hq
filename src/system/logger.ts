@@ -209,7 +209,11 @@ export class Logger {
     opts?: { editMode?: boolean }
   ): void {
     const label = formatAgentLabel(agentName, opts?.editMode);
-    console.log(`${label} ${c.dim(action + ':')} ${details}`);
+    if (details) {
+      console.log(`${label} ${c.dim(action + ':')} ${details}`);
+    } else {
+      console.log(`${label} ${c.dim(action)}`);
+    }
   }
 
   /**
