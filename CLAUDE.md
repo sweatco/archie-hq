@@ -32,6 +32,10 @@ Slack messages → Triage Agent → PM Agent → Specialist Agents (Backend, Mob
 
 No build or test commands yet - this is an early-stage architecture specification project.
 
+## Logging
+
+Use the unified logger (`src/system/logger.ts`) for all console output. Never use `console.log/error/warn` directly. The logger provides color-coded, semantic logging methods for agents, system events, and errors.
+
 ## Git Workflow
 
 **IMPORTANT**: Only create commits when explicitly requested by the user. Never commit code automatically.
