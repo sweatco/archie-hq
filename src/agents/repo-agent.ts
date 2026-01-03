@@ -21,7 +21,7 @@ import {
   createAgentInputGenerator,
 } from "../system/message-queue.js";
 import { createRepoAgentMcpServer, type ToolCallbacks } from "../mcp/tools.js";
-import { processAgentEventForLogging } from "../system/agent-logging.js";
+import { processAgentEventForLogging, logger } from "../system/logger.js";
 import { getAllRepoConfigs } from "./repo-configs.js";
 import { setupWorktree, worktreeExists } from "../system/worktree-manager.js";
 import { loadPrompt } from "../utils/prompt-loader.js";
@@ -86,13 +86,14 @@ export async function spawnRepoAgent(
     ) {
       // Worktree already exists - reuse it (no fetch needed)
       repoPath = repoInfo.worktree_path;
-      console.log(
-        `[${config.agentId}] Reusing existing worktree at ${repoPath}`
+      logger.agent(
+        config.agentId,
+        `Reusing existing worktree at ${repoPath}`,
+        { editMode: true }
       );
     } else {
       // Create new worktree (includes fetch)
       // This means we're switching from readonly to edit mode - need to fork session
-      console.log(`[${config.agentId}] Creating worktree for edit mode`);
       startFreshSession = true; // cwd is changing to non-child path, need fresh session
 
       const reposPath = getReposPath(metadata.task_id);
@@ -118,9 +119,6 @@ export async function spawnRepoAgent(
       }
 
       repoPath = worktree_path;
-      console.log(
-        `[${config.agentId}] Worktree created at ${repoPath} (branch: ${feature_branch})`
-      );
     }
   } else {
     // Readonly mode - use base repo
@@ -197,11 +195,6 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
       for await (const event of agentQuery) {
         // Capture session ID
         if (event.type === "system" && event.subtype === "init") {
-          if (startFreshSession) {
-            console.log(
-              `[${config.agentId}] Started fresh session for edit mode: ${event.session_id}`
-            );
-          }
           onSessionId(event.session_id);
         }
 
@@ -209,11 +202,11 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
         processAgentEventForLogging(event, config.agentId, [
           repoPath,
           sharedPath,
-        ]);
+        ], editAllowed);
       }
     } catch (error) {
       if (!queue.isStopped()) {
-        console.error(`[${config.agentId}] Error:`, error);
+        logger.error(config.agentId, 'Error', error);
       }
     } finally {
       handle.isRunning = false;

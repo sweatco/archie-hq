@@ -15,7 +15,7 @@ import {
   createAgentInputGenerator,
 } from "../system/message-queue.js";
 import { createPMAgentMcpServer, type ToolCallbacks } from "../mcp/tools.js";
-import { processAgentEventForLogging } from "../system/agent-logging.js";
+import { processAgentEventForLogging, logger } from "../system/logger.js";
 import { getAllRepoConfigs } from "./repo-configs.js";
 import { loadPrompt } from "../utils/prompt-loader.js";
 
@@ -133,7 +133,7 @@ Files available to read (in your working directory):
       }
     } catch (error) {
       if (!queue.isStopped()) {
-        console.error(`[${agentName}] Error:`, error);
+        logger.error(agentName, 'Error', error);
       }
     } finally {
       handle.isRunning = false;

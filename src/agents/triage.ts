@@ -9,9 +9,10 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { join } from 'path';
+import pc from 'picocolors';
 import type { TriageResult, SlackMessage } from '../types/index.js';
 import { findTaskIdByThread } from '../system/task-runtime.js';
-import { processAgentEventForLogging } from '../system/agent-logging.js';
+import { processAgentEventForLogging, logger } from '../system/logger.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 
 /**
@@ -89,6 +90,8 @@ Classify this message and respond with JSON only.`;
   // Set cwd to sessions directory for searching task metadata
   const systemPrompt = await getTriageSystemPrompt();
 
+  logger.system('Running triage-agent...');
+
   for await (const event of query({
     prompt: triageInput,
     options: {
@@ -118,19 +121,21 @@ Classify this message and respond with JSON only.`;
         const parsed = TriageResultSchema.safeParse(event.structured_output);
         if (parsed.success) {
           result = parsed.data;
-          console.log('[triage-agent] Decision:', {
+          const decision = {
             action: result.action,
             taskId: result.task_id || '(none)',
             confidence: result.confidence,
             reasoning: parsed.data.reasoning,
-          });
+          };
+          const label = pc.yellow('[triage-agent]');
+          console.log(`${label} ${pc.yellow('[decision]')}:`, decision);
         } else {
-          console.error('[triage-agent] Validation failed:', parsed.error);
+          logger.error('triage-agent', 'Validation failed', parsed.error);
         }
       } else if (event.subtype === 'error_max_structured_output_retries') {
-        console.error('[triage-agent] Failed to produce valid structured output after retries');
+        logger.error('triage-agent', 'Failed to produce valid structured output after retries');
       } else if (event.subtype === 'error_during_execution') {
-        console.error('[triage-agent] Error during execution:', event.errors);
+        logger.error('triage-agent', 'Error during execution', event.errors);
       }
     }
   }
