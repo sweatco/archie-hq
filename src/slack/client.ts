@@ -8,6 +8,7 @@
 import { WebClient } from '@slack/web-api';
 import type { SlackMessage, SlackThread } from '../types/index.js';
 import slackifyMarkdown from 'slackify-markdown';
+import { logger } from '../system/logger.js';
 
 let slackClient: WebClient | null = null;
 let botUserId: string | null = null;
@@ -22,9 +23,9 @@ export async function initSlackClient(token: string): Promise<void> {
   try {
     const authResult = await slackClient.auth.test();
     botUserId = authResult.user_id as string;
-    console.log(`[Slack] Bot user ID: ${botUserId}`);
+    logger.slack(`Bot user ID: ${botUserId}`);
   } catch (error) {
-    console.warn('Failed to get bot user ID:', error);
+    logger.warn('Slack', 'Failed to get bot user ID', error);
   }
 }
 
@@ -177,7 +178,7 @@ async function fetchMentionInfo(
           const info = await getUserInfo(userId);
           userInfoMap.set(userId, info);
         } catch (error) {
-          console.warn(`Failed to get user info for ${userId}`);
+          logger.warn('Slack', `Failed to get user info for ${userId}`);
         }
       })
     );
@@ -196,7 +197,7 @@ async function fetchMentionInfo(
         }
       }
     } catch (error) {
-      console.warn('Failed to fetch usergroups:', error);
+      logger.warn('Slack', 'Failed to fetch usergroups', error);
     }
   }
 
@@ -210,7 +211,7 @@ async function fetchMentionInfo(
           const channelName = channelResult.channel?.name || channelId;
           channelInfoMap.set(channelId, channelName);
         } catch (error) {
-          console.warn(`Failed to get channel info for ${channelId}`);
+          logger.warn('Slack', `Failed to get channel info for ${channelId}`);
         }
       })
     );
@@ -326,7 +327,7 @@ export async function getChannelInfo(channelId: string): Promise<{ id: string; n
       name: result.channel?.name || channelId,
     };
   } catch (error) {
-    console.warn(`Failed to get channel info for ${channelId}`);
+    logger.warn('Slack', `Failed to get channel info for ${channelId}`);
     return { id: channelId, name: channelId };
   }
 }

@@ -29,6 +29,7 @@ import {
   extractMentionText,
   cleanSlackText,
 } from './client.js';
+import { logger } from '../system/logger.js';
 
 // Configuration
 let backendRepoPath = process.env.BACKEND_REPO_PATH || '/repos/backend';
@@ -69,7 +70,7 @@ export async function handleSlackMessage(event: {
   const userInfo = await getUserInfo(event.user);
   const cleanText = await cleanSlackText(event.text, event.channel);
 
-  console.log(`[Slack] #<${channelInfo.id}:${channelInfo.name}> @<${event.user}:${userInfo.realName}>: ${cleanText}`);
+  logger.slack(`#<${channelInfo.id}:${channelInfo.name}> @<${event.user}:${userInfo.realName}>: ${cleanText}`);
 
   // Fetch thread history (this also cleans up mentions)
   const threadHistory = await fetchThreadHistory(event.channel, threadId);
@@ -112,7 +113,7 @@ export async function handleSlackMessage(event: {
       break;
 
     case 'noop':
-      console.log('[System] No action needed (acknowledgment)');
+      logger.system('No action needed (acknowledgment)');
       break;
   }
 }
@@ -138,7 +139,7 @@ async function handleNewTask(
   // Create the task
   const metadata = await createTask(slackThread, backendRepoPath, mobileRepoPath);
 
-  console.log(`[System] Created task ${metadata.task_id}`);
+  logger.system(`Created task ${metadata.task_id}`);
 
   // Append all thread history to shared knowledge log
   for (const msg of threadHistory) {
@@ -170,7 +171,7 @@ async function handleExistingTask(
 ): Promise<void> {
   const metadata = await loadMetadata(taskId);
   if (!metadata) {
-    console.error(`Task ${taskId} not found`);
+    logger.error('slack/events', `Task ${taskId} not found`);
     return;
   }
 
@@ -239,13 +240,13 @@ async function handleExistingTask(
 async function handleCancelTask(taskId: string, message: SlackMessage): Promise<void> {
   const metadata = await loadMetadata(taskId);
   if (!metadata) {
-    console.error(`Task ${taskId} not found`);
+    logger.error('slack/events', `Task ${taskId} not found`);
     return;
   }
 
   // Check if task is active before stopping
   if (!isTaskActive(taskId)) {
-    console.log(`[System] Task ${taskId} is not active, nothing to cancel`);
+    logger.system(`Task ${taskId} is not active, nothing to cancel`);
     await postToThreads(metadata.slack_threads, "This task is already completed.");
     return;
   }
