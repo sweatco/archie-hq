@@ -1,58 +1,59 @@
-# AI Software Engineer
+# Archie HQ
+
+**A**utonomous **R**epository **C**ollaborative **H**yper **I**ntelligent **E**ngineer
 
 Multi-agent AI system where specialized agents collaborate on software engineering tasks across multiple repositories via Slack.
 
 ## Quick Start
 
-**Status:** Architecture phase - implementation starting soon
+```bash
+npm install
+npm run dev
+```
 
-See [MVP v1 Plan](plans/mvp-v1.md) for implementation details.
+See [Local Development](docs/local-development.md) for detailed setup instructions.
 
 ## Architecture
 
 Specialized AI agents coordinate like a human engineering team:
 
-- **PM Agent** - Task coordination and user communication
-- **Backend Agent** - Ruby on Rails engineering
-- **Mobile Agent** - React Native/iOS/Android engineering
-- **Website Agent** - Node.js/React engineering
-- **Triage Agent** - Message classification (Haiku)
-- **Memory Agent** - Task summarization (Haiku)
+- **Triage Agent** (Haiku) - Message classification and routing
+- **PM Agent** (Sonnet) - Task coordination, user communication, GitHub operations
+- **Backend Agent** (Sonnet) - Ruby on Rails engineering
+- **Mobile Agent** (Sonnet) - React Native/iOS/Android engineering
 
 **Key Features:**
-- Direct agent-to-agent communication
-- Task ownership pattern
-- Per-task context isolation
-- Git worktrees for parallel execution
-- File-based persistence
+
+- Direct agent-to-agent communication via message queues
+- Shared knowledge log for findings and decisions
+- Git worktrees for parallel task execution
+- Human approval flow for code changes
+- Automated PR creation and merge orchestration
+- File-based task persistence
 
 ## Documentation
 
 **Architecture:**
+
 - [Architecture Overview](docs/architecture-overview.md) - System design and concepts
 - [Agent Architecture](docs/agent-architecture.md) - AI agent specifications
 - [System Orchestration](docs/system-orchestration.md) - Backend implementation
 - [Task Persistence](docs/task-persistence.md) - Storage and state
 - [Slack Integration](docs/slack-integration.md) - UX layer
+- [GitHub Integration](docs/github-integration-agreements.md) - PR workflow
 
 **Operations:**
-- [Local Development](docs/local-development.md) - Running locally for development
-- [Deployment & Operations](docs/deployment-operations.md) - GCP deployment, security, scaling
 
-**Implementation Plans:**
-- [MVP v1](plans/mvp-v1.md) - Initial 4-week implementation plan
+- [Local Development](docs/local-development.md) - Running locally
+- [Deployment & Operations](docs/deployment-operations.md) - Production deployment
 
 ## Technology Stack
 
 - **Runtime:** Node.js with TypeScript
 - **AI:** Claude Agent SDK (Sonnet 4.5, Haiku 4.5)
-- **Integration:** Slack API
+- **Integrations:** Slack API, GitHub App
 - **Storage:** File-based sessions
 - **VCS:** Git worktrees
-
-## Development
-
-Coming soon - see [MVP v1 Plan](plans/mvp-v1.md) for timeline.
 
 ## License
 
