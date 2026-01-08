@@ -20,7 +20,7 @@ import {
 } from "../system/task-manager.js";
 import {
   MessageQueue,
-  createAgentInputGenerator,
+  createRecoverableInputGenerator,
 } from "../system/message-queue.js";
 import {
   createRepoAgentMcpServer,
@@ -65,6 +65,9 @@ async function generateRepoAgentPrompt(
  * - Creates/reuses worktree for isolated work
  * - Adds Write and Edit to allowed tools
  * - cwd is set to worktree path
+ *
+ * Includes automatic session recovery: if resuming a session fails,
+ * it will retry once with a fresh session.
  *
  * @param onMetadataUpdate - Optional callback when metadata changes (worktree created)
  */
@@ -164,56 +167,49 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
 
   const systemPrompt = await generateRepoAgentPrompt(config);
 
-  // Create streaming input generator from queue
-  const inputGenerator = createAgentInputGenerator(queue);
-
-  // Run the agent with streaming input - this runs until queue is stopped
-  const agentQuery = query({
-    prompt: inputGenerator as any,
-    options: {
-      model: (process.env.SONNET_MODEL || "claude-sonnet-4-5-20250929") as any,
-      betas: ["context-1m-2025-08-07"],
-      systemPrompt: `${systemPrompt}\n\nCurrent Context:\n${context}`,
-      cwd: repoPath,
-      additionalDirectories: [repoPath, sharedPath] as any,
-      executable: "node",
-      pathToClaudeCodeExecutable: process.env.CLAUDE_PATH || "claude",
-      env: {
-        NODE_ENV: process.env.NODE_ENV || "development",
-        ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-        PATH: process.env.PATH,
-      },
-      settingSources: ["project"],
-      // Don't resume if cwd is changing to non-child path (worktree) - Claude Code blocks this
-      resume: startFreshSession ? undefined : existingSessionId,
-      maxTurns: 100,
-      permissionMode: "dontAsk",
-      mcpServers: {
-        "repo-agent-tools": mcpServer,
-      },
-      allowedTools: [
-        "mcp__repo-agent-tools__send_message_to_agent",
-        "mcp__repo-agent-tools__log_finding",
-        "Read",
-        "Glob",
-        "Grep",
-        // Edit mode adds Write, Edit, and local git Bash commands
-        ...(editAllowed
-          ? [
-              "Write",
-              "Edit",
-              // Local git operations only - no git push/fetch (PM handles remote)
-              "Bash(git add:*)",
-              "Bash(git commit:*)",
-              "Bash(git status:*)",
-              "Bash(git diff:*)",
-              "Bash(git log:*)",
-              "Bash(git merge:*)", // For conflict resolution with origin/main
-              "Bash(git restore:*)", // For unstaging (git restore --staged <file>) or discarding changes
-            ]
-          : []),
-      ],
+  // Build query options (session ID may change on retry)
+  const buildQueryOptions = (sessionId?: string) => ({
+    model: (process.env.SONNET_MODEL || "claude-sonnet-4-5-20250929") as any,
+    betas: ["context-1m-2025-08-07"] as any,
+    systemPrompt: `${systemPrompt}\n\nCurrent Context:\n${context}`,
+    cwd: repoPath,
+    additionalDirectories: [repoPath, sharedPath] as any,
+    executable: "node" as const,
+    pathToClaudeCodeExecutable: process.env.CLAUDE_PATH || "claude",
+    env: {
+      NODE_ENV: process.env.NODE_ENV || "development",
+      ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+      PATH: process.env.PATH,
     },
+    settingSources: ["project"] as any,
+    resume: sessionId,
+    maxTurns: 100,
+    permissionMode: "dontAsk" as const,
+    mcpServers: {
+      "repo-agent-tools": mcpServer,
+    },
+    allowedTools: [
+      "mcp__repo-agent-tools__send_message_to_agent",
+      "mcp__repo-agent-tools__log_finding",
+      "Read",
+      "Glob",
+      "Grep",
+      // Edit mode adds Write, Edit, and local git Bash commands
+      ...(editAllowed
+        ? [
+            "Write",
+            "Edit",
+            // Local git operations only - no git push/fetch (PM handles remote)
+            "Bash(git add:*)",
+            "Bash(git commit:*)",
+            "Bash(git status:*)",
+            "Bash(git diff:*)",
+            "Bash(git log:*)",
+            "Bash(git merge:*)", // For conflict resolution with origin/main
+            "Bash(git restore:*)", // For unstaging (git restore --staged <file>) or discarding changes
+          ]
+        : []),
+    ],
   });
 
   // Create handle to track agent state
@@ -222,26 +218,61 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
     isRunning: true,
   };
 
-  // Process agent output in background
-  handle.running = (async () => {
-    try {
-      for await (const event of agentQuery) {
-        // Capture session ID
-        if (event.type === "system" && event.subtype === "init") {
-          onSessionId(event.session_id);
-        }
+  // Determine initial session ID (don't resume if cwd changed to worktree)
+  const initialSessionId = startFreshSession ? undefined : existingSessionId;
 
-        // Log file operation tool calls
-        processAgentEventForLogging(
-          event,
-          config.agentId,
-          [repoPath, sharedPath],
-          editAllowed
-        );
-      }
-    } catch (error) {
-      if (!queue.isStopped()) {
-        logger.error(config.agentId, "Error", error);
+  // Create recoverable input generator (tracks consumed messages for retry)
+  const recoverable = createRecoverableInputGenerator(queue);
+
+  // Process agent output in background with session recovery
+  handle.running = (async () => {
+    let sessionId = initialSessionId;
+    let hasRetried = false;
+
+    try {
+      while (true) {
+        try {
+          const agentQuery = query({
+            prompt: recoverable.generator() as any,
+            options: buildQueryOptions(sessionId),
+          });
+
+          for await (const event of agentQuery) {
+            // Capture session ID
+            if (event.type === "system" && event.subtype === "init") {
+              onSessionId(event.session_id);
+            }
+
+            // Log file operation tool calls
+            processAgentEventForLogging(
+              event,
+              config.agentId,
+              [repoPath, sharedPath],
+              editAllowed
+            );
+          }
+
+          // Clean exit - loop completed normally
+          return;
+        } catch (error) {
+          // If we had a session ID, retry once without it
+          if (sessionId && !hasRetried) {
+            logger.warn(
+              config.agentId,
+              `Agent failed with session ${sessionId}, retrying fresh`
+            );
+            recoverable.reset(); // Put consumed messages back in queue
+            sessionId = undefined;
+            hasRetried = true;
+            continue;
+          }
+
+          // Already retried or no session - give up
+          if (!queue.isStopped()) {
+            logger.error(config.agentId, "Error", error);
+          }
+          return;
+        }
       }
     } finally {
       handle.isRunning = false;
