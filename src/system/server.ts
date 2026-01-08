@@ -15,9 +15,11 @@ import type { ExpressReceiver as ExpressReceiverType } from '@slack/bolt';
 
 import { initSlackClient, postToThreads, postInteractiveToThreads, updateMessage } from '../slack/client.js';
 import { handleSlackMessage, setRepoPaths } from '../slack/events.js';
+import { handleGitHubWebhook, verifyWebhookSignature } from '../github/events.js';
 import { setSlackCallbacks, handleEditModeApproval, handleEditModeDenial } from './task-runtime.js';
 import { loadMetadata } from './task-manager.js';
 import { logger } from './logger.js';
+import type { Request, Response } from 'express';
 
 /**
  * Server configuration
@@ -28,6 +30,7 @@ export interface ServerConfig {
   port: number;
   backendRepoPath: string;
   mobileRepoPath: string;
+  githubWebhookSecret?: string; // Optional - GitHub webhooks disabled if not set
 }
 
 let app: AppType | null = null;
@@ -66,9 +69,50 @@ export async function startServer(config: ServerConfig): Promise<void> {
   });
 
   // Add health check endpoint
-  receiver.router.get('/health', (_req, res) => {
+  receiver.router.get('/health', (_req: Request, res: Response) => {
     res.json({ status: 'ok' });
   });
+
+  // Add GitHub webhook endpoint (if configured)
+  if (config.githubWebhookSecret) {
+    // Parse raw body for signature verification
+    receiver.router.post(
+      '/github/webhooks',
+      require('express').raw({ type: 'application/json' }),
+      async (req: Request, res: Response) => {
+        const signature = req.headers['x-hub-signature-256'] as string;
+        const eventType = req.headers['x-github-event'] as string;
+
+        if (!signature || !eventType) {
+          res.status(400).json({ error: 'Missing required headers' });
+          return;
+        }
+
+        // Verify webhook signature
+        const payload = req.body.toString();
+        if (!verifyWebhookSignature(payload, signature, config.githubWebhookSecret!)) {
+          logger.warn('Server', 'Invalid GitHub webhook signature');
+          res.status(401).json({ error: 'Invalid signature' });
+          return;
+        }
+
+        // Acknowledge receipt immediately
+        res.status(200).json({ received: true });
+
+        // Process the webhook asynchronously
+        try {
+          const parsedPayload = JSON.parse(payload);
+          await handleGitHubWebhook(eventType, parsedPayload);
+        } catch (error) {
+          logger.error('Server', 'Error processing GitHub webhook', error);
+        }
+      }
+    );
+
+    logger.system('GitHub webhooks enabled');
+  } else {
+    logger.system('GitHub webhooks disabled (GITHUB_WEBHOOK_SECRET not set)');
+  }
 
   // Create Bolt app with HTTP receiver
   app = new App({
@@ -187,7 +231,8 @@ export async function startServer(config: ServerConfig): Promise<void> {
   await app!.start(config.port);
 
   logger.plain(`AI Engineer server is running on port ${config.port}`);
-  logger.plain(`Webhook endpoint: POST /slack/events`);
+  logger.plain(`Slack webhook: POST /slack/events`);
+  logger.plain(`GitHub webhook: POST /github/webhooks`);
   logger.plain(`Health check: GET /health`);
 }
 

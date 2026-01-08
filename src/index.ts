@@ -17,6 +17,7 @@ function loadConfig(): ServerConfig {
   const port = parseInt(process.env.PORT || '3000', 10);
   const backendRepoPath = process.env.BACKEND_REPO_PATH || '/repos/backend';
   const mobileRepoPath = process.env.MOBILE_REPO_PATH || '/repos/mobile';
+  const githubWebhookSecret = process.env.GITHUB_WEBHOOK_SECRET;
 
   // Validate required environment variables
   if (!slackBotToken) {
@@ -35,6 +36,7 @@ function loadConfig(): ServerConfig {
     port,
     backendRepoPath,
     mobileRepoPath,
+    githubWebhookSecret,
   };
 }
 

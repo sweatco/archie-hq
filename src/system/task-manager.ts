@@ -198,6 +198,24 @@ export async function appendAgentFinding(
 }
 
 /**
+ * Append a GitHub event to the knowledge log
+ * @param repoKey - Repository identifier (e.g., 'backend', 'mobile') for multi-repo tasks
+ */
+export async function appendGitHubEvent(
+  taskId: string,
+  repoKey: string,
+  message: string
+): Promise<void> {
+  const entry: LogEntry = {
+    timestamp: new Date().toISOString(),
+    source: `github:${repoKey}`,
+    message,
+  };
+
+  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
+}
+
+/**
  * Read the knowledge log
  */
 export async function readKnowledgeLog(taskId: string): Promise<string> {
@@ -228,6 +246,58 @@ export async function findTaskByThreadId(threadId: string): Promise<string | nul
     if (hasThread) {
       return session;
     }
+  }
+
+  return null;
+}
+
+/**
+ * Find a task by PR number and repo
+ * Uses grep to find candidates, then verifies repo matches
+ */
+export async function findTaskByPRNumber(
+  githubRepo: string,
+  prNumber: number
+): Promise<string | null> {
+  await ensureSessionsDir();
+
+  // Import repo config to map githubRepo -> repoKey
+  const { getAllRepoConfigs } = await import('../agents/repo-configs.js');
+  const repoConfigs = getAllRepoConfigs();
+  const repoKey = repoConfigs.find((c) => c.githubRepo === githubRepo)?.agentId.replace('-agent', '');
+
+  if (!repoKey) {
+    // Unknown repo - can't match
+    return null;
+  }
+
+  try {
+    // Use grep to find metadata files containing the PR number
+    const { execSync } = await import('child_process');
+    const grepResult = execSync(
+      `grep -l '"pr_number": ${prNumber}' ${SESSIONS_DIR}/task-*/shared/metadata.json 2>/dev/null || true`,
+      { encoding: 'utf-8' }
+    ).trim();
+
+    if (!grepResult) return null;
+
+    // Check each candidate to verify repo matches
+    for (const filePath of grepResult.split('\n')) {
+      const taskIdMatch = filePath.match(/task-[a-z0-9-]+/i);
+      if (!taskIdMatch) continue;
+
+      const taskId = taskIdMatch[0];
+      const metadata = await loadMetadata(taskId);
+      if (!metadata) continue;
+
+      // Verify this task has the PR in the correct repo
+      const repoInfo = metadata.repositories[repoKey];
+      if (repoInfo?.pr_number === prNumber) {
+        return taskId;
+      }
+    }
+  } catch {
+    // Fallback silently if grep fails
   }
 
   return null;
@@ -305,6 +375,26 @@ export async function updateThreadTimestamp(
   const thread = metadata.slack_threads.find((t) => t.thread_id === threadId);
   if (thread) {
     thread.last_processed_ts = timestamp;
+    await saveMetadata(taskId, metadata);
+  }
+}
+
+/**
+ * Update the last processed PR comment ID for a repository
+ */
+export async function updatePRCommentTimestamp(
+  taskId: string,
+  repoKey: string,
+  commentId: number
+): Promise<void> {
+  const metadata = await loadMetadata(taskId);
+  if (!metadata) {
+    throw new Error(`Task ${taskId} not found`);
+  }
+
+  const repoInfo = metadata.repositories[repoKey];
+  if (repoInfo) {
+    repoInfo.last_processed_comment_id = commentId;
     await saveMetadata(taskId, metadata);
   }
 }
