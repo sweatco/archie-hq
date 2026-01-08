@@ -13,6 +13,24 @@ import { logger } from './logger.js';
 
 const execAsync = promisify(exec);
 
+/**
+ * Get GitHub App bot identity for git commits
+ * Returns null if not configured
+ */
+function getGitHubAppIdentity(): { name: string; email: string } | null {
+  const appId = process.env.GITHUB_APP_ID;
+  const appSlug = process.env.GITHUB_APP_SLUG;
+
+  if (!appId || !appSlug) {
+    return null;
+  }
+
+  return {
+    name: `${appSlug}[bot]`,
+    email: `${appId}+${appSlug}[bot]@users.noreply.github.com`,
+  };
+}
+
 export interface WorktreeResult {
   worktree_path: string;
   feature_branch: string;
@@ -66,25 +84,27 @@ async function getDefaultBranch(repoPath: string): Promise<string> {
 /**
  * Setup worktree for a repository in a task
  *
- * 1. Auto-detects the default branch (main, master, etc.)
+ * 1. Uses provided base branch or auto-detects (main, master, etc.)
  * 2. Fetches latest from origin
  * 3. Creates worktree at <reposPath>/<repoKey>
- * 4. Creates feature branch feature/task-{taskId} from origin/<defaultBranch>
+ * 4. Creates feature branch feature/task-{taskId} from origin/<baseBranch>
  *
  * @param taskId - The task identifier
  * @param repoKey - Repository key (e.g., 'backend', 'mobile')
  * @param reposPath - Path to the repos directory (e.g., sessions/task-xxx/repos)
  * @param baseRepoPath - Path to the base repository
- * @returns Object with worktree_path and feature_branch
+ * @param baseBranch - Optional base branch (e.g., 'main', 'master'). Auto-detects if not provided.
+ * @returns Object with worktree_path, feature_branch, and base_branch
  */
 export async function setupWorktree(
   taskId: string,
   repoKey: string,
   reposPath: string,
-  baseRepoPath: string
+  baseRepoPath: string,
+  baseBranch?: string
 ): Promise<WorktreeResult> {
-  // 1. Detect the default branch (main, master, etc.)
-  const defaultBranch = await getDefaultBranch(baseRepoPath);
+  // 1. Use provided base branch or detect it
+  const defaultBranch = baseBranch || await getDefaultBranch(baseRepoPath);
 
   // 2. Fetch latest commits from origin
   try {
@@ -137,6 +157,14 @@ export async function setupWorktree(
     } else {
       throw error;
     }
+  }
+
+  // 6. Configure git identity for the worktree (GitHub App bot)
+  const identity = getGitHubAppIdentity();
+  if (identity) {
+    await gitExec(worktreePath, `config --local user.name "${identity.name}"`);
+    await gitExec(worktreePath, `config --local user.email "${identity.email}"`);
+    logger.worktree(`Configured git identity: ${identity.name}`);
   }
 
   return {

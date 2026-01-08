@@ -8,6 +8,8 @@
  */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { exec } from "child_process";
+import { promisify } from "util";
 import type { TaskMetadata } from "../types/index.js";
 import type { AgentHandle } from "../types/agent.js";
 import type { RepoAgentConfig } from "../types/repo-agent.js";
@@ -20,11 +22,16 @@ import {
   MessageQueue,
   createAgentInputGenerator,
 } from "../system/message-queue.js";
-import { createRepoAgentMcpServer, type ToolCallbacks } from "../mcp/tools.js";
+import {
+  createRepoAgentMcpServer,
+  type RepoAgentToolCallbacks,
+} from "../mcp/tools.js";
 import { processAgentEventForLogging, logger } from "../system/logger.js";
 import { getAllRepoConfigs } from "./repo-configs.js";
 import { setupWorktree, worktreeExists } from "../system/worktree-manager.js";
 import { loadPrompt } from "../utils/prompt-loader.js";
+
+const execAsync = promisify(exec);
 
 /**
  * Generate the system prompt for a repo agent
@@ -46,6 +53,7 @@ async function generateRepoAgentPrompt(
     REPO_KEY: config.repoKey,
     EXPERTISE: config.expertise,
     PEER_LIST: peerList,
+    BASE_BRANCH: config.baseBranch || "main",
   });
 }
 
@@ -64,7 +72,7 @@ export async function spawnRepoAgent(
   config: RepoAgentConfig,
   metadata: TaskMetadata,
   queue: MessageQueue,
-  callbacks: ToolCallbacks,
+  callbacks: RepoAgentToolCallbacks,
   onSessionId: (sessionId: string) => void,
   existingSessionId?: string,
   onMetadataUpdate?: (metadata: TaskMetadata) => Promise<void>
@@ -84,13 +92,23 @@ export async function spawnRepoAgent(
       repoInfo?.worktree_path &&
       (await worktreeExists(repoInfo.worktree_path))
     ) {
-      // Worktree already exists - reuse it (no fetch needed)
+      // Worktree already exists - reuse it
       repoPath = repoInfo.worktree_path;
-      logger.agent(
-        config.agentId,
-        `Reusing existing worktree at ${repoPath}`,
-        { editMode: true }
-      );
+      logger.agent(config.agentId, `Reusing existing worktree at ${repoPath}`, {
+        editMode: true,
+      });
+
+      // Fetch origin to ensure origin/main is up-to-date for conflict resolution
+      try {
+        logger.agent(config.agentId, "Fetching origin to update remote refs");
+        await execAsync("git fetch origin", { cwd: repoPath });
+      } catch (error) {
+        logger.warn(
+          config.agentId,
+          "Failed to fetch origin (non-fatal)",
+          error
+        );
+      }
     } else {
       // Create new worktree (includes fetch)
       // This means we're switching from readonly to edit mode - need to fork session
@@ -101,7 +119,8 @@ export async function spawnRepoAgent(
         metadata.task_id,
         config.repoKey,
         reposPath,
-        baseRepoPath
+        baseRepoPath,
+        config.baseBranch // Use config value, falls back to auto-detection if undefined
       );
 
       // Update metadata with worktree info
@@ -110,6 +129,7 @@ export async function spawnRepoAgent(
         path: baseRepoPath,
         worktree_path,
         feature_branch,
+        base_branch: config.baseBranch,
       };
 
       // Save metadata and notify caller
@@ -177,8 +197,21 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
         "Read",
         "Glob",
         "Grep",
-        // Edit mode adds Write and Edit tools
-        ...(editAllowed ? ["Write", "Edit"] : []),
+        // Edit mode adds Write, Edit, and local git Bash commands
+        ...(editAllowed
+          ? [
+              "Write",
+              "Edit",
+              // Local git operations only - no git push/fetch (PM handles remote)
+              "Bash(git add:*)",
+              "Bash(git commit:*)",
+              "Bash(git status:*)",
+              "Bash(git diff:*)",
+              "Bash(git log:*)",
+              "Bash(git merge:*)", // For conflict resolution with origin/main
+              "Bash(git restore:*)", // For unstaging (git restore --staged <file>) or discarding changes
+            ]
+          : []),
       ],
     },
   });
@@ -199,14 +232,16 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
         }
 
         // Log file operation tool calls
-        processAgentEventForLogging(event, config.agentId, [
-          repoPath,
-          sharedPath,
-        ], editAllowed);
+        processAgentEventForLogging(
+          event,
+          config.agentId,
+          [repoPath, sharedPath],
+          editAllowed
+        );
       }
     } catch (error) {
       if (!queue.isStopped()) {
-        logger.error(config.agentId, 'Error', error);
+        logger.error(config.agentId, "Error", error);
       }
     } finally {
       handle.isRunning = false;

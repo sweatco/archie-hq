@@ -133,7 +133,7 @@ export class Logger {
   }
 
   /**
-   * Log an agent tool call (Read, Write, Edit, Grep, Glob)
+   * Log an agent tool call (Read, Write, Edit, Grep, Glob, Bash)
    */
   agentTool(
     agentName: string,
@@ -157,6 +157,11 @@ export class Logger {
       console.log(`${label} ${c.dim('Searching:')} "${input.pattern}"`);
     } else if (toolName === 'Glob') {
       console.log(`${label} ${c.dim('Globbing:')} ${input.pattern}`);
+    } else if (toolName === 'Bash') {
+      // Show command, truncated if too long
+      const cmd = input.command || '';
+      const displayCmd = cmd.length > 80 ? cmd.substring(0, 77) + '...' : cmd;
+      console.log(`${label} ${c.dim('Bash:')} ${displayCmd}`);
     } else {
       // Generic fallback for any other tools
       console.log(`${label} ${c.dim('Tool:')} ${toolName}`);
@@ -255,8 +260,8 @@ export class Logger {
 }
 
 /**
- * Process agent events and log file operation tool calls
- * Filters out MCP tools and only logs Read, Write, Edit, Grep, Glob operations
+ * Process agent events and log SDK tool calls
+ * Filters out MCP tools and only logs Read, Write, Edit, Grep, Glob, Bash operations
  */
 export function processAgentEventForLogging(
   event: any,
@@ -272,8 +277,8 @@ export function processAgentEventForLogging(
           const toolName = block.name;
           const input = block.input as any;
 
-          // Only log file operation tools (not MCP tools)
-          if (['Read', 'Write', 'Edit', 'Grep', 'Glob'].includes(toolName)) {
+          // Only log SDK tools (not MCP tools which start with mcp__)
+          if (['Read', 'Write', 'Edit', 'Grep', 'Glob', 'Bash'].includes(toolName)) {
             logger.agentTool(agentName, toolName, input, { editMode, cwds });
           }
         }
