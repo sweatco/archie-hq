@@ -6,6 +6,8 @@
  * Each agent has its own queue and runs with a streaming generator.
  */
 
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import type { TaskMetadata, AgentName, FindingType } from '../types/index.js';
 import type { AgentHandle } from '../types/agent.js';
 import { MessageQueue } from './message-queue.js';
@@ -21,8 +23,15 @@ import {
 import { spawnPMAgent, PM_PROMPTS } from '../agents/pm.js';
 import { spawnRepoAgent } from '../agents/repo-agent.js';
 import { getRepoConfig, getAllRepoConfigs } from '../agents/repo-configs.js';
-import type { ToolCallbacks } from '../mcp/tools.js';
+import type { PMToolCallbacks, PRStatus, PRReview } from '../mcp/tools.js';
+import { GitHubClient, createGitHubClient } from '../github/client.js';
+import { triggerMergeCheck } from '../github/merge-orchestrator.js';
 import { logger } from './logger.js';
+
+const execAsync = promisify(exec);
+
+// Lazy-loaded GitHub client
+let githubClient: GitHubClient | null | undefined = undefined;
 
 /**
  * Runtime state for a single task
@@ -95,12 +104,22 @@ export function findTaskIdByThread(threadId: string): string | null {
 }
 
 /**
+ * Get or create the GitHub client (lazy initialization)
+ */
+function getGitHubClient(): GitHubClient | null {
+  if (githubClient === undefined) {
+    githubClient = createGitHubClient();
+  }
+  return githubClient;
+}
+
+/**
  * Create tool callbacks for an agent
  */
 function createToolCallbacks(
   runtime: TaskRuntimeState,
   agentName: AgentName
-): ToolCallbacks {
+): PMToolCallbacks {
   return {
     /**
      * Send a message to another agent
@@ -298,6 +317,218 @@ function createToolCallbacks(
       // Stop the task - it will be reactivated on approval/denial
       await stopTask(runtime.taskId);
     },
+
+    // ========================================================================
+    // GitHub Callbacks
+    // ========================================================================
+
+    /**
+     * Trigger merge check for all linked PRs
+     * Returns status of each PR and merges any that are ready
+     */
+    onTriggerMergeCheck: async (): Promise<{ merged: string[]; pending: string[]; conflicts: string[] }> => {
+      logger.agentAction(agentName, 'Triggering merge check', runtime.taskId);
+      return triggerMergeCheck(runtime.taskId);
+    },
+
+    /**
+     * Push a branch to origin
+     */
+    onPushBranch: async (repoKey: string): Promise<{ success: boolean; message: string }> => {
+      logger.agentAction(agentName, 'Pushing branch', repoKey);
+
+      const repoInfo = runtime.metadata.repositories[repoKey];
+      if (!repoInfo?.worktree_path) {
+        return { success: false, message: `No worktree found for ${repoKey}` };
+      }
+
+      try {
+        // Push using git CLI from the worktree
+        await execAsync('git push -u origin HEAD', { cwd: repoInfo.worktree_path });
+        const message = `Pushed ${repoInfo.feature_branch || 'branch'} to origin`;
+        logger.system(`GitHub: ${message}`);
+        return { success: true, message };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        logger.error('task-runtime', `Failed to push ${repoKey}: ${message}`);
+        return { success: false, message };
+      }
+    },
+
+    /**
+     * Create a pull request
+     */
+    onCreatePullRequest: async (
+      repoKey: string,
+      title: string,
+      body: string
+    ): Promise<{ pr_number: number; pr_url: string }> => {
+      logger.agentAction(agentName, 'Creating PR', `${repoKey}: ${title}`);
+
+      const client = getGitHubClient();
+      if (!client) {
+        throw new Error('GitHub client not configured');
+      }
+
+      const config = getRepoConfig(`${repoKey}-agent`);
+      if (!config) {
+        throw new Error(`No config found for repo key: ${repoKey}`);
+      }
+
+      const repoInfo = runtime.metadata.repositories[repoKey];
+      const head = repoInfo?.feature_branch || `feature/task-${runtime.taskId}`;
+      const base = repoInfo?.base_branch || 'main';
+
+      const result = await client.createPullRequest(config.githubRepo, head, base, title, body);
+
+      // Store PR number in metadata
+      if (repoInfo) {
+        repoInfo.pr_number = result.pr_number;
+        await saveMetadata(runtime.taskId, runtime.metadata);
+      }
+
+      await appendAgentFinding(
+        runtime.taskId,
+        agentName,
+        `Created PR #${result.pr_number}: ${result.pr_url}`,
+        'decision'
+      );
+
+      return result;
+    },
+
+    /**
+     * Get PR status
+     */
+    onGetPRStatus: async (repoKey: string, prNumber: number): Promise<PRStatus> => {
+      const client = getGitHubClient();
+      if (!client) {
+        throw new Error('GitHub client not configured');
+      }
+
+      const config = getRepoConfig(`${repoKey}-agent`);
+      if (!config) {
+        throw new Error(`No config found for repo key: ${repoKey}`);
+      }
+
+      return client.getPRStatus(config.githubRepo, prNumber);
+    },
+
+    /**
+     * Get PR reviews
+     */
+    onGetPRReviews: async (repoKey: string, prNumber: number): Promise<PRReview[]> => {
+      const client = getGitHubClient();
+      if (!client) {
+        throw new Error('GitHub client not configured');
+      }
+
+      const config = getRepoConfig(`${repoKey}-agent`);
+      if (!config) {
+        throw new Error(`No config found for repo key: ${repoKey}`);
+      }
+
+      return client.getPRReviews(config.githubRepo, prNumber);
+    },
+
+    /**
+     * Update PR description
+     */
+    onUpdatePRDescription: async (
+      repoKey: string,
+      prNumber: number,
+      body: string
+    ): Promise<void> => {
+      const client = getGitHubClient();
+      if (!client) {
+        throw new Error('GitHub client not configured');
+      }
+
+      const config = getRepoConfig(`${repoKey}-agent`);
+      if (!config) {
+        throw new Error(`No config found for repo key: ${repoKey}`);
+      }
+
+      await client.updatePRDescription(config.githubRepo, prNumber, body);
+    },
+
+    /**
+     * Add a PR comment
+     */
+    onAddPRComment: async (repoKey: string, prNumber: number, comment: string): Promise<void> => {
+      const client = getGitHubClient();
+      if (!client) {
+        throw new Error('GitHub client not configured');
+      }
+
+      const config = getRepoConfig(`${repoKey}-agent`);
+      if (!config) {
+        throw new Error(`No config found for repo key: ${repoKey}`);
+      }
+
+      await client.addPRComment(config.githubRepo, prNumber, comment);
+    },
+
+    /**
+     * Add a review comment on a specific line
+     */
+    onAddReviewComment: async (
+      repoKey: string,
+      prNumber: number,
+      path: string,
+      line: number,
+      comment: string
+    ): Promise<void> => {
+      const client = getGitHubClient();
+      if (!client) {
+        throw new Error('GitHub client not configured');
+      }
+
+      const config = getRepoConfig(`${repoKey}-agent`);
+      if (!config) {
+        throw new Error(`No config found for repo key: ${repoKey}`);
+      }
+
+      await client.addReviewComment(config.githubRepo, prNumber, path, line, comment);
+    },
+
+    /**
+     * Resolve a review thread
+     */
+    onResolveReviewThread: async (
+      repoKey: string,
+      prNumber: number,
+      threadId: string
+    ): Promise<void> => {
+      const client = getGitHubClient();
+      if (!client) {
+        throw new Error('GitHub client not configured');
+      }
+
+      const config = getRepoConfig(`${repoKey}-agent`);
+      if (!config) {
+        throw new Error(`No config found for repo key: ${repoKey}`);
+      }
+
+      await client.resolveReviewThread(config.githubRepo, prNumber, threadId);
+    },
+
+    /**
+     * Request re-review
+     */
+    onRequestReReview: async (repoKey: string, prNumber: number): Promise<void> => {
+      const client = getGitHubClient();
+      if (!client) {
+        throw new Error('GitHub client not configured');
+      }
+
+      const config = getRepoConfig(`${repoKey}-agent`);
+      if (!config) {
+        throw new Error(`No config found for repo key: ${repoKey}`);
+      }
+
+      await client.requestReReview(config.githubRepo, prNumber);
+    },
   };
 }
 
@@ -452,9 +683,9 @@ export async function startTask(taskId: string): Promise<void> {
 }
 
 /**
- * Notify PM of new user input
+ * Notify PM of new input (user message or GitHub event)
  */
-export async function notifyNewUserInput(taskId: string): Promise<void> {
+export async function notifyNewInput(taskId: string): Promise<void> {
   const runtime = activeTasks.get(taskId);
   if (!runtime) {
     logger.warn('task-runtime', `TaskRuntime for ${taskId} not found, cannot notify`);
@@ -465,23 +696,6 @@ export async function notifyNewUserInput(taskId: string): Promise<void> {
   const pmQueue = runtime.queues.get('pm-agent');
   if (pmQueue) {
     pmQueue.addMessage(PM_PROMPTS.newUserInput);
-  }
-}
-
-/**
- * Handle a status request
- */
-export async function handleStatusRequest(taskId: string): Promise<void> {
-  const runtime = activeTasks.get(taskId);
-  if (!runtime) {
-    logger.warn('task-runtime', `TaskRuntime for ${taskId} not found, cannot handle status`);
-    return;
-  }
-
-  runtime.lastActivity = new Date();
-  const pmQueue = runtime.queues.get('pm-agent');
-  if (pmQueue) {
-    pmQueue.addMessage(PM_PROMPTS.statusRequest);
   }
 }
 

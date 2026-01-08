@@ -106,6 +106,20 @@ Files available to read (in your working directory):
         "mcp__pm-agent-tools__assign_task_owner",
         "mcp__pm-agent-tools__report_completion",
         "mcp__pm-agent-tools__request_edit_mode",
+        // GitHub tools - only available when edit mode is approved
+        ...(metadata.edit_allowed
+          ? [
+              "mcp__pm-agent-tools__push_branch",
+              "mcp__pm-agent-tools__create_pull_request",
+              "mcp__pm-agent-tools__get_pr_status",
+              "mcp__pm-agent-tools__get_pr_reviews",
+              "mcp__pm-agent-tools__update_pr_description",
+              "mcp__pm-agent-tools__add_pr_comment",
+              "mcp__pm-agent-tools__add_review_comment",
+              "mcp__pm-agent-tools__resolve_review_thread",
+              "mcp__pm-agent-tools__request_re_review",
+            ]
+          : []),
         "Read",
         "Glob",
         "Grep",
@@ -147,11 +161,9 @@ Files available to read (in your working directory):
  * PM system prompt additions for specific scenarios
  */
 export const PM_PROMPTS = {
-  newTask: "New task created, assign owner",
-  newUserInput:
-    "New user input in the Slack thread. Check knowledge.log for the update.",
+  newTask: 'New task created, assign owner',
+  newUserInput: 'New Slack message received. Check knowledge.log for the update.',
+  newGitHubEvent: 'New GitHub PR event received. Check knowledge.log for the update.',
   taskCompleted:
-    "Task owner completed investigation. Read knowledge.log and post a summary to Slack.",
-  statusRequest:
-    "User asked for status. Read knowledge.log and post a brief update to Slack.",
+    'Task owner completed investigation. Read knowledge.log and post a summary to Slack.',
 };
