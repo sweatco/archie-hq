@@ -16,6 +16,8 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.0",
+    "@octokit/app": "^16.1.2",
+    "@octokit/webhooks": "^14.2.0",
     "@slack/bolt": "^4.6.0",
     "@slack/web-api": "^7.0.0",
     "dotenv": "^16.3.0",

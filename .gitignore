@@ -25,6 +25,9 @@ build/
 .env.local
 .env.*.local
 
+# GitHub App private keys
+*.pem
+
 # Runtime data
 sessions/
 repos/
