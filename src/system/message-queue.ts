@@ -103,6 +103,23 @@ export class MessageQueue {
   }
 
   /**
+   * Add a message to the front of the queue (for replaying on retry)
+   */
+  prependMessage(content: string, from?: string): void {
+    if (this.stopped) {
+      throw new Error('Queue has been stopped');
+    }
+
+    const message: QueuedMessage = {
+      content,
+      timestamp: new Date().toISOString(),
+      from,
+    };
+
+    this.messages.unshift(message);
+  }
+
+  /**
    * Reset the queue to allow reuse
    */
   reset(): void {
@@ -124,31 +141,75 @@ export interface SDKUserMessageInput {
 }
 
 /**
- * Create an async generator that yields messages from a queue
- * This is used as streaming input for agent queries
+ * Format a queued message as SDK input
  */
-export async function* createAgentInputGenerator(
+function formatMessageAsInput(msg: QueuedMessage, sessionId: string): SDKUserMessageInput {
+  return {
+    type: 'user' as const,
+    message: {
+      role: 'user' as const,
+      content: msg.from ? `[From ${msg.from}]: ${msg.content}` : msg.content,
+    },
+    parent_tool_use_id: null,
+    session_id: sessionId,
+  };
+}
+
+/**
+ * Recoverable input generator that tracks consumed messages
+ * and can restore them to the queue on retry
+ */
+export interface RecoverableInputGenerator {
+  /** Returns consumed messages to the queue (call before retry) */
+  reset(): void;
+  /** Create a new generator instance (call for each attempt) */
+  generator(): AsyncGenerator<SDKUserMessageInput>;
+}
+
+/**
+ * Create a recoverable input generator that can replay messages on retry
+ *
+ * Usage:
+ *   const recoverable = createRecoverableInputGenerator(queue);
+ *   while (retrying) {
+ *     try {
+ *       const gen = recoverable.generator();
+ *       // use gen...
+ *     } catch {
+ *       recoverable.reset();  // put consumed messages back
+ *     }
+ *   }
+ */
+export function createRecoverableInputGenerator(
   queue: MessageQueue,
   sessionId: string = ''
-): AsyncGenerator<SDKUserMessageInput> {
-  while (!queue.isStopped()) {
-    try {
-      const msg = await queue.nextMessage();
-      yield {
-        type: 'user' as const,
-        message: {
-          role: 'user' as const,
-          content: msg.from ? `[From ${msg.from}]: ${msg.content}` : msg.content,
-        },
-        parent_tool_use_id: null,
-        session_id: sessionId,
-      };
-    } catch (error) {
-      // Queue was stopped, exit the generator
-      if (queue.isStopped()) {
-        return;
+): RecoverableInputGenerator {
+  let consumed: QueuedMessage[] = [];
+
+  return {
+    reset() {
+      // Put messages back in reverse order so they end up in original order
+      for (let i = consumed.length - 1; i >= 0; i--) {
+        queue.prependMessage(consumed[i].content, consumed[i].from);
       }
-      throw error;
-    }
-  }
+      consumed = [];
+    },
+
+    async *generator(): AsyncGenerator<SDKUserMessageInput> {
+      while (!queue.isStopped()) {
+        try {
+          const msg = await queue.nextMessage();
+          consumed.push(msg);
+          yield formatMessageAsInput(msg, sessionId);
+        } catch (error) {
+          // Queue was stopped, exit the generator
+          if (queue.isStopped()) {
+            return;
+          }
+          throw error;
+        }
+      }
+    },
+  };
 }
+
