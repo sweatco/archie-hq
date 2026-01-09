@@ -76,6 +76,7 @@ curl http://localhost:${PORT:-3000}/health
 ```
 archie-hq/
 ├── .env                    # Your environment variables (git-ignored)
+├── claude-data/            # Claude Code config/sessions (git-ignored)
 ├── secrets/                # Private keys (git-ignored)
 │   └── github-private-key.pem
 ├── repos/                  # Cloned repositories (git-ignored)
@@ -140,6 +141,12 @@ Sessions are stored in `./sessions/` and mounted as a volume. This ensures:
 ```bash
 tar -czf sessions-backup-$(date +%Y%m%d).tar.gz sessions/
 ```
+
+## Claude Code Configuration
+
+Claude Code stores its configuration and session data in `~/.claude`. The container mounts `./claude-data` to `/root/.claude` for persistence.
+
+The `claude-data/` directory is created automatically on first run. Claude Code sessions and settings persist across container restarts.
 
 ## ngrok Setup (Local Development)
 

@@ -12,18 +12,11 @@ services:
       - NODE_ENV=development
 
     volumes:
-      # Mount source code for hot reload
+      # Mount source code for hot reload (dev-specific)
       - ./src:/app/src
       - ./prompts:/app/prompts
 
-      # Sessions persist
-      - ./sessions:/app/sessions
-
-      # Repos (needs write for git fetch/worktree)
-      - ./repos:/app/repos
-
-      # Secrets
-      - ./secrets:/app/secrets:ro
+      # Inherit sessions, repos, secrets, claude-data from base compose
 
       # Exclude node_modules (use container's version)
       - /app/node_modules

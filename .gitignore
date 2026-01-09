@@ -31,6 +31,7 @@ build/
 # Runtime data
 sessions/
 repos/
+claude-data/
 *.log
 
 # OS

@@ -10,7 +10,4 @@ services:
     environment:
       - NODE_ENV=production
 
-    volumes:
-      - ./sessions:/app/sessions
-      - ./repos:/app/repos
-      - ./secrets:/app/secrets:ro
+    # Inherits volumes from base compose (sessions, repos, secrets, claude-data)
