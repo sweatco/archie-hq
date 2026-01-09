@@ -2,5 +2,6 @@
 @Library('SweatcoinSharedLibs') _
 
 containerBuildPipeline_v1 (
-    containerRepoName: 'sweatcoin-archie-hq'
+    containerRepoName: 'sweatcoin-archie-hq',
+    dockerfilePath: "./Dockerfile.prod"
 )
