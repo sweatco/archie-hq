@@ -1,0 +1,29 @@
+# Development overrides with hot reload
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+
+services:
+  archie:
+    # Use dev Dockerfile (keeps devDependencies)
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+
+    environment:
+      - NODE_ENV=development
+
+    volumes:
+      # Mount source code for hot reload
+      - ./src:/app/src
+      - ./prompts:/app/prompts
+
+      # Sessions persist
+      - ./sessions:/app/sessions
+
+      # Repos (needs write for git fetch/worktree)
+      - ./repos:/app/repos
+
+      # Secrets
+      - ./secrets:/app/secrets:ro
+
+      # Exclude node_modules (use container's version)
+      - /app/node_modules

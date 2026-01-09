@@ -1,0 +1,16 @@
+# Production overrides
+# Usage: npm run docker:prod
+
+services:
+  archie:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+
+    environment:
+      - NODE_ENV=production
+
+    volumes:
+      - ./sessions:/app/sessions
+      - ./repos:/app/repos
+      - ./secrets:/app/secrets:ro

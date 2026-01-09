@@ -1,0 +1,61 @@
+# Archie HQ - Docker Compose
+#
+# Usage:
+#   Development: npm run docker:dev   (hot reload)
+#   Production:  npm run docker:prod
+#
+# Setup:
+#   1. Copy .env.example to .env and fill in your values
+#   2. Place your GitHub App private key as secrets/github-private-key.pem
+#   3. Clone your repos into ./repos/backend and ./repos/mobile
+#
+# Logs:
+#   docker compose logs -f          # Follow all logs
+#   docker compose logs -f archie   # Follow archie logs only
+#
+# ngrok (in separate terminal):
+#   ngrok http 3000
+#   Then update Slack app URL to: https://xxxx.ngrok.io/slack/events
+
+services:
+  archie:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: archie-hq
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}"
+
+    # Environment variables from .env file
+    env_file:
+      - .env
+
+    # Override paths for containerized environment
+    environment:
+      # Paths inside container (override .env values)
+      - CLAUDE_PATH=/usr/local/bin/claude
+      - BACKEND_REPO_PATH=/app/repos/backend
+      - MOBILE_REPO_PATH=/app/repos/mobile
+      - GITHUB_APP_PRIVATE_KEY_PATH=/app/secrets/github-private-key.pem
+
+    volumes:
+      # Sessions - persist task data across container restarts
+      - ./sessions:/app/sessions
+
+      # Repos - mount your cloned repositories (needs write for git fetch/worktree)
+      - ./repos:/app/repos
+
+      # Secrets - mount your private key file
+      - ./secrets:/app/secrets:ro
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:${PORT:-3000}/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+# Optional: Add a volume for sessions if you prefer named volumes
+# volumes:
+#   archie-sessions:
