@@ -1,0 +1,37 @@
+# Production Dockerfile
+
+FROM node:20-alpine
+
+# Install git
+RUN apk add --no-cache git
+
+# Install Claude Code CLI globally
+RUN npm install -g @anthropic-ai/claude-code
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files
+COPY package.json package-lock.json* ./
+
+# Install ALL dependencies (for build)
+RUN npm ci
+
+# Copy source code
+COPY tsconfig.json ./
+COPY src/ ./src/
+COPY prompts/ ./prompts/
+
+# Build TypeScript
+RUN npm run build
+
+# Remove devDependencies
+RUN npm prune --production
+
+# Create directories
+RUN mkdir -p /app/sessions /app/repos /app/secrets
+
+# Expose port (actual port comes from ENV)
+EXPOSE ${PORT:-3000}
+
+CMD ["node", "dist/index.js"]

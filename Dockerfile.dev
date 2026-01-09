@@ -1,0 +1,30 @@
+# Development Dockerfile with hot reload support
+
+FROM node:20-alpine
+
+# Install git (needed for worktree operations)
+RUN apk add --no-cache git
+
+# Install Claude Code CLI globally
+RUN npm install -g @anthropic-ai/claude-code
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files
+COPY package.json package-lock.json* ./
+
+# Install ALL dependencies (keep devDependencies for tsx)
+RUN npm ci
+
+# Copy tsconfig (needed for tsx)
+COPY tsconfig.json ./
+
+# Create directories for volumes
+RUN mkdir -p /app/sessions /app/repos /app/secrets
+
+# Expose port (actual port comes from ENV)
+EXPOSE ${PORT:-3000}
+
+# Start with hot reload
+CMD ["npm", "run", "dev"]
