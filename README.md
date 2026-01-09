@@ -7,11 +7,15 @@ Multi-agent AI system where specialized agents collaborate on software engineeri
 ## Quick Start
 
 ```bash
+# Local development (requires Node.js 20+)
 npm install
 npm run dev
+
+# Or with Docker
+npm run docker:dev
 ```
 
-See [Local Development](docs/local-development.md) for detailed setup instructions.
+See [Docker Setup](DOCKER.md) for container deployment or [Local Development](docs/local-development.md) for running without Docker.
 
 ## Architecture
 
@@ -44,7 +48,8 @@ Specialized AI agents coordinate like a human engineering team:
 
 **Operations:**
 
-- [Local Development](docs/local-development.md) - Running locally
+- [Docker Setup](DOCKER.md) - Container deployment
+- [Local Development](docs/local-development.md) - Running without Docker
 - [Deployment & Operations](docs/deployment-operations.md) - Production deployment
 
 ## Technology Stack
