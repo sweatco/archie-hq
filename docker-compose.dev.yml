@@ -1,4 +1,4 @@
-# Development overrides with hot reload
+# Development overrides with hot reload and local Redis
 # Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 
 services:
@@ -10,6 +10,9 @@ services:
 
     environment:
       - NODE_ENV=development
+      # Local Redis connection
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
 
     volumes:
       # Mount source code for hot reload (dev-specific)
@@ -20,3 +23,26 @@ services:
 
       # Exclude node_modules (use container's version)
       - /app/node_modules
+
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # Local Redis for development
+  redis:
+    image: redis:7-alpine
+    container_name: archie-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  redis-data:

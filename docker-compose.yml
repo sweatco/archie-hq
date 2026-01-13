@@ -1,8 +1,8 @@
-# Archie HQ - Docker Compose
+# Archie HQ - Docker Compose (base)
 #
 # Usage:
-#   Development: npm run docker:dev   (hot reload)
-#   Production:  npm run docker:prod
+#   Development: npm run docker:dev   (with local Redis)
+#   Production:  npm run docker:prod  (uses external Redis from .env)
 #
 # Setup:
 #   1. Copy .env.example to .env and fill in your values
@@ -58,7 +58,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
-
-# Optional: Add a volume for sessions if you prefer named volumes
-# volumes:
-#   archie-sessions:
