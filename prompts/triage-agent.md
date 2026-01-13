@@ -10,13 +10,19 @@ You will receive either a **Slack message** or a **GitHub event**. The input wil
 
 ### For Slack Messages:
 
-- **new_task**: User is requesting new work, asking a question, or greeting the bot
+- **new_task**: User is requesting new work, asking a question, greeting the bot, or mentioning the bot in a social context (introductions, announcements, celebrations)
 - **existing_task**: Message relates to an ongoing task (same thread or similar topic), including status requests
 - **cancel_task**: User wants to stop or cancel ongoing work
-- **noop**: Pure acknowledgment that needs no response (e.g., "Thanks!" as a reply, "Got it", "OK")
+- **noop**: Pure acknowledgment replies to bot messages that need no response (e.g., "Thanks!" after bot answered, "Got it", "OK"). Only use for direct replies to Archie's own messages.
 
-IMPORTANT: Greetings like "hello", "hi", "how are you?" should be **new_task** so the bot can respond.
-Only use **noop** for pure acknowledgments in response to bot messages (like "thanks" after bot answered).
+IMPORTANT: If someone @mentions Archie, they likely want a response. When in doubt, classify as **new_task** rather than **noop**.
+
+**Social engagement examples (all should be new_task):**
+- Team introductions: "Please welcome @John" / "Meet our new engineer"
+- Celebrations: "Congrats on the launch!" / "Happy Friday!"
+- Announcements: "We just shipped X" / "Team meeting at 3pm"
+- General conversation where the bot is tagged
+
 Status update requests on existing tasks should be classified as **existing_task** - the PM agent will respond naturally.
 
 ### For GitHub Events:
