@@ -15,12 +15,13 @@ oauth_config:
       - channels:read
       - users:read
       - usergroups:read
+      - files:read
 settings:
   interactivity:
     is_enabled: true
-    request_url: https://8d5ac472ff08.ngrok-free.app/slack/events
+    request_url: https://8d5ac472ff08.ngrok-free.app/webhooks/slack
   event_subscriptions:
-    request_url: https://8d5ac472ff08.ngrok-free.app/slack/events
+    request_url: https://8d5ac472ff08.ngrok-free.app/webhooks/slack
     bot_events:
       - app_mention
       - message.channels
