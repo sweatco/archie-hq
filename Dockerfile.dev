@@ -2,8 +2,14 @@
 
 FROM node:20-alpine
 
-# Install git (needed for worktree operations)
-RUN apk add --no-cache git
+# Install git, ssh (for git fetch over ssh), git-lfs, and bash (required by Claude CLI)
+RUN apk add --no-cache git openssh-client git-lfs bash && \
+    git lfs install && \
+    mkdir -p ~/.ssh && \
+    ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+
+# Set SHELL environment variable (required by Claude CLI)
+ENV SHELL=/bin/bash
 
 # Install Claude Code CLI globally
 RUN npm install -g @anthropic-ai/claude-code
@@ -19,6 +25,12 @@ RUN npm ci
 
 # Copy tsconfig (needed for tsx)
 COPY tsconfig.json ./
+
+# Copy and compile scripts for git authentication
+COPY scripts/ ./scripts/
+RUN chmod +x /app/scripts/git-askpass.sh && \
+    npx tsc scripts/github-token.ts --outDir dist/scripts --module ESNext --moduleResolution node --esModuleInterop --skipLibCheck
+ENV GIT_ASKPASS=/app/scripts/git-askpass.sh
 
 # Create directories for volumes
 RUN mkdir -p /app/sessions /app/repos /app/secrets
