@@ -23,6 +23,7 @@ import {
   postToThreads,
   postInteractiveToThreads,
   updateMessage,
+  getBotUserId,
 } from "../slack/client.js";
 import {
   setSlackCallbacks,
@@ -58,6 +59,7 @@ import {
 import { appendGitHubEvent } from "./task-manager.js";
 import { getRepoConfigByGithubRepo } from "../agents/repo-configs.js";
 import { verifyWebhookSignature } from "../github/webhook-utils.js";
+import { configureGitIdentity } from "../github/client.js";
 
 /**
  * Server configuration
@@ -83,6 +85,10 @@ export async function startServer(config: ServerConfig): Promise<void> {
 
   // Set repository paths for triage worker
   setTriageRepoPaths(config.backendRepoPath, config.mobileRepoPath);
+
+  // Configure git identity for base repos (worktrees inherit this)
+  await configureGitIdentity(config.backendRepoPath);
+  await configureGitIdentity(config.mobileRepoPath);
 
   // Set up Slack callbacks once globally (works for all tasks since it uses taskId parameter)
   setSlackCallbacks(
@@ -234,6 +240,12 @@ export async function startServer(config: ServerConfig): Promise<void> {
       event.thread_ts &&
       event.thread_ts !== event.ts
     ) {
+      // Skip if message mentions our bot - app_mention handler will process it
+      const botUserId = getBotUserId();
+      if (botUserId && event.text?.includes(`<@${botUserId}>`)) {
+        return;
+      }
+
       // Check if shutting down
       if (isShuttingDown) {
         logger.system("Ignoring Slack event during shutdown");
