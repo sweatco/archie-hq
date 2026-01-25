@@ -139,10 +139,15 @@ function createToolCallbacks(
       }
 
       // Spawn target agent if not already running
-      await ensureAgentSpawned(runtime, target);
+      const wasAlreadyRunning = await ensureAgentSpawned(runtime, target);
 
       // Add message to target's queue
       targetQueue.addMessage(message, agentName);
+
+      // Log delivery method for debugging
+      if (wasAlreadyRunning) {
+        logger.system(`Message from ${agentName} queued to running ${target}: "${message}"`);
+      }
 
       // Return acknowledgment
       return `Message sent to ${target}. They will process it and log findings.`;
@@ -322,25 +327,36 @@ function createToolCallbacks(
 
     /**
      * Push a branch to origin
+     * Authentication is handled by GIT_ASKPASS environment variable
      */
     onPushBranch: async (
       repoKey: string
     ): Promise<{ success: boolean; message: string }> => {
       logger.agentAction(agentName, "Pushing branch", repoKey);
 
-      const repoInfo = runtime.metadata.repositories[repoKey];
+      // Always load fresh metadata from disk
+      const metadata = await loadMetadata(runtime.taskId);
+      if (!metadata) {
+        return { success: false, message: `Task ${runtime.taskId} not found` };
+      }
+
+      const repoInfo = metadata.repositories[repoKey];
       if (!repoInfo?.worktree_path) {
         return { success: false, message: `No worktree found for ${repoKey}` };
       }
+      if (!repoInfo.feature_branch) {
+        return { success: false, message: `No feature branch found for ${repoKey}` };
+      }
 
       try {
-        // Push using git CLI from the worktree
-        await execAsync("git push -u origin HEAD", {
+        const branch = repoInfo.feature_branch;
+
+        // Push with upstream tracking - GIT_ASKPASS handles authentication
+        await execAsync(`git push -u origin HEAD:${branch}`, {
           cwd: repoInfo.worktree_path,
         });
-        const message = `Pushed ${
-          repoInfo.feature_branch || "branch"
-        } to origin`;
+
+        const message = `Pushed ${branch} to origin`;
         logger.system(`GitHub: ${message}`);
         return { success: true, message };
       } catch (error) {
@@ -371,7 +387,13 @@ function createToolCallbacks(
         throw new Error(`No config found for repo key: ${repoKey}`);
       }
 
-      const repoInfo = runtime.metadata.repositories[repoKey];
+      // Always load fresh metadata from disk
+      const metadata = await loadMetadata(runtime.taskId);
+      if (!metadata) {
+        throw new Error(`Task ${runtime.taskId} not found`);
+      }
+
+      const repoInfo = metadata.repositories[repoKey];
       const head = repoInfo?.feature_branch || `feature/task-${runtime.taskId}`;
       const base = repoInfo?.base_branch || "main";
 
