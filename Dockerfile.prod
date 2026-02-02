@@ -2,6 +2,9 @@
 
 FROM node:20-alpine
 
+# Upgrade system packages to get latest security updates if node image has not been updated yet
+RUN apk upgrade --no-cache
+
 # Install git, ssh (for git fetch over ssh), git-lfs, and bash (required by Claude CLI)
 RUN apk add --no-cache git openssh-client git-lfs bash && \
     git lfs install && \
