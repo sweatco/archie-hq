@@ -32,19 +32,23 @@ import {
   isTaskActive,
   type TaskRuntimeState,
 } from "./active-tasks.js";
-import { routeToSpawnOrNotify } from "../workers/triage-worker.js";
+import { reactivateTask } from "./event-handler.js";
 
 // Re-export from active-tasks for backwards compatibility
 export {
   isTaskActive,
   getActiveTaskIds,
   getTaskRuntime,
-  waitForTaskCompletion,
   isAgentRunning,
   getAgentStatus,
   findTaskIdByThread,
 } from "./active-tasks.js";
 export type { TaskRuntimeState } from "./active-tasks.js";
+
+/**
+ * Spawn reason type (relocated from queues.ts)
+ */
+export type SpawnReason = 'new_task' | 'existing_task';
 
 const execAsync = promisify(exec);
 
@@ -120,13 +124,13 @@ function createToolCallbacks(
         "decision"
       );
 
-      // Safety check: If task is inactive, route through spawn queue to wake PM
+      // Safety check: If task is inactive, reactivate to wake PM
       if (!isTaskActive(runtime.taskId)) {
         logger.warn(
           "task-runtime",
-          `Task ${runtime.taskId} is inactive but ${agentName} is sending message - routing to spawn queue`
+          `Task ${runtime.taskId} is inactive but ${agentName} is sending message - reactivating`
         );
-        await routeToSpawnOrNotify(runtime.taskId);
+        await reactivateTask(runtime.taskId);
         return `Message logged to knowledge.log. PM will be notified.`;
       }
 
@@ -139,7 +143,8 @@ function createToolCallbacks(
       }
 
       // Spawn target agent if not already running
-      const wasAlreadyRunning = await ensureAgentSpawned(runtime, target);
+      const wasAlreadyRunning = runtime.spawned.has(target);
+      await ensureAgentSpawned(runtime, target);
 
       // Add message to target's queue
       targetQueue.addMessage(message, agentName);
@@ -655,8 +660,6 @@ async function ensureAgentSpawned(
   }
 }
 
-// reactivateTask removed - all reactivation now goes through spawn queue via routeToSpawnOrNotify
-
 /**
  * Initialize a new TaskRuntime for a task
  */
@@ -681,12 +684,6 @@ export async function initializeTaskRuntime(
     sessions.set(agentId as AgentName, sessionId);
   }
 
-  // Create completion promise for spawn worker to await
-  let resolveCompletion: () => void;
-  const completionPromise = new Promise<void>((resolve) => {
-    resolveCompletion = resolve;
-  });
-
   const runtime: TaskRuntimeState = {
     taskId,
     metadata,
@@ -696,8 +693,6 @@ export async function initializeTaskRuntime(
     spawned: new Set<AgentName>(),
     lastActivity: new Date(),
     isActive: true,
-    completionPromise,
-    resolveCompletion: resolveCompletion!,
   };
 
   activeTasks.set(taskId, runtime);
@@ -713,7 +708,7 @@ export async function initializeTaskRuntime(
  */
 export async function startTask(
   taskId: string,
-  reason: "new_task" | "existing_task" = "new_task"
+  reason: SpawnReason = "new_task"
 ): Promise<void> {
   const runtime = activeTasks.get(taskId);
   if (!runtime) {
@@ -779,9 +774,6 @@ export async function stopTask(taskId: string): Promise<void> {
   // Update status
   await updateTaskStatus(taskId, "stopped");
 
-  // Signal completion to spawn worker
-  runtime.resolveCompletion();
-
   // Remove from active tasks
   activeTasks.delete(taskId);
 
@@ -813,9 +805,6 @@ export async function completeTask(taskId: string): Promise<void> {
   // Update status
   await updateTaskStatus(taskId, "completed");
 
-  // Signal completion to spawn worker
-  runtime.resolveCompletion();
-
   // Remove from active tasks
   activeTasks.delete(taskId);
 
@@ -846,8 +835,8 @@ export async function handleEditModeApproval(taskId: string): Promise<void> {
     "decision"
   );
 
-  // Route through spawn queue
-  await routeToSpawnOrNotify(taskId);
+  // Reactivate task (PM was stopped, needs to restart)
+  await reactivateTask(taskId);
 }
 
 /**
@@ -863,6 +852,6 @@ export async function handleEditModeDenial(taskId: string): Promise<void> {
     "decision"
   );
 
-  // Route through spawn queue
-  await routeToSpawnOrNotify(taskId);
+  // Reactivate task (PM was stopped, needs to restart)
+  await reactivateTask(taskId);
 }

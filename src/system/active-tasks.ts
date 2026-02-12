@@ -32,10 +32,6 @@ export interface TaskRuntimeState {
   // Activity tracking
   lastActivity: Date;
   isActive: boolean;
-
-  // Completion signaling
-  completionPromise: Promise<void>;
-  resolveCompletion: () => void;
 }
 
 /**
@@ -62,13 +58,6 @@ export function getActiveTaskIds(): string[] {
  */
 export function getTaskRuntime(taskId: string): TaskRuntimeState | undefined {
   return activeTasks.get(taskId);
-}
-
-/**
- * Wait for a task to complete (via completeTask or stopTask)
- */
-export function waitForTaskCompletion(taskId: string): Promise<void> | undefined {
-  return activeTasks.get(taskId)?.completionPromise;
 }
 
 /**

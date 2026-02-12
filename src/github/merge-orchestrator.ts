@@ -21,7 +21,7 @@ import { loadMetadata, appendAgentFinding } from '../system/task-manager.js';
 import { createGitHubClient, type GitHubClient } from './client.js';
 import { getRepoConfig } from '../agents/repo-configs.js';
 import { logger } from '../system/logger.js';
-import { routeToSpawnOrNotify } from '../workers/triage-worker.js';
+import { reactivateTask } from '../system/event-handler.js';
 import type { PRStatus } from '../mcp/tools.js';
 import type { TaskMetadata } from '../types/index.js';
 
@@ -251,8 +251,8 @@ async function notifyPMAboutConflicts(
   // Log to knowledge.log (PM will read this)
   await appendAgentFinding(taskId, 'system', message, 'blocker');
 
-  // Route through spawn queue
-  await routeToSpawnOrNotify(taskId);
+  // Reactivate task so PM reads the new knowledge
+  await reactivateTask(taskId);
 }
 
 /**
@@ -285,6 +285,6 @@ async function notifyPMAboutMerge(
   const findingType = failedPRs.length > 0 ? 'blocker' : 'completion';
   await appendAgentFinding(taskId, 'system', message, findingType);
 
-  // Route through spawn queue
-  await routeToSpawnOrNotify(taskId);
+  // Reactivate task so PM reads the new knowledge
+  await reactivateTask(taskId);
 }
