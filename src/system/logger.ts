@@ -162,6 +162,8 @@ export class Logger {
       const cmd = input.command || '';
       const displayCmd = cmd.length > 80 ? cmd.substring(0, 77) + '...' : cmd;
       console.log(`${label} ${c.dim('Bash:')} ${displayCmd}`);
+    } else if (toolName === 'Skill') {
+      console.log(`${label} ${c.dim('Skill:')} ${input.skill || 'unknown'}`);
     } else {
       // Generic fallback for any other tools
       console.log(`${label} ${c.dim('Tool:')} ${toolName}`);
@@ -289,7 +291,7 @@ export function processAgentEventForLogging(
           const input = block.input as any;
 
           // Only log SDK tools (not MCP tools which start with mcp__)
-          if (['Read', 'Write', 'Edit', 'Grep', 'Glob', 'Bash'].includes(toolName)) {
+          if (['Read', 'Write', 'Edit', 'Grep', 'Glob', 'Bash', 'Skill'].includes(toolName)) {
             logger.agentTool(agentName, toolName, input, { editMode, cwds });
           }
         }

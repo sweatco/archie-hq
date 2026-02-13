@@ -480,13 +480,14 @@ function getGitHubAppIdentity(): { name: string; email: string } | null {
  * Should be called once on server startup for each base repo.
  * Worktrees inherit this config from the base repo.
  */
-export async function configureGitIdentity(repoPath: string): Promise<void> {
+export async function configureGitIdentity(repoPath: string): Promise<string | null> {
   const identity = getGitHubAppIdentity();
   if (identity) {
     await execAsync(`git config user.name "${identity.name}"`, { cwd: repoPath });
     await execAsync(`git config user.email "${identity.email}"`, { cwd: repoPath });
-    logger.system(`Configured git identity for ${repoPath}: ${identity.name}`);
+    return identity.name;
   }
+  return null;
 }
 
 /**

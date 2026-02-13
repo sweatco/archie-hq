@@ -87,6 +87,7 @@ Files available to read (in your working directory):
     cwd: sharedPath,
     executable: "node" as const,
     pathToClaudeCodeExecutable: process.env.CLAUDE_PATH || "claude",
+    settingSources: ["project"] as any,
     env: {
       NODE_ENV: process.env.NODE_ENV || "development",
       ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
@@ -99,6 +100,7 @@ Files available to read (in your working directory):
       "pm-agent-tools": mcpServer,
     },
     allowedTools: [
+      "Skill",
       "mcp__pm-agent-tools__send_message_to_agent",
       "mcp__pm-agent-tools__post_to_slack",
       "mcp__pm-agent-tools__assign_task_owner",
