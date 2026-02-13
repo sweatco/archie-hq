@@ -5,10 +5,12 @@
  * appending to knowledge.log
  */
 
-import { mkdir, readFile, writeFile, appendFile, readdir } from 'fs/promises';
+import { mkdir, readFile, writeFile, appendFile, readdir, symlink } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import type { TaskMetadata, LogEntry, FindingType, SlackThread, AgentName, SlackFile } from '../types/index.js';
+import { getAllRepoConfigs } from '../agents/repo-configs.js';
+import { getPluginsWithPmSkills } from './plugin-loader.js';
 
 const SESSIONS_DIR = join(process.cwd(), 'sessions');
 
@@ -141,9 +143,7 @@ export async function ensureSessionsDir(): Promise<void> {
  * Create a new task with initial metadata
  */
 export async function createTask(
-  slackThread: SlackThread,
-  backendRepoPath: string,
-  mobileRepoPath: string
+  slackThread: SlackThread
 ): Promise<TaskMetadata> {
   await ensureSessionsDir();
 
@@ -154,6 +154,28 @@ export async function createTask(
   await mkdir(sharedPath, { recursive: true });
   await mkdir(getMemoryPath(taskId), { recursive: true });
 
+  // Symlink PM skills from all loaded plugins into task shared folder
+  const skillsTarget = join(sharedPath, '.claude', 'skills');
+  await mkdir(join(sharedPath, '.claude'), { recursive: true });
+
+  for (const plugin of getPluginsWithPmSkills()) {
+    for (const entry of await readdir(plugin.pmSkillsDir!, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        const target = join(skillsTarget, entry.name);
+        if (!existsSync(target)) {
+          await mkdir(skillsTarget, { recursive: true });
+          await symlink(join(plugin.pmSkillsDir!, entry.name), target);
+        }
+      }
+    }
+  }
+
+  // Build repositories map dynamically from loaded repo configs
+  const repositories: Record<string, { path: string }> = {};
+  for (const config of getAllRepoConfigs()) {
+    repositories[config.repoKey] = { path: config.defaultRepoPath };
+  }
+
   // Create initial metadata
   const metadata: TaskMetadata = {
     task_id: taskId,
@@ -161,10 +183,7 @@ export async function createTask(
     participants: [],
     slack_threads: [slackThread],
     agent_sessions: {},
-    repositories: {
-      backend: { path: backendRepoPath },
-      mobile: { path: mobileRepoPath },
-    },
+    repositories,
     status: 'in_progress',
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),

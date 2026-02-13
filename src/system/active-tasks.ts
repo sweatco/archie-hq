@@ -79,14 +79,14 @@ export function isAgentRunning(taskId: string, agentName: AgentName): boolean {
 export function getAgentStatus(taskId: string): Record<string, boolean> {
   const runtime = activeTasks.get(taskId);
   if (!runtime) {
-    return { pm: false, backend: false, mobile: false };
+    return {};
   }
 
-  return {
-    pm: runtime.handles.get('pm-agent')?.isRunning ?? false,
-    backend: runtime.handles.get('backend-agent')?.isRunning ?? false,
-    mobile: runtime.handles.get('mobile-agent')?.isRunning ?? false,
-  };
+  const status: Record<string, boolean> = {};
+  for (const [agentName, handle] of runtime.handles) {
+    status[agentName] = handle.isRunning;
+  }
+  return status;
 }
 
 /**

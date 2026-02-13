@@ -135,9 +135,7 @@ function createToolCallbacks(
       }
 
       // Get the target queue (triage-agent doesn't have a queue)
-      const targetQueue = runtime.queues.get(
-        target as "pm-agent" | "backend-agent" | "mobile-agent"
-      );
+      const targetQueue = runtime.queues.get(target);
       if (!targetQueue) {
         throw new Error(`No queue found for agent ${target}`);
       }

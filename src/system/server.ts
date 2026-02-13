@@ -42,12 +42,10 @@ import {
 import {
   processSlackTriage,
   processGitHubTriage,
-  setRepoPaths,
   reactivateTask,
 } from "./event-handler.js";
 import { getRepoConfigByGithubRepo } from "../agents/repo-configs.js";
 import { verifyWebhookSignature } from "../github/webhook-utils.js";
-import { configureGitIdentity } from "../github/client.js";
 
 /**
  * Server configuration
@@ -56,8 +54,6 @@ export interface ServerConfig {
   slackBotToken: string;
   slackSigningSecret: string;
   port: number;
-  backendRepoPath: string;
-  mobileRepoPath: string;
   githubWebhookSecret?: string; // Optional - GitHub webhooks disabled if not set
 }
 
@@ -70,13 +66,6 @@ let isShuttingDown = false;
 export async function startServer(config: ServerConfig): Promise<void> {
   // Initialize Slack client for outgoing messages
   await initSlackClient(config.slackBotToken);
-
-  // Set repository paths for event handler
-  setRepoPaths(config.backendRepoPath, config.mobileRepoPath);
-
-  // Configure git identity for base repos (worktrees inherit this)
-  await configureGitIdentity(config.backendRepoPath);
-  await configureGitIdentity(config.mobileRepoPath);
 
   // Set up Slack callbacks once globally (works for all tasks since it uses taskId parameter)
   setSlackCallbacks(
@@ -163,9 +152,6 @@ export async function startServer(config: ServerConfig): Promise<void> {
       }
     );
 
-    logger.system("GitHub webhooks enabled");
-  } else {
-    logger.system("GitHub webhooks disabled (GITHUB_WEBHOOK_SECRET not set)");
   }
 
   // Create Bolt app with HTTP receiver

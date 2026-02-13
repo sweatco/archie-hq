@@ -7,6 +7,9 @@
 import 'dotenv/config';
 import { startServer, stopServer, type ServerConfig } from './system/server.js';
 import { logger } from './system/logger.js';
+import { getPlugins } from './system/plugin-loader.js';
+import { getAllRepoConfigs } from './agents/repo-configs.js';
+import { configureGitIdentity } from './github/client.js';
 
 /**
  * Load configuration from environment
@@ -15,8 +18,6 @@ function loadConfig(): ServerConfig {
   const slackBotToken = process.env.SLACK_BOT_TOKEN;
   const slackSigningSecret = process.env.SLACK_SIGNING_SECRET;
   const port = parseInt(process.env.PORT || '3000', 10);
-  const backendRepoPath = process.env.BACKEND_REPO_PATH || '/repos/backend';
-  const mobileRepoPath = process.env.MOBILE_REPO_PATH || '/repos/mobile';
   const githubWebhookSecret = process.env.GITHUB_WEBHOOK_SECRET;
 
   // Validate required environment variables
@@ -34,8 +35,6 @@ function loadConfig(): ServerConfig {
     slackBotToken,
     slackSigningSecret,
     port,
-    backendRepoPath,
-    mobileRepoPath,
     githubWebhookSecret,
   };
 }
@@ -56,8 +55,26 @@ async function main(): Promise<void> {
   try {
     const config = loadConfig();
 
-    logger.plain(`Backend repo: ${config.backendRepoPath}`);
-    logger.plain(`Mobile repo: ${config.mobileRepoPath}`);
+    // Log loaded plugins and agents
+    const plugins = getPlugins();
+    const repoConfigs = getAllRepoConfigs();
+
+    logger.plain(`Plugins loaded: ${plugins.map((p) => p.name).join(', ') || 'none'}`);
+    logger.plain('');
+
+    // Collect all PM skills across plugins
+    const allPmSkills = plugins.flatMap((p) => p.pmSkillNames);
+
+    logger.plain('Team:');
+    logger.plain('  pm-agent (orchestrator)');
+    if (allPmSkills.length > 0) {
+      logger.plain(`    skills: ${allPmSkills.join(', ')}`);
+    }
+    for (const rc of repoConfigs) {
+      logger.plain(`  ${rc.agentId} — ${rc.role}`);
+      const gitName = await configureGitIdentity(rc.defaultRepoPath);
+      logger.plain(`    repo: ${rc.defaultRepoPath} (${rc.githubRepo})${gitName ? `, git: ${gitName}` : ''}`);
+    }
     logger.plain('');
 
     await startServer(config);

@@ -34,21 +34,6 @@ import { logger } from './logger.js';
 import type { SlackThread, SlackMessage } from '../types/index.js';
 
 // ============================================================================
-// Configuration
-// ============================================================================
-
-let backendRepoPath = process.env.BACKEND_REPO_PATH || '/repos/backend';
-let mobileRepoPath = process.env.MOBILE_REPO_PATH || '/repos/mobile';
-
-/**
- * Set repository paths (called from server startup)
- */
-export function setRepoPaths(backend: string, mobile: string): void {
-  backendRepoPath = backend;
-  mobileRepoPath = mobile;
-}
-
-// ============================================================================
 // Spawn Guard
 // ============================================================================
 
@@ -159,7 +144,7 @@ async function handleNewTask(
     last_processed_ts: message.ts,
   };
 
-  const metadata = await createTask(slackThread, backendRepoPath, mobileRepoPath);
+  const metadata = await createTask(slackThread);
   const taskId = metadata.task_id;
 
   logger.system(`Created task ${taskId}`);

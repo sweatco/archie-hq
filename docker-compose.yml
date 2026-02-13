@@ -35,11 +35,13 @@ services:
     environment:
       # Paths inside container (override .env values)
       - CLAUDE_PATH=/usr/local/bin/claude
-      - BACKEND_REPO_PATH=/app/repos/backend
-      - MOBILE_REPO_PATH=/app/repos/mobile
+      - ARCHIE_REPOS_DIR=/app/repos
       - GITHUB_APP_PRIVATE_KEY_PATH=/app/secrets/github-private-key.pem
 
     volumes:
+      # Plugins - domain-specific agent configs, prompts, and PM skills
+      - ./plugins:/app/plugins
+
       # Sessions - persist task data across container restarts
       - ./sessions:/app/sessions
 

@@ -15,6 +15,7 @@ services:
       # Mount source code for hot reload (dev-specific)
       - ./src:/app/src
       - ./prompts:/app/prompts
+      - ./plugins:/app/plugins
 
       # Inherit sessions, repos, secrets, claude-data from base compose
 
