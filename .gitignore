@@ -46,4 +46,4 @@ tmp/
 temp/
 
 # Plugin configurations (cloned from separate repo)
-plugins/
+plugins
