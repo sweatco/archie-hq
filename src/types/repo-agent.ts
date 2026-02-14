@@ -30,4 +30,7 @@ export interface RepoAgentConfig {
 
   /** Layer 3 agent prompt body from plugins/<name>/agents/<key>.md (domain-specific instructions) */
   agentPrompt?: string;
+
+  /** Plugin name this agent belongs to, e.g., 'engineering' */
+  pluginName: string;
 }

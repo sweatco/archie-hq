@@ -17,20 +17,25 @@ import {
 import { createPMAgentMcpServer, type PMToolCallbacks } from "../mcp/tools.js";
 import { processAgentEventForLogging, logger } from "../system/logger.js";
 import { getAllRepoConfigs } from "./repo-configs.js";
+import { getAllPluginAgentConfigs } from "./plugin-configs.js";
 import { loadPrompt } from "../utils/prompt-loader.js";
 
 /**
- * Generate PM system prompt with dynamically loaded engineering team
+ * Generate PM system prompt with dynamically loaded team (repo + plugin agents)
  */
 async function generatePMSystemPrompt(): Promise<string> {
   const repoConfigs = getAllRepoConfigs();
-  const teamList = repoConfigs
-    .map((c) => `- ${c.agentId}: ${c.role}`)
-    .join("\n");
+  const pluginAgents = getAllPluginAgentConfigs();
 
-  const assignmentGuidelines = repoConfigs
-    .map((c) => `- ${c.agentId}: ${c.expertise}`)
-    .join("\n");
+  const teamList = [
+    ...repoConfigs.map((c) => `- ${c.agentId}: ${c.role}`),
+    ...pluginAgents.map((a) => `- ${a.agentId}: ${a.role}`),
+  ].join("\n");
+
+  const assignmentGuidelines = [
+    ...repoConfigs.map((c) => `- ${c.agentId}: ${c.expertise}`),
+    ...pluginAgents.map((a) => `- ${a.agentId}: ${a.expertise}`),
+  ].join("\n");
 
   return loadPrompt("pm-agent", {
     TEAM_LIST: teamList,

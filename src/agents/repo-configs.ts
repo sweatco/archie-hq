@@ -64,6 +64,7 @@ function buildRepoConfigs(): RepoAgentConfig[] {
         githubRepo: infraConfig.githubRepo,
         baseBranch: infraConfig.baseBranch,
         agentPrompt,
+        pluginName: plugin.name,
       });
     }
   }

@@ -9,6 +9,7 @@ import { startServer, stopServer, type ServerConfig } from './system/server.js';
 import { logger } from './system/logger.js';
 import { getPlugins } from './system/plugin-loader.js';
 import { getAllRepoConfigs } from './agents/repo-configs.js';
+import { getAllPluginAgentConfigs } from './agents/plugin-configs.js';
 import { configureGitIdentity } from './github/client.js';
 
 /**
@@ -62,8 +63,10 @@ async function main(): Promise<void> {
     logger.plain(`Plugins loaded: ${plugins.map((p) => p.name).join(', ') || 'none'}`);
     logger.plain('');
 
-    // Collect all PM skills across plugins
-    const allPmSkills = plugins.flatMap((p) => p.pmSkillNames);
+    // Collect all PM skills across plugins (already namespaced)
+    const allPmSkills = plugins.flatMap((p) =>
+      p.pmSkills.map((s) => s.namespacedName)
+    );
 
     logger.plain('Team:');
     logger.plain('  pm-agent (orchestrator)');
@@ -71,9 +74,15 @@ async function main(): Promise<void> {
       logger.plain(`    skills: ${allPmSkills.join(', ')}`);
     }
     for (const rc of repoConfigs) {
-      logger.plain(`  ${rc.agentId} — ${rc.role}`);
+      logger.plain(`  [${rc.pluginName}] ${rc.agentId} — ${rc.role}`);
       const gitName = await configureGitIdentity(rc.defaultRepoPath);
-      logger.plain(`    repo: ${rc.defaultRepoPath} (${rc.githubRepo})${gitName ? `, git: ${gitName}` : ''}`);
+      logger.plain(`    repo: ${rc.defaultRepoPath} (${rc.githubRepo})`);
+      if (gitName) {
+        logger.plain(`    git: ${gitName}`);
+      }
+    }
+    for (const pa of getAllPluginAgentConfigs()) {
+      logger.plain(`  [${pa.pluginName}] ${pa.agentId} — ${pa.role}`);
     }
     logger.plain('');
 

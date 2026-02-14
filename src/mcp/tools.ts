@@ -9,6 +9,7 @@ import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { AgentName, FindingType } from '../types/index.js';
 import { getAllRepoAgentIds } from '../agents/repo-configs.js';
+import { getAllPluginAgentIds } from '../agents/plugin-configs.js';
 
 // ============================================================================
 // GitHub Types
@@ -104,8 +105,8 @@ export interface ToolCallbacks extends PMToolCallbacks {}
  * The sending agent pauses until a response is received.
  */
 export function createSendMessageTool(callbacks: BaseToolCallbacks) {
-  // Build dynamic list of all agents
-  const allAgents = ['pm-agent', ...getAllRepoAgentIds()] as [string, ...string[]];
+  // Build dynamic list of all agents (PM + repo + plugin)
+  const allAgents = ['pm-agent', ...getAllRepoAgentIds(), ...getAllPluginAgentIds()] as [string, ...string[]];
 
   return tool(
     'send_message_to_agent',
@@ -194,15 +195,15 @@ export function createPostToSlackTool(callbacks: ToolCallbacks) {
  * The task owner is responsible for leading the investigation.
  */
 export function createAssignTaskOwnerTool(callbacks: ToolCallbacks) {
-  // Only repo agents can be task owners
-  const repoAgents = getAllRepoAgentIds() as [string, ...string[]];
+  // Repo agents and plugin agents can be task owners
+  const taskOwnerAgents = [...getAllRepoAgentIds(), ...getAllPluginAgentIds()] as [string, ...string[]];
 
   return tool(
     'assign_task_owner',
     'Assign a task owner who will lead the investigation. Call this before sending the initial assignment message.',
     {
       agent: z
-        .enum(repoAgents)
+        .enum(taskOwnerAgents)
         .describe('The agent to assign as task owner'),
     },
     async (args) => {

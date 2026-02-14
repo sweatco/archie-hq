@@ -25,7 +25,7 @@ import {
   type RepoAgentToolCallbacks,
 } from "../mcp/tools.js";
 import { processAgentEventForLogging, logger } from "../system/logger.js";
-import { getAllRepoConfigs } from "./repo-configs.js";
+import { buildPeerList } from "./peer-list.js";
 import { setupWorktree, worktreeExists, fetchOrigin } from "../system/worktree-manager.js";
 import { loadPrompt } from "../utils/prompt-loader.js";
 
@@ -37,11 +37,8 @@ import { loadPrompt } from "../utils/prompt-loader.js";
 async function generateRepoAgentPrompt(
   config: RepoAgentConfig
 ): Promise<string> {
-  // Build peer list from all other repo agents
-  const peerList = getAllRepoConfigs()
-    .filter((c) => c.agentId !== config.agentId)
-    .map((c) => `- ${c.agentId}: ${c.role} (${c.repoKey} repository)`)
-    .join("\n");
+  // Build peer list from all agents (repo + plugin)
+  const peerList = buildPeerList(config.agentId);
 
   // Layer 1: Universal multi-agent protocol
   const corePrompt = await loadPrompt("agent-core", {

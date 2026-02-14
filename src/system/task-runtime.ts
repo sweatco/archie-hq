@@ -23,6 +23,8 @@ import {
 import { spawnPMAgent, PM_PROMPTS } from "../agents/pm.js";
 import { spawnRepoAgent } from "../agents/repo-agent.js";
 import { getRepoConfig, getAllRepoConfigs } from "../agents/repo-configs.js";
+import { getPluginAgentConfig, getAllPluginAgentConfigs } from "../agents/plugin-configs.js";
+import { spawnPluginAgent } from "../agents/plugin-agent.js";
 import type { PMToolCallbacks, PRStatus, PRReview } from "../mcp/tools.js";
 import { GitHubClient, createGitHubClient } from "../github/client.js";
 import { triggerMergeCheck } from "../github/merge-orchestrator.js";
@@ -643,7 +645,26 @@ async function ensureAgentSpawned(
     );
     runtime.handles.set("pm-agent", handle);
   } else {
-    throw new Error(`Unknown agent: ${agentName}`);
+    // Check if it's a plugin agent
+    const pluginConfig = getPluginAgentConfig(agentName);
+    if (pluginConfig) {
+      await addParticipant(runtime.taskId, agentName);
+      const queue = runtime.queues.get(agentName);
+      if (!queue) {
+        throw new Error(`${agentName} queue not initialized`);
+      }
+      handle = await spawnPluginAgent(
+        pluginConfig,
+        metadata,
+        queue,
+        callbacks,
+        onSessionId,
+        existingSessionId
+      );
+      runtime.handles.set(agentName, handle);
+    } else {
+      throw new Error(`Unknown agent: ${agentName}`);
+    }
   }
 
   runtime.spawned.add(agentName);
@@ -669,10 +690,13 @@ export async function initializeTaskRuntime(
     throw new Error(`Task ${taskId} not found`);
   }
 
-  // Initialize queues for PM and all repo agents
+  // Initialize queues for PM, all repo agents, and all plugin agents
   const queues = new Map<AgentName, MessageQueue>();
   queues.set("pm-agent", new MessageQueue());
   for (const config of getAllRepoConfigs()) {
+    queues.set(config.agentId as AgentName, new MessageQueue());
+  }
+  for (const config of getAllPluginAgentConfigs()) {
     queues.set(config.agentId as AgentName, new MessageQueue());
   }
 

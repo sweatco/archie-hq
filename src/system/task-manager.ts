@@ -159,13 +159,11 @@ export async function createTask(
   await mkdir(join(sharedPath, '.claude'), { recursive: true });
 
   for (const plugin of getPluginsWithPmSkills()) {
-    for (const entry of await readdir(plugin.pmSkillsDir!, { withFileTypes: true })) {
-      if (entry.isDirectory()) {
-        const target = join(skillsTarget, entry.name);
-        if (!existsSync(target)) {
-          await mkdir(skillsTarget, { recursive: true });
-          await symlink(join(plugin.pmSkillsDir!, entry.name), target);
-        }
+    for (const skill of plugin.pmSkills) {
+      const target = join(skillsTarget, skill.namespacedName);
+      if (!existsSync(target)) {
+        await mkdir(skillsTarget, { recursive: true });
+        await symlink(skill.sourcePath, target);
       }
     }
   }
