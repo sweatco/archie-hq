@@ -1,5 +1,5 @@
 /**
- * Archie - Autonomous Repository Collaborative Hyper Intelligent Engineer
+ * Archie - Autonomous Responsive and Collaborative Hyper Intelligent Employee
  *
  * Main entry point for the application.
  */
@@ -44,8 +44,8 @@ function loadConfig(): ServerConfig {
  * Main function
  */
 async function main(): Promise<void> {
-  logger.plain('Archie - Autonomous Repository Collaborative Hyper Intelligent Engineer');
-  logger.plain('=======================================================================');
+  logger.plain('Archie - Autonomous Responsive and Collaborative Hyper Intelligent Employee');
+  logger.plain('===========================================================================');
   logger.plain('');
 
   // Fix PATH for spawned processes - npm/tsx strips PATH to node_modules only

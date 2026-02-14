@@ -1,7 +1,7 @@
 {
   "name": "archie-hq",
   "version": "0.1.0",
-  "description": "Archie - Autonomous Repository Collaborative Hyper Intelligent Engineer",
+  "description": "Archie - Autonomous Responsive and Collaborative Hyper Intelligent Employee",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
