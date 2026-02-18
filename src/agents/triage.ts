@@ -51,7 +51,7 @@ async function runTriage<T extends z.ZodType>(
   for await (const event of query({
     prompt: input,
     options: {
-      model: (process.env.HAIKU_MODEL || "claude-haiku-4-5-20251001") as any,
+      model: 'haiku',
       systemPrompt,
       cwd: sessionsDir,
       executable: "node",
