@@ -3,7 +3,8 @@
  */
 
 export { triageSlackMessage, triageGitHubComment } from './triage.js';
-export { spawnPMAgent, PM_PROMPTS } from './pm.js';
+export { spawnPMAgent } from './pm.js';
+export { AGENT_PROMPTS } from './prompts.js';
 export { spawnRepoAgent } from './repo-agent.js';
 export { getRepoConfig, getAllRepoConfigs, getAllRepoAgentIds } from './repo-configs.js';
 export { spawnPluginAgent } from './plugin-agent.js';

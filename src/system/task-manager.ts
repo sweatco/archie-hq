@@ -383,23 +383,29 @@ export async function findTaskByPRNumber(
 }
 
 /**
- * Find all tasks with a given status
+ * Find all tasks with a given status.
+ * Uses grep to find matching files in one pass (faster than reading every metadata.json).
  */
 export async function findTasksByStatus(
   status: 'in_progress' | 'stopped' | 'completed'
 ): Promise<TaskMetadata[]> {
   await ensureSessionsDir();
 
-  const sessions = await readdir(SESSIONS_DIR);
+  const { execSync } = await import('child_process');
+  const grepResult = execSync(
+    `grep -l '"status": "${status}"' ${SESSIONS_DIR}/task-*/shared/metadata.json 2>/dev/null || true`,
+    { encoding: 'utf-8' }
+  ).trim();
+
+  if (!grepResult) return [];
+
   const tasks: TaskMetadata[] = [];
+  for (const filePath of grepResult.split('\n')) {
+    const taskIdMatch = filePath.match(/task-[a-z0-9-]+/i);
+    if (!taskIdMatch) continue;
 
-  for (const session of sessions) {
-    if (!session.startsWith('task-')) continue;
-
-    const metadata = await loadMetadata(session);
-    if (metadata && metadata.status === status) {
-      tasks.push(metadata);
-    }
+    const metadata = await loadMetadata(taskIdMatch[0]);
+    if (metadata) tasks.push(metadata);
   }
 
   return tasks;
@@ -515,19 +521,3 @@ export async function addParticipant(
   }
 }
 
-/**
- * Store an agent's session ID
- */
-export async function storeAgentSession(
-  taskId: string,
-  agentName: string,
-  sessionId: string
-): Promise<void> {
-  const metadata = await loadMetadata(taskId);
-  if (!metadata) {
-    throw new Error(`Task ${taskId} not found`);
-  }
-
-  metadata.agent_sessions[agentName] = sessionId;
-  await saveMetadata(taskId, metadata);
-}

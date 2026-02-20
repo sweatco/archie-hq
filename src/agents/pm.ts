@@ -112,6 +112,12 @@ Files available to read (in your working directory):
         }),
         createResearchDefenseTagHook(),
       ],
+      Stop: [{
+        hooks: [async () => {
+          await callbacks.onIdle();
+          return { continue: true };
+        }],
+      }],
     },
     mcpServers: {
       "pm-agent-tools": mcpServer,
@@ -132,6 +138,7 @@ Files available to read (in your working directory):
       "mcp__pm-agent-tools__assign_task_owner",
       "mcp__pm-agent-tools__report_completion",
       "mcp__pm-agent-tools__request_edit_mode",
+      "mcp__pm-agent-tools__get_agents_status",
       // GitHub tools - only available when edit mode is approved
       ...(metadata.edit_allowed
         ? [
@@ -214,11 +221,3 @@ Files available to read (in your working directory):
 
   return handle;
 }
-
-/**
- * PM system prompt additions for specific scenarios
- */
-export const PM_PROMPTS = {
-  newTask: 'New task created, assign owner',
-  existingTask: 'New input received. Check knowledge.log for the update.',
-};
