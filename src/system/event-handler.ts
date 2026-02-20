@@ -2,24 +2,19 @@
  * Event Handler
  *
  * Processes webhook events inline (no queues).
- * Consolidates business logic from the former triage-worker and spawn-worker.
  *
- * Flow: webhook → processSlackTriage / processGitHubTriage → spawnTaskIfNeeded
+ * Flow: webhook → processSlackTriage / processGitHubTriage → loadTask → sendMessage
  */
 
 import { triageSlackMessage, triageGitHubComment, type GitHubComment } from '../agents/triage.js';
 import {
-  createTask,
   appendSlackMessage,
   appendGitHubEvent,
-  addThreadToTask,
-  loadMetadata,
-  updateThreadTimestamp,
-  updatePRCommentTimestamp,
   downloadMessageFiles,
 } from './task-manager.js';
-import { notifyNewInput, stopTask, initializeTaskRuntime, startTask, type SpawnReason } from './task-runtime.js';
-import { isTaskActive } from './active-tasks.js';
+import { createTask, loadTask, sendMessage, stopTask } from './task-runtime.js';
+import { saveTask } from './task-persistence.js';
+import { AGENT_PROMPTS } from '../agents/prompts.js';
 import {
   fetchThreadHistory,
   getUserInfo,
@@ -32,35 +27,6 @@ import { createGitHubClient } from '../github/client.js';
 import { getRepoConfigByGithubRepo } from '../agents/repo-configs.js';
 import { logger } from './logger.js';
 import type { SlackThread, SlackMessage } from '../types/index.js';
-
-// ============================================================================
-// Spawn Guard
-// ============================================================================
-
-/**
- * Guard against concurrent spawn race.
- * Between the synchronous isTaskActive() check and the async initializeTaskRuntime(),
- * two concurrent webhook calls could both pass the check. This Set prevents that.
- */
-const spawningTasks = new Set<string>();
-
-/**
- * Spawn a task if not already active or spawning
- */
-async function spawnTaskIfNeeded(taskId: string, reason: SpawnReason): Promise<void> {
-  if (isTaskActive(taskId)) {
-    await notifyNewInput(taskId);
-    return;
-  }
-  if (spawningTasks.has(taskId)) return;
-  spawningTasks.add(taskId);
-  try {
-    await initializeTaskRuntime(taskId);
-    await startTask(taskId, reason);
-  } finally {
-    spawningTasks.delete(taskId);
-  }
-}
 
 // ============================================================================
 // Slack Triage
@@ -118,7 +84,7 @@ export async function processSlackTriage(payload: Record<string, unknown>): Prom
 
     case 'cancel_task':
       if (triageResult.task_id) {
-        await handleCancelTask(triageResult.task_id, message);
+        await handleCancelTask(triageResult.task_id);
       }
       break;
 
@@ -144,24 +110,21 @@ async function handleNewTask(
     last_processed_ts: message.ts,
   };
 
-  const metadata = await createTask(slackThread);
-  const taskId = metadata.task_id;
-
-  logger.system(`Created task ${taskId}`);
+  const runtime = await createTask(slackThread);
 
   // Append all thread history to shared knowledge log
   for (const msg of threadHistory) {
     const msgUserInfo = await getUserInfo(msg.user);
-    const downloadedFiles = msg.files ? await downloadMessageFiles(taskId, msg.files) : undefined;
-    await appendSlackMessage(taskId, channelInfo, threadId, {
+    const downloadedFiles = msg.files ? await downloadMessageFiles(runtime.taskId, msg.files) : undefined;
+    await appendSlackMessage(runtime.taskId, channelInfo, threadId, {
       id: msg.user,
       username: msgUserInfo.name,
       realName: msgUserInfo.realName,
     }, msg.text, downloadedFiles);
   }
 
-  // Spawn PM directly
-  await spawnTaskIfNeeded(taskId, 'new_task');
+  // Start PM
+  await sendMessage(runtime, 'pm-agent', AGENT_PROMPTS.newTask);
 }
 
 /**
@@ -174,22 +137,18 @@ async function handleExistingTask(
   threadHistory: SlackMessage[],
   channelInfo: { id: string; name: string }
 ): Promise<void> {
-  const metadata = await loadMetadata(taskId);
-  if (!metadata) {
-    logger.error('event-handler', `Task ${taskId} not found`);
-    return;
-  }
+  const runtime = await loadTask(taskId);
 
-  const existingThread = metadata.slack_threads.find((t) => t.thread_id === threadId);
+  const existingThread = runtime.metadata.slack_threads.find((t) => t.thread_id === threadId);
 
   if (!existingThread) {
+    // New thread for this task
     const newThread: SlackThread = {
       thread_id: threadId,
       channel_id: message.channel,
       last_processed_ts: message.ts,
     };
-
-    await addThreadToTask(taskId, newThread);
+    runtime.metadata.slack_threads.push(newThread);
 
     for (const msg of threadHistory) {
       if (!msg.user || msg.user === 'unknown' || msg.user === getBotUserId()) continue;
@@ -204,6 +163,7 @@ async function handleExistingTask(
 
     await postToThreads([newThread], "Got it, I've linked this to the ongoing investigation.");
   } else {
+    // Existing thread — append only new messages
     const lastProcessedTs = existingThread.last_processed_ts;
 
     for (const msg of threadHistory) {
@@ -218,29 +178,24 @@ async function handleExistingTask(
       }, msg.text, downloadedFiles);
     }
 
-    await updateThreadTimestamp(taskId, threadId, message.ts);
+    existingThread.last_processed_ts = message.ts;
   }
 
-  // Route: spawn or notify
-  await spawnTaskIfNeeded(taskId, 'existing_task');
+  saveTask(runtime);
+  await sendMessage(runtime, 'pm-agent', AGENT_PROMPTS.existingTask);
 }
 
 /**
  * Handle task cancellation
  */
-async function handleCancelTask(taskId: string, _message: SlackMessage): Promise<void> {
-  const metadata = await loadMetadata(taskId);
-  if (!metadata) {
-    logger.error('event-handler', `Task ${taskId} not found`);
-    return;
-  }
+async function handleCancelTask(taskId: string): Promise<void> {
+  const runtime = await loadTask(taskId);
+  const threads = [...runtime.metadata.slack_threads];
 
-  if (isTaskActive(taskId)) {
-    await stopTask(taskId);
-  }
+  await stopTask(taskId);
 
   await postToThreads(
-    metadata.slack_threads,
+    threads,
     "Work stopped. All progress has been saved and can be resumed if needed."
   );
 }
@@ -308,28 +263,24 @@ export async function processGitHubTriage(taskId: string, payload: Record<string
   // Run triage
   const triageResult = await triageGitHubComment(currentComment, commentHistory, prNumber, githubRepo);
 
-  // Get metadata for last processed comment
-  const metadata = await loadMetadata(taskId);
-  if (!metadata) {
-    logger.error('event-handler', `Task ${taskId} not found`);
-    return;
-  }
-
-  const repoInfo = metadata.repositories[repoConfig.repoKey];
-  const lastProcessedId = repoInfo?.last_processed_comment_id || 0;
-
   if (triageResult.action === 'existing_task') {
+    const runtime = await loadTask(taskId);
+    const repoInfo = runtime.metadata.repositories[repoConfig.repoKey];
+    const lastProcessedId = repoInfo?.last_processed_comment_id || 0;
+
     const newComments = commentHistory.filter((c) => c.id > lastProcessedId);
 
     for (const c of newComments) {
-      const message = `PR #${prNumber}: ${c.user} commented: ${c.body}`;
-      await appendGitHubEvent(taskId, repoConfig.repoKey, message);
+      const msg = `PR #${prNumber}: ${c.user} commented: ${c.body}`;
+      await appendGitHubEvent(taskId, repoConfig.repoKey, msg);
     }
 
-    await updatePRCommentTimestamp(taskId, repoConfig.repoKey, commentId);
+    if (repoInfo) {
+      repoInfo.last_processed_comment_id = commentId;
+    }
 
-    // Route: spawn or notify
-    await spawnTaskIfNeeded(taskId, 'existing_task');
+    saveTask(runtime);
+    await sendMessage(runtime, 'pm-agent', AGENT_PROMPTS.existingTask);
   } else {
     logger.system(`GitHub: Ignoring conversational comment on PR #${prNumber}`);
   }
@@ -350,15 +301,7 @@ async function handleGitHubCommentDirect(
   const user = (comment.user as Record<string, unknown>)?.login as string || 'unknown';
   const body = comment.body as string || '';
 
+  const runtime = await loadTask(taskId);
   await appendGitHubEvent(taskId, repoKey, `PR #${prNumber}: ${user} commented: ${body}`);
-  await spawnTaskIfNeeded(taskId, 'existing_task');
-}
-
-/**
- * Reactivate a stopped/inactive task.
- * Used by merge-orchestrator, edit mode handlers, recovery, and other callsites
- * that need to wake up agents for an existing task.
- */
-export async function reactivateTask(taskId: string, reason: SpawnReason = 'existing_task'): Promise<void> {
-  await spawnTaskIfNeeded(taskId, reason);
+  await sendMessage(runtime, 'pm-agent', AGENT_PROMPTS.existingTask);
 }

@@ -17,13 +17,13 @@ export interface MergeCheckResult {
   conflicts: string[]; // PRs with merge conflicts
 }
 
-import { loadMetadata, appendAgentFinding } from '../system/task-manager.js';
+import { appendAgentFinding } from '../system/task-manager.js';
+import { loadTask, sendMessage } from '../system/task-runtime.js';
+import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { createGitHubClient, type GitHubClient } from './client.js';
 import { getRepoConfig } from '../agents/repo-configs.js';
 import { logger } from '../system/logger.js';
-import { reactivateTask } from '../system/event-handler.js';
 import type { PRStatus } from '../mcp/tools.js';
-import type { TaskMetadata } from '../types/index.js';
 
 interface LinkedPRStatus {
   repoKey: string;
@@ -61,11 +61,7 @@ export async function checkAndMergeLinkedPRs(taskId: string): Promise<void> {
 export async function triggerMergeCheck(taskId: string): Promise<MergeCheckResult> {
   const result: MergeCheckResult = { merged: [], pending: [], conflicts: [] };
 
-  const metadata = await loadMetadata(taskId);
-  if (!metadata) {
-    logger.error('merge-orchestrator', `Task ${taskId} not found`);
-    return result;
-  }
+  const runtime = await loadTask(taskId);
 
   const githubClient = createGitHubClient();
   if (!githubClient) {
@@ -75,7 +71,7 @@ export async function triggerMergeCheck(taskId: string): Promise<MergeCheckResul
 
   // Collect all PRs linked to this task
   const linkedPRs: Array<{ repoKey: string; prNumber: number }> = [];
-  for (const [repoKey, repoInfo] of Object.entries(metadata.repositories)) {
+  for (const [repoKey, repoInfo] of Object.entries(runtime.metadata.repositories)) {
     if (repoInfo.pr_number) {
       linkedPRs.push({ repoKey, prNumber: repoInfo.pr_number });
     }
@@ -89,7 +85,7 @@ export async function triggerMergeCheck(taskId: string): Promise<MergeCheckResul
   logger.system(`Task ${taskId}: Checking ${linkedPRs.length} linked PR(s)`);
 
   // Fetch status of all PRs
-  const prStatuses = await fetchAllPRStatuses(githubClient, linkedPRs, metadata);
+  const prStatuses = await fetchAllPRStatuses(githubClient, linkedPRs);
 
   // Categorize PRs with detailed logging
   const alreadyMerged = prStatuses.filter((pr) => pr.status.state === 'merged');
@@ -200,8 +196,7 @@ export async function triggerMergeCheck(taskId: string): Promise<MergeCheckResul
  */
 async function fetchAllPRStatuses(
   githubClient: GitHubClient,
-  linkedPRs: Array<{ repoKey: string; prNumber: number }>,
-  metadata: TaskMetadata
+  linkedPRs: Array<{ repoKey: string; prNumber: number }>
 ): Promise<LinkedPRStatus[]> {
   const results: LinkedPRStatus[] = [];
 
@@ -234,7 +229,7 @@ async function fetchAllPRStatuses(
 
 /**
  * Notify PM about PRs with conflicts
- * Logs to knowledge.log and routes through spawn queue
+ * Logs to knowledge.log and sends message to PM
  */
 async function notifyPMAboutConflicts(
   taskId: string,
@@ -248,16 +243,15 @@ async function notifyPMAboutConflicts(
 
   logger.system(`Task ${taskId}: Notifying PM about conflicts`);
 
-  // Log to knowledge.log (PM will read this)
   await appendAgentFinding(taskId, 'system', message, 'blocker');
 
-  // Reactivate task so PM reads the new knowledge
-  await reactivateTask(taskId);
+  const runtime = await loadTask(taskId);
+  await sendMessage(runtime, 'pm-agent', AGENT_PROMPTS.existingTask);
 }
 
 /**
  * Notify PM that PRs were merged (or failed to merge)
- * Logs to knowledge.log and routes through spawn queue
+ * Logs to knowledge.log and sends message to PM
  */
 async function notifyPMAboutMerge(
   taskId: string,
@@ -281,10 +275,9 @@ async function notifyPMAboutMerge(
 
   logger.system(`Task ${taskId}: Notifying PM about merge results`);
 
-  // Log to knowledge.log (PM will read this)
   const findingType = failedPRs.length > 0 ? 'blocker' : 'completion';
   await appendAgentFinding(taskId, 'system', message, findingType);
 
-  // Reactivate task so PM reads the new knowledge
-  await reactivateTask(taskId);
+  const runtime = await loadTask(taskId);
+  await sendMessage(runtime, 'pm-agent', AGENT_PROMPTS.existingTask);
 }

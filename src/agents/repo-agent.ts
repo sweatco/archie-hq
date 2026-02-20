@@ -16,7 +16,6 @@ import {
   getSharedPath,
   getTaskPath,
   getReposPath,
-  saveMetadata,
 } from "../system/task-manager.js";
 import {
   MessageQueue,
@@ -78,7 +77,6 @@ async function generateRepoAgentPrompt(
  * Includes automatic session recovery: if resuming a session fails,
  * it will retry once with a fresh session.
  *
- * @param onMetadataUpdate - Optional callback when metadata changes (worktree created)
  */
 export async function spawnRepoAgent(
   config: RepoAgentConfig,
@@ -87,7 +85,6 @@ export async function spawnRepoAgent(
   callbacks: RepoAgentToolCallbacks,
   onSessionId: (sessionId: string) => void,
   existingSessionId?: string,
-  onMetadataUpdate?: (metadata: TaskMetadata) => Promise<void>
 ): Promise<AgentHandle> {
   const repoInfo = metadata.repositories[config.repoKey];
   const baseRepoPath = repoInfo?.path || config.defaultRepoPath;
@@ -136,12 +133,7 @@ export async function spawnRepoAgent(
         base_branch,
       };
 
-      // Save metadata and notify caller
-      await saveMetadata(metadata.task_id, metadata);
-      if (onMetadataUpdate) {
-        await onMetadataUpdate(metadata);
-      }
-
+      // Metadata object is mutated in-place (caller owns persistence)
       repoPath = worktree_path;
     }
   } else {

@@ -8,20 +8,28 @@
 
 import { exec } from "child_process";
 import { promisify } from "util";
-import type { AgentName, AgentSessionState, FindingType } from "../types/index.js";
+import { mkdir, writeFile, symlink } from "fs/promises";
+import { existsSync } from "fs";
+import { join } from "path";
+import type { AgentName, AgentSessionState, FindingType, SlackThread, TaskMetadata } from "../types/index.js";
 import type { AgentHandle } from "../types/agent.js";
 import { MessageQueue } from "./message-queue.js";
 import {
   loadMetadata,
-  saveMetadata,
+  getMetadataPath,
   appendAgentFinding,
-  setTaskOwner,
-  addParticipant,
-  updateTaskStatus,
+  ensureSessionsDir,
+  generateTaskId,
+  getSharedPath,
+  getMemoryPath,
+  getKnowledgeLogPath,
 } from "./task-manager.js";
+import { getPluginsWithPmSkills } from "./plugin-loader.js";
 import { spawnPMAgent } from "../agents/pm.js";
 import { AGENT_PROMPTS } from "../agents/prompts.js";
-import { updateAgentState, getAgentSession, flushPendingPersist } from "./agent-state.js";
+import { saveTask } from "./task-persistence.js";
+import { getIsShuttingDown } from "./server.js";
+import { scheduleIdleCheck } from "./task-recovery.js";
 import { spawnRepoAgent } from "../agents/repo-agent.js";
 import { getRepoConfig, getAllRepoConfigs } from "../agents/repo-configs.js";
 import { getPluginAgentConfig, getAllPluginAgentConfigs } from "../agents/plugin-configs.js";
@@ -35,8 +43,6 @@ import {
   isTaskActive,
   type TaskRuntimeState,
 } from "./active-tasks.js";
-import { reactivateTask } from "./event-handler.js";
-
 // Re-export from active-tasks for backwards compatibility
 export {
   isTaskActive,
@@ -47,11 +53,6 @@ export {
   findTaskIdByThread,
 } from "./active-tasks.js";
 export type { TaskRuntimeState } from "./active-tasks.js";
-
-/**
- * Spawn reason type
- */
-export type SpawnReason = 'new_task' | 'existing_task' | 'recovery';
 
 const execAsync = promisify(exec);
 
@@ -100,6 +101,59 @@ function getGitHubClient(): GitHubClient | null {
 }
 
 /**
+ * Read helper for legacy agent_sessions entries.
+ * If the entry is a legacy string (old metadata on disk), convert it
+ * to an AgentSessionState. Returns undefined if no entry exists.
+ */
+function getAgentSession(
+  metadata: TaskMetadata,
+  agentName: string
+): AgentSessionState | undefined {
+  const entry = metadata.agent_sessions[agentName];
+  if (!entry) return undefined;
+  if (typeof entry === 'string') {
+    return { session_id: entry, active: false };
+  }
+  return entry;
+}
+
+/**
+ * Update an agent's active state.
+ * Updates in-memory session, persists (debounced), and schedules idle check on deactivation.
+ *
+ * During shutdown, deactivation is skipped so recovery sees the correct pre-shutdown state.
+ */
+function updateAgentState(
+  runtime: TaskRuntimeState,
+  agentName: AgentName | string,
+  active: boolean,
+  sessionId?: string
+): void {
+  if (!active && getIsShuttingDown()) return;
+
+  const name = agentName as AgentName;
+
+  const session = runtime.sessions.get(name);
+  if (session) {
+    if (sessionId) session.session_id = sessionId;
+    session.active = active;
+    session.last_activity = new Date().toISOString();
+  } else if (sessionId) {
+    runtime.sessions.set(name, {
+      session_id: sessionId,
+      active,
+      last_activity: new Date().toISOString(),
+    });
+  }
+
+  saveTask(runtime);
+
+  if (!active) {
+    scheduleIdleCheck(runtime);
+  }
+}
+
+/**
  * Create tool callbacks for an agent
  */
 function createToolCallbacks(
@@ -143,14 +197,13 @@ function createToolCallbacks(
         "decision"
       );
 
-      // Safety check: If task is inactive, reactivate to wake PM
-      if (!isTaskActive(runtime.taskId)) {
+      // Safety check: If task went inactive, just log warning
+      if (!runtime.isActive) {
         logger.warn(
           "task-runtime",
-          `Task ${runtime.taskId} is inactive but ${agentName} is sending message - reactivating`
+          `Task ${runtime.taskId} is inactive but ${agentName} is sending message`
         );
-        await reactivateTask(runtime.taskId);
-        return `Message logged to knowledge.log. PM will be notified.`;
+        return `Task is inactive, message logged to knowledge.log.`;
       }
 
       // Get the target queue (triage-agent doesn't have a queue)
@@ -245,8 +298,12 @@ function createToolCallbacks(
 
       runtime.lastActivity = new Date();
 
-      await setTaskOwner(runtime.taskId, agent);
-      await addParticipant(runtime.taskId, agent);
+      // Update in-memory metadata directly
+      runtime.metadata.task_owner = agent;
+      if (!runtime.metadata.participants.includes(agent)) {
+        runtime.metadata.participants.push(agent);
+      }
+      saveTask(runtime);
 
       // Log the assignment to shared knowledge
       await appendAgentFinding(
@@ -255,12 +312,6 @@ function createToolCallbacks(
         `Assigned ${agent} as task owner`,
         "decision"
       );
-
-      // Reload metadata to reflect the change
-      const metadata = await loadMetadata(runtime.taskId);
-      if (metadata) {
-        runtime.metadata = metadata;
-      }
 
       logger.system(`Task ${runtime.taskId} owner set to ${agent}`);
     },
@@ -356,13 +407,7 @@ function createToolCallbacks(
     ): Promise<{ success: boolean; message: string }> => {
       logger.agentAction(agentName, "Pushing branch", repoKey);
 
-      // Always load fresh metadata from disk
-      const metadata = await loadMetadata(runtime.taskId);
-      if (!metadata) {
-        return { success: false, message: `Task ${runtime.taskId} not found` };
-      }
-
-      const repoInfo = metadata.repositories[repoKey];
+      const repoInfo = runtime.metadata.repositories[repoKey];
       if (!repoInfo?.worktree_path) {
         return { success: false, message: `No worktree found for ${repoKey}` };
       }
@@ -409,13 +454,7 @@ function createToolCallbacks(
         throw new Error(`No config found for repo key: ${repoKey}`);
       }
 
-      // Always load fresh metadata from disk
-      const metadata = await loadMetadata(runtime.taskId);
-      if (!metadata) {
-        throw new Error(`Task ${runtime.taskId} not found`);
-      }
-
-      const repoInfo = metadata.repositories[repoKey];
+      const repoInfo = runtime.metadata.repositories[repoKey];
       const head = repoInfo?.feature_branch || `feature/task-${runtime.taskId}`;
       const base = repoInfo?.base_branch || "main";
 
@@ -430,7 +469,7 @@ function createToolCallbacks(
       // Store PR number in metadata
       if (repoInfo) {
         repoInfo.pr_number = result.pr_number;
-        await saveMetadata(runtime.taskId, runtime.metadata);
+        saveTask(runtime);
       }
 
       await appendAgentFinding(
@@ -612,13 +651,9 @@ function createToolCallbacks(
         `Research request ${runtime.budgets.researchRequestCount}/${runtime.budgets.researchRequestLimit} for task ${runtime.taskId}`
       );
 
-      // Persist count to metadata (fire-and-forget — don't block research pipeline)
-      loadMetadata(runtime.taskId).then(async (meta) => {
-        if (meta) {
-          meta.research_request_count = runtime.budgets.researchRequestCount;
-          await saveMetadata(runtime.taskId, meta);
-        }
-      }).catch(err => logger.error("budget", "Failed to persist research count", err));
+      // Persist count via debounced metadata write
+      runtime.metadata.research_request_count = runtime.budgets.researchRequestCount;
+      saveTask(runtime);
     },
 
     onResearchBudgetExceeded: async () => {
@@ -713,11 +748,6 @@ async function ensureAgentSpawned(
     return;
   }
 
-  const metadata = await loadMetadata(runtime.taskId);
-  if (!metadata) {
-    throw new Error(`Task ${runtime.taskId} not found`);
-  }
-
   const callbacks = createToolCallbacks(runtime, agentName);
 
   const onSessionId = (sessionId: string) => {
@@ -728,6 +758,11 @@ async function ensureAgentSpawned(
   const existingSession = runtime.sessions.get(agentName);
   const existingSessionId = existingSession?.session_id;
 
+  // Track participant in-memory
+  if (!runtime.metadata.participants.includes(agentName)) {
+    runtime.metadata.participants.push(agentName);
+  }
+
   let handle: AgentHandle;
 
   // Check if it's a repo agent
@@ -735,14 +770,13 @@ async function ensureAgentSpawned(
 
   if (repoConfig) {
     // It's a repo agent - use unified spawn
-    await addParticipant(runtime.taskId, agentName);
     const queue = runtime.queues.get(agentName);
     if (!queue) {
       throw new Error(`${agentName} queue not initialized`);
     }
     handle = await spawnRepoAgent(
       repoConfig,
-      metadata,
+      runtime.metadata,
       queue,
       callbacks,
       onSessionId,
@@ -756,7 +790,7 @@ async function ensureAgentSpawned(
       throw new Error("PM queue not initialized");
     }
     handle = await spawnPMAgent(
-      metadata,
+      runtime.metadata,
       pmQueue,
       callbacks,
       onSessionId,
@@ -767,14 +801,13 @@ async function ensureAgentSpawned(
     // Check if it's a plugin agent
     const pluginConfig = getPluginAgentConfig(agentName);
     if (pluginConfig) {
-      await addParticipant(runtime.taskId, agentName);
       const queue = runtime.queues.get(agentName);
       if (!queue) {
         throw new Error(`${agentName} queue not initialized`);
       }
       handle = await spawnPluginAgent(
         pluginConfig,
-        metadata,
+        runtime.metadata,
         queue,
         callbacks,
         onSessionId,
@@ -785,6 +818,9 @@ async function ensureAgentSpawned(
       throw new Error(`Unknown agent: ${agentName}`);
     }
   }
+
+  // Persist metadata (participant added, repo-agent may have mutated worktree info)
+  saveTask(runtime);
 
   runtime.spawned.add(agentName);
 
@@ -805,15 +841,103 @@ async function ensureAgentSpawned(
 }
 
 /**
- * Initialize a new TaskRuntime for a task
+ * Create a new task: set up disk structure, register runtime in memory.
+ * Returns TaskRuntimeState directly — no round-trip through disk.
  */
-export async function initializeTaskRuntime(
-  taskId: string
+export async function createTask(
+  slackThread: SlackThread
 ): Promise<TaskRuntimeState> {
+  await ensureSessionsDir();
+
+  const taskId = generateTaskId();
+  const sharedPath = getSharedPath(taskId);
+
+  // Create task directory structure
+  await mkdir(sharedPath, { recursive: true });
+  await mkdir(getMemoryPath(taskId), { recursive: true });
+
+  // Symlink PM skills from all loaded plugins into task shared folder
+  const skillsTarget = join(sharedPath, '.claude', 'skills');
+  await mkdir(join(sharedPath, '.claude'), { recursive: true });
+
+  for (const plugin of getPluginsWithPmSkills()) {
+    for (const skill of plugin.pmSkills) {
+      const target = join(skillsTarget, skill.namespacedName);
+      if (!existsSync(target)) {
+        await mkdir(skillsTarget, { recursive: true });
+        await symlink(skill.sourcePath, target);
+      }
+    }
+  }
+
+  // Build repositories map dynamically from loaded repo configs
+  const repositories: Record<string, { path: string }> = {};
+  for (const config of getAllRepoConfigs()) {
+    repositories[config.repoKey] = { path: config.defaultRepoPath };
+  }
+
+  // Create initial metadata
+  const metadata: TaskMetadata = {
+    task_id: taskId,
+    task_owner: null,
+    participants: [],
+    slack_threads: [slackThread],
+    agent_sessions: {},
+    repositories,
+    status: 'in_progress',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  metadata.updated_at = new Date().toISOString();
+  await writeFile(getMetadataPath(taskId), JSON.stringify(metadata, null, 2));
+
+  // Create empty knowledge log
+  await writeFile(getKnowledgeLogPath(taskId), '');
+
+  logger.system(`Created task ${taskId}`);
+
+  return buildRuntime(taskId, metadata);
+}
+
+/**
+ * Load a task into memory. Idempotent — returns existing runtime instantly
+ * if already loaded, otherwise reads from disk.
+ */
+export async function loadTask(taskId: string): Promise<TaskRuntimeState> {
+  const existing = activeTasks.get(taskId);
+  if (existing) return existing;
+
   const metadata = await loadMetadata(taskId);
   if (!metadata) {
     throw new Error(`Task ${taskId} not found`);
   }
+
+  return buildRuntime(taskId, metadata);
+}
+
+/**
+ * Send a message to an agent. Ensures the agent is spawned first (idempotent).
+ */
+export async function sendMessage(
+  runtime: TaskRuntimeState,
+  agentName: AgentName,
+  message: string
+): Promise<void> {
+  await ensureAgentSpawned(runtime, agentName);
+  const queue = runtime.queues.get(agentName);
+  if (!queue) {
+    throw new Error(`No queue for ${agentName}`);
+  }
+  queue.addMessage(message);
+}
+
+/**
+ * Build a TaskRuntimeState from metadata. Shared by createTask and loadTask.
+ * Registers in activeTasks and starts wall-clock timeout.
+ */
+function buildRuntime(taskId: string, metadata: TaskMetadata): TaskRuntimeState {
+  metadata.status = 'in_progress';
 
   // Initialize queues for PM, all repo agents, and all plugin agents
   const queues = new Map<AgentName, MessageQueue>();
@@ -881,75 +1005,6 @@ export async function initializeTaskRuntime(
 }
 
 /**
- * Start a task by spawning agents and sending initial messages
- *
- * @param taskId - The task ID
- * @param reason - Why we're starting: 'new_task', 'existing_task', or 'recovery'
- */
-export async function startTask(
-  taskId: string,
-  reason: SpawnReason = "new_task"
-): Promise<void> {
-  const runtime = activeTasks.get(taskId);
-  if (!runtime) {
-    throw new Error(`TaskRuntime for ${taskId} not initialized`);
-  }
-
-  if (reason === 'recovery') {
-    // Re-spawn only agents that were active when interrupted
-    let spawned = 0;
-    for (const [agentName, session] of runtime.sessions) {
-      if (!session.active) continue;
-
-      const queue = runtime.queues.get(agentName);
-      if (!queue) throw new Error(`${agentName} queue not initialized`);
-      queue.addMessage(AGENT_PROMPTS.recovery);
-      await ensureAgentSpawned(runtime, agentName as AgentName);
-      spawned++;
-    }
-
-    // Fallback: if no agents were active (stale metadata), spawn PM below
-    if (spawned > 0) return;
-  }
-
-  // Spawn PM: new_task, existing_task, or recovery fallback
-  const pmQueue = runtime.queues.get("pm-agent");
-  if (!pmQueue) {
-    throw new Error("PM queue not initialized");
-  }
-
-  const prompt = reason === "new_task"
-    ? AGENT_PROMPTS.newTask
-    : reason === "recovery"
-      ? AGENT_PROMPTS.recovery
-      : AGENT_PROMPTS.existingTask;
-  pmQueue.addMessage(prompt);
-
-  // Spawn PM agent - it will process the message from its queue
-  await ensureAgentSpawned(runtime, "pm-agent");
-}
-
-/**
- * Notify PM of new input (user message or GitHub event)
- */
-export async function notifyNewInput(taskId: string): Promise<void> {
-  const runtime = activeTasks.get(taskId);
-  if (!runtime) {
-    logger.warn(
-      "task-runtime",
-      `TaskRuntime for ${taskId} not found, cannot notify`
-    );
-    return;
-  }
-
-  runtime.lastActivity = new Date();
-  const pmQueue = runtime.queues.get("pm-agent");
-  if (pmQueue) {
-    pmQueue.addMessage(AGENT_PROMPTS.existingTask);
-  }
-}
-
-/**
  * Stop a task and clean up
  */
 export async function stopTask(taskId: string): Promise<void> {
@@ -972,21 +1027,19 @@ export async function stopTask(taskId: string): Promise<void> {
     runtime.timeoutInterval = undefined;
   }
 
-  // Deactivate all spawned agents
+  // Deactivate all agents in-memory
   for (const agentName of runtime.spawned) {
     updateAgentState(runtime, agentName, false);
   }
-
-  // Flush debounced session writes before removing from memory
-  await flushPendingPersist(taskId);
 
   // Stop all queues - this will cause agent generators to exit
   for (const queue of runtime.queues.values()) {
     queue.stop();
   }
 
-  // Update status
-  await updateTaskStatus(taskId, "stopped");
+  // Final write: set status + flush to disk
+  runtime.metadata.status = 'stopped';
+  await saveTask(runtime, true);
 
   // Remove from active tasks
   activeTasks.delete(taskId);
@@ -1017,21 +1070,19 @@ export async function completeTask(taskId: string): Promise<void> {
     runtime.timeoutInterval = undefined;
   }
 
-  // Deactivate all spawned agents
+  // Deactivate all agents in-memory
   for (const agentName of runtime.spawned) {
     updateAgentState(runtime, agentName, false);
   }
-
-  // Flush debounced session writes before removing from memory
-  await flushPendingPersist(taskId);
 
   // Stop all queues
   for (const queue of runtime.queues.values()) {
     queue.stop();
   }
 
-  // Update status
-  await updateTaskStatus(taskId, "completed");
+  // Final write: set status + flush to disk
+  runtime.metadata.status = 'completed';
+  await saveTask(runtime, true);
 
   // Remove from active tasks
   activeTasks.delete(taskId);
@@ -1041,85 +1092,49 @@ export async function completeTask(taskId: string): Promise<void> {
 
 /**
  * Handle edit mode approval from Slack button
- * Sets edit_allowed, logs approval, routes through spawn queue
  */
 export async function handleEditModeApproval(taskId: string): Promise<void> {
-  // Load metadata and set edit_allowed
-  const metadata = await loadMetadata(taskId);
-  if (!metadata) {
-    logger.error("System", `Task ${taskId} not found for edit approval`);
-    return;
-  }
+  const runtime = await loadTask(taskId);
+  runtime.metadata.edit_allowed = true;
+  saveTask(runtime);
 
-  // Update metadata with edit_allowed
-  metadata.edit_allowed = true;
-  await saveMetadata(taskId, metadata);
-
-  // Log approval to shared knowledge (PM will read this)
-  await appendAgentFinding(
-    taskId,
-    "system",
-    "Edit mode approved by user",
-    "decision"
-  );
-
-  // Reactivate task (PM was stopped, needs to restart)
-  await reactivateTask(taskId);
+  await appendAgentFinding(taskId, "system", "Edit mode approved by user", "decision");
+  await sendMessage(runtime, 'pm-agent', AGENT_PROMPTS.existingTask);
 }
 
 /**
  * Handle edit mode denial from Slack button
- * Logs denial, routes through spawn queue
  */
 export async function handleEditModeDenial(taskId: string): Promise<void> {
-  // Log denial to shared knowledge (PM will read this)
-  await appendAgentFinding(
-    taskId,
-    "system",
-    "Edit mode denied by user",
-    "decision"
-  );
-
-  // Reactivate task (PM was stopped, needs to restart)
-  await reactivateTask(taskId);
+  const runtime = await loadTask(taskId);
+  await appendAgentFinding(taskId, "system", "Edit mode denied by user", "decision");
+  await sendMessage(runtime, 'pm-agent', AGENT_PROMPTS.existingTask);
 }
 
 /**
  * Handle research budget approval from Slack button
- * Persists extra budget to metadata BEFORE reactivation (avoids race condition)
  */
 export async function handleResearchBudgetApproval(taskId: string): Promise<void> {
-  const metadata = await loadMetadata(taskId);
-  if (!metadata) {
-    logger.error("System", `Task ${taskId} not found for research budget approval`);
-    return;
-  }
-
-  // Persist increased budget BEFORE reactivation so initializeTaskRuntime picks it up
-  metadata.research_budget_extra = (metadata.research_budget_extra ?? 0) + 5;
-  await saveMetadata(taskId, metadata);
+  const runtime = await loadTask(taskId);
+  runtime.metadata.research_budget_extra = (runtime.metadata.research_budget_extra ?? 0) + 5;
+  runtime.budgets.researchRequestLimit = 5 + (runtime.metadata.research_budget_extra ?? 0);
+  saveTask(runtime);
 
   await appendAgentFinding(
     taskId,
     "system",
-    `Research budget extended by user (+5 requests, total extra: ${metadata.research_budget_extra})`,
+    `Research budget extended by user (+5 requests, total extra: ${runtime.metadata.research_budget_extra})`,
     "decision"
   );
-
-  await reactivateTask(taskId);
+  await sendMessage(runtime, 'pm-agent', AGENT_PROMPTS.existingTask);
 }
 
 /**
  * Handle research budget denial from Slack button
  */
 export async function handleResearchBudgetDenial(taskId: string): Promise<void> {
-  await appendAgentFinding(
-    taskId,
-    "system",
-    "Additional research denied by user",
-    "decision"
-  );
-
-  await reactivateTask(taskId);
+  const runtime = await loadTask(taskId);
+  await appendAgentFinding(taskId, "system", "Additional research denied by user", "decision");
+  await sendMessage(runtime, 'pm-agent', AGENT_PROMPTS.existingTask);
 }
 

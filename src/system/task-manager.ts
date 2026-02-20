@@ -5,12 +5,10 @@
  * appending to knowledge.log
  */
 
-import { mkdir, readFile, writeFile, appendFile, readdir, symlink } from 'fs/promises';
+import { mkdir, readFile, writeFile, appendFile, readdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import type { TaskMetadata, LogEntry, FindingType, SlackThread, AgentName, SlackFile } from '../types/index.js';
-import { getAllRepoConfigs } from '../agents/repo-configs.js';
-import { getPluginsWithPmSkills } from './plugin-loader.js';
+import type { TaskMetadata, LogEntry, FindingType, SlackFile } from '../types/index.js';
 
 const SESSIONS_DIR = join(process.cwd(), 'sessions');
 
@@ -139,69 +137,7 @@ export async function ensureSessionsDir(): Promise<void> {
   }
 }
 
-/**
- * Create a new task with initial metadata
- */
-export async function createTask(
-  slackThread: SlackThread
-): Promise<TaskMetadata> {
-  await ensureSessionsDir();
-
-  const taskId = generateTaskId();
-  const sharedPath = getSharedPath(taskId);
-
-  // Create task directory structure
-  await mkdir(sharedPath, { recursive: true });
-  await mkdir(getMemoryPath(taskId), { recursive: true });
-
-  // Symlink PM skills from all loaded plugins into task shared folder
-  const skillsTarget = join(sharedPath, '.claude', 'skills');
-  await mkdir(join(sharedPath, '.claude'), { recursive: true });
-
-  for (const plugin of getPluginsWithPmSkills()) {
-    for (const skill of plugin.pmSkills) {
-      const target = join(skillsTarget, skill.namespacedName);
-      if (!existsSync(target)) {
-        await mkdir(skillsTarget, { recursive: true });
-        await symlink(skill.sourcePath, target);
-      }
-    }
-  }
-
-  // Build repositories map dynamically from loaded repo configs
-  const repositories: Record<string, { path: string }> = {};
-  for (const config of getAllRepoConfigs()) {
-    repositories[config.repoKey] = { path: config.defaultRepoPath };
-  }
-
-  // Create initial metadata
-  const metadata: TaskMetadata = {
-    task_id: taskId,
-    task_owner: null,
-    participants: [],
-    slack_threads: [slackThread],
-    agent_sessions: {},
-    repositories,
-    status: 'in_progress',
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
-
-  await saveMetadata(taskId, metadata);
-
-  // Create empty knowledge log
-  await writeFile(getKnowledgeLogPath(taskId), '');
-
-  return metadata;
-}
-
-/**
- * Save task metadata to disk
- */
-export async function saveMetadata(taskId: string, metadata: TaskMetadata): Promise<void> {
-  metadata.updated_at = new Date().toISOString();
-  await writeFile(getMetadataPath(taskId), JSON.stringify(metadata, null, 2));
-}
+// createTask has moved to task-runtime.ts (returns TaskRuntimeState directly)
 
 /**
  * Load task metadata from disk
@@ -411,113 +347,4 @@ export async function findTasksByStatus(
   return tasks;
 }
 
-/**
- * Update task status
- */
-export async function updateTaskStatus(
-  taskId: string,
-  status: 'in_progress' | 'stopped' | 'completed'
-): Promise<void> {
-  const metadata = await loadMetadata(taskId);
-  if (!metadata) {
-    throw new Error(`Task ${taskId} not found`);
-  }
-
-  metadata.status = status;
-  await saveMetadata(taskId, metadata);
-}
-
-/**
- * Add a Slack thread to an existing task
- */
-export async function addThreadToTask(taskId: string, thread: SlackThread): Promise<void> {
-  const metadata = await loadMetadata(taskId);
-  if (!metadata) {
-    throw new Error(`Task ${taskId} not found`);
-  }
-
-  // Check if thread already exists
-  const exists = metadata.slack_threads.some((t) => t.thread_id === thread.thread_id);
-  if (!exists) {
-    metadata.slack_threads.push(thread);
-    await saveMetadata(taskId, metadata);
-  }
-}
-
-/**
- * Update the last processed timestamp for a thread
- */
-export async function updateThreadTimestamp(
-  taskId: string,
-  threadId: string,
-  timestamp: string
-): Promise<void> {
-  const metadata = await loadMetadata(taskId);
-  if (!metadata) {
-    throw new Error(`Task ${taskId} not found`);
-  }
-
-  const thread = metadata.slack_threads.find((t) => t.thread_id === threadId);
-  if (thread) {
-    thread.last_processed_ts = timestamp;
-    await saveMetadata(taskId, metadata);
-  }
-}
-
-/**
- * Update the last processed PR comment ID for a repository
- */
-export async function updatePRCommentTimestamp(
-  taskId: string,
-  repoKey: string,
-  commentId: number
-): Promise<void> {
-  const metadata = await loadMetadata(taskId);
-  if (!metadata) {
-    throw new Error(`Task ${taskId} not found`);
-  }
-
-  const repoInfo = metadata.repositories[repoKey];
-  if (repoInfo) {
-    repoInfo.last_processed_comment_id = commentId;
-    await saveMetadata(taskId, metadata);
-  }
-}
-
-/**
- * Set the task owner
- */
-export async function setTaskOwner(
-  taskId: string,
-  owner: AgentName
-): Promise<void> {
-  const metadata = await loadMetadata(taskId);
-  if (!metadata) {
-    throw new Error(`Task ${taskId} not found`);
-  }
-
-  metadata.task_owner = owner;
-  if (!metadata.participants.includes(owner)) {
-    metadata.participants.push(owner);
-  }
-  await saveMetadata(taskId, metadata);
-}
-
-/**
- * Add a participant to the task
- */
-export async function addParticipant(
-  taskId: string,
-  participant: AgentName
-): Promise<void> {
-  const metadata = await loadMetadata(taskId);
-  if (!metadata) {
-    throw new Error(`Task ${taskId} not found`);
-  }
-
-  if (!metadata.participants.includes(participant)) {
-    metadata.participants.push(participant);
-    await saveMetadata(taskId, metadata);
-  }
-}
 

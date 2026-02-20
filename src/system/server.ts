@@ -24,12 +24,15 @@ import {
 } from "../slack/client.js";
 import {
   setSlackCallbacks,
+  loadTask,
+  sendMessage,
   handleEditModeApproval,
   handleEditModeDenial,
   handleResearchBudgetApproval,
   handleResearchBudgetDenial,
 } from "./task-runtime.js";
-import { loadMetadata, appendGitHubEvent } from "./task-manager.js";
+import { appendGitHubEvent } from "./task-manager.js";
+import { AGENT_PROMPTS } from "../agents/prompts.js";
 import { logger } from "./logger.js";
 import { getActiveTaskIds } from "./active-tasks.js";
 import type { Request, Response } from "express";
@@ -44,7 +47,6 @@ import {
 import {
   processSlackTriage,
   processGitHubTriage,
-  reactivateTask,
 } from "./event-handler.js";
 import { getRepoConfigByGithubRepo } from "../agents/repo-configs.js";
 import { verifyWebhookSignature } from "../github/webhook-utils.js";
@@ -79,23 +81,13 @@ export async function startServer(config: ServerConfig): Promise<void> {
 
   // Set up Slack callbacks once globally (works for all tasks since it uses taskId parameter)
   setSlackCallbacks(
-    // Regular message callback
     async (taskId: string, slackMessage: string) => {
-      const taskMetadata = await loadMetadata(taskId);
-      if (taskMetadata) {
-        await postToThreads(taskMetadata.slack_threads, slackMessage);
-      }
+      const runtime = await loadTask(taskId);
+      await postToThreads(runtime.metadata.slack_threads, slackMessage);
     },
-    // Interactive message callback (for buttons)
     async (taskId: string, text: string, blocks: unknown[]) => {
-      const taskMetadata = await loadMetadata(taskId);
-      if (taskMetadata) {
-        await postInteractiveToThreads(
-          taskMetadata.slack_threads,
-          text,
-          blocks
-        );
-      }
+      const runtime = await loadTask(taskId);
+      await postInteractiveToThreads(runtime.metadata.slack_threads, text, blocks);
     }
   );
 
@@ -404,9 +396,9 @@ async function handleExistingTaskDirect(
   const repoConfig = getRepoConfigByGithubRepo(context.githubRepo);
   const repoKey = repoConfig?.repoKey || "unknown";
 
+  const runtime = await loadTask(taskId);
   await appendGitHubEvent(taskId, repoKey, eventMessage);
-
-  await reactivateTask(taskId);
+  await sendMessage(runtime, 'pm-agent', AGENT_PROMPTS.existingTask);
 }
 
 /**

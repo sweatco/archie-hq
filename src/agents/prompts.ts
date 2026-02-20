@@ -2,8 +2,8 @@
  * Agent Prompts
  *
  * Shared prompt constants for spawn/recovery scenarios.
- * Used by task-runtime (startTask), agent-state (triggerRecovery),
- * and event-handler (notifyNewInput).
+ * Used by task-runtime (sendMessage), task-recovery (triggerRecovery),
+ * and event-handler (processSlackTriage/processGitHubTriage).
  */
 
 export const AGENT_PROMPTS = {
