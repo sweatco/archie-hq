@@ -41,17 +41,15 @@ const HOOK_EVENTS = [
 
 ## The Right Hook for Turn Detection
 
-### ✅ Use: `Notification` Hook with `idle_prompt`
+### ✅ Use: `Stop` Hook
 
-The **Notification hook with `notification_type === 'idle_prompt'`** is the correct way to detect turn completion.
+The **Stop hook** fires when the agent finishes its turn. Tested and confirmed in `feature/agent-recovery-idle-detection` branch.
 
 **Type Definition:**
 ```typescript
-type NotificationHookInput = BaseHookInput & {
-  hook_event_name: 'Notification';
-  message: string;
-  title?: string;
-  notification_type: string;  // 'idle_prompt' indicates waiting for input
+type StopHookInput = BaseHookInput & {
+  hook_event_name: 'Stop';
+  stop_hook_active: boolean;
 };
 ```
 
@@ -64,18 +62,15 @@ const agentQuery = query({
   options: {
     model: 'claude-sonnet-4-5-20250929',
     hooks: {
-      Notification: [{
-        hooks: [async (input) => {
-          if (input.notification_type === 'idle_prompt') {
-            console.log('✅ Agent turn completed - waiting for input');
+      Stop: [{
+        hooks: [async () => {
+          console.log('Agent turn completed - waiting for input');
 
-            // Your turn completion logic here:
-            // - Update UI state
-            // - Log metrics
-            // - Trigger next agent in workflow
-            // - etc.
-          }
-          return { continue: true };
+          // Your turn completion logic here:
+          // - Update agent active state
+          // - Check if all agents are idle
+          // - Trigger recovery if needed
+          return { continue: true };  // Don't terminate, wait for next message
         }]
       }]
     }
@@ -83,33 +78,9 @@ const agentQuery = query({
 });
 ```
 
-### ❌ Don't Use: `Stop` Hook for Turn Detection
+### ❌ Don't Use: `Notification` Hook with `idle_prompt` for Turn Detection
 
-**Common Misconception:** The `Stop` hook fires at the end of each turn.
-
-**Reality:** The `Stop` hook only fires when the agent **terminates completely**.
-
-**Type Definition:**
-```typescript
-type StopHookInput = BaseHookInput & {
-  hook_event_name: 'Stop';
-  stop_hook_active: boolean;
-};
-```
-
-**Official Use Case:** "Save session state before exit"
-
-This clearly indicates it's for termination, not turn boundaries.
-
-**When Stop Hook Fires:**
-- Agent execution is ending
-- Session is being cleaned up
-- Resources need to be released
-
-**When Stop Hook Does NOT Fire:**
-- After agent completes a response (turn)
-- When agent waits for next input
-- During normal multi-turn conversation flow
+The Notification hook with `notification_type === 'idle_prompt'` is NOT the right mechanism for detecting turn completion in multi-agent streaming setups.
 
 ## Alternative Detection Methods
 
@@ -294,19 +265,15 @@ export async function startBackendAgent(
 
       hooks: {
         // Detect turn completion
-        Notification: [{
-          hooks: [async (input) => {
-            if (input.notification_type === 'idle_prompt') {
-              console.log('[Backend Agent] Turn completed - waiting for input');
+        Stop: [{
+          hooks: [async () => {
+            console.log('[Backend Agent] Turn completed - waiting for input');
 
-              // Call custom callback
-              if (onTurnComplete) {
-                onTurnComplete();
-              }
-
-              // Could also update runtime state
-              // runtime.lastActivity = new Date();
+            // Call custom callback
+            if (onTurnComplete) {
+              onTurnComplete();
             }
+
             return { continue: true };
           }]
         }],
@@ -315,15 +282,6 @@ export async function startBackendAgent(
         PostToolUse: [{
           hooks: [async (input) => {
             console.log(`[Backend Agent] Tool: ${input.tool_name}`);
-            return { continue: true };
-          }]
-        }],
-
-        // Handle session termination
-        Stop: [{
-          hooks: [async (input) => {
-            console.log('[Backend Agent] Stopping - saving state');
-            // Save session state, close resources, etc.
             return { continue: true };
           }]
         }]
@@ -342,15 +300,14 @@ export async function startBackendAgent(
 
 | Hook | Fires On | Use For | Timing |
 |------|----------|---------|--------|
-| `Notification` (idle_prompt) | Agent waits for input | ✅ **Turn completion detection** | End of turn |
-| `Stop` | Agent/session terminates | Session cleanup, final saves | End of session |
-| `SessionEnd` | Session ends | Similar to Stop, includes exit reason | End of session |
+| `Stop` | Agent finishes turn | ✅ **Turn completion detection** | End of turn |
+| `SessionEnd` | Session ends | Includes exit reason | End of session |
 | `PostToolUse` | After each tool execution | Tool-level monitoring, custom patterns | After each tool |
 | `UserPromptSubmit` | New user message arrives | Next turn detection | Start of next turn |
 
 ## Best Practices
 
-1. **Use the Right Hook**: For turn detection, always use `Notification` with `idle_prompt`, not `Stop`.
+1. **Use the Right Hook**: For turn detection, use the `Stop` hook with `return { continue: true }` to keep the agent alive for the next message.
 
 2. **Keep Hooks Fast**: Hooks run synchronously in the agent execution path. Keep them lightweight.
 
