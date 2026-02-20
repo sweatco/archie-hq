@@ -8,7 +8,7 @@
 
 import { exec } from "child_process";
 import { promisify } from "util";
-import type { AgentName, FindingType } from "../types/index.js";
+import type { AgentName, AgentSessionState, FindingType } from "../types/index.js";
 import type { AgentHandle } from "../types/agent.js";
 import { MessageQueue } from "./message-queue.js";
 import {
@@ -17,10 +17,11 @@ import {
   appendAgentFinding,
   setTaskOwner,
   addParticipant,
-  storeAgentSession,
   updateTaskStatus,
 } from "./task-manager.js";
-import { spawnPMAgent, PM_PROMPTS } from "../agents/pm.js";
+import { spawnPMAgent } from "../agents/pm.js";
+import { AGENT_PROMPTS } from "../agents/prompts.js";
+import { updateAgentState, getAgentSession, flushPendingPersist } from "./agent-state.js";
 import { spawnRepoAgent } from "../agents/repo-agent.js";
 import { getRepoConfig, getAllRepoConfigs } from "../agents/repo-configs.js";
 import { getPluginAgentConfig, getAllPluginAgentConfigs } from "../agents/plugin-configs.js";
@@ -48,9 +49,9 @@ export {
 export type { TaskRuntimeState } from "./active-tasks.js";
 
 /**
- * Spawn reason type (relocated from queues.ts)
+ * Spawn reason type
  */
-export type SpawnReason = 'new_task' | 'existing_task';
+export type SpawnReason = 'new_task' | 'existing_task' | 'recovery';
 
 const execAsync = promisify(exec);
 
@@ -672,6 +673,31 @@ function createToolCallbacks(
       // Stop the task — will be reactivated on approval/denial
       await stopTask(runtime.taskId);
     },
+
+    // ========================================================================
+    // Agent Lifecycle Callbacks
+    // ========================================================================
+
+    onIdle: async () => {
+      updateAgentState(runtime, agentName, false);
+    },
+
+    // ========================================================================
+    // Agent Status (PM only)
+    // ========================================================================
+
+    onGetAgentsStatus: () => {
+      const statuses: { agent: string; active: boolean; last_activity?: string }[] = [];
+      for (const spawned of runtime.spawned) {
+        const session = runtime.sessions.get(spawned);
+        statuses.push({
+          agent: spawned,
+          active: session?.active ?? false,
+          last_activity: session?.last_activity,
+        });
+      }
+      return statuses;
+    },
   };
 }
 
@@ -695,14 +721,12 @@ async function ensureAgentSpawned(
   const callbacks = createToolCallbacks(runtime, agentName);
 
   const onSessionId = (sessionId: string) => {
-    runtime.sessions.set(agentName, sessionId);
-    storeAgentSession(runtime.taskId, agentName, sessionId).catch((err) =>
-      logger.error("task-runtime", "Failed to store agent session", err)
-    );
+    updateAgentState(runtime, agentName, true, sessionId);
   };
 
   // Get existing session ID if available
-  const existingSessionId = runtime.sessions.get(agentName);
+  const existingSession = runtime.sessions.get(agentName);
+  const existingSessionId = existingSession?.session_id;
 
   let handle: AgentHandle;
 
@@ -764,6 +788,12 @@ async function ensureAgentSpawned(
 
   runtime.spawned.add(agentName);
 
+  // Crash detection: when agent's background function exits, mark inactive
+  // Shutdown guard inside updateAgentState will skip if shutting down
+  handle.running.then(() => {
+    updateAgentState(runtime, agentName, false);
+  });
+
   // Log spawning (single consolidated message)
   if (existingSessionId) {
     logger.system(
@@ -795,10 +825,13 @@ export async function initializeTaskRuntime(
     queues.set(config.agentId as AgentName, new MessageQueue());
   }
 
-  // Load existing session IDs from metadata
-  const sessions = new Map<AgentName, string>();
-  for (const [agentId, sessionId] of Object.entries(metadata.agent_sessions)) {
-    sessions.set(agentId as AgentName, sessionId);
+  // Load existing session state from metadata (handles legacy string values)
+  const sessions = new Map<AgentName, AgentSessionState>();
+  for (const [agentId] of Object.entries(metadata.agent_sessions)) {
+    const session = getAgentSession(metadata, agentId);
+    if (session) {
+      sessions.set(agentId as AgentName, session);
+    }
   }
 
   const runtime: TaskRuntimeState = {
@@ -818,6 +851,7 @@ export async function initializeTaskRuntime(
       taskStartTime: new Date(),
       taskTimeoutMs: 1_800_000, // 30 minutes
     },
+    recoveryAttempts: 0,
   };
 
   // Wall-clock timeout (Defense 4) — check every 60s
@@ -847,10 +881,10 @@ export async function initializeTaskRuntime(
 }
 
 /**
- * Start a task by spawning the PM agent and sending initial message
+ * Start a task by spawning agents and sending initial messages
  *
  * @param taskId - The task ID
- * @param reason - Why we're starting: 'new_task' or 'existing_task' (continuation)
+ * @param reason - Why we're starting: 'new_task', 'existing_task', or 'recovery'
  */
 export async function startTask(
   taskId: string,
@@ -861,14 +895,34 @@ export async function startTask(
     throw new Error(`TaskRuntime for ${taskId} not initialized`);
   }
 
-  // Add initial message to PM queue based on reason
+  if (reason === 'recovery') {
+    // Re-spawn only agents that were active when interrupted
+    let spawned = 0;
+    for (const [agentName, session] of runtime.sessions) {
+      if (!session.active) continue;
+
+      const queue = runtime.queues.get(agentName);
+      if (!queue) throw new Error(`${agentName} queue not initialized`);
+      queue.addMessage(AGENT_PROMPTS.recovery);
+      await ensureAgentSpawned(runtime, agentName as AgentName);
+      spawned++;
+    }
+
+    // Fallback: if no agents were active (stale metadata), spawn PM below
+    if (spawned > 0) return;
+  }
+
+  // Spawn PM: new_task, existing_task, or recovery fallback
   const pmQueue = runtime.queues.get("pm-agent");
   if (!pmQueue) {
     throw new Error("PM queue not initialized");
   }
 
-  const prompt =
-    reason === "new_task" ? PM_PROMPTS.newTask : PM_PROMPTS.existingTask;
+  const prompt = reason === "new_task"
+    ? AGENT_PROMPTS.newTask
+    : reason === "recovery"
+      ? AGENT_PROMPTS.recovery
+      : AGENT_PROMPTS.existingTask;
   pmQueue.addMessage(prompt);
 
   // Spawn PM agent - it will process the message from its queue
@@ -891,7 +945,7 @@ export async function notifyNewInput(taskId: string): Promise<void> {
   runtime.lastActivity = new Date();
   const pmQueue = runtime.queues.get("pm-agent");
   if (pmQueue) {
-    pmQueue.addMessage(PM_PROMPTS.existingTask);
+    pmQueue.addMessage(AGENT_PROMPTS.existingTask);
   }
 }
 
@@ -917,6 +971,14 @@ export async function stopTask(taskId: string): Promise<void> {
     clearInterval(runtime.timeoutInterval);
     runtime.timeoutInterval = undefined;
   }
+
+  // Deactivate all spawned agents
+  for (const agentName of runtime.spawned) {
+    updateAgentState(runtime, agentName, false);
+  }
+
+  // Flush debounced session writes before removing from memory
+  await flushPendingPersist(taskId);
 
   // Stop all queues - this will cause agent generators to exit
   for (const queue of runtime.queues.values()) {
@@ -954,6 +1016,14 @@ export async function completeTask(taskId: string): Promise<void> {
     clearInterval(runtime.timeoutInterval);
     runtime.timeoutInterval = undefined;
   }
+
+  // Deactivate all spawned agents
+  for (const agentName of runtime.spawned) {
+    updateAgentState(runtime, agentName, false);
+  }
+
+  // Flush debounced session writes before removing from memory
+  await flushPendingPersist(taskId);
 
   // Stop all queues
   for (const queue of runtime.queues.values()) {

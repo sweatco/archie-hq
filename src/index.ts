@@ -11,6 +11,7 @@ import { getPlugins } from './system/plugin-loader.js';
 import { getAllRepoConfigs } from './agents/repo-configs.js';
 import { getAllPluginAgentConfigs } from './agents/plugin-configs.js';
 import { configureGitIdentity } from './github/client.js';
+import { recoverActiveTasks } from './system/task-recovery.js';
 
 /**
  * Load configuration from environment
@@ -87,6 +88,7 @@ async function main(): Promise<void> {
     logger.plain('');
 
     await startServer(config);
+    await recoverActiveTasks();
 
     // Handle graceful shutdown
     process.on('SIGINT', async () => {

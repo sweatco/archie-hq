@@ -18,7 +18,7 @@ import {
   updatePRCommentTimestamp,
   downloadMessageFiles,
 } from './task-manager.js';
-import { notifyNewInput, stopTask, initializeTaskRuntime, startTask } from './task-runtime.js';
+import { notifyNewInput, stopTask, initializeTaskRuntime, startTask, type SpawnReason } from './task-runtime.js';
 import { isTaskActive } from './active-tasks.js';
 import {
   fetchThreadHistory,
@@ -47,7 +47,7 @@ const spawningTasks = new Set<string>();
 /**
  * Spawn a task if not already active or spawning
  */
-async function spawnTaskIfNeeded(taskId: string, reason: 'new_task' | 'existing_task'): Promise<void> {
+async function spawnTaskIfNeeded(taskId: string, reason: SpawnReason): Promise<void> {
   if (isTaskActive(taskId)) {
     await notifyNewInput(taskId);
     return;
@@ -356,9 +356,9 @@ async function handleGitHubCommentDirect(
 
 /**
  * Reactivate a stopped/inactive task.
- * Used by merge-orchestrator, edit mode handlers, and other callsites
- * that need to wake up a PM for an existing task.
+ * Used by merge-orchestrator, edit mode handlers, recovery, and other callsites
+ * that need to wake up agents for an existing task.
  */
-export async function reactivateTask(taskId: string): Promise<void> {
-  await spawnTaskIfNeeded(taskId, 'existing_task');
+export async function reactivateTask(taskId: string, reason: SpawnReason = 'existing_task'): Promise<void> {
+  await spawnTaskIfNeeded(taskId, reason);
 }
