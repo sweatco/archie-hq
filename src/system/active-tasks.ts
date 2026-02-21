@@ -110,15 +110,3 @@ export function getAgentStatus(taskId: string): Record<string, boolean> {
   return status;
 }
 
-/**
- * Find task ID by thread ID by iterating over active tasks
- */
-export function findTaskIdByThread(threadId: string): string | null {
-  for (const [taskId, runtime] of activeTasks.entries()) {
-    const hasThread = runtime.metadata.slack_threads.some((t) => t.thread_id === threadId);
-    if (hasThread) {
-      return taskId;
-    }
-  }
-  return null;
-}

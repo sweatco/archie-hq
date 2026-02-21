@@ -5,10 +5,11 @@
  * appending to knowledge.log
  */
 
-import { mkdir, readFile, writeFile, appendFile, readdir } from 'fs/promises';
+import { mkdir, readFile, writeFile, appendFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import type { TaskMetadata, LogEntry, FindingType, SlackFile } from '../types/index.js';
+import { activeTasks } from './active-tasks.js';
 
 const SESSIONS_DIR = join(process.cwd(), 'sessions');
 
@@ -244,23 +245,33 @@ export async function readKnowledgeLog(taskId: string): Promise<string> {
 }
 
 /**
- * Find a task by Slack thread ID
+ * Find a task by Slack thread ID.
+ * Checks in-memory active tasks first (instant), then scans disk.
  */
-export async function findTaskByThreadId(threadId: string): Promise<string | null> {
+export async function findTaskByThread(threadId: string): Promise<string | null> {
+  // Fast: check in-memory active tasks
+  for (const [taskId, runtime] of activeTasks.entries()) {
+    if (runtime.metadata.slack_threads.some((t) => t.thread_id === threadId)) {
+      return taskId;
+    }
+  }
+
+  // Disk: grep metadata files not loaded in memory
   await ensureSessionsDir();
 
-  const sessions = await readdir(SESSIONS_DIR);
+  try {
+    const { execSync } = await import('child_process');
+    const grepResult = execSync(
+      `grep -l '"thread_id": "${threadId}"' ${SESSIONS_DIR}/task-*/shared/metadata.json 2>/dev/null || true`,
+      { encoding: 'utf-8' }
+    ).trim();
 
-  for (const session of sessions) {
-    if (!session.startsWith('task-')) continue;
-
-    const metadata = await loadMetadata(session);
-    if (!metadata) continue;
-
-    const hasThread = metadata.slack_threads.some((t) => t.thread_id === threadId);
-    if (hasThread) {
-      return session;
+    if (grepResult) {
+      const taskIdMatch = grepResult.split('\n')[0].match(/task-[a-z0-9-]+/i);
+      if (taskIdMatch) return taskIdMatch[0];
     }
+  } catch {
+    // Fallback silently if grep fails
   }
 
   return null;

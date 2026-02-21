@@ -50,7 +50,6 @@ export {
   getTaskRuntime,
   isAgentRunning,
   getAgentStatus,
-  findTaskIdByThread,
 } from "./active-tasks.js";
 export type { TaskRuntimeState } from "./active-tasks.js";
 

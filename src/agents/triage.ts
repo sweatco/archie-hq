@@ -1,9 +1,9 @@
 /**
  * Triage Agent
  *
- * Lightweight event classifier using Haiku model.
- * Handles Slack messages and GitHub PR comments.
- * Other GitHub events use deterministic routing.
+ * Lightweight classifier using Haiku model.
+ * Slack messages: classifies intent (new_task, existing_task, cancel_task, noop)
+ * GitHub PR comments: classifies actionability (existing_task, noop)
  */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -12,7 +12,7 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import { join } from "path";
 import pc from "picocolors";
 import type { TriageResult, SlackMessage } from "../types/index.js";
-import { findTaskIdByThread } from "../system/task-runtime.js";
+import { findTaskByThread } from "../system/task-manager.js";
 import { processAgentEventForLogging, logger } from "../system/logger.js";
 import { loadPrompt } from "../utils/prompt-loader.js";
 
@@ -115,27 +115,21 @@ async function runTriage<T extends z.ZodType>(
 // ============================================================================
 
 /**
- * Build context for Slack message triage
+ * Build the full triage input for a Slack message.
+ * Resolves the task (memory + disk) and constructs the classification prompt.
  */
-function buildSlackContext(threadId: string): string {
-  const existingTaskId = findTaskIdByThread(threadId);
-  if (existingTaskId) {
-    return `THREAD MATCH: This thread (${threadId}) belongs to task ${existingTaskId}`;
-  }
-  return "No thread match found in active tasks. Use tools if needed to search historical tasks.";
-}
-
-/**
- * Run the triage agent to classify a Slack message
- */
-export async function triageSlackMessage(
+async function buildTriageInput(
   message: SlackMessage,
-  threadHistory: SlackMessage[]
-): Promise<TriageResult> {
-  const threadId = message.thread_ts || message.ts;
-  const context = buildSlackContext(threadId);
+  threadHistory: SlackMessage[],
+  threadId: string
+): Promise<string> {
+  const taskId = await findTaskByThread(threadId);
 
-  const input = `
+  const context = taskId
+    ? `THREAD MATCH: This thread (${threadId}) belongs to task ${taskId}. Classify the user's intent and respond with JSON.`
+    : `No thread match found. Use tools if needed to search historical tasks. Classify this message and respond with JSON.`;
+
+  return `
 Slack Message:
 - Thread ID: ${threadId}
 - Channel: ${message.channel}
@@ -147,9 +141,18 @@ ${threadHistory.map((m) => `[${m.user}]: ${m.text}`).join("\n")}
 Current Message:
 ${message.text}
 
-${context}
+${context}`;
+}
 
-Classify this Slack message and respond with JSON only.`;
+/**
+ * Run the triage agent to classify a Slack message
+ */
+export async function triageSlackMessage(
+  message: SlackMessage,
+  threadHistory: SlackMessage[]
+): Promise<TriageResult> {
+  const threadId = message.thread_ts || message.ts;
+  const input = await buildTriageInput(message, threadHistory, threadId);
 
   const result = await runTriage(input, SlackTriageSchema, "slack");
 
