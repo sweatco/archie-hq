@@ -120,8 +120,10 @@ or `handleMergeCheckDirect()` in `server.ts`. Only `issue_comment` events go thr
 
 **Source**: `src/system/message-queue.ts`
 
-Each agent has a dedicated `MessageQueue` instance. Queues implement an async
-producer-consumer pattern.
+Each agent has a dedicated `MessageQueue` instance -- a simple in-memory async
+producer-consumer queue. An earlier iteration used an external message broker
+(RabbitMQ/Redis), but this proved overkill for the system's needs and was
+replaced with the current straightforward in-process implementation.
 
 ### Core interface
 

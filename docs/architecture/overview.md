@@ -5,8 +5,8 @@ Archie (Autonomous Responsive and Collaborative Hyper Intelligent Employee) is a
 ## Core Principles
 
 - **Human-like behavior**: To users, Archie presents as a single AI assistant. Internal agent coordination is never exposed. The PM agent writes as "I", not "my agent" or "the backend agent."
-- **Context-aware sessions**: Each task gets its own runtime with isolated message queues, metadata, and a shared `knowledge.log` that all agents read for context.
-- **Direct agent communication**: Agents communicate peer-to-peer via `send_message_to_agent`, with messages routed through the task runtime's queue system.
+- **Context-aware sessions**: Each task gets its own runtime with per-agent message delivery, metadata, and a shared `knowledge.log` that all agents read for context.
+- **Direct agent communication**: Agents communicate peer-to-peer via `send_message_to_agent`, with messages delivered through simple in-memory queues in the task runtime.
 - **Non-proactive**: Archie only acts in response to external events (Slack messages, GitHub webhooks). It never initiates work on its own.
 - **Interruptible**: Tasks can be stopped, resumed, and recovered. Edit mode requires explicit user approval via Slack buttons.
 
