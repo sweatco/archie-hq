@@ -1,3 +1,5 @@
+> **Status: Implemented** — Core multi-agent system with Slack integration, triage, PM agent, repo agents, message queues, MCP tools, and file-based task persistence.
+
 # MVP v1 Specification
 
 ## Overview

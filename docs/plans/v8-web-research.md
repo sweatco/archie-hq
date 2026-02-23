@@ -1,3 +1,5 @@
+> **Status: Implemented** — Multi-agent research pipeline with lead agent, parallel researchers, report writer, structured JSON output, sandwich defense hooks, and per-task research budgets.
+
 # MVP v8 — Web Research MCP Tool
 
 ## Goal

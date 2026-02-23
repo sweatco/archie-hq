@@ -1,3 +1,5 @@
+> **Status: Implemented** — Full GitHub App integration with PR creation, review handling, merge orchestration, webhook routing, and pattern-restricted Bash for local git operations.
+
 # MVP 3: Git Commits & Pull Requests
 
 **Status**: Planned

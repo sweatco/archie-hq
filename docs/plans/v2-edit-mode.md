@@ -1,3 +1,5 @@
+> **Status: Implemented** — Two-mode agent system (readonly/edit) with Slack approval buttons, lazy worktree creation, and tool gating based on edit_allowed flag.
+
 # MVP Implementation Plans
 
 Incremental development plan for the AI Engineer system. Each MVP adds a focused set of features.

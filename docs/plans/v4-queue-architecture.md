@@ -1,3 +1,5 @@
+> **Status: Not implemented** — The Redis/GroupMQ durable queue architecture was not built. The system uses in-memory MessageQueue per agent (from v1). Task state recovery relies on v10's restart mechanism instead.
+
 # MVP 4: Queue-Based Architecture & Graceful Deployment
 
 **Status**: Planned
