@@ -21,10 +21,10 @@ Status update requests on existing tasks should be classified as **existing_task
 
 ## How to Find Tasks
 
-1. **If context shows "THREAD MATCH"**: Use that task_id with high confidence
+1. **If context shows "THREAD MATCH"**: ALWAYS classify as **existing_task** with that task_id. A thread match means the conversation belongs to that task — regardless of whether the task was completed, the topic changed, or the message seems unrelated. The Slack thread IS the task identity.
 2. **If context shows "No thread match"**: Search for the task using your tools
 3. Use Grep to search for the thread_id across all metadata.json files
-4. If found, extract the task_id from the path and classify based on user intent
+4. If found, extract the task_id from the path and classify as **existing_task**
 5. If not found anywhere, classify as new_task
 
 ## Task Storage
