@@ -23,7 +23,7 @@ import {
   postToThreads,
 } from '../slack/client.js';
 import { createGitHubClient } from '../github/client.js';
-import { getRepoConfigByGithubRepo } from '../agents/repo-configs.js';
+import { getAgentDefByGithubRepo } from '../agents/registry.js';
 import { logger } from './logger.js';
 import type { SlackThread, SlackMessage } from '../types/index.js';
 
@@ -234,8 +234,8 @@ export async function processGitHubTriage(taskId: string, payload: Record<string
   }
 
   // Find repo config
-  const repoConfig = getRepoConfigByGithubRepo(githubRepo);
-  if (!repoConfig) {
+  const repoDef = getAgentDefByGithubRepo(githubRepo);
+  if (!repoDef) {
     logger.warn('event-handler', `Unknown repo ${githubRepo}`);
     await handleGitHubCommentDirect(taskId, githubRepo, prNumber, comment);
     return;
@@ -264,14 +264,15 @@ export async function processGitHubTriage(taskId: string, payload: Record<string
 
   if (triageResult.action === 'existing_task') {
     const task = await Task.get(taskId);
-    const repoInfo = task.metadata.repositories[repoConfig.repoKey];
+    const repoKey = repoDef.repo!.repoKey;
+    const repoInfo = task.metadata.repositories[repoKey];
     const lastProcessedId = repoInfo?.last_processed_comment_id || 0;
 
     const newComments = commentHistory.filter((c) => c.id > lastProcessedId);
 
     for (const c of newComments) {
       const msg = `PR #${prNumber}: ${c.user} commented: ${c.body}`;
-      await appendGitHubEvent(taskId, repoConfig.repoKey, msg);
+      await appendGitHubEvent(taskId, repoKey, msg);
     }
 
     if (repoInfo) {
@@ -294,8 +295,8 @@ async function handleGitHubCommentDirect(
   prNumber: number,
   comment: Record<string, unknown>
 ): Promise<void> {
-  const repoConfig = getRepoConfigByGithubRepo(githubRepo);
-  const repoKey = repoConfig?.repoKey || 'unknown';
+  const repoDef = getAgentDefByGithubRepo(githubRepo);
+  const repoKey = repoDef?.repo?.repoKey || 'unknown';
 
   const user = (comment.user as Record<string, unknown>)?.login as string || 'unknown';
   const body = comment.body as string || '';

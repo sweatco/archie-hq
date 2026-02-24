@@ -21,7 +21,7 @@ import { appendAgentFinding } from '../system/task-manager.js';
 import { Task } from '../tasks/task.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { createGitHubClient, type GitHubClient } from './client.js';
-import { getRepoConfig } from '../agents/repo-configs.js';
+import { getAgentDef } from '../agents/registry.js';
 import { logger } from '../system/logger.js';
 import type { PRStatus } from '../agents/tools.js';
 
@@ -201,24 +201,24 @@ async function fetchAllPRStatuses(
   const results: LinkedPRStatus[] = [];
 
   for (const { repoKey, prNumber } of linkedPRs) {
-    const config = getRepoConfig(`${repoKey}-agent`);
-    if (!config) {
+    const def = getAgentDef(`${repoKey}-agent`);
+    if (!def?.repo) {
       logger.warn('merge-orchestrator', `No config found for repo key: ${repoKey}`);
       continue;
     }
 
     try {
-      const status = await githubClient.getPRStatus(config.githubRepo, prNumber);
+      const status = await githubClient.getPRStatus(def.repo.githubRepo, prNumber);
       results.push({
         repoKey,
-        githubRepo: config.githubRepo,
+        githubRepo: def.repo.githubRepo,
         prNumber,
         status,
       });
     } catch (error) {
       logger.error(
         'merge-orchestrator',
-        `Failed to get status for ${config.githubRepo}#${prNumber}`,
+        `Failed to get status for ${def.repo!.githubRepo}#${prNumber}`,
         error
       );
     }

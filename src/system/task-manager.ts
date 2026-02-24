@@ -286,10 +286,10 @@ export async function findTaskByPRNumber(
 ): Promise<string | null> {
   await ensureSessionsDir();
 
-  // Import repo config to map githubRepo -> repoKey
-  const { getAllRepoConfigs } = await import('../agents/repo-configs.js');
-  const repoConfigs = getAllRepoConfigs();
-  const repoKey = repoConfigs.find((c) => c.githubRepo === githubRepo)?.agentId.replace('-agent', '');
+  // Import registry to map githubRepo -> repoKey
+  const { getAgentDefByGithubRepo } = await import('../agents/registry.js');
+  const repoDef = getAgentDefByGithubRepo(githubRepo);
+  const repoKey = repoDef?.repo?.repoKey;
 
   if (!repoKey) {
     // Unknown repo - can't match

@@ -40,7 +40,7 @@ import {
   processSlackTriage,
   processGitHubTriage,
 } from "./event-handler.js";
-import { getRepoConfigByGithubRepo } from "../agents/repo-configs.js";
+import { getAgentDefByGithubRepo } from "../agents/registry.js";
 import { verifyWebhookSignature } from "../github/webhook-utils.js";
 
 /**
@@ -389,8 +389,8 @@ async function handleExistingTaskDirect(
   context: ReturnType<typeof formatGitHubContext>
 ): Promise<void> {
   const eventMessage = formatGitHubEventMessage(context);
-  const repoConfig = getRepoConfigByGithubRepo(context.githubRepo);
-  const repoKey = repoConfig?.repoKey || "unknown";
+  const repoDef = getAgentDefByGithubRepo(context.githubRepo);
+  const repoKey = repoDef?.repo?.repoKey || "unknown";
 
   const task = await Task.get(taskId);
   await appendGitHubEvent(taskId, repoKey, eventMessage);
