@@ -55,3 +55,79 @@ export interface AgentHandle {
   /** Whether the agent is still processing messages */
   isRunning: boolean;
 }
+
+/**
+ * Agent track — determines spawning behavior, tools, and CWD
+ */
+export type AgentTrack = 'pm' | 'repo' | 'plugin';
+
+/**
+ * Repo-specific fields (only for track='repo')
+ */
+export interface AgentRepoDef {
+  /** GitHub repository identifier, e.g., 'sweatco/backend' */
+  githubRepo: string;
+  /** Base branch for PRs and merges. Defaults to 'main' if not specified. */
+  baseBranch?: string;
+  /** Default repository path on disk */
+  defaultPath: string;
+  /** Key in TaskMetadata.repositories, e.g., 'backend', 'mobile' */
+  repoKey: string;
+}
+
+/**
+ * PM-specific fields (only for track='pm')
+ */
+export interface AgentPmDef {
+  /** Formatted team list for prompt template */
+  teamList: string;
+  /** Formatted team expertise for prompt template */
+  teamExpertise: string;
+}
+
+/**
+ * Unified agent definition — replaces RepoAgentConfig + PluginAgentConfig
+ *
+ * Scanned fresh from plugins at startup and on every task start/restart.
+ * One type for all three tracks: PM, repo, plugin.
+ */
+export interface AgentDef {
+  /** Unique agent identifier, e.g., 'backend-agent', 'pm-agent' */
+  id: string;
+
+  /** Short key, e.g., 'backend', 'copywriter' */
+  key: string;
+
+  /** Short role description */
+  role: string;
+
+  /** Detailed expertise */
+  expertise: string;
+
+  /** Model override (default per track: opus for PM, sonnet for repo/plugin) */
+  model?: string;
+
+  /** Which track: pm, repo, or plugin */
+  track: AgentTrack;
+
+  /** Plugin name this agent belongs to */
+  pluginName: string;
+
+  /** Domain-specific prompt body (Layer 3) from agents/<key>.md */
+  agentPrompt?: string;
+
+  /** Repo-specific fields (track='repo' only) */
+  repo?: AgentRepoDef;
+
+  /** Absolute path to plugin directory (track='plugin' only) */
+  pluginPath?: string;
+
+  /** Absolute path to plugin's skills/ directory (track='plugin' only) */
+  skillsPath?: string;
+
+  /** PM-specific fields (track='pm' only) — built dynamically from team */
+  pmConfig?: AgentPmDef;
+
+  /** PM skills (track='pm' only) */
+  pmSkills?: string[];
+}

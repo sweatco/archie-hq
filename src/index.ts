@@ -9,8 +9,7 @@ import { startServer, stopServer, type ServerConfig } from './system/server.js';
 import { logger } from './system/logger.js';
 import { bootstrapWorkdir, cloneRepos } from './system/workdir.js';
 import { initPlugins, getPlugins } from './system/plugin-loader.js';
-import { initRepoConfigs, getAllRepoConfigs } from './agents/repo-configs.js';
-import { initPluginAgentConfigs, getAllPluginAgentConfigs } from './agents/plugin-configs.js';
+import { initRegistry, getAllAgentDefs } from './agents/registry.js';
 import { configureGitIdentity } from './github/client.js';
 import { recoverActiveTasks } from './system/task-recovery.js';
 
@@ -63,14 +62,14 @@ async function main(): Promise<void> {
 
     // Initialize modules (previously module-level, now explicit)
     initPlugins();
-    initRepoConfigs();
-    initPluginAgentConfigs();
+    initRegistry();
 
     // Clone repos declared by plugins
-    const repoConfigs = getAllRepoConfigs();
-    await cloneRepos(repoConfigs.map((rc) => ({
-      key: rc.repoKey,
-      githubRepo: rc.githubRepo,
+    const agentDefs = getAllAgentDefs();
+    const repoDefs = agentDefs.filter((d) => d.track === 'repo');
+    await cloneRepos(repoDefs.map((d) => ({
+      key: d.repo!.repoKey,
+      githubRepo: d.repo!.githubRepo,
     })));
 
     // Log loaded plugins and agents
@@ -89,16 +88,16 @@ async function main(): Promise<void> {
     if (allPmSkills.length > 0) {
       logger.plain(`    skills: ${allPmSkills.join(', ')}`);
     }
-    for (const rc of repoConfigs) {
-      logger.plain(`  [${rc.pluginName}] ${rc.agentId} — ${rc.role}`);
-      const gitName = await configureGitIdentity(rc.defaultRepoPath);
-      logger.plain(`    repo: ${rc.defaultRepoPath} (${rc.githubRepo})`);
+    for (const def of repoDefs) {
+      logger.plain(`  [${def.pluginName}] ${def.id} — ${def.role}`);
+      const gitName = await configureGitIdentity(def.repo!.defaultPath);
+      logger.plain(`    repo: ${def.repo!.defaultPath} (${def.repo!.githubRepo})`);
       if (gitName) {
         logger.plain(`    git: ${gitName}`);
       }
     }
-    for (const pa of getAllPluginAgentConfigs()) {
-      logger.plain(`  [${pa.pluginName}] ${pa.agentId} — ${pa.role}`);
+    for (const def of agentDefs.filter((d) => d.track === 'plugin')) {
+      logger.plain(`  [${def.pluginName}] ${def.id} — ${def.role}`);
     }
     logger.plain('');
 

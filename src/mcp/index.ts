@@ -2,4 +2,4 @@
  * Re-export MCP module
  */
 
-export * from './tools.js';
+export * from './research-tools.js';

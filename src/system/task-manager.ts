@@ -9,7 +9,7 @@ import { mkdir, readFile, writeFile, appendFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import type { TaskMetadata, LogEntry, FindingType, SlackFile } from '../types/index.js';
-import { activeTasks } from './active-tasks.js';
+import { activeTasks } from '../tasks/task.js';
 import { SESSIONS_DIR } from './workdir.js';
 
 /**

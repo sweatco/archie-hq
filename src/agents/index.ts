@@ -3,10 +3,30 @@
  */
 
 export { triageSlackMessage, triageGitHubComment } from './triage.js';
-export { spawnPMAgent } from './pm.js';
 export { AGENT_PROMPTS } from './prompts.js';
-export { spawnRepoAgent } from './repo-agent.js';
+
+// New unified modules
+export { spawnAgent } from './spawn.js';
+export { Agent } from './agent.js';
+export {
+  initRegistry,
+  scanAgentDefs,
+  getAllAgentDefs,
+  getAgentIds,
+  getRepoAgentIds,
+  getAgentDef,
+  getAgentDefByGithubRepo,
+  getPmDef,
+  buildPeerList,
+} from './registry.js';
+export {
+  createPMAgentMcpServer,
+  createBaseAgentMcpServer,
+  type PRStatus,
+  type PRReview,
+  type PRReviewComment,
+  type MergeableState,
+} from './tools.js';
+
+// Legacy shim (still used by server.ts, event-handler.ts, merge-orchestrator.ts)
 export { getRepoConfig, getAllRepoConfigs, getAllRepoAgentIds } from './repo-configs.js';
-export { spawnPluginAgent } from './plugin-agent.js';
-export { getPluginAgentConfig, getAllPluginAgentConfigs, getAllPluginAgentIds } from './plugin-configs.js';
-export { buildPeerList } from './peer-list.js';

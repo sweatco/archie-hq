@@ -10,7 +10,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { App } from '@octokit/app';
 import { Octokit } from '@octokit/core';
-import type { PRStatus, PRReview, PRReviewComment, MergeableState } from '../mcp/tools.js';
+import type { PRStatus, PRReview, PRReviewComment, MergeableState } from '../agents/tools.js';
 import { logger } from '../system/logger.js';
 
 const execAsync = promisify(exec);

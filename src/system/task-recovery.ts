@@ -8,11 +8,10 @@
  */
 
 import { findTasksByStatus } from './task-manager.js';
-import { saveTask } from './task-persistence.js';
 import { logger } from './logger.js';
 import { getIsShuttingDown } from './server.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
-import type { TaskRuntimeState } from './active-tasks.js';
+import type { Task } from '../tasks/task.js';
 import type { AgentName } from '../types/index.js';
 
 // ============================================================================
@@ -33,16 +32,16 @@ export async function recoverActiveTasks(): Promise<void> {
 
   logger.system(`Recovery: Found ${tasks.length} in_progress task(s), re-activating...`);
 
-  // Lazy import to avoid circular dependency
-  const { loadTask, sendMessage } = await import('./task-runtime.js');
+  // Lazy import to avoid circular dependency (task-recovery ↔ tasks/task)
+  const { Task: TaskClass } = await import('../tasks/task.js');
 
-  for (const task of tasks) {
+  for (const taskMeta of tasks) {
     try {
-      const runtime = await loadTask(task.task_id);
-      await recoverTaskAgents(runtime, sendMessage);
-      logger.system(`Recovery: Re-activated task ${task.task_id}`);
+      const task = await TaskClass.get(taskMeta.task_id);
+      await recoverTaskAgents(task);
+      logger.system(`Recovery: Re-activated task ${taskMeta.task_id}`);
     } catch (error) {
-      logger.error('recovery', `Failed to recover task ${task.task_id}`, error);
+      logger.error('recovery', `Failed to recover task ${taskMeta.task_id}`, error);
     }
   }
 }
@@ -51,20 +50,18 @@ export async function recoverActiveTasks(): Promise<void> {
  * Re-spawn previously active agents for a task, or fall back to PM.
  * Shared by startup recovery and nuclear recovery.
  */
-async function recoverTaskAgents(
-  runtime: TaskRuntimeState,
-  sendMessage: (runtime: TaskRuntimeState, agentName: AgentName, message: string) => Promise<void>
-): Promise<void> {
+async function recoverTaskAgents(task: Task): Promise<void> {
   let spawned = 0;
-  for (const [agentName, session] of runtime.sessions) {
-    if (!session.active) continue;
-    await sendMessage(runtime, agentName as AgentName, AGENT_PROMPTS.recovery);
+  for (const [agentName, session] of Object.entries(task.metadata.agent_sessions)) {
+    const sessionState = typeof session === 'string' ? { active: false } : session;
+    if (!sessionState.active) continue;
+    await task.sendMessage(AGENT_PROMPTS.recovery, agentName as AgentName);
     spawned++;
   }
 
   // Fallback: if no agents were active (stale metadata), spawn PM
   if (spawned === 0) {
-    await sendMessage(runtime, 'pm-agent' as AgentName, AGENT_PROMPTS.recovery);
+    await task.sendMessage(AGENT_PROMPTS.recovery, 'pm-agent' as AgentName);
   }
 }
 
@@ -77,13 +74,13 @@ async function recoverTaskAgents(
  * Small delay to avoid racing with message delivery
  * (another agent may be about to send a message that wakes this one).
  */
-export function scheduleIdleCheck(runtime: TaskRuntimeState): void {
+export function scheduleIdleCheck(task: Task): void {
   setTimeout(async () => {
-    if (!runtime.isActive || getIsShuttingDown()) return;
+    if (!task.isActive || getIsShuttingDown()) return;
 
-    const allInactive = checkAllAgentsInactive(runtime);
+    const allInactive = checkAllAgentsInactive(task);
     if (allInactive) {
-      await triggerRecovery(runtime);
+      await triggerRecovery(task);
     }
   }, 3000);
 }
@@ -91,12 +88,11 @@ export function scheduleIdleCheck(runtime: TaskRuntimeState): void {
 /**
  * Check if all spawned agents are inactive.
  */
-function checkAllAgentsInactive(runtime: TaskRuntimeState): boolean {
-  if (runtime.spawned.size === 0) return false;
+function checkAllAgentsInactive(task: Task): boolean {
+  if (task.agents.size === 0) return false;
 
-  for (const agentName of runtime.spawned) {
-    const session = runtime.sessions.get(agentName);
-    if (session?.active) return false;
+  for (const [, agent] of task.agents) {
+    if (agent.session.active) return false;
   }
   return true;
 }
@@ -107,49 +103,43 @@ function checkAllAgentsInactive(runtime: TaskRuntimeState): boolean {
  * - Attempt 3+: Nuclear — clear all sessions and restart with fresh context
  *
  * Works entirely in-memory. The debounced persist snapshots whatever
- * runtime.sessions looks like when it fires.
+ * state looks like when it fires.
  */
-async function triggerRecovery(runtime: TaskRuntimeState): Promise<void> {
-  runtime.recoveryAttempts += 1;
+async function triggerRecovery(task: Task): Promise<void> {
+  task.recoveryAttempts += 1;
 
-  logger.warn('recovery', `All agents inactive for task ${runtime.taskId} (attempt ${runtime.recoveryAttempts})`);
+  logger.warn('recovery', `All agents inactive for task ${task.taskId} (attempt ${task.recoveryAttempts})`);
 
-  if (runtime.recoveryAttempts >= 3) {
-    // Nuclear: clear all sessions in-memory so the final write saves empty state
-    runtime.sessions.clear();
-    runtime.recoveryAttempts = 0;
+  if (task.recoveryAttempts >= 3) {
+    // Nuclear: reset recovery counter before stop
+    task.recoveryAttempts = 0;
 
     // Lazy import to avoid circular dependency
-    const { stopTask, loadTask, sendMessage } = await import('./task-runtime.js');
+    const { Task: TaskClass } = await import('../tasks/task.js');
 
-    await stopTask(runtime.taskId);
+    await task.stop();
 
     // Re-load from disk and recover
-    const newRuntime = await loadTask(runtime.taskId);
-    await recoverTaskAgents(newRuntime, sendMessage);
+    const newTask = await TaskClass.get(task.taskId);
+    await recoverTaskAgents(newTask);
   } else {
     // Reinforcement: nudge the lead agent
-    const target = runtime.metadata.task_owner || 'pm-agent';
-    const handle = runtime.handles.get(target as AgentName);
-    const queue = runtime.queues.get(target as AgentName);
+    const target = (task.metadata.task_owner || 'pm-agent') as AgentName;
+    const agent = task.agents.get(target);
 
     // Only nudge if the agent process is actually running (not crashed)
-    if (queue && handle?.isRunning) {
+    if (agent && agent.isRunning) {
       const prompt = target === 'pm-agent'
         ? AGENT_PROMPTS.reinforcePM
         : AGENT_PROMPTS.reinforceAgent;
-      queue.addMessage(prompt);
+      agent.queue.addMessage(prompt);
 
       // Mark agent as active after nudge
-      const session = runtime.sessions.get(target as AgentName);
-      if (session) {
-        session.active = true;
-        session.last_activity = new Date().toISOString();
-      }
-      saveTask(runtime);
+      agent.updateSession(true);
+      task.save();
     } else {
       // Agent process is dead — skip straight to nuclear on next idle check
-      runtime.recoveryAttempts = 2;
+      task.recoveryAttempts = 2;
     }
   }
 }
