@@ -17,13 +17,13 @@ export interface MergeCheckResult {
   conflicts: string[]; // PRs with merge conflicts
 }
 
-import { appendAgentFinding } from '../tasks/persistence.js';
-import { Task } from '../tasks/task.js';
-import { AGENT_PROMPTS } from '../agents/prompts.js';
+import { appendAgentFinding } from '../../tasks/persistence.js';
+import { Task } from '../../tasks/task.js';
+import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { createGitHubClient, type GitHubClient } from './client.js';
-import { getAgentDef } from '../agents/registry.js';
-import { logger } from '../system/logger.js';
-import type { PRStatus } from '../agents/tools.js';
+import { getAgentDef } from '../../agents/registry.js';
+import { logger } from '../../system/logger.js';
+import type { PRStatus } from '../../agents/tools.js';
 
 interface LinkedPRStatus {
   repoKey: string;

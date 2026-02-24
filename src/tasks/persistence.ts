@@ -98,7 +98,7 @@ export async function downloadMessageFiles(
     return [];
   }
 
-  const { downloadSlackFile } = await import('../slack/client.js');
+  const { downloadSlackFile } = await import('../connectors/slack/client.js');
   const attachmentsDir = getAttachmentsPath(taskId);
 
   // Ensure attachments directory exists

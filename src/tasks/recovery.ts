@@ -9,7 +9,7 @@
 
 import { findTasksByStatus } from './persistence.js';
 import { logger } from '../system/logger.js';
-import { getIsShuttingDown } from '../system/server.js';
+import { getIsShuttingDown } from '../system/shutdown.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import type { Task } from './task.js';
 import type { AgentName } from '../types/index.js';

@@ -10,8 +10,8 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { App } from '@octokit/app';
 import { Octokit } from '@octokit/core';
-import type { PRStatus, PRReview, PRReviewComment, MergeableState } from '../agents/tools.js';
-import { logger } from '../system/logger.js';
+import type { PRStatus, PRReview, PRReviewComment, MergeableState } from '../../agents/tools.js';
+import { logger } from '../../system/logger.js';
 
 const execAsync = promisify(exec);
 
@@ -505,4 +505,15 @@ export async function fetchOrigin(repoPath: string, branch: string): Promise<voi
     // Non-fatal - log and continue with existing refs
     logger.system(`Fetch failed, using existing origin/${branch}`);
   }
+}
+
+// ---- Singleton (merged from github/singleton.ts) ----
+
+let singletonInstance: GitHubClient | null | undefined = undefined;
+
+export function getGitHubClient(): GitHubClient | null {
+  if (singletonInstance === undefined) {
+    singletonInstance = createGitHubClient();
+  }
+  return singletonInstance;
 }

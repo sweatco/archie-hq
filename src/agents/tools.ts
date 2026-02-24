@@ -17,10 +17,10 @@ import type { AgentName, FindingType } from '../types/task.js';
 import type { Task } from '../tasks/task.js';
 import type { Agent } from './agent.js';
 import { getRepoAgentIds, getAgentIds, getAgentDef } from './registry.js';
-import { getGitHubClient } from '../github/singleton.js';
-import { postToSlack, postInteractiveToSlack, hasInteractiveCallback } from '../slack/callbacks.js';
+import { getGitHubClient } from '../connectors/github/client.js';
+import { postToSlack, postInteractiveToSlack, hasInteractiveCallback } from '../connectors/slack/callbacks.js';
 import { appendAgentFinding } from '../tasks/persistence.js';
-import { triggerMergeCheck } from '../github/merge-orchestrator.js';
+import { triggerMergeCheck } from '../connectors/github/merge.js';
 import { logger } from '../system/logger.js';
 
 const execAsync = promisify(exec);

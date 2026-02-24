@@ -6,9 +6,9 @@
  */
 
 import { WebClient } from '@slack/web-api';
-import type { SlackMessage, SlackThread, SlackFile } from '../types/index.js';
+import type { SlackMessage, SlackThread, SlackFile } from '../../types/index.js';
 import slackifyMarkdown from 'slackify-markdown';
-import { logger } from '../system/logger.js';
+import { logger } from '../../system/logger.js';
 
 let slackClient: WebClient | null = null;
 let botUserId: string | null = null;

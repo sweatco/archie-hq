@@ -5,7 +5,7 @@
  * Tools and task methods import postToSlack/postInteractiveToSlack directly.
  */
 
-import { logger } from '../system/logger.js';
+import { logger } from '../../system/logger.js';
 
 type PostFn = (taskId: string, message: string) => Promise<void>;
 type PostInteractiveFn = (taskId: string, text: string, blocks: unknown[]) => Promise<void>;
