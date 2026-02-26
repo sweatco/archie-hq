@@ -6,7 +6,7 @@
  */
 
 import { WebClient } from '@slack/web-api';
-import type { SlackMessage, SlackThread, SlackFile } from '../../types/index.js';
+import type { SlackMessage, SlackThreadRef, SlackFile, SlackThread, SlackThreadMessage } from '../../types/index.js';
 import slackifyMarkdown from 'slackify-markdown';
 import { logger } from '../../system/logger.js';
 
@@ -82,7 +82,7 @@ export async function postToThread(
  * Post a message to multiple threads (for tasks with multiple linked threads)
  */
 export async function postToThreads(
-  threads: SlackThread[],
+  threads: SlackThreadRef[],
   text: string
 ): Promise<void> {
   for (const thread of threads) {
@@ -116,7 +116,7 @@ export async function postInteractiveToThread(
  * Post an interactive message to multiple threads
  */
 export async function postInteractiveToThreads(
-  threads: SlackThread[],
+  threads: SlackThreadRef[],
   text: string,
   blocks: unknown[]
 ): Promise<void> {
@@ -701,4 +701,54 @@ export async function downloadSlackFile(
   await writeFile(destPath, buffer);
 
   logger.slack(`Downloaded file to ${destPath} (${buffer.length} bytes, type: ${contentType})`);
+}
+
+/**
+ * Fetch a complete Slack thread with all API work done in one place:
+ * channel info, thread history, user info resolution, bot message filtering.
+ *
+ * Returns a fully-resolved SlackThread ready for consumption by triage and Task.
+ */
+export async function fetchSlackThread(
+  channelId: string,
+  threadTs: string,
+  currentMessageTs: string,
+): Promise<SlackThread> {
+  const [channelInfo, rawMessages] = await Promise.all([
+    getChannelInfo(channelId),
+    fetchThreadHistory(channelId, threadTs),
+  ]);
+
+  // Filter out bot messages
+  const humanMessages = rawMessages.filter(
+    (msg) => msg.user && msg.user !== 'unknown' && msg.user !== botUserId
+  );
+
+  // Batch-resolve user info for all unique authors
+  const uniqueUserIds = [...new Set(humanMessages.map((msg) => msg.user))];
+  const userInfoEntries = await Promise.all(
+    uniqueUserIds.map(async (uid) => {
+      const info = await getUserInfo(uid);
+      return [uid, info] as const;
+    })
+  );
+  const userInfoMap = new Map(userInfoEntries);
+
+  // Build resolved messages
+  const messages: SlackThreadMessage[] = humanMessages.map((msg) => {
+    const info = userInfoMap.get(msg.user)!;
+    return {
+      user: { id: msg.user, username: info.name, realName: info.realName },
+      text: msg.text,
+      ts: msg.ts,
+      ...(msg.files && msg.files.length > 0 ? { files: msg.files } : {}),
+    };
+  });
+
+  return {
+    threadId: threadTs,
+    channel: channelInfo,
+    messages,
+    currentMessageTs,
+  };
 }

@@ -18,7 +18,6 @@ import type { Task } from '../tasks/task.js';
 import type { Agent } from './agent.js';
 import { getRepoAgentIds, getAgentIds, getAgentDef } from './registry.js';
 import { getGitHubClient } from '../connectors/github/client.js';
-import { postToSlack, postInteractiveToSlack, hasInteractiveCallback } from '../connectors/slack/callbacks.js';
 import { appendAgentFinding } from '../tasks/persistence.js';
 import { triggerMergeCheck } from '../connectors/github/merge.js';
 import { logger } from '../system/logger.js';
@@ -114,7 +113,7 @@ function createPostToSlackTool(agent: Agent, task: Task) {
       const agentName = agent.def.id as AgentName;
       logger.agentToSlack(agentName, args.message);
       task.touch();
-      await postToSlack(task.taskId, args.message);
+      await task.postToSlack(args.message);
       await appendAgentFinding(task.taskId, agentName, `→ Slack: ${args.message}`, 'decision');
       return { content: [{ type: 'text' as const, text: `Posted to Slack: ${args.message}` }] };
     },
@@ -162,39 +161,32 @@ function createRequestEditModeTool(agent: Agent, task: Task) {
 
       await appendAgentFinding(task.taskId, 'system', `Edit mode requested: ${args.reason}`, 'decision');
 
-      if (hasInteractiveCallback()) {
-        const blocks = [
-          {
-            type: 'section',
-            text: { type: 'mrkdwn', text: `*Edit mode request:* ${args.reason}` },
-          },
-          {
-            type: 'actions',
-            elements: [
-              {
-                type: 'button',
-                text: { type: 'plain_text', text: 'Approve' },
-                action_id: 'approve_edit_mode',
-                value: task.taskId,
-                style: 'primary',
-              },
-              {
-                type: 'button',
-                text: { type: 'plain_text', text: 'Deny' },
-                action_id: 'deny_edit_mode',
-                value: task.taskId,
-                style: 'danger',
-              },
-            ],
-          },
-        ];
-        await postInteractiveToSlack(task.taskId, `Edit mode request: ${args.reason}`, blocks);
-      } else {
-        await postToSlack(
-          task.taskId,
-          `Edit mode request: ${args.reason}\n\n(Interactive buttons not available - please respond with "approve" or "deny")`,
-        );
-      }
+      const blocks = [
+        {
+          type: 'section',
+          text: { type: 'mrkdwn', text: `*Edit mode request:* ${args.reason}` },
+        },
+        {
+          type: 'actions',
+          elements: [
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Approve' },
+              action_id: 'approve_edit_mode',
+              value: task.taskId,
+              style: 'primary',
+            },
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Deny' },
+              action_id: 'deny_edit_mode',
+              value: task.taskId,
+              style: 'danger',
+            },
+          ],
+        },
+      ];
+      await task.postInteractiveToSlack(`Edit mode request: ${args.reason}`, blocks);
 
       await task.stop();
       return { content: [{ type: 'text' as const, text: 'Edit mode request sent. Task paused pending user approval.' }] };
@@ -213,7 +205,7 @@ function createReportCompletionTool(agent: Agent, task: Task) {
       const agentName = agent.def.id as AgentName;
       if (args.message) {
         logger.agentToSlack(agentName, args.message);
-        await postToSlack(task.taskId, args.message);
+        await task.postToSlack(args.message);
         await appendAgentFinding(task.taskId, agentName, `→ Slack: ${args.message}`, 'decision');
       }
       logger.agentAction(agentName, 'Reporting completion', '');

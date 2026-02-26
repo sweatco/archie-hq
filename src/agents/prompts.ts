@@ -3,7 +3,7 @@
  *
  * Shared prompt constants for spawn/recovery scenarios.
  * Used by task-runtime (sendMessage), task-recovery (triggerRecovery),
- * and event-handler (processSlackTriage/processGitHubTriage).
+ * and event-handler (handleSlackEvent/processGitHubTriage).
  */
 
 export const AGENT_PROMPTS = {

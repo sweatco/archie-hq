@@ -89,9 +89,9 @@ export function scheduleIdleCheck(task: Task): void {
  * Check if all spawned agents are inactive.
  */
 function checkAllAgentsInactive(task: Task): boolean {
-  if (task.agents.size === 0) return false;
+  if (task.agentProcesses.size === 0) return false;
 
-  for (const [, agent] of task.agents) {
+  for (const [, agent] of task.agentProcesses) {
     if (agent.session.active) return false;
   }
   return true;
@@ -125,7 +125,7 @@ async function triggerRecovery(task: Task): Promise<void> {
   } else {
     // Reinforcement: nudge the lead agent
     const target = (task.metadata.task_owner || 'pm-agent') as AgentName;
-    const agent = task.agents.get(target);
+    const agent = task.agentProcesses.get(target);
 
     // Only nudge if the agent process is actually running (not crashed)
     if (agent && agent.isRunning) {

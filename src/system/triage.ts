@@ -10,7 +10,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import pc from "picocolors";
-import type { TriageResult, SlackMessage } from "../types/index.js";
+import type { TriageResult, SlackThread } from "../types/index.js";
 import { findTaskByThread } from "../tasks/persistence.js";
 import { SESSIONS_DIR } from "./workdir.js";
 import { processAgentEventForLogging, logger } from "./logger.js";
@@ -115,44 +115,40 @@ async function runTriage<T extends z.ZodType>(
 // ============================================================================
 
 /**
- * Build the full triage input for a Slack message.
- * Resolves the task (memory + disk) and constructs the classification prompt.
+ * Build the full triage input from a resolved SlackThread.
+ * Looks up existing task by thread ID and constructs the classification prompt.
  */
-async function buildTriageInput(
-  message: SlackMessage,
-  threadHistory: SlackMessage[],
-  threadId: string
-): Promise<string> {
-  const taskId = await findTaskByThread(threadId);
+async function buildTriageInput(thread: SlackThread): Promise<string> {
+  const taskId = await findTaskByThread(thread.threadId);
 
   const context = taskId
-    ? `THREAD MATCH: This thread (${threadId}) belongs to task ${taskId}. Classify the user's intent and respond with JSON.`
+    ? `THREAD MATCH: This thread (${thread.threadId}) belongs to task ${taskId}. Classify the user's intent and respond with JSON.`
     : `No thread match found. Use tools if needed to search historical tasks. Classify this message and respond with JSON.`;
+
+  const currentMessage = thread.messages.find((m) => m.ts === thread.currentMessageTs);
 
   return `
 Slack Message:
-- Thread ID: ${threadId}
-- Channel: ${message.channel}
-- User: ${message.user}
+- Thread ID: ${thread.threadId}
+- Channel: ${thread.channel.id}
+- User: ${currentMessage?.user.realName ?? 'unknown'}
 
 Thread History:
-${threadHistory.map((m) => `[${m.user}]: ${m.text}`).join("\n")}
+${thread.messages.map((m) => `[${m.user.realName}]: ${m.text}`).join("\n")}
 
 Current Message:
-${message.text}
+${currentMessage?.text ?? ''}
 
 ${context}`;
 }
 
 /**
- * Run the triage agent to classify a Slack message
+ * Run the triage agent to classify a Slack thread
  */
 export async function triageSlackMessage(
-  message: SlackMessage,
-  threadHistory: SlackMessage[]
+  thread: SlackThread
 ): Promise<TriageResult> {
-  const threadId = message.thread_ts || message.ts;
-  const input = await buildTriageInput(message, threadHistory, threadId);
+  const input = await buildTriageInput(thread);
 
   const result = await runTriage(input, SlackTriageSchema, "slack");
 

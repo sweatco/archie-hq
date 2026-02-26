@@ -15,26 +15,16 @@ import type { App as AppType } from '@slack/bolt';
 import {
   initSlackClient,
   postToThreads,
-  postInteractiveToThreads,
   updateMessage,
   getBotUserId,
-  fetchThreadHistory,
-  getUserInfo,
-  getChannelInfo,
-  cleanSlackText,
+  fetchSlackThread,
   getBotId,
 } from './client.js';
-import { setSlackCallbacks } from './callbacks.js';
 import { Task } from '../../tasks/task.js';
-import {
-  appendSlackMessage,
-  downloadMessageFiles,
-} from '../../tasks/persistence.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
 import { getIsShuttingDown } from '../../system/shutdown.js';
 import { triageSlackMessage } from '../../system/triage.js';
-import type { SlackThread, SlackMessage } from '../../types/index.js';
 
 /**
  * Slack configuration
@@ -67,18 +57,6 @@ export async function mountSlackApp(
   // Initialize Slack client for outgoing messages
   await initSlackClient(config.slackBotToken);
 
-  // Set up Slack callbacks once globally (works for all tasks since it uses taskId parameter)
-  setSlackCallbacks(
-    async (taskId: string, slackMessage: string) => {
-      const task = await Task.get(taskId);
-      await postToThreads(task.metadata.slack_threads, slackMessage);
-    },
-    async (taskId: string, text: string, blocks: unknown[]) => {
-      const task = await Task.get(taskId);
-      await postInteractiveToThreads(task.metadata.slack_threads, text, blocks);
-    }
-  );
-
   // Create Bolt app with the shared receiver
   app = new App({
     token: config.slackBotToken,
@@ -97,14 +75,14 @@ export async function mountSlackApp(
       return;
     }
 
-    processSlackTriage({
+    handleSlackEvent({
       type: event.type,
       channel: event.channel,
       user: event.user ?? '',
       text: event.text,
       ts: event.ts,
       thread_ts: event.thread_ts,
-    }).catch((err) => logger.error('Server', 'Error processing Slack event', err));
+    }).catch((err: unknown) => logger.error('Server', 'Error processing Slack event', err));
   });
 
   // Handle thread messages (replies without @mention)
@@ -131,14 +109,14 @@ export async function mountSlackApp(
         return;
       }
 
-      processSlackTriage({
+      handleSlackEvent({
         type: event.type,
         channel: event.channel,
         user: event.user || '',
         text: event.text || '',
         ts: event.ts,
         thread_ts: event.thread_ts,
-      }).catch((err) => logger.error('Server', 'Error processing Slack event', err));
+      }).catch((err: unknown) => logger.error('Server', 'Error processing Slack event', err));
     }
   });
 
@@ -273,151 +251,52 @@ function routeSlackEvent(event: {
 }
 
 // ============================================================================
-// Slack Triage
+// Slack Event Handler
 // ============================================================================
 
-async function processSlackTriage(payload: Record<string, unknown>): Promise<void> {
-  const event = payload as {
-    type: string;
-    channel: string;
-    user: string;
-    text: string;
-    ts: string;
-    thread_ts?: string;
-  };
-
+async function handleSlackEvent(event: {
+  type: string;
+  channel: string;
+  user: string;
+  text: string;
+  ts: string;
+  thread_ts?: string;
+}): Promise<void> {
   const threadId = event.thread_ts || event.ts;
+  const thread = await fetchSlackThread(event.channel, threadId, event.ts);
 
-  const channelInfo = await getChannelInfo(event.channel);
-  const cleanText = await cleanSlackText(event.text, event.channel);
+  logger.system(`Processing #${thread.channel.name} (thread: ${threadId})`);
 
-  logger.system(`Processing #${channelInfo.name} (thread: ${threadId}): "${cleanText}"`);
-
-  const threadHistory = await fetchThreadHistory(event.channel, threadId);
-
-  const message: SlackMessage = {
-    type: event.type,
-    channel: event.channel,
-    user: event.user,
-    text: cleanText,
-    ts: event.ts,
-    thread_ts: event.thread_ts,
-  };
-
-  const triageResult = await triageSlackMessage(message, threadHistory);
+  const triageResult = await triageSlackMessage(thread);
 
   switch (triageResult.action) {
-    case 'new_task':
-      await handleNewTask(message, threadHistory, channelInfo);
+    case 'new_task': {
+      const task = await Task.create();
+      await task.append(thread);
+      await task.sendMessage(AGENT_PROMPTS.newTask);
       break;
-
-    case 'existing_task':
-      if (triageResult.task_id) {
-        await handleExistingTask(triageResult.task_id, message, threadId, threadHistory, channelInfo);
+    }
+    case 'existing_task': {
+      if (!triageResult.task_id) break;
+      const task = await Task.get(triageResult.task_id);
+      const { linkedNewThread } = await task.append(thread);
+      if (linkedNewThread) {
+        const ref = task.metadata.slack_threads.find(t => t.thread_id === thread.threadId);
+        if (ref) await postToThreads([ref], 'Got it, I\'ve linked this to the ongoing investigation.');
       }
+      await task.sendMessage(AGENT_PROMPTS.existingTask);
       break;
-
-    case 'cancel_task':
-      if (triageResult.task_id) {
-        await handleCancelTask(triageResult.task_id);
-      }
+    }
+    case 'cancel_task': {
+      if (!triageResult.task_id) break;
+      const task = await Task.get(triageResult.task_id);
+      const threads = [...task.metadata.slack_threads];
+      await task.stop();
+      await postToThreads(threads, 'Work stopped. All progress has been saved and can be resumed if needed.');
       break;
-
+    }
     case 'noop':
-      logger.system('Triage: No action needed (acknowledgment)');
+      logger.system('Triage: noop');
       break;
   }
-}
-
-async function handleNewTask(
-  message: SlackMessage,
-  threadHistory: SlackMessage[],
-  channelInfo: { id: string; name: string }
-): Promise<void> {
-  const threadId = message.thread_ts || message.ts;
-
-  const slackThread: SlackThread = {
-    thread_id: threadId,
-    channel_id: message.channel,
-    last_processed_ts: message.ts,
-  };
-
-  const task = await Task.createFromSlackThread(slackThread);
-
-  for (const msg of threadHistory) {
-    const msgUserInfo = await getUserInfo(msg.user);
-    const downloadedFiles = msg.files ? await downloadMessageFiles(task.taskId, msg.files) : undefined;
-    await appendSlackMessage(task.taskId, channelInfo, threadId, {
-      id: msg.user,
-      username: msgUserInfo.name,
-      realName: msgUserInfo.realName,
-    }, msg.text, downloadedFiles);
-  }
-
-  await task.sendMessage(AGENT_PROMPTS.newTask, 'pm-agent');
-}
-
-async function handleExistingTask(
-  taskId: string,
-  message: SlackMessage,
-  threadId: string,
-  threadHistory: SlackMessage[],
-  channelInfo: { id: string; name: string }
-): Promise<void> {
-  const task = await Task.get(taskId);
-
-  const existingThread = task.metadata.slack_threads.find((t: SlackThread) => t.thread_id === threadId);
-
-  if (!existingThread) {
-    const newThread: SlackThread = {
-      thread_id: threadId,
-      channel_id: message.channel,
-      last_processed_ts: message.ts,
-    };
-    task.metadata.slack_threads.push(newThread);
-
-    for (const msg of threadHistory) {
-      if (!msg.user || msg.user === 'unknown' || msg.user === getBotUserId()) continue;
-      const userInfo = await getUserInfo(msg.user);
-      const downloadedFiles = msg.files ? await downloadMessageFiles(taskId, msg.files) : undefined;
-      await appendSlackMessage(taskId, channelInfo, threadId, {
-        id: msg.user,
-        username: userInfo.name,
-        realName: userInfo.realName,
-      }, msg.text, downloadedFiles);
-    }
-
-    await postToThreads([newThread], 'Got it, I\'ve linked this to the ongoing investigation.');
-  } else {
-    const lastProcessedTs = existingThread.last_processed_ts;
-
-    for (const msg of threadHistory) {
-      if (!msg.ts || msg.ts <= lastProcessedTs) continue;
-      if (!msg.user || msg.user === 'unknown' || msg.user === getBotUserId()) continue;
-      const userInfo = await getUserInfo(msg.user);
-      const downloadedFiles = msg.files ? await downloadMessageFiles(taskId, msg.files) : undefined;
-      await appendSlackMessage(taskId, channelInfo, threadId, {
-        id: msg.user,
-        username: userInfo.name,
-        realName: userInfo.realName,
-      }, msg.text, downloadedFiles);
-    }
-
-    existingThread.last_processed_ts = message.ts;
-  }
-
-  task.debouncedSave();
-  await task.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
-}
-
-async function handleCancelTask(taskId: string): Promise<void> {
-  const task = await Task.get(taskId);
-  const threads = [...task.metadata.slack_threads];
-
-  await task.stop();
-
-  await postToThreads(
-    threads,
-    'Work stopped. All progress has been saved and can be resumed if needed.'
-  );
 }

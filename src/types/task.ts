@@ -12,10 +12,27 @@ export type AgentName = CoreAgentName | `${string}-agent`;
 
 export type FindingType = 'discovery' | 'decision' | 'completion' | 'blocker';
 
-export interface SlackThread {
+/** Tracking record for a Slack thread linked to a task */
+export interface SlackThreadRef {
   thread_id: string;
   channel_id: string;
   last_processed_ts: string;
+}
+
+/** A fully-resolved message from a Slack thread */
+export interface SlackThreadMessage {
+  user: { id: string; username: string; realName: string };
+  text: string;           // mentions already resolved
+  ts: string;
+  files?: SlackFile[];    // raw file metadata (not yet downloaded)
+}
+
+/** Full Slack thread context — all API data resolved, ready for task consumption */
+export interface SlackThread {
+  threadId: string;
+  channel: { id: string; name: string };
+  messages: SlackThreadMessage[];  // full thread, bot messages excluded
+  currentMessageTs: string;
 }
 
 export interface RepositoryInfo {
@@ -43,7 +60,7 @@ export interface TaskMetadata {
   task_id: string;
   task_owner: AgentName | null;
   participants: AgentName[];
-  slack_threads: SlackThread[];
+  slack_threads: SlackThreadRef[];
   agent_sessions: Record<string, AgentSessionState | string>; // union handles legacy string values on disk
   repositories: Record<string, RepositoryInfo>;
   status: TaskStatus;

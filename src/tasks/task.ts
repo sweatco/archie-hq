@@ -2,15 +2,13 @@
  * Task Class
  *
  * The central unit of work. Owns agents, metadata, budgets, lifecycle.
- * Created via Task.createFromSlackThread() or Task.get().
- *
- * Implementation filled in at Step 6.
+ * Created via Task.create(thread) or Task.get(taskId).
  */
 
 import { mkdir, writeFile, symlink } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import type { AgentName, SlackThread, TaskMetadata } from '../types/task.js';
+import type { AgentName, SlackThreadRef, SlackThread, TaskMetadata } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
 
 /**
@@ -30,6 +28,8 @@ import {
   loadMetadata,
   getMetadataPath,
   appendAgentFinding,
+  appendSlackMessage,
+  downloadMessageFiles,
   ensureSessionsDir,
   generateTaskId,
   getSharedPath,
@@ -40,7 +40,8 @@ import { getPluginsWithPmSkills } from '../system/plugin-loader.js';
 import { getIsShuttingDown } from '../system/shutdown.js';
 import { scheduleIdleCheck } from './recovery.js';
 import { scanAgentDefs } from '../agents/registry.js';
-import { postToSlack, postInteractiveToSlack, hasInteractiveCallback } from '../connectors/slack/callbacks.js';
+import { refreshPlugins } from '../system/workdir.js';
+import { postToThreads, postInteractiveToThreads } from '../connectors/slack/client.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
 
@@ -53,13 +54,13 @@ export const activeTasks = new Map<string, Task>();
 export class Task {
   readonly taskId: string;
   metadata: TaskMetadata;
-  readonly agents: Map<AgentName, Agent> = new Map();
+  readonly agentProcesses: Map<AgentName, Agent> = new Map();
   team: AgentDef[];
   budgets: TaskBudgets;
-  isActive: boolean = true;
+  isActive: boolean = false;
   lastActivity: Date = new Date();
   recoveryAttempts: number = 0;
-  timeoutInterval?: ReturnType<typeof setInterval>;
+  taskTimeoutTimer?: ReturnType<typeof setInterval>;
 
   private constructor(taskId: string, metadata: TaskMetadata, team: AgentDef[]) {
     this.taskId = taskId;
@@ -78,10 +79,12 @@ export class Task {
   // ---- Static factory methods ----
 
   /**
-   * Create a new task from a Slack thread.
-   * Sets up disk structure, registers in activeTasks.
+   * Create a new empty task.
+   * Sets up disk structure (folders, metadata, skills).
+   * Task is inert until sendMessage() is called, which activates it.
    */
-  static async createFromSlackThread(slackThread: SlackThread): Promise<Task> {
+  static async create(): Promise<Task> {
+    await refreshPlugins();
     await ensureSessionsDir();
 
     const taskId = generateTaskId();
@@ -121,7 +124,7 @@ export class Task {
       task_id: taskId,
       task_owner: null,
       participants: [],
-      slack_threads: [slackThread],
+      slack_threads: [],
       agent_sessions: {},
       repositories,
       status: 'in_progress',
@@ -135,30 +138,26 @@ export class Task {
     logger.system(`Created task ${taskId}`);
 
     const task = new Task(taskId, metadata, team);
-    task.startTimeoutInterval();
-    activeTasks.set(taskId, task);
     return task;
   }
 
   /**
-   * Load (or return cached) a task by ID.
+   * Load a task by ID. Returns cached instance if already active.
+   * Task is inert until sendMessage() is called, which activates it.
    */
   static async get(taskId: string): Promise<Task> {
     const existing = activeTasks.get(taskId);
     if (existing) return existing;
+
+    await refreshPlugins();
 
     const metadata = await loadMetadata(taskId);
     if (!metadata) {
       throw new Error(`Task ${taskId} not found`);
     }
 
-    metadata.status = 'in_progress';
     const team = scanAgentDefs();
-    const task = new Task(taskId, metadata, team);
-
-    task.startTimeoutInterval();
-    activeTasks.set(taskId, task);
-    return task;
+    return new Task(taskId, metadata, team);
   }
 
   // ---- Public methods ----
@@ -166,14 +165,82 @@ export class Task {
   /**
    * Send a message to an agent (default: PM).
    * Creates agent lazily on first message, spawns if not running.
+   * Activates the task on first call (starts timeout, sets status).
    */
   async sendMessage(message: string, agentName: AgentName = 'pm-agent'): Promise<void> {
+    if (!this.isActive) {
+      this.activate();
+    }
     await this.ensureAgentSpawned(agentName);
-    const agent = this.agents.get(agentName);
+    const agent = this.agentProcesses.get(agentName);
     if (!agent) {
       throw new Error(`No agent ${agentName} after spawn`);
     }
     agent.queue.addMessage(message);
+  }
+
+  /**
+   * Append a Slack thread's messages to this task.
+   * If the thread is new, links it and appends all messages.
+   * If already linked, appends only messages newer than last_processed_ts.
+   * Returns whether a new thread was linked.
+   */
+  async append(thread: SlackThread): Promise<{ linkedNewThread: boolean }> {
+    const existingThread = this.metadata.slack_threads.find(
+      (t: SlackThreadRef) => t.thread_id === thread.threadId
+    );
+
+    if (!existingThread) {
+      // New thread — link it and append all messages
+      const ref: SlackThreadRef = {
+        thread_id: thread.threadId,
+        channel_id: thread.channel.id,
+        last_processed_ts: thread.currentMessageTs,
+      };
+      this.metadata.slack_threads.push(ref);
+
+      for (const msg of thread.messages) {
+        const downloadedFiles = msg.files ? await downloadMessageFiles(this.taskId, msg.files) : undefined;
+        await appendSlackMessage(this.taskId, thread.channel, thread.threadId, msg.user, msg.text, downloadedFiles);
+      }
+
+      this.debouncedSave();
+      return { linkedNewThread: true };
+    }
+
+    // Existing thread — only append messages newer than last_processed_ts
+    const lastProcessedTs = existingThread.last_processed_ts;
+    for (const msg of thread.messages) {
+      if (msg.ts <= lastProcessedTs) continue;
+      const downloadedFiles = msg.files ? await downloadMessageFiles(this.taskId, msg.files) : undefined;
+      await appendSlackMessage(this.taskId, thread.channel, thread.threadId, msg.user, msg.text, downloadedFiles);
+    }
+
+    existingThread.last_processed_ts = thread.currentMessageTs;
+    this.debouncedSave();
+    return { linkedNewThread: false };
+  }
+
+  /**
+   * Post a message to all Slack threads linked to this task.
+   */
+  async postToSlack(message: string): Promise<void> {
+    if (this.metadata.slack_threads.length > 0) {
+      await postToThreads(this.metadata.slack_threads, message);
+    } else {
+      logger.slack(`POST: ${message}`);
+    }
+  }
+
+  /**
+   * Post an interactive message (with blocks) to all Slack threads linked to this task.
+   */
+  async postInteractiveToSlack(text: string, blocks: unknown[]): Promise<void> {
+    if (this.metadata.slack_threads.length > 0) {
+      await postInteractiveToThreads(this.metadata.slack_threads, text, blocks);
+    } else {
+      logger.slack(`POST (interactive): ${text}`);
+    }
   }
 
   /**
@@ -186,15 +253,15 @@ export class Task {
     }
 
     this.isActive = false;
-    this.clearTimeout();
+    this.clearTaskTimeout();
 
     // Deactivate all agents
-    for (const [agentName] of this.agents) {
+    for (const [agentName] of this.agentProcesses) {
       this.updateAgentState(agentName, false);
     }
 
     // Stop all queues
-    for (const a of this.agents.values()) {
+    for (const a of this.agentProcesses.values()) {
       a.queue.stop();
     }
 
@@ -216,13 +283,13 @@ export class Task {
     }
 
     this.isActive = false;
-    this.clearTimeout();
+    this.clearTaskTimeout();
 
-    for (const [agentName] of this.agents) {
+    for (const [agentName] of this.agentProcesses) {
       this.updateAgentState(agentName, false);
     }
 
-    for (const a of this.agents.values()) {
+    for (const a of this.agentProcesses.values()) {
       a.queue.stop();
     }
 
@@ -238,7 +305,7 @@ export class Task {
    */
   getAgentStatus(): { agent: string; active: boolean; last_activity?: string }[] {
     const statuses: { agent: string; active: boolean; last_activity?: string }[] = [];
-    for (const [agentName, agent] of this.agents) {
+    for (const [agentName, agent] of this.agentProcesses) {
       statuses.push({
         agent: agentName,
         active: agent.session.active,
@@ -261,7 +328,7 @@ export class Task {
    */
   async save(flush?: boolean): Promise<void> {
     // Sync agent sessions into metadata
-    for (const [agentName, agent] of this.agents) {
+    for (const [agentName, agent] of this.agentProcesses) {
       this.metadata.agent_sessions[agentName] = { ...agent.session };
     }
     this.metadata.updated_at = new Date().toISOString();
@@ -293,8 +360,7 @@ export class Task {
     this.budgets.interAgentMessageCount++;
     if (this.budgets.interAgentMessageCount > this.budgets.interAgentMessageLimit) {
       logger.warn('budget', `Inter-agent message limit exceeded for task ${this.taskId}`);
-      postToSlack(
-        this.taskId,
+      this.postToSlack(
         `⚠️ Inter-agent message limit exceeded (${this.budgets.interAgentMessageCount}/${this.budgets.interAgentMessageLimit}).`,
       ).catch((err: unknown) => logger.error('budget', 'Failed to post message limit warning', err));
     }
@@ -307,7 +373,7 @@ export class Task {
     }
 
     await this.ensureAgentSpawned(target);
-    const targetAgent = this.agents.get(target);
+    const targetAgent = this.agentProcesses.get(target);
     if (!targetAgent) {
       throw new Error(`No agent ${target} after spawn`);
     }
@@ -342,46 +408,38 @@ export class Task {
       `Research budget exceeded for task ${this.taskId} (${this.budgets.researchRequestCount}/${this.budgets.researchRequestLimit})`,
     );
 
-    if (hasInteractiveCallback()) {
-      const blocks = [
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: `*Research budget reached* (${this.budgets.researchRequestCount}/${this.budgets.researchRequestLimit} requests). Approve additional research?`,
+    const blocks = [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Research budget reached* (${this.budgets.researchRequestCount}/${this.budgets.researchRequestLimit} requests). Approve additional research?`,
+        },
+      },
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Approve (+5)' },
+            action_id: 'approve_research_budget',
+            value: this.taskId,
+            style: 'primary',
           },
-        },
-        {
-          type: 'actions',
-          elements: [
-            {
-              type: 'button',
-              text: { type: 'plain_text', text: 'Approve (+5)' },
-              action_id: 'approve_research_budget',
-              value: this.taskId,
-              style: 'primary',
-            },
-            {
-              type: 'button',
-              text: { type: 'plain_text', text: 'Deny' },
-              action_id: 'deny_research_budget',
-              value: this.taskId,
-              style: 'danger',
-            },
-          ],
-        },
-      ];
-      await postInteractiveToSlack(
-        this.taskId,
-        `Research budget reached (${this.budgets.researchRequestCount}/${this.budgets.researchRequestLimit} requests)`,
-        blocks,
-      ).catch((err: unknown) => logger.error('budget', 'Failed to post budget approval request', err));
-    } else {
-      await postToSlack(
-        this.taskId,
-        `Research budget reached (${this.budgets.researchRequestCount}/${this.budgets.researchRequestLimit} requests). Stopping task.`,
-      ).catch((err: unknown) => logger.error('budget', 'Failed to post budget message', err));
-    }
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Deny' },
+            action_id: 'deny_research_budget',
+            value: this.taskId,
+            style: 'danger',
+          },
+        ],
+      },
+    ];
+    await this.postInteractiveToSlack(
+      `Research budget reached (${this.budgets.researchRequestCount}/${this.budgets.researchRequestLimit} requests)`,
+      blocks,
+    ).catch((err: unknown) => logger.error('budget', 'Failed to post budget approval request', err));
 
     await this.stop();
   }
@@ -427,7 +485,7 @@ export class Task {
     if (!active && getIsShuttingDown()) return;
 
     const name = agentName as AgentName;
-    const agent = this.agents.get(name);
+    const agent = this.agentProcesses.get(name);
     if (agent) {
       agent.updateSession(active, sessionId);
     }
@@ -445,7 +503,7 @@ export class Task {
    * Ensure an agent is created and spawned.
    */
   private async ensureAgentSpawned(agentName: AgentName): Promise<void> {
-    let agent = this.agents.get(agentName);
+    let agent = this.agentProcesses.get(agentName);
 
     if (!agent) {
       const def = this.team.find((d) => d.id === agentName);
@@ -453,22 +511,33 @@ export class Task {
         throw new Error(`Unknown agent: ${agentName}`);
       }
       agent = new Agent(def);
-      this.agents.set(agentName, agent);
+      this.agentProcesses.set(agentName, agent);
     }
 
     await agent.spawn(this);
   }
 
-  private startTimeoutInterval(): void {
-    this.timeoutInterval = setInterval(async () => {
+  /**
+   * Activate the task — start timeout, mark in_progress.
+   * Called lazily on first sendMessage().
+   */
+  private activate(): void {
+    this.isActive = true;
+    this.metadata.status = 'in_progress';
+    activeTasks.set(this.taskId, this);
+    this.startTaskTimeout();
+    this.debouncedSave();
+  }
+
+  private startTaskTimeout(): void {
+    this.taskTimeoutTimer = setInterval(async () => {
       const elapsed = Date.now() - this.budgets.taskStartTime.getTime();
       if (elapsed >= this.budgets.taskTimeoutMs) {
         logger.warn(
           'budget',
           `Task ${this.taskId} exceeded wall-clock timeout (${Math.round(elapsed / 60_000)}min)`,
         );
-        await postToSlack(
-          this.taskId,
+        await this.postToSlack(
           `⏱️ Task timed out after ${Math.round(elapsed / 60_000)} minutes. Stopping task.`,
         ).catch((err: unknown) => logger.error('budget', 'Failed to post timeout message', err));
         await this.stop();
@@ -476,10 +545,10 @@ export class Task {
     }, 60_000);
   }
 
-  private clearTimeout(): void {
-    if (this.timeoutInterval) {
-      clearInterval(this.timeoutInterval);
-      this.timeoutInterval = undefined;
+  private clearTaskTimeout(): void {
+    if (this.taskTimeoutTimer) {
+      clearInterval(this.taskTimeoutTimer);
+      this.taskTimeoutTimer = undefined;
     }
   }
 
@@ -492,7 +561,7 @@ export class Task {
       this.saveTimer = undefined;
       try {
         // Sync sessions
-        for (const [agentName, agent] of this.agents) {
+        for (const [agentName, agent] of this.agentProcesses) {
           this.metadata.agent_sessions[agentName] = { ...agent.session };
         }
         this.metadata.updated_at = new Date().toISOString();
