@@ -113,9 +113,9 @@ function createPostToSlackTool(agent: Agent, task: Task) {
       const agentName = agent.def.id as AgentName;
       logger.agentToSlack(agentName, args.message);
       task.touch();
-      await task.postToSlack(args.message);
-      await appendAgentFinding(task.taskId, agentName, `→ Slack: ${args.message}`, 'decision');
-      return { content: [{ type: 'text' as const, text: `Posted to Slack: ${args.message}` }] };
+      await task.postToUser(args.message);
+      await appendAgentFinding(task.taskId, agentName, `@user ${args.message}`);
+      return { content: [{ type: 'text' as const, text: `Posted to user: ${args.message}` }] };
     },
   );
 }
@@ -186,7 +186,7 @@ function createRequestEditModeTool(agent: Agent, task: Task) {
           ],
         },
       ];
-      await task.postInteractiveToSlack(`Edit mode request: ${args.reason}`, blocks);
+      await task.postInteractiveToUser(`Edit mode request: ${args.reason}`, blocks);
 
       await task.stop();
       return { content: [{ type: 'text' as const, text: 'Edit mode request sent. Task paused pending user approval.' }] };
@@ -205,8 +205,8 @@ function createReportCompletionTool(agent: Agent, task: Task) {
       const agentName = agent.def.id as AgentName;
       if (args.message) {
         logger.agentToSlack(agentName, args.message);
-        await task.postToSlack(args.message);
-        await appendAgentFinding(task.taskId, agentName, `→ Slack: ${args.message}`, 'decision');
+        await task.postToUser(args.message);
+        await appendAgentFinding(task.taskId, agentName, `@user ${args.message}`);
       }
       logger.agentAction(agentName, 'Reporting completion', '');
       task.touch();

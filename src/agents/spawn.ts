@@ -129,11 +129,13 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     cwd = sharedPath;
     model = 'opus';
 
-    const channelInfo = metadata.slack_threads.map((t) => `#${t.channel_id}`).join(', ');
+    const channelInfo = Object.entries(metadata.channels)
+      .map(([id, ch]) => ch.type === 'slack' ? `#${ch.channel_name || ch.channel_id}` : id)
+      .join(', ') || 'CLI (no Slack channel)';
     const context = `
 Task: ${taskId}
 Status: ${metadata.status}
-Slack Channel(s): ${channelInfo}
+Channel(s): ${channelInfo}
 Task Owner: ${metadata.task_owner || 'Not assigned'}
 Participants: ${metadata.participants.join(', ') || 'None yet'}
 

@@ -11,6 +11,8 @@ import { join } from 'path';
 import type { TaskMetadata, LogEntry, FindingType, SlackFile } from '../types/index.js';
 import { activeTasks } from './task.js';
 import { SESSIONS_DIR } from '../system/workdir.js';
+import { emitEvent } from '../system/event-bus.js';
+import { logger } from '../system/logger.js';
 
 /**
  * Generate a unique task ID with human-readable date format
@@ -149,8 +151,13 @@ export async function loadMetadata(taskId: string): Promise<TaskMetadata | null>
     return null;
   }
 
-  const content = await readFile(metadataPath, 'utf-8');
-  return JSON.parse(content) as TaskMetadata;
+  try {
+    const content = await readFile(metadataPath, 'utf-8');
+    return JSON.parse(content) as TaskMetadata;
+  } catch (err) {
+    logger.warn('persistence', `Failed to parse metadata for ${taskId}: ${err}`);
+    return null;
+  }
 }
 
 /**
@@ -191,6 +198,7 @@ export async function appendSlackMessage(
   };
 
   await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
+  emitEvent('message:user_input', taskId, { source: 'slack', user: userInfo.realName, message });
 }
 
 /**
@@ -200,7 +208,7 @@ export async function appendAgentFinding(
   taskId: string,
   agentName: string,
   finding: string,
-  type: FindingType
+  type?: FindingType
 ): Promise<void> {
   const entry: LogEntry = {
     timestamp: new Date().toISOString(),
@@ -210,6 +218,7 @@ export async function appendAgentFinding(
   };
 
   await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
+  emitEvent('message:finding', taskId, { finding, type }, agentName);
 }
 
 /**
@@ -231,6 +240,23 @@ export async function appendGitHubEvent(
 }
 
 /**
+ * Append a CLI user message to the knowledge log
+ */
+export async function appendCliMessage(
+  taskId: string,
+  message: string,
+): Promise<void> {
+  const entry: LogEntry = {
+    timestamp: new Date().toISOString(),
+    source: 'cli',
+    message,
+  };
+
+  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
+  emitEvent('message:user_input', taskId, { source: 'cli', message });
+}
+
+/**
  * Read the knowledge log
  */
 export async function readKnowledgeLog(taskId: string): Promise<string> {
@@ -248,11 +274,12 @@ export async function readKnowledgeLog(taskId: string): Promise<string> {
  * Checks in-memory active tasks first (instant), then scans disk.
  */
 export async function findTaskByThread(threadId: string): Promise<string | null> {
-  // Fast: check in-memory active tasks
+  // Fast: check in-memory active tasks (channels keyed by channel ID containing thread_id)
   for (const [taskId, runtime] of activeTasks.entries()) {
-    if (runtime.metadata.slack_threads.some((t) => t.thread_id === threadId)) {
-      return taskId;
-    }
+    const found = Object.values(runtime.metadata.channels).some(
+      (ch) => ch.type === 'slack' && ch.thread_id === threadId
+    );
+    if (found) return taskId;
   }
 
   // Disk: grep metadata files not loaded in memory
@@ -351,6 +378,25 @@ export async function findTasksByStatus(
     if (!taskIdMatch) continue;
 
     const metadata = await loadMetadata(taskIdMatch[0]);
+    if (metadata) tasks.push(metadata);
+  }
+
+  return tasks;
+}
+
+/**
+ * Find all tasks on disk (any status). Reads every metadata.json in sessions dir.
+ */
+export async function findAllTasks(): Promise<TaskMetadata[]> {
+  await ensureSessionsDir();
+
+  const { readdirSync } = await import('fs');
+  const dirs = readdirSync(SESSIONS_DIR, { withFileTypes: true });
+  const tasks: TaskMetadata[] = [];
+
+  for (const dir of dirs) {
+    if (!dir.isDirectory() || !dir.name.startsWith('task-')) continue;
+    const metadata = await loadMetadata(dir.name);
     if (metadata) tasks.push(metadata);
   }
 

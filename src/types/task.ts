@@ -35,6 +35,32 @@ export interface SlackThread {
   currentMessageTs: string;
 }
 
+// ---- Channel types (replace slack_threads) ----
+
+export type ChannelType = 'slack' | 'github';
+
+export interface ChannelBase {
+  type: ChannelType;
+}
+
+/** Slack channel — wraps a specific thread in a Slack channel */
+export interface SlackChannel extends ChannelBase {
+  type: 'slack';
+  thread_id: string;
+  channel_id: string;
+  channel_name: string;
+  last_processed_ts: string;
+}
+
+/** GitHub channel — a PR conversation */
+export interface GitHubChannel extends ChannelBase {
+  type: 'github';
+  repo: string;
+  pr_number: number;
+}
+
+export type Channel = SlackChannel | GitHubChannel;
+
 export interface RepositoryInfo {
   path: string;
   branch?: string;
@@ -60,7 +86,9 @@ export interface TaskMetadata {
   task_id: string;
   task_owner: AgentName | null;
   participants: AgentName[];
-  slack_threads: SlackThreadRef[];
+  channels: Record<string, Channel>;   // Active message delivery targets, keyed by channel ID
+  default_channel: string | null;      // Channel ID of the originating channel (null for CLI-originated tasks)
+  slack_threads?: SlackThreadRef[];    // Legacy — only present on old tasks loaded from disk, removed after migration
   agent_sessions: Record<string, AgentSessionState | string>; // union handles legacy string values on disk
   repositories: Record<string, RepositoryInfo>;
   status: TaskStatus;

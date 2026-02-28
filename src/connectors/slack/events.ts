@@ -281,8 +281,10 @@ async function handleSlackEvent(event: {
       const task = await Task.get(triageResult.task_id);
       const { linkedNewThread } = await task.append(thread);
       if (linkedNewThread) {
-        const ref = task.metadata.slack_threads.find(t => t.thread_id === thread.threadId);
-        if (ref) await postToThreads([ref], 'Got it, I\'ve linked this to the ongoing investigation.');
+        await postToThreads(
+          [{ thread_id: thread.threadId, channel_id: thread.channel.id, last_processed_ts: thread.currentMessageTs }],
+          'Got it, I\'ve linked this to the ongoing investigation.',
+        );
       }
       await task.sendMessage(AGENT_PROMPTS.existingTask);
       break;
@@ -290,9 +292,8 @@ async function handleSlackEvent(event: {
     case 'cancel_task': {
       if (!triageResult.task_id) break;
       const task = await Task.get(triageResult.task_id);
-      const threads = [...task.metadata.slack_threads];
+      await task.postToUser('Work stopped. All progress has been saved and can be resumed if needed.');
       await task.stop();
-      await postToThreads(threads, 'Work stopped. All progress has been saved and can be resumed if needed.');
       break;
     }
     case 'noop':

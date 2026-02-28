@@ -8,7 +8,7 @@
 import { mkdir, writeFile, symlink } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import type { AgentName, SlackThreadRef, SlackThread, TaskMetadata } from '../types/task.js';
+import type { AgentName, SlackChannel, SlackThread, TaskMetadata } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
 
 /**
@@ -44,6 +44,7 @@ import { refreshPlugins } from '../system/workdir.js';
 import { postToThreads, postInteractiveToThreads } from '../connectors/slack/client.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
+import { emitEvent } from '../system/event-bus.js';
 
 // ---- Global state ----
 
@@ -64,7 +65,6 @@ export class Task {
 
   private constructor(taskId: string, metadata: TaskMetadata, team: AgentDef[]) {
     this.taskId = taskId;
-    this.metadata = metadata;
     this.team = team;
     this.budgets = {
       researchRequestCount: metadata.research_request_count ?? 0,
@@ -74,6 +74,28 @@ export class Task {
       taskStartTime: new Date(),
       taskTimeoutMs: 1_800_000, // 30 minutes
     };
+
+    // Migrate legacy slack_threads → channels
+    if (metadata.slack_threads?.length && !metadata.channels) {
+      metadata.channels = {};
+      for (const ref of metadata.slack_threads) {
+        const id = `slack:${ref.channel_id}:${ref.thread_id}`;
+        metadata.channels[id] = {
+          type: 'slack',
+          thread_id: ref.thread_id,
+          channel_id: ref.channel_id,
+          channel_name: '',
+          last_processed_ts: ref.last_processed_ts,
+        };
+        metadata.default_channel ??= id;
+      }
+      delete metadata.slack_threads;
+    }
+    // Ensure channels/default_channel exist on metadata
+    metadata.channels ??= {};
+    metadata.default_channel ??= null;
+
+    this.metadata = metadata;
   }
 
   // ---- Static factory methods ----
@@ -124,7 +146,8 @@ export class Task {
       task_id: taskId,
       task_owner: null,
       participants: [],
-      slack_threads: [],
+      channels: {},
+      default_channel: null,
       agent_sessions: {},
       repositories,
       status: 'in_progress',
@@ -136,6 +159,7 @@ export class Task {
     await writeFile(getKnowledgeLogPath(taskId), '');
 
     logger.system(`Created task ${taskId}`);
+    emitEvent('task:created', taskId);
 
     const task = new Task(taskId, metadata, team);
     return task;
@@ -181,23 +205,24 @@ export class Task {
 
   /**
    * Append a Slack thread's messages to this task.
-   * If the thread is new, links it and appends all messages.
+   * If the thread is new, links it as a channel and appends all messages.
    * If already linked, appends only messages newer than last_processed_ts.
    * Returns whether a new thread was linked.
    */
   async append(thread: SlackThread): Promise<{ linkedNewThread: boolean }> {
-    const existingThread = this.metadata.slack_threads.find(
-      (t: SlackThreadRef) => t.thread_id === thread.threadId
-    );
+    const channelId = `slack:${thread.channel.id}:${thread.threadId}`;
+    const existing = this.metadata.channels[channelId] as SlackChannel | undefined;
 
-    if (!existingThread) {
-      // New thread — link it and append all messages
-      const ref: SlackThreadRef = {
+    if (!existing) {
+      // New thread — link it as a channel and append all messages
+      this.metadata.channels[channelId] = {
+        type: 'slack',
         thread_id: thread.threadId,
         channel_id: thread.channel.id,
+        channel_name: thread.channel.name,
         last_processed_ts: thread.currentMessageTs,
       };
-      this.metadata.slack_threads.push(ref);
+      this.metadata.default_channel ??= channelId;
 
       for (const msg of thread.messages) {
         const downloadedFiles = msg.files ? await downloadMessageFiles(this.taskId, msg.files) : undefined;
@@ -209,38 +234,61 @@ export class Task {
     }
 
     // Existing thread — only append messages newer than last_processed_ts
-    const lastProcessedTs = existingThread.last_processed_ts;
+    const lastProcessedTs = existing.last_processed_ts;
     for (const msg of thread.messages) {
       if (msg.ts <= lastProcessedTs) continue;
       const downloadedFiles = msg.files ? await downloadMessageFiles(this.taskId, msg.files) : undefined;
       await appendSlackMessage(this.taskId, thread.channel, thread.threadId, msg.user, msg.text, downloadedFiles);
     }
 
-    existingThread.last_processed_ts = thread.currentMessageTs;
+    existing.last_processed_ts = thread.currentMessageTs;
     this.debouncedSave();
     return { linkedNewThread: false };
   }
 
   /**
-   * Post a message to all Slack threads linked to this task.
+   * Post a message to the user via the default channel.
+   * Always emits an event (so CLI sees it via SSE). If the default channel
+   * is a Slack thread, also posts there.
    */
-  async postToSlack(message: string): Promise<void> {
-    if (this.metadata.slack_threads.length > 0) {
-      await postToThreads(this.metadata.slack_threads, message);
+  async postToUser(message: string): Promise<void> {
+    emitEvent('message:to_user', this.taskId, { message });
+
+    const slackRefs = this.getSlackThreadRefs();
+    if (slackRefs.length > 0) {
+      await postToThreads(slackRefs, message);
     } else {
       logger.slack(`POST: ${message}`);
     }
   }
 
   /**
-   * Post an interactive message (with blocks) to all Slack threads linked to this task.
+   * Post an interactive message (with blocks) to the user.
+   * Always emits an approval:requested event (so CLI sees it).
+   * If Slack channels exist, also posts interactive message there.
    */
-  async postInteractiveToSlack(text: string, blocks: unknown[]): Promise<void> {
-    if (this.metadata.slack_threads.length > 0) {
-      await postInteractiveToThreads(this.metadata.slack_threads, text, blocks);
+  async postInteractiveToUser(text: string, blocks: unknown[]): Promise<void> {
+    emitEvent('approval:requested', this.taskId, { text });
+
+    const slackRefs = this.getSlackThreadRefs();
+    if (slackRefs.length > 0) {
+      await postInteractiveToThreads(slackRefs, text, blocks);
     } else {
       logger.slack(`POST (interactive): ${text}`);
     }
+  }
+
+  /**
+   * Extract SlackThreadRef[] from channels for posting via Slack client.
+   */
+  private getSlackThreadRefs(): { thread_id: string; channel_id: string; last_processed_ts: string }[] {
+    return Object.values(this.metadata.channels)
+      .filter((ch): ch is SlackChannel => ch.type === 'slack')
+      .map((ch) => ({
+        thread_id: ch.thread_id,
+        channel_id: ch.channel_id,
+        last_processed_ts: ch.last_processed_ts,
+      }));
   }
 
   /**
@@ -271,6 +319,7 @@ export class Task {
 
     activeTasks.delete(this.taskId);
     logger.system(`Task ${this.taskId} stopped`);
+    emitEvent('task:stopped', this.taskId);
   }
 
   /**
@@ -298,6 +347,7 @@ export class Task {
 
     activeTasks.delete(this.taskId);
     logger.system(`Task ${this.taskId} completed`);
+    emitEvent('task:completed', this.taskId);
   }
 
   /**
@@ -360,7 +410,7 @@ export class Task {
     this.budgets.interAgentMessageCount++;
     if (this.budgets.interAgentMessageCount > this.budgets.interAgentMessageLimit) {
       logger.warn('budget', `Inter-agent message limit exceeded for task ${this.taskId}`);
-      this.postToSlack(
+      this.postToUser(
         `⚠️ Inter-agent message limit exceeded (${this.budgets.interAgentMessageCount}/${this.budgets.interAgentMessageLimit}).`,
       ).catch((err: unknown) => logger.error('budget', 'Failed to post message limit warning', err));
     }
@@ -436,7 +486,7 @@ export class Task {
         ],
       },
     ];
-    await this.postInteractiveToSlack(
+    await this.postInteractiveToUser(
       `Research budget reached (${this.budgets.researchRequestCount}/${this.budgets.researchRequestLimit} requests)`,
       blocks,
     ).catch((err: unknown) => logger.error('budget', 'Failed to post budget approval request', err));
@@ -490,6 +540,7 @@ export class Task {
       agent.updateSession(active, sessionId);
     }
 
+    emitEvent(active ? 'agent:active' : 'agent:inactive', this.taskId, {}, name);
     this.debouncedSave();
 
     if (!active) {
@@ -537,7 +588,7 @@ export class Task {
           'budget',
           `Task ${this.taskId} exceeded wall-clock timeout (${Math.round(elapsed / 60_000)}min)`,
         );
-        await this.postToSlack(
+        await this.postToUser(
           `⏱️ Task timed out after ${Math.round(elapsed / 60_000)} minutes. Stopping task.`,
         ).catch((err: unknown) => logger.error('budget', 'Failed to post timeout message', err));
         await this.stop();

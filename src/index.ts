@@ -15,6 +15,7 @@ import type { Application, Request, Response } from 'express';
 
 import { mountSlackApp } from './connectors/slack/events.js';
 import { mountGitHubWebhook } from './connectors/github/events.js';
+import { mountApiRoutes } from './connectors/api/routes.js';
 import { getIsShuttingDown, setShuttingDown } from './system/shutdown.js';
 import { getActiveTaskIds } from './tasks/task.js';
 import { logger } from './system/logger.js';
@@ -132,6 +133,9 @@ async function main(): Promise<void> {
         activeTasks: getActiveTaskIds().length,
       });
     });
+
+    // Mount API routes (REST + SSE for CLI)
+    mountApiRoutes(app);
 
     // Mount GitHub webhook (if configured)
     if (config.githubWebhookSecret) {
