@@ -6,12 +6,14 @@
  */
 
 import { mkdir, readFile, writeFile, appendFile } from 'fs/promises';
-import { existsSync } from 'fs';
+import { createReadStream, existsSync } from 'fs';
+import { createInterface } from 'readline';
 import { join } from 'path';
 import type { TaskMetadata, LogEntry, FindingType, SlackFile } from '../types/index.js';
+import type { SystemEvent } from '../system/event-bus.js';
 import { activeTasks } from './task.js';
 import { SESSIONS_DIR } from '../system/workdir.js';
-import { emitEvent } from '../system/event-bus.js';
+import { emitEvent, onEvent } from '../system/event-bus.js';
 import { logger } from '../system/logger.js';
 
 /**
@@ -198,7 +200,7 @@ export async function appendSlackMessage(
   };
 
   await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
-  emitEvent('message:user_input', taskId, { source: 'slack', user: userInfo.realName, message });
+  emitEvent('message', taskId, { from: userInfo.realName, to: 'pm-agent', message });
 }
 
 /**
@@ -218,7 +220,42 @@ export async function appendAgentFinding(
   };
 
   await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
-  emitEvent('message:finding', taskId, { finding, type }, agentName);
+  emitEvent('agent:log', taskId, { finding, type }, agentName);
+}
+
+/**
+ * Append a user-facing message to the knowledge log (no event — caller emits)
+ */
+export async function appendMessageToUser(
+  taskId: string,
+  agentName: string,
+  message: string,
+): Promise<void> {
+  const entry: LogEntry = {
+    timestamp: new Date().toISOString(),
+    source: agentName,
+    message: `@user ${message}`,
+  };
+  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
+}
+
+/**
+ * Append an inter-agent message to the knowledge log
+ */
+export async function appendAgentMessage(
+  taskId: string,
+  fromAgent: string,
+  toAgent: string,
+  message: string,
+): Promise<void> {
+  const entry: LogEntry = {
+    timestamp: new Date().toISOString(),
+    source: fromAgent,
+    message: `→ ${toAgent}: ${message}`,
+  };
+
+  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
+  emitEvent('message', taskId, { from: fromAgent, to: toAgent, message });
 }
 
 /**
@@ -237,6 +274,7 @@ export async function appendGitHubEvent(
   };
 
   await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
+  emitEvent('message', taskId, { from: `github:${repoKey}`, to: 'pm-agent', message });
 }
 
 /**
@@ -253,7 +291,7 @@ export async function appendCliMessage(
   };
 
   await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
-  emitEvent('message:user_input', taskId, { source: 'cli', message });
+  emitEvent('message', taskId, { from: 'user', to: 'pm-agent', message });
 }
 
 /**
@@ -403,4 +441,67 @@ export async function findAllTasks(): Promise<TaskMetadata[]> {
   return tasks;
 }
 
+// ---- Event JSONL persistence ----
 
+/**
+ * Get the path to a task's events log (JSONL)
+ */
+export function getEventsLogPath(taskId: string): string {
+  return join(getSharedPath(taskId), 'events.jsonl');
+}
+
+/**
+ * Serialized write queues per task — ensures event ordering.
+ */
+const writeQueues = new Map<string, Promise<void>>();
+
+/**
+ * Append a system event to the task's events.jsonl (fire-and-forget).
+ */
+export async function appendEvent(event: SystemEvent): Promise<void> {
+  const prev = writeQueues.get(event.taskId) ?? Promise.resolve();
+  const next = prev.then(async () => {
+    try {
+      const dir = getSharedPath(event.taskId);
+      if (!existsSync(dir)) return;
+      await appendFile(getEventsLogPath(event.taskId), JSON.stringify(event) + '\n');
+    } catch (err) {
+      logger.warn('events', `Failed to persist event for ${event.taskId}: ${err}`);
+    }
+  });
+  writeQueues.set(event.taskId, next);
+}
+
+/**
+ * Read events from a task's events.jsonl, streaming line-by-line.
+ * Skips `after` lines so the caller only gets new events.
+ */
+export async function readEvents(
+  taskId: string,
+  after?: number,
+): Promise<{ events: SystemEvent[]; total: number }> {
+  const eventsPath = getEventsLogPath(taskId);
+  if (!existsSync(eventsPath)) return { events: [], total: 0 };
+
+  const events: SystemEvent[] = [];
+  let lineNum = 0;
+  const start = after ?? 0;
+
+  const rl = createInterface({ input: createReadStream(eventsPath), crlfDelay: Infinity });
+  for await (const line of rl) {
+    if (!line.trim()) continue;
+    if (lineNum++ < start) continue;
+    try { events.push(JSON.parse(line)); }
+    catch { /* skip malformed */ }
+  }
+
+  return { events, total: lineNum };
+}
+
+/**
+ * Subscribe to all system events and persist them to JSONL.
+ * Call once at startup after initRegistry().
+ */
+export function initEventPersistence(): void {
+  onEvent((event: SystemEvent) => { void appendEvent(event); });
+}

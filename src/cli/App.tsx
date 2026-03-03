@@ -16,6 +16,7 @@ export function App() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [lastEvent, setLastEvent] = useState<any>(null);
   const disconnectRef = useRef<(() => void) | null>(null);
 
   const refresh = useCallback(() => {
@@ -27,11 +28,15 @@ export function App() {
     const disconnect = connectSSE({
       taskId: view === 'detail' && selectedTaskId ? selectedTaskId : undefined,
       onEvent: (event) => {
-        // Refresh data on relevant events
-        if (event.type?.startsWith('task:') ||
-            event.type?.startsWith('agent:') ||
-            event.type?.startsWith('message:') ||
-            event.type?.startsWith('approval:')) {
+        if (event.type === 'connected') return;
+
+        // For detail view: pass event directly to TaskDetail
+        if (view === 'detail') {
+          setLastEvent(event);
+        }
+
+        // For list view: refresh on task-level events
+        if (view === 'list' && event.type?.startsWith('task:')) {
           refresh();
         }
       },
@@ -51,12 +56,14 @@ export function App() {
   });
 
   const handleSelectTask = (taskId: string) => {
+    setLastEvent(null);
     setSelectedTaskId(taskId);
     setView('detail');
   };
 
   const handleBack = () => {
     setSelectedTaskId(null);
+    setLastEvent(null);
     setView('list');
   };
 
@@ -67,6 +74,7 @@ export function App() {
   const handleCreateTask = async (message: string) => {
     try {
       const taskId = await createTask(message);
+      setLastEvent(null);
       setSelectedTaskId(taskId);
       setView('detail');
     } catch {
@@ -98,7 +106,8 @@ export function App() {
           <TaskDetail
             taskId={selectedTaskId}
             onBack={handleBack}
-            refreshTrigger={refreshTrigger}
+            onEvent={lastEvent}
+            onConnect={connected}
           />
         )}
         {view === 'create' && (

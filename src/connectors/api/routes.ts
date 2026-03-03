@@ -18,6 +18,7 @@ import {
   readKnowledgeLog,
   loadMetadata,
   appendCliMessage,
+  readEvents,
 } from '../../tasks/persistence.js';
 import { SESSIONS_DIR } from '../../system/workdir.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
@@ -119,6 +120,19 @@ export function mountApiRoutes(app: Application): void {
     }
   });
 
+  // ---- GET /tasks/:id/events — event log (JSONL replay) ----
+
+  router.get('/tasks/:id/events', async (req: Request, res: Response) => {
+    try {
+      const after = req.query.after ? parseInt(req.query.after as string, 10) : undefined;
+      const result = await readEvents(req.params.id, after);
+      res.json(result);
+    } catch (error) {
+      logger.error('api', 'Failed to read events', error);
+      res.status(500).json({ error: 'Failed to read events' });
+    }
+  });
+
   // ---- POST /tasks — create task from CLI ----
 
   router.post('/tasks', async (req: Request, res: Response) => {
@@ -152,7 +166,6 @@ export function mountApiRoutes(app: Application): void {
       }
 
       await appendCliMessage(taskId, message);
-      emitEvent('message:user_input', taskId, { message, source: 'cli' });
 
       const task = await Task.get(taskId);
       await task.sendMessage(AGENT_PROMPTS.existingTask);

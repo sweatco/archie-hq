@@ -24,6 +24,7 @@ import { initPlugins, getPlugins } from './system/plugin-loader.js';
 import { initRegistry, getAllAgentDefs } from './agents/registry.js';
 import { configureGitIdentity } from './connectors/github/client.js';
 import { recoverActiveTasks } from './tasks/recovery.js';
+import { initEventPersistence } from './tasks/persistence.js';
 
 /**
  * Application configuration
@@ -83,6 +84,7 @@ async function main(): Promise<void> {
     // Initialize modules
     initPlugins();
     initRegistry();
+    initEventPersistence();
 
     // Clone repos declared by plugins
     const agentDefs = getAllAgentDefs();

@@ -43,6 +43,18 @@ export async function sendMessage(taskId: string, message: string): Promise<void
   if (!res.ok) throw new Error(`Failed to send message: ${res.status}`);
 }
 
+export async function fetchTaskEvents(
+  taskId: string,
+  after?: number,
+): Promise<{ events: any[]; total: number }> {
+  const url = after !== undefined
+    ? `${getBaseUrl()}/api/tasks/${taskId}/events?after=${after}`
+    : `${getBaseUrl()}/api/tasks/${taskId}/events`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch events: ${res.status}`);
+  return res.json() as Promise<{ events: any[]; total: number }>;
+}
+
 export async function sendApproval(
   taskId: string,
   type: 'edit_mode' | 'research_budget',

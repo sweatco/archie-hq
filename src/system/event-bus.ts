@@ -8,9 +8,9 @@
 import { EventEmitter } from 'events';
 
 export type EventType =
-  | 'task:created' | 'task:stopped' | 'task:completed'
+  | 'task:created' | 'task:resumed' | 'task:stopped' | 'task:completed'
   | 'agent:active' | 'agent:inactive'
-  | 'message:to_user' | 'message:agent' | 'message:finding' | 'message:user_input'
+  | 'message' | 'agent:log'
   | 'approval:requested' | 'approval:resolved';
 
 export interface SystemEvent {

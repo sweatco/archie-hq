@@ -28,6 +28,8 @@ import {
   loadMetadata,
   getMetadataPath,
   appendAgentFinding,
+  appendAgentMessage,
+  appendMessageToUser,
   appendSlackMessage,
   downloadMessageFiles,
   ensureSessionsDir,
@@ -251,8 +253,10 @@ export class Task {
    * Always emits an event (so CLI sees it via SSE). If the default channel
    * is a Slack thread, also posts there.
    */
-  async postToUser(message: string): Promise<void> {
-    emitEvent('message:to_user', this.taskId, { message });
+  async postToUser(message: string, agentName?: string): Promise<void> {
+    const sender = agentName || 'system';
+    emitEvent('message', this.taskId, { from: sender, to: 'user', message });
+    await appendMessageToUser(this.taskId, sender, message);
 
     const slackRefs = this.getSlackThreadRefs();
     if (slackRefs.length > 0) {
@@ -267,8 +271,8 @@ export class Task {
    * Always emits an approval:requested event (so CLI sees it).
    * If Slack channels exist, also posts interactive message there.
    */
-  async postInteractiveToUser(text: string, blocks: unknown[]): Promise<void> {
-    emitEvent('approval:requested', this.taskId, { text });
+  async postInteractiveToUser(text: string, blocks: unknown[], approvalType: 'edit_mode' | 'research_budget'): Promise<void> {
+    emitEvent('approval:requested', this.taskId, { text, approvalType });
 
     const slackRefs = this.getSlackThreadRefs();
     if (slackRefs.length > 0) {
@@ -303,17 +307,11 @@ export class Task {
     this.isActive = false;
     this.clearTaskTimeout();
 
-    // Deactivate all agents
-    for (const [agentName] of this.agentProcesses) {
-      this.updateAgentState(agentName, false);
-    }
-
-    // Stop all queues
+    // Stop all queues — agent:inactive emitted by Stop hook / crash handler
     for (const a of this.agentProcesses.values()) {
       a.queue.stop();
     }
 
-    // Final write
     this.metadata.status = 'stopped';
     await this.save(true);
 
@@ -334,10 +332,7 @@ export class Task {
     this.isActive = false;
     this.clearTaskTimeout();
 
-    for (const [agentName] of this.agentProcesses) {
-      this.updateAgentState(agentName, false);
-    }
-
+    // Stop all queues — agent:inactive emitted by Stop hook / crash handler
     for (const a of this.agentProcesses.values()) {
       a.queue.stop();
     }
@@ -415,7 +410,7 @@ export class Task {
       ).catch((err: unknown) => logger.error('budget', 'Failed to post message limit warning', err));
     }
 
-    await appendAgentFinding(this.taskId, fromAgent, `→ ${target}: ${message}`, 'decision');
+    await appendAgentMessage(this.taskId, fromAgent, target, message);
 
     if (!this.isActive) {
       logger.warn('task', `Task ${this.taskId} is inactive but ${fromAgent} is sending message`);
@@ -489,6 +484,7 @@ export class Task {
     await this.postInteractiveToUser(
       `Research budget reached (${this.budgets.researchRequestCount}/${this.budgets.researchRequestLimit} requests)`,
       blocks,
+      'research_budget',
     ).catch((err: unknown) => logger.error('budget', 'Failed to post budget approval request', err));
 
     await this.stop();
@@ -536,6 +532,10 @@ export class Task {
 
     const name = agentName as AgentName;
     const agent = this.agentProcesses.get(name);
+
+    // Idempotency: skip if agent is already in the requested state (no sessionId update needed)
+    if (agent && agent.session.active === active && !sessionId) return;
+
     if (agent) {
       agent.updateSession(active, sessionId);
     }
@@ -577,6 +577,7 @@ export class Task {
     this.metadata.status = 'in_progress';
     activeTasks.set(this.taskId, this);
     this.startTaskTimeout();
+    emitEvent('task:resumed', this.taskId);
     this.debouncedSave();
   }
 
