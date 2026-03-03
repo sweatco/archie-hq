@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Box, Text, useInput, useStdout } from 'ink';
+import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import { ScrollView, type ScrollViewRef } from 'ink-scroll-view';
 import { fetchTaskDetail, fetchTaskEvents, sendMessage, sendApproval } from '../api.js';
 import { MessageInput } from './MessageInput.js';
@@ -56,6 +56,7 @@ function formatEvent(event: SystemEvent): React.ReactNode | null {
 }
 
 export function TaskDetail({ taskId, onBack, onEvent, onConnect }: TaskDetailProps) {
+  const { exit } = useApp();
   const { stdout } = useStdout();
   const termHeight = stdout?.rows ?? 24;
   const [agents, setAgents] = useState<AgentStatus[]>([]);
@@ -166,21 +167,21 @@ export function TaskDetail({ taskId, onBack, onEvent, onConnect }: TaskDetailPro
     }
   }, [onConnect, taskId, eventCursor]);
 
-  // Total focusable items: 1 (input) + pending approvals
-  const focusableCount = 1 + pendingApprovals.length;
+  // Total focusable items: 1 (input) + pending approvals + 1 (unfocused/scroll mode)
+  // focusIndex: 0 = input, 1..N = approvals, N+1 = unfocused
+  const focusableCount = 1 + pendingApprovals.length + 1;
+  const unfocusedIndex = focusableCount - 1;
 
   useInput((input, key) => {
     if (key.escape) {
-      if (focusIndex === 0) {
-        onBack();
-      } else {
-        setFocusIndex(0);
-      }
+      onBack();
     } else if (key.tab) {
       setFocusIndex((prev) => (prev + 1) % focusableCount);
     } else if (focusIndex === 0) {
-      // Input is focused — scroll with arrows when not typing
-      // (MessageInput handles its own input when active)
+      // Input is focused — MessageInput handles its own input (q is just a letter here)
+    } else if (focusIndex === unfocusedIndex) {
+      // Unfocused / scroll mode
+      if (input === 'q' || input === 'Q') exit();
     } else {
       // Approval line is focused — y/n to respond
       const approvalIdx = focusIndex - 1;

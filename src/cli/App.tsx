@@ -50,6 +50,7 @@ export function App() {
 
   useInput((input, key) => {
     if (view === 'create') return; // create view captures input
+    if (view === 'detail') return; // detail view handles its own navigation (esc to go back)
     if (input === 'q' || input === 'Q') {
       exit();
     }
