@@ -397,7 +397,16 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
         } catch (error) {
           if (sessionId && !hasRetried) {
             logger.warn(def.id, `Agent failed with session ${sessionId}, retrying fresh`);
-            recoverable.reset();
+            try {
+              recoverable.reset();
+            } catch {
+              // Queue was stopped (task completed/stopped) — bail out
+              return;
+            }
+            // Clear bad session from both agent and metadata so nuclear recovery
+            // doesn't reload and retry it after a stop/restart cycle
+            agent.session.session_id = undefined;
+            task.metadata.agent_sessions[def.id] = { active: false };
             sessionId = undefined;
             hasRetried = true;
             continue;
