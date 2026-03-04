@@ -39,7 +39,8 @@ export function mountApiRoutes(app: Application): void {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no', // disable nginx/proxy buffering for SSE
     });
 
     // Send initial connected event
