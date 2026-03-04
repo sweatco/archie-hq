@@ -24,7 +24,8 @@ import { Task } from '../../tasks/task.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
 import { getIsShuttingDown } from '../../system/shutdown.js';
-import { triageSlackMessage } from '../../system/triage.js';
+import { findTaskByThread } from '../../tasks/persistence.js';
+// import { triageSlackMessage } from '../../system/triage.js';
 
 /**
  * Slack configuration
@@ -267,37 +268,40 @@ async function handleSlackEvent(event: {
 
   logger.system(`Processing #${thread.channel.name} (thread: ${threadId})`);
 
-  const triageResult = await triageSlackMessage(thread);
-
-  switch (triageResult.action) {
-    case 'new_task': {
-      const task = await Task.create();
-      await task.append(thread);
-      await task.sendMessage(AGENT_PROMPTS.newTask);
-      break;
-    }
-    case 'existing_task': {
-      if (!triageResult.task_id) break;
-      const task = await Task.get(triageResult.task_id);
-      const { linkedNewThread } = await task.append(thread);
-      if (linkedNewThread) {
-        await postToThreads(
-          [{ thread_id: thread.threadId, channel_id: thread.channel.id, last_processed_ts: thread.currentMessageTs }],
-          'Got it, I\'ve linked this to the ongoing investigation.',
-        );
-      }
-      await task.sendMessage(AGENT_PROMPTS.existingTask);
-      break;
-    }
-    case 'cancel_task': {
-      if (!triageResult.task_id) break;
-      const task = await Task.get(triageResult.task_id);
-      await task.postToUser('Work stopped. All progress has been saved and can be resumed if needed.');
-      await task.stop();
-      break;
-    }
-    case 'noop':
-      logger.system('Triage: noop');
-      break;
-  }
+  // const triageResult = await triageSlackMessage(thread);
+  // switch (triageResult.action) {
+  //   case 'new_task': {
+  //     const task = await Task.create();
+  //     await task.append(thread);
+  //     await task.sendMessage(AGENT_PROMPTS.newTask);
+  //     break;
+  //   }
+  //   case 'existing_task': {
+  //     if (!triageResult.task_id) break;
+  //     const task = await Task.get(triageResult.task_id);
+  //     const { linkedNewThread } = await task.append(thread);
+  //     if (linkedNewThread) {
+  //       await postToThreads(
+  //         [{ thread_id: thread.threadId, channel_id: thread.channel.id, last_processed_ts: thread.currentMessageTs }],
+  //         'Got it, I\'ve linked this to the ongoing investigation.',
+  //       );
+  //     }
+  //     await task.sendMessage(AGENT_PROMPTS.existingTask);
+  //     break;
+  //   }
+  //   case 'cancel_task': {
+  //     if (!triageResult.task_id) break;
+  //     const task = await Task.get(triageResult.task_id);
+  //     await task.postToUser('Work stopped. All progress has been saved and can be resumed if needed.');
+  //     await task.stop();
+  //     break;
+  //   }
+  //   case 'noop':
+  //     logger.system('Triage: noop');
+  //     break;
+  // }
+  const taskId = await findTaskByThread(threadId);
+  const task = taskId ? await Task.get(taskId) : await Task.create();
+  await task.append(thread);
+  await task.sendMessage(taskId ? AGENT_PROMPTS.existingTask : AGENT_PROMPTS.newTask);
 }
