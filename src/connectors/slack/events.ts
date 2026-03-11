@@ -301,7 +301,16 @@ async function handleSlackEvent(event: {
   //     break;
   // }
   const taskId = await findTaskByThread(threadId);
-  const task = taskId ? await Task.get(taskId) : await Task.create();
-  await task.append(thread);
-  await task.sendMessage(taskId ? AGENT_PROMPTS.existingTask : AGENT_PROMPTS.newTask);
+  if (taskId) {
+    // Thread reply to an existing task — route to it
+    const task = await Task.get(taskId);
+    await task.append(thread);
+    await task.sendMessage(AGENT_PROMPTS.existingTask);
+  } else if (event.type === 'app_mention') {
+    // Bot was @mentioned — start a new task
+    const task = await Task.create();
+    await task.append(thread);
+    await task.sendMessage(AGENT_PROMPTS.newTask);
+  }
+  // Otherwise: thread reply in a thread the bot was never part of — ignore
 }
