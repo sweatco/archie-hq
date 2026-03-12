@@ -241,18 +241,21 @@ export class GitHubClient {
   /**
    * Update PR description
    */
-  async updatePRDescription(githubRepo: string, prNumber: number, body: string): Promise<void> {
+  async updatePR(githubRepo: string, prNumber: number, fields: { title?: string; body?: string }): Promise<void> {
     const octokit = await this.getOctokit();
     const { owner, repo } = this.parseRepo(githubRepo);
+    const patch: Record<string, string> = {};
+    if (fields.title !== undefined) patch.title = fields.title;
+    if (fields.body !== undefined) patch.body = fields.body;
 
     await octokit.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
       owner,
       repo,
       pull_number: prNumber,
-      body,
+      ...patch,
     });
 
-    logger.system(`GitHub: Updated PR #${prNumber} description`);
+    logger.system(`GitHub: Updated PR #${prNumber}`);
   }
 
   /**

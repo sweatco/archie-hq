@@ -362,22 +362,23 @@ function createGetPRReviewsTool(agent: Agent, task: Task) {
   );
 }
 
-function createUpdatePRDescriptionTool(agent: Agent, task: Task) {
+function createUpdatePRTool(agent: Agent, task: Task) {
   return tool(
-    'update_pr_description',
-    'Update the body/description of a pull request.',
+    'update_pr',
+    'Update the title and/or description of a pull request. Both fields are optional — include only what needs to change.',
     {
       repo_key: z.enum(repoKeys()).describe('The repository'),
       pr_number: z.number().describe('The PR number'),
-      body: z.string().describe('New PR description body'),
+      title: z.string().optional().describe('New PR title'),
+      body: z.string().optional().describe('New PR description body'),
     },
     async (args) => {
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
       const def = getAgentDef(`${args.repo_key}-agent`);
       if (!def?.repo) throw new Error(`No config found for repo key: ${args.repo_key}`);
-      await client.updatePRDescription(def.repo.githubRepo, args.pr_number, args.body);
-      return { content: [{ type: 'text' as const, text: `Updated description for PR #${args.pr_number}` }] };
+      await client.updatePR(def.repo.githubRepo, args.pr_number, { title: args.title, body: args.body });
+      return { content: [{ type: 'text' as const, text: `Updated PR #${args.pr_number}` }] };
     },
   );
 }
@@ -501,7 +502,7 @@ export function createPMAgentMcpServer(agent: Agent, task: Task) {
       createPullRequestTool(agent, task),
       createGetPRStatusTool(agent, task),
       createGetPRReviewsTool(agent, task),
-      createUpdatePRDescriptionTool(agent, task),
+      createUpdatePRTool(agent, task),
       createAddPRCommentTool(agent, task),
       createAddReviewCommentTool(agent, task),
       createResolveReviewThreadTool(agent, task),

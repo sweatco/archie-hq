@@ -174,7 +174,7 @@ Files available to read (in your working directory):
             'mcp__pm-agent-tools__create_pull_request',
             'mcp__pm-agent-tools__get_pr_status',
             'mcp__pm-agent-tools__get_pr_reviews',
-            'mcp__pm-agent-tools__update_pr_description',
+            'mcp__pm-agent-tools__update_pr',
             'mcp__pm-agent-tools__add_pr_comment',
             'mcp__pm-agent-tools__add_review_comment',
             'mcp__pm-agent-tools__resolve_review_thread',
