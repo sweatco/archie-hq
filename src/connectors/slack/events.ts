@@ -86,14 +86,15 @@ export async function mountSlackApp(
     }).catch((err: unknown) => logger.error('Server', 'Error processing Slack event', err));
   });
 
-  // Handle thread messages (replies without @mention)
+  // Handle thread messages (replies without @mention) and DM messages
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app!.event('message', async ({ event }: { event: any }) => {
+    const isDm = event.channel?.startsWith('D');
+    const isThreadReply = event.thread_ts && event.thread_ts !== event.ts;
     if (
       event.type === 'message' &&
       !event.subtype &&
-      event.thread_ts &&
-      event.thread_ts !== event.ts
+      (isThreadReply || isDm)
     ) {
       const botUserId = getBotUserId();
       if (botUserId && event.text?.includes(`<@${botUserId}>`)) {
@@ -306,8 +307,8 @@ async function handleSlackEvent(event: {
     const task = await Task.get(taskId);
     await task.append(thread);
     await task.sendMessage(AGENT_PROMPTS.existingTask);
-  } else if (event.type === 'app_mention') {
-    // Bot was @mentioned — start a new task
+  } else if (event.type === 'app_mention' || event.channel.startsWith('D')) {
+    // Bot was @mentioned, or this is a DM — start a new task
     const task = await Task.create();
     await task.append(thread);
     await task.sendMessage(AGENT_PROMPTS.newTask);
