@@ -12,7 +12,9 @@
     "typecheck": "tsc --noEmit",
     "cli": "tsx src/cli/index.tsx",
     "docker:dev": "docker compose up --build",
-    "docker:stop": "docker compose down"
+    "docker:stop": "docker compose down",
+    "test": "vitest run --reporter=verbose",
+    "test:watch": "vitest"
   },
   "engines": {
     "node": ">=20.0.0"
@@ -39,6 +41,7 @@
     "@types/node": "^20.10.0",
     "@types/react": "^18.3.28",
     "tsx": "^4.7.0",
-    "typescript": "^5.3.0"
+    "typescript": "^5.3.0",
+    "vitest": "^4.1.0"
   }
 }
