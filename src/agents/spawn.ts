@@ -14,7 +14,7 @@ import { existsSync } from 'fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Agent } from './agent.js';
 import type { Task } from '../tasks/task.js';
-import { createPMAgentMcpServer, createBaseAgentMcpServer } from './tools.js';
+import { createPMAgentMcpServer, createBaseAgentMcpServer, createRepoPRMcpServer } from './tools.js';
 import { createResearchMcpServer, createResearchPostToolHook, createResearchDefenseTagHook } from '../mcp/research-tools.js';
 import { buildPeerList } from './registry.js';
 import {
@@ -168,20 +168,6 @@ Files available to read (in your working directory):
       'mcp__pm-agent-tools__report_completion',
       'mcp__pm-agent-tools__request_edit_mode',
       'mcp__pm-agent-tools__get_agents_status',
-      ...(metadata.edit_allowed
-        ? [
-            'mcp__pm-agent-tools__push_branch',
-            'mcp__pm-agent-tools__create_pull_request',
-            'mcp__pm-agent-tools__get_pr_status',
-            'mcp__pm-agent-tools__get_pr_reviews',
-            'mcp__pm-agent-tools__update_pr',
-            'mcp__pm-agent-tools__add_pr_comment',
-            'mcp__pm-agent-tools__add_review_comment',
-            'mcp__pm-agent-tools__resolve_review_thread',
-            'mcp__pm-agent-tools__request_re_review',
-            'mcp__pm-agent-tools__trigger_merge_check',
-          ]
-        : []),
       'Read',
       'Glob',
       'Grep',
@@ -243,6 +229,7 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
 
     mcpServers = {
       'repo-agent-tools': createBaseAgentMcpServer(agent, task),
+      ...(editAllowed ? { 'pr-tools': createRepoPRMcpServer(agent, task) } : {}),
       'research-tools': createResearchMcpServer({
         getTaskId: () => taskId,
         getResearchesDir: () => join(getTaskPath(taskId), 'researches'),
@@ -272,6 +259,17 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
             'Bash(git log:*)',
             'Bash(git merge:*)',
             'Bash(git restore:*)',
+            'mcp__pr-tools__push_branch',
+            'mcp__pr-tools__create_pull_request',
+            'mcp__pr-tools__get_pr_status',
+            'mcp__pr-tools__get_pr_reviews',
+            'mcp__pr-tools__update_pr',
+            'mcp__pr-tools__add_pr_comment',
+            'mcp__pr-tools__add_review_comment',
+            'mcp__pr-tools__resolve_review_thread',
+            'mcp__pr-tools__request_re_review',
+            'mcp__pr-tools__merge_pull_request',
+            'mcp__pr-tools__close_pull_request',
           ]
         : []),
     ];

@@ -16,10 +16,9 @@ import { z } from 'zod';
 import type { AgentName, FindingType } from '../types/task.js';
 import type { Task } from '../tasks/task.js';
 import type { Agent } from './agent.js';
-import { getRepoAgentIds, getAgentIds, getAgentDef } from './registry.js';
+import { getAgentIds } from './registry.js';
 import { getGitHubClient } from '../connectors/github/client.js';
 import { appendAgentFinding } from '../tasks/persistence.js';
-import { triggerMergeCheck } from '../connectors/github/merge.js';
 import { logger } from '../system/logger.js';
 
 const execAsync = promisify(exec);
@@ -51,10 +50,6 @@ export interface PRReview {
 }
 
 // ---- Tool creation helpers ----
-
-function repoKeys(): [string, ...string[]] {
-  return getRepoAgentIds().map((id) => id.replace('-agent', '')) as [string, ...string[]];
-}
 
 function allAgents(): [string, ...string[]] {
   return ['pm-agent', ...getAgentIds()] as [string, ...string[]];
@@ -239,23 +234,24 @@ function createGetAgentsStatusTool(agent: Agent, task: Task) {
   );
 }
 
-// ---- GitHub tools (PM only) ----
+// ---- GitHub tools (repo agents in edit mode) ----
 
 function createPushBranchTool(agent: Agent, task: Task) {
+  const repoKey = agent.def.repo!.repoKey;
   return tool(
     'push_branch',
     'Push commits from the local worktree to the remote origin.',
-    { repo_key: z.enum(repoKeys()).describe('The repository to push') },
-    async (args) => {
+    {},
+    async () => {
       const agentName = agent.def.id as AgentName;
-      logger.agentAction(agentName, 'Pushing branch', args.repo_key);
+      logger.agentAction(agentName, 'Pushing branch', repoKey);
 
-      const repoInfo = task.metadata.repositories[args.repo_key];
+      const repoInfo = task.metadata.repositories[repoKey];
       if (!repoInfo?.worktree_path) {
-        return { content: [{ type: 'text' as const, text: `Failed to push ${args.repo_key}: No worktree found for ${args.repo_key}` }] };
+        return { content: [{ type: 'text' as const, text: `Failed to push: No worktree found` }] };
       }
       if (!repoInfo.feature_branch) {
-        return { content: [{ type: 'text' as const, text: `Failed to push ${args.repo_key}: No feature branch found for ${args.repo_key}` }] };
+        return { content: [{ type: 'text' as const, text: `Failed to push: No feature branch found` }] };
       }
 
       try {
@@ -263,40 +259,38 @@ function createPushBranchTool(agent: Agent, task: Task) {
         await execAsync(`git push -u origin HEAD:${branch}`, { cwd: repoInfo.worktree_path });
         const message = `Pushed ${branch} to origin`;
         logger.system(`GitHub: ${message}`);
-        return { content: [{ type: 'text' as const, text: `Successfully pushed ${args.repo_key}: ${message}` }] };
+        return { content: [{ type: 'text' as const, text: `Successfully pushed: ${message}` }] };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
-        logger.error('task', `Failed to push ${args.repo_key}: ${message}`);
-        return { content: [{ type: 'text' as const, text: `Failed to push ${args.repo_key}: ${message}` }] };
+        logger.error('task', `Failed to push: ${message}`);
+        return { content: [{ type: 'text' as const, text: `Failed to push: ${message}` }] };
       }
     },
   );
 }
 
 function createPullRequestTool(agent: Agent, task: Task) {
+  const repoKey = agent.def.repo!.repoKey;
+  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'create_pull_request',
     'Create a pull request on GitHub.',
     {
-      repo_key: z.enum(repoKeys()).describe('The repository'),
       title: z.string().describe('PR title'),
       body: z.string().describe('PR description body'),
     },
     async (args) => {
       const agentName = agent.def.id as AgentName;
-      logger.agentAction(agentName, 'Creating PR', `${args.repo_key}: ${args.title}`);
+      logger.agentAction(agentName, 'Creating PR', args.title);
 
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
 
-      const def = getAgentDef(`${args.repo_key}-agent`);
-      if (!def?.repo) throw new Error(`No config found for repo key: ${args.repo_key}`);
-
-      const repoInfo = task.metadata.repositories[args.repo_key];
+      const repoInfo = task.metadata.repositories[repoKey];
       const head = repoInfo?.feature_branch || `feature/task-${task.taskId}`;
       const base = repoInfo?.base_branch || 'main';
 
-      const result = await client.createPullRequest(def.repo.githubRepo, head, base, args.title, args.body);
+      const result = await client.createPullRequest(githubRepo, head, base, args.title, args.body);
 
       if (repoInfo) {
         repoInfo.pr_number = result.pr_number;
@@ -310,19 +304,15 @@ function createPullRequestTool(agent: Agent, task: Task) {
 }
 
 function createGetPRStatusTool(agent: Agent, task: Task) {
+  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'get_pr_status',
     'Get the current status of a pull request.',
-    {
-      repo_key: z.enum(repoKeys()).describe('The repository'),
-      pr_number: z.number().describe('The PR number'),
-    },
+    { pr_number: z.number().describe('The PR number') },
     async (args) => {
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
-      const def = getAgentDef(`${args.repo_key}-agent`);
-      if (!def?.repo) throw new Error(`No config found for repo key: ${args.repo_key}`);
-      const status = await client.getPRStatus(def.repo.githubRepo, args.pr_number);
+      const status = await client.getPRStatus(githubRepo, args.pr_number);
       return {
         content: [{
           type: 'text' as const,
@@ -334,19 +324,15 @@ function createGetPRStatusTool(agent: Agent, task: Task) {
 }
 
 function createGetPRReviewsTool(agent: Agent, task: Task) {
+  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'get_pr_reviews',
     'Get all reviews and comments on a pull request.',
-    {
-      repo_key: z.enum(repoKeys()).describe('The repository'),
-      pr_number: z.number().describe('The PR number'),
-    },
+    { pr_number: z.number().describe('The PR number') },
     async (args) => {
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
-      const def = getAgentDef(`${args.repo_key}-agent`);
-      if (!def?.repo) throw new Error(`No config found for repo key: ${args.repo_key}`);
-      const reviews = await client.getPRReviews(def.repo.githubRepo, args.pr_number);
+      const reviews = await client.getPRReviews(githubRepo, args.pr_number);
       if (reviews.length === 0) {
         return { content: [{ type: 'text' as const, text: `No reviews found for PR #${args.pr_number}` }] };
       }
@@ -363,11 +349,11 @@ function createGetPRReviewsTool(agent: Agent, task: Task) {
 }
 
 function createUpdatePRTool(agent: Agent, task: Task) {
+  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'update_pr',
     'Update the title and/or description of a pull request. Both fields are optional — include only what needs to change.',
     {
-      repo_key: z.enum(repoKeys()).describe('The repository'),
       pr_number: z.number().describe('The PR number'),
       title: z.string().optional().describe('New PR title'),
       body: z.string().optional().describe('New PR description body'),
@@ -375,40 +361,36 @@ function createUpdatePRTool(agent: Agent, task: Task) {
     async (args) => {
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
-      const def = getAgentDef(`${args.repo_key}-agent`);
-      if (!def?.repo) throw new Error(`No config found for repo key: ${args.repo_key}`);
-      await client.updatePR(def.repo.githubRepo, args.pr_number, { title: args.title, body: args.body });
+      await client.updatePR(githubRepo, args.pr_number, { title: args.title, body: args.body });
       return { content: [{ type: 'text' as const, text: `Updated PR #${args.pr_number}` }] };
     },
   );
 }
 
 function createAddPRCommentTool(agent: Agent, task: Task) {
+  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'add_pr_comment',
     'Add a general comment to a pull request.',
     {
-      repo_key: z.enum(repoKeys()).describe('The repository'),
       pr_number: z.number().describe('The PR number'),
       comment: z.string().describe('The comment text'),
     },
     async (args) => {
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
-      const def = getAgentDef(`${args.repo_key}-agent`);
-      if (!def?.repo) throw new Error(`No config found for repo key: ${args.repo_key}`);
-      await client.addPRComment(def.repo.githubRepo, args.pr_number, args.comment);
+      await client.addPRComment(githubRepo, args.pr_number, args.comment);
       return { content: [{ type: 'text' as const, text: `Added comment to PR #${args.pr_number}` }] };
     },
   );
 }
 
 function createAddReviewCommentTool(agent: Agent, task: Task) {
+  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'add_review_comment',
     'Add a comment on a specific line of code in a PR.',
     {
-      repo_key: z.enum(repoKeys()).describe('The repository'),
       pr_number: z.number().describe('The PR number'),
       path: z.string().describe('File path relative to repo root'),
       line: z.number().describe('Line number in the file'),
@@ -417,67 +399,81 @@ function createAddReviewCommentTool(agent: Agent, task: Task) {
     async (args) => {
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
-      const def = getAgentDef(`${args.repo_key}-agent`);
-      if (!def?.repo) throw new Error(`No config found for repo key: ${args.repo_key}`);
-      await client.addReviewComment(def.repo.githubRepo, args.pr_number, args.path, args.line, args.comment);
+      await client.addReviewComment(githubRepo, args.pr_number, args.path, args.line, args.comment);
       return { content: [{ type: 'text' as const, text: `Added review comment to ${args.path}:${args.line} on PR #${args.pr_number}` }] };
     },
   );
 }
 
 function createResolveReviewThreadTool(agent: Agent, task: Task) {
+  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'resolve_review_thread',
     'Mark a review comment thread as resolved.',
     {
-      repo_key: z.enum(repoKeys()).describe('The repository'),
       pr_number: z.number().describe('The PR number'),
       thread_id: z.string().describe('The thread ID to resolve'),
     },
     async (args) => {
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
-      const def = getAgentDef(`${args.repo_key}-agent`);
-      if (!def?.repo) throw new Error(`No config found for repo key: ${args.repo_key}`);
-      await client.resolveReviewThread(def.repo.githubRepo, args.pr_number, args.thread_id);
+      await client.resolveReviewThread(githubRepo, args.pr_number, args.thread_id);
       return { content: [{ type: 'text' as const, text: `Resolved review thread ${args.thread_id} on PR #${args.pr_number}` }] };
     },
   );
 }
 
 function createRequestReReviewTool(agent: Agent, task: Task) {
+  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'request_re_review',
     'Request reviewers to re-review the PR after changes.',
-    {
-      repo_key: z.enum(repoKeys()).describe('The repository'),
-      pr_number: z.number().describe('The PR number'),
-    },
+    { pr_number: z.number().describe('The PR number') },
     async (args) => {
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
-      const def = getAgentDef(`${args.repo_key}-agent`);
-      if (!def?.repo) throw new Error(`No config found for repo key: ${args.repo_key}`);
-      await client.requestReReview(def.repo.githubRepo, args.pr_number);
+      await client.requestReReview(githubRepo, args.pr_number);
       return { content: [{ type: 'text' as const, text: `Requested re-review for PR #${args.pr_number}` }] };
     },
   );
 }
 
-function createTriggerMergeCheckTool(agent: Agent, task: Task) {
+
+function createMergePRTool(agent: Agent, task: Task) {
+  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
-    'trigger_merge_check',
-    'Check all linked PRs and merge them if ready.',
-    {},
-    async () => {
-      const agentName = agent.def.id as AgentName;
-      logger.agentAction(agentName, 'Triggering merge check', task.taskId);
-      const result = await triggerMergeCheck(task.taskId);
-      const parts: string[] = [];
-      if (result.merged.length > 0) parts.push(`Merged: ${result.merged.join(', ')}`);
-      if (result.pending.length > 0) parts.push(`Pending: ${result.pending.join(', ')}`);
-      if (result.conflicts.length > 0) parts.push(`Conflicts: ${result.conflicts.join(', ')}`);
-      return { content: [{ type: 'text' as const, text: parts.length > 0 ? parts.join('\n') : 'No linked PRs found.' }] };
+    'merge_pull_request',
+    'Merge a pull request. Checks mergeability first and returns the current status if not ready.',
+    { pr_number: z.number().describe('The PR number') },
+    async (args) => {
+      const client = getGitHubClient();
+      if (!client) throw new Error('GitHub client not configured');
+
+      const status = await client.getPRStatus(githubRepo, args.pr_number);
+      if (status.state !== 'open') {
+        return { content: [{ type: 'text' as const, text: `Cannot merge: PR #${args.pr_number} is ${status.state}` }] };
+      }
+      if (!status.mergeable || status.mergeableState !== 'clean') {
+        return { content: [{ type: 'text' as const, text: `Cannot merge: PR #${args.pr_number} is not ready (mergeable=${status.mergeable}, state=${status.mergeableState})` }] };
+      }
+
+      const result = await client.mergePullRequest(githubRepo, args.pr_number);
+      return { content: [{ type: 'text' as const, text: result.message }] };
+    },
+  );
+}
+
+function createClosePRTool(agent: Agent, task: Task) {
+  const githubRepo = agent.def.repo!.githubRepo;
+  return tool(
+    'close_pull_request',
+    'Close a pull request without merging.',
+    { pr_number: z.number().describe('The PR number') },
+    async (args) => {
+      const client = getGitHubClient();
+      if (!client) throw new Error('GitHub client not configured');
+      await client.closePullRequest(githubRepo, args.pr_number);
+      return { content: [{ type: 'text' as const, text: `Closed PR #${args.pr_number}` }] };
     },
   );
 }
@@ -498,6 +494,18 @@ export function createPMAgentMcpServer(agent: Agent, task: Task) {
       createReportCompletionTool(agent, task),
       createRequestEditModeTool(agent, task),
       createGetAgentsStatusTool(agent, task),
+    ],
+  });
+}
+
+/**
+ * Create the MCP server with PR tools for repo agents (edit mode only).
+ */
+export function createRepoPRMcpServer(agent: Agent, task: Task) {
+  return createSdkMcpServer({
+    name: 'pr-tools',
+    version: '1.0.0',
+    tools: [
       createPushBranchTool(agent, task),
       createPullRequestTool(agent, task),
       createGetPRStatusTool(agent, task),
@@ -507,7 +515,8 @@ export function createPMAgentMcpServer(agent: Agent, task: Task) {
       createAddReviewCommentTool(agent, task),
       createResolveReviewThreadTool(agent, task),
       createRequestReReviewTool(agent, task),
-      createTriggerMergeCheckTool(agent, task),
+      createMergePRTool(agent, task),
+      createClosePRTool(agent, task),
     ],
   });
 }

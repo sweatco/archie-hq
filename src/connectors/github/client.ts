@@ -401,6 +401,21 @@ export class GitHubClient {
   }
 
   /**
+   * Close a pull request without merging
+   */
+  async closePullRequest(githubRepo: string, prNumber: number): Promise<void> {
+    const octokit = await this.getOctokit();
+    const { owner, repo } = this.parseRepo(githubRepo);
+    await octokit.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
+      owner,
+      repo,
+      pull_number: prNumber,
+      state: 'closed',
+    });
+    logger.system(`GitHub: Closed PR #${prNumber}`);
+  }
+
+  /**
    * Merge a pull request
    */
   async mergePullRequest(
