@@ -9,7 +9,7 @@
  */
 
 import { join } from 'path';
-import { mkdir, symlink, readdir } from 'fs/promises';
+import { mkdir, symlink, readdir, readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Agent } from './agent.js';
@@ -28,6 +28,31 @@ import {
 import { setupWorktree, worktreeExists, fetchOrigin } from '../connectors/github/worktree.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { processAgentEventForLogging, logger } from '../system/logger.js';
+import { PLUGINS_DIR } from '../system/workdir.js';
+
+/**
+ * Load and parse .mcp.json from the plugins directory.
+ * Substitutes ${MCP_*} placeholders with matching environment variables.
+ * Only MCP_-prefixed vars are eligible — others are left as-is.
+ */
+async function loadPluginMcpServers(): Promise<Record<string, any>> {
+  const mcpPath = join(PLUGINS_DIR, '.mcp.json');
+  if (existsSync(mcpPath)) {
+    try {
+      const raw = await readFile(mcpPath, 'utf8');
+      const substituted = raw.replace(/\$\{(MCP_[A-Z0-9_]+)\}/g, (_, name) => {
+        const value = process.env[name];
+        if (!value) logger.warn('system', `Plugin MCP: env var ${name} is not set`);
+        return value ?? '';
+      });
+      const parsed = JSON.parse(substituted);
+      return parsed.mcpServers ?? {};
+    } catch (err) {
+      logger.warn('system', `Plugin MCP: failed to load ${mcpPath}: ${err}`);
+    }
+  }
+  return {};
+}
 
 // ---- Prompt generation (per track) ----
 
@@ -147,7 +172,10 @@ Files available to read (in your working directory):
 `;
     systemPrompt = `${systemPrompt}\n\nCurrent Task Context:\n${context}`;
 
+    const pluginMcpServers = await loadPluginMcpServers();
+
     mcpServers = {
+      ...pluginMcpServers,
       'pm-agent-tools': createPMAgentMcpServer(agent, task),
       'research-tools': createResearchMcpServer({
         getTaskId: () => taskId,
@@ -161,6 +189,9 @@ Files available to read (in your working directory):
 
     allowedTools = [
       'Skill',
+      'Read',
+      'Glob',
+      'Grep',
       'mcp__research-tools__web_research',
       'mcp__pm-agent-tools__send_message_to_agent',
       'mcp__pm-agent-tools__post_to_slack',
@@ -168,9 +199,7 @@ Files available to read (in your working directory):
       'mcp__pm-agent-tools__report_completion',
       'mcp__pm-agent-tools__request_edit_mode',
       'mcp__pm-agent-tools__get_agents_status',
-      'Read',
-      'Glob',
-      'Grep',
+      ...Object.keys(pluginMcpServers).map((name) => `mcp__${name}__*`),
     ];
   } else if (def.track === 'repo') {
     // ---- Repo track ----

@@ -146,6 +146,7 @@ async function cloneOrFetch(url: string, targetDir: string, label: string): Prom
   if (existsSync(join(targetDir, '.git'))) {
     logger.system(`Fetching latest for ${label}...`);
     try {
+      await execAsync('git remote prune origin', { cwd: targetDir });
       await execAsync('git fetch --all', { cwd: targetDir });
     } catch (error) {
       logger.warn('workdir', `Failed to fetch ${label}, using existing refs: ${error}`);
