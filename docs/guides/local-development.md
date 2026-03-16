@@ -2,59 +2,153 @@
 
 ## Quick Start
 
+The only required env var is `ANTHROPIC_API_KEY`. Slack and GitHub App credentials are optional.
+
 ```bash
-# 1. Install dependencies
-npm install
-
-# 2. Setup environment
+# 1. Setup environment
 cp .env.example .env
-# Edit .env with your API keys
-# Set ARCHIE_PLUGINS to your plugins repo git URL
+# Set ANTHROPIC_API_KEY in .env
 
-# 3. Start server (plugins and repos are auto-cloned on first run)
-npm run dev
+# 2. Ensure your SSH key is loaded (used for git inside Docker)
+ssh-add
 
-# 4. Expose with ngrok (separate terminal)
-ngrok http 3000
+# 3. Setup plugins (symlink for local editing)
+git clone git@github.com:<org>/<plugins-repo>.git ../archie-plugins
+mkdir -p workdir
+ln -s ../archie-plugins workdir/plugins
 
-# 5. Update Slack Event URL with ngrok URL
-# https://api.slack.com/apps → Event Subscriptions → https://YOUR-URL.ngrok.io/slack/events
+# 4. Clone repos with SSH (one per repo defined in plugins)
+mkdir -p workdir/repos
+git clone git@github.com:<org>/<repo>.git workdir/repos/<key>
 
-# 6. Test in Slack: @Archie investigate login timeout
+# 5. Start server with Docker
+npm run docker:dev
+
+# 6. Use the CLI to create and monitor tasks (separate terminal)
+npm run cli
 ```
 
 ## Prerequisites
 
-- Node.js 20+
-- Git
+- Docker
+- Node.js 20+ (for CLI and local tooling)
+- Git with SSH key configured for GitHub
 - Anthropic API key ([console.anthropic.com](https://console.anthropic.com/settings/keys))
-- Slack workspace with bot configured
 
 **Optional:**
-- ngrok (required for Slack webhooks to reach localhost)
-- GitHub App credentials (for PR management features)
+- Slack App credentials (for Slack integration — see [Slack Bot Setup](#slack-bot-setup))
+- GitHub App credentials (for PR tools — create PR, merge, review comments)
+- ngrok (for Slack webhooks to reach localhost)
+
+## Docker Development
+
+Docker is the recommended way to run the server locally. Source code and prompts are mounted for hot reload. Your SSH agent is forwarded into the container for git operations.
+
+```bash
+# Ensure SSH key is loaded
+ssh-add -l   # verify
+ssh-add      # add if needed
+
+# Start (with hot reload)
+npm run docker:dev
+
+# Follow logs
+docker compose logs -f
+
+# Stop
+npm run docker:stop
+```
+
+The `docker-compose.yml`:
+- Mounts `./workdir` into the container (repos, sessions)
+- Resolves the `workdir/plugins` symlink and mounts the real directory
+- Forwards your SSH agent socket for git push/fetch inside the container
+
+## CLI
+
+The CLI provides an interactive terminal UI for creating and monitoring tasks. The server must be running.
+
+```bash
+npm run cli
+```
+
+**Controls:**
+- `↑/↓` — Navigate task list
+- `Enter` — Open task detail
+- `n` — Create new task
+- `Tab` — Toggle message input
+- `Esc` — Go back
+- `q` — Quit
+
+You can also use the REST API directly:
+
+```bash
+# Create a task
+curl -X POST http://localhost:3000/api/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Fix login timeout issue"}'
+
+# Send a message to a task
+curl -X POST http://localhost:3000/api/tasks/<task-id>/message \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Check the auth logs"}'
+
+# List recent tasks
+curl http://localhost:3000/api/tasks
+```
 
 ## Working Directory
 
-All runtime state lives under `ARCHIE_WORKDIR` (default: `./workdir`). On startup, the app:
+All runtime state lives under `ARCHIE_WORKDIR` (default: `./workdir`).
 
-1. Clones/pulls the plugins repo from `ARCHIE_PLUGINS` into `{WORKDIR}/plugins/`
-2. Reads `repo-config.json` from each plugin to discover required repos
-3. Clones/fetches each required repo into `{WORKDIR}/repos/`
-4. Creates `{WORKDIR}/sessions/` for task data
-
-Everything is automatic — just set `ARCHIE_PLUGINS` in your `.env` and run.
-
-**For plugin development** (editing plugins locally instead of pulling from git):
+**Plugins** — symlink to your local clone for easy editing:
 ```bash
+git clone git@github.com:<org>/<plugins-repo>.git ../archie-plugins
 mkdir -p workdir
-git clone git@github.com:sweatco/archie-plugins.git workdir/plugins
-# Don't set ARCHIE_PLUGINS in .env — the app will use the local directory
+ln -s ../archie-plugins workdir/plugins
 ```
+
+**Repos** — pre-clone with SSH remotes so git uses your SSH keys. The `<key>` must match the key in the plugin's `repo-config.json`:
+```bash
+mkdir -p workdir/repos
+git clone git@github.com:<org>/<repo>.git workdir/repos/<key>
+```
+
+On startup, the app detects existing repos and runs `git fetch --all` to update refs. It won't re-clone repos that already exist.
+
+If `ARCHIE_PLUGINS` is set to a git URL, the app auto-clones the plugins repo instead of using the local directory.
+
+## Environment Variables
+
+```bash
+# Required
+ANTHROPIC_API_KEY=sk-ant-...           # Claude API key
+
+# Optional - Slack (omit for CLI-only mode)
+# SLACK_BOT_TOKEN=xoxb-...
+# SLACK_SIGNING_SECRET=...
+
+# Optional - GitHub App (omit to use local SSH keys for git)
+# GITHUB_APP_ID=123456
+# GITHUB_APP_SLUG=archie-hq
+# GITHUB_APP_PRIVATE_KEY_PATH=./secrets/github-private-key.pem
+# GITHUB_INSTALLATION_ID=12345678
+# GITHUB_WEBHOOK_SECRET=your-webhook-secret
+
+# Optional - Plugins (omit if using local symlink)
+# ARCHIE_PLUGINS=https://github.com/...
+
+# Optional - Paths
+# ARCHIE_WORKDIR=./workdir             # Default: ./workdir
+# PORT=3000                            # Default: 3000
+```
+
+Without Slack credentials, the server runs in **CLI-only mode**.
+Without GitHub App credentials, **PR tools are disabled** but agents can still read/write code, commit, and push via SSH.
 
 ## Slack Bot Setup
 
-Use the app manifest at [`slack-manifest.yaml`](../../slack-manifest.yaml):
+To enable Slack integration, use the app manifest at [`slack-manifest.yaml`](../../slack-manifest.yaml):
 
 1. Go to https://api.slack.com/apps → **Create New App** → **From an app manifest**
 2. Choose your workspace, select YAML, paste the manifest contents
@@ -62,6 +156,11 @@ Use the app manifest at [`slack-manifest.yaml`](../../slack-manifest.yaml):
 4. Collect credentials:
    - **Bot Token** (OAuth & Permissions): `xoxb-...`
    - **Signing Secret** (Basic Information → App Credentials)
+5. Add to `.env`:
+   ```bash
+   SLACK_BOT_TOKEN=xoxb-...
+   SLACK_SIGNING_SECRET=...
+   ```
 
 The bot needs these permissions:
 - `app_mentions:read` — receive @mentions
@@ -69,83 +168,32 @@ The bot needs these permissions:
 - `channels:history` — read thread history
 - `users:read` — get user names
 
-## Environment Variables
-
-```bash
-# Required
-ANTHROPIC_API_KEY=sk-ant-...           # Claude API key
-SLACK_BOT_TOKEN=xoxb-...              # Slack bot token
-SLACK_SIGNING_SECRET=...              # Slack webhook verification
-
-# Optional - GitHub App
-GITHUB_APP_ID=123456
-GITHUB_PRIVATE_KEY=...                # GitHub App private key (PEM)
-GITHUB_INSTALLATION_ID=...
-GITHUB_WEBHOOK_SECRET=...             # GitHub webhook verification
-
-# Optional - Paths
-ARCHIE_WORKDIR=./workdir              # Working directory (default: ./workdir)
-ARCHIE_PLUGINS=https://github.com/... # Plugins repo git URL (auto-cloned)
-PORT=3000                             # Server port (default: 3000)
-
-# Optional - Development
-NODE_ENV=development
-NO_COLOR=1                            # Disable colored log output
-```
-
-## ngrok Setup
+### ngrok
 
 For Slack webhooks to reach your local server:
 
 ```bash
-# Install
 brew install ngrok  # macOS
-
-# Start tunnel (separate terminal)
 ngrok http 3000
-# → https://abc123.ngrok.io
-
 # Update Slack Event URL:
-# https://api.slack.com/apps → Event Subscriptions → https://abc123.ngrok.io/slack/events
+# https://api.slack.com/apps → Event Subscriptions → https://YOUR-URL.ngrok.io/slack/events
 ```
 
-Free ngrok URLs change on restart. Paid ngrok provides static URLs.
-
-## Running the Server
+## Running Without Docker
 
 ```bash
-# Development with hot reload
-npm run dev
-
-# Production build
-npm run build && npm start
-
-# Type checking
-npm run typecheck
+npm install
+npm run dev          # Development with hot reload
+npm run build        # TypeScript compilation
+npm run typecheck    # Type checking only
 ```
 
 The server starts on `http://localhost:3000` with:
-- `POST /webhooks/slack` — Slack webhooks
-- `POST /webhooks/github` — GitHub webhooks
-- `GET /health` — Health check (returns active task count)
-- Interactive message handlers for edit mode approval buttons
-
-## Docker Development
-
-```bash
-# Start (with hot reload)
-npm run docker:dev
-
-# Stop
-npm run docker:stop
-```
-
-## Testing in Slack
-
-1. Invite the bot to a channel: `/invite @Archie`
-2. Send a test message: `@Archie hello`
-3. Check server logs for the message being processed
-4. The bot should respond in the thread
+- `GET /api/tasks` — REST API for CLI and external clients
+- `GET /api/events/stream` — SSE stream for real-time updates
+- `POST /webhooks/slack` — Slack webhooks (if configured)
+- `POST /webhooks/github` — GitHub webhooks (if configured)
+- `GET /health` — Health check
 
 ## Debugging
 
@@ -172,17 +220,19 @@ archie-hq/
 ├── src/                  # Application source
 │   ├── connectors/       # External integrations
 │   │   ├── slack/        # Slack Bolt app, client, events
-│   │   └── github/       # GitHub App, webhooks, merge
+│   │   ├── github/       # GitHub App, webhooks, merge
+│   │   └── api/          # REST API + SSE for CLI
 │   ├── agents/           # Agent spawn logic, tools, registry
 │   ├── tasks/            # Task class, persistence, recovery
 │   ├── system/           # Logger, plugin loader, triage, workdir
+│   ├── cli/              # Interactive terminal UI (Ink/React)
 │   ├── mcp/              # Research tools pipeline
 │   ├── types/            # TypeScript types
 │   └── utils/            # Utilities
 ├── prompts/              # Agent system prompts
 ├── workdir/              # Runtime state (gitignored)
-│   ├── plugins/          # Auto-cloned from ARCHIE_PLUGINS
-│   ├── repos/            # Auto-cloned from plugin repo-config.json
+│   ├── plugins/          # Symlink to archie-plugins (or auto-cloned)
+│   ├── repos/            # Pre-cloned with SSH (or auto-cloned)
 │   └── sessions/         # Task persistence
 └── docs/                 # Documentation
 ```

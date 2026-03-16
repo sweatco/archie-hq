@@ -4,8 +4,8 @@
 #
 # Setup:
 #   1. Copy .env.example to .env and fill in your values
-#   2. Place your GitHub App private key as secrets/github-private-key.pem
-#   3. Plugins and repos are auto-cloned on startup via ARCHIE_PLUGINS env var
+#   2. Symlink plugins and pre-clone repos into workdir/ (see docs/guides/local-development.md)
+#   3. Ensure your SSH key is loaded: ssh-add
 #
 # Logs:
 #   docker compose logs -f          # Follow all logs
@@ -33,7 +33,8 @@ services:
     environment:
       - CLAUDE_PATH=/usr/local/bin/claude
       - ARCHIE_WORKDIR=/workdir
-      - GITHUB_APP_PRIVATE_KEY_PATH=/app/secrets/github-private-key.pem
+      # - GITHUB_APP_PRIVATE_KEY_PATH=/app/secrets/github-private-key.pem
+      - SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock
       - NODE_ENV=development
 
     volumes:
@@ -47,7 +48,10 @@ services:
       - ./src:/app/src
       - ./prompts:/app/prompts
 
-      # Secrets - mount your private key file
+      # SSH agent forwarding (macOS Docker Desktop)
+      - /run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock
+
+      # Secrets - mount your private key file (for GitHub App, optional)
       - ./secrets:/app/secrets:ro
 
       # Claude Code config - stores API keys, sessions, settings
