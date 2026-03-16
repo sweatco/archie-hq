@@ -33,7 +33,6 @@ services:
     environment:
       - CLAUDE_PATH=/usr/local/bin/claude
       - ARCHIE_WORKDIR=/workdir
-      - ARCHIE_PLUGINS=https://github.com/sweatco/archie-plugins
       - GITHUB_APP_PRIVATE_KEY_PATH=/app/secrets/github-private-key.pem
       - NODE_ENV=development
 
