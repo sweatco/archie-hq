@@ -54,6 +54,33 @@ async function loadPluginMcpServers(): Promise<Record<string, any>> {
   return {};
 }
 
+/**
+ * Extract allowedTools/disallowedTools from plugin MCP configs,
+ * prefix with mcp__<name>__, and strip custom fields before passing to SDK.
+ */
+function extractPluginToolPermissions(servers: Record<string, any>) {
+  const allowed: string[] = [];
+  const disallowed: string[] = [];
+
+  for (const [name, config] of Object.entries(servers)) {
+    const prefix = (t: string) => `mcp__${name}__${t}`;
+
+    if (Array.isArray(config.allowedTools)) {
+      allowed.push(...config.allowedTools.map(prefix));
+      delete config.allowedTools;
+    } else {
+      allowed.push(`mcp__${name}__*`);
+    }
+
+    if (Array.isArray(config.disallowedTools)) {
+      disallowed.push(...config.disallowedTools.map(prefix));
+      delete config.disallowedTools;
+    }
+  }
+
+  return { allowed, disallowed: disallowed.length > 0 ? disallowed : undefined };
+}
+
 // ---- Prompt generation (per track) ----
 
 async function generatePMPrompt(task: Task): Promise<string> {
@@ -145,6 +172,7 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   let additionalDirectories: string[] | undefined;
   let mcpServers: Record<string, any>;
   let allowedTools: string[];
+  let disallowedTools: string[] | undefined;
   let model: string;
   let startFreshSession = false;
 
@@ -178,6 +206,8 @@ Files available to read (in your working directory):
       logger.system(`Plugin MCP servers: ${pluginNames.join(', ')}`);
     }
 
+    const pluginToolPerms = extractPluginToolPermissions(pluginMcpServers);
+
     mcpServers = {
       ...pluginMcpServers,
       'pm-agent-tools': createPMAgentMcpServer(agent, task),
@@ -203,8 +233,9 @@ Files available to read (in your working directory):
       'mcp__pm-agent-tools__report_completion',
       'mcp__pm-agent-tools__request_edit_mode',
       'mcp__pm-agent-tools__get_agents_status',
-      ...Object.keys(pluginMcpServers).map((name) => `mcp__${name}__*`),
+      ...pluginToolPerms.allowed,
     ];
+    disallowedTools = pluginToolPerms.disallowed;
   } else if (def.track === 'repo') {
     // ---- Repo track ----
     const repoInfo = metadata.repositories[def.repo!.repoKey];
@@ -389,6 +420,7 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
     },
     mcpServers,
     allowedTools,
+    disallowedTools,
   });
 
   // ---- Session recovery (try → reset → retry → give up) ----
