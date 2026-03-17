@@ -1,13 +1,11 @@
-# Archie HQ - Docker Compose (base)
+# Archie HQ - Docker Compose (local development)
 #
-# Usage:
-#   Development: npm run docker:dev   (with local Redis)
-#   Production:  npm run docker:prod  (uses external Redis from .env)
+# Usage: npm run docker:dev
 #
 # Setup:
 #   1. Copy .env.example to .env and fill in your values
-#   2. Place your GitHub App private key as secrets/github-private-key.pem
-#   3. Clone your repos into ./repos/backend and ./repos/mobile
+#   2. Symlink plugins and pre-clone repos into workdir/ (see docs/guides/local-development.md)
+#   3. Ensure your SSH key is loaded: ssh-add
 #
 # Logs:
 #   docker compose logs -f          # Follow all logs
@@ -33,24 +31,34 @@ services:
 
     # Override paths for containerized environment
     environment:
-      # Paths inside container (override .env values)
       - CLAUDE_PATH=/usr/local/bin/claude
-      - BACKEND_REPO_PATH=/app/repos/backend
-      - MOBILE_REPO_PATH=/app/repos/mobile
-      - GITHUB_APP_PRIVATE_KEY_PATH=/app/secrets/github-private-key.pem
+      - ARCHIE_WORKDIR=/workdir
+      # - GITHUB_APP_PRIVATE_KEY_PATH=/app/secrets/github-private-key.pem
+      - SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock
+      - NODE_ENV=development
 
     volumes:
-      # Sessions - persist task data across container restarts
-      - ./sessions:/app/sessions
+      # Workdir mount — contains repos/, sessions/
+      - ./workdir:/workdir
 
-      # Repos - mount your cloned repositories (needs write for git fetch/worktree)
-      - ./repos:/app/repos
+      # Plugins — mounted explicitly because workdir/plugins is a symlink
+      - ./workdir/plugins:/workdir/plugins
 
-      # Secrets - mount your private key file
+      # Mount source code for hot reload
+      - ./src:/app/src
+      - ./prompts:/app/prompts
+
+      # SSH agent forwarding (macOS Docker Desktop)
+      - /run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock
+
+      # Secrets - mount your private key file (for GitHub App, optional)
       - ./secrets:/app/secrets:ro
 
       # Claude Code config - stores API keys, sessions, settings
       - ./claude-data:/root/.claude
+
+      # Exclude node_modules (use container's version)
+      - /app/node_modules
 
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:${PORT:-3000}/health || exit 1"]

@@ -12,11 +12,54 @@ export type AgentName = CoreAgentName | `${string}-agent`;
 
 export type FindingType = 'discovery' | 'decision' | 'completion' | 'blocker';
 
-export interface SlackThread {
+/** Tracking record for a Slack thread linked to a task */
+export interface SlackThreadRef {
   thread_id: string;
   channel_id: string;
   last_processed_ts: string;
 }
+
+/** A fully-resolved message from a Slack thread */
+export interface SlackThreadMessage {
+  user: { id: string; username: string; realName: string };
+  text: string;           // mentions already resolved
+  ts: string;
+  files?: SlackFile[];    // raw file metadata (not yet downloaded)
+}
+
+/** Full Slack thread context — all API data resolved, ready for task consumption */
+export interface SlackThread {
+  threadId: string;
+  channel: { id: string; name: string };
+  messages: SlackThreadMessage[];  // full thread, bot messages excluded
+  currentMessageTs: string;
+}
+
+// ---- Channel types (replace slack_threads) ----
+
+export type ChannelType = 'slack' | 'github';
+
+export interface ChannelBase {
+  type: ChannelType;
+}
+
+/** Slack channel — wraps a specific thread in a Slack channel */
+export interface SlackChannel extends ChannelBase {
+  type: 'slack';
+  thread_id: string;
+  channel_id: string;
+  channel_name: string;
+  last_processed_ts: string;
+}
+
+/** GitHub channel — a PR conversation */
+export interface GitHubChannel extends ChannelBase {
+  type: 'github';
+  repo: string;
+  pr_number: number;
+}
+
+export type Channel = SlackChannel | GitHubChannel;
 
 export interface RepositoryInfo {
   path: string;
@@ -29,15 +72,30 @@ export interface RepositoryInfo {
   last_processed_comment_id?: number;  // Last processed PR comment ID (for triage)
 }
 
+/**
+ * Per-agent session state — tracks whether each agent is active
+ * and preserves session IDs for SDK resume.
+ */
+export interface AgentSessionState {
+  session_id?: string;       // undefined = no session yet or cleared (fresh start)
+  active: boolean;           // true = doing work, false = finished turn / crashed
+  last_activity?: string;    // ISO timestamp
+}
+
 export interface TaskMetadata {
   task_id: string;
   task_owner: AgentName | null;
   participants: AgentName[];
-  slack_threads: SlackThread[];
-  agent_sessions: Record<string, string>;
+  channels: Record<string, Channel>;   // Active message delivery targets, keyed by channel ID
+  default_channel: string | null;      // Channel ID of the originating channel (null for CLI-originated tasks)
+  slack_threads?: SlackThreadRef[];    // Legacy — only present on old tasks loaded from disk, removed after migration
+  agent_sessions: Record<string, AgentSessionState | string>; // union handles legacy string values on disk
   repositories: Record<string, RepositoryInfo>;
   status: TaskStatus;
   edit_allowed?: boolean;     // Has user approved edit mode for this task?
+  research_budget_extra?: number;    // Additional research budget granted via Slack approval (+5 per approval)
+  research_request_count?: number;   // Persisted research request count (survives stop/reactivate)
+  failure_counter?: number;          // Consecutive recovery attempts (Stage 3 idle detection)
   created_at: string;
   updated_at: string;
 }

@@ -45,3 +45,24 @@ export async function loadPrompt(
 
   return template;
 }
+
+/**
+ * Load a prompt template from an absolute file path and interpolate variables
+ *
+ * @param absolutePath - Absolute path to the template file
+ * @param variables - Object with variable values to interpolate
+ * @returns Interpolated prompt string
+ */
+export async function loadPromptFromPath(
+  absolutePath: string,
+  variables: Record<string, string> = {}
+): Promise<string> {
+  let template = await readFile(absolutePath, 'utf-8');
+
+  for (const [key, value] of Object.entries(variables)) {
+    const pattern = new RegExp(`{{${key}}}`, 'g');
+    template = template.replace(pattern, value);
+  }
+
+  return template;
+}

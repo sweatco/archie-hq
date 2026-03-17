@@ -6,7 +6,7 @@ FROM node:20-alpine
 RUN apk upgrade --no-cache
 
 # Install git, ssh (for git fetch over ssh), git-lfs, and bash (required by Claude CLI)
-RUN apk add --no-cache git openssh-client git-lfs bash && \
+RUN apk add --no-cache git openssh-client git-lfs bash libcrypto3=3.5.5-r0 libssl3=3.5.5-r0 && \
     git lfs install && \
     mkdir -p ~/.ssh && \
     ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
@@ -40,7 +40,7 @@ RUN npm run build && \
 RUN npm prune --production
 
 # Create directories
-RUN mkdir -p /app/sessions /app/repos /app/secrets
+RUN mkdir -p /workdir /app/secrets
 
 # Configure git authentication
 RUN chmod +x /app/scripts/git-askpass.sh

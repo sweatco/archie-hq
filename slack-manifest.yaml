@@ -1,6 +1,6 @@
 display_information:
   name: Archie
-  description: "Autonomous Repository Collaborative Hyper Intelligent Engineer"
+  description: "Autonomous Responsive and Collaborative Hyper Intelligent Employee"
   background_color: "#2c2d30"
 features:
   bot_user:
@@ -13,18 +13,22 @@ oauth_config:
       - chat:write
       - channels:history
       - channels:read
+      - im:history
+      - im:read
+      - im:write
       - users:read
       - usergroups:read
       - files:read
 settings:
   interactivity:
     is_enabled: true
-    request_url: https://8d5ac472ff08.ngrok-free.app/webhooks/slack
+    request_url: https://archie.sweatco.team/webhooks/slack
   event_subscriptions:
-    request_url: https://8d5ac472ff08.ngrok-free.app/webhooks/slack
+    request_url: https://archie.sweatco.team/webhooks/slack
     bot_events:
       - app_mention
       - message.channels
+      - message.im
   org_deploy_enabled: false
   socket_mode_enabled: false
   token_rotation_enabled: false

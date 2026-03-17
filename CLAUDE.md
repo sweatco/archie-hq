@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Important
 
-Please familiarize with the codebase. Do not solely rely on docs as these are forward-thinking documents and drafts, not actual representation of the project.
+Please familiarize with the codebase. The `docs/architecture/` folder describes the current system accurately. The `docs/plans/` folder contains historical development plans. The `docs/proposals/` folder contains unimplemented ideas.
 
 ## Project Overview
 
@@ -14,7 +14,7 @@ Multi-agent AI software engineering system built with Claude Agent SDK. Speciali
 
 - **Runtime**: Node.js with TypeScript
 - **Agent Framework**: Claude Agent SDK (Sonnet 4.5, 1M context)
-- **Integrations**: Slack API
+- **Integrations**: Slack API, GitHub App (Octokit)
 - **Storage**: File-based sessions
 - **Version Control**: Git
 
@@ -24,13 +24,25 @@ Slack messages → Triage Agent → PM Agent → Specialist Agents (Backend, Mob
 
 - **Triage agent** (Haiku) classifies messages: new task, existing task, status request, cancel
 - **PM agent** manages tasks, assigns owners, communicates with users via Slack
-- **Specialist agents** (Backend/Mobile) investigate codebases in read-only mode (Read, Glob, Grep only)
+- **Specialist agents** (Backend/Mobile) investigate and modify codebases (readonly by default, edit mode after approval)
+- **Plugin agents** handle non-engineering domains (generic, no git infrastructure)
 - Agents communicate via message queues and shared `shared-knowledge.log`
-- `docs/` contains design specs (drafts, not implementation)
+- `docs/` contains architecture docs, guides, historical plans, and proposals
+
+## Working Directory
+
+All runtime state (plugins, repos, sessions) lives under `ARCHIE_WORKDIR` (default: `./workdir`). The app auto-clones plugins from `ARCHIE_PLUGINS` git URL and repos declared by plugins on startup. See `src/system/workdir.ts` for the bootstrap logic.
 
 ## Development Setup
 
-No build or test commands yet - this is an early-stage architecture specification project.
+```bash
+npm install          # Install dependencies
+npm run dev          # Development server with hot reload
+npm run build        # TypeScript compilation
+npm run typecheck    # Type checking only
+```
+
+See `docs/guides/local-development.md` for full setup instructions.
 
 ## Logging
 
@@ -45,4 +57,4 @@ When creating commits (only when asked):
 - **Use atomic commits**: Each commit should represent a single logical change
 - **Group related changes**: If multiple files change for the same feature, commit them together
 - **Clear commit messages**: Use descriptive messages that explain what changed and why
-- **Exclude docs/plans**: Don't commit draft documentation or plans unless specifically requested
+- **Exclude drafts**: Don't commit draft documentation or proposals unless specifically requested

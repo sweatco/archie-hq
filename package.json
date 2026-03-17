@@ -1,7 +1,7 @@
 {
   "name": "archie-hq",
   "version": "0.1.0",
-  "description": "Archie - Autonomous Repository Collaborative Hyper Intelligent Engineer",
+  "description": "Archie - Autonomous Responsive and Collaborative Hyper Intelligent Employee",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
@@ -10,9 +10,11 @@
     "start": "node dist/index.js",
     "lint": "eslint src/**/*.ts",
     "typecheck": "tsc --noEmit",
-    "docker:dev": "docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build",
-    "docker:prod": "docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build",
-    "docker:stop": "docker compose down"
+    "cli": "tsx src/cli/index.tsx",
+    "docker:dev": "docker compose up --build",
+    "docker:stop": "docker compose down",
+    "test": "vitest run --reporter=verbose",
+    "test:watch": "vitest"
   },
   "engines": {
     "node": ">=20.0.0"
@@ -24,17 +26,22 @@
     "@slack/bolt": "^4.6.0",
     "@slack/web-api": "^7.0.0",
     "dotenv": "^16.3.0",
-    "groupmq": "^1.1.0",
-    "ioredis": "^5.9.1",
+    "gray-matter": "^4.0.3",
+    "ink": "^5.2.1",
+    "ink-scroll-view": "^0.3.6",
+    "ink-spinner": "^5.0.0",
+    "ink-text-input": "^6.0.0",
     "picocolors": "^1.1.1",
+    "react": "^18.3.1",
     "slackify-markdown": "^4.5.0",
     "zod": "^3.22.0",
     "zod-to-json-schema": "^3.25.0"
   },
   "devDependencies": {
-    "@types/ioredis": "^4.28.10",
     "@types/node": "^20.10.0",
+    "@types/react": "^18.3.28",
     "tsx": "^4.7.0",
-    "typescript": "^5.3.0"
+    "typescript": "^5.3.0",
+    "vitest": "^4.1.0"
   }
 }

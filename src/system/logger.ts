@@ -118,20 +118,6 @@ export class Logger {
   }
 
   /**
-   * Log a triage queue event
-   */
-  triageQueue(message: string): void {
-    console.log(`${c.blue('[triage-queue]')} ${message}`);
-  }
-
-  /**
-   * Log a spawn queue event
-   */
-  spawnQueue(message: string): void {
-    console.log(`${c.magenta('[spawn-queue]')} ${message}`);
-  }
-
-  /**
    * Log a server event
    */
   server(message: string): void {
@@ -153,7 +139,7 @@ export class Logger {
     agentName: string,
     toolName: string,
     input: any,
-    opts?: { editMode?: boolean; cwds?: string[] }
+    opts?: { editMode?: boolean; cwds?: string[]; subagentLabel?: string }
   ): void {
     const label = formatAgentLabel(agentName, opts?.editMode);
     const cwds = opts?.cwds || [];
@@ -176,6 +162,28 @@ export class Logger {
       const cmd = input.command || '';
       const displayCmd = cmd.length > 80 ? cmd.substring(0, 77) + '...' : cmd;
       console.log(`${label} ${c.dim('Bash:')} ${displayCmd}`);
+    } else if (toolName === 'Skill') {
+      console.log(`${label} ${c.dim('Skill:')} ${input.skill || 'unknown'}`);
+    } else if (toolName === 'Task') {
+      const desc = input.description || input.prompt?.substring(0, 60) || 'subagent';
+      const subLabel = opts?.subagentLabel ? ` ${c.cyan(`[${opts.subagentLabel}]`)}` : '';
+      console.log(`${label} ${c.dim('Spawning:')}${subLabel} ${desc}`);
+      // Log the full prompt sent to the subagent
+      if (input.prompt) {
+        const promptLines = input.prompt.split('\n');
+        console.log(`${label} ${c.dim('  Prompt:')}`);
+        for (const line of promptLines) {
+          console.log(`${label} ${c.dim('  │')} ${line}`);
+        }
+      }
+    } else if (toolName === 'WebSearch') {
+      const searchQuery = input.query || '';
+      const displayQuery = searchQuery.length > 80 ? searchQuery.substring(0, 77) + '...' : searchQuery;
+      console.log(`${label} ${c.dim('WebSearch:')} "${displayQuery}"`);
+    } else if (toolName === 'WebFetch') {
+      const url = input.url || '';
+      const displayUrl = url.length > 80 ? url.substring(0, 77) + '...' : url;
+      console.log(`${label} ${c.dim('WebFetch:')} ${displayUrl}`);
     } else {
       // Generic fallback for any other tools
       console.log(`${label} ${c.dim('Tool:')} ${toolName}`);
@@ -285,8 +293,43 @@ export class Logger {
 }
 
 /**
+ * Tracks subagent Task tool calls so we can label events from subagents.
+ * Maps tool_use_id → short label derived from the Task description/subagent_type.
+ */
+const subagentLabels = new Map<string, string>();
+
+/** Counts how many times each base label has been used, for numbering duplicates. */
+const subagentLabelCounts = new Map<string, number>();
+
+/**
+ * Extract a short label from a Task tool call for subagent identification.
+ * Numbers duplicates: researcher#1, researcher#2, etc.
+ */
+function extractSubagentLabel(input: any): string {
+  // Prefer subagent_type (e.g. "researcher", "report-writer") or name
+  let base: string;
+  if (input.subagent_type) {
+    base = input.subagent_type;
+  } else if (input.name) {
+    base = input.name;
+  } else if (input.description) {
+    base = input.description.length > 20
+      ? input.description.substring(0, 20).trim()
+      : input.description;
+  } else {
+    base = 'subagent';
+  }
+
+  // Number duplicates: researcher#1, researcher#2, ...
+  const count = (subagentLabelCounts.get(base) || 0) + 1;
+  subagentLabelCounts.set(base, count);
+  return `${base}#${count}`;
+}
+
+/**
  * Process agent events and log SDK tool calls
- * Filters out MCP tools and only logs Read, Write, Edit, Grep, Glob, Bash operations
+ * Filters out MCP tools and only logs Read, Write, Edit, Grep, Glob, Bash operations.
+ * Tracks parent_tool_use_id to label events from subagents.
  */
 export function processAgentEventForLogging(
   event: any,
@@ -296,15 +339,30 @@ export function processAgentEventForLogging(
 ): void {
   if (event.type === 'assistant') {
     const content = event.message.content;
+    const parentId: string | null = event.parent_tool_use_id ?? null;
+
+    // Determine display name: append subagent label if this is a subagent event
+    let displayName = agentName;
+    if (parentId && subagentLabels.has(parentId)) {
+      displayName = `${agentName}/${subagentLabels.get(parentId)}`;
+    }
+
     if (typeof content !== 'string') {
       for (const block of content) {
         if (block.type === 'tool_use') {
           const toolName = block.name;
           const input = block.input as any;
 
+          // Track Task tool calls for subagent labeling
+          let subagentLabel: string | undefined;
+          if (toolName === 'Task') {
+            subagentLabel = extractSubagentLabel(input);
+            subagentLabels.set(block.id, subagentLabel);
+          }
+
           // Only log SDK tools (not MCP tools which start with mcp__)
-          if (['Read', 'Write', 'Edit', 'Grep', 'Glob', 'Bash'].includes(toolName)) {
-            logger.agentTool(agentName, toolName, input, { editMode, cwds });
+          if (['Read', 'Write', 'Edit', 'Grep', 'Glob', 'Bash', 'Skill', 'Task', 'WebSearch', 'WebFetch'].includes(toolName)) {
+            logger.agentTool(displayName, toolName, input, { editMode, cwds, subagentLabel });
           }
         }
       }

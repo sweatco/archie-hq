@@ -1,8 +1,8 @@
 # Archie HQ
 
-**A**utonomous **R**epository **C**ollaborative **H**yper **I**ntelligent **E**ngineer
+**A**utonomous **R**esponsive and **C**ollaborative **H**yper **I**ntelligent **E**mployee
 
-Multi-agent AI system where specialized agents collaborate on software engineering tasks across multiple repositories via Slack.
+Multi-agent AI system where specialized agents collaborate on tasks across multiple domains via Slack.
 
 ## Quick Start
 
