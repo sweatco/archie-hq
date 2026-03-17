@@ -36,6 +36,11 @@ export interface PluginAgentDef {
   model?: string;
   /** Markdown body (domain-specific instructions) */
   prompt: string;
+  /** Repo metadata from frontmatter (if present, agent is a repo agent) */
+  repo?: {
+    github: string;
+    baseBranch?: string;
+  };
 }
 
 export interface PmSkillEntry {
@@ -48,11 +53,11 @@ export interface PmSkillEntry {
 export interface LoadedPlugin {
   name: string;
   dir: string;
-  /** Parsed repo-config.json if present — keyed by agent key (e.g. "backend") */
+  /** Parsed repo-config.json if present (legacy, kept for reference) */
   repoConfigs: Record<string, PluginRepoConfig> | null;
   /** PM skills with namespaced names and source paths */
   pmSkills: PmSkillEntry[];
-  /** Generic plugin agent definitions (only for plugins WITHOUT repo-config.json) */
+  /** Agent definitions from agents/*.md — repo or plugin track based on frontmatter */
   agents: PluginAgentDef[];
   /** Absolute path to skills/ directory (for agent craft skills) */
   skillsPath: string | null;
@@ -99,26 +104,35 @@ function scanPlugins(): LoadedPlugin[] {
       }
     }
 
-    // Scan agents/*.md for generic plugins (plugins WITHOUT repo-config.json)
+    // Scan agents/*.md for all plugins
     const agents: PluginAgentDef[] = [];
-    if (!repoConfigs) {
-      const agentsDir = join(pluginDir, 'agents');
-      if (existsSync(agentsDir)) {
-        for (const agentEntry of readdirSync(agentsDir, { withFileTypes: true })) {
-          if (!agentEntry.isFile() || !agentEntry.name.endsWith('.md')) continue;
+    const agentsDir = join(pluginDir, 'agents');
+    if (existsSync(agentsDir)) {
+      for (const agentEntry of readdirSync(agentsDir, { withFileTypes: true })) {
+        if (!agentEntry.isFile() || !agentEntry.name.endsWith('.md')) continue;
 
-          const key = agentEntry.name.replace(/\.md$/, '');
-          const agentContent = readFileSync(join(agentsDir, agentEntry.name), 'utf-8');
-          const { data, content } = matter(agentContent);
+        const key = agentEntry.name.replace(/\.md$/, '');
+        const agentContent = readFileSync(join(agentsDir, agentEntry.name), 'utf-8');
+        const { data, content } = matter(agentContent);
 
-          agents.push({
-            key,
-            role: data.role || '',
-            expertise: data.expertise || '',
-            model: data.model || undefined,
-            prompt: content.trim(),
-          });
+        const agentDef: PluginAgentDef = {
+          key,
+          role: data.role || '',
+          expertise: data.expertise || '',
+          model: data.model || undefined,
+          prompt: content.trim(),
+        };
+
+        // If frontmatter has repo metadata, this is a repo agent
+        const repoMeta = data.metadata?.archie?.repo;
+        if (repoMeta && typeof repoMeta === 'object' && repoMeta.github) {
+          agentDef.repo = {
+            github: repoMeta.github,
+            baseBranch: repoMeta.baseBranch || undefined,
+          };
         }
+
+        agents.push(agentDef);
       }
     }
 

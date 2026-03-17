@@ -9,11 +9,9 @@
  */
 
 import type { AgentDef } from '../types/agent.js';
-import { getPlugins, getPluginsWithRepoConfigs, type LoadedPlugin, type PmSkillEntry } from '../system/plugin-loader.js';
+import { getPlugins, type LoadedPlugin, type PmSkillEntry } from '../system/plugin-loader.js';
 import { REPOS_DIR } from '../system/workdir.js';
-import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
-import matter from 'gray-matter';
 
 // ---- Module state ----
 
@@ -38,83 +36,45 @@ export function scanAgentDefs(): AgentDef[] {
   const defs: AgentDef[] = [];
   const seenIds = new Map<string, string>(); // agentId → pluginName (collision detection)
 
-  // --- Repo agents ---
-  const repoPlugins = getPluginsWithRepoConfigs();
-  for (const plugin of repoPlugins) {
-    const repoConfigs = plugin.repoConfigs!;
-    for (const [key, infraConfig] of Object.entries(repoConfigs)) {
-      const agentId = `${key}-agent`;
-
-      // Validate prompt field
-      if (!infraConfig.prompt) {
-        throw new Error(
-          `Missing "prompt" field for "${key}" in ${plugin.name}/repo-config.json. ` +
-          `Each agent must declare its prompt file (e.g. "prompt": "agents/${key}.md").`
-        );
-      }
-
-      // Read agent identity from prompt file
-      const agentFilePath = join(plugin.dir, infraConfig.prompt);
-      if (!existsSync(agentFilePath)) {
-        throw new Error(
-          `Agent prompt file not found: ${agentFilePath} ` +
-          `(declared as "${infraConfig.prompt}" for "${key}" in ${plugin.name}/repo-config.json)`
-        );
-      }
-
-      const agentContent = readFileSync(agentFilePath, 'utf-8');
-      const { data, content } = matter(agentContent);
-
-      checkCollision(agentId, plugin.name, seenIds);
-
-      defs.push({
-        id: agentId,
-        key,
-        role: data.role || '',
-        expertise: data.expertise || '',
-        track: 'repo',
-        pluginName: plugin.name,
-        agentPrompt: content.trim() || undefined,
-        repo: {
-          githubRepo: infraConfig.githubRepo,
-          baseBranch: infraConfig.baseBranch,
-          defaultPath: infraConfig.repoPath || join(REPOS_DIR, key),
-          repoKey: key,
-        },
-      });
-    }
-  }
-
-  // Fail-fast: at least one repo config required (z.enum() crashes on empty array)
-  const repoDefs = defs.filter((d) => d.track === 'repo');
-  if (repoDefs.length === 0) {
-    throw new Error(
-      'No repo configs loaded. Ensure at least one plugin has repo-config.json.'
-    );
-  }
-
-  // --- Plugin agents ---
+  // --- Scan all agents from all plugins ---
   for (const plugin of getPlugins()) {
-    // Skip repo plugins — their agents are already handled above
-    if (plugin.repoConfigs !== null) continue;
-
     for (const agent of plugin.agents) {
       const agentId = `${agent.key}-agent`;
-
       checkCollision(agentId, plugin.name, seenIds);
 
-      defs.push({
-        id: agentId,
-        key: agent.key,
-        role: agent.role,
-        expertise: agent.expertise,
-        model: agent.model,
-        track: 'plugin',
-        pluginName: plugin.name,
-        agentPrompt: agent.prompt,
-        pluginPath: plugin.dir,
-        skillsPath: plugin.skillsPath || undefined,
-      });
+      if (agent.repo) {
+        // Repo agent — has repo metadata in frontmatter
+        defs.push({
+          id: agentId,
+          key: agent.key,
+          role: agent.role,
+          expertise: agent.expertise,
+          model: agent.model,
+          track: 'repo',
+          pluginName: plugin.name,
+          agentPrompt: agent.prompt || undefined,
+          repo: {
+            githubRepo: agent.repo.github,
+            baseBranch: agent.repo.baseBranch,
+            defaultPath: join(REPOS_DIR, agent.key),
+            repoKey: agent.key,
+          },
+        });
+      } else {
+        // Plugin agent — no repo metadata
+        defs.push({
+          id: agentId,
+          key: agent.key,
+          role: agent.role,
+          expertise: agent.expertise,
+          model: agent.model,
+          track: 'plugin',
+          pluginName: plugin.name,
+          agentPrompt: agent.prompt,
+          pluginPath: plugin.dir,
+          skillsPath: plugin.skillsPath || undefined,
+        });
+      }
     }
   }
 
