@@ -13,6 +13,7 @@ import { existsSync } from 'fs';
 import { mkdir } from 'fs/promises';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { initPlugins } from './plugin-loader.js';
 import { logger } from './logger.js';
 
 const execAsync = promisify(exec);
@@ -89,7 +90,7 @@ let lastPluginsRefresh = 0;
 let pluginsRefreshPromise: Promise<void> | null = null;
 
 /**
- * Pull latest plugins if cooldown has elapsed.
+ * Pull latest plugins if cooldown has elapsed, then re-scan plugin definitions.
  * Safe to call frequently — skips if pulled recently.
  * Deduplicates concurrent calls (returns same promise).
  */
@@ -105,6 +106,8 @@ export async function refreshPlugins(): Promise<void> {
         await execAsync('git pull --ff-only', { cwd: PLUGINS_DIR });
         logger.system('Plugins refreshed');
       }
+      // Re-scan plugin definitions from disk (picks up new/changed agents, prompts, etc.)
+      initPlugins();
       lastPluginsRefresh = Date.now();
     } catch (error) {
       logger.warn('workdir', `Failed to refresh plugins: ${error}`);

@@ -9,7 +9,7 @@
  */
 
 import { join } from 'path';
-import { mkdir, symlink, readdir, readFile } from 'fs/promises';
+import { mkdir, symlink, readdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Agent } from './agent.js';
@@ -28,58 +28,7 @@ import {
 import { setupWorktree, worktreeExists, fetchOrigin } from '../connectors/github/worktree.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { processAgentEventForLogging, logger } from '../system/logger.js';
-import { PLUGINS_DIR } from '../system/workdir.js';
-
-/**
- * Load and parse .mcp.json from the plugins directory.
- * Substitutes ${MCP_*} placeholders with matching environment variables.
- * Only MCP_-prefixed vars are eligible — others are left as-is.
- */
-async function loadPluginMcpServers(): Promise<Record<string, any>> {
-  const mcpPath = join(PLUGINS_DIR, '.mcp.json');
-  if (existsSync(mcpPath)) {
-    try {
-      const raw = await readFile(mcpPath, 'utf8');
-      const substituted = raw.replace(/\$\{(MCP_[A-Z0-9_]+)\}/g, (_, name) => {
-        const value = process.env[name];
-        if (!value) logger.warn('system', `Plugin MCP: env var ${name} is not set`);
-        return value ?? '';
-      });
-      const parsed = JSON.parse(substituted);
-      return parsed.mcpServers ?? {};
-    } catch (err) {
-      logger.warn('system', `Plugin MCP: failed to load ${mcpPath}: ${err}`);
-    }
-  }
-  return {};
-}
-
-/**
- * Extract allowedTools/disallowedTools from plugin MCP configs,
- * prefix with mcp__<name>__, and strip custom fields before passing to SDK.
- */
-function extractPluginToolPermissions(servers: Record<string, any>) {
-  const allowed: string[] = [];
-  const disallowed: string[] = [];
-
-  for (const [name, config] of Object.entries(servers)) {
-    const prefix = (t: string) => `mcp__${name}__${t}`;
-
-    if (Array.isArray(config.allowedTools)) {
-      allowed.push(...config.allowedTools.map(prefix));
-      delete config.allowedTools;
-    } else {
-      allowed.push(`mcp__${name}__*`);
-    }
-
-    if (Array.isArray(config.disallowedTools)) {
-      disallowed.push(...config.disallowedTools.map(prefix));
-      delete config.disallowedTools;
-    }
-  }
-
-  return { allowed, disallowed: disallowed.length > 0 ? disallowed : undefined };
-}
+// getRootMcpConfig now used only by registry.ts for resolving agent MCP servers
 
 // ---- Prompt generation (per track) ----
 
@@ -200,16 +149,13 @@ Files available to read (in your working directory):
 `;
     systemPrompt = `${systemPrompt}\n\nCurrent Task Context:\n${context}`;
 
-    const pluginMcpServers = await loadPluginMcpServers();
-    const pluginNames = Object.keys(pluginMcpServers);
-    if (pluginNames.length > 0) {
-      logger.system(`Plugin MCP servers: ${pluginNames.join(', ')}`);
+    // Append PM overlay prompt from the pm plugin (business context, etc.)
+    if (def.pmOverlayPrompt) {
+      systemPrompt = `${systemPrompt}\n\n${def.pmOverlayPrompt}`;
     }
 
-    const pluginToolPerms = extractPluginToolPermissions(pluginMcpServers);
-
     mcpServers = {
-      ...pluginMcpServers,
+      ...(def.mcpServers || {}),
       'pm-agent-tools': createPMAgentMcpServer(agent, task),
       'research-tools': createResearchMcpServer({
         getTaskId: () => taskId,
@@ -226,16 +172,18 @@ Files available to read (in your working directory):
       'Read',
       'Glob',
       'Grep',
-      'mcp__research-tools__web_research',
-      'mcp__pm-agent-tools__send_message_to_agent',
-      'mcp__pm-agent-tools__post_to_slack',
-      'mcp__pm-agent-tools__assign_task_owner',
-      'mcp__pm-agent-tools__report_completion',
-      'mcp__pm-agent-tools__request_edit_mode',
-      'mcp__pm-agent-tools__get_agents_status',
-      ...pluginToolPerms.allowed,
+      'mcp__research-tools__*',
+      'mcp__pm-agent-tools__*',
+      ...(def.tools || []),
     ];
-    disallowedTools = pluginToolPerms.disallowed;
+    disallowedTools = [
+      'Bash',
+      'Edit',
+      'Write',
+      'WebSearch',
+      'WebFetch',
+      ...(def.disallowedTools || []),
+    ];
   } else if (def.track === 'repo') {
     // ---- Repo track ----
     const repoInfo = metadata.repositories[def.repo!.repoKey];
@@ -292,6 +240,7 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
     model = 'sonnet';
 
     mcpServers = {
+      ...(def.mcpServers || {}),
       'repo-agent-tools': createBaseAgentMcpServer(agent, task),
       ...(editAllowed ? { 'pr-tools': createRepoPRMcpServer(agent, task) } : {}),
       'research-tools': createResearchMcpServer({
@@ -311,6 +260,7 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
       'Read',
       'Glob',
       'Grep',
+      ...(def.tools || []),
       ...(editAllowed
         ? [
             'Write',
@@ -324,19 +274,14 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
             'Bash(git log:*)',
             'Bash(git merge:*)',
             'Bash(git restore:*)',
-            'mcp__pr-tools__push_branch',
-            'mcp__pr-tools__create_pull_request',
-            'mcp__pr-tools__get_pr_status',
-            'mcp__pr-tools__get_pr_reviews',
-            'mcp__pr-tools__update_pr',
-            'mcp__pr-tools__add_pr_comment',
-            'mcp__pr-tools__add_review_comment',
-            'mcp__pr-tools__resolve_review_thread',
-            'mcp__pr-tools__request_re_review',
-            'mcp__pr-tools__merge_pull_request',
-            'mcp__pr-tools__close_pull_request',
+            'mcp__pr-tools__*',
           ]
         : []),
+    ];
+    disallowedTools = [
+      'WebSearch',
+      'WebFetch',
+      ...(def.disallowedTools || []),
     ];
   } else {
     // ---- Plugin track ----
@@ -362,6 +307,7 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
     model = (def.model || 'sonnet') as string;
 
     mcpServers = {
+      ...(def.mcpServers || {}),
       'repo-agent-tools': createBaseAgentMcpServer(agent, task),
       'research-tools': createResearchMcpServer({
         getTaskId: () => taskId,
@@ -381,14 +327,15 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
       'Glob',
       'Grep',
       'Skill',
+      ...(def.tools || []),
     ];
+    disallowedTools = def.disallowedTools;
   }
 
   // ---- Build query options (session ID may change on retry) ----
 
   const buildQueryOptions = (sessionId?: string) => ({
     model: model as any,
-    betas: ['context-1m-2025-08-07'] as any,
     systemPrompt,
     cwd,
     ...(additionalDirectories ? { additionalDirectories: additionalDirectories as any } : {}),
@@ -449,6 +396,12 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
           for await (const event of agentQuery) {
             if (event.type === 'system' && event.subtype === 'init') {
               task.updateAgentState(def.id, true, event.session_id);
+              if (Array.isArray(event.mcp_servers)) {
+                for (const mcp of event.mcp_servers) {
+                  const status = mcp.status === 'connected' ? 'connected' : `FAILED`;
+                  logger.agent(def.id, `MCP ${mcp.name}: ${status}`);
+                }
+              }
             }
             processAgentEventForLogging(
               event,

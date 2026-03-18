@@ -5,8 +5,15 @@
  * Each plugin is a directory under plugins/ that may contain:
  *   - repo-config.json  — repo agent infrastructure configs
  *   - agents/*.md       — agent prompts with frontmatter (role, expertise)
- *   - pm-skills/        — PM skill directories (each subdir has SKILL.md)
+ *   - skills/           — skill directories (each subdir has SKILL.md)
  *   - .claude-plugin/plugin.json — optional plugin metadata
+ *
+ * MCP servers are configured in a single root .mcp.json at the plugins directory root.
+ * Individual agents reference server names via frontmatter `mcpServers: [...]`.
+ *
+ * A special "pm" plugin can provide an overlay for the PM agent:
+ *   - agents/pm.md body is appended to the PM's hardcoded prompt
+ *   - frontmatter mcpServers/tools/disallowedTools configure PM's MCP access
  *
  * Consumers (repo-configs, task-manager) pull what they need from loaded plugins.
  */
@@ -15,8 +22,44 @@ import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import matter from 'gray-matter';
 import { PLUGINS_DIR } from './workdir.js';
+import { logger } from './logger.js';
 
 export { PLUGINS_DIR };
+
+/** Parsed root .mcp.json — server connection configs only */
+export interface LoadedMcpConfig {
+  servers: Record<string, any>;
+}
+
+/**
+ * Load and parse an .mcp.json file, substituting ${MCP_*} env vars.
+ * Returns pure server connection configs. Tool permissions are controlled
+ * by agent frontmatter, not by .mcp.json.
+ */
+export function loadMcpJson(path: string): LoadedMcpConfig {
+  const empty: LoadedMcpConfig = { servers: {} };
+  if (!existsSync(path)) return empty;
+  try {
+    const raw = readFileSync(path, 'utf-8');
+    const substituted = raw.replace(/\$\{(MCP_[A-Z0-9_]+)\}/g, (_, name) => {
+      const value = process.env[name];
+      if (!value) logger.warn('system', `MCP config: env var ${name} is not set (${path})`);
+      return value ?? '';
+    });
+    const parsed = JSON.parse(substituted);
+    const rawServers: Record<string, any> = parsed.mcpServers ?? {};
+
+    const servers: Record<string, any> = {};
+    for (const [name, config] of Object.entries(rawServers)) {
+      servers[name] = config;
+    }
+
+    return { servers };
+  } catch {
+    logger.warn('system', `MCP config: failed to parse ${path}`);
+    return empty;
+  }
+}
 
 export interface PluginRepoConfig {
   githubRepo: string;
@@ -41,13 +84,12 @@ export interface PluginAgentDef {
     github: string;
     baseBranch?: string;
   };
-}
-
-export interface PmSkillEntry {
-  /** Namespaced skill name: {pluginName}-{skillDirName}, e.g. "engineering-workflow" */
-  namespacedName: string;
-  /** Absolute path to the skill source directory */
-  sourcePath: string;
+  /** MCP server names this agent should have access to (from plugin's .mcp.json) */
+  mcpServers?: string[];
+  /** Tool allowlist from frontmatter */
+  tools?: string[];
+  /** Tool denylist from frontmatter */
+  disallowedTools?: string[];
 }
 
 export interface LoadedPlugin {
@@ -55,11 +97,9 @@ export interface LoadedPlugin {
   dir: string;
   /** Parsed repo-config.json if present (legacy, kept for reference) */
   repoConfigs: Record<string, PluginRepoConfig> | null;
-  /** PM skills with namespaced names and source paths */
-  pmSkills: PmSkillEntry[];
   /** Agent definitions from agents/*.md — repo or plugin track based on frontmatter */
   agents: PluginAgentDef[];
-  /** Absolute path to skills/ directory (for agent craft skills) */
+  /** Absolute path to skills/ directory (null if none) */
   skillsPath: string | null;
 }
 
@@ -90,20 +130,6 @@ function scanPlugins(): LoadedPlugin[] {
       repoConfigs = JSON.parse(readFileSync(repoConfigPath, 'utf-8'));
     }
 
-    // Check for pm-skills/ directory and build namespaced skill entries
-    const pmSkillsDir = join(pluginDir, 'pm-skills');
-    const pmSkills: PmSkillEntry[] = [];
-    if (existsSync(pmSkillsDir)) {
-      for (const skillEntry of readdirSync(pmSkillsDir, { withFileTypes: true })) {
-        if (skillEntry.isDirectory()) {
-          pmSkills.push({
-            namespacedName: `${pluginName}-${skillEntry.name}`,
-            sourcePath: join(pmSkillsDir, skillEntry.name),
-          });
-        }
-      }
-    }
-
     // Scan agents/*.md for all plugins
     const agents: PluginAgentDef[] = [];
     const agentsDir = join(pluginDir, 'agents');
@@ -132,6 +158,17 @@ function scanPlugins(): LoadedPlugin[] {
           };
         }
 
+        // MCP servers and tool permissions from frontmatter
+        if (Array.isArray(data.mcpServers)) {
+          agentDef.mcpServers = data.mcpServers;
+        }
+        if (Array.isArray(data.tools)) {
+          agentDef.tools = data.tools;
+        }
+        if (Array.isArray(data.disallowedTools)) {
+          agentDef.disallowedTools = data.disallowedTools;
+        }
+
         agents.push(agentDef);
       }
     }
@@ -140,11 +177,11 @@ function scanPlugins(): LoadedPlugin[] {
     const skillsDir = join(pluginDir, 'skills');
     const hasSkills = existsSync(skillsDir);
 
+
     plugins.push({
       name: pluginName,
       dir: pluginDir,
       repoConfigs,
-      pmSkills,
       agents,
       skillsPath: hasSkills ? skillsDir : null,
     });
@@ -155,12 +192,20 @@ function scanPlugins(): LoadedPlugin[] {
 
 // Initialized by initPlugins(), called from main() at startup
 let loadedPlugins: LoadedPlugin[] = [];
-
 /**
  * Initialize plugin loader. Must be called after bootstrapWorkdir().
  */
 export function initPlugins(): void {
   loadedPlugins = scanPlugins();
+}
+
+/**
+ * Get root-level MCP config (from PLUGINS_DIR/.mcp.json).
+ * Loaded fresh each call so config changes are picked up.
+ * All agents resolve their MCP servers from this single config.
+ */
+export function getRootMcpConfig(): LoadedMcpConfig {
+  return loadMcpJson(join(PLUGINS_DIR, '.mcp.json'));
 }
 
 /**
@@ -178,8 +223,12 @@ export function getPluginsWithRepoConfigs(): LoadedPlugin[] {
 }
 
 /**
- * Get plugins that have PM skills
+ * Get the PM plugin overlay (agents/pm.md from the "pm" plugin).
+ * Returns the parsed agent def if found, or null.
  */
-export function getPluginsWithPmSkills(): LoadedPlugin[] {
-  return loadedPlugins.filter((p) => p.pmSkills.length > 0);
+export function getPmOverlay(): PluginAgentDef | null {
+  const pmPlugin = loadedPlugins.find((p) => p.name === 'pm');
+  if (!pmPlugin) return null;
+  const pmAgent = pmPlugin.agents.find((a) => a.key === 'pm');
+  return pmAgent || null;
 }

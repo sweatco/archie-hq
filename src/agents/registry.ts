@@ -9,9 +9,10 @@
  */
 
 import type { AgentDef } from '../types/agent.js';
-import { getPlugins, type LoadedPlugin, type PmSkillEntry } from '../system/plugin-loader.js';
+import { getPlugins, getRootMcpConfig, getPmOverlay, type LoadedMcpConfig, type PluginAgentDef } from '../system/plugin-loader.js';
 import { REPOS_DIR } from '../system/workdir.js';
 import { join } from 'path';
+import { logger } from '../system/logger.js';
 
 // ---- Module state ----
 
@@ -36,11 +37,20 @@ export function scanAgentDefs(): AgentDef[] {
   const defs: AgentDef[] = [];
   const seenIds = new Map<string, string>(); // agentId → pluginName (collision detection)
 
+  // Load root MCP config once for all agents
+  const rootMcp = getRootMcpConfig();
+
   // --- Scan all agents from all plugins ---
   for (const plugin of getPlugins()) {
     for (const agent of plugin.agents) {
+      // Skip the PM overlay — it's handled separately in buildPmDef()
+      if (plugin.name === 'pm' && agent.key === 'pm') continue;
+
       const agentId = `${agent.key}-agent`;
       checkCollision(agentId, plugin.name, seenIds);
+
+      // Resolve MCP servers and tool permissions from frontmatter
+      const resolvedMcp = resolveAgentMcpServers(agent, rootMcp);
 
       if (agent.repo) {
         // Repo agent — has repo metadata in frontmatter
@@ -59,6 +69,7 @@ export function scanAgentDefs(): AgentDef[] {
             defaultPath: join(REPOS_DIR, agent.key),
             repoKey: agent.key,
           },
+          ...resolvedMcp,
         });
       } else {
         // Plugin agent — no repo metadata
@@ -73,6 +84,7 @@ export function scanAgentDefs(): AgentDef[] {
           agentPrompt: agent.prompt,
           pluginPath: plugin.dir,
           skillsPath: plugin.skillsPath || undefined,
+          ...resolvedMcp,
         });
       }
     }
@@ -80,7 +92,7 @@ export function scanAgentDefs(): AgentDef[] {
 
   // --- PM agent (singleton, built from the full team) ---
   const teamDefs = defs; // all repo + plugin agents collected above
-  defs.push(buildPmDef(teamDefs));
+  defs.push(buildPmDef(teamDefs, rootMcp));
 
   return defs;
 }
@@ -156,11 +168,52 @@ function checkCollision(agentId: string, pluginName: string, seen: Map<string, s
   seen.set(agentId, pluginName);
 }
 
-function buildPmDef(teamDefs: AgentDef[]): AgentDef {
-  const plugins = getPlugins();
-  const allPmSkills = plugins.flatMap((p: LoadedPlugin) =>
-    p.pmSkills.map((s: PmSkillEntry) => s.namespacedName)
-  );
+/**
+ * Resolve agent's mcpServers references against the root .mcp.json.
+ *
+ * Tool permission rules (all from agent frontmatter):
+ * - No `tools` defined → wildcard for every MCP server (`mcp__<name>__*`)
+ * - `tools` defined → use exactly what's listed (user adds wildcards explicitly if needed)
+ * - `disallowedTools` → always applied on top
+ */
+function resolveAgentMcpServers(
+  agent: PluginAgentDef,
+  rootMcp: LoadedMcpConfig,
+): Pick<AgentDef, 'mcpServers' | 'tools' | 'disallowedTools'> {
+  const result: Pick<AgentDef, 'mcpServers' | 'tools' | 'disallowedTools'> = {};
+
+  if (agent.mcpServers && agent.mcpServers.length > 0) {
+    const resolved: Record<string, any> = {};
+    for (const name of agent.mcpServers) {
+      const config = rootMcp.servers[name];
+      if (config) {
+        resolved[name] = config;
+      } else {
+        logger.warn('registry', `Agent "${agent.key}" references MCP server "${name}" not found in root .mcp.json`);
+      }
+    }
+    if (Object.keys(resolved).length > 0) {
+      result.mcpServers = resolved;
+      // No tools defined → wildcard for all resolved servers
+      // Tools defined → use exactly what's listed
+      const serverNames = Object.keys(resolved);
+      result.tools = agent.tools && agent.tools.length > 0
+        ? agent.tools
+        : serverNames.map((name) => `mcp__${name}__*`);
+    }
+  } else if (agent.tools && agent.tools.length > 0) {
+    result.tools = agent.tools;
+  }
+
+  if (agent.disallowedTools && agent.disallowedTools.length > 0) {
+    result.disallowedTools = agent.disallowedTools;
+  }
+
+  return result;
+}
+
+function buildPmDef(teamDefs: AgentDef[], rootMcp: LoadedMcpConfig): AgentDef {
+  const pmPlugin = getPlugins().find((p) => p.name === 'pm');
 
   const teamList = teamDefs
     .map((d) => `- ${d.id}: ${d.role}`)
@@ -170,6 +223,10 @@ function buildPmDef(teamDefs: AgentDef[]): AgentDef {
     .map((d) => `- ${d.id}: ${d.expertise}`)
     .join('\n');
 
+  // PM overlay from the "pm" plugin (extra prompt, MCP, tool permissions)
+  const overlay = getPmOverlay();
+  const resolvedMcp = overlay ? resolveAgentMcpServers(overlay, rootMcp) : {};
+
   return {
     id: 'pm-agent',
     key: 'pm',
@@ -178,6 +235,8 @@ function buildPmDef(teamDefs: AgentDef[]): AgentDef {
     track: 'pm',
     pluginName: 'core',
     pmConfig: { teamList, teamExpertise },
-    pmSkills: allPmSkills,
+    pmOverlayPrompt: overlay?.prompt || undefined,
+    skillsPath: pmPlugin?.skillsPath || undefined,
+    ...resolvedMcp,
   };
 }

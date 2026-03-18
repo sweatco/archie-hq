@@ -8,6 +8,7 @@
 import 'dotenv/config';
 import { createRequire } from 'module';
 import http from 'node:http';
+import { readdirSync } from 'fs';
 const require = createRequire(import.meta.url);
 const express = require('express');
 
@@ -94,14 +95,24 @@ async function main(): Promise<void> {
     logger.plain(`Plugins loaded: ${plugins.map((p) => p.name).join(', ') || 'none'}`);
     logger.plain('');
 
-    const allPmSkills = plugins.flatMap((p) =>
-      p.pmSkills.map((s) => s.namespacedName)
-    );
+    const pmDef = agentDefs.find((d) => d.track === 'pm');
 
     logger.plain('Team:');
     logger.plain('  pm-agent (orchestrator)');
-    if (allPmSkills.length > 0) {
-      logger.plain(`    skills: ${allPmSkills.join(', ')}`);
+    const pmPlugin = plugins.find((p) => p.name === 'pm');
+    if (pmPlugin?.skillsPath) {
+      const skillDirs = readdirSync(pmPlugin.skillsPath, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => e.name);
+      if (skillDirs.length > 0) {
+        logger.plain(`    skills: ${skillDirs.join(', ')}`);
+      }
+    }
+    if (pmDef?.mcpServers) {
+      logger.plain(`    mcp: ${Object.keys(pmDef.mcpServers).join(', ')}`);
+    }
+    if (pmDef?.pmOverlayPrompt) {
+      logger.plain(`    overlay: pm plugin`);
     }
     for (const def of repoDefs) {
       logger.plain(`  [${def.pluginName}] ${def.id} — ${def.role}`);
@@ -110,9 +121,15 @@ async function main(): Promise<void> {
       if (gitName) {
         logger.plain(`    git: ${gitName}`);
       }
+      if (def.mcpServers) {
+        logger.plain(`    mcp: ${Object.keys(def.mcpServers).join(', ')}`);
+      }
     }
     for (const def of agentDefs.filter((d) => d.track === 'plugin')) {
       logger.plain(`  [${def.pluginName}] ${def.id} — ${def.role}`);
+      if (def.mcpServers) {
+        logger.plain(`    mcp: ${Object.keys(def.mcpServers).join(', ')}`);
+      }
     }
     logger.plain('');
 

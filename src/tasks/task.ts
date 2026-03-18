@@ -38,7 +38,6 @@ import {
   getMemoryPath,
   getKnowledgeLogPath,
 } from './persistence.js';
-import { getPluginsWithPmSkills } from '../system/plugin-loader.js';
 import { getIsShuttingDown } from '../system/shutdown.js';
 import { scheduleIdleCheck } from './recovery.js';
 import { scanAgentDefs } from '../agents/registry.js';
@@ -118,22 +117,18 @@ export class Task {
     await mkdir(sharedPath, { recursive: true });
     await mkdir(getMemoryPath(taskId), { recursive: true });
 
-    // Symlink PM skills from all loaded plugins into task shared folder
-    const skillsTarget = join(sharedPath, '.claude', 'skills');
-    await mkdir(join(sharedPath, '.claude'), { recursive: true });
-
-    for (const plugin of getPluginsWithPmSkills()) {
-      for (const skill of plugin.pmSkills) {
-        const target = join(skillsTarget, skill.namespacedName);
-        if (!existsSync(target)) {
-          await mkdir(skillsTarget, { recursive: true });
-          await symlink(skill.sourcePath, target);
-        }
-      }
-    }
-
     // Scan fresh agent defs for this task
     const team = scanAgentDefs();
+
+    // Symlink PM skills into task shared folder
+    const pmDef = team.find((d) => d.track === 'pm');
+    if (pmDef?.skillsPath) {
+      const skillsTarget = join(sharedPath, '.claude', 'skills');
+      await mkdir(join(sharedPath, '.claude'), { recursive: true });
+      if (!existsSync(skillsTarget)) {
+        await symlink(pmDef.skillsPath, skillsTarget);
+      }
+    }
 
     // Build repositories map from repo agent defs
     const repositories: Record<string, { path: string }> = {};
