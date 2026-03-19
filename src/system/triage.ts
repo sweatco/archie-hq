@@ -41,7 +41,7 @@ async function runTriage<T extends z.ZodType>(
   logLabel: string
 ): Promise<z.infer<T>> {
   const systemPrompt = await loadPrompt("triage-agent", {});
-  const jsonSchema = zodToJsonSchema(schema, { $refStrategy: "none" });
+  const jsonSchema = zodToJsonSchema(schema as any, { $refStrategy: "none" });
   const sessionsDir = SESSIONS_DIR;
 
   let result: z.infer<T> | null = null;
@@ -75,11 +75,12 @@ async function runTriage<T extends z.ZodType>(
         const parsed = schema.safeParse(event.structured_output);
         if (parsed.success) {
           result = parsed.data;
+          const data = parsed.data as any;
           const decision = {
-            action: parsed.data.action,
-            taskId: parsed.data.task_id || "(none)",
-            confidence: parsed.data.confidence,
-            reasoning: parsed.data.reasoning,
+            action: data.action,
+            taskId: data.task_id || "(none)",
+            confidence: data.confidence,
+            reasoning: data.reasoning,
           };
           const label = pc.yellow("[triage-agent]");
           console.log(`${label} ${pc.yellow(`[${logLabel}]`)}:`, decision);

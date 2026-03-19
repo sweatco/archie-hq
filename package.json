@@ -20,7 +20,7 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.1.0",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.77",
     "@octokit/app": "^16.1.2",
     "@octokit/webhooks": "^14.2.0",
     "@slack/bolt": "^4.6.0",
@@ -34,7 +34,7 @@
     "picocolors": "^1.1.1",
     "react": "^18.3.1",
     "slackify-markdown": "^4.5.0",
-    "zod": "^3.22.0",
+    "zod": "^4.3.6",
     "zod-to-json-schema": "^3.25.0"
   },
   "devDependencies": {

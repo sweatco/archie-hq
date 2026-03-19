@@ -184,6 +184,24 @@ export class Logger {
       const url = input.url || '';
       const displayUrl = url.length > 80 ? url.substring(0, 77) + '...' : url;
       console.log(`${label} ${c.dim('WebFetch:')} ${displayUrl}`);
+    } else if (toolName === 'ToolSearch') {
+      const query = input.query || '';
+      const displayQuery = query.length > 80 ? query.substring(0, 77) + '...' : query;
+      console.log(`${label} ${c.dim('ToolSearch:')} "${displayQuery}"`);
+    } else if (toolName.startsWith('mcp__')) {
+      // MCP tool: mcp__server__tool → "server: tool(params)"
+      const parts = toolName.split('__');
+      const server = parts[1] || '';
+      const tool = parts.slice(2).join('__') || '';
+      // Show key params inline, truncated
+      const params = Object.entries(input || {})
+        .map(([k, v]) => {
+          const s = typeof v === 'string' ? v : JSON.stringify(v);
+          return `${k}=${s.length > 60 ? s.substring(0, 57) + '...' : s}`;
+        })
+        .join(', ');
+      const display = params ? ` ${c.dim(params)}` : '';
+      console.log(`${label} ${c.dim(`${server}:`)} ${tool}${display}`);
     } else {
       // Generic fallback for any other tools
       console.log(`${label} ${c.dim('Tool:')} ${toolName}`);
@@ -360,10 +378,7 @@ export function processAgentEventForLogging(
             subagentLabels.set(block.id, subagentLabel);
           }
 
-          // Only log SDK tools (not MCP tools which start with mcp__)
-          if (['Read', 'Write', 'Edit', 'Grep', 'Glob', 'Bash', 'Skill', 'Task', 'WebSearch', 'WebFetch'].includes(toolName)) {
-            logger.agentTool(displayName, toolName, input, { editMode, cwds, subagentLabel });
-          }
+          logger.agentTool(displayName, toolName, input, { editMode, cwds, subagentLabel });
         }
       }
     }

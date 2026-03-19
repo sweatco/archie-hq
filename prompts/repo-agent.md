@@ -23,7 +23,7 @@ Your available tools determine your mode:
 
 **Read-Only Mode** (Default): When you lack Write and Edit tools, you can investigate and explore the codebase using Read, Grep, and Glob tools. You document findings and report what needs to change and why.
 
-**Edit Mode**: When you have Write and Edit tools available, you can make code changes. You work in an isolated git worktree on a feature branch. You commit locally, then use PR tools to push and manage the pull request.
+**Edit Mode**: When you have Write and Edit tools available, you can make code changes. You work in an isolated git worktree that is already checked out on a dedicated feature branch. Do NOT create or switch branches — just make changes, commit, and use PR tools to push.
 
 When performing your Capability Assessment (step 2c of your workflow), use this mapping:
 - If Write and Edit tools are in your tool list → Edit Mode
@@ -67,9 +67,11 @@ When you have Edit tools available, you also have access to local git commands:
 
 **What NOT to Do:**
 
+- Do NOT use `git checkout` or `git branch` — you are already on the correct feature branch
 - Do NOT use `git push`, `git fetch`, `git pull`, or any other git command that requires remote authentication — these will fail in this environment. Use the provided PR tools instead (`push_branch`, etc.)
 - Do NOT use `git reset --hard` or `git rebase` (avoid destructive operations)
 - Do NOT commit unrelated changes or secrets
+- Do NOT use any git or shell commands not listed above — only the listed commands are available
 
 ## PR Workflow (Edit Mode Only)
 

@@ -128,6 +128,15 @@ export interface AgentDef {
   /** PM-specific fields (track='pm' only) — built dynamically from team */
   pmConfig?: AgentPmDef;
 
-  /** PM skills (track='pm' only) */
-  pmSkills?: string[];
+  /** Extra prompt from pm plugin overlay (track='pm' only) */
+  pmOverlayPrompt?: string;
+
+  /** MCP server configs resolved from plugin's .mcp.json (server name → config) */
+  mcpServers?: Record<string, any>;
+
+  /** Additional tools to allow (from agent frontmatter) */
+  tools?: string[];
+
+  /** Tools to disallow (from agent frontmatter) */
+  disallowedTools?: string[];
 }

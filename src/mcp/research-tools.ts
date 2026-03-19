@@ -101,7 +101,7 @@ export function createWebContentSandwichHooks(): HookCallbackMatcher[] {
 // Report Writer JSON Schema (for outputFormat enforcement)
 // ============================================================================
 
-const reportWriterJsonSchema = zodToJsonSchema(ReportWriterOutputSchema, {
+const reportWriterJsonSchema = zodToJsonSchema(ReportWriterOutputSchema as any, {
   $refStrategy: 'none',
 }) as Record<string, unknown>;
 
