@@ -20,6 +20,7 @@ import { getAgentIds } from './registry.js';
 import { getGitHubClient } from '../connectors/github/client.js';
 import { appendAgentFinding } from '../tasks/persistence.js';
 import { logger } from '../system/logger.js';
+import { createUpdateMemoryTool } from '../memory-adapter.js';
 
 const execAsync = promisify(exec);
 
@@ -494,6 +495,7 @@ export function createPMAgentMcpServer(agent: Agent, task: Task) {
       createReportCompletionTool(agent, task),
       createRequestEditModeTool(agent, task),
       createGetAgentsStatusTool(agent, task),
+      createUpdateMemoryTool(agent, task),
     ],
   });
 }

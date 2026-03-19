@@ -15,6 +15,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Agent } from './agent.js';
 import type { Task } from '../tasks/task.js';
 import { createPMAgentMcpServer, createBaseAgentMcpServer, createRepoPRMcpServer } from './tools.js';
+import type { TaskMetadata } from '../types/task.js';
 import { createResearchMcpServer, createResearchPostToolHook, createResearchDefenseTagHook } from '../mcp/research-tools.js';
 import { buildPeerList } from './registry.js';
 import {
@@ -29,6 +30,7 @@ import { setupWorktree, worktreeExists, fetchOrigin } from '../connectors/github
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { processAgentEventForLogging, logger } from '../system/logger.js';
 import { PLUGINS_DIR } from '../system/workdir.js';
+import { getMemoryContext, getMemoryDir } from '../memory-adapter.js';
 
 /**
  * Load and parse .mcp.json from the plugins directory.
@@ -153,6 +155,21 @@ async function setupAgentWorkspace(taskId: string, agent: Agent): Promise<string
   return agentWorkspace;
 }
 
+// ---- Helpers ----
+
+/**
+ * Extract the requesting user's Slack ID from task metadata.
+ * Looks at the knowledge.log source pattern [@<userId:name>].
+ * Falls back to undefined if no Slack user found.
+ */
+function findRequestingUser(metadata: TaskMetadata): string | undefined {
+  // Check channels for Slack threads — first user is typically the requester
+  // We don't have direct user info in metadata, but the adapter can use this
+  // to look up user preferences. Return undefined for now — the extraction
+  // will capture user IDs from the transcript.
+  return undefined;
+}
+
 // ---- Main spawner ----
 
 /**
@@ -200,6 +217,13 @@ Files available to read (in your working directory):
 `;
     systemPrompt = `${systemPrompt}\n\nCurrent Task Context:\n${context}`;
 
+    // Inject memory context — find requesting user from channels
+    const requestingUserId = findRequestingUser(metadata);
+    const memoryContext = await getMemoryContext('pm', requestingUserId);
+    if (memoryContext) {
+      systemPrompt = `${systemPrompt}\n${memoryContext}`;
+    }
+
     const pluginMcpServers = await loadPluginMcpServers();
     const pluginNames = Object.keys(pluginMcpServers);
     if (pluginNames.length > 0) {
@@ -233,9 +257,11 @@ Files available to read (in your working directory):
       'mcp__pm-agent-tools__report_completion',
       'mcp__pm-agent-tools__request_edit_mode',
       'mcp__pm-agent-tools__get_agents_status',
+      'mcp__pm-agent-tools__update_memory',
       ...pluginToolPerms.allowed,
     ];
     disallowedTools = pluginToolPerms.disallowed;
+    additionalDirectories = [getMemoryDir()];
   } else if (def.track === 'repo') {
     // ---- Repo track ----
     const repoInfo = metadata.repositories[def.repo!.repoKey];
@@ -286,6 +312,12 @@ IMPORTANT: The knowledge.log file is continuously updated by other agents and us
 Read it ONCE when you receive a new message, then proceed with your work. Don't poll it repeatedly.
 `;
     systemPrompt = `${systemPrompt}\n\nCurrent Context:\n${context}`;
+
+    // Inject memory context for repo agent
+    const repoMemoryContext = await getMemoryContext('repo');
+    if (repoMemoryContext) {
+      systemPrompt = `${systemPrompt}\n${repoMemoryContext}`;
+    }
 
     cwd = repoPath;
     additionalDirectories = [repoPath, sharedPath];
@@ -356,6 +388,12 @@ IMPORTANT: The knowledge.log file is continuously updated by other agents and us
 Read it ONCE when you receive a new message, then proceed with your work. Don't poll it repeatedly.
 `;
     systemPrompt = `${systemPrompt}\n\nCurrent Context:\n${context}`;
+
+    // Inject memory context for plugin agent
+    const pluginMemoryContext = await getMemoryContext('plugin');
+    if (pluginMemoryContext) {
+      systemPrompt = `${systemPrompt}\n${pluginMemoryContext}`;
+    }
 
     cwd = agentWorkspace;
     additionalDirectories = [agentWorkspace, sharedPath];

@@ -33,6 +33,9 @@ export const REPOS_DIR = join(WORKDIR, 'repos');
 /** Sessions directory (task runtime data) */
 export const SESSIONS_DIR = join(WORKDIR, 'sessions');
 
+/** Global memory directory (cross-task, persistent) */
+export const MEMORY_DIR = join(WORKDIR, 'memory');
+
 // =============================================================================
 // Bootstrap (async — must be called from main() before plugin/repo loading)
 // =============================================================================

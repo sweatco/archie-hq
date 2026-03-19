@@ -33,6 +33,15 @@ vi.mock('../registry.js', () => ({
   getAgentIds: vi.fn().mockReturnValue(['backend-agent', 'mobile-agent']),
 }));
 
+vi.mock('../../memory-adapter.js', () => ({
+  createUpdateMemoryTool: vi.fn().mockReturnValue({
+    name: 'update_memory',
+    description: 'mock',
+    inputSchema: { type: 'object', properties: {} },
+    handler: vi.fn(),
+  }),
+}));
+
 // ---- Helpers ----
 
 function makeAgent(overrides: Partial<AgentDef> = {}): Agent {
@@ -78,6 +87,7 @@ const SPAWN_PM_TOOLS = [
   'mcp__pm-agent-tools__report_completion',
   'mcp__pm-agent-tools__request_edit_mode',
   'mcp__pm-agent-tools__get_agents_status',
+  'mcp__pm-agent-tools__update_memory',
 ];
 
 const SPAWN_PR_TOOLS = [
