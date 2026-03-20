@@ -96,8 +96,11 @@ export async function mountSlackApp(
       !event.subtype &&
       (isThreadReply || isDm)
     ) {
+      // In channels, @mentions are handled by app_mention handler, so skip them here
+      // to avoid double-processing. But in DMs, app_mention doesn't fire, so we must
+      // process mention-containing DMs here.
       const botUserId = getBotUserId();
-      if (botUserId && event.text?.includes(`<@${botUserId}>`)) {
+      if (!isDm && botUserId && event.text?.includes(`<@${botUserId}>`)) {
         return;
       }
 
