@@ -48,6 +48,17 @@ See `docs/guides/local-development.md` for full setup instructions.
 
 Use the unified logger (`src/system/logger.ts`) for all console output. Never use `console.log/error/warn` directly. The logger provides color-coded, semantic logging methods for agents, system events, and errors.
 
+## Memory Layer
+
+`src/memory/` is a standalone module (no ARCHIE imports). ARCHIE integrates via `src/memory-adapter.ts`. See `src/memory/CLAUDE.md` for details.
+
+## Adding MCP Tools
+
+When adding a new MCP tool, update three places:
+1. Tool definition in `src/agents/tools.ts` (add to the relevant MCP server's tools array)
+2. `allowedTools` in `src/agents/spawn.ts` (with `mcp__<server>__<tool>` prefix)
+3. Expected tool list in `src/agents/__tests__/tool-contract.test.ts` (+ mock if new import)
+
 ## Git Workflow
 
 **IMPORTANT**: Only create commits when explicitly requested by the user. Never commit code automatically.
