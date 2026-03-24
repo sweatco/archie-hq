@@ -27,8 +27,8 @@ Archie (Autonomous Responsive and Collaborative Hyper Intelligent Employee) is a
               └──────┬──────┘  └────────┬────────┘
                      │                  │
                     ┌▼──────────────────▼─────┐
-                    │     Triage Agent        │
-                    │  (Haiku — classifier)   │
+                    │   Triage Agent          │
+                    │  (Haiku — disabled)     │
                     └────────────┬────────────┘
                                  │
 ─────────────────────────────────┼─────────────────── Task Layer
@@ -63,11 +63,11 @@ Archie (Autonomous Responsive and Collaborative Hyper Intelligent Employee) is a
 | Component | Technology |
 |---|---|
 | Runtime | Node.js >= 20, TypeScript, ES modules |
-| Agent Framework | `@anthropic-ai/claude-agent-sdk` ^0.1.0 |
-| Models | Haiku (triage), Opus (PM), Sonnet (repo agents, plugin agents, research) |
+| Agent Framework | `@anthropic-ai/claude-agent-sdk` ^0.2.77 |
+| Models | Opus (PM), Sonnet (repo agents, plugin agents, research). Haiku (triage — currently disabled) |
 | Slack Integration | `@slack/bolt` ^4.6.0, `@slack/web-api` ^7.0.0 |
 | GitHub Integration | `@octokit/app` ^16.1.2, `@octokit/webhooks` ^14.2.0 |
-| Schema Validation | `zod` ^3.22.0, `zod-to-json-schema` ^3.25.0 |
+| Schema Validation | `zod` ^4.3.6, `zod-to-json-schema` ^3.25.0 |
 | Prompt Parsing | `gray-matter` ^4.0.3 (frontmatter extraction) |
 | Markdown | `slackify-markdown` ^4.5.0 (Slack formatting) |
 | Build | `tsc` (TypeScript compiler), `tsx` (dev mode) |
@@ -101,16 +101,18 @@ Each task gets its own `Task` instance (a class that encapsulates runtime state)
 
 ### Git Worktrees
 
-In edit mode, repo agents work in isolated git worktrees (`src/connectors/github/worktree.ts`). Each worktree gets a feature branch (`feature/task-{taskId}`) based on the repository's default branch. Agents commit locally; the PM agent handles `git push`, PR creation, and remote operations via GitHub API.
+All repo agents work in isolated git worktrees (`src/connectors/github/worktree.ts`), regardless of mode. In **readonly mode**, the worktree is created in detached HEAD at `origin/{baseBranch}`. In **edit mode**, the worktree has a feature branch (`feature/task-{taskId}`) based on the repository's default branch. Agents can track multiple branches per worktree via `BranchState` records. Agents commit locally and manage their own PRs via `repo-tools` MCP server; worktrees for readonly tasks are cleaned up on task stop/complete.
 
 ### Plugin Architecture
 
 Agents and capabilities are loaded dynamically from a `plugins/` directory (`src/system/plugin-loader.ts`). Each plugin can provide:
 
-- **Repo agents**: Via `repo-config.json` (infrastructure config) + `agents/*.md` (identity/prompts)
-- **Plugin agents**: Via `agents/*.md` in plugins without `repo-config.json` (lightweight, read-only)
-- **PM skills**: Via `pm-skills/` directories (domain-specific workflows symlinked into task workspaces)
+- **Repo agents**: Via `agents/*.md` with repo metadata in frontmatter (or legacy `repo-config.json`)
+- **Plugin agents**: Via `agents/*.md` without repo metadata (lightweight, read-only)
+- **PM overlay**: Via `pm/` plugin (`agents/pm.md` body appended to PM prompt)
 - **Agent skills**: Via `skills/` directories (agent-specific capabilities symlinked at spawn)
+- **Hooks**: Via `hooks/hooks.json` (plugin-defined hooks injected into agent settings)
+- **MCP servers**: Via root `.mcp.json` (agent frontmatter references server names)
 
 See [plugin-system.md](plugin-system.md) for details.
 
@@ -125,14 +127,9 @@ See [plugin-system.md](plugin-system.md) for details.
 2. Route filters (bot messages)
    → routeSlackEvent() discards own bot messages or passes through
 
-3. Triage Agent classifies (Haiku, structured JSON output)
-   → new_task | existing_task | cancel_task | noop
-
-4. Event handler routes based on triage result:
-   → new_task:      Task.createFromSlackThread() → task.sendMessage(pm-agent)
-   → existing_task: Task.get()   → append to knowledge.log → task.sendMessage(pm-agent)
-   → cancel_task:   task.stop()  → post cancellation to Slack
-   → noop:          no action
+3. Message routed directly to PM (triage agent is currently disabled)
+   → New thread: Task.createFromSlackThread() → task.sendMessage(pm-agent)
+   → Existing thread: Task.get() → append to knowledge.log → task.sendMessage(pm-agent)
 
 5. PM Agent processes input:
    → Reads knowledge.log for context
@@ -154,10 +151,9 @@ See [plugin-system.md](plugin-system.md) for details.
 
 2. connectors/github/webhooks.ts performs deterministic routing:
    → Matches task by branch name (feature/task-{id}) or PR number
-   → Routes to: triage (comments), direct (reviews, CI), merge_check, or discard
+   → Routes to: direct (reviews, CI, comments), merge_check, or discard
 
-3. For PR comments: Triage Agent classifies (existing_task or noop)
-4. For deterministic events: Direct routing to PM agent
+3. Events routed directly to PM agent (triage currently disabled for GitHub too)
 5. For merge checks: Merge orchestrator evaluates and merges if ready
 ```
 
@@ -178,7 +174,8 @@ src/
 │       ├── events.ts            # GitHub webhook dispatch, triage processing
 │       ├── webhooks.ts          # Signature verification, routing, context extraction, formatting
 │       ├── merge.ts             # PR merge logic, linked PR checking
-│       └── worktree.ts          # Git worktree lifecycle
+│       ├── worktree.ts          # Git worktree lifecycle (setup, remove, detached/branch modes)
+│       └── branch-state.ts      # Per-branch state helpers (hydrate, mirror legacy, find by PR)
 ├── agents/
 │   ├── agent.ts                 # Agent class: prompt composition, spawning, session management
 │   ├── spawn.ts                 # Agent spawn entrypoint, worktree setup, tool wiring
@@ -193,7 +190,7 @@ src/
 ├── system/
 │   ├── shutdown.ts              # Shutdown state (getIsShuttingDown / setShuttingDown)
 │   ├── logger.ts                # Unified color-coded logger
-│   ├── triage.ts                # Triage agent (Haiku classifier for Slack/GitHub)
+│   ├── triage.ts                # Triage agent (Haiku classifier — currently disabled)
 │   ├── plugin-loader.ts         # Plugin directory scanner
 │   └── workdir.ts               # Bootstrap: path constants, clone/pull/fetch helpers
 ├── mcp/

@@ -15,14 +15,14 @@ npm run dev
 npm run docker:dev
 ```
 
-See [Docker Setup](DOCKER.md) for container deployment or [Local Development](docs/local-development.md) for running without Docker.
+See [Docker Setup](DOCKER.md) for container deployment or [Local Development](docs/guides/local-development.md) for running without Docker.
 
 ## Architecture
 
 Specialized AI agents coordinate like a human engineering team:
 
-- **Triage Agent** (Haiku) - Message classification and routing
-- **PM Agent** (Sonnet) - Task coordination, user communication, GitHub operations
+- ~~**Triage Agent** (Haiku) - Message classification and routing~~ (currently disabled)
+- **PM Agent** (Opus) - Task coordination, user communication
 - **Backend Agent** (Sonnet) - Ruby on Rails engineering
 - **Mobile Agent** (Sonnet) - React Native/iOS/Android engineering
 
@@ -39,23 +39,27 @@ Specialized AI agents coordinate like a human engineering team:
 
 **Architecture:**
 
-- [Architecture Overview](docs/architecture-overview.md) - System design and concepts
-- [Agent Architecture](docs/agent-architecture.md) - AI agent specifications
-- [System Orchestration](docs/system-orchestration.md) - Backend implementation
-- [Task Persistence](docs/task-persistence.md) - Storage and state
-- [Slack Integration](docs/slack-integration.md) - UX layer
-- [GitHub Integration](docs/github-integration-agreements.md) - PR workflow
+- [Architecture Overview](docs/architecture/overview.md) - System design and concepts
+- [Agent Architecture](docs/architecture/agents.md) - AI agent specifications
+- [System Orchestration](docs/architecture/orchestration.md) - Backend implementation
+- [Task Persistence](docs/architecture/persistence.md) - Storage and state
+- [Edit Mode](docs/architecture/edit-mode.md) - Approval flow, worktrees, and git workflow
+- [Slack Integration](docs/architecture/slack-integration.md) - UX layer
+- [GitHub Integration](docs/architecture/github-integration.md) - PR workflow
+- [Plugin System](docs/architecture/plugin-system.md) - Plugin structure and agent registration
+- [Web Research](docs/architecture/web-research.md) - Multi-agent research pipeline
+- [Security](docs/architecture/security.md) - Research budget, defense layers
 
 **Operations:**
 
 - [Docker Setup](DOCKER.md) - Container deployment
-- [Local Development](docs/local-development.md) - Running without Docker
-- [Deployment & Operations](docs/deployment-operations.md) - Production deployment
+- [Local Development](docs/guides/local-development.md) - Running without Docker
+- [Deployment](docs/guides/deployment.md) - Production deployment
 
 ## Technology Stack
 
 - **Runtime:** Node.js with TypeScript
-- **AI:** Claude Agent SDK (Sonnet 4.5, Haiku 4.5)
+- **AI:** Claude Agent SDK (Opus, Sonnet, Haiku)
 - **Integrations:** Slack API, GitHub App
 - **Storage:** File-based sessions
 - **VCS:** Git worktrees

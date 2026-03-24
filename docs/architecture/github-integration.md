@@ -93,24 +93,38 @@ These messages are written to the task's knowledge log so the PM agent can under
 
 ## GitHub MCP Tools
 
-The PM agent has access to a suite of GitHub tools defined in `src/agents/tools.ts`. These tools are callback-based -- the tool definitions call into `PMToolCallbacks`, and the actual implementations live in `src/tasks/task.ts`.
+GitHub and git tools are exposed to **repo agents** via the `repo-tools` MCP server, defined in `src/agents/tools.ts` (`createRepoToolsMcpServer`). Access is controlled at spawn time by the `allowedTools` list: read tools are always available, write tools are gated on `edit_allowed`.
 
-### Available Tools
+### Available Tools (via `repo-tools` MCP server)
+
+**Always available (read-only and edit mode):**
 
 | Tool | Description |
 |---|---|
-| `push_branch` | Push commits from a worktree to origin. Takes a `repo_key` (e.g., "backend"). Uses `git push -u origin HEAD:{branch}` via CLI. |
-| `create_pull_request` | Create a PR on GitHub. Takes `repo_key`, `title`, `body`. Stores the PR number in task metadata for tracking. |
+| `fetch` | Fetch latest refs from origin. |
+| `switch_branch` | Switch to a different branch. Auto-stashes dirty work, auto-pops on return. |
+| `list_prs` | List pull requests with optional filters (state, base, sort, limit). |
+| `get_pr` | Get full PR details: title, description, diff, state, and branches. |
 | `get_pr_status` | Get PR state, mergeable status, and approval status. Returns `state`, `mergeable`, `mergeableState`, `approved`. |
 | `get_pr_reviews` | Fetch all reviews and inline comments on a PR. Groups comments by review and includes file paths and line numbers. |
-| `update_pr_description` | Update the body/description of an existing PR. |
+
+**Edit mode only:**
+
+| Tool | Description |
+|---|---|
+| `push_branch` | Push commits from the local worktree to origin. Uses `git push -u origin HEAD:{branch}` for owned branches. |
+| `create_pull_request` | Create a PR on GitHub. Stores the PR number in the current branch's `BranchState`. |
+| `update_pr` | Update the title and/or description of an existing PR (both fields optional). |
 | `add_pr_comment` | Add a general comment to a PR (issue comment). |
 | `add_review_comment` | Add a comment on a specific file and line in a PR diff. |
 | `resolve_review_thread` | Mark a review comment thread as resolved (placeholder -- requires GraphQL in production). |
 | `request_re_review` | Request re-review from all previous reviewers. Fetches existing reviewers and sends review requests. |
-| `trigger_merge_check` | Manually trigger the merge orchestrator. Returns merged, pending, and conflicted PR lists. |
+| `merge_pull_request` | Merge a pull request. Checks mergeability first and returns status if not ready. |
+| `close_pull_request` | Close a pull request without merging. |
+| `create_branch` | Create a new branch (auto-named from task ID) and switch to it. |
+| `list_branches` | List branches created or visited by this agent in the current task. |
 
-All tools that take a `repo_key` parameter dynamically build the allowed values from loaded repo agent configurations.
+Each repo agent's tools are scoped to its own repository (the `githubRepo` from the agent's config). PR numbers are stored per-branch in `BranchState.pr_number`.
 
 ## Merge Orchestrator
 
@@ -121,7 +135,7 @@ The merge orchestrator (`src/connectors/github/merge.ts`) is a system-level comp
 The merge orchestrator is triggered by:
 
 1. **Webhook events** -- Via `handleMergeCheckDirect()` on PR approval, push, CI completion.
-2. **PM tool call** -- Via `trigger_merge_check` MCP tool.
+2. **Repo agent tool call** -- Repo agents can merge individual PRs via the `merge_pull_request` tool on the `repo-tools` MCP server. The merge orchestrator runs automatically for webhook-triggered checks.
 
 ### Debouncing
 
@@ -129,7 +143,7 @@ Webhook-triggered merge checks are debounced per task with a 5-second delay (`ME
 
 ### Merge Logic
 
-`triggerMergeCheck()` collects all PRs linked to a task (from `metadata.repositories[repoKey].pr_number`) and categorizes them:
+`triggerMergeCheck()` collects all PRs linked to a task (from `branch_states` across all repositories, with legacy fallback to `repoInfo.pr_number`) and categorizes them:
 
 | Category | Criteria | Action |
 |---|---|---|
@@ -142,16 +156,25 @@ The `blocked` + `mergeable=true` case handles a known GitHub Rulesets issue wher
 
 ### Linked PR Checking
 
-A single task can have PRs across multiple repositories. The orchestrator checks all of them together. PRs are linked via the `pr_number` field in `RepositoryInfo`:
+A single task can have PRs across multiple repositories and multiple branches. The orchestrator collects all PRs from `branch_states` across all repositories:
 
 ```typescript
-interface RepositoryInfo {
-  pr_number?: number;  // PR number for this repo in this task
-  // ...
+// From src/connectors/github/merge.ts
+for (const [repoKey, repoInfo] of Object.entries(task.metadata.repositories)) {
+  if (repoInfo.branch_states) {
+    for (const state of Object.values(repoInfo.branch_states)) {
+      if (state.pr_number) {
+        linkedPRs.push({ repoKey, prNumber: state.pr_number });
+      }
+    }
+  } else if (repoInfo.pr_number) {
+    // Legacy fallback for tasks created before branch_states
+    linkedPRs.push({ repoKey, prNumber: repoInfo.pr_number });
+  }
 }
 ```
 
-PR numbers are stored when the PM calls `create_pull_request` and are referenced in log entries using the `repo#123` format (e.g., `backend#42`).
+PR numbers are stored when a repo agent calls `create_pull_request` and are referenced in log entries using the `repo#123` format (e.g., `backend#42`).
 
 ### PM Notification
 
@@ -200,11 +223,11 @@ The system is designed so that the PM agent is only reactivated for GitHub event
 
 ## Relevant Source Files
 
-- `src/connectors/github/client.ts` -- GitHubClient class, Octokit wrapper, git identity configuration, GIT_ASKPASS
+- `src/connectors/github/client.ts` -- GitHubClient class, Octokit wrapper, git identity configuration, GIT_ASKPASS, `listPRs`, `getPRDetails`, `mergePullRequest`, `closePullRequest`
 - `src/connectors/github/events.ts` -- GitHub webhook dispatch, triage processing (`processGitHubTriage`)
 - `src/connectors/github/webhooks.ts` -- Signature verification, deterministic routing, context extraction, event formatting, merge check debouncing
-- `src/connectors/github/merge.ts` -- Auto-merge logic, linked PR checking, PM notification
-- `src/connectors/github/worktree.ts` -- Git worktree lifecycle
-- `src/agents/tools.ts` -- GitHub MCP tool definitions (PM agent tools)
-- `src/tasks/task.ts` -- GitHub tool callback implementations (`onPushBranch`, `onCreatePullRequest`, etc.)
-- `src/types/task.ts` -- `RepositoryInfo` type with PR tracking fields
+- `src/connectors/github/merge.ts` -- Auto-merge logic, linked PR checking (reads from `branch_states`), PM notification
+- `src/connectors/github/worktree.ts` -- Git worktree lifecycle (`setupWorktree`, `removeWorktree`, `WorktreeCheckout`)
+- `src/connectors/github/branch-state.ts` -- Per-branch state helpers (`hydrateBranchState`, `mirrorLegacyFields`, `findBranchStateByPR`)
+- `src/agents/tools.ts` -- `repo-tools` MCP server (git workflow + PR tools for repo agents), `pm-agent-tools` MCP server
+- `src/types/task.ts` -- `RepositoryInfo` with `branch_states`, `BranchState` type with per-branch PR tracking
