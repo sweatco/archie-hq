@@ -82,17 +82,19 @@ User @mentions Archie in Slack thread
 
 ## Multi-Thread Support
 
-A single task can be associated with multiple Slack threads. The `TaskMetadata` type (`src/types/task.ts`) holds an array of `SlackThread` objects:
+A single task can be associated with multiple Slack threads (and other channel types). The `TaskMetadata` type (`src/types/task.ts`) holds a `channels` record keyed by channel ID:
 
 ```typescript
-interface SlackThread {
+interface SlackChannel {
+  type: 'slack';
   thread_id: string;
   channel_id: string;
+  channel_name: string;
   last_processed_ts: string;
 }
 ```
 
-When triage classifies a message as `existing_task` and the thread is not yet tracked for that task, the event handler adds the new thread to `metadata.slack_threads` and posts a linking confirmation: "Got it, I've linked this to the ongoing investigation." All subsequent `post_to_slack` calls from the PM agent post to every tracked thread.
+When triage classifies a message as `existing_task` and the thread is not yet tracked for that task, the event handler adds the new thread to `metadata.channels` and posts a linking confirmation. All subsequent `post_to_slack` calls from the PM agent post to every tracked Slack channel.
 
 ## Message Deduplication
 

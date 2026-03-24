@@ -20,9 +20,9 @@ Multi-agent AI software engineering system built with Claude Agent SDK. Speciali
 
 ## Architecture Overview
 
-Slack messages → Triage Agent → PM Agent → Specialist Agents (Backend, Mobile)
+Slack messages → PM Agent → Specialist Agents (Backend, Mobile)
 
-- **Triage agent** (Haiku) classifies messages: new task, existing task, status request, cancel
+- **Triage agent** (Haiku) is currently disabled — messages route directly to PM
 - **PM agent** manages tasks, assigns owners, communicates with users via Slack
 - **Specialist agents** (Backend/Mobile) investigate and modify codebases (readonly by default, edit mode after approval)
 - **Plugin agents** handle non-engineering domains (generic, no git infrastructure)

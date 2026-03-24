@@ -8,14 +8,16 @@ Archie uses four agent types, each backed by a specific Claude model and serving
 
 | Agent Type | Model | Count | Role |
 |---|---|---|---|
-| Triage Agent | Haiku | 1 (stateless) | Event classifier for Slack messages and GitHub PR comments |
+| ~~Triage Agent~~ | Haiku | 1 (stateless) | Event classifier for Slack messages and GitHub PR comments (**currently disabled**) |
 | PM Agent | Opus | 1 per task | Task manager, user interface, agent coordinator |
 | Repo Agents | Sonnet | 1 per repository per task | Codebase investigation and modification |
 | Plugin Agents | Sonnet (configurable) | 1 per plugin agent per task | Lightweight, read-only domain specialists |
 
-### Triage Agent
+### Triage Agent (currently disabled)
 
 **Source**: `src/system/triage.ts`
+
+> **Note**: The triage agent is currently disabled. All incoming Slack messages are routed directly to the PM agent without classification. The code and prompts remain in the codebase for potential re-enablement.
 
 The triage agent is a stateless classifier that runs once per incoming event. It does not maintain sessions or participate in task coordination. It uses the Haiku model for fast, cost-effective classification.
 
@@ -74,20 +76,7 @@ One PM agent instance is spawned per task. It is the orchestrator: it receives a
 | `Skill` | Load domain-specific PM skills from plugins |
 | `Read`, `Glob`, `Grep` | Read files in the shared task folder |
 
-**Edit mode tools** (available only after user approval):
-
-| Tool | Purpose |
-|---|---|
-| `push_branch` | Push commits from worktree to origin |
-| `create_pull_request` | Create a PR on GitHub |
-| `get_pr_status` | Check PR mergeable state |
-| `get_pr_reviews` | Fetch PR reviews and comments |
-| `update_pr_description` | Update PR body |
-| `add_pr_comment` | Add a general PR comment |
-| `add_review_comment` | Comment on a specific line of code |
-| `resolve_review_thread` | Mark a review thread as resolved |
-| `request_re_review` | Request reviewers to re-review |
-| `trigger_merge_check` | Check and merge ready PRs |
+Note: PR lifecycle tools (push, create PR, merge, etc.) have moved from the PM agent to repo agents via the `repo-tools` MCP server. The PM no longer directly manages git or GitHub operations.
 
 **Key behaviors**:
 
@@ -105,28 +94,38 @@ Repo agents are specialized for a single repository. They investigate code, make
 
 **Model**: Sonnet (with 1M context beta)
 
-**Tools** (via MCP server `repo-agent-tools`):
+**Tools** (via MCP servers `repo-agent-tools` and `repo-tools`):
 
-| Tool | Purpose |
-|---|---|
-| `send_message_to_agent` | Report findings or coordinate with peers |
-| `log_finding` | Write to shared knowledge log |
-| `web_research` | Spawn a research pipeline |
-| `Read`, `Glob`, `Grep` | Investigate repository code |
+| Tool | MCP Server | Availability | Purpose |
+|---|---|---|---|
+| `send_message_to_agent` | `repo-agent-tools` | Always | Report findings or coordinate with peers |
+| `log_finding` | `repo-agent-tools` | Always | Write to shared knowledge log |
+| `web_research` | `research-tools` | Always | Spawn a research pipeline |
+| `fetch` | `repo-tools` | Always | Fetch latest refs from origin |
+| `switch_branch` | `repo-tools` | Always | Switch branches with auto-stash/pop |
+| `list_prs` | `repo-tools` | Always | List PRs with filters |
+| `get_pr` | `repo-tools` | Always | Get full PR details including diff |
+| `get_pr_status` | `repo-tools` | Always | Check PR mergeable state |
+| `get_pr_reviews` | `repo-tools` | Always | Fetch PR reviews and comments |
+| `Read`, `Glob`, `Grep` | (built-in) | Always | Investigate repository code |
+| `git log`, `git diff`, `git show`, `git blame`, `git branch` | (Bash) | Always | Read-only git inspection |
+| `Write`, `Edit` | (built-in) | Edit mode | Modify files in the worktree |
+| `git add`, `git commit`, `git status`, `git merge`, `git restore`, `rm`, `git rm` | (Bash) | Edit mode | Stage, commit, and manage changes |
+| `push_branch` | `repo-tools` | Edit mode | Push commits to origin |
+| `create_pull_request` | `repo-tools` | Edit mode | Create a PR on GitHub |
+| `update_pr` | `repo-tools` | Edit mode | Update PR title/description |
+| `add_pr_comment` | `repo-tools` | Edit mode | Add a general PR comment |
+| `add_review_comment` | `repo-tools` | Edit mode | Comment on a specific line |
+| `resolve_review_thread` | `repo-tools` | Edit mode | Mark a review thread as resolved |
+| `request_re_review` | `repo-tools` | Edit mode | Request reviewers to re-review |
+| `merge_pull_request` | `repo-tools` | Edit mode | Merge a PR |
+| `close_pull_request` | `repo-tools` | Edit mode | Close a PR without merging |
+| `create_branch` | `repo-tools` | Edit mode | Create and switch to a new branch |
+| `list_branches` | `repo-tools` | Edit mode | List branches in the current task |
 
-**Edit mode tools** (when `metadata.edit_allowed === true`):
+**Dual mode system**: Repo agents discover their mode (read-only vs edit) from their available tools. When `Write` and `Edit` are present, they operate in edit mode. When absent, they operate in read-only mode.
 
-| Tool | Purpose |
-|---|---|
-| `Write`, `Edit` | Modify files in the worktree |
-| `git add`, `git commit` | Stage and commit changes |
-| `git status`, `git diff`, `git log` | Inspect working tree state |
-| `git merge` | Resolve conflicts with origin/main |
-| `git restore` | Unstage or discard changes |
-
-**Dual mode system**: Repo agents discover their mode (read-only vs edit) from their available tools. When `Write` and `Edit` are present, they operate in edit mode within an isolated git worktree. When absent, they operate in read-only mode on the base repository.
-
-**Working directory**: In read-only mode, the agent's cwd is the base repository path. In edit mode, it switches to the worktree path. The `additionalDirectories` option gives agents access to both the repository and the shared task folder.
+**Working directory**: The agent's cwd is always a task-local worktree at `sessions/{taskId}/repos/{repoKey}`. In read-only mode, the worktree is at detached HEAD on the base branch. In edit mode, it has a feature branch. The `additionalDirectories` option gives agents access to both the worktree and the shared task folder.
 
 ### Plugin Agents
 
@@ -221,8 +220,8 @@ Different for each agent track:
 - Repository responsibility
 - Task lifecycle context (Research, Implement, Review, Conflicts)
 - Dual mode system (Read-Only vs Edit, determined by available tools)
-- Git workflow (staging, committing, conflict resolution)
-- Restrictions (no push, no fetch, no destructive operations)
+- Git workflow: branch management (`switch_branch`, `create_branch`, `fetch`), staging, committing, PR lifecycle
+- Honesty and transparency guidelines
 - Template variables: `{{REPO_KEY}}`, `{{BASE_BRANCH}}`
 
 **Plugin agents** (`prompts/plugin-agent.md`):

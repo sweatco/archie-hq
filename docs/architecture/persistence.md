@@ -32,10 +32,14 @@ sessions/
       memory/                              # agent memory (created at task init)
       attachments/                         # downloaded Slack file attachments
         {file_id}-{filename}               # e.g. F08ABC123-screenshot.png
-      .claude/
-        skills/                            # symlinked PM skills from plugins
-          {namespacedSkillName} -> ...     # symlink to plugin skill source
-    repos/                                 # git worktrees for edit mode (created on demand)
+    agents/
+      pm/                                  # PM agent workspace
+        .claude/
+          skills/                          # symlinked PM skills from plugins
+      {agentKey}/                          # Plugin agent workspaces
+        .claude/
+          skills/                          # symlinked agent skills
+    repos/                                 # git worktrees (always created; detached HEAD for RO, feature branch for RW)
 ```
 
 ### Path helpers (`src/tasks/persistence.ts`)
@@ -74,7 +78,9 @@ interface TaskMetadata {
   task_id: string;                              // e.g. "task-20251223-1712-a3f9k2"
   task_owner: AgentName | null;                 // agent leading the task, or null
   participants: AgentName[];                    // all agents that have participated
-  slack_threads: SlackThread[];                 // linked Slack threads
+  channels: Record<string, Channel>;            // active message delivery targets, keyed by channel ID
+  default_channel: string | null;               // channel ID of originating channel
+  slack_threads?: SlackThreadRef[];             // legacy — only on old tasks, removed after migration
   agent_sessions: Record<string, AgentSessionState | string>;  // per-agent session state
   repositories: Record<string, RepositoryInfo>; // per-repo metadata
   status: TaskStatus;                           // 'in_progress' | 'stopped' | 'completed'
@@ -87,30 +93,72 @@ interface TaskMetadata {
 }
 ```
 
-### SlackThread
+### Channel (replaces legacy `slack_threads`)
 
 ```typescript
-interface SlackThread {
+type Channel = SlackChannel | GitHubChannel;
+
+interface SlackChannel {
+  type: 'slack';
   thread_id: string;        // Slack thread timestamp ID
   channel_id: string;       // Slack channel ID
+  channel_name: string;     // Human-readable channel name
   last_processed_ts: string; // timestamp of last processed message (for dedup)
 }
+
+interface GitHubChannel {
+  type: 'github';
+  repo: string;             // GitHub repo identifier
+  pr_number: number;        // PR number
+}
 ```
+
+The `channels` field is keyed by a unique channel ID (e.g., `"{channel_id}:{thread_id}"` for Slack). The `default_channel` field identifies the originating channel. Legacy `slack_threads` arrays are migrated on first load.
+
+### SlackThreadRef (legacy)
+
+```typescript
+interface SlackThreadRef {
+  thread_id: string;
+  channel_id: string;
+  last_processed_ts: string;
+}
+```
+
+Present only on old tasks loaded from disk. Migrated to `channels` on first access.
 
 ### RepositoryInfo
 
 ```typescript
 interface RepositoryInfo {
-  path: string;                          // default repo path on disk
+  path: string;                                    // base repo path on disk
+  worktree_path?: string;                          // path to task-local worktree
+  current_branch?: string;                         // branch agent is on (key into branch_states)
+  branch_states?: Record<string, BranchState>;     // per-branch tracking
+  // Legacy fields (mirrored from current branch state for rollback safety):
   branch?: string;
-  base_branch?: string;                  // target branch for PRs (e.g. "main")
+  base_branch?: string;
   base_sha?: string;
-  worktree_path?: string;               // path to git worktree (edit mode)
-  feature_branch?: string;              // branch name (e.g. "feature/task-{id}")
-  pr_number?: number;                   // GitHub PR number
-  last_processed_comment_id?: number;   // dedup cursor for GitHub PR comments
+  feature_branch?: string;
+  pr_number?: number;
+  last_processed_comment_id?: number;
 }
 ```
+
+### BranchState
+
+```typescript
+interface BranchState {
+  owned: boolean;                      // true = agent created, false = existing branch (detached HEAD)
+  head_sha: string;                    // HEAD position when agent last left this branch
+  base_branch?: string;                // PR target branch (e.g. 'main', 'master')
+  pr_number?: number;                  // PR associated with this branch
+  last_processed_comment_id?: number;  // triage tracking for this branch's PR
+  stash_name?: string;                 // set if dirty work was auto-stashed when leaving
+}
+```
+
+Branch state tracks each branch the agent creates or visits. The `owned` flag distinguishes agent-created branches (checked out normally) from existing branches (visited in detached HEAD mode). Legacy top-level fields (`feature_branch`, `pr_number`, etc.) are mirrored from the current branch state by `mirrorLegacyFields()` in `src/connectors/github/branch-state.ts` for backward compatibility.
 
 ### AgentSessionState
 
@@ -252,7 +300,7 @@ timestamp of the most recently processed message in that thread.
 
 When a new Slack thread is linked to an existing task (`handleExistingTask()` in
 `connectors/slack/events.ts`), the full thread history is appended to the knowledge log and the
-thread is added to `metadata.slack_threads` with `last_processed_ts` set to the
+thread is added to `metadata.channels` as a `SlackChannel` with `last_processed_ts` set to the
 current message's timestamp.
 
 ### Existing thread
@@ -274,9 +322,11 @@ existingThread.last_processed_ts = message.ts;
 
 ### GitHub comment deduplication
 
-Similarly, `RepositoryInfo.last_processed_comment_id` tracks the most recently
+Similarly, `BranchState.last_processed_comment_id` (per-branch) tracks the most recently
 processed GitHub PR comment ID. When GitHub triage fires, only comments with
-`id > last_processed_comment_id` are appended to the knowledge log.
+`id > last_processed_comment_id` are appended to the knowledge log. The legacy
+`RepositoryInfo.last_processed_comment_id` is still supported for backward compatibility
+and mirrored from the current branch state.
 
 ---
 

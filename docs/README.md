@@ -60,11 +60,11 @@ Future work and unimplemented features. These are ideas that have been designed 
 
 ## Quick Reference
 
-**Message flow:** Slack/GitHub → Triage Agent (Haiku) → System → PM Agent → Specialist Agents
+**Message flow:** Slack/GitHub → PM Agent → Specialist Agents (triage agent currently disabled)
 
 **Agent types:**
-- **Triage** (Haiku) — classifies incoming events
-- **PM** (Sonnet) — manages tasks, assigns owners, communicates with users
+- ~~**Triage** (Haiku) — classifies incoming events~~ (currently disabled)
+- **PM** (Opus) — manages tasks, assigns owners, communicates with users
 - **Repo Agents** (Sonnet) — investigate and modify code in specific repositories
 - **Plugin Agents** (Sonnet) — domain-specific agents without git infrastructure
 

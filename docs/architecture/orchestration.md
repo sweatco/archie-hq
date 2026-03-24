@@ -178,9 +178,12 @@ It is idempotent: if the agent is already in `task.spawned`, it returns immediat
 
 ```
 task.ensureAgentSpawned(agentName)
-  --> create tool callbacks
   --> check for existing session ID (for SDK resume)
-  --> spawnAgent() in src/agents/spawn.ts handles all agent types
+  --> spawnAgent() in src/agents/spawn.ts handles all agent types:
+      --> updateAgentState(active) early to prevent false idle detection
+      --> build track-specific config (prompt, cwd, tools, MCP servers)
+      --> for repo track: create worktree if needed
+      --> start SDK query() with session recovery loop
   --> register handle in task.handles
   --> add to task.spawned
   --> attach crash handler: handle.running.then(() => updateAgentState(inactive))
@@ -221,29 +224,45 @@ Tools are defined in `src/agents/tools.ts` and exposed via MCP servers created p
 | `report_completion` | Optionally post to Slack, then complete the task |
 | `request_edit_mode` | Post Approve/Deny buttons to Slack, pause task until response |
 | `get_agents_status` | Return active/idle status of all spawned agents |
-| `push_branch` | Push commits from local worktree to origin (GIT_ASKPASS auth) |
-| `create_pull_request` | Create a GitHub PR and store PR number in metadata |
-| `get_pr_status` | Get PR state, mergeable status, approval status |
-| `get_pr_reviews` | Fetch all reviews and line-level comments on a PR |
-| `update_pr_description` | Update the body of a PR |
-| `add_pr_comment` | Add a general comment to a PR |
-| `add_review_comment` | Add a comment on a specific file line in a PR |
-| `resolve_review_thread` | Mark a review comment thread as resolved |
-| `request_re_review` | Request reviewers to re-review after changes |
-| `trigger_merge_check` | Check all linked PRs and merge any that are ready |
 
-### Repo Agent Tools (via `createRepoAgentMcpServer`)
+### Base Agent Tools (via `createBaseAgentMcpServer`, named `repo-agent-tools`)
+
+Used by both repo agents and plugin agents:
 
 | Tool | Description |
 |---|---|
 | `send_message_to_agent` | Send a message to another agent |
 | `log_finding` | Write an entry to the shared knowledge log (discovery, decision, completion, blocker) |
 
-### Callback architecture
+### Repo Tools (via `createRepoToolsMcpServer`, named `repo-tools`)
 
-All tools delegate to callback functions (`PMToolCallbacks` / `RepoAgentToolCallbacks`)
-created per agent per task by `task.createToolCallbacks()` in `src/tasks/task.ts`. This
-decouples tool definitions from runtime state, enabling testing and isolation.
+Used by repo agents only. Access controlled by `allowedTools` at spawn time:
+
+| Tool | Availability | Description |
+|---|---|---|
+| `fetch` | Always | Fetch latest refs from origin |
+| `switch_branch` | Always | Switch branches with auto-stash/pop |
+| `list_prs` | Always | List PRs with optional filters |
+| `get_pr` | Always | Get full PR details including diff |
+| `get_pr_status` | Always | Get PR state, mergeable status, approval status |
+| `get_pr_reviews` | Always | Fetch all reviews and line-level comments on a PR |
+| `push_branch` | Edit mode | Push commits from local worktree to origin |
+| `create_pull_request` | Edit mode | Create a GitHub PR and store PR number in branch state |
+| `update_pr` | Edit mode | Update the title and/or description of a PR |
+| `add_pr_comment` | Edit mode | Add a general comment to a PR |
+| `add_review_comment` | Edit mode | Add a comment on a specific file line in a PR |
+| `resolve_review_thread` | Edit mode | Mark a review comment thread as resolved |
+| `request_re_review` | Edit mode | Request reviewers to re-review after changes |
+| `merge_pull_request` | Edit mode | Merge a PR (checks mergeability first) |
+| `close_pull_request` | Edit mode | Close a PR without merging |
+| `create_branch` | Edit mode | Create a new branch (auto-named) and switch to it |
+| `list_branches` | Edit mode | List branches in the current task |
+
+### Tool architecture
+
+Tools are defined as self-contained functions in `src/agents/tools.ts`. Each tool receives
+the `Agent` and `Task` instances directly, importing external systems (GitHub, Slack,
+persistence) as needed. The MCP servers are created per agent per task at spawn time.
 
 ### Research budget (Defense 4)
 

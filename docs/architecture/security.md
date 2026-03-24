@@ -104,7 +104,7 @@ Additionally, each agent's core prompt (`prompts/agent-core.md`) includes standi
 Both hooks (persistence + defense tagging) are wired on every agent's PostToolUse array:
 
 ```typescript
-// From src/agents/spawn.ts (same in plugin-agent.ts, pm.ts)
+// From src/agents/spawn.ts (applied to all agent tracks)
 hooks: {
   PostToolUse: [
     createResearchPostToolHook({ getSharedDir, getTaskId, getAgentId }),
@@ -152,19 +152,24 @@ Repo agents start in **read-only mode** with only `Read`, `Glob`, `Grep` tools. 
 2. System posts Slack message with Approve/Deny buttons
 3. Task pauses (all agents stop)
 4. User clicks Approve -> task resumes with `edit_allowed: true`
-5. Repo agents gain `Write`, `Edit`, and local git commands (`git add`, `git commit`, `git diff`, `git status`, `git log`, `git merge`, `git restore`)
+5. Repo agents gain `Write`, `Edit`, local git commands (`git add`, `git commit`, `git status`, `git merge`, `git restore`, `rm`, `git rm`), and PR lifecycle tools (`push_branch`, `create_pull_request`, `update_pr`, `merge_pull_request`, etc.)
 
-Even in edit mode, repo agents cannot push to remote -- only the PM agent has `push_branch` and `create_pull_request` tools.
+In edit mode, repo agents manage their own PRs directly via the `repo-tools` MCP server. Note that even in readonly mode, agents have access to read-only git commands (`git log`, `git diff`, `git show`, `git blame`, `git branch`) and PR read tools (`fetch`, `switch_branch`, `list_prs`, `get_pr`, `get_pr_status`, `get_pr_reviews`).
 
 ```typescript
-// From src/agents/spawn.ts — edit mode tool gating
+// From src/agents/spawn.ts — edit mode tool gating (partial)
 allowedTools: [
   "Read", "Glob", "Grep",
+  "mcp__repo-tools__fetch", "mcp__repo-tools__switch_branch",
+  "mcp__repo-tools__list_prs", "mcp__repo-tools__get_pr",
+  "Bash(git log*)", "Bash(git diff*)", "Bash(git show *)",
   ...(editAllowed ? [
     "Write", "Edit",
-    "Bash(git add:*)", "Bash(git commit:*)", "Bash(git status:*)",
-    "Bash(git diff:*)", "Bash(git log:*)", "Bash(git merge:*)",
-    "Bash(git restore:*)",
+    "Bash(git add *)", "Bash(git commit *)", "Bash(git status*)",
+    "Bash(git merge *)", "Bash(git restore *)", "Bash(rm *)", "Bash(git rm *)",
+    "mcp__repo-tools__push_branch", "mcp__repo-tools__create_pull_request",
+    "mcp__repo-tools__merge_pull_request", "mcp__repo-tools__create_branch",
+    // ... additional PR write tools
   ] : []),
 ],
 ```
@@ -173,9 +178,9 @@ allowedTools: [
 
 ### PR Review Enforcement
 
-All code changes go through GitHub pull requests. The PM agent creates PRs via the `create_pull_request` tool, and merge is gated on external PR review approval. The `trigger_merge_check` tool checks that PRs are approved, CI is passing, and there are no conflicts before merging.
+All code changes go through GitHub pull requests. Repo agents create PRs via the `create_pull_request` tool on the `repo-tools` MCP server, and merge is gated on external PR review approval. The `merge_pull_request` tool checks that PRs are approved, CI is passing, and there are no conflicts before merging. The merge orchestrator also runs automatically on webhook events (approval, push, CI completion).
 
-**Source:** `src/agents/tools.ts` (`createPullRequestTool`, `createTriggerMergeCheckTool`)
+**Source:** `src/agents/tools.ts` (`createPullRequestTool`, `createMergePRTool`), `src/connectors/github/merge.ts`
 
 ### Plugin Agent Isolation
 
@@ -292,9 +297,9 @@ This log is readable by all agents and provides a full audit trail of task activ
 
 | Agent Type | Read Code | Write Code | Git Operations | Slack | GitHub PRs | Web Research |
 |-----------|-----------|-----------|---------------|-------|-----------|-------------|
-| PM Agent | Via shared/ | No | No | Yes | Yes (create, push, merge) | Yes |
-| Repo Agent (readonly) | Yes | No | No | No | No | Yes |
-| Repo Agent (edit mode) | Yes | Yes | Local only (add, commit, diff, merge) | No | No | Yes |
+| PM Agent | Via shared/ | No | No | Yes | No | Yes |
+| Repo Agent (readonly) | Yes | No | Read-only (log, diff, show, blame, branch, fetch, switch) | No | Read (list, get, status, reviews) | Yes |
+| Repo Agent (edit mode) | Yes | Yes | Full (add, commit, merge, restore, push, create branch) | No | Full (create, update, merge, close, comment) | Yes |
 | Plugin Agent | Workspace only | No | No | No | No | Yes |
 | Researcher (inner) | No | notes/ only | No | No | No | WebSearch, WebFetch |
 | Report Writer (inner) | notes/ only | No | No | No | No | No |
