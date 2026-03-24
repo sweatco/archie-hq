@@ -22,6 +22,7 @@ import { Task } from '../../tasks/task.js';
 import { appendGitHubEvent } from '../../tasks/persistence.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { getAgentDefByGithubRepo } from '../../agents/registry.js';
+import { findBranchStateByPR } from './branch-state.js';
 import { logger } from '../../system/logger.js';
 import { getIsShuttingDown } from '../../system/shutdown.js';
 import { triageGitHubComment, type GitHubComment } from '../../system/triage.js';
@@ -181,7 +182,11 @@ async function processGitHubTriage(taskId: string, payload: Record<string, unkno
     const task = await Task.get(taskId);
     const repoKey = repoDef.repo!.repoKey;
     const repoInfo = task.metadata.repositories[repoKey];
-    const lastProcessedId = repoInfo?.last_processed_comment_id || 0;
+
+    // Look up last_processed_comment_id from branch_states first, then legacy
+    const branchMatch = repoInfo ? findBranchStateByPR(repoInfo, prNumber) : undefined;
+    const lastProcessedId = branchMatch?.state.last_processed_comment_id
+      || repoInfo?.last_processed_comment_id || 0;
 
     const newComments = commentHistory.filter((c) => c.id > lastProcessedId);
 
@@ -190,6 +195,9 @@ async function processGitHubTriage(taskId: string, payload: Record<string, unkno
       await appendGitHubEvent(taskId, repoKey, msg);
     }
 
+    if (branchMatch) {
+      branchMatch.state.last_processed_comment_id = commentId;
+    }
     if (repoInfo) {
       repoInfo.last_processed_comment_id = commentId;
     }

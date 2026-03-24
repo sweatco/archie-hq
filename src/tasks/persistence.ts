@@ -382,6 +382,12 @@ export async function findTaskByPRNumber(
 
       // Verify this task has the PR in the correct repo
       const repoInfo = metadata.repositories[repoKey];
+      // Check branch_states first, then legacy top-level field
+      if (repoInfo?.branch_states) {
+        for (const state of Object.values(repoInfo.branch_states)) {
+          if (state.pr_number === prNumber) return taskId;
+        }
+      }
       if (repoInfo?.pr_number === prNumber) {
         return taskId;
       }

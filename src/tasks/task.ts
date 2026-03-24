@@ -294,6 +294,11 @@ export class Task {
       a.queue.stop();
     }
 
+    // Clean up worktrees to free disk space (only when not in edit mode)
+    if (this.metadata.edit_allowed !== true) {
+      await this.cleanupWorktrees();
+    }
+
     this.metadata.status = 'stopped';
     await this.save(true);
 
@@ -319,11 +324,35 @@ export class Task {
       a.queue.stop();
     }
 
+    // Clean up worktrees to free disk space (only when not in edit mode).
+    // RW worktrees (edit_allowed) are kept — they have branches, commits, PRs.
+    if (this.metadata.edit_allowed !== true) {
+      await this.cleanupWorktrees();
+    }
+
     this.metadata.status = 'completed';
     await this.save(true);
 
     logger.system(`Task ${this.taskId} completed`);
     emitEvent('task:completed', this.taskId);
+  }
+
+  /**
+   * Remove worktrees and clear worktree_path so next spawn creates a fresh one.
+   */
+  private async cleanupWorktrees(): Promise<void> {
+    const { removeWorktree } = await import('../connectors/github/worktree.js');
+    for (const [repoKey, repoInfo] of Object.entries(this.metadata.repositories)) {
+      if (repoInfo.worktree_path) {
+        try {
+          await removeWorktree(repoInfo.path, repoInfo.worktree_path);
+          repoInfo.worktree_path = undefined;
+          logger.system(`Task ${this.taskId}: cleaned up RO worktree for ${repoKey}`);
+        } catch (error) {
+          logger.warn('task', `Failed to cleanup worktree for ${repoKey}: ${error}`);
+        }
+      }
+    }
   }
 
   /**

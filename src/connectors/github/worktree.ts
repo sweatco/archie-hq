@@ -19,14 +19,14 @@ export { fetchOrigin };
 
 export interface WorktreeResult {
   worktree_path: string;
-  feature_branch: string;
+  feature_branch?: string;    // undefined when created in detached HEAD mode
   base_branch: string;
 }
 
 /**
  * Execute a git command in a directory
  */
-async function gitExec(cwd: string, args: string): Promise<string> {
+export async function gitExec(cwd: string, args: string): Promise<string> {
   try {
     const { stdout } = await execAsync(`git ${args}`, { cwd });
     return stdout.trim();
@@ -69,85 +69,84 @@ async function getDefaultBranch(repoPath: string): Promise<string> {
 }
 
 /**
- * Setup worktree for a repository in a task
+ * Checkout target for worktree creation.
  *
- * 1. Uses provided base branch or auto-detects (main, master, etc.)
- * 2. Fetches latest from origin
- * 3. Creates worktree at <reposPath>/<repoKey>
- * 4. Creates feature branch feature/task-{taskId} from origin/<baseBranch>
+ * - `{ type: 'detached' }` — detached HEAD at origin/{baseBranch}
+ * - `{ type: 'detached', sha }` — detached HEAD at specific commit
+ * - `{ type: 'branch', name }` — checkout existing branch (normal)
+ * - `{ type: 'new_branch', name }` — create new branch from origin/{baseBranch}
+ */
+export type WorktreeCheckout =
+  | { type: 'detached'; sha?: string }
+  | { type: 'branch'; name: string }
+  | { type: 'new_branch'; name: string };
+
+/**
+ * Setup worktree for a repository in a task.
  *
- * @param taskId - The task identifier
  * @param repoKey - Repository key (e.g., 'backend', 'mobile')
  * @param reposPath - Path to the repos directory (e.g., sessions/task-xxx/repos)
  * @param baseRepoPath - Path to the base repository
+ * @param checkout - What to check out in the worktree
  * @param baseBranch - Optional base branch (e.g., 'main', 'master'). Auto-detects if not provided.
- * @returns Object with worktree_path, feature_branch, and base_branch
+ * @returns Object with worktree_path, feature_branch (if created), and base_branch
  */
 export async function setupWorktree(
-  taskId: string,
   repoKey: string,
   reposPath: string,
   baseRepoPath: string,
-  baseBranch?: string
+  checkout: WorktreeCheckout,
+  baseBranch?: string,
 ): Promise<WorktreeResult> {
-  // 1. Use provided base branch or detect it
   const defaultBranch = baseBranch || await getDefaultBranch(baseRepoPath);
 
-  // 2. Fetch latest commits from origin
   await fetchOrigin(baseRepoPath, defaultBranch);
 
-  // 3. Create branch name
-  // taskId already includes "task-" prefix (e.g., "task-01012026-1823-abc123")
-  const featureBranch = `feature/${taskId}`;
-
-  // 4. Create worktree path
-  // Worktrees go in reposPath/<repoKey> (e.g., sessions/task-xxx/repos/backend)
   await fs.mkdir(reposPath, { recursive: true });
-
   const worktreePath = path.join(reposPath, repoKey);
 
-  // 5. Create worktree with new branch from origin/<defaultBranch>
-  logger.worktree(`Creating worktree for ${repoKey} (${featureBranch})`);
+  if (checkout.type === 'new_branch') {
+    const featureBranch = checkout.name;
+    logger.worktree(`Creating worktree for ${repoKey} (${featureBranch})`);
 
-  try {
-    await gitExec(baseRepoPath, `worktree add -b ${featureBranch} "${worktreePath}" origin/${defaultBranch}`);
-  } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    // If branch already exists, try to use it
-    if (errorMessage.includes('already exists')) {
-      logger.worktree(`Branch ${featureBranch} already exists, creating worktree with existing branch`);
-      // First check if there's already a worktree for this branch
-      const worktreeList = await gitExec(baseRepoPath, 'worktree list --porcelain');
-      if (worktreeList.includes(featureBranch)) {
-        // Worktree already exists for this branch - this shouldn't happen in normal flow
-        // but handle it gracefully by finding and returning the existing path
-        const lines = worktreeList.split('\n');
-        for (let i = 0; i < lines.length; i++) {
-          if (lines[i].startsWith('worktree ') && lines[i + 2]?.includes(featureBranch)) {
-            const existingPath = lines[i].replace('worktree ', '');
-            logger.worktree(`Found existing worktree at ${existingPath}`);
-            return {
-              worktree_path: existingPath,
-              feature_branch: featureBranch,
-              base_branch: defaultBranch,
-            };
+    try {
+      await gitExec(baseRepoPath, `worktree add -b ${featureBranch} "${worktreePath}" origin/${defaultBranch}`);
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (errorMessage.includes('already exists')) {
+        logger.worktree(`Branch ${featureBranch} already exists, reusing`);
+        const worktreeList = await gitExec(baseRepoPath, 'worktree list --porcelain');
+        if (worktreeList.includes(featureBranch)) {
+          const lines = worktreeList.split('\n');
+          for (let i = 0; i < lines.length; i++) {
+            if (lines[i].startsWith('worktree ') && lines[i + 2]?.includes(featureBranch)) {
+              const existingPath = lines[i].replace('worktree ', '');
+              logger.worktree(`Found existing worktree at ${existingPath}`);
+              return { worktree_path: existingPath, feature_branch: featureBranch, base_branch: defaultBranch };
+            }
           }
         }
+        await gitExec(baseRepoPath, `worktree add "${worktreePath}" ${featureBranch}`);
+      } else {
+        throw error;
       }
-      // No existing worktree, just use the existing branch
-      await gitExec(baseRepoPath, `worktree add "${worktreePath}" ${featureBranch}`);
-    } else {
-      throw error;
     }
+
+    return { worktree_path: worktreePath, feature_branch: featureBranch, base_branch: defaultBranch };
+  } else if (checkout.type === 'branch') {
+    logger.worktree(`Creating worktree for ${repoKey} on existing branch ${checkout.name}`);
+    await fetchOrigin(baseRepoPath, checkout.name);
+    await gitExec(baseRepoPath, `worktree add "${worktreePath}" ${checkout.name}`);
+
+    return { worktree_path: worktreePath, feature_branch: checkout.name, base_branch: defaultBranch };
+  } else {
+    // Detached HEAD
+    const target = checkout.sha || `origin/${defaultBranch}`;
+    logger.worktree(`Creating detached worktree for ${repoKey} at ${target}`);
+    await gitExec(baseRepoPath, `worktree add --detach "${worktreePath}" ${target}`);
+
+    return { worktree_path: worktreePath, base_branch: defaultBranch };
   }
-
-  // Identity is inherited from base repo (configured at server startup)
-
-  return {
-    worktree_path: worktreePath,
-    feature_branch: featureBranch,
-    base_branch: defaultBranch,
-  };
 }
 
 /**
@@ -177,5 +176,36 @@ export async function getWorktreeBranch(worktreePath: string): Promise<string | 
     return branch || null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Remove a worktree and its directory.
+ * Uses `git worktree remove --force` from the base repo.
+ */
+export async function removeWorktree(baseRepoPath: string, worktreePath: string): Promise<void> {
+  try {
+    await gitExec(baseRepoPath, `worktree remove --force "${worktreePath}"`);
+    logger.worktree(`Removed worktree at ${worktreePath}`);
+  } catch (error: any) {
+    // If worktree is already gone, just prune
+    logger.warn('worktree-manager', `Failed to remove worktree: ${error.message}`);
+    try {
+      await gitExec(baseRepoPath, 'worktree prune');
+    } catch {
+      // Best effort
+    }
+  }
+}
+
+/**
+ * Check if a path is a symbolic link
+ */
+export async function isSymlink(p: string): Promise<boolean> {
+  try {
+    const stat = await fs.lstat(p);
+    return stat.isSymbolicLink();
+  } catch {
+    return false;
   }
 }

@@ -17,11 +17,35 @@ import type { AgentName, FindingType } from '../types/task.js';
 import type { Task } from '../tasks/task.js';
 import type { Agent } from './agent.js';
 import { getAgentIds } from './registry.js';
-import { getGitHubClient } from '../connectors/github/client.js';
+import { getGitHubClient, fetchOrigin } from '../connectors/github/client.js';
+import { gitExec } from '../connectors/github/worktree.js';
+import { mirrorLegacyFields, hydrateBranchState, findBranchStateByPR } from '../connectors/github/branch-state.js';
 import { appendAgentFinding } from '../tasks/persistence.js';
 import { logger } from '../system/logger.js';
 
+// Re-export branch state helpers for consumers that import from tools.ts
+export { mirrorLegacyFields, hydrateBranchState, findBranchStateByPR };
+
 const execAsync = promisify(exec);
+
+// ---- Tool result helpers ----
+
+const ok = (text: string) => ({ content: [{ type: 'text' as const, text }] });
+const err = (text: string) => ({ content: [{ type: 'text' as const, text: `Error: ${text}` }] });
+
+/**
+ * Find stash index by message name in `git stash list` output.
+ */
+function findStashIndex(stashList: string, stashName: string): number | null {
+  const lines = stashList.split('\n');
+  for (const line of lines) {
+    if (line.includes(stashName)) {
+      const match = line.match(/^stash@\{(\d+)\}/);
+      if (match) return parseInt(match[1], 10);
+    }
+  }
+  return null;
+}
 
 // ---- GitHub Types (moved here, re-exported for backward compat) ----
 
@@ -248,22 +272,35 @@ function createPushBranchTool(agent: Agent, task: Task) {
 
       const repoInfo = task.metadata.repositories[repoKey];
       if (!repoInfo?.worktree_path) {
-        return { content: [{ type: 'text' as const, text: `Failed to push: No worktree found` }] };
+        return err('No worktree found');
       }
-      if (!repoInfo.feature_branch) {
-        return { content: [{ type: 'text' as const, text: `Failed to push: No feature branch found` }] };
+
+      const branch = repoInfo.current_branch;
+      const state = branch ? repoInfo.branch_states?.[branch] : undefined;
+
+      if (!branch || !state) {
+        return err('No branch to push');
       }
 
       try {
-        const branch = repoInfo.feature_branch;
-        await execAsync(`git push -u origin HEAD:${branch}`, { cwd: repoInfo.worktree_path });
+        if (state.owned) {
+          await execAsync(`git push -u origin HEAD:${branch}`, { cwd: repoInfo.worktree_path });
+        } else {
+          await execAsync(`git push origin HEAD:refs/heads/${branch}`, { cwd: repoInfo.worktree_path });
+        }
+
+        // Update head_sha after push
+        state.head_sha = await gitExec(repoInfo.worktree_path, 'rev-parse HEAD');
+        mirrorLegacyFields(repoInfo);
+        task.debouncedSave();
+
         const message = `Pushed ${branch} to origin`;
         logger.system(`GitHub: ${message}`);
-        return { content: [{ type: 'text' as const, text: `Successfully pushed: ${message}` }] };
+        return ok(`Successfully pushed: ${message}`);
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         logger.error('task', `Failed to push: ${message}`);
-        return { content: [{ type: 'text' as const, text: `Failed to push: ${message}` }] };
+        return err(`Failed to push: ${message}`);
       }
     },
   );
@@ -287,18 +324,23 @@ function createPullRequestTool(agent: Agent, task: Task) {
       if (!client) throw new Error('GitHub client not configured');
 
       const repoInfo = task.metadata.repositories[repoKey];
-      const head = repoInfo?.feature_branch || `feature/task-${task.taskId}`;
-      const base = repoInfo?.base_branch || 'main';
+      const branch = repoInfo?.current_branch;
+      const state = branch ? repoInfo?.branch_states?.[branch] : undefined;
+      const head = branch || `feature/task-${task.taskId}`;
+      const base = state?.base_branch || 'main';
 
       const result = await client.createPullRequest(githubRepo, head, base, args.title, args.body);
 
+      if (state) {
+        state.pr_number = result.pr_number;
+      }
       if (repoInfo) {
-        repoInfo.pr_number = result.pr_number;
+        mirrorLegacyFields(repoInfo);
         task.debouncedSave();
       }
 
       await appendAgentFinding(task.taskId, agentName, `Created PR #${result.pr_number}: ${result.pr_url}`, 'decision');
-      return { content: [{ type: 'text' as const, text: `Created PR #${result.pr_number}: ${result.pr_url}` }] };
+      return ok(`Created PR #${result.pr_number}: ${result.pr_url}`);
     },
   );
 }
@@ -344,6 +386,63 @@ function createGetPRReviewsTool(agent: Agent, task: Task) {
         return text;
       }).join('\n');
       return { content: [{ type: 'text' as const, text: `Reviews for PR #${args.pr_number}:\n${reviewText}` }] };
+    },
+  );
+}
+
+function createListPRsTool(agent: Agent, task: Task) {
+  const githubRepo = agent.def.repo!.githubRepo;
+  return tool(
+    'list_prs',
+    'List pull requests with optional filters.',
+    {
+      state: z.enum(['open', 'closed', 'all']).optional().describe('PR state filter (default: open)'),
+      base: z.string().optional().describe('Filter by base branch (e.g. "main")'),
+      sort: z.enum(['created', 'updated', 'popularity', 'long-running']).optional().describe('Sort field (default: updated)'),
+      limit: z.number().optional().describe('Max results to return (default: 10)'),
+    },
+    async (args) => {
+      const client = getGitHubClient();
+      if (!client) throw new Error('GitHub client not configured');
+      const prs = await client.listPRs(githubRepo, {
+        state: args.state,
+        base: args.base,
+        sort: args.sort,
+        per_page: args.limit,
+      });
+      if (prs.length === 0) {
+        return ok('No PRs found matching the filters.');
+      }
+      const lines = prs.map((pr) =>
+        `#${pr.number} [${pr.state}] ${pr.title} (${pr.head} → ${pr.base}) by ${pr.author} — ${pr.url}`
+      );
+      return ok(lines.join('\n'));
+    },
+  );
+}
+
+function createGetPRTool(agent: Agent, task: Task) {
+  const githubRepo = agent.def.repo!.githubRepo;
+  return tool(
+    'get_pr',
+    'Get full PR details: title, description, diff, state, and branches.',
+    { pr_number: z.number().describe('The PR number') },
+    async (args) => {
+      const client = getGitHubClient();
+      if (!client) throw new Error('GitHub client not configured');
+      const pr = await client.getPRDetails(githubRepo, args.pr_number);
+      const text = [
+        `PR #${pr.number}: ${pr.title}`,
+        `State: ${pr.state} | ${pr.head} → ${pr.base}`,
+        `URL: ${pr.url}`,
+        '',
+        '--- Description ---',
+        pr.body || '(no description)',
+        '',
+        '--- Diff ---',
+        pr.diff,
+      ].join('\n');
+      return ok(text);
     },
   );
 }
@@ -478,6 +577,165 @@ function createClosePRTool(agent: Agent, task: Task) {
   );
 }
 
+// ---- Git workflow tools (repo agents) ----
+
+function createFetchTool(agent: Agent, task: Task) {
+  const repoKey = agent.def.repo!.repoKey;
+  return tool(
+    'fetch',
+    'Fetch latest refs from origin.',
+    {},
+    async () => {
+      const repoInfo = task.metadata.repositories[repoKey];
+      const repoPath = repoInfo?.path;
+      if (!repoPath) return err('No repo path');
+      await fetchOrigin(repoPath);
+      return ok('Fetched latest from origin');
+    },
+  );
+}
+
+function createSwitchBranchTool(agent: Agent, task: Task) {
+  const repoKey = agent.def.repo!.repoKey;
+  return tool(
+    'switch_branch',
+    'Switch to a different branch. Fetches latest, auto-stashes dirty work, auto-pops on return.',
+    {
+      branch: z.string().describe('Branch name to switch to'),
+    },
+    async (args) => {
+      const repoInfo = task.metadata.repositories[repoKey];
+      const worktreePath = repoInfo.worktree_path;
+      if (!worktreePath) return err('No worktree available');
+
+      const branch = args.branch;
+      const currentBranch = repoInfo.current_branch;
+      const state = repoInfo.branch_states?.[branch];
+
+      // 1. Fetch
+      await fetchOrigin(repoInfo.path, branch);
+
+      // 2. Auto-stash if dirty
+      const status = await gitExec(worktreePath, 'status --porcelain');
+      if (status.trim()) {
+        const stashName = `archie:${task.taskId}:${currentBranch}`;
+        await gitExec(worktreePath, `stash push --include-untracked -m "${stashName}"`);
+        if (currentBranch && repoInfo.branch_states?.[currentBranch]) {
+          repoInfo.branch_states[currentBranch].stash_name = stashName;
+        }
+      }
+
+      // 3. Record HEAD sha before leaving
+      if (currentBranch && repoInfo.branch_states?.[currentBranch]) {
+        const headSha = await gitExec(worktreePath, 'rev-parse HEAD');
+        repoInfo.branch_states[currentBranch].head_sha = headSha;
+      }
+
+      // 4. Checkout
+      if (state?.owned) {
+        // Agent-created branch: normal checkout
+        await gitExec(worktreePath, `checkout ${branch}`);
+      } else if (state) {
+        // Previously visited existing branch
+        if (branch === currentBranch) {
+          // Refresh pattern: re-detach to latest remote
+          await gitExec(worktreePath, `checkout --detach origin/${branch}`);
+          state.head_sha = await gitExec(worktreePath, 'rev-parse HEAD');
+        } else {
+          // Return to recorded position (preserves unpushed commits)
+          await gitExec(worktreePath, `checkout --detach ${state.head_sha}`);
+        }
+      } else {
+        // First visit to existing branch — detached HEAD
+        await gitExec(worktreePath, `checkout --detach origin/${branch}`);
+        repoInfo.branch_states ??= {};
+        repoInfo.branch_states[branch] = {
+          owned: false,
+          head_sha: await gitExec(worktreePath, 'rev-parse HEAD'),
+        };
+      }
+
+      // 5. Update current_branch
+      repoInfo.current_branch = branch;
+
+      // 6. Auto-pop stash if exists for target branch
+      const targetState = repoInfo.branch_states?.[branch];
+      if (targetState?.stash_name) {
+        const stashList = await gitExec(worktreePath, 'stash list');
+        const stashIndex = findStashIndex(stashList, targetState.stash_name);
+        if (stashIndex !== null) {
+          await gitExec(worktreePath, `stash pop stash@{${stashIndex}}`);
+        }
+        targetState.stash_name = undefined;
+      }
+
+      mirrorLegacyFields(repoInfo);
+      task.debouncedSave();
+      return ok(`Switched to ${branch}`);
+    },
+  );
+}
+
+function createCreateBranchTool(agent: Agent, task: Task) {
+  const repoKey = agent.def.repo!.repoKey;
+  return tool(
+    'create_branch',
+    'Create a new branch and switch to it. Branch name is auto-generated from the task ID. Returns the full branch name.',
+    {
+      base: z.string().optional().describe('Base branch or commit (default: current HEAD)'),
+    },
+    async (args) => {
+      const repoInfo = task.metadata.repositories[repoKey];
+      if (!repoInfo?.worktree_path) return err('No worktree');
+
+      // Count existing owned branches to generate unique name
+      const existing = Object.values(repoInfo.branch_states || {}).filter((s) => s.owned).length;
+      const branchName = existing === 0
+        ? `feature/${task.taskId}`
+        : `feature/${task.taskId}-${existing + 1}`;
+
+      const base = args.base || 'HEAD';
+      await gitExec(repoInfo.worktree_path, `checkout -b ${branchName} ${base}`);
+
+      repoInfo.branch_states ??= {};
+      repoInfo.branch_states[branchName] = {
+        owned: true,
+        head_sha: await gitExec(repoInfo.worktree_path, 'rev-parse HEAD'),
+      };
+      repoInfo.current_branch = branchName;
+      mirrorLegacyFields(repoInfo);
+      task.debouncedSave();
+      return ok(`Created and switched to ${branchName}`);
+    },
+  );
+}
+
+function createListBranchesTool(agent: Agent, task: Task) {
+  const repoKey = agent.def.repo!.repoKey;
+  return tool(
+    'list_branches',
+    'List branches created or visited by this agent in the current task.',
+    {},
+    async () => {
+      const repoInfo = task.metadata.repositories[repoKey];
+      const current = repoInfo?.current_branch || '(unknown)';
+      const states = repoInfo?.branch_states || {};
+      const owned = Object.entries(states)
+        .filter(([, s]) => s.owned)
+        .map(([name, s]) => `${name}${s.pr_number ? ` (PR #${s.pr_number})` : ''}`);
+      const visited = Object.entries(states)
+        .filter(([, s]) => !s.owned)
+        .map(([name, s]) => `${name}${s.pr_number ? ` (PR #${s.pr_number})` : ''}`);
+      const lines = [
+        `Current: ${current}`,
+        `Created: ${owned.join(', ') || '(none)'}`,
+        `Visited: ${visited.join(', ') || '(none)'}`,
+      ];
+      return ok(lines.join('\n'));
+    },
+  );
+}
+
 // ---- MCP Server creation ----
 
 /**
@@ -499,17 +757,27 @@ export function createPMAgentMcpServer(agent: Agent, task: Task) {
 }
 
 /**
- * Create the MCP server with PR tools for repo agents (edit mode only).
+ * Create the MCP server with all repo agent tools (git, PR, branch).
+ * Access is controlled by allowedTools in spawn.ts, not by server registration.
  */
-export function createRepoPRMcpServer(agent: Agent, task: Task) {
+export function createRepoToolsMcpServer(agent: Agent, task: Task) {
   return createSdkMcpServer({
-    name: 'pr-tools',
+    name: 'repo-tools',
     version: '1.0.0',
     tools: [
-      createPushBranchTool(agent, task),
-      createPullRequestTool(agent, task),
+      // Git workflow
+      createFetchTool(agent, task),
+      createSwitchBranchTool(agent, task),
+      createCreateBranchTool(agent, task),
+      createListBranchesTool(agent, task),
+      // PR read
+      createListPRsTool(agent, task),
+      createGetPRTool(agent, task),
       createGetPRStatusTool(agent, task),
       createGetPRReviewsTool(agent, task),
+      // PR write
+      createPushBranchTool(agent, task),
+      createPullRequestTool(agent, task),
       createUpdatePRTool(agent, task),
       createAddPRCommentTool(agent, task),
       createAddReviewCommentTool(agent, task),

@@ -14,7 +14,12 @@ import { existsSync } from 'fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Agent } from './agent.js';
 import type { Task } from '../tasks/task.js';
-import { createPMAgentMcpServer, createBaseAgentMcpServer, createRepoPRMcpServer } from './tools.js';
+import {
+  createPMAgentMcpServer,
+  createBaseAgentMcpServer,
+  createRepoToolsMcpServer,
+} from './tools.js';
+import { hydrateBranchState } from '../connectors/github/branch-state.js';
 import { createResearchMcpServer, createResearchPostToolHook, createResearchDefenseTagHook } from '../mcp/research-tools.js';
 import { buildPeerList } from './registry.js';
 import {
@@ -125,6 +130,10 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   const metadata = task.metadata;
   const sharedPath = getSharedPath(taskId);
 
+  // Mark active before any heavy work (worktree setup, MCP init) to prevent
+  // false idle detection — recovery fires at 3s, MCP connections can take longer
+  task.updateAgentState(def.id, true);
+
   // ---- Build track-specific config ----
 
   let systemPrompt: string;
@@ -202,41 +211,69 @@ Files available to read (in shared folder):
     const repoInfo = metadata.repositories[def.repo!.repoKey];
     const baseRepoPath = repoInfo?.path || def.repo!.defaultPath;
     const editAllowed = metadata.edit_allowed === true;
+    const baseBranch = repoInfo?.base_branch || def.repo!.baseBranch || 'main';
+
+    // CWD: always a worktree at task-local path
+    const taskRepoPath = join(getReposPath(taskId), def.repo!.repoKey);
     let repoPath: string;
 
-    if (editAllowed) {
-      if (repoInfo?.worktree_path && (await worktreeExists(repoInfo.worktree_path))) {
-        repoPath = repoInfo.worktree_path;
-        logger.agent(def.id, `Reusing existing worktree at ${repoPath}`, { editMode: true });
-        const baseBranch = repoInfo.base_branch || def.repo!.baseBranch || 'main';
-        await fetchOrigin(repoPath, baseBranch);
-      } else {
-        startFreshSession = true;
-        const reposPath = getReposPath(taskId);
-        const { worktree_path, feature_branch, base_branch } = await setupWorktree(
-          taskId,
-          def.repo!.repoKey,
-          reposPath,
-          baseRepoPath,
-          def.repo!.baseBranch,
-        );
-        metadata.repositories[def.repo!.repoKey] = {
-          ...repoInfo,
-          path: baseRepoPath,
-          worktree_path,
-          feature_branch,
-          base_branch,
-        };
-        repoPath = worktree_path;
-      }
+    if (await worktreeExists(taskRepoPath)) {
+      // Worktree already set up (resumed task or reactivated after completion)
+      repoPath = taskRepoPath;
+      logger.agent(def.id, `Reusing existing worktree at ${repoPath}`, { editMode: editAllowed });
+      await fetchOrigin(baseRepoPath, baseBranch);
     } else {
-      repoPath = baseRepoPath;
+      // Create worktree — determine checkout target from previous state + edit mode
+      const previousBranch = repoInfo?.current_branch;
+      const prevState = previousBranch ? repoInfo?.branch_states?.[previousBranch] : undefined;
+      const wasOnBaseBranch = !previousBranch || previousBranch === baseBranch;
+
+      let checkout: import('../connectors/github/worktree.js').WorktreeCheckout;
+
+      if (editAllowed && wasOnBaseBranch) {
+        // RW mode, was on base branch (or no branch) — create feature branch for new work
+        checkout = { type: 'new_branch', name: `feature/${taskId}` };
+      } else if (prevState?.owned) {
+        // Had an owned branch — restore it (normal checkout)
+        checkout = { type: 'branch', name: previousBranch! };
+      } else if (prevState && !wasOnBaseBranch) {
+        // Was visiting a non-base existing branch — restore at recorded position
+        checkout = { type: 'detached', sha: prevState.head_sha };
+      } else {
+        // Default: detached HEAD at base branch
+        checkout = { type: 'detached' };
+      }
+
+      const result = await setupWorktree(
+        def.repo!.repoKey, getReposPath(taskId), baseRepoPath, checkout, def.repo!.baseBranch,
+      );
+
+      repoInfo.worktree_path = taskRepoPath;
+      if (result.feature_branch) {
+        hydrateBranchState(repoInfo, result.feature_branch, result.base_branch);
+      } else {
+        repoInfo.current_branch = previousBranch || baseBranch;
+      }
+      metadata.repositories[def.repo!.repoKey] = { ...repoInfo, path: baseRepoPath };
+      repoPath = taskRepoPath;
+      startFreshSession = true;
+      logger.agent(def.id, `Created worktree at ${taskRepoPath} (${result.feature_branch || checkout.type})`, { editMode: editAllowed });
+    }
+
+    // Legacy hydration: old tasks with feature_branch but no branch_states
+    if (repoInfo.feature_branch && !repoInfo.branch_states) {
+      hydrateBranchState(repoInfo, repoInfo.feature_branch, repoInfo.base_branch);
+      const state = repoInfo.branch_states![repoInfo.feature_branch];
+      state.pr_number = repoInfo.pr_number;
+      state.last_processed_comment_id = repoInfo.last_processed_comment_id;
     }
 
     systemPrompt = await generateRepoAgentPrompt(agent);
+    const currentBranch = repoInfo.current_branch || baseBranch;
     const context = `
 Task: ${taskId}
 Repository: ${repoPath}
+Current branch: ${currentBranch}
 Shared folder: ${sharedPath}
 
 Live task files (these update as work progresses):
@@ -255,7 +292,7 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
     mcpServers = {
       ...(def.mcpServers || {}),
       'repo-agent-tools': createBaseAgentMcpServer(agent, task),
-      ...(editAllowed ? { 'pr-tools': createRepoPRMcpServer(agent, task) } : {}),
+      'repo-tools': createRepoToolsMcpServer(agent, task),
       'research-tools': createResearchMcpServer({
         getTaskId: () => taskId,
         getResearchesDir: () => join(getTaskPath(taskId), 'researches'),
@@ -270,6 +307,22 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
       'mcp__repo-agent-tools__send_message_to_agent',
       'mcp__repo-agent-tools__log_finding',
       'mcp__research-tools__web_research',
+      // Git + PR read tools (RO + RW)
+      'mcp__repo-tools__fetch',
+      'mcp__repo-tools__switch_branch',
+      'mcp__repo-tools__list_prs',
+      'mcp__repo-tools__get_pr',
+      'mcp__repo-tools__get_pr_status',
+      'mcp__repo-tools__get_pr_reviews',
+      // RO git bash commands (no-space glob to match bare commands like `git log`)
+      'Bash(git log*)',
+      'Bash(git diff*)',
+      'Bash(git show *)',
+      'Bash(git blame *)',
+      'Bash(git branch -r*)',
+      'Bash(git branch --show-current)',
+      'Bash(git ls-files*)',
+      'Bash(git ls-tree *)',
       'Read',
       'Glob',
       'Grep',
@@ -278,16 +331,24 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
         ? [
             'Write',
             'Edit',
-            'Bash(rm:*)',
-            'Bash(git add:*)',
-            'Bash(git rm:*)',
-            'Bash(git commit:*)',
-            'Bash(git status:*)',
-            'Bash(git diff:*)',
-            'Bash(git log:*)',
-            'Bash(git merge:*)',
-            'Bash(git restore:*)',
-            'mcp__pr-tools__*',
+            'Bash(rm *)',
+            'Bash(git add *)',
+            'Bash(git rm *)',
+            'Bash(git commit *)',
+            'Bash(git status*)',
+            'Bash(git merge *)',
+            'Bash(git restore *)',
+            'mcp__repo-tools__push_branch',
+            'mcp__repo-tools__create_pull_request',
+            'mcp__repo-tools__update_pr',
+            'mcp__repo-tools__add_pr_comment',
+            'mcp__repo-tools__add_review_comment',
+            'mcp__repo-tools__resolve_review_thread',
+            'mcp__repo-tools__request_re_review',
+            'mcp__repo-tools__merge_pull_request',
+            'mcp__repo-tools__close_pull_request',
+            'mcp__repo-tools__create_branch',
+            'mcp__repo-tools__list_branches',
           ]
         : []),
     ];

@@ -6,19 +6,36 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createRepoPRMcpServer, createPMAgentMcpServer } from '../tools.js';
+import {
+  createRepoToolsMcpServer,
+  createPMAgentMcpServer,
+  mirrorLegacyFields,
+  hydrateBranchState,
+  findBranchStateByPR,
+} from '../tools.js';
 import type { Agent } from '../agent.js';
 import type { Task } from '../../tasks/task.js';
 import type { AgentDef } from '../../types/agent.js';
+import type { RepositoryInfo } from '../../types/task.js';
 
 // ---- Module mocks ----
 
 vi.mock('../../connectors/github/client.js', () => ({
   getGitHubClient: vi.fn(),
+  fetchOrigin: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../../connectors/github/worktree.js', () => ({
+  gitExec: vi.fn().mockResolvedValue(''),
+  isSymlink: vi.fn().mockResolvedValue(false),
+  setupWorktree: vi.fn().mockResolvedValue({ worktree_path: '/wt', feature_branch: 'feat/x', base_branch: 'main' }),
+  worktreeExists: vi.fn().mockResolvedValue(false),
+  fetchOrigin: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../../tasks/persistence.js', () => ({
   appendAgentFinding: vi.fn().mockResolvedValue(undefined),
+  getReposPath: vi.fn().mockReturnValue('/sessions/task-123/repos'),
 }));
 
 vi.mock('../../system/logger.js', () => ({
@@ -85,6 +102,14 @@ function makeTask(overrides: Partial<Task['metadata']> = {}): Task {
           worktree_path: '/worktrees/backend',
           feature_branch: 'feature/task-123',
           base_branch: 'main',
+          current_branch: 'feature/task-123',
+          branch_states: {
+            'feature/task-123': {
+              owned: true,
+              head_sha: 'abc123',
+              base_branch: 'main',
+            },
+          },
         },
       },
       edit_allowed: true,
@@ -109,20 +134,16 @@ function makeTask(overrides: Partial<Task['metadata']> = {}): Task {
   } as unknown as Task;
 }
 
-/** Extract a tool handler from the pr-tools MCP server by name */
-function getPRTool(agent: Agent, task: Task, toolName: string) {
-  const server = createRepoPRMcpServer(agent, task);
-  const toolDef = (server.instance as any)._registeredTools?.[toolName]
-    ?? (server.instance as any)._tools?.get(toolName);
+/** Extract a tool handler from an MCP server by name */
+function getToolFromServer(server: any, toolName: string) {
+  const tools: Record<string, any> = (server.instance as any)._registeredTools
+    ?? Object.fromEntries((server.instance as any)._tools ?? []);
+  if (!tools[toolName]) throw new Error(`Tool '${toolName}' not found in server`);
+  return tools[toolName].callback ?? tools[toolName].handler;
+}
 
-  if (!toolDef) {
-    // fallback: iterate registered tools
-    const tools: Record<string, any> = (server.instance as any)._registeredTools
-      ?? Object.fromEntries((server.instance as any)._tools ?? []);
-    if (!tools[toolName]) throw new Error(`Tool '${toolName}' not found in pr-tools server`);
-    return tools[toolName].callback ?? tools[toolName].handler;
-  }
-  return toolDef.callback ?? toolDef.handler;
+function getRepoTool(agent: Agent, task: Task, toolName: string) {
+  return getToolFromServer(createRepoToolsMcpServer(agent, task), toolName);
 }
 
 // ---- Tests ----
@@ -136,13 +157,10 @@ describe('merge_pull_request', () => {
 
   it('rejects when PR is not open', async () => {
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'merged',
-      mergeable: true,
-      mergeableState: 'clean',
-      approved: true,
+      state: 'merged', mergeable: true, mergeableState: 'clean', approved: true,
     });
 
-    const tool = getPRTool(makeAgent(), makeTask(), 'merge_pull_request');
+    const tool = getRepoTool(makeAgent(), makeTask(), 'merge_pull_request');
     const result = await tool({ pr_number: 42 }, {});
 
     expect(result.content[0].text).toContain('Cannot merge');
@@ -152,13 +170,10 @@ describe('merge_pull_request', () => {
 
   it('rejects when mergeableState is not clean', async () => {
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'open',
-      mergeable: true,
-      mergeableState: 'dirty',
-      approved: true,
+      state: 'open', mergeable: true, mergeableState: 'dirty', approved: true,
     });
 
-    const tool = getPRTool(makeAgent(), makeTask(), 'merge_pull_request');
+    const tool = getRepoTool(makeAgent(), makeTask(), 'merge_pull_request');
     const result = await tool({ pr_number: 42 }, {});
 
     expect(result.content[0].text).toContain('not ready');
@@ -168,13 +183,10 @@ describe('merge_pull_request', () => {
 
   it('rejects when mergeable is false', async () => {
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'open',
-      mergeable: false,
-      mergeableState: 'blocked',
-      approved: false,
+      state: 'open', mergeable: false, mergeableState: 'blocked', approved: false,
     });
 
-    const tool = getPRTool(makeAgent(), makeTask(), 'merge_pull_request');
+    const tool = getRepoTool(makeAgent(), makeTask(), 'merge_pull_request');
     const result = await tool({ pr_number: 42 }, {});
 
     expect(result.content[0].text).toContain('not ready');
@@ -183,17 +195,13 @@ describe('merge_pull_request', () => {
 
   it('merges when PR is open and clean', async () => {
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'open',
-      mergeable: true,
-      mergeableState: 'clean',
-      approved: true,
+      state: 'open', mergeable: true, mergeableState: 'clean', approved: true,
     });
     mockGitHubClient.mergePullRequest.mockResolvedValue({
-      success: true,
-      message: 'PR #42 merged successfully',
+      success: true, message: 'PR #42 merged successfully',
     });
 
-    const tool = getPRTool(makeAgent(), makeTask(), 'merge_pull_request');
+    const tool = getRepoTool(makeAgent(), makeTask(), 'merge_pull_request');
     const result = await tool({ pr_number: 42 }, {});
 
     expect(mockGitHubClient.mergePullRequest).toHaveBeenCalledWith('org/backend', 42);
@@ -202,18 +210,14 @@ describe('merge_pull_request', () => {
 
   it('uses githubRepo from agent def', async () => {
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'open',
-      mergeable: true,
-      mergeableState: 'clean',
-      approved: true,
+      state: 'open', mergeable: true, mergeableState: 'clean', approved: true,
     });
     mockGitHubClient.mergePullRequest.mockResolvedValue({
-      success: true,
-      message: 'PR #7 merged successfully',
+      success: true, message: 'PR #7 merged successfully',
     });
 
     const agent = makeAgent({ repo: { githubRepo: 'org/mobile', repoKey: 'mobile', defaultPath: '/repos/mobile' } });
-    const tool = getPRTool(agent, makeTask(), 'merge_pull_request');
+    const tool = getRepoTool(agent, makeTask(), 'merge_pull_request');
     await tool({ pr_number: 7 }, {});
 
     expect(mockGitHubClient.getPRStatus).toHaveBeenCalledWith('org/mobile', 7);
@@ -223,7 +227,7 @@ describe('merge_pull_request', () => {
   it('throws when GitHub client is not configured', async () => {
     vi.mocked(getGitHubClient).mockReturnValue(null as any);
 
-    const tool = getPRTool(makeAgent(), makeTask(), 'merge_pull_request');
+    const tool = getRepoTool(makeAgent(), makeTask(), 'merge_pull_request');
     await expect(tool({ pr_number: 42 }, {})).rejects.toThrow('GitHub client not configured');
   });
 });
@@ -237,7 +241,7 @@ describe('close_pull_request', () => {
   it('closes the PR', async () => {
     mockGitHubClient.closePullRequest.mockResolvedValue(undefined);
 
-    const tool = getPRTool(makeAgent(), makeTask(), 'close_pull_request');
+    const tool = getRepoTool(makeAgent(), makeTask(), 'close_pull_request');
     const result = await tool({ pr_number: 99 }, {});
 
     expect(mockGitHubClient.closePullRequest).toHaveBeenCalledWith('org/backend', 99);
@@ -245,7 +249,7 @@ describe('close_pull_request', () => {
   });
 });
 
-describe('get_pr_status', () => {
+describe('get_pr_status (read-only server)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getGitHubClient).mockReturnValue(mockGitHubClient as any);
@@ -253,13 +257,10 @@ describe('get_pr_status', () => {
 
   it('returns formatted status', async () => {
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'open',
-      mergeable: true,
-      mergeableState: 'clean',
-      approved: true,
+      state: 'open', mergeable: true, mergeableState: 'clean', approved: true,
     });
 
-    const tool = getPRTool(makeAgent(), makeTask(), 'get_pr_status');
+    const tool = getRepoTool(makeAgent(), makeTask(), 'get_pr_status');
     const result = await tool({ pr_number: 5 }, {});
 
     expect(result.content[0].text).toContain('State: open');
@@ -281,11 +282,172 @@ describe('PM agent tools', () => {
     const prToolNames = [
       'push_branch', 'create_pull_request', 'get_pr_status', 'get_pr_reviews',
       'update_pr', 'add_pr_comment', 'add_review_comment', 'resolve_review_thread',
-      'request_re_review', 'merge_pull_request', 'close_pull_request', 'trigger_merge_check',
+      'request_re_review', 'merge_pull_request', 'close_pull_request',
     ];
 
     for (const prTool of prToolNames) {
       expect(registeredTools, `PM server should not have tool: ${prTool}`).not.toContain(prTool);
     }
+  });
+});
+
+// ---- Branch state helper tests ----
+
+describe('mirrorLegacyFields', () => {
+  it('mirrors current branch state to top-level fields', () => {
+    const repoInfo: RepositoryInfo = {
+      path: '/repos/backend',
+      current_branch: 'feature/task-1',
+      branch_states: {
+        'feature/task-1': {
+          owned: true, head_sha: 'abc', base_branch: 'main', pr_number: 42, last_processed_comment_id: 10,
+        },
+      },
+    };
+    mirrorLegacyFields(repoInfo);
+    expect(repoInfo.feature_branch).toBe('feature/task-1');
+    expect(repoInfo.base_branch).toBe('main');
+    expect(repoInfo.pr_number).toBe(42);
+    expect(repoInfo.last_processed_comment_id).toBe(10);
+  });
+
+  it('mirrors only current branch when multiple exist', () => {
+    const repoInfo: RepositoryInfo = {
+      path: '/repos/backend',
+      current_branch: 'fix/bug',
+      branch_states: {
+        'feature/task-1': { owned: true, head_sha: 'abc', pr_number: 42 },
+        'fix/bug': { owned: true, head_sha: 'def', pr_number: 99, base_branch: 'develop' },
+      },
+    };
+    mirrorLegacyFields(repoInfo);
+    expect(repoInfo.pr_number).toBe(99);
+    expect(repoInfo.base_branch).toBe('develop');
+    expect(repoInfo.feature_branch).toBe('fix/bug');
+  });
+
+  it('does nothing when no current branch', () => {
+    const repoInfo: RepositoryInfo = { path: '/repos/backend' };
+    mirrorLegacyFields(repoInfo);
+    expect(repoInfo.feature_branch).toBeUndefined();
+    expect(repoInfo.pr_number).toBeUndefined();
+  });
+});
+
+describe('hydrateBranchState', () => {
+  it('creates branch_states from a branch name', () => {
+    const repoInfo: RepositoryInfo = { path: '/repos/backend' };
+    hydrateBranchState(repoInfo, 'feature/task-1', 'main');
+
+    expect(repoInfo.current_branch).toBe('feature/task-1');
+    expect(repoInfo.branch_states).toBeDefined();
+    expect(repoInfo.branch_states!['feature/task-1']).toEqual({
+      owned: true, head_sha: '', base_branch: 'main',
+    });
+    // Legacy fields mirrored
+    expect(repoInfo.feature_branch).toBe('feature/task-1');
+    expect(repoInfo.base_branch).toBe('main');
+  });
+
+  it('preserves existing branch_states', () => {
+    const repoInfo: RepositoryInfo = {
+      path: '/repos/backend',
+      branch_states: { 'existing': { owned: false, head_sha: 'xyz' } },
+    };
+    hydrateBranchState(repoInfo, 'feature/task-2', 'main');
+
+    expect(repoInfo.branch_states!['existing']).toBeDefined();
+    expect(repoInfo.branch_states!['feature/task-2']).toBeDefined();
+  });
+});
+
+describe('findBranchStateByPR', () => {
+  it('finds branch state by PR number', () => {
+    const repoInfo: RepositoryInfo = {
+      path: '/repos/backend',
+      branch_states: {
+        'feat/a': { owned: true, head_sha: 'abc', pr_number: 42 },
+        'feat/b': { owned: true, head_sha: 'def', pr_number: 99 },
+      },
+    };
+    const result = findBranchStateByPR(repoInfo, 99);
+    expect(result).toBeDefined();
+    expect(result!.branch).toBe('feat/b');
+    expect(result!.state.pr_number).toBe(99);
+  });
+
+  it('returns undefined when no match', () => {
+    const repoInfo: RepositoryInfo = {
+      path: '/repos/backend',
+      branch_states: {
+        'feat/a': { owned: true, head_sha: 'abc', pr_number: 42 },
+      },
+    };
+    expect(findBranchStateByPR(repoInfo, 999)).toBeUndefined();
+  });
+
+  it('returns undefined when no branch_states', () => {
+    const repoInfo: RepositoryInfo = { path: '/repos/backend' };
+    expect(findBranchStateByPR(repoInfo, 42)).toBeUndefined();
+  });
+});
+
+describe('legacy hydration', () => {
+  it('old metadata with feature_branch hydrates into branch_states', () => {
+    const repoInfo: RepositoryInfo = {
+      path: '/repos/backend',
+      feature_branch: 'feature/task-old',
+      base_branch: 'master',
+      pr_number: 55,
+      last_processed_comment_id: 20,
+    };
+
+    // Simulate the hydration from spawn.ts
+    if (repoInfo.feature_branch && !repoInfo.branch_states) {
+      hydrateBranchState(repoInfo, repoInfo.feature_branch, repoInfo.base_branch);
+      const state = repoInfo.branch_states![repoInfo.feature_branch];
+      state.pr_number = repoInfo.pr_number;
+      state.last_processed_comment_id = repoInfo.last_processed_comment_id;
+    }
+
+    expect(repoInfo.current_branch).toBe('feature/task-old');
+    expect(repoInfo.branch_states!['feature/task-old']).toEqual({
+      owned: true,
+      head_sha: '',
+      base_branch: 'master',
+      pr_number: 55,
+      last_processed_comment_id: 20,
+    });
+  });
+
+  it('new metadata with branch_states skips hydration', () => {
+    const repoInfo: RepositoryInfo = {
+      path: '/repos/backend',
+      feature_branch: 'feature/task-new',
+      current_branch: 'feature/task-new',
+      branch_states: {
+        'feature/task-new': { owned: true, head_sha: 'abc', base_branch: 'main', pr_number: 10 },
+      },
+    };
+
+    // Hydration guard
+    if (repoInfo.feature_branch && !repoInfo.branch_states) {
+      hydrateBranchState(repoInfo, repoInfo.feature_branch, repoInfo.base_branch);
+    }
+
+    // Should be unchanged
+    expect(repoInfo.branch_states!['feature/task-new'].pr_number).toBe(10);
+    expect(repoInfo.branch_states!['feature/task-new'].head_sha).toBe('abc');
+  });
+
+  it('empty metadata without feature_branch does not crash', () => {
+    const repoInfo: RepositoryInfo = { path: '/repos/backend' };
+
+    if (repoInfo.feature_branch && !repoInfo.branch_states) {
+      hydrateBranchState(repoInfo, repoInfo.feature_branch, repoInfo.base_branch);
+    }
+
+    expect(repoInfo.branch_states).toBeUndefined();
+    expect(repoInfo.current_branch).toBeUndefined();
   });
 });

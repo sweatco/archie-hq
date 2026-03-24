@@ -26,6 +26,36 @@ export interface CreatePRResult {
   pr_url: string;
 }
 
+export interface PRListItem {
+  number: number;
+  title: string;
+  state: 'open' | 'closed';
+  head: string;
+  base: string;
+  author: string;
+  updated_at: string;
+  url: string;
+}
+
+export interface PRListFilters {
+  state?: 'open' | 'closed' | 'all';
+  base?: string;
+  sort?: 'created' | 'updated' | 'popularity' | 'long-running';
+  direction?: 'asc' | 'desc';
+  per_page?: number;
+}
+
+export interface PRDetails {
+  number: number;
+  title: string;
+  body: string;
+  state: 'open' | 'merged' | 'closed';
+  head: string;
+  base: string;
+  diff: string;
+  url: string;
+}
+
 export class GitHubClient {
   private app: App;
   private installationId: number;
@@ -170,6 +200,64 @@ export class GitHubClient {
     );
 
     return status;
+  }
+
+  /**
+   * Get PR details: title, body, diff, state, head/base branches
+   */
+  async getPRDetails(githubRepo: string, prNumber: number): Promise<PRDetails> {
+    const octokit = await this.getOctokit();
+    const { owner, repo } = this.parseRepo(githubRepo);
+
+    const prResponse = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+      owner, repo, pull_number: prNumber,
+    });
+
+    // Fetch diff via Accept header
+    const diffResponse = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+      owner, repo, pull_number: prNumber,
+      headers: { accept: 'application/vnd.github.v3.diff' },
+    });
+
+    const pr = prResponse.data;
+    return {
+      number: prNumber,
+      title: pr.title,
+      body: pr.body || '',
+      state: pr.merged ? 'merged' : (pr.state as 'open' | 'closed'),
+      head: pr.head.ref,
+      base: pr.base.ref,
+      diff: String(diffResponse.data),
+      url: pr.html_url,
+    };
+  }
+
+  /**
+   * List PRs with optional filters
+   */
+  async listPRs(githubRepo: string, filters: PRListFilters = {}): Promise<PRListItem[]> {
+    const octokit = await this.getOctokit();
+    const { owner, repo } = this.parseRepo(githubRepo);
+
+    const response = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
+      owner, repo,
+      state: filters.state || 'open',
+      base: filters.base,
+      sort: filters.sort || 'updated',
+      direction: filters.direction || 'desc',
+      per_page: filters.per_page || 10,
+    });
+
+    return response.data.map((pr: any) => ({
+      number: pr.number,
+      title: pr.title,
+      state: pr.state as 'open' | 'closed',
+      head: pr.head.ref,
+      base: pr.base.ref,
+      author: pr.user?.login || 'unknown',
+      updated_at: pr.updated_at,
+      url: pr.html_url,
+    }));
   }
 
   /**
@@ -509,19 +597,20 @@ export async function configureGitIdentity(repoPath: string): Promise<string | n
 }
 
 /**
- * Fetch latest commits from origin for a specific branch.
+ * Fetch latest commits from origin.
  * Authentication is handled by GIT_ASKPASS environment variable.
  *
  * @param repoPath - Path to the repository (base repo or worktree)
- * @param branch - Branch to fetch (e.g., 'main')
+ * @param branch - Optional branch to fetch. If omitted, fetches all refs.
  */
-export async function fetchOrigin(repoPath: string, branch: string): Promise<void> {
+export async function fetchOrigin(repoPath: string, branch?: string): Promise<void> {
   try {
-    await execAsync(`git fetch origin ${branch}`, { cwd: repoPath });
-    logger.system(`Fetched origin/${branch}`);
+    const target = branch ? `origin ${branch}` : 'origin';
+    await execAsync(`git fetch ${target}`, { cwd: repoPath });
+    logger.system(branch ? `Fetched origin/${branch}` : 'Fetched origin');
   } catch (error) {
     // Non-fatal - log and continue with existing refs
-    logger.system(`Fetch failed, using existing origin/${branch}`);
+    logger.system(branch ? `Fetch failed, using existing origin/${branch}` : 'Fetch failed, using existing refs');
   }
 }
 

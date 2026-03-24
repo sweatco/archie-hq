@@ -69,10 +69,17 @@ export async function triggerMergeCheck(taskId: string): Promise<MergeCheckResul
     return result;
   }
 
-  // Collect all PRs linked to this task
+  // Collect all PRs linked to this task (from branch_states, with legacy fallback)
   const linkedPRs: Array<{ repoKey: string; prNumber: number }> = [];
   for (const [repoKey, repoInfo] of Object.entries(task.metadata.repositories)) {
-    if (repoInfo.pr_number) {
+    if (repoInfo.branch_states) {
+      for (const state of Object.values(repoInfo.branch_states)) {
+        if (state.pr_number) {
+          linkedPRs.push({ repoKey, prNumber: state.pr_number });
+        }
+      }
+    } else if (repoInfo.pr_number) {
+      // Legacy fallback
       linkedPRs.push({ repoKey, prNumber: repoInfo.pr_number });
     }
   }

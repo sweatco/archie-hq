@@ -61,15 +61,28 @@ export interface GitHubChannel extends ChannelBase {
 
 export type Channel = SlackChannel | GitHubChannel;
 
+/** Per-branch state — tracks checkout mode, PR lifecycle, and stash */
+export interface BranchState {
+  owned: boolean;                      // true = agent created, false = existing branch (detached HEAD)
+  head_sha: string;                    // HEAD position when agent last left this branch
+  base_branch?: string;                // PR target branch (e.g. 'main', 'master')
+  pr_number?: number;                  // PR associated with this branch
+  last_processed_comment_id?: number;  // triage tracking for this branch's PR
+  stash_name?: string;                 // set if dirty work was auto-stashed when leaving
+}
+
 export interface RepositoryInfo {
   path: string;
-  branch?: string;
-  base_branch?: string;
-  base_sha?: string;
-  worktree_path?: string;     // Path to active worktree (edit mode)
-  feature_branch?: string;    // Branch name in worktree (feature/task-{id})
-  pr_number?: number;         // PR number for this repo in this task
-  last_processed_comment_id?: number;  // Last processed PR comment ID (for triage)
+  branch?: string;                     // legacy, unused
+  base_branch?: string;                // legacy — now per-branch in BranchState
+  base_sha?: string;                   // legacy, unused
+  worktree_path?: string;              // Path to active worktree
+  feature_branch?: string;             // legacy — now current_branch
+  pr_number?: number;                  // legacy — now per-branch in BranchState
+  last_processed_comment_id?: number;  // legacy — now per-branch in BranchState
+
+  current_branch?: string;                          // branch agent is on right now (key into branch_states)
+  branch_states?: Record<string, BranchState>;      // keyed by branch name
 }
 
 /**
