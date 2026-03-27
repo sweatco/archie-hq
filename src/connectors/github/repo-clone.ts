@@ -134,6 +134,22 @@ export async function setupSharedClone(
 
 // ---- Post-clone configuration ----
 
+const SANDBOX_EXCLUDES = [
+  '.bashrc', '.bash_profile', '.profile', '.zshrc', '.zprofile',
+  '.gitconfig', '.gitmodules', '.mcp.json', '.ripgreprc', '.idea', 'CLAUDE.md',
+];
+
+/**
+ * Add bwrap sandbox artifacts to .git/info/exclude so they don't pollute git status.
+ * Uses .git/info/exclude (per-repo, not committed) because bwrap overrides $HOME/.gitconfig
+ * inside the sandbox, making global excludes ineffective.
+ */
+export async function configureSandboxExcludes(clonePath: string): Promise<void> {
+  const excludeFile = path.join(clonePath, '.git', 'info', 'exclude');
+  await fs.mkdir(path.join(clonePath, '.git', 'info'), { recursive: true });
+  await fs.writeFile(excludeFile, `# bwrap sandbox artifacts\n${SANDBOX_EXCLUDES.join('\n')}\n`);
+}
+
 // ---- Detection helpers ----
 
 /**

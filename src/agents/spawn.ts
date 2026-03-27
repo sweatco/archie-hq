@@ -30,10 +30,11 @@ import {
 import {
   createRecoverableInputGenerator,
 } from './message-queue.js';
-import { setupSharedClone, cloneExists, isWorktree, migrateWorktreeToClone, type CloneCheckout } from '../connectors/github/repo-clone.js';
+import { setupSharedClone, cloneExists, isWorktree, migrateWorktreeToClone, fetchOrigin, configureSandboxExcludes, type CloneCheckout } from '../connectors/github/repo-clone.js';
 import { configureGitIdentity } from '../connectors/github/client.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { processAgentEventForLogging, logger } from '../system/logger.js';
+import { buildSandboxConfig, createFilesystemGuardHooks, type SandboxOptions } from './sandbox.js';
 
 // ---- Prompt generation (per track) ----
 
@@ -118,24 +119,6 @@ async function setupAgentWorkspace(taskId: string, agent: Agent): Promise<string
   return agentWorkspace;
 }
 
-/**
- * Generate mcp__<name>__* wildcards for allowedTools from plugin MCP servers.
- * When def.tools is defined, it acts as the availability restriction (query.tools),
- * so we don't need wildcards in allowedTools. When undefined, all MCP tools
- * should be auto-approved, so we generate wildcards from the mcpServers map,
- * excluding internally-registered servers (they're already listed explicitly).
- */
-function mcpWildcards(
-  def: { tools?: string[] },
-  mcpServers: Record<string, any>,
-  internalServers: string[] = [],
-): string[] {
-  if (def.tools) return [];
-  return Object.keys(mcpServers)
-    .filter((name) => !internalServers.includes(name))
-    .map((name) => `mcp__${name}__*`);
-}
-
 // ---- Main spawner ----
 
 /**
@@ -158,9 +141,9 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   let cwd: string;
   let additionalDirectories: string[] | undefined;
   let mcpServers: Record<string, any>;
-  let allowedTools: string[];
-  let tools: string[] | undefined;        // SDK availability layer (def.tools → query.tools)
   let disallowedTools: string[] | undefined;
+  let tools: string[] | undefined;
+  let sandboxOpts: SandboxOptions;
   let model: string;
 
   if (def.track === 'pm') {
@@ -209,29 +192,32 @@ Files available to read (in shared folder):
     };
 
     tools = def.tools;
-    allowedTools = [
-      'Skill',
-      'Read',
-      'Glob',
-      'Grep',
-      'mcp__research-tools__*',
-      'mcp__pm-agent-tools__*',
-      ...mcpWildcards(def, mcpServers, ['pm-agent-tools', 'research-tools']),
-    ];
     disallowedTools = [
-      'Bash',
-      'Edit',
-      'Write',
-      'WebSearch',
-      'WebFetch',
+      'WebSearch', 'WebFetch',
       ...(def.disallowedTools || []),
     ];
+    sandboxOpts = {
+      cwd: pmWorkspace,
+      allowReadPaths: [
+        pmWorkspace, sharedPath,
+        ...(def.pluginPath ? [def.pluginPath] : []),
+        ...(def.pluginDataPath ? [def.pluginDataPath] : []),
+      ],
+      allowWritePaths: [pmWorkspace],
+      denyWritePaths: [
+        join(pmWorkspace, '.claude', 'settings.json'),
+        join(pmWorkspace, '.claude', 'skills'),
+        join(pmWorkspace, '.claude', 'hooks'),
+        join(pmWorkspace, 'CLAUDE.md'),
+      ],
+    };
   } else if (def.track === 'repo') {
     // ---- Repo track ----
     const repoInfo = metadata.repositories[def.repo!.repoKey];
     const baseRepoPath = repoInfo?.path || def.repo!.defaultPath;
     const editAllowed = metadata.edit_allowed === true;
     const baseBranch = repoInfo?.base_branch || def.repo!.baseBranch || 'main';
+    const baseObjectsPath = join(baseRepoPath, '.git', 'objects');
 
     // CWD: always a shared clone at task-local path
     const taskRepoPath = join(getReposPath(taskId), def.repo!.repoKey);
@@ -280,8 +266,9 @@ Files available to read (in shared folder):
       logger.agent(def.id, `Created shared clone at ${repoPath} (${result.branch})`, { editMode: editAllowed });
     }
 
-    // Configure git identity for the clone
+    // Configure git identity and exclude bwrap artifacts (redundant on existing clones, but ensures it's always set)
     await configureGitIdentity(repoPath);
+    await configureSandboxExcludes(repoPath);
 
     // Update metadata
     repoInfo.clone_path = repoPath;
@@ -332,41 +319,21 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
       }),
     };
 
-    allowedTools = [
-      'mcp__repo-agent-tools__send_message_to_agent',
-      'mcp__repo-agent-tools__log_finding',
-      'mcp__research-tools__web_research',
-      // Git + PR read tools (RO + RW)
-      'mcp__repo-tools__fetch',
-      'mcp__repo-tools__switch_branch',
-      'mcp__repo-tools__list_prs',
-      'mcp__repo-tools__get_pr',
-      'mcp__repo-tools__get_pr_status',
-      'mcp__repo-tools__get_pr_reviews',
-      // RO git bash commands (no-space glob to match bare commands like `git log`)
-      'Bash(git log*)',
-      'Bash(git diff*)',
-      'Bash(git show *)',
-      'Bash(git blame *)',
-      'Bash(git branch -r*)',
-      'Bash(git branch --show-current)',
-      'Bash(git ls-files*)',
-      'Bash(git ls-tree *)',
-      'Read',
-      'Glob',
-      'Grep',
-      ...mcpWildcards(def, mcpServers, ['repo-agent-tools', 'research-tools', 'repo-tools']),
+    const denyWriteProtected = [
+      join(repoPath, '.claude', 'settings.json'),
+      join(repoPath, '.claude', 'skills'),
+      join(repoPath, '.claude', 'hooks'),
+      join(repoPath, 'CLAUDE.md'),
+    ];
+
+    tools = def.tools;
+    disallowedTools = [
+      'WebSearch', 'WebFetch',
       ...(editAllowed
-        ? [
-            'Write',
-            'Edit',
-            'Bash(rm *)',
-            'Bash(git add *)',
-            'Bash(git rm *)',
-            'Bash(git commit *)',
-            'Bash(git status*)',
-            'Bash(git merge *)',
-            'Bash(git restore *)',
+        ? []
+        : [
+            // RO mode: block write tools and write MCP operations
+            'Write', 'Edit',
             'mcp__repo-tools__push_branch',
             'mcp__repo-tools__create_pull_request',
             'mcp__repo-tools__update_pr',
@@ -377,15 +344,28 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
             'mcp__repo-tools__merge_pull_request',
             'mcp__repo-tools__close_pull_request',
             'mcp__repo-tools__create_branch',
-            'mcp__repo-tools__list_branches',
-          ]
-        : []),
-    ];
-    disallowedTools = [
-      'WebSearch',
-      'WebFetch',
+          ]),
       ...(def.disallowedTools || []),
     ];
+    const readOnlyPaths = [
+      sharedPath, baseObjectsPath,
+      ...(def.pluginPath ? [def.pluginPath] : []),
+      ...(def.pluginDataPath ? [def.pluginDataPath] : []),
+    ];
+
+    if (editAllowed) {
+      sandboxOpts = {
+        cwd: repoPath,
+        allowReadPaths: [repoPath, ...readOnlyPaths],
+        allowWritePaths: [repoPath],
+        denyWritePaths: denyWriteProtected,
+      };
+    } else {
+      sandboxOpts = {
+        cwd: repoPath,
+        allowReadPaths: [repoPath, ...readOnlyPaths],
+      };
+    }
   } else {
     // ---- Plugin track ----
     const agentWorkspace = await setupAgentWorkspace(taskId, agent);
@@ -426,21 +406,26 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
       }),
     };
 
-    allowedTools = [
-      'mcp__repo-agent-tools__send_message_to_agent',
-      'mcp__repo-agent-tools__log_finding',
-      'mcp__research-tools__web_research',
-      'Read',
-      'Glob',
-      'Grep',
-      'Skill',
-      ...mcpWildcards(def, mcpServers, ['repo-agent-tools', 'research-tools']),
-    ];
+    tools = def.tools;
     disallowedTools = [
-      'WebSearch',
-      'WebFetch',
+      'WebSearch', 'WebFetch',
       ...(def.disallowedTools || []),
     ];
+    sandboxOpts = {
+      cwd: agentWorkspace,
+      allowReadPaths: [
+        agentWorkspace, sharedPath,
+        ...(def.pluginPath ? [def.pluginPath] : []),
+        ...(def.pluginDataPath ? [def.pluginDataPath] : []),
+      ],
+      allowWritePaths: [agentWorkspace],
+      denyWritePaths: [
+        join(agentWorkspace, '.claude', 'settings.json'),
+        join(agentWorkspace, '.claude', 'skills'),
+        join(agentWorkspace, '.claude', 'hooks'),
+        join(agentWorkspace, 'CLAUDE.md'),
+      ],
+    };
   }
 
   // ---- Build query options (session ID may change on retry) ----
@@ -460,8 +445,12 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
     },
     resume: sessionId,
     maxTurns: 100,
-    permissionMode: 'dontAsk' as const,
+    permissionMode: 'bypassPermissions' as const,
+    allowDangerouslySkipPermissions: true,
+    sandbox: buildSandboxConfig(sandboxOpts),
+    ...(tools ? { tools } : {}),
     hooks: {
+      PreToolUse: createFilesystemGuardHooks(sandboxOpts),
       PostToolUse: [
         createResearchPostToolHook({
           getSharedDir: () => getSharedPath(taskId),
@@ -478,9 +467,10 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
       }],
     },
     mcpServers,
-    ...(tools ? { tools } : {}),
-    allowedTools,
     disallowedTools,
+    stderr: (data: string) => {
+      logger.debug(def.id, `stderr: ${data.trim()}`);
+    },
   });
 
   // ---- Session recovery (try → reset → retry → give up) ----
