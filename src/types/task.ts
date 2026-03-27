@@ -61,10 +61,8 @@ export interface GitHubChannel extends ChannelBase {
 
 export type Channel = SlackChannel | GitHubChannel;
 
-/** Per-branch state — tracks checkout mode, PR lifecycle, and stash */
+/** Per-branch state — tracks PR lifecycle and stash */
 export interface BranchState {
-  owned: boolean;                      // true = agent created, false = existing branch (detached HEAD)
-  head_sha: string;                    // HEAD position when agent last left this branch
   base_branch?: string;                // PR target branch (e.g. 'main', 'master')
   pr_number?: number;                  // PR associated with this branch
   last_processed_comment_id?: number;  // triage tracking for this branch's PR
@@ -76,7 +74,7 @@ export interface RepositoryInfo {
   branch?: string;                     // legacy, unused
   base_branch?: string;                // legacy — now per-branch in BranchState
   base_sha?: string;                   // legacy, unused
-  worktree_path?: string;              // Path to active worktree
+  clone_path?: string;                 // Path to shared clone (task-local independent repo)
   feature_branch?: string;             // legacy — now current_branch
   pr_number?: number;                  // legacy — now per-branch in BranchState
   last_processed_comment_id?: number;  // legacy — now per-branch in BranchState

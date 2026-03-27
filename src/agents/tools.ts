@@ -17,8 +17,8 @@ import type { AgentName, FindingType } from '../types/task.js';
 import type { Task } from '../tasks/task.js';
 import type { Agent } from './agent.js';
 import { getAgentIds } from './registry.js';
-import { getGitHubClient, fetchOrigin } from '../connectors/github/client.js';
-import { gitExec } from '../connectors/github/worktree.js';
+import { getGitHubClient } from '../connectors/github/client.js';
+import { gitExec } from '../connectors/github/repo-clone.js';
 import { mirrorLegacyFields, hydrateBranchState, findBranchStateByPR } from '../connectors/github/branch-state.js';
 import { appendAgentFinding } from '../tasks/persistence.js';
 import { logger } from '../system/logger.js';
@@ -264,15 +264,15 @@ function createPushBranchTool(agent: Agent, task: Task) {
   const repoKey = agent.def.repo!.repoKey;
   return tool(
     'push_branch',
-    'Push commits from the local worktree to the remote origin.',
+    'Push commits from the local clone to the remote origin.',
     {},
     async () => {
       const agentName = agent.def.id as AgentName;
       logger.agentAction(agentName, 'Pushing branch', repoKey);
 
       const repoInfo = task.metadata.repositories[repoKey];
-      if (!repoInfo?.worktree_path) {
-        return err('No worktree found');
+      if (!repoInfo?.clone_path) {
+        return err('No clone found');
       }
 
       const branch = repoInfo.current_branch;
@@ -283,14 +283,8 @@ function createPushBranchTool(agent: Agent, task: Task) {
       }
 
       try {
-        if (state.owned) {
-          await execAsync(`git push -u origin HEAD:${branch}`, { cwd: repoInfo.worktree_path });
-        } else {
-          await execAsync(`git push origin HEAD:refs/heads/${branch}`, { cwd: repoInfo.worktree_path });
-        }
+        await execAsync(`git push -u origin HEAD:${branch}`, { cwd: repoInfo.clone_path });
 
-        // Update head_sha after push
-        state.head_sha = await gitExec(repoInfo.worktree_path, 'rev-parse HEAD');
         mirrorLegacyFields(repoInfo);
         task.debouncedSave();
 
@@ -587,9 +581,9 @@ function createFetchTool(agent: Agent, task: Task) {
     {},
     async () => {
       const repoInfo = task.metadata.repositories[repoKey];
-      const repoPath = repoInfo?.path;
-      if (!repoPath) return err('No repo path');
-      await fetchOrigin(repoPath);
+      const clonePath = repoInfo?.clone_path;
+      if (!clonePath) return err('No clone path');
+      await gitExec(clonePath, 'fetch origin');
       return ok('Fetched latest from origin');
     },
   );
@@ -605,66 +599,49 @@ function createSwitchBranchTool(agent: Agent, task: Task) {
     },
     async (args) => {
       const repoInfo = task.metadata.repositories[repoKey];
-      const worktreePath = repoInfo.worktree_path;
-      if (!worktreePath) return err('No worktree available');
+      const clonePath = repoInfo.clone_path;
+      if (!clonePath) return err('No clone available');
 
       const branch = args.branch;
       const currentBranch = repoInfo.current_branch;
-      const state = repoInfo.branch_states?.[branch];
 
-      // 1. Fetch
-      await fetchOrigin(repoInfo.path, branch);
+      // 1. Fetch branch into clone
+      await gitExec(clonePath, `fetch origin ${branch}`).catch(() => {});
 
       // 2. Auto-stash if dirty
-      const status = await gitExec(worktreePath, 'status --porcelain');
+      const status = await gitExec(clonePath, 'status --porcelain');
       if (status.trim()) {
         const stashName = `archie:${task.taskId}:${currentBranch}`;
-        await gitExec(worktreePath, `stash push --include-untracked -m "${stashName}"`);
+        await gitExec(clonePath, `stash push --include-untracked -m "${stashName}"`);
         if (currentBranch && repoInfo.branch_states?.[currentBranch]) {
           repoInfo.branch_states[currentBranch].stash_name = stashName;
         }
       }
 
-      // 3. Record HEAD sha before leaving
-      if (currentBranch && repoInfo.branch_states?.[currentBranch]) {
-        const headSha = await gitExec(worktreePath, 'rev-parse HEAD');
-        repoInfo.branch_states[currentBranch].head_sha = headSha;
+      // 3. Checkout — always normal (shared clones have no branch conflicts)
+      try {
+        await gitExec(clonePath, `checkout ${branch}`);
+      } catch {
+        // Branch doesn't exist locally yet — track remote
+        await gitExec(clonePath, `checkout -b ${branch} origin/${branch}`);
       }
 
-      // 4. Checkout
-      if (state?.owned) {
-        // Agent-created branch: normal checkout
-        await gitExec(worktreePath, `checkout ${branch}`);
-      } else if (state) {
-        // Previously visited existing branch
-        if (branch === currentBranch) {
-          // Refresh pattern: re-detach to latest remote
-          await gitExec(worktreePath, `checkout --detach origin/${branch}`);
-          state.head_sha = await gitExec(worktreePath, 'rev-parse HEAD');
-        } else {
-          // Return to recorded position (preserves unpushed commits)
-          await gitExec(worktreePath, `checkout --detach ${state.head_sha}`);
-        }
-      } else {
-        // First visit to existing branch — detached HEAD
-        await gitExec(worktreePath, `checkout --detach origin/${branch}`);
-        repoInfo.branch_states ??= {};
-        repoInfo.branch_states[branch] = {
-          owned: false,
-          head_sha: await gitExec(worktreePath, 'rev-parse HEAD'),
-        };
+      // 4. Track branch state
+      repoInfo.branch_states ??= {};
+      if (!repoInfo.branch_states[branch]) {
+        repoInfo.branch_states[branch] = {};
       }
 
       // 5. Update current_branch
       repoInfo.current_branch = branch;
 
-      // 6. Auto-pop stash if exists for target branch
-      const targetState = repoInfo.branch_states?.[branch];
+      // 7. Auto-pop stash if exists for target branch
+      const targetState = repoInfo.branch_states[branch];
       if (targetState?.stash_name) {
-        const stashList = await gitExec(worktreePath, 'stash list');
+        const stashList = await gitExec(clonePath, 'stash list');
         const stashIndex = findStashIndex(stashList, targetState.stash_name);
         if (stashIndex !== null) {
-          await gitExec(worktreePath, `stash pop stash@{${stashIndex}}`);
+          await gitExec(clonePath, `stash pop stash@{${stashIndex}}`);
         }
         targetState.stash_name = undefined;
       }
@@ -686,22 +663,19 @@ function createCreateBranchTool(agent: Agent, task: Task) {
     },
     async (args) => {
       const repoInfo = task.metadata.repositories[repoKey];
-      if (!repoInfo?.worktree_path) return err('No worktree');
+      if (!repoInfo?.clone_path) return err('No clone');
 
-      // Count existing owned branches to generate unique name
-      const existing = Object.values(repoInfo.branch_states || {}).filter((s) => s.owned).length;
+      // Count existing branches to generate unique name
+      const existing = Object.keys(repoInfo.branch_states || {}).length;
       const branchName = existing === 0
         ? `feature/${task.taskId}`
         : `feature/${task.taskId}-${existing + 1}`;
 
       const base = args.base || 'HEAD';
-      await gitExec(repoInfo.worktree_path, `checkout -b ${branchName} ${base}`);
+      await gitExec(repoInfo.clone_path, `checkout -b ${branchName} ${base}`);
 
       repoInfo.branch_states ??= {};
-      repoInfo.branch_states[branchName] = {
-        owned: true,
-        head_sha: await gitExec(repoInfo.worktree_path, 'rev-parse HEAD'),
-      };
+      repoInfo.branch_states[branchName] = {};
       repoInfo.current_branch = branchName;
       mirrorLegacyFields(repoInfo);
       task.debouncedSave();
@@ -720,16 +694,11 @@ function createListBranchesTool(agent: Agent, task: Task) {
       const repoInfo = task.metadata.repositories[repoKey];
       const current = repoInfo?.current_branch || '(unknown)';
       const states = repoInfo?.branch_states || {};
-      const owned = Object.entries(states)
-        .filter(([, s]) => s.owned)
-        .map(([name, s]) => `${name}${s.pr_number ? ` (PR #${s.pr_number})` : ''}`);
-      const visited = Object.entries(states)
-        .filter(([, s]) => !s.owned)
+      const branches = Object.entries(states)
         .map(([name, s]) => `${name}${s.pr_number ? ` (PR #${s.pr_number})` : ''}`);
       const lines = [
         `Current: ${current}`,
-        `Created: ${owned.join(', ') || '(none)'}`,
-        `Visited: ${visited.join(', ') || '(none)'}`,
+        `Branches: ${branches.join(', ') || '(none)'}`,
       ];
       return ok(lines.join('\n'));
     },

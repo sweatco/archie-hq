@@ -122,6 +122,9 @@ export interface AgentDef {
   /** Absolute path to plugin directory (track='plugin' only) */
   pluginPath?: string;
 
+  /** Absolute path to plugin's persistent data directory (workdir/plugins-data/<name>/) */
+  pluginDataPath?: string;
+
   /** Absolute path to plugin's skills/ directory (track='plugin' only) */
   skillsPath?: string;
 

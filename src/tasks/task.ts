@@ -294,9 +294,9 @@ export class Task {
       a.queue.stop();
     }
 
-    // Clean up worktrees to free disk space (only when not in edit mode)
+    // Clean up clones to free disk space (only when not in edit mode)
     if (this.metadata.edit_allowed !== true) {
-      await this.cleanupWorktrees();
+      await this.cleanupClones();
     }
 
     this.metadata.status = 'stopped';
@@ -324,10 +324,10 @@ export class Task {
       a.queue.stop();
     }
 
-    // Clean up worktrees to free disk space (only when not in edit mode).
-    // RW worktrees (edit_allowed) are kept — they have branches, commits, PRs.
+    // Clean up clones to free disk space (only when not in edit mode).
+    // RW clones (edit_allowed) are kept — they have branches, commits, PRs.
     if (this.metadata.edit_allowed !== true) {
-      await this.cleanupWorktrees();
+      await this.cleanupClones();
     }
 
     this.metadata.status = 'completed';
@@ -338,18 +338,18 @@ export class Task {
   }
 
   /**
-   * Remove worktrees and clear worktree_path so next spawn creates a fresh one.
+   * Remove shared clones and clear clone_path so next spawn creates a fresh one.
    */
-  private async cleanupWorktrees(): Promise<void> {
-    const { removeWorktree } = await import('../connectors/github/worktree.js');
+  private async cleanupClones(): Promise<void> {
+    const { removeClone } = await import('../connectors/github/repo-clone.js');
     for (const [repoKey, repoInfo] of Object.entries(this.metadata.repositories)) {
-      if (repoInfo.worktree_path) {
+      if (repoInfo.clone_path) {
         try {
-          await removeWorktree(repoInfo.path, repoInfo.worktree_path);
-          repoInfo.worktree_path = undefined;
-          logger.system(`Task ${this.taskId}: cleaned up RO worktree for ${repoKey}`);
+          await removeClone(repoInfo.clone_path);
+          repoInfo.clone_path = undefined;
+          logger.system(`Task ${this.taskId}: cleaned up clone for ${repoKey}`);
         } catch (error) {
-          logger.warn('task', `Failed to cleanup worktree for ${repoKey}: ${error}`);
+          logger.warn('task', `Failed to cleanup clone for ${repoKey}: ${error}`);
         }
       }
     }

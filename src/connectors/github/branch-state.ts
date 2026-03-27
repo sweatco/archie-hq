@@ -28,8 +28,6 @@ export function mirrorLegacyFields(repoInfo: RepositoryInfo): void {
 export function hydrateBranchState(repoInfo: RepositoryInfo, branch: string, baseBranch?: string): void {
   repoInfo.branch_states ??= {};
   repoInfo.branch_states[branch] = {
-    owned: true,
-    head_sha: '',
     base_branch: baseBranch,
   };
   repoInfo.current_branch = branch;

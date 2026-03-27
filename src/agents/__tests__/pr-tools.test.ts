@@ -25,11 +25,11 @@ vi.mock('../../connectors/github/client.js', () => ({
   fetchOrigin: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../../connectors/github/worktree.js', () => ({
+vi.mock('../../connectors/github/repo-clone.js', () => ({
   gitExec: vi.fn().mockResolvedValue(''),
-  isSymlink: vi.fn().mockResolvedValue(false),
-  setupWorktree: vi.fn().mockResolvedValue({ worktree_path: '/wt', feature_branch: 'feat/x', base_branch: 'main' }),
-  worktreeExists: vi.fn().mockResolvedValue(false),
+  setupSharedClone: vi.fn().mockResolvedValue({ clone_path: '/wt', branch: 'feat/x', base_branch: 'main' }),
+  cloneExists: vi.fn().mockResolvedValue(false),
+  isWorktree: vi.fn().mockResolvedValue(false),
   fetchOrigin: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -99,14 +99,12 @@ function makeTask(overrides: Partial<Task['metadata']> = {}): Task {
       repositories: {
         backend: {
           path: '/repos/backend',
-          worktree_path: '/worktrees/backend',
+          clone_path: '/clones/backend',
           feature_branch: 'feature/task-123',
           base_branch: 'main',
           current_branch: 'feature/task-123',
           branch_states: {
             'feature/task-123': {
-              owned: true,
-              head_sha: 'abc123',
               base_branch: 'main',
             },
           },
@@ -300,7 +298,7 @@ describe('mirrorLegacyFields', () => {
       current_branch: 'feature/task-1',
       branch_states: {
         'feature/task-1': {
-          owned: true, head_sha: 'abc', base_branch: 'main', pr_number: 42, last_processed_comment_id: 10,
+          base_branch: 'main', pr_number: 42, last_processed_comment_id: 10,
         },
       },
     };
@@ -316,8 +314,8 @@ describe('mirrorLegacyFields', () => {
       path: '/repos/backend',
       current_branch: 'fix/bug',
       branch_states: {
-        'feature/task-1': { owned: true, head_sha: 'abc', pr_number: 42 },
-        'fix/bug': { owned: true, head_sha: 'def', pr_number: 99, base_branch: 'develop' },
+        'feature/task-1': { pr_number: 42 },
+        'fix/bug': { pr_number: 99, base_branch: 'develop' },
       },
     };
     mirrorLegacyFields(repoInfo);
@@ -342,7 +340,7 @@ describe('hydrateBranchState', () => {
     expect(repoInfo.current_branch).toBe('feature/task-1');
     expect(repoInfo.branch_states).toBeDefined();
     expect(repoInfo.branch_states!['feature/task-1']).toEqual({
-      owned: true, head_sha: '', base_branch: 'main',
+      base_branch: 'main',
     });
     // Legacy fields mirrored
     expect(repoInfo.feature_branch).toBe('feature/task-1');
@@ -352,7 +350,7 @@ describe('hydrateBranchState', () => {
   it('preserves existing branch_states', () => {
     const repoInfo: RepositoryInfo = {
       path: '/repos/backend',
-      branch_states: { 'existing': { owned: false, head_sha: 'xyz' } },
+      branch_states: { 'existing': { } },
     };
     hydrateBranchState(repoInfo, 'feature/task-2', 'main');
 
@@ -366,8 +364,8 @@ describe('findBranchStateByPR', () => {
     const repoInfo: RepositoryInfo = {
       path: '/repos/backend',
       branch_states: {
-        'feat/a': { owned: true, head_sha: 'abc', pr_number: 42 },
-        'feat/b': { owned: true, head_sha: 'def', pr_number: 99 },
+        'feat/a': { pr_number: 42 },
+        'feat/b': { pr_number: 99 },
       },
     };
     const result = findBranchStateByPR(repoInfo, 99);
@@ -380,7 +378,7 @@ describe('findBranchStateByPR', () => {
     const repoInfo: RepositoryInfo = {
       path: '/repos/backend',
       branch_states: {
-        'feat/a': { owned: true, head_sha: 'abc', pr_number: 42 },
+        'feat/a': { pr_number: 42 },
       },
     };
     expect(findBranchStateByPR(repoInfo, 999)).toBeUndefined();
@@ -412,8 +410,6 @@ describe('legacy hydration', () => {
 
     expect(repoInfo.current_branch).toBe('feature/task-old');
     expect(repoInfo.branch_states!['feature/task-old']).toEqual({
-      owned: true,
-      head_sha: '',
       base_branch: 'master',
       pr_number: 55,
       last_processed_comment_id: 20,
@@ -426,7 +422,7 @@ describe('legacy hydration', () => {
       feature_branch: 'feature/task-new',
       current_branch: 'feature/task-new',
       branch_states: {
-        'feature/task-new': { owned: true, head_sha: 'abc', base_branch: 'main', pr_number: 10 },
+        'feature/task-new': { base_branch: 'main', pr_number: 10 },
       },
     };
 
@@ -437,7 +433,7 @@ describe('legacy hydration', () => {
 
     // Should be unchanged
     expect(repoInfo.branch_states!['feature/task-new'].pr_number).toBe(10);
-    expect(repoInfo.branch_states!['feature/task-new'].head_sha).toBe('abc');
+    expect(repoInfo.branch_states!['feature/task-new'].base_branch).toBe('main');
   });
 
   it('empty metadata without feature_branch does not crash', () => {

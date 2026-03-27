@@ -15,6 +15,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { initPlugins } from './plugin-loader.js';
 import { logger } from './logger.js';
+import { githubRepoToUrl } from '../connectors/github/repo-clone.js';
 
 const execAsync = promisify(exec);
 
@@ -34,6 +35,9 @@ export const REPOS_DIR = join(WORKDIR, 'repos');
 /** Sessions directory (task runtime data) */
 export const SESSIONS_DIR = join(WORKDIR, 'sessions');
 
+/** Persistent per-plugin data directory */
+export const PLUGINS_DATA_DIR = join(WORKDIR, 'plugins-data');
+
 // =============================================================================
 // Bootstrap (async — must be called from main() before plugin/repo loading)
 // =============================================================================
@@ -49,6 +53,7 @@ export async function bootstrapWorkdir(): Promise<void> {
   await mkdir(WORKDIR, { recursive: true });
   await mkdir(REPOS_DIR, { recursive: true });
   await mkdir(SESSIONS_DIR, { recursive: true });
+  await mkdir(PLUGINS_DATA_DIR, { recursive: true });
 
   const pluginsUrl = process.env.ARCHIE_PLUGINS;
   if (pluginsUrl) {
@@ -130,20 +135,12 @@ export async function refreshPlugins(): Promise<void> {
  */
 async function cloneRepo(url: string, targetDir: string, label: string): Promise<void> {
   logger.system(`Cloning ${label} from ${url}...`);
-  await execAsync(`git clone "${url}" "${targetDir}"`);
-}
-
-/**
- * Convert "org/repo" to an HTTPS clone URL.
- * HTTPS works with the existing GIT_ASKPASS infrastructure.
- */
-function githubRepoToUrl(githubRepo: string): string {
-  return `https://github.com/${githubRepo}.git`;
+  await execAsync(`git clone --recurse-submodules "${url}" "${targetDir}"`);
 }
 
 /**
  * Clone if missing, git fetch --all if exists.
- * Used for source repos (large, just need refs up to date for worktrees).
+ * Used for source repos (large, just need refs up to date for shared clones).
  */
 async function cloneOrFetch(url: string, targetDir: string, label: string): Promise<void> {
   if (existsSync(join(targetDir, '.git'))) {

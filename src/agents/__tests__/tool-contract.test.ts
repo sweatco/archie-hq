@@ -22,11 +22,11 @@ vi.mock('../../connectors/github/client.js', () => ({
   fetchOrigin: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../../connectors/github/worktree.js', () => ({
+vi.mock('../../connectors/github/repo-clone.js', () => ({
   gitExec: vi.fn().mockResolvedValue(''),
-  isSymlink: vi.fn().mockResolvedValue(false),
-  setupWorktree: vi.fn().mockResolvedValue({ worktree_path: '/wt', feature_branch: 'feat/x', base_branch: 'main' }),
-  worktreeExists: vi.fn().mockResolvedValue(false),
+  setupSharedClone: vi.fn().mockResolvedValue({ clone_path: '/wt', branch: 'feat/x', base_branch: 'main' }),
+  cloneExists: vi.fn().mockResolvedValue(false),
+  isWorktree: vi.fn().mockResolvedValue(false),
   fetchOrigin: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -68,12 +68,12 @@ function makeTask(): Task {
       repositories: {
         backend: {
           path: '/repos/backend',
-          worktree_path: '/wt/backend',
+          clone_path: '/wt/backend',
           feature_branch: 'feat/x',
           base_branch: 'main',
           current_branch: 'feat/x',
           branch_states: {
-            'feat/x': { owned: true, head_sha: 'abc', base_branch: 'main' },
+            'feat/x': { base_branch: 'main' },
           },
         },
       },

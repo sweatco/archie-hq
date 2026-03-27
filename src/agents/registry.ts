@@ -10,7 +10,7 @@
 
 import type { AgentDef } from '../types/agent.js';
 import { getPlugins, getRootMcpConfig, getPmOverlay, type LoadedMcpConfig, type PluginAgentDef } from '../system/plugin-loader.js';
-import { REPOS_DIR } from '../system/workdir.js';
+import { REPOS_DIR, PLUGINS_DATA_DIR } from '../system/workdir.js';
 import { join } from 'path';
 import { logger } from '../system/logger.js';
 
@@ -69,6 +69,7 @@ export function scanAgentDefs(): AgentDef[] {
             defaultPath: join(REPOS_DIR, agent.key),
             repoKey: agent.key,
           },
+          pluginDataPath: join(PLUGINS_DATA_DIR, plugin.name),
           pluginHooks: plugin.hooks || undefined,
           ...resolvedMcp,
         });
@@ -84,6 +85,7 @@ export function scanAgentDefs(): AgentDef[] {
           pluginName: plugin.name,
           agentPrompt: agent.prompt,
           pluginPath: plugin.dir,
+          pluginDataPath: join(PLUGINS_DATA_DIR, plugin.name),
           skillsPath: plugin.skillsPath || undefined,
           pluginHooks: plugin.hooks || undefined,
           ...resolvedMcp,
@@ -196,14 +198,13 @@ function resolveAgentMcpServers(
     }
     if (Object.keys(resolved).length > 0) {
       result.mcpServers = resolved;
-      // No tools defined → wildcard for all resolved servers
-      // Tools defined → use exactly what's listed
-      const serverNames = Object.keys(resolved);
-      result.tools = agent.tools && agent.tools.length > 0
-        ? agent.tools
-        : serverNames.map((name) => `mcp__${name}__*`);
     }
-  } else if (agent.tools && agent.tools.length > 0) {
+  }
+
+  // Only pass tools when explicitly defined in agent frontmatter.
+  // With bypassPermissions, all tools (built-in + MCP) are available by default —
+  // def.tools restricts the set, so auto-generating MCP wildcards would kill built-ins.
+  if (agent.tools && agent.tools.length > 0) {
     result.tools = agent.tools;
   }
 
@@ -236,6 +237,7 @@ function buildPmDef(teamDefs: AgentDef[], rootMcp: LoadedMcpConfig): AgentDef {
     expertise: 'Task management, coordination, user communication',
     track: 'pm',
     pluginName: 'core',
+    pluginDataPath: join(PLUGINS_DATA_DIR, 'pm'),
     pmConfig: { teamList, teamExpertise },
     pmOverlayPrompt: overlay?.prompt || undefined,
     skillsPath: pmPlugin?.skillsPath || undefined,

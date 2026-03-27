@@ -30,10 +30,10 @@ import {
 import {
   createRecoverableInputGenerator,
 } from './message-queue.js';
-import { setupWorktree, worktreeExists, fetchOrigin } from '../connectors/github/worktree.js';
+import { setupSharedClone, cloneExists, isWorktree, migrateWorktreeToClone, type CloneCheckout } from '../connectors/github/repo-clone.js';
+import { configureGitIdentity } from '../connectors/github/client.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { processAgentEventForLogging, logger } from '../system/logger.js';
-// getRootMcpConfig now used only by registry.ts for resolving agent MCP servers
 
 // ---- Prompt generation (per track) ----
 
@@ -130,7 +130,7 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   const metadata = task.metadata;
   const sharedPath = getSharedPath(taskId);
 
-  // Mark active before any heavy work (worktree setup, MCP init) to prevent
+  // Mark active before any heavy work (clone setup, MCP init) to prevent
   // false idle detection — recovery fires at 3s, MCP connections can take longer
   task.updateAgentState(def.id, true);
 
@@ -151,7 +151,8 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     systemPrompt = await generatePMPrompt(task);
     cwd = pmWorkspace;
     additionalDirectories = [pmWorkspace, sharedPath];
-    model = 'opus';
+    if (def.pluginPath) additionalDirectories.push(def.pluginPath);
+    model = (def.model || 'opus') as string;
 
     const channelInfo = Object.entries(metadata.channels)
       .map(([id, ch]) => ch.type === 'slack' ? `#${ch.channel_name || ch.channel_id}` : id)
@@ -213,52 +214,60 @@ Files available to read (in shared folder):
     const editAllowed = metadata.edit_allowed === true;
     const baseBranch = repoInfo?.base_branch || def.repo!.baseBranch || 'main';
 
-    // CWD: always a worktree at task-local path
+    // CWD: always a shared clone at task-local path
     const taskRepoPath = join(getReposPath(taskId), def.repo!.repoKey);
     let repoPath: string;
 
-    if (await worktreeExists(taskRepoPath)) {
-      // Worktree already set up (resumed task or reactivated after completion)
+    // Step A: Migrate legacy worktree → shared clone if needed
+    if (await isWorktree(taskRepoPath)) {
+      logger.agent(def.id, `Migrating worktree to shared clone`);
+      await migrateWorktreeToClone(
+        def.repo!.repoKey, getReposPath(taskId), baseRepoPath,
+        baseBranch, def.repo!.githubRepo, repoInfo, editAllowed,
+      );
+    }
+
+    // Step B: Reuse existing clone or create new one
+    if (await cloneExists(taskRepoPath)) {
       repoPath = taskRepoPath;
-      logger.agent(def.id, `Reusing existing worktree at ${repoPath}`, { editMode: editAllowed });
-      await fetchOrigin(baseRepoPath, baseBranch);
+      logger.agent(def.id, `Reusing existing clone at ${repoPath}`, { editMode: editAllowed });
     } else {
-      // Create worktree — determine checkout target from previous state + edit mode
       const previousBranch = repoInfo?.current_branch;
-      const prevState = previousBranch ? repoInfo?.branch_states?.[previousBranch] : undefined;
       const wasOnBaseBranch = !previousBranch || previousBranch === baseBranch;
 
-      let checkout: import('../connectors/github/worktree.js').WorktreeCheckout;
-
+      let checkout: CloneCheckout;
       if (editAllowed && wasOnBaseBranch) {
         // RW mode, was on base branch (or no branch) — create feature branch for new work
         checkout = { type: 'new_branch', name: `feature/${taskId}` };
-      } else if (prevState?.owned) {
-        // Had an owned branch — restore it (normal checkout)
+      } else if (editAllowed && !wasOnBaseBranch) {
+        // RW but was on a specific branch — restore it
         checkout = { type: 'branch', name: previousBranch! };
-      } else if (prevState && !wasOnBaseBranch) {
-        // Was visiting a non-base existing branch — restore at recorded position
-        checkout = { type: 'detached', sha: prevState.head_sha };
       } else {
-        // Default: detached HEAD at base branch
-        checkout = { type: 'detached' };
+        // RO default: clone on base branch
+        checkout = { type: 'base' };
       }
 
-      const result = await setupWorktree(
-        def.repo!.repoKey, getReposPath(taskId), baseRepoPath, checkout, def.repo!.baseBranch,
+      const result = await setupSharedClone(
+        def.repo!.repoKey, getReposPath(taskId), baseRepoPath,
+        checkout, baseBranch, def.repo!.githubRepo,
       );
+      repoPath = result.clone_path;
 
-      repoInfo.worktree_path = taskRepoPath;
-      if (result.feature_branch) {
-        hydrateBranchState(repoInfo, result.feature_branch, result.base_branch);
+      if (result.branch !== result.base_branch) {
+        hydrateBranchState(repoInfo, result.branch, result.base_branch);
       } else {
-        repoInfo.current_branch = previousBranch || baseBranch;
+        repoInfo.current_branch = result.branch;
       }
-      metadata.repositories[def.repo!.repoKey] = { ...repoInfo, path: baseRepoPath };
-      repoPath = taskRepoPath;
       startFreshSession = true;
-      logger.agent(def.id, `Created worktree at ${taskRepoPath} (${result.feature_branch || checkout.type})`, { editMode: editAllowed });
+      logger.agent(def.id, `Created shared clone at ${repoPath} (${result.branch})`, { editMode: editAllowed });
     }
+
+    // Configure git identity for the clone
+    await configureGitIdentity(repoPath);
+
+    // Update metadata
+    repoInfo.clone_path = repoPath;
+    metadata.repositories[def.repo!.repoKey] = { ...repoInfo, path: baseRepoPath };
 
     // Legacy hydration: old tasks with feature_branch but no branch_states
     if (repoInfo.feature_branch && !repoInfo.branch_states) {
@@ -287,7 +296,8 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
 
     cwd = repoPath;
     additionalDirectories = [repoPath, sharedPath];
-    model = 'sonnet';
+    if (def.pluginPath) additionalDirectories.push(def.pluginPath);
+    model = (def.model || 'sonnet') as string;
 
     mcpServers = {
       ...(def.mcpServers || {}),
