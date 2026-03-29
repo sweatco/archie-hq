@@ -118,8 +118,9 @@ When you have Edit tools available, you also have access to:
 
 1. Commit all changes with `git commit`
 2. `push_branch()` to push
-3. `create_pull_request(title, body)` with a clear description
-4. Notify pm-agent: "PR #123 created: <url>"
+3. Read `metadata.json` from the shared folder to find the originating channel URL (look for the `default_channel` key, then find that channel's `url` field in `channels`). If available, include a link at the bottom of the PR body using the channel's type and name (e.g. `Slack thread in #channel-name: <url>`)
+4. `create_pull_request(title, body)` with a clear description
+5. Notify pm-agent: "PR #123 created: <url>"
 
 ### Handling Reviews
 

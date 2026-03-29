@@ -40,7 +40,7 @@ import { getIsShuttingDown } from '../system/shutdown.js';
 import { scheduleIdleCheck } from './recovery.js';
 import { scanAgentDefs } from '../agents/registry.js';
 import { refreshPlugins } from '../system/workdir.js';
-import { postToThreads, postInteractiveToThreads, removeReaction } from '../connectors/slack/client.js';
+import { postToThreads, postInteractiveToThreads, removeReaction, buildThreadUrl } from '../connectors/slack/client.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
 import { emitEvent } from '../system/event-bus.js';
@@ -206,6 +206,7 @@ export class Task {
         channel_id: thread.channel.id,
         channel_name: thread.channel.name,
         last_processed_ts: thread.currentMessageTs,
+        url: buildThreadUrl(thread.channel.id, thread.threadId) ?? undefined,
       };
       this.metadata.default_channel ??= channelId;
 

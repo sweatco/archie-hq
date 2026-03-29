@@ -13,6 +13,7 @@ import { logger } from '../../system/logger.js';
 let slackClient: WebClient | null = null;
 let botUserId: string | null = null;
 let botId: string | null = null;
+let workspaceUrl: string | null = null;
 
 /**
  * Initialize the Slack client and fetch bot user ID
@@ -25,7 +26,8 @@ export async function initSlackClient(token: string): Promise<void> {
     const authResult = await slackClient.auth.test();
     botUserId = authResult.user_id as string;
     botId = authResult.bot_id as string | undefined ?? null;
-    logger.slack(`Bot user ID: ${botUserId}, bot ID: ${botId}`);
+    workspaceUrl = (authResult.url as string | undefined)?.replace(/\/$/, '') ?? null;
+    logger.slack(`Bot user ID: ${botUserId}, bot ID: ${botId}, workspace: ${workspaceUrl}`);
   } catch (error) {
     logger.warn('Slack', 'Failed to get bot user ID', error);
   }
@@ -43,6 +45,17 @@ export function getBotUserId(): string | null {
  */
 export function getBotId(): string | null {
   return botId;
+}
+
+/**
+ * Build a full Slack URL for a thread.
+ * Format: https://{workspace}.slack.com/archives/{channel}/p{ts_without_dot}
+ * Returns null if workspace URL is not available.
+ */
+export function buildThreadUrl(channelId: string, threadTs: string): string | null {
+  if (!workspaceUrl) return null;
+  const tsNoDot = threadTs.replace('.', '');
+  return `${workspaceUrl}/archives/${channelId}/p${tsNoDot}`;
 }
 
 /**
@@ -65,8 +78,8 @@ export async function postToThread(
 ): Promise<string | undefined> {
   const client = getSlackClient();
 
-  // Convert markdown to Slack mrkdwn format
-  const slackText = slackifyMarkdown(text);
+  // Restore @<ID:Name> mentions to <@ID> before slackify (which would escape the angle brackets)
+  const slackText = slackifyMarkdown(restoreMentions(text));
 
   const result = await client.chat.postMessage({
     channel,
@@ -253,6 +266,15 @@ async function fetchMentionInfo(
   }
 
   return { userInfoMap, groupInfoMap, channelInfoMap };
+}
+
+/**
+ * Restore @<ID:Name> mention format back to Slack's <@ID> syntax for outgoing messages.
+ * Agents see users as @<U123:John Smith> in conversation history and are taught to use
+ * this format when mentioning users. This converts them back so Slack sends notifications.
+ */
+function restoreMentions(text: string): string {
+  return text.replace(/@<([A-Z0-9]+):[^>]+>/g, '<@$1>');
 }
 
 /**
