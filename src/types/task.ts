@@ -50,6 +50,7 @@ export interface SlackChannel extends ChannelBase {
   channel_id: string;
   channel_name: string;
   last_processed_ts: string;
+  muted?: boolean;  // When true, messages are not routed to task until next @mention
 }
 
 /** GitHub channel — a PR conversation */

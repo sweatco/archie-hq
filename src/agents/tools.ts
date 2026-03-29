@@ -238,6 +238,40 @@ function createReportCompletionTool(agent: Agent, task: Task) {
   );
 }
 
+function createMuteThreadTool(agent: Agent, task: Task) {
+  return tool(
+    'mute_thread',
+    'Unsubscribe from the current Slack thread. Messages will be ignored until someone @mentions the bot again. Posts a notification to the thread.',
+    {},
+    async () => {
+      const agentName = agent.def.id as AgentName;
+      logger.agentAction(agentName, 'Muting thread', '');
+      task.touch();
+
+      // Mute all Slack channels
+      let mutedCount = 0;
+      for (const ch of Object.values(task.metadata.channels)) {
+        if (ch.type === 'slack' && !ch.muted) {
+          (ch as import('../types/task.js').SlackChannel).muted = true;
+          mutedCount++;
+        }
+      }
+
+      if (mutedCount === 0) {
+        return ok('No active Slack threads to mute.');
+      }
+
+      task.debouncedSave();
+      await appendAgentFinding(task.taskId, agentName, 'Muted Slack thread — will not process messages until next @mention', 'decision');
+
+      // Notify the thread
+      await task.postToUser("I'll step back from this thread. Mention me again when you need me.", agentName);
+
+      return ok(`Muted ${mutedCount} Slack thread(s). Will resume on next @mention.`);
+    },
+  );
+}
+
 function createGetAgentsStatusTool(agent: Agent, task: Task) {
   return tool(
     'get_agents_status',
@@ -721,6 +755,7 @@ export function createPMAgentMcpServer(agent: Agent, task: Task) {
       createReportCompletionTool(agent, task),
       createRequestEditModeTool(agent, task),
       createGetAgentsStatusTool(agent, task),
+      createMuteThreadTool(agent, task),
     ],
   });
 }

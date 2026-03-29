@@ -101,6 +101,7 @@ const SPAWN_PM_TOOLS = [
   'mcp__pm-agent-tools__report_completion',
   'mcp__pm-agent-tools__request_edit_mode',
   'mcp__pm-agent-tools__get_agents_status',
+  'mcp__pm-agent-tools__mute_thread',
 ];
 
 const SPAWN_REPO_TOOLS = [
