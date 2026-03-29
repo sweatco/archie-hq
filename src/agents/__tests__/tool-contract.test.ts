@@ -96,7 +96,7 @@ function getRegisteredToolNames(server: ReturnType<typeof createRepoToolsMcpServ
 
 const SPAWN_PM_TOOLS = [
   'mcp__pm-agent-tools__send_message_to_agent',
-  'mcp__pm-agent-tools__post_to_slack',
+  'mcp__pm-agent-tools__post_to_user',
   'mcp__pm-agent-tools__assign_task_owner',
   'mcp__pm-agent-tools__report_completion',
   'mcp__pm-agent-tools__request_edit_mode',

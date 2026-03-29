@@ -50,6 +50,7 @@ export interface SlackChannel extends ChannelBase {
   channel_id: string;
   channel_name: string;
   last_processed_ts: string;
+  url?: string;     // Full Slack URL to the thread (e.g. https://workspace.slack.com/archives/C.../p...)
   muted?: boolean;  // When true, messages are not routed to task until next @mention
 }
 

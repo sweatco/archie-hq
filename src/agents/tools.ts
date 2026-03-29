@@ -121,12 +121,12 @@ function createLogFindingTool(agent: Agent, task: Task) {
 
 // ---- PM-only tools ----
 
-function createPostToSlackTool(agent: Agent, task: Task) {
+function createPostToUserTool(agent: Agent, task: Task) {
   return tool(
-    'post_to_slack',
-    'Post a message to the Slack thread(s) associated with this task. Write naturally, like a human PM.',
+    'post_to_user',
+    'Send a message to the user. Routes to the originating channel (Slack thread, CLI, etc.). Write naturally, like a human PM.',
     {
-      message: z.string().describe('The message to post to Slack'),
+      message: z.string().describe('The message to send to the user'),
     },
     async (args) => {
       const agentName = agent.def.id as AgentName;
@@ -750,7 +750,7 @@ export function createPMAgentMcpServer(agent: Agent, task: Task) {
     version: '1.0.0',
     tools: [
       createSendMessageTool(agent, task),
-      createPostToSlackTool(agent, task),
+      createPostToUserTool(agent, task),
       createAssignTaskOwnerTool(agent, task),
       createReportCompletionTool(agent, task),
       createRequestEditModeTool(agent, task),
