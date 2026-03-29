@@ -40,7 +40,7 @@ import { getIsShuttingDown } from '../system/shutdown.js';
 import { scheduleIdleCheck } from './recovery.js';
 import { scanAgentDefs } from '../agents/registry.js';
 import { refreshPlugins } from '../system/workdir.js';
-import { postToThreads, postInteractiveToThreads } from '../connectors/slack/client.js';
+import { postToThreads, postInteractiveToThreads, removeReaction } from '../connectors/slack/client.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
 import { emitEvent } from '../system/event-bus.js';
@@ -243,6 +243,10 @@ export class Task {
 
     const slackRefs = this.getSlackThreadRefs();
     if (slackRefs.length > 0) {
+      // Remove eyes acknowledgment before posting the reply
+      await Promise.all(
+        slackRefs.map((ref) => removeReaction(ref.channel_id, ref.last_processed_ts, 'eyes')),
+      );
       await postToThreads(slackRefs, message);
     }
   }

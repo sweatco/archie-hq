@@ -126,6 +126,32 @@ export async function postInteractiveToThreads(
 }
 
 /**
+ * Add an emoji reaction to a message.
+ * Failures are silently ignored (duplicate reactions, missing scopes, etc.).
+ */
+export async function addReaction(channel: string, timestamp: string, emoji: string): Promise<void> {
+  try {
+    const client = getSlackClient();
+    await client.reactions.add({ channel, timestamp, name: emoji });
+  } catch {
+    // Silently ignore — already_reacted, missing scope, etc.
+  }
+}
+
+/**
+ * Remove an emoji reaction from a message.
+ * Failures are silently ignored (not_reacted, missing scope, etc.).
+ */
+export async function removeReaction(channel: string, timestamp: string, emoji: string): Promise<void> {
+  try {
+    const client = getSlackClient();
+    await client.reactions.remove({ channel, timestamp, name: emoji });
+  } catch {
+    // Silently ignore — not_reacted, missing scope, etc.
+  }
+}
+
+/**
  * Update an existing message (e.g., to remove buttons after action)
  */
 export async function updateMessage(

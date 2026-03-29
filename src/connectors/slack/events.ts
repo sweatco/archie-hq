@@ -19,6 +19,7 @@ import {
   getBotUserId,
   fetchSlackThread,
   getBotId,
+  addReaction,
 } from './client.js';
 import { Task } from '../../tasks/task.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
@@ -268,6 +269,12 @@ async function handleSlackEvent(event: {
   thread_ts?: string;
 }): Promise<void> {
   const threadId = event.thread_ts || event.ts;
+
+  // Instant acknowledgment — react before any LLM processing
+  if (event.type === 'app_mention' || event.channel.startsWith('D')) {
+    addReaction(event.channel, event.ts, 'eyes');
+  }
+
   const thread = await fetchSlackThread(event.channel, threadId, event.ts);
 
   logger.system(`Processing #${thread.channel.name} (thread: ${threadId})`);
@@ -306,8 +313,25 @@ async function handleSlackEvent(event: {
   // }
   const taskId = await findTaskByThread(threadId);
   if (taskId) {
-    // Thread reply to an existing task — route to it
     const task = await Task.get(taskId);
+
+    // Check if thread is muted
+    const channelId = `slack:${event.channel}:${threadId}`;
+    const channel = task.metadata.channels[channelId];
+    if (channel?.type === 'slack' && channel.muted) {
+      if (event.type === 'app_mention') {
+        // @mention unmutes the thread
+        channel.muted = false;
+        task.debouncedSave();
+        logger.system(`Thread ${threadId} unmuted by @mention`);
+      } else {
+        // Thread is muted and no @mention — skip
+        logger.system(`Skipping muted thread ${threadId}`);
+        return;
+      }
+    }
+
+    // Thread reply to an existing task — route to it
     await task.append(thread);
     await task.sendMessage(AGENT_PROMPTS.existingTask);
   } else if (event.type === 'app_mention' || event.channel.startsWith('D')) {
