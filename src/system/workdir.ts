@@ -56,11 +56,13 @@ export async function bootstrapWorkdir(): Promise<void> {
   await mkdir(PLUGINS_DATA_DIR, { recursive: true });
 
   const pluginsUrl = process.env.ARCHIE_PLUGINS;
+  const pluginsBranch = process.env.ARCHIE_PLUGINS_BRANCH;
   if (pluginsUrl) {
     if (!existsSync(join(PLUGINS_DIR, '.git'))) {
-      await cloneRepo(pluginsUrl, PLUGINS_DIR, 'plugins');
+      await cloneRepo(pluginsUrl, PLUGINS_DIR, 'plugins', pluginsBranch);
       lastPluginsRefresh = Date.now();
     } else {
+      if (pluginsBranch) await checkoutBranch(PLUGINS_DIR, pluginsBranch, 'plugins');
       await refreshPlugins();
     }
   } else if (!existsSync(PLUGINS_DIR)) {
@@ -133,9 +135,22 @@ export async function refreshPlugins(): Promise<void> {
 /**
  * Clone a git repo into targetDir.
  */
-async function cloneRepo(url: string, targetDir: string, label: string): Promise<void> {
-  logger.system(`Cloning ${label} from ${url}...`);
-  await execAsync(`git clone --recurse-submodules "${url}" "${targetDir}"`);
+async function cloneRepo(url: string, targetDir: string, label: string, branch?: string): Promise<void> {
+  const branchFlag = branch ? ` -b "${branch}"` : '';
+  logger.system(`Cloning ${label} from ${url}${branch ? ` (branch: ${branch})` : ''}...`);
+  await execAsync(`git clone --recurse-submodules${branchFlag} "${url}" "${targetDir}"`);
+}
+
+async function checkoutBranch(repoDir: string, branch: string, label: string): Promise<void> {
+  try {
+    const { stdout } = await execAsync('git rev-parse --abbrev-ref HEAD', { cwd: repoDir });
+    if (stdout.trim() === branch) return;
+    await execAsync('git fetch --all', { cwd: repoDir });
+    await execAsync(`git checkout "${branch}"`, { cwd: repoDir });
+    logger.system(`Switched ${label} to branch ${branch}`);
+  } catch (error) {
+    logger.warn('workdir', `Failed to switch ${label} to branch ${branch}: ${error}`);
+  }
 }
 
 /**
