@@ -118,6 +118,24 @@ async function setupAgentWorkspace(taskId: string, agent: Agent): Promise<string
   return agentWorkspace;
 }
 
+/**
+ * Generate mcp__<name>__* wildcards for allowedTools from plugin MCP servers.
+ * When def.tools is defined, it acts as the availability restriction (query.tools),
+ * so we don't need wildcards in allowedTools. When undefined, all MCP tools
+ * should be auto-approved, so we generate wildcards from the mcpServers map,
+ * excluding internally-registered servers (they're already listed explicitly).
+ */
+function mcpWildcards(
+  def: { tools?: string[] },
+  mcpServers: Record<string, any>,
+  internalServers: string[] = [],
+): string[] {
+  if (def.tools) return [];
+  return Object.keys(mcpServers)
+    .filter((name) => !internalServers.includes(name))
+    .map((name) => `mcp__${name}__*`);
+}
+
 // ---- Main spawner ----
 
 /**
@@ -141,9 +159,9 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   let additionalDirectories: string[] | undefined;
   let mcpServers: Record<string, any>;
   let allowedTools: string[];
+  let tools: string[] | undefined;        // SDK availability layer (def.tools → query.tools)
   let disallowedTools: string[] | undefined;
   let model: string;
-  let startFreshSession = false;
 
   if (def.track === 'pm') {
     // ---- PM track ----
@@ -190,6 +208,7 @@ Files available to read (in shared folder):
       }),
     };
 
+    tools = def.tools;
     allowedTools = [
       'Skill',
       'Read',
@@ -197,7 +216,7 @@ Files available to read (in shared folder):
       'Grep',
       'mcp__research-tools__*',
       'mcp__pm-agent-tools__*',
-      ...(def.tools || []),
+      ...mcpWildcards(def, mcpServers, ['pm-agent-tools', 'research-tools']),
     ];
     disallowedTools = [
       'Bash',
@@ -258,7 +277,6 @@ Files available to read (in shared folder):
       } else {
         repoInfo.current_branch = result.branch;
       }
-      startFreshSession = true;
       logger.agent(def.id, `Created shared clone at ${repoPath} (${result.branch})`, { editMode: editAllowed });
     }
 
@@ -298,6 +316,7 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
     additionalDirectories = [repoPath, sharedPath];
     if (def.pluginPath) additionalDirectories.push(def.pluginPath);
     model = (def.model || 'sonnet') as string;
+    tools = def.tools;
 
     mcpServers = {
       ...(def.mcpServers || {}),
@@ -336,7 +355,7 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
       'Read',
       'Glob',
       'Grep',
-      ...(def.tools || []),
+      ...mcpWildcards(def, mcpServers, ['repo-agent-tools', 'research-tools', 'repo-tools']),
       ...(editAllowed
         ? [
             'Write',
@@ -392,6 +411,7 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
       additionalDirectories.push(def.pluginPath);
     }
     model = (def.model || 'sonnet') as string;
+    tools = def.tools;
 
     mcpServers = {
       ...(def.mcpServers || {}),
@@ -414,9 +434,13 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
       'Glob',
       'Grep',
       'Skill',
-      ...(def.tools || []),
+      ...mcpWildcards(def, mcpServers, ['repo-agent-tools', 'research-tools']),
     ];
-    disallowedTools = def.disallowedTools;
+    disallowedTools = [
+      'WebSearch',
+      'WebFetch',
+      ...(def.disallowedTools || []),
+    ];
   }
 
   // ---- Build query options (session ID may change on retry) ----
@@ -454,13 +478,14 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
       }],
     },
     mcpServers,
+    ...(tools ? { tools } : {}),
     allowedTools,
     disallowedTools,
   });
 
   // ---- Session recovery (try → reset → retry → give up) ----
 
-  const existingSessionId = startFreshSession ? undefined : agent.session.session_id;
+  const existingSessionId = agent.session.session_id;
   const recoverable = createRecoverableInputGenerator(agent.queue);
 
   const handle = {
