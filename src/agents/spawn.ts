@@ -205,6 +205,7 @@ Files available to read (in shared folder):
       ],
       allowWritePaths: [pmWorkspace],
       denyWritePaths: [
+        sharedPath,
         join(pmWorkspace, '.claude', 'settings.json'),
         join(pmWorkspace, '.claude', 'skills'),
         join(pmWorkspace, '.claude', 'hooks'),
@@ -213,6 +214,7 @@ Files available to read (in shared folder):
     };
   } else if (def.track === 'repo') {
     // ---- Repo track ----
+    const repoWorkspace = await setupAgentWorkspace(taskId, agent);
     const repoInfo = metadata.repositories[def.repo!.repoKey];
     const baseRepoPath = repoInfo?.path || def.repo!.defaultPath;
     const editAllowed = metadata.edit_allowed === true;
@@ -299,8 +301,8 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
 `;
     systemPrompt = `${systemPrompt}\n\nCurrent Context:\n${context}`;
 
-    cwd = repoPath;
-    additionalDirectories = [repoPath, sharedPath];
+    cwd = repoWorkspace;
+    additionalDirectories = [repoWorkspace, repoPath, sharedPath];
     if (def.pluginPath) additionalDirectories.push(def.pluginPath);
     model = (def.model || 'sonnet') as string;
     tools = def.tools;
@@ -357,15 +359,17 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
 
     if (editAllowed) {
       sandboxOpts = {
-        cwd: repoPath,
-        allowReadPaths: [repoPath, ...readOnlyPaths],
-        allowWritePaths: [repoPath],
-        denyWritePaths: denyWriteProtected,
+        cwd: repoWorkspace,
+        allowReadPaths: [repoWorkspace, repoPath, ...readOnlyPaths],
+        allowWritePaths: [repoWorkspace, repoPath],
+        denyWritePaths: [...readOnlyPaths, ...denyWriteProtected],
       };
     } else {
       sandboxOpts = {
-        cwd: repoPath,
-        allowReadPaths: [repoPath, ...readOnlyPaths],
+        cwd: repoWorkspace,
+        allowReadPaths: [repoWorkspace, repoPath, ...readOnlyPaths],
+        allowWritePaths: [repoWorkspace],
+        denyWritePaths: [repoPath, ...readOnlyPaths],
       };
     }
   } else {
@@ -422,6 +426,9 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
       ],
       allowWritePaths: [agentWorkspace],
       denyWritePaths: [
+        sharedPath,
+        ...(def.pluginPath ? [def.pluginPath] : []),
+        ...(def.pluginDataPath ? [def.pluginDataPath] : []),
         join(agentWorkspace, '.claude', 'settings.json'),
         join(agentWorkspace, '.claude', 'skills'),
         join(agentWorkspace, '.claude', 'hooks'),
