@@ -1,12 +1,16 @@
 # Development Dockerfile with hot reload support
 
-FROM node:20-alpine
+FROM node:24-slim
 
-# Install git, ssh (for git fetch over ssh), git-lfs, and bash (required by Claude CLI)
-RUN apk add --no-cache git openssh-client git-lfs bash su-exec bubblewrap socat libcrypto3=3.5.5-r0 libssl3=3.5.5-r0 && \
+# Install git, ssh (for git fetch over ssh), git-lfs, bash (required by Claude CLI),
+# bubblewrap + socat (sandbox runtime), gosu (entrypoint privilege drop)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      git openssh-client git-lfs bash bubblewrap socat gosu ca-certificates && \
     git lfs install && \
     mkdir -p ~/.ssh && \
-    ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+    ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null && \
+    rm -rf /var/lib/apt/lists/*
 
 # Set SHELL environment variable (required by Claude CLI)
 ENV SHELL=/bin/bash
@@ -33,8 +37,8 @@ RUN chmod +x /app/scripts/git-askpass.sh && \
 ENV GIT_ASKPASS=/app/scripts/git-askpass.sh
 
 # Create non-root user (required: bypassPermissions refuses to run as root)
-RUN addgroup -g 101 -S archie 
-RUN adduser -u 100 -S archie -G archie
+RUN groupadd -g 1001 archie && \
+    useradd -u 1001 -g archie -m archie
 
 # Create directories for volumes and set ownership
 RUN mkdir -p /workdir /app/secrets && \

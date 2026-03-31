@@ -12,4 +12,4 @@ if [ -S "${SSH_AUTH_SOCK:-}" ]; then
 fi
 
 # Drop to non-root user and run the CMD
-exec su-exec archie "$@"
+exec gosu archie "$@"

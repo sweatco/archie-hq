@@ -1,14 +1,14 @@
 # Production Dockerfile
 
-FROM node:20-alpine
-
-# Upgrade system packages to get latest security updates if node image has not been updated yet
-RUN apk upgrade --no-cache
+FROM node:24-slim
 
 # Install git, git-lfs, bash (required by Claude CLI),
-# bubblewrap + socat (sandbox runtime), su-exec (entrypoint privilege drop)
-RUN apk add --no-cache git git-lfs bash su-exec bubblewrap socat libcrypto3=3.5.5-r0 libssl3=3.5.5-r0 && \
-    git lfs install
+# bubblewrap + socat (sandbox runtime), gosu (entrypoint privilege drop)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      git git-lfs bash bubblewrap socat gosu ca-certificates && \
+    git lfs install && \
+    rm -rf /var/lib/apt/lists/*
 
 # Set SHELL environment variable (required by Claude CLI)
 ENV SHELL=/bin/bash
@@ -39,8 +39,8 @@ RUN npm run build && \
 RUN npm prune --production
 
 # Create non-root user (required: bypassPermissions refuses to run as root)
-RUN addgroup -g 101 -S archie 
-RUN adduser -u 100 -S archie -G archie
+RUN groupadd -g 1001 archie && \
+    useradd -u 1001 -g archie -m archie
 
 # Create directories and set ownership
 RUN mkdir -p /workdir /app/secrets && \
