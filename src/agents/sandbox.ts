@@ -23,6 +23,8 @@ export interface SandboxOptions {
   allowWritePaths?: string[];
   /** Paths to deny within allowWrite regions (e.g., cwd/.claude) */
   denyWritePaths?: string[];
+  /** Additional paths to deny reading (appended to global denyRead) */
+  denyReadPaths?: string[];
   /** Domains Bash can reach (empty = deny all, default) */
   allowedNetworkDomains?: string[];
 }
@@ -55,11 +57,8 @@ export function buildSandboxConfig(opts: SandboxOptions) {
       // directory uses --tmpfs which destroys allowWrite --bind mounts on children
       // (bwrap mount ordering bug in sandbox-runtime). Sessions are readable from
       // Bash but PreToolUse hooks enforce read boundaries on Read/Glob/Grep tools.
-      denyRead: ['/app', '/home/archie/.claude'],
-      allowRead: [
-        '/home/archie/.claude/shell-snapshots',
-        ...new Set(opts.allowReadPaths),
-      ],
+      denyRead: ['/app', '/home/archie/.claude', ...(opts.denyReadPaths || [])],
+      allowRead: ['/home/archie/.claude/shell-snapshots', ...new Set(opts.allowReadPaths)],
       allowWrite: ['/tmp', ...(opts.allowWritePaths || [])],
       ...(opts.denyWritePaths && opts.denyWritePaths.length > 0
         ? { denyWrite: opts.denyWritePaths }

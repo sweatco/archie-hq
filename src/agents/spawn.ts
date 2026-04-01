@@ -27,10 +27,11 @@ import {
   getTaskPath,
   getReposPath,
 } from '../tasks/persistence.js';
+import { REPOS_DIR, PLUGINS_DATA_DIR } from '../system/workdir.js';
 import {
   createRecoverableInputGenerator,
 } from './message-queue.js';
-import { setupSharedClone, cloneExists, isWorktree, migrateWorktreeToClone, fetchOrigin, configureSandboxExcludes, type CloneCheckout } from '../connectors/github/repo-clone.js';
+import { setupSharedClone, cloneExists, isWorktree, migrateWorktreeToClone, fetchOrigin, type CloneCheckout } from '../connectors/github/repo-clone.js';
 import { configureGitIdentity } from '../connectors/github/client.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { processAgentEventForLogging, logger } from '../system/logger.js';
@@ -150,10 +151,12 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     // ---- PM track ----
     const pmWorkspace = await setupAgentWorkspace(taskId, agent);
     systemPrompt = await generatePMPrompt(task);
-    cwd = pmWorkspace;
-    additionalDirectories = [pmWorkspace, sharedPath];
-    if (def.pluginPath) additionalDirectories.push(def.pluginPath);
     model = (def.model || 'opus') as string;
+    cwd = pmWorkspace;
+    additionalDirectories = [sharedPath];
+    if (def.pluginPath) {
+      additionalDirectories.push(def.pluginPath);
+    }
 
     const channelInfo = Object.entries(metadata.channels)
       .map(([id, ch]) => ch.type === 'slack' ? `#${ch.channel_name || ch.channel_id}` : id)
@@ -198,6 +201,7 @@ Files available to read (in shared folder):
     ];
     sandboxOpts = {
       cwd: pmWorkspace,
+      denyReadPaths: [REPOS_DIR, PLUGINS_DATA_DIR, getReposPath(taskId)],
       allowReadPaths: [
         pmWorkspace, sharedPath,
         ...(def.pluginPath ? [def.pluginPath] : []),
@@ -206,6 +210,7 @@ Files available to read (in shared folder):
       allowWritePaths: [pmWorkspace],
       denyWritePaths: [
         sharedPath,
+        ...(def.pluginPath ? [def.pluginPath] : []),
         join(pmWorkspace, '.claude', 'settings.json'),
         join(pmWorkspace, '.claude', 'skills'),
         join(pmWorkspace, '.claude', 'hooks'),
@@ -268,9 +273,8 @@ Files available to read (in shared folder):
       logger.agent(def.id, `Created shared clone at ${repoPath} (${result.branch})`, { editMode: editAllowed });
     }
 
-    // Configure git identity and exclude bwrap artifacts (redundant on existing clones, but ensures it's always set)
+    // Configure git identity for the clone
     await configureGitIdentity(repoPath);
-    await configureSandboxExcludes(repoPath);
 
     // Update metadata
     repoInfo.clone_path = repoPath;
@@ -302,10 +306,11 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
     systemPrompt = `${systemPrompt}\n\nCurrent Context:\n${context}`;
 
     cwd = repoWorkspace;
-    additionalDirectories = [repoWorkspace, repoPath, sharedPath];
-    if (def.pluginPath) additionalDirectories.push(def.pluginPath);
     model = (def.model || 'sonnet') as string;
-    tools = def.tools;
+    additionalDirectories = [repoPath, sharedPath];
+    if (def.pluginPath) {
+      additionalDirectories.push(def.pluginPath);
+    }
 
     mcpServers = {
       ...(def.mcpServers || {}),
@@ -322,10 +327,11 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
     };
 
     const denyWriteProtected = [
-      join(repoPath, '.claude', 'settings.json'),
-      join(repoPath, '.claude', 'skills'),
-      join(repoPath, '.claude', 'hooks'),
-      join(repoPath, 'CLAUDE.md'),
+      // Protect SDK config in cwd (agent workspace)
+      join(repoWorkspace, '.claude', 'settings.json'),
+      join(repoWorkspace, '.claude', 'skills'),
+      join(repoWorkspace, '.claude', 'hooks'),
+      join(repoWorkspace, 'CLAUDE.md'),
       // Prevent agent from switching branches (git checkout/switch writes .git/HEAD)
       join(repoPath, '.git', 'HEAD'),
     ];
@@ -336,8 +342,7 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
       ...(editAllowed
         ? []
         : [
-            // RO mode: block write tools and write MCP operations
-            'Write', 'Edit',
+            // RO mode: block write MCP operations (Write/Edit enforced by sandbox hooks)
             'mcp__repo-tools__push_branch',
             'mcp__repo-tools__create_pull_request',
             'mcp__repo-tools__update_pr',
@@ -360,6 +365,7 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
     if (editAllowed) {
       sandboxOpts = {
         cwd: repoWorkspace,
+        denyReadPaths: [REPOS_DIR, PLUGINS_DATA_DIR, getReposPath(taskId)],
         allowReadPaths: [repoWorkspace, repoPath, ...readOnlyPaths],
         allowWritePaths: [repoWorkspace, repoPath],
         denyWritePaths: [...readOnlyPaths, ...denyWriteProtected],
@@ -367,6 +373,7 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
     } else {
       sandboxOpts = {
         cwd: repoWorkspace,
+        denyReadPaths: [REPOS_DIR, PLUGINS_DATA_DIR, getReposPath(taskId)],
         allowReadPaths: [repoWorkspace, repoPath, ...readOnlyPaths],
         allowWritePaths: [repoWorkspace],
         denyWritePaths: [repoPath, ...readOnlyPaths],
@@ -392,12 +399,11 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
     systemPrompt = `${systemPrompt}\n\nCurrent Context:\n${context}`;
 
     cwd = agentWorkspace;
-    additionalDirectories = [agentWorkspace, sharedPath];
+    additionalDirectories = [sharedPath];
     if (def.pluginPath) {
       additionalDirectories.push(def.pluginPath);
     }
     model = (def.model || 'sonnet') as string;
-    tools = def.tools;
 
     mcpServers = {
       ...(def.mcpServers || {}),
@@ -419,6 +425,7 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
     ];
     sandboxOpts = {
       cwd: agentWorkspace,
+      denyReadPaths: [REPOS_DIR, PLUGINS_DATA_DIR, getReposPath(taskId)],
       allowReadPaths: [
         agentWorkspace, sharedPath,
         ...(def.pluginPath ? [def.pluginPath] : []),
@@ -428,7 +435,6 @@ Read it ONCE when you receive a new message, then proceed with your work. Don't 
       denyWritePaths: [
         sharedPath,
         ...(def.pluginPath ? [def.pluginPath] : []),
-        ...(def.pluginDataPath ? [def.pluginDataPath] : []),
         join(agentWorkspace, '.claude', 'settings.json'),
         join(agentWorkspace, '.claude', 'skills'),
         join(agentWorkspace, '.claude', 'hooks'),
