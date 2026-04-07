@@ -355,7 +355,7 @@ function createPullRequestTool(agent: Agent, task: Task) {
       const branch = repoInfo?.current_branch;
       const state = branch ? repoInfo?.branch_states?.[branch] : undefined;
       const head = branch || `feature/task-${task.taskId}`;
-      const base = state?.base_branch || 'main';
+      const base = state?.base_branch || agent.def.repo!.baseBranch || 'main';
 
       const result = await client.createPullRequest(githubRepo, head, base, args.title, args.body);
 
