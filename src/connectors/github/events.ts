@@ -77,6 +77,8 @@ async function handleGitHubWebhook(
   eventType: string,
   payload: Record<string, unknown>
 ): Promise<void> {
+  logger.system(`GitHub raw event: ${eventType}\n${JSON.stringify(payload, null, 2)}`);
+
   const context = formatGitHubContext(eventType, payload);
 
   logger.system(
