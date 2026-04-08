@@ -135,11 +135,12 @@ export function extractBranchFromPayload(
 
 /**
  * Extract task ID from branch name
- * Branch format: feature/task-{taskId}
+ * Branch format: feature/{taskId} or feature/{taskId}-{N} (multi-branch suffix)
+ * Task ID format: task-YYYYMMDD-HHMM-random
  */
 export function extractTaskIdFromBranch(branch: string | undefined): string | undefined {
   if (!branch) return undefined;
-  const match = branch.match(/^feature\/(task-[a-z0-9-]+)$/i);
+  const match = branch.match(/^feature\/(task-\d{8}-\d{4}-[a-z0-9]+)(?:-\d+)?$/i);
   return match ? match[1] : undefined;
 }
 
