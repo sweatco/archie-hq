@@ -150,12 +150,26 @@ The budget count persists across task stop/reactivate cycles via `research_reque
 
 **Source:** `src/tasks/task.ts` (`handleResearchBudgetApproval`)
 
+## AWS Bedrock Guardrails (Optional)
+
+When configured, the tool scans queries and results via AWS Bedrock Guardrails:
+- **Input scan**: Checks the research query for PII, secrets, and sensitive data before sending to Perplexity
+- **Output scan**: Checks Perplexity response for prompt injection attempts
+
+Scanning is optional and fail-open. Without `BEDROCK_GUARDRAIL_ID` set, the tool works normally.
+
+See [Bedrock Guardrails Setup Guide](../guides/bedrock-guardrails-setup.md) for full configuration instructions.
+
 ## Environment Variables
 
 - `PERPLEXITY_API_KEY`: Required for the Perplexity Agent API
 - `ANTHROPIC_API_KEY`: Required for the Haiku preset classifier
+- `BEDROCK_GUARDRAIL_ID`: Optional — enables input/output scanning
+- `BEDROCK_GUARDRAIL_VERSION`: Optional — defaults to `DRAFT`
+- `AWS_REGION`: Optional — defaults to `us-east-1`
 
 ## Related Documentation
 
 - [Plugin System Architecture](./plugin-system.md) -- how agents are defined and loaded
 - [Security Architecture](./security.md) -- full defense layer breakdown including research isolation
+- [Bedrock Guardrails Setup](../guides/bedrock-guardrails-setup.md) -- how to configure research scanning
