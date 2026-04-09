@@ -66,14 +66,19 @@ export function mountApiRoutes(app: Application): void {
 
   // ---- GET /tasks — list tasks ----
 
-  router.get('/tasks', async (_req: Request, res: Response) => {
+  router.get('/tasks', async (req: Request, res: Response) => {
     try {
-      // Read task dirs from disk, sorted newest first, take 20
-      const dirs = readdirSync(SESSIONS_DIR, { withFileTypes: true })
+      const limit = Math.min(parseInt(req.query.limit as string, 10) || 50, 200);
+      const offset = parseInt(req.query.offset as string, 10) || 0;
+
+      // Read task dirs from disk, sorted newest first
+      const allDirs = readdirSync(SESSIONS_DIR, { withFileTypes: true })
         .filter((d) => d.isDirectory() && d.name.startsWith('task-'))
         .map((d) => d.name)
-        .sort((a, b) => b.localeCompare(a))
-        .slice(0, 20);
+        .sort((a, b) => b.localeCompare(a));
+
+      const total = allDirs.length;
+      const dirs = allDirs.slice(offset, offset + limit);
 
       const tasks = [];
       for (const dir of dirs) {
@@ -81,6 +86,14 @@ export function mountApiRoutes(app: Application): void {
         if (!metadata) continue;
 
         const activeTask = activeTasks.get(dir);
+
+        // Extract channel name from default channel
+        let channel_name: string | null = null;
+        if (metadata.default_channel && metadata.channels[metadata.default_channel]) {
+          const ch = metadata.channels[metadata.default_channel];
+          if (ch.type === 'slack') channel_name = ch.channel_name;
+        }
+
         tasks.push({
           task_id: metadata.task_id,
           status: metadata.status,
@@ -88,11 +101,12 @@ export function mountApiRoutes(app: Application): void {
           participants: metadata.participants,
           created_at: metadata.created_at,
           updated_at: metadata.updated_at,
+          channel_name,
           agents: activeTask ? activeTask.getAgentStatus() : [],
         });
       }
 
-      res.json({ tasks });
+      res.json({ tasks, total, offset, limit });
     } catch (error) {
       logger.error('api', 'Failed to list tasks', error);
       res.status(500).json({ error: 'Failed to list tasks' });
@@ -112,7 +126,23 @@ export function mountApiRoutes(app: Application): void {
 
       const knowledgeLog = await readKnowledgeLog(taskId);
       const activeTask = activeTasks.get(taskId);
-      const agents = activeTask ? activeTask.getAgentStatus() : [];
+
+      // Build agents list: start from metadata (all agents that ever participated),
+      // then overlay live status from in-memory task if available
+      const liveAgents = activeTask ? activeTask.getAgentStatus() : [];
+      const liveMap = new Map(liveAgents.map((a) => [a.agent, a]));
+      const agents = Object.entries(metadata.agent_sessions).map(([name, session]) => {
+        const live = liveMap.get(name);
+        if (live) return live;
+        const s = typeof session === 'string' ? { active: false } : session;
+        return { agent: name, active: s.active, last_activity: s.last_activity };
+      });
+      // Add any live agents not in metadata (shouldn't happen, but be safe)
+      for (const live of liveAgents) {
+        if (!metadata.agent_sessions[live.agent]) {
+          agents.push(live);
+        }
+      }
 
       res.json({ metadata, knowledgeLog, agents });
     } catch (error) {
