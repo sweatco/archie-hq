@@ -72,7 +72,6 @@ Respond with JSON only.`;
         systemPrompt: 'You are a research query classifier. Analyze the query and select the most appropriate search preset. Respond with JSON only.',
         cwd: SESSIONS_DIR,
         executable: 'node',
-        pathToClaudeCodeExecutable: process.env.CLAUDE_PATH || 'claude',
         env: {
           NODE_ENV: process.env.NODE_ENV || 'development',
           ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
@@ -232,13 +231,32 @@ async function scanWithGuardrail(
     if (result.action === 'GUARDRAIL_INTERVENED') {
       const reason = result.actionReason || `${source} blocked by guardrail`;
       logger.warn('research', `Guardrail BLOCKED ${source}: ${reason}`);
+      // Log detailed assessment info
+      if (result.assessments) {
+        for (const assessment of result.assessments) {
+          if (assessment.contentPolicy?.filters?.length) {
+            logger.warn('research', `  Content policy: ${JSON.stringify(assessment.contentPolicy.filters)}`);
+          }
+          if (assessment.sensitiveInformationPolicy?.piiEntities?.length) {
+            logger.warn('research', `  PII detected: ${JSON.stringify(assessment.sensitiveInformationPolicy.piiEntities)}`);
+          }
+          if (assessment.sensitiveInformationPolicy?.regexes?.length) {
+            logger.warn('research', `  Regex matches: ${JSON.stringify(assessment.sensitiveInformationPolicy.regexes)}`);
+          }
+        }
+      }
       return { blocked: true, reason };
     }
 
     logger.agent('research', `Guardrail ${source} scan passed`);
     return { blocked: false };
   } catch (error) {
-    logger.warn('research', `Guardrail scan failed for ${source}, proceeding without scan`, error);
+    const err = error as any;
+    logger.warn('research', `Guardrail scan failed for ${source}, proceeding without scan`);
+    logger.warn('research', `  Error: ${err.name || 'Unknown'}: ${err.message || String(error)}`);
+    if (err.$metadata) {
+      logger.warn('research', `  HTTP ${err.$metadata.httpStatusCode}, request: ${err.$metadata.requestId}`);
+    }
     return { blocked: false };
   }
 }
