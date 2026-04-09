@@ -3,7 +3,7 @@
  */
 
 export function getBaseUrl(): string {
-  if (process.env.ARCHIE_URL) return process.env.ARCHIE_URL;
+  if (process.env.ARCHIE_URL) return process.env.ARCHIE_URL.replace(/\/+$/, '');
   const port = process.env.PORT || '3000';
   return `http://localhost:${port}`;
 }
