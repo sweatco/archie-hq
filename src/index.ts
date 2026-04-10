@@ -30,6 +30,7 @@ import { configureGitIdentity } from './connectors/github/client.js';
 import { recoverActiveTasks } from './tasks/recovery.js';
 import { initEventPersistence } from './tasks/persistence.js';
 import { initReminderScheduler } from './system/reminder-scheduler.js';
+import { initMemory } from './memory/index.js';
 
 /**
  * Application configuration
@@ -95,6 +96,7 @@ async function main(): Promise<void> {
     initPlugins();
     initRegistry();
     initEventPersistence();
+    await initMemory();
 
     // Clone repos declared by plugins
     const agentDefs = getAllAgentDefs();
