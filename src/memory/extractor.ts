@@ -1,0 +1,248 @@
+/**
+ * Memory Extraction Side-Agent
+ *
+ * Calls a Sonnet side-agent to extract learnings from a completed task session.
+ * Returns structured MemoryUpdate arrays and task/activity summaries.
+ */
+
+import { query } from '@anthropic-ai/claude-agent-sdk';
+import { loadPrompt } from '../utils/prompt-loader.js';
+import { logger } from '../system/logger.js';
+import type { ExtractionResult, MemoryUpdate } from './types.js';
+
+// ============================================================================
+// Types
+// ============================================================================
+
+export interface ExtractionInput {
+  orgMemory: string;
+  userMemory: string;
+  taskId: string;
+  participants: string;
+  taskOwner: string;
+  status: string;
+  createdAt: string;
+  transcript: string;
+}
+
+// ============================================================================
+// Constants
+// ============================================================================
+
+const TRANSCRIPT_LIMIT = 100_000;
+
+const FALLBACK_TEMPLATE = `You are reviewing a completed task session. Extract learnings.
+
+Current organizational knowledge:
+<org_memory>
+{{ORG_MEMORY}}
+</org_memory>
+
+Current user knowledge:
+<user_memory>
+{{USER_MEMORY}}
+</user_memory>
+
+Task metadata:
+<task_metadata>
+Task ID: {{TASK_ID}}
+Participants: {{PARTICIPANTS}}
+Task Owner: {{TASK_OWNER}}
+Status: {{STATUS}}
+Created: {{CREATED_AT}}
+</task_metadata>
+
+Task transcript:
+<transcript>
+{{TRANSCRIPT}}
+</transcript>
+
+Respond with ONLY a JSON object:
+{
+  "org_updates": [],
+  "user_updates": {},
+  "task_summary": "Summary of what happened.",
+  "activity_summary": "One-line activity description",
+  "domain": "engineering|marketing|operations|product|other"
+}`;
+
+// ============================================================================
+// buildExtractionPrompt
+// ============================================================================
+
+/**
+ * Load the memory-extractor template and substitute all {{VAR}} placeholders.
+ * Transcript is truncated at 100K chars if needed.
+ * Falls back to an inline template if the prompt file does not exist.
+ */
+export async function buildExtractionPrompt(input: ExtractionInput): Promise<string> {
+  let transcript = input.transcript;
+  if (transcript.length > TRANSCRIPT_LIMIT) {
+    transcript = transcript.slice(0, TRANSCRIPT_LIMIT) + '\n[truncated]';
+  }
+
+  const variables: Record<string, string> = {
+    ORG_MEMORY: input.orgMemory,
+    USER_MEMORY: input.userMemory,
+    TASK_ID: input.taskId,
+    PARTICIPANTS: input.participants,
+    TASK_OWNER: input.taskOwner,
+    STATUS: input.status,
+    CREATED_AT: input.createdAt,
+    TRANSCRIPT: transcript,
+  };
+
+  try {
+    return await loadPrompt('memory-extractor', variables);
+  } catch {
+    logger.warn('memory', 'memory-extractor prompt template not found, using inline fallback');
+    let template = FALLBACK_TEMPLATE;
+    for (const [key, value] of Object.entries(variables)) {
+      const pattern = new RegExp(`{{${key}}}`, 'g');
+      template = template.replace(pattern, value);
+    }
+    return template;
+  }
+}
+
+// ============================================================================
+// parseExtractionResponse
+// ============================================================================
+
+/**
+ * Validate a single update has required fields.
+ */
+function isValidUpdate(u: unknown): u is MemoryUpdate {
+  if (typeof u !== 'object' || u === null) return false;
+  const obj = u as Record<string, unknown>;
+  if (obj.action !== 'add' && obj.action !== 'update') return false;
+  if (typeof obj.content !== 'string') return false;
+  return true;
+}
+
+/**
+ * Parse and validate the Sonnet side-agent response.
+ * Strips markdown code fences if present.
+ * Returns null on any parse or validation failure.
+ */
+export function parseExtractionResponse(response: string): ExtractionResult | null {
+  // Strip markdown code fences (```json ... ``` or ``` ... ```)
+  const stripped = response
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/, '')
+    .trim();
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripped);
+  } catch {
+    return null;
+  }
+
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const obj = parsed as Record<string, unknown>;
+
+  // Validate required string fields
+  if (typeof obj.task_summary !== 'string') return null;
+  if (typeof obj.activity_summary !== 'string') return null;
+  if (typeof obj.domain !== 'string') return null;
+
+  // Validate org_updates is an array
+  if (!Array.isArray(obj.org_updates)) return null;
+  for (const u of obj.org_updates) {
+    if (!isValidUpdate(u)) return null;
+  }
+
+  // Validate user_updates is a plain object (not array, not null)
+  if (typeof obj.user_updates !== 'object' || obj.user_updates === null || Array.isArray(obj.user_updates)) return null;
+  const userUpdates = obj.user_updates as Record<string, unknown>;
+  for (const username of Object.keys(userUpdates)) {
+    const updates = userUpdates[username];
+    if (!Array.isArray(updates)) return null;
+    for (const u of updates) {
+      if (!isValidUpdate(u)) return null;
+    }
+  }
+
+  return {
+    org_updates: obj.org_updates as MemoryUpdate[],
+    user_updates: userUpdates as Record<string, MemoryUpdate[]>,
+    task_summary: obj.task_summary,
+    activity_summary: obj.activity_summary,
+    domain: obj.domain,
+  };
+}
+
+// ============================================================================
+// runExtraction
+// ============================================================================
+
+/**
+ * Run the memory extraction side-agent.
+ * Builds prompt, calls Claude Agent SDK query() with sonnet + maxTurns 1,
+ * collects text output, parses result.
+ * Returns null on any error.
+ */
+export async function runExtraction(input: ExtractionInput): Promise<ExtractionResult | null> {
+  let prompt: string;
+  try {
+    prompt = await buildExtractionPrompt(input);
+  } catch (err) {
+    logger.warn('memory', 'Failed to build extraction prompt', err);
+    return null;
+  }
+
+  try {
+    const agentQuery = query({
+      prompt,
+      options: {
+        model: 'sonnet' as any,
+        maxTurns: 1,
+        allowedTools: [],
+        executable: 'node',
+        pathToClaudeCodeExecutable: process.env.CLAUDE_PATH || 'claude',
+        env: {
+          NODE_ENV: process.env.NODE_ENV || 'development',
+          ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+          PATH: process.env.PATH,
+        },
+      },
+    });
+
+    let responseText = '';
+
+    for await (const event of agentQuery) {
+      if (event.type === 'assistant') {
+        const content = (event as any).message?.content;
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block.type === 'text' && typeof block.text === 'string') {
+              responseText += block.text;
+            }
+          }
+        }
+      }
+      if (event.type === 'result' && event.subtype === 'success') {
+        const resultText = (event as any).result;
+        if (typeof resultText === 'string' && resultText.trim()) {
+          responseText = resultText;
+        }
+      }
+    }
+
+    if (!responseText.trim()) {
+      logger.warn('memory', `Extraction agent for task ${input.taskId} returned no text`);
+      return null;
+    }
+
+    const result = parseExtractionResponse(responseText);
+    if (!result) {
+      logger.warn('memory', `Extraction agent for task ${input.taskId} returned unparseable response`);
+    }
+    return result;
+  } catch (err) {
+    logger.warn('memory', `Extraction agent failed for task ${input.taskId}`, err);
+    return null;
+  }
+}
