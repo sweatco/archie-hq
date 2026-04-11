@@ -87,6 +87,7 @@ async function main(): Promise<void> {
     await cloneRepos(repoDefs.map((d) => ({
       key: d.repo!.repoKey,
       githubRepo: d.repo!.githubRepo,
+      baseBranch: d.repo!.baseBranch,
     })));
 
     // Log loaded plugins and agents

@@ -118,6 +118,15 @@ export async function setupSharedClone(
     resultBranch = defaultBranch;
   }
 
+  // Update the base repo's local branch to match remote before cloning from it
+  // (git clone --shared clones from local branches, not remote tracking refs)
+  try {
+    await gitExec(baseRepoPath, `checkout "${cloneBranch}"`);
+    await gitExec(baseRepoPath, `reset --hard "origin/${cloneBranch}"`);
+  } catch {
+    // Non-fatal — clone will use whatever state the base repo has
+  }
+
   // Clone and initialize submodules (before remote change, so submodules resolve from local base repo)
   await execAsync(`git clone --shared --branch ${cloneBranch} "${baseRepoPath}" "${clonePath}"`);
   await gitExec(clonePath, 'submodule update --init --recursive').catch(() => {});

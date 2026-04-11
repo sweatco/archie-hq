@@ -90,12 +90,12 @@ export async function bootstrapWorkdir(): Promise<void> {
  * @param repos - Array of { key, githubRepo } from loaded plugin configs
  */
 export async function cloneRepos(
-  repos: Array<{ key: string; githubRepo: string }>
+  repos: Array<{ key: string; githubRepo: string; baseBranch?: string }>
 ): Promise<void> {
-  for (const { key, githubRepo } of repos) {
+  for (const { key, githubRepo, baseBranch } of repos) {
     const repoPath = join(REPOS_DIR, key);
     const repoUrl = githubRepoToUrl(githubRepo);
-    await cloneOrFetch(repoUrl, repoPath, key);
+    await cloneOrFetch(repoUrl, repoPath, key, baseBranch);
   }
 }
 
@@ -180,20 +180,23 @@ async function checkoutBranch(repoDir: string, branch: string, label: string): P
 }
 
 /**
- * Clone if missing, git fetch --all if exists.
- * Used for source repos (large, just need refs up to date for shared clones).
+ * Clone if missing, fetch and pull default branch if exists.
  */
-async function cloneOrFetch(url: string, targetDir: string, label: string): Promise<void> {
+async function cloneOrFetch(url: string, targetDir: string, label: string, baseBranch?: string): Promise<void> {
   if (existsSync(join(targetDir, '.git'))) {
-    logger.system(`Fetching latest for ${label}...`);
+    logger.system(`Pulling latest for ${label}...`);
     try {
       await execAsync('git remote prune origin', { cwd: targetDir });
       await execAsync('git fetch --all', { cwd: targetDir });
+      const branch = baseBranch || 'main';
+      await execAsync(`git checkout "${branch}"`, { cwd: targetDir });
+      await execAsync(`git reset --hard "origin/${branch}"`, { cwd: targetDir });
     } catch (error) {
-      logger.warn('workdir', `Failed to fetch ${label}, using existing refs: ${error}`);
+      logger.warn('workdir', `Failed to pull ${label}, using existing state: ${error}`);
     }
   } else {
+    const branchFlag = baseBranch ? ` -b "${baseBranch}"` : '';
     logger.system(`Cloning ${label} from ${url}...`);
-    await execAsync(`git clone "${url}" "${targetDir}"`);
+    await execAsync(`git clone${branchFlag} "${url}" "${targetDir}"`);
   }
 }
