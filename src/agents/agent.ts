@@ -17,6 +17,7 @@ export class Agent {
   readonly queue: MessageQueue;
   handle?: AgentHandle;
   session: AgentSessionState;
+  pendingClose: boolean = false;
 
   constructor(def: AgentDef) {
     this.def = def;
@@ -36,6 +37,17 @@ export class Agent {
    */
   get isRunning(): boolean {
     return this.handle?.isRunning ?? false;
+  }
+
+  /**
+   * Forcefully terminate the agent's SDK process.
+   * Kills the subprocess immediately — use for subtask cleanup.
+   */
+  close(): void {
+    this.queue.stop();
+    if (this.handle?.query) {
+      this.handle.query.close();
+    }
   }
 
   /**
