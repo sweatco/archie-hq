@@ -84,6 +84,9 @@ interface TaskMetadata {
   agent_sessions: Record<string, AgentSessionState | string>;  // per-agent session state
   repositories: Record<string, RepositoryInfo>; // per-repo metadata
   status: TaskStatus;                           // 'in_progress' | 'stopped' | 'completed'
+  parent_task_id?: string;                      // set on subtasks — ID of the parent task
+  subtask_ids?: string[];                       // set on parent — all subtask IDs ever created
+  subtask_budget_extra?: number;                // additional +10 per user approval
   edit_allowed?: boolean;                       // user approved edit mode
   research_budget_extra?: number;               // additional budget granted (+5 per approval)
   research_request_count?: number;              // persisted research call count
@@ -96,7 +99,7 @@ interface TaskMetadata {
 ### Channel (replaces legacy `slack_threads`)
 
 ```typescript
-type Channel = SlackChannel | GitHubChannel;
+type Channel = SlackChannel | GitHubChannel | ParentChannel;
 
 interface SlackChannel {
   type: 'slack';
@@ -110,6 +113,12 @@ interface GitHubChannel {
   type: 'github';
   repo: string;             // GitHub repo identifier
   pr_number: number;        // PR number
+}
+
+interface ParentChannel {
+  type: 'parent';
+  parent_task_id: string;   // ID of the parent task
+  parent_agent: string;     // agent that spawned this subtask (e.g. 'pm-agent')
 }
 ```
 
@@ -214,6 +223,8 @@ and omitted for Slack messages and GitHub events.
 | `slack:#<{channelId}:{channelName}>:{threadId}` | `appendSlackMessage()` | `[2025-01-15T10:30:00Z] [slack:#<C123:general>:1234.5678] [@<U456:Jane Doe>] Fix the login bug` |
 | `{agentName}` | `appendAgentFinding()` | `[2025-01-15T10:31:00Z] [pm-agent] [decision] Assigned backend-agent as task owner` |
 | `github:{repoKey}` | `appendGitHubEvent()` | `[2025-01-15T10:32:00Z] [github:backend] PR #42: reviewer approved` |
+| `subtask:{taskId}` | `appendCrossTaskMessage()` | `[2025-01-15T10:34:00Z] [subtask:task-20250115-1030-abc123] Investigation findings...` |
+| `user` | `appendCrossTaskMessage()` | `[2025-01-15T10:34:00Z] [user] Goal message from parent...` (on subtask's log) |
 | `system` | Various (edit mode, budget) | `[2025-01-15T10:33:00Z] [system] [decision] Edit mode approved by user` |
 
 ### Slack message format
