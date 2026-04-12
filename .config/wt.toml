@@ -1,0 +1,10 @@
+# Copy .env from base worktree, then assign a unique PORT
+[post-create]
+env-copy = "cp {{ base_worktree_path }}/.env .env 2>/dev/null || true"
+env-port = """
+if [ -f .env ] && grep -q '^PORT=' .env; then
+    sed -i.bak 's/^PORT=.*/PORT={{ branch | hash_port }}/' .env && rm -f .env.bak
+else
+    echo 'PORT={{ branch | hash_port }}' >> .env
+fi
+"""
