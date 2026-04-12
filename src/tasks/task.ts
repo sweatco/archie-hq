@@ -27,6 +27,7 @@ import {
   getMetadataPath,
   appendAgentFinding,
   appendAgentMessage,
+  appendCrossTaskMessage,
   appendMessageToUser,
   appendSlackMessage,
   downloadMessageFiles,
@@ -242,13 +243,22 @@ export class Task {
     emitEvent('message', this.taskId, { from: sender, to: 'user', message });
     await appendMessageToUser(this.taskId, sender, message);
 
-    const slackRefs = this.getSlackThreadRefs();
-    if (slackRefs.length > 0) {
-      // Remove eyes acknowledgment before posting the reply
-      await Promise.all(
-        slackRefs.map((ref) => removeReaction(ref.channel_id, ref.last_processed_ts, 'eyes')),
-      );
-      await postToThreads(slackRefs, message);
+    const defaultCh = this.metadata.default_channel
+      ? this.metadata.channels[this.metadata.default_channel]
+      : null;
+    if (defaultCh?.type === 'parent') {
+      // Route to parent task's originating agent — same as Slack/CLI: log + event + standard prompt
+      await deliverMessage(defaultCh.parent_task_id, message, `subtask:${this.taskId}`, defaultCh.parent_agent as AgentName);
+    } else {
+      // Post to Slack threads
+      const slackRefs = this.getSlackThreadRefs();
+      if (slackRefs.length > 0) {
+        // Remove eyes acknowledgment before posting the reply
+        await Promise.all(
+          slackRefs.map((ref) => removeReaction(ref.channel_id, ref.last_processed_ts, 'eyes')),
+        );
+        await postToThreads(slackRefs, message);
+      }
     }
   }
 
@@ -257,7 +267,7 @@ export class Task {
    * Always emits an approval:requested event (so CLI sees it).
    * If Slack channels exist, also posts interactive message there.
    */
-  async postInteractiveToUser(text: string, blocks: unknown[], approvalType: 'edit_mode' | 'research_budget'): Promise<void> {
+  async postInteractiveToUser(text: string, blocks: unknown[], approvalType: 'edit_mode' | 'research_budget' | 'subtask_budget'): Promise<void> {
     emitEvent('approval:requested', this.taskId, { text, approvalType });
 
     const slackRefs = this.getSlackThreadRefs();
@@ -293,11 +303,7 @@ export class Task {
     this.isActive = false;
     activeTasks.delete(this.taskId);
     this.clearTaskTimeout();
-
-    // Stop all queues — agent:inactive emitted by Stop hook / crash handler
-    for (const a of this.agentProcesses.values()) {
-      a.queue.stop();
-    }
+    this.stopAgents();
 
     // Clean up clones to free disk space (only when not in edit mode)
     if (this.metadata.edit_allowed !== true) {
@@ -324,10 +330,7 @@ export class Task {
     activeTasks.delete(this.taskId);
     this.clearTaskTimeout();
 
-    // Stop all queues — agent:inactive emitted by Stop hook / crash handler
-    for (const a of this.agentProcesses.values()) {
-      a.queue.stop();
-    }
+    this.stopAgents();
 
     // Clean up clones to free disk space (only when not in edit mode).
     // RW clones (edit_allowed) are kept — they have branches, commits, PRs.
@@ -340,6 +343,22 @@ export class Task {
 
     logger.system(`Task ${this.taskId} completed`);
     emitEvent('task:completed', this.taskId);
+  }
+
+  /**
+   * Stop all agents gracefully.
+   * Active agents (mid-turn) get pendingClose — they finish their turn,
+   * the Stop hook fires, and close() runs on the next tick.
+   * Idle agents (waiting for input) get closed immediately.
+   */
+  private stopAgents(): void {
+    for (const a of this.agentProcesses.values()) {
+      if (a.session.active) {
+        a.pendingClose = true;
+      } else {
+        a.close();
+      }
+    }
   }
 
   /**
@@ -468,6 +487,9 @@ export class Task {
       `Research budget exceeded for task ${this.taskId} (${this.budgets.researchRequestCount}/${this.budgets.researchRequestLimit})`,
     );
 
+    // Subtasks: no approval flow, research tool will return error, agent reports back naturally
+    if (this.metadata.parent_task_id) return;
+
     const blocks = [
       {
         type: 'section',
@@ -537,6 +559,72 @@ export class Task {
     await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
   }
 
+  // ---- Subtask budget methods ----
+
+  checkSubtaskBudget(): { allowed: boolean; used: number; limit: number } {
+    const used = this.metadata.subtask_ids?.length ?? 0;
+    const limit = 10 + (this.metadata.subtask_budget_extra ?? 0);
+    return { allowed: used < limit, used, limit };
+  }
+
+  async onSubtaskBudgetExceeded(): Promise<void> {
+    const { used, limit } = this.checkSubtaskBudget();
+    logger.warn('budget', `Subtask budget exceeded for task ${this.taskId} (${used}/${limit})`);
+
+    const blocks = [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Subtask budget reached* (${used}/${limit} subtasks). Approve additional subtasks?`,
+        },
+      },
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Approve (+10)' },
+            action_id: 'approve_subtask_budget',
+            value: this.taskId,
+            style: 'primary',
+          },
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Deny' },
+            action_id: 'deny_subtask_budget',
+            value: this.taskId,
+            style: 'danger',
+          },
+        ],
+      },
+    ];
+    await this.postInteractiveToUser(
+      `Subtask budget reached (${used}/${limit} subtasks)`,
+      blocks,
+      'subtask_budget',
+    ).catch((err: unknown) => logger.error('budget', 'Failed to post subtask budget approval request', err));
+
+    await this.stop();
+  }
+
+  async handleSubtaskBudgetApproval(): Promise<void> {
+    this.metadata.subtask_budget_extra = (this.metadata.subtask_budget_extra ?? 0) + 10;
+    this.debouncedSave();
+    await appendAgentFinding(
+      this.taskId,
+      'system',
+      `Subtask budget extended by user (+10 subtasks, total extra: ${this.metadata.subtask_budget_extra})`,
+      'decision',
+    );
+    await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+  }
+
+  async handleSubtaskBudgetDenial(): Promise<void> {
+    await appendAgentFinding(this.taskId, 'system', 'Additional subtasks denied by user', 'decision');
+    await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+  }
+
   // ---- Internal methods ----
 
   /**
@@ -553,6 +641,12 @@ export class Task {
 
     if (agent) {
       agent.updateSession(active, sessionId);
+
+      // If agent was marked for deferred close (task completed/stopped),
+      // close the SDK process on next tick so the Stop hook can finish cleanly.
+      if (!active && agent.pendingClose) {
+        setTimeout(() => agent.close(), 0);
+      }
     }
 
     emitEvent(active ? 'agent:active' : 'agent:inactive', this.taskId, {}, name);
@@ -604,9 +698,11 @@ export class Task {
           'budget',
           `Task ${this.taskId} exceeded wall-clock timeout (${Math.round(elapsed / 60_000)}min)`,
         );
-        await this.postToUser(
-          `⏱️ Task timed out after ${Math.round(elapsed / 60_000)} minutes. Stopping task.`,
-        ).catch((err: unknown) => logger.error('budget', 'Failed to post timeout message', err));
+        const timeoutMessage = this.metadata.parent_task_id
+          ? `Subtask timed out after ${Math.round(elapsed / 60_000)} minutes without completing. Partial findings (if any) are in the knowledge log.`
+          : `⏱️ Task timed out after ${Math.round(elapsed / 60_000)} minutes. Stopping task.`;
+        await this.postToUser(timeoutMessage)
+          .catch((err: unknown) => logger.error('budget', 'Failed to post timeout message', err));
         await this.stop();
       }
     }, 60_000);
@@ -642,6 +738,26 @@ export class Task {
     }, 500);
   }
 
+}
+
+// ---- Cross-task message delivery ----
+
+/**
+ * Deliver a message to any task's agent. Follows the same pattern as
+ * Slack (appendSlackMessage + sendMessage) and CLI (appendCliMessage + sendMessage):
+ * 1. Log message to target task's knowledge log + emit event
+ * 2. Load/reactivate task + send standard prompt to agent (agent reads knowledge log)
+ */
+export async function deliverMessage(
+  taskId: string,
+  message: string,
+  source: string,
+  targetAgent: AgentName = 'pm-agent',
+): Promise<void> {
+  await appendCrossTaskMessage(taskId, source, message, targetAgent);
+
+  const task = activeTasks.get(taskId) ?? await Task.get(taskId);
+  await task.sendMessage(AGENT_PROMPTS.existingTask, targetAgent);
 }
 
 // ---- Module-level accessor functions (backward compat) ----

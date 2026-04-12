@@ -87,11 +87,15 @@ export function mountApiRoutes(app: Application): void {
 
         const activeTask = activeTasks.get(dir);
 
-        // Extract channel name from default channel
+        // Extract display-ready channel name from default channel
         let channel_name: string | null = null;
         if (metadata.default_channel && metadata.channels[metadata.default_channel]) {
           const ch = metadata.channels[metadata.default_channel];
-          if (ch.type === 'slack') channel_name = ch.channel_name;
+          if (ch.type === 'slack') {
+            channel_name = ch.channel_name.startsWith('DM with') ? ch.channel_name : `#${ch.channel_name}`;
+          } else if (ch.type === 'parent') {
+            channel_name = `subtask of ${ch.parent_task_id}`;
+          }
         }
 
         tasks.push({
@@ -233,6 +237,12 @@ export function mountApiRoutes(app: Application): void {
           await task.handleResearchBudgetApproval();
         } else {
           await task.handleResearchBudgetDenial();
+        }
+      } else if (type === 'subtask_budget') {
+        if (approve) {
+          await task.handleSubtaskBudgetApproval();
+        } else {
+          await task.handleSubtaskBudgetDenial();
         }
       } else {
         res.status(400).json({ error: `Unknown approval type: ${type}` });
