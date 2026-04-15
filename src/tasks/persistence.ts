@@ -295,6 +295,27 @@ export async function appendCliMessage(
 }
 
 /**
+ * Append a cross-task message to the knowledge log.
+ * Used for subtask↔parent communication in both directions.
+ * Same pattern as appendCliMessage/appendSlackMessage — logs + emits event.
+ */
+export async function appendCrossTaskMessage(
+  taskId: string,
+  source: string,
+  message: string,
+  target: string = 'pm-agent',
+): Promise<void> {
+  const entry: LogEntry = {
+    timestamp: new Date().toISOString(),
+    source,
+    message,
+  };
+
+  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
+  emitEvent('message', taskId, { from: source, to: target, message });
+}
+
+/**
  * Read the knowledge log
  */
 export async function readKnowledgeLog(taskId: string): Promise<string> {

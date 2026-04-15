@@ -54,6 +54,8 @@ export interface AgentHandle {
   running: Promise<void>;
   /** Whether the agent is still processing messages */
   isRunning: boolean;
+  /** Reference to the SDK Query for forceful termination via close() */
+  query?: { close(): void };
 }
 
 /**

@@ -73,6 +73,10 @@ One PM agent instance is spawned per task. It is the orchestrator: it receives a
 | `request_edit_mode` | Request user approval for code changes |
 | `get_agents_status` | Check which agents are spawned and active |
 | `web_research` | Spawn a multi-agent research pipeline |
+| `spawn_subtask` | Spawn an independent subtask for parallel investigation |
+| `send_message_to_subtask` | Send a follow-up message to a running subtask |
+| `get_subtasks_status` | Check status of all spawned subtasks |
+| `cancel_subtask` | Cancel a running subtask |
 | `Skill` | Load domain-specific PM skills from plugins |
 | `Read`, `Glob`, `Grep` | Read files in the shared task folder |
 
@@ -100,6 +104,10 @@ Repo agents are specialized for a single repository. They investigate code, make
 |---|---|---|---|
 | `send_message_to_agent` | `repo-agent-tools` | Always | Report findings or coordinate with peers |
 | `log_finding` | `repo-agent-tools` | Always | Write to shared knowledge log |
+| `spawn_subtask` | `repo-agent-tools` | Always | Spawn an independent subtask |
+| `send_message_to_subtask` | `repo-agent-tools` | Always | Send follow-up to a subtask |
+| `get_subtasks_status` | `repo-agent-tools` | Always | Check subtask statuses |
+| `cancel_subtask` | `repo-agent-tools` | Always | Cancel a running subtask |
 | `web_research` | `research-tools` | Always | Spawn a research pipeline |
 | `fetch` | `repo-tools` | Always | Fetch latest refs from origin |
 | `switch_branch` | `repo-tools` | Always | Switch branches with auto-stash/pop |
@@ -141,6 +149,10 @@ Plugin agents are lightweight, read-only agents for domains that don't need git,
 |---|---|
 | `send_message_to_agent` | Report findings or coordinate with peers |
 | `log_finding` | Write to shared knowledge log |
+| `spawn_subtask` | Spawn an independent subtask |
+| `send_message_to_subtask` | Send follow-up to a subtask |
+| `get_subtasks_status` | Check subtask statuses |
+| `cancel_subtask` | Cancel a running subtask |
 | `web_research` | Spawn a research pipeline |
 | `Read`, `Glob`, `Grep` | Explore files in workspace |
 | `Skill` | Load domain-specific agent skills |
@@ -177,6 +189,20 @@ Broadcast-style logging to the shared `knowledge.log` file. Non-blocking -- the 
 **Finding types**: `discovery`, `decision`, `completion`, `blocker`
 
 **Behavior**: Appends a timestamped entry to `<task>/shared/knowledge.log` with the agent name and finding type. All agents and the PM read this file at the start of each turn to understand task context.
+
+### Subtask Communication
+
+Any agent can spawn independent subtasks via `spawn_subtask`. Subtasks are full tasks with their own PM and specialist agents, running in fresh context with separate repo clones.
+
+**How it works**:
+1. Agent calls `spawn_subtask(goal)` → creates a new Task with a `ParentChannel` as its default channel
+2. The subtask PM thinks it's serving a regular user — its `post_to_user` messages route back to the parent task's originating agent via `deliverMessage()` (same pattern as Slack/CLI: log to knowledge.log + emit event + send standard prompt)
+3. Parent-to-subtask messages use source `'user'` so the subtask PM sees them as normal user messages
+4. Subtasks are fire-and-forget: they run independently and are not terminated when the parent stops. Results arriving on a stopped parent reactivate it.
+
+**Budget**: 10 subtasks per task (shared across all agents), extendable by 10 via user approval. Subtask tools are hidden from subtask agents to prevent recursion.
+
+**Source**: `deliverMessage()` in `src/tasks/task.ts`, `appendCrossTaskMessage()` in `src/tasks/persistence.ts`
 
 ## Thread Owner Pattern
 

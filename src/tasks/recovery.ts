@@ -11,7 +11,7 @@ import { findTasksByStatus } from './persistence.js';
 import { logger } from '../system/logger.js';
 import { getIsShuttingDown } from '../system/shutdown.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
-import type { Task } from './task.js';
+import { type Task, activeTasks } from './task.js';
 import type { AgentName } from '../types/index.js';
 
 // ============================================================================
@@ -36,6 +36,12 @@ export async function recoverActiveTasks(): Promise<void> {
   const { Task: TaskClass } = await import('./task.js');
 
   for (const taskMeta of tasks) {
+    // Skip subtasks — they cannot run independently
+    if (taskMeta.parent_task_id) {
+      logger.system(`Recovery: Skipping subtask ${taskMeta.task_id} (parent: ${taskMeta.parent_task_id})`);
+      continue;
+    }
+
     try {
       const task = await TaskClass.get(taskMeta.task_id);
       await recoverTaskAgents(task);
@@ -87,12 +93,22 @@ export function scheduleIdleCheck(task: Task): void {
 
 /**
  * Check if all spawned agents are inactive.
+ * Also considers active subtasks — if any subtask is still running,
+ * the task is waiting for results and is not truly idle.
  */
 function checkAllAgentsInactive(task: Task): boolean {
   if (task.agentProcesses.size === 0) return false;
 
   for (const [, agent] of task.agentProcesses) {
     if (agent.session.active) return false;
+  }
+
+  // If any subtask is still active, we're waiting for it — not idle
+  if (task.metadata.subtask_ids?.length) {
+    for (const subtaskId of task.metadata.subtask_ids) {
+      const subtask = activeTasks.get(subtaskId);
+      if (subtask?.isActive) return false;
+    }
   }
   return true;
 }

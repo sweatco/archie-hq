@@ -14,13 +14,14 @@ import { promisify } from 'util';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { AgentName, FindingType } from '../types/task.js';
-import type { Task } from '../tasks/task.js';
+import { type Task, activeTasks, deliverMessage } from '../tasks/task.js';
+import { appendAgentFinding, appendCrossTaskMessage } from '../tasks/persistence.js';
+import { AGENT_PROMPTS } from './prompts.js';
 import type { Agent } from './agent.js';
 import { getAgentIds } from './registry.js';
 import { getGitHubClient } from '../connectors/github/client.js';
 import { gitExec } from '../connectors/github/repo-clone.js';
 import { mirrorLegacyFields, hydrateBranchState, findBranchStateByPR } from '../connectors/github/branch-state.js';
-import { appendAgentFinding } from '../tasks/persistence.js';
 import { logger } from '../system/logger.js';
 
 // Re-export branch state helpers for consumers that import from tools.ts
@@ -173,6 +174,10 @@ function createRequestEditModeTool(agent: Agent, task: Task) {
       reason: z.string().describe('Brief summary of what changes need to be made'),
     },
     async (args) => {
+      if (task.metadata.parent_task_id) {
+        return err('This tool is not available in the current task context.');
+      }
+
       const agentName = agent.def.id as AgentName;
       logger.agentAction(agentName, 'Requesting edit mode', args.reason);
       task.touch();
@@ -739,24 +744,169 @@ function createListBranchesTool(agent: Agent, task: Task) {
   );
 }
 
+// ---- Subtask tools (PM-only, parent tasks only) ----
+
+function createSpawnSubtaskTool(agent: Agent, task: Task) {
+  return tool(
+    'spawn_subtask',
+    'Spawn an independent subtask for parallel investigation. The subtask gets its own PM and specialist agents with fresh context. You will be notified when the subtask reports back — no need to poll, continue with other work.',
+    {
+      goal: z.string().describe('Clear goal/question for the subtask to investigate'),
+    },
+    async (args) => {
+      const agentName = agent.def.id as AgentName;
+      logger.agentAction(agentName, 'Spawning subtask', args.goal);
+      task.touch();
+
+      // Check subtask budget
+      const budget = task.checkSubtaskBudget();
+      if (!budget.allowed) {
+        await task.onSubtaskBudgetExceeded();
+        return err(`Subtask budget exceeded (${budget.used}/${budget.limit}). Approval requested.`);
+      }
+
+      // Create the subtask
+      const { Task: TaskClass } = await import('../tasks/task.js');
+      const subtask = await TaskClass.create();
+
+      // Set subtask metadata
+      subtask.metadata.parent_task_id = task.taskId;
+      const channelId = `parent:${task.taskId}`;
+      subtask.metadata.channels[channelId] = {
+        type: 'parent',
+        parent_task_id: task.taskId,
+        parent_agent: agent.def.id,
+      };
+      subtask.metadata.default_channel = channelId;
+      subtask.debouncedSave();
+
+      // Track on parent
+      task.metadata.subtask_ids ??= [];
+      task.metadata.subtask_ids.push(subtask.taskId);
+      task.debouncedSave();
+
+      // Log goal to subtask knowledge log (looks like a user message) and start subtask PM
+      await appendCrossTaskMessage(subtask.taskId, 'user', args.goal);
+      await subtask.sendMessage(AGENT_PROMPTS.newTask, 'pm-agent');
+
+      await appendAgentFinding(task.taskId, agentName, `Spawned subtask ${subtask.taskId}: ${args.goal}`, 'decision');
+      logger.system(`Task ${task.taskId}: spawned subtask ${subtask.taskId}`);
+
+      return ok(`Subtask ${subtask.taskId} spawned. You will be notified when it reports back. No need to poll — continue with other work.`);
+    },
+  );
+}
+
+function createSendMessageToSubtaskTool(agent: Agent, task: Task) {
+  return tool(
+    'send_message_to_subtask',
+    'Send a follow-up message to a running subtask. You will be notified when the subtask responds.',
+    {
+      subtask_id: z.string().describe('The subtask ID to send the message to'),
+      message: z.string().describe('The message content'),
+    },
+    async (args) => {
+      const agentName = agent.def.id as AgentName;
+      task.touch();
+
+      if (!task.metadata.subtask_ids?.includes(args.subtask_id)) {
+        return err(`Unknown subtask: ${args.subtask_id}`);
+      }
+
+      await deliverMessage(args.subtask_id, args.message, 'user');
+      logger.agentMessage(agentName, `subtask:${args.subtask_id}`, args.message, { truncate: 100 });
+
+      return ok(`Message delivered to ${args.subtask_id}. You will be notified when the subtask responds.`);
+    },
+  );
+}
+
+function createGetSubtasksStatusTool(agent: Agent, task: Task) {
+  return tool(
+    'get_subtasks_status',
+    'Get the status of all subtasks spawned by this task.',
+    {},
+    async () => {
+      const subtaskIds = task.metadata.subtask_ids ?? [];
+      if (subtaskIds.length === 0) {
+        return ok('No subtasks spawned yet.');
+      }
+
+      const lines: string[] = [];
+      for (const subtaskId of subtaskIds) {
+        const subtask = activeTasks.get(subtaskId);
+        if (subtask?.isActive) {
+          const agents = subtask.getAgentStatus();
+          const activeAgents = agents.filter((a) => a.active).map((a) => a.agent);
+          lines.push(`- ${subtaskId}: active (agents: ${activeAgents.join(', ') || 'none active'})`);
+        } else {
+          lines.push(`- ${subtaskId}: inactive`);
+        }
+      }
+
+      return ok(`Subtasks (${subtaskIds.length}):\n${lines.join('\n')}`);
+    },
+  );
+}
+
+function createCancelSubtaskTool(agent: Agent, task: Task) {
+  return tool(
+    'cancel_subtask',
+    'Cancel a running subtask.',
+    {
+      subtask_id: z.string().describe('The subtask ID to cancel'),
+    },
+    async (args) => {
+      const agentName = agent.def.id as AgentName;
+      task.touch();
+
+      if (!task.metadata.subtask_ids?.includes(args.subtask_id)) {
+        return err(`Unknown subtask: ${args.subtask_id}`);
+      }
+
+      const subtask = activeTasks.get(args.subtask_id);
+      if (subtask?.isActive) {
+        await subtask.stop();
+        logger.agentAction(agentName, 'Cancelled subtask', args.subtask_id);
+        return ok(`Subtask ${args.subtask_id} cancelled.`);
+      }
+
+      return ok(`Subtask ${args.subtask_id} is already inactive.`);
+    },
+  );
+}
+
 // ---- MCP Server creation ----
 
 /**
  * Create the MCP server with PM agent tools.
  */
 export function createPMAgentMcpServer(agent: Agent, task: Task) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tools: any[] = [
+    createSendMessageTool(agent, task),
+    createPostToUserTool(agent, task),
+    createAssignTaskOwnerTool(agent, task),
+    createReportCompletionTool(agent, task),
+    createRequestEditModeTool(agent, task),
+    createGetAgentsStatusTool(agent, task),
+    createMuteThreadTool(agent, task),
+  ];
+
+  // Subtask tools only for parent tasks (not subtasks themselves)
+  if (!task.metadata.parent_task_id) {
+    tools.push(
+      createSpawnSubtaskTool(agent, task),
+      createSendMessageToSubtaskTool(agent, task),
+      createGetSubtasksStatusTool(agent, task),
+      createCancelSubtaskTool(agent, task),
+    );
+  }
+
   return createSdkMcpServer({
     name: 'pm-agent-tools',
     version: '1.0.0',
-    tools: [
-      createSendMessageTool(agent, task),
-      createPostToUserTool(agent, task),
-      createAssignTaskOwnerTool(agent, task),
-      createReportCompletionTool(agent, task),
-      createRequestEditModeTool(agent, task),
-      createGetAgentsStatusTool(agent, task),
-      createMuteThreadTool(agent, task),
-    ],
+    tools,
   });
 }
 
@@ -797,12 +947,25 @@ export function createRepoToolsMcpServer(agent: Agent, task: Task) {
  * Create the MCP server with base agent tools (repo + plugin agents).
  */
 export function createBaseAgentMcpServer(agent: Agent, task: Task) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tools: any[] = [
+    createSendMessageTool(agent, task),
+    createLogFindingTool(agent, task),
+  ];
+
+  // Subtask tools available to all agents (shared budget per task)
+  if (!task.metadata.parent_task_id) {
+    tools.push(
+      createSpawnSubtaskTool(agent, task),
+      createSendMessageToSubtaskTool(agent, task),
+      createGetSubtasksStatusTool(agent, task),
+      createCancelSubtaskTool(agent, task),
+    );
+  }
+
   return createSdkMcpServer({
     name: 'repo-agent-tools',
     version: '1.0.0',
-    tools: [
-      createSendMessageTool(agent, task),
-      createLogFindingTool(agent, task),
-    ],
+    tools,
   });
 }

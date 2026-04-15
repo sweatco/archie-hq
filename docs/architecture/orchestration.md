@@ -309,8 +309,9 @@ function scheduleIdleCheck(task: Task): void {
 }
 ```
 
-`checkAllAgentsInactive()` returns `true` only if `spawned.size > 0` and every
-spawned agent's session has `active === false`.
+`checkAllAgentsInactive()` returns `true` only if `spawned.size > 0`, every
+spawned agent's session has `active === false`, and no active subtasks exist
+(checked via `task.metadata.subtask_ids` against `activeTasks`).
 
 ### Progressive recovery
 
@@ -332,12 +333,15 @@ agent's queue and marks the agent active. If the process is dead, it sets
 
 **Source**: `src/tasks/recovery.ts` -- `recoverActiveTasks()`
 
-Called once during server startup after the HTTP server is ready.
+Called once during server startup after the HTTP server is ready. Tasks with
+`parent_task_id` (subtasks) are skipped — they cannot run independently and
+are not recovered.
 
 ```
 recoverActiveTasks()
   --> findTasksByStatus('in_progress')   // grep across sessions/task-*/shared/metadata.json
   --> for each task:
+      --> skip if task.parent_task_id    // subtasks are not recovered
       --> Task.get(task_id)              // build Task from disk metadata
       --> recoverTaskAgents(task)
           --> for each session where active === true:
@@ -349,6 +353,21 @@ recoverActiveTasks()
 During graceful shutdown, `isShuttingDown` is set to `true` via `src/system/shutdown.ts`.
 This causes `task.updateAgentState()` to skip deactivation writes, preserving the
 `active: true` state in metadata so that recovery on restart correctly re-spawns those agents.
+
+### Graceful Agent Shutdown
+
+When a task stops or completes, agents are shut down via `stopAgents()`:
+
+- **Active agents** (mid-turn): `pendingClose = true` is set. The agent finishes its current turn, the SDK Stop hook fires `updateAgentState(false)`, which triggers `setTimeout(() => agent.close(), 0)` on the next tick. This lets the hook complete before the SDK process is killed.
+- **Idle agents** (waiting for input): `agent.close()` is called immediately, which stops the queue and calls `query.close()` to terminate the SDK subprocess.
+
+`Agent.close()` calls `queue.stop()` + `handle.query.close()`. The `query` reference is stored on `AgentHandle` when the SDK `query()` is created in `spawn.ts`.
+
+### Subtask Lifecycle
+
+Subtasks are fire-and-forget. When a parent task stops or completes, its subtasks are **not** terminated — they continue running independently. When a subtask finishes, its `post_to_user` routes the result back to the parent via `deliverMessage()`. If the parent is stopped, this reactivates it (same as a Slack message arriving on a stopped task).
+
+Subtask budget: 10 per task (shared across all agents), extendable by 10 via Slack approval. Tracked on `metadata.subtask_ids` (count) and `metadata.subtask_budget_extra`.
 
 ---
 

@@ -37,7 +37,7 @@ export interface SlackThread {
 
 // ---- Channel types (replace slack_threads) ----
 
-export type ChannelType = 'slack' | 'github';
+export type ChannelType = 'slack' | 'github' | 'parent';
 
 export interface ChannelBase {
   type: ChannelType;
@@ -61,7 +61,14 @@ export interface GitHubChannel extends ChannelBase {
   pr_number: number;
 }
 
-export type Channel = SlackChannel | GitHubChannel;
+/** Parent channel — routes subtask messages back to parent task's originating agent */
+export interface ParentChannel extends ChannelBase {
+  type: 'parent';
+  parent_task_id: string;
+  parent_agent: string;  // Agent that spawned this subtask (e.g. 'pm-agent', 'backend-agent')
+}
+
+export type Channel = SlackChannel | GitHubChannel | ParentChannel;
 
 /** Per-branch state — tracks PR lifecycle and stash */
 export interface BranchState {
@@ -105,6 +112,9 @@ export interface TaskMetadata {
   agent_sessions: Record<string, AgentSessionState | string>; // union handles legacy string values on disk
   repositories: Record<string, RepositoryInfo>;
   status: TaskStatus;
+  parent_task_id?: string;           // Set on subtasks — ID of the parent task
+  subtask_ids?: string[];            // Set on parent — all subtask IDs ever created
+  subtask_budget_extra?: number;     // Additional +10 per user approval
   edit_allowed?: boolean;     // Has user approved edit mode for this task?
   research_budget_extra?: number;    // Additional research budget granted via Slack approval (+5 per approval)
   research_request_count?: number;   // Persisted research request count (survives stop/reactivate)

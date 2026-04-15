@@ -241,6 +241,60 @@ export async function mountSlackApp(
       logger.error('Server', 'Error handling research budget denial', error);
     }
   });
+
+  // Handle subtask budget approval button
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  app!.action('approve_subtask_budget', async ({ action, ack, body }: any) => {
+    await ack();
+
+    const taskId = action.value;
+    const userId = body.user?.id || 'unknown';
+
+    logger.server(`Subtask budget approved by ${userId} for task ${taskId}`);
+
+    try {
+      if (body.channel?.id && body.message?.ts) {
+        await updateMessage(
+          body.channel.id,
+          body.message.ts,
+          `✅ *Subtask budget extended* by <@${userId}> (+10 subtasks)`,
+          []
+        );
+      }
+
+      const task = await Task.get(taskId);
+      await task.handleSubtaskBudgetApproval();
+    } catch (error) {
+      logger.error('Server', 'Error handling subtask budget approval', error);
+    }
+  });
+
+  // Handle subtask budget denial button
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  app!.action('deny_subtask_budget', async ({ action, ack, body }: any) => {
+    await ack();
+
+    const taskId = action.value;
+    const userId = body.user?.id || 'unknown';
+
+    logger.server(`Subtask budget denied by ${userId} for task ${taskId}`);
+
+    try {
+      if (body.channel?.id && body.message?.ts) {
+        await updateMessage(
+          body.channel.id,
+          body.message.ts,
+          `❌ *Additional subtasks denied* by <@${userId}>`,
+          []
+        );
+      }
+
+      const task = await Task.get(taskId);
+      await task.handleSubtaskBudgetDenial();
+    } catch (error) {
+      logger.error('Server', 'Error handling subtask budget denial', error);
+    }
+  });
 }
 
 

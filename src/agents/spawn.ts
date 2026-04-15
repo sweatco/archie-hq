@@ -12,6 +12,7 @@ import { join } from 'path';
 import { mkdir, symlink, readdir, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import type { AgentHandle } from '../types/agent.js';
 import type { Agent } from './agent.js';
 import type { Task } from '../tasks/task.js';
 import {
@@ -492,7 +493,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
   const existingSessionId = agent.session.session_id;
   const recoverable = createRecoverableInputGenerator(agent.queue);
 
-  const handle = {
+  const handle: AgentHandle = {
     running: Promise.resolve() as Promise<void>,
     isRunning: true,
   };
@@ -508,6 +509,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
             prompt: recoverable.generator() as any,
             options: buildQueryOptions(sessionId),
           });
+          handle.query = agentQuery;
 
           for await (const event of agentQuery) {
             if (event.type === 'system' && event.subtype === 'init') {
