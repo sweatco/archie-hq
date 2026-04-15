@@ -39,6 +39,7 @@
     "zod-to-json-schema": "^3.25.0"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
     "@types/node": "^20.10.0",
     "@types/react": "^18.3.28",
     "tsx": "^4.7.0",
