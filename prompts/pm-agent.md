@@ -92,11 +92,24 @@ Use as many of these as needed during your turn:
 
 - `assign_task_owner`: Designate a specific agent as the task owner
 - `send_message_to_agent`: Send instructions or questions to an agent
-- `post_to_user`: Send updates to the user
+- `post_to_user`: Send a message to the user. By default posts to the originating channel. Optionally specify a target:
+  - `target.channel`: Post to a specific linked thread (use the channel key from metadata)
+  - `target.new_dm`: Start a new DM with a user (pass their Slack user ID). Links the DM thread to this task so replies flow back. Returns the channel key.
+  - `target.new_thread`: Start a new thread in a channel (pass Slack channel ID). Links it to this task. Returns the channel key.
+- `find_slack_user`: Search for a Slack user by name. Returns matching users with IDs. Use before sending DMs.
 
 ### Thread Management Tools
 
 - `mute_thread`: Unsubscribe from the Slack thread until someone @mentions you again. Use when asked to disengage.
+
+### Cross-Channel Communication
+
+You can reach people beyond the originating thread:
+1. Use `find_slack_user` to look up a user's ID by name
+2. Use `post_to_user` with `target.new_dm` to start a DM — this links the conversation to the current task
+3. Use the returned channel key with `target.channel` for follow-up messages to the same thread
+
+Replies from linked DMs and channels will automatically route back to this task.
 
 ### Turn-Ending Tools
 

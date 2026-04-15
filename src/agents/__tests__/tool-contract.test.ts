@@ -46,6 +46,10 @@ vi.mock('../registry.js', () => ({
   getAgentIds: vi.fn().mockReturnValue(['backend-agent', 'mobile-agent']),
 }));
 
+vi.mock('../../connectors/slack/client.js', () => ({
+  findSlackUsers: vi.fn().mockResolvedValue([]),
+}));
+
 // ---- Helpers ----
 
 function makeAgent(overrides: Partial<AgentDef> = {}): Agent {
@@ -97,6 +101,7 @@ function getRegisteredToolNames(server: ReturnType<typeof createRepoToolsMcpServ
 const SPAWN_PM_TOOLS = [
   'mcp__pm-agent-tools__send_message_to_agent',
   'mcp__pm-agent-tools__post_to_user',
+  'mcp__pm-agent-tools__find_slack_user',
   'mcp__pm-agent-tools__assign_task_owner',
   'mcp__pm-agent-tools__report_completion',
   'mcp__pm-agent-tools__request_edit_mode',

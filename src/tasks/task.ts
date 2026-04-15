@@ -10,6 +10,18 @@ import type { AgentName, SlackChannel, SlackThread, TaskMetadata } from '../type
 import type { AgentDef } from '../types/agent.js';
 
 /**
+ * Target for postToUser — controls where the message is delivered.
+ */
+export interface PostTarget {
+  /** Post to an existing linked thread (channel key, e.g., "slack:C123:456.789") */
+  channel?: string;
+  /** Start a new DM with a user (Slack user ID). Reuses existing DM thread if one is linked. */
+  new_dm?: string;
+  /** Start a new thread in a channel (Slack channel ID). */
+  new_thread?: string;
+}
+
+/**
  * Resource budgets for a task (Defense 4 — per-task limits)
  */
 export interface TaskBudgets {
@@ -40,7 +52,7 @@ import { getIsShuttingDown } from '../system/shutdown.js';
 import { scheduleIdleCheck } from './recovery.js';
 import { scanAgentDefs } from '../agents/registry.js';
 import { refreshPlugins } from '../system/workdir.js';
-import { postToThreads, postInteractiveToThreads, removeReaction, buildThreadUrl } from '../connectors/slack/client.js';
+import { postToThread, postInteractiveToThreads, removeReaction, buildThreadUrl, openDMChannel, postNewMessage, getChannelInfo, getUserInfo, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
 import { emitEvent } from '../system/event-bus.js';
@@ -233,52 +245,164 @@ export class Task {
   }
 
   /**
-   * Post a message to the user via the default channel.
-   * Always emits an event (so CLI sees it via SSE). If the default channel
-   * is a Slack thread, also posts there.
+   * Post a message to the user.
+   *
+   * Targeting modes:
+   * - No target: post to default_channel only
+   * - target.channel: post to a specific already-linked thread
+   * - target.new_dm: open DM with user, post message, link thread (reuses existing DM if found)
+   * - target.new_thread: post top-level message in channel, link thread
+   *
+   * Returns the channel key when a new channel is created/reused, null otherwise.
    */
-  async postToUser(message: string, agentName?: string): Promise<void> {
+  async postToUser(message: string, agentName?: string, target?: PostTarget): Promise<string | null> {
     const sender = agentName || 'system';
-    emitEvent('message', this.taskId, { from: sender, to: 'user', message });
-    await appendMessageToUser(this.taskId, sender, message);
 
-    const slackRefs = this.getSlackThreadRefs();
-    if (slackRefs.length > 0) {
-      // Remove eyes acknowledgment before posting the reply
-      await Promise.all(
-        slackRefs.map((ref) => removeReaction(ref.channel_id, ref.last_processed_ts, 'eyes')),
-      );
-      await postToThreads(slackRefs, message);
+    // New DM — open DM channel, reuse existing thread or create new
+    if (target?.new_dm) {
+      const dmChannelId = await openDMChannel(target.new_dm);
+      const existing = this.findChannelBySlackId(dmChannelId);
+      if (existing) {
+        const dest = Task.formatSlackDest(existing.channel);
+        this.logOutgoingMessage(sender, message, dest.display, existing.channel);
+        await this.postToSlackRef(existing.channel, message);
+        return existing.key;
+      }
+      const userInfo = await getUserInfo(target.new_dm);
+      const channelName = `DM with ${userInfo.realName}`;
+      const ts = await postNewMessage(dmChannelId, message);
+      if (!ts) return null; // dry-run
+      const key = this.registerSlackChannel(dmChannelId, ts, channelName);
+      const ch = this.metadata.channels[key] as SlackChannel;
+      this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch);
+      return key;
     }
+
+    // New thread in a channel
+    if (target?.new_thread) {
+      const channelInfo = await getChannelInfo(target.new_thread);
+      const ts = await postNewMessage(target.new_thread, message);
+      if (!ts) return null; // dry-run
+      const key = this.registerSlackChannel(target.new_thread, ts, channelInfo.name);
+      const ch = this.metadata.channels[key] as SlackChannel;
+      this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch);
+      return key;
+    }
+
+    // Specific existing channel
+    if (target?.channel) {
+      const ch = this.metadata.channels[target.channel];
+      if (ch?.type === 'slack') {
+        const dest = Task.formatSlackDest(ch);
+        this.logOutgoingMessage(sender, message, dest.display, ch);
+        await this.postToSlackRef(ch, message);
+      }
+      return null;
+    }
+
+    // Default channel
+    const defaultCh = this.metadata.default_channel
+      ? this.metadata.channels[this.metadata.default_channel]
+      : null;
+    if (defaultCh?.type === 'slack') {
+      const dest = Task.formatSlackDest(defaultCh);
+      this.logOutgoingMessage(sender, message, dest.display, defaultCh);
+      await this.postToSlackRef(defaultCh, message);
+    } else {
+      // CLI or no channel
+      this.logOutgoingMessage(sender, message, 'cli');
+    }
+    return null;
   }
 
   /**
-   * Post an interactive message (with blocks) to the user.
-   * Always emits an approval:requested event (so CLI sees it).
-   * If Slack channels exist, also posts interactive message there.
+   * Emit event and append outgoing message to knowledge log with destination info.
+   */
+  /**
+   * Format a SlackChannel as a destination string for logs.
+   * For knowledge log: includes IDs (e.g., "slack:#<C123:bot-test>:threadTs")
+   * For CLI/server: human-readable (e.g., "#bot-test", "DM with Egor")
+   */
+  private static formatSlackDest(ch: SlackChannel): { log: string; display: string } {
+    return {
+      log: formatSlackChannelRef(ch.channel_id, ch.channel_name, ch.thread_id),
+      display: formatSlackChannelDisplay(ch.channel_name),
+    };
+  }
+
+  private logOutgoingMessage(sender: string, message: string, destination: string, slackChannel?: SlackChannel): void {
+    const display = destination;
+    const logDest = slackChannel ? Task.formatSlackDest(slackChannel).log : destination;
+    logger.agentToSlack(sender, message, { destination: display });
+    emitEvent('message', this.taskId, { from: sender, to: 'user', destination: display, message });
+    appendMessageToUser(this.taskId, sender, message, logDest);
+  }
+
+  /**
+   * Post an interactive message (with blocks) to the user via the default channel.
    */
   async postInteractiveToUser(text: string, blocks: unknown[], approvalType: 'edit_mode' | 'research_budget'): Promise<void> {
     emitEvent('approval:requested', this.taskId, { text, approvalType });
 
-    const slackRefs = this.getSlackThreadRefs();
-    if (slackRefs.length > 0) {
-      await postInteractiveToThreads(slackRefs, text, blocks);
+    const defaultCh = this.metadata.default_channel
+      ? this.metadata.channels[this.metadata.default_channel]
+      : null;
+    if (defaultCh?.type === 'slack') {
+      await postInteractiveToThreads([{
+        thread_id: defaultCh.thread_id,
+        channel_id: defaultCh.channel_id,
+        last_processed_ts: defaultCh.last_processed_ts,
+      }], text, blocks);
     } else {
       logger.slack(`POST (interactive): ${text}`);
     }
   }
 
   /**
-   * Extract SlackThreadRef[] from channels for posting via Slack client.
+   * Remove eyes reaction from the last processed message on all Slack channels.
+   * Called on task stop/complete to clean up acknowledgment indicators.
    */
-  private getSlackThreadRefs(): { thread_id: string; channel_id: string; last_processed_ts: string }[] {
-    return Object.values(this.metadata.channels)
-      .filter((ch): ch is SlackChannel => ch.type === 'slack')
-      .map((ch) => ({
-        thread_id: ch.thread_id,
-        channel_id: ch.channel_id,
-        last_processed_ts: ch.last_processed_ts,
-      }));
+  private removeEyesFromAllChannels(): void {
+    for (const ch of Object.values(this.metadata.channels)) {
+      if (ch.type === 'slack') {
+        removeReaction(ch.channel_id, ch.last_processed_ts, 'eyes');
+      }
+    }
+  }
+
+  /**
+   * Post to a single Slack thread ref.
+   */
+  private async postToSlackRef(ch: SlackChannel, message: string): Promise<void> {
+    await postToThread(ch.channel_id, ch.thread_id, message);
+  }
+
+  /**
+   * Find an existing channel entry by Slack channel ID.
+   * Used for DM reuse — conversations.open returns the same channel ID for a given user.
+   */
+  private findChannelBySlackId(slackChannelId: string): { key: string; channel: SlackChannel } | null {
+    for (const [key, ch] of Object.entries(this.metadata.channels)) {
+      if (ch.type === 'slack' && ch.channel_id === slackChannelId) return { key, channel: ch };
+    }
+    return null;
+  }
+
+  /**
+   * Register a new Slack channel/thread in the task metadata.
+   */
+  private registerSlackChannel(channelId: string, threadTs: string, channelName: string): string {
+    const key = `slack:${channelId}:${threadTs}`;
+    this.metadata.channels[key] = {
+      type: 'slack',
+      thread_id: threadTs,
+      channel_id: channelId,
+      channel_name: channelName,
+      last_processed_ts: threadTs,
+      url: buildThreadUrl(channelId, threadTs) ?? undefined,
+    };
+    this.debouncedSave();
+    return key;
   }
 
   /**
@@ -303,6 +427,8 @@ export class Task {
     if (this.metadata.edit_allowed !== true) {
       await this.cleanupClones();
     }
+
+    this.removeEyesFromAllChannels();
 
     this.metadata.status = 'stopped';
     await this.save(true);
@@ -334,6 +460,8 @@ export class Task {
     if (this.metadata.edit_allowed !== true) {
       await this.cleanupClones();
     }
+
+    this.removeEyesFromAllChannels();
 
     this.metadata.status = 'completed';
     await this.save(true);
