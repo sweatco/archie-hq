@@ -5,6 +5,22 @@ import { ScrollView, type ScrollViewRef } from 'ink-scroll-view';
 import { fetchTaskDetail, fetchTaskEvents, sendMessage, sendApproval } from '../api.js';
 import { MessageInput } from './MessageInput.js';
 
+/**
+ * Format message for CLI display using from, to, and destination fields.
+ *
+ * Patterns:
+ *   [cli] @pm-agent message                      — CLI input
+ *   [Egor in #bot-test] @pm-agent message         — Slack incoming
+ *   [pm-agent in #bot-test] message               — agent posting to a channel
+ *   [pm-agent in cli] message                     — agent posting to CLI
+ *   [pm-agent] @backend-agent message             — agent messaging another agent
+ */
+function formatMessageParts(from: string, to: string, destination?: string): { label: string; mention: string } {
+  const label = destination ? `${from} in ${destination}` : from;
+  const mention = from !== to && to !== 'user' ? ` @${to}` : '';
+  return { label, mention };
+}
+
 interface AgentStatus {
   agent: string;
   active: boolean;
@@ -69,7 +85,7 @@ export function TaskDetail({ taskId, onBack, onEvent, onConnect }: TaskDetailPro
       switch (event.type) {
         case 'message':
           logLines.push({
-            node: <><Text dimColor>[{event.data.from as string}]</Text> <Text color="cyan">@{event.data.to as string}</Text> {event.data.message as string}</>,
+            node: (() => { const p = formatMessageParts(event.data.from as string, event.data.to as string, event.data.destination as string | undefined); return <><Text dimColor>[{p.label}]</Text>{p.mention ? <Text color="cyan">{p.mention}</Text> : null} {event.data.message as string}</>; })(),
           });
           break;
         case 'agent:log':

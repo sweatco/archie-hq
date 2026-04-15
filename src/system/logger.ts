@@ -264,9 +264,10 @@ export class Logger {
   /**
    * Log an agent posting to Slack
    */
-  agentToSlack(agentName: string, message: string, opts?: { editMode?: boolean }): void {
+  agentToSlack(agentName: string, message: string, opts?: { editMode?: boolean; destination?: string }): void {
     const label = formatAgentLabel(agentName, opts?.editMode);
-    console.log(`${label} ${c.dim('→')} ${c.cyan('[Slack]')}: ${message}`);
+    const dest = opts?.destination ? `[${opts.destination}]` : '[Slack]';
+    console.log(`${label} ${c.dim('→')} ${c.cyan(dest)}: ${message}`);
   }
 
   /**
