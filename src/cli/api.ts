@@ -134,12 +134,14 @@ export function connectSSE(opts: SSEOptions): () => void {
       if (err.name === 'AbortError') return;
     }
 
+    // If aborted, this was an intentional teardown — don't fire onDisconnect
+    // or attempt to reconnect (the new connection handles its own state)
+    if (aborted) return;
+
     opts.onDisconnect?.();
 
     // Reconnect after delay
-    if (!aborted) {
-      setTimeout(connect, 3000);
-    }
+    setTimeout(connect, 3000);
   };
 
   connect();
