@@ -79,6 +79,10 @@ export interface PluginAgentDef {
   expertise: string;
   /** Optional model override from frontmatter */
   model?: string;
+  /** Reasoning effort level from frontmatter */
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  /** Maximum agentic turns from frontmatter */
+  maxTurns?: number;
   /** Markdown body (domain-specific instructions) */
   prompt: string;
   /** Repo metadata from frontmatter (if present, agent is a repo agent) */
@@ -170,11 +174,16 @@ function scanPlugins(): LoadedPlugin[] {
         const agentContent = readFileSync(join(agentsDir, agentEntry.name), 'utf-8');
         const { data, content } = matter(agentContent);
 
+        const effort = ['low', 'medium', 'high', 'xhigh', 'max'].includes(data.effort) ? data.effort : undefined;
+        const maxTurns = typeof data.maxTurns === 'number' && data.maxTurns > 0 ? data.maxTurns : undefined;
+
         const agentDef: PluginAgentDef = {
           key,
           role: data.role || '',
           expertise: data.expertise || '',
           model: data.model || undefined,
+          effort,
+          maxTurns,
           prompt: content.trim(),
         };
 

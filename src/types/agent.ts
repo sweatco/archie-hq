@@ -107,6 +107,12 @@ export interface AgentDef {
   /** Model override (default per track: opus for PM, sonnet for repo/plugin) */
   model?: string;
 
+  /** Reasoning effort level (default: 'high') */
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+  /** Maximum agentic turns before stopping (default: 100) */
+  maxTurns?: number;
+
   /** Which track: pm, repo, or plugin */
   track: AgentTrack;
 

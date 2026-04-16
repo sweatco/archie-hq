@@ -475,7 +475,9 @@ Shared folder: ${sharedPath} [READ-ONLY]
       } : {}),
     },
     resume: sessionId,
-    maxTurns: 100,
+    maxTurns: def.maxTurns ?? 100,
+    thinking: { type: 'adaptive' } as const,
+    ...(def.effort ? { effort: def.effort } : {}),
     permissionMode: 'bypassPermissions' as const,
     allowDangerouslySkipPermissions: true,
     sandbox: buildSandboxConfig(sandboxOpts),
@@ -529,6 +531,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
           for await (const event of agentQuery) {
             if (event.type === 'system' && event.subtype === 'init') {
               task.updateAgentState(def.id, true, event.session_id);
+              logger.agent(def.id, `Model: ${(event as any).model || 'unknown'}`);
               if (Array.isArray(event.mcp_servers)) {
                 for (const mcp of event.mcp_servers) {
                   const status = mcp.status === 'connected' ? 'connected' : `FAILED`;

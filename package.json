@@ -20,7 +20,7 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.96",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.112",
     "@aws-sdk/client-bedrock-runtime": "^3.1020.0",
     "@octokit/app": "^16.1.2",
     "@octokit/webhooks": "^14.2.0",
