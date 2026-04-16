@@ -478,7 +478,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
     },
     resume: sessionId,
     maxTurns: def.maxTurns ?? 100,
-    thinking: { type: 'adaptive' } as const,
+    // thinking: { type: 'adaptive' } as const,
     ...(def.effort ? { effort: def.effort } : {}),
     permissionMode: 'bypassPermissions' as const,
     allowDangerouslySkipPermissions: true,
