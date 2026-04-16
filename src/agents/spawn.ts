@@ -137,12 +137,17 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   task.updateAgentState(def.id, true);
 
   // ---- SDK config/tmp dirs (agent reads tool-results from here) ----
+  // Only create for new tasks. Old tasks recovering won't have <taskId>/claude/
+  // on disk — skip to avoid breaking their sandbox config during transition.
 
   const claudeBaseDir = join(getTaskPath(taskId), 'claude', def.key);
-  const claudeConfigDir = join(claudeBaseDir, 'session');
-  const claudeTmpDir = join(claudeBaseDir, 'tmp');
-  await mkdir(claudeConfigDir, { recursive: true });
-  await mkdir(claudeTmpDir, { recursive: true });
+  const hasClaudeDirs = existsSync(claudeBaseDir);
+  if (!agent.session.session_id) {
+    // Fresh spawn — create dirs
+    await mkdir(join(claudeBaseDir, 'session'), { recursive: true });
+    await mkdir(join(claudeBaseDir, 'tmp'), { recursive: true });
+  }
+  const useClaudeDirs = hasClaudeDirs || !agent.session.session_id;
 
   // ---- Build track-specific config ----
 
@@ -211,7 +216,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
       cwd: pmWorkspace,
       denyReadPaths: [WORKDIR],
       allowReadPaths: [
-        pmWorkspace, sharedPath, claudeBaseDir,
+        pmWorkspace, sharedPath, ...(useClaudeDirs ? [claudeBaseDir] : []),
         ...(def.pluginPath ? [def.pluginPath] : []),
         ...(def.pluginDataPath ? [def.pluginDataPath] : []),
       ],
@@ -374,7 +379,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
       sandboxOpts = {
         cwd,
         denyReadPaths: [WORKDIR],
-        allowReadPaths: [repoWorkspace, repoPath, claudeBaseDir, ...readOnlyPaths],
+        allowReadPaths: [repoWorkspace, repoPath, ...(useClaudeDirs ? [claudeBaseDir] : []), ...readOnlyPaths],
         allowWritePaths: [repoWorkspace, repoPath],
         denyWritePaths: [...readOnlyPaths, ...denyWriteProtected],
       };
@@ -382,7 +387,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
       sandboxOpts = {
         cwd,
         denyReadPaths: [WORKDIR],
-        allowReadPaths: [repoWorkspace, repoPath, claudeBaseDir, ...readOnlyPaths],
+        allowReadPaths: [repoWorkspace, repoPath, ...(useClaudeDirs ? [claudeBaseDir] : []), ...readOnlyPaths],
         allowWritePaths: [repoWorkspace],
         denyWritePaths: [repoPath, ...readOnlyPaths],
       };
@@ -433,7 +438,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
       cwd: agentWorkspace,
       denyReadPaths: [WORKDIR],
       allowReadPaths: [
-        agentWorkspace, sharedPath, claudeBaseDir,
+        agentWorkspace, sharedPath, ...(useClaudeDirs ? [claudeBaseDir] : []),
         ...(def.pluginPath ? [def.pluginPath] : []),
         ...(def.pluginDataPath ? [def.pluginDataPath] : []),
       ],
@@ -464,8 +469,10 @@ Shared folder: ${sharedPath} [READ-ONLY]
       ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
       PATH: process.env.PATH,
       CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
-      CLAUDE_CONFIG_DIR: claudeConfigDir,
-      CLAUDE_CODE_TMPDIR: claudeTmpDir,
+      ...(useClaudeDirs ? {
+        CLAUDE_CONFIG_DIR: join(claudeBaseDir, 'session'),
+        CLAUDE_CODE_TMPDIR: join(claudeBaseDir, 'tmp'),
+      } : {}),
     },
     resume: sessionId,
     maxTurns: 100,
