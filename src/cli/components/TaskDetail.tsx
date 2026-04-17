@@ -209,29 +209,20 @@ export function TaskDetail({ taskId, onBack, onEvent, onConnect }: TaskDetailPro
       }, 50);
       return;
     } else if (key.tab) {
-      // Tab cycles through: input → visible pending approvals → input
-      // Only considers approvals currently visible in the viewport
-      const ref = scrollRef.current;
-      const scrollOffset = ref?.getScrollOffset() ?? 0;
-      const visibleStart = scrollOffset;
-      const visibleEnd = scrollOffset + logHeight;
-      const visiblePending = pendingApprovalLines.filter(
-        (line) => line >= visibleStart && line < visibleEnd,
-      );
-
+      // Tab cycles through: input → pending approvals → input
       if (inputActive) {
-        if (visiblePending.length > 0) {
+        if (pendingApprovalLines.length > 0) {
           setInputActive(false);
-          setFocusedApprovalLine(visiblePending[0]);
+          setFocusedApprovalLine(pendingApprovalLines[0]);
         } else {
           setInputActive(false);
           setFocusedApprovalLine(null);
         }
       } else if (focusedApprovalLine !== null) {
-        const currentIdx = visiblePending.indexOf(focusedApprovalLine);
+        const currentIdx = pendingApprovalLines.indexOf(focusedApprovalLine);
         const nextIdx = currentIdx + 1;
-        if (nextIdx < visiblePending.length) {
-          setFocusedApprovalLine(visiblePending[nextIdx]);
+        if (nextIdx < pendingApprovalLines.length) {
+          setFocusedApprovalLine(pendingApprovalLines[nextIdx]);
         } else {
           setInputActive(true);
           setFocusedApprovalLine(null);
