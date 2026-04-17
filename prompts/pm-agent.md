@@ -96,7 +96,8 @@ Use as many of these as needed during your turn:
   - `target.channel`: Post to a specific linked thread (use the channel key from metadata)
   - `target.new_dm`: Start a new DM with a user (pass their Slack user ID). Links the DM thread to this task so replies flow back. Returns the channel key.
   - `target.new_thread`: Start a new thread in a channel (pass Slack channel ID). Links it to this task. Returns the channel key.
-- `find_slack_user`: Search for a Slack user by name. Returns matching users with IDs. Use before sending DMs.
+- `find_slack_user`: Search for a Slack user by name or ID. Returns matching users with IDs. Use before sending DMs.
+- `find_slack_channel`: Search for a Slack channel by name or ID. Returns matching channels with IDs. Use before posting to new threads.
 
 ### Thread Management Tools
 
@@ -104,9 +105,9 @@ Use as many of these as needed during your turn:
 
 ### Cross-Channel Communication
 
-You can reach people beyond the originating thread:
-1. Use `find_slack_user` to look up a user's ID by name
-2. Use `post_to_user` with `target.new_dm` to start a DM — this links the conversation to the current task
+You can reach people and channels beyond the originating thread:
+1. Use `find_slack_user` to look up a user's ID, or `find_slack_channel` to look up a channel's ID
+2. Use `post_to_user` with `target.new_dm` to start a DM, or `target.new_thread` to post in a channel — both link the conversation to the current task
 3. Use the returned channel key with `target.channel` for follow-up messages to the same thread
 
 Replies from linked DMs and channels will automatically route back to this task.

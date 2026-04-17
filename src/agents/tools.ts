@@ -22,7 +22,7 @@ import { gitExec } from '../connectors/github/repo-clone.js';
 import { mirrorLegacyFields, hydrateBranchState, findBranchStateByPR } from '../connectors/github/branch-state.js';
 import { appendAgentFinding } from '../tasks/persistence.js';
 import { logger } from '../system/logger.js';
-import { findSlackUsers } from '../connectors/slack/client.js';
+import { findSlackUsers, findSlackChannels } from '../connectors/slack/client.js';
 
 // Re-export branch state helpers for consumers that import from tools.ts
 export { mirrorLegacyFields, hydrateBranchState, findBranchStateByPR };
@@ -168,6 +168,28 @@ function createFindSlackUserTool(_agent: Agent, _task: Task) {
         return `- ${parts.join('\n')}`;
       }).join('\n');
       return ok(`Found ${matches.length} user(s):\n${list}`);
+    },
+  );
+}
+
+function createFindSlackChannelTool(_agent: Agent, _task: Task) {
+  return tool(
+    'find_slack_channel',
+    'Find a Slack channel by name or ID. Returns matching channels with their details. Use this to find channel IDs before posting to new threads.',
+    {
+      query: z.string().describe('Channel ID (e.g., "C1234567"), or channel name/part of name to search for (with or without #)'),
+    },
+    async (args) => {
+      const matches = await findSlackChannels(args.query);
+      if (matches.length === 0) return ok('No channels found matching that query.');
+      const list = matches.slice(0, 10).map(ch => {
+        const parts = [`#${ch.name} — ID: ${ch.id} (${ch.memberCount} members)`];
+        if (ch.topic) parts.push(`  Topic: ${ch.topic}`);
+        if (ch.purpose) parts.push(`  Purpose: ${ch.purpose}`);
+        if (ch.isPrivate) parts.push(`  Private channel`);
+        return `- ${parts.join('\n')}`;
+      }).join('\n');
+      return ok(`Found ${matches.length} channel(s):\n${list}`);
     },
   );
 }
@@ -785,6 +807,7 @@ export function createPMAgentMcpServer(agent: Agent, task: Task) {
       createSendMessageTool(agent, task),
       createPostToUserTool(agent, task),
       createFindSlackUserTool(agent, task),
+      createFindSlackChannelTool(agent, task),
       createAssignTaskOwnerTool(agent, task),
       createReportCompletionTool(agent, task),
       createRequestEditModeTool(agent, task),

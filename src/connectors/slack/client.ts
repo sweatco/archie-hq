@@ -935,6 +935,86 @@ export async function findSlackUsers(query: string): Promise<SlackUserInfo[]> {
 }
 
 // ============================================================================
+// Channel Lookup
+// ============================================================================
+
+export interface SlackChannelInfo {
+  id: string;
+  name: string;
+  topic: string;
+  purpose: string;
+  memberCount: number;
+  isPrivate: boolean;
+  isArchived: boolean;
+}
+
+let channelCache: SlackChannelInfo[] = [];
+let channelCacheTimestamp = 0;
+
+/**
+ * List all workspace channels the bot can see (cached, refreshed every 10 minutes).
+ * Filters out archived channels.
+ */
+export async function listWorkspaceChannels(): Promise<SlackChannelInfo[]> {
+  if (channelCache.length > 0 && Date.now() - channelCacheTimestamp < USER_CACHE_TTL) {
+    return channelCache;
+  }
+
+  const client = getSlackClient();
+  const channels: SlackChannelInfo[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const result = await client.conversations.list({
+      cursor,
+      limit: 200,
+      exclude_archived: true,
+      types: 'public_channel,private_channel',
+    });
+    for (const ch of result.channels ?? []) {
+      channels.push({
+        id: ch.id!,
+        name: ch.name ?? ch.id!,
+        topic: (ch.topic as { value?: string })?.value ?? '',
+        purpose: (ch.purpose as { value?: string })?.value ?? '',
+        memberCount: ch.num_members ?? 0,
+        isPrivate: ch.is_private ?? false,
+        isArchived: ch.is_archived ?? false,
+      });
+    }
+    cursor = result.response_metadata?.next_cursor || undefined;
+  } while (cursor);
+
+  channelCache = channels;
+  channelCacheTimestamp = Date.now();
+  logger.slack(`Cached ${channels.length} workspace channels`);
+  return channels;
+}
+
+/**
+ * Find Slack channels by ID or name.
+ * - If query looks like a Slack channel ID (starts with C), returns exact match
+ * - Otherwise, case-insensitive substring match against name, topic, purpose
+ */
+export async function findSlackChannels(query: string): Promise<SlackChannelInfo[]> {
+  const channels = await listWorkspaceChannels();
+
+  // Exact ID match
+  if (/^C[A-Z0-9]+$/.test(query)) {
+    const ch = channels.find(c => c.id === query);
+    return ch ? [ch] : [];
+  }
+
+  // Name search (strip leading # if present)
+  const q = query.replace(/^#/, '').toLowerCase();
+  return channels.filter(c =>
+    c.name.toLowerCase().includes(q) ||
+    c.topic.toLowerCase().includes(q) ||
+    c.purpose.toLowerCase().includes(q)
+  );
+}
+
+// ============================================================================
 // DM & Channel Messaging
 // ============================================================================
 

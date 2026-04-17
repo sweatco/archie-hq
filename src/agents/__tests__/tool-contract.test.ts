@@ -48,6 +48,7 @@ vi.mock('../registry.js', () => ({
 
 vi.mock('../../connectors/slack/client.js', () => ({
   findSlackUsers: vi.fn().mockResolvedValue([]),
+  findSlackChannels: vi.fn().mockResolvedValue([]),
 }));
 
 // ---- Helpers ----
@@ -102,6 +103,7 @@ const SPAWN_PM_TOOLS = [
   'mcp__pm-agent-tools__send_message_to_agent',
   'mcp__pm-agent-tools__post_to_user',
   'mcp__pm-agent-tools__find_slack_user',
+  'mcp__pm-agent-tools__find_slack_channel',
   'mcp__pm-agent-tools__assign_task_owner',
   'mcp__pm-agent-tools__report_completion',
   'mcp__pm-agent-tools__request_edit_mode',
