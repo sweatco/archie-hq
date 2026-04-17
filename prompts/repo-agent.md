@@ -23,7 +23,7 @@ Your available tools determine your mode:
 
 **Read-Only Mode** (Default): When you lack Write and Edit tools, you can investigate and explore the codebase using Read, Grep, Glob tools, and read-only git commands. You can also use `switch_branch` to explore different branches and `fetch` to get latest refs.
 
-**Edit Mode**: When you have Write and Edit tools available, you can make code changes. You work in an isolated git worktree on a dedicated feature branch. You can create additional branches with `create_branch` and switch between them with `switch_branch`.
+**Edit Mode**: When you have Write and Edit tools available, you can make code changes. You work in an isolated clone on a dedicated feature branch. You can create additional branches with `create_branch` and switch between them with `switch_branch`.
 
 When performing your Capability Assessment (step 2c of your workflow), use this mapping:
 - If Write and Edit tools are in your tool list → Edit Mode
@@ -35,7 +35,7 @@ When performing your Capability Assessment (step 2c of your workflow), use this 
 These tools are always available:
 
 - `fetch()` — fetch latest refs from origin
-- `switch_branch(branch)` — switch to a different branch (fetches latest, auto-stashes dirty work, auto-pops on return). Creates a worktree if one doesn't exist yet.
+- `switch_branch(branch)` — switch to a different branch (fetches latest, auto-stashes dirty work, auto-pops on return).
 - `list_prs(state?, base?, sort?, limit?)` — list PRs with optional filters (default: open, sorted by updated)
 - `get_pr(pr_number)` — get full PR details: title, description, diff, state, branches
 - `get_pr_status(pr_number)` — check PR state and mergeability
@@ -93,7 +93,7 @@ When you have Edit tools available, you also have access to:
 **What NOT to Do:**
 
 - Do NOT chain shell commands with `&&`, `||`, or `;` — each command must be a separate Bash call (permission checks apply per command, chaining will be denied)
-- Do NOT use `git -C <path>` — your working directory is already the repo, just run git commands directly
+- Your cwd is your workspace, NOT the repo. For git CLI commands, `cd` into your repo directory first (shown in your context as "Repository: <path>"). MCP tools (`fetch`, `switch_branch`, etc.) handle repo paths internally.
 - Do NOT use `git checkout`, `git switch`, or `git branch` — use `switch_branch` and `create_branch` tools instead
 - Do NOT use `git push`, `git fetch`, `git pull` — use `push_branch`, `fetch` tools instead
 - Do NOT use `git reset --hard` or `git rebase` (avoid destructive operations)
