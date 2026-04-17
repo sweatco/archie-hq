@@ -22,6 +22,7 @@ import { gitExec } from '../connectors/github/repo-clone.js';
 import { mirrorLegacyFields, hydrateBranchState, findBranchStateByPR } from '../connectors/github/branch-state.js';
 import { appendAgentFinding } from '../tasks/persistence.js';
 import { logger } from '../system/logger.js';
+import { findSlackUsers, findSlackChannels } from '../connectors/slack/client.js';
 
 // Re-export branch state helpers for consumers that import from tools.ts
 export { mirrorLegacyFields, hydrateBranchState, findBranchStateByPR };
@@ -124,16 +125,71 @@ function createLogFindingTool(agent: Agent, task: Task) {
 function createPostToUserTool(agent: Agent, task: Task) {
   return tool(
     'post_to_user',
-    'Send a message to the user. Routes to the originating channel (Slack thread, CLI, etc.). Write naturally, like a human PM.',
+    'Send a message to the user. Without target, posts to the default channel. ' +
+    'Use target.channel to post to a specific linked thread. ' +
+    'Use target.new_dm with a user ID to start a DM conversation (links it to this task). ' +
+    'Use target.new_thread with a channel ID to start a new thread in a channel (links it to this task). ' +
+    'When creating new DMs/threads, returns the channel key for future use.',
     {
-      message: z.string().describe('The message to send to the user'),
+      message: z.string().describe('The message to send'),
+      target: z.object({
+        channel: z.string().optional().describe('Channel key of an existing linked thread (e.g., "slack:C123:456.789")'),
+        new_dm: z.string().optional().describe('User ID to start a new DM conversation with'),
+        new_thread: z.string().optional().describe('Channel ID to start a new thread in'),
+      }).optional().describe('Where to post. Omit to post to the default channel.'),
     },
     async (args) => {
       const agentName = agent.def.id as AgentName;
-      logger.agentToSlack(agentName, args.message);
       task.touch();
-      await task.postToUser(args.message, agentName);
-      return { content: [{ type: 'text' as const, text: `Posted to user: ${args.message}` }] };
+      const newChannelKey = await task.postToUser(args.message, agentName, args.target);
+      if (newChannelKey) {
+        return ok(`Message posted. New channel linked: ${newChannelKey} (saved in task metadata for future use)`);
+      }
+      return ok('Message posted.');
+    },
+  );
+}
+
+function createFindSlackUserTool(_agent: Agent, _task: Task) {
+  return tool(
+    'find_slack_user',
+    'Find a Slack user by name or ID. Returns matching users with their details. Use this to find user IDs before sending DMs.',
+    {
+      query: z.string().describe('User ID (e.g., "U1234567") or name/part of name to search for'),
+    },
+    async (args) => {
+      const matches = await findSlackUsers(args.query);
+      if (matches.length === 0) return ok('No users found matching that query.');
+      const list = matches.slice(0, 10).map(u => {
+        const parts = [`${u.realName} (@${u.name}) — ID: ${u.id}`];
+        if (u.title) parts.push(`  Title: ${u.title}`);
+        if (u.timezone) parts.push(`  Timezone: ${u.timezone}`);
+        if (u.displayName && u.displayName !== u.realName) parts.push(`  Display name: ${u.displayName}`);
+        return `- ${parts.join('\n')}`;
+      }).join('\n');
+      return ok(`Found ${matches.length} user(s):\n${list}`);
+    },
+  );
+}
+
+function createFindSlackChannelTool(_agent: Agent, _task: Task) {
+  return tool(
+    'find_slack_channel',
+    'Find a Slack channel by name or ID. Returns matching channels with their details. Use this to find channel IDs before posting to new threads.',
+    {
+      query: z.string().describe('Channel ID (e.g., "C1234567"), or channel name/part of name to search for (with or without #)'),
+    },
+    async (args) => {
+      const matches = await findSlackChannels(args.query);
+      if (matches.length === 0) return ok('No channels found matching that query.');
+      const list = matches.slice(0, 10).map(ch => {
+        const parts = [`#${ch.name} — ID: ${ch.id} (${ch.memberCount} members)`];
+        if (ch.topic) parts.push(`  Topic: ${ch.topic}`);
+        if (ch.purpose) parts.push(`  Purpose: ${ch.purpose}`);
+        if (ch.isPrivate) parts.push(`  Private channel`);
+        return `- ${parts.join('\n')}`;
+      }).join('\n');
+      return ok(`Found ${matches.length} channel(s):\n${list}`);
     },
   );
 }
@@ -222,7 +278,6 @@ function createReportCompletionTool(agent: Agent, task: Task) {
     async (args) => {
       const agentName = agent.def.id as AgentName;
       if (args.message) {
-        logger.agentToSlack(agentName, args.message);
         await task.postToUser(args.message, agentName);
       }
       logger.agentAction(agentName, 'Reporting completion', '');
@@ -751,6 +806,8 @@ export function createPMAgentMcpServer(agent: Agent, task: Task) {
     tools: [
       createSendMessageTool(agent, task),
       createPostToUserTool(agent, task),
+      createFindSlackUserTool(agent, task),
+      createFindSlackChannelTool(agent, task),
       createAssignTaskOwnerTool(agent, task),
       createReportCompletionTool(agent, task),
       createRequestEditModeTool(agent, task),

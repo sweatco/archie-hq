@@ -20,6 +20,7 @@ import {
   fetchSlackThread,
   getBotId,
   addReaction,
+  removeReaction,
   setSlackDryRun,
 } from './client.js';
 import { Task } from '../../tasks/task.js';
@@ -278,8 +279,18 @@ async function handleSlackEvent(event: {
 }): Promise<void> {
   const threadId = event.thread_ts || event.ts;
 
-  // Instant acknowledgment — react before any LLM processing
+  // Instant acknowledgment — react before any LLM processing.
+  // Remove eyes from the previous message first (only one message should have eyes at a time).
   if (event.type === 'app_mention' || event.channel.startsWith('D')) {
+    const prevTaskId = await findTaskByThread(threadId);
+    if (prevTaskId) {
+      const prevTask = await Task.get(prevTaskId);
+      const chKey = `slack:${event.channel}:${threadId}`;
+      const prevCh = prevTask.metadata.channels[chKey];
+      if (prevCh?.type === 'slack' && prevCh.last_processed_ts !== event.ts) {
+        removeReaction(event.channel, prevCh.last_processed_ts, 'eyes');
+      }
+    }
     addReaction(event.channel, event.ts, 'eyes');
   }
 

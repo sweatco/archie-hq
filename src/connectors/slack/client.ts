@@ -834,3 +834,219 @@ export async function fetchSlackThread(
     currentMessageTs,
   };
 }
+
+// ============================================================================
+// Channel Formatting
+// ============================================================================
+
+/**
+ * Format a Slack channel reference for logs (includes IDs).
+ * e.g., "slack:#<C123:bot-test>:threadTs"
+ */
+export function formatSlackChannelRef(channelId: string, channelName: string, threadId: string): string {
+  return `slack:#<${channelId}:${channelName}>:${threadId}`;
+}
+
+/**
+ * Format a Slack channel for human-readable display.
+ * e.g., "#bot-test"
+ */
+export function formatSlackChannelDisplay(channelName: string): string {
+  return `#${channelName}`;
+}
+
+// ============================================================================
+// User Lookup
+// ============================================================================
+
+export interface SlackUserInfo {
+  id: string;
+  name: string;          // @handle
+  realName: string;      // Full name
+  displayName: string;   // Display name (may differ from realName)
+  title: string;         // Job title (e.g., "Senior Engineer")
+  timezone: string;      // Timezone label (e.g., "Eastern Time (US & Canada)")
+  isAdmin: boolean;      // Workspace admin
+  isOwner: boolean;      // Workspace owner
+}
+
+let userCache: SlackUserInfo[] = [];
+let userCacheTimestamp = 0;
+const USER_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * List all workspace users (cached, refreshed every 10 minutes).
+ * Filters out bots and deactivated accounts.
+ */
+export async function listWorkspaceUsers(): Promise<SlackUserInfo[]> {
+  if (userCache.length > 0 && Date.now() - userCacheTimestamp < USER_CACHE_TTL) {
+    return userCache;
+  }
+
+  const client = getSlackClient();
+  const users: SlackUserInfo[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const result = await client.users.list({ cursor, limit: 200 });
+    for (const member of result.members ?? []) {
+      if (member.deleted || member.is_bot || member.id === 'USLACKBOT') continue;
+      users.push({
+        id: member.id!,
+        name: member.name ?? member.id!,
+        realName: member.real_name ?? member.name ?? member.id!,
+        displayName: member.profile?.display_name || member.real_name || member.name || member.id!,
+        title: member.profile?.title ?? '',
+        timezone: member.tz_label ?? member.tz ?? '',
+        isAdmin: member.is_admin ?? false,
+        isOwner: member.is_owner ?? false,
+      });
+    }
+    cursor = result.response_metadata?.next_cursor || undefined;
+  } while (cursor);
+
+  userCache = users;
+  userCacheTimestamp = Date.now();
+  logger.slack(`Cached ${users.length} workspace users`);
+  return users;
+}
+
+/**
+ * Find Slack users by ID or name.
+ * - If query looks like a Slack user ID (starts with U), returns exact match
+ * - Otherwise, case-insensitive substring match against name, realName, displayName
+ */
+export async function findSlackUsers(query: string): Promise<SlackUserInfo[]> {
+  const users = await listWorkspaceUsers();
+
+  // Exact ID match
+  if (/^U[A-Z0-9]+$/.test(query)) {
+    const user = users.find(u => u.id === query);
+    return user ? [user] : [];
+  }
+
+  // Name search
+  const q = query.toLowerCase();
+  return users.filter(u =>
+    u.name.toLowerCase().includes(q) ||
+    u.realName.toLowerCase().includes(q) ||
+    u.displayName.toLowerCase().includes(q)
+  );
+}
+
+// ============================================================================
+// Channel Lookup
+// ============================================================================
+
+export interface SlackChannelInfo {
+  id: string;
+  name: string;
+  topic: string;
+  purpose: string;
+  memberCount: number;
+  isPrivate: boolean;
+  isArchived: boolean;
+}
+
+let channelCache: SlackChannelInfo[] = [];
+let channelCacheTimestamp = 0;
+
+/**
+ * List all workspace channels the bot can see (cached, refreshed every 10 minutes).
+ * Filters out archived channels.
+ */
+export async function listWorkspaceChannels(): Promise<SlackChannelInfo[]> {
+  if (channelCache.length > 0 && Date.now() - channelCacheTimestamp < USER_CACHE_TTL) {
+    return channelCache;
+  }
+
+  const client = getSlackClient();
+  const channels: SlackChannelInfo[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const result = await client.conversations.list({
+      cursor,
+      limit: 200,
+      exclude_archived: true,
+      types: 'public_channel,private_channel',
+    });
+    for (const ch of result.channels ?? []) {
+      channels.push({
+        id: ch.id!,
+        name: ch.name ?? ch.id!,
+        topic: (ch.topic as { value?: string })?.value ?? '',
+        purpose: (ch.purpose as { value?: string })?.value ?? '',
+        memberCount: ch.num_members ?? 0,
+        isPrivate: ch.is_private ?? false,
+        isArchived: ch.is_archived ?? false,
+      });
+    }
+    cursor = result.response_metadata?.next_cursor || undefined;
+  } while (cursor);
+
+  channelCache = channels;
+  channelCacheTimestamp = Date.now();
+  logger.slack(`Cached ${channels.length} workspace channels`);
+  return channels;
+}
+
+/**
+ * Find Slack channels by ID or name.
+ * - If query looks like a Slack channel ID (starts with C), returns exact match
+ * - Otherwise, case-insensitive substring match against name, topic, purpose
+ */
+export async function findSlackChannels(query: string): Promise<SlackChannelInfo[]> {
+  const channels = await listWorkspaceChannels();
+
+  // Exact ID match
+  if (/^C[A-Z0-9]+$/.test(query)) {
+    const ch = channels.find(c => c.id === query);
+    return ch ? [ch] : [];
+  }
+
+  // Name search (strip leading # if present)
+  const q = query.replace(/^#/, '').toLowerCase();
+  return channels.filter(c =>
+    c.name.toLowerCase().includes(q) ||
+    c.topic.toLowerCase().includes(q) ||
+    c.purpose.toLowerCase().includes(q)
+  );
+}
+
+// ============================================================================
+// DM & Channel Messaging
+// ============================================================================
+
+/**
+ * Open (or get existing) DM channel with a user.
+ * Returns the DM channel ID (e.g., "D1234567").
+ */
+export async function openDMChannel(userId: string): Promise<string> {
+  if (dryRun) {
+    logger.system(`[DRY RUN] openDMChannel for user ${userId}`);
+    return `D_DRYRUN_${userId}`;
+  }
+  const client = getSlackClient();
+  const result = await client.conversations.open({ users: userId });
+  return result.channel!.id!;
+}
+
+/**
+ * Post a top-level message to a channel (not in a thread).
+ * Creates a new thread — the returned ts becomes the thread_id for replies.
+ */
+export async function postNewMessage(channel: string, text: string): Promise<string | undefined> {
+  if (dryRun) {
+    logger.system(`[DRY RUN] postNewMessage ${channel} — ${text.slice(0, 120)}`);
+    return undefined;
+  }
+  const client = getSlackClient();
+  const slackText = slackifyMarkdown(restoreMentions(text));
+  const result = await client.chat.postMessage({
+    channel,
+    text: slackText,
+    mrkdwn: true,
+  });
+  return result.ts;
+}

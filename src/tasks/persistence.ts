@@ -15,6 +15,7 @@ import { activeTasks } from './task.js';
 import { SESSIONS_DIR } from '../system/workdir.js';
 import { emitEvent, onEvent } from '../system/event-bus.js';
 import { logger } from '../system/logger.js';
+import { formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
 
 /**
  * Generate a unique task ID with human-readable date format
@@ -183,7 +184,7 @@ export async function appendSlackMessage(
   files?: SlackFile[]
 ): Promise<void> {
   // Build message with optional file attachments
-  let fullMessage = `[@<${userInfo.id}:${userInfo.realName}>] ${message}`;
+  let fullMessage = message;
 
   if (files && files.length > 0) {
     const fileInfo = files.map(f => {
@@ -195,12 +196,12 @@ export async function appendSlackMessage(
 
   const entry: LogEntry = {
     timestamp: new Date().toISOString(),
-    source: `slack:#<${channelInfo.id}:${channelInfo.name}>:${threadId}`,
+    source: `@<${userInfo.id}:${userInfo.realName}> in ${formatSlackChannelRef(channelInfo.id, channelInfo.name, threadId)}`,
     message: fullMessage,
   };
 
   await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
-  emitEvent('message', taskId, { from: userInfo.realName, to: 'pm-agent', message });
+  emitEvent('message', taskId, { from: userInfo.realName, to: 'pm-agent', destination: formatSlackChannelDisplay(channelInfo.name), message });
 }
 
 /**
@@ -230,11 +231,13 @@ export async function appendMessageToUser(
   taskId: string,
   agentName: string,
   message: string,
+  destination?: string,
 ): Promise<void> {
+  const source = destination ? `${agentName} in ${destination}` : agentName;
   const entry: LogEntry = {
     timestamp: new Date().toISOString(),
-    source: agentName,
-    message: `@user ${message}`,
+    source,
+    message,
   };
   await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
 }
@@ -291,7 +294,7 @@ export async function appendCliMessage(
   };
 
   await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
-  emitEvent('message', taskId, { from: 'user', to: 'pm-agent', message });
+  emitEvent('message', taskId, { from: 'cli', to: 'pm-agent', message });
 }
 
 /**
