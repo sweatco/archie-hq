@@ -3,6 +3,13 @@ import { Box, Text, useInput, useStdout } from 'ink';
 import Spinner from 'ink-spinner';
 import { fetchTasks } from '../api.js';
 
+function formatDateTime(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleString('en-US', {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+}
+
 interface TaskSummary {
   task_id: string;
   status: string;
@@ -11,6 +18,7 @@ interface TaskSummary {
   created_at: string;
   updated_at: string;
   channel_name: string | null;
+  reminder: { trigger_at: string; reason: string } | null;
   agents?: { agentId: string; active: boolean }[];
 }
 
@@ -163,15 +171,18 @@ export function TaskList({ onSelect, onCreate, refreshTrigger, active }: TaskLis
           : 'cli';
 
         return (
-          <Box key={task.task_id} paddingX={1} gap={1}>
-            <Text color={selected ? 'cyan' : undefined} bold={selected}>
-              {selected ? '>' : ' '}
-            </Text>
-            <StatusIcon status={task.status} />
-            <Text color={selected ? 'cyan' : undefined} bold={selected}>
-              {task.task_id}
+          <Box key={task.task_id} paddingX={1}>
+            <Text wrap="truncate-end">
+              <Text color={selected ? 'cyan' : undefined} bold={selected}>
+                {selected ? '> ' : '  '}
+              </Text>
+              <StatusIcon status={task.status} />
+              <Text color={selected ? 'cyan' : undefined} bold={selected}>
+                {' '}{task.task_id}
+              </Text>
               <Text dimColor>  {channel}</Text>
               {activeAgents > 0 && <Text color="green">  {activeAgents} active</Text>}
+              {task.reminder && <Text color="magenta">  ⏰ {formatDateTime(task.reminder.trigger_at)} — {task.reminder.reason.length > 50 ? task.reminder.reason.slice(0, 50) + '…' : task.reminder.reason}</Text>}
             </Text>
           </Box>
         );

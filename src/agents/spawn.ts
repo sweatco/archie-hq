@@ -176,12 +176,18 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     const channelInfo = Object.entries(metadata.channels)
       .map(([id, ch]) => ch.type === 'slack' ? `#${ch.channel_name || ch.channel_id}` : id)
       .join(', ') || 'CLI (no Slack channel)';
+    const contextLines = [
+      `Task: ${taskId}`,
+      `Status: ${metadata.status}`,
+      `Channel(s): ${channelInfo}`,
+      `Task Owner: ${metadata.task_owner || 'Not assigned'}`,
+      `Participants: ${metadata.participants.join(', ') || 'None yet'}`,
+    ];
+    if (metadata.reminder) {
+      contextLines.push(`Reminder: ${metadata.reminder.trigger_at} — ${metadata.reminder.reason}`);
+    }
     const context = `
-Task: ${taskId}
-Status: ${metadata.status}
-Channel(s): ${channelInfo}
-Task Owner: ${metadata.task_owner || 'Not assigned'}
-Participants: ${metadata.participants.join(', ') || 'None yet'}
+${contextLines.join('\n')}
 
 Working directory (cwd): ${pmWorkspace} [READ-WRITE]
 

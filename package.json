@@ -26,6 +26,7 @@
     "@octokit/webhooks": "^14.2.0",
     "@slack/bolt": "^4.6.0",
     "@slack/web-api": "^7.0.0",
+    "chrono-node": "^2.9.0",
     "dotenv": "^16.3.0",
     "gray-matter": "^4.0.3",
     "ink": "^5.2.1",

@@ -21,6 +21,13 @@ function formatMessageParts(from: string, to: string, destination?: string): { l
   return { label, mention };
 }
 
+function formatDateTime(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleString('en-US', {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+}
+
 interface AgentStatus {
   agent: string;
   active: boolean;
@@ -66,6 +73,7 @@ export function TaskDetail({ taskId, onBack, onEvent, onConnect }: TaskDetailPro
   const [focusedApprovalLine, setFocusedApprovalLine] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string>('');
+  const [reminder, setReminder] = useState<{ trigger_at: string; reason: string } | null>(null);
   const prevOnEvent = useRef<SystemEvent | null>(null);
   const prevOnConnect = useRef<boolean | undefined>(undefined);
   const scrollRef = useRef<ScrollViewRef>(null);
@@ -115,6 +123,21 @@ export function TaskDetail({ taskId, onBack, onEvent, onConnect }: TaskDetailPro
             node: <Text>{event.data.approve ? '✅' : '❌'} Approval {event.data.approve ? 'granted' : 'denied'}: {event.data.type as string}</Text>,
           });
           break;
+        case 'reminder:set':
+          logLines.push({
+            node: <Text color="magenta">⏰ Reminder set for {formatDateTime(event.data.trigger_at as string)} — {event.data.reason as string}</Text>,
+          });
+          break;
+        case 'reminder:cancelled':
+          logLines.push({
+            node: <Text dimColor>⏰ Reminder cancelled</Text>,
+          });
+          break;
+        case 'reminder:fired':
+          logLines.push({
+            node: <Text color="magenta">⏰ Reminder fired — {event.data.reason as string}</Text>,
+          });
+          break;
         default:
           break;
       }
@@ -143,6 +166,7 @@ export function TaskDetail({ taskId, onBack, onEvent, onConnect }: TaskDetailPro
         fetchTaskEvents(taskId),
       ]);
       setStatus(detail.metadata?.status || '');
+      setReminder(detail.metadata?.reminder ?? null);
       setAgents(detail.agents || []);
       setEvents(eventsResult.events);
       setEventCursor(eventsResult.total);
@@ -189,6 +213,14 @@ export function TaskDetail({ taskId, onBack, onEvent, onConnect }: TaskDetailPro
       if (onEvent.type === 'task:resumed') setStatus('in_progress');
       if (onEvent.type === 'task:completed') setStatus('completed');
       if (onEvent.type === 'task:stopped') setStatus('stopped');
+
+      // Update reminder from reminder events
+      if (onEvent.type === 'reminder:set') {
+        setReminder({ trigger_at: onEvent.data.trigger_at as string, reason: onEvent.data.reason as string });
+      }
+      if (onEvent.type === 'reminder:cancelled' || onEvent.type === 'reminder:fired') {
+        setReminder(null);
+      }
 
       // Auto-scroll to bottom when new events arrive (if user hasn't scrolled up)
       if (autoScroll.current) {
@@ -312,10 +344,15 @@ export function TaskDetail({ taskId, onBack, onEvent, onConnect }: TaskDetailPro
     <Box flexDirection="column" height={termHeight}>
       {/* Header */}
       <Box paddingX={1}>
-        <Text bold>Task: {taskId}</Text>
-        <Text dimColor>  status: </Text>
-        <Text color={status === 'in_progress' ? 'yellow' : status === 'completed' ? 'green' : 'red'}>
-          {status}
+        <Text wrap="truncate-end">
+          <Text bold>Task: {taskId}</Text>
+          <Text dimColor>  status: </Text>
+          <Text color={status === 'in_progress' ? 'yellow' : status === 'completed' ? 'green' : 'red'}>
+            {status}
+          </Text>
+          {reminder && (
+            <Text color="magenta">  ⏰ {formatDateTime(reminder.trigger_at)}</Text>
+          )}
         </Text>
       </Box>
 

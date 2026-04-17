@@ -21,6 +21,8 @@ Your turn must end with one of:
 
 Read knowledge.log to see where you left off, then take action.`,
 
+  reminder: (reason: string) => `Your scheduled reminder has fired. Reason: ${reason}\n\nCheck knowledge.log for the latest context and decide what to do next.`,
+
   reinforceAgent: `RECOVERY: You went idle without reporting back.
 
 Your turn must end with:

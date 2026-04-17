@@ -23,6 +23,8 @@ import { mirrorLegacyFields, hydrateBranchState, findBranchStateByPR } from '../
 import { appendAgentFinding } from '../tasks/persistence.js';
 import { logger } from '../system/logger.js';
 import { findSlackUsers, findSlackChannels } from '../connectors/slack/client.js';
+import { scheduleReminder, cancelReminder } from '../system/reminder-scheduler.js';
+import * as chrono from 'chrono-node';
 
 // Re-export branch state helpers for consumers that import from tools.ts
 export { mirrorLegacyFields, hydrateBranchState, findBranchStateByPR };
@@ -794,6 +796,80 @@ function createListBranchesTool(agent: Agent, task: Task) {
   );
 }
 
+// ---- Reminder tools ----
+
+function createParseDatetimeTool(agent: Agent, task: Task) {
+  return tool(
+    'parse_datetime',
+    'Parse a natural language date/time expression into an ISO 8601 timestamp. Call this before set_reminder to get the correct datetime value. You must provide the timezone of the person the reminder relates to.',
+    {
+      expression: z.string().describe('Natural language date/time, e.g. "in 2 hours", "tomorrow at 10am", "next Monday at 9am"'),
+      timezone: z.string().describe('IANA timezone, e.g. "Europe/Moscow", "America/New_York", "UTC"'),
+    },
+    async (args) => {
+      const tz = args.timezone;
+      const refDate = new Date();
+      const results = chrono.parse(args.expression, { instant: refDate, timezone: tz });
+      if (results.length === 0) {
+        return { content: [{ type: 'text' as const, text: `Could not parse "${args.expression}". Try a different format like "in 2 hours", "tomorrow at 10am", or "next Monday at 9am".` }] };
+      }
+      const parsed = results[0].start.date();
+      return { content: [{ type: 'text' as const, text: parsed.toISOString() }] };
+    },
+  );
+}
+
+function createSetReminderTool(agent: Agent, task: Task) {
+  return tool(
+    'set_reminder',
+    'Set a reminder to be woken up at the specified time. The task will be reactivated and you will receive a prompt with the reason. Only one reminder can be pending — calling this replaces any existing reminder. Use parse_datetime first to get the correct ISO 8601 value.',
+    {
+      datetime: z.string().describe('ISO 8601 datetime, e.g. "2026-04-15T10:00:00Z"'),
+      reason: z.string().describe('What to do when woken — this will be shown to you'),
+    },
+    async (args) => {
+      const triggerAt = new Date(args.datetime);
+      if (isNaN(triggerAt.getTime())) {
+        return { content: [{ type: 'text' as const, text: 'Invalid datetime. Use parse_datetime to get a valid ISO 8601 value.' }] };
+      }
+      if (triggerAt <= new Date()) {
+        return { content: [{ type: 'text' as const, text: 'Datetime must be in the future.' }] };
+      }
+      const maxFuture = new Date(Date.now() + 30 * 24 * 60 * 60_000);
+      if (triggerAt > maxFuture) {
+        return { content: [{ type: 'text' as const, text: 'Datetime must be within 30 days.' }] };
+      }
+
+      const agentName = agent.def.id as AgentName;
+      scheduleReminder(task, triggerAt, args.reason);
+      logger.agentAction(agentName, 'Setting reminder', `${triggerAt.toISOString()}: ${args.reason}`);
+
+      return { content: [{ type: 'text' as const, text: `Reminder set for ${args.datetime}. Reason: ${args.reason}` }] };
+    },
+  );
+}
+
+function createCancelReminderTool(agent: Agent, task: Task) {
+  return tool(
+    'cancel_reminder',
+    'Cancel the pending reminder for this task. Use when the reason for the reminder is no longer relevant.',
+    {},
+    async () => {
+      if (!task.metadata.reminder) {
+        return { content: [{ type: 'text' as const, text: 'No pending reminder to cancel.' }] };
+      }
+
+      const agentName = agent.def.id as AgentName;
+      cancelReminder(task);
+
+      await appendAgentFinding(task.taskId, agentName, 'Cancelled scheduled reminder', 'decision');
+      logger.agentAction(agentName, 'Cancelled reminder', '');
+
+      return { content: [{ type: 'text' as const, text: 'Reminder cancelled.' }] };
+    },
+  );
+}
+
 // ---- MCP Server creation ----
 
 /**
@@ -813,6 +889,9 @@ export function createPMAgentMcpServer(agent: Agent, task: Task) {
       createRequestEditModeTool(agent, task),
       createGetAgentsStatusTool(agent, task),
       createMuteThreadTool(agent, task),
+      createParseDatetimeTool(agent, task),
+      createSetReminderTool(agent, task),
+      createCancelReminderTool(agent, task),
     ],
   });
 }

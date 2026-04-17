@@ -26,6 +26,7 @@ import { initRegistry, getAllAgentDefs } from './agents/registry.js';
 import { configureGitIdentity } from './connectors/github/client.js';
 import { recoverActiveTasks } from './tasks/recovery.js';
 import { initEventPersistence } from './tasks/persistence.js';
+import { initReminderScheduler } from './system/reminder-scheduler.js';
 
 /**
  * Application configuration
@@ -177,6 +178,7 @@ async function main(): Promise<void> {
     logger.plain(`Archie server is running on port ${config.port}\n`);
 
     await recoverActiveTasks();
+    await initReminderScheduler();
 
     // Graceful shutdown
     const shutdown = async (signal: string) => {

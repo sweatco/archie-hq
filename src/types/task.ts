@@ -109,6 +109,10 @@ export interface TaskMetadata {
   research_budget_extra?: number;    // Additional research budget granted via Slack approval (+5 per approval)
   research_request_count?: number;   // Persisted research request count (survives stop/reactivate)
   failure_counter?: number;          // Consecutive recovery attempts (Stage 3 idle detection)
+  reminder?: {                       // Pending self-scheduled reminder (set by agent via set_reminder tool)
+    trigger_at: string;              // ISO 8601 datetime when the task should be reactivated
+    reason: string;                  // Why — shown to agent when woken
+  };
   created_at: string;
   updated_at: string;
 }

@@ -649,7 +649,7 @@ export async function fetchNewMessages(
 /**
  * Get user info
  */
-export async function getUserInfo(userId: string): Promise<{ name: string; realName: string }> {
+export async function getUserInfo(userId: string): Promise<{ name: string; realName: string; tz?: string }> {
   const client = getSlackClient();
 
   const result = await client.users.info({ user: userId });
@@ -657,6 +657,7 @@ export async function getUserInfo(userId: string): Promise<{ name: string; realN
   return {
     name: result.user?.name || userId,
     realName: result.user?.real_name || userId,
+    tz: (result.user as Record<string, unknown>)?.tz as string | undefined,
   };
 }
 

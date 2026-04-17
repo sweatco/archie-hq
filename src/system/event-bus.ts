@@ -11,7 +11,8 @@ export type EventType =
   | 'task:created' | 'task:resumed' | 'task:stopped' | 'task:completed'
   | 'agent:active' | 'agent:inactive'
   | 'message' | 'agent:log'
-  | 'approval:requested' | 'approval:resolved';
+  | 'approval:requested' | 'approval:resolved'
+  | 'reminder:set' | 'reminder:cancelled' | 'reminder:fired';
 
 export interface SystemEvent {
   type: EventType;
