@@ -15,13 +15,19 @@ Examples of what to extract:
 - "Sarah wants bullet-point summaries for marketing reviews"
 - "Hattie provides structured briefs with all challenge parameters upfront"
 
+Examples of what NOT to extract (these are task-specific, not reusable):
+- "GitHub token for account 'hardworker' is expired" (temporary state, will be fixed)
+- "Task failed because credentials were missing" (debugging detail, not org knowledge)
+- "Challenge runs from March 18-31 with 80K step goal" (specific to one task)
+- Error messages, workarounds for temporary issues, or configuration problems from a single session
+
 Rules:
-- Only extract things useful in FUTURE tasks (not task-specific details like dates or step goals)
+- Only extract DURABLE facts useful in 3+ future tasks — not temporary states, error messages, or session-specific troubleshooting details
 - If something contradicts existing knowledge, use "update" action to replace the old entry
-- If nothing worth remembering, return empty arrays
+- If nothing worth remembering, return empty arrays — most tasks produce 0-2 learnings. Err on the side of extracting less.
 - Be concise — one line per fact
 - Default ambiguous items to USER level (not org)
-- Identify users by their first name (lowercase) from the Slack mentions in the log
+- Identify users by their first name (lowercase) from the Slack mentions in the log (format: [@<UID:FirstName LastName>])
 
 Current organizational knowledge:
 <org_memory>

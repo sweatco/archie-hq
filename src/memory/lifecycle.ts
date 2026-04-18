@@ -101,7 +101,7 @@ async function processExtraction(taskId: string): Promise<void> {
   await writeFile(summaryPath, summaryContent, 'utf-8');
 
   // i. Append to recent activity, then trim
-  const requestingUser = extractRequestingUser(transcript);
+  const requestingUser = extractRequestingUser(transcript) || 'cli';
   await appendActivity({
     date: metadata.created_at.split('T')[0],
     taskId,
