@@ -2,8 +2,7 @@
  * Triage Agent
  *
  * Lightweight classifier using Haiku model.
- * Slack messages: classifies intent (new_task, existing_task, cancel_task, noop)
- * GitHub PR comments: classifies actionability (existing_task, noop)
+ * Slack messages: classifies intent (new_task, existing_task, cancel_task, noop).
  */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -161,80 +160,3 @@ export async function triageSlackMessage(
   };
 }
 
-// ============================================================================
-// GitHub PR Comment Triage
-// ============================================================================
-
-/**
- * GitHub PR comment for triage
- */
-export interface GitHubComment {
-  id: number;
-  user: string;
-  body: string;
-  createdAt: string;
-}
-
-/**
- * GitHub comment triage result - simpler than Slack (only existing_task or noop)
- */
-export interface GitHubCommentTriageResult {
-  action: "existing_task" | "noop";
-  confidence: "high" | "medium" | "low";
-  reasoning: string;
-}
-
-/**
- * GitHub comment triage schema - only existing_task or noop
- */
-const GitHubCommentTriageSchema = z.object({
-  action: z.enum(["existing_task", "noop"]),
-  confidence: z.enum(["high", "medium", "low"]),
-  reasoning: z.string(),
-});
-
-/**
- * Run the triage agent to classify a GitHub PR comment
- *
- * Determines if a PR comment requires PM attention or can be ignored.
- * - existing_task: Actionable feedback (change request, bug report, blocker, question)
- * - noop: Conversational (acknowledgment, thanks, simple confirmation)
- */
-export async function triageGitHubComment(
-  currentComment: GitHubComment,
-  commentHistory: GitHubComment[],
-  prNumber: number,
-  githubRepo: string
-): Promise<GitHubCommentTriageResult> {
-  const input = `
-GitHub PR Comment:
-- Repository: ${githubRepo}
-- PR Number: #${prNumber}
-- Comment Author: ${currentComment.user}
-
-Comment Thread History:
-${commentHistory.map((c) => `[${c.user}]: ${c.body}`).join("\n")}
-
-Current Comment:
-[${currentComment.user}]: ${currentComment.body}
-
-Classify this PR comment. Use:
-- "existing_task" if this comment requires action (change request, bug report, question needing answer, blocker, technical feedback)
-- "noop" if this comment is conversational (acknowledgment like "Done", "Thanks", "LGTM", simple confirmations, or resolved discussions)
-
-Respond with JSON only.`;
-
-  logger.system(`GitHub triage input for PR #${prNumber}:\n${input}`);
-
-  const result = await runTriage(
-    input,
-    GitHubCommentTriageSchema,
-    `github-pr-${prNumber}`
-  );
-
-  return {
-    action: result.action,
-    confidence: result.confidence,
-    reasoning: result.reasoning,
-  };
-}

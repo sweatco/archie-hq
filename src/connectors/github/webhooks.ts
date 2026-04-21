@@ -83,6 +83,7 @@ export function formatGitHubContext(
     const comment = payload.comment as Record<string, unknown> | undefined;
     context.prNumber = pullRequest?.number as number | undefined;
     context.body = comment?.body as string | undefined;
+    context.commentId = comment?.id as number | undefined;
     context.branch = (pullRequest?.head as Record<string, unknown>)?.ref as string | undefined;
   } else if (eventType === 'pull_request') {
     context.prNumber = pullRequest?.number as number | undefined;
@@ -149,39 +150,55 @@ export function extractTaskIdFromBranch(branch: string | undefined): string | un
 // ============================================================================
 
 /**
- * Format a GitHub event for the knowledge log
+ * Structured GitHub event for the knowledge log and CLI rendering.
+ * Mirrors the shape Slack and CLI emit so the CLI renders GitHub events
+ * uniformly: `[from in destination] @pm-agent message`.
  */
-export function formatGitHubEventMessage(context: GitHubEventContext): string {
-  const { eventType, action, user, prNumber, body, state } = context;
+export interface FormattedGitHubEvent {
+  from: string;
+  destination: string;
+  message: string;
+}
+
+/**
+ * Format a GitHub event into the structured Slack/CLI-compatible shape.
+ */
+export function formatGitHubEvent(context: GitHubEventContext): FormattedGitHubEvent {
+  const { eventType, action, user, prNumber, body, state, commentId } = context;
+  const prDest = prNumber ? `PR #${prNumber}` : 'PR';
+  const branchDest = `branch:${context.branch || 'unknown'}`;
+  const cidTag = commentId ? ` [comment_id=${commentId}]` : '';
 
   switch (eventType) {
     case 'pull_request_review':
       if (state === 'approved') {
-        return `PR #${prNumber} approved by ${user}`;
+        return { from: user, destination: prDest, message: 'approved' };
       } else if (state === 'changes_requested') {
-        return `PR #${prNumber}: ${user} requested changes${body ? `: ${body}` : ''}`;
+        return { from: user, destination: prDest, message: body ? `requested changes: ${body}` : 'requested changes' };
       } else {
-        return `PR #${prNumber}: ${user} commented${body ? `: ${body}` : ''}`;
+        return { from: user, destination: prDest, message: body ? `commented: ${body}` : 'commented' };
       }
 
     case 'pull_request_review_comment':
-      return `PR #${prNumber}: ${user} commented on code${body ? `: ${body}` : ''}`;
+      return { from: user, destination: prDest, message: body ? `commented on code${cidTag}: ${body}` : `commented on code${cidTag}` };
+
+    case 'issue_comment':
+      return { from: user, destination: prDest, message: body ? `${body}${cidTag}` : `(empty)${cidTag}` };
 
     case 'pull_request':
       if (action === 'closed') {
-        return `PR #${prNumber} ${state === 'merged' ? 'merged' : 'closed'} by ${user}`;
+        return { from: user, destination: prDest, message: state === 'merged' ? 'merged' : 'closed' };
       }
-      return `PR #${prNumber}: ${action} by ${user}`;
+      return { from: user, destination: prDest, message: action };
 
     case 'push':
-      return `Push to ${context.branch || 'branch'} by ${user}`;
+      return { from: user, destination: branchDest, message: 'pushed' };
 
     case 'workflow_run':
-      const conclusion = state || 'completed';
-      return `CI workflow ${conclusion} for ${context.branch || 'branch'}`;
+      return { from: 'ci', destination: branchDest, message: `workflow ${state || 'completed'}` };
 
     default:
-      return `GitHub event: ${eventType}/${action} by ${user}`;
+      return { from: user, destination: prDest, message: `${eventType}/${action}` };
   }
 }
 
@@ -228,13 +245,12 @@ export function handleMergeCheckDirect(taskId: string): void {
  */
 export type GitHubRouteResult =
   | { action: 'discard'; reason: string }
-  | { action: 'triage'; taskId: string }
   | { action: 'direct'; handler: 'merge_check' | 'existing_task'; taskId: string };
 
 /**
  * Internal route action
  */
-type InternalRouteAction = 'merge_check' | 'existing_task' | 'triage_comment' | 'noop';
+type InternalRouteAction = 'merge_check' | 'existing_task' | 'noop';
 
 /**
  * Deterministic routing based on event type
@@ -254,10 +270,10 @@ function determineRouteAction(context: GitHubEventContext): InternalRouteAction 
 
     case 'issue_comment':
       if (action !== 'created') return 'noop';
-      return 'triage_comment';
+      return 'existing_task';
 
     case 'pull_request':
-      if (action === 'closed') return 'noop';
+      if (action === 'closed') return 'existing_task';
       if (action === 'opened' || action === 'synchronize') return 'merge_check';
       return 'noop';
 
@@ -289,8 +305,8 @@ function getGitHubAppBotUsername(): string | null {
  *
  * Determines:
  * 1. If event should be discarded (not our branch, no task found, or our own bot)
- * 2. If event needs triage (issue_comment - to filter conversational noise)
- * 3. If event can be handled directly (approval, push, CI - deterministic)
+ * 2. If event routes to a merge check (approval, push, CI success)
+ * 3. If event routes to the existing-task handler (comments, reviews, CI failure, PR closed/merged)
  */
 export async function routeGitHubEvent(
   eventType: string,
@@ -328,16 +344,10 @@ export async function routeGitHubEvent(
   const routeAction = determineRouteAction(context);
 
   switch (routeAction) {
-    case 'triage_comment':
-      // issue_comment needs triage to filter conversational noise
-      return { action: 'triage', taskId };
-
     case 'existing_task':
-      // Deterministic routing to existing task handler
       return { action: 'direct', handler: 'existing_task', taskId };
 
     case 'merge_check':
-      // Deterministic routing to merge check
       return { action: 'direct', handler: 'merge_check', taskId };
 
     case 'noop':
