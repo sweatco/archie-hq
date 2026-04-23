@@ -369,6 +369,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
             'mcp__repo-tools__update_pr',
             'mcp__repo-tools__add_pr_comment',
             'mcp__repo-tools__add_review_comment',
+            'mcp__repo-tools__reply_to_review_comment',
             'mcp__repo-tools__resolve_review_thread',
             'mcp__repo-tools__request_re_review',
             'mcp__repo-tools__merge_pull_request',

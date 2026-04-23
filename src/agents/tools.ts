@@ -61,19 +61,37 @@ export interface PRStatus {
   approved: boolean;
 }
 
-export interface PRReviewComment {
-  path: string;
-  line: number;
-  body: string;
-  threadId: string;
-}
-
 export interface PRReview {
   id: string;
   user: string;
   state: 'approved' | 'changes_requested' | 'commented';
   body: string;
-  comments: PRReviewComment[];
+  submittedAt: string;
+}
+
+export interface ReviewThreadComment {
+  commentId: number;
+  author: string;
+  body: string;
+  createdAt: string;
+  url: string;
+}
+
+export interface ReviewThread {
+  threadId: string;
+  isResolved: boolean;
+  isOutdated: boolean;
+  path: string;
+  line: number | null;
+  comments: ReviewThreadComment[];
+}
+
+export interface PRComment {
+  id: number;
+  author: string;
+  body: string;
+  createdAt: string;
+  url: string;
 }
 
 // ---- Tool creation helpers ----
@@ -279,18 +297,26 @@ function createReportCompletionTool(agent: Agent, task: Task) {
     },
     async (args) => {
       const agentName = agent.def.id as AgentName;
+      // Idempotency: if the task is already completing/completed, skip side-effects.
+      // Prevents duplicate Slack posts when the agent retries after a stream-closed error
+      // (the previous complete() tore down the agent mid-response, so the retry is spurious).
+      if (!task.isActive) {
+        return ok('Task already completed.');
+      }
       if (args.message) {
         await task.postToUser(args.message, agentName);
       }
       logger.agentAction(agentName, 'Reporting completion', '');
       task.touch();
-      await task.complete();
-      return {
-        content: [{
-          type: 'text' as const,
-          text: args.message ? 'Posted message to Slack and stopped task.' : 'Stopped task.',
-        }],
-      };
+      // Run complete() on next tick so this tool response streams back to the agent
+      // before the runtime tears it down. Without this, the response is lost and the
+      // agent's SDK reports "stream closed", causing a retry loop.
+      setImmediate(() => {
+        task.complete().catch((err) =>
+          logger.error('report_completion', 'Error completing task', err)
+        );
+      });
+      return ok(args.message ? 'Posted message to Slack and stopped task.' : 'Stopped task.');
     },
   );
 }
@@ -454,23 +480,70 @@ function createGetPRReviewsTool(agent: Agent, task: Task) {
   const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'get_pr_reviews',
-    'Get all reviews and comments on a pull request.',
+    'Get review-level summary for a PR (approvals, change requests, review bodies). For line-level comments, use get_review_threads.',
     { pr_number: z.number().describe('The PR number') },
     async (args) => {
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
       const reviews = await client.getPRReviews(githubRepo, args.pr_number);
       if (reviews.length === 0) {
-        return { content: [{ type: 'text' as const, text: `No reviews found for PR #${args.pr_number}` }] };
+        return ok(`No reviews found for PR #${args.pr_number}`);
       }
-      const reviewText = reviews.map((r) => {
-        let text = `- ${r.user} (${r.state}): ${r.body || '(no comment)'}`;
-        if (r.comments.length > 0) {
-          text += '\n  Comments:\n' + r.comments.map((c) => `    - ${c.path}:${c.line}: ${c.body}`).join('\n');
-        }
-        return text;
-      }).join('\n');
-      return { content: [{ type: 'text' as const, text: `Reviews for PR #${args.pr_number}:\n${reviewText}` }] };
+      const lines = reviews.map((r) =>
+        `- ${r.user} [${r.state}] @ ${r.submittedAt}: ${r.body || '(no body)'}`
+      );
+      return ok(`Reviews for PR #${args.pr_number}:\n${lines.join('\n')}`);
+    },
+  );
+}
+
+function createGetPRCommentsTool(agent: Agent, task: Task) {
+  const githubRepo = agent.def.repo!.githubRepo;
+  return tool(
+    'get_pr_comments',
+    'Get top-level PR conversation comments (the "Conversation" tab). Does not include line-level review comments — use get_review_threads for those.',
+    { pr_number: z.number().describe('The PR number') },
+    async (args) => {
+      const client = getGitHubClient();
+      if (!client) throw new Error('GitHub client not configured');
+      const comments = await client.getPRComments(githubRepo, args.pr_number);
+      if (comments.length === 0) {
+        return ok(`No conversation comments on PR #${args.pr_number}`);
+      }
+      const lines = comments.map((c) =>
+        `- [comment_id=${c.id}] ${c.author} @ ${c.createdAt}: ${c.body}`
+      );
+      return ok(`Comments on PR #${args.pr_number}:\n${lines.join('\n')}`);
+    },
+  );
+}
+
+function createGetReviewThreadsTool(agent: Agent, task: Task) {
+  const githubRepo = agent.def.repo!.githubRepo;
+  return tool(
+    'get_review_threads',
+    'Get every review thread on a PR with its thread_id (for resolve_review_thread) and each comment\'s comment_id (for reply_to_review_comment).',
+    { pr_number: z.number().describe('The PR number') },
+    async (args) => {
+      const client = getGitHubClient();
+      if (!client) throw new Error('GitHub client not configured');
+      const threads = await client.getReviewThreads(githubRepo, args.pr_number);
+      if (threads.length === 0) {
+        return ok(`No review threads on PR #${args.pr_number}`);
+      }
+      const chunks = threads.map((t) => {
+        const flags = [
+          t.isResolved ? 'RESOLVED' : 'UNRESOLVED',
+          t.isOutdated ? 'OUTDATED' : null,
+        ].filter(Boolean).join(', ');
+        const location = t.line !== null ? `${t.path}:${t.line}` : `${t.path} (outdated)`;
+        const header = `Thread ${t.threadId} — ${location} [${flags}]`;
+        const lines = t.comments.map((c) =>
+          `  [comment_id=${c.commentId}] ${c.author} @ ${c.createdAt}: ${c.body}`
+        );
+        return [header, ...lines].join('\n');
+      });
+      return ok(`Review threads on PR #${args.pr_number}:\n${chunks.join('\n\n')}`);
     },
   );
 }
@@ -536,16 +609,21 @@ function createUpdatePRTool(agent: Agent, task: Task) {
   const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'update_pr',
-    'Update the title and/or description of a pull request. Both fields are optional — include only what needs to change.',
+    'Update the title, description, and/or base branch of a pull request. All fields are optional — include only what needs to change.',
     {
       pr_number: z.number().describe('The PR number'),
       title: z.string().optional().describe('New PR title'),
       body: z.string().optional().describe('New PR description body'),
+      base: z.string().optional().describe('New base branch (retarget the PR, e.g. "main" → "release-1.2")'),
     },
     async (args) => {
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
-      await client.updatePR(githubRepo, args.pr_number, { title: args.title, body: args.body });
+      await client.updatePR(githubRepo, args.pr_number, {
+        title: args.title,
+        body: args.body,
+        base: args.base,
+      });
       return { content: [{ type: 'text' as const, text: `Updated PR #${args.pr_number}` }] };
     },
   );
@@ -573,7 +651,7 @@ function createAddReviewCommentTool(agent: Agent, task: Task) {
   const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'add_review_comment',
-    'Add a comment on a specific line of code in a PR.',
+    'Start a NEW review thread on a specific line of code. To reply inside an existing thread, use reply_to_review_comment instead.',
     {
       pr_number: z.number().describe('The PR number'),
       path: z.string().describe('File path relative to repo root'),
@@ -584,7 +662,26 @@ function createAddReviewCommentTool(agent: Agent, task: Task) {
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
       await client.addReviewComment(githubRepo, args.pr_number, args.path, args.line, args.comment);
-      return { content: [{ type: 'text' as const, text: `Added review comment to ${args.path}:${args.line} on PR #${args.pr_number}` }] };
+      return ok(`Added review comment to ${args.path}:${args.line} on PR #${args.pr_number}`);
+    },
+  );
+}
+
+function createReplyToReviewCommentTool(agent: Agent, task: Task) {
+  const githubRepo = agent.def.repo!.githubRepo;
+  return tool(
+    'reply_to_review_comment',
+    'Reply inside an existing review thread. Requires the comment_id of any comment in the target thread (from the knowledge log or get_review_threads).',
+    {
+      pr_number: z.number().describe('The PR number'),
+      comment_id: z.number().describe('REST comment id of any comment in the target thread'),
+      comment: z.string().describe('The reply text'),
+    },
+    async (args) => {
+      const client = getGitHubClient();
+      if (!client) throw new Error('GitHub client not configured');
+      await client.replyToReviewComment(githubRepo, args.pr_number, args.comment_id, args.comment);
+      return ok(`Replied to review comment ${args.comment_id} on PR #${args.pr_number}`);
     },
   );
 }
@@ -593,16 +690,16 @@ function createResolveReviewThreadTool(agent: Agent, task: Task) {
   const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'resolve_review_thread',
-    'Mark a review comment thread as resolved.',
+    'Mark a review thread as resolved. thread_id must be a GraphQL node id (e.g. PRRT_...) obtained from get_review_threads.',
     {
       pr_number: z.number().describe('The PR number'),
-      thread_id: z.string().describe('The thread ID to resolve'),
+      thread_id: z.string().describe('GraphQL thread node id from get_review_threads (e.g. PRRT_...)'),
     },
     async (args) => {
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
       await client.resolveReviewThread(githubRepo, args.pr_number, args.thread_id);
-      return { content: [{ type: 'text' as const, text: `Resolved review thread ${args.thread_id} on PR #${args.pr_number}` }] };
+      return ok(`Resolved review thread ${args.thread_id} on PR #${args.pr_number}`);
     },
   );
 }
@@ -915,12 +1012,15 @@ export function createRepoToolsMcpServer(agent: Agent, task: Task) {
       createGetPRTool(agent, task),
       createGetPRStatusTool(agent, task),
       createGetPRReviewsTool(agent, task),
+      createGetPRCommentsTool(agent, task),
+      createGetReviewThreadsTool(agent, task),
       // PR write
       createPushBranchTool(agent, task),
       createPullRequestTool(agent, task),
       createUpdatePRTool(agent, task),
       createAddPRCommentTool(agent, task),
       createAddReviewCommentTool(agent, task),
+      createReplyToReviewCommentTool(agent, task),
       createResolveReviewThreadTool(agent, task),
       createRequestReReviewTool(agent, task),
       createMergePRTool(agent, task),

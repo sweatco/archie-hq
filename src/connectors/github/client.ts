@@ -10,7 +10,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { App } from '@octokit/app';
 import { Octokit } from '@octokit/core';
-import type { PRStatus, PRReview, PRReviewComment, MergeableState } from '../../agents/tools.js';
+import type { PRStatus, PRReview, ReviewThread, PRComment, MergeableState } from '../../agents/tools.js';
 import { logger } from '../../system/logger.js';
 
 const execAsync = promisify(exec);
@@ -261,58 +261,102 @@ export class GitHubClient {
   }
 
   /**
-   * Get all reviews and comments on a PR
+   * Get review-level summary for a PR (approvals, change requests, review bodies).
+   * Line-level comments are returned by `getReviewThreads` instead.
    */
   async getPRReviews(githubRepo: string, prNumber: number): Promise<PRReview[]> {
     const octokit = await this.getOctokit();
     const { owner, repo } = this.parseRepo(githubRepo);
 
-    // Get reviews
     const reviewsResponse = await octokit.request(
       'GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews',
-      {
-        owner,
-        repo,
-        pull_number: prNumber,
-      }
+      { owner, repo, pull_number: prNumber }
     );
 
-    // Get review comments
-    const commentsResponse = await octokit.request(
-      'GET /repos/{owner}/{repo}/pulls/{pull_number}/comments',
-      {
-        owner,
-        repo,
-        pull_number: prNumber,
-      }
-    );
-
-    // Group comments by review
-    const commentsByReview = new Map<number, PRReviewComment[]>();
-    for (const comment of commentsResponse.data) {
-      const reviewId = comment.pull_request_review_id;
-      if (reviewId) {
-        const existing = commentsByReview.get(reviewId) || [];
-        existing.push({
-          path: comment.path,
-          line: comment.line || comment.original_line || 0,
-          body: comment.body,
-          threadId: String(comment.id),
-        });
-        commentsByReview.set(reviewId, existing);
-      }
-    }
-
-    // Build review objects
-    const reviews: PRReview[] = reviewsResponse.data.map((review) => ({
+    return reviewsResponse.data.map((review) => ({
       id: String(review.id),
       user: review.user?.login || 'unknown',
       state: this.mapReviewState(review.state),
       body: review.body || '',
-      comments: commentsByReview.get(review.id) || [],
+      submittedAt: review.submitted_at || '',
     }));
+  }
 
-    return reviews;
+  /**
+   * Get all review threads on a PR via GraphQL.
+   * Returns thread node IDs (for resolveReviewThread) plus each comment's REST id
+   * (for replyToReviewComment via in_reply_to).
+   */
+  async getReviewThreads(githubRepo: string, prNumber: number): Promise<ReviewThread[]> {
+    const octokit = await this.getOctokit();
+    const { owner, repo } = this.parseRepo(githubRepo);
+
+    const query = `
+      query($owner: String!, $repo: String!, $pr: Int!) {
+        repository(owner: $owner, name: $repo) {
+          pullRequest(number: $pr) {
+            reviewThreads(first: 100) {
+              nodes {
+                id
+                isResolved
+                isOutdated
+                path
+                line
+                comments(first: 100) {
+                  nodes {
+                    databaseId
+                    author { login }
+                    body
+                    createdAt
+                    url
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    const result = await octokit.graphql<{
+      repository: {
+        pullRequest: {
+          reviewThreads: {
+            nodes: Array<{
+              id: string;
+              isResolved: boolean;
+              isOutdated: boolean;
+              path: string;
+              line: number | null;
+              comments: {
+                nodes: Array<{
+                  databaseId: number;
+                  author: { login: string } | null;
+                  body: string;
+                  createdAt: string;
+                  url: string;
+                }>;
+              };
+            }>;
+          };
+        };
+      };
+    }>(query, { owner, repo, pr: prNumber });
+
+    return result.repository.pullRequest.reviewThreads.nodes.map((thread) => ({
+      threadId: thread.id,
+      isResolved: thread.isResolved,
+      isOutdated: thread.isOutdated,
+      path: thread.path,
+      line: thread.line,
+      comments: thread.comments.nodes.map((c) => ({
+        commentId: c.databaseId,
+        author: c.author?.login || 'unknown',
+        body: c.body,
+        createdAt: c.createdAt,
+        url: c.url,
+      })),
+    }));
   }
 
   private mapReviewState(state: string): 'approved' | 'changes_requested' | 'commented' {
@@ -327,14 +371,19 @@ export class GitHubClient {
   }
 
   /**
-   * Update PR description
+   * Update PR title, body, and/or base branch.
    */
-  async updatePR(githubRepo: string, prNumber: number, fields: { title?: string; body?: string }): Promise<void> {
+  async updatePR(
+    githubRepo: string,
+    prNumber: number,
+    fields: { title?: string; body?: string; base?: string }
+  ): Promise<void> {
     const octokit = await this.getOctokit();
     const { owner, repo } = this.parseRepo(githubRepo);
     const patch: Record<string, string> = {};
     if (fields.title !== undefined) patch.title = fields.title;
     if (fields.body !== undefined) patch.body = fields.body;
+    if (fields.base !== undefined) patch.base = fields.base;
 
     await octokit.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
       owner,
@@ -397,7 +446,8 @@ export class GitHubClient {
   }
 
   /**
-   * Resolve a review thread (requires GraphQL)
+   * Resolve a review thread via GraphQL. `threadId` must be the GraphQL node id
+   * (e.g. `PRRT_...`) obtained from `getReviewThreads`.
    */
   async resolveReviewThread(
     githubRepo: string,
@@ -406,23 +456,37 @@ export class GitHubClient {
   ): Promise<void> {
     const octokit = await this.getOctokit();
 
-    // GraphQL mutation to resolve the thread
-    // The threadId here is actually the comment ID, we need to find the thread
-    // For now, we'll use the REST API to minimize complexity
-    // In production, you'd use GraphQL with the actual thread node ID
-
-    logger.system(
-      `GitHub: Resolving review thread ${threadId} on PR #${prNumber} (requires GraphQL in production)`
+    await octokit.graphql(
+      `mutation($threadId: ID!) {
+        resolveReviewThread(input: { threadId: $threadId }) {
+          thread { id isResolved }
+        }
+      }`,
+      { threadId }
     );
 
-    // Placeholder - in production, use:
-    // await octokit.graphql(`
-    //   mutation {
-    //     resolveReviewThread(input: {threadId: "${threadId}"}) {
-    //       thread { isResolved }
-    //     }
-    //   }
-    // `);
+    logger.system(`GitHub: Resolved review thread ${threadId} on PR #${prNumber}`);
+  }
+
+  /**
+   * Reply to an existing review comment inside its thread.
+   * `commentId` is the REST numeric id of any comment in the thread.
+   */
+  async replyToReviewComment(
+    githubRepo: string,
+    prNumber: number,
+    commentId: number,
+    comment: string
+  ): Promise<void> {
+    const octokit = await this.getOctokit();
+    const { owner, repo } = this.parseRepo(githubRepo);
+
+    await octokit.request(
+      'POST /repos/{owner}/{repo}/pulls/{pull_number}/comments/{comment_id}/replies',
+      { owner, repo, pull_number: prNumber, comment_id: commentId, body: comment }
+    );
+
+    logger.system(`GitHub: Replied to review comment ${commentId} on PR #${prNumber}`);
   }
 
   /**
@@ -463,28 +527,24 @@ export class GitHubClient {
   }
 
   /**
-   * Get PR comments (issue comments on a PR)
-   * Returns comments sorted by creation time (oldest first)
+   * Get top-level PR conversation comments (issue comments on a PR).
+   * Returns comments sorted by creation time (oldest first).
    */
-  async getPRComments(
-    githubRepo: string,
-    prNumber: number
-  ): Promise<Array<{ id: number; user: string; body: string; createdAt: string }>> {
+  async getPRComments(githubRepo: string, prNumber: number): Promise<PRComment[]> {
     const octokit = await this.getOctokit();
     const { owner, repo } = this.parseRepo(githubRepo);
 
-    const response = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-      owner,
-      repo,
-      issue_number: prNumber,
-      per_page: 100,
-    });
+    const response = await octokit.request(
+      'GET /repos/{owner}/{repo}/issues/{issue_number}/comments',
+      { owner, repo, issue_number: prNumber, per_page: 100 }
+    );
 
     return response.data.map((comment) => ({
       id: comment.id,
-      user: comment.user?.login || 'unknown',
+      author: comment.user?.login || 'unknown',
       body: comment.body || '',
       createdAt: comment.created_at,
+      url: comment.html_url,
     }));
   }
 

@@ -109,6 +109,9 @@ const SPAWN_PM_TOOLS = [
   'mcp__pm-agent-tools__request_edit_mode',
   'mcp__pm-agent-tools__get_agents_status',
   'mcp__pm-agent-tools__mute_thread',
+  'mcp__pm-agent-tools__parse_datetime',
+  'mcp__pm-agent-tools__set_reminder',
+  'mcp__pm-agent-tools__cancel_reminder',
 ];
 
 const SPAWN_REPO_TOOLS = [
@@ -122,12 +125,15 @@ const SPAWN_REPO_TOOLS = [
   'mcp__repo-tools__get_pr',
   'mcp__repo-tools__get_pr_status',
   'mcp__repo-tools__get_pr_reviews',
+  'mcp__repo-tools__get_pr_comments',
+  'mcp__repo-tools__get_review_threads',
   // PR write
   'mcp__repo-tools__push_branch',
   'mcp__repo-tools__create_pull_request',
   'mcp__repo-tools__update_pr',
   'mcp__repo-tools__add_pr_comment',
   'mcp__repo-tools__add_review_comment',
+  'mcp__repo-tools__reply_to_review_comment',
   'mcp__repo-tools__resolve_review_thread',
   'mcp__repo-tools__request_re_review',
   'mcp__repo-tools__merge_pull_request',

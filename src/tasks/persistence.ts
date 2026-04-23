@@ -262,22 +262,33 @@ export async function appendAgentMessage(
 }
 
 /**
- * Append a GitHub event to the knowledge log
- * @param repoKey - Repository identifier (e.g., 'backend', 'mobile') for multi-repo tasks
+ * Append a GitHub event to the knowledge log.
+ *
+ * Accepts a structured payload matching the Slack/CLI shape so the CLI can
+ * render GitHub events uniformly: `[from in destination] @pm-agent message`.
+ *
+ * @param githubRepo - Full "owner/repo" identifier (e.g., 'sweatco/sweatcoin-mobile')
+ * @param event - Structured event with author, destination (e.g. "PR #42"), and clean message body
  */
 export async function appendGitHubEvent(
   taskId: string,
-  repoKey: string,
-  message: string
+  githubRepo: string,
+  event: { from: string; destination: string; message: string }
 ): Promise<void> {
+  const destination = `github:${githubRepo}/${event.destination}`;
   const entry: LogEntry = {
     timestamp: new Date().toISOString(),
-    source: `github:${repoKey}`,
-    message,
+    source: `@<${event.from}> in ${destination}`,
+    message: event.message,
   };
 
   await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
-  emitEvent('message', taskId, { from: `github:${repoKey}`, to: 'pm-agent', message });
+  emitEvent('message', taskId, {
+    from: event.from,
+    to: 'pm-agent',
+    destination,
+    message: event.message,
+  });
 }
 
 /**

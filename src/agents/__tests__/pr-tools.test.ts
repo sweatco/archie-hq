@@ -63,9 +63,12 @@ const mockGitHubClient = {
   closePullRequest: vi.fn(),
   createPullRequest: vi.fn(),
   getPRReviews: vi.fn(),
+  getPRComments: vi.fn(),
+  getReviewThreads: vi.fn(),
   updatePR: vi.fn(),
   addPRComment: vi.fn(),
   addReviewComment: vi.fn(),
+  replyToReviewComment: vi.fn(),
   resolveReviewThread: vi.fn(),
   requestReReview: vi.fn(),
 };
@@ -279,8 +282,9 @@ describe('PM agent tools', () => {
 
     const prToolNames = [
       'push_branch', 'create_pull_request', 'get_pr_status', 'get_pr_reviews',
-      'update_pr', 'add_pr_comment', 'add_review_comment', 'resolve_review_thread',
-      'request_re_review', 'merge_pull_request', 'close_pull_request',
+      'get_pr_comments', 'get_review_threads',
+      'update_pr', 'add_pr_comment', 'add_review_comment', 'reply_to_review_comment',
+      'resolve_review_thread', 'request_re_review', 'merge_pull_request', 'close_pull_request',
     ];
 
     for (const prTool of prToolNames) {

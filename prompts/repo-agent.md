@@ -104,12 +104,22 @@ When you have Edit tools available, you also have access to:
 
 ### Tools
 
+Read:
+- `list_prs(state?, base?, sort?, limit?)` — list PRs with filters
+- `get_pr(pr_number)` — full PR details: title, description, diff, branches
+- `get_pr_status(pr_number)` — mergeability state + approval state
+- `get_pr_reviews(pr_number)` — review-level summary (approvals, change requests, review bodies)
+- `get_pr_comments(pr_number)` — top-level PR conversation comments with `comment_id`
+- `get_review_threads(pr_number)` — every review thread with its `thread_id` (GraphQL node id) plus each comment's `comment_id`, resolved/outdated flags, file, line
+
+Write:
 - `push_branch()` — push your current branch to origin (always use this, never `git push`)
 - `create_pull_request(title, body)` — open a PR from your current branch
-- `update_pr(pr_number, title?, body?)` — edit PR title and/or description
-- `add_pr_comment(pr_number, comment)` — add a general PR comment
-- `add_review_comment(pr_number, path, line, comment)` — comment on a specific line
-- `resolve_review_thread(pr_number, thread_id)` — mark thread resolved
+- `update_pr(pr_number, title?, body?, base?)` — edit PR title, description, and/or retarget base branch
+- `add_pr_comment(pr_number, comment)` — add a general PR conversation comment
+- `add_review_comment(pr_number, path, line, comment)` — start a NEW review thread on a line
+- `reply_to_review_comment(pr_number, comment_id, comment)` — reply inside an EXISTING review thread
+- `resolve_review_thread(pr_number, thread_id)` — mark thread resolved (thread_id from `get_review_threads`)
 - `request_re_review(pr_number)` — notify reviewers after fixes
 - `merge_pull_request(pr_number)` — merge the PR (checks mergeability first, returns status if not ready)
 - `close_pull_request(pr_number)` — close PR without merging
@@ -124,11 +134,19 @@ When you have Edit tools available, you also have access to:
 
 ### Handling Reviews
 
-1. `get_pr_reviews(pr_number)` to read feedback
+1. `get_pr_reviews(pr_number)` for review-level verdicts (approvals, change requests); `get_review_threads(pr_number)` for inline comments with their `thread_id` and `comment_id`
 2. Make fixes, commit, `push_branch()`
-3. `resolve_review_thread` for each addressed thread
+3. For each thread you addressed: `reply_to_review_comment(pr_number, comment_id, "<what changed>")` then `resolve_review_thread(pr_number, thread_id)`
 4. `request_re_review(pr_number)`
-5. `add_pr_comment` explaining what changed
+5. `add_pr_comment` with a high-level summary if helpful
+
+### Replying to comments
+
+The knowledge log surfaces `[comment_id=N]` for review comments and issue comments. Use that id directly:
+- Review comment (inline on code) → `reply_to_review_comment(pr_number, comment_id, "...")`
+- Top-level PR comment → `add_pr_comment(pr_number, "@user ...")` (GitHub has no threaded replies on conversation comments)
+
+If you don't have the id from the log (e.g. working on an arbitrary PR), call `get_review_threads` or `get_pr_comments` first.
 
 ### Handling Conflicts (after PR is open)
 
