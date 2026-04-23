@@ -166,9 +166,11 @@ export function TaskList({ onSelect, onCreate, refreshTrigger, active }: TaskLis
         const globalIndex = scrollTop + i;
         const selected = globalIndex === cursor;
         const activeAgents = task.agents?.filter((a) => a.active).length ?? 0;
-        const channel = task.channel_name
-          ? (task.channel_name.startsWith('DM with') ? task.channel_name : `#${task.channel_name}`)
-          : 'cli';
+        const channel = !task.channel_name || task.channel_name === 'cli'
+          ? 'cli'
+          : task.channel_name.startsWith('DM with')
+            ? task.channel_name
+            : `#${task.channel_name}`;
 
         return (
           <Box key={task.task_id} paddingX={1}>

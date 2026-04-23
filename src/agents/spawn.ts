@@ -173,16 +173,35 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
       additionalDirectories.push(def.pluginPath);
     }
 
-    const channelInfo = Object.entries(metadata.channels)
-      .map(([id, ch]) => ch.type === 'slack' ? `#${ch.channel_name || ch.channel_id}` : id)
-      .join(', ') || 'CLI (no Slack channel)';
+    const channelEntries = Object.entries(metadata.channels);
+    const renderChannel = (id: string, ch: typeof metadata.channels[string]): string => {
+      if (ch.type === 'slack') {
+        const name = ch.channel_name || ch.channel_id;
+        return name.startsWith('DM with ') ? name : `#${name}`;
+      }
+      if (ch.type === 'cli') return 'CLI session';
+      if (ch.type === 'github') return `PR ${ch.repo}#${ch.pr_number}`;
+      return id;
+    };
     const contextLines = [
       `Task: ${taskId}`,
       `Status: ${metadata.status}`,
-      `Channel(s): ${channelInfo}`,
+    ];
+    if (channelEntries.length === 0) {
+      contextLines.push(
+        'Channel(s): none — to reply you must first open a destination via ' +
+        'post_to_user(target.new_dm <userId>) or post_to_user(target.new_thread <channelId>)'
+      );
+    } else {
+      contextLines.push(`Channel(s): ${channelEntries.map(([id, ch]) => renderChannel(id, ch)).join(', ')}`);
+      if (metadata.default_channel && metadata.channels[metadata.default_channel]) {
+        contextLines.push(`Default channel: ${renderChannel(metadata.default_channel, metadata.channels[metadata.default_channel])}`);
+      }
+    }
+    contextLines.push(
       `Task Owner: ${metadata.task_owner || 'Not assigned'}`,
       `Participants: ${metadata.participants.join(', ') || 'None yet'}`,
-    ];
+    );
     if (metadata.reminder) {
       contextLines.push(`Reminder: ${metadata.reminder.trigger_at} — ${metadata.reminder.reason}`);
     }

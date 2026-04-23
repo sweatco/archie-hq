@@ -7,6 +7,7 @@
 
 import { mkdir, writeFile } from 'fs/promises';
 import type { AgentName, SlackChannel, SlackThread, TaskMetadata } from '../types/task.js';
+import { CLI_CHANNEL_KEY } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
 
 /**
@@ -245,6 +246,18 @@ export class Task {
   }
 
   /**
+   * Link the CLI channel to this task. Called on every CLI inbound (create + follow-up),
+   * mirroring how Slack's append() ensures its channel is linked on every message.
+   * Idempotent — overwriting the same channel entry is a no-op; default_channel is only
+   * promoted the first time via ??=.
+   */
+  linkCliChannel(): void {
+    this.metadata.channels[CLI_CHANNEL_KEY] = { type: 'cli', id: CLI_CHANNEL_KEY };
+    this.metadata.default_channel ??= CLI_CHANNEL_KEY;
+    this.debouncedSave();
+  }
+
+  /**
    * Post a message to the user.
    *
    * Targeting modes:
@@ -304,12 +317,18 @@ export class Task {
     const defaultCh = this.metadata.default_channel
       ? this.metadata.channels[this.metadata.default_channel]
       : null;
-    if (defaultCh?.type === 'slack') {
+    if (!defaultCh) {
+      // No channel linked. Caller (tool wrapper) is expected to have caught this
+      // and returned a clear error to the agent. Internal callers reach here too
+      // (e.g. mute_thread's farewell) — stay defensive, log a warning, no-op.
+      logger.warn('task', `postToUser called on task ${this.taskId} with no default channel — message dropped`);
+      return null;
+    }
+    if (defaultCh.type === 'slack') {
       const dest = Task.formatSlackDest(defaultCh);
       this.logOutgoingMessage(sender, message, dest.display, defaultCh);
       await this.postToSlackRef(defaultCh, message);
-    } else {
-      // CLI or no channel
+    } else if (defaultCh.type === 'cli') {
       this.logOutgoingMessage(sender, message, 'cli');
     }
     return null;

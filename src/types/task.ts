@@ -37,7 +37,7 @@ export interface SlackThread {
 
 // ---- Channel types (replace slack_threads) ----
 
-export type ChannelType = 'slack' | 'github';
+export type ChannelType = 'slack' | 'github' | 'cli';
 
 export interface ChannelBase {
   type: ChannelType;
@@ -61,7 +61,15 @@ export interface GitHubChannel extends ChannelBase {
   pr_number: number;
 }
 
-export type Channel = SlackChannel | GitHubChannel;
+/** CLI channel — the REST/SSE surface the CLI tails. One per task at most. */
+export interface CliChannel extends ChannelBase {
+  type: 'cli';
+  id: 'cli:local';
+}
+
+export const CLI_CHANNEL_KEY = 'cli:local' as const;
+
+export type Channel = SlackChannel | GitHubChannel | CliChannel;
 
 /** Per-branch state — tracks PR lifecycle and stash */
 export interface BranchState {

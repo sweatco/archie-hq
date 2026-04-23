@@ -109,6 +109,7 @@ const SPAWN_PM_TOOLS = [
   'mcp__pm-agent-tools__request_edit_mode',
   'mcp__pm-agent-tools__get_agents_status',
   'mcp__pm-agent-tools__mute_thread',
+  'mcp__pm-agent-tools__launch_task',
   'mcp__pm-agent-tools__parse_datetime',
   'mcp__pm-agent-tools__set_reminder',
   'mcp__pm-agent-tools__cancel_reminder',

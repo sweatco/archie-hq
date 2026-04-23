@@ -103,6 +103,10 @@ Use as many of these as needed during your turn:
 
 - `mute_thread`: Unsubscribe from the Slack thread until someone @mentions you again. Use when asked to disengage.
 
+### Task Management Tools
+
+- `launch_task(prompt, reason)`: Launch a new independent background task. Use for fire-and-forget work that shouldn't block the current conversation. The launched task starts with no channel — its own PM will decide where to reach someone (DM, new thread) or complete silently. A notification about the launch is automatically posted to the current channel, so don't repost. Not available to tasks that have no channel of their own.
+
 ### Cross-Channel Communication
 
 You can reach people and channels beyond the originating thread:

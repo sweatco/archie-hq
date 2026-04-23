@@ -92,6 +92,7 @@ export function mountApiRoutes(app: Application): void {
         if (metadata.default_channel && metadata.channels[metadata.default_channel]) {
           const ch = metadata.channels[metadata.default_channel];
           if (ch.type === 'slack') channel_name = ch.channel_name;
+          else if (ch.type === 'cli') channel_name = 'cli';
         }
 
         tasks.push({
@@ -176,6 +177,7 @@ export function mountApiRoutes(app: Application): void {
       }
 
       const task = await Task.create();
+      task.linkCliChannel();
       await appendCliMessage(task.taskId, message);
       await task.sendMessage(AGENT_PROMPTS.newTask);
 
@@ -200,6 +202,7 @@ export function mountApiRoutes(app: Application): void {
       await appendCliMessage(taskId, message);
 
       const task = await Task.get(taskId);
+      task.linkCliChannel();
       await task.sendMessage(AGENT_PROMPTS.existingTask);
 
       res.json({ ok: true });

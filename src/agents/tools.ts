@@ -21,6 +21,7 @@ import { getGitHubClient } from '../connectors/github/client.js';
 import { gitExec } from '../connectors/github/repo-clone.js';
 import { mirrorLegacyFields, hydrateBranchState, findBranchStateByPR } from '../connectors/github/branch-state.js';
 import { appendAgentFinding } from '../tasks/persistence.js';
+import { launchTask } from '../tasks/launch.js';
 import { logger } from '../system/logger.js';
 import { findSlackUsers, findSlackChannels } from '../connectors/slack/client.js';
 import { scheduleReminder, cancelReminder } from '../system/reminder-scheduler.js';
@@ -160,6 +161,13 @@ function createPostToUserTool(agent: Agent, task: Task) {
     },
     async (args) => {
       const agentName = agent.def.id as AgentName;
+      const hasTarget = !!(args.target?.channel || args.target?.new_dm || args.target?.new_thread);
+      if (!hasTarget && Object.keys(task.metadata.channels).length === 0) {
+        return ok(
+          'No channel linked to this task. Use target.new_dm <userId> or target.new_thread <channelId> ' +
+          'to open a destination, or call report_completion() without a message to finish silently.'
+        );
+      }
       task.touch();
       const newChannelKey = await task.postToUser(args.message, agentName, args.target);
       if (newChannelKey) {
@@ -304,6 +312,13 @@ function createReportCompletionTool(agent: Agent, task: Task) {
         return ok('Task already completed.');
       }
       if (args.message) {
+        if (Object.keys(task.metadata.channels).length === 0) {
+          return ok(
+            'Cannot post a completion message — no channel linked. ' +
+            'Either open a destination via post_to_user(target.new_dm/new_thread) first, ' +
+            'or call report_completion() without a message to finish silently.'
+          );
+        }
         await task.postToUser(args.message, agentName);
       }
       logger.agentAction(agentName, 'Reporting completion', '');
@@ -351,6 +366,33 @@ function createMuteThreadTool(agent: Agent, task: Task) {
       await task.postToUser("I'll step back from this thread. Mention me again when you need me.", agentName);
 
       return ok(`Muted ${mutedCount} Slack thread(s). Will resume on next @mention.`);
+    },
+  );
+}
+
+function createLaunchTaskTool(_agent: Agent, task: Task) {
+  return tool(
+    'launch_task',
+    'Launch a new independent task that runs in the background. Use for fire-and-forget ' +
+    'work that should not block the current conversation. The launched task starts with no ' +
+    'channel — its own PM will decide whether to ping someone (DM, new thread) or complete ' +
+    'silently based on the task. Cannot be called from a task that has no channel of its own.',
+    {
+      prompt: z.string().describe('The task prompt for the launched PM agent'),
+      reason: z.string().describe('Why this task is being launched (shown to the new PM and in the notification)'),
+    },
+    async (args) => {
+      try {
+        const { newTaskId, notifiedInChannel } = await launchTask(task, args.prompt, args.reason);
+        return ok(
+          notifiedInChannel
+            ? `Task ${newTaskId} launched. User was already notified in the current channel — do not repost.`
+            : `Task ${newTaskId} launched. No channel notified.`
+        );
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        return ok(`Failed to launch task: ${msg}`);
+      }
     },
   );
 }
@@ -986,6 +1028,7 @@ export function createPMAgentMcpServer(agent: Agent, task: Task) {
       createRequestEditModeTool(agent, task),
       createGetAgentsStatusTool(agent, task),
       createMuteThreadTool(agent, task),
+      createLaunchTaskTool(agent, task),
       createParseDatetimeTool(agent, task),
       createSetReminderTool(agent, task),
       createCancelReminderTool(agent, task),
