@@ -22,6 +22,10 @@ import {
   addReaction,
   removeReaction,
   setSlackDryRun,
+  getUserInfo,
+  isExternalUser,
+  isChannelShared,
+  postEphemeral,
 } from './client.js';
 import { Task } from '../../tasks/task.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
@@ -279,6 +283,24 @@ async function handleSlackEvent(event: {
 }): Promise<void> {
   const threadId = event.thread_ts || event.ts;
 
+  // ---- External-author bail-out --------------------------------------------
+  // Resolve the event author and bail if external (different team, or guest).
+  // No agent spawn, no task creation, no reactions, no log entries. The
+  // redacted history will be appended lazily the next time an internal user
+  // triggers the handler (fetchSlackThread re-reads full history and redacts).
+  if (event.user) {
+    try {
+      const authorInfo = await getUserInfo(event.user);
+      if (isExternalUser(authorInfo)) {
+        logger.system(`Skipping event from external/guest user ${event.user}`);
+        return;
+      }
+    } catch (error) {
+      // Fail open — if we can't classify, don't silently drop the event.
+      logger.warn('Slack', `Failed to classify event author ${event.user}`, error);
+    }
+  }
+
   // Instant acknowledgment — react before any LLM processing.
   // Remove eyes from the previous message first (only one message should have eyes at a time).
   if (event.type === 'app_mention' || event.channel.startsWith('D')) {
@@ -295,6 +317,7 @@ async function handleSlackEvent(event: {
   }
 
   const thread = await fetchSlackThread(event.channel, threadId, event.ts);
+  const shared = await isChannelShared(event.channel);
 
   // const triageResult = await triageSlackMessage(thread);
   // switch (triageResult.action) {
@@ -351,6 +374,7 @@ async function handleSlackEvent(event: {
 
     // Thread reply to an existing task — route to it
     await task.append(thread);
+    await sendSharedChannelWarnings(task, event.channel, threadId, thread, shared);
     await task.sendMessage(AGENT_PROMPTS.existingTask);
   } else if (event.type === 'app_mention' || event.channel.startsWith('D')) {
     logger.system(`Processing #${thread.channel.name} (thread: ${threadId})`);
@@ -358,7 +382,90 @@ async function handleSlackEvent(event: {
     // Bot was @mentioned, or this is a DM — start a new task
     const task = await Task.create();
     await task.append(thread);
+    await sendSharedChannelWarnings(task, event.channel, threadId, thread, shared);
     await task.sendMessage(AGENT_PROMPTS.newTask);
   }
   // Otherwise: thread reply in a thread the bot was never part of — ignore
 }
+
+const SHARED_CHANNEL_WARNING_TEXT =
+  ':warning: *Heads up:* this thread is in a Slack channel shared with an external organisation. ' +
+  'Archie filters messages from external participants — if you need Archie to see something an ' +
+  'external person said, re-say it yourself. Also be aware that anything Archie posts here ' +
+  '(including on your behalf) is visible to the external org, so mind what you ask Archie to share.';
+
+const FORWARD_NOTICE_TEXT =
+  ':information_source: You forwarded a message originally authored by an external user. ' +
+  'Archie will process its contents — just making sure you are aware.';
+
+/**
+ * Persist isShared and post ephemeral warnings to internal users in the thread.
+ *
+ * Warning A (shared-channel awareness): one ephemeral per (thread × user).
+ * Warning B (forward-from-external): one ephemeral per (thread × forwarder).
+ *
+ * Both lists live on the SlackChannel metadata for the thread.
+ */
+async function sendSharedChannelWarnings(
+  task: Task,
+  channelId: string,
+  threadId: string,
+  thread: import('../../types/task.js').SlackThread,
+  shared: boolean,
+): Promise<void> {
+  const channelKey = `slack:${channelId}:${threadId}`;
+  const ch = task.metadata.channels[channelKey];
+  if (!ch || ch.type !== 'slack') return;
+
+  // Snapshot isShared for observability. Runtime decisions still use isChannelShared cache.
+  ch.isShared = shared;
+
+  if (!shared) {
+    task.debouncedSave();
+    return;
+  }
+
+  // Warning A — diff thread participants vs already-warned set.
+  // Skip externals (they don't need our warning) and the bot.
+  const warned = new Set(ch.warnedUsers ?? []);
+  const botUserId = getBotUserId();
+  const internalParticipants = new Set<string>();
+  for (const msg of thread.messages) {
+    if (isExternalUser(msg.user)) continue;
+    if (!msg.user.id || msg.user.id === botUserId) continue;
+    internalParticipants.add(msg.user.id);
+  }
+  const toWarn = [...internalParticipants].filter((u) => !warned.has(u));
+  for (const userId of toWarn) {
+    await postEphemeral(channelId, userId, SHARED_CHANNEL_WARNING_TEXT, threadId);
+    warned.add(userId);
+  }
+  if (toWarn.length > 0) {
+    ch.warnedUsers = [...warned];
+  }
+
+  // Warning B — for each message that carries at least one externally-authored
+  // attachment, notify the forwarder (the message's top-level author) once
+  // per thread.
+  const forwardNotified = new Set(ch.forwardNotifiedUsers ?? []);
+  const forwardersToNotify = new Set<string>();
+  for (const msg of thread.messages) {
+    if (!msg.user.id || forwardNotified.has(msg.user.id)) continue;
+    const hasExternalAttachment = (msg.attachments ?? []).some(
+      (att) => att.author && isExternalUser(att.author),
+    );
+    if (hasExternalAttachment) {
+      forwardersToNotify.add(msg.user.id);
+    }
+  }
+  for (const userId of forwardersToNotify) {
+    await postEphemeral(channelId, userId, FORWARD_NOTICE_TEXT, threadId);
+    forwardNotified.add(userId);
+  }
+  if (forwardersToNotify.size > 0) {
+    ch.forwardNotifiedUsers = [...forwardNotified];
+  }
+
+  task.debouncedSave();
+}
+

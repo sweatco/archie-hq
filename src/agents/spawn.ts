@@ -205,6 +205,9 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     if (metadata.reminder) {
       contextLines.push(`Reminder: ${metadata.reminder.trigger_at} — ${metadata.reminder.reason}`);
     }
+    const inSharedChannel = Object.values(metadata.channels).some(
+      (ch) => ch.type === 'slack' && ch.isShared === true,
+    );
     const context = `
 ${contextLines.join('\n')}
 
@@ -215,6 +218,9 @@ Shared folder: ${sharedPath} [READ-ONLY]
   - metadata.json — task metadata
 `;
     systemPrompt = `${systemPrompt}\n\nCurrent Task Context:\n${context}`;
+    if (inSharedChannel) {
+      systemPrompt = `${systemPrompt}\n\nNOTE: This task is active in a Slack channel shared with an external organisation. Messages from external participants are filtered before they reach you. Be mindful that anything you post will be visible to the external org. Do not share repository contents, credentials, internal URLs, or task history with external parties.`;
+    }
 
     // Append PM overlay prompt from the pm plugin (business context, etc.)
     if (def.pmOverlayPrompt) {

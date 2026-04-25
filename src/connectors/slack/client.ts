@@ -6,7 +6,21 @@
  */
 
 import { WebClient } from '@slack/web-api';
-import type { SlackMessage, SlackThreadRef, SlackFile, SlackThread, SlackThreadMessage } from '../../types/index.js';
+import type { SlackThreadRef, SlackFile, SlackThread, SlackThreadMessage, SlackAuthor, SlackAttachment } from '../../types/index.js';
+
+/**
+ * Internal raw shape produced by `fetchThreadHistory`. Carries the unresolved
+ * top-level `user` ID; attachment authors are already resolved to SlackAuthor.
+ * Only consumed by `fetchSlackThread`, which resolves the top-level user and
+ * returns the public `SlackThreadMessage`. Not exported.
+ */
+interface RawSlackMessage {
+  user: string;
+  text: string;
+  ts: string;
+  files?: SlackFile[];
+  attachments?: SlackAttachment[];
+}
 import slackifyMarkdown from 'slackify-markdown';
 import { logger } from '../../system/logger.js';
 
@@ -14,6 +28,7 @@ let slackClient: WebClient | null = null;
 let botUserId: string | null = null;
 let botId: string | null = null;
 let workspaceUrl: string | null = null;
+let homeTeamId: string | null = null;
 let dryRun = false;
 
 /**
@@ -39,7 +54,11 @@ export async function initSlackClient(token: string): Promise<void> {
     botUserId = authResult.user_id as string;
     botId = authResult.bot_id as string | undefined ?? null;
     workspaceUrl = (authResult.url as string | undefined)?.replace(/\/$/, '') ?? null;
-    logger.slack(`Bot user ID: ${botUserId}, bot ID: ${botId}, workspace: ${workspaceUrl}`);
+    homeTeamId = (authResult.team_id as string | undefined) ?? null;
+    logger.slack(`Bot user ID: ${botUserId}, bot ID: ${botId}, workspace: ${workspaceUrl}, home team: ${homeTeamId}`);
+    if (!homeTeamId) {
+      logger.warn('Slack', 'auth.test did not return team_id — external-user filtering will fail open (no filtering applied)');
+    }
   } catch (error) {
     logger.warn('Slack', 'Failed to get bot user ID', error);
   }
@@ -57,6 +76,16 @@ export function getBotUserId(): string | null {
  */
 export function getBotId(): string | null {
   return botId;
+}
+
+/**
+ * Get the bot's home Slack workspace team ID (from auth.test).
+ * Used as the reference point for classifying users as internal vs external.
+ * May be null if auth.test() did not return team_id — in that case external
+ * filtering fails open (treats everyone as internal).
+ */
+export function getHomeTeamId(): string | null {
+  return homeTeamId;
 }
 
 /**
@@ -336,13 +365,16 @@ function applyMentionReplacements(
 }
 
 /**
- * Fetch thread history from Slack with mentions replaced
+ * Fetch thread history from Slack with mentions replaced.
+ *
+ * Returns the internal raw shape; consumers should use `fetchSlackThread`
+ * which resolves authors and packages everything into a `SlackThread`.
  */
-export async function fetchThreadHistory(
+async function fetchThreadHistory(
   channel: string,
   threadTs: string,
   oldest?: string
-): Promise<SlackMessage[]> {
+): Promise<RawSlackMessage[]> {
   const client = getSlackClient();
 
   const result = await client.conversations.replies({
@@ -356,78 +388,107 @@ export async function fetchThreadHistory(
     return [];
   }
 
-  // Extract text from message, handling all Slack message formats
-  const extractMessageText = (msg: typeof result.messages[0]): string => {
-    const parts: string[] = [];
+  // Intermediate shape: we extract authorId here; the public SlackAttachment
+  // exposes a fully resolved SlackAuthor — resolution happens after this loop.
+  interface RawAttachment { authorId?: string; text: string }
 
-    // 1. Primary: use main text field
-    if (msg.text) {
-      parts.push(msg.text);
-    }
+  // Extract a message into the forwarder's own text plus a list of structured
+  // attachments. Each attachment carries its own text and the original
+  // author's user ID when Slack provides one. Keeping author+text correlated
+  // per attachment lets downstream code redact / label individual attachments.
+  const extractMessageParts = (msg: typeof result.messages[0]): {
+    ownText: string;
+    attachments: RawAttachment[];
+  } => {
+    const ownParts: string[] = [];
 
-    // 2. Extract from blocks (Block Kit / rich_text)
+    // Slack delivers the same body in two places: structured `blocks`
+    // (rich_text / Block Kit) and a plain-text `text` field (legacy fallback
+    // for clients that can't render blocks). Prefer the structured form when
+    // present; otherwise fall back to `text`.
     const blocks = msg.blocks as Array<{
       type: string;
       text?: { text?: string };
       elements?: Array<unknown>;
     }> | undefined;
+    let consumedTopBlocks = false;
 
     if (blocks && Array.isArray(blocks)) {
       for (const block of blocks) {
         const blockText = extractBlockText(block);
-        if (blockText && !parts.includes(blockText)) {
-          parts.push(blockText);
+        if (blockText && !ownParts.includes(blockText)) {
+          ownParts.push(blockText);
+          consumedTopBlocks = true;
         }
       }
     }
 
-    // 3. Extract from attachments (forwarded messages, shared content, unfurls)
-    const attachments = msg.attachments as Array<{
-      text?: string;
-      fallback?: string;
-      pretext?: string;
-      title?: string;
-      message_blocks?: Array<{ message?: { blocks?: Array<unknown> } }>;
-    }> | undefined;
-
-    if (attachments && Array.isArray(attachments)) {
-      for (const att of attachments) {
-        // Try structured message_blocks first (forwarded messages)
-        if (att.message_blocks) {
-          for (const mb of att.message_blocks) {
-            if (mb.message?.blocks) {
-              for (const block of mb.message.blocks) {
-                const blockText = extractBlockText(block as { type: string; elements?: Array<unknown> });
-                if (blockText && !parts.includes(blockText)) {
-                  parts.push(`[Forwarded] ${blockText}`);
-                }
-              }
-            }
-          }
-        }
-
-        // Fall back to text/fallback fields
-        const attText = att.text || att.fallback;
-        if (attText && !parts.includes(attText)) {
-          // Check if this looks like a forwarded message (has is_share or from_url)
-          const isForwarded = (att as { is_share?: boolean }).is_share;
-          parts.push(isForwarded ? `[Forwarded] ${attText}` : attText);
-        }
-      }
+    if (!consumedTopBlocks && msg.text) {
+      ownParts.push(msg.text);
     }
 
-    // 4. Extract from files (file shares)
+    // Files (file shares) — appended to ownText since they belong to the
+    // top-level message, not to an attachment.
     const files = msg.files as Array<{ name?: string; title?: string }> | undefined;
     if (files && Array.isArray(files)) {
       const fileDescriptions = files
         .map(f => f.title || f.name)
         .filter(Boolean);
       if (fileDescriptions.length > 0) {
-        parts.push(`[Files: ${fileDescriptions.join(', ')}]`);
+        ownParts.push(`[Files: ${fileDescriptions.join(', ')}]`);
       }
     }
 
-    return parts.join('\n');
+    // Attachments (forwarded messages, shared content, unfurls). Each entry
+    // becomes one SlackAttachment with its author + text correlated.
+    const rawAttachments = msg.attachments as Array<{
+      author_id?: string;
+      text?: string;
+      fallback?: string;
+      pretext?: string;
+      title?: string;
+      message_blocks?: Array<{ message?: { user?: string; blocks?: Array<unknown> } }>;
+    }> | undefined;
+
+    const attachments: RawAttachment[] = [];
+    if (rawAttachments && Array.isArray(rawAttachments)) {
+      for (const att of rawAttachments) {
+        // Prefer structured message_blocks; skip text/fallback when present to
+        // avoid duplicating the same content.
+        const seg: string[] = [];
+        let authorId = att.author_id;
+        let consumedFromBlocks = false;
+        if (att.message_blocks) {
+          for (const mb of att.message_blocks) {
+            if (mb.message?.user && !authorId) authorId = mb.message.user;
+            if (mb.message?.blocks) {
+              for (const block of mb.message.blocks) {
+                const blockText = extractBlockText(block as { type: string; elements?: Array<unknown> });
+                if (blockText && !seg.includes(blockText)) {
+                  seg.push(blockText);
+                  consumedFromBlocks = true;
+                }
+              }
+            }
+          }
+        }
+
+        if (!consumedFromBlocks) {
+          const attText = att.text || att.fallback;
+          if (attText && !seg.includes(attText)) seg.push(attText);
+        }
+
+        const text = seg.join('\n');
+        if (text || authorId) {
+          attachments.push({ ...(authorId ? { authorId } : {}), text });
+        }
+      }
+    }
+
+    return {
+      ownText: ownParts.join('\n'),
+      attachments,
+    };
   };
 
   /**
@@ -555,8 +616,15 @@ export async function fetchThreadHistory(
     return parts.join('');
   };
 
-  // Batch fetch user/group/channel info for all messages
-  const messages = result.messages.map(m => ({ text: extractMessageText(m) }));
+  // Batch fetch user/group/channel info for all messages.
+  // For mention extraction we just need every text segment we'll surface,
+  // so concatenate ownText and all attachment texts into one blob.
+  const messages = result.messages.map((m) => {
+    const { ownText, attachments } = extractMessageParts(m);
+    return {
+      text: [ownText, ...attachments.map((a) => a.text)].filter(Boolean).join('\n'),
+    };
+  });
   const channelIds = new Set([channel]); // Include the thread's channel
   const { userInfoMap, groupInfoMap, channelInfoMap } = await fetchMentionInfo(messages, channelIds);
 
@@ -620,45 +688,191 @@ export async function fetchThreadHistory(
     return allFiles.length > 0 ? allFiles : undefined;
   };
 
+  // Resolve attachment authors to SlackAuthor objects up-front so each
+  // attachment carries its full author info (name, team, restriction flags).
+  const extractedPerMessage = result.messages.map((m) => extractMessageParts(m));
+  const attachmentAuthorIds = new Set<string>();
+  for (const { attachments } of extractedPerMessage) {
+    for (const att of attachments) {
+      if (att.authorId) attachmentAuthorIds.add(att.authorId);
+    }
+  }
+  const authorEntries = await Promise.all(
+    Array.from(attachmentAuthorIds).map(async (uid): Promise<readonly [string, SlackAuthor | null]> => {
+      try {
+        const info = await getUserInfo(uid);
+        return [uid, {
+          id: uid,
+          username: info.name,
+          realName: info.realName,
+          teamId: info.teamId,
+          isRestricted: info.isRestricted,
+          isUltraRestricted: info.isUltraRestricted,
+        }];
+      } catch {
+        return [uid, null];
+      }
+    })
+  );
+  const authorMap = new Map(authorEntries);
+
   // Apply replacements to all messages
-  return result.messages.map((msg) => {
+  return result.messages.map((msg, i) => {
     const files = extractFiles(msg);
+    const { ownText, attachments } = extractedPerMessage[i];
+    const resolvedAttachments: SlackAttachment[] = attachments.map((a) => {
+      const author = a.authorId ? authorMap.get(a.authorId) ?? undefined : undefined;
+      return {
+        ...(author ? { author } : {}),
+        text: applyMentionReplacements(a.text, userInfoMap, groupInfoMap, channelInfoMap),
+      };
+    });
     return {
-      type: msg.type || 'message',
-      channel,
       user: msg.user || 'unknown',
-      text: applyMentionReplacements(extractMessageText(msg), userInfoMap, groupInfoMap, channelInfoMap),
+      text: applyMentionReplacements(ownText, userInfoMap, groupInfoMap, channelInfoMap),
       ts: msg.ts || '',
-      thread_ts: msg.thread_ts,
       ...(files && files.length > 0 ? { files } : {}),
+      ...(resolvedAttachments.length > 0 ? { attachments: resolvedAttachments } : {}),
     };
   });
 }
 
 /**
- * Fetch new messages in a thread since a timestamp
- */
-export async function fetchNewMessages(
-  channel: string,
-  threadTs: string,
-  sinceTs: string
-): Promise<SlackMessage[]> {
-  return fetchThreadHistory(channel, threadTs, sinceTs);
-}
-
-/**
  * Get user info
  */
-export async function getUserInfo(userId: string): Promise<{ name: string; realName: string; tz?: string }> {
+export async function getUserInfo(userId: string): Promise<{
+  name: string;
+  realName: string;
+  tz?: string;
+  teamId?: string;
+  isRestricted?: boolean;
+  isUltraRestricted?: boolean;
+}> {
   const client = getSlackClient();
 
   const result = await client.users.info({ user: userId });
+  const user = result.user as {
+    name?: string;
+    real_name?: string;
+    profile?: { real_name?: string; display_name?: string; real_name_normalized?: string };
+    tz?: string;
+    team_id?: string;
+    is_restricted?: boolean;
+    is_ultra_restricted?: boolean;
+  } | undefined;
+
+  // External users (Slack Connect) often only populate the name under profile.*
+  // — fall through several fields before giving up to the user ID.
+  const realName =
+    user?.real_name ||
+    user?.profile?.real_name ||
+    user?.profile?.real_name_normalized ||
+    user?.profile?.display_name ||
+    user?.name ||
+    userId;
 
   return {
-    name: result.user?.name || userId,
-    realName: result.user?.real_name || userId,
-    tz: (result.user as Record<string, unknown>)?.tz as string | undefined,
+    name: user?.name || userId,
+    realName,
+    tz: user?.tz,
+    teamId: user?.team_id,
+    isRestricted: user?.is_restricted,
+    isUltraRestricted: user?.is_ultra_restricted,
   };
+}
+
+/**
+ * Classify a user as external relative to the bot's home Slack team.
+ * External = different team_id (Slack Connect / shared channels) OR a guest
+ * (`is_restricted` / `is_ultra_restricted`) on the home workspace.
+ *
+ * Fails open when homeTeamId is unknown (returns false) so the bot remains
+ * usable rather than filtering everyone — see startup warning in initSlackClient.
+ */
+export function isExternalUser(user: {
+  teamId?: string;
+  isRestricted?: boolean;
+  isUltraRestricted?: boolean;
+}): boolean {
+  const home = getHomeTeamId();
+  if (!home) return false;
+  if (user.isRestricted || user.isUltraRestricted) return true;
+  if (user.teamId && user.teamId !== home) return true;
+  return false;
+}
+
+// ---- Shared-channel detection (Slack Connect) -----------------------------
+// Cached per-channel with a 1-minute TTL: a channel can flip to shared mid-task
+// when an external org is added, and the warning logic depends on observing
+// the transition promptly. 1 min is well under Slack's tier-3 rate limit
+// (50+/min) even for >50 simultaneously active threads.
+
+interface ChannelSharedCacheEntry {
+  isShared: boolean;
+  fetchedAt: number;
+}
+const channelSharedCache = new Map<string, ChannelSharedCacheEntry>();
+const CHANNEL_SHARED_TTL_MS = 60_000;
+
+/**
+ * Returns whether a channel is shared with one or more external Slack
+ * workspaces (Slack Connect). DMs are never shared. Result is cached for
+ * 1 minute. On API failure, returns false (fail-open).
+ */
+export async function isChannelShared(channelId: string): Promise<boolean> {
+  if (channelId.startsWith('D')) return false;
+
+  const cached = channelSharedCache.get(channelId);
+  if (cached && Date.now() - cached.fetchedAt < CHANNEL_SHARED_TTL_MS) {
+    return cached.isShared;
+  }
+
+  try {
+    const client = getSlackClient();
+    const result = await client.conversations.info({ channel: channelId });
+    const channel = result.channel as {
+      is_ext_shared?: boolean;
+      is_pending_ext_shared?: boolean;
+      connected_team_ids?: string[];
+    } | undefined;
+    const isShared =
+      !!channel?.is_ext_shared ||
+      !!channel?.is_pending_ext_shared ||
+      ((channel?.connected_team_ids?.length ?? 0) > 1);
+    channelSharedCache.set(channelId, { isShared, fetchedAt: Date.now() });
+    return isShared;
+  } catch (error) {
+    logger.warn('Slack', `Failed to fetch shared-channel status for ${channelId}`, error);
+    return false;
+  }
+}
+
+/**
+ * Post an ephemeral message in a channel/thread visible only to one user.
+ * Used for shared-channel and forwarding warnings.
+ */
+export async function postEphemeral(
+  channel: string,
+  user: string,
+  text: string,
+  threadTs?: string,
+): Promise<void> {
+  if (dryRun) {
+    logger.system(`[DRY RUN] postEphemeral ${channel} → ${user} — ${text.slice(0, 120)}`);
+    return;
+  }
+  try {
+    const client = getSlackClient();
+    const slackText = slackifyMarkdown(restoreMentions(text));
+    await client.chat.postEphemeral({
+      channel,
+      user,
+      text: slackText,
+      ...(threadTs ? { thread_ts: threadTs } : {}),
+    });
+  } catch (error) {
+    logger.warn('Slack', `Failed to post ephemeral in ${channel} to ${user}`, error);
+  }
 }
 
 /**
@@ -797,9 +1011,10 @@ export async function fetchSlackThread(
   threadTs: string,
   currentMessageTs: string,
 ): Promise<SlackThread> {
-  const [channelInfo, rawMessages] = await Promise.all([
+  const [channelInfo, rawMessages, shared] = await Promise.all([
     getChannelInfo(channelId),
     fetchThreadHistory(channelId, threadTs),
+    isChannelShared(channelId),
   ]);
 
   // Filter out bot messages
@@ -807,30 +1022,45 @@ export async function fetchSlackThread(
     (msg) => msg.user && msg.user !== 'unknown' && msg.user !== botUserId
   );
 
-  // Batch-resolve user info for all unique authors
-  const uniqueUserIds = [...new Set(humanMessages.map((msg) => msg.user))];
+  // Resolve top-level message authors. Attachment authors are already
+  // resolved on each msg.attachments[].author by fetchThreadHistory.
+  const authorIds = new Set(humanMessages.map((msg) => msg.user));
   const userInfoEntries = await Promise.all(
-    uniqueUserIds.map(async (uid) => {
-      const info = await getUserInfo(uid);
-      return [uid, info] as const;
+    Array.from(authorIds).map(async (uid): Promise<readonly [string, SlackAuthor]> => {
+      try {
+        const info = await getUserInfo(uid);
+        return [uid, {
+          id: uid,
+          username: info.name,
+          realName: info.realName,
+          teamId: info.teamId,
+          isRestricted: info.isRestricted,
+          isUltraRestricted: info.isUltraRestricted,
+        }];
+      } catch {
+        return [uid, { id: uid, username: uid, realName: uid }];
+      }
     })
   );
   const userInfoMap = new Map(userInfoEntries);
 
-  // Build resolved messages
+  // Surface structured pieces (text, attachments, files) and let consumers
+  // decide redaction / labeling using `thread.shared` + `isExternalUser`.
   const messages: SlackThreadMessage[] = humanMessages.map((msg) => {
-    const info = userInfoMap.get(msg.user)!;
+    const author = userInfoMap.get(msg.user)!;
     return {
-      user: { id: msg.user, username: info.name, realName: info.realName },
+      user: author,
       text: msg.text,
       ts: msg.ts,
       ...(msg.files && msg.files.length > 0 ? { files: msg.files } : {}),
+      ...(msg.attachments && msg.attachments.length > 0 ? { attachments: msg.attachments } : {}),
     };
   });
 
   return {
     threadId: threadTs,
     channel: channelInfo,
+    shared,
     messages,
     currentMessageTs,
   };
@@ -869,6 +1099,9 @@ export interface SlackUserInfo {
   timezone: string;      // Timezone label (e.g., "Eastern Time (US & Canada)")
   isAdmin: boolean;      // Workspace admin
   isOwner: boolean;      // Workspace owner
+  teamId?: string;             // Slack team_id — used for external-org classification
+  isRestricted?: boolean;      // Multi-channel guest
+  isUltraRestricted?: boolean; // Single-channel guest
 }
 
 let userCache: SlackUserInfo[] = [];
@@ -901,6 +1134,9 @@ export async function listWorkspaceUsers(): Promise<SlackUserInfo[]> {
         timezone: member.tz_label ?? member.tz ?? '',
         isAdmin: member.is_admin ?? false,
         isOwner: member.is_owner ?? false,
+        teamId: member.team_id ?? undefined,
+        isRestricted: member.is_restricted ?? false,
+        isUltraRestricted: member.is_ultra_restricted ?? false,
       });
     }
     cursor = result.response_metadata?.next_cursor || undefined;
