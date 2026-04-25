@@ -9,7 +9,8 @@ import { mkdir, readFile, writeFile, appendFile } from 'fs/promises';
 import { createReadStream, existsSync } from 'fs';
 import { createInterface } from 'readline';
 import { join } from 'path';
-import type { TaskMetadata, LogEntry, FindingType, SlackFile } from '../types/index.js';
+import type { TaskMetadata, LogEntry, FindingType, SlackFile, SlackAttachment, SlackAuthor } from '../types/index.js';
+import { isExternalUser } from '../connectors/slack/client.js';
 import type { SystemEvent } from '../system/event-bus.js';
 import { activeTasks } from './task.js';
 import { SESSIONS_DIR } from '../system/workdir.js';
@@ -172,36 +173,83 @@ function formatLogEntry(entry: LogEntry): string {
 }
 
 /**
- * Append a Slack message to the knowledge log
- * @param files - Optional array of downloaded files with localPath set
+ * Append a Slack message to the knowledge log.
+ *
+ * Renders one of three layouts based on the structured data:
+ * - Redacted (external author): body replaced with a fixed placeholder, name
+ *   masked as `external` in the source line.
+ * - With forwarded-from-external attachment: forwarder's text first, then a
+ *   provenance label, then the forwarded content. Other (non-external)
+ *   attachments fold into the inline body.
+ * - Normal: just the author's text plus inline attachments and file list.
  */
 export async function appendSlackMessage(
   taskId: string,
   channelInfo: { id: string; name: string },
   threadId: string,
-  userInfo: { id: string; username: string; realName: string },
+  userInfo: SlackAuthor,
   message: string,
-  files?: SlackFile[]
+  files?: SlackFile[],
+  attachments?: SlackAttachment[],
+  options?: { redacted?: boolean }
 ): Promise<void> {
-  // Build message with optional file attachments
-  let fullMessage = message;
+  const redacted = options?.redacted === true;
 
-  if (files && files.length > 0) {
-    const fileInfo = files.map(f => {
-      const pathInfo = f.localPath ? ` (${f.localPath})` : '';
-      return `${f.name}${pathInfo}`;
-    }).join(', ');
-    fullMessage += `\n  [Attachments: ${fileInfo}]`;
+  let fullMessage: string;
+  if (redacted) {
+    fullMessage = '[redacted: external participant in shared channel]';
+  } else {
+    const inlineParts: string[] = [];
+    if (message) inlineParts.push(message);
+
+    let forwardedBlock = '';
+    for (const att of attachments ?? []) {
+      if (att.author && isExternalUser(att.author)) {
+        // Render the externally-authored attachment under a provenance label.
+        // Only the first one gets the label block; subsequent ones (rare)
+        // fold inline so the agent still sees them.
+        if (!forwardedBlock) {
+          const teamSuffix = att.author.teamId ? `, team ${att.author.teamId}` : '';
+          const label = `[forwarded from @<${att.author.id}:${att.author.realName}> — external${teamSuffix}]`;
+          forwardedBlock = `${label}\n${att.text}`;
+          continue;
+        }
+      }
+      if (att.text) inlineParts.push(att.text);
+    }
+    if (forwardedBlock) inlineParts.push(forwardedBlock);
+
+    fullMessage = inlineParts.join('\n');
+
+    if (files && files.length > 0) {
+      const fileInfo = files.map(f => {
+        const pathInfo = f.localPath ? ` (${f.localPath})` : '';
+        return `${f.name}${pathInfo}`;
+      }).join(', ');
+      fullMessage += `\n  [Attachments: ${fileInfo}]`;
+    }
   }
 
+  // Mask the author name in the source line when the body is redacted, so the
+  // log doesn't leak the external user's display name even though we keep it
+  // in memory for classification purposes.
+  const displayName = redacted ? 'external' : userInfo.realName;
   const entry: LogEntry = {
     timestamp: new Date().toISOString(),
-    source: `@<${userInfo.id}:${userInfo.realName}> in ${formatSlackChannelRef(channelInfo.id, channelInfo.name, threadId)}`,
+    source: `@<${userInfo.id}:${displayName}> in ${formatSlackChannelRef(channelInfo.id, channelInfo.name, threadId)}`,
     message: fullMessage,
   };
 
   await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
-  emitEvent('message', taskId, { from: userInfo.realName, to: 'pm-agent', destination: formatSlackChannelDisplay(channelInfo.name), message });
+  // Emit the original message body in events so live observers (CLI/UI) still
+  // see redacted vs internal as a clear category — pass the same string we
+  // wrote to the log.
+  emitEvent('message', taskId, {
+    from: displayName,
+    to: 'pm-agent',
+    destination: formatSlackChannelDisplay(channelInfo.name),
+    message: fullMessage,
+  });
 }
 
 /**

@@ -19,18 +19,45 @@ export interface SlackThreadRef {
   last_processed_ts: string;
 }
 
-/** A fully-resolved message from a Slack thread */
-export interface SlackThreadMessage {
-  user: { id: string; username: string; realName: string };
-  text: string;           // mentions already resolved
-  ts: string;
-  files?: SlackFile[];    // raw file metadata (not yet downloaded)
+/**
+ * Resolved Slack user info attached to a message or an attachment.
+ *
+ * Carries everything needed to classify the user (home-team membership,
+ * guest status) without a second lookup. Use `isExternalUser` from the Slack
+ * client to evaluate.
+ */
+export interface SlackAuthor {
+  id: string;
+  username: string;     // @handle
+  realName: string;     // Full display name
+  teamId?: string;
+  isRestricted?: boolean;
+  isUltraRestricted?: boolean;
 }
 
-/** Full Slack thread context — all API data resolved, ready for task consumption */
+/** A fully-resolved message from a Slack thread */
+export interface SlackThreadMessage {
+  user: SlackAuthor;
+  /** The author's own typed text (top-level blocks/text + file descriptions), mentions already resolved. */
+  text: string;
+  ts: string;
+  files?: SlackFile[];    // raw file metadata (not yet downloaded)
+  /** Forwarded / unfurled message attachments — each carries its author and text. */
+  attachments?: SlackAttachment[];
+}
+
+/**
+ * Full Slack thread context — all API data resolved, ready for task consumption.
+ *
+ * `shared` is a thread-level signal: when true, the channel is currently
+ * shared with one or more external workspaces (Slack Connect). Consumers use
+ * `shared && isExternalUser(msg.user)` to decide whether to redact a message
+ * when writing it out — the data layer never strips content itself.
+ */
 export interface SlackThread {
   threadId: string;
   channel: { id: string; name: string };
+  shared: boolean;
   messages: SlackThreadMessage[];  // full thread, bot messages excluded
   currentMessageTs: string;
 }
@@ -52,6 +79,12 @@ export interface SlackChannel extends ChannelBase {
   last_processed_ts: string;
   url?: string;     // Full Slack URL to the thread (e.g. https://workspace.slack.com/archives/C.../p...)
   muted?: boolean;  // When true, messages are not routed to task until next @mention
+  /** Snapshot of last observed Slack-Connect / shared-channel state for this channel. */
+  isShared?: boolean;
+  /** User IDs already shown the shared-channel ephemeral warning in this thread. */
+  warnedUsers?: string[];
+  /** User IDs already shown the forward-from-external ephemeral notice in this thread. */
+  forwardNotifiedUsers?: string[];
 }
 
 /** GitHub channel — a PR conversation */
@@ -151,13 +184,19 @@ export interface SlackFile {
   localPath?: string;
 }
 
-export interface SlackMessage {
-  type: string;
-  channel: string;
-  user: string;
+/**
+ * A simplified attachment on a Slack message.
+ *
+ * Slack attachments cover several use cases (forwarded messages, permalink
+ * unfurls, link previews). We collapse them into a single shape: each entry
+ * has its own text and, when known, the original author resolved to a
+ * SlackAuthor. This keeps the author + content correlation that flat parallel
+ * fields would lose.
+ */
+export interface SlackAttachment {
+  /** Resolved author info, when the attachment carries an author (forwards / message unfurls). */
+  author?: SlackAuthor;
+  /** Text content of the attachment (forwarded message body, unfurled preview, etc.). */
   text: string;
-  ts: string;
-  thread_ts?: string;
-  /** Files attached to this message */
-  files?: SlackFile[];
 }
+

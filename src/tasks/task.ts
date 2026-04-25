@@ -53,7 +53,7 @@ import { getIsShuttingDown } from '../system/shutdown.js';
 import { scheduleIdleCheck } from './recovery.js';
 import { scanAgentDefs } from '../agents/registry.js';
 import { refreshPlugins } from '../system/workdir.js';
-import { postToThread, postInteractiveToThreads, removeReaction, buildThreadUrl, openDMChannel, postNewMessage, getChannelInfo, getUserInfo, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { postToThread, postInteractiveToThreads, removeReaction, buildThreadUrl, openDMChannel, postNewMessage, getChannelInfo, getUserInfo, isExternalUser, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
 import { emitEvent } from '../system/event-bus.js';
@@ -211,6 +211,24 @@ export class Task {
     const channelId = `slack:${thread.channel.id}:${thread.threadId}`;
     const existing = this.metadata.channels[channelId] as SlackChannel | undefined;
 
+    // Redaction policy: when the channel is shared and the message author is
+    // external, drop content and don't download files. Author info is logged.
+    const writeMessage = async (msg: typeof thread.messages[number]): Promise<void> => {
+      const redact = thread.shared && isExternalUser(msg.user);
+      if (redact) {
+        await appendSlackMessage(
+          this.taskId, thread.channel, thread.threadId, msg.user, '', undefined, undefined,
+          { redacted: true },
+        );
+      } else {
+        const downloadedFiles = msg.files ? await downloadMessageFiles(this.taskId, msg.files) : undefined;
+        await appendSlackMessage(
+          this.taskId, thread.channel, thread.threadId, msg.user, msg.text,
+          downloadedFiles, msg.attachments,
+        );
+      }
+    };
+
     if (!existing) {
       // New thread — link it as a channel and append all messages
       this.metadata.channels[channelId] = {
@@ -224,8 +242,7 @@ export class Task {
       this.metadata.default_channel ??= channelId;
 
       for (const msg of thread.messages) {
-        const downloadedFiles = msg.files ? await downloadMessageFiles(this.taskId, msg.files) : undefined;
-        await appendSlackMessage(this.taskId, thread.channel, thread.threadId, msg.user, msg.text, downloadedFiles);
+        await writeMessage(msg);
       }
 
       this.debouncedSave();
@@ -236,8 +253,7 @@ export class Task {
     const lastProcessedTs = existing.last_processed_ts;
     for (const msg of thread.messages) {
       if (msg.ts <= lastProcessedTs) continue;
-      const downloadedFiles = msg.files ? await downloadMessageFiles(this.taskId, msg.files) : undefined;
-      await appendSlackMessage(this.taskId, thread.channel, thread.threadId, msg.user, msg.text, downloadedFiles);
+      await writeMessage(msg);
     }
 
     existing.last_processed_ts = thread.currentMessageTs;
