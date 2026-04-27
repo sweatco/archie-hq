@@ -151,41 +151,39 @@ export function getSlackClient(): WebClient {
 }
 
 /**
- * Post a message to a Slack thread
+ * Post a Slack message as a `markdown` block.
+ *
+ * - With `threadTs`: replies inside that thread.
+ * - Without `threadTs`: posts a new top-level message; the returned `ts` becomes
+ *   the thread root for future replies.
+ *
+ * Throws `SlackMarkdownLimitError` when `text` exceeds the per-message limit
+ * — callers should perform any logging/event emission only AFTER this resolves
+ * successfully so rejected payloads are not persisted.
+ *
+ * Returns `undefined` in dry-run mode.
  */
-export async function postToThread(
-  channel: string,
-  threadTs: string,
-  text: string
-): Promise<string | undefined> {
+export async function postSlackMessage(args: {
+  channel: string;
+  text: string;
+  threadTs?: string;
+}): Promise<string | undefined> {
+  const { channel, text, threadTs } = args;
   if (dryRun) {
-    logger.system(`[DRY RUN] postToThread ${channel}:${threadTs} — ${text.slice(0, 120)}`);
+    const target = threadTs ? `${channel}:${threadTs}` : channel;
+    logger.system(`[DRY RUN] postSlackMessage ${target} — ${text.slice(0, 120)}`);
     return undefined;
   }
   const renderedText = restoreMentions(text);
   assertSlackMarkdownLength(renderedText);
   const client = getSlackClient();
-
   const result = await client.chat.postMessage({
     channel,
-    thread_ts: threadTs,
+    ...(threadTs ? { thread_ts: threadTs } : {}),
     text: renderedText,
     blocks: markdownBlock(renderedText) as any,
   });
-
   return result.ts;
-}
-
-/**
- * Post a message to multiple threads (for tasks with multiple linked threads)
- */
-export async function postToThreads(
-  threads: SlackThreadRef[],
-  text: string
-): Promise<void> {
-  for (const thread of threads) {
-    await postToThread(thread.channel_id, thread.thread_id, text);
-  }
 }
 
 /**
@@ -961,7 +959,7 @@ export async function askUserInThread(
     message += options.map((opt, i) => `${i + 1}. ${opt}`).join('\n');
   }
 
-  await postToThread(channel, threadTs, message);
+  await postSlackMessage({ channel, threadTs, text: message });
 }
 
 /**
@@ -1311,22 +1309,3 @@ export async function openDMChannel(userId: string): Promise<string> {
   return result.channel!.id!;
 }
 
-/**
- * Post a top-level message to a channel (not in a thread).
- * Creates a new thread — the returned ts becomes the thread_id for replies.
- */
-export async function postNewMessage(channel: string, text: string): Promise<string | undefined> {
-  if (dryRun) {
-    logger.system(`[DRY RUN] postNewMessage ${channel} — ${text.slice(0, 120)}`);
-    return undefined;
-  }
-  const renderedText = restoreMentions(text);
-  assertSlackMarkdownLength(renderedText);
-  const client = getSlackClient();
-  const result = await client.chat.postMessage({
-    channel,
-    text: renderedText,
-    blocks: markdownBlock(renderedText) as any,
-  });
-  return result.ts;
-}
