@@ -271,6 +271,7 @@ async function generateTitleAndSync(task: Task, thread: SlackThread): Promise<vo
 
   task.metadata.title = title;
   task.debouncedSave();
+  logger.system(`Task ${task.taskId} title set: "${title}"`);
 
   if (thread.channel.id.startsWith('D')) {
     await setAssistantThreadTitle(getSlackClient(), thread.channel.id, thread.threadId, title);
