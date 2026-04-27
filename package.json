@@ -35,7 +35,6 @@
     "ink-text-input": "^6.0.0",
     "picocolors": "^1.1.1",
     "react": "^18.3.1",
-    "slackify-markdown": "^4.5.0",
     "zod": "^4.3.6",
     "zod-to-json-schema": "^3.25.0"
   },

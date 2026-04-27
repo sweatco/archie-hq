@@ -53,7 +53,7 @@ import { getIsShuttingDown } from '../system/shutdown.js';
 import { scheduleIdleCheck } from './recovery.js';
 import { scanAgentDefs } from '../agents/registry.js';
 import { refreshPlugins } from '../system/workdir.js';
-import { postToThread, postInteractiveToThreads, removeReaction, buildThreadUrl, openDMChannel, postNewMessage, getChannelInfo, getUserInfo, isExternalUser, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { postToThread, postInteractiveToThreads, removeReaction, buildThreadUrl, openDMChannel, postNewMessage, getChannelInfo, getUserInfo, isExternalUser, formatSlackChannelRef, formatSlackChannelDisplay, assertSlackMarkdownLength } from '../connectors/slack/client.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
 import { emitEvent } from '../system/event-bus.js';
@@ -289,6 +289,9 @@ export class Task {
 
     // New DM — open DM channel, reuse existing thread or create new
     if (target?.new_dm) {
+      // Validate length BEFORE logging so a rejected message is not persisted
+      // to the knowledge log or emitted to the event bus.
+      assertSlackMarkdownLength(message);
       const dmChannelId = await openDMChannel(target.new_dm);
       const existing = this.findChannelBySlackId(dmChannelId);
       if (existing) {
@@ -309,6 +312,7 @@ export class Task {
 
     // New thread in a channel
     if (target?.new_thread) {
+      assertSlackMarkdownLength(message);
       const channelInfo = await getChannelInfo(target.new_thread);
       const ts = await postNewMessage(target.new_thread, message);
       if (!ts) return null; // dry-run
@@ -322,6 +326,7 @@ export class Task {
     if (target?.channel) {
       const ch = this.metadata.channels[target.channel];
       if (ch?.type === 'slack') {
+        assertSlackMarkdownLength(message);
         const dest = Task.formatSlackDest(ch);
         this.logOutgoingMessage(sender, message, dest.display, ch);
         await this.postToSlackRef(ch, message);
@@ -341,6 +346,7 @@ export class Task {
       return null;
     }
     if (defaultCh.type === 'slack') {
+      assertSlackMarkdownLength(message);
       const dest = Task.formatSlackDest(defaultCh);
       this.logOutgoingMessage(sender, message, dest.display, defaultCh);
       await this.postToSlackRef(defaultCh, message);

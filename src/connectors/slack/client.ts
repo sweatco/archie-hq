@@ -21,8 +21,49 @@ interface RawSlackMessage {
   files?: SlackFile[];
   attachments?: SlackAttachment[];
 }
-import slackifyMarkdown from 'slackify-markdown';
 import { logger } from '../../system/logger.js';
+
+/**
+ * Slack `markdown` block cumulative payload limit (per chat.postMessage).
+ * Source: https://docs.slack.dev/reference/block-kit/blocks/markdown-block/
+ */
+export const SLACK_MARKDOWN_LIMIT = 12000;
+
+/**
+ * Thrown when a Slack-bound message exceeds the markdown block character limit.
+ * Carries the actual length so tool wrappers can build agent-facing guidance.
+ */
+export class SlackMarkdownLimitError extends Error {
+  readonly actualLength: number;
+  readonly limit: number;
+  constructor(actualLength: number) {
+    super(
+      `Slack markdown payload is ${actualLength} chars, exceeds ${SLACK_MARKDOWN_LIMIT} limit.`
+    );
+    this.name = 'SlackMarkdownLimitError';
+    this.actualLength = actualLength;
+    this.limit = SLACK_MARKDOWN_LIMIT;
+  }
+}
+
+/**
+ * Throw if `text` exceeds Slack's markdown block character limit.
+ * Callers should invoke this BEFORE logging the message anywhere
+ * so a rejected payload does not pollute the knowledge log.
+ */
+export function assertSlackMarkdownLength(text: string): void {
+  if (text.length > SLACK_MARKDOWN_LIMIT) {
+    throw new SlackMarkdownLimitError(text.length);
+  }
+}
+
+/**
+ * Build a single Slack `markdown` block carrying CommonMark text.
+ * Slack renders it natively (tables, code, lists) — no legacy mrkdwn conversion.
+ */
+function markdownBlock(text: string): unknown[] {
+  return [{ type: 'markdown', text }];
+}
 
 let slackClient: WebClient | null = null;
 let botUserId: string | null = null;
@@ -121,16 +162,15 @@ export async function postToThread(
     logger.system(`[DRY RUN] postToThread ${channel}:${threadTs} — ${text.slice(0, 120)}`);
     return undefined;
   }
+  const renderedText = restoreMentions(text);
+  assertSlackMarkdownLength(renderedText);
   const client = getSlackClient();
-
-  // Restore @<ID:Name> mentions to <@ID> before slackify (which would escape the angle brackets)
-  const slackText = slackifyMarkdown(restoreMentions(text));
 
   const result = await client.chat.postMessage({
     channel,
     thread_ts: threadTs,
-    text: slackText,
-    mrkdwn: true,
+    text: renderedText,
+    blocks: markdownBlock(renderedText) as any,
   });
 
   return result.ts;
@@ -862,12 +902,14 @@ export async function postEphemeral(
     return;
   }
   try {
+    const renderedText = restoreMentions(text);
+    assertSlackMarkdownLength(renderedText);
     const client = getSlackClient();
-    const slackText = slackifyMarkdown(restoreMentions(text));
     await client.chat.postEphemeral({
       channel,
       user,
-      text: slackText,
+      text: renderedText,
+      blocks: markdownBlock(renderedText) as any,
       ...(threadTs ? { thread_ts: threadTs } : {}),
     });
   } catch (error) {
@@ -1278,12 +1320,13 @@ export async function postNewMessage(channel: string, text: string): Promise<str
     logger.system(`[DRY RUN] postNewMessage ${channel} — ${text.slice(0, 120)}`);
     return undefined;
   }
+  const renderedText = restoreMentions(text);
+  assertSlackMarkdownLength(renderedText);
   const client = getSlackClient();
-  const slackText = slackifyMarkdown(restoreMentions(text));
   const result = await client.chat.postMessage({
     channel,
-    text: slackText,
-    mrkdwn: true,
+    text: renderedText,
+    blocks: markdownBlock(renderedText) as any,
   });
   return result.ts;
 }
