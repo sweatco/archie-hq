@@ -107,10 +107,9 @@ See `src/connectors/slack/events.ts`, `handleExistingTask()` -- specifically the
 The PM agent communicates with users via the `post_to_slack` MCP tool, defined in `src/agents/tools.ts`. When the PM calls this tool:
 
 1. The tool callback (`onPostToSlack` in `src/tasks/task.ts`) invokes the Slack post callback.
-2. The callback loads the task's metadata and calls `postToThreads()` from `src/connectors/slack/client.ts`.
-3. `postToThreads()` iterates over all `SlackThread` entries in the task metadata and posts the message to each one.
-4. Before posting, the message text is converted from standard Markdown to Slack's `mrkdwn` format using the `slackify-markdown` library.
-5. The message is also logged to the task's `knowledge.log` as a decision entry.
+2. The callback loads the task's metadata and calls `postSlackMessage()` from `src/connectors/slack/client.ts` for each linked target — replying inside an existing thread when `threadTs` is supplied, or starting a new top-level message otherwise.
+3. The message is sent as a Slack Block Kit `markdown` block (`{ type: 'markdown', text }`), which Slack renders natively as CommonMark — supporting headings, tables, fenced code blocks, lists, blockquotes, task lists, and links without manual conversion. See [Markdown block reference](https://docs.slack.dev/reference/block-kit/blocks/markdown-block/). Per-message payload is capped at 12,000 characters; `postSlackMessage()` enforces this and throws `SlackMarkdownLimitError` on overflow.
+4. On a successful send, the message is logged to the task's `knowledge.log` as a decision entry. A failed send (length limit, transport error) skips the log so rejected payloads never reach `knowledge.log` or the event bus, and the agent receives split-and-retry guidance via the tool response.
 
 The PM agent is the only agent with access to `post_to_slack`. Repo agents communicate findings back to PM via `send_message_to_agent`, and PM decides what to relay to the user.
 

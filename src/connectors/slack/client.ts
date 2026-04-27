@@ -21,8 +21,49 @@ interface RawSlackMessage {
   files?: SlackFile[];
   attachments?: SlackAttachment[];
 }
-import slackifyMarkdown from 'slackify-markdown';
 import { logger } from '../../system/logger.js';
+
+/**
+ * Slack `markdown` block cumulative payload limit (per chat.postMessage).
+ * Source: https://docs.slack.dev/reference/block-kit/blocks/markdown-block/
+ */
+export const SLACK_MARKDOWN_LIMIT = 12000;
+
+/**
+ * Thrown when a Slack-bound message exceeds the markdown block character limit.
+ * Carries the actual length so tool wrappers can build agent-facing guidance.
+ */
+export class SlackMarkdownLimitError extends Error {
+  readonly actualLength: number;
+  readonly limit: number;
+  constructor(actualLength: number) {
+    super(
+      `Slack markdown payload is ${actualLength} chars, exceeds ${SLACK_MARKDOWN_LIMIT} limit.`
+    );
+    this.name = 'SlackMarkdownLimitError';
+    this.actualLength = actualLength;
+    this.limit = SLACK_MARKDOWN_LIMIT;
+  }
+}
+
+/**
+ * Throw if `text` exceeds Slack's markdown block character limit.
+ * Callers should invoke this BEFORE logging the message anywhere
+ * so a rejected payload does not pollute the knowledge log.
+ */
+export function assertSlackMarkdownLength(text: string): void {
+  if (text.length > SLACK_MARKDOWN_LIMIT) {
+    throw new SlackMarkdownLimitError(text.length);
+  }
+}
+
+/**
+ * Build a single Slack `markdown` block carrying CommonMark text.
+ * Slack renders it natively (tables, code, lists) — no legacy mrkdwn conversion.
+ */
+function markdownBlock(text: string): unknown[] {
+  return [{ type: 'markdown', text }];
+}
 
 let slackClient: WebClient | null = null;
 let botUserId: string | null = null;
@@ -110,42 +151,39 @@ export function getSlackClient(): WebClient {
 }
 
 /**
- * Post a message to a Slack thread
+ * Post a Slack message as a `markdown` block.
+ *
+ * - With `threadTs`: replies inside that thread.
+ * - Without `threadTs`: posts a new top-level message; the returned `ts` becomes
+ *   the thread root for future replies.
+ *
+ * Throws `SlackMarkdownLimitError` when `text` exceeds the per-message limit
+ * — callers should perform any logging/event emission only AFTER this resolves
+ * successfully so rejected payloads are not persisted.
+ *
+ * Returns `undefined` in dry-run mode.
  */
-export async function postToThread(
-  channel: string,
-  threadTs: string,
-  text: string
-): Promise<string | undefined> {
+export async function postSlackMessage(args: {
+  channel: string;
+  text: string;
+  threadTs?: string;
+}): Promise<string | undefined> {
+  const { channel, text, threadTs } = args;
   if (dryRun) {
-    logger.system(`[DRY RUN] postToThread ${channel}:${threadTs} — ${text.slice(0, 120)}`);
+    const target = threadTs ? `${channel}:${threadTs}` : channel;
+    logger.system(`[DRY RUN] postSlackMessage ${target} — ${text.slice(0, 120)}`);
     return undefined;
   }
+  const renderedText = restoreMentions(text);
+  assertSlackMarkdownLength(renderedText);
   const client = getSlackClient();
-
-  // Restore @<ID:Name> mentions to <@ID> before slackify (which would escape the angle brackets)
-  const slackText = slackifyMarkdown(restoreMentions(text));
-
   const result = await client.chat.postMessage({
     channel,
-    thread_ts: threadTs,
-    text: slackText,
-    mrkdwn: true,
+    ...(threadTs ? { thread_ts: threadTs } : {}),
+    text: renderedText,
+    blocks: markdownBlock(renderedText) as any,
   });
-
   return result.ts;
-}
-
-/**
- * Post a message to multiple threads (for tasks with multiple linked threads)
- */
-export async function postToThreads(
-  threads: SlackThreadRef[],
-  text: string
-): Promise<void> {
-  for (const thread of threads) {
-    await postToThread(thread.channel_id, thread.thread_id, text);
-  }
 }
 
 /**
@@ -862,12 +900,14 @@ export async function postEphemeral(
     return;
   }
   try {
+    const renderedText = restoreMentions(text);
+    assertSlackMarkdownLength(renderedText);
     const client = getSlackClient();
-    const slackText = slackifyMarkdown(restoreMentions(text));
     await client.chat.postEphemeral({
       channel,
       user,
-      text: slackText,
+      text: renderedText,
+      blocks: markdownBlock(renderedText) as any,
       ...(threadTs ? { thread_ts: threadTs } : {}),
     });
   } catch (error) {
@@ -919,7 +959,7 @@ export async function askUserInThread(
     message += options.map((opt, i) => `${i + 1}. ${opt}`).join('\n');
   }
 
-  await postToThread(channel, threadTs, message);
+  await postSlackMessage({ channel, threadTs, text: message });
 }
 
 /**
@@ -1269,21 +1309,3 @@ export async function openDMChannel(userId: string): Promise<string> {
   return result.channel!.id!;
 }
 
-/**
- * Post a top-level message to a channel (not in a thread).
- * Creates a new thread — the returned ts becomes the thread_id for replies.
- */
-export async function postNewMessage(channel: string, text: string): Promise<string | undefined> {
-  if (dryRun) {
-    logger.system(`[DRY RUN] postNewMessage ${channel} — ${text.slice(0, 120)}`);
-    return undefined;
-  }
-  const client = getSlackClient();
-  const slackText = slackifyMarkdown(restoreMentions(text));
-  const result = await client.chat.postMessage({
-    channel,
-    text: slackText,
-    mrkdwn: true,
-  });
-  return result.ts;
-}

@@ -23,6 +23,19 @@ import { mirrorLegacyFields, hydrateBranchState, findBranchStateByPR } from '../
 import { appendAgentFinding } from '../tasks/persistence.js';
 import { launchTask } from '../tasks/launch.js';
 import { logger } from '../system/logger.js';
+import { SLACK_MARKDOWN_LIMIT, SlackMarkdownLimitError } from '../connectors/slack/client.js';
+
+function formatSlackSendError(err: unknown): string {
+  if (err instanceof SlackMarkdownLimitError) {
+    return (
+      `Slack rejected the message: ${err.actualLength} chars exceeds the ${SLACK_MARKDOWN_LIMIT}-char per-message limit. ` +
+      `Nothing was delivered or logged. Split the content into multiple messages under the limit, ` +
+      `breaking on paragraphs and keeping code blocks/tables whole.`
+    );
+  }
+  const reason = err instanceof Error ? err.message : String(err);
+  return `Failed to post message: ${reason}`;
+}
 import { findSlackUsers, findSlackChannels } from '../connectors/slack/client.js';
 import { scheduleReminder, cancelReminder } from '../system/reminder-scheduler.js';
 import * as chrono from 'chrono-node';
@@ -169,7 +182,12 @@ function createPostToUserTool(agent: Agent, task: Task) {
         );
       }
       task.touch();
-      const newChannelKey = await task.postToUser(args.message, agentName, args.target);
+      let newChannelKey: string | null;
+      try {
+        newChannelKey = await task.postToUser(args.message, agentName, args.target);
+      } catch (err) {
+        return ok(formatSlackSendError(err));
+      }
       if (newChannelKey) {
         return ok(`Message posted. New channel linked: ${newChannelKey} (saved in task metadata for future use)`);
       }
@@ -319,7 +337,14 @@ function createReportCompletionTool(agent: Agent, task: Task) {
             'or call report_completion() without a message to finish silently.'
           );
         }
-        await task.postToUser(args.message, agentName);
+        try {
+          await task.postToUser(args.message, agentName);
+        } catch (err) {
+          // Surface the error to the agent so it can retry (e.g. split the
+          // message). Do NOT complete the task — completion only proceeds
+          // after a successful post (or no message at all).
+          return ok(formatSlackSendError(err));
+        }
       }
       logger.agentAction(agentName, 'Reporting completion', '');
       task.touch();

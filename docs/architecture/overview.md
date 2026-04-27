@@ -69,7 +69,6 @@ Archie (Autonomous Responsive and Collaborative Hyper Intelligent Employee) is a
 | GitHub Integration | `@octokit/app` ^16.1.2, `@octokit/webhooks` ^14.2.0 |
 | Schema Validation | `zod` ^4.3.6, `zod-to-json-schema` ^3.25.0 |
 | Prompt Parsing | `gray-matter` ^4.0.3 (frontmatter extraction) |
-| Markdown | `slackify-markdown` ^4.5.0 (Slack formatting) |
 | Build | `tsc` (TypeScript compiler), `tsx` (dev mode) |
 | Deployment | Docker Compose (dev + prod configurations) |
 

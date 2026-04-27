@@ -53,7 +53,7 @@ import { getIsShuttingDown } from '../system/shutdown.js';
 import { scheduleIdleCheck } from './recovery.js';
 import { scanAgentDefs } from '../agents/registry.js';
 import { refreshPlugins } from '../system/workdir.js';
-import { postToThread, postInteractiveToThreads, removeReaction, buildThreadUrl, openDMChannel, postNewMessage, getChannelInfo, getUserInfo, isExternalUser, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { postSlackMessage, postInteractiveToThreads, removeReaction, buildThreadUrl, openDMChannel, getChannelInfo, getUserInfo, isExternalUser, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
 import { emitEvent } from '../system/event-bus.js';
@@ -292,25 +292,32 @@ export class Task {
       const dmChannelId = await openDMChannel(target.new_dm);
       const existing = this.findChannelBySlackId(dmChannelId);
       if (existing) {
-        const dest = Task.formatSlackDest(existing.channel);
-        this.logOutgoingMessage(sender, message, dest.display, existing.channel);
-        await this.postToSlackRef(existing.channel, message);
+        // Reply inside the linked DM thread. Send first, then log on success
+        // so a rejected message (e.g. exceeding the markdown limit) is not
+        // persisted to the knowledge log or emitted to the event bus.
+        await postSlackMessage({
+          channel: existing.channel.channel_id,
+          threadTs: existing.channel.thread_id,
+          text: message,
+        });
+        this.logOutgoingMessage(sender, message, Task.formatSlackDest(existing.channel).display, existing.channel);
         return existing.key;
+      } else {
+        const userInfo = await getUserInfo(target.new_dm);
+        const channelName = `DM with ${userInfo.realName}`;
+        const ts = await postSlackMessage({ channel: dmChannelId, text: message });
+        if (!ts) return null; // dry-run
+        const key = this.registerSlackChannel(dmChannelId, ts, channelName);
+        const ch = this.metadata.channels[key] as SlackChannel;
+        this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch);
+        return key;
       }
-      const userInfo = await getUserInfo(target.new_dm);
-      const channelName = `DM with ${userInfo.realName}`;
-      const ts = await postNewMessage(dmChannelId, message);
-      if (!ts) return null; // dry-run
-      const key = this.registerSlackChannel(dmChannelId, ts, channelName);
-      const ch = this.metadata.channels[key] as SlackChannel;
-      this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch);
-      return key;
     }
 
     // New thread in a channel
     if (target?.new_thread) {
       const channelInfo = await getChannelInfo(target.new_thread);
-      const ts = await postNewMessage(target.new_thread, message);
+      const ts = await postSlackMessage({ channel: target.new_thread, text: message });
       if (!ts) return null; // dry-run
       const key = this.registerSlackChannel(target.new_thread, ts, channelInfo.name);
       const ch = this.metadata.channels[key] as SlackChannel;
@@ -322,9 +329,8 @@ export class Task {
     if (target?.channel) {
       const ch = this.metadata.channels[target.channel];
       if (ch?.type === 'slack') {
-        const dest = Task.formatSlackDest(ch);
-        this.logOutgoingMessage(sender, message, dest.display, ch);
-        await this.postToSlackRef(ch, message);
+        await postSlackMessage({ channel: ch.channel_id, threadTs: ch.thread_id, text: message });
+        this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch);
       }
       return null;
     }
@@ -341,9 +347,8 @@ export class Task {
       return null;
     }
     if (defaultCh.type === 'slack') {
-      const dest = Task.formatSlackDest(defaultCh);
-      this.logOutgoingMessage(sender, message, dest.display, defaultCh);
-      await this.postToSlackRef(defaultCh, message);
+      await postSlackMessage({ channel: defaultCh.channel_id, threadTs: defaultCh.thread_id, text: message });
+      this.logOutgoingMessage(sender, message, Task.formatSlackDest(defaultCh).display, defaultCh);
     } else if (defaultCh.type === 'cli') {
       this.logOutgoingMessage(sender, message, 'cli');
     }
@@ -403,13 +408,6 @@ export class Task {
         removeReaction(ch.channel_id, ch.last_processed_ts, 'eyes');
       }
     }
-  }
-
-  /**
-   * Post to a single Slack thread ref.
-   */
-  private async postToSlackRef(ch: SlackChannel, message: string): Promise<void> {
-    await postToThread(ch.channel_id, ch.thread_id, message);
   }
 
   /**

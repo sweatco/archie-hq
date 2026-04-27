@@ -14,7 +14,6 @@ import type { App as AppType } from '@slack/bolt';
 
 import {
   initSlackClient,
-  postToThreads,
   updateMessage,
   getBotUserId,
   fetchSlackThread,
