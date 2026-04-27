@@ -113,7 +113,9 @@ export async function triggerMergeCheck(taskId: string): Promise<MergeCheckResul
       (pr.status.mergeableState === 'clean' ||
         (pr.status.mergeable && pr.status.mergeableState === 'blocked'))
   );
-  const conflicted = prStatuses.filter((pr) => pr.status.mergeableState === 'dirty');
+  const conflicted = prStatuses.filter(
+    (pr) => pr.status.state === 'open' && pr.status.mergeableState === 'dirty'
+  );
   const pending = prStatuses.filter(
     (pr) =>
       pr.status.state === 'open' &&
