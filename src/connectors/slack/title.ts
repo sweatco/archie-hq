@@ -20,6 +20,7 @@ export async function setAssistantThreadTitle(
 ): Promise<void> {
   try {
     await client.assistant.threads.setTitle({ channel_id, thread_ts, title });
+    logger.system(`Slack DM title synced (${channel_id}/${thread_ts})`);
   } catch (err) {
     logger.warn('slack-title', `setTitle failed for ${channel_id}/${thread_ts}: ${err}`);
   }
