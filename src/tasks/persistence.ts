@@ -173,15 +173,58 @@ function formatLogEntry(entry: LogEntry): string {
 }
 
 /**
- * Append a Slack message to the knowledge log.
+ * Render the body of a Slack message for context (knowledge log, title generator, etc.).
  *
- * Renders one of three layouts based on the structured data:
- * - Redacted (external author): body replaced with a fixed placeholder, name
- *   masked as `external` in the source line.
- * - With forwarded-from-external attachment: forwarder's text first, then a
+ * Single source of truth for redaction + forwarded-attachment rendering.
+ * - Redacted: fixed placeholder.
+ * - With externally-authored attachment: forwarder's text first, then a
  *   provenance label, then the forwarded content. Other (non-external)
  *   attachments fold into the inline body.
- * - Normal: just the author's text plus inline attachments and file list.
+ * - Normal: author's text plus inline attachments and file list.
+ */
+export function renderMessageForContext(
+  msg: { text: string; files?: SlackFile[]; attachments?: SlackAttachment[] },
+  options: { redacted: boolean }
+): string {
+  if (options.redacted) {
+    return '[redacted: external participant in shared channel]';
+  }
+
+  const inlineParts: string[] = [];
+  if (msg.text) inlineParts.push(msg.text);
+
+  let forwardedBlock = '';
+  for (const att of msg.attachments ?? []) {
+    if (att.author && isExternalUser(att.author)) {
+      // Render the externally-authored attachment under a provenance label.
+      // Only the first one gets the label block; subsequent ones (rare)
+      // fold inline so the agent still sees them.
+      if (!forwardedBlock) {
+        const teamSuffix = att.author.teamId ? `, team ${att.author.teamId}` : '';
+        const label = `[forwarded from @<${att.author.id}:${att.author.realName}> — external${teamSuffix}]`;
+        forwardedBlock = `${label}\n${att.text}`;
+        continue;
+      }
+    }
+    if (att.text) inlineParts.push(att.text);
+  }
+  if (forwardedBlock) inlineParts.push(forwardedBlock);
+
+  let fullMessage = inlineParts.join('\n');
+
+  if (msg.files && msg.files.length > 0) {
+    const fileInfo = msg.files.map(f => {
+      const pathInfo = f.localPath ? ` (${f.localPath})` : '';
+      return `${f.name}${pathInfo}`;
+    }).join(', ');
+    fullMessage += `\n  [Attachments: ${fileInfo}]`;
+  }
+
+  return fullMessage;
+}
+
+/**
+ * Append a Slack message to the knowledge log.
  */
 export async function appendSlackMessage(
   taskId: string,
@@ -194,41 +237,10 @@ export async function appendSlackMessage(
   options?: { redacted?: boolean }
 ): Promise<void> {
   const redacted = options?.redacted === true;
-
-  let fullMessage: string;
-  if (redacted) {
-    fullMessage = '[redacted: external participant in shared channel]';
-  } else {
-    const inlineParts: string[] = [];
-    if (message) inlineParts.push(message);
-
-    let forwardedBlock = '';
-    for (const att of attachments ?? []) {
-      if (att.author && isExternalUser(att.author)) {
-        // Render the externally-authored attachment under a provenance label.
-        // Only the first one gets the label block; subsequent ones (rare)
-        // fold inline so the agent still sees them.
-        if (!forwardedBlock) {
-          const teamSuffix = att.author.teamId ? `, team ${att.author.teamId}` : '';
-          const label = `[forwarded from @<${att.author.id}:${att.author.realName}> — external${teamSuffix}]`;
-          forwardedBlock = `${label}\n${att.text}`;
-          continue;
-        }
-      }
-      if (att.text) inlineParts.push(att.text);
-    }
-    if (forwardedBlock) inlineParts.push(forwardedBlock);
-
-    fullMessage = inlineParts.join('\n');
-
-    if (files && files.length > 0) {
-      const fileInfo = files.map(f => {
-        const pathInfo = f.localPath ? ` (${f.localPath})` : '';
-        return `${f.name}${pathInfo}`;
-      }).join(', ');
-      fullMessage += `\n  [Attachments: ${fileInfo}]`;
-    }
-  }
+  const fullMessage = renderMessageForContext(
+    { text: message, files, attachments },
+    { redacted },
+  );
 
   // Mask the author name in the source line when the body is redacted, so the
   // log doesn't leak the external user's display name even though we keep it

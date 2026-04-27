@@ -6,6 +6,9 @@ features:
   bot_user:
     display_name: Archie
     always_online: true
+  assistant_view:
+    assistant_description: "Autonomous Responsive and Collaborative Hyper Intelligent Employee"
+    suggested_prompts: []
 oauth_config:
   scopes:
     bot:
@@ -21,6 +24,7 @@ oauth_config:
       - usergroups:read
       - files:read
       - reactions:write
+      - assistant:write
 settings:
   interactivity:
     is_enabled: true
@@ -29,6 +33,7 @@ settings:
     request_url: https://archie.sweatco.team/webhooks/slack
     bot_events:
       - app_mention
+      - assistant_thread_started
       - message.channels
       - message.im
   org_deploy_enabled: false

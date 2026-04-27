@@ -17,6 +17,7 @@ interface TaskSummary {
   participants: string[];
   created_at: string;
   updated_at: string;
+  title: string | null;
   channel_name: string | null;
   reminder: { trigger_at: string; reason: string } | null;
   agents?: { agentId: string; active: boolean }[];
@@ -183,6 +184,7 @@ export function TaskList({ onSelect, onCreate, refreshTrigger, active }: TaskLis
                 {' '}{task.task_id}
               </Text>
               <Text dimColor>  {channel}</Text>
+              {task.title && <Text>  {task.title}</Text>}
               {activeAgents > 0 && <Text color="green">  {activeAgents} active</Text>}
               {task.reminder && <Text color="magenta">  ⏰ {formatDateTime(task.reminder.trigger_at)} — {task.reminder.reason.length > 50 ? task.reminder.reason.slice(0, 50) + '…' : task.reminder.reason}</Text>}
             </Text>

@@ -142,6 +142,7 @@ export interface TaskMetadata {
   participants: AgentName[];
   channels: Record<string, Channel>;   // Active message delivery targets, keyed by channel ID
   default_channel: string | null;      // Channel ID of the originating channel (null for CLI-originated tasks)
+  title?: string;                      // AI-generated one-line summary; absent on pre-feature tasks
   slack_threads?: SlackThreadRef[];    // Legacy — only present on old tasks loaded from disk, removed after migration
   agent_sessions: Record<string, AgentSessionState | string>; // union handles legacy string values on disk
   repositories: Record<string, RepositoryInfo>;

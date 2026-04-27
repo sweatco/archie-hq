@@ -102,6 +102,7 @@ export function mountApiRoutes(app: Application): void {
           participants: metadata.participants,
           created_at: metadata.created_at,
           updated_at: metadata.updated_at,
+          title: metadata.title ?? null,
           channel_name,
           reminder: metadata.reminder ?? null,
           agents: activeTask ? activeTask.getAgentStatus() : [],

@@ -74,6 +74,7 @@ export function TaskDetail({ taskId, onBack, onEvent, onConnect }: TaskDetailPro
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string>('');
   const [reminder, setReminder] = useState<{ trigger_at: string; reason: string } | null>(null);
+  const [title, setTitle] = useState<string | null>(null);
   const prevOnEvent = useRef<SystemEvent | null>(null);
   const prevOnConnect = useRef<boolean | undefined>(undefined);
   const scrollRef = useRef<ScrollViewRef>(null);
@@ -167,6 +168,7 @@ export function TaskDetail({ taskId, onBack, onEvent, onConnect }: TaskDetailPro
       ]);
       setStatus(detail.metadata?.status || '');
       setReminder(detail.metadata?.reminder ?? null);
+      setTitle(detail.metadata?.title ?? null);
       setAgents(detail.agents || []);
       setEvents(eventsResult.events);
       setEventCursor(eventsResult.total);
@@ -346,6 +348,7 @@ export function TaskDetail({ taskId, onBack, onEvent, onConnect }: TaskDetailPro
       <Box paddingX={1}>
         <Text wrap="truncate-end">
           <Text bold>Task: {taskId}</Text>
+          {title && <Text>  {title}</Text>}
           <Text dimColor>  status: </Text>
           <Text color={status === 'in_progress' ? 'yellow' : status === 'completed' ? 'green' : 'red'}>
             {status}

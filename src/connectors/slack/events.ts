@@ -26,12 +26,16 @@ import {
   isExternalUser,
   isChannelShared,
   postEphemeral,
+  getSlackClient,
 } from './client.js';
 import { Task } from '../../tasks/task.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
 import { getIsShuttingDown } from '../../system/shutdown.js';
 import { findTaskByThread } from '../../tasks/persistence.js';
+import { generateTaskTitle } from '../../tasks/title-generator.js';
+import { setAssistantThreadTitle } from './title.js';
+import type { SlackThread } from '../../types/task.js';
 // import { triageSlackMessage } from '../../system/triage.js';
 
 /**
@@ -250,6 +254,31 @@ export async function mountSlackApp(
 
 
 // ============================================================================
+// Task Title Pipeline
+// ============================================================================
+
+/**
+ * Fire-and-forget title generation + Slack sync.
+ *
+ * Generates a Haiku-authored title for the task and persists it on metadata.
+ * For DM-originated tasks, also pushes the title to Slack via
+ * `assistant.threads.setTitle` so the bot's DM list shows a meaningful name.
+ *
+ * Errors are swallowed by the called helpers — title is best-effort.
+ */
+async function generateTitleAndSync(task: Task, thread: SlackThread): Promise<void> {
+  const title = await generateTaskTitle(thread);
+  if (!title) return;
+
+  task.metadata.title = title;
+  task.debouncedSave();
+
+  if (thread.channel.id.startsWith('D')) {
+    await setAssistantThreadTitle(getSlackClient(), thread.channel.id, thread.threadId, title);
+  }
+}
+
+// ============================================================================
 // Slack Routing
 // ============================================================================
 
@@ -374,6 +403,11 @@ async function handleSlackEvent(event: {
 
     // Thread reply to an existing task — route to it
     await task.append(thread);
+    if (!task.metadata.title) {
+      generateTitleAndSync(task, thread).catch((err) =>
+        logger.warn('title-generator', `pipeline failed: ${err}`),
+      );
+    }
     await sendSharedChannelWarnings(task, event.channel, threadId, thread, shared);
     await task.sendMessage(AGENT_PROMPTS.existingTask);
   } else if (event.type === 'app_mention' || event.channel.startsWith('D')) {
@@ -382,6 +416,11 @@ async function handleSlackEvent(event: {
     // Bot was @mentioned, or this is a DM — start a new task
     const task = await Task.create();
     await task.append(thread);
+    if (!task.metadata.title) {
+      generateTitleAndSync(task, thread).catch((err) =>
+        logger.warn('title-generator', `pipeline failed: ${err}`),
+      );
+    }
     await sendSharedChannelWarnings(task, event.channel, threadId, thread, shared);
     await task.sendMessage(AGENT_PROMPTS.newTask);
   }
