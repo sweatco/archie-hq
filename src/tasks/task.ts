@@ -42,6 +42,7 @@ import {
   appendAgentMessage,
   appendMessageToUser,
   appendSlackMessage,
+  renderAttachmentsSuffix,
   downloadMessageFiles,
   ensureSessionsDir,
   generateTaskId,
@@ -53,7 +54,8 @@ import { getIsShuttingDown } from '../system/shutdown.js';
 import { scheduleIdleCheck } from './recovery.js';
 import { scanAgentDefs } from '../agents/registry.js';
 import { refreshPlugins } from '../system/workdir.js';
-import { postSlackMessage, postInteractiveToThreads, removeReaction, buildThreadUrl, openDMChannel, getChannelInfo, getUserInfo, isExternalUser, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { postSlackMessage, postSlackFiles, postInteractiveToThreads, removeReaction, buildThreadUrl, openDMChannel, getChannelInfo, getUserInfo, isExternalUser, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { basename } from 'path';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
 import { emitEvent } from '../system/event-bus.js';
@@ -292,9 +294,6 @@ export class Task {
       const dmChannelId = await openDMChannel(target.new_dm);
       const existing = this.findChannelBySlackId(dmChannelId);
       if (existing) {
-        // Reply inside the linked DM thread. Send first, then log on success
-        // so a rejected message (e.g. exceeding the markdown limit) is not
-        // persisted to the knowledge log or emitted to the event bus.
         await postSlackMessage({
           channel: existing.channel.channel_id,
           threadTs: existing.channel.thread_id,
@@ -340,9 +339,6 @@ export class Task {
       ? this.metadata.channels[this.metadata.default_channel]
       : null;
     if (!defaultCh) {
-      // No channel linked. Caller (tool wrapper) is expected to have caught this
-      // and returned a clear error to the agent. Internal callers reach here too
-      // (e.g. mute_thread's farewell) — stay defensive, log a warning, no-op.
       logger.warn('task', `postToUser called on task ${this.taskId} with no default channel — message dropped`);
       return null;
     }
@@ -353,6 +349,39 @@ export class Task {
       this.logOutgoingMessage(sender, message, 'cli');
     }
     return null;
+  }
+
+  /**
+   * Upload one or more files to the user via Slack's `files.uploadV2`.
+   *
+   * Posts to the default channel or to an already-linked channel via
+   * `target.channel`. New thread / DM creation is intentionally not supported —
+   * agents must call `postToUser` first to open and link a thread, then call
+   * this to attach files.
+   */
+  async postFilesToUser(filePaths: readonly string[], agentName?: string, channelKey?: string): Promise<void> {
+    if (filePaths.length === 0) return;
+    const sender = agentName || 'system';
+    const files = filePaths.map((p) => ({ path: p, filename: basename(p) }));
+
+    const target = channelKey
+      ? this.metadata.channels[channelKey]
+      : (this.metadata.default_channel ? this.metadata.channels[this.metadata.default_channel] : null);
+
+    if (!target) {
+      logger.warn(
+        'task',
+        `postFilesToUser on task ${this.taskId}: ${channelKey ? `channel ${channelKey} not linked` : 'no default channel'} — files dropped`,
+      );
+      return;
+    }
+    if (target.type === 'slack') {
+      await postSlackFiles({ channel: target.channel_id, threadTs: target.thread_id, files });
+      this.logFilesUpload(sender, filePaths, Task.formatSlackDest(target).display, target);
+    } else if (target.type === 'cli') {
+      // CLI channel can't render Slack uploads — log the file list so it surfaces.
+      this.logFilesUpload(sender, filePaths, 'cli');
+    }
   }
 
   /**
@@ -376,6 +405,20 @@ export class Task {
     logger.agentToSlack(sender, message, { destination: display });
     emitEvent('message', this.taskId, { from: sender, to: 'user', destination: display, message });
     appendMessageToUser(this.taskId, sender, message, logDest);
+  }
+
+  /**
+   * Log a file-upload action to the user. Mirrors `logOutgoingMessage` but the
+   * "message" body is the rendered `[Attachments: …]` suffix only, since
+   * `postFilesToUser` posts files without accompanying text.
+   */
+  private logFilesUpload(sender: string, filePaths: readonly string[], destination: string, slackChannel?: SlackChannel): void {
+    const display = destination;
+    const logDest = slackChannel ? Task.formatSlackDest(slackChannel).log : destination;
+    const rendered = renderAttachmentsSuffix(filePaths).trimStart();
+    logger.agentToSlack(sender, rendered, { destination: display });
+    emitEvent('message', this.taskId, { from: sender, to: 'user', destination: display, message: rendered });
+    appendMessageToUser(this.taskId, sender, '', logDest, filePaths);
   }
 
   /**

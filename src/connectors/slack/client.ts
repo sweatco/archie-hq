@@ -187,6 +187,48 @@ export async function postSlackMessage(args: {
 }
 
 /**
+ * Upload one or more files via `files.uploadV2`.
+ *
+ * No accompanying text — uploadV2 does not support the `markdown` block type
+ * we use elsewhere, so callers post narrative text via `postSlackMessage`
+ * separately (typically immediately before this call to seed a thread root).
+ *
+ * Returns `undefined` in dry-run mode.
+ */
+export async function postSlackFiles(args: {
+  channel: string;
+  threadTs?: string;
+  files: { path: string; filename: string }[];
+}): Promise<void> {
+  const { channel, threadTs, files } = args;
+  if (files.length === 0) {
+    throw new Error('postSlackFiles called with no files');
+  }
+  if (dryRun) {
+    const target = threadTs ? `${channel}:${threadTs}` : channel;
+    const names = files.map((f) => f.filename).join(', ');
+    logger.system(`[DRY RUN] postSlackFiles ${target} — ${files.length} file(s): ${names}`);
+    return;
+  }
+  const client = getSlackClient();
+  try {
+    await client.files.uploadV2({
+      channel_id: channel,
+      ...(threadTs ? { thread_ts: threadTs } : {}),
+      file_uploads: files.map((f) => ({ file: f.path, filename: f.filename })),
+    });
+  } catch (uploadErr) {
+    const errAny = uploadErr as { code?: string; data?: unknown; message?: string };
+    logger.warn(
+      'Slack',
+      `files.uploadV2 failed channel=${channel} threadTs=${threadTs ?? '-'} files=${files.length} ` +
+      `code=${errAny.code ?? 'n/a'} message=${errAny.message ?? 'n/a'} data=${JSON.stringify(errAny.data ?? null)}`,
+    );
+    throw uploadErr;
+  }
+}
+
+/**
  * Post an interactive message with blocks to a Slack thread
  * Used for messages with buttons (e.g., edit mode approval)
  */
