@@ -8,6 +8,7 @@
 
 import type { AgentDef, AgentHandle } from '../types/agent.js';
 import type { AgentName, AgentSessionState } from '../types/task.js';
+import type { SandboxOptions } from './sandbox.js';
 import { MessageQueue } from './message-queue.js';
 import { spawnAgent } from './spawn.js';
 import { logger } from '../system/logger.js';
@@ -17,6 +18,14 @@ export class Agent {
   readonly queue: MessageQueue;
   handle?: AgentHandle;
   session: AgentSessionState;
+  /**
+   * Sandbox config for this agent (read/write paths, network rules).
+   * Populated by `spawnAgent` after the per-track sandbox is computed. Used by
+   * in-process tools (e.g. `share_artifact`, `post_to_user` artifact_paths) to
+   * validate that a path the agent passes points inside its allowed area —
+   * keeping a single source of truth instead of duplicating per-tool path lists.
+   */
+  sandbox?: SandboxOptions;
 
   constructor(def: AgentDef) {
     this.def = def;

@@ -20,7 +20,8 @@ import { getAgentIds } from './registry.js';
 import { getGitHubClient } from '../connectors/github/client.js';
 import { gitExec } from '../connectors/github/repo-clone.js';
 import { mirrorLegacyFields, hydrateBranchState, findBranchStateByPR } from '../connectors/github/branch-state.js';
-import { appendAgentFinding } from '../tasks/persistence.js';
+import { appendAgentFinding, appendArtifactShared } from '../tasks/persistence.js';
+import { copyArtifactToShared, assertReadable } from './artifacts.js';
 import { launchTask } from '../tasks/launch.js';
 import { logger } from '../system/logger.js';
 import { SLACK_MARKDOWN_LIMIT, SlackMarkdownLimitError } from '../connectors/slack/client.js';
@@ -49,6 +50,17 @@ const execAsync = promisify(exec);
 
 const ok = (text: string) => ({ content: [{ type: 'text' as const, text }] });
 const err = (text: string) => ({ content: [{ type: 'text' as const, text: `Error: ${text}` }] });
+
+/**
+ * Get the agent's sandbox config. Populated by `spawnAgent` before any tool
+ * runs; throws if a tool somehow executes before spawn (programmer error).
+ */
+function requireSandbox(agent: Agent) {
+  if (!agent.sandbox) {
+    throw new Error(`Agent ${agent.def.id} has no sandbox config — was it spawned?`);
+  }
+  return agent.sandbox;
+}
 
 /**
  * Find stash index by message name in `git stash list` output.
@@ -154,6 +166,40 @@ function createLogFindingTool(agent: Agent, task: Task) {
   );
 }
 
+function createShareArtifactTool(agent: Agent, task: Task) {
+  return tool(
+    'share_artifact',
+    'Share a document (plan, report, diff, or any longer output) with OTHER AGENTS by publishing an immutable snapshot to the task\'s shared artifacts folder. ' +
+    'This is for inter-agent sharing only — to deliver a file to the user, use `post_files_to_user`. ' +
+    'The tool COPIES the file — your local file is left in place, and the published copy is read-only and never updated. ' +
+    'Pass an absolute path to a file inside your readable sandbox; the tool returns the absolute path of the immutable copy under shared/artifacts/, which you should send in `send_message_to_agent` instead of pasting the document body. ' +
+    'Identical content is deduped by hash — re-sharing the same bytes returns the existing snapshot path. To publish revisions, edit your local file and call share_artifact again — each call creates a new versioned snapshot, preserving history.',
+    {
+      path: z.string().describe('Absolute path to the file you want to share'),
+      description: z.string().describe('Short description of what the artifact contains; logged for other agents'),
+    },
+    async (args) => {
+      const agentName = agent.def.id as AgentName;
+      let resolvedSource: string;
+      try {
+        resolvedSource = await assertReadable(args.path, requireSandbox(agent));
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e));
+      }
+      let copyResult;
+      try {
+        copyResult = await copyArtifactToShared(task.taskId, resolvedSource);
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e));
+      }
+      task.touch();
+      await appendArtifactShared(task.taskId, agentName, copyResult.artifactPath, args.description);
+      const verb = copyResult.reused ? 'Already shared' : 'Shared immutable snapshot';
+      return ok(`${verb} at ${copyResult.artifactPath}. This is a read-only copy — other agents can Read it but it will never be updated. To publish revisions, edit your local file and call share_artifact again. Logged to knowledge log.`);
+    },
+  );
+}
+
 // ---- PM-only tools ----
 
 function createPostToUserTool(agent: Agent, task: Task) {
@@ -163,7 +209,8 @@ function createPostToUserTool(agent: Agent, task: Task) {
     'Use target.channel to post to a specific linked thread. ' +
     'Use target.new_dm with a user ID to start a DM conversation (links it to this task). ' +
     'Use target.new_thread with a channel ID to start a new thread in a channel (links it to this task). ' +
-    'When creating new DMs/threads, returns the channel key for future use.',
+    'When creating new DMs/threads, returns the channel key for future use. ' +
+    'To attach files, send the message first, then call `post_files_to_user` with the same target.',
     {
       message: z.string().describe('The message to send'),
       target: z.object({
@@ -185,13 +232,49 @@ function createPostToUserTool(agent: Agent, task: Task) {
       let newChannelKey: string | null;
       try {
         newChannelKey = await task.postToUser(args.message, agentName, args.target);
-      } catch (err) {
-        return ok(formatSlackSendError(err));
+      } catch (e) {
+        return ok(formatSlackSendError(e));
       }
       if (newChannelKey) {
         return ok(`Message posted. New channel linked: ${newChannelKey} (saved in task metadata for future use)`);
       }
       return ok('Message posted.');
+    },
+  );
+}
+
+function createPostFilesToUserTool(agent: Agent, task: Task) {
+  return tool(
+    'post_files_to_user',
+    'Upload one or more files as Slack file attachments to the user. Files must point to absolute paths inside your readable sandbox (e.g. shared/artifacts/...). ' +
+    'Without `channel`, attaches to the default channel. With `channel`, attaches to an already-linked thread. ' +
+    'This tool only attaches files to existing threads — it does not create new threads or DMs. To open a destination, call `post_to_user` first with `target.new_dm` or `target.new_thread`, then pass the returned channel key here. ' +
+    'Files are sent without accompanying text — call `post_to_user` separately for any message you want next to the files.',
+    {
+      paths: z.array(z.string()).min(1).describe('Absolute file paths to upload as Slack attachments'),
+      channel: z.string().optional().describe('Channel key of an existing linked thread (e.g., "slack:C123:456.789"). Omit to post to the default channel.'),
+    },
+    async (args) => {
+      const agentName = agent.def.id as AgentName;
+      if (!args.channel && Object.keys(task.metadata.channels).length === 0) {
+        return ok(
+          'No channel linked to this task. Open one first with post_to_user(target.new_dm or target.new_thread), then call post_files_to_user with the returned channel key.'
+        );
+      }
+      let validatedPaths: string[];
+      try {
+        const sandbox = requireSandbox(agent);
+        validatedPaths = await Promise.all(args.paths.map((p) => assertReadable(p, sandbox)));
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e));
+      }
+      task.touch();
+      try {
+        await task.postFilesToUser(validatedPaths, agentName, args.channel);
+      } catch (e) {
+        return ok(formatSlackSendError(e));
+      }
+      return ok(`${validatedPaths.length} file(s) uploaded.`);
     },
   );
 }
@@ -1047,6 +1130,8 @@ export function createPMAgentMcpServer(agent: Agent, task: Task) {
     tools: [
       createSendMessageTool(agent, task),
       createPostToUserTool(agent, task),
+      createPostFilesToUserTool(agent, task),
+      createShareArtifactTool(agent, task),
       createFindSlackUserTool(agent, task),
       createFindSlackChannelTool(agent, task),
       createAssignTaskOwnerTool(agent, task),
@@ -1108,6 +1193,7 @@ export function createBaseAgentMcpServer(agent: Agent, task: Task) {
     tools: [
       createSendMessageTool(agent, task),
       createLogFindingTool(agent, task),
+      createShareArtifactTool(agent, task),
     ],
   });
 }
