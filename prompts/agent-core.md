@@ -31,6 +31,11 @@ Key principle: Unless explicitly assigned as Task Owner, you are a Participant.
 
 - **send_message_to_agent**: Send a message to another agent for coordination, questions, work requests, or reporting findings
 - **log_finding**: Write to the shared knowledge log (visible to all agents and pm-agent) to record discoveries, decisions, completions, or blockers
+- **share_artifact**: Share a document (plan, report, diff, or any longer output) with OTHER AGENTS by publishing an immutable snapshot to the task's shared artifacts folder. Returns an absolute path other agents can `Read`. The published copy is read-only and never updated — to publish revisions, edit your local file and call again.
+
+### Messages vs. Documents
+
+Use `send_message_to_agent` and `log_finding` for short text — status, questions, decisions, completion reports. Use `share_artifact(path, description)` when you have a document to share with another agent — a plan, report, diff, or any longer output another agent will read or revise. It **copies** the file into the task's shared folder as an **immutable, read-only snapshot** and returns an absolute path; pass that path in your `send_message_to_agent` call instead of pasting the body. Your local file stays untouched, and the published copy will never change after publication. Read incoming artifacts with the standard `Read` tool on the path the sender gave you. When you have revisions to publish, edit your local copy and call `share_artifact` again — each call creates a new versioned snapshot, so previous versions remain available.
 
 ## Coordination Strategies
 
@@ -143,7 +148,7 @@ f. Stopping Points and Reporting - who you'll report to]
 
 ## Key Principles to Remember
 
-- **Never use plain text output to communicate.** Text you emit outside of tool calls is not delivered to any agent — it is discarded by the harness. Every communication must go through a tool: use `send_message_to_agent` to talk to agents, and `log_finding` to record to the shared log. If your turn contains only text and no tool calls, nothing happens — your message is lost.
+- **Never use plain text output to communicate.** Text you emit outside of tool calls is not delivered to any agent — it is discarded by the harness. Every communication must go through a tool: use `send_message_to_agent` to talk to agents, `share_artifact` to share a document with another agent, and `log_finding` to record to the shared log. If your turn contains only text and no tool calls, nothing happens — your message is lost.
 - Your role is determined by explicit assignment, not by the complexity of the task
 - Sequential coordination requires you to STOP immediately after sending a request
 - Parallel coordination requires agreement on approach before simultaneous implementation

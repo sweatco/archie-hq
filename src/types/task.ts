@@ -10,7 +10,7 @@ export type CoreAgentName = 'pm-agent' | 'triage-agent';
 /** Agent name - core agents or any repo agent (e.g., 'backend-agent', 'mobile-agent', 'web-agent') */
 export type AgentName = CoreAgentName | `${string}-agent`;
 
-export type FindingType = 'discovery' | 'decision' | 'completion' | 'blocker';
+export type FindingType = 'discovery' | 'decision' | 'completion' | 'blocker' | 'artifact';
 
 /** Tracking record for a Slack thread linked to a task */
 export interface SlackThreadRef {

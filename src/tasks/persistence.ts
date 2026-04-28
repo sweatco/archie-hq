@@ -93,6 +93,13 @@ export function getAttachmentsPath(taskId: string): string {
 }
 
 /**
+ * Get the path to a task's artifacts directory (for cross-agent file sharing)
+ */
+export function getArtifactsPath(taskId: string): string {
+  return join(getSharedPath(taskId), 'artifacts');
+}
+
+/**
  * Download Slack files to task's attachments folder
  * Returns files with localPath populated
  */
@@ -170,6 +177,24 @@ export async function loadMetadata(taskId: string): Promise<TaskMetadata | null>
 function formatLogEntry(entry: LogEntry): string {
   const typeStr = entry.type ? ` [${entry.type}]` : '';
   return `[${entry.timestamp}] [${entry.source}]${typeStr} ${entry.message}\n`;
+}
+
+/**
+ * Build the `[Attachments: …]` suffix for a list of artifact paths.
+ * Mirrors the inbound rendering at the bottom of `renderMessageForContext` so
+ * outgoing messages with attachments look symmetric in the knowledge log.
+ * Returns an empty string when there are no paths.
+ */
+export function renderAttachmentsSuffix(artifactPaths: readonly string[]): string {
+  if (!artifactPaths.length) return '';
+  const fileInfo = artifactPaths
+    .map((p) => {
+      const slash = p.lastIndexOf('/');
+      const name = slash === -1 ? p : p.slice(slash + 1);
+      return `${name} (${p})`;
+    })
+    .join(', ');
+  return `\n  [Attachments: ${fileInfo}]`;
 }
 
 /**
@@ -285,19 +310,50 @@ export async function appendAgentFinding(
 }
 
 /**
- * Append a user-facing message to the knowledge log (no event — caller emits)
+ * Append an artifact share to the knowledge log.
+ *
+ * Records that an agent published a file to `shared/artifacts/`. Other agents can
+ * read the artifact via the absolute path. Reuses the `agent:log` event channel so
+ * existing CLI/SSE rendering picks it up without changes.
+ */
+export async function appendArtifactShared(
+  taskId: string,
+  agentName: string,
+  artifactPath: string,
+  description: string,
+): Promise<void> {
+  const finding = `shared artifact: ${artifactPath} — ${description}`;
+  const entry: LogEntry = {
+    timestamp: new Date().toISOString(),
+    source: agentName,
+    type: 'artifact',
+    message: finding,
+  };
+
+  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
+  emitEvent('agent:log', taskId, { finding, type: 'artifact' }, agentName);
+}
+
+/**
+ * Append a user-facing message to the knowledge log (no event — caller emits).
+ *
+ * When `artifactPaths` is non-empty, the rendered message includes a trailing
+ * `[Attachments: …]` line (same shape used for inbound Slack files) so the log
+ * shows what was attached.
  */
 export async function appendMessageToUser(
   taskId: string,
   agentName: string,
   message: string,
   destination?: string,
+  artifactPaths?: readonly string[],
 ): Promise<void> {
   const source = destination ? `${agentName} in ${destination}` : agentName;
+  const renderedMessage = message + renderAttachmentsSuffix(artifactPaths ?? []);
   const entry: LogEntry = {
     timestamp: new Date().toISOString(),
     source,
-    message,
+    message: renderedMessage,
   };
   await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
 }

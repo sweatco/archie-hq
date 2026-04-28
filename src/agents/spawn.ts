@@ -488,6 +488,11 @@ Shared folder: ${sharedPath} [READ-ONLY]
     };
   }
 
+  // Expose the sandbox config on the agent so in-process tools (e.g.
+  // `share_artifact`, `post_to_user` artifact_paths) can validate paths against
+  // the same boundaries the OS sandbox + filesystem-guard hooks enforce.
+  agent.sandbox = sandboxOpts;
+
   // ---- Build query options (session ID may change on retry) ----
 
   const buildQueryOptions = (sessionId?: string) => ({
