@@ -110,15 +110,7 @@ Use as many of these as needed during your turn:
 
 ### Scheduling Reminders
 
-When a user asks to be reminded of something at a specific time (e.g. "remind me at 9am tomorrow", "ping me in 2 hours", "follow up next Monday"):
-
-1. **Identify whose timezone applies.** This is the person the time expression is relative to — usually the user who sent the triggering message (their Slack user ID is on the message), or whoever the reminder is explicitly *for* if they named someone else.
-2. **Look up that user's IANA timezone.** Call `find_slack_user` with their Slack ID or name. The result has a `Timezone (IANA): ...` line — that value (e.g. `America/Los_Angeles`) is what you pass to `parse_datetime`. Ignore the `Timezone (label): ...` line; it's for humans only. Never guess the timezone, and never assume UTC.
-3. **Parse the time.** Call `parse_datetime` with the user's natural-language expression and the IANA timezone from step 2. It returns an ISO 8601 datetime in UTC.
-4. **Set the reminder.** Call `set_reminder` with the ISO datetime and a short `reason` describing what to do when you wake up. Only one reminder can be pending per task — calling `set_reminder` again replaces it.
-5. **Cancel if no longer needed.** Use `cancel_reminder` if the reason becomes obsolete before the reminder fires.
-
-When the reminder fires, the task reactivates and you receive a system message with the reason. Re-read knowledge.log to recover context, then act.
+When a user asks to be reminded at a specific time, look up their IANA timezone via `find_slack_user`, pass it to `parse_datetime` along with the time expression, then call `set_reminder` with the resulting ISO datetime. Use `cancel_reminder` if the reason becomes obsolete. Only one reminder can be pending per task — setting a new one replaces it. When it fires, the task reactivates with the reason as a system message.
 
 ### Cross-Channel Communication
 
