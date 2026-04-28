@@ -15,11 +15,18 @@ import type { SlackThreadRef, SlackFile, SlackThread, SlackThreadMessage, SlackA
  * returns the public `SlackThreadMessage`. Not exported.
  */
 interface RawSlackMessage {
+  /** Author's user ID. Empty string when the message was posted by an app/bot. */
   user: string;
   text: string;
   ts: string;
   files?: SlackFile[];
   attachments?: SlackAttachment[];
+  /** Slack-assigned bot identity when the message was posted by an app/bot. */
+  botId?: string;
+  /** Bot's display name (from bot_profile.name) when posted by an app/bot. */
+  botName?: string;
+  /** Workspace (team) the message originated from. Used for external-bot filtering. */
+  teamId?: string;
 }
 import { logger } from '../../system/logger.js';
 
@@ -765,12 +772,23 @@ async function fetchThreadHistory(
         text: applyMentionReplacements(a.text, userInfoMap, groupInfoMap, channelInfoMap),
       };
     });
+    const rawMsg = msg as typeof msg & {
+      bot_id?: string;
+      bot_profile?: { id?: string; name?: string; team_id?: string };
+      team?: string;
+    };
+    const botId = rawMsg.bot_id;
+    const botName = rawMsg.bot_profile?.name;
+    const teamId = rawMsg.bot_profile?.team_id || rawMsg.team;
     return {
-      user: msg.user || 'unknown',
+      user: msg.user || '',
       text: applyMentionReplacements(ownText, userInfoMap, groupInfoMap, channelInfoMap),
       ts: msg.ts || '',
       ...(files && files.length > 0 ? { files } : {}),
       ...(resolvedAttachments.length > 0 ? { attachments: resolvedAttachments } : {}),
+      ...(botId ? { botId } : {}),
+      ...(botName ? { botName } : {}),
+      ...(teamId ? { teamId } : {}),
     };
   });
 }
@@ -1057,14 +1075,30 @@ export async function fetchSlackThread(
     isChannelShared(channelId),
   ]);
 
-  // Filter out bot messages
-  const humanMessages = rawMessages.filter(
-    (msg) => msg.user && msg.user !== 'unknown' && msg.user !== botUserId
-  );
+  // Skip:
+  //  - our own bot's messages (botUserId)
+  //  - external bots (bot messages whose team_id differs from our home team).
+  // Keep:
+  //  - real users (msg.user set)
+  //  - internal bots (e.g. bug-tracker integrations posting to channels) so
+  //    their thread starters survive into the knowledge log.
+  const visibleMessages = rawMessages.filter((msg) => {
+    if (msg.user) {
+      return msg.user !== botUserId;
+    }
+    if (msg.botId) {
+      if (msg.botId === botId) return false; // our own bot
+      if (homeTeamId && msg.teamId && msg.teamId !== homeTeamId) return false; // external bot
+      return true;
+    }
+    // No user and no bot id — drop (system message, file_comment, etc.)
+    return false;
+  });
 
-  // Resolve top-level message authors. Attachment authors are already
-  // resolved on each msg.attachments[].author by fetchThreadHistory.
-  const authorIds = new Set(humanMessages.map((msg) => msg.user));
+  // Resolve top-level message authors for human messages. Attachment authors are
+  // already resolved on each msg.attachments[].author by fetchThreadHistory.
+  // Bot messages synthesize an author from bot_profile.
+  const authorIds = new Set(visibleMessages.filter((m) => m.user).map((m) => m.user));
   const userInfoEntries = await Promise.all(
     Array.from(authorIds).map(async (uid): Promise<readonly [string, SlackAuthor]> => {
       try {
@@ -1086,8 +1120,10 @@ export async function fetchSlackThread(
 
   // Surface structured pieces (text, attachments, files) and let consumers
   // decide redaction / labeling using `thread.shared` + `isExternalUser`.
-  const messages: SlackThreadMessage[] = humanMessages.map((msg) => {
-    const author = userInfoMap.get(msg.user)!;
+  const messages: SlackThreadMessage[] = visibleMessages.map((msg) => {
+    const author: SlackAuthor = msg.user
+      ? userInfoMap.get(msg.user)!
+      : { id: msg.botId!, username: msg.botName || 'bot', realName: msg.botName || 'bot', teamId: msg.teamId };
     return {
       user: author,
       text: msg.text,
