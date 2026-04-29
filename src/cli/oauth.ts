@@ -76,7 +76,7 @@ async function runConnect(args: string[]): Promise<void> {
       'e.g. https://archie.example.com',
     );
   }
-  const redirectUri = new URL('/oauth/callback', publicUrl).toString();
+  const redirectUri = new URL(`${publicUrl.replace(/\/+$/, '')}/oauth/callback`).toString();
 
   const result = await beginConnect({
     serverName,
