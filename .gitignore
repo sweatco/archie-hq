@@ -27,6 +27,9 @@ build/
 # GitHub App private keys
 *.pem
 
+# Runtime OAuth tokens (encrypted, but never commit)
+secrets/oauth/
+
 # Runtime data
 workdir/
 claude-data/

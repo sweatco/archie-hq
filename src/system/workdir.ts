@@ -38,6 +38,25 @@ export const SESSIONS_DIR = join(WORKDIR, 'sessions');
 /** Persistent per-plugin data directory */
 export const PLUGINS_DATA_DIR = join(WORKDIR, 'plugins-data');
 
+/**
+ * Directory holding encrypted runtime secrets (e.g. OAuth tokens).
+ * Defaults to `/app/secrets` (the docker-mounted volume) when present,
+ * otherwise `<repo>/secrets` for local development. Override with
+ * `ARCHIE_SECRETS_DIR`.
+ */
+export const SECRETS_DIR = (() => {
+  const override = process.env.ARCHIE_SECRETS_DIR;
+  if (override) return override;
+  if (existsSync('/app/secrets')) return '/app/secrets';
+  return join(process.cwd(), 'secrets');
+})();
+
+/** OAuth token records, one file per MCP server. */
+export const OAUTH_DIR = join(SECRETS_DIR, 'oauth');
+
+/** Pending OAuth attempts (short-lived state during an authorize flow). */
+export const OAUTH_PENDING_DIR = join(OAUTH_DIR, '.pending');
+
 // =============================================================================
 // Bootstrap (async — must be called from main() before plugin/repo loading)
 // =============================================================================
@@ -54,6 +73,8 @@ export async function bootstrapWorkdir(): Promise<void> {
   await mkdir(REPOS_DIR, { recursive: true });
   await mkdir(SESSIONS_DIR, { recursive: true });
   await mkdir(PLUGINS_DATA_DIR, { recursive: true });
+  await mkdir(OAUTH_DIR, { recursive: true, mode: 0o700 });
+  await mkdir(OAUTH_PENDING_DIR, { recursive: true, mode: 0o700 });
 
   const pluginsUrl = process.env.ARCHIE_PLUGINS;
   const pluginsBranch = process.env.ARCHIE_PLUGINS_BRANCH;

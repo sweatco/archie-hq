@@ -1,0 +1,70 @@
+/**
+ * Shared types for the OAuth subsystem.
+ *
+ * The vocabulary follows the relevant RFCs:
+ *   - RFC 6749 / OAuth 2.1 — authorization code grant
+ *   - RFC 7591 — Dynamic Client Registration
+ *   - RFC 7636 — PKCE
+ *   - RFC 8414 — Authorization Server Metadata
+ *   - RFC 9728 — Protected Resource Metadata
+ */
+
+import type { EncryptedEnvelope } from '../secrets-vault.js';
+
+/** Plaintext metadata in an OAuth vault record. */
+export interface OAuthRecordMeta {
+  server_name: string;
+  label?: string;
+  expires_at: number;        // unix seconds
+  created_at: number;
+  updated_at: number;
+  /** Authorization-server issuer URL — needed to reconstruct an AS for refresh. */
+  issuer: string;
+  token_endpoint: string;
+  scopes: string[];
+}
+
+/** What we encrypt inside the OAuth vault record. */
+export interface OAuthSealed {
+  access_token: string;
+  refresh_token?: string;
+  client_id: string;
+  client_secret?: string;
+  token_type: string;        // typically "Bearer"
+}
+
+/** On-disk representation of a connected MCP server. */
+export interface OAuthRecord extends OAuthRecordMeta {
+  envelope: EncryptedEnvelope;
+}
+
+/** What the CLI persists for the daemon's callback handler to pick up. */
+export interface OAuthPendingMeta {
+  state: string;
+  server_name: string;
+  label?: string;
+  /** Authorization-server issuer URL — used to reconstruct the AS object. */
+  issuer: string;
+  token_endpoint: string;
+  authorization_endpoint: string;
+  scopes: string[];
+  redirect_uri: string;
+  created_at: number;
+}
+
+/** Encrypted half of a pending file (verifier + client creds). */
+export interface OAuthPendingSealed {
+  code_verifier: string;
+  client_id: string;
+  client_secret?: string;
+}
+
+/** On-disk representation of an in-flight OAuth attempt. */
+export interface OAuthPendingRecord extends OAuthPendingMeta {
+  envelope: EncryptedEnvelope;
+  /** Set by the callback handler when the exchange fails — CLI surfaces it. */
+  error?: string;
+  /** Set by the callback handler on success — CLI uses it to detect completion. */
+  completed_at?: number;
+}
+

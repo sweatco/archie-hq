@@ -61,8 +61,10 @@ services:
       # SSH agent forwarding (macOS Docker Desktop)
       - /run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock
 
-      # Secrets - mount your private key file (for GitHub App, optional)
-      - ./secrets:/app/secrets:ro
+      # Secrets - mounts deploy-time secrets (GitHub App key) AND runtime
+      # OAuth tokens written by `oauth:connect`. Read-write so the daemon
+      # can persist refreshed tokens.
+      - ./secrets:/app/secrets
 
       # Claude Code config - stores API keys, sessions, settings
       - ./claude-data:/home/archie/.claude

@@ -36,6 +36,7 @@ import { configureGitIdentity } from '../connectors/github/client.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { processAgentEventForLogging, logger } from '../system/logger.js';
 import { buildSandboxConfig, createFilesystemGuardHooks, type SandboxOptions } from './sandbox.js';
+import { applyOAuthBindings } from '../system/oauth/inject.js';
 
 // ---- Prompt generation (per track) ----
 
@@ -492,6 +493,10 @@ Shared folder: ${sharedPath} [READ-ONLY]
   // `share_artifact`, `post_to_user` artifact_paths) can validate paths against
   // the same boundaries the OS sandbox + filesystem-guard hooks enforce.
   agent.sandbox = sandboxOpts;
+
+  // Inject OAuth Bearer tokens into any HTTP/SSE MCP servers that have
+  // a vault record. Drops entries whose tokens can't be refreshed.
+  await applyOAuthBindings(mcpServers);
 
   // ---- Build query options (session ID may change on retry) ----
 

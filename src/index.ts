@@ -17,10 +17,12 @@ import type { Application, Request, Response } from 'express';
 import { mountSlackApp } from './connectors/slack/events.js';
 import { mountGitHubWebhook } from './connectors/github/events.js';
 import { mountApiRoutes } from './connectors/api/routes.js';
+import { mountOAuthRoutes } from './connectors/oauth/routes.js';
 import { getIsShuttingDown, setShuttingDown } from './system/shutdown.js';
 import { getActiveTaskIds } from './tasks/task.js';
 import { logger } from './system/logger.js';
-import { bootstrapWorkdir, cloneRepos } from './system/workdir.js';
+import { bootstrapWorkdir, cloneRepos, OAUTH_DIR } from './system/workdir.js';
+import { validateMasterKey } from './system/secrets-vault.js';
 import { initPlugins, getPlugins } from './system/plugin-loader.js';
 import { initRegistry, getAllAgentDefs } from './agents/registry.js';
 import { configureGitIdentity } from './connectors/github/client.js';
@@ -76,6 +78,14 @@ async function main(): Promise<void> {
 
     // Bootstrap: create workdir structure, clone/pull plugins
     await bootstrapWorkdir();
+
+    // If any OAuth vault records exist (or the master key was provided),
+    // validate it now so a misconfigured deployment fails fast instead of
+    // erroring at agent-spawn time.
+    const hasVaultRecords = readdirSync(OAUTH_DIR).some((name) => name.endsWith('.json'));
+    if (hasVaultRecords || process.env.ARCHIE_SECRETS_KEY) {
+      validateMasterKey();
+    }
 
     // Initialize modules
     initPlugins();
@@ -151,6 +161,9 @@ async function main(): Promise<void> {
 
     // Mount API routes (REST + SSE for CLI)
     mountApiRoutes(app);
+
+    // Mount OAuth callback route (provider redirects land here)
+    mountOAuthRoutes(app);
 
     // Mount GitHub webhook (if configured)
     if (config.githubWebhookSecret) {
