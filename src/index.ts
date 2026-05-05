@@ -14,7 +14,7 @@ const express = require('express');
 
 import type { Application, Request, Response } from 'express';
 
-import { mountSlackApp } from './connectors/slack/events.js';
+import { mountSlackApp, type SlackLifecycle } from './connectors/slack/events.js';
 import { mountGitHubWebhook } from './connectors/github/events.js';
 import { mountApiRoutes } from './connectors/api/routes.js';
 import { mountOAuthRoutes } from './connectors/oauth/routes.js';
@@ -177,10 +177,13 @@ async function main(): Promise<void> {
 
     // Mount Slack Bolt app (if configured).
     // Two modes: HTTP (bot token + signing secret) or Socket Mode (bot token + app token).
+    // Mounting registers handlers but does NOT start accepting events — we defer
+    // that until after task recovery so inbound events cannot race recovery.
     const slackHttpReady = !!(config.slackBotToken && config.slackSigningSecret);
     const slackSocketReady = !!(config.slackBotToken && config.slackAppToken);
+    let slackLifecycle: SlackLifecycle | null = null;
     if (slackHttpReady || slackSocketReady) {
-      await mountSlackApp(app, {
+      slackLifecycle = await mountSlackApp(app, {
         slackBotToken: config.slackBotToken!,
         slackSigningSecret: config.slackSigningSecret,
         slackAppToken: config.slackAppToken,
@@ -190,21 +193,32 @@ async function main(): Promise<void> {
       logger.plain('Slack App not configured — running in CLI-only mode');
     }
 
-    // Start the HTTP server
+    // Create the HTTP server but DO NOT listen yet — recover first so a Slack
+    // event arriving on startup cannot reach a task before its agent is respawned.
     const server = http.createServer(app);
-    await new Promise<void>((resolve) => server.listen(config.port, resolve));
-
-    logger.plain(`Health check: GET /health`);
-    logger.plain(`Archie server is running on port ${config.port}\n`);
 
     await recoverActiveTasks();
     await initReminderScheduler();
+
+    // Now accept events: start the HTTP server and open the Socket Mode WebSocket.
+    await new Promise<void>((resolve) => server.listen(config.port, resolve));
+    if (slackLifecycle) await slackLifecycle.start();
+
+    logger.plain(`Health check: GET /health`);
+    logger.plain(`Archie server is running on port ${config.port}\n`);
 
     // Graceful shutdown
     const shutdown = async (signal: string) => {
       logger.plain(`\nReceived ${signal} signal`);
       setShuttingDown(true);
       logger.system('Stopped accepting new webhooks');
+      if (slackLifecycle) {
+        try {
+          await slackLifecycle.stop();
+        } catch (err) {
+          logger.error('index', 'Error stopping Slack receiver', err);
+        }
+      }
       server.close();
       logger.plain('Server closed');
       process.exit(0);

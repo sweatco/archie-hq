@@ -52,21 +52,42 @@ export interface SlackConfig {
   dryRun?: boolean;
 }
 
+/**
+ * Lifecycle handle returned by mountSlackApp.
+ *
+ * Mounting only registers handlers; `start()` opens the Socket Mode
+ * WebSocket (no-op in HTTP mode, which is driven by the shared HTTP
+ * server). Callers should defer `start()` until task recovery has
+ * completed so startup-time events cannot race recovery.
+ */
+export interface SlackLifecycle {
+  start: () => Promise<void>;
+  stop: () => Promise<void>;
+}
+
 let app: AppType | null = null;
 
 /**
  * Mount Slack Bolt app on an existing Express app
  *
- * Creates an ExpressReceiver internally using the provided Express app,
- * registers Bolt event/action handlers, and initializes the Slack client.
+ * Registers Bolt event/action handlers and initializes the Slack
+ * client. In HTTP mode the ExpressReceiver hooks routes onto the
+ * shared Express app immediately. In Socket Mode the WebSocket is
+ * NOT opened here — call `start()` on the returned lifecycle once
+ * the rest of bootstrap (task recovery, scheduler) is ready.
  */
 export async function mountSlackApp(
   expressApp: Application,
   config: SlackConfig
-): Promise<void> {
+): Promise<SlackLifecycle> {
   const useSocketMode = !!config.slackAppToken;
 
   if (useSocketMode) {
+    if (!config.slackAppToken!.startsWith('xapp-')) {
+      throw new Error(
+        'SLACK_APP_TOKEN must start with "xapp-" (app-level token with connections:write scope)'
+      );
+    }
     logger.plain('Slack: Socket Mode (outbound WebSocket, no webhook URL)');
   } else {
     if (!config.slackSigningSecret) {
@@ -267,13 +288,22 @@ export async function mountSlackApp(
     }
   });
 
-  // Socket Mode requires explicit start to open the WebSocket.
-  // ExpressReceiver is driven by the shared HTTP server in src/index.ts and
-  // does not need this call.
-  if (useSocketMode) {
-    await app!.start();
-    logger.plain('Slack: Socket Mode connected');
-  }
+  // Return a lifecycle handle. start()/stop() are no-ops in HTTP mode —
+  // the shared HTTP server in src/index.ts drives the ExpressReceiver.
+  return {
+    async start() {
+      if (useSocketMode) {
+        await app!.start();
+        logger.plain('Slack: Socket Mode connected');
+      }
+    },
+    async stop() {
+      if (useSocketMode && app) {
+        await app.stop();
+        logger.plain('Slack: Socket Mode disconnected');
+      }
+    },
+  };
 }
 
 
