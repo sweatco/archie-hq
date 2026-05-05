@@ -144,7 +144,8 @@ ANTHROPIC_API_KEY=sk-ant-...           # Claude API key
 
 # Optional - Slack (omit for CLI-only mode)
 # SLACK_BOT_TOKEN=xoxb-...
-# SLACK_SIGNING_SECRET=...
+# SLACK_SIGNING_SECRET=...                # Required for HTTP webhook mode
+# SLACK_APP_TOKEN=xapp-...                # Set instead of (or alongside) SIGNING_SECRET to use Socket Mode
 
 # Optional - GitHub App (omit to use local SSH keys for git)
 # GITHUB_APP_ID=123456
@@ -181,11 +182,17 @@ To enable Slack integration, use the app manifest at [`slack-manifest.yaml`](../
 3. Click **Create**, then **Install to Workspace**
 4. Collect credentials:
    - **Bot Token** (OAuth & Permissions): `xoxb-...`
-   - **Signing Secret** (Basic Information → App Credentials)
-5. Add to `.env`:
+   - **Signing Secret** (Basic Information → App Credentials) — for HTTP webhook mode
+   - **App-Level Token** (Basic Information → App-Level Tokens) with the `connections:write` scope — for Socket Mode
+5. Add to `.env`. Pick one of the two modes:
    ```bash
+   # HTTP webhook mode (needs ngrok or a public URL — see below)
    SLACK_BOT_TOKEN=xoxb-...
    SLACK_SIGNING_SECRET=...
+
+   # OR Socket Mode (no public URL, no ngrok)
+   SLACK_BOT_TOKEN=xoxb-...
+   SLACK_APP_TOKEN=xapp-...
    ```
 
 The bot needs these permissions:
@@ -194,9 +201,11 @@ The bot needs these permissions:
 - `channels:history` — read thread history
 - `users:read` — get user names
 
-### ngrok
+### ngrok (HTTP webhook mode only)
 
-For Slack webhooks to reach your local server:
+If you went with **Socket Mode**, skip this section — events arrive over an outbound WebSocket and no public URL is needed.
+
+For HTTP webhook mode, expose your local server to Slack:
 
 ```bash
 brew install ngrok  # macOS
@@ -204,6 +213,8 @@ ngrok http 3000
 # Update Slack Event URL:
 # https://api.slack.com/apps → Event Subscriptions → https://YOUR-URL.ngrok.io/slack/events
 ```
+
+For Socket Mode you also need to flip `socket_mode_enabled: true` in `slack-manifest.yaml` and re-import the manifest at https://api.slack.com/apps → your app → App Manifest. See the header comment in `slack-manifest.yaml` for the full checklist.
 
 ## Running Without Docker
 

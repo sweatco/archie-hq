@@ -45,7 +45,7 @@ npm run cli
 
 Repos defined in plugins are auto-cloned on startup — no manual setup needed.
 
-The **CLI** (`npm run cli`) provides an interactive terminal UI for creating tasks and chatting with Archie without Slack. For Slack integration, add `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET` to `.env`. See [Local Development Guide](docs/guides/local-development.md) for full setup including Slack bot creation, ngrok, and GitHub App.
+The **CLI** (`npm run cli`) provides an interactive terminal UI for creating tasks and chatting with Archie without Slack. For Slack integration, add `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET` to `.env` for HTTP webhook mode, or set `SLACK_APP_TOKEN` (`xapp-...`) for Socket Mode (no public URL needed — skip ngrok). See [Local Development Guide](docs/guides/local-development.md) for full setup including Slack bot creation and GitHub App.
 
 ## Plugins
 

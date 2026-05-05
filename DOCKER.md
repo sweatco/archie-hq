@@ -138,7 +138,8 @@ Configure these in your `.env` file:
 |----------|-------------|---------|
 | `ANTHROPIC_API_KEY` | Claude API key | `sk-ant-...` |
 | `SLACK_BOT_TOKEN` | Slack bot OAuth token | `xoxb-...` |
-| `SLACK_SIGNING_SECRET` | Slack app signing secret | `abc123...` |
+| `SLACK_SIGNING_SECRET` | Slack signing secret — HTTP webhook mode | `abc123...` |
+| `SLACK_APP_TOKEN` | Slack app-level token — Socket Mode (alternative to signing secret; no inbound webhook URL needed) | `xapp-...` |
 | `GITHUB_APP_ID` | GitHub App ID | `123456` |
 | `GITHUB_INSTALLATION_ID` | GitHub App installation ID | `12345678` |
 | `ARCHIE_PLUGINS` | Git URL for plugins repo | `git@github.com:org/archie-plugins.git` |
@@ -161,7 +162,7 @@ The `claude-data/` directory is created automatically on first run. If `.claude.
 
 ## ngrok Setup (Local Development)
 
-To receive Slack/GitHub webhooks locally:
+To receive Slack/GitHub webhooks locally over HTTP. If you're running Slack in **Socket Mode** (`SLACK_APP_TOKEN` set), Slack events arrive over an outbound WebSocket and ngrok is only needed for GitHub.
 
 **Terminal 1** — Run container:
 ```bash
@@ -174,7 +175,7 @@ ngrok http ${PORT:-3000}
 ```
 
 Then update:
-- **Slack**: api.slack.com/apps → Event Subscriptions → `https://xxxx.ngrok.io/slack/events`
+- **Slack** (HTTP mode only): api.slack.com/apps → Event Subscriptions → `https://xxxx.ngrok.io/slack/events`
 - **GitHub**: Repo Settings → Webhooks → `https://xxxx.ngrok.io/github/webhooks`
 
 ## Production Deployment

@@ -1,10 +1,14 @@
 # Slack Integration
 
-Slack is the primary user experience layer for Archie. All human interaction flows through Slack threads, and all agent responses are delivered back to Slack. The system uses `@slack/bolt` in HTTP webhook mode (not socket mode) to receive events and the `@slack/web-api` client to post messages.
+Slack is the primary user experience layer for Archie. All human interaction flows through Slack threads, and all agent responses are delivered back to Slack. The system uses `@slack/bolt` to receive events — over HTTP webhooks by default, or in Socket Mode (outbound WebSocket, no public URL) when an app-level token is provided — and the `@slack/web-api` client to post messages.
 
 ## Connection Method
 
-Archie runs an Express-based HTTP server using Slack Bolt's `ExpressReceiver`. The Slack app manifest (`slack-manifest.yaml`) explicitly sets `socket_mode_enabled: false` and configures event subscriptions and interactivity to point at the `/webhooks/slack` endpoint.
+Archie supports two ways of receiving Slack events. The mode is selected at startup by which Slack credentials are present in the environment — there is no separate `SLACK_MODE` switch.
+
+### HTTP webhook mode (default)
+
+When only `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET` are set, Archie uses Slack Bolt's `ExpressReceiver`. Events arrive as POST requests on `/webhooks/slack` and are verified against the signing secret.
 
 ```
 # From slack-manifest.yaml
@@ -23,6 +27,16 @@ settings:
 ```
 
 The Bolt app is mounted by `mountSlackApp()` in `src/connectors/slack/events.ts`, which constructs an `ExpressReceiver` against an existing Express app with the Slack signing secret and the `/webhooks/slack` endpoint, then attaches a Bolt `App` to that receiver.
+
+### Socket Mode (no inbound webhook URL)
+
+When `SLACK_APP_TOKEN` (an `xapp-...` app-level token with the `connections:write` scope) is also set, `mountSlackApp()` constructs a `SocketModeReceiver` instead. Events flow over an outbound WebSocket initiated by the bot, removing the need for a public webhook URL. This is convenient for local development (no ngrok) and for production environments without inbound webhook capability.
+
+To enable Socket Mode end-to-end, also flip `socket_mode_enabled: true` in `slack-manifest.yaml` and re-import the manifest in the Slack app config — otherwise Slack will keep trying to deliver events over HTTP and the WebSocket will sit idle. The header comment in `slack-manifest.yaml` walks through the steps.
+
+### Lifecycle
+
+`mountSlackApp()` registers handlers immediately but does not begin accepting events. It returns a `{ start, stop }` lifecycle handle. `src/index.ts` calls `start()` only after `recoverActiveTasks()` and the reminder scheduler have finished, so an inbound event arriving during boot cannot race a recovery prompt and double-trigger an agent. `stop()` is invoked from the SIGINT/SIGTERM handler for a graceful Socket Mode disconnect before the HTTP server closes.
 
 ### Bot Scopes
 

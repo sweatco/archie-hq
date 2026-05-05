@@ -28,7 +28,8 @@ Secrets are injected via the container's environment file plus the mounted
 `/app/secrets` volume. See `.env.example` for the full list. Required at runtime:
 
 - `ANTHROPIC_API_KEY` — Claude API access (required; startup fails without it)
-- `SLACK_BOT_TOKEN` / `SLACK_SIGNING_SECRET` — Slack integration (optional; CLI-only mode if omitted)
+- `SLACK_BOT_TOKEN` / `SLACK_SIGNING_SECRET` — Slack integration in HTTP webhook mode (optional; CLI-only mode if both omitted)
+- `SLACK_APP_TOKEN` — `xapp-...` app-level token; set this *instead of* `SLACK_SIGNING_SECRET` to use Socket Mode and deploy without an inbound webhook URL
 - `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_INSTALLATION_ID` — GitHub App identifiers
 - `GITHUB_APP_PRIVATE_KEY_PATH` — path to PEM file (mount under `/app/secrets`)
 - `GITHUB_WEBHOOK_SECRET` — webhook signature verification (PR tools disabled if unset)
@@ -47,9 +48,9 @@ GitHub App with fine-grained, read-only permissions scoped to the organization. 
 
 ### Network Security
 
-- **Inbound:** Public IP for webhooks, firewall restricted to Slack IPs on port 443
-- **Outbound:** GitHub, Anthropic API, Slack API (all trusted)
-- Slack webhook signature verification enforced
+- **Inbound:** public IP for webhooks, firewall restricted to Slack IPs on port 443. Not required when running Slack in Socket Mode — events arrive over the bot's outbound WebSocket.
+- **Outbound:** GitHub, Anthropic API, Slack API (all trusted). Socket Mode also relies on a long-lived outbound WebSocket to `wss-primary.slack.com`.
+- Slack webhook signature verification enforced (HTTP mode); Socket Mode events are authenticated by the app-level token used to open the connection.
 - GitHub webhook signature verification enforced
 
 ## CI/CD Pipeline
