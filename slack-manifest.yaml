@@ -1,3 +1,15 @@
+# Slack app manifest. Default: HTTP webhook mode.
+#
+# To run Archie in Socket Mode instead (no public webhook URL needed):
+#   1. Flip `socket_mode_enabled` to `true` near the bottom of this file
+#      and re-import the manifest at https://api.slack.com/apps/<app>.
+#   2. Generate an app-level token with the `connections:write` scope:
+#      https://api.slack.com/apps/<app>/general → "App-Level Tokens".
+#   3. Set `SLACK_APP_TOKEN=xapp-...` in the runtime environment.
+#      Archie selects Socket Mode automatically when this var is present.
+# The `request_url` fields are ignored by Slack when Socket Mode is on,
+# so they can stay as-is for environments that toggle between modes.
+
 display_information:
   name: Archie
   description: "Autonomous Responsive and Collaborative Hyper Intelligent Employee"
