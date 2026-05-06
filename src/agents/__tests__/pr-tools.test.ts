@@ -12,6 +12,7 @@ import {
   mirrorLegacyFields,
   hydrateBranchState,
   findBranchStateByPR,
+  normalizeJiraOrSkipTitle,
 } from '../tools.js';
 import type { Agent } from '../agent.js';
 import type { Task } from '../../tasks/task.js';
@@ -93,6 +94,37 @@ function makeAgent(overrides: Partial<AgentDef> = {}): Agent {
     queue: {} as any,
     session: { active: false },
   } as Agent;
+}
+
+function makePolicyAgent(): Agent {
+  return makeAgent({
+    id: 'mobile-agent',
+    key: 'mobile',
+    repo: {
+      githubRepo: 'org/mobile',
+      repoKey: 'mobile',
+      defaultPath: '/repos/mobile',
+      baseBranch: 'main',
+      prTitlePolicy: 'jira-or-skip',
+    },
+  });
+}
+
+function makePolicyTask(): Task {
+  return makeTask({
+    repositories: {
+      mobile: {
+        path: '/repos/mobile',
+        clone_path: '/clones/mobile',
+        feature_branch: 'feature/task-123',
+        base_branch: 'main',
+        current_branch: 'feature/task-123',
+        branch_states: {
+          'feature/task-123': { base_branch: 'main' },
+        },
+      },
+    },
+  });
 }
 
 function makeTask(overrides: Partial<Task['metadata']> = {}): Task {
@@ -267,6 +299,119 @@ describe('get_pr_status (read-only server)', () => {
     expect(result.content[0].text).toContain('State: open');
     expect(result.content[0].text).toContain('Mergeable: true');
     expect(result.content[0].text).toContain('Approved: true');
+  });
+});
+
+describe('normalizeJiraOrSkipTitle', () => {
+  it('leaves compliant titles as-is (after trim)', () => {
+    expect(normalizeJiraOrSkipTitle('[SWEAT-1] Fix thing')).toBe('[SWEAT-1] Fix thing');
+    expect(normalizeJiraOrSkipTitle('  [AB-999] Edge case  ')).toBe('[AB-999] Edge case');
+    expect(normalizeJiraOrSkipTitle('[Skip] Chore only')).toBe('[Skip] Chore only');
+  });
+
+  it('prepends [Skip] when prefix is missing, fixes [skip] casing and empty title', () => {
+    expect(normalizeJiraOrSkipTitle('Fix thing')).toBe('[Skip] Fix thing');
+    expect(normalizeJiraOrSkipTitle('[skip] lower case')).toBe('[Skip] lower case');
+    expect(normalizeJiraOrSkipTitle('[Skip]')).toBe('[Skip] Pull request');
+    expect(normalizeJiraOrSkipTitle('')).toBe('[Skip] Pull request');
+  });
+
+  it('wraps bare Jira keys at the start', () => {
+    expect(normalizeJiraOrSkipTitle('WEB-12 Fix')).toBe('[WEB-12] Fix');
+    expect(normalizeJiraOrSkipTitle('WEB-12')).toBe('[WEB-12] Pull request');
+  });
+
+  it('does not treat malformed bracket keys as Jira', () => {
+    expect(normalizeJiraOrSkipTitle('[SWEAT-x] bad number')).toBe('[Skip] [SWEAT-x] bad number');
+  });
+});
+
+describe('create_pull_request (prTitlePolicy: jira-or-skip)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getGitHubClient).mockReturnValue(mockGitHubClient as any);
+    mockGitHubClient.createPullRequest.mockResolvedValue({ pr_number: 55, pr_url: 'https://gh/pr/55' });
+  });
+
+  it('normalizes missing prefix and still creates PR', async () => {
+    const tool = getRepoTool(makePolicyAgent(), makePolicyTask(), 'create_pull_request');
+    const result = await tool({ title: 'No prefix', body: 'hi' }, {});
+
+    expect(result.content[0].text).not.toMatch(/^Error:/);
+    expect(mockGitHubClient.createPullRequest).toHaveBeenCalledWith(
+      'org/mobile',
+      'feature/task-123',
+      'main',
+      '[Skip] No prefix',
+      'hi',
+    );
+    expect(result.content[0].text).toContain('Title adjusted');
+  });
+
+  it('passes compliant Jira/Skip titles through unchanged', async () => {
+    const tool = getRepoTool(makePolicyAgent(), makePolicyTask(), 'create_pull_request');
+    await tool({ title: '[WEB-12] Fix', body: 'b' }, {});
+    expect(mockGitHubClient.createPullRequest).toHaveBeenCalledWith(
+      'org/mobile',
+      'feature/task-123',
+      'main',
+      '[WEB-12] Fix',
+      'b',
+    );
+
+    await tool({ title: '  [Skip] Trim me  ', body: 'c' }, {});
+    expect(mockGitHubClient.createPullRequest).toHaveBeenLastCalledWith(
+      'org/mobile',
+      'feature/task-123',
+      'main',
+      '[Skip] Trim me',
+      'c',
+    );
+  });
+
+  it('does not normalize when repo has no prTitlePolicy', async () => {
+    const tool = getRepoTool(makeAgent(), makeTask(), 'create_pull_request');
+    const result = await tool({ title: 'Plain title', body: 'x' }, {});
+
+    expect(result.content[0].text).not.toMatch(/^Error:/);
+    expect(mockGitHubClient.createPullRequest).toHaveBeenCalledWith(
+      'org/backend',
+      'feature/task-123',
+      'main',
+      'Plain title',
+      'x',
+    );
+  });
+});
+
+describe('update_pr (prTitlePolicy: jira-or-skip)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getGitHubClient).mockReturnValue(mockGitHubClient as any);
+    mockGitHubClient.updatePR.mockResolvedValue(undefined);
+  });
+
+  it('normalizes title when prTitlePolicy is set', async () => {
+    const tool = getRepoTool(makePolicyAgent(), makePolicyTask(), 'update_pr');
+    const result = await tool({ pr_number: 1, title: 'Missing prefix' }, {});
+
+    expect(mockGitHubClient.updatePR).toHaveBeenCalledWith('org/mobile', 1, {
+      title: '[Skip] Missing prefix',
+      body: undefined,
+      base: undefined,
+    });
+    expect(result.content[0].text).toContain('Title adjusted');
+  });
+
+  it('skips normalization for body-only updates', async () => {
+    const tool = getRepoTool(makePolicyAgent(), makePolicyTask(), 'update_pr');
+    await tool({ pr_number: 2, body: 'only body' }, {});
+
+    expect(mockGitHubClient.updatePR).toHaveBeenCalledWith('org/mobile', 2, {
+      title: undefined,
+      body: 'only body',
+      base: undefined,
+    });
   });
 });
 

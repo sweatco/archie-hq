@@ -89,6 +89,7 @@ export interface PluginAgentDef {
   repo?: {
     github: string;
     baseBranch?: string;
+    prTitlePolicy?: 'jira-or-skip';
   };
   /** MCP server names this agent should have access to (from plugin's .mcp.json) */
   mcpServers?: string[];
@@ -193,6 +194,7 @@ function scanPlugins(): LoadedPlugin[] {
           agentDef.repo = {
             github: repoMeta.github,
             baseBranch: repoMeta.baseBranch || undefined,
+            prTitlePolicy: repoMeta.prTitlePolicy || undefined,
           };
         }
 

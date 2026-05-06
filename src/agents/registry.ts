@@ -70,6 +70,7 @@ export function scanAgentDefs(): AgentDef[] {
             baseBranch: agent.repo.baseBranch,
             defaultPath: join(REPOS_DIR, agent.key),
             repoKey: agent.key,
+            prTitlePolicy: agent.repo.prTitlePolicy,
           },
           pluginDataPath: join(PLUGINS_DATA_DIR, plugin.name),
           pluginHooks: plugin.hooks || undefined,

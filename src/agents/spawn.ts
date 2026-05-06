@@ -59,9 +59,13 @@ async function generateRepoAgentPrompt(agent: Agent): Promise<string> {
     PEER_LIST: peerList,
   });
 
+  const repo = def.repo!;
   const repoPrompt = await loadPrompt('repo-agent', {
-    REPO_KEY: def.repo!.repoKey,
-    BASE_BRANCH: def.repo!.baseBranch || 'main',
+    REPO_KEY: repo.repoKey,
+    BASE_BRANCH: repo.baseBranch || 'main',
+    PR_TITLE_POLICY_HINT: repo.prTitlePolicy === 'jira-or-skip'
+      ? ' — prefer `[PROJ-123] Title` when tied to a Jira ticket, or `[Skip] Title` when not (missing prefix is added automatically)'
+      : '',
   });
 
   const layers = [corePrompt, repoPrompt];

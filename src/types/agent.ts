@@ -73,6 +73,11 @@ export interface AgentRepoDef {
   defaultPath: string;
   /** Key in TaskMetadata.repositories, e.g., 'backend', 'mobile' */
   repoKey: string;
+  /**
+   * PR title prefix policy. When set, PR titles are auto-normalized at tool level:
+   * - 'jira-or-skip': title must start with `[PROJ-123]` or `[Skip]`; missing prefix gets `[Skip]` prepended.
+   */
+  prTitlePolicy?: 'jira-or-skip';
 }
 
 /**

@@ -129,7 +129,7 @@ Write:
 1. Commit all changes with `git commit`
 2. `push_branch()` to push
 3. Read `metadata.json` from the shared folder to find the originating channel (look for the `default_channel` key, then find that channel in `channels`). If the `channel_name` starts with `DM with`, do NOT include the URL — instead write `Requested by <name>` using the name from `channel_name`. Otherwise, include a link at the bottom of the PR body using the channel name (e.g. `Slack thread in #channel-name: <url>`)
-4. `create_pull_request(title, body)` with a clear description
+4. `create_pull_request(title, body)` with a clear description{{PR_TITLE_POLICY_HINT}}
 5. Notify pm-agent: "PR #123 created: <url>"
 
 ### Handling Reviews

@@ -14,6 +14,7 @@ import { promisify } from 'util';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { AgentName, FindingType } from '../types/task.js';
+import type { AgentRepoDef } from '../types/agent.js';
 import type { Task } from '../tasks/task.js';
 import type { Agent } from './agent.js';
 import { getAgentIds } from './registry.js';
@@ -118,6 +119,50 @@ export interface PRComment {
   body: string;
   createdAt: string;
   url: string;
+}
+
+// ---- PR title normalization (jira-or-skip policy) ----
+
+const JIRA_OR_SKIP_COMPLIANT = /^\[([A-Z][A-Z0-9]+-\d+|Skip)\]\s+\S/;
+
+/**
+ * Normalize a PR title to `[PROJ-123] …` or `[Skip] …` for repos with
+ * `prTitlePolicy: 'jira-or-skip'`. Never fails — missing prefix gets `[Skip]`.
+ */
+export function normalizeJiraOrSkipTitle(rawTitle: string): string {
+  const t = rawTitle.trim();
+  if (!t) return '[Skip] Pull request';
+  if (JIRA_OR_SKIP_COMPLIANT.test(t)) return t;
+
+  const skipBracket = t.match(/^\[(skip)\]\s*(.*)$/i);
+  if (skipBracket) {
+    const rest = skipBracket[2].trim();
+    return rest ? `[Skip] ${rest}` : '[Skip] Pull request';
+  }
+
+  const bracketJira = t.match(/^\[([A-Z][A-Z0-9]+-\d+)\]\s*(.*)$/);
+  if (bracketJira) {
+    const rest = bracketJira[2].trim();
+    return rest ? `[${bracketJira[1]}] ${rest}` : `[${bracketJira[1]}] Pull request`;
+  }
+
+  const bare = t.match(/^([A-Z][A-Z0-9]+-\d+)(?:\s+(.*))?$/);
+  if (bare) {
+    const rest = (bare[2] ?? '').trim();
+    return rest ? `[${bare[1]}] ${rest}` : `[${bare[1]}] Pull request`;
+  }
+
+  return `[Skip] ${t}`;
+}
+
+/**
+ * Apply the repo's prTitlePolicy (if any). Returns the possibly-normalized title.
+ */
+function applyPrTitlePolicy(repo: AgentRepoDef, rawTitle: string): string {
+  if (repo.prTitlePolicy === 'jira-or-skip') {
+    return normalizeJiraOrSkipTitle(rawTitle);
+  }
+  return rawTitle;
 }
 
 // ---- Tool creation helpers ----
@@ -569,18 +614,29 @@ function createPushBranchTool(agent: Agent, task: Task) {
 }
 
 function createPullRequestTool(agent: Agent, task: Task) {
-  const repoKey = agent.def.repo!.repoKey;
-  const githubRepo = agent.def.repo!.githubRepo;
+  const repo = agent.def.repo!;
+  const repoKey = repo.repoKey;
+  const githubRepo = repo.githubRepo;
+  const hasPolicy = !!repo.prTitlePolicy;
+  const titleFieldDesc = hasPolicy
+    ? 'PR title. Prefer [PROJECT-123] when tied to a Jira ticket, or [Skip] when not; missing prefix is added automatically.'
+    : 'PR title';
   return tool(
     'create_pull_request',
     'Create a pull request on GitHub.',
     {
-      title: z.string().describe('PR title'),
+      title: z.string().describe(titleFieldDesc),
       body: z.string().describe('PR description body'),
     },
     async (args) => {
       const agentName = agent.def.id as AgentName;
-      logger.agentAction(agentName, 'Creating PR', args.title);
+      const original = args.title.trim();
+      const title = applyPrTitlePolicy(repo, args.title);
+      if (title !== original) {
+        logger.system(`PR title normalized (${repo.prTitlePolicy}): ${JSON.stringify(original)} → ${JSON.stringify(title)}`);
+      }
+
+      logger.agentAction(agentName, 'Creating PR', title);
 
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -589,9 +645,9 @@ function createPullRequestTool(agent: Agent, task: Task) {
       const branch = repoInfo?.current_branch;
       const state = branch ? repoInfo?.branch_states?.[branch] : undefined;
       const head = branch || `feature/task-${task.taskId}`;
-      const base = state?.base_branch || agent.def.repo!.baseBranch || 'main';
+      const base = state?.base_branch || repo.baseBranch || 'main';
 
-      const result = await client.createPullRequest(githubRepo, head, base, args.title, args.body);
+      const result = await client.createPullRequest(githubRepo, head, base, title, args.body);
 
       if (state) {
         state.pr_number = result.pr_number;
@@ -602,7 +658,10 @@ function createPullRequestTool(agent: Agent, task: Task) {
       }
 
       await appendAgentFinding(task.taskId, agentName, `Created PR #${result.pr_number}: ${result.pr_url}`, 'decision');
-      return ok(`Created PR #${result.pr_number}: ${result.pr_url}`);
+      const message = title !== original
+        ? `Created PR #${result.pr_number}: ${result.pr_url}\n(Title adjusted: ${title})`
+        : `Created PR #${result.pr_number}: ${result.pr_url}`;
+      return ok(message);
     },
   );
 }
@@ -757,25 +816,42 @@ function createGetPRTool(agent: Agent, task: Task) {
 }
 
 function createUpdatePRTool(agent: Agent, task: Task) {
-  const githubRepo = agent.def.repo!.githubRepo;
+  const repo = agent.def.repo!;
+  const githubRepo = repo.githubRepo;
+  const hasPolicy = !!repo.prTitlePolicy;
+  const titleFieldDesc = hasPolicy
+    ? 'New PR title. Same automatic normalization as create_pull_request for this repository.'
+    : 'New PR title';
   return tool(
     'update_pr',
     'Update the title, description, and/or base branch of a pull request. All fields are optional — include only what needs to change.',
     {
       pr_number: z.number().describe('The PR number'),
-      title: z.string().optional().describe('New PR title'),
+      title: z.string().optional().describe(titleFieldDesc),
       body: z.string().optional().describe('New PR description body'),
       base: z.string().optional().describe('New base branch (retarget the PR, e.g. "main" → "release-1.2")'),
     },
     async (args) => {
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
+      let title = args.title;
+      let adjusted = false;
+      if (title !== undefined) {
+        const original = title.trim();
+        title = applyPrTitlePolicy(repo, title);
+        adjusted = title !== original;
+        if (adjusted) {
+          logger.system(`PR title normalized (${repo.prTitlePolicy}): ${JSON.stringify(original)} → ${JSON.stringify(title)}`);
+        }
+      }
       await client.updatePR(githubRepo, args.pr_number, {
-        title: args.title,
+        title,
         body: args.body,
         base: args.base,
       });
-      return { content: [{ type: 'text' as const, text: `Updated PR #${args.pr_number}` }] };
+      return ok(adjusted
+        ? `Updated PR #${args.pr_number}. Title adjusted: ${title}`
+        : `Updated PR #${args.pr_number}`);
     },
   );
 }
