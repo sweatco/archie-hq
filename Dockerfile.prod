@@ -42,7 +42,7 @@ RUN npm prune --production
 
 # Create non-root user (required: bypassPermissions refuses to run as root)
 RUN groupadd -g 1001 archie && \
-    useradd -u 1001 -g archie -m archie
+    useradd -u 1001 -s /bin/bash -g archie -m archie
 
 # Create directories and set ownership
 RUN mkdir -p /workdir /app/secrets && \
