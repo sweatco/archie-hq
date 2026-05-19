@@ -1,6 +1,6 @@
 # Development Dockerfile with hot reload support
 
-FROM node:24-slim
+FROM node:24-trixie-slim
 
 # uv/uvx for Python tool execution
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
