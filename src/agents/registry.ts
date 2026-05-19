@@ -73,6 +73,7 @@ export function scanAgentDefs(): AgentDef[] {
           },
           pluginDataPath: join(PLUGINS_DATA_DIR, plugin.name),
           pluginHooks: plugin.hooks || undefined,
+          allowedNetworkDomains: agent.allowedNetworkDomains,
           ...resolvedMcp,
         });
       } else {
@@ -92,6 +93,7 @@ export function scanAgentDefs(): AgentDef[] {
           pluginDataPath: join(PLUGINS_DATA_DIR, plugin.name),
           skillsPath: plugin.skillsPath || undefined,
           pluginHooks: plugin.hooks || undefined,
+          allowedNetworkDomains: agent.allowedNetworkDomains,
           ...resolvedMcp,
         });
       }

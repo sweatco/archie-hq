@@ -20,10 +20,10 @@
  * Consumers (repo-configs, task-manager) pull what they need from loaded plugins.
  */
 
-import { readFileSync, existsSync, readdirSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import matter from 'gray-matter';
-import { PLUGINS_DIR } from './workdir.js';
+import { PLUGINS_DIR, PLUGINS_DATA_DIR } from './workdir.js';
 import { logger } from './logger.js';
 
 export { PLUGINS_DIR };
@@ -96,6 +96,8 @@ export interface PluginAgentDef {
   tools?: string[];
   /** Tool denylist from frontmatter */
   disallowedTools?: string[];
+  /** Hostnames the sandbox should allow outbound HTTPS to from Bash. Empty/undefined = deny all. */
+  allowedNetworkDomains?: string[];
 }
 
 export interface PluginManifest {
@@ -156,6 +158,21 @@ function scanPlugins(): LoadedPlugin[] {
 
     const pluginName = manifest.name;
 
+    // Ensure per-plugin persistent data dir exists (referenced as
+    // ${CLAUDE_PLUGIN_DATA} from hooks and as `pluginDataPath` from sandbox).
+    const pluginDataDir = join(PLUGINS_DATA_DIR, pluginName);
+    mkdirSync(pluginDataDir, { recursive: true });
+
+    // Helper: substitute Claude Code plugin runtime variables.
+    //   ${CLAUDE_PLUGIN_ROOT} — read-only plugin source directory
+    //   ${CLAUDE_PLUGIN_DATA} — per-plugin persistent data directory
+    // Applied to anything authored at the plugin level (agent prompts, hooks.json).
+    // Skills are NOT substituted — skill bash commands resolve via env vars at runtime.
+    const substitutePluginVars = (text: string): string =>
+      text
+        .replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, pluginDir)
+        .replace(/\$\{CLAUDE_PLUGIN_DATA\}/g, pluginDataDir);
+
     // Load repo-config.json if present
     let repoConfigs: Record<string, PluginRepoConfig> | null = null;
     const repoConfigPath = join(pluginDir, 'repo-config.json');
@@ -184,7 +201,7 @@ function scanPlugins(): LoadedPlugin[] {
           model: data.model || undefined,
           effort,
           maxTurns,
-          prompt: content.trim(),
+          prompt: substitutePluginVars(content.trim()),
         };
 
         // If frontmatter has repo metadata, this is a repo agent
@@ -206,6 +223,11 @@ function scanPlugins(): LoadedPlugin[] {
         if (Array.isArray(data.disallowedTools)) {
           agentDef.disallowedTools = data.disallowedTools;
         }
+        if (Array.isArray(data.allowedNetworkDomains)) {
+          agentDef.allowedNetworkDomains = data.allowedNetworkDomains.filter(
+            (d: unknown): d is string => typeof d === 'string' && d.length > 0,
+          );
+        }
 
         agents.push(agentDef);
       }
@@ -221,8 +243,7 @@ function scanPlugins(): LoadedPlugin[] {
     if (existsSync(hooksPath)) {
       try {
         const raw = readFileSync(hooksPath, 'utf-8');
-        // Substitute ${CLAUDE_PLUGIN_ROOT} with the actual plugin directory path
-        const substituted = raw.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, pluginDir);
+        const substituted = substitutePluginVars(raw);
         const parsed = JSON.parse(substituted);
         hooks = parsed.hooks ?? null;
         if (hooks) {

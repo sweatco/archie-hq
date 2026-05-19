@@ -263,6 +263,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
         join(pmWorkspace, '.claude', 'hooks'),
         join(pmWorkspace, 'CLAUDE.md'),
       ],
+      allowedNetworkDomains: def.allowedNetworkDomains,
     };
   } else if (def.track === 'repo') {
     // ---- Repo track ----
@@ -417,6 +418,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
         allowReadPaths: [repoWorkspace, repoPath, ...(useClaudeDirs ? [claudeConfigDir, claudeTmpDir] : []), ...readOnlyPaths],
         allowWritePaths: [repoWorkspace, repoPath, ...(useClaudeDirs ? [claudeTmpDir] : [])],
         denyWritePaths: [...readOnlyPaths, ...denyWriteProtected],
+        allowedNetworkDomains: def.allowedNetworkDomains,
       };
     } else {
       sandboxOpts = {
@@ -425,6 +427,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
         allowReadPaths: [repoWorkspace, repoPath, ...(useClaudeDirs ? [claudeConfigDir, claudeTmpDir] : []), ...readOnlyPaths],
         allowWritePaths: [repoWorkspace, ...(useClaudeDirs ? [claudeTmpDir] : [])],
         denyWritePaths: [repoPath, ...readOnlyPaths],
+        allowedNetworkDomains: def.allowedNetworkDomains,
       };
     }
   } else {
@@ -486,6 +489,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
         join(agentWorkspace, '.claude', 'hooks'),
         join(agentWorkspace, 'CLAUDE.md'),
       ],
+      allowedNetworkDomains: def.allowedNetworkDomains,
     };
   }
 
@@ -517,6 +521,8 @@ Shared folder: ${sharedPath} [READ-ONLY]
         CLAUDE_CONFIG_DIR: claudeConfigDir,
         CLAUDE_CODE_TMPDIR: claudeTmpDir,
       } : {}),
+      ...(def.pluginPath ? { CLAUDE_PLUGIN_ROOT: def.pluginPath } : {}),
+      ...(def.pluginDataPath ? { CLAUDE_PLUGIN_DATA: def.pluginDataPath } : {}),
     },
     resume: sessionId,
     maxTurns: def.maxTurns ?? 100,

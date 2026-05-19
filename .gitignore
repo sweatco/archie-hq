@@ -30,6 +30,9 @@ build/
 # Runtime OAuth tokens (encrypted, but never commit)
 secrets/oauth/
 
+# Plugin-supplied credential files in the secrets volume
+secrets/*-credentials.json
+
 # Runtime data
 workdir/
 claude-data/

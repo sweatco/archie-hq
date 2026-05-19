@@ -149,6 +149,9 @@ export interface AgentDef {
   /** Tools to disallow (from agent frontmatter) */
   disallowedTools?: string[];
 
+  /** Sandbox outbound-network whitelist (from agent frontmatter). Empty/undefined = deny all. */
+  allowedNetworkDomains?: string[];
+
   /** Plugin hooks config (from plugin's hooks/hooks.json), written to .claude/settings.json */
   pluginHooks?: Record<string, any>;
 }
