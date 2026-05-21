@@ -10,7 +10,9 @@
 
 import crypto from 'crypto';
 import { checkAndMergeLinkedPRs } from './merge.js';
-import { findTaskByPRNumber, loadMetadata } from '../../tasks/persistence.js';
+import { findTaskByPRNumber, loadMetadata, appendGitHubEvent } from '../../tasks/persistence.js';
+import { Task } from '../../tasks/task.js';
+import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
 
 // ============================================================================
@@ -104,6 +106,15 @@ export function formatGitHubContext(
     const workflowRun = payload.workflow_run as Record<string, unknown> | undefined;
     context.branch = workflowRun?.head_branch as string | undefined;
     context.state = workflowRun?.conclusion as string | undefined;
+  } else if (eventType === 'check_suite') {
+    const checkSuite = payload.check_suite as Record<string, unknown> | undefined;
+    context.branch = checkSuite?.head_branch as string | undefined;
+    context.state = (checkSuite?.conclusion as string | undefined) ?? (checkSuite?.status as string | undefined);
+    const prs = checkSuite?.pull_requests as Array<Record<string, unknown>> | undefined;
+    const firstPr = prs && prs.length > 0 ? prs[0] : undefined;
+    if (firstPr?.number !== undefined) {
+      context.prNumber = firstPr.number as number;
+    }
   }
 
   return context;
@@ -129,6 +140,11 @@ export function extractBranchFromPayload(
   if (eventType === 'workflow_run') {
     const workflowRun = payload.workflow_run as Record<string, unknown> | undefined;
     return workflowRun?.head_branch as string | undefined;
+  }
+
+  if (eventType === 'check_suite') {
+    const checkSuite = payload.check_suite as Record<string, unknown> | undefined;
+    return checkSuite?.head_branch as string | undefined;
   }
 
   return undefined;
@@ -197,6 +213,13 @@ export function formatGitHubEvent(context: GitHubEventContext): FormattedGitHubE
     case 'workflow_run':
       return { from: 'ci', destination: branchDest, message: `workflow ${state || 'completed'}` };
 
+    case 'check_suite':
+      return {
+        from: 'ci',
+        destination: prNumber ? prDest : branchDest,
+        message: `checks ${state || action}`,
+      };
+
     default:
       return { from: user, destination: prDest, message: `${eventType}/${action}` };
   }
@@ -237,6 +260,58 @@ export function handleMergeCheckDirect(taskId: string): void {
 }
 
 // ============================================================================
+// Checks-Ready Debouncing
+// ============================================================================
+
+/**
+ * Per-PR debounce timers for check_suite.completed events. A push typically
+ * triggers several check suites which complete within seconds of each other;
+ * we coalesce them into a single PM ping so the agent inspects checks once.
+ *
+ * Key format: `${taskId}:${githubRepo}#${prNumber}` — per-PR, not per-task.
+ */
+const checksReadyTimers = new Map<string, NodeJS.Timeout>();
+const CHECKS_READY_DEBOUNCE_MS = 20_000;
+
+/**
+ * Handle check_suite.completed with per-PR debouncing.
+ *
+ * Resets the timer on every event in the window; on fire, appends one
+ * structured GitHub event to knowledge.log and wakes PM with the standard
+ * `existingTask` prompt. PM is expected to call `get_pr_checks` to inspect.
+ */
+export function handleChecksReadyDirect(
+  taskId: string,
+  githubRepo: string,
+  prNumber: number
+): void {
+  const key = `${taskId}:${githubRepo}#${prNumber}`;
+  const existingTimer = checksReadyTimers.get(key);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+    logger.system(`GitHub: Debouncing checks_ready for ${key}`);
+  }
+
+  const timer = setTimeout(async () => {
+    checksReadyTimers.delete(key);
+    logger.system(`GitHub: Firing checks_ready for ${key}`);
+    try {
+      await appendGitHubEvent(taskId, githubRepo, {
+        from: 'ci',
+        destination: `PR #${prNumber}`,
+        message: `checks updated — call get_pr_checks(${prNumber}) to inspect`,
+      });
+      const task = await Task.get(taskId);
+      await task.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+    } catch (error) {
+      logger.error('checks-ready', `Failed to deliver checks_ready ping for ${key}`, error);
+    }
+  }, CHECKS_READY_DEBOUNCE_MS);
+
+  checksReadyTimers.set(key, timer);
+}
+
+// ============================================================================
 // GitHub Routing (merged from system/webhook-router.ts)
 // ============================================================================
 
@@ -245,12 +320,19 @@ export function handleMergeCheckDirect(taskId: string): void {
  */
 export type GitHubRouteResult =
   | { action: 'discard'; reason: string }
-  | { action: 'direct'; handler: 'merge_check' | 'existing_task'; taskId: string };
+  | { action: 'direct'; handler: 'merge_check' | 'existing_task'; taskId: string }
+  | {
+      action: 'direct';
+      handler: 'checks_ready';
+      taskId: string;
+      githubRepo: string;
+      prNumber: number;
+    };
 
 /**
  * Internal route action
  */
-type InternalRouteAction = 'merge_check' | 'existing_task' | 'noop';
+type InternalRouteAction = 'merge_check' | 'existing_task' | 'checks_ready' | 'noop';
 
 /**
  * Deterministic routing based on event type
@@ -287,6 +369,21 @@ function determineRouteAction(context: GitHubEventContext): InternalRouteAction 
       }
       return 'noop';
 
+    case 'check_suite':
+      if (action !== 'completed') return 'noop';
+      // Only wake PM on failure-like conclusions. Success/neutral/skipped
+      // are already covered by the pre-existing merge triggers
+      // (workflow_run, push, pull_request_review) — no need to duplicate.
+      if (
+        state === 'failure' ||
+        state === 'cancelled' ||
+        state === 'timed_out' ||
+        state === 'action_required'
+      ) {
+        return 'checks_ready';
+      }
+      return 'noop';
+
     default:
       return 'noop';
   }
@@ -314,9 +411,17 @@ export async function routeGitHubEvent(
 ): Promise<GitHubRouteResult> {
   const context = formatGitHubContext(eventType, payload);
 
-  // Discard events from our own bot to avoid infinite loops
+  // Discard comment/review-style events from our own bot to avoid infinite loops
+  // (bot posts → webhook → PM wake → bot posts again). Machine events
+  // (check_suite, workflow_run, push) carry the bot as `sender` whenever the
+  // bot pushed the triggering commit, but they're CI output — not a reply
+  // loop — so we must process them.
   const ourBotUsername = getGitHubAppBotUsername();
-  if (ourBotUsername && context.user === ourBotUsername) {
+  const isMachineEvent =
+    eventType === 'check_suite' ||
+    eventType === 'workflow_run' ||
+    eventType === 'push';
+  if (ourBotUsername && context.user === ourBotUsername && !isMachineEvent) {
     return { action: 'discard', reason: 'Own bot event' };
   }
 
@@ -326,6 +431,12 @@ export async function routeGitHubEvent(
 
   // For issue_comment, branch isn't in payload - find task by PR number
   if (!taskId && eventType === 'issue_comment' && context.prNumber) {
+    taskId = await findTaskByPRNumber(context.githubRepo, context.prNumber) ?? undefined;
+  }
+
+  // For check_suite events, fall back to PR-number lookup if the branch
+  // doesn't match our feature/{taskId} pattern (e.g. suite attached to base).
+  if (!taskId && eventType === 'check_suite' && context.prNumber) {
     taskId = await findTaskByPRNumber(context.githubRepo, context.prNumber) ?? undefined;
   }
 
@@ -349,6 +460,18 @@ export async function routeGitHubEvent(
 
     case 'merge_check':
       return { action: 'direct', handler: 'merge_check', taskId };
+
+    case 'checks_ready':
+      if (!context.prNumber) {
+        return { action: 'discard', reason: 'check_suite without attached PR' };
+      }
+      return {
+        action: 'direct',
+        handler: 'checks_ready',
+        taskId,
+        githubRepo: context.githubRepo,
+        prNumber: context.prNumber,
+      };
 
     case 'noop':
     default:

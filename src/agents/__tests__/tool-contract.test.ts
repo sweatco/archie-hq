@@ -127,6 +127,7 @@ const SPAWN_REPO_TOOLS = [
   'mcp__repo-tools__list_prs',
   'mcp__repo-tools__get_pr',
   'mcp__repo-tools__get_pr_status',
+  'mcp__repo-tools__get_pr_checks',
   'mcp__repo-tools__get_pr_reviews',
   'mcp__repo-tools__get_pr_comments',
   'mcp__repo-tools__get_review_threads',

@@ -120,6 +120,38 @@ export interface PRComment {
   url: string;
 }
 
+export type CheckConclusion =
+  | 'success'
+  | 'failure'
+  | 'cancelled'
+  | 'timed_out'
+  | 'neutral'
+  | 'action_required'
+  | 'skipped'
+  | 'stale'
+  | null;
+
+export interface PRCheckEntry {
+  source: 'check_run' | 'status';
+  name: string;
+  app: string;
+  status: string;
+  conclusion: CheckConclusion;
+  url: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  output?: {
+    title?: string;
+    summary?: string;
+    text?: string;
+  };
+}
+
+export interface PRChecksReport {
+  headSha: string;
+  entries: PRCheckEntry[];
+}
+
 // ---- Tool creation helpers ----
 
 function allAgents(): [string, ...string[]] {
@@ -623,6 +655,53 @@ function createGetPRStatusTool(agent: Agent, task: Task) {
           text: `PR #${args.pr_number} status:\n- State: ${status.state}\n- Mergeable: ${status.mergeable}\n- Mergeable State: ${status.mergeableState}\n- Approved: ${status.approved}`,
         }],
       };
+    },
+  );
+}
+
+function createGetPRChecksTool(agent: Agent, task: Task) {
+  const githubRepo = agent.def.repo!.githubRepo;
+  return tool(
+    'get_pr_checks',
+    'List CI checks (check-runs + legacy commit statuses) attached to a PR\'s HEAD commit. Returns conclusion, URL, and — for failed checks — the full output (title/summary/text). Use this when a "checks updated" event arrives or get_pr_status reports mergeableState=unstable, to find which specific check broke.',
+    { pr_number: z.number().describe('The PR number') },
+    async (args) => {
+      const client = getGitHubClient();
+      if (!client) throw new Error('GitHub client not configured');
+      const report = await client.listPRChecks(githubRepo, args.pr_number);
+      if (report.entries.length === 0) {
+        return ok(`No checks found for PR #${args.pr_number} (head ${report.headSha.slice(0, 7)}).`);
+      }
+
+      const FAILED_CONCLUSIONS = new Set(['failure', 'cancelled', 'timed_out', 'action_required']);
+      const lines: string[] = [
+        `Checks for PR #${args.pr_number} (head ${report.headSha.slice(0, 7)}):`,
+      ];
+
+      for (const entry of report.entries) {
+        const state = entry.conclusion ?? entry.status;
+        const urlPart = entry.url ? ` — ${entry.url}` : '';
+        lines.push(`- [${state}] ${entry.name} (${entry.app})${urlPart}`);
+      }
+
+      const failed = report.entries.filter(
+        (e) => e.conclusion && FAILED_CONCLUSIONS.has(e.conclusion) && e.output
+      );
+      for (const entry of failed) {
+        const blocks: string[] = ['', `${entry.name} output:`];
+        if (entry.output?.title) blocks.push(`title: ${entry.output.title}`);
+        if (entry.output?.summary) {
+          blocks.push('summary:');
+          blocks.push(entry.output.summary);
+        }
+        if (entry.output?.text) {
+          blocks.push('text:');
+          blocks.push(entry.output.text);
+        }
+        lines.push(blocks.join('\n'));
+      }
+
+      return ok(lines.join('\n'));
     },
   );
 }
@@ -1165,6 +1244,7 @@ export function createRepoToolsMcpServer(agent: Agent, task: Task) {
       createListPRsTool(agent, task),
       createGetPRTool(agent, task),
       createGetPRStatusTool(agent, task),
+      createGetPRChecksTool(agent, task),
       createGetPRReviewsTool(agent, task),
       createGetPRCommentsTool(agent, task),
       createGetReviewThreadsTool(agent, task),

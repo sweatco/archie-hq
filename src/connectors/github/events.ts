@@ -10,9 +10,13 @@ const require = createRequire(import.meta.url);
 
 import type { Application, Request, Response } from 'express';
 
+import { join } from 'path';
+import { mkdir, writeFile } from 'fs/promises';
+
 import {
   routeGitHubEvent,
   handleMergeCheckDirect,
+  handleChecksReadyDirect,
   formatGitHubContext,
   formatGitHubEvent,
   verifyWebhookSignature,
@@ -24,6 +28,7 @@ import { getAgentDefByGithubRepo } from '../../agents/registry.js';
 import { findBranchStateByPR } from './branch-state.js';
 import { logger } from '../../system/logger.js';
 import { getIsShuttingDown } from '../../system/shutdown.js';
+import { WORKDIR } from '../../system/workdir.js';
 
 /**
  * Mount the GitHub webhook endpoint on an Express router
@@ -60,12 +65,37 @@ export function mountGitHubWebhook(app: Application, secret: string): void {
       // Process inline (fire-and-forget)
       try {
         const parsedPayload = JSON.parse(payload);
+        await maybeDumpRawPayload(eventType, parsedPayload);
         await handleGitHubWebhook(eventType, parsedPayload);
       } catch (error) {
         logger.error('Server', 'Error processing GitHub webhook', error);
       }
     }
   );
+}
+
+/**
+ * When ARCHIE_DEBUG_GITHUB_WEBHOOKS=1, persist the raw payload to
+ * `${WORKDIR}/logs/github-webhooks/` so the exact shape can be inspected
+ * offline. Used for capturing sample payloads (e.g. check_suite) before
+ * extending parsing logic.
+ */
+async function maybeDumpRawPayload(
+  eventType: string,
+  payload: Record<string, unknown>
+): Promise<void> {
+  if (process.env.ARCHIE_DEBUG_GITHUB_WEBHOOKS !== '1') return;
+  try {
+    const dir = join(WORKDIR, 'logs', 'github-webhooks');
+    await mkdir(dir, { recursive: true });
+    const action = (payload.action as string | undefined) || 'noaction';
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const fname = `${ts}-${eventType}-${action}.json`;
+    await writeFile(join(dir, fname), JSON.stringify(payload, null, 2));
+    logger.system(`GitHub webhook: dumped raw payload to ${fname}`);
+  } catch (error) {
+    logger.warn('Server', `Failed to dump webhook payload: ${error instanceof Error ? error.message : error}`);
+  }
 }
 
 /**
@@ -98,6 +128,8 @@ async function handleGitHubWebhook(
       handleMergeCheckDirect(route.taskId);
     } else if (route.handler === 'existing_task') {
       await handleExistingTaskDirect(route.taskId, context);
+    } else if (route.handler === 'checks_ready') {
+      handleChecksReadyDirect(route.taskId, route.githubRepo, route.prNumber);
     }
   }
 }

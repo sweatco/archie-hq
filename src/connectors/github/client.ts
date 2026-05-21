@@ -10,10 +10,32 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { App } from '@octokit/app';
 import { Octokit } from '@octokit/core';
-import type { PRStatus, PRReview, ReviewThread, PRComment, MergeableState } from '../../agents/tools.js';
+import type {
+  PRStatus,
+  PRReview,
+  ReviewThread,
+  PRComment,
+  MergeableState,
+  PRChecksReport,
+  PRCheckEntry,
+} from '../../agents/tools.js';
 import { logger } from '../../system/logger.js';
 
 const execAsync = promisify(exec);
+
+/**
+ * Map legacy commit-status state (success/failure/pending/error) onto the
+ * check_run-style conclusion vocabulary so consumers see one shape.
+ */
+function mapStatusStateToConclusion(state: string): PRCheckEntry['conclusion'] {
+  switch (state) {
+    case 'success': return 'success';
+    case 'failure': return 'failure';
+    case 'error': return 'failure';
+    case 'pending': return null;
+    default: return null;
+  }
+}
 
 export interface GitHubClientConfig {
   appId: string;
@@ -546,6 +568,85 @@ export class GitHubClient {
       createdAt: comment.created_at,
       url: comment.html_url,
     }));
+  }
+
+  /**
+   * List all checks attached to a PR's HEAD commit.
+   *
+   * Combines two GitHub APIs:
+   * - `/commits/{ref}/check-runs` — modern GitHub Apps (Actions, most CIs)
+   * - `/commits/{ref}/status` — legacy commit statuses (older CIs, e.g. CircleCI v1)
+   *
+   * Both surfaces matter for "is the PR green?": some checks publish only as
+   * statuses. Output is normalized to a single `entries[]` shape.
+   */
+  async listPRChecks(githubRepo: string, prNumber: number): Promise<PRChecksReport> {
+    const octokit = await this.getOctokit();
+    const { owner, repo } = this.parseRepo(githubRepo);
+
+    const prResponse = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+      owner, repo, pull_number: prNumber,
+    });
+    const headSha = prResponse.data.head.sha;
+
+    const checkRunsResponse = await octokit.request(
+      'GET /repos/{owner}/{repo}/commits/{ref}/check-runs',
+      { owner, repo, ref: headSha, per_page: 100 }
+    );
+
+    const statusResponse = await octokit.request(
+      'GET /repos/{owner}/{repo}/commits/{ref}/status',
+      { owner, repo, ref: headSha, per_page: 100 }
+    );
+
+    const entries: PRCheckEntry[] = [];
+
+    for (const run of checkRunsResponse.data.check_runs) {
+      const entry: PRCheckEntry = {
+        source: 'check_run',
+        name: run.name,
+        app: run.app?.slug || 'unknown',
+        status: run.status,
+        conclusion: run.conclusion as PRCheckEntry['conclusion'],
+        url: run.html_url ?? null,
+        startedAt: run.started_at ?? null,
+        completedAt: run.completed_at ?? null,
+      };
+      const output = run.output;
+      if (output && (output.title || output.summary || output.text)) {
+        entry.output = {
+          title: output.title ?? undefined,
+          summary: output.summary ?? undefined,
+          text: output.text ?? undefined,
+        };
+      }
+      entries.push(entry);
+    }
+
+    for (const status of statusResponse.data.statuses) {
+      entries.push({
+        source: 'status',
+        name: status.context,
+        app: status.context, // legacy statuses have no app slug
+        status: 'completed',
+        conclusion: mapStatusStateToConclusion(status.state),
+        url: status.target_url ?? null,
+        startedAt: status.created_at ?? null,
+        completedAt: status.updated_at ?? null,
+        output: status.description ? { summary: status.description } : undefined,
+      });
+    }
+
+    // Log a one-line summary by conclusion for debugging.
+    const counts: Record<string, number> = {};
+    for (const e of entries) {
+      const k = e.conclusion || e.status;
+      counts[k] = (counts[k] || 0) + 1;
+    }
+    const summary = Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(', ');
+    logger.system(`GitHub: PR #${prNumber} checks (head ${headSha.slice(0, 7)}): ${entries.length} total (${summary})`);
+
+    return { headSha, entries };
   }
 
   /**
