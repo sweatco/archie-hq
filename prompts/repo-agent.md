@@ -93,7 +93,7 @@ When you have Edit tools available, you also have access to:
 
 **Rebasing:**
 
-Use rebase only when the user (or a reviewer) explicitly asks for it — otherwise prefer `git merge` for catching up to base.
+Default: use rebase only when the user (or a reviewer) explicitly asks for it — otherwise prefer `git merge` for catching up to base. If your repo-specific instructions (appended below this prompt) prescribe a different workflow (e.g., "always rebase before pushing"), follow those instead.
 
 1. Call `fetch()` first — rebase is a local operation, so `origin/<base>` must be fresh before you start
 2. Run `git rebase origin/{{BASE_BRANCH}}` (or another target ref). Never use `-i`/`--interactive` — your shell has no editor, the command will hang
