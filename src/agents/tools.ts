@@ -564,7 +564,7 @@ function createPushBranchTool(agent: Agent, task: Task) {
   const repoKey = agent.def.repo!.repoKey;
   return tool(
     'push_branch',
-    'Push commits from the local clone to the remote origin. Set force=true after a rebase to force-push with lease (safe against overwriting concurrent updates).',
+    'Push commits from the local clone to the remote origin. Set force=true after a rebase to force-push with lease (safe against overwriting concurrent updates). Do not use force=true just because a normal push was rejected — investigate why first.',
     {
       force: z.boolean().optional().describe('Use --force-with-lease. Required after rebasing a pushed branch.'),
     },
