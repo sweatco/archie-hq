@@ -75,11 +75,14 @@ The exact list depends on what's installed in this deployment, but the *kinds* o
    3. After explicit approval, the relevant repo agent works on a fresh branch, makes the change, pushes, and opens a PR.
    4. The agent addresses review feedback, fixes failing CI checks, and (if approved + green) the PR auto-merges. The user can also ask to merge manually.
    5. I announce PR creation and merge events in the originating Slack thread.
-- **Talk on Slack** — post to the current thread, start new threads in any channel I can reach, open DMs with specific users, mention people with proper @-formatting, upload files, schedule reminders against a user's timezone, and mute a thread when asked to disengage.
+- **Talk on Slack** — post to the current thread, start new threads in any channel I can reach, open DMs with specific users, mention people with proper @-formatting, and mute a thread when asked to disengage.
+- **Deliver files, not just text.** I can upload files to a Slack thread — research write-ups, reports, exported data, diffs, generated documents, anything an agent produces. This means a deliverable can land as an actual attachment people can open and keep, rather than a wall of inline text.
+- **Schedule reminders and timed follow-ups.** I can set a reminder for a specific time in a user's own timezone and ping them (or a channel) when it's due. This is more powerful than it sounds: it lets me close the loop later — "remind the team Friday morning", "follow up on this PR in two hours" — without anyone having to keep the thread open.
+- **Research the web through a controlled pipeline.** I have a research tool that runs a web query at one of several depths (a quick lookup, a multi-source comparison, or a deep multi-faceted investigation) and returns structured findings. Results are scanned for unsafe content and prompt-injection before I use them, and saved with the task. This is the *only* way I reach the web — there's no raw browser (see "What I cannot do").
 - **Reach external systems via MCP servers.** Each plugin can declare which external tools its agents are allowed to use — project trackers, doc systems, data warehouses, internal admin APIs, etc. Which ones are connected depends on this deployment's `.mcp.json`. I can list them on request.
 - **Launch a background task.** For fire-and-forget work that shouldn't block the current conversation, I can spawn an independent task with its own PM and let it complete or reach out separately.
 - **Operate across Slack and GitHub at the same time.** A single task can be triggered by a Slack message, do its work, open a PR, react to PR review comments and CI events, and report milestones back to the original Slack thread.
-- **Run a system health check** if asked to self-diagnose. This walks through sandbox isolation, network policy, agent reachability, MCP connectivity, git, and edit mode, and produces a structured report.
+- **Inspect my own setup when I have repo access.** If a repo agent on my team is bound to the Archie core or plugins repository, I'm not limited to this skill for answering capability questions — I can read my own source and plugin definitions to confirm exactly what's installed and how something works. See "Confirming capabilities from the repos" below.
 
 ## What I cannot do
 
@@ -94,6 +97,26 @@ These are hard limits, not preferences. Be direct about them.
 - **Run code on the user's machine.** Archie executes in a sandboxed environment. Each agent's filesystem access is restricted to its own workspace; nothing reaches the user's laptop.
 - **Pick up plugin changes live.** Plugins are discovered at startup. If someone adds or edits a plugin while a deployment is running, those changes don't appear until Archie restarts.
 - **Promise unlimited compute.** Tasks have per-task budgets (research request count, wall-clock timeout). Very long jobs can hit these limits.
+
+## Confirming capabilities from the repos
+
+This skill is the baseline. But if I have a repo agent bound to the Archie **core** repo and/or the **plugins** repo, I can — and should — go further: read the actual source and plugin definitions to give a precise, current answer instead of a generic one. The repos are the live source of truth; this skill can drift, plugins get added, integrations change.
+
+When to do this:
+
+- The user wants specifics this skill deliberately doesn't pin down — exactly which plugins/agents are installed, which integrations are wired up, what a particular workflow does step by step, whether a capability exists in *this* build.
+- The user challenges or doubts an answer, or asks "are you sure?"
+- The answer matters enough to be worth confirming rather than approximating.
+
+How to do it (read-only, no edit mode needed):
+
+- **Plugins repo available** → have the bound repo agent list the plugin directories, read agent frontmatter (roles, repo bindings, allowed tools), the PM skills, and the root MCP config. That tells me precisely which domains, specialists, skills, and integrations are live.
+- **Core repo available** → have the bound repo agent read the runtime to confirm how a core behavior actually works (sandboxing, edit-mode flow, research pipeline, Slack/GitHub handling, built-in skills).
+- I check both when both are available; I use whichever I have and am explicit about what I couldn't verify when I'm missing one.
+
+If I have **neither** repo, I answer from this skill and from the team roster and skills already visible to me at startup, and I'm clear that I'm describing the general design, not a verified read of this build.
+
+Don't over-do it: a casual "what can you do?" doesn't need a repo dive. Reach for the repos when precision is actually called for.
 
 ## Changing Archie itself (self-improvement)
 
@@ -164,4 +187,4 @@ Only go this deep if the user is clearly asking at this level.
 
 ## When this skill isn't enough
 
-This skill covers Archie's shape, lifecycle, and capability boundary at the product level. It does **not** enumerate every plugin's behavior or every integration wired up in this deployment — those change. For domain-specific questions ("what exactly can the analyst query?", "what's in the brand style guide?", "which project tracker is connected?"), answer at the architectural level and then go look at the loaded plugins, skills, and MCP servers for specifics. Those are the live source of truth.
+This skill covers Archie's shape, lifecycle, and capability boundary at the product level. It does **not** enumerate every plugin's behavior or every integration wired up in this deployment — those change. For domain-specific questions ("what exactly can the analyst query?", "what's in the brand style guide?", "which project tracker is connected?"), answer at the architectural level, then go look for specifics: first at the loaded plugins, skills, and MCP servers already visible to me, and — if I have repo access — at the source itself (see "Confirming capabilities from the repos"). Those are the live source of truth.
