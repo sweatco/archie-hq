@@ -25,7 +25,7 @@ import { bootstrapWorkdir, cloneRepos, OAUTH_DIR } from './system/workdir.js';
 import { validateMasterKey } from './system/secrets-vault.js';
 import { initPlugins, getPlugins } from './system/plugin-loader.js';
 import { initRegistry, getAllAgentDefs } from './agents/registry.js';
-import { isRepoAgent, isPmAgent, isPluginAgent } from './types/agent.js';
+import { isRepoAgent, isPmAgent } from './types/agent.js';
 import { configureGitIdentity } from './connectors/github/client.js';
 import { recoverActiveTasks } from './tasks/recovery.js';
 import { initEventPersistence } from './tasks/persistence.js';
@@ -147,7 +147,7 @@ async function main(): Promise<void> {
         logger.plain(`    mcp: ${Object.keys(def.mcpServers).join(', ')}`);
       }
     }
-    for (const def of agentDefs.filter(isPluginAgent)) {
+    for (const def of agentDefs.filter((d) => !isPmAgent(d) && !isRepoAgent(d))) {
       logger.plain(`  [${def.pluginName}] ${def.id} (${def.visibility}) — ${def.role}`);
       if (def.mcpServers) {
         logger.plain(`    mcp: ${Object.keys(def.mcpServers).join(', ')}`);

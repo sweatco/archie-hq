@@ -166,10 +166,10 @@ export interface AgentDef {
 
 // ---- Capability predicates ----
 //
-// There is one kind of agent. What it can do is derived from its def:
+// There is one kind of agent: a plain agent is the default. What it can do on
+// top of that is derived from its def:
 //   - a repo agent is any agent with repo access attached
 //   - the PM coordinator is the single agent with `isPm`
-//   - everything else is a plain plugin agent
 
 /** True when the agent has repository access attached. */
 export function isRepoAgent(def: AgentDef): boolean {
@@ -179,9 +179,4 @@ export function isRepoAgent(def: AgentDef): boolean {
 /** True for the PM coordinator (the core agent overlaid by the pm plugin). */
 export function isPmAgent(def: AgentDef): boolean {
   return def.isPm === true;
-}
-
-/** True for a plain plugin agent — no repo access and not the PM. */
-export function isPluginAgent(def: AgentDef): boolean {
-  return !isRepoAgent(def) && !isPmAgent(def);
 }

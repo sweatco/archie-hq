@@ -8,7 +8,7 @@
  * Scanned fresh at startup (validate + fail-fast) and on every task start/restart.
  */
 
-import { type AgentDef, isRepoAgent, isPmAgent, isPluginAgent } from '../types/agent.js';
+import { type AgentDef, isRepoAgent, isPmAgent } from '../types/agent.js';
 import { getPlugins, getRootMcpConfig, getPmOverlay, type LoadedMcpConfig, type PluginAgentDef } from '../system/plugin-loader.js';
 import { REPOS_DIR, PLUGINS_DATA_DIR } from '../system/workdir.js';
 import { existsSync } from 'fs';
@@ -194,8 +194,9 @@ export function buildPeerListForSender(senderDef: AgentDef): string {
     .filter((d) => isRepoAgent(d) && visibleIds.has(d.id))
     .map((d) => `- ${d.id}: ${d.role} (${d.repo!.repoKey} repository)`);
 
+  // Non-repo peers (visibleIds already excludes the PM).
   const pluginPeers = registry
-    .filter((d) => isPluginAgent(d) && visibleIds.has(d.id))
+    .filter((d) => !isRepoAgent(d) && visibleIds.has(d.id))
     .map((d) => `- ${d.id}: ${d.role} [${d.pluginName}]`);
 
   return [...repoPeers, ...pluginPeers].join('\n');
