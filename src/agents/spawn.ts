@@ -96,16 +96,22 @@ async function setupAgentWorkspace(taskId: string, agent: Agent): Promise<string
   const claudeDir = join(agentWorkspace, '.claude');
   await mkdir(claudeDir, { recursive: true });
 
-  // Symlink skills from plugin
-  if (agent.def.skillsPath && existsSync(agent.def.skillsPath)) {
+  // Symlink skills — plugin skills first (so plugins can shadow core skills by name),
+  // then archie-hq built-in skills fill in the rest. coreSkillsPath is only set on the PM.
+  const skillSources = [agent.def.skillsPath, agent.def.coreSkillsPath].filter(
+    (p): p is string => !!p && existsSync(p)
+  );
+  if (skillSources.length > 0) {
     const agentSkillsDir = join(claudeDir, 'skills');
 
-    for (const skillEntry of await readdir(agent.def.skillsPath, { withFileTypes: true })) {
-      if (!skillEntry.isDirectory()) continue;
-      const target = join(agentSkillsDir, skillEntry.name);
-      if (!existsSync(target)) {
-        await mkdir(agentSkillsDir, { recursive: true });
-        await symlink(join(agent.def.skillsPath, skillEntry.name), target);
+    for (const skillsPath of skillSources) {
+      for (const skillEntry of await readdir(skillsPath, { withFileTypes: true })) {
+        if (!skillEntry.isDirectory()) continue;
+        const target = join(agentSkillsDir, skillEntry.name);
+        if (!existsSync(target)) {
+          await mkdir(agentSkillsDir, { recursive: true });
+          await symlink(join(skillsPath, skillEntry.name), target);
+        }
       }
     }
   }

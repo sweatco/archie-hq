@@ -115,13 +115,19 @@ async function main(): Promise<void> {
     logger.plain('Team:');
     logger.plain('  pm-agent (orchestrator)');
     const pmPlugin = plugins.find((p) => p.name === 'pm');
+    const pmSkillNames = new Set<string>();
     if (pmPlugin?.skillsPath) {
-      const skillDirs = readdirSync(pmPlugin.skillsPath, { withFileTypes: true })
-        .filter((e) => e.isDirectory())
-        .map((e) => e.name);
-      if (skillDirs.length > 0) {
-        logger.plain(`    skills: ${skillDirs.join(', ')}`);
+      for (const e of readdirSync(pmPlugin.skillsPath, { withFileTypes: true })) {
+        if (e.isDirectory()) pmSkillNames.add(e.name);
       }
+    }
+    if (pmDef?.coreSkillsPath) {
+      for (const e of readdirSync(pmDef.coreSkillsPath, { withFileTypes: true })) {
+        if (e.isDirectory()) pmSkillNames.add(e.name);
+      }
+    }
+    if (pmSkillNames.size > 0) {
+      logger.plain(`    skills: ${Array.from(pmSkillNames).sort().join(', ')}`);
     }
     if (pmDef?.mcpServers) {
       logger.plain(`    mcp: ${Object.keys(pmDef.mcpServers).join(', ')}`);

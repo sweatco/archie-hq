@@ -142,6 +142,9 @@ export interface AgentDef {
   /** Absolute path to plugin's skills/ directory (track='plugin' only) */
   skillsPath?: string;
 
+  /** Absolute path to archie-hq's built-in skills/ directory (track='pm' only). Symlinked alongside plugin skills. */
+  coreSkillsPath?: string;
+
   /** PM-specific fields (track='pm' only) — built dynamically from team */
   pmConfig?: AgentPmDef;
 

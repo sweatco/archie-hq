@@ -11,8 +11,16 @@
 import type { AgentDef } from '../types/agent.js';
 import { getPlugins, getRootMcpConfig, getPmOverlay, type LoadedMcpConfig, type PluginAgentDef } from '../system/plugin-loader.js';
 import { REPOS_DIR, PLUGINS_DATA_DIR } from '../system/workdir.js';
-import { join } from 'path';
+import { existsSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { logger } from '../system/logger.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Built-in PM skills shipped with archie-hq (resolved relative to this file: src/agents -> skills)
+const CORE_SKILLS_DIR = join(__dirname, '..', '..', 'skills');
 
 // ---- Module state ----
 
@@ -287,6 +295,7 @@ function buildPmDef(teamDefs: AgentDef[], rootMcp: LoadedMcpConfig): AgentDef {
     pmConfig: { teamList, teamExpertise },
     pmOverlayPrompt: overlay?.prompt || undefined,
     skillsPath: pmPlugin?.skillsPath || undefined,
+    coreSkillsPath: existsSync(CORE_SKILLS_DIR) ? CORE_SKILLS_DIR : undefined,
     pluginHooks: pmPlugin?.hooks || undefined,
     ...resolvedMcp,
   };
