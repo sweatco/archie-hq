@@ -1400,9 +1400,9 @@ function createCancelReminderTool(agent: Agent, task: Task) {
  */
 
 /** User-facing communication (Slack messaging, lookups, channel control, reactions). */
-export function createPmCommsMcpServer(agent: Agent, task: Task) {
+export function createCommsMcpServer(agent: Agent, task: Task) {
   return createSdkMcpServer({
-    name: 'pm-comms',
+    name: 'comms-tools',
     version: '1.0.0',
     tools: [
       createPostToUserTool(agent, task),
@@ -1418,9 +1418,9 @@ export function createPmCommsMcpServer(agent: Agent, task: Task) {
 }
 
 /** Task orchestration (ownership, completion, edit mode, team status, spawning). */
-export function createPmOrchestrationMcpServer(agent: Agent, task: Task) {
+export function createOrchestrationMcpServer(agent: Agent, task: Task) {
   return createSdkMcpServer({
-    name: 'pm-orchestration',
+    name: 'orchestration-tools',
     version: '1.0.0',
     tools: [
       createAssignTaskOwnerTool(agent, task),
@@ -1433,9 +1433,9 @@ export function createPmOrchestrationMcpServer(agent: Agent, task: Task) {
 }
 
 /** Scheduling (datetime parsing and reminders). */
-export function createPmSchedulingMcpServer(agent: Agent, task: Task) {
+export function createSchedulingMcpServer(agent: Agent, task: Task) {
   return createSdkMcpServer({
-    name: 'pm-scheduling',
+    name: 'scheduling-tools',
     version: '1.0.0',
     tools: [
       createParseDatetimeTool(agent, task),

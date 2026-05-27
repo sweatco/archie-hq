@@ -10,9 +10,9 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   createRepoToolsMcpServer,
   createBaseAgentMcpServer,
-  createPmCommsMcpServer,
-  createPmOrchestrationMcpServer,
-  createPmSchedulingMcpServer,
+  createCommsMcpServer,
+  createOrchestrationMcpServer,
+  createSchedulingMcpServer,
 } from '../tools.js';
 import type { Agent } from '../agent.js';
 import type { Task } from '../../tasks/task.js';
@@ -111,28 +111,28 @@ const AGENT_TOOLS = [
 ];
 
 const PM_COMMS_TOOLS = [
-  'mcp__pm-comms__post_to_user',
-  'mcp__pm-comms__post_files_to_user',
-  'mcp__pm-comms__find_slack_user',
-  'mcp__pm-comms__find_slack_channel',
-  'mcp__pm-comms__mute_channel',
-  'mcp__pm-comms__react_to_message',
-  'mcp__pm-comms__unreact_from_message',
-  'mcp__pm-comms__get_message_reactions',
+  'mcp__comms-tools__post_to_user',
+  'mcp__comms-tools__post_files_to_user',
+  'mcp__comms-tools__find_slack_user',
+  'mcp__comms-tools__find_slack_channel',
+  'mcp__comms-tools__mute_channel',
+  'mcp__comms-tools__react_to_message',
+  'mcp__comms-tools__unreact_from_message',
+  'mcp__comms-tools__get_message_reactions',
 ];
 
 const PM_ORCHESTRATION_TOOLS = [
-  'mcp__pm-orchestration__assign_task_owner',
-  'mcp__pm-orchestration__report_completion',
-  'mcp__pm-orchestration__request_edit_mode',
-  'mcp__pm-orchestration__get_agents_status',
-  'mcp__pm-orchestration__launch_task',
+  'mcp__orchestration-tools__assign_task_owner',
+  'mcp__orchestration-tools__report_completion',
+  'mcp__orchestration-tools__request_edit_mode',
+  'mcp__orchestration-tools__get_agents_status',
+  'mcp__orchestration-tools__launch_task',
 ];
 
 const PM_SCHEDULING_TOOLS = [
-  'mcp__pm-scheduling__parse_datetime',
-  'mcp__pm-scheduling__set_reminder',
-  'mcp__pm-scheduling__cancel_reminder',
+  'mcp__scheduling-tools__parse_datetime',
+  'mcp__scheduling-tools__set_reminder',
+  'mcp__scheduling-tools__cancel_reminder',
 ];
 
 const SPAWN_REPO_TOOLS = [
@@ -183,21 +183,21 @@ describe('PM MCP server contracts', () => {
     expect(registered.sort()).toEqual(AGENT_TOOLS.sort());
   });
 
-  it('pm-comms registers exactly its tools', () => {
-    const server = createPmCommsMcpServer(pmAgent(), makeTask());
-    const registered = getRegisteredToolNames(server).map((n) => `mcp__pm-comms__${n}`);
+  it('comms-tools registers exactly its tools', () => {
+    const server = createCommsMcpServer(pmAgent(), makeTask());
+    const registered = getRegisteredToolNames(server).map((n) => `mcp__comms-tools__${n}`);
     expect(registered.sort()).toEqual(PM_COMMS_TOOLS.sort());
   });
 
-  it('pm-orchestration registers exactly its tools', () => {
-    const server = createPmOrchestrationMcpServer(pmAgent(), makeTask());
-    const registered = getRegisteredToolNames(server).map((n) => `mcp__pm-orchestration__${n}`);
+  it('orchestration-tools registers exactly its tools', () => {
+    const server = createOrchestrationMcpServer(pmAgent(), makeTask());
+    const registered = getRegisteredToolNames(server).map((n) => `mcp__orchestration-tools__${n}`);
     expect(registered.sort()).toEqual(PM_ORCHESTRATION_TOOLS.sort());
   });
 
-  it('pm-scheduling registers exactly its tools', () => {
-    const server = createPmSchedulingMcpServer(pmAgent(), makeTask());
-    const registered = getRegisteredToolNames(server).map((n) => `mcp__pm-scheduling__${n}`);
+  it('scheduling-tools registers exactly its tools', () => {
+    const server = createSchedulingMcpServer(pmAgent(), makeTask());
+    const registered = getRegisteredToolNames(server).map((n) => `mcp__scheduling-tools__${n}`);
     expect(registered.sort()).toEqual(PM_SCHEDULING_TOOLS.sort());
   });
 });

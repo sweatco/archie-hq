@@ -8,9 +8,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   createRepoToolsMcpServer,
-  createPmCommsMcpServer,
-  createPmOrchestrationMcpServer,
-  createPmSchedulingMcpServer,
+  createCommsMcpServer,
+  createOrchestrationMcpServer,
+  createSchedulingMcpServer,
   mirrorLegacyFields,
   hydrateBranchState,
   findBranchStateByPR,
@@ -373,9 +373,9 @@ describe('PM agent tools', () => {
     const agent = makeAgent({ isPm: true, repo: undefined, id: 'pm-agent' });
     const task = makeTask();
     const servers = [
-      createPmCommsMcpServer(agent, task),
-      createPmOrchestrationMcpServer(agent, task),
-      createPmSchedulingMcpServer(agent, task),
+      createCommsMcpServer(agent, task),
+      createOrchestrationMcpServer(agent, task),
+      createSchedulingMcpServer(agent, task),
     ];
 
     const registeredTools = servers.flatMap((server) =>
