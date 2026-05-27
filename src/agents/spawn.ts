@@ -18,9 +18,11 @@ import type { Agent } from './agent.js';
 import type { Task } from '../tasks/task.js';
 import { isRepoAgent, isPmAgent } from '../types/agent.js';
 import {
-  createPMAgentMcpServer,
   createBaseAgentMcpServer,
   createRepoToolsMcpServer,
+  createPmCommsMcpServer,
+  createPmOrchestrationMcpServer,
+  createPmSchedulingMcpServer,
 } from './tools.js';
 import { hydrateBranchState } from '../connectors/github/branch-state.js';
 import { createResearchMcpServer, createResearchPostToolHook, createResearchDefenseTagHook } from '../mcp/research-tools.js';
@@ -382,7 +384,10 @@ Shared folder: ${sharedPath} [READ-ONLY]
       systemPrompt = `${systemPrompt}\n\n${def.pmOverlayPrompt}`;
     }
 
-    mcpServers['pm-agent-tools'] = createPMAgentMcpServer(agent, task);
+    mcpServers['agent-tools'] = createBaseAgentMcpServer(agent, task);
+    mcpServers['pm-comms'] = createPmCommsMcpServer(agent, task);
+    mcpServers['pm-orchestration'] = createPmOrchestrationMcpServer(agent, task);
+    mcpServers['pm-scheduling'] = createPmSchedulingMcpServer(agent, task);
   } else if (isRepoAgent(def)) {
     // ---- Repo access attached ----
     const { repoPath, editAllowed, baseObjectsPath, currentBranch } = await prepareRepoClone(agent, task);

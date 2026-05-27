@@ -9,7 +9,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   createRepoToolsMcpServer,
-  createPMAgentMcpServer,
+  createBaseAgentMcpServer,
+  createPmCommsMcpServer,
+  createPmOrchestrationMcpServer,
+  createPmSchedulingMcpServer,
 } from '../tools.js';
 import type { Agent } from '../agent.js';
 import type { Task } from '../../tasks/task.js';
@@ -101,25 +104,35 @@ function getRegisteredToolNames(server: ReturnType<typeof createRepoToolsMcpServ
 
 // ---- Expected tool lists (must stay in sync with spawn.ts) ----
 
-const SPAWN_PM_TOOLS = [
-  'mcp__pm-agent-tools__send_message_to_agent',
-  'mcp__pm-agent-tools__post_to_user',
-  'mcp__pm-agent-tools__post_files_to_user',
-  'mcp__pm-agent-tools__share_artifact',
-  'mcp__pm-agent-tools__find_slack_user',
-  'mcp__pm-agent-tools__find_slack_channel',
-  'mcp__pm-agent-tools__assign_task_owner',
-  'mcp__pm-agent-tools__report_completion',
-  'mcp__pm-agent-tools__request_edit_mode',
-  'mcp__pm-agent-tools__get_agents_status',
-  'mcp__pm-agent-tools__mute_channel',
-  'mcp__pm-agent-tools__react_to_message',
-  'mcp__pm-agent-tools__unreact_from_message',
-  'mcp__pm-agent-tools__get_message_reactions',
-  'mcp__pm-agent-tools__launch_task',
-  'mcp__pm-agent-tools__parse_datetime',
-  'mcp__pm-agent-tools__set_reminder',
-  'mcp__pm-agent-tools__cancel_reminder',
+const AGENT_TOOLS = [
+  'mcp__agent-tools__send_message_to_agent',
+  'mcp__agent-tools__log_finding',
+  'mcp__agent-tools__share_artifact',
+];
+
+const PM_COMMS_TOOLS = [
+  'mcp__pm-comms__post_to_user',
+  'mcp__pm-comms__post_files_to_user',
+  'mcp__pm-comms__find_slack_user',
+  'mcp__pm-comms__find_slack_channel',
+  'mcp__pm-comms__mute_channel',
+  'mcp__pm-comms__react_to_message',
+  'mcp__pm-comms__unreact_from_message',
+  'mcp__pm-comms__get_message_reactions',
+];
+
+const PM_ORCHESTRATION_TOOLS = [
+  'mcp__pm-orchestration__assign_task_owner',
+  'mcp__pm-orchestration__report_completion',
+  'mcp__pm-orchestration__request_edit_mode',
+  'mcp__pm-orchestration__get_agents_status',
+  'mcp__pm-orchestration__launch_task',
+];
+
+const PM_SCHEDULING_TOOLS = [
+  'mcp__pm-scheduling__parse_datetime',
+  'mcp__pm-scheduling__set_reminder',
+  'mcp__pm-scheduling__cancel_reminder',
 ];
 
 const SPAWN_REPO_TOOLS = [
@@ -161,12 +174,30 @@ describe('repo-tools MCP server contract', () => {
   });
 });
 
-describe('pm-agent-tools MCP server contract', () => {
-  it('registers exactly the tools listed in spawn.ts allowedTools', () => {
-    const agent = makeAgent({ isPm: true, repo: undefined, id: 'pm-agent' });
-    const server = createPMAgentMcpServer(agent, makeTask());
-    const registered = getRegisteredToolNames(server).map((n) => `mcp__pm-agent-tools__${n}`);
+describe('PM MCP server contracts', () => {
+  const pmAgent = () => makeAgent({ isPm: true, repo: undefined, id: 'pm-agent' });
 
-    expect(registered.sort()).toEqual(SPAWN_PM_TOOLS.sort());
+  it('agent-tools registers the shared base tools', () => {
+    const server = createBaseAgentMcpServer(pmAgent(), makeTask());
+    const registered = getRegisteredToolNames(server).map((n) => `mcp__agent-tools__${n}`);
+    expect(registered.sort()).toEqual(AGENT_TOOLS.sort());
+  });
+
+  it('pm-comms registers exactly its tools', () => {
+    const server = createPmCommsMcpServer(pmAgent(), makeTask());
+    const registered = getRegisteredToolNames(server).map((n) => `mcp__pm-comms__${n}`);
+    expect(registered.sort()).toEqual(PM_COMMS_TOOLS.sort());
+  });
+
+  it('pm-orchestration registers exactly its tools', () => {
+    const server = createPmOrchestrationMcpServer(pmAgent(), makeTask());
+    const registered = getRegisteredToolNames(server).map((n) => `mcp__pm-orchestration__${n}`);
+    expect(registered.sort()).toEqual(PM_ORCHESTRATION_TOOLS.sort());
+  });
+
+  it('pm-scheduling registers exactly its tools', () => {
+    const server = createPmSchedulingMcpServer(pmAgent(), makeTask());
+    const registered = getRegisteredToolNames(server).map((n) => `mcp__pm-scheduling__${n}`);
+    expect(registered.sort()).toEqual(PM_SCHEDULING_TOOLS.sort());
   });
 });
