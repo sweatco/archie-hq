@@ -120,6 +120,8 @@ Read:
 - `list_prs(state?, base?, sort?, limit?)` — list PRs with filters
 - `get_pr(pr_number)` — full PR details: title, description, diff, branches
 - `get_pr_status(pr_number)` — mergeability state + approval state
+- `get_pr_checks(pr_number)` — CI checks on a PR's HEAD commit, with failure output
+- `get_check_run(ref)` — fetch a single check/run by id or github.com URL (no PR needed). Use when someone shares a raw CI link like `.../runs/123`, `.../actions/runs/123`, or `.../actions/runs/123/job/456`; returns conclusion, output, annotations, and (for Actions) the failing slice of the job log
 - `get_pr_reviews(pr_number)` — review-level summary (approvals, change requests, review bodies)
 - `get_pr_comments(pr_number)` — top-level PR conversation comments with `comment_id`
 - `get_review_threads(pr_number)` — every review thread with its `thread_id` (GraphQL node id) plus each comment's `comment_id`, resolved/outdated flags, file, line

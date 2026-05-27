@@ -17,7 +17,7 @@ import type { AgentName, FindingType } from '../types/task.js';
 import type { Task } from '../tasks/task.js';
 import type { Agent } from './agent.js';
 import { getAgentIds, getVisiblePeerIdsForSender, getAgentDef } from './registry.js';
-import { getGitHubClient } from '../connectors/github/client.js';
+import { getGitHubClient, parseCheckRef } from '../connectors/github/client.js';
 import { gitExec } from '../connectors/github/repo-clone.js';
 import { mirrorLegacyFields, hydrateBranchState, findBranchStateByPR } from '../connectors/github/branch-state.js';
 import { appendAgentFinding, appendArtifactShared } from '../tasks/persistence.js';
@@ -724,6 +724,86 @@ function createGetPRChecksTool(agent: Agent, task: Task) {
   );
 }
 
+function createGetCheckRunTool(agent: Agent, task: Task) {
+  const githubRepo = agent.def.repo!.githubRepo;
+  return tool(
+    'get_check_run',
+    'Fetch a single CI check/run by its id or a github.com URL — no PR needed. ' +
+    'Use this when someone shares a raw check-run, Actions job, or workflow-run link (e.g. ".../runs/123", ".../actions/runs/123", or ".../actions/runs/123/job/456") or just a run id, and you need the failure details. ' +
+    'Returns the conclusion, check output, annotations, and — for GitHub Actions — the failing slice of the job log (the rspec "Failures:" / "Failed examples:" block). ' +
+    'For checks on a PR you already know, prefer get_pr_checks.',
+    {
+      ref: z.string().describe('A numeric check-run/job/workflow-run id, or a full github.com URL pointing at one.'),
+    },
+    async (args) => {
+      const client = getGitHubClient();
+      if (!client) throw new Error('GitHub client not configured');
+
+      let parsed;
+      try {
+        parsed = parseCheckRef(args.ref);
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e));
+      }
+
+      // Stay within this agent's repo: a URL pointing elsewhere is out of scope.
+      if (parsed.owner && parsed.repo) {
+        const refRepo = `${parsed.owner}/${parsed.repo}`;
+        if (refRepo.toLowerCase() !== githubRepo.toLowerCase()) {
+          return err(
+            `That link points at ${refRepo}, but you are scoped to ${githubRepo}. ` +
+            `I can only fetch checks for ${githubRepo}.`
+          );
+        }
+      }
+
+      if (parsed.kind === 'workflow_run') {
+        const report = await client.getWorkflowRunById(githubRepo, parsed.id);
+        const lines: string[] = [
+          `Workflow run ${report.id} — ${report.name} [${report.conclusion ?? report.status}]`,
+          `Branch: ${report.headBranch ?? 'unknown'} (head ${report.headSha ? report.headSha.slice(0, 7) : 'unknown'})`,
+        ];
+        if (report.url) lines.push(`URL: ${report.url}`);
+        lines.push('', `Jobs (${report.jobs.length}):`);
+        for (const job of report.jobs) {
+          lines.push(`- [${job.conclusion ?? job.status}] ${job.name} (job ${job.id})${job.url ? ` — ${job.url}` : ''}`);
+        }
+        for (const job of report.jobs) {
+          if (job.logTail) {
+            lines.push('', `${job.name} log:`, job.logTail);
+          }
+        }
+        return ok(lines.join('\n'));
+      }
+
+      const report = await client.getCheckRunById(githubRepo, parsed.id);
+      const lines: string[] = [
+        `Check run ${report.id} — ${report.name} (${report.app}) [${report.conclusion ?? report.status}]`,
+        `Head: ${report.headSha ? report.headSha.slice(0, 7) : 'unknown'}`,
+      ];
+      if (report.url) lines.push(`URL: ${report.url}`);
+      if (report.output?.title) lines.push(`title: ${report.output.title}`);
+      if (report.output?.summary) {
+        lines.push('summary:', report.output.summary);
+      }
+      if (report.output?.text) {
+        lines.push('text:', report.output.text);
+      }
+      if (report.annotations?.length) {
+        lines.push('', `Annotations (${report.annotations.length}):`);
+        for (const a of report.annotations) {
+          const loc = a.startLine !== null ? `${a.path}:${a.startLine}` : a.path;
+          lines.push(`- [${a.level}] ${loc}${a.title ? ` ${a.title}` : ''}: ${a.message}`);
+        }
+      }
+      if (report.logTail) {
+        lines.push('', 'log:', report.logTail);
+      }
+      return ok(lines.join('\n'));
+    },
+  );
+}
+
 function createGetPRReviewsTool(agent: Agent, task: Task) {
   const githubRepo = agent.def.repo!.githubRepo;
   return tool(
@@ -1263,6 +1343,7 @@ export function createRepoToolsMcpServer(agent: Agent, task: Task) {
       createGetPRTool(agent, task),
       createGetPRStatusTool(agent, task),
       createGetPRChecksTool(agent, task),
+      createGetCheckRunTool(agent, task),
       createGetPRReviewsTool(agent, task),
       createGetPRCommentsTool(agent, task),
       createGetReviewThreadsTool(agent, task),

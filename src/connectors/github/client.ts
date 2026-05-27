@@ -78,6 +78,125 @@ export interface PRDetails {
   url: string;
 }
 
+export interface CheckRunAnnotation {
+  path: string;
+  startLine: number | null;
+  level: string;
+  message: string;
+  title?: string;
+}
+
+export interface CheckRunReport {
+  id: number;
+  name: string;
+  app: string;
+  status: string;
+  conclusion: PRCheckEntry['conclusion'];
+  url: string | null;
+  headSha: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  output?: { title?: string; summary?: string; text?: string };
+  annotations?: CheckRunAnnotation[];
+  logTail?: string;
+}
+
+export interface WorkflowJobEntry {
+  id: number;
+  name: string;
+  status: string;
+  conclusion: PRCheckEntry['conclusion'];
+  url: string | null;
+  logTail?: string;
+}
+
+export interface WorkflowRunReport {
+  id: number;
+  name: string;
+  status: string;
+  conclusion: PRCheckEntry['conclusion'];
+  headSha: string | null;
+  headBranch: string | null;
+  url: string | null;
+  jobs: WorkflowJobEntry[];
+}
+
+export interface ParsedCheckRef {
+  /** `check_run` covers check-run permalinks and Actions job links (job id == check-run id). */
+  kind: 'check_run' | 'workflow_run';
+  id: number;
+  owner?: string;
+  repo?: string;
+}
+
+/**
+ * Classify a GitHub CI reference — a bare numeric id or a github.com URL — into
+ * the id + kind needed to hit the right API.
+ *
+ * Recognized URL shapes (owner/repo extracted when present):
+ * - `.../pull/N/checks?check_run_id=ID`        → check_run
+ * - `.../actions/runs/R/job/J` (or `/jobs/J`)  → check_run (J is the job id)
+ * - `.../actions/runs/R`                       → workflow_run
+ * - `.../runs/ID` (legacy check-run permalink) → check_run
+ * - bare `ID`                                  → check_run
+ */
+export function parseCheckRef(input: string): ParsedCheckRef {
+  const trimmed = input.trim();
+
+  let owner: string | undefined;
+  let repo: string | undefined;
+  const repoMatch = trimmed.match(/github\.com\/([^/\s]+)\/([^/\s?#]+)/i);
+  if (repoMatch) {
+    owner = repoMatch[1];
+    repo = repoMatch[2];
+  }
+
+  const checkRunQuery = trimmed.match(/[?&]check_run_id=(\d+)/);
+  if (checkRunQuery) {
+    return { kind: 'check_run', id: Number(checkRunQuery[1]), owner, repo };
+  }
+
+  const jobMatch = trimmed.match(/\/actions\/runs\/\d+\/jobs?\/(\d+)/);
+  if (jobMatch) {
+    return { kind: 'check_run', id: Number(jobMatch[1]), owner, repo };
+  }
+
+  const workflowMatch = trimmed.match(/\/actions\/runs\/(\d+)/);
+  if (workflowMatch) {
+    return { kind: 'workflow_run', id: Number(workflowMatch[1]), owner, repo };
+  }
+
+  const legacyMatch = trimmed.match(/\/runs\/(\d+)/);
+  if (legacyMatch) {
+    return { kind: 'check_run', id: Number(legacyMatch[1]), owner, repo };
+  }
+
+  const bare = trimmed.match(/^(\d+)$/);
+  if (bare) {
+    return { kind: 'check_run', id: Number(bare[1]) };
+  }
+
+  throw new Error(
+    `Could not extract a check-run, job, or workflow-run id from: "${input}". ` +
+    `Pass a numeric id or a github.com run/check/job URL.`
+  );
+}
+
+/**
+ * Pull the most useful slice out of a raw CI log: the rspec-style "Failures:"
+ * block when present, otherwise the tail. Actions logs can be megabytes, so
+ * the result is capped.
+ */
+function extractFailureTail(text: string, maxChars = 15000): string {
+  if (!text) return '';
+  const marker = text.indexOf('Failures:');
+  const slice = marker >= 0 ? text.slice(marker) : text;
+  if (slice.length <= maxChars) return slice;
+  return marker >= 0
+    ? slice.slice(0, maxChars) + '\n…(truncated)'
+    : '…(truncated)\n' + slice.slice(slice.length - maxChars);
+}
+
 export class GitHubClient {
   private app: App;
   private installationId: number;
@@ -647,6 +766,145 @@ export class GitHubClient {
     logger.system(`GitHub: PR #${prNumber} checks (head ${headSha.slice(0, 7)}): ${entries.length} total (${summary})`);
 
     return { headSha, entries };
+  }
+
+  /**
+   * Best-effort fetch of an Actions job log tail. For GitHub Actions, a job's
+   * id equals its check-run id, so a check-run permalink id works here too.
+   * Returns undefined for non-Actions checks (the endpoint 404s) or any error.
+   */
+  private async tryFetchJobLogTail(owner: string, repo: string, jobId: number): Promise<string | undefined> {
+    try {
+      const octokit = await this.getOctokit();
+      const res = await octokit.request(
+        'GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs',
+        { owner, repo, job_id: jobId }
+      );
+      const text = typeof res.data === 'string' ? res.data : '';
+      const tail = extractFailureTail(text);
+      return tail || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Fetch a single check run by id, resolving the failure detail an agent
+   * actually needs: the check output, any annotations, and — for Actions jobs
+   * (where job id == check-run id) — the failing slice of the job log.
+   */
+  async getCheckRunById(githubRepo: string, checkRunId: number): Promise<CheckRunReport> {
+    const octokit = await this.getOctokit();
+    const { owner, repo } = this.parseRepo(githubRepo);
+
+    const res = await octokit.request(
+      'GET /repos/{owner}/{repo}/check-runs/{check_run_id}',
+      { owner, repo, check_run_id: checkRunId }
+    );
+    const run = res.data;
+
+    const report: CheckRunReport = {
+      id: run.id,
+      name: run.name,
+      app: run.app?.slug || 'unknown',
+      status: run.status,
+      conclusion: run.conclusion as PRCheckEntry['conclusion'],
+      url: run.html_url ?? null,
+      headSha: run.head_sha ?? null,
+      startedAt: run.started_at ?? null,
+      completedAt: run.completed_at ?? null,
+    };
+
+    const output = run.output;
+    if (output && (output.title || output.summary || output.text)) {
+      report.output = {
+        title: output.title ?? undefined,
+        summary: output.summary ?? undefined,
+        text: output.text ?? undefined,
+      };
+    }
+
+    if (output?.annotations_count && output.annotations_count > 0) {
+      try {
+        const ann = await octokit.request(
+          'GET /repos/{owner}/{repo}/check-runs/{check_run_id}/annotations',
+          { owner, repo, check_run_id: checkRunId, per_page: 50 }
+        );
+        report.annotations = ann.data.map((a) => ({
+          path: a.path,
+          startLine: a.start_line ?? null,
+          level: a.annotation_level ?? 'notice',
+          message: a.message ?? '',
+          title: a.title ?? undefined,
+        }));
+      } catch {
+        // annotations are best-effort
+      }
+    }
+
+    const logTail = await this.tryFetchJobLogTail(owner, repo, checkRunId);
+    if (logTail) report.logTail = logTail;
+
+    logger.system(
+      `GitHub: check run ${checkRunId} (${report.name}): ${report.conclusion ?? report.status}` +
+      `${report.annotations ? `, ${report.annotations.length} annotations` : ''}` +
+      `${report.logTail ? ', log captured' : ''}`
+    );
+
+    return report;
+  }
+
+  /**
+   * Fetch a workflow run by id plus its jobs. Failed jobs include a tail of
+   * their log so an agent can see what broke without a PR in hand.
+   */
+  async getWorkflowRunById(githubRepo: string, runId: number): Promise<WorkflowRunReport> {
+    const octokit = await this.getOctokit();
+    const { owner, repo } = this.parseRepo(githubRepo);
+
+    const runRes = await octokit.request(
+      'GET /repos/{owner}/{repo}/actions/runs/{run_id}',
+      { owner, repo, run_id: runId }
+    );
+    const run = runRes.data;
+
+    const jobsRes = await octokit.request(
+      'GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs',
+      { owner, repo, run_id: runId, per_page: 100 }
+    );
+
+    const FAILED = new Set(['failure', 'cancelled', 'timed_out', 'action_required']);
+    const jobs: WorkflowJobEntry[] = [];
+    for (const job of jobsRes.data.jobs) {
+      const entry: WorkflowJobEntry = {
+        id: job.id,
+        name: job.name,
+        status: job.status,
+        conclusion: job.conclusion as PRCheckEntry['conclusion'],
+        url: job.html_url ?? null,
+      };
+      if (job.conclusion && FAILED.has(job.conclusion)) {
+        const logTail = await this.tryFetchJobLogTail(owner, repo, job.id);
+        if (logTail) entry.logTail = logTail;
+      }
+      jobs.push(entry);
+    }
+
+    logger.system(
+      `GitHub: workflow run ${runId} (${run.name ?? 'unknown'}): ` +
+      `${run.conclusion ?? run.status}, ${jobs.length} jobs`
+    );
+
+    return {
+      id: run.id,
+      name: run.name ?? 'unknown',
+      status: run.status ?? 'unknown',
+      conclusion: run.conclusion as PRCheckEntry['conclusion'],
+      headSha: run.head_sha ?? null,
+      headBranch: run.head_branch ?? null,
+      url: run.html_url ?? null,
+      jobs,
+    };
   }
 
   /**
