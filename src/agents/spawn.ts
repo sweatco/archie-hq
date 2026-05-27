@@ -292,8 +292,16 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     onResearchBudgetExceeded: () => task.onResearchBudgetExceeded(),
   });
 
-  // Standard (non-repo) filesystem sandbox — shared by the PM and plugin agents.
-  const standardSandbox: SandboxOptions = {
+  // ---- Per-agent config ----
+  //
+  // Defaults describe the plain plugin agent. The PM coordinator and repo
+  // agents deviate from these in their branches below; anything they don't
+  // touch keeps the default.
+
+  let systemPrompt: string;
+  let additionalDirectories: string[] = [sharedPath, ...pluginPaths];
+  let disallowedTools: string[] = baseDisallowedTools;
+  let sandboxOpts: SandboxOptions = {
     cwd,
     denyReadPaths: [WORKDIR],
     allowReadPaths: [workspace, sharedPath, ...claudeReadDirs, ...pluginReadPaths],
@@ -301,15 +309,11 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     denyWritePaths: [sharedPath, ...pluginPaths, ...protectedWorkspaceFiles],
     allowedNetworkDomains: def.allowedNetworkDomains,
   };
-
-  // ---- Per-agent layers ----
-
-  let systemPrompt: string;
-  // Base shared by every agent; the repo branch prepends its clone path.
-  let additionalDirectories: string[] = [sharedPath, ...pluginPaths];
-  let mcpServers: Record<string, any>;
-  let disallowedTools: string[];
-  let sandboxOpts: SandboxOptions;
+  // Common to all agents; each branch adds its own agent-tools server.
+  const mcpServers: Record<string, any> = {
+    ...(def.mcpServers || {}),
+    'research-tools': researchServer,
+  };
 
   if (isPmAgent(def)) {
     // ---- PM coordinator ----
@@ -378,13 +382,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
       systemPrompt = `${systemPrompt}\n\n${def.pmOverlayPrompt}`;
     }
 
-    mcpServers = {
-      ...(def.mcpServers || {}),
-      'pm-agent-tools': createPMAgentMcpServer(agent, task),
-      'research-tools': researchServer,
-    };
-    disallowedTools = baseDisallowedTools;
-    sandboxOpts = standardSandbox;
+    mcpServers['pm-agent-tools'] = createPMAgentMcpServer(agent, task);
   } else if (isRepoAgent(def)) {
     // ---- Repo access attached ----
     const { repoPath, editAllowed, baseObjectsPath, currentBranch } = await prepareRepoClone(agent, task);
@@ -407,12 +405,8 @@ Shared folder: ${sharedPath} [READ-ONLY]
 
     additionalDirectories = [repoPath, ...additionalDirectories];
 
-    mcpServers = {
-      ...(def.mcpServers || {}),
-      'repo-agent-tools': createBaseAgentMcpServer(agent, task),
-      'repo-tools': createRepoToolsMcpServer(agent, task),
-      'research-tools': researchServer,
-    };
+    mcpServers['repo-agent-tools'] = createBaseAgentMcpServer(agent, task);
+    mcpServers['repo-tools'] = createRepoToolsMcpServer(agent, task);
 
     disallowedTools = [
       ...baseDisallowedTools,
@@ -464,13 +458,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
 `;
     systemPrompt = `${systemPrompt}\n\nCurrent Context:\n${context}`;
 
-    mcpServers = {
-      ...(def.mcpServers || {}),
-      'repo-agent-tools': createBaseAgentMcpServer(agent, task),
-      'research-tools': researchServer,
-    };
-    disallowedTools = baseDisallowedTools;
-    sandboxOpts = standardSandbox;
+    mcpServers['repo-agent-tools'] = createBaseAgentMcpServer(agent, task);
   }
 
   // Expose the sandbox config on the agent so in-process tools (e.g.
