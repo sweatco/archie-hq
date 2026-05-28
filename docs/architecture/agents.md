@@ -62,7 +62,7 @@ One PM agent instance is spawned per task. It is the orchestrator: it receives a
 | `report_completion` | Optionally post a final message, then stop the task |
 | `request_edit_mode` | Post an interactive Approve/Deny prompt to the default channel and pause the task |
 | `get_agents_status` | Check which agents are spawned and active |
-| `mute_thread` | Disengage from the current Slack thread until the bot is @mentioned again |
+| `mute_channel` | Disengage from one Slack channel/thread (the one named via `channel`, or the task's default channel) until the bot is @mentioned there again. DM channels cannot be muted |
 | `launch_task` | Launch a new independent background task (with notification posted to the current channel) |
 | `parse_datetime` / `set_reminder` / `cancel_reminder` | Schedule a reminder that wakes the task at an ISO datetime |
 

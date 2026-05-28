@@ -258,7 +258,7 @@ Tools are defined in `src/agents/tools.ts` and exposed via MCP servers created p
 | `report_completion` | Optionally post a final message via `post_to_user`, then complete the task |
 | `request_edit_mode` | Post Approve/Deny buttons to the default channel and stop the task until the user responds |
 | `get_agents_status` | Return active/idle status of all spawned agents |
-| `mute_thread` | Stop processing the current Slack thread until the bot is @mentioned again |
+| `mute_channel` | Stop processing a Slack channel/thread until the bot is @mentioned there again. Takes optional `channel` key; defaults to the task's `default_channel`. DM channels cannot be muted |
 | `launch_task` | Start a new background task (delegates to `src/tasks/launch.ts`) |
 | `parse_datetime` / `set_reminder` / `cancel_reminder` | Schedule/cancel reactivation of the task at a future time (via `src/system/reminder-scheduler.ts`) |
 

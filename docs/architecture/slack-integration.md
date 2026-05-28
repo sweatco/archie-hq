@@ -89,7 +89,7 @@ Slack webhook
        not found, plain thread reply -> ignore (bot was never invited)
 ```
 
-A muted thread (`SlackChannel.muted = true`, set by the PM's `mute_thread` tool) is unmuted by an `@mention` and otherwise skipped. Title generation runs as a fire-and-forget Haiku call after the first append; for DM-rooted tasks the resulting title is pushed to Slack via `assistant.threads.setTitle` (see `src/connectors/slack/title.ts`). External users (different `team_id`, or `is_restricted` / `is_ultra_restricted` guests) are filtered out before any work is spawned; their messages are still re-read on later events because `fetchSlackThread` refreshes full history each time.
+A muted thread (`SlackChannel.muted = true`, set by the PM's `mute_channel` tool) is unmuted by an `@mention` and otherwise skipped. In DM channels, any inbound message also unmutes — there is no `@mention` path in a DM, so a DM message is treated as the equivalent. `mute_channel` mutes a single channel — the one the PM names, or the task's `default_channel` if omitted; it refuses to mute DM channels (channel IDs starting with `D`) up front, but the DM-as-unmute rule above is the backstop that recovers any legacy task whose DM channel was muted before this restriction existed. Title generation runs as a fire-and-forget Haiku call after the first append; for DM-rooted tasks the resulting title is pushed to Slack via `assistant.threads.setTitle` (see `src/connectors/slack/title.ts`). External users (different `team_id`, or `is_restricted` / `is_ultra_restricted` guests) are filtered out before any work is spawned; their messages are still re-read on later events because `fetchSlackThread` refreshes full history each time.
 
 ## Multi-Channel Support
 
@@ -172,7 +172,7 @@ The Slack client extracts file metadata from messages, including files shared di
 ## Acknowledgment, Muting, and Shared-Channel Awareness
 
 - **Eyes reaction** — every accepted inbound message gets a `:eyes:` reaction added; the previous message's eyes is removed first so only one indicator is live per thread. Cleaned up on task stop/complete by `removeEyesFromAllChannels`.
-- **Muting** — the PM's `mute_thread` tool sets `SlackChannel.muted = true`, after which the thread is ignored until a new `@mention` toggles it back on.
+- **Muting** — the PM's `mute_channel` tool sets `SlackChannel.muted = true` on a single channel (the one named, or the task's `default_channel` if no `channel` arg is given), after which that thread is ignored until a new `@mention` toggles it back on. DM channels cannot be muted because there is no `@mention` re-engagement path in a DM.
 - **Shared channels (Slack Connect)** — `isChannelShared` (60s TTL cache) flags external-shared channels; `sendSharedChannelWarnings` posts ephemeral notices once per (thread × user): a general shared-channel heads-up to internal participants, and a forward-from-external notice to anyone who pastes content originally authored by an external user.
 
 ## Relevant Source Files
@@ -181,7 +181,7 @@ The Slack client extracts file metadata from messages, including files shared di
 - `src/connectors/slack/events.ts` — Bolt app setup (`mountSlackApp`), `app_mention` / `message` handlers, `routeSlackEvent` + `handleSlackEvent`, button action handlers, title pipeline, shared-channel warnings
 - `src/connectors/slack/title.ts` — `assistant.threads.setTitle` wrapper for DM-rooted tasks
 - `src/system/triage.ts` — Haiku-based message classifier (currently disabled at the call site)
-- `src/agents/tools.ts` — `post_to_user`, `post_files_to_user`, `mute_thread`, `find_slack_user`, `find_slack_channel`, etc. (no `post_to_slack`)
+- `src/agents/tools.ts` — `post_to_user`, `post_files_to_user`, `mute_channel`, `find_slack_user`, `find_slack_channel`, etc. (no `post_to_slack`)
 - `src/tasks/task.ts` — `postToUser`, `postFilesToUser`, `postInteractiveToUser`, channel registration
 - `src/system/event-bus.ts` — in-process event bus (used for SSE streaming to CLI; not a Slack transport)
 - `src/types/task.ts` — `SlackChannel`, `TaskMetadata.channels`, `default_channel`

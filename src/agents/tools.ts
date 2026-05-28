@@ -491,36 +491,52 @@ function createReportCompletionTool(agent: Agent, task: Task) {
   );
 }
 
-function createMuteThreadTool(agent: Agent, task: Task) {
+function createMuteChannelTool(agent: Agent, task: Task) {
   return tool(
-    'mute_thread',
-    'Unsubscribe from the current Slack thread. Messages will be ignored until someone @mentions the bot again. Posts a notification to the thread.',
-    {},
-    async () => {
+    'mute_channel',
+    'Unsubscribe from a Slack channel/thread. Once muted, messages in it are ignored until someone @mentions the bot there again. Posts a notification to the thread it muted. ' +
+    'Pass `channel` (a channel key like "slack:C123:456.789") to mute that specific thread. ' +
+    'Omit `channel` to mute the task\'s default channel only (never all linked channels). ' +
+    'DM channels cannot be muted — DMs have no @mention to unmute by, so muting one would lock the user out permanently.',
+    {
+      channel: z.string().optional().describe('Channel key of the thread to mute (e.g., "slack:C123:456.789"). Omit to mute the task\'s default channel.'),
+    },
+    async (args) => {
       const agentName = agent.def.id as AgentName;
-      logger.agentAction(agentName, 'Muting thread', '');
+      const channelKey = args.channel ?? task.metadata.default_channel;
+
+      if (!channelKey) {
+        return ok('No channel specified and task has no default channel — nothing to mute.');
+      }
+
+      const ch = task.metadata.channels[channelKey];
+      if (!ch) {
+        return ok(`Channel ${channelKey} is not linked to this task.`);
+      }
+      if (ch.type !== 'slack') {
+        return ok(`Channel ${channelKey} is not a Slack channel (type: ${ch.type}).`);
+      }
+      if (ch.channel_id.startsWith('D')) {
+        return ok(
+          `Cannot mute DM channel ${channelKey} — DMs have no @mention to unmute by, so muting would lock the user out permanently. ` +
+          `Every DM is implicitly addressed to the bot, so just stop responding to disengage.`
+        );
+      }
+      if (ch.muted) {
+        return ok(`Channel ${channelKey} is already muted.`);
+      }
+
+      logger.agentAction(agentName, 'Muting channel', channelKey);
       task.touch();
 
-      // Mute all Slack channels
-      let mutedCount = 0;
-      for (const ch of Object.values(task.metadata.channels)) {
-        if (ch.type === 'slack' && !ch.muted) {
-          (ch as import('../types/task.js').SlackChannel).muted = true;
-          mutedCount++;
-        }
-      }
-
-      if (mutedCount === 0) {
-        return ok('No active Slack threads to mute.');
-      }
-
+      ch.muted = true;
       task.debouncedSave();
-      await appendAgentFinding(task.taskId, agentName, 'Muted Slack thread — will not process messages until next @mention', 'decision');
+      await appendAgentFinding(task.taskId, agentName, `Muted Slack channel ${channelKey} — will not process messages until next @mention`, 'decision');
 
-      // Notify the thread
-      await task.postToUser("I'll step back from this thread. Mention me again when you need me.", agentName);
+      // Notify only the channel we muted
+      await task.postToUser("I'll step back from this thread. Mention me again when you need me.", agentName, { channel: channelKey });
 
-      return ok(`Muted ${mutedCount} Slack thread(s). Will resume on next @mention.`);
+      return ok(`Muted ${channelKey}. Will resume on next @mention.`);
     },
   );
 }
@@ -1315,7 +1331,7 @@ export function createPMAgentMcpServer(agent: Agent, task: Task) {
       createReportCompletionTool(agent, task),
       createRequestEditModeTool(agent, task),
       createGetAgentsStatusTool(agent, task),
-      createMuteThreadTool(agent, task),
+      createMuteChannelTool(agent, task),
       createLaunchTaskTool(agent, task),
       createParseDatetimeTool(agent, task),
       createSetReminderTool(agent, task),
