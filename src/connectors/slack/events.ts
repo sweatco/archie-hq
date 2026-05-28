@@ -440,18 +440,20 @@ async function handleSlackEvent(event: {
     logger.system(`Processing #${thread.channel.name} (thread: ${threadId})`);
     const task = await Task.get(taskId);
 
-    // Check if thread is muted
+    // Check if channel is muted
     const channelId = `slack:${event.channel}:${threadId}`;
     const channel = task.metadata.channels[channelId];
     if (channel?.type === 'slack' && channel.muted) {
-      if (event.type === 'app_mention') {
-        // @mention unmutes the thread
+      const isDm = event.channel.startsWith('D');
+      if (event.type === 'app_mention' || isDm) {
+        // @mention unmutes the channel; a DM message is an implicit @mention
+        // (there's no other re-engagement path in a DM)
         channel.muted = false;
         task.debouncedSave();
-        logger.system(`Thread ${threadId} unmuted by @mention`);
+        logger.system(`Channel ${threadId} unmuted by ${event.type === 'app_mention' ? '@mention' : 'DM message'}`);
       } else {
-        // Thread is muted and no @mention — skip
-        logger.system(`Skipping muted thread ${threadId}`);
+        // Channel is muted and no @mention — skip
+        logger.system(`Skipping muted channel ${threadId}`);
         return;
       }
     }
