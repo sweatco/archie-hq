@@ -48,6 +48,20 @@ export interface CreatePRResult {
   pr_url: string;
 }
 
+export interface AssignableUser {
+  /** GitHub login (what the reviewers API expects). */
+  login: string;
+  /** Human display name, if the user has set one (may be null). */
+  name: string | null;
+}
+
+export interface RequestReviewersResult {
+  /** Logins that were successfully requested as reviewers. */
+  requested: string[];
+  /** Logins GitHub rejected (e.g. not a collaborator, or the PR author). */
+  rejected: string[];
+}
+
 export interface PRListItem {
   number: number;
   title: string;
@@ -664,6 +678,123 @@ export class GitHubClient {
       });
 
       logger.system(`GitHub: Requested re-review from ${Array.from(reviewers).join(', ')}`);
+    }
+  }
+
+  /**
+   * List users who can be requested as reviewers on a repo.
+   *
+   * Uses the GraphQL `assignableUsers` connection — the same authoritative set
+   * that powers the reviewer picker in the GitHub UI (collaborators + org
+   * members with access), scoped to this repo. Returns `login` plus the human
+   * `name` so a name typed in Slack can be matched against either.
+   *
+   * @param query Optional filter on login/name. Omit to fetch the full list.
+   */
+  async getAssignableUsers(githubRepo: string, query?: string): Promise<AssignableUser[]> {
+    const octokit = await this.getOctokit();
+    const { owner, repo } = this.parseRepo(githubRepo);
+
+    const gqlQuery = `
+      query($owner: String!, $repo: String!, $query: String, $after: String) {
+        repository(owner: $owner, name: $repo) {
+          assignableUsers(first: 100, query: $query, after: $after) {
+            nodes { login name }
+            pageInfo { hasNextPage endCursor }
+          }
+        }
+      }
+    `;
+
+    const users: AssignableUser[] = [];
+    let after: string | undefined;
+
+    // The assignable set is small (people with repo access), so this is at most
+    // a couple of pages — paginate until exhausted.
+    for (;;) {
+      const result = await octokit.graphql<{
+        repository: {
+          assignableUsers: {
+            nodes: Array<{ login: string; name: string | null }>;
+            pageInfo: { hasNextPage: boolean; endCursor: string | null };
+          };
+        };
+      }>(gqlQuery, { owner, repo, query: query ?? undefined, after });
+
+      const conn = result.repository.assignableUsers;
+      for (const node of conn.nodes) {
+        users.push({ login: node.login, name: node.name });
+      }
+      if (!conn.pageInfo.hasNextPage || !conn.pageInfo.endCursor) break;
+      after = conn.pageInfo.endCursor;
+    }
+
+    return users;
+  }
+
+  /**
+   * Request reviews from specific GitHub users on a PR.
+   *
+   * Reviewers are a separate sub-resource — they can't be set via the PR create
+   * or update endpoints, so this hits the dedicated `requested_reviewers`
+   * endpoint (the same one `requestReReview` uses). GitHub rejects the whole
+   * batch with a 422 if any login is invalid (not a collaborator, the PR
+   * author, etc.), so on 422 we retry one login at a time to salvage the valid
+   * ones and pinpoint the bad. Rejected logins are returned rather than thrown
+   * so the caller can keep the PR and report them.
+   */
+  async requestReviewers(
+    githubRepo: string,
+    prNumber: number,
+    logins: string[]
+  ): Promise<RequestReviewersResult> {
+    const octokit = await this.getOctokit();
+    const { owner, repo } = this.parseRepo(githubRepo);
+
+    const unique = Array.from(new Set(logins.map((l) => l.trim()).filter(Boolean)));
+    if (unique.length === 0) {
+      return { requested: [], rejected: [] };
+    }
+
+    try {
+      await octokit.request('POST /repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers', {
+        owner,
+        repo,
+        pull_number: prNumber,
+        reviewers: unique,
+      });
+      logger.system(`GitHub: Requested review from ${unique.join(', ')} on PR #${prNumber}`);
+      return { requested: unique, rejected: [] };
+    } catch (error) {
+      if ((error as { status?: number }).status !== 422) throw error;
+
+      // Batch failed — retry individually to isolate the invalid login(s).
+      const requested: string[] = [];
+      const rejected: string[] = [];
+      for (const login of unique) {
+        try {
+          await octokit.request('POST /repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers', {
+            owner,
+            repo,
+            pull_number: prNumber,
+            reviewers: [login],
+          });
+          requested.push(login);
+        } catch (singleError) {
+          if ((singleError as { status?: number }).status === 422) {
+            rejected.push(login);
+          } else {
+            throw singleError;
+          }
+        }
+      }
+      if (requested.length > 0) {
+        logger.system(`GitHub: Requested review from ${requested.join(', ')} on PR #${prNumber}`);
+      }
+      if (rejected.length > 0) {
+        logger.system(`GitHub: Could not request review from ${rejected.join(', ')} on PR #${prNumber}`);
+      }
+      return { requested, rejected };
     }
   }
 

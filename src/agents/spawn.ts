@@ -405,6 +405,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
             'mcp__repo-tools__reply_to_review_comment',
             'mcp__repo-tools__resolve_review_thread',
             'mcp__repo-tools__request_re_review',
+            'mcp__repo-tools__request_reviewers',
             'mcp__repo-tools__merge_pull_request',
             'mcp__repo-tools__close_pull_request',
             'mcp__repo-tools__create_branch',

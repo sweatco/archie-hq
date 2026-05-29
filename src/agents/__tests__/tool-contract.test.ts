@@ -134,6 +134,7 @@ const SPAWN_REPO_TOOLS = [
   'mcp__repo-tools__get_pr_reviews',
   'mcp__repo-tools__get_pr_comments',
   'mcp__repo-tools__get_review_threads',
+  'mcp__repo-tools__get_assignable_users',
   // PR write
   'mcp__repo-tools__push_branch',
   'mcp__repo-tools__create_pull_request',
@@ -143,6 +144,7 @@ const SPAWN_REPO_TOOLS = [
   'mcp__repo-tools__reply_to_review_comment',
   'mcp__repo-tools__resolve_review_thread',
   'mcp__repo-tools__request_re_review',
+  'mcp__repo-tools__request_reviewers',
   'mcp__repo-tools__merge_pull_request',
   'mcp__repo-tools__close_pull_request',
 ];

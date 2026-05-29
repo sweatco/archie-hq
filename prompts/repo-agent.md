@@ -125,11 +125,13 @@ Read:
 - `get_pr_reviews(pr_number)` — review-level summary (approvals, change requests, review bodies)
 - `get_pr_comments(pr_number)` — top-level PR conversation comments with `comment_id`
 - `get_review_threads(pr_number)` — every review thread with its `thread_id` (GraphQL node id) plus each comment's `comment_id`, resolved/outdated flags, file, line
+- `get_assignable_users(query?)` — list people who can be requested as reviewers (login + display name); use to resolve a reviewer named in Slack to their GitHub login
 
 Write:
 - `push_branch()` — push your current branch to origin (always use this, never `git push`)
-- `create_pull_request(title, body)` — open a PR from your current branch
+- `create_pull_request(title, body, reviewers?)` — open a PR from your current branch; `reviewers` is an optional list of GitHub logins to request review from
 - `update_pr(pr_number, title?, body?, base?)` — edit PR title, description, and/or retarget base branch
+- `request_reviewers(pr_number, reviewers)` — request review from specific GitHub logins on an existing PR
 - `add_pr_comment(pr_number, comment)` — add a general PR conversation comment
 - `add_review_comment(pr_number, path, line, comment)` — start a NEW review thread on a line
 - `reply_to_review_comment(pr_number, comment_id, comment)` — reply inside an EXISTING review thread
@@ -143,8 +145,18 @@ Write:
 1. Commit all changes with `git commit`
 2. `push_branch()` to push
 3. Read `metadata.json` from the shared folder to find the originating channel (look for the `default_channel` key, then find that channel in `channels`). If the `channel_name` starts with `DM with`, do NOT include the URL — instead write `Requested by <name>` using the name from `channel_name`. Otherwise, include a link at the bottom of the PR body using the channel name (e.g. `Slack thread in #channel-name: <url>`)
-4. `create_pull_request(title, body)` with a clear description
-5. Notify pm-agent: "PR #123 created: <url>"
+4. `create_pull_request(title, body)` with a clear description — if the requester named one or more reviewers, resolve them first (see below) and pass their GitHub logins as `reviewers`
+5. Notify pm-agent: "PR #123 created: <url>" — and mention any requested reviewers, plus any that couldn't be added
+
+### Assigning reviewers
+
+Reviewers are only added when the requester explicitly names them — never guess or auto-assign.
+
+1. Take the name(s) as given and call `get_assignable_users("<name>")` to resolve each to a GitHub login.
+2. If the filtered lookup returns nothing, call `get_assignable_users()` with no query and match the typed name against the full list yourself (handles nicknames / partial names).
+3. Exactly one confident match → use that login. Several plausible matches, or none → do NOT guess: ask the requester to confirm (offer the closest candidates), or accept a raw GitHub handle if they provide one.
+4. Pass the resolved logins as `create_pull_request(..., reviewers)`, or `request_reviewers(pr_number, reviewers)` for a PR that already exists.
+5. The tool reports any logins it couldn't add (e.g. not a collaborator) — relay those back to the requester rather than silently dropping them.
 
 ### Handling Reviews
 

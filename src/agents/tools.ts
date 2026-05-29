@@ -639,10 +639,14 @@ function createPullRequestTool(agent: Agent, task: Task) {
   const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'create_pull_request',
-    'Create a pull request on GitHub.',
+    'Create a pull request on GitHub. Optionally request reviewers by GitHub login — resolve names to logins with get_assignable_users first.',
     {
       title: z.string().describe('PR title'),
       body: z.string().describe('PR description body'),
+      reviewers: z
+        .array(z.string())
+        .optional()
+        .describe('GitHub logins to request review from (not names). Use get_assignable_users to resolve a person to their login.'),
     },
     async (args) => {
       const agentName = agent.def.id as AgentName;
@@ -668,7 +672,19 @@ function createPullRequestTool(agent: Agent, task: Task) {
       }
 
       await appendAgentFinding(task.taskId, agentName, `Created PR #${result.pr_number}: ${result.pr_url}`, 'decision');
-      return ok(`Created PR #${result.pr_number}: ${result.pr_url}`);
+
+      let reviewerNote = '';
+      if (args.reviewers && args.reviewers.length > 0) {
+        const { requested, rejected } = await client.requestReviewers(githubRepo, result.pr_number, args.reviewers);
+        if (requested.length > 0) {
+          reviewerNote += `\nReview requested from: ${requested.join(', ')}`;
+        }
+        if (rejected.length > 0) {
+          reviewerNote += `\nCould not add as reviewer (not a collaborator on ${githubRepo}): ${rejected.join(', ')}`;
+        }
+      }
+
+      return ok(`Created PR #${result.pr_number}: ${result.pr_url}${reviewerNote}`);
     },
   );
 }
@@ -1063,6 +1079,61 @@ function createRequestReReviewTool(agent: Agent, task: Task) {
   );
 }
 
+function createGetAssignableUsersTool(agent: Agent, task: Task) {
+  const githubRepo = agent.def.repo!.githubRepo;
+  return tool(
+    'get_assignable_users',
+    'List GitHub users who can be requested as reviewers on this repo (login + display name). ' +
+      'Use this to resolve a reviewer named in plain language (e.g. "Egor") to their GitHub login before requesting a review. ' +
+      'Pass a query to filter; omit it to fetch the full list and match the name yourself. ' +
+      'If a name is ambiguous or has no match, ask the requester to confirm instead of guessing.',
+    {
+      query: z
+        .string()
+        .optional()
+        .describe('Optional filter matched against login and display name. Omit to list everyone assignable.'),
+    },
+    async (args) => {
+      const client = getGitHubClient();
+      if (!client) throw new Error('GitHub client not configured');
+      const users = await client.getAssignableUsers(githubRepo, args.query);
+      if (users.length === 0) {
+        return ok(
+          args.query
+            ? `No assignable users on ${githubRepo} matching "${args.query}". Try without a query to see the full list.`
+            : `No assignable users found on ${githubRepo}.`
+        );
+      }
+      const lines = users.map((u) => (u.name ? `${u.name} (@${u.login})` : `@${u.login}`));
+      return ok(`Assignable users on ${githubRepo}:\n${lines.join('\n')}`);
+    },
+  );
+}
+
+function createRequestReviewersTool(agent: Agent, task: Task) {
+  const githubRepo = agent.def.repo!.githubRepo;
+  return tool(
+    'request_reviewers',
+    'Request review from specific GitHub users on an existing PR. Pass GitHub logins (not names) — resolve names with get_assignable_users first.',
+    {
+      pr_number: z.number().describe('The PR number'),
+      reviewers: z.array(z.string()).describe('GitHub logins to request review from'),
+    },
+    async (args) => {
+      const client = getGitHubClient();
+      if (!client) throw new Error('GitHub client not configured');
+      const { requested, rejected } = await client.requestReviewers(githubRepo, args.pr_number, args.reviewers);
+      const parts: string[] = [];
+      if (requested.length > 0) parts.push(`Requested review from ${requested.join(', ')} on PR #${args.pr_number}`);
+      if (rejected.length > 0) {
+        parts.push(`Could not add (not a collaborator on ${githubRepo}): ${rejected.join(', ')}`);
+      }
+      if (parts.length === 0) parts.push('No valid reviewers provided.');
+      return ok(parts.join('\n'));
+    },
+  );
+}
+
 
 function createMergePRTool(agent: Agent, task: Task) {
   const githubRepo = agent.def.repo!.githubRepo;
@@ -1372,6 +1443,8 @@ export function createRepoToolsMcpServer(agent: Agent, task: Task) {
       createReplyToReviewCommentTool(agent, task),
       createResolveReviewThreadTool(agent, task),
       createRequestReReviewTool(agent, task),
+      createGetAssignableUsersTool(agent, task),
+      createRequestReviewersTool(agent, task),
       createMergePRTool(agent, task),
       createClosePRTool(agent, task),
     ],

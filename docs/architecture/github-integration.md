@@ -109,13 +109,14 @@ All tools below are registered on the same `repo-tools` MCP server. Whether a to
 | `get_pr_reviews` | Review-level summary for a PR (approvals, change requests, review bodies). |
 | `get_pr_comments` | Top-level PR conversation comments (issue comments). |
 | `get_review_threads` | Every review thread on a PR via GraphQL: `thread_id` (for `resolve_review_thread`) and per-comment `comment_id` (for `reply_to_review_comment`). |
+| `get_assignable_users` | List users who can be requested as reviewers on the repo (login + display name) via the GraphQL `assignableUsers` connection. Optional `query` filters by login/name; omit for the full list. Used to resolve a reviewer named in Slack to a GitHub login. |
 
 **Edit mode only:**
 
 | Tool | Description |
 |---|---|
 | `push_branch` | Push commits from the local shared clone to origin via `git push -u origin HEAD:{branch}`. |
-| `create_pull_request` | Create a PR on GitHub. Stores the PR number in the current branch's `BranchState`. |
+| `create_pull_request` | Create a PR on GitHub. Stores the PR number in the current branch's `BranchState`. Optional `reviewers` (GitHub logins) are requested as a follow-up call after the PR is created. |
 | `create_branch` | Create a new branch (auto-named `feature/{taskId}` or `feature/{taskId}-N`) and switch to it. |
 | `update_pr` | Update the title, description, and/or base branch of an existing PR (all fields optional). |
 | `add_pr_comment` | Add a general comment to a PR (issue comment). |
@@ -123,6 +124,7 @@ All tools below are registered on the same `repo-tools` MCP server. Whether a to
 | `reply_to_review_comment` | Reply inside an existing review thread, given any `comment_id` from that thread. |
 | `resolve_review_thread` | Mark a review thread as resolved via the `resolveReviewThread` GraphQL mutation. Requires the GraphQL `thread_id` (e.g. `PRRT_...`). |
 | `request_re_review` | Request re-review from all previous reviewers. Fetches existing reviewers and sends review requests. |
+| `request_reviewers` | Request review from specific GitHub logins on an existing PR. Logins GitHub rejects (e.g. not a collaborator) are reported back, not thrown. |
 | `merge_pull_request` | Merge a pull request. Checks mergeability first and returns status if not ready. |
 | `close_pull_request` | Close a pull request without merging. |
 

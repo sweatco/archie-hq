@@ -78,6 +78,8 @@ const mockGitHubClient = {
   replyToReviewComment: vi.fn(),
   resolveReviewThread: vi.fn(),
   requestReReview: vi.fn(),
+  getAssignableUsers: vi.fn(),
+  requestReviewers: vi.fn(),
   getCheckRunById: vi.fn(),
   getWorkflowRunById: vi.fn(),
 };
@@ -260,6 +262,94 @@ describe('close_pull_request', () => {
   });
 });
 
+describe('get_assignable_users', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getGitHubClient).mockReturnValue(mockGitHubClient as any);
+  });
+
+  it('lists users with login and display name', async () => {
+    mockGitHubClient.getAssignableUsers.mockResolvedValue([
+      { login: 'elarionov', name: 'Egor Larionov' },
+      { login: 'nobody', name: null },
+    ]);
+
+    const tool = getRepoTool(makeAgent(), makeTask(), 'get_assignable_users');
+    const result = await tool({ query: 'egor' }, {});
+
+    expect(mockGitHubClient.getAssignableUsers).toHaveBeenCalledWith('org/backend', 'egor');
+    expect(result.content[0].text).toContain('Egor Larionov (@elarionov)');
+    expect(result.content[0].text).toContain('@nobody');
+  });
+
+  it('suggests dropping the query when a filtered lookup is empty', async () => {
+    mockGitHubClient.getAssignableUsers.mockResolvedValue([]);
+
+    const tool = getRepoTool(makeAgent(), makeTask(), 'get_assignable_users');
+    const result = await tool({ query: 'zzz' }, {});
+
+    expect(result.content[0].text).toContain('No assignable users');
+    expect(result.content[0].text).toContain('full list');
+  });
+});
+
+describe('request_reviewers', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getGitHubClient).mockReturnValue(mockGitHubClient as any);
+  });
+
+  it('reports requested and rejected logins', async () => {
+    mockGitHubClient.requestReviewers.mockResolvedValue({
+      requested: ['elarionov'],
+      rejected: ['ghost'],
+    });
+
+    const tool = getRepoTool(makeAgent(), makeTask(), 'request_reviewers');
+    const result = await tool({ pr_number: 42, reviewers: ['elarionov', 'ghost'] }, {});
+
+    expect(mockGitHubClient.requestReviewers).toHaveBeenCalledWith('org/backend', 42, ['elarionov', 'ghost']);
+    expect(result.content[0].text).toContain('Requested review from elarionov');
+    expect(result.content[0].text).toContain('Could not add');
+    expect(result.content[0].text).toContain('ghost');
+  });
+});
+
+describe('create_pull_request', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getGitHubClient).mockReturnValue(mockGitHubClient as any);
+  });
+
+  it('creates a PR without requesting reviewers when none given', async () => {
+    mockGitHubClient.createPullRequest.mockResolvedValue({ pr_number: 7, pr_url: 'https://gh/pr/7' });
+
+    const tool = getRepoTool(makeAgent(), makeTask(), 'create_pull_request');
+    const result = await tool({ title: 'Fix bug', body: 'Details' }, {});
+
+    expect(mockGitHubClient.createPullRequest).toHaveBeenCalledWith(
+      'org/backend', 'feature/task-123', 'main', 'Fix bug', 'Details',
+    );
+    expect(mockGitHubClient.requestReviewers).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain('Created PR #7');
+  });
+
+  it('requests reviewers after creating the PR and reports rejects', async () => {
+    mockGitHubClient.createPullRequest.mockResolvedValue({ pr_number: 8, pr_url: 'https://gh/pr/8' });
+    mockGitHubClient.requestReviewers.mockResolvedValue({ requested: ['elarionov'], rejected: ['ghost'] });
+
+    const tool = getRepoTool(makeAgent(), makeTask(), 'create_pull_request');
+    const result = await tool({ title: 'Fix bug', body: 'Details', reviewers: ['elarionov', 'ghost'] }, {});
+
+    expect(mockGitHubClient.requestReviewers).toHaveBeenCalledWith('org/backend', 8, ['elarionov', 'ghost']);
+    const text = result.content[0].text;
+    expect(text).toContain('Created PR #8');
+    expect(text).toContain('Review requested from: elarionov');
+    expect(text).toContain('Could not add as reviewer');
+    expect(text).toContain('ghost');
+  });
+});
+
 describe('get_pr_status (read-only server)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -381,7 +471,8 @@ describe('PM agent tools', () => {
       'push_branch', 'create_pull_request', 'get_pr_status', 'get_pr_reviews',
       'get_pr_comments', 'get_review_threads',
       'update_pr', 'add_pr_comment', 'add_review_comment', 'reply_to_review_comment',
-      'resolve_review_thread', 'request_re_review', 'merge_pull_request', 'close_pull_request',
+      'resolve_review_thread', 'request_re_review', 'request_reviewers', 'get_assignable_users',
+      'merge_pull_request', 'close_pull_request',
     ];
 
     for (const prTool of prToolNames) {
