@@ -597,7 +597,7 @@ function createGetMessageReactionsTool(_agent: Agent, task: Task) {
     'get_message_reactions',
     'Read the CURRENT emoji reactions on a Slack message (live state, fresher than ' +
     'the snapshot in the knowledge log). Pass the `message_id` (`msg:<ts>` id). ' +
-    'Returns each reaction\'s emoji shortcode and how many users reacted with it.',
+    'Returns each reaction\'s emoji shortcode, how many users reacted, and who they were.',
     {
       message_id: z.string().describe('The target message timestamp — the `msg:<ts>` id from the knowledge log'),
       channel: z.string().optional().describe('Channel key of the linked thread. Omit for the default channel.'),
@@ -610,8 +610,13 @@ function createGetMessageReactionsTool(_agent: Agent, task: Task) {
       if (reactions.length === 0) {
         return ok(`Message ${args.message_id} has no reactions.`);
       }
-      const summary = reactions.map((r) => `:${r.name}: (${r.count})`).join(', ');
-      return ok(`Reactions on ${args.message_id}: ${summary}`);
+      const summary = reactions
+        .map((r) => {
+          const who = r.users && r.users.length > 0 ? ` — ${r.users.join(', ')}` : '';
+          return `:${r.name}: (${r.count})${who}`;
+        })
+        .join('\n');
+      return ok(`Reactions on ${args.message_id}:\n${summary}`);
     },
   );
 }

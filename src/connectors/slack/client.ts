@@ -313,13 +313,29 @@ export async function getMessageReactions(channel: string, timestamp: string): P
   if (dryRun) return [];
   try {
     const client = getSlackClient();
+    // `full: true` returns the complete user list per reaction (not truncated).
     const result = await client.reactions.get({ channel, timestamp, full: true });
-    const message = result.message as { reactions?: Array<{ name?: string; count?: number }> } | undefined;
+    const message = result.message as { reactions?: Array<{ name?: string; count?: number; users?: string[] }> } | undefined;
     const raw = message?.reactions;
     if (!raw || !Array.isArray(raw)) return [];
-    return raw
-      .filter((r): r is { name: string; count?: number } => typeof r.name === 'string')
-      .map((r) => ({ name: r.name, count: r.count ?? 0 }));
+    return Promise.all(
+      raw
+        .filter((r): r is { name: string; count?: number; users?: string[] } => typeof r.name === 'string')
+        .map(async (r) => {
+          // Resolve reacting user IDs to display names so the agent knows WHO
+          // reacted — identity is the point when a reaction is a signal/vote.
+          const users = await Promise.all(
+            (r.users ?? []).map(async (uid) => {
+              try {
+                return (await getUserInfo(uid)).realName;
+              } catch {
+                return uid;
+              }
+            }),
+          );
+          return { name: r.name, count: r.count ?? 0, ...(users.length > 0 ? { users } : {}) };
+        }),
+    );
   } catch {
     // Silently ignore — message not found, missing scope, etc.
     return [];

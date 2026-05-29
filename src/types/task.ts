@@ -41,6 +41,12 @@ export interface SlackReaction {
   name: string;
   /** Number of users who reacted with this emoji. */
   count: number;
+  /**
+   * Display names of the users who reacted, when known. Populated by live reads
+   * (`getMessageReactions`); omitted from the ingest snapshot, which only knows
+   * counts.
+   */
+  users?: string[];
 }
 
 /** A fully-resolved message from a Slack thread */

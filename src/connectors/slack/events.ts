@@ -365,6 +365,8 @@ async function handleSlackEvent(event: {
   thread_ts?: string;
 }): Promise<void> {
   const threadId = event.thread_ts || event.ts;
+  // Key under which this thread is (or will be) linked in task.metadata.channels.
+  const channelKey = `slack:${event.channel}:${threadId}`;
 
   // ---- External-author bail-out --------------------------------------------
   // Resolve the event author and bail if external (different team, or guest).
@@ -436,8 +438,7 @@ async function handleSlackEvent(event: {
     const task = await Task.get(taskId);
 
     // Check if channel is muted
-    const channelId = `slack:${event.channel}:${threadId}`;
-    const channel = task.metadata.channels[channelId];
+    const channel = task.metadata.channels[channelKey];
     if (channel?.type === 'slack' && channel.muted) {
       const isDm = event.channel.startsWith('D');
       if (event.type === 'app_mention' || isDm) {
@@ -455,7 +456,7 @@ async function handleSlackEvent(event: {
 
     // Thread reply to an existing task — route to it
     await task.append(thread);
-    if (isAckable) task.ackMessage(channelId, event.ts);
+    if (isAckable) task.ackMessage(channelKey, event.ts);
     if (!task.metadata.title) {
       generateTitleAndSync(task, thread).catch((err) =>
         logger.warn('title-generator', `pipeline failed: ${err}`),
@@ -469,7 +470,7 @@ async function handleSlackEvent(event: {
     // Bot was @mentioned, or this is a DM — start a new task
     const task = await Task.create();
     await task.append(thread);
-    if (isAckable) task.ackMessage(`slack:${event.channel}:${threadId}`, event.ts);
+    if (isAckable) task.ackMessage(channelKey, event.ts);
     if (!task.metadata.title) {
       generateTitleAndSync(task, thread).catch((err) =>
         logger.warn('title-generator', `pipeline failed: ${err}`),
