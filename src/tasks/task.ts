@@ -443,34 +443,35 @@ export class Task {
   }
 
   /**
-   * Move the `:eyes:` acknowledgment to a newly-acked message on a Slack channel.
+   * Acknowledge a message on a Slack channel, moving the acknowledgment to it.
    *
-   * The eyes is already added to `messageTs` by the event handler for instant
-   * feedback; this records which message holds it and removes the eyes from the
-   * previously-acked message (so only one indicator is live per thread). We
-   * track `eyes_ts` separately from `last_processed_ts` because the latter
-   * advances on every processed message — including plain thread replies that
-   * never received an eyes — which would otherwise orphan the reaction.
+   * The visual indicator (an `:eyes:` reaction) is already added to `messageTs`
+   * by the event handler for instant feedback; this records which message holds
+   * it and clears the acknowledgment from the previously-acked message (so only
+   * one indicator is live per thread). We track `acknowledged_ts` separately
+   * from `last_processed_ts` because the latter advances on every processed
+   * message — including plain thread replies we never acknowledge — which would
+   * otherwise orphan the indicator.
    */
-  ackEyes(channelKey: string, messageTs: string): void {
+  acknowledgeMessage(channelKey: string, messageTs: string): void {
     const ch = this.metadata.channels[channelKey];
     if (ch?.type !== 'slack') return;
-    if (ch.eyes_ts && ch.eyes_ts !== messageTs) {
-      removeReaction(ch.channel_id, ch.eyes_ts, 'eyes');
+    if (ch.acknowledged_ts && ch.acknowledged_ts !== messageTs) {
+      removeReaction(ch.channel_id, ch.acknowledged_ts, 'eyes');
     }
-    ch.eyes_ts = messageTs;
+    ch.acknowledged_ts = messageTs;
     this.debouncedSave();
   }
 
   /**
-   * Remove the `:eyes:` acknowledgment from whichever message currently holds it
+   * Clear the acknowledgment indicator from whichever message currently holds it
    * on each Slack channel. Called on task stop/complete to clean up indicators.
    */
-  private removeEyesFromAllChannels(): void {
+  private clearAcknowledgments(): void {
     for (const ch of Object.values(this.metadata.channels)) {
-      if (ch.type === 'slack' && ch.eyes_ts) {
-        removeReaction(ch.channel_id, ch.eyes_ts, 'eyes');
-        ch.eyes_ts = undefined;
+      if (ch.type === 'slack' && ch.acknowledged_ts) {
+        removeReaction(ch.channel_id, ch.acknowledged_ts, 'eyes');
+        ch.acknowledged_ts = undefined;
       }
     }
   }
@@ -584,7 +585,7 @@ export class Task {
       await this.cleanupClones();
     }
 
-    this.removeEyesFromAllChannels();
+    this.clearAcknowledgments();
 
     this.metadata.status = 'stopped';
     await this.save(true);
@@ -617,7 +618,7 @@ export class Task {
       await this.cleanupClones();
     }
 
-    this.removeEyesFromAllChannels();
+    this.clearAcknowledgments();
 
     this.metadata.status = 'completed';
     await this.save(true);
