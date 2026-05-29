@@ -541,6 +541,81 @@ function createMuteChannelTool(agent: Agent, task: Task) {
   );
 }
 
+function createReactToMessageTool(agent: Agent, task: Task) {
+  return tool(
+    'react_to_message',
+    'Add an emoji reaction to a message in a Slack thread. Use to acknowledge, ' +
+    'express sentiment, or signal status without sending a text message. ' +
+    'Reacts to ANY message in a linked thread — pass `message_id`, the `msg:<ts>` ' +
+    'value shown next to each message in the knowledge log (e.g. "1716998400.123456"). ' +
+    'Omit `channel` to target the task\'s default channel. ' +
+    'The emoji is a Slack shortcode WITHOUT colons (e.g. "thumbsup", "eyes", "tada", "white_check_mark").',
+    {
+      message_id: z.string().describe('The target message timestamp — the `msg:<ts>` id from the knowledge log (e.g. "1716998400.123456")'),
+      emoji: z.string().describe('Slack emoji shortcode without colons (e.g. "thumbsup", "heart", "eyes")'),
+      channel: z.string().optional().describe('Channel key of the linked thread (e.g. "slack:C123:456.789"). Omit for the default channel.'),
+    },
+    async (args) => {
+      const agentName = agent.def.id as AgentName;
+      const emoji = args.emoji.replace(/:/g, '').trim();
+      const dispatched = await task.reactToMessage(args.message_id, emoji, args.channel);
+      if (!dispatched) {
+        return ok(`Could not react: ${args.channel ? `channel ${args.channel} is not a linked Slack thread` : 'task has no default Slack channel'}.`);
+      }
+      logger.agentAction(agentName, `Reacted :${emoji}:`, args.message_id);
+      return ok(`Added :${emoji}: to message ${args.message_id}.`);
+    },
+  );
+}
+
+function createUnreactFromMessageTool(agent: Agent, task: Task) {
+  return tool(
+    'unreact_from_message',
+    'Remove an emoji reaction Archie previously added to a Slack message. ' +
+    'Mirrors `react_to_message`: pass the `message_id` (`msg:<ts>` id) and the emoji shortcode. ' +
+    'Only removes Archie\'s own reaction; other users\' reactions are unaffected.',
+    {
+      message_id: z.string().describe('The target message timestamp — the `msg:<ts>` id from the knowledge log'),
+      emoji: z.string().describe('Slack emoji shortcode without colons (e.g. "eyes")'),
+      channel: z.string().optional().describe('Channel key of the linked thread. Omit for the default channel.'),
+    },
+    async (args) => {
+      const agentName = agent.def.id as AgentName;
+      const emoji = args.emoji.replace(/:/g, '').trim();
+      const dispatched = await task.unreactFromMessage(args.message_id, emoji, args.channel);
+      if (!dispatched) {
+        return ok(`Could not remove reaction: ${args.channel ? `channel ${args.channel} is not a linked Slack thread` : 'task has no default Slack channel'}.`);
+      }
+      logger.agentAction(agentName, `Removed :${emoji}:`, args.message_id);
+      return ok(`Removed :${emoji}: from message ${args.message_id}.`);
+    },
+  );
+}
+
+function createGetMessageReactionsTool(_agent: Agent, task: Task) {
+  return tool(
+    'get_message_reactions',
+    'Read the CURRENT emoji reactions on a Slack message (live state, fresher than ' +
+    'the snapshot in the knowledge log). Pass the `message_id` (`msg:<ts>` id). ' +
+    'Returns each reaction\'s emoji shortcode and how many users reacted with it.',
+    {
+      message_id: z.string().describe('The target message timestamp — the `msg:<ts>` id from the knowledge log'),
+      channel: z.string().optional().describe('Channel key of the linked thread. Omit for the default channel.'),
+    },
+    async (args) => {
+      const reactions = await task.readMessageReactions(args.message_id, args.channel);
+      if (reactions === null) {
+        return ok(`Could not read reactions: ${args.channel ? `channel ${args.channel} is not a linked Slack thread` : 'task has no default Slack channel'}.`);
+      }
+      if (reactions.length === 0) {
+        return ok(`Message ${args.message_id} has no reactions.`);
+      }
+      const summary = reactions.map((r) => `:${r.name}: (${r.count})`).join(', ');
+      return ok(`Reactions on ${args.message_id}: ${summary}`);
+    },
+  );
+}
+
 function createLaunchTaskTool(_agent: Agent, task: Task) {
   return tool(
     'launch_task',
@@ -1332,6 +1407,9 @@ export function createPMAgentMcpServer(agent: Agent, task: Task) {
       createRequestEditModeTool(agent, task),
       createGetAgentsStatusTool(agent, task),
       createMuteChannelTool(agent, task),
+      createReactToMessageTool(agent, task),
+      createUnreactFromMessageTool(agent, task),
+      createGetMessageReactionsTool(agent, task),
       createLaunchTaskTool(agent, task),
       createParseDatetimeTool(agent, task),
       createSetReminderTool(agent, task),

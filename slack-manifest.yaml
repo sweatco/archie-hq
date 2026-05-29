@@ -36,6 +36,7 @@ oauth_config:
       - usergroups:read
       - files:read
       - files:write
+      - reactions:read
       - reactions:write
       - assistant:write
 settings:

@@ -9,7 +9,7 @@ import { mkdir, readFile, writeFile, appendFile } from 'fs/promises';
 import { createReadStream, existsSync } from 'fs';
 import { createInterface } from 'readline';
 import { join } from 'path';
-import type { TaskMetadata, LogEntry, FindingType, SlackFile, SlackAttachment, SlackAuthor } from '../types/index.js';
+import type { TaskMetadata, LogEntry, FindingType, SlackFile, SlackAttachment, SlackAuthor, SlackReaction } from '../types/index.js';
 import { isExternalUser } from '../connectors/slack/client.js';
 import type { SystemEvent } from '../system/event-bus.js';
 import { activeTasks } from './task.js';
@@ -208,7 +208,7 @@ export function renderAttachmentsSuffix(artifactPaths: readonly string[]): strin
  * - Normal: author's text plus inline attachments and file list.
  */
 export function renderMessageForContext(
-  msg: { text: string; files?: SlackFile[]; attachments?: SlackAttachment[] },
+  msg: { text: string; files?: SlackFile[]; attachments?: SlackAttachment[]; reactions?: SlackReaction[] },
   options: { redacted: boolean }
 ): string {
   if (options.redacted) {
@@ -245,6 +245,13 @@ export function renderMessageForContext(
     fullMessage += `\n  [Attachments: ${fileInfo}]`;
   }
 
+  if (msg.reactions && msg.reactions.length > 0) {
+    const reactionInfo = msg.reactions
+      .map((r) => `:${r.name}:${r.count > 1 ? ` ×${r.count}` : ''}`)
+      .join(', ');
+    fullMessage += `\n  [Reactions: ${reactionInfo}]`;
+  }
+
   return fullMessage;
 }
 
@@ -259,11 +266,11 @@ export async function appendSlackMessage(
   message: string,
   files?: SlackFile[],
   attachments?: SlackAttachment[],
-  options?: { redacted?: boolean }
+  options?: { redacted?: boolean; ts?: string; reactions?: SlackReaction[] }
 ): Promise<void> {
   const redacted = options?.redacted === true;
   const fullMessage = renderMessageForContext(
-    { text: message, files, attachments },
+    { text: message, files, attachments, reactions: options?.reactions },
     { redacted },
   );
 
@@ -271,9 +278,13 @@ export async function appendSlackMessage(
   // log doesn't leak the external user's display name even though we keep it
   // in memory for classification purposes.
   const displayName = redacted ? 'external' : userInfo.realName;
+  // Stamp the Slack message timestamp (`ts`) into the source line as a stable
+  // message id, so agents can target ANY message in the thread when reacting
+  // (e.g. via `react_to_message`), not just the most recent one.
+  const msgIdSuffix = options?.ts ? ` | msg:${options.ts}` : '';
   const entry: LogEntry = {
     timestamp: new Date().toISOString(),
-    source: `@<${userInfo.id}:${displayName}> in ${formatSlackChannelRef(channelInfo.id, channelInfo.name, threadId)}`,
+    source: `@<${userInfo.id}:${displayName}> in ${formatSlackChannelRef(channelInfo.id, channelInfo.name, threadId)}${msgIdSuffix}`,
     message: fullMessage,
   };
 

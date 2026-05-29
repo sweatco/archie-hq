@@ -35,6 +35,14 @@ export interface SlackAuthor {
   isUltraRestricted?: boolean;
 }
 
+/** An emoji reaction present on a Slack message (snapshot at fetch time). */
+export interface SlackReaction {
+  /** Emoji shortcode without colons (e.g. "thumbsup", "eyes"). */
+  name: string;
+  /** Number of users who reacted with this emoji. */
+  count: number;
+}
+
 /** A fully-resolved message from a Slack thread */
 export interface SlackThreadMessage {
   user: SlackAuthor;
@@ -44,6 +52,8 @@ export interface SlackThreadMessage {
   files?: SlackFile[];    // raw file metadata (not yet downloaded)
   /** Forwarded / unfurled message attachments — each carries its author and text. */
   attachments?: SlackAttachment[];
+  /** Emoji reactions present on this message at fetch time. Omitted when none. */
+  reactions?: SlackReaction[];
 }
 
 /**

@@ -40,7 +40,7 @@ To enable Socket Mode end-to-end, also flip `socket_mode_enabled: true` in `slac
 
 ### Bot Scopes
 
-The manifest declares these bot scopes: `app_mentions:read`, `chat:write`, `channels:history`, `channels:read`, `groups:read`, `im:history`, `im:read`, `im:write`, `users:read`, `usergroups:read`, `files:read`, `files:write`, `reactions:write`, `assistant:write`. The `im:*` scopes enable DM-originated tasks; `reactions:write` powers the eyes-emoji acknowledgment pattern; `assistant:write` is required to push generated titles to DM-rooted assistant threads via `assistant.threads.setTitle`.
+The manifest declares these bot scopes: `app_mentions:read`, `chat:write`, `channels:history`, `channels:read`, `groups:read`, `im:history`, `im:read`, `im:write`, `users:read`, `usergroups:read`, `files:read`, `files:write`, `reactions:read`, `reactions:write`, `assistant:write`. The `im:*` scopes enable DM-originated tasks; `reactions:write` powers the eyes-emoji acknowledgment pattern and the PM's `react_to_message` tool; `reactions:read` backs `get_message_reactions`; `assistant:write` is required to push generated titles to DM-rooted assistant threads via `assistant.threads.setTitle`.
 
 ## Bot Identity Detection
 
@@ -172,6 +172,7 @@ The Slack client extracts file metadata from messages, including files shared di
 ## Acknowledgment, Muting, and Shared-Channel Awareness
 
 - **Eyes reaction** — every accepted inbound message gets a `:eyes:` reaction added; the previous message's eyes is removed first so only one indicator is live per thread. Cleaned up on task stop/complete by `removeEyesFromAllChannels`.
+- **Agent-driven reactions** — the PM can react to *any* message in a linked thread via the `react_to_message` tool (and `unreact_from_message` / `get_message_reactions`). Messages are addressable because `appendSlackMessage` stamps each knowledge-log source line with a `msg:<ts>` id; the agent passes that `ts` as `message_id`. Reactions present at ingest time are also captured as a `SlackReaction[]` snapshot (from `conversations.replies`) and rendered as a `[Reactions: …]` line in the log; `get_message_reactions` reads the live state via `reactions.get`.
 - **Muting** — the PM's `mute_channel` tool sets `SlackChannel.muted = true` on a single channel (the one named, or the task's `default_channel` if no `channel` arg is given), after which that thread is ignored until a new `@mention` toggles it back on. DM channels cannot be muted because there is no `@mention` re-engagement path in a DM.
 - **Shared channels (Slack Connect)** — `isChannelShared` (60s TTL cache) flags external-shared channels; `sendSharedChannelWarnings` posts ephemeral notices once per (thread × user): a general shared-channel heads-up to internal participants, and a forward-from-external notice to anyone who pastes content originally authored by an external user.
 
@@ -181,8 +182,8 @@ The Slack client extracts file metadata from messages, including files shared di
 - `src/connectors/slack/events.ts` — Bolt app setup (`mountSlackApp`), `app_mention` / `message` handlers, `routeSlackEvent` + `handleSlackEvent`, button action handlers, title pipeline, shared-channel warnings
 - `src/connectors/slack/title.ts` — `assistant.threads.setTitle` wrapper for DM-rooted tasks
 - `src/system/triage.ts` — Haiku-based message classifier (currently disabled at the call site)
-- `src/agents/tools.ts` — `post_to_user`, `post_files_to_user`, `mute_channel`, `find_slack_user`, `find_slack_channel`, etc. (no `post_to_slack`)
-- `src/tasks/task.ts` — `postToUser`, `postFilesToUser`, `postInteractiveToUser`, channel registration
+- `src/agents/tools.ts` — `post_to_user`, `post_files_to_user`, `mute_channel`, `react_to_message`, `unreact_from_message`, `get_message_reactions`, `find_slack_user`, `find_slack_channel`, etc. (no `post_to_slack`)
+- `src/tasks/task.ts` — `postToUser`, `postFilesToUser`, `postInteractiveToUser`, `reactToMessage`, `unreactFromMessage`, `readMessageReactions`, channel registration
 - `src/system/event-bus.ts` — in-process event bus (used for SSE streaming to CLI; not a Slack transport)
 - `src/types/task.ts` — `SlackChannel`, `TaskMetadata.channels`, `default_channel`
 - `slack-manifest.yaml` — Slack app configuration

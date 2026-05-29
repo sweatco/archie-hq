@@ -6,7 +6,7 @@
  */
 
 import { mkdir, writeFile } from 'fs/promises';
-import type { AgentName, SlackChannel, SlackThread, TaskMetadata } from '../types/task.js';
+import type { AgentName, SlackChannel, SlackThread, SlackReaction, TaskMetadata } from '../types/task.js';
 import { CLI_CHANNEL_KEY } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
 
@@ -54,7 +54,7 @@ import { getIsShuttingDown } from '../system/shutdown.js';
 import { scheduleIdleCheck } from './recovery.js';
 import { scanAgentDefs, getVisiblePeerIdsForSender } from '../agents/registry.js';
 import { refreshPlugins } from '../system/workdir.js';
-import { postSlackMessage, postSlackFiles, postInteractiveToThreads, removeReaction, buildThreadUrl, openDMChannel, getChannelInfo, getUserInfo, isExternalUser, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { postSlackMessage, postSlackFiles, postInteractiveToThreads, addReaction, removeReaction, getMessageReactions, buildThreadUrl, openDMChannel, getChannelInfo, getUserInfo, isExternalUser, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
 import { basename } from 'path';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
@@ -220,13 +220,14 @@ export class Task {
       if (redact) {
         await appendSlackMessage(
           this.taskId, thread.channel, thread.threadId, msg.user, '', undefined, undefined,
-          { redacted: true },
+          { redacted: true, ts: msg.ts },
         );
       } else {
         const downloadedFiles = msg.files ? await downloadMessageFiles(this.taskId, msg.files) : undefined;
         await appendSlackMessage(
           this.taskId, thread.channel, thread.threadId, msg.user, msg.text,
           downloadedFiles, msg.attachments,
+          { ts: msg.ts, reactions: msg.reactions },
         );
       }
     };
@@ -451,6 +452,64 @@ export class Task {
         removeReaction(ch.channel_id, ch.last_processed_ts, 'eyes');
       }
     }
+  }
+
+  /**
+   * Resolve a Slack channel for reaction operations. Uses the given channel key
+   * when provided, otherwise falls back to the task's default channel. Returns
+   * null when the target is missing or not a Slack channel.
+   */
+  private resolveSlackChannel(channelKey?: string): SlackChannel | null {
+    const ch = channelKey
+      ? this.metadata.channels[channelKey]
+      : (this.metadata.default_channel ? this.metadata.channels[this.metadata.default_channel] : null);
+    return ch?.type === 'slack' ? ch : null;
+  }
+
+  /**
+   * Add an emoji reaction to a message in a linked Slack thread.
+   *
+   * `messageTs` is the Slack message timestamp (the `msg:<ts>` id shown in the
+   * knowledge log). Omit `channelKey` to target the task's default channel.
+   * Returns true when the reaction was dispatched, false when no Slack channel
+   * could be resolved.
+   */
+  async reactToMessage(messageTs: string, emoji: string, channelKey?: string): Promise<boolean> {
+    const ch = this.resolveSlackChannel(channelKey);
+    if (!ch) {
+      logger.warn('task', `reactToMessage on task ${this.taskId}: ${channelKey ? `channel ${channelKey} not linked` : 'no default channel'} — reaction dropped`);
+      return false;
+    }
+    await addReaction(ch.channel_id, messageTs, emoji);
+    return true;
+  }
+
+  /**
+   * Remove an emoji reaction Archie previously added to a message.
+   * Mirrors `reactToMessage`. Returns true when dispatched.
+   */
+  async unreactFromMessage(messageTs: string, emoji: string, channelKey?: string): Promise<boolean> {
+    const ch = this.resolveSlackChannel(channelKey);
+    if (!ch) {
+      logger.warn('task', `unreactFromMessage on task ${this.taskId}: ${channelKey ? `channel ${channelKey} not linked` : 'no default channel'} — reaction removal dropped`);
+      return false;
+    }
+    await removeReaction(ch.channel_id, messageTs, emoji);
+    return true;
+  }
+
+  /**
+   * Read the live emoji reactions on a message in a linked Slack thread.
+   * Returns null when no Slack channel could be resolved, otherwise the current
+   * reactions (empty array when the message has none).
+   */
+  async readMessageReactions(messageTs: string, channelKey?: string): Promise<SlackReaction[] | null> {
+    const ch = this.resolveSlackChannel(channelKey);
+    if (!ch) {
+      logger.warn('task', `readMessageReactions on task ${this.taskId}: ${channelKey ? `channel ${channelKey} not linked` : 'no default channel'}`);
+      return null;
+    }
+    return getMessageReactions(ch.channel_id, messageTs);
   }
 
   /**

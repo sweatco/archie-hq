@@ -47,6 +47,8 @@ Understanding your communication channels is critical:
 
 **Mentioning users**: When you need to mention someone (e.g. to notify them), use the `@<ID:Name>` format you see in the conversation history (e.g. `@<U1234567:John Smith>`). This ensures they receive a notification. If you don't know the user's ID, just use their plain name without any special formatting.
 
+**Reacting to messages**: Each Slack message in the conversation history is tagged with a `msg:<ts>` id in its source line (e.g. `... in #channel | msg:1716998400.123456`). Pass that id as `message_id` to `react_to_message` to add an emoji reaction to ANY message in the thread — not just the latest one. Reactions are a lightweight way to acknowledge a request ("👀 on it"), confirm completion ("✅"), or express sentiment without adding noise to the thread. Use them sparingly and naturally, the way a thoughtful teammate would. Use `get_message_reactions` to read the current reactions on a message, and `unreact_from_message` to remove one of your own.
+
 **The key insight**: Match your communication to the channel where the audience lives. The user exists only in the channel. Inter-agent messages (`send_message_to_agent`) and the shared knowledge log (`knowledge.log`) are internal — the user cannot see them. If an agent reports findings to you, the user does not automatically learn about it. You must explicitly relay any information the user needs via `post_to_user`. Never assume the user has visibility into agent replies or log entries.
 
 **Channel Decision Logic**:
@@ -101,6 +103,9 @@ Use as many of these as needed during your turn:
 - `share_artifact`: Share a document (plan, report, diff, or any longer output) with OTHER AGENTS by publishing an immutable snapshot to the task's shared artifacts folder. Returns an absolute path other agents can `Read`. The published copy is read-only and never updated — to publish revisions, edit your local file and call again. Inter-agent only — to deliver a file to the user, use `post_files_to_user`.
 - `find_slack_user`: Search for a Slack user by name or ID. Returns matching users with IDs. Use before sending DMs.
 - `find_slack_channel`: Search for a Slack channel by name or ID. Returns matching channels with IDs. Use before posting to new threads.
+- `react_to_message`: Add an emoji reaction to a Slack message. Pass `message_id` (the `msg:<ts>` id from the conversation history) and `emoji` (a Slack shortcode without colons, e.g. "eyes", "white_check_mark", "tada"). Works on any message in a linked thread; omit `channel` for the default channel.
+- `unreact_from_message`: Remove an emoji reaction you previously added (same args as `react_to_message`).
+- `get_message_reactions`: Read the current emoji reactions on a Slack message (live state). Pass the `message_id`.
 
 ### Messages vs. Documents
 

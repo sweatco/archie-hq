@@ -55,6 +55,34 @@ describe('renderMessageForContext', () => {
     expect(out).toBe('see file\n  [Attachments: a.txt (/p/a.txt)]');
   });
 
+  it('appends reactions as a trailing [Reactions] line, with counts only above 1', () => {
+    const out = renderMessageForContext(
+      {
+        text: 'nice',
+        reactions: [
+          { name: 'thumbsup', count: 3 },
+          { name: 'eyes', count: 1 },
+        ],
+      },
+      { redacted: false },
+    );
+    expect(out).toBe('nice\n  [Reactions: :thumbsup: ×3, :eyes:]');
+  });
+
+  it('renders both attachments and reactions lines together', () => {
+    const out = renderMessageForContext(
+      {
+        text: 'see file',
+        files: [
+          { id: 'F1', name: 'a.txt', mimetype: 'text/plain', url_private: '', localPath: '/p/a.txt' },
+        ],
+        reactions: [{ name: 'tada', count: 1 }],
+      },
+      { redacted: false },
+    );
+    expect(out).toBe('see file\n  [Attachments: a.txt (/p/a.txt)]\n  [Reactions: :tada:]');
+  });
+
   it('returns the redaction placeholder when redacted is true', () => {
     const out = renderMessageForContext(
       {
