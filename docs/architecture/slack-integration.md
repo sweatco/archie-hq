@@ -21,7 +21,6 @@ settings:
       - message.channels
       - message.groups
       - message.im
-      - message.mpim
   interactivity:
     is_enabled: true
     request_url: https://<host>/webhooks/slack
@@ -57,7 +56,7 @@ The server registers two Bolt event handlers:
 
 1. **`app_mention`** -- Fires when a user mentions `@Archie` in any channel Archie is a member of (public or private). This is the primary way users start new tasks in channels.
 
-2. **`message`** -- Fires for thread replies and DM messages. Slack delivers these via four subscribed event types — `message.channels` (public channels), `message.groups` (private channels), `message.im` (DMs), and `message.mpim` (group DMs) — all of which Bolt surfaces as a single `message` event. The handler accepts an event when it is either a thread reply (`event.thread_ts && event.thread_ts !== event.ts`) or a DM (channel ID starting with `D`), and the subtype is empty / `file_share` / `thread_broadcast`. In channels, messages containing a bot mention are skipped here because `app_mention` already handles them; in DMs, mention-containing messages are processed here because `app_mention` does not fire for DMs. Note that Archie only receives private-channel events for channels it has been invited to.
+2. **`message`** -- Fires for thread replies and DM messages. Slack delivers these via three subscribed event types — `message.channels` (public channels), `message.groups` (private channels), and `message.im` (DMs) — all of which Bolt surfaces as a single `message` event. The handler accepts an event when it is either a thread reply (`event.thread_ts && event.thread_ts !== event.ts`) or a DM (channel ID starting with `D`), and the subtype is empty / `file_share` / `thread_broadcast`. In channels, messages containing a bot mention are skipped here because `app_mention` already handles them; in DMs, mention-containing messages are processed here because `app_mention` does not fire for DMs. Note that Archie only receives private-channel events for channels it has been invited to.
 
 Both handlers run the same pipeline:
 
