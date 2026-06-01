@@ -53,7 +53,7 @@ import {
 import { getIsShuttingDown } from '../system/shutdown.js';
 import { scheduleIdleCheck } from './recovery.js';
 import { scanAgentDefs, getVisiblePeerIdsForSender } from '../agents/registry.js';
-import { refreshPlugins } from '../system/workdir.js';
+import { syncPlugins } from '../system/plugin-sync.js';
 import { postSlackMessage, postSlackFiles, postInteractiveToThreads, addReaction, removeReaction, getMessageReactions, buildThreadUrl, openDMChannel, getChannelInfo, getUserInfo, isExternalUser, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
 import { basename } from 'path';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
@@ -120,7 +120,7 @@ export class Task {
    * Task is inert until sendMessage() is called, which activates it.
    */
   static async create(): Promise<Task> {
-    await refreshPlugins();
+    await syncPlugins();
     await ensureSessionsDir();
 
     const taskId = generateTaskId();
@@ -173,7 +173,7 @@ export class Task {
     const existing = activeTasks.get(taskId);
     if (existing) return existing;
 
-    await refreshPlugins();
+    await syncPlugins();
 
     const metadata = await loadMetadata(taskId);
     if (!metadata) {

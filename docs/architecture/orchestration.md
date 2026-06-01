@@ -12,7 +12,7 @@ How Archie routes messages, manages tasks, spawns agents, and recovers from fail
 | Layer | Source | Purpose |
 |---|---|---|
 | **HTTP Server** | `src/index.ts` | Express app, workdir bootstrap, plugin/repo cloning, health check, GitHub webhook mount, Slack Bolt mount, recovery, reminder scheduler |
-| **Workdir Bootstrap** | `src/system/workdir.ts` | Resolves `ARCHIE_WORKDIR`, clones plugins from `ARCHIE_PLUGINS`, clones repos declared by plugins, refreshes plugins on a cooldown |
+| **Workdir Bootstrap** | `src/system/workdir.ts` | Resolves `ARCHIE_WORKDIR`, clones plugins from `ARCHIE_PLUGINS`, clones repos declared by plugins, refreshes plugins via an `ls-remote` HEAD check (`refreshPlugins`, orchestrated by `syncPlugins` in `src/system/plugin-sync.ts`) |
 | **Slack Events** | `src/connectors/slack/events.ts` | Slack Bolt receiver, event handlers (app_mention/message), interactive button actions, direct routing to PM (triage disabled) |
 | **GitHub Events** | `src/connectors/github/events.ts` | GitHub webhook dispatch, direct existing-task handler (with `issue_comment` dedup) |
 | **GitHub Webhooks** | `src/connectors/github/webhooks.ts` | Signature verification, deterministic routing, event formatting, merge check debouncing |

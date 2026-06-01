@@ -87,7 +87,6 @@ export async function bootstrapWorkdir(): Promise<void> {
       logger.system(`Plugins: cloning fresh from ${pluginsUrl}`);
       await cloneRepo(pluginsUrl, PLUGINS_DIR, 'plugins', pluginsBranch);
       managedPlugins = true;
-      lastPluginsRefresh = Date.now();
     } else {
       // Symlink = local dev (don't reset), real dir = cloned by us (safe to reset)
       managedPlugins = !isSymlink;
@@ -121,27 +120,29 @@ export async function cloneRepos(
 }
 
 // =============================================================================
-// Plugins refresh (cached — pulls at most once per cooldown period)
+// Plugins refresh (HEAD-checked — updates only when the remote branch moves)
 // =============================================================================
 
-const PLUGINS_REFRESH_COOLDOWN_MS = 30 * 60_000; // 30 minutes
-let lastPluginsRefresh = 0;
 let managedPlugins = false;
-let pluginsRefreshPromise: Promise<void> | null = null;
+let pluginsRefreshPromise: Promise<boolean> | null = null;
 
 /**
- * Pull latest plugins if cooldown has elapsed, then re-scan plugin definitions.
- * Safe to call frequently — skips if pulled recently.
- * Deduplicates concurrent calls (returns same promise).
+ * Check the plugins remote for new commits and, if the branch tip moved,
+ * hard-reset onto it and re-scan plugin definitions from disk.
+ *
+ * There is no time-based TTL. Every call does a lightweight `git ls-remote`
+ * to read the remote branch tip and compares it against the local HEAD:
+ *   - tips equal   → nothing changed; returns false (no fetch, no re-scan)
+ *   - tips differ  → fetch + reset --hard + re-scan; returns true
+ * So a push to the plugins repo is picked up on the very next request, while
+ * an unchanged repo costs only one cheap ref lookup.
+ *
+ * Returns true when plugin definitions were (re)loaded — callers can then
+ * rebuild the agent registry and clone any newly-declared repos (see
+ * {@link syncPlugins}). Deduplicates concurrent calls (returns the in-flight
+ * promise so a burst of requests triggers at most one check).
  */
-export async function refreshPlugins(): Promise<void> {
-  const now = Date.now();
-  const cooldownRemaining = PLUGINS_REFRESH_COOLDOWN_MS - (now - lastPluginsRefresh);
-  if (cooldownRemaining > 0) {
-    logger.debug('workdir', `Plugins refresh skipped (cooldown: ${Math.round(cooldownRemaining / 60_000)}m remaining)`);
-    return;
-  }
-
+export async function refreshPlugins(): Promise<boolean> {
   if (pluginsRefreshPromise) {
     logger.debug('workdir', 'Plugins refresh already in progress, deduplicating');
     return pluginsRefreshPromise;
@@ -151,28 +152,82 @@ export async function refreshPlugins(): Promise<void> {
     try {
       if (managedPlugins && existsSync(join(PLUGINS_DIR, '.git'))) {
         const branch = process.env.ARCHIE_PLUGINS_BRANCH || 'main';
-        logger.system(`Plugins: fetching and resetting to origin/${branch}`);
+        const remoteSha = await getRemoteHeadSha(PLUGINS_DIR, branch);
+        if (!remoteSha) {
+          // Couldn't reach the remote — keep what we have and try again next call.
+          logger.warn('workdir', `Plugins: could not read remote ${branch} tip; leaving plugins unchanged`);
+          return false;
+        }
+        const localSha = await getLocalHeadSha(PLUGINS_DIR);
+        if (remoteSha === localSha) {
+          logger.debug('workdir', `Plugins up to date (${branch} @ ${remoteSha.slice(0, 8)})`);
+          return false;
+        }
+        logger.system(`Plugins: ${branch} moved ${localSha?.slice(0, 8) ?? 'unknown'} → ${remoteSha.slice(0, 8)}, updating`);
         await execAsync('git fetch --all --prune', { cwd: PLUGINS_DIR });
         await execAsync(`git checkout "${branch}"`, { cwd: PLUGINS_DIR });
         await execAsync(`git reset --hard "origin/${branch}"`, { cwd: PLUGINS_DIR });
         logger.system('Plugins refreshed from remote');
-      } else {
-        logger.system('Plugins: skipping git sync (local/symlinked — not managed by archie)');
+        // Re-scan plugin definitions (picks up new/changed agents, prompts, etc.)
+        initPlugins();
+        return true;
       }
-      // Re-scan plugin definitions from disk (picks up new/changed agents, prompts, etc.)
-      logger.system('Plugins: re-scanning definitions from disk');
+
+      // Local/symlinked checkout (local dev) — no remote to diff against, so
+      // re-scan from disk every call to pick up in-place edits.
+      logger.debug('workdir', 'Plugins: local/symlinked — re-scanning definitions from disk');
       initPlugins();
-      lastPluginsRefresh = Date.now();
+      return true;
     } catch (error) {
       logger.warn('workdir', `Failed to refresh plugins: ${error}`);
-      // Still update timestamp to avoid hammering on persistent failures
-      lastPluginsRefresh = Date.now();
+      return false;
     } finally {
       pluginsRefreshPromise = null;
     }
   })();
 
   return pluginsRefreshPromise;
+}
+
+/**
+ * Clone repos for newly-declared repo agents. Unlike {@link cloneRepos} (run at
+ * startup), this skips any repo that is already present — it never fetches or
+ * resets an existing checkout, so it is safe to call on every request without
+ * disturbing in-flight work. Used by the live plugin refresh path to bring up
+ * the base repo for an agent that was just added to the plugins repo.
+ */
+export async function cloneMissingRepos(
+  repos: Array<{ key: string; githubRepo: string; baseBranch?: string }>
+): Promise<void> {
+  for (const { key, githubRepo, baseBranch } of repos) {
+    const repoPath = join(REPOS_DIR, key);
+    if (existsSync(join(repoPath, '.git'))) continue;
+    const repoUrl = githubRepoToUrl(githubRepo);
+    logger.system(`Plugins: cloning newly-added repo ${key} (${githubRepo})`);
+    await cloneOrFetch(repoUrl, repoPath, key, baseBranch);
+  }
+}
+
+/** Read the remote branch tip via `ls-remote` (no object download). Returns null on failure. */
+async function getRemoteHeadSha(repoDir: string, branch: string): Promise<string | null> {
+  try {
+    const { stdout } = await execAsync(`git ls-remote origin "refs/heads/${branch}"`, { cwd: repoDir });
+    const sha = stdout.split(/\s+/)[0]?.trim();
+    return sha && /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+  } catch (error) {
+    logger.debug('workdir', `ls-remote failed for ${branch}: ${error}`);
+    return null;
+  }
+}
+
+/** Read the local HEAD sha. Returns null on failure. */
+async function getLocalHeadSha(repoDir: string): Promise<string | null> {
+  try {
+    const { stdout } = await execAsync('git rev-parse HEAD', { cwd: repoDir });
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
 }
 
 // =============================================================================
