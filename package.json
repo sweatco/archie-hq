@@ -4,6 +4,7 @@
   "description": "Archie - Autonomous Responsive and Collaborative Hyper Intelligent Employee",
   "type": "module",
   "main": "dist/index.js",
+  "packageManager": "npm@11.16.0",
   "scripts": {
     "build": "tsc",
     "dev": "tsx watch src/index.ts",
@@ -22,7 +23,8 @@
     "test:watch": "vitest"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20.0.0",
+    "npm": ">=11.0.0"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.156",
