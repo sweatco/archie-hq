@@ -189,6 +189,38 @@ export async function refreshPlugins(): Promise<boolean> {
   return pluginsRefreshPromise;
 }
 
+/** Current plugins-repo commit, for surfacing "last updated" info in agent context. */
+export interface PluginsHeadInfo {
+  /** Full commit SHA of the checked-out plugins HEAD. */
+  sha: string;
+  /** First 8 chars of the SHA. */
+  shortSha: string;
+  /** Committer date of HEAD, ISO 8601 (when the plugins repo was last updated). */
+  committedAt: string;
+  /** Subject line of the HEAD commit. */
+  subject: string;
+}
+
+/**
+ * Read the plugins repo's current HEAD commit (SHA + committer date + subject).
+ * Returns null if the plugins dir isn't a git checkout or git fails. Cheap — a
+ * single `git log -1`. Because every task start/load runs a HEAD check first,
+ * this reflects the live plugins version at spawn time.
+ */
+export async function getPluginsHeadInfo(): Promise<PluginsHeadInfo | null> {
+  try {
+    if (!existsSync(join(PLUGINS_DIR, '.git'))) return null;
+    // \x1f (unit separator) is safe — it can't appear in a SHA, date, or subject.
+    const { stdout } = await execAsync('git log -1 --format=%H%x1f%cI%x1f%s', { cwd: PLUGINS_DIR });
+    const [sha, committedAt, subject] = stdout.trim().split('\x1f');
+    if (!sha) return null;
+    return { sha, shortSha: sha.slice(0, 8), committedAt: committedAt ?? '', subject: subject ?? '' };
+  } catch (error) {
+    logger.debug('workdir', `Failed to read plugins HEAD: ${error}`);
+    return null;
+  }
+}
+
 /** Read the remote branch tip via `ls-remote` (no object download). Returns null on failure. */
 async function getRemoteHeadSha(repoDir: string, branch: string): Promise<string | null> {
   try {

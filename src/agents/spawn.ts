@@ -27,7 +27,7 @@ import {
   getTaskPath,
   getReposPath,
 } from '../tasks/persistence.js';
-import { WORKDIR } from '../system/workdir.js';
+import { WORKDIR, getPluginsHeadInfo } from '../system/workdir.js';
 import {
   createRecoverableInputGenerator,
 } from './message-queue.js';
@@ -211,6 +211,15 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     );
     if (metadata.reminder) {
       contextLines.push(`Reminder: ${metadata.reminder.trigger_at} — ${metadata.reminder.reason}`);
+    }
+    // Surface the live plugins-repo version so the PM can tell users when the
+    // plugins/agents were last updated. Refreshed on every task start/load.
+    const pluginsHead = await getPluginsHeadInfo();
+    if (pluginsHead) {
+      contextLines.push(
+        `Plugins repo last updated: ${pluginsHead.committedAt} (commit ${pluginsHead.shortSha}` +
+        `${pluginsHead.subject ? ` "${pluginsHead.subject}"` : ''})`
+      );
     }
     const inSharedChannel = Object.values(metadata.channels).some(
       (ch) => ch.type === 'slack' && ch.isShared === true,
