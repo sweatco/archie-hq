@@ -28,10 +28,13 @@ import { logger } from './logger.js';
  * Note: an already-running task keeps the team it was created with — its live
  * agent processes are not restarted. New tasks (and tasks reloaded from disk)
  * pick up the updated agents immediately.
+ *
+ * Returns true when plugin definitions were (re)loaded, so callers can refresh
+ * any cached agent state (e.g. an idle task's team on its next ping).
  */
-export async function syncPlugins(): Promise<void> {
+export async function syncPlugins(): Promise<boolean> {
   const changed = await refreshPlugins();
-  if (!changed) return;
+  if (!changed) return false;
 
   // Rebuild the cached registry so getAllAgentDefs()/getAgentDefByGithubRepo()
   // and other lookups reflect the freshly-scanned plugins.
@@ -51,4 +54,6 @@ export async function syncPlugins(): Promise<void> {
   } catch (error) {
     logger.warn('system', `Failed to clone newly-added repos: ${error}`);
   }
+
+  return true;
 }
