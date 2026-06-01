@@ -169,19 +169,17 @@ export class Task {
    * Load a task by ID. Returns cached instance if already active.
    * Task is inert until sendMessage() is called, which activates it.
    *
-   * Syncs plugins on every call (a cheap remote HEAD check). When the plugins
-   * repo has moved, a cached task refreshes its team so the next ping picks up
-   * new/changed agents — agents already spawned for the task keep running and
-   * are not disturbed; only not-yet-spawned agents use the refreshed defs.
+   * An in-flight task (still in activeTasks) is returned as-is — we never
+   * disturb a live task's team or agents. Only when a task is reloaded from
+   * disk (i.e. it was stopped/completed and is being pinged again, or the
+   * process restarted) do we sync plugins and scan a fresh team, so the
+   * resumed task picks up any repo changes.
    */
   static async get(taskId: string): Promise<Task> {
-    const pluginsChanged = await syncPlugins();
-
     const existing = activeTasks.get(taskId);
-    if (existing) {
-      if (pluginsChanged) existing.team = scanAgentDefs();
-      return existing;
-    }
+    if (existing) return existing;
+
+    await syncPlugins();
 
     const metadata = await loadMetadata(taskId);
     if (!metadata) {

@@ -25,16 +25,14 @@ import { logger } from './logger.js';
  *      see new/changed agents, and
  *   3. clones the base repo for any repo agent that was just added.
  *
- * Note: an already-running task keeps the team it was created with — its live
- * agent processes are not restarted. New tasks (and tasks reloaded from disk)
- * pick up the updated agents immediately.
- *
- * Returns true when plugin definitions were (re)loaded, so callers can refresh
- * any cached agent state (e.g. an idle task's team on its next ping).
+ * Note: an in-flight task keeps the team it was created with — its live agent
+ * processes are not restarted. New tasks, and tasks reloaded from disk after
+ * being stopped/completed (or after a process restart), pick up the updated
+ * agents on their next start.
  */
-export async function syncPlugins(): Promise<boolean> {
+export async function syncPlugins(): Promise<void> {
   const changed = await refreshPlugins();
-  if (!changed) return false;
+  if (!changed) return;
 
   // Rebuild the cached registry so getAllAgentDefs()/getAgentDefByGithubRepo()
   // and other lookups reflect the freshly-scanned plugins.
@@ -54,6 +52,4 @@ export async function syncPlugins(): Promise<boolean> {
   } catch (error) {
     logger.warn('system', `Failed to clone newly-added repos: ${error}`);
   }
-
-  return true;
 }
