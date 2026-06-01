@@ -189,25 +189,6 @@ export async function refreshPlugins(): Promise<boolean> {
   return pluginsRefreshPromise;
 }
 
-/**
- * Clone repos for newly-declared repo agents. Unlike {@link cloneRepos} (run at
- * startup), this skips any repo that is already present — it never fetches or
- * resets an existing checkout, so it is safe to call on every request without
- * disturbing in-flight work. Used by the live plugin refresh path to bring up
- * the base repo for an agent that was just added to the plugins repo.
- */
-export async function cloneMissingRepos(
-  repos: Array<{ key: string; githubRepo: string; baseBranch?: string }>
-): Promise<void> {
-  for (const { key, githubRepo, baseBranch } of repos) {
-    const repoPath = join(REPOS_DIR, key);
-    if (existsSync(join(repoPath, '.git'))) continue;
-    const repoUrl = githubRepoToUrl(githubRepo);
-    logger.system(`Plugins: cloning newly-added repo ${key} (${githubRepo})`);
-    await cloneOrFetch(repoUrl, repoPath, key, baseBranch);
-  }
-}
-
 /** Read the remote branch tip via `ls-remote` (no object download). Returns null on failure. */
 async function getRemoteHeadSha(repoDir: string, branch: string): Promise<string | null> {
   try {
