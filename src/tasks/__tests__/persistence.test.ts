@@ -169,18 +169,13 @@ describe('renderMessageForContext', () => {
 });
 
 describe('renderEditForContext', () => {
-  it('shows the new text and records the previous text underneath', () => {
-    const out = renderEditForContext('deploy to staging', 'deploy to prod');
-    expect(out).toBe('[edited] deploy to prod\n  [previous text: "deploy to staging"]');
+  it('tags the new text as an edit and omits the previous text', () => {
+    const out = renderEditForContext('deploy to prod');
+    expect(out).toBe('[edited] deploy to prod');
   });
 
-  it('quotes the previous text so an empty prior message is unambiguous', () => {
-    const out = renderEditForContext('', 'added later');
-    expect(out).toBe('[edited] added later\n  [previous text: ""]');
-  });
-
-  it('escapes quotes/newlines in the previous text via JSON encoding', () => {
-    const out = renderEditForContext('a\n"b"', 'c');
-    expect(out).toBe('[edited] c\n  [previous text: "a\\n\\"b\\""]');
+  it('preserves multi-line new text verbatim', () => {
+    const out = renderEditForContext('line one\nline two');
+    expect(out).toBe('[edited] line one\nline two');
   });
 });

@@ -559,12 +559,10 @@ async function handleSlackEdit(event: any): Promise<void> {
     return;
   }
 
-  // Resolve <@U…>/<#C…> mentions in both versions to the @<ID:Name> form used
-  // throughout the knowledge log.
-  const [newText, oldText] = await Promise.all([
-    cleanSlackText(newRaw, channelId),
-    cleanSlackText(oldRaw, channelId),
-  ]);
+  // Resolve <@U…>/<#C…> mentions to the @<ID:Name> form used throughout the
+  // knowledge log. Only the new text is logged — the pre-edit text already
+  // lives in the log under the same `msg:<ts>` id.
+  const newText = await cleanSlackText(newRaw, channelId);
   const author: SlackAuthor = {
     id: msg.user,
     username: authorInfo?.name ?? msg.user,
@@ -574,7 +572,7 @@ async function handleSlackEdit(event: any): Promise<void> {
     isUltraRestricted: authorInfo?.isUltraRestricted,
   };
 
-  const recorded = await task.appendSlackEdit(channelKey, author, editedTs, oldText, newText);
+  const recorded = await task.appendSlackEdit(channelKey, author, editedTs, newText);
   if (!recorded) return;
 
   const channelLabel = channel?.type === 'slack' ? channel.channel_name : channelId;

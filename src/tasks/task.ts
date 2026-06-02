@@ -275,16 +275,17 @@ export class Task {
    * Record that a Slack message previously ingested into this task was edited.
    *
    * Writes a fresh knowledge-log entry (we never mutate prior entries) keyed to
-   * the original message via `msg:<ts>`, capturing the new and previous text.
-   * Deliberately does NOT advance `last_processed_ts` — an edit reuses the
-   * original message's `ts`, so touching the watermark would skip genuinely new
-   * replies. Returns false when the thread isn't a linked Slack channel.
+   * the original message via `msg:<ts>`, capturing the new text. The pre-edit
+   * text stays in the log under that same id, so the change is recoverable by
+   * correlation. Deliberately does NOT advance `last_processed_ts` — an edit
+   * reuses the original message's `ts`, so touching the watermark would skip
+   * genuinely new replies. Returns false when the thread isn't a linked Slack
+   * channel.
    */
   async appendSlackEdit(
     channelKey: string,
     author: SlackAuthor,
     editedTs: string,
-    oldText: string,
     newText: string,
   ): Promise<boolean> {
     const ch = this.metadata.channels[channelKey];
@@ -295,7 +296,6 @@ export class Task {
       ch.thread_id,
       author,
       editedTs,
-      oldText,
       newText,
     );
     return true;

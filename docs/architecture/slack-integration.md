@@ -81,12 +81,14 @@ When a user edits a message, Slack delivers a `message` event with subtype `mess
 - **A task already follows the thread.** Resolved via `findTaskByThread(message.thread_ts || message.ts)`; edits in threads the bot was never part of are ignored, mirroring plain-reply handling.
 - **The editor is internal.** The same external/guest bail-out (`isExternalUser`) used by `handleSlackEvent` applies, and a muted channel is not woken.
 
-When they hold, mentions in both versions are resolved to the `@<ID:Name>` form (`cleanSlackText`) and `task.appendSlackEdit` writes a **fresh** knowledge-log entry — the log is append-only, so edits are never mutations of the original line. The entry reuses the original message's `msg:<ts>` id (so it correlates to the message it edits) and its body, built by the pure `renderEditForContext`, shows the new text with the previous text recorded underneath:
+When they hold, mentions in the new text are resolved to the `@<ID:Name>` form (`cleanSlackText`) and `task.appendSlackEdit` writes a **fresh** knowledge-log entry — the log is append-only, so edits are never mutations of the original line. The entry reuses the original message's `msg:<ts>` id and its body, built by the pure `renderEditForContext`, is just the new text tagged as an edit:
 
 ```
-[edited] deploy to prod
-  [previous text: "deploy to staging"]
+@<U123:Egor> in slack:#<C456:deploys>:1700000000.000100 | msg:1700000000.000100
+  [edited] deploy to prod
 ```
+
+The pre-edit text is deliberately **not** duplicated — the original message already sits in the log under the same `msg:<ts>` id, so the agent correlates the edit to it by id rather than us re-logging now-stale text.
 
 Crucially, `appendSlackEdit` does **not** advance `last_processed_ts`: an edit reuses the original message's `ts`, so touching the watermark would cause genuinely new replies to be skipped. After logging, the task is woken with the standard `AGENT_PROMPTS.existingTask` ("new input received") prompt — the agent reads the edit from the log and decides whether the change is material, taking no action when it is merely cosmetic.
 

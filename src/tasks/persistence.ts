@@ -301,23 +301,25 @@ export async function appendSlackMessage(
 }
 
 /**
- * Render the body of a message-edit log entry: the new text, with the prior
- * text recorded underneath so an agent can see exactly what changed. Pure —
- * no I/O — so it can be unit tested directly (see persistence.test.ts).
+ * Render the body of a message-edit log entry: the new text, tagged as an edit.
+ * The previous text is intentionally not included — the original message is
+ * already in the log under the same `msg:<ts>` id, so an agent correlates the
+ * two by id rather than us duplicating now-stale text. Pure — no I/O — so it can
+ * be unit tested directly (see persistence.test.ts).
  */
-export function renderEditForContext(oldText: string, newText: string): string {
-  return `[edited] ${newText}\n  [previous text: ${JSON.stringify(oldText)}]`;
+export function renderEditForContext(newText: string): string {
+  return `[edited] ${newText}`;
 }
 
 /**
  * Append a message-edit notice to the knowledge log.
  *
  * Records that a Slack message previously ingested into this task (identified by
- * `editedTs`) was edited, capturing both the new and previous text so an agent
- * can judge whether the change is material. Written as a fresh entry rather than
- * mutating the original line — the log stays append-only and the edit auditable.
- * The `msg:<ts>` suffix matches the id stamped by `appendSlackMessage`, so the
- * edit correlates to the original message.
+ * `editedTs`) was edited, capturing the new text. Written as a fresh entry
+ * rather than mutating the original line — the log stays append-only and the
+ * edit auditable. The `msg:<ts>` suffix matches the id stamped by
+ * `appendSlackMessage`, so the edit correlates to the original message (whose
+ * pre-edit text remains in the log under the same id).
  */
 export async function appendSlackEdit(
   taskId: string,
@@ -325,10 +327,9 @@ export async function appendSlackEdit(
   threadId: string,
   userInfo: SlackAuthor,
   editedTs: string,
-  oldText: string,
   newText: string,
 ): Promise<void> {
-  const body = renderEditForContext(oldText, newText);
+  const body = renderEditForContext(newText);
   const entry: LogEntry = {
     timestamp: new Date().toISOString(),
     source: `@<${userInfo.id}:${userInfo.realName}> in ${formatSlackChannelRef(channelInfo.id, channelInfo.name, threadId)} | msg:${editedTs}`,
