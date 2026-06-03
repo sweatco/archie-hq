@@ -17,6 +17,7 @@ import {
   getMemoryDir,
   getUsersDir,
   getSummariesDir,
+  getEntitiesDir,
   isMemoryEnabled,
   isAllowedUserId,
 } from './paths.js';
@@ -35,6 +36,7 @@ export async function initMemory(): Promise<void> {
   await mkdir(getMemoryDir(), { recursive: true });
   await mkdir(getUsersDir(), { recursive: true });
   await mkdir(getSummariesDir(), { recursive: true });
+  await mkdir(getEntitiesDir(), { recursive: true });
 
   await warnLegacyUserFiles();
   await drainPendingExtractions();

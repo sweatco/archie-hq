@@ -22,3 +22,11 @@ Input file:
 <file>
 {{FILE_CONTENT}}
 </file>
+
+---
+
+Note: this prompt consolidates `users/*.md` only. Entity pages
+(`entities/<slug>.md`) are consolidated deterministically in code — alias-based
+merge, stale-entity archival, and index rebuild — not by this side-agent, so
+the no-new-facts guarantee holds structurally (only existing observations and
+relations are moved, never authored).

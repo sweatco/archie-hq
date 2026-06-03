@@ -18,7 +18,6 @@ import { join } from 'path';
 
 let tempDir: string;
 let memoryDir: string;
-let orgPath: string;
 let usersDir: string;
 let activityPath: string;
 let summariesDir: string;
@@ -32,7 +31,6 @@ vi.mock('../paths.js', () => ({
   isMemoryEnabled: () => true,
   isHousekeepingEnabled: () => true,
   getMemoryDir: () => memoryDir,
-  getOrgPath: () => orgPath,
   getUsersDir: () => usersDir,
   getUserPath: (id: string) => {
     const safe = id.includes(':') ? id.replace(':', '__') : id;
@@ -47,10 +45,15 @@ vi.mock('../paths.js', () => ({
   isSlackUserId: (id: string) => /^(U|W|B|T)[A-Z0-9]{6,}$/.test(id),
   isFallbackUserId: (id: string) => /^(cli|local):[A-Za-z0-9_\-]+$/.test(id),
   isAllowedTaskId: (id: string) => /^[A-Za-z0-9._\-]+$/.test(id),
-  getOrgCap: () => 200,
   getUserCap: () => 100,
   getSectionCap: () => 30,
   getStalenessDays: () => 180,
+  getEntitiesDir: () => join(memoryDir, 'entities'),
+  getEntityIndexPath: () => join(memoryDir, 'entities', 'index.md'),
+  getEntityPath: (slug: string) => join(memoryDir, 'entities', `${slug}.md`),
+  getEntityCap: () => 300,
+  getEntityInjectMax: () => 8,
+  isValidEntitySlug: (s: string) => /^[a-z0-9][a-z0-9-]{0,63}$/.test(s) && s !== 'index',
   getTaskSummaryPath: (taskId: string) => join(sessionsDir, taskId, 'shared', 'summary.md'),
 }));
 
@@ -113,7 +116,7 @@ vi.mock('../extractor.js', async (importOriginal) => {
 // Import the module under test and mocked modules (after mocks are set up)
 // ============================================================================
 
-import { handleTaskCompleted, rescheduleTaskCompleted, extractUsernames } from '../lifecycle.js';
+import { handleTaskCompleted, rescheduleTaskCompleted, extractUsernames, selectRelatedTasksByEntity } from '../lifecycle.js';
 import { enqueuePending, readPending } from '../pending-queue.js';
 import { runExtraction } from '../extractor.js';
 import { postSlackMessage } from '../../connectors/slack/client.js';
@@ -165,7 +168,6 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), 'archie-lifecycle-test-'));
     memoryDir = join(tempDir, 'memory');
-    orgPath = join(memoryDir, 'org.md');
     usersDir = join(memoryDir, 'users');
     activityPath = join(memoryDir, 'recent-activity.md');
     summariesDir = join(memoryDir, 'summaries');
@@ -190,14 +192,21 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     vi.mocked(postSlackMessage).mockClear();
     vi.mocked(runExtraction).mockClear();
     vi.mocked(runExtraction).mockResolvedValue({
-      org_updates: [
-        { action: 'add', section: 'Engineering', content: 'Uses NestJS with PostgreSQL' },
-      ],
       user_updates: {
         [USER_EGOR]: [
           { action: 'add', section: 'Work Style', content: 'Prefers direct communication' },
         ],
       },
+      entity_updates: [
+        {
+          slug: 'backend',
+          type: 'repo',
+          scope: 'repo',
+          repos: ['backend'],
+          summary: 'Backend service',
+          observations: [{ category: 'config', text: 'Uses NestJS with PostgreSQL' }],
+        },
+      ],
       task_summary: 'Investigated and fixed the login bug.',
       activity_summary: 'Fixed login validation bug',
       domain: 'engineering',
@@ -208,13 +217,14 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
-  it('writes org.md with extracted org knowledge', async () => {
+  it('does not write org.md (org.md retired); org knowledge lands in an entity', async () => {
     handleTaskCompleted(TASK_ID);
     await drain();
 
-    expect(existsSync(orgPath)).toBe(true);
-    const content = await readFile(orgPath, 'utf-8');
-    expect(content).toContain('Uses NestJS with PostgreSQL');
+    expect(existsSync(join(memoryDir, 'org.md'))).toBe(false);
+    const entityPath = join(memoryDir, 'entities', 'backend.md');
+    expect(existsSync(entityPath)).toBe(true);
+    expect(await readFile(entityPath, 'utf-8')).toContain('Uses NestJS with PostgreSQL');
   });
 
   it('writes users/<U…>.md keyed by raw Slack ID with frontmatter', async () => {
@@ -248,16 +258,17 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     await drain();
     const content = await readFile(join(summariesDir, `${TASK_ID}.md`), 'utf-8');
     expect(content).toContain('## Memory Updates');
-    expect(content).toContain('### org.md');
-    expect(content).toContain('**added** `## Engineering` › Uses NestJS with PostgreSQL');
+    expect(content).not.toContain('### org.md');
+    expect(content).toContain('### entities/backend.md');
+    expect(content).toContain('Uses NestJS with PostgreSQL');
     expect(content).toContain(`### users/${USER_EGOR}.md`);
     expect(content).toContain('**added** `## Work Style` › Prefers direct communication');
   });
 
   it('summary marks empty extraction as _no durable learnings_', async () => {
     vi.mocked(runExtraction).mockResolvedValue({
-      org_updates: [],
       user_updates: {},
+      entity_updates: [],
       task_summary: 'Nothing to learn.',
       activity_summary: 'Routine task',
       domain: 'engineering',
@@ -319,7 +330,7 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     await drain();
 
     // Reschedule should have completed extraction and removed the entry
-    expect(existsSync(orgPath)).toBe(true);
+    expect(existsSync(join(usersDir, `${USER_EGOR}.md`))).toBe(true);
     expect(await readPending()).toEqual([]);
   });
 
@@ -333,7 +344,6 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     await writeFile(join(sessionsDir, TASK_ID, 'shared', 'knowledge.log'), log, 'utf-8');
 
     vi.mocked(runExtraction).mockResolvedValue({
-      org_updates: [],
       user_updates: {
         [USER_ALICE]: [{ action: 'add', section: 'Work Style', content: 'Likes lists' }],
         [USER_BOB]: [{ action: 'add', section: 'Work Style', content: 'Prefers concise' }],
@@ -341,6 +351,7 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
         // (not mocked here) is what drops unknown users at runtime. This test
         // confirms the lifecycle passes the right allowedUserIds set.
       },
+      entity_updates: [],
       task_summary: 'Talked to alice and bob.',
       activity_summary: 'Discussion with alice and bob',
       domain: 'engineering',
@@ -356,6 +367,76 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
 
     expect(existsSync(join(usersDir, `${USER_ALICE}.md`))).toBe(true);
     expect(existsSync(join(usersDir, `${USER_BOB}.md`))).toBe(true);
+  });
+
+  // ---- Entity layer ----
+
+  it('writes an entity page (with auto touched_by) and rebuilds the index from entity_updates', async () => {
+    vi.mocked(runExtraction).mockResolvedValue({
+      user_updates: {},
+      entity_updates: [
+        {
+          slug: 'payment-service',
+          type: 'service',
+          scope: 'repo',
+          repos: ['backend'],
+          summary: 'NestJS payments API',
+          observations: [{ category: 'decision', text: 'chose idempotency keys' }],
+          relations: [{ type: 'depends_on', target: 'postgres-prod' }],
+        },
+      ],
+      task_summary: 'Worked on the payment service.',
+      activity_summary: 'Payments work',
+      domain: 'engineering',
+    });
+
+    handleTaskCompleted(TASK_ID);
+    await drain();
+
+    const entityPath = join(memoryDir, 'entities', 'payment-service.md');
+    expect(existsSync(entityPath)).toBe(true);
+    const content = await readFile(entityPath, 'utf-8');
+    expect(content).toContain('entity: payment-service');
+    expect(content).toContain('- [decision] chose idempotency keys');
+    expect(content).toContain('- depends_on [[postgres-prod]]');
+    expect(content).toContain(`- touched_by [[${TASK_ID}]]`); // auto-added
+
+    const indexPath = join(memoryDir, 'entities', 'index.md');
+    expect(existsSync(indexPath)).toBe(true);
+    expect(await readFile(indexPath, 'utf-8')).toContain('[[payment-service]]');
+  });
+
+  it('selectRelatedTasksByEntity links tasks that share an entity', async () => {
+    const entitiesDir = join(memoryDir, 'entities');
+    await mkdir(entitiesDir, { recursive: true });
+    await writeFile(
+      join(entitiesDir, 'payment-service.md'),
+      [
+        '---',
+        'entity: payment-service',
+        'type: service',
+        'display_name: "Payment Service"',
+        'aliases: []',
+        'scope: org',
+        'repos: []',
+        'domain: engineering',
+        'status: active',
+        '---',
+        '<!-- L0: payments -->',
+        '',
+        '## Facts',
+        '- [fact] x  <!-- touched: 2026-05-01 -->',
+        '',
+        '## Relations',
+        '- touched_by [[task-A]]',
+        '- touched_by [[task-B]]',
+        '',
+      ].join('\n'),
+      'utf-8'
+    );
+
+    const related = await selectRelatedTasksByEntity(['payment-service'], 'task-B', []);
+    expect(related.map((r) => r.taskId)).toEqual(['task-A']);
   });
 });
 

@@ -29,25 +29,22 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
-/** Soft cap on total bullets in org.md before housekeeping triggers. */
-export function getOrgCap(): number { return envInt('ARCHIE_MEMORY_ORG_CAP', 200); }
 /** Soft cap on total bullets in each user file before housekeeping triggers. */
 export function getUserCap(): number { return envInt('ARCHIE_MEMORY_USER_CAP', 100); }
 /** Soft cap on bullets per section in any memory file. */
 export function getSectionCap(): number { return envInt('ARCHIE_MEMORY_SECTION_CAP', 30); }
 /** Days after which an unrefreshed bullet becomes eligible for housekeeping removal. */
 export function getStalenessDays(): number { return envInt('ARCHIE_MEMORY_STALENESS_DAYS', 180); }
+/** Soft cap on total entity files before entity housekeeping triggers. */
+export function getEntityCap(): number { return envInt('ARCHIE_MEMORY_ENTITY_CAP', 300); }
+/** Maximum number of full entity pages injected into a single agent prompt. */
+export function getEntityInjectMax(): number { return envInt('ARCHIE_MEMORY_ENTITY_INJECT_MAX', 8); }
 
 // ---- Directory & file paths ----
 
 /** Root memory directory: workdir/memory/ */
 export function getMemoryDir(): string {
   return join(WORKDIR, 'memory');
-}
-
-/** Org knowledge file: workdir/memory/org.md */
-export function getOrgPath(): string {
-  return join(getMemoryDir(), 'org.md');
 }
 
 /** Users directory: workdir/memory/users/ */
@@ -78,6 +75,31 @@ export function getRecentActivityPath(): string {
   return join(getMemoryDir(), 'recent-activity.md');
 }
 
+/** Entities directory: workdir/memory/entities/ */
+export function getEntitiesDir(): string {
+  return join(getMemoryDir(), 'entities');
+}
+
+/** Derived entity index: workdir/memory/entities/index.md */
+export function getEntityIndexPath(): string {
+  return join(getEntitiesDir(), 'index.md');
+}
+
+/**
+ * Per-entity file: workdir/memory/entities/<slug>.md.
+ *
+ * `slug` MUST be a valid entity slug (see `isValidEntitySlug`). Throws on any
+ * other input — entity slugs originate from untrusted transcripts and become
+ * filenames, so this guard is the hard boundary. Use `sanitizeEntitySlug`
+ * (sanitize.ts) as the normalizing front door before reaching here.
+ */
+export function getEntityPath(slug: string): string {
+  if (!isValidEntitySlug(slug)) {
+    throw new Error(`getEntityPath: invalid entity slug ${JSON.stringify(slug)}`);
+  }
+  return join(getEntitiesDir(), `${slug}.md`);
+}
+
 // ---- User identifier validation ----
 
 const SLACK_ID_RE = /^(U|W|B|T)[A-Z0-9]{6,}$/;
@@ -102,6 +124,22 @@ export function isAllowedUserId(id: string): boolean {
 /** True if `taskId` is safe to embed in a filename. */
 export function isAllowedTaskId(taskId: string): boolean {
   return TASK_ID_RE.test(taskId);
+}
+
+// ---- Entity slug validation ----
+
+const ENTITY_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+// Names that would collide with non-entity files in entities/ or are otherwise unsafe.
+const RESERVED_ENTITY_SLUGS = new Set(['index']);
+
+/**
+ * True if `slug` is safe to use as an entity filename stem: lowercase
+ * alphanumerics and single hyphens only, length-bounded, no path separators,
+ * no `.` segments, and not a reserved name. This is the hard validator; the
+ * normalizing front door is `sanitizeEntitySlug` in sanitize.ts.
+ */
+export function isValidEntitySlug(slug: string): boolean {
+  return typeof slug === 'string' && ENTITY_SLUG_RE.test(slug) && !RESERVED_ENTITY_SLUGS.has(slug);
 }
 
 /**

@@ -8,15 +8,16 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { logger } from '../system/logger.js';
-import type { ExtractionResult, MemoryUpdate } from './types.js';
+import type { ExtractionResult, MemoryUpdate, EntityUpdate } from './types.js';
 
 // ============================================================================
 // Types
 // ============================================================================
 
 export interface ExtractionInput {
-  orgMemory: string;
   userMemory: string;
+  /** Current entity index (thin table) so the extractor resolves to existing entities. */
+  entityIndex: string;
   taskId: string;
   participants: string;
   taskOwner: string;
@@ -33,15 +34,15 @@ const TRANSCRIPT_LIMIT = 100_000;
 
 const FALLBACK_TEMPLATE = `You are reviewing a completed task session. Extract learnings.
 
-Current organizational knowledge:
-<org_memory>
-{{ORG_MEMORY}}
-</org_memory>
-
 Current user knowledge:
 <user_memory>
 {{USER_MEMORY}}
 </user_memory>
+
+Known entities (resolve against these — do not duplicate):
+<entity_index>
+{{ENTITY_INDEX}}
+</entity_index>
 
 Task metadata:
 <task_metadata>
@@ -59,8 +60,8 @@ Task transcript:
 
 Respond with ONLY a JSON object:
 {
-  "org_updates": [],
   "user_updates": {},
+  "entity_updates": [],
   "task_summary": "Summary of what happened.",
   "activity_summary": "One-line activity description",
   "domain": "engineering|marketing|operations|product|other"
@@ -82,8 +83,8 @@ export async function buildExtractionPrompt(input: ExtractionInput): Promise<str
   }
 
   const variables: Record<string, string> = {
-    ORG_MEMORY: input.orgMemory,
     USER_MEMORY: input.userMemory,
+    ENTITY_INDEX: input.entityIndex,
     TASK_ID: input.taskId,
     PARTICIPANTS: input.participants,
     TASK_OWNER: input.taskOwner,
@@ -118,6 +119,28 @@ function isValidUpdate(u: unknown): u is MemoryUpdate {
   if (obj.action !== 'add' && obj.action !== 'update') return false;
   if (typeof obj.content !== 'string') return false;
   return true;
+}
+
+/**
+ * Parse the `entity_updates` array leniently. Entity writes are additive and
+ * fully sanitized downstream (applyEntityUpdate), so a malformed individual
+ * item is dropped with a warning rather than failing the whole extraction.
+ * A missing or non-array field yields [].
+ */
+function parseEntityUpdates(raw: unknown): EntityUpdate[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    logger.warn('memory', 'parseExtractionResponse: entity_updates is not an array — ignored');
+    return [];
+  }
+  const out: EntityUpdate[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null) continue;
+    const obj = item as Record<string, unknown>;
+    if (typeof obj.slug !== 'string' || !obj.slug.trim()) continue;
+    out.push(obj as unknown as EntityUpdate);
+  }
+  return out;
 }
 
 /**
@@ -156,12 +179,6 @@ export function parseExtractionResponse(
   if (typeof obj.activity_summary !== 'string') return null;
   if (typeof obj.domain !== 'string') return null;
 
-  // Validate org_updates is an array
-  if (!Array.isArray(obj.org_updates)) return null;
-  for (const u of obj.org_updates) {
-    if (!isValidUpdate(u)) return null;
-  }
-
   // Validate user_updates is a plain object (not array, not null)
   if (typeof obj.user_updates !== 'object' || obj.user_updates === null || Array.isArray(obj.user_updates)) return null;
   const userUpdates = obj.user_updates as Record<string, unknown>;
@@ -180,8 +197,8 @@ export function parseExtractionResponse(
   }
 
   return {
-    org_updates: obj.org_updates as MemoryUpdate[],
     user_updates: filteredUserUpdates,
+    entity_updates: parseEntityUpdates(obj.entity_updates),
     task_summary: obj.task_summary,
     activity_summary: obj.activity_summary,
     domain: obj.domain,

@@ -7,14 +7,23 @@
 
 import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
-import { readOrg, readUser } from './store.js';
+import { readUser } from './store.js';
+import { listEntities, serializeEntity } from './entities.js';
+import { readIndexMarkdown, renderIndex, selectEntities } from './entity-index.js';
 import { isMemoryEnabled, getRecentActivityPath } from './paths.js';
-import type { UserRef } from './types.js';
+import { logger } from '../system/logger.js';
+import type { UserRef, EntityRecord } from './types.js';
+
+/** Spawn-context selectors used to push the relevant entity pages. */
+export interface MemorySelectors {
+  repo?: string;
+  plugin?: string;
+  taskTitle?: string;
+}
 
 /**
  * Build an XML-tagged memory context string from available memory artifacts.
  *
- * - org.md → <organizational_knowledge> block
  * - per-user files → <user_preferences user_id="..." display_name="..."> blocks
  * - recent-activity.md → <recent_activity> block
  *
@@ -24,14 +33,11 @@ import type { UserRef } from './types.js';
  *
  * Blocks are joined with double newlines. Returns '' when nothing is available.
  */
-export async function buildMemoryContext(users: UserRef[] | string[]): Promise<string> {
+export async function buildMemoryContext(
+  users: UserRef[] | string[],
+  selectors: MemorySelectors = {},
+): Promise<string> {
   const blocks: string[] = [];
-
-  // Org knowledge
-  const orgContent = await readOrg();
-  if (orgContent.trim()) {
-    blocks.push(`<organizational_knowledge>\n${orgContent.trimEnd()}\n</organizational_knowledge>`);
-  }
 
   // Per-user preferences
   const refs: UserRef[] = users.map((u) =>
@@ -62,7 +68,29 @@ export async function buildMemoryContext(users: UserRef[] | string[]): Promise<s
     }
   }
 
+  // Entity layer: always inject the thin index when any entity exists, then
+  // push the full pages selected for this spawn (repo/plugin + users + title).
+  const records = await listEntities();
+  if (records.length > 0) {
+    const indexMd = (await readIndexMarkdown()).trim() || renderIndex(records).trim();
+    if (indexMd) {
+      blocks.push(`<entity_index>\n${indexMd}\n</entity_index>`);
+    }
+    const { selected, dropped } = selectEntities(records, { ...selectors, users: refs });
+    if (dropped.length > 0) {
+      logger.system(`[memory] entity selection dropped ${dropped.length} over inject cap: ${dropped.join(', ')}`);
+    }
+    for (const rec of selected) {
+      blocks.push(renderEntityBlock(rec));
+    }
+  }
+
   return blocks.join('\n\n');
+}
+
+/** Wrap a full entity page in an `<entity ...>` block for prompt injection. */
+function renderEntityBlock(rec: EntityRecord): string {
+  return `<entity slug="${escapeAttr(rec.entity)}" type="${escapeAttr(rec.type)}" scope="${escapeAttr(rec.scope)}">\n${serializeEntity(rec).trimEnd()}\n</entity>`;
 }
 
 /**
@@ -74,12 +102,13 @@ export async function buildMemoryContext(users: UserRef[] | string[]): Promise<s
 export async function enrichPromptWithMemory(
   systemPrompt: string,
   users: UserRef[] | string[],
+  selectors: MemorySelectors = {},
 ): Promise<string> {
   if (!isMemoryEnabled()) {
     return systemPrompt;
   }
 
-  const memoryContext = await buildMemoryContext(users);
+  const memoryContext = await buildMemoryContext(users, selectors);
   if (!memoryContext) {
     return systemPrompt;
   }

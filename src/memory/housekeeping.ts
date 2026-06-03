@@ -1,7 +1,7 @@
 /**
  * Memory Housekeeping
  *
- * Periodically consolidates `org.md` and `users/*.md`:
+ * Periodically consolidates `users/*.md`:
  *   - Merge semantically-duplicate bullets.
  *   - Drop entries whose `<!-- touched: -->` date is past the staleness window.
  *   - Reorder bullets within each section so the most-recently-touched come first.
@@ -14,20 +14,24 @@
  */
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { readFile, writeFile } from 'fs/promises';
+import { readFile, writeFile, rm } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import {
   isHousekeepingEnabled,
-  getOrgPath,
   getUserPath,
+  getEntityPath,
   getUsersDir,
   getStalenessDays,
 } from './paths.js';
+import { sanitizeEntitySlug } from './sanitize.js';
+import { listEntities, writeEntity, addRelation } from './entities.js';
+import { rebuildIndex } from './entity-index.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { logger } from '../system/logger.js';
 import { recordHousekeepingNote } from './lifecycle.js';
 import { parseLastTouched as parseLastTouchedFromAnnotations, stripLastTouched as stripLastTouchedFromAnnotations, appendLastTouched as appendLastTouchedFromAnnotations } from './annotations.js';
+import type { EntityRecord } from './types.js';
 
 const TOUCHED_RE = /<!--\s*touched:\s*(\d{4}-\d{2}-\d{2})\s*-->/;
 const TRACE_DISTANCE_THRESHOLD = 0.4;
@@ -36,26 +40,26 @@ const TRACE_DISTANCE_THRESHOLD = 0.4;
 // Public entry point
 // ============================================================================
 
-export type HousekeepingTarget = 'org' | 'all' | string;
+export type HousekeepingTarget = 'all' | 'entities' | string;
 
 /**
- * Consolidate one or more memory files via the housekeeping side-agent.
- * No-op when the housekeeping flag is disabled.
+ * Consolidate one or more memory files. No-op when the housekeeping flag is
+ * disabled.
  *
- *   - `target = 'org'`  → consolidate org.md
- *   - `target = 'all'`  → consolidate org.md and every users/<id>.md
- *   - `target = '<id>'` → consolidate users/<id>.md only
+ *   - `target = 'all'`      → consolidate every users/<id>.md, and entities
+ *   - `target = 'entities'` → dedup/merge + archive-stale + rebuild index (code-level)
+ *   - `target = '<id>'`     → consolidate users/<id>.md only (side-agent)
  */
 export async function runHousekeeping(target: HousekeepingTarget): Promise<void> {
   if (!isHousekeepingEnabled()) {
     logger.system('[memory] housekeeping disabled (ARCHIE_MEMORY_HOUSEKEEPING=false)');
     return;
   }
-  if (target === 'org') {
-    await consolidateFile('org.md', getOrgPath());
+  if (target === 'entities') {
+    await runEntityHousekeeping();
   } else if (target === 'all') {
-    await consolidateFile('org.md', getOrgPath());
     await consolidateAllUserFiles();
+    await runEntityHousekeeping();
   } else {
     // assume a user ID
     await consolidateFile(`users/${target}.md`, getUserPath(target));
@@ -77,6 +81,122 @@ async function consolidateAllUserFiles(): Promise<void> {
       logger.warn('memory', `housekeeping: skipped users/${name}: ${err}`);
     }
   }
+}
+
+// ============================================================================
+// Entity housekeeping (code-level, deterministic)
+// ============================================================================
+//
+// Unlike user consolidation (which uses the side-agent), entity
+// consolidation is done in code: merging structured pages and repointing
+// graph edges is deterministic and safe, and it trivially satisfies the
+// no-new-facts constraint — only existing observations/relations are moved,
+// never authored.
+
+/**
+ * Plan alias-based merges: if entity C lists alias A and a separate file with
+ * slug A exists, that file (the duplicate) folds into C. Returns a map of
+ * duplicate-slug → canonical-slug. Pure.
+ */
+export function planEntityMerges(records: EntityRecord[]): Map<string, string> {
+  const bySlug = new Map(records.map((r) => [r.entity, r]));
+  const mergedAway = new Map<string, string>();
+  for (const canonical of records) {
+    if (mergedAway.has(canonical.entity)) continue;
+    for (const alias of canonical.aliases) {
+      const dupSlug = sanitizeEntitySlug(alias);
+      if (!dupSlug || dupSlug === canonical.entity) continue;
+      const dup = bySlug.get(dupSlug);
+      if (!dup || dup.entity === canonical.entity || mergedAway.has(dup.entity)) continue;
+      mergedAway.set(dup.entity, canonical.entity);
+    }
+  }
+  return mergedAway;
+}
+
+/**
+ * True when every observation on the record is dated and older than the
+ * staleness window. Undated observations are treated as fresh (never archive
+ * on missing dates). An observation-less entity is not stale. Pure.
+ */
+export function isFullyStale(record: EntityRecord, stalenessDays: number, today: string): boolean {
+  if (record.observations.length === 0) return false;
+  return record.observations.every((o) => !!o.touched && daysBetween(o.touched, today) > stalenessDays);
+}
+
+function daysBetween(from: string, to: string): number {
+  const a = Date.parse(`${from}T00:00:00Z`);
+  const b = Date.parse(`${to}T00:00:00Z`);
+  if (Number.isNaN(a) || Number.isNaN(b)) return 0;
+  return Math.floor((b - a) / 86_400_000);
+}
+
+function mergeInto(canonical: EntityRecord, dup: EntityRecord): void {
+  for (const o of dup.observations) {
+    const norm = o.text.toLowerCase().replace(/\s+/g, ' ').trim();
+    if (!canonical.observations.some((x) => x.category === o.category && x.text.toLowerCase().replace(/\s+/g, ' ').trim() === norm)) {
+      canonical.observations.push(o);
+    }
+  }
+  for (const rel of dup.relations) addRelation(canonical.relations, rel);
+  for (const a of [...dup.aliases, dup.entity]) {
+    if (a.toLowerCase() !== canonical.entity && !canonical.aliases.some((x) => x.toLowerCase() === a.toLowerCase())) {
+      canonical.aliases.push(a);
+    }
+  }
+  for (const repo of dup.repos) {
+    if (!canonical.repos.some((x) => x.toLowerCase() === repo.toLowerCase())) canonical.repos.push(repo);
+  }
+  if (!canonical.domain && dup.domain) canonical.domain = dup.domain;
+  if (!canonical.summary && dup.summary) canonical.summary = dup.summary;
+}
+
+async function runEntityHousekeeping(today?: string): Promise<void> {
+  const date = today ?? new Date().toISOString().slice(0, 10);
+  const records = await listEntities();
+  if (records.length === 0) return;
+
+  const bySlug = new Map(records.map((r) => [r.entity, r]));
+  const mergedAway = planEntityMerges(records);
+
+  // Fold each duplicate into its canonical entity.
+  for (const [dupSlug, canonicalSlug] of mergedAway) {
+    const dup = bySlug.get(dupSlug);
+    const canonical = bySlug.get(canonicalSlug);
+    if (dup && canonical) mergeInto(canonical, dup);
+  }
+
+  const staleness = getStalenessDays();
+  let archived = 0;
+
+  for (const r of records) {
+    if (mergedAway.has(r.entity)) continue; // deleted below
+    // Repoint relation edges that targeted a merged-away entity; dedupe after.
+    const repointed: EntityRecord['relations'] = [];
+    for (const rel of r.relations) {
+      const target = mergedAway.get(rel.target) ?? rel.target;
+      if (!repointed.some((x) => x.type === rel.type && x.target.toLowerCase() === target.toLowerCase())) {
+        repointed.push({ ...rel, target });
+      }
+    }
+    r.relations = repointed;
+    if (r.status === 'active' && isFullyStale(r, staleness, date)) {
+      r.status = 'archived';
+      archived++;
+    }
+    await writeEntity(r);
+  }
+
+  // Remove merged-away files.
+  for (const dupSlug of mergedAway.keys()) {
+    await rm(getEntityPath(dupSlug), { force: true });
+  }
+
+  await rebuildIndex();
+
+  const note = `entities: merged ${mergedAway.size} duplicate(s), archived ${archived} stale`;
+  recordHousekeepingNote('entities', note);
+  logger.system(`[memory] entity housekeeping — ${note}`);
 }
 
 // ============================================================================

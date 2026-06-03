@@ -10,8 +10,12 @@ import {
   isFallbackUserId,
   isAllowedUserId,
   isAllowedTaskId,
+  isValidEntitySlug,
   getUserPath,
   getSummaryPath,
+  getEntityPath,
+  getEntityCap,
+  getEntityInjectMax,
 } from '../paths.js';
 
 describe('isSlackUserId', () => {
@@ -106,5 +110,41 @@ describe('getSummaryPath', () => {
 
   it('throws on malformed taskId', () => {
     expect(() => getSummaryPath('has space')).toThrow(/invalid taskId/);
+  });
+});
+
+describe('isValidEntitySlug', () => {
+  it.each(['payment-service', 'stripe', 'postgres-prod', 'a', 'v1', 'x'.repeat(64)])(
+    'accepts %s',
+    (slug) => expect(isValidEntitySlug(slug)).toBe(true),
+  );
+
+  it.each([
+    '',
+    'Payment-Service', // uppercase
+    'payment service', // whitespace
+    'payment_service', // underscore
+    '../../etc/passwd', // traversal
+    'a/b', // separator
+    '-leading', // leading hyphen
+    'index', // reserved (collides with index.md)
+    'x'.repeat(65), // too long
+  ])('rejects %s', (slug) => expect(isValidEntitySlug(slug)).toBe(false));
+});
+
+describe('getEntityPath', () => {
+  it('places entities under memory/entities/', () => {
+    expect(getEntityPath('payment-service')).toMatch(/memory\/entities\/payment-service\.md$/);
+  });
+  it('throws on an invalid slug (no traversal reaches the filesystem)', () => {
+    expect(() => getEntityPath('../../etc/passwd')).toThrow(/invalid entity slug/);
+    expect(() => getEntityPath('index')).toThrow(/invalid entity slug/);
+  });
+});
+
+describe('entity caps', () => {
+  it('default entity cap and inject max are positive integers', () => {
+    expect(getEntityCap()).toBeGreaterThan(0);
+    expect(getEntityInjectMax()).toBeGreaterThan(0);
   });
 });

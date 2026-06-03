@@ -1,17 +1,14 @@
 /**
  * Memory Store
  *
- * Read/write operations for org.md and per-user memory files.
+ * Read/write operations for per-user memory files.
  * All path resolution is delegated to paths.ts.
  */
 
 import { readFile, writeFile, mkdir } from 'fs/promises';
-import { dirname } from 'path';
 import {
-  getOrgPath,
   getUserPath,
   getUsersDir,
-  getOrgCap,
   getUserCap,
   getSectionCap,
   isHousekeepingEnabled,
@@ -20,25 +17,6 @@ import { sanitizeUpdate } from './sanitize.js';
 import { appendLastTouched, stripLastTouched } from './annotations.js';
 import { logger } from '../system/logger.js';
 import type { MemoryUpdate } from './types.js';
-
-// ---- Org ----
-
-/** Read org.md — returns '' if file does not exist */
-export async function readOrg(): Promise<string> {
-  try {
-    return await readFile(getOrgPath(), 'utf-8');
-  } catch (err: any) {
-    if (err.code === 'ENOENT') return '';
-    throw err;
-  }
-}
-
-/** Write org.md, creating parent directory if needed */
-export async function writeOrg(content: string): Promise<void> {
-  const path = getOrgPath();
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, content, 'utf-8');
-}
 
 // ---- Users ----
 
@@ -187,21 +165,6 @@ export function applyUpdate(content: string, update: MemoryUpdate): string {
 
   lines.splice(actualInsert, 0, newItem);
   return lines.join('\n');
-}
-
-/** Apply a list of updates to org.md, sanitizing each before write. Returns true if a soft cap was exceeded after the write. */
-export async function applyOrgUpdates(updates: MemoryUpdate[]): Promise<boolean> {
-  let content = await readOrg();
-  for (const update of updates) {
-    const clean = sanitizeUpdate(update);
-    if (!clean) {
-      logger.warn('memory', `dropped org update (sanitizer rejected): ${JSON.stringify(update).slice(0, 120)}`);
-      continue;
-    }
-    content = applyUpdate(content, clean);
-  }
-  await writeOrg(content);
-  return softCapExceeded(content, getOrgCap(), getSectionCap());
 }
 
 /** Apply a list of updates to a user's memory file, sanitizing each before write. */

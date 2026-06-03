@@ -14,8 +14,10 @@ import {
   isSlackUserId,
   isFallbackUserId,
 } from './paths.js';
-import { readOrg, readUser, applyOrgUpdates, applyUserUpdatesWithIdentity } from './store.js';
+import { readUser, applyUserUpdatesWithIdentity } from './store.js';
 import { runExtraction } from './extractor.js';
+import { applyEntityUpdate, readEntity } from './entities.js';
+import { rebuildIndex, readIndexMarkdown } from './entity-index.js';
 import { appendActivity, trimActivity, readActivity } from './activity.js';
 import { sanitizeTaskSummary } from './sanitize.js';
 import { enqueuePending, dequeuePending } from './pending-queue.js';
@@ -109,7 +111,7 @@ async function processExtraction(taskId: string): Promise<void> {
   }
 
   // Load existing memory for ALL involved users in parallel.
-  const orgMemory = await readOrg();
+  const entityIndex = await readIndexMarkdown();
   const userMemoryBlocks = await Promise.all(
     users.map(async (u) => {
       const mem = await readUser(u.userId);
@@ -125,8 +127,8 @@ async function processExtraction(taskId: string): Promise<void> {
   const allowedUserIds = new Set(users.map((u) => u.userId));
   const result = await runExtraction(
     {
-      orgMemory,
       userMemory,
+      entityIndex,
       taskId,
       participants: metadata.participants.join(', '),
       taskOwner: metadata.task_owner ?? '',
@@ -142,15 +144,9 @@ async function processExtraction(taskId: string): Promise<void> {
     return;
   }
 
-  // Apply org updates (sanitizer runs inside store.ts).
-  const housekeepingTargets = new Set<string>();
-  if (result.org_updates.length > 0) {
-    const orgCapExceeded = await applyOrgUpdates(result.org_updates);
-    if (orgCapExceeded) housekeepingTargets.add('org');
-  }
-
   // Apply per-user updates. Use the identity-aware writer so first-touch
   // user files get YAML frontmatter (slack_user_id + display_name + aliases).
+  const housekeepingTargets = new Set<string>();
   const displayNameById = new Map(users.map((u) => [u.userId, u.displayName]));
   for (const [userId, updates] of Object.entries(result.user_updates)) {
     if (updates.length > 0) {
@@ -158,6 +154,20 @@ async function processExtraction(taskId: string): Promise<void> {
       const userCapExceeded = await applyUserUpdatesWithIdentity(userId, displayName, updates);
       if (userCapExceeded) housekeepingTargets.add(userId);
     }
+  }
+
+  // Apply entity updates (resolve-or-create; sanitizer runs inside entities.ts).
+  // Each applied update auto-adds a `touched_by [[taskId]]` edge.
+  const touchedEntities: string[] = [];
+  for (const update of result.entity_updates) {
+    const applied = await applyEntityUpdate(update, taskId);
+    if (!applied) continue;
+    touchedEntities.push(applied.slug);
+    if (applied.capExceeded) housekeepingTargets.add('entities');
+  }
+  // Rebuild the derived index whenever entities changed.
+  if (touchedEntities.length > 0) {
+    await rebuildIndex();
   }
 
   // Schedule housekeeping for any target that exceeded its soft cap. The pass
@@ -175,7 +185,13 @@ async function processExtraction(taskId: string): Promise<void> {
 
   // Write task summary (rich format) to the new memory-dir path.
   const activityIndex = await readActivity();
-  await writeSummary(taskId, metadata, result, users, activityIndex);
+  // Related tasks: prefer tasks that share an entity with this one; fall back
+  // to lexical similarity over the activity index when there's no entity overlap.
+  let related = await selectRelatedTasksByEntity(touchedEntities, taskId, activityIndex);
+  if (related.length === 0) {
+    related = selectRelatedTasks(result.activity_summary, result.domain, activityIndex, taskId);
+  }
+  await writeSummary(taskId, metadata, result, users, activityIndex, related);
 
   // Append to recent activity, then trim.
   const requestingUser = users[0]?.userId ?? 'cli';
@@ -262,12 +278,13 @@ async function writeSummary(
   metadata: TaskMetadata,
   result: ExtractionResult,
   users: UserRef[],
-  activityIndex: ActivityEntry[]
+  activityIndex: ActivityEntry[],
+  related?: ActivityEntry[]
 ): Promise<void> {
   const path = getSummaryPath(taskId);
   await mkdir(dirname(path), { recursive: true });
   const housekeepingNotes = drainHousekeepingNotes();
-  const content = buildSummaryMarkdown(taskId, metadata, result, users, activityIndex, housekeepingNotes);
+  const content = buildSummaryMarkdown(taskId, metadata, result, users, activityIndex, housekeepingNotes, related);
   await writeFile(path, content, 'utf-8');
 }
 
@@ -277,8 +294,8 @@ async function writeSummary(
  * Schema:
  *   - YAML frontmatter (task_id, status, created_at, updated_at, domain, extraction_at, links, users)
  *   - `# Summary` — sanitized prose from the extractor
- *   - `## Memory Updates` — applied org + user updates with action + section + content,
- *     plus any housekeeping notes; `_no durable learnings_` when both empty
+ *   - `## Memory Updates` — applied user + entity updates, plus any housekeeping
+ *     notes; `_no durable learnings_` when all empty
  *   - `## Related Tasks` — up to 5 lexically-similar prior tasks; `_no related tasks found_` when empty
  */
 export function buildSummaryMarkdown(
@@ -287,7 +304,8 @@ export function buildSummaryMarkdown(
   result: ExtractionResult,
   users: UserRef[],
   activityIndex: ActivityEntry[] = [],
-  housekeepingNotes: string[] = []
+  housekeepingNotes: string[] = [],
+  related?: ActivityEntry[]
 ): string {
   const safeSummary = sanitizeTaskSummary(result.task_summary) ?? result.task_summary.slice(0, 2000);
   const lines: string[] = ['---'];
@@ -331,10 +349,11 @@ export function buildSummaryMarkdown(
   const memBlock = renderMemoryUpdates(result, housekeepingNotes);
   lines.push(memBlock);
 
-  // Related Tasks section
+  // Related Tasks section. Caller may pass a precomputed list (e.g. entity-based);
+  // otherwise fall back to lexical similarity over the activity index.
   lines.push('', '## Related Tasks', '');
-  const related = selectRelatedTasks(result.activity_summary, result.domain, activityIndex, taskId);
-  lines.push(renderRelatedTasks(related));
+  const relatedTasks = related ?? selectRelatedTasks(result.activity_summary, result.domain, activityIndex, taskId);
+  lines.push(renderRelatedTasks(relatedTasks));
 
   return lines.join('\n') + '\n';
 }
@@ -372,19 +391,11 @@ function buildLinksBlock(metadata: TaskMetadata): LinksBlock {
 
 function renderMemoryUpdates(result: ExtractionResult, housekeepingNotes: string[]): string {
   const lines: string[] = [];
-  const hasOrg = result.org_updates.length > 0;
   const hasUser = Object.values(result.user_updates).some((u) => u.length > 0);
+  const hasEntity = result.entity_updates.length > 0;
 
-  if (!hasOrg && !hasUser && housekeepingNotes.length === 0) {
+  if (!hasUser && !hasEntity && housekeepingNotes.length === 0) {
     return '_no durable learnings_';
-  }
-
-  if (hasOrg) {
-    lines.push('### org.md', '');
-    for (const u of result.org_updates) {
-      lines.push(renderUpdateBullet(u));
-    }
-    lines.push('');
   }
 
   for (const [userId, updates] of Object.entries(result.user_updates)) {
@@ -393,6 +404,16 @@ function renderMemoryUpdates(result: ExtractionResult, housekeepingNotes: string
     for (const u of updates) {
       lines.push(renderUpdateBullet(u));
     }
+    lines.push('');
+  }
+
+  // Entity pages are the home for organizational knowledge (org.md is retired),
+  // so the diff renders each touched entity as its own group.
+  for (const e of result.entity_updates) {
+    lines.push(`### entities/${e.slug}.md`, '');
+    if (e.summary) lines.push(`- **summary** ${e.summary}`);
+    for (const o of e.observations ?? []) lines.push(`- **[${o.category}]** ${o.text}`);
+    for (const r of e.relations ?? []) lines.push(`- **${r.type}** [[${r.target}]]`);
     lines.push('');
   }
 
@@ -474,9 +495,43 @@ export function selectRelatedTasks(
   return unique;
 }
 
+/**
+ * Select related tasks by SHARED ENTITY: other tasks that this task's touched
+ * entities are also `touched_by`. Scored by number of co-touched entities,
+ * highest first. Returns up to `limit` (default 5). Async — reads the touched
+ * entity files. Returns [] when there is no entity overlap, so the caller can
+ * fall back to lexical similarity.
+ */
+export async function selectRelatedTasksByEntity(
+  touchedSlugs: string[],
+  currentTaskId: string,
+  activityIndex: ActivityEntry[],
+  limit = 5
+): Promise<ActivityEntry[]> {
+  if (touchedSlugs.length === 0) return [];
+  const byTask = new Map<string, number>();
+  for (const slug of touchedSlugs) {
+    const rec = await readEntity(slug);
+    if (!rec) continue;
+    for (const rel of rec.relations) {
+      if (rel.type !== 'touched_by' || rel.target === currentTaskId) continue;
+      byTask.set(rel.target, (byTask.get(rel.target) ?? 0) + 1);
+    }
+  }
+  if (byTask.size === 0) return [];
+
+  const indexByTask = new Map(activityIndex.map((e) => [e.taskId, e]));
+  return Array.from(byTask.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([taskId]) =>
+      indexByTask.get(taskId) ?? { date: '', taskId, summary: 'related via shared entity', domain: '', user: '' }
+    );
+}
+
 function renderRelatedTasks(related: ActivityEntry[]): string {
   if (related.length === 0) return '_no related tasks found_';
   return related
-    .map((e) => `- [${e.taskId}](./${e.taskId}.md) — ${e.summary} (${e.domain})`)
+    .map((e) => `- [${e.taskId}](./${e.taskId}.md) — ${e.summary}${e.domain ? ` (${e.domain})` : ''}`)
     .join('\n');
 }

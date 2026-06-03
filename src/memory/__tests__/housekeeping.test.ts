@@ -5,16 +5,34 @@
  * detection). The side-agent call itself is integration-tested separately.
  */
 
-import { describe, it, expect, vi } from 'vitest';
-import { extractBullets, traceBackOutput, validateTraceBack } from '../housekeeping.js';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtemp, rm } from 'fs/promises';
+import { existsSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import {
+  extractBullets,
+  traceBackOutput,
+  validateTraceBack,
+  planEntityMerges,
+  isFullyStale,
+  runHousekeeping,
+} from '../housekeeping.js';
 import { parseLastTouched, stripLastTouched, appendLastTouched } from '../annotations.js';
+
+let entitiesDir = '/tmp/fake-entities';
 
 vi.mock('../paths.js', () => ({
   isHousekeepingEnabled: () => true,
-  getOrgPath: () => '/tmp/fake-org.md',
   getUserPath: (id: string) => `/tmp/fake-user-${id}.md`,
   getUsersDir: () => '/tmp/fake-users',
   getStalenessDays: () => 180,
+  getEntitiesDir: () => entitiesDir,
+  getEntityIndexPath: () => join(entitiesDir, 'index.md'),
+  getEntityPath: (slug: string) => join(entitiesDir, `${slug}.md`),
+  getEntityCap: () => 300,
+  getEntityInjectMax: () => 8,
+  isValidEntitySlug: (s: string) => /^[a-z0-9][a-z0-9-]{0,63}$/.test(s) && s !== 'index',
 }));
 
 vi.mock('../../system/logger.js', () => ({
@@ -155,5 +173,100 @@ describe('softCapExceeded', () => {
     const bullets = Array.from({ length: 31 }, (_, i) => `- bullet ${i}`).join('\n');
     const content = `## Eng\n${bullets}`;
     expect(softCapExceeded(content, 1000, 30)).toBe(true);
+  });
+});
+
+// ============================================================================
+// Entity housekeeping — pure helpers
+// ============================================================================
+
+import type { EntityRecord } from '../types.js';
+
+function entity(over: Partial<EntityRecord> & { entity: string }): EntityRecord {
+  return {
+    type: 'service', displayName: over.entity, aliases: [], scope: 'org', repos: [],
+    domain: 'engineering', status: 'active', summary: '', observations: [], relations: [],
+    ...over,
+  };
+}
+
+describe('planEntityMerges', () => {
+  it('plans a merge when one entity lists another existing slug as an alias', () => {
+    const records = [
+      entity({ entity: 'payment-service', aliases: ['payments-api'] }),
+      entity({ entity: 'payments-api' }),
+    ];
+    const plan = planEntityMerges(records);
+    expect(plan.get('payments-api')).toBe('payment-service');
+    expect(plan.has('payment-service')).toBe(false);
+  });
+
+  it('plans nothing when aliases reference no existing file', () => {
+    const records = [entity({ entity: 'payment-service', aliases: ['nonexistent'] })];
+    expect(planEntityMerges(records).size).toBe(0);
+  });
+});
+
+describe('isFullyStale', () => {
+  it('is true when every observation is dated beyond the window', () => {
+    const r = entity({ entity: 'x', observations: [{ category: 'fact', text: 'a', touched: '2020-01-01' }] });
+    expect(isFullyStale(r, 180, '2026-06-01')).toBe(true);
+  });
+  it('is false when any observation is fresh or undated', () => {
+    const fresh = entity({ entity: 'x', observations: [{ category: 'fact', text: 'a', touched: '2026-05-20' }] });
+    const undated = entity({ entity: 'y', observations: [{ category: 'fact', text: 'a' }] });
+    expect(isFullyStale(fresh, 180, '2026-06-01')).toBe(false);
+    expect(isFullyStale(undated, 180, '2026-06-01')).toBe(false);
+  });
+  it('is false for an entity with no observations', () => {
+    expect(isFullyStale(entity({ entity: 'x' }), 180, '2026-06-01')).toBe(false);
+  });
+});
+
+// ============================================================================
+// Entity housekeeping — integration (temp dir)
+// ============================================================================
+
+import { writeEntity, readEntity, listEntities } from '../entities.js';
+
+describe('runHousekeeping("entities")', () => {
+  beforeEach(async () => {
+    entitiesDir = await mkdtemp(join(tmpdir(), 'archie-hk-entities-'));
+  });
+  afterEach(async () => {
+    await rm(entitiesDir, { recursive: true, force: true });
+  });
+
+  it('merges two alias entities into one canonical file', async () => {
+    await writeEntity(entity({
+      entity: 'payment-service',
+      aliases: ['payments-api'],
+      observations: [{ category: 'fact', text: 'canonical fact', touched: '2026-05-01' }],
+    }));
+    await writeEntity(entity({
+      entity: 'payments-api',
+      observations: [{ category: 'fact', text: 'duplicate fact', touched: '2026-05-01' }],
+    }));
+
+    await runHousekeeping('entities');
+
+    expect(existsSync(join(entitiesDir, 'payments-api.md'))).toBe(false);
+    const survivor = (await readEntity('payment-service'))!;
+    const texts = survivor.observations.map((o) => o.text);
+    expect(texts).toContain('canonical fact');
+    expect(texts).toContain('duplicate fact');
+    expect(await listEntities()).toHaveLength(1);
+  });
+
+  it('archives a fully-stale entity instead of deleting it', async () => {
+    await writeEntity(entity({
+      entity: 'legacy-thing',
+      observations: [{ category: 'fact', text: 'old', touched: '2020-01-01' }],
+    }));
+
+    await runHousekeeping('entities');
+
+    expect(existsSync(join(entitiesDir, 'legacy-thing.md'))).toBe(true);
+    expect((await readEntity('legacy-thing'))!.status).toBe('archived');
   });
 });

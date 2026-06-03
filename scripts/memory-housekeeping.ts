@@ -3,9 +3,9 @@
  * Manual memory housekeeping entry point.
  *
  * Usage:
- *   npm run memory:housekeeping -- --target org
  *   npm run memory:housekeeping -- --target U07ABC123
  *   npm run memory:housekeeping -- --target all
+ *   npm run memory:housekeeping -- --target entities
  *
  * Runs a one-shot Sonnet consolidation pass over the chosen target memory
  * file(s). Safe to invoke while the server is running — the pass serializes

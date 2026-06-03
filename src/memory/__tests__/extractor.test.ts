@@ -9,8 +9,8 @@ import { buildExtractionPrompt, parseExtractionResponse } from '../extractor.js'
 import type { ExtractionInput } from '../extractor.js';
 
 const baseInput: ExtractionInput = {
-  orgMemory: '## Engineering\n- Uses TypeScript\n',
   userMemory: '## alice\n- Prefers async\n',
+  entityIndex: '| [[payment-service]] | service | repo | payments API | 2026-05-01 |',
   taskId: 'task-abc-123',
   participants: 'alice, bob',
   taskOwner: 'alice',
@@ -24,10 +24,10 @@ const baseInput: ExtractionInput = {
 // ============================================================================
 
 describe('buildExtractionPrompt(input)', () => {
-  it('substitutes ORG_MEMORY placeholder', async () => {
+  it('does not reference org memory (org.md retired)', async () => {
     const prompt = await buildExtractionPrompt(baseInput);
-    expect(prompt).toContain('## Engineering\n- Uses TypeScript');
     expect(prompt).not.toContain('{{ORG_MEMORY}}');
+    expect(prompt).not.toContain('<org_memory>');
   });
 
   it('substitutes USER_MEMORY placeholder', async () => {
@@ -78,6 +78,12 @@ describe('buildExtractionPrompt(input)', () => {
     expect(prompt).not.toMatch(/\{\{[A-Z_]+\}\}/);
   });
 
+  it('substitutes ENTITY_INDEX placeholder', async () => {
+    const prompt = await buildExtractionPrompt(baseInput);
+    expect(prompt).toContain('[[payment-service]]');
+    expect(prompt).not.toContain('{{ENTITY_INDEX}}');
+  });
+
   it('truncates transcript longer than 100K chars and adds note', async () => {
     const longTranscript = 'x'.repeat(110_000);
     const prompt = await buildExtractionPrompt({ ...baseInput, transcript: longTranscript });
@@ -95,9 +101,6 @@ describe('buildExtractionPrompt(input)', () => {
 // ============================================================================
 
 const validResponse = JSON.stringify({
-  org_updates: [
-    { action: 'add', section: 'Engineering', content: 'Uses NestJS' },
-  ],
   user_updates: {
     alice: [{ action: 'add', section: 'Communication', content: 'Prefers concise updates' }],
   },
@@ -110,9 +113,6 @@ describe('parseExtractionResponse(json)', () => {
   it('parses valid JSON and returns ExtractionResult', () => {
     const result = parseExtractionResponse(validResponse);
     expect(result).not.toBeNull();
-    expect(result!.org_updates).toHaveLength(1);
-    expect(result!.org_updates[0].action).toBe('add');
-    expect(result!.org_updates[0].content).toBe('Uses NestJS');
     expect(result!.user_updates.alice).toHaveLength(1);
     expect(result!.task_summary).toBe('Task was completed successfully with major refactor.');
     expect(result!.activity_summary).toBe('Refactored auth module');
@@ -124,30 +124,20 @@ describe('parseExtractionResponse(json)', () => {
     expect(result).toBeNull();
   });
 
-  it('returns null when org_updates is missing', () => {
-    const bad = JSON.stringify({
+  it('does not require or emit org_updates (org.md retired)', () => {
+    const ok = JSON.stringify({
       user_updates: {},
       task_summary: 'x',
       activity_summary: 'y',
       domain: 'z',
     });
-    expect(parseExtractionResponse(bad)).toBeNull();
-  });
-
-  it('returns null when org_updates is not an array', () => {
-    const bad = JSON.stringify({
-      org_updates: 'not-an-array',
-      user_updates: {},
-      task_summary: 'x',
-      activity_summary: 'y',
-      domain: 'z',
-    });
-    expect(parseExtractionResponse(bad)).toBeNull();
+    const result = parseExtractionResponse(ok);
+    expect(result).not.toBeNull();
+    expect(result).not.toHaveProperty('org_updates');
   });
 
   it('returns null when user_updates is missing', () => {
     const bad = JSON.stringify({
-      org_updates: [],
       task_summary: 'x',
       activity_summary: 'y',
       domain: 'z',
@@ -157,7 +147,6 @@ describe('parseExtractionResponse(json)', () => {
 
   it('returns null when user_updates is not an object', () => {
     const bad = JSON.stringify({
-      org_updates: [],
       user_updates: 'not-an-object',
       task_summary: 'x',
       activity_summary: 'y',
@@ -168,7 +157,6 @@ describe('parseExtractionResponse(json)', () => {
 
   it('returns null when task_summary is missing', () => {
     const bad = JSON.stringify({
-      org_updates: [],
       user_updates: {},
       activity_summary: 'y',
       domain: 'z',
@@ -178,7 +166,6 @@ describe('parseExtractionResponse(json)', () => {
 
   it('returns null when activity_summary is missing', () => {
     const bad = JSON.stringify({
-      org_updates: [],
       user_updates: {},
       task_summary: 'x',
       domain: 'z',
@@ -188,32 +175,9 @@ describe('parseExtractionResponse(json)', () => {
 
   it('returns null when domain is missing', () => {
     const bad = JSON.stringify({
-      org_updates: [],
       user_updates: {},
       task_summary: 'x',
       activity_summary: 'y',
-    });
-    expect(parseExtractionResponse(bad)).toBeNull();
-  });
-
-  it('returns null when an org update has invalid action', () => {
-    const bad = JSON.stringify({
-      org_updates: [{ action: 'delete', content: 'something' }],
-      user_updates: {},
-      task_summary: 'x',
-      activity_summary: 'y',
-      domain: 'z',
-    });
-    expect(parseExtractionResponse(bad)).toBeNull();
-  });
-
-  it('returns null when an org update is missing content', () => {
-    const bad = JSON.stringify({
-      org_updates: [{ action: 'add' }],
-      user_updates: {},
-      task_summary: 'x',
-      activity_summary: 'y',
-      domain: 'z',
     });
     expect(parseExtractionResponse(bad)).toBeNull();
   });
@@ -232,9 +196,59 @@ describe('parseExtractionResponse(json)', () => {
     expect(result!.domain).toBe('engineering');
   });
 
-  it('parses valid result with empty org_updates and user_updates', () => {
+  it('defaults entity_updates to [] when the field is absent', () => {
+    const result = parseExtractionResponse(validResponse);
+    expect(result!.entity_updates).toEqual([]);
+  });
+
+  it('parses well-formed entity_updates', () => {
+    const withEntities = JSON.stringify({
+      user_updates: {},
+      entity_updates: [
+        { slug: 'payment-service', type: 'service', observations: [{ category: 'fact', text: 'NestJS' }] },
+      ],
+      task_summary: 'x',
+      activity_summary: 'y',
+      domain: 'engineering',
+    });
+    const result = parseExtractionResponse(withEntities);
+    expect(result!.entity_updates).toHaveLength(1);
+    expect(result!.entity_updates[0].slug).toBe('payment-service');
+  });
+
+  it('tolerates malformed entity updates by dropping them, not failing the result', () => {
+    const mixed = JSON.stringify({
+      user_updates: {},
+      entity_updates: [
+        { slug: 'good-entity', type: 'service' },
+        { type: 'service' }, // missing slug → dropped
+        'not-an-object', // → dropped
+      ],
+      task_summary: 'x',
+      activity_summary: 'y',
+      domain: 'engineering',
+    });
+    const result = parseExtractionResponse(mixed);
+    expect(result).not.toBeNull();
+    expect(result!.entity_updates).toHaveLength(1);
+    expect(result!.entity_updates[0].slug).toBe('good-entity');
+  });
+
+  it('treats a non-array entity_updates as empty', () => {
+    const bad = JSON.stringify({
+      user_updates: {},
+      entity_updates: 'nope',
+      task_summary: 'x',
+      activity_summary: 'y',
+      domain: 'engineering',
+    });
+    const result = parseExtractionResponse(bad);
+    expect(result).not.toBeNull();
+    expect(result!.entity_updates).toEqual([]);
+  });
+
+  it('parses valid result with empty user_updates', () => {
     const minimal = JSON.stringify({
-      org_updates: [],
       user_updates: {},
       task_summary: 'Nothing notable.',
       activity_summary: 'Routine maintenance',
@@ -242,12 +256,11 @@ describe('parseExtractionResponse(json)', () => {
     });
     const result = parseExtractionResponse(minimal);
     expect(result).not.toBeNull();
-    expect(result!.org_updates).toHaveLength(0);
+    expect(Object.keys(result!.user_updates)).toHaveLength(0);
   });
 
   it('validates user updates also have action and content', () => {
     const bad = JSON.stringify({
-      org_updates: [],
       user_updates: {
         alice: [{ action: 'add' }], // missing content
       },
@@ -260,7 +273,6 @@ describe('parseExtractionResponse(json)', () => {
 
   it('validates user updates action is add or update', () => {
     const bad = JSON.stringify({
-      org_updates: [],
       user_updates: {
         alice: [{ action: 'remove', content: 'something' }],
       },

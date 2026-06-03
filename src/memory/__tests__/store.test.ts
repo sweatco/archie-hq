@@ -11,18 +11,15 @@ import { join } from 'path';
 
 // We need to set up the mock before importing the module
 let tempDir: string;
-let orgPath: string;
 let usersDir: string;
 
 vi.mock('../paths.js', () => ({
-  getOrgPath: () => orgPath,
   getUserPath: (id: string) => {
     const safe = id.includes(':') ? id.replace(':', '__') : id;
     return join(usersDir, `${safe}.md`);
   },
   getUsersDir: () => usersDir,
   getMemoryDir: () => tempDir,
-  getOrgCap: () => 200,
   getUserCap: () => 100,
   getSectionCap: () => 30,
   isHousekeepingEnabled: () => false,
@@ -33,57 +30,19 @@ vi.mock('../../system/logger.js', () => ({
 }));
 
 import {
-  readOrg,
-  writeOrg,
   readUser,
   writeUser,
-  applyOrgUpdates,
   applyUserUpdates,
 } from '../store.js';
 
 describe('memory store', () => {
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), 'archie-memory-test-'));
-    orgPath = join(tempDir, 'org.md');
     usersDir = join(tempDir, 'users');
   });
 
   afterEach(async () => {
     await rm(tempDir, { recursive: true, force: true });
-  });
-
-  // ---- readOrg ----
-
-  describe('readOrg()', () => {
-    it('returns empty string when file does not exist', async () => {
-      const result = await readOrg();
-      expect(result).toBe('');
-    });
-
-    it('returns file content when file exists', async () => {
-      const content = '## Engineering\n- Uses TypeScript\n';
-      await writeFile(orgPath, content, 'utf-8');
-      const result = await readOrg();
-      expect(result).toBe(content);
-    });
-  });
-
-  // ---- writeOrg ----
-
-  describe('writeOrg(content)', () => {
-    it('creates the file with given content', async () => {
-      const content = '## Engineering\n- Uses TypeScript\n';
-      await writeOrg(content);
-      const saved = await readFile(orgPath, 'utf-8');
-      expect(saved).toBe(content);
-    });
-
-    it('overwrites existing content', async () => {
-      await writeFile(orgPath, 'old content', 'utf-8');
-      await writeOrg('new content');
-      const saved = await readFile(orgPath, 'utf-8');
-      expect(saved).toBe('new content');
-    });
   });
 
   // ---- readUser ----
@@ -142,77 +101,7 @@ describe('memory store', () => {
     });
   });
 
-  // ---- applyOrgUpdates ----
-
-  describe('applyOrgUpdates(updates)', () => {
-    it('handles empty file — creates new section for add action', async () => {
-      await applyOrgUpdates([{ action: 'add', section: 'Engineering', content: 'Uses TypeScript' }]);
-      const saved = await readFile(orgPath, 'utf-8');
-      expect(saved).toContain('## Engineering');
-      expect(saved).toContain('- Uses TypeScript');
-    });
-
-    it('adds under existing section', async () => {
-      await writeFile(orgPath, '## Engineering\n- Uses Node.js\n', 'utf-8');
-      await applyOrgUpdates([{ action: 'add', section: 'Engineering', content: 'Uses TypeScript' }]);
-      const saved = await readFile(orgPath, 'utf-8');
-      expect(saved).toContain('- Uses Node.js');
-      expect(saved).toContain('- Uses TypeScript');
-    });
-
-    it('creates new section at end of file when section missing', async () => {
-      await writeFile(orgPath, '## Engineering\n- Uses Node.js\n', 'utf-8');
-      await applyOrgUpdates([{ action: 'add', section: 'Marketing', content: 'Uses Figma' }]);
-      const saved = await readFile(orgPath, 'utf-8');
-      expect(saved).toContain('## Engineering');
-      expect(saved).toContain('## Marketing');
-      expect(saved).toContain('- Uses Figma');
-      // Marketing section should come after Engineering
-      expect(saved.indexOf('## Engineering')).toBeLessThan(saved.indexOf('## Marketing'));
-    });
-
-    it('replaces line on update action with old text', async () => {
-      await writeFile(orgPath, '## Engineering\n- Uses Node.js\n- Uses TypeScript\n', 'utf-8');
-      await applyOrgUpdates([{ action: 'update', content: 'Uses Node.js v20', old: 'Uses Node.js' }]);
-      const saved = await readFile(orgPath, 'utf-8');
-      expect(saved).toContain('- Uses Node.js v20');
-      expect(saved).not.toContain('- Uses Node.js\n');
-      expect(saved).toContain('- Uses TypeScript');
-    });
-
-    it('skips update when `old` text is not found (no silent append)', async () => {
-      await writeFile(orgPath, '## Engineering\n- Uses TypeScript\n', 'utf-8');
-      const before = await readFile(orgPath, 'utf-8');
-      await applyOrgUpdates([{ action: 'update', content: 'Uses TypeScript v5', old: 'Uses JavaScript' }]);
-      const after = await readFile(orgPath, 'utf-8');
-      expect(after).toBe(before);
-    });
-
-    it('skips update when `old` is missing entirely', async () => {
-      await writeFile(orgPath, '## Engineering\n- Uses TypeScript\n', 'utf-8');
-      const before = await readFile(orgPath, 'utf-8');
-      // sanitizeUpdate would normally reject this; testing applyUpdate directly via applyOrgUpdates
-      // The sanitizer catches it first — verifying the file is unchanged either way.
-      await applyOrgUpdates([{ action: 'update', content: 'orphan content' } as any]);
-      const after = await readFile(orgPath, 'utf-8');
-      expect(after).toBe(before);
-    });
-
-    it('applies multiple updates sequentially', async () => {
-      await writeFile(orgPath, '## Engineering\n- Uses Node.js\n', 'utf-8');
-      await applyOrgUpdates([
-        { action: 'add', section: 'Engineering', content: 'Uses TypeScript' },
-        { action: 'add', section: 'Culture', content: 'Remote first' },
-      ]);
-      const saved = await readFile(orgPath, 'utf-8');
-      expect(saved).toContain('- Uses Node.js');
-      expect(saved).toContain('- Uses TypeScript');
-      expect(saved).toContain('## Culture');
-      expect(saved).toContain('- Remote first');
-    });
-  });
-
-  // ---- applyUserUpdates ----
+  // ---- applyUserUpdates (also covers applyUpdate add/update/skip semantics) ----
 
   describe('applyUserUpdates(username, updates)', () => {
     it('creates new user file with section when file does not exist', async () => {
@@ -231,11 +120,48 @@ describe('memory store', () => {
       expect(saved).toContain('- Uses Slack');
     });
 
+    it('creates new section at end of file when section missing', async () => {
+      await mkdir(usersDir, { recursive: true });
+      await writeFile(join(usersDir, 'dana.md'), '## Communication\n- Prefers async\n', 'utf-8');
+      await applyUserUpdates('dana', [{ action: 'add', section: 'Notes', content: 'Backend dev' }]);
+      const saved = await readFile(join(usersDir, 'dana.md'), 'utf-8');
+      expect(saved.indexOf('## Communication')).toBeLessThan(saved.indexOf('## Notes'));
+      expect(saved).toContain('- Backend dev');
+    });
+
     it('creates users/ directory if missing', async () => {
       await applyUserUpdates('charlie', [{ action: 'add', section: 'Notes', content: 'Backend dev' }]);
       const saved = await readFile(join(usersDir, 'charlie.md'), 'utf-8');
       expect(saved).toContain('## Notes');
       expect(saved).toContain('- Backend dev');
+    });
+
+    it('replaces line on update action with old text', async () => {
+      await mkdir(usersDir, { recursive: true });
+      await writeFile(join(usersDir, 'erin.md'), '## Notes\n- Uses Node.js\n- Uses TypeScript\n', 'utf-8');
+      await applyUserUpdates('erin', [{ action: 'update', content: 'Uses Node.js v20', old: 'Uses Node.js' }]);
+      const saved = await readFile(join(usersDir, 'erin.md'), 'utf-8');
+      expect(saved).toContain('- Uses Node.js v20');
+      expect(saved).not.toContain('- Uses Node.js\n');
+      expect(saved).toContain('- Uses TypeScript');
+    });
+
+    it('skips update when `old` text is not found (no silent append)', async () => {
+      await mkdir(usersDir, { recursive: true });
+      await writeFile(join(usersDir, 'finn.md'), '## Notes\n- Uses TypeScript\n', 'utf-8');
+      const before = await readFile(join(usersDir, 'finn.md'), 'utf-8');
+      await applyUserUpdates('finn', [{ action: 'update', content: 'Uses TypeScript v5', old: 'Uses JavaScript' }]);
+      const after = await readFile(join(usersDir, 'finn.md'), 'utf-8');
+      expect(after).toBe(before);
+    });
+
+    it('skips update when `old` is missing entirely', async () => {
+      await mkdir(usersDir, { recursive: true });
+      await writeFile(join(usersDir, 'gwen.md'), '## Notes\n- Uses TypeScript\n', 'utf-8');
+      const before = await readFile(join(usersDir, 'gwen.md'), 'utf-8');
+      await applyUserUpdates('gwen', [{ action: 'update', content: 'orphan content' } as any]);
+      const after = await readFile(join(usersDir, 'gwen.md'), 'utf-8');
+      expect(after).toBe(before);
     });
   });
 });
