@@ -42,6 +42,7 @@ import { loadPrompt } from '../utils/prompt-loader.js';
 import { processAgentEventForLogging, logger } from '../system/logger.js';
 import { buildSandboxConfig, createFilesystemGuardHooks, type SandboxOptions } from './sandbox.js';
 import { applyOAuthBindings } from '../system/oauth/inject.js';
+import { enrichPromptWithMemory, isMemoryEnabled, isInjectionEnabled } from '../memory/index.js';
 
 // ---- Prompt generation (per agent kind) ----
 
@@ -130,6 +131,26 @@ async function setupAgentWorkspace(taskId: string, agent: Agent): Promise<string
   }
 
   return agentWorkspace;
+}
+
+// ---- Memory helpers ----
+
+/**
+ * Extract Slack user references from a task's knowledge.log.
+ * Returns empty array if memory disabled, injection disabled, or log unavailable.
+ * The result feeds only prompt injection, so when injection is off we skip the
+ * transcript scan and user-file reads entirely.
+ */
+async function extractTaskUsernames(taskId: string): Promise<import('../memory/types.js').UserRef[]> {
+  if (!isMemoryEnabled() || !isInjectionEnabled()) return [];
+  try {
+    const { readKnowledgeLog } = await import('../tasks/persistence.js');
+    const { extractUsernames } = await import('../memory/lifecycle.js');
+    const log = await readKnowledgeLog(taskId);
+    return extractUsernames(log);
+  } catch {
+    return [];
+  }
 }
 
 // ---- Repo clone setup ----
@@ -463,6 +484,16 @@ Shared folder: ${sharedPath} [READ-ONLY]
     systemPrompt = `${systemPrompt}\n\nCurrent Context:\n${context}`;
 
   }
+
+  // ---- Organizational memory injection (read path; gated by ARCHIE_MEMORY_INJECT, default off) ----
+  const taskTitle = metadata.title ?? undefined;
+  const memorySelectors = isPmAgent(def)
+    ? { taskTitle }
+    : isRepoAgent(def)
+      ? { repo: def.repo!.repoKey, taskTitle }
+      : { plugin: def.pluginName, taskTitle };
+  const memoryUsernames = await extractTaskUsernames(taskId);
+  systemPrompt = await enrichPromptWithMemory(systemPrompt, memoryUsernames, memorySelectors);
 
   // Expose the sandbox config on the agent so in-process tools (e.g.
   // `share_artifact`, `post_to_user` artifact_paths) can validate paths against
