@@ -288,7 +288,8 @@ sessions/
 
 - Agent spawning: `src/agents/agent.ts`, `src/agents/spawn.ts`
 - Agent registry: `src/agents/registry.ts`
-- Agent tools: `src/agents/tools.ts`, `src/mcp/research-tools.ts`
+- Agent tools: `src/agents/tools.ts`
+- Web research: `src/extensions/web-research/` (self-contained MCP server + host PostToolUse hook, wired directly in `spawn.ts`; see [Web Research](./web-research.md))
 - Plugin loader: `src/system/plugin-loader.ts`
 - Task management: `src/tasks/task.ts`, `src/tasks/persistence.ts`
 - Type definitions: `src/types/agent.ts`, `src/types/task.ts`

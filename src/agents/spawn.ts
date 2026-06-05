@@ -25,7 +25,9 @@ import {
   createSchedulingMcpServer,
 } from './tools.js';
 import { hydrateBranchState } from '../connectors/github/branch-state.js';
-import { createResearchMcpServer, createResearchPostToolHook, createResearchDefenseTagHook } from '../mcp/research-tools.js';
+import { createResearchMcpServer, webResearchHooks } from '../extensions/web-research/index.js';
+import { mergeHooks } from './hooks.js';
+import { createBudgetGuardHook } from '../system/tool-budgets.js';
 import { buildPeerListForSender } from './registry.js';
 import {
   getSharedPath,
@@ -284,13 +286,18 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     join(workspace, 'CLAUDE.md'),
   ];
 
-  const researchServer = createResearchMcpServer({
-    getTaskId: () => taskId,
-    getResearchesDir: () => join(getTaskPath(taskId), 'researches'),
-    getCallerAgentId: () => def.id,
-    checkResearchBudget: () => task.checkResearchBudget(),
-    incrementResearchCount: () => task.incrementResearchCount(),
-    onResearchBudgetExceeded: () => task.onResearchBudgetExceeded(),
+  // Web research (optional MCP capability): a pure MCP server passed separately
+  // + its host hooks as one set. Gated on PERPLEXITY_API_KEY. Per-task budgeting
+  // is the generic PreToolUse guard (METERED_TOOLS), not here.
+  const researchEnabled = !!process.env.PERPLEXITY_API_KEY;
+  const researchMcp: Record<string, any> = researchEnabled
+    ? { 'research-tools': createResearchMcpServer() }
+    : {};
+  const researchHooks = webResearchHooks({
+    taskId,
+    agentId: def.id,
+    getTaskDir: () => getTaskPath(taskId),
+    getSharedDir: () => sharedPath,
   });
 
   // ---- Per-agent config ----
@@ -315,7 +322,7 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   const mcpServers: Record<string, any> = {
     ...(def.mcpServers || {}),
     'agent-tools': createBaseAgentMcpServer(agent, task),
-    'research-tools': researchServer,
+    ...researchMcp,
   };
 
   if (isPmAgent(def)) {
@@ -501,23 +508,18 @@ Shared folder: ${sharedPath} [READ-ONLY]
     allowDangerouslySkipPermissions: true,
     sandbox: buildSandboxConfig(sandboxOpts),
     ...(tools ? { tools } : {}),
-    hooks: {
-      PreToolUse: createFilesystemGuardHooks(sandboxOpts),
-      PostToolUse: [
-        createResearchPostToolHook({
-          getSharedDir: () => getSharedPath(taskId),
-          getTaskId: () => taskId,
-          getAgentId: () => def.id,
-        }),
-        createResearchDefenseTagHook(),
-      ],
-      Stop: [{
-        hooks: [async () => {
-          task.updateAgentState(def.id, false);
-          return { continue: true };
+    hooks: mergeHooks(
+      {
+        PreToolUse: [...createFilesystemGuardHooks(sandboxOpts), createBudgetGuardHook(task)],
+        Stop: [{
+          hooks: [async () => {
+            task.updateAgentState(def.id, false);
+            return { continue: true };
+          }],
         }],
-      }],
-    },
+      },
+      researchHooks,
+    ),
     mcpServers,
     disallowedTools,
     stderr: (data: string) => {

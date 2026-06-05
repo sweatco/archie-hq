@@ -161,9 +161,9 @@ There is no `post_to_slack` MCP tool and no event-bus subscription that ferries 
 Some system events require user decisions via Slack buttons. The PM calls `task.postInteractiveToUser(text, blocks, approvalType)`, which routes to `postInteractiveToThreads()` for the task's default Slack channel. Currently implemented interactive flows:
 
 - **Edit mode approval**: "Approve" / "Deny" buttons (action IDs: `approve_edit_mode`, `deny_edit_mode`). See [Edit Mode](./edit-mode.md).
-- **Research budget approval**: "Approve (+5)" / "Deny" buttons (action IDs: `approve_research_budget`, `deny_research_budget`).
+- **Tool budget approval**: "Approve (+N)" / "Deny" buttons (action IDs: `approve_budget`, `deny_budget`). The button `value` is `<taskId>:<resource>`, so one generic handler serves every metered tool (e.g. `web-research`). See [tool budgets](./security.md#metered-tool-limits).
 
-Button clicks are handled by Bolt action handlers in `src/connectors/slack/events.ts`. When clicked, the handler acknowledges the interaction, updates the original message (removing buttons and showing the outcome), and calls the corresponding `Task` method (`handleEditModeApproval` / `handleEditModeDenial` / `handleResearchBudgetApproval` / `handleResearchBudgetDenial`), which modifies task metadata and reactivates the PM agent.
+Button clicks are handled by Bolt action handlers in `src/connectors/slack/events.ts`. When clicked, the handler acknowledges the interaction, updates the original message (removing buttons and showing the outcome), and calls the corresponding `Task` method (`handleEditModeApproval` / `handleEditModeDenial` / `handleBudgetApproval(resource)` / `handleBudgetDenial(resource)`), which modifies task metadata and reactivates the PM agent.
 
 ## Natural Language Guidelines for PM Responses
 

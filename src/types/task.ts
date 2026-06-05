@@ -172,8 +172,13 @@ export interface TaskMetadata {
   repositories: Record<string, RepositoryInfo>;
   status: TaskStatus;
   edit_allowed?: boolean;     // Has user approved edit mode for this task?
-  research_budget_extra?: number;    // Additional research budget granted via Slack approval (+5 per approval)
-  research_request_count?: number;   // Persisted research request count (survives stop/reactivate)
+  /**
+   * Generic per-resource tool budgets (used count + granted extra), survives
+   * stop/reactivate. Keyed by resource name (see METERED_TOOLS).
+   */
+  budgets?: Record<string, { used: number; extra: number }>;
+  research_budget_extra?: number;    // DEPRECATED — migrated into `budgets['web-research']`
+  research_request_count?: number;   // DEPRECATED — migrated into `budgets['web-research']`
   failure_counter?: number;          // Consecutive recovery attempts (Stage 3 idle detection)
   reminder?: {                       // Pending self-scheduled reminder (set by agent via set_reminder tool)
     trigger_at: string;              // ISO 8601 datetime when the task should be reactivated

@@ -140,9 +140,9 @@ function makeTask(overrides: Partial<Task['metadata']> = {}): Task {
     toolSendMessage: vi.fn().mockResolvedValue('ok'),
     getAgentStatus: vi.fn().mockReturnValue([]),
     updateAgentState: vi.fn(),
-    checkResearchBudget: vi.fn().mockReturnValue(true),
-    incrementResearchCount: vi.fn(),
-    onResearchBudgetExceeded: vi.fn(),
+    checkBudget: vi.fn().mockReturnValue({ allowed: true, used: 0, limit: 5 }),
+    consumeBudget: vi.fn(),
+    onBudgetExceeded: vi.fn(),
   } as unknown as Task;
 }
 

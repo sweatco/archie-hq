@@ -313,14 +313,17 @@ Tools are defined as self-contained functions in `src/agents/tools.ts`. Each too
 the `Agent` and `Task` instances directly, importing external systems (GitHub, Slack,
 persistence) as needed. The MCP servers are created per agent per task at spawn time.
 
-### Research budget (Defense 4)
+### Tool budgets (Defense 4)
 
-The `checkResearchBudget`, `incrementResearchCount`, and `onResearchBudgetExceeded`
-callbacks are wired into the `research-tools` MCP server (created in `spawn.ts` via
-`createResearchMcpServer({ ... })` for every track — PM, repo, plugin). When the
-budget is exceeded, `task.onResearchBudgetExceeded()` posts Slack interactive
-buttons (Approve +5 / Deny) and stops the task. Approval increments
-`metadata.research_budget_extra` by 5 and reactivates the task.
+Budgeting is generic and host-side, not baked into any tool. A tool is metered by
+listing it in `METERED_TOOLS` (`src/system/tool-budgets.ts`). A `PreToolUse` guard
+(`createBudgetGuardHook`, wired in `spawn.ts` for every track — PM, repo, plugin)
+intercepts metered tool calls: under budget it calls `task.consumeBudget(resource)`
+and allows the call; exhausted, it **denies** the call and calls
+`task.onBudgetExceeded(policy)`, which posts Slack interactive buttons
+(Approve +N / Deny) and stops the task. Approval (`task.handleBudgetApproval`) grants
++N and reactivates the task. Counts persist per resource in `metadata.budgets`.
+`web_research` ships metered at 5; see [tool budgets](./security.md#metered-tool-limits).
 
 ### Inter-agent message budget
 
