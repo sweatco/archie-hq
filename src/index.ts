@@ -25,6 +25,7 @@ import { bootstrapWorkdir, cloneRepos, OAUTH_DIR } from './system/workdir.js';
 import { validateMasterKey } from './system/secrets-vault.js';
 import { initPlugins, getPlugins } from './system/plugin-loader.js';
 import { initRegistry, getAllAgentDefs } from './agents/registry.js';
+import { isRepoAgent, isPmAgent } from './types/agent.js';
 import { configureGitIdentity } from './connectors/github/client.js';
 import { recoverActiveTasks } from './tasks/recovery.js';
 import { initEventPersistence } from './tasks/persistence.js';
@@ -97,7 +98,7 @@ async function main(): Promise<void> {
 
     // Clone repos declared by plugins
     const agentDefs = getAllAgentDefs();
-    const repoDefs = agentDefs.filter((d) => d.track === 'repo');
+    const repoDefs = agentDefs.filter(isRepoAgent);
     await cloneRepos(repoDefs.map((d) => ({
       key: d.repo!.repoKey,
       githubRepo: d.repo!.githubRepo,
@@ -110,7 +111,7 @@ async function main(): Promise<void> {
     logger.plain(`Plugins loaded: ${plugins.map((p) => p.name).join(', ') || 'none'}`);
     logger.plain('');
 
-    const pmDef = agentDefs.find((d) => d.track === 'pm');
+    const pmDef = agentDefs.find(isPmAgent);
 
     logger.plain('Team:');
     logger.plain('  pm-agent (orchestrator)');
@@ -146,7 +147,7 @@ async function main(): Promise<void> {
         logger.plain(`    mcp: ${Object.keys(def.mcpServers).join(', ')}`);
       }
     }
-    for (const def of agentDefs.filter((d) => d.track === 'plugin')) {
+    for (const def of agentDefs.filter((d) => !isPmAgent(d) && !isRepoAgent(d))) {
       logger.plain(`  [${def.pluginName}] ${def.id} (${def.visibility}) — ${def.role}`);
       if (def.mcpServers) {
         logger.plain(`    mcp: ${Object.keys(def.mcpServers).join(', ')}`);
@@ -161,10 +162,10 @@ async function main(): Promise<void> {
     const pluginNames = new Set(plugins.map((p) => p.name));
     pluginNames.delete('pm');
     for (const pluginName of pluginNames) {
-      const pluginAgents = agentDefs.filter((d) => d.pluginName === pluginName && d.track !== 'pm');
+      const pluginAgents = agentDefs.filter((d) => d.pluginName === pluginName && !isPmAgent(d));
       if (pluginAgents.length === 0) continue;
       const hasEntryPoint = pluginAgents.some(
-        (d) => d.visibility === 'global' || d.track === 'repo',
+        (d) => d.visibility === 'global' || isRepoAgent(d),
       );
       if (!hasEntryPoint) {
         logger.warn(

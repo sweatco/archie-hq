@@ -21,7 +21,6 @@ function mkPlugin(pluginName: string, key: string, visibility: 'global' | 'local
     key,
     role: `${key} role`,
     expertise: `${key} expertise`,
-    track: 'plugin',
     pluginName,
     visibility,
     ...extras,
@@ -34,7 +33,6 @@ function mkRepo(pluginName: string, key: string, visibility: 'global' | 'local')
     key,
     role: `${key} role`,
     expertise: `${key} expertise`,
-    track: 'repo',
     pluginName,
     visibility,
     repo: {
@@ -51,7 +49,7 @@ function mkPm(): AgentDef {
     key: 'pm',
     role: 'PM',
     expertise: 'Coordination',
-    track: 'pm',
+    isPm: true,
     pluginName: 'pm',
     visibility: 'global',
   } as AgentDef;

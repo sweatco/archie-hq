@@ -57,12 +57,7 @@ export interface AgentHandle {
 }
 
 /**
- * Agent track — determines spawning behavior, tools, and CWD
- */
-export type AgentTrack = 'pm' | 'repo' | 'plugin';
-
-/**
- * Repo-specific fields (only for track='repo')
+ * Repo-specific fields (present only when the agent has repo access attached)
  */
 export interface AgentRepoDef {
   /** GitHub repository identifier, e.g., 'sweatco/backend' */
@@ -76,7 +71,7 @@ export interface AgentRepoDef {
 }
 
 /**
- * PM-specific fields (only for track='pm')
+ * PM-specific fields (present only on the PM coordinator agent)
  */
 export interface AgentPmDef {
   /** Formatted team list for prompt template */
@@ -89,7 +84,9 @@ export interface AgentPmDef {
  * Unified agent definition — replaces RepoAgentConfig + PluginAgentConfig
  *
  * Scanned fresh from plugins at startup and on every task start/restart.
- * One type for all three tracks: PM, repo, plugin.
+ * There is a single kind of agent; capabilities are additive:
+ *   - repo access is attached when `repo` is set
+ *   - the PM coordinator is the one agent with `isPm` set (overlaid by the pm plugin)
  */
 export interface AgentDef {
   /** Unique agent identifier, e.g., 'backend-agent', 'pm-agent' */
@@ -104,7 +101,7 @@ export interface AgentDef {
   /** Detailed expertise */
   expertise: string;
 
-  /** Model override (default per track: opus for PM, sonnet for repo/plugin) */
+  /** Model override (default: opus for PM, sonnet otherwise) */
   model?: string;
 
   /** Reasoning effort level (default: 'high') */
@@ -113,8 +110,8 @@ export interface AgentDef {
   /** Maximum agentic turns before stopping (default: 100) */
   maxTurns?: number;
 
-  /** Which track: pm, repo, or plugin */
-  track: AgentTrack;
+  /** True only for the PM coordinator agent (the core agent overlaid by the pm plugin) */
+  isPm?: boolean;
 
   /** Plugin name this agent belongs to */
   pluginName: string;
@@ -130,25 +127,25 @@ export interface AgentDef {
   /** Domain-specific prompt body (Layer 3) from agents/<key>.md */
   agentPrompt?: string;
 
-  /** Repo-specific fields (track='repo' only) */
+  /** Repo-specific fields — set only when the agent has repo access */
   repo?: AgentRepoDef;
 
-  /** Absolute path to plugin directory (track='plugin' only) */
+  /** Absolute path to plugin directory (not set on the PM coordinator) */
   pluginPath?: string;
 
   /** Absolute path to plugin's persistent data directory (workdir/plugins-data/<name>/) */
   pluginDataPath?: string;
 
-  /** Absolute path to plugin's skills/ directory (track='plugin' only) */
+  /** Absolute path to plugin's skills/ directory */
   skillsPath?: string;
 
-  /** Absolute path to archie-hq's built-in skills/ directory (track='pm' only). Symlinked alongside plugin skills. */
+  /** Absolute path to archie-hq's built-in skills/ directory (PM only). Symlinked alongside plugin skills. */
   coreSkillsPath?: string;
 
-  /** PM-specific fields (track='pm' only) — built dynamically from team */
+  /** PM-specific fields (PM only) — built dynamically from team */
   pmConfig?: AgentPmDef;
 
-  /** Extra prompt from pm plugin overlay (track='pm' only) */
+  /** Extra prompt from pm plugin overlay (PM only) */
   pmOverlayPrompt?: string;
 
   /** MCP server configs resolved from plugin's .mcp.json (server name → config) */
@@ -165,4 +162,21 @@ export interface AgentDef {
 
   /** Plugin hooks config (from plugin's hooks/hooks.json), written to .claude/settings.json */
   pluginHooks?: Record<string, any>;
+}
+
+// ---- Capability predicates ----
+//
+// There is one kind of agent: a plain agent is the default. What it can do on
+// top of that is derived from its def:
+//   - a repo agent is any agent with repo access attached
+//   - the PM coordinator is the single agent with `isPm`
+
+/** True when the agent has repository access attached. */
+export function isRepoAgent(def: AgentDef): boolean {
+  return def.repo != null;
+}
+
+/** True for the PM coordinator (the core agent overlaid by the pm plugin). */
+export function isPmAgent(def: AgentDef): boolean {
+  return def.isPm === true;
 }

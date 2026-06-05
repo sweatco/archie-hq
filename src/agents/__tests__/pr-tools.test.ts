@@ -8,7 +8,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   createRepoToolsMcpServer,
-  createPMAgentMcpServer,
+  createCommsMcpServer,
+  createOrchestrationMcpServer,
+  createSchedulingMcpServer,
   mirrorLegacyFields,
   hydrateBranchState,
   findBranchStateByPR,
@@ -89,7 +91,6 @@ function makeAgent(overrides: Partial<AgentDef> = {}): Agent {
       key: 'backend',
       role: 'Backend engineer',
       expertise: 'Node.js',
-      track: 'repo',
       pluginName: 'engineering',
       visibility: 'global',
       repo: {
@@ -369,12 +370,18 @@ describe('get_check_run', () => {
 
 describe('PM agent tools', () => {
   it('does not include any PR tools', () => {
-    const agent = makeAgent({ track: 'pm', repo: undefined, id: 'pm-agent' });
+    const agent = makeAgent({ isPm: true, repo: undefined, id: 'pm-agent' });
     const task = makeTask();
-    const server = createPMAgentMcpServer(agent, task);
+    const servers = [
+      createCommsMcpServer(agent, task),
+      createOrchestrationMcpServer(agent, task),
+      createSchedulingMcpServer(agent, task),
+    ];
 
-    const registeredTools = Object.keys(
-      (server.instance as any)._registeredTools ?? Object.fromEntries((server.instance as any)._tools ?? []),
+    const registeredTools = servers.flatMap((server) =>
+      Object.keys(
+        (server.instance as any)._registeredTools ?? Object.fromEntries((server.instance as any)._tools ?? []),
+      ),
     );
 
     const prToolNames = [
@@ -385,7 +392,7 @@ describe('PM agent tools', () => {
     ];
 
     for (const prTool of prToolNames) {
-      expect(registeredTools, `PM server should not have tool: ${prTool}`).not.toContain(prTool);
+      expect(registeredTools, `PM servers should not have tool: ${prTool}`).not.toContain(prTool);
     }
   });
 });

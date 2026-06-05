@@ -1394,28 +1394,50 @@ function createCancelReminderTool(agent: Agent, task: Task) {
 // ---- MCP Server creation ----
 
 /**
- * Create the MCP server with PM agent tools.
+ * PM coordinator tools, split by concern. The PM also gets the shared
+ * `agent-tools` server (send_message_to_agent, log_finding, share_artifact),
+ * so those are not repeated here.
  */
-export function createPMAgentMcpServer(agent: Agent, task: Task) {
+
+/** User-facing communication (Slack messaging, lookups, channel control, reactions). */
+export function createCommsMcpServer(agent: Agent, task: Task) {
   return createSdkMcpServer({
-    name: 'pm-agent-tools',
+    name: 'comms-tools',
     version: '1.0.0',
     tools: [
-      createSendMessageTool(agent, task),
       createPostToUserTool(agent, task),
       createPostFilesToUserTool(agent, task),
-      createShareArtifactTool(agent, task),
       createFindSlackUserTool(agent, task),
       createFindSlackChannelTool(agent, task),
-      createAssignTaskOwnerTool(agent, task),
-      createReportCompletionTool(agent, task),
-      createRequestEditModeTool(agent, task),
-      createGetAgentsStatusTool(agent, task),
       createMuteChannelTool(agent, task),
       createReactToMessageTool(agent, task),
       createUnreactFromMessageTool(agent, task),
       createGetMessageReactionsTool(agent, task),
+    ],
+  });
+}
+
+/** Task orchestration (ownership, completion, edit mode, team status, spawning). */
+export function createOrchestrationMcpServer(agent: Agent, task: Task) {
+  return createSdkMcpServer({
+    name: 'orchestration-tools',
+    version: '1.0.0',
+    tools: [
+      createAssignTaskOwnerTool(agent, task),
+      createReportCompletionTool(agent, task),
+      createRequestEditModeTool(agent, task),
+      createGetAgentsStatusTool(agent, task),
       createLaunchTaskTool(agent, task),
+    ],
+  });
+}
+
+/** Scheduling (datetime parsing and reminders). */
+export function createSchedulingMcpServer(agent: Agent, task: Task) {
+  return createSdkMcpServer({
+    name: 'scheduling-tools',
+    version: '1.0.0',
+    tools: [
       createParseDatetimeTool(agent, task),
       createSetReminderTool(agent, task),
       createCancelReminderTool(agent, task),
@@ -1462,11 +1484,12 @@ export function createRepoToolsMcpServer(agent: Agent, task: Task) {
 }
 
 /**
- * Create the MCP server with base agent tools (repo + plugin agents).
+ * Create the MCP server with base agent tools shared by every agent
+ * (PM, repo, and plugin): inter-agent messaging, findings, and artifacts.
  */
 export function createBaseAgentMcpServer(agent: Agent, task: Task) {
   return createSdkMcpServer({
-    name: 'repo-agent-tools',
+    name: 'agent-tools',
     version: '1.0.0',
     tools: [
       createSendMessageTool(agent, task),

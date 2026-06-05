@@ -2,8 +2,10 @@
  * Unified Agent Spawner
  *
  * Single spawnAgent(agent, task) function replaces three separate spawners
- * (pm.ts, repo-agent.ts, plugin-agent.ts). Branches on agent.def.track for
- * model, CWD, prompt, tools, edit mode, and skills.
+ * (pm.ts, repo-agent.ts, plugin-agent.ts). One agent model: a plain plugin
+ * agent gains repo access when it has `repo` attached, and the PM coordinator
+ * is the one agent with `isPm`. Branches on those capabilities for model, CWD,
+ * prompt, tools, edit mode, and skills.
  *
  * Session recovery pattern (try with session → reset → retry → give up) written once.
  */
@@ -14,10 +16,13 @@ import { existsSync } from 'fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Agent } from './agent.js';
 import type { Task } from '../tasks/task.js';
+import { isRepoAgent, isPmAgent } from '../types/agent.js';
 import {
-  createPMAgentMcpServer,
   createBaseAgentMcpServer,
   createRepoToolsMcpServer,
+  createCommsMcpServer,
+  createOrchestrationMcpServer,
+  createSchedulingMcpServer,
 } from './tools.js';
 import { hydrateBranchState } from '../connectors/github/branch-state.js';
 import { createResearchMcpServer, createResearchPostToolHook, createResearchDefenseTagHook } from '../mcp/research-tools.js';
@@ -38,10 +43,10 @@ import { processAgentEventForLogging, logger } from '../system/logger.js';
 import { buildSandboxConfig, createFilesystemGuardHooks, type SandboxOptions } from './sandbox.js';
 import { applyOAuthBindings } from '../system/oauth/inject.js';
 
-// ---- Prompt generation (per track) ----
+// ---- Prompt generation (per agent kind) ----
 
 async function generatePMPrompt(task: Task): Promise<string> {
-  const pmDef = task.team.find((d) => d.track === 'pm');
+  const pmDef = task.team.find(isPmAgent);
   return loadPrompt('pm-agent', {
     TEAM_LIST: pmDef?.pmConfig?.teamList ?? '',
     TEAM_EXPERTISE: pmDef?.pmConfig?.teamExpertise ?? '',
@@ -127,11 +132,110 @@ async function setupAgentWorkspace(taskId: string, agent: Agent): Promise<string
   return agentWorkspace;
 }
 
+// ---- Repo clone setup ----
+
+interface RepoCloneSetup {
+  /** Path to the task-local shared clone the agent works in */
+  repoPath: string;
+  /** Whether the agent may write/push (edit mode) */
+  editAllowed: boolean;
+  /** Path to the base repo's .git/objects (shared, read-only) */
+  baseObjectsPath: string;
+  /** Branch the clone is currently checked out on */
+  currentBranch: string;
+}
+
+/**
+ * Ensure a task-local shared clone exists for the agent's repo, migrating any
+ * legacy worktree and hydrating branch state. Mutates the task's repo metadata
+ * by reference. Returns the paths/flags the spawner needs to build its config.
+ */
+async function prepareRepoClone(agent: Agent, task: Task): Promise<RepoCloneSetup> {
+  const { def } = agent;
+  const taskId = task.taskId;
+  const metadata = task.metadata;
+
+  const repoInfo = metadata.repositories[def.repo!.repoKey];
+  const baseRepoPath = repoInfo?.path || def.repo!.defaultPath;
+  const editAllowed = metadata.edit_allowed === true;
+  const baseBranch = repoInfo?.base_branch || def.repo!.baseBranch || 'main';
+  const baseObjectsPath = join(baseRepoPath, '.git', 'objects');
+
+  // CWD: always a shared clone at task-local path
+  const taskRepoPath = join(getReposPath(taskId), def.repo!.repoKey);
+  let repoPath: string;
+
+  // Step A: Migrate legacy worktree → shared clone if needed
+  if (await isWorktree(taskRepoPath)) {
+    logger.agent(def.id, `Migrating worktree to shared clone`);
+    await migrateWorktreeToClone(
+      def.repo!.repoKey, getReposPath(taskId), baseRepoPath,
+      baseBranch, def.repo!.githubRepo, repoInfo, editAllowed,
+    );
+  }
+
+  // Step B: Reuse existing clone or create new one
+  if (await cloneExists(taskRepoPath)) {
+    repoPath = taskRepoPath;
+    logger.agent(def.id, `Reusing existing clone at ${repoPath}`, { editMode: editAllowed });
+  } else {
+    const previousBranch = repoInfo?.current_branch;
+    const wasOnBaseBranch = !previousBranch || previousBranch === baseBranch;
+
+    let checkout: CloneCheckout;
+    if (editAllowed && wasOnBaseBranch) {
+      // RW mode, was on base branch (or no branch) — create feature branch for new work
+      checkout = { type: 'new_branch', name: `feature/${taskId}` };
+    } else if (editAllowed && !wasOnBaseBranch) {
+      // RW but was on a specific branch — restore it
+      checkout = { type: 'branch', name: previousBranch! };
+    } else {
+      // RO default: clone on base branch
+      checkout = { type: 'base' };
+    }
+
+    const result = await setupSharedClone(
+      def.repo!.repoKey, getReposPath(taskId), baseRepoPath,
+      checkout, baseBranch, def.repo!.githubRepo,
+    );
+    repoPath = result.clone_path;
+
+    if (result.branch !== result.base_branch) {
+      hydrateBranchState(repoInfo, result.branch, result.base_branch);
+    } else {
+      repoInfo.current_branch = result.branch;
+    }
+    logger.agent(def.id, `Created shared clone at ${repoPath} (${result.branch})`, { editMode: editAllowed });
+  }
+
+  // Configure git identity for the clone
+  await configureGitIdentity(repoPath);
+
+  // Update metadata
+  repoInfo.clone_path = repoPath;
+  metadata.repositories[def.repo!.repoKey] = { ...repoInfo, path: baseRepoPath };
+
+  // Legacy hydration: old tasks with feature_branch but no branch_states
+  if (repoInfo.feature_branch && !repoInfo.branch_states) {
+    hydrateBranchState(repoInfo, repoInfo.feature_branch, repoInfo.base_branch);
+    const state = repoInfo.branch_states![repoInfo.feature_branch];
+    state.pr_number = repoInfo.pr_number;
+    state.last_processed_comment_id = repoInfo.last_processed_comment_id;
+  }
+
+  return {
+    repoPath,
+    editAllowed,
+    baseObjectsPath,
+    currentBranch: repoInfo.current_branch || baseBranch,
+  };
+}
+
 // ---- Main spawner ----
 
 /**
- * Spawn an agent. Branches on agent.def.track for all track-specific behavior.
- * Sets agent.handle on success.
+ * Spawn an agent. Branches on the agent's capabilities (PM coordinator vs. repo
+ * access vs. plain plugin) for all behavior. Sets agent.handle on success.
  */
 export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   const { def } = agent;
@@ -158,27 +262,65 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   }
   const useClaudeDirs = hasClaudeDirs || !agent.session.session_id;
 
-  // ---- Build track-specific config ----
+  // ---- Shared scaffolding (all agents) ----
+  //
+  // Every agent gets a workspace, the same research-tools server, the same base
+  // tool set, and the same base filesystem boundaries. Repo access and the PM
+  // coordinator role are layered on top of this.
+
+  const workspace = await setupAgentWorkspace(taskId, agent);
+  const cwd = workspace;
+  const model = def.model || (isPmAgent(def) ? 'opus' : 'sonnet');
+  const tools = def.tools;
+
+  const pluginPaths = def.pluginPath ? [def.pluginPath] : [];
+  const pluginReadPaths = [...pluginPaths, ...(def.pluginDataPath ? [def.pluginDataPath] : [])];
+  const claudeReadDirs = useClaudeDirs ? [claudeConfigDir, claudeTmpDir] : [];
+  const claudeWriteDirs = useClaudeDirs ? [claudeTmpDir] : [];
+  const protectedWorkspaceFiles = [
+    join(workspace, '.claude', 'settings.json'),
+    join(workspace, '.claude', 'skills'),
+    join(workspace, '.claude', 'hooks'),
+    join(workspace, 'CLAUDE.md'),
+  ];
+
+  const researchServer = createResearchMcpServer({
+    getTaskId: () => taskId,
+    getResearchesDir: () => join(getTaskPath(taskId), 'researches'),
+    getCallerAgentId: () => def.id,
+    checkResearchBudget: () => task.checkResearchBudget(),
+    incrementResearchCount: () => task.incrementResearchCount(),
+    onResearchBudgetExceeded: () => task.onResearchBudgetExceeded(),
+  });
+
+  // ---- Per-agent config ----
+  //
+  // Defaults describe the plain plugin agent. The PM coordinator and repo
+  // agents deviate from these in their branches below; anything they don't
+  // touch keeps the default.
 
   let systemPrompt: string;
-  let cwd: string;
-  let additionalDirectories: string[] | undefined;
-  let mcpServers: Record<string, any>;
-  let disallowedTools: string[] | undefined;
-  let tools: string[] | undefined;
-  let sandboxOpts: SandboxOptions;
-  let model: string;
+  let additionalDirectories: string[] = [sharedPath, ...pluginPaths];
+  let disallowedTools: string[] = ['WebSearch', 'WebFetch', ...(def.disallowedTools || [])];
+  let sandboxOpts: SandboxOptions = {
+    cwd,
+    denyReadPaths: [WORKDIR],
+    allowReadPaths: [workspace, sharedPath, ...claudeReadDirs, ...pluginReadPaths],
+    allowWritePaths: [workspace, ...claudeWriteDirs],
+    denyWritePaths: [sharedPath, ...pluginPaths, ...protectedWorkspaceFiles],
+    allowedNetworkDomains: def.allowedNetworkDomains,
+  };
+  // Base servers every agent gets; branches add their own (repo-tools, the PM
+  // coordinator servers, etc.) on top.
+  const mcpServers: Record<string, any> = {
+    ...(def.mcpServers || {}),
+    'agent-tools': createBaseAgentMcpServer(agent, task),
+    'research-tools': researchServer,
+  };
 
-  if (def.track === 'pm') {
-    // ---- PM track ----
-    const pmWorkspace = await setupAgentWorkspace(taskId, agent);
+  if (isPmAgent(def)) {
+    // ---- PM coordinator ----
     systemPrompt = await generatePMPrompt(task);
-    model = (def.model || 'opus') as string;
-    cwd = pmWorkspace;
-    additionalDirectories = [sharedPath];
-    if (def.pluginPath) {
-      additionalDirectories.push(def.pluginPath);
-    }
 
     const channelEntries = Object.entries(metadata.channels);
     const renderChannel = (id: string, ch: typeof metadata.channels[string]): string => {
@@ -227,7 +369,7 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     const context = `
 ${contextLines.join('\n')}
 
-Working directory (cwd): ${pmWorkspace} [READ-WRITE]
+Working directory (cwd): ${workspace} [READ-WRITE]
 
 Shared folder: ${sharedPath} [READ-ONLY]
   - knowledge.log — conversation history and agent findings
@@ -243,121 +385,19 @@ Shared folder: ${sharedPath} [READ-ONLY]
       systemPrompt = `${systemPrompt}\n\n${def.pmOverlayPrompt}`;
     }
 
-    mcpServers = {
-      ...(def.mcpServers || {}),
-      'pm-agent-tools': createPMAgentMcpServer(agent, task),
-      'research-tools': createResearchMcpServer({
-        getTaskId: () => taskId,
-        getResearchesDir: () => join(getTaskPath(taskId), 'researches'),
-        getCallerAgentId: () => 'pm-agent',
-        checkResearchBudget: () => task.checkResearchBudget(),
-        incrementResearchCount: () => task.incrementResearchCount(),
-        onResearchBudgetExceeded: () => task.onResearchBudgetExceeded(),
-      }),
-    };
-
-    tools = def.tools;
-    disallowedTools = [
-      'WebSearch', 'WebFetch',
-      ...(def.disallowedTools || []),
-    ];
-    sandboxOpts = {
-      cwd: pmWorkspace,
-      denyReadPaths: [WORKDIR],
-      allowReadPaths: [
-        pmWorkspace, sharedPath, ...(useClaudeDirs ? [claudeConfigDir, claudeTmpDir] : []),
-        ...(def.pluginPath ? [def.pluginPath] : []),
-        ...(def.pluginDataPath ? [def.pluginDataPath] : []),
-      ],
-      allowWritePaths: [pmWorkspace, ...(useClaudeDirs ? [claudeTmpDir] : [])],
-      denyWritePaths: [
-        sharedPath,
-        ...(def.pluginPath ? [def.pluginPath] : []),
-        join(pmWorkspace, '.claude', 'settings.json'),
-        join(pmWorkspace, '.claude', 'skills'),
-        join(pmWorkspace, '.claude', 'hooks'),
-        join(pmWorkspace, 'CLAUDE.md'),
-      ],
-      allowedNetworkDomains: def.allowedNetworkDomains,
-    };
-  } else if (def.track === 'repo') {
-    // ---- Repo track ----
-    const repoWorkspace = await setupAgentWorkspace(taskId, agent);
-    const repoInfo = metadata.repositories[def.repo!.repoKey];
-    const baseRepoPath = repoInfo?.path || def.repo!.defaultPath;
-    const editAllowed = metadata.edit_allowed === true;
-    const baseBranch = repoInfo?.base_branch || def.repo!.baseBranch || 'main';
-    const baseObjectsPath = join(baseRepoPath, '.git', 'objects');
-
-    // CWD: always a shared clone at task-local path
-    const taskRepoPath = join(getReposPath(taskId), def.repo!.repoKey);
-    let repoPath: string;
-
-    // Step A: Migrate legacy worktree → shared clone if needed
-    if (await isWorktree(taskRepoPath)) {
-      logger.agent(def.id, `Migrating worktree to shared clone`);
-      await migrateWorktreeToClone(
-        def.repo!.repoKey, getReposPath(taskId), baseRepoPath,
-        baseBranch, def.repo!.githubRepo, repoInfo, editAllowed,
-      );
-    }
-
-    // Step B: Reuse existing clone or create new one
-    if (await cloneExists(taskRepoPath)) {
-      repoPath = taskRepoPath;
-      logger.agent(def.id, `Reusing existing clone at ${repoPath}`, { editMode: editAllowed });
-    } else {
-      const previousBranch = repoInfo?.current_branch;
-      const wasOnBaseBranch = !previousBranch || previousBranch === baseBranch;
-
-      let checkout: CloneCheckout;
-      if (editAllowed && wasOnBaseBranch) {
-        // RW mode, was on base branch (or no branch) — create feature branch for new work
-        checkout = { type: 'new_branch', name: `feature/${taskId}` };
-      } else if (editAllowed && !wasOnBaseBranch) {
-        // RW but was on a specific branch — restore it
-        checkout = { type: 'branch', name: previousBranch! };
-      } else {
-        // RO default: clone on base branch
-        checkout = { type: 'base' };
-      }
-
-      const result = await setupSharedClone(
-        def.repo!.repoKey, getReposPath(taskId), baseRepoPath,
-        checkout, baseBranch, def.repo!.githubRepo,
-      );
-      repoPath = result.clone_path;
-
-      if (result.branch !== result.base_branch) {
-        hydrateBranchState(repoInfo, result.branch, result.base_branch);
-      } else {
-        repoInfo.current_branch = result.branch;
-      }
-      logger.agent(def.id, `Created shared clone at ${repoPath} (${result.branch})`, { editMode: editAllowed });
-    }
-
-    // Configure git identity for the clone
-    await configureGitIdentity(repoPath);
-
-    // Update metadata
-    repoInfo.clone_path = repoPath;
-    metadata.repositories[def.repo!.repoKey] = { ...repoInfo, path: baseRepoPath };
-
-    // Legacy hydration: old tasks with feature_branch but no branch_states
-    if (repoInfo.feature_branch && !repoInfo.branch_states) {
-      hydrateBranchState(repoInfo, repoInfo.feature_branch, repoInfo.base_branch);
-      const state = repoInfo.branch_states![repoInfo.feature_branch];
-      state.pr_number = repoInfo.pr_number;
-      state.last_processed_comment_id = repoInfo.last_processed_comment_id;
-    }
+    mcpServers['comms-tools'] = createCommsMcpServer(agent, task);
+    mcpServers['orchestration-tools'] = createOrchestrationMcpServer(agent, task);
+    mcpServers['scheduling-tools'] = createSchedulingMcpServer(agent, task);
+  } else if (isRepoAgent(def)) {
+    // ---- Repo access attached ----
+    const { repoPath, editAllowed, baseObjectsPath, currentBranch } = await prepareRepoClone(agent, task);
 
     systemPrompt = await generateRepoAgentPrompt(agent);
-    const currentBranch = repoInfo.current_branch || baseBranch;
     const repoMode = editAllowed ? 'READ-WRITE' : 'READ-ONLY';
     const context = `
 Task: ${taskId}
 
-Working directory (cwd): ${repoWorkspace} [READ-WRITE]
+Working directory (cwd): ${workspace} [READ-WRITE]
 
 Repository: ${repoPath} [${repoMode}]
   - Current branch: ${currentBranch}
@@ -368,40 +408,12 @@ Shared folder: ${sharedPath} [READ-ONLY]
 `;
     systemPrompt = `${systemPrompt}\n\nCurrent Context:\n${context}`;
 
-    cwd = repoWorkspace;
-    model = (def.model || 'sonnet') as string;
-    additionalDirectories = [repoPath, sharedPath];
-    if (def.pluginPath) {
-      additionalDirectories.push(def.pluginPath);
-    }
+    additionalDirectories = [repoPath, ...additionalDirectories];
 
-    mcpServers = {
-      ...(def.mcpServers || {}),
-      'repo-agent-tools': createBaseAgentMcpServer(agent, task),
-      'repo-tools': createRepoToolsMcpServer(agent, task),
-      'research-tools': createResearchMcpServer({
-        getTaskId: () => taskId,
-        getResearchesDir: () => join(getTaskPath(taskId), 'researches'),
-        getCallerAgentId: () => def.id,
-        checkResearchBudget: () => task.checkResearchBudget(),
-        incrementResearchCount: () => task.incrementResearchCount(),
-        onResearchBudgetExceeded: () => task.onResearchBudgetExceeded(),
-      }),
-    };
+    mcpServers['repo-tools'] = createRepoToolsMcpServer(agent, task);
 
-    const denyWriteProtected = [
-      // Protect SDK config in cwd (agent workspace)
-      join(repoWorkspace, '.claude', 'settings.json'),
-      join(repoWorkspace, '.claude', 'skills'),
-      join(repoWorkspace, '.claude', 'hooks'),
-      join(repoWorkspace, 'CLAUDE.md'),
-      // Prevent agent from switching branches (git checkout/switch writes .git/HEAD)
-      join(repoPath, '.git', 'HEAD'),
-    ];
-
-    tools = def.tools;
     disallowedTools = [
-      'WebSearch', 'WebFetch',
+      ...disallowedTools,
       ...(editAllowed
         ? []
         : [
@@ -418,43 +430,31 @@ Shared folder: ${sharedPath} [READ-ONLY]
             'mcp__repo-tools__close_pull_request',
             'mcp__repo-tools__create_branch',
           ]),
-      ...(def.disallowedTools || []),
-    ];
-    const readOnlyPaths = [
-      sharedPath, baseObjectsPath,
-      ...(def.pluginPath ? [def.pluginPath] : []),
-      ...(def.pluginDataPath ? [def.pluginDataPath] : []),
     ];
 
-    if (editAllowed) {
-      sandboxOpts = {
-        cwd,
-        denyReadPaths: [WORKDIR],
-        allowReadPaths: [repoWorkspace, repoPath, ...(useClaudeDirs ? [claudeConfigDir, claudeTmpDir] : []), ...readOnlyPaths],
-        allowWritePaths: [repoWorkspace, repoPath, ...(useClaudeDirs ? [claudeTmpDir] : [])],
-        denyWritePaths: [...readOnlyPaths, ...denyWriteProtected],
-        allowedNetworkDomains: def.allowedNetworkDomains,
-      };
-    } else {
-      sandboxOpts = {
-        cwd,
-        denyReadPaths: [WORKDIR],
-        allowReadPaths: [repoWorkspace, repoPath, ...(useClaudeDirs ? [claudeConfigDir, claudeTmpDir] : []), ...readOnlyPaths],
-        allowWritePaths: [repoWorkspace, ...(useClaudeDirs ? [claudeTmpDir] : [])],
-        denyWritePaths: [repoPath, ...readOnlyPaths],
-        allowedNetworkDomains: def.allowedNetworkDomains,
-      };
-    }
+    // Repo agents extend the base sandbox with the clone (RW in edit mode) and
+    // a few repo-specific read-only/protected paths.
+    const readOnlyPaths = [sharedPath, baseObjectsPath, ...pluginReadPaths];
+    sandboxOpts = {
+      cwd,
+      denyReadPaths: [WORKDIR],
+      allowReadPaths: [workspace, repoPath, ...claudeReadDirs, ...readOnlyPaths],
+      allowWritePaths: editAllowed
+        ? [workspace, repoPath, ...claudeWriteDirs]
+        : [workspace, ...claudeWriteDirs],
+      denyWritePaths: editAllowed
+        ? [...readOnlyPaths, ...protectedWorkspaceFiles, join(repoPath, '.git', 'HEAD')]
+        : [repoPath, ...readOnlyPaths],
+      allowedNetworkDomains: def.allowedNetworkDomains,
+    };
   } else {
-    // ---- Plugin track ----
-    const agentWorkspace = await setupAgentWorkspace(taskId, agent);
-
+    // ---- Plain plugin agent ----
     systemPrompt = await generatePluginAgentPrompt(agent);
     const context = `
 Task: ${taskId}
 Plugin: ${def.pluginName}
 
-Working directory (cwd): ${agentWorkspace} [READ-WRITE]
+Working directory (cwd): ${workspace} [READ-WRITE]
 
 Shared folder: ${sharedPath} [READ-ONLY]
   - knowledge.log — conversation history and agent findings (read ONCE per message, don't poll)
@@ -462,50 +462,6 @@ Shared folder: ${sharedPath} [READ-ONLY]
 `;
     systemPrompt = `${systemPrompt}\n\nCurrent Context:\n${context}`;
 
-    cwd = agentWorkspace;
-    additionalDirectories = [sharedPath];
-    if (def.pluginPath) {
-      additionalDirectories.push(def.pluginPath);
-    }
-    model = (def.model || 'sonnet') as string;
-
-    mcpServers = {
-      ...(def.mcpServers || {}),
-      'repo-agent-tools': createBaseAgentMcpServer(agent, task),
-      'research-tools': createResearchMcpServer({
-        getTaskId: () => taskId,
-        getResearchesDir: () => join(getTaskPath(taskId), 'researches'),
-        getCallerAgentId: () => def.id,
-        checkResearchBudget: () => task.checkResearchBudget(),
-        incrementResearchCount: () => task.incrementResearchCount(),
-        onResearchBudgetExceeded: () => task.onResearchBudgetExceeded(),
-      }),
-    };
-
-    tools = def.tools;
-    disallowedTools = [
-      'WebSearch', 'WebFetch',
-      ...(def.disallowedTools || []),
-    ];
-    sandboxOpts = {
-      cwd: agentWorkspace,
-      denyReadPaths: [WORKDIR],
-      allowReadPaths: [
-        agentWorkspace, sharedPath, ...(useClaudeDirs ? [claudeConfigDir, claudeTmpDir] : []),
-        ...(def.pluginPath ? [def.pluginPath] : []),
-        ...(def.pluginDataPath ? [def.pluginDataPath] : []),
-      ],
-      allowWritePaths: [agentWorkspace, ...(useClaudeDirs ? [claudeTmpDir] : [])],
-      denyWritePaths: [
-        sharedPath,
-        ...(def.pluginPath ? [def.pluginPath] : []),
-        join(agentWorkspace, '.claude', 'settings.json'),
-        join(agentWorkspace, '.claude', 'skills'),
-        join(agentWorkspace, '.claude', 'hooks'),
-        join(agentWorkspace, 'CLAUDE.md'),
-      ],
-      allowedNetworkDomains: def.allowedNetworkDomains,
-    };
   }
 
   // Expose the sandbox config on the agent so in-process tools (e.g.
@@ -523,9 +479,8 @@ Shared folder: ${sharedPath} [READ-ONLY]
     model: model as any,
     systemPrompt,
     cwd,
-    ...(additionalDirectories ? { additionalDirectories: additionalDirectories as any } : {}),
+    additionalDirectories: additionalDirectories as any,
     executable: 'node' as const,
-    // pathToClaudeCodeExecutable: process.env.CLAUDE_PATH || 'claude',
     settingSources: ['project'] as any,
     env: {
       NODE_ENV: process.env.NODE_ENV || 'development',
@@ -541,7 +496,6 @@ Shared folder: ${sharedPath} [READ-ONLY]
     },
     resume: sessionId,
     maxTurns: def.maxTurns ?? 100,
-    // thinking: { type: 'adaptive' } as const,
     ...(def.effort ? { effort: def.effort } : {}),
     permissionMode: 'bypassPermissions' as const,
     allowDangerouslySkipPermissions: true,
@@ -607,8 +561,8 @@ Shared folder: ${sharedPath} [READ-ONLY]
             processAgentEventForLogging(
               event,
               def.id,
-              additionalDirectories || [cwd],
-              def.track === 'repo' && metadata.edit_allowed === true,
+              additionalDirectories,
+              isRepoAgent(def) && metadata.edit_allowed === true,
             );
           }
 

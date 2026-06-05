@@ -8,7 +8,7 @@
  * Scanned fresh at startup (validate + fail-fast) and on every task start/restart.
  */
 
-import type { AgentDef } from '../types/agent.js';
+import { type AgentDef, isRepoAgent, isPmAgent } from '../types/agent.js';
 import { getPlugins, getRootMcpConfig, getPmOverlay, type LoadedMcpConfig, type PluginAgentDef } from '../system/plugin-loader.js';
 import { REPOS_DIR, PLUGINS_DATA_DIR } from '../system/workdir.js';
 import { existsSync } from 'fs';
@@ -72,7 +72,6 @@ export function scanAgentDefs(): AgentDef[] {
           model: agent.model,
           effort: agent.effort,
           maxTurns: agent.maxTurns,
-          track: 'repo',
           pluginName: plugin.name,
           visibility,
           agentPrompt: agent.prompt || undefined,
@@ -97,7 +96,6 @@ export function scanAgentDefs(): AgentDef[] {
           model: agent.model,
           effort: agent.effort,
           maxTurns: agent.maxTurns,
-          track: 'plugin',
           pluginName: plugin.name,
           visibility,
           agentPrompt: agent.prompt,
@@ -139,14 +137,14 @@ export function __setRegistryForTesting(defs: AgentDef[]): void {
  * Get all agent IDs (repo + plugin, excludes PM)
  */
 export function getAgentIds(): string[] {
-  return registry.filter((d) => d.track !== 'pm').map((d) => d.id);
+  return registry.filter((d) => !isPmAgent(d)).map((d) => d.id);
 }
 
 /**
  * Get all repo agent IDs
  */
 export function getRepoAgentIds(): string[] {
-  return registry.filter((d) => d.track === 'repo').map((d) => d.id);
+  return registry.filter(isRepoAgent).map((d) => d.id);
 }
 
 /**
@@ -160,14 +158,14 @@ export function getAgentDef(id: string): AgentDef | undefined {
  * Get repo AgentDef by GitHub repository identifier (e.g., 'sweatco/backend')
  */
 export function getAgentDefByGithubRepo(githubRepo: string): AgentDef | undefined {
-  return registry.find((d) => d.track === 'repo' && d.repo?.githubRepo === githubRepo);
+  return registry.find((d) => d.repo?.githubRepo === githubRepo);
 }
 
 /**
  * Get the PM AgentDef
  */
 export function getPmDef(): AgentDef | undefined {
-  return registry.find((d) => d.track === 'pm');
+  return registry.find(isPmAgent);
 }
 
 /**
@@ -180,7 +178,7 @@ export function getPmDef(): AgentDef | undefined {
  */
 export function getVisiblePeerIdsForSender(senderDef: AgentDef): string[] {
   return registry
-    .filter((d) => d.track !== 'pm')
+    .filter((d) => !isPmAgent(d))
     .filter((d) => d.id !== senderDef.id)
     .filter((d) => d.pluginName === senderDef.pluginName || d.visibility === 'global')
     .map((d) => d.id);
@@ -193,11 +191,12 @@ export function buildPeerListForSender(senderDef: AgentDef): string {
   const visibleIds = new Set(getVisiblePeerIdsForSender(senderDef));
 
   const repoPeers = registry
-    .filter((d) => d.track === 'repo' && visibleIds.has(d.id))
+    .filter((d) => isRepoAgent(d) && visibleIds.has(d.id))
     .map((d) => `- ${d.id}: ${d.role} (${d.repo!.repoKey} repository)`);
 
+  // Non-repo peers (visibleIds already excludes the PM).
   const pluginPeers = registry
-    .filter((d) => d.track === 'plugin' && visibleIds.has(d.id))
+    .filter((d) => !isRepoAgent(d) && visibleIds.has(d.id))
     .map((d) => `- ${d.id}: ${d.role} [${d.pluginName}]`);
 
   return [...repoPeers, ...pluginPeers].join('\n');
@@ -288,7 +287,7 @@ function buildPmDef(teamDefs: AgentDef[], rootMcp: LoadedMcpConfig): AgentDef {
     model: overlay?.model,
     effort: overlay?.effort,
     maxTurns: overlay?.maxTurns,
-    track: 'pm',
+    isPm: true,
     pluginName: 'pm',
     visibility: 'global',
     pluginDataPath: join(PLUGINS_DATA_DIR, 'pm'),

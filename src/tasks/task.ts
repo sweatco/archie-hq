@@ -137,7 +137,7 @@ export class Task {
     // Build repositories map from repo agent defs
     const repositories: Record<string, { path: string }> = {};
     for (const def of team) {
-      if (def.track === 'repo' && def.repo) {
+      if (def.repo) {
         repositories[def.repo.repoKey] = { path: def.repo.defaultPath };
       }
     }
