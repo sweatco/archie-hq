@@ -250,57 +250,57 @@ export async function mountSlackApp(
     }
   });
 
-  // Handle research budget approval button (Defense 4)
+  // Handle generic tool-budget approval button (value: "<taskId>:<resource>")
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  app!.action('approve_research_budget', async ({ action, ack, body }: any) => {
+  app!.action('approve_budget', async ({ action, ack, body }: any) => {
     await ack();
 
-    const taskId = action.value;
+    const [taskId, resource] = String(action.value).split(':');
     const userId = body.user?.id || 'unknown';
 
-    logger.server(`Research budget approved by ${userId} for task ${taskId}`);
+    logger.server(`${resource} budget approved by ${userId} for task ${taskId}`);
 
     try {
       if (body.channel?.id && body.message?.ts) {
         await updateMessage(
           body.channel.id,
           body.message.ts,
-          `✅ *Research budget extended* by <@${userId}> (+5 requests)`,
+          `✅ *${resource} budget extended* by <@${userId}>`,
           []
         );
       }
 
       const task = await Task.get(taskId);
-      await task.handleResearchBudgetApproval();
+      await task.handleBudgetApproval(resource);
     } catch (error) {
-      logger.error('Server', 'Error handling research budget approval', error);
+      logger.error('Server', 'Error handling budget approval', error);
     }
   });
 
-  // Handle research budget denial button (Defense 4)
+  // Handle generic tool-budget denial button (value: "<taskId>:<resource>")
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  app!.action('deny_research_budget', async ({ action, ack, body }: any) => {
+  app!.action('deny_budget', async ({ action, ack, body }: any) => {
     await ack();
 
-    const taskId = action.value;
+    const [taskId, resource] = String(action.value).split(':');
     const userId = body.user?.id || 'unknown';
 
-    logger.server(`Research budget denied by ${userId} for task ${taskId}`);
+    logger.server(`${resource} budget denied by ${userId} for task ${taskId}`);
 
     try {
       if (body.channel?.id && body.message?.ts) {
         await updateMessage(
           body.channel.id,
           body.message.ts,
-          `❌ *Additional research denied* by <@${userId}>`,
+          `❌ *Additional ${resource} denied* by <@${userId}>`,
           []
         );
       }
 
       const task = await Task.get(taskId);
-      await task.handleResearchBudgetDenial();
+      await task.handleBudgetDenial(resource);
     } catch (error) {
-      logger.error('Server', 'Error handling research budget denial', error);
+      logger.error('Server', 'Error handling budget denial', error);
     }
   });
 

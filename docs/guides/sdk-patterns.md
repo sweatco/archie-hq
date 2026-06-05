@@ -192,7 +192,7 @@ const defenseTagHook: HookCallbackMatcher = {
 };
 ```
 
-See `createResearchDefenseTagHook` in `src/mcp/research-tools.ts` for the
+See `createResearchDefenseTagHook` in `src/extensions/web-research/research-tools.ts` for the
 production implementation (paired with `createResearchPostToolHook`, which
 also persists the report to `shared/researches/` and logs to `knowledge.log`).
 
@@ -230,7 +230,7 @@ for await (const event of query({
 
 Archie uses this for triage classification (`src/system/triage.ts`, with
 `zod-to-json-schema`) and research preset classification
-(`src/mcp/research-tools.ts`, which uses Zod's built-in `toJSONSchema`). Watch
+(`src/extensions/web-research/research-tools.ts`, which uses Zod's built-in `toJSONSchema`). Watch
 for `subtype === 'error_max_structured_output_retries'` to detect repeated
 schema-validation failures.
 
@@ -248,5 +248,5 @@ schema-validation failures.
 - SDK package: `@anthropic-ai/claude-agent-sdk` (see `package.json`)
 - Agent spawner & hook wiring: `src/agents/spawn.ts` (Stop hook + PostToolUse hooks)
 - Sandbox / filesystem-guard hooks: `src/agents/sandbox.ts`
-- MCP servers: `src/agents/tools.ts` (PM/repo tools) and `src/mcp/research-tools.ts` (research + defense hooks)
-- Structured output examples: `src/system/triage.ts`, `src/tasks/title-generator.ts`, `src/mcp/research-tools.ts`
+- MCP servers: `src/agents/tools.ts` (PM/repo tools) and `src/extensions/web-research/research-tools.ts` (research + defense hooks)
+- Structured output examples: `src/system/triage.ts`, `src/tasks/title-generator.ts`, `src/extensions/web-research/research-tools.ts`

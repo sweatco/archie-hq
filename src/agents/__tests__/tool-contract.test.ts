@@ -92,7 +92,7 @@ function makeTask(): Task {
     touch: vi.fn(), debouncedSave: vi.fn(),
     postToUser: vi.fn(), postInteractiveToUser: vi.fn(),
     stop: vi.fn(), complete: vi.fn(), toolSendMessage: vi.fn(), getAgentStatus: vi.fn(),
-    updateAgentState: vi.fn(), checkResearchBudget: vi.fn(), incrementResearchCount: vi.fn(), onResearchBudgetExceeded: vi.fn(),
+    updateAgentState: vi.fn(), checkBudget: vi.fn(), consumeBudget: vi.fn(), onBudgetExceeded: vi.fn(),
   } as unknown as Task;
 }
 

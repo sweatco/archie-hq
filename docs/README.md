@@ -92,7 +92,7 @@ Future work and unimplemented features. These are ideas that have been designed 
 - Entry point: `src/index.ts`
 - Agent spawners and registry: `src/agents/`
 - System orchestration: `src/system/`
-- MCP tools: `src/mcp/`
+- Web research (optional MCP tool + host hook): `src/extensions/web-research/` (wired in `src/agents/spawn.ts`)
 - Connectors (Slack, GitHub, OAuth, API): `src/connectors/`
 - Agent prompts: `prompts/`
 - Plugins are git-cloned into the runtime workdir (`ARCHIE_WORKDIR`, default `./workdir`); see `src/system/workdir.ts` and `src/system/plugin-loader.ts`

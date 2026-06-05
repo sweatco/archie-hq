@@ -213,12 +213,12 @@ export function mountApiRoutes(app: Application): void {
     }
   });
 
-  // ---- POST /tasks/:id/approve — approve/deny edit mode or research budget ----
+  // ---- POST /tasks/:id/approve — approve/deny edit mode or a tool budget ----
 
   router.post('/tasks/:id/approve', async (req: Request, res: Response) => {
     try {
       const taskId = req.params.id as string;
-      const { type, approve } = req.body as { type: string; approve: boolean };
+      const { type, approve, resource } = req.body as { type: string; approve: boolean; resource?: string };
 
       if (!type || typeof approve !== 'boolean') {
         res.status(400).json({ error: 'type and approve are required' });
@@ -233,11 +233,13 @@ export function mountApiRoutes(app: Application): void {
         } else {
           await task.handleEditModeDenial();
         }
-      } else if (type === 'research_budget') {
+      } else if (type === 'budget' || type === 'research_budget') {
+        // 'research_budget' kept as a legacy alias → 'web-research' resource.
+        const res_ = resource ?? 'web-research';
         if (approve) {
-          await task.handleResearchBudgetApproval();
+          await task.handleBudgetApproval(res_);
         } else {
-          await task.handleResearchBudgetDenial();
+          await task.handleBudgetDenial(res_);
         }
       } else {
         res.status(400).json({ error: `Unknown approval type: ${type}` });

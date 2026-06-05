@@ -26,8 +26,8 @@ export interface PostTarget {
  * Resource budgets for a task (Defense 4 — per-task limits)
  */
 export interface TaskBudgets {
-  researchRequestCount: number;     // web_research calls made
-  researchRequestLimit: number;     // default: 5
+  /** Per-resource metering: used count + extra units granted via approval. */
+  resources: Record<string, { used: number; extra: number }>;
   interAgentMessageCount: number;   // send_message_to_agent calls
   interAgentMessageLimit: number;   // default: 100
   taskStartTime: Date;              // for wall-clock timeout
@@ -60,6 +60,7 @@ import { basename } from 'path';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
 import { emitEvent } from '../system/event-bus.js';
+import { policyForResource, type BudgetPolicy } from '../system/tool-budgets.js';
 
 // ---- Global state ----
 
@@ -81,9 +82,21 @@ export class Task {
   private constructor(taskId: string, metadata: TaskMetadata, team: AgentDef[]) {
     this.taskId = taskId;
     this.team = team;
+
+    // Generic per-resource budgets, with one-time migration of the legacy
+    // research-specific fields into the 'web-research' resource.
+    const resources = { ...(metadata.budgets ?? {}) };
+    if (!resources['web-research'] &&
+        (metadata.research_request_count != null || metadata.research_budget_extra != null)) {
+      resources['web-research'] = {
+        used: metadata.research_request_count ?? 0,
+        extra: metadata.research_budget_extra ?? 0,
+      };
+    }
+    metadata.budgets = resources;
+
     this.budgets = {
-      researchRequestCount: metadata.research_request_count ?? 0,
-      researchRequestLimit: 5 + (metadata.research_budget_extra ?? 0),
+      resources,
       interAgentMessageCount: 0,
       interAgentMessageLimit: 100,
       taskStartTime: new Date(),
@@ -462,7 +475,7 @@ export class Task {
   /**
    * Post an interactive message (with blocks) to the user via the default channel.
    */
-  async postInteractiveToUser(text: string, blocks: unknown[], approvalType: 'edit_mode' | 'research_budget'): Promise<void> {
+  async postInteractiveToUser(text: string, blocks: unknown[], approvalType: 'edit_mode' | 'budget'): Promise<void> {
     emitEvent('approval:requested', this.taskId, { text, approvalType });
 
     const defaultCh = this.metadata.default_channel
@@ -776,64 +789,70 @@ export class Task {
     return `Message sent to ${target}. They will process it and log findings.`;
   }
 
-  // Research budget methods (used by tools and research-tools)
+  // ---- Generic per-resource tool budgets (see system/tool-budgets.ts) ----
 
-  checkResearchBudget(): { allowed: boolean; used: number; limit: number } {
-    return {
-      allowed: this.budgets.researchRequestCount < this.budgets.researchRequestLimit,
-      used: this.budgets.researchRequestCount,
-      limit: this.budgets.researchRequestLimit,
-    };
+  /** Lazily-created budget entry for a resource. */
+  private budgetEntry(resource: string): { used: number; extra: number } {
+    return (this.budgets.resources[resource] ??= { used: 0, extra: 0 });
   }
 
-  incrementResearchCount(): void {
-    this.budgets.researchRequestCount++;
-    logger.debug(
-      'budget',
-      `Research request ${this.budgets.researchRequestCount}/${this.budgets.researchRequestLimit} for task ${this.taskId}`,
-    );
-    this.metadata.research_request_count = this.budgets.researchRequestCount;
+  /** Check (without mutating) whether a metered tool call is within budget. */
+  checkBudget(policy: BudgetPolicy): { allowed: boolean; used: number; limit: number } {
+    const entry = this.budgetEntry(policy.resource);
+    const limit = policy.limit + entry.extra;
+    return { allowed: entry.used < limit, used: entry.used, limit };
+  }
+
+  /** Consume one unit of a resource's budget and persist. */
+  consumeBudget(resource: string): void {
+    const entry = this.budgetEntry(resource);
+    entry.used++;
+    logger.debug('budget', `${resource} usage ${entry.used} for task ${this.taskId}`);
+    this.metadata.budgets = this.budgets.resources;
     this.debouncedSave();
   }
 
-  async onResearchBudgetExceeded(): Promise<void> {
-    logger.warn(
-      'budget',
-      `Research budget exceeded for task ${this.taskId} (${this.budgets.researchRequestCount}/${this.budgets.researchRequestLimit})`,
+  /** Budget exhausted: log a blocker, post an approval prompt, pause the task. */
+  async onBudgetExceeded(policy: BudgetPolicy): Promise<void> {
+    const { used, limit } = this.checkBudget(policy);
+    logger.warn('budget', `${policy.label} budget exceeded for task ${this.taskId} (${used}/${limit})`);
+    await appendAgentFinding(
+      this.taskId,
+      'system',
+      `${policy.label} budget reached (${used}/${limit}) — awaiting user approval`,
+      'blocker',
     );
 
+    const value = `${this.taskId}:${policy.resource}`;
     const blocks = [
       {
         type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `*Research budget reached* (${this.budgets.researchRequestCount}/${this.budgets.researchRequestLimit} requests). Approve additional research?`,
-        },
+        text: { type: 'mrkdwn', text: `*${policy.label} budget reached* (${used}/${limit}). Approve more?` },
       },
       {
         type: 'actions',
         elements: [
           {
             type: 'button',
-            text: { type: 'plain_text', text: 'Approve (+5)' },
-            action_id: 'approve_research_budget',
-            value: this.taskId,
+            text: { type: 'plain_text', text: `Approve (+${policy.grant})` },
+            action_id: 'approve_budget',
+            value,
             style: 'primary',
           },
           {
             type: 'button',
             text: { type: 'plain_text', text: 'Deny' },
-            action_id: 'deny_research_budget',
-            value: this.taskId,
+            action_id: 'deny_budget',
+            value,
             style: 'danger',
           },
         ],
       },
     ];
     await this.postInteractiveToUser(
-      `Research budget reached (${this.budgets.researchRequestCount}/${this.budgets.researchRequestLimit} requests)`,
+      `${policy.label} budget reached (${used}/${limit})`,
       blocks,
-      'research_budget',
+      'budget',
     ).catch((err: unknown) => logger.error('budget', 'Failed to post budget approval request', err));
 
     await this.stop();
@@ -853,21 +872,26 @@ export class Task {
     await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
   }
 
-  async handleResearchBudgetApproval(): Promise<void> {
-    this.metadata.research_budget_extra = (this.metadata.research_budget_extra ?? 0) + 5;
-    this.budgets.researchRequestLimit = 5 + (this.metadata.research_budget_extra ?? 0);
+  async handleBudgetApproval(resource: string): Promise<void> {
+    const policy = policyForResource(resource);
+    const grant = policy?.grant ?? 5;
+    const label = policy?.label ?? resource;
+    const entry = this.budgetEntry(resource);
+    entry.extra += grant;
+    this.metadata.budgets = this.budgets.resources;
     this.debouncedSave();
     await appendAgentFinding(
       this.taskId,
       'system',
-      `Research budget extended by user (+5 requests, total extra: ${this.metadata.research_budget_extra})`,
+      `${label} budget extended by user (+${grant}, total extra: ${entry.extra})`,
       'decision',
     );
     await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
   }
 
-  async handleResearchBudgetDenial(): Promise<void> {
-    await appendAgentFinding(this.taskId, 'system', 'Additional research denied by user', 'decision');
+  async handleBudgetDenial(resource: string): Promise<void> {
+    const label = policyForResource(resource)?.label ?? resource;
+    await appendAgentFinding(this.taskId, 'system', `Additional ${label} denied by user`, 'decision');
     await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
   }
 
