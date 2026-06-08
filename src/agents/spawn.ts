@@ -513,10 +513,15 @@ Shared folder: ${sharedPath} [READ-ONLY]
     additionalDirectories: additionalDirectories as any,
     executable: 'node' as const,
     settingSources: ['project'] as any,
+    // The SDK replaces (not merges) process.env with this object, so any var the
+    // spawned CLI needs must be listed here explicitly. HOME in particular must be
+    // set: without it `~` fails to expand in unsandboxed hook commands, silently
+    // resolving to a literal `~` directory instead of the real home.
     env: {
       NODE_ENV: process.env.NODE_ENV || 'development',
       ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
       PATH: process.env.PATH,
+      HOME: process.env.HOME,
       CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
       ...(useClaudeDirs ? {
         CLAUDE_CONFIG_DIR: claudeConfigDir,
