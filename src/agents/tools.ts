@@ -400,12 +400,28 @@ function createAssignTaskOwnerTool(agent: Agent, task: Task) {
 function createRequestEditModeTool(agent: Agent, task: Task) {
   return tool(
     'request_edit_mode',
-    'Request permission to make code changes. Call this AFTER explaining to the user what changes are needed and why. Task will pause until user approves or denies.',
+    'Request permission to make code changes. Call this AFTER explaining to the user what changes are needed and why. Task will pause until user approves or denies. ' +
+    'Without `channel`, the request posts to the task\'s default channel. Pass `channel` (a channel key like "slack:C123:456.789") to post it to a specific linked thread — useful when the task has no default channel yet or you opened a new thread to talk to the user.',
     {
       reason: z.string().describe('Brief summary of what changes need to be made'),
+      channel: z.string().optional().describe('Channel key of an existing linked thread to post the request to (e.g., "slack:C123:456.789"). Omit to use the task\'s default channel.'),
     },
     async (args) => {
       const agentName = agent.def.id as AgentName;
+
+      // Validate an explicit target before posting so a bad key surfaces as
+      // actionable feedback instead of silently dropping to the CLI log. The
+      // task is left running so the agent can retry with a valid channel.
+      if (args.channel) {
+        const ch = task.metadata.channels[args.channel];
+        if (!ch) {
+          return ok(`Channel ${args.channel} is not linked to this task. Open one with post_to_user(target.new_thread/new_dm), or omit channel to use the default.`);
+        }
+        if (ch.type !== 'slack') {
+          return ok(`Channel ${args.channel} is not a Slack channel (type: ${ch.type}).`);
+        }
+      }
+
       logger.agentAction(agentName, 'Requesting edit mode', args.reason);
       task.touch();
 
@@ -436,7 +452,7 @@ function createRequestEditModeTool(agent: Agent, task: Task) {
           ],
         },
       ];
-      await task.postInteractiveToUser(`Edit mode request: ${args.reason}`, blocks, 'edit_mode');
+      await task.postInteractiveToUser(`Edit mode request: ${args.reason}`, blocks, 'edit_mode', args.channel);
 
       await task.stop();
       return { content: [{ type: 'text' as const, text: 'Edit mode request sent. Task paused pending user approval.' }] };
