@@ -31,7 +31,7 @@ The PM agent calls the `request_edit_mode` MCP tool (defined in `src/agents/tool
 [ Approve ]  [ Deny ]
 ```
 
-The buttons use action IDs `approve_edit_mode` and `deny_edit_mode`, with the task ID as the button value. `postInteractiveToUser` posts to the task's default channel (Slack today; other connectors may not surface the buttons).
+The buttons use action IDs `approve_edit_mode` and `deny_edit_mode`, with the task ID as the button value. `postInteractiveToUser` posts to the channel passed via the tool's optional `channel` argument, falling back to the task's default channel when omitted (Slack today; other connectors may not surface the buttons). The explicit `channel` lets an agent target a linked thread even when the task has no default channel yet — e.g. a self-launched task that just opened a thread via `post_to_user`.
 
 ### 3. Task Pauses
 

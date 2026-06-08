@@ -158,7 +158,7 @@ There is no `post_to_slack` MCP tool and no event-bus subscription that ferries 
 
 ## Interactive Messages
 
-Some system events require user decisions via Slack buttons. The PM calls `task.postInteractiveToUser(text, blocks, approvalType)`, which routes to `postInteractiveToThreads()` for the task's default Slack channel. Currently implemented interactive flows:
+Some system events require user decisions via Slack buttons. The PM calls `task.postInteractiveToUser(text, blocks, approvalType, channelKey?)`, which routes to `postInteractiveToThreads()` for the given channel — or the task's default Slack channel when `channelKey` is omitted. Currently implemented interactive flows:
 
 - **Edit mode approval**: "Approve" / "Deny" buttons (action IDs: `approve_edit_mode`, `deny_edit_mode`). See [Edit Mode](./edit-mode.md).
 - **Research budget approval**: "Approve (+5)" / "Deny" buttons (action IDs: `approve_research_budget`, `deny_research_budget`).

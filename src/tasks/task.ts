@@ -460,19 +460,24 @@ export class Task {
   }
 
   /**
-   * Post an interactive message (with blocks) to the user via the default channel.
+   * Post an interactive message (with blocks) to the user.
+   *
+   * Routes to `channelKey` when provided, otherwise to the task's default
+   * channel (both resolved via `resolveSlackChannel`). This lets callers target
+   * a specific linked thread even when the task has no default channel. Falls
+   * back to a CLI log line when no Slack channel resolves — interactive
+   * approvals are also surfaced in the CLI via the `approval:requested` event
+   * regardless of Slack delivery.
    */
-  async postInteractiveToUser(text: string, blocks: unknown[], approvalType: 'edit_mode' | 'research_budget'): Promise<void> {
+  async postInteractiveToUser(text: string, blocks: unknown[], approvalType: 'edit_mode' | 'research_budget', channelKey?: string): Promise<void> {
     emitEvent('approval:requested', this.taskId, { text, approvalType });
 
-    const defaultCh = this.metadata.default_channel
-      ? this.metadata.channels[this.metadata.default_channel]
-      : null;
-    if (defaultCh?.type === 'slack') {
+    const ch = this.resolveSlackChannel(channelKey);
+    if (ch) {
       await postInteractiveToThreads([{
-        thread_id: defaultCh.thread_id,
-        channel_id: defaultCh.channel_id,
-        last_processed_ts: defaultCh.last_processed_ts,
+        thread_id: ch.thread_id,
+        channel_id: ch.channel_id,
+        last_processed_ts: ch.last_processed_ts,
       }], text, blocks);
     } else {
       logger.slack(`POST (interactive): ${text}`);
