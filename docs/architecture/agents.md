@@ -54,7 +54,7 @@ One PM agent instance is spawned per task. It is the orchestrator: it receives a
 | Tool | Purpose |
 |---|---|
 | `send_message_to_agent` | Send instructions/questions to any agent |
-| `post_to_user` | Send a message to the user. Routes to the default linked channel, an existing linked thread (`target.channel`), a new DM (`target.new_dm`), or a new thread in a channel (`target.new_thread`). The Slack/CLI/GitHub specifics live in `Task.postToUser`, so the PM never picks a transport directly. |
+| `post_to_user` | Send a message to the user. Routes to the default linked channel, an existing linked thread (`target.channel`), a new DM (`target.new_dm`), or a new thread in a channel (`target.new_thread`). The Slack/CLI/GitHub specifics live in `Task.postToUser`, so the PM never picks a transport directly. The prompt steers the PM to stay where the task lives (in a channel thread, `@mention` people there; in a DM, stay 1:1); `new_dm`/`new_thread` are reserved for explicit user requests or cases a loaded skill/workflow requires. |
 | `post_files_to_user` | Upload files to an already-linked thread (default channel or `channel` key). Does not open new destinations. |
 | `share_artifact` | Publish an immutable, deduped snapshot of a file under `<task>/shared/artifacts/` for inter-agent sharing. |
 | `find_slack_user` / `find_slack_channel` | Look up Slack user/channel IDs and metadata before opening a DM or new thread. |
@@ -63,7 +63,7 @@ One PM agent instance is spawned per task. It is the orchestrator: it receives a
 | `request_edit_mode` | Post an interactive Approve/Deny prompt to the default channel and pause the task |
 | `get_agents_status` | Check which agents are spawned and active |
 | `mute_channel` | Disengage from one Slack channel/thread (the one named via `channel`, or the task's default channel) until the bot is @mentioned there again. DM channels cannot be muted |
-| `launch_task` | Launch a new independent background task (with notification posted to the current channel) |
+| `launch_task` | Launch a new independent background task (with notification posted to the current channel). The prompt steers the PM to keep follow-up work inside the current task and reserve this for explicit user requests or workflow-driven background work, since a launched task has no trace back to the originating one. |
 | `parse_datetime` / `set_reminder` / `cancel_reminder` | Schedule a reminder that wakes the task at an ISO datetime |
 
 The `Skill` tool is provided by the Claude Agent SDK itself (not by `pm-agent-tools`); skills are mounted from the `pm` plugin's `skills/` directory and surfaced via `.claude/skills/` symlinks plus `settingSources: ['project']`. Built-in `Read`, `Glob`, and `Grep` tools are available against the PM workspace and the shared task folder (which is mounted read-only via `additionalDirectories`); `WebSearch` and `WebFetch` are explicitly disallowed.

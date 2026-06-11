@@ -246,10 +246,12 @@ function createShareArtifactTool(agent: Agent, task: Task) {
 function createPostToUserTool(agent: Agent, task: Task) {
   return tool(
     'post_to_user',
-    'Send a message to the user. Without target, posts to the default channel. ' +
-    'Use target.channel to post to a specific linked thread. ' +
-    'Use target.new_dm with a user ID to start a DM conversation (links it to this task). ' +
-    'Use target.new_thread with a channel ID to start a new thread in a channel (links it to this task). ' +
+    'Send a message to the user. Without target, posts to the default channel — wherever this task already lives. ' +
+    'Use that default almost always; use target.channel to reach another already-linked thread. ' +
+    'target.new_dm (user ID) and target.new_thread (channel ID) OPEN A NEW conversation and link it to this task — ' +
+    'use them ONLY when the user explicitly asks you to reach someone elsewhere, or a loaded skill/workflow requires it. ' +
+    'If this task lives in a channel thread, bring someone in by @mentioning them in that thread, not by DMing them. ' +
+    'If it lives in a DM, you are 1:1 with that user — keep it private and don\'t pull others in. ' +
     'When creating new DMs/threads, returns the channel key for future use. ' +
     'To attach files, send the message first, then call `post_files_to_user` with the same target.',
     {
@@ -652,10 +654,11 @@ function createGetMessageReactionsTool(_agent: Agent, task: Task) {
 function createLaunchTaskTool(_agent: Agent, task: Task) {
   return tool(
     'launch_task',
-    'Launch a new independent task that runs in the background. Use for fire-and-forget ' +
-    'work that should not block the current conversation. The launched task starts with no ' +
-    'channel — its own PM will decide whether to ping someone (DM, new thread) or complete ' +
-    'silently based on the task. Cannot be called from a task that has no channel of its own.',
+    'Launch a SEPARATE, independent background task with NO link back to this one — its origin is invisible to whoever picks it up. ' +
+    'Keep follow-up work inside the current task by delegating to an agent here, so everything stays on one traceable thread. ' +
+    'Use this ONLY when the user explicitly asks for separate/background work, or a loaded skill/workflow requires it. ' +
+    'The launched task starts with no channel — its own PM decides whether to reach someone or complete silently. ' +
+    'Cannot be called from a task that has no channel of its own.',
     {
       prompt: z.string().describe('The task prompt for the launched PM agent'),
       reason: z.string().describe('Why this task is being launched (shown to the new PM and in the notification)'),
