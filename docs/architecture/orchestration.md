@@ -250,7 +250,7 @@ Tools are defined in `src/agents/tools.ts` and exposed via MCP servers created p
 | Tool | Description |
 |---|---|
 | `send_message_to_agent` | Send a message to another agent (spawns target if needed) |
-| `post_to_user` | Post a message to the user — default channel, an existing linked thread, a new DM, or a new thread in a channel (`target.channel` / `target.new_dm` / `target.new_thread`) |
+| `post_to_user` | Post a message to the user — default channel, an existing linked thread, a new DM, or a new thread in a channel (`target.channel` / `target.new_dm` / `target.new_thread`). Default is where the task lives; `new_dm`/`new_thread` are reserved for explicit user requests or cases a loaded skill/workflow requires |
 | `post_files_to_user` | Upload one or more files as Slack attachments to an already-linked channel; does not open new threads |
 | `share_artifact` | Publish an immutable snapshot to `shared/artifacts/` for inter-agent file sharing (deduped by hash) |
 | `find_slack_user` / `find_slack_channel` | Look up Slack user/channel metadata (used before opening new DMs/threads) |
@@ -259,7 +259,7 @@ Tools are defined in `src/agents/tools.ts` and exposed via MCP servers created p
 | `request_edit_mode` | Post Approve/Deny buttons to the default channel and stop the task until the user responds |
 | `get_agents_status` | Return active/idle status of all spawned agents |
 | `mute_channel` | Stop processing a Slack channel/thread until the bot is @mentioned there again. Takes optional `channel` key; defaults to the task's `default_channel`. DM channels cannot be muted |
-| `launch_task` | Start a new background task (delegates to `src/tasks/launch.ts`) |
+| `launch_task` | Start a new background task (delegates to `src/tasks/launch.ts`). Reserved for explicit user requests or workflow-driven background work — follow-up work normally stays in the current task to preserve the trace |
 | `parse_datetime` / `set_reminder` / `cancel_reminder` | Schedule/cancel reactivation of the task at a future time (via `src/system/reminder-scheduler.ts`) |
 
 Outbound posting flow: PM-style tools (`post_to_user`, `post_files_to_user`,
