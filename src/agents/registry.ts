@@ -10,7 +10,7 @@
 
 import { type AgentDef, isRepoAgent, isPmAgent } from '../types/agent.js';
 import { getPlugins, getRootMcpConfig, getPmOverlay, type LoadedMcpConfig, type PluginAgentDef } from '../system/plugin-loader.js';
-import { REPOS_DIR, PLUGINS_DATA_DIR } from '../system/workdir.js';
+import { PLUGINS_DATA_DIR } from '../system/workdir.js';
 import { existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -76,10 +76,11 @@ export function scanAgentDefs(): AgentDef[] {
           visibility,
           agentPrompt: agent.prompt || undefined,
           repo: {
-            githubRepo: agent.repo.github,
-            baseBranch: agent.repo.baseBranch,
-            defaultPath: join(REPOS_DIR, agent.key),
-            repoKey: agent.key,
+            repos: agent.repo.repos.map((r) => ({
+              github: r.github,
+              baseBranch: r.baseBranch || 'main',
+            })),
+            primary: agent.repo.primary,
           },
           pluginDataPath: join(PLUGINS_DATA_DIR, plugin.name),
           pluginHooks: plugin.hooks || undefined,
@@ -155,10 +156,12 @@ export function getAgentDef(id: string): AgentDef | undefined {
 }
 
 /**
- * Get repo AgentDef by GitHub repository identifier (e.g., 'sweatco/backend')
+ * Get repo AgentDef whose **primary** is the given GitHub repository identifier
+ * (e.g., 'sweatco/backend'). Matches on the primary only; an agent that merely
+ * lists the repo as a secondary is not returned.
  */
 export function getAgentDefByGithubRepo(githubRepo: string): AgentDef | undefined {
-  return registry.find((d) => d.repo?.githubRepo === githubRepo);
+  return registry.find((d) => isRepoAgent(d) && d.repo!.primary === githubRepo);
 }
 
 /**
@@ -192,7 +195,7 @@ export function buildPeerListForSender(senderDef: AgentDef): string {
 
   const repoPeers = registry
     .filter((d) => isRepoAgent(d) && visibleIds.has(d.id))
-    .map((d) => `- ${d.id}: ${d.role} (${d.repo!.repoKey} repository)`);
+    .map((d) => `- ${d.id}: ${d.role} (${d.repo!.primary} repository)`);
 
   // Non-repo peers (visibleIds already excludes the PM).
   const pluginPeers = registry

@@ -8,7 +8,7 @@
  * Bootstrap functions are async and must be called from main() at startup.
  */
 
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { existsSync, lstatSync } from 'fs';
 import { mkdir } from 'fs/promises';
 import { exec } from 'child_process';
@@ -107,16 +107,27 @@ export async function bootstrapWorkdir(): Promise<void> {
 /**
  * Clone repos declared by plugins. Called after plugins are loaded.
  *
- * @param repos - Array of { key, githubRepo } from loaded plugin configs
+ * Each base clone lives at `$ARCHIE_WORKDIR/repos/<org>/<repo>` (the github
+ * identifier becomes a nested directory). Task-local agent clones use this as
+ * their alternates source via `git clone --shared`.
+ *
+ * @param repos - Array of { github, baseBranch } — deduplicated by caller
  */
 export async function cloneRepos(
-  repos: Array<{ key: string; githubRepo: string; baseBranch?: string }>
+  repos: Array<{ github: string; baseBranch?: string }>
 ): Promise<void> {
-  for (const { key, githubRepo, baseBranch } of repos) {
-    const repoPath = join(REPOS_DIR, key);
-    const repoUrl = githubRepoToUrl(githubRepo);
-    await cloneOrFetch(repoUrl, repoPath, key, baseBranch);
+  for (const { github, baseBranch } of repos) {
+    const repoPath = getBaseCachePath(github);
+    const repoUrl = githubRepoToUrl(github);
+    await cloneOrFetch(repoUrl, repoPath, github, baseBranch);
   }
+}
+
+/**
+ * Base-cache path for a github repo on disk. Computed, not stored.
+ */
+export function getBaseCachePath(github: string): string {
+  return join(REPOS_DIR, github);
 }
 
 // =============================================================================
@@ -284,6 +295,8 @@ async function cloneOrFetch(url: string, targetDir: string, label: string, baseB
       logger.warn('workdir', `Failed to pull ${label}, using existing state: ${error}`);
     }
   } else {
+    // Nested `org/repo` target dirs require the parent to exist before clone.
+    await mkdir(dirname(targetDir), { recursive: true });
     const branchFlag = baseBranch ? ` -b "${baseBranch}"` : '';
     logger.system(`Cloning ${label} from ${url}...`);
     await execAsync(`git clone${branchFlag} "${url}" "${targetDir}"`);

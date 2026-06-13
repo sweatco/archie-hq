@@ -134,14 +134,14 @@ export class Agent {
     // Spawn the SDK process
     await spawnAgent(this, task);
 
-    // Wire crash detection: when agent exits, mark inactive
+    // Wire crash detection: when the SDK iterator exits, mark inactive.
     if (this.handle) {
       this.handle.running.then(() => {
         task.updateAgentState(this.def.id, false);
       });
     }
 
-    // Persist (participant added, repo agent may have mutated worktree info)
+    // Persist (participant added, repo agent may have mutated attached repos)
     task.debouncedSave();
 
     // Log

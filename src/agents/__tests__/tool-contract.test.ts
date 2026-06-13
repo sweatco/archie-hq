@@ -63,7 +63,7 @@ function makeAgent(overrides: Partial<AgentDef> = {}): Agent {
     def: {
       id: 'backend-agent', key: 'backend', role: 'Backend', expertise: 'Node',
       pluginName: 'engineering', visibility: 'global',
-      repo: { githubRepo: 'org/backend', repoKey: 'backend', defaultPath: '/repos/backend' },
+      repo: { repos: [{ github: 'org/backend', baseBranch: 'main' }], primary: 'org/backend' },
       ...overrides,
     },
     queue: {} as any,
@@ -74,18 +74,23 @@ function makeAgent(overrides: Partial<AgentDef> = {}): Agent {
 function makeTask(): Task {
   return {
     taskId: 'task-123',
+    team: [
+      {
+        id: 'backend-agent', key: 'backend', role: 'r', expertise: 'e',
+        pluginName: 'engineering',
+        repo: { repos: [{ github: 'org/backend', baseBranch: 'main' }], primary: 'org/backend' },
+      },
+    ],
     metadata: {
       repositories: {
-        backend: {
-          path: '/repos/backend',
+        'backend-agent': [{
+          github: 'org/backend',
           clone_path: '/wt/backend',
-          feature_branch: 'feat/x',
-          base_branch: 'main',
           current_branch: 'feat/x',
           branch_states: {
             'feat/x': { base_branch: 'main' },
           },
-        },
+        }],
       },
       edit_allowed: true, status: 'active', channels: {}, participants: [], agent_sessions: {},
     },

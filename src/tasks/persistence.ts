@@ -58,7 +58,39 @@ export function getSharedPath(taskId: string): string {
 }
 
 /**
- * Get the path to a task's repos directory (for worktrees in MVP-v2)
+ * Get the path to a task's agents directory.
+ * Each agent's per-task workspace (cwd, RW scratch space) lives under
+ * `agents/<agentId>/`. Agent workspaces never contain repo clones — clones
+ * live under the task's `repos/` tree (see `getAgentClonesDir`).
+ */
+export function getAgentsPath(taskId: string): string {
+  return join(getTaskPath(taskId), 'agents');
+}
+
+/**
+ * Get the directory where a given agent's repo clones live for this task.
+ *
+ * Layout: `sessions/<taskId>/repos/<agentId>/`. Each clone is then nested at
+ * `<github>` (e.g., `org/repo/`). This is a sibling of `agents/<agentId>/`
+ * (the agent's cwd) — clones are deliberately kept out of the workspace tree
+ * so the workspace stays a clean RW scratch space and clone permissions are
+ * controlled solely via the sandbox's allow/deny mounts.
+ */
+export function getAgentClonesDir(taskId: string, agentId: string): string {
+  return join(getTaskPath(taskId), 'repos', agentId);
+}
+
+/**
+ * Get the clone path for a specific repo attached to a specific agent.
+ * Returns `sessions/<taskId>/repos/<agentId>/<github>/`.
+ */
+export function getAgentClonePath(taskId: string, agentId: string, github: string): string {
+  return join(getAgentClonesDir(taskId, agentId), github);
+}
+
+/**
+ * Get the legacy per-task repos directory (pre-v30).
+ * Used only by the migration path; new code should use `getAgentClonesDir`.
  */
 export function getReposPath(taskId: string): string {
   return join(getTaskPath(taskId), 'repos');
@@ -554,24 +586,17 @@ export async function findTaskByThread(threadId: string): Promise<string | null>
 }
 
 /**
- * Find a task by PR number and repo
- * Uses grep to find candidates, then verifies repo matches
+ * Find a task by PR number and repo.
+ *
+ * Uses grep to find candidates, then verifies that some agent on the task has
+ * an AttachedRepo for the matching github with a branch state pointing at the
+ * given PR number.
  */
 export async function findTaskByPRNumber(
   githubRepo: string,
   prNumber: number
 ): Promise<string | null> {
   await ensureSessionsDir();
-
-  // Import registry to map githubRepo -> repoKey
-  const { getAgentDefByGithubRepo } = await import('../agents/registry.js');
-  const repoDef = getAgentDefByGithubRepo(githubRepo);
-  const repoKey = repoDef?.repo?.repoKey;
-
-  if (!repoKey) {
-    // Unknown repo - can't match
-    return null;
-  }
 
   try {
     // Use grep to find metadata files containing the PR number
@@ -592,16 +617,25 @@ export async function findTaskByPRNumber(
       const metadata = await loadMetadata(taskId);
       if (!metadata) continue;
 
-      // Verify this task has the PR in the correct repo
-      const repoInfo = metadata.repositories[repoKey];
-      // Check branch_states first, then legacy top-level field
-      if (repoInfo?.branch_states) {
-        for (const state of Object.values(repoInfo.branch_states)) {
-          if (state.pr_number === prNumber) return taskId;
+      // Normalize legacy (pre-v30) `repositories` shape in memory before
+      // walking. This routes webhook events for in-flight PRs on tasks that
+      // haven't been re-saved since deploy (their on-disk metadata is still the
+      // old Record<repoKey, RepositoryInfo>). Mutates the loaded copy only — we
+      // never persist from here. Dynamic import avoids a static persistence↔task
+      // cycle; the call is runtime-only so the cycle is harmless either way.
+      const { migrateRepositoriesShape } = await import('./task.js');
+      migrateRepositoriesShape(metadata);
+
+      // Walk every agent's attached repos and look for the github + pr_number.
+      for (const attachments of Object.values(metadata.repositories || {})) {
+        if (!Array.isArray(attachments)) continue;
+        for (const attached of attachments) {
+          if (attached.github !== githubRepo) continue;
+          if (!attached.branch_states) continue;
+          for (const state of Object.values(attached.branch_states)) {
+            if (state.pr_number === prNumber) return taskId;
+          }
         }
-      }
-      if (repoInfo?.pr_number === prNumber) {
-        return taskId;
       }
     }
   } catch {

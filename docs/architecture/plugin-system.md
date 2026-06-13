@@ -71,7 +71,7 @@ plugins/
       pm.md                       # Body appended to PM prompt; frontmatter configures MCP/tools
 ```
 
-An agent is classified as a **repo agent** if its frontmatter contains `metadata.archie.repo.github`. Otherwise it is a **plugin agent**. (The legacy `repo-config.json` file is still parsed and exposed on `LoadedPlugin.repoConfigs` for backward compatibility, but the live registry in `src/agents/registry.ts` derives every repo agent from frontmatter — `repo-config.json` is no longer the source of truth for cloning or agent registration.)
+An agent is classified as a **repo agent** if its frontmatter contains `metadata.archie.repos` (or the legacy singular `metadata.archie.repo`). Otherwise it is a **plugin agent**. (The legacy `repo-config.json` file is still parsed and exposed on `LoadedPlugin.repoConfigs` for backward compatibility, but the live registry in `src/agents/registry.ts` derives every repo agent from frontmatter — `repo-config.json` is no longer the source of truth for cloning or agent registration.)
 
 ### Plugin Manifest (`plugin.json`)
 
@@ -181,7 +181,7 @@ The markdown body (everything after the frontmatter) becomes the Layer 3 domain-
 
 ## Repo Agent Configuration
 
-Repo agents are identified by the `metadata.archie.repo` field in their frontmatter. The `github` field is required and specifies the GitHub repository identifier:
+Repo agents declare one or more GitHub repositories in their frontmatter. The preferred shape is the plural `metadata.archie.repos: [...]` plus an optional `primary` selector:
 
 ```markdown
 ---
@@ -189,19 +189,28 @@ role: Senior backend engineer
 expertise: Ruby on Rails, PostgreSQL
 metadata:
   archie:
-    repo:
-      github: org/backend-repo
-      baseBranch: main
+    repos:
+      - github: org/backend-repo
+        baseBranch: main
+      - github: org/shared-libs
+        baseBranch: main
+    primary: org/backend-repo   # optional; defaults to repos[0].github
 ---
 ```
 
+- Every entry in `repos` is mounted at spawn (eager — there is no runtime attach).
+- `primary` is the default target for `repo-tools` when their `github` arg is omitted. If omitted, the first entry is used. If set, must match exactly one entry's `github`.
+- The legacy singular shape (`metadata.archie.repo: { github, baseBranch }`) is still accepted — the plugin loader auto-migrates it to the plural form: `repos: [{github, baseBranch}], primary: github`.
+- Both shapes in the same frontmatter is an error.
+
 ### Agent Derivation
 
-Each agent `.md` file with repo metadata produces an `AgentDef` with `track: 'repo'`:
+Each agent `.md` file with repo metadata produces an `AgentDef` carrying repo access (`def.repo` set):
 - Agent ID: `{key}-agent` (e.g., filename `backend.md` becomes `backend-agent`)
-- Repository path: `$ARCHIE_WORKDIR/repos/{key}` by default — this base clone is created at startup by `cloneRepos()` based on the frontmatter `github` field
-- GitHub repo: from `metadata.archie.repo.github`
-- Base branch: from `metadata.archie.repo.baseBranch` (defaults to `"main"` at spawn time)
+- Base cache paths: `$ARCHIE_WORKDIR/repos/{github}/` per declared repo (nested `org/repo` directories). All declared repos are pre-warmed by `cloneRepos()` at startup, deduplicated across all repo agents; a repo whose base cache is missing (e.g. added to frontmatter after startup) is lazy-cloned on first spawn.
+- Per-task clone paths: `sessions/<taskId>/repos/<agentId>/<github>/` (created by `setupSharedClone` at spawn). These are siblings of the agent's cwd (`sessions/<taskId>/agents/<agentId>/`), not nested inside it.
+- GitHub repos: from `metadata.archie.repos[*].github`
+- Base branches: from `metadata.archie.repos[*].baseBranch` (defaults to `"main"`)
 - Identity (role, expertise): from frontmatter
 - Domain prompt (Layer 3): from markdown body
 

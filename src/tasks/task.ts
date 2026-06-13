@@ -53,7 +53,8 @@ import {
 } from './persistence.js';
 import { getIsShuttingDown } from '../system/shutdown.js';
 import { scheduleIdleCheck } from './recovery.js';
-import { scanAgentDefs, getVisiblePeerIdsForSender } from '../agents/registry.js';
+import { scanAgentDefs, getAgentDef, getVisiblePeerIdsForSender } from '../agents/registry.js';
+import type { AttachedRepo } from '../types/task.js';
 import { syncPlugins } from '../system/plugin-sync.js';
 import { postSlackMessage, postSlackFiles, postInteractiveToThreads, addReaction, removeReaction, getMessageReactions, buildThreadUrl, openDMChannel, getChannelInfo, getUserInfo, isExternalUser, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
 import { basename } from 'path';
@@ -134,15 +135,8 @@ export class Task {
     // Scan fresh agent defs for this task
     const team = scanAgentDefs();
 
-    // Build repositories map from repo agent defs
-    const repositories: Record<string, { path: string }> = {};
-    for (const def of team) {
-      if (def.repo) {
-        repositories[def.repo.repoKey] = { path: def.repo.defaultPath };
-      }
-    }
-
-    // Create initial metadata
+    // metadata.repositories is populated lazily per-agent during spawn.
+    // It maps agentId → list of currently-attached repos.
     const metadata: TaskMetadata = {
       task_id: taskId,
       task_owner: null,
@@ -150,7 +144,7 @@ export class Task {
       channels: {},
       default_channel: null,
       agent_sessions: {},
-      repositories,
+      repositories: {},
       status: 'in_progress',
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -186,6 +180,12 @@ export class Task {
     if (!metadata) {
       throw new Error(`Task ${taskId} not found`);
     }
+
+    // v30 migration: `metadata.repositories` used to be Record<repoKey, RepositoryInfo>
+    // (one object per repo agent, keyed by short name). Now it's
+    // Record<agentId, AttachedRepo[]> (per-agent list of attached repos).
+    // Detect by structural check: any value that's NOT an array is old shape.
+    migrateRepositoriesShape(metadata);
 
     const team = scanAgentDefs();
     return new Task(taskId, metadata, team);
@@ -679,17 +679,20 @@ export class Task {
 
   /**
    * Remove shared clones and clear clone_path so next spawn creates a fresh one.
+   * Iterates every attached repo across every agent in the task.
    */
   private async cleanupClones(): Promise<void> {
     const { removeClone } = await import('../connectors/github/repo-clone.js');
-    for (const [repoKey, repoInfo] of Object.entries(this.metadata.repositories)) {
-      if (repoInfo.clone_path) {
+    for (const [agentId, attachments] of Object.entries(this.metadata.repositories)) {
+      if (!Array.isArray(attachments)) continue;
+      for (const attached of attachments) {
+        if (!attached.clone_path) continue;
         try {
-          await removeClone(repoInfo.clone_path);
-          repoInfo.clone_path = undefined;
-          logger.system(`Task ${this.taskId}: cleaned up clone for ${repoKey}`);
+          await removeClone(attached.clone_path);
+          attached.clone_path = undefined as unknown as string;
+          logger.system(`Task ${this.taskId}: cleaned up clone for ${agentId}/${attached.github}`);
         } catch (error) {
-          logger.warn('task', `Failed to cleanup clone for ${repoKey}: ${error}`);
+          logger.warn('task', `Failed to cleanup clone for ${agentId}/${attached.github}: ${error}`);
         }
       }
     }
@@ -1039,4 +1042,105 @@ export function getActiveTaskIds(): string[] {
 
 export function getTask(taskId: string): Task | undefined {
   return activeTasks.get(taskId);
+}
+
+// ---- v30 migration ----
+
+/**
+ * Migrate `metadata.repositories` from the legacy `Record<repoKey, RepositoryInfo>`
+ * shape to the new `Record<agentId, AttachedRepo[]>` shape.
+ *
+ * Detection: legacy values are objects with a `clone_path` / `current_branch`
+ * field; the new shape is always an array. We discriminate per-value and rewrite
+ * in-place. Persistence happens on the next `debouncedSave()`.
+ *
+ * For each legacy entry, we map `repoKey -> agentId` as `${repoKey}-agent` and
+ * use the registered agent's primary github to construct the new `AttachedRepo`.
+ * If the agent is no longer registered (plugin removed), the entry is dropped
+ * with a warning.
+ *
+ * Exported for testing — exercised in the normal flow only via `Task.get`.
+ */
+export function migrateRepositoriesShape(metadata: TaskMetadata): void {
+  const repos = metadata.repositories;
+  if (!repos || typeof repos !== 'object') return;
+
+  // Fast path: nothing to migrate if every entry is already an array.
+  let needsMigration = false;
+  for (const value of Object.values(repos)) {
+    if (!Array.isArray(value)) {
+      needsMigration = true;
+      break;
+    }
+  }
+  if (!needsMigration) return;
+
+  const migrated: Record<string, AttachedRepo[]> = {};
+  for (const [key, value] of Object.entries(repos)) {
+    if (Array.isArray(value)) {
+      migrated[key] = value;
+      continue;
+    }
+    // Legacy entry: object keyed by short repoKey (e.g. 'backend')
+    const agentId = `${key}-agent`;
+    const def = getAgentDef(agentId);
+    const primary = def?.repo?.primary;
+    if (!primary) {
+      logger.warn('task', `[migrate] Dropping legacy metadata.repositories[${key}] — no agent ${agentId} found in registry`);
+      continue;
+    }
+    const legacy = value as {
+      path?: string;
+      clone_path?: string;
+      current_branch?: string;
+      branch_states?: Record<string, any>;
+      feature_branch?: string;
+      base_branch?: string;
+      pr_number?: number;
+      last_processed_comment_id?: number;
+    };
+    const currentBranch = legacy.current_branch ?? legacy.feature_branch;
+    const attached: AttachedRepo = {
+      github: primary,
+      // Absent clone_path means "no clone yet" — keep it undefined (uniform with
+      // the live shape) rather than an empty-string sentinel. Spawn re-clones.
+      clone_path: legacy.clone_path || undefined,
+      // Preserve the legacy base-cache path the clone borrows from. The pre-v30
+      // base cache lived at $ARCHIE_WORKDIR/repos/<short-key>/, which differs
+      // from the new github-nested layout — without this, an in-flight clone
+      // whose alternates point at the old base path would lose read access
+      // through the sandbox when the spawner re-derives baseObjectsPath from
+      // the new layout convention. Spawn falls back to getBaseCachePath(github)
+      // only when base_path is absent (e.g. a fresh clone or a legacy entry
+      // with no `path` field).
+      base_path: legacy.path || undefined,
+      current_branch: currentBranch,
+      branch_states: legacy.branch_states,
+    };
+    // Lift legacy top-level PR/branch state into the branch_states map when the
+    // branch the task is on has no entry yet. Key off current_branch (the
+    // post-v17 norm) and fall back to feature_branch (older shape) — earlier
+    // code only handled feature_branch, losing PR state for tasks sitting on
+    // current_branch with no branch_states map.
+    if (currentBranch && !attached.branch_states?.[currentBranch]) {
+      attached.branch_states ??= {};
+      attached.branch_states[currentBranch] = {
+        base_branch: legacy.base_branch,
+        pr_number: legacy.pr_number,
+        last_processed_comment_id: legacy.last_processed_comment_id,
+      };
+    }
+    // Guard against a legacy repoKey and its v30 agentId key coexisting
+    // mid-rollout: don't append a second AttachedRepo for a github the
+    // already-migrated array entry covers.
+    const list = (migrated[agentId] ??= []);
+    if (!list.some((a) => a.github === attached.github)) {
+      list.push(attached);
+      logger.system(`[migrate] task ${metadata.task_id}: ${key} -> ${agentId}/${primary}`);
+    } else {
+      logger.warn('task', `[migrate] task ${metadata.task_id}: skipping legacy ${key} — ${agentId} already has ${attached.github}`);
+    }
+  }
+
+  metadata.repositories = migrated;
 }

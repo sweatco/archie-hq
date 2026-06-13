@@ -31,13 +31,13 @@ import { buildPeerListForSender } from './registry.js';
 import {
   getSharedPath,
   getTaskPath,
-  getReposPath,
+  getAgentClonePath,
 } from '../tasks/persistence.js';
-import { WORKDIR, getPluginsHeadInfo } from '../system/workdir.js';
+import { WORKDIR, getBaseCachePath, getPluginsHeadInfo } from '../system/workdir.js';
 import {
   createRecoverableInputGenerator,
 } from './message-queue.js';
-import { setupSharedClone, cloneExists, isWorktree, migrateWorktreeToClone, type CloneCheckout } from '../connectors/github/repo-clone.js';
+import { setupSharedClone, cloneExists, type CloneCheckout } from '../connectors/github/repo-clone.js';
 import { configureGitIdentity } from '../connectors/github/client.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { processAgentEventForLogging, logger } from '../system/logger.js';
@@ -67,10 +67,12 @@ async function generateRepoAgentPrompt(agent: Agent): Promise<string> {
     PEER_LIST: peerList,
   });
 
-  const repoPrompt = await loadPrompt('repo-agent', {
-    REPO_KEY: def.repo!.repoKey,
-    BASE_BRANCH: def.repo!.baseBranch || 'main',
-  });
+  // Per-repo data — github, base branch, current branch, clone path, mode — is
+  // surfaced through the dynamic Current Context block (built per spawn in the
+  // repo-agent branch of spawnAgent), not via static template variables here.
+  // The repo-agent prompt is generic; instances differ only in what their
+  // Current Context lists.
+  const repoPrompt = await loadPrompt('repo-agent', {});
 
   const layers = [corePrompt, repoPrompt];
   if (def.agentPrompt) layers.push(def.agentPrompt);
@@ -153,105 +155,6 @@ async function extractTaskUsernames(taskId: string): Promise<import('../memory/t
   } catch {
     return [];
   }
-}
-
-// ---- Repo clone setup ----
-
-interface RepoCloneSetup {
-  /** Path to the task-local shared clone the agent works in */
-  repoPath: string;
-  /** Whether the agent may write/push (edit mode) */
-  editAllowed: boolean;
-  /** Path to the base repo's .git/objects (shared, read-only) */
-  baseObjectsPath: string;
-  /** Branch the clone is currently checked out on */
-  currentBranch: string;
-}
-
-/**
- * Ensure a task-local shared clone exists for the agent's repo, migrating any
- * legacy worktree and hydrating branch state. Mutates the task's repo metadata
- * by reference. Returns the paths/flags the spawner needs to build its config.
- */
-async function prepareRepoClone(agent: Agent, task: Task): Promise<RepoCloneSetup> {
-  const { def } = agent;
-  const taskId = task.taskId;
-  const metadata = task.metadata;
-
-  const repoInfo = metadata.repositories[def.repo!.repoKey];
-  const baseRepoPath = repoInfo?.path || def.repo!.defaultPath;
-  const editAllowed = metadata.edit_allowed === true;
-  const baseBranch = repoInfo?.base_branch || def.repo!.baseBranch || 'main';
-  const baseObjectsPath = join(baseRepoPath, '.git', 'objects');
-
-  // CWD: always a shared clone at task-local path
-  const taskRepoPath = join(getReposPath(taskId), def.repo!.repoKey);
-  let repoPath: string;
-
-  // Step A: Migrate legacy worktree → shared clone if needed
-  if (await isWorktree(taskRepoPath)) {
-    logger.agent(def.id, `Migrating worktree to shared clone`);
-    await migrateWorktreeToClone(
-      def.repo!.repoKey, getReposPath(taskId), baseRepoPath,
-      baseBranch, def.repo!.githubRepo, repoInfo, editAllowed,
-    );
-  }
-
-  // Step B: Reuse existing clone or create new one
-  if (await cloneExists(taskRepoPath)) {
-    repoPath = taskRepoPath;
-    logger.agent(def.id, `Reusing existing clone at ${repoPath}`, { editMode: editAllowed });
-  } else {
-    const previousBranch = repoInfo?.current_branch;
-    const wasOnBaseBranch = !previousBranch || previousBranch === baseBranch;
-
-    let checkout: CloneCheckout;
-    if (editAllowed && wasOnBaseBranch) {
-      // RW mode, was on base branch (or no branch) — create feature branch for new work
-      checkout = { type: 'new_branch', name: taskBranchName(taskId) };
-    } else if (editAllowed && !wasOnBaseBranch) {
-      // RW but was on a specific branch — restore it
-      checkout = { type: 'branch', name: previousBranch! };
-    } else {
-      // RO default: clone on base branch
-      checkout = { type: 'base' };
-    }
-
-    const result = await setupSharedClone(
-      def.repo!.repoKey, getReposPath(taskId), baseRepoPath,
-      checkout, baseBranch, def.repo!.githubRepo,
-    );
-    repoPath = result.clone_path;
-
-    if (result.branch !== result.base_branch) {
-      hydrateBranchState(repoInfo, result.branch, result.base_branch);
-    } else {
-      repoInfo.current_branch = result.branch;
-    }
-    logger.agent(def.id, `Created shared clone at ${repoPath} (${result.branch})`, { editMode: editAllowed });
-  }
-
-  // Configure git identity for the clone
-  await configureGitIdentity(repoPath);
-
-  // Update metadata
-  repoInfo.clone_path = repoPath;
-  metadata.repositories[def.repo!.repoKey] = { ...repoInfo, path: baseRepoPath };
-
-  // Legacy hydration: old tasks with feature_branch but no branch_states
-  if (repoInfo.feature_branch && !repoInfo.branch_states) {
-    hydrateBranchState(repoInfo, repoInfo.feature_branch, repoInfo.base_branch);
-    const state = repoInfo.branch_states![repoInfo.feature_branch];
-    state.pr_number = repoInfo.pr_number;
-    state.last_processed_comment_id = repoInfo.last_processed_comment_id;
-  }
-
-  return {
-    repoPath,
-    editAllowed,
-    baseObjectsPath,
-    currentBranch: repoInfo.current_branch || baseBranch,
-  };
 }
 
 // ---- Main spawner ----
@@ -413,17 +316,102 @@ Shared folder: ${sharedPath} [READ-ONLY]
     mcpServers['scheduling-tools'] = createSchedulingMcpServer(agent, task);
   } else if (isRepoAgent(def)) {
     // ---- Repo access attached ----
-    const { repoPath, editAllowed, baseObjectsPath, currentBranch } = await prepareRepoClone(agent, task);
+    const editAllowed = metadata.edit_allowed === true;
+
+    // Ensure metadata.repositories[agentId] is an array; defaults to [primary]
+    // on first spawn so single-repo behaviour matches the pre-v30 world.
+    let attached = metadata.repositories[def.id];
+    if (!Array.isArray(attached)) {
+      attached = [];
+      metadata.repositories[def.id] = attached;
+    }
+    // Eager mount: every repo the agent declares in frontmatter is mounted at
+    // spawn. Ensure each declared repo has an attachment record (preserving
+    // existing clone/branch state for repos already present — important for
+    // recovering an old task after its agent gained a new repo in frontmatter).
+    // We iterate the DECLARED list (not the metadata list) so a repo removed
+    // from frontmatter is simply no longer mounted; a stale metadata record for
+    // it is harmless and left in place.
+    for (const entry of def.repo!.repos) {
+      if (!attached.some((a) => a.github === entry.github)) {
+        attached.push({ github: entry.github });
+      }
+    }
+
+    // Set up each declared repo: prepare clone, hydrate branch state.
+    const repoMounts: Array<{ github: string; clonePath: string; baseObjectsPath: string; currentBranch: string; baseBranch: string }> = [];
+    for (const entry of def.repo!.repos) {
+      const att = attached.find((a) => a.github === entry.github)!;
+      const baseBranch = entry.baseBranch || 'main';
+      // Prefer the base path the clone was actually built against — that's
+      // what alternates points at. Migrated old tasks carry the legacy base
+      // (`$ARCHIE_WORKDIR/repos/<short-key>/`); fresh clones default to the
+      // current github-nested layout. Pin it back into metadata so the value
+      // stays the single source of truth.
+      const baseRepoPath = att.base_path || getBaseCachePath(att.github);
+      att.base_path = baseRepoPath;
+      const baseObjectsPath = join(baseRepoPath, '.git', 'objects');
+      const desiredClonePath = getAgentClonePath(taskId, def.id, att.github);
+
+      let clonePath: string;
+      if (att.clone_path && await cloneExists(att.clone_path)) {
+        clonePath = att.clone_path;
+        logger.agent(def.id, `Reusing existing clone at ${clonePath} (${att.github})`, { editMode: editAllowed });
+      } else if (await cloneExists(desiredClonePath)) {
+        clonePath = desiredClonePath;
+        att.clone_path = clonePath;
+        logger.agent(def.id, `Reusing existing clone at ${clonePath} (${att.github})`, { editMode: editAllowed });
+      } else {
+        const previousBranch = att.current_branch;
+        const wasOnBaseBranch = !previousBranch || previousBranch === baseBranch;
+
+        let checkout: CloneCheckout;
+        if (editAllowed && wasOnBaseBranch) {
+          checkout = { type: 'new_branch', name: taskBranchName(taskId) };
+        } else if (editAllowed && previousBranch) {
+          checkout = { type: 'branch', name: previousBranch };
+        } else {
+          checkout = { type: 'base' };
+        }
+
+        const result = await setupSharedClone(
+          desiredClonePath, baseRepoPath, checkout, baseBranch, att.github,
+        );
+        clonePath = result.clone_path;
+        att.clone_path = clonePath;
+
+        if (result.branch !== result.base_branch) {
+          hydrateBranchState(att, result.branch, result.base_branch);
+        } else {
+          att.current_branch = result.branch;
+        }
+        logger.agent(def.id, `Created shared clone at ${clonePath} (${att.github} @ ${result.branch})`, { editMode: editAllowed });
+      }
+
+      await configureGitIdentity(clonePath);
+      repoMounts.push({
+        github: att.github,
+        clonePath,
+        baseObjectsPath,
+        currentBranch: att.current_branch || baseBranch,
+        baseBranch,
+      });
+    }
 
     systemPrompt = await generateRepoAgentPrompt(agent);
     const repoMode = editAllowed ? 'READ-WRITE' : 'READ-ONLY';
+    const mountLines = repoMounts.map((m) =>
+      `  - ${m.github}${m.github === def.repo!.primary ? ' (primary)' : ''}\n` +
+      `    path: ${m.clonePath} [${repoMode}]\n` +
+      `    branch: ${m.currentBranch} (base: ${m.baseBranch})`
+    ).join('\n');
     const context = `
 Task: ${taskId}
 
 Working directory (cwd): ${workspace} [READ-WRITE]
 
-Repository: ${repoPath} [${repoMode}]
-  - Current branch: ${currentBranch}
+Repositories (all mounted; use the github arg on repo-tools to target one, default is your primary):
+${mountLines}
 
 Shared folder: ${sharedPath} [READ-ONLY]
   - knowledge.log — conversation history and agent findings (read ONCE per message, don't poll)
@@ -431,8 +419,8 @@ Shared folder: ${sharedPath} [READ-ONLY]
 `;
     systemPrompt = `${systemPrompt}\n\nCurrent Context:\n${context}`;
 
-    additionalDirectories = [repoPath, ...additionalDirectories];
-
+    const allClonePaths = repoMounts.map((m) => m.clonePath);
+    additionalDirectories = [...allClonePaths, ...additionalDirectories];
     mcpServers['repo-tools'] = createRepoToolsMcpServer(agent, task);
 
     disallowedTools = [
@@ -440,7 +428,6 @@ Shared folder: ${sharedPath} [READ-ONLY]
       ...(editAllowed
         ? []
         : [
-            // RO mode: block write MCP operations (Write/Edit enforced by sandbox hooks)
             'mcp__repo-tools__push_branch',
             'mcp__repo-tools__create_pull_request',
             'mcp__repo-tools__update_pr',
@@ -455,36 +442,25 @@ Shared folder: ${sharedPath} [READ-ONLY]
           ]),
     ];
 
-    // Repo agents extend the base sandbox with the clone (RW in edit mode) and
-    // a few repo-specific read-only/protected paths.
-    const readOnlyPaths = [sharedPath, baseObjectsPath, ...pluginReadPaths];
+    // Repo agents extend the base sandbox with every attached clone (RW in edit
+    // mode) plus per-repo read-only/protected paths.
+    const readOnlyPaths = [sharedPath, ...repoMounts.map((m) => m.baseObjectsPath), ...pluginReadPaths];
+    const cloneGitHeads = repoMounts.map((m) => join(m.clonePath, '.git', 'HEAD'));
     sandboxOpts = {
       cwd,
       denyReadPaths: [WORKDIR],
-      allowReadPaths: [workspace, repoPath, ...claudeReadDirs, ...readOnlyPaths],
+      allowReadPaths: [workspace, ...allClonePaths, ...claudeReadDirs, ...readOnlyPaths],
       allowWritePaths: editAllowed
-        ? [workspace, repoPath, ...claudeWriteDirs]
+        ? [workspace, ...allClonePaths, ...claudeWriteDirs]
         : [workspace, ...claudeWriteDirs],
       denyWritePaths: editAllowed
-        ? [...readOnlyPaths, ...protectedWorkspaceFiles, join(repoPath, '.git', 'HEAD')]
-        : [repoPath, ...readOnlyPaths],
+        ? [...readOnlyPaths, ...protectedWorkspaceFiles, ...cloneGitHeads]
+        : [...allClonePaths, ...readOnlyPaths],
       allowedNetworkDomains: def.allowedNetworkDomains,
     };
   } else {
     // ---- Plain plugin agent ----
     systemPrompt = await generatePluginAgentPrompt(agent);
-    const context = `
-Task: ${taskId}
-Plugin: ${def.pluginName}
-
-Working directory (cwd): ${workspace} [READ-WRITE]
-
-Shared folder: ${sharedPath} [READ-ONLY]
-  - knowledge.log — conversation history and agent findings (read ONCE per message, don't poll)
-  - metadata.json — task metadata
-`;
-    systemPrompt = `${systemPrompt}\n\nCurrent Context:\n${context}`;
-
   }
 
   // ---- Organizational memory injection (read path; gated by ARCHIE_MEMORY_INJECT, default off) ----
@@ -492,7 +468,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
   const memorySelectors = isPmAgent(def)
     ? { taskTitle }
     : isRepoAgent(def)
-      ? { repo: def.repo!.repoKey, taskTitle }
+      ? { repo: def.repo!.primary, taskTitle }
       : { plugin: def.pluginName, taskTitle };
   const memoryUsernames = await extractTaskUsernames(taskId);
   systemPrompt = await enrichPromptWithMemory(systemPrompt, memoryUsernames, memorySelectors);

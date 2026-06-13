@@ -21,7 +21,8 @@ import { mountOAuthRoutes } from './connectors/oauth/routes.js';
 import { getIsShuttingDown, setShuttingDown } from './system/shutdown.js';
 import { getActiveTaskIds } from './tasks/task.js';
 import { logger } from './system/logger.js';
-import { bootstrapWorkdir, cloneRepos, OAUTH_DIR } from './system/workdir.js';
+import { bootstrapWorkdir, cloneRepos, OAUTH_DIR, REPOS_DIR } from './system/workdir.js';
+import { join } from 'path';
 import { validateMasterKey } from './system/secrets-vault.js';
 import { initPlugins, getPlugins } from './system/plugin-loader.js';
 import { initRegistry, getAllAgentDefs } from './agents/registry.js';
@@ -98,14 +99,19 @@ async function main(): Promise<void> {
     initEventPersistence();
     await initMemory();
 
-    // Clone repos declared by plugins
+    // Clone repos declared by plugins (every entry across every repo agent,
+    // deduplicated by github identifier).
     const agentDefs = getAllAgentDefs();
     const repoDefs = agentDefs.filter(isRepoAgent);
-    await cloneRepos(repoDefs.map((d) => ({
-      key: d.repo!.repoKey,
-      githubRepo: d.repo!.githubRepo,
-      baseBranch: d.repo!.baseBranch,
-    })));
+    const byGithub = new Map<string, { github: string; baseBranch: string }>();
+    for (const def of repoDefs) {
+      for (const entry of def.repo!.repos) {
+        if (!byGithub.has(entry.github)) {
+          byGithub.set(entry.github, { github: entry.github, baseBranch: entry.baseBranch });
+        }
+      }
+    }
+    await cloneRepos([...byGithub.values()]);
 
     // Log loaded plugins and agents
     const plugins = getPlugins();
@@ -140,10 +146,16 @@ async function main(): Promise<void> {
     }
     for (const def of repoDefs) {
       logger.plain(`  [${def.pluginName}] ${def.id} (${def.visibility}) — ${def.role}`);
-      const gitName = await configureGitIdentity(def.repo!.defaultPath);
-      logger.plain(`    repo: ${def.repo!.defaultPath} (${def.repo!.githubRepo})`);
+      const primary = def.repo!.primary;
+      const primaryPath = join(REPOS_DIR, primary);
+      const gitName = await configureGitIdentity(primaryPath);
+      logger.plain(`    primary: ${primary} (${primaryPath})`);
       if (gitName) {
         logger.plain(`    git: ${gitName}`);
+      }
+      const otherRepos = def.repo!.repos.filter((r) => r.github !== primary);
+      if (otherRepos.length > 0) {
+        logger.plain(`    also mounts: ${otherRepos.map((r) => r.github).join(', ')}`);
       }
       if (def.mcpServers) {
         logger.plain(`    mcp: ${Object.keys(def.mcpServers).join(', ')}`);

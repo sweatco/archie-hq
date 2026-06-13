@@ -24,7 +24,6 @@ import {
 import { Task } from '../../tasks/task.js';
 import { appendGitHubEvent } from '../../tasks/persistence.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
-import { getAgentDefByGithubRepo } from '../../agents/registry.js';
 import { findBranchStateByPR } from './branch-state.js';
 import { logger } from '../../system/logger.js';
 import { getIsShuttingDown } from '../../system/shutdown.js';
@@ -147,27 +146,33 @@ async function handleExistingTaskDirect(
   taskId: string,
   context: ReturnType<typeof formatGitHubContext>
 ): Promise<void> {
-  const repoDef = getAgentDefByGithubRepo(context.githubRepo);
-  const repoKey = repoDef?.repo?.repoKey || 'unknown';
   const task = await Task.get(taskId);
 
   if (context.eventType === 'issue_comment' && context.prNumber && context.commentId) {
-    const repoInfo = task.metadata.repositories[repoKey];
-    const branchMatch = repoInfo ? findBranchStateByPR(repoInfo, context.prNumber) : undefined;
-    const lastProcessedId = branchMatch?.state.last_processed_comment_id
-      ?? repoInfo?.last_processed_comment_id
-      ?? 0;
+    // Walk every attached repo across every agent looking for a branch state
+    // matching this PR. Update `last_processed_comment_id` on every match
+    // (two agents on the same PR should both dedup against the same id).
+    let lastProcessedId = 0;
+    const matches: Array<{ state: { last_processed_comment_id?: number } }> = [];
+    for (const attachments of Object.values(task.metadata.repositories)) {
+      if (!Array.isArray(attachments)) continue;
+      for (const attached of attachments) {
+        if (attached.github !== context.githubRepo) continue;
+        const branchMatch = findBranchStateByPR(attached, context.prNumber);
+        if (!branchMatch) continue;
+        matches.push(branchMatch);
+        const seen = branchMatch.state.last_processed_comment_id ?? 0;
+        if (seen > lastProcessedId) lastProcessedId = seen;
+      }
+    }
 
     if (context.commentId <= lastProcessedId) {
       logger.system(`GitHub: Skipping already-processed comment ${context.commentId} on PR #${context.prNumber}`);
       return;
     }
 
-    if (branchMatch) {
-      branchMatch.state.last_processed_comment_id = context.commentId;
-    }
-    if (repoInfo) {
-      repoInfo.last_processed_comment_id = context.commentId;
+    for (const m of matches) {
+      m.state.last_processed_comment_id = context.commentId;
     }
     task.debouncedSave();
   }

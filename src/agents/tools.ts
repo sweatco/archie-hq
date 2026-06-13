@@ -13,13 +13,13 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import type { AgentName, FindingType } from '../types/task.js';
+import type { AgentName, FindingType, AttachedRepo } from '../types/task.js';
 import type { Task } from '../tasks/task.js';
 import type { Agent } from './agent.js';
-import { getAgentIds, getVisiblePeerIdsForSender, getAgentDef } from './registry.js';
+import { getVisiblePeerIdsForSender, getAgentIds } from './registry.js';
 import { getGitHubClient, parseCheckRef } from '../connectors/github/client.js';
 import { gitExec } from '../connectors/github/repo-clone.js';
-import { mirrorLegacyFields, hydrateBranchState, findBranchStateByPR } from '../connectors/github/branch-state.js';
+import { hydrateBranchState, findBranchStateByPR } from '../connectors/github/branch-state.js';
 import { taskBranchName } from '../connectors/github/branch-naming.js';
 import { appendAgentFinding, appendArtifactShared } from '../tasks/persistence.js';
 import { copyArtifactToShared, assertReadable } from './artifacts.js';
@@ -43,7 +43,62 @@ import { scheduleReminder, cancelReminder } from '../system/reminder-scheduler.j
 import * as chrono from 'chrono-node';
 
 // Re-export branch state helpers for consumers that import from tools.ts
-export { mirrorLegacyFields, hydrateBranchState, findBranchStateByPR };
+export { hydrateBranchState, findBranchStateByPR };
+
+/**
+ * Resolve an attached repo for a repo-track agent in a task.
+ *
+ * If `github` is omitted, returns the agent's primary repo's `AttachedRepo`.
+ * If `github` is provided, returns the matching attached repo; returns undefined
+ * when the repo is not currently mounted for this agent (or when the agent has
+ * never spawned).
+ */
+function getAttached(agent: Agent, task: Task, github?: string): AttachedRepo | undefined {
+  const target = github ?? agent.def.repo!.primary;
+  const attachments = task.metadata.repositories[agent.def.id];
+  if (!Array.isArray(attachments)) return undefined;
+  return attachments.find((a) => a.github === target);
+}
+
+/**
+ * Resolve the github identifier for a tool call. Defaults to the agent's primary.
+ *
+ * Validates the requested github is declared in the agent's `repos` whitelist —
+ * agents can only operate on repos they've declared in frontmatter. For tools
+ * that also need the repo to be currently mounted (clone access), use
+ * `requireAttached`.
+ */
+function resolveGithub(agent: Agent, requested?: string): { ok: true; github: string } | { ok: false; error: string } {
+  const github = requested ?? agent.def.repo!.primary;
+  const declared = agent.def.repo!.repos.some((r) => r.github === github);
+  if (!declared) {
+    const list = agent.def.repo!.repos.map((r) => r.github).join(', ');
+    return { ok: false, error: `Repo "${github}" is not in this agent's declared repos list (${list}).` };
+  }
+  return { ok: true, github };
+}
+
+/**
+ * Resolve and require that the github has a local clone available.
+ *
+ * Every declared repo is mounted at spawn, so a missing clone is unexpected —
+ * it means the repo wasn't declared (caught by `resolveGithub`) or its clone
+ * setup didn't complete. The error tells the agent to report rather than retry
+ * blindly.
+ */
+function requireAttached(agent: Agent, task: Task, requested?: string): { ok: true; github: string; attached: AttachedRepo } | { ok: false; error: string } {
+  const resolved = resolveGithub(agent, requested);
+  if (!resolved.ok) return resolved;
+  const attached = getAttached(agent, task, resolved.github);
+  if (!attached?.clone_path) {
+    return { ok: false, error: `Repo "${resolved.github}" has no local clone (mount may have failed). Report this rather than retrying.` };
+  }
+  return { ok: true, github: resolved.github, attached };
+}
+
+const githubArgSchema = z.string().optional().describe(
+  'Github identifier (e.g. "org/repo") of a declared repo. Defaults to the agent\'s primary repo when omitted.',
+);
 
 const execAsync = promisify(exec);
 
@@ -157,10 +212,15 @@ export interface PRChecksReport {
 
 /**
  * Build the enum of agents the given sender can message.
- * Always includes 'pm-agent' as a fallback target so an isolated local helper
- * can still escalate. Excludes the sender itself.
+ *
+ * Applies visibility rules from the sender's plugin (same-plugin always
+ * visible; other-plugin only when `visibility === 'global'`). Always includes
+ * 'pm-agent' as a fallback target so an isolated local helper can still
+ * escalate. Excludes the sender itself.
  */
-function visibleTargetsForSender(senderDef: import('../types/agent.js').AgentDef): [string, ...string[]] {
+function visibleTargetsForSender(
+  senderDef: import('../types/agent.js').AgentDef,
+): [string, ...string[]] {
   const visible = new Set<string>(getVisiblePeerIdsForSender(senderDef));
   // PM is always reachable (escalation channel), except when the sender is PM itself.
   if (senderDef.id !== 'pm-agent') visible.add('pm-agent');
@@ -372,8 +432,8 @@ function createAssignTaskOwnerTool(agent: Agent, task: Task) {
   // PM can only assign to agents it can see — globals + same-plugin (pm) locals.
   const visibleIds = getVisiblePeerIdsForSender(agent.def);
   // Defensive fallback: if no visible peers (misconfigured deployment), expose
-  // the legacy full list so the tool still type-checks and PM gets a clear
-  // runtime error instead of a Zod construction crash.
+  // the full registry list so Zod construction doesn't crash on an empty enum;
+  // PM will get a clearer runtime error from the actual delegation attempt.
   const taskOwnerAgents = (visibleIds.length > 0 ? visibleIds : getAgentIds()) as [string, ...string[]];
   return tool(
     'assign_task_owner',
@@ -714,25 +774,27 @@ function createGetAgentsStatusTool(agent: Agent, task: Task) {
 // ---- GitHub tools (repo agents in edit mode) ----
 
 function createPushBranchTool(agent: Agent, task: Task) {
-  const repoKey = agent.def.repo!.repoKey;
   return tool(
     'push_branch',
     'Push commits from the local clone to the remote origin. Set force=true after a rebase to force-push with lease (safe against overwriting concurrent updates). Do not use force=true just because a normal push was rejected — investigate why first.',
     {
       force: z.boolean().optional().describe('Use --force-with-lease. Required after rebasing a pushed branch.'),
+      github: githubArgSchema,
     },
     async (args) => {
       const agentName = agent.def.id as AgentName;
+      const resolved = requireAttached(agent, task, args.github);
+      if (!resolved.ok) return err(resolved.error);
       const force = args.force === true;
-      logger.agentAction(agentName, force ? 'Force-pushing branch (with lease)' : 'Pushing branch', repoKey);
+      logger.agentAction(
+        agentName,
+        force ? 'Force-pushing branch (with lease)' : 'Pushing branch',
+        resolved.github,
+      );
 
-      const repoInfo = task.metadata.repositories[repoKey];
-      if (!repoInfo?.clone_path) {
-        return err('No clone found');
-      }
-
-      const branch = repoInfo.current_branch;
-      const state = branch ? repoInfo.branch_states?.[branch] : undefined;
+      const { attached } = resolved;
+      const branch = attached.current_branch;
+      const state = branch ? attached.branch_states?.[branch] : undefined;
 
       if (!branch || !state) {
         return err('No branch to push');
@@ -740,12 +802,11 @@ function createPushBranchTool(agent: Agent, task: Task) {
 
       try {
         const forceFlag = force ? '--force-with-lease ' : '';
-        await execAsync(`git push ${forceFlag}-u origin HEAD:${branch}`, { cwd: repoInfo.clone_path });
+        await execAsync(`git push ${forceFlag}-u origin HEAD:${branch}`, { cwd: attached.clone_path! });
 
-        mirrorLegacyFields(repoInfo);
         task.debouncedSave();
 
-        const message = `${force ? 'Force-pushed' : 'Pushed'} ${branch} to origin`;
+        const message = `${force ? 'Force-pushed' : 'Pushed'} ${branch} to origin (${resolved.github})`;
         logger.system(`GitHub: ${message}`);
         return ok(`Successfully pushed: ${message}`);
       } catch (error) {
@@ -758,58 +819,59 @@ function createPushBranchTool(agent: Agent, task: Task) {
 }
 
 function createPullRequestTool(agent: Agent, task: Task) {
-  const repoKey = agent.def.repo!.repoKey;
-  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'create_pull_request',
     'Create a pull request on GitHub.',
     {
       title: z.string().describe('PR title'),
       body: z.string().describe('PR description body'),
+      github: githubArgSchema,
     },
     async (args) => {
       const agentName = agent.def.id as AgentName;
       logger.agentAction(agentName, 'Creating PR', args.title);
 
+      const resolved = requireAttached(agent, task, args.github);
+      if (!resolved.ok) return err(resolved.error);
+
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
 
-      const repoInfo = task.metadata.repositories[repoKey];
-      const branch = repoInfo?.current_branch;
-      const state = branch ? repoInfo?.branch_states?.[branch] : undefined;
+      const { github, attached } = resolved;
+      const branch = attached.current_branch;
+      const state = branch ? attached.branch_states?.[branch] : undefined;
       const head = branch || taskBranchName(task.taskId);
-      const base = state?.base_branch || agent.def.repo!.baseBranch || 'main';
+      const entry = agent.def.repo!.repos.find((r) => r.github === github);
+      const base = state?.base_branch || entry?.baseBranch || 'main';
 
-      const result = await client.createPullRequest(githubRepo, head, base, args.title, args.body);
+      const result = await client.createPullRequest(github, head, base, args.title, args.body);
 
       if (state) {
         state.pr_number = result.pr_number;
       }
-      if (repoInfo) {
-        mirrorLegacyFields(repoInfo);
-        task.debouncedSave();
-      }
+      task.debouncedSave();
 
-      await appendAgentFinding(task.taskId, agentName, `Created PR #${result.pr_number}: ${result.pr_url}`, 'decision');
-      return ok(`Created PR #${result.pr_number}: ${result.pr_url}`);
+      await appendAgentFinding(task.taskId, agentName, `Created PR #${result.pr_number} on ${github}: ${result.pr_url}`, 'decision');
+      return ok(`Created PR #${result.pr_number} on ${github}: ${result.pr_url}`);
     },
   );
 }
 
 function createGetPRStatusTool(agent: Agent, task: Task) {
-  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'get_pr_status',
     'Get the current status of a pull request.',
-    { pr_number: z.number().describe('The PR number') },
+    { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
+      const resolved = resolveGithub(agent, args.github);
+      if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
-      const status = await client.getPRStatus(githubRepo, args.pr_number);
+      const status = await client.getPRStatus(resolved.github, args.pr_number);
       return {
         content: [{
           type: 'text' as const,
-          text: `PR #${args.pr_number} status:\n- State: ${status.state}\n- Mergeable: ${status.mergeable}\n- Mergeable State: ${status.mergeableState}\n- Approved: ${status.approved}`,
+          text: `PR #${args.pr_number} (${resolved.github}) status:\n- State: ${status.state}\n- Mergeable: ${status.mergeable}\n- Mergeable State: ${status.mergeableState}\n- Approved: ${status.approved}`,
         }],
       };
     },
@@ -817,15 +879,16 @@ function createGetPRStatusTool(agent: Agent, task: Task) {
 }
 
 function createGetPRChecksTool(agent: Agent, task: Task) {
-  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'get_pr_checks',
     'List CI checks (check-runs + legacy commit statuses) attached to a PR\'s HEAD commit. Returns conclusion, URL, and — for failed checks — the full output (title/summary/text). Use this when a "checks updated" event arrives or get_pr_status reports mergeableState=unstable, to find which specific check broke.',
-    { pr_number: z.number().describe('The PR number') },
+    { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
+      const resolved = resolveGithub(agent, args.github);
+      if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
-      const report = await client.listPRChecks(githubRepo, args.pr_number);
+      const report = await client.listPRChecks(resolved.github, args.pr_number);
       if (report.entries.length === 0) {
         return ok(`No checks found for PR #${args.pr_number} (head ${report.headSha.slice(0, 7)}).`);
       }
@@ -864,7 +927,6 @@ function createGetPRChecksTool(agent: Agent, task: Task) {
 }
 
 function createGetCheckRunTool(agent: Agent, task: Task) {
-  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'get_check_run',
     'Fetch a single CI check/run by its id or a github.com URL — no PR needed. ' +
@@ -873,8 +935,12 @@ function createGetCheckRunTool(agent: Agent, task: Task) {
     'For checks on a PR you already know, prefer get_pr_checks.',
     {
       ref: z.string().describe('A numeric check-run/job/workflow-run id, or a full github.com URL pointing at one.'),
+      github: githubArgSchema,
     },
     async (args) => {
+      const resolved = resolveGithub(agent, args.github);
+      if (!resolved.ok) return err(resolved.error);
+      const githubRepo = resolved.github;
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
 
@@ -944,59 +1010,62 @@ function createGetCheckRunTool(agent: Agent, task: Task) {
 }
 
 function createGetPRReviewsTool(agent: Agent, task: Task) {
-  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'get_pr_reviews',
     'Get review-level summary for a PR (approvals, change requests, review bodies). For line-level comments, use get_review_threads.',
-    { pr_number: z.number().describe('The PR number') },
+    { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
+      const resolved = resolveGithub(agent, args.github);
+      if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
-      const reviews = await client.getPRReviews(githubRepo, args.pr_number);
+      const reviews = await client.getPRReviews(resolved.github, args.pr_number);
       if (reviews.length === 0) {
-        return ok(`No reviews found for PR #${args.pr_number}`);
+        return ok(`No reviews found for PR #${args.pr_number} (${resolved.github})`);
       }
       const lines = reviews.map((r) =>
         `- ${r.user} [${r.state}] @ ${r.submittedAt}: ${r.body || '(no body)'}`
       );
-      return ok(`Reviews for PR #${args.pr_number}:\n${lines.join('\n')}`);
+      return ok(`Reviews for PR #${args.pr_number} (${resolved.github}):\n${lines.join('\n')}`);
     },
   );
 }
 
 function createGetPRCommentsTool(agent: Agent, task: Task) {
-  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'get_pr_comments',
     'Get top-level PR conversation comments (the "Conversation" tab). Does not include line-level review comments — use get_review_threads for those.',
-    { pr_number: z.number().describe('The PR number') },
+    { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
+      const resolved = resolveGithub(agent, args.github);
+      if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
-      const comments = await client.getPRComments(githubRepo, args.pr_number);
+      const comments = await client.getPRComments(resolved.github, args.pr_number);
       if (comments.length === 0) {
-        return ok(`No conversation comments on PR #${args.pr_number}`);
+        return ok(`No conversation comments on PR #${args.pr_number} (${resolved.github})`);
       }
       const lines = comments.map((c) =>
         `- [comment_id=${c.id}] ${c.author} @ ${c.createdAt}: ${c.body}`
       );
-      return ok(`Comments on PR #${args.pr_number}:\n${lines.join('\n')}`);
+      return ok(`Comments on PR #${args.pr_number} (${resolved.github}):\n${lines.join('\n')}`);
     },
   );
 }
 
 function createGetReviewThreadsTool(agent: Agent, task: Task) {
-  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'get_review_threads',
     'Get every review thread on a PR with its thread_id (for resolve_review_thread) and each comment\'s comment_id (for reply_to_review_comment).',
-    { pr_number: z.number().describe('The PR number') },
+    { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
+      const resolved = resolveGithub(agent, args.github);
+      if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
-      const threads = await client.getReviewThreads(githubRepo, args.pr_number);
+      const threads = await client.getReviewThreads(resolved.github, args.pr_number);
       if (threads.length === 0) {
-        return ok(`No review threads on PR #${args.pr_number}`);
+        return ok(`No review threads on PR #${args.pr_number} (${resolved.github})`);
       }
       const chunks = threads.map((t) => {
         const flags = [
@@ -1010,13 +1079,12 @@ function createGetReviewThreadsTool(agent: Agent, task: Task) {
         );
         return [header, ...lines].join('\n');
       });
-      return ok(`Review threads on PR #${args.pr_number}:\n${chunks.join('\n\n')}`);
+      return ok(`Review threads on PR #${args.pr_number} (${resolved.github}):\n${chunks.join('\n\n')}`);
     },
   );
 }
 
 function createListPRsTool(agent: Agent, task: Task) {
-  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'list_prs',
     'List pull requests with optional filters.',
@@ -1025,39 +1093,43 @@ function createListPRsTool(agent: Agent, task: Task) {
       base: z.string().optional().describe('Filter by base branch (e.g. "main")'),
       sort: z.enum(['created', 'updated', 'popularity', 'long-running']).optional().describe('Sort field (default: updated)'),
       limit: z.number().optional().describe('Max results to return (default: 10)'),
+      github: githubArgSchema,
     },
     async (args) => {
+      const resolved = resolveGithub(agent, args.github);
+      if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
-      const prs = await client.listPRs(githubRepo, {
+      const prs = await client.listPRs(resolved.github, {
         state: args.state,
         base: args.base,
         sort: args.sort,
         per_page: args.limit,
       });
       if (prs.length === 0) {
-        return ok('No PRs found matching the filters.');
+        return ok(`No PRs found in ${resolved.github} matching the filters.`);
       }
       const lines = prs.map((pr) =>
         `#${pr.number} [${pr.state}] ${pr.title} (${pr.head} → ${pr.base}) by ${pr.author} — ${pr.url}`
       );
-      return ok(lines.join('\n'));
+      return ok(`PRs in ${resolved.github}:\n${lines.join('\n')}`);
     },
   );
 }
 
 function createGetPRTool(agent: Agent, task: Task) {
-  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'get_pr',
     'Get full PR details: title, description, diff, state, and branches.',
-    { pr_number: z.number().describe('The PR number') },
+    { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
+      const resolved = resolveGithub(agent, args.github);
+      if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
-      const pr = await client.getPRDetails(githubRepo, args.pr_number);
+      const pr = await client.getPRDetails(resolved.github, args.pr_number);
       const text = [
-        `PR #${pr.number}: ${pr.title}`,
+        `PR #${pr.number} (${resolved.github}): ${pr.title}`,
         `State: ${pr.state} | ${pr.head} → ${pr.base}`,
         `URL: ${pr.url}`,
         '',
@@ -1073,7 +1145,6 @@ function createGetPRTool(agent: Agent, task: Task) {
 }
 
 function createUpdatePRTool(agent: Agent, task: Task) {
-  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'update_pr',
     'Update the title, description, and/or base branch of a pull request. All fields are optional — include only what needs to change.',
@@ -1082,40 +1153,44 @@ function createUpdatePRTool(agent: Agent, task: Task) {
       title: z.string().optional().describe('New PR title'),
       body: z.string().optional().describe('New PR description body'),
       base: z.string().optional().describe('New base branch (retarget the PR, e.g. "main" → "release-1.2")'),
+      github: githubArgSchema,
     },
     async (args) => {
+      const resolved = resolveGithub(agent, args.github);
+      if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
-      await client.updatePR(githubRepo, args.pr_number, {
+      await client.updatePR(resolved.github, args.pr_number, {
         title: args.title,
         body: args.body,
         base: args.base,
       });
-      return { content: [{ type: 'text' as const, text: `Updated PR #${args.pr_number}` }] };
+      return ok(`Updated PR #${args.pr_number} (${resolved.github})`);
     },
   );
 }
 
 function createAddPRCommentTool(agent: Agent, task: Task) {
-  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'add_pr_comment',
     'Add a general comment to a pull request.',
     {
       pr_number: z.number().describe('The PR number'),
       comment: z.string().describe('The comment text'),
+      github: githubArgSchema,
     },
     async (args) => {
+      const resolved = resolveGithub(agent, args.github);
+      if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
-      await client.addPRComment(githubRepo, args.pr_number, args.comment);
-      return { content: [{ type: 'text' as const, text: `Added comment to PR #${args.pr_number}` }] };
+      await client.addPRComment(resolved.github, args.pr_number, args.comment);
+      return ok(`Added comment to PR #${args.pr_number} (${resolved.github})`);
     },
   );
 }
 
 function createAddReviewCommentTool(agent: Agent, task: Task) {
-  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'add_review_comment',
     'Start a NEW review thread on a specific line of code. To reply inside an existing thread, use reply_to_review_comment instead.',
@@ -1124,18 +1199,20 @@ function createAddReviewCommentTool(agent: Agent, task: Task) {
       path: z.string().describe('File path relative to repo root'),
       line: z.number().describe('Line number in the file'),
       comment: z.string().describe('The comment text'),
+      github: githubArgSchema,
     },
     async (args) => {
+      const resolved = resolveGithub(agent, args.github);
+      if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
-      await client.addReviewComment(githubRepo, args.pr_number, args.path, args.line, args.comment);
-      return ok(`Added review comment to ${args.path}:${args.line} on PR #${args.pr_number}`);
+      await client.addReviewComment(resolved.github, args.pr_number, args.path, args.line, args.comment);
+      return ok(`Added review comment to ${args.path}:${args.line} on PR #${args.pr_number} (${resolved.github})`);
     },
   );
 }
 
 function createReplyToReviewCommentTool(agent: Agent, task: Task) {
-  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'reply_to_review_comment',
     'Reply inside an existing review thread. Requires the comment_id of any comment in the target thread (from the knowledge log or get_review_threads).',
@@ -1143,85 +1220,93 @@ function createReplyToReviewCommentTool(agent: Agent, task: Task) {
       pr_number: z.number().describe('The PR number'),
       comment_id: z.number().describe('REST comment id of any comment in the target thread'),
       comment: z.string().describe('The reply text'),
+      github: githubArgSchema,
     },
     async (args) => {
+      const resolved = resolveGithub(agent, args.github);
+      if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
-      await client.replyToReviewComment(githubRepo, args.pr_number, args.comment_id, args.comment);
-      return ok(`Replied to review comment ${args.comment_id} on PR #${args.pr_number}`);
+      await client.replyToReviewComment(resolved.github, args.pr_number, args.comment_id, args.comment);
+      return ok(`Replied to review comment ${args.comment_id} on PR #${args.pr_number} (${resolved.github})`);
     },
   );
 }
 
 function createResolveReviewThreadTool(agent: Agent, task: Task) {
-  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'resolve_review_thread',
     'Mark a review thread as resolved. thread_id must be a GraphQL node id (e.g. PRRT_...) obtained from get_review_threads.',
     {
       pr_number: z.number().describe('The PR number'),
       thread_id: z.string().describe('GraphQL thread node id from get_review_threads (e.g. PRRT_...)'),
+      github: githubArgSchema,
     },
     async (args) => {
+      const resolved = resolveGithub(agent, args.github);
+      if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
-      await client.resolveReviewThread(githubRepo, args.pr_number, args.thread_id);
-      return ok(`Resolved review thread ${args.thread_id} on PR #${args.pr_number}`);
+      await client.resolveReviewThread(resolved.github, args.pr_number, args.thread_id);
+      return ok(`Resolved review thread ${args.thread_id} on PR #${args.pr_number} (${resolved.github})`);
     },
   );
 }
 
 function createRequestReReviewTool(agent: Agent, task: Task) {
-  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'request_re_review',
     'Request reviewers to re-review the PR after changes.',
-    { pr_number: z.number().describe('The PR number') },
+    { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
+      const resolved = resolveGithub(agent, args.github);
+      if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
-      await client.requestReReview(githubRepo, args.pr_number);
-      return { content: [{ type: 'text' as const, text: `Requested re-review for PR #${args.pr_number}` }] };
+      await client.requestReReview(resolved.github, args.pr_number);
+      return ok(`Requested re-review for PR #${args.pr_number} (${resolved.github})`);
     },
   );
 }
 
 
 function createMergePRTool(agent: Agent, task: Task) {
-  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'merge_pull_request',
     'Merge a pull request. Checks mergeability first and returns the current status if not ready.',
-    { pr_number: z.number().describe('The PR number') },
+    { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
+      const resolved = resolveGithub(agent, args.github);
+      if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
 
-      const status = await client.getPRStatus(githubRepo, args.pr_number);
+      const status = await client.getPRStatus(resolved.github, args.pr_number);
       if (status.state !== 'open') {
-        return { content: [{ type: 'text' as const, text: `Cannot merge: PR #${args.pr_number} is ${status.state}` }] };
+        return ok(`Cannot merge: PR #${args.pr_number} (${resolved.github}) is ${status.state}`);
       }
       if (!status.mergeable || status.mergeableState !== 'clean') {
-        return { content: [{ type: 'text' as const, text: `Cannot merge: PR #${args.pr_number} is not ready (mergeable=${status.mergeable}, state=${status.mergeableState})` }] };
+        return ok(`Cannot merge: PR #${args.pr_number} (${resolved.github}) is not ready (mergeable=${status.mergeable}, state=${status.mergeableState})`);
       }
 
-      const result = await client.mergePullRequest(githubRepo, args.pr_number);
+      const result = await client.mergePullRequest(resolved.github, args.pr_number);
       return { content: [{ type: 'text' as const, text: result.message }] };
     },
   );
 }
 
 function createClosePRTool(agent: Agent, task: Task) {
-  const githubRepo = agent.def.repo!.githubRepo;
   return tool(
     'close_pull_request',
     'Close a pull request without merging.',
-    { pr_number: z.number().describe('The PR number') },
+    { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
+      const resolved = resolveGithub(agent, args.github);
+      if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
-      await client.closePullRequest(githubRepo, args.pr_number);
-      return { content: [{ type: 'text' as const, text: `Closed PR #${args.pr_number}` }] };
+      await client.closePullRequest(resolved.github, args.pr_number);
+      return ok(`Closed PR #${args.pr_number} (${resolved.github})`);
     },
   );
 }
@@ -1229,36 +1314,35 @@ function createClosePRTool(agent: Agent, task: Task) {
 // ---- Git workflow tools (repo agents) ----
 
 function createFetchTool(agent: Agent, task: Task) {
-  const repoKey = agent.def.repo!.repoKey;
   return tool(
     'fetch',
     'Fetch latest refs from origin.',
-    {},
-    async () => {
-      const repoInfo = task.metadata.repositories[repoKey];
-      const clonePath = repoInfo?.clone_path;
-      if (!clonePath) return err('No clone path');
-      await gitExec(clonePath, 'fetch origin');
-      return ok('Fetched latest from origin');
+    { github: githubArgSchema },
+    async (args) => {
+      const resolved = requireAttached(agent, task, args.github);
+      if (!resolved.ok) return err(resolved.error);
+      await gitExec(resolved.attached.clone_path!, 'fetch origin');
+      return ok(`Fetched latest from origin (${resolved.github})`);
     },
   );
 }
 
 function createSwitchBranchTool(agent: Agent, task: Task) {
-  const repoKey = agent.def.repo!.repoKey;
   return tool(
     'switch_branch',
     'Switch to a different branch. Fetches latest, auto-stashes dirty work, auto-pops on return.',
     {
       branch: z.string().describe('Branch name to switch to'),
+      github: githubArgSchema,
     },
     async (args) => {
-      const repoInfo = task.metadata.repositories[repoKey];
-      const clonePath = repoInfo.clone_path;
-      if (!clonePath) return err('No clone available');
+      const resolved = requireAttached(agent, task, args.github);
+      if (!resolved.ok) return err(resolved.error);
+      const { attached } = resolved;
+      const clonePath = attached.clone_path!;
 
       const branch = args.branch;
-      const currentBranch = repoInfo.current_branch;
+      const currentBranch = attached.current_branch;
 
       // 1. Fetch branch into clone
       await gitExec(clonePath, `fetch origin ${branch}`).catch(() => {});
@@ -1268,8 +1352,8 @@ function createSwitchBranchTool(agent: Agent, task: Task) {
       if (status.trim()) {
         const stashName = `archie:${task.taskId}:${currentBranch}`;
         await gitExec(clonePath, `stash push --include-untracked -m "${stashName}"`);
-        if (currentBranch && repoInfo.branch_states?.[currentBranch]) {
-          repoInfo.branch_states[currentBranch].stash_name = stashName;
+        if (currentBranch && attached.branch_states?.[currentBranch]) {
+          attached.branch_states[currentBranch].stash_name = stashName;
         }
       }
 
@@ -1282,16 +1366,16 @@ function createSwitchBranchTool(agent: Agent, task: Task) {
       }
 
       // 4. Track branch state
-      repoInfo.branch_states ??= {};
-      if (!repoInfo.branch_states[branch]) {
-        repoInfo.branch_states[branch] = {};
+      attached.branch_states ??= {};
+      if (!attached.branch_states[branch]) {
+        attached.branch_states[branch] = {};
       }
 
       // 5. Update current_branch
-      repoInfo.current_branch = branch;
+      attached.current_branch = branch;
 
       // 7. Auto-pop stash if exists for target branch
-      const targetState = repoInfo.branch_states[branch];
+      const targetState = attached.branch_states[branch];
       if (targetState?.stash_name) {
         const stashList = await gitExec(clonePath, 'stash list');
         const stashIndex = findStashIndex(stashList, targetState.stash_name);
@@ -1301,7 +1385,6 @@ function createSwitchBranchTool(agent: Agent, task: Task) {
         targetState.stash_name = undefined;
       }
 
-      mirrorLegacyFields(repoInfo);
       task.debouncedSave();
       return ok(`Switched to ${branch}`);
     },
@@ -1309,51 +1392,62 @@ function createSwitchBranchTool(agent: Agent, task: Task) {
 }
 
 function createCreateBranchTool(agent: Agent, task: Task) {
-  const repoKey = agent.def.repo!.repoKey;
   return tool(
     'create_branch',
     'Create a new branch and switch to it. Branch name is auto-generated from the task ID. Returns the full branch name.',
     {
       base: z.string().optional().describe('Base branch or commit (default: current HEAD)'),
+      github: githubArgSchema,
     },
     async (args) => {
-      const repoInfo = task.metadata.repositories[repoKey];
-      if (!repoInfo?.clone_path) return err('No clone');
+      const resolved = requireAttached(agent, task, args.github);
+      if (!resolved.ok) return err(resolved.error);
+      const { attached } = resolved;
 
       // Count existing branches to generate unique name
-      const existing = Object.keys(repoInfo.branch_states || {}).length;
+      const existing = Object.keys(attached.branch_states || {}).length;
       const branchName = taskBranchName(task.taskId, existing);
 
       const base = args.base || 'HEAD';
-      await gitExec(repoInfo.clone_path, `checkout -b ${branchName} ${base}`);
+      await gitExec(attached.clone_path!, `checkout -b ${branchName} ${base}`);
 
-      repoInfo.branch_states ??= {};
-      repoInfo.branch_states[branchName] = {};
-      repoInfo.current_branch = branchName;
-      mirrorLegacyFields(repoInfo);
+      attached.branch_states ??= {};
+      attached.branch_states[branchName] = {};
+      attached.current_branch = branchName;
       task.debouncedSave();
-      return ok(`Created and switched to ${branchName}`);
+      return ok(`Created and switched to ${branchName} (${resolved.github})`);
     },
   );
 }
 
 function createListBranchesTool(agent: Agent, task: Task) {
-  const repoKey = agent.def.repo!.repoKey;
   return tool(
     'list_branches',
-    'List branches created or visited by this agent in the current task.',
-    {},
-    async () => {
-      const repoInfo = task.metadata.repositories[repoKey];
-      const current = repoInfo?.current_branch || '(unknown)';
-      const states = repoInfo?.branch_states || {};
-      const branches = Object.entries(states)
-        .map(([name, s]) => `${name}${s.pr_number ? ` (PR #${s.pr_number})` : ''}`);
-      const lines = [
-        `Current: ${current}`,
-        `Branches: ${branches.join(', ') || '(none)'}`,
-      ];
-      return ok(lines.join('\n'));
+    'List branches created or visited by this agent in the current task. With no arguments, lists branches across every attached repo.',
+    { github: githubArgSchema },
+    async (args) => {
+      const attachments = task.metadata.repositories[agent.def.id];
+      if (!Array.isArray(attachments) || attachments.length === 0) {
+        return ok('No attached repos.');
+      }
+      let filtered = attachments;
+      if (args.github) {
+        const resolved = resolveGithub(agent, args.github);
+        if (!resolved.ok) return err(resolved.error);
+        filtered = attachments.filter((a) => a.github === resolved.github);
+      }
+      const blocks = filtered.map((a) => {
+        const current = a.current_branch || '(unknown)';
+        const states = a.branch_states || {};
+        const branches = Object.entries(states)
+          .map(([name, s]) => `${name}${s.pr_number ? ` (PR #${s.pr_number})` : ''}`);
+        return [
+          `[${a.github}]`,
+          `  Current: ${current}`,
+          `  Branches: ${branches.join(', ') || '(none)'}`,
+        ].join('\n');
+      });
+      return ok(blocks.join('\n\n'));
     },
   );
 }
@@ -1458,7 +1552,7 @@ export function createCommsMcpServer(agent: Agent, task: Task) {
   });
 }
 
-/** Task orchestration (ownership, completion, edit mode, team status, spawning). */
+/** Task orchestration (ownership, completion, edit mode, team status). */
 export function createOrchestrationMcpServer(agent: Agent, task: Task) {
   return createSdkMcpServer({
     name: 'orchestration-tools',

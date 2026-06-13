@@ -11,14 +11,13 @@ import {
   createCommsMcpServer,
   createOrchestrationMcpServer,
   createSchedulingMcpServer,
-  mirrorLegacyFields,
   hydrateBranchState,
   findBranchStateByPR,
 } from '../tools.js';
 import type { Agent } from '../agent.js';
 import type { Task } from '../../tasks/task.js';
 import type { AgentDef } from '../../types/agent.js';
-import type { RepositoryInfo } from '../../types/task.js';
+import type { AttachedRepo } from '../../types/task.js';
 
 // ---- Module mocks ----
 
@@ -42,6 +41,9 @@ vi.mock('../../connectors/github/repo-clone.js', () => ({
 
 vi.mock('../../tasks/persistence.js', () => ({
   appendAgentFinding: vi.fn().mockResolvedValue(undefined),
+  getAgentClonePath: vi.fn((_taskId: string, agentId: string, github: string) =>
+    `/sessions/task-123/agents/${agentId}/clones/${github}`,
+  ),
   getReposPath: vi.fn().mockReturnValue('/sessions/task-123/repos'),
 }));
 
@@ -94,10 +96,8 @@ function makeAgent(overrides: Partial<AgentDef> = {}): Agent {
       pluginName: 'engineering',
       visibility: 'global',
       repo: {
-        githubRepo: 'org/backend',
-        repoKey: 'backend',
-        defaultPath: '/repos/backend',
-        baseBranch: 'main',
+        repos: [{ github: 'org/backend', baseBranch: 'main' }],
+        primary: 'org/backend',
       },
       ...overrides,
     },
@@ -109,20 +109,32 @@ function makeAgent(overrides: Partial<AgentDef> = {}): Agent {
 function makeTask(overrides: Partial<Task['metadata']> = {}): Task {
   return {
     taskId: 'task-123',
+    team: [
+      {
+        id: 'backend-agent', key: 'backend', role: 'Backend engineer', expertise: 'Node.js',
+        pluginName: 'engineering', visibility: 'global',
+        repo: { repos: [{ github: 'org/backend', baseBranch: 'main' }], primary: 'org/backend' },
+      },
+      {
+        id: 'mobile-agent', key: 'mobile', role: 'Mobile engineer', expertise: 'Mobile',
+        pluginName: 'engineering', visibility: 'global',
+        repo: { repos: [{ github: 'org/mobile', baseBranch: 'main' }], primary: 'org/mobile' },
+      },
+    ],
     metadata: {
       repositories: {
-        backend: {
-          path: '/repos/backend',
-          clone_path: '/clones/backend',
-          feature_branch: 'feature/task-123',
-          base_branch: 'main',
-          current_branch: 'feature/task-123',
-          branch_states: {
-            'feature/task-123': {
-              base_branch: 'main',
+        'backend-agent': [
+          {
+            github: 'org/backend',
+            clone_path: '/clones/backend',
+            current_branch: 'feature/task-123',
+            branch_states: {
+              'feature/task-123': {
+                base_branch: 'main',
+              },
             },
           },
-        },
+        ],
       },
       edit_allowed: true,
       status: 'active',
@@ -228,7 +240,10 @@ describe('merge_pull_request', () => {
       success: true, message: 'PR #7 merged successfully',
     });
 
-    const agent = makeAgent({ repo: { githubRepo: 'org/mobile', repoKey: 'mobile', defaultPath: '/repos/mobile' } });
+    const agent = makeAgent({
+      id: 'mobile-agent',
+      repo: { repos: [{ github: 'org/mobile', baseBranch: 'main' }], primary: 'org/mobile' },
+    });
     const tool = getRepoTool(agent, makeTask(), 'merge_pull_request');
     await tool({ pr_number: 7 }, {});
 
@@ -399,159 +414,57 @@ describe('PM agent tools', () => {
 
 // ---- Branch state helper tests ----
 
-describe('mirrorLegacyFields', () => {
-  it('mirrors current branch state to top-level fields', () => {
-    const repoInfo: RepositoryInfo = {
-      path: '/repos/backend',
-      current_branch: 'feature/task-1',
-      branch_states: {
-        'feature/task-1': {
-          base_branch: 'main', pr_number: 42, last_processed_comment_id: 10,
-        },
-      },
-    };
-    mirrorLegacyFields(repoInfo);
-    expect(repoInfo.feature_branch).toBe('feature/task-1');
-    expect(repoInfo.base_branch).toBe('main');
-    expect(repoInfo.pr_number).toBe(42);
-    expect(repoInfo.last_processed_comment_id).toBe(10);
-  });
-
-  it('mirrors only current branch when multiple exist', () => {
-    const repoInfo: RepositoryInfo = {
-      path: '/repos/backend',
-      current_branch: 'fix/bug',
-      branch_states: {
-        'feature/task-1': { pr_number: 42 },
-        'fix/bug': { pr_number: 99, base_branch: 'develop' },
-      },
-    };
-    mirrorLegacyFields(repoInfo);
-    expect(repoInfo.pr_number).toBe(99);
-    expect(repoInfo.base_branch).toBe('develop');
-    expect(repoInfo.feature_branch).toBe('fix/bug');
-  });
-
-  it('does nothing when no current branch', () => {
-    const repoInfo: RepositoryInfo = { path: '/repos/backend' };
-    mirrorLegacyFields(repoInfo);
-    expect(repoInfo.feature_branch).toBeUndefined();
-    expect(repoInfo.pr_number).toBeUndefined();
-  });
-});
-
 describe('hydrateBranchState', () => {
   it('creates branch_states from a branch name', () => {
-    const repoInfo: RepositoryInfo = { path: '/repos/backend' };
-    hydrateBranchState(repoInfo, 'feature/task-1', 'main');
+    const attached: AttachedRepo = { github: 'org/backend' };
+    hydrateBranchState(attached, 'feature/task-1', 'main');
 
-    expect(repoInfo.current_branch).toBe('feature/task-1');
-    expect(repoInfo.branch_states).toBeDefined();
-    expect(repoInfo.branch_states!['feature/task-1']).toEqual({
+    expect(attached.current_branch).toBe('feature/task-1');
+    expect(attached.branch_states).toBeDefined();
+    expect(attached.branch_states!['feature/task-1']).toEqual({
       base_branch: 'main',
     });
-    // Legacy fields mirrored
-    expect(repoInfo.feature_branch).toBe('feature/task-1');
-    expect(repoInfo.base_branch).toBe('main');
   });
 
   it('preserves existing branch_states', () => {
-    const repoInfo: RepositoryInfo = {
-      path: '/repos/backend',
+    const attached: AttachedRepo = {
+      github: 'org/backend',
       branch_states: { 'existing': { } },
     };
-    hydrateBranchState(repoInfo, 'feature/task-2', 'main');
+    hydrateBranchState(attached, 'feature/task-2', 'main');
 
-    expect(repoInfo.branch_states!['existing']).toBeDefined();
-    expect(repoInfo.branch_states!['feature/task-2']).toBeDefined();
+    expect(attached.branch_states!['existing']).toBeDefined();
+    expect(attached.branch_states!['feature/task-2']).toBeDefined();
   });
 });
 
 describe('findBranchStateByPR', () => {
   it('finds branch state by PR number', () => {
-    const repoInfo: RepositoryInfo = {
-      path: '/repos/backend',
+    const attached: AttachedRepo = {
+      github: 'org/backend',
       branch_states: {
         'feat/a': { pr_number: 42 },
         'feat/b': { pr_number: 99 },
       },
     };
-    const result = findBranchStateByPR(repoInfo, 99);
+    const result = findBranchStateByPR(attached, 99);
     expect(result).toBeDefined();
     expect(result!.branch).toBe('feat/b');
     expect(result!.state.pr_number).toBe(99);
   });
 
   it('returns undefined when no match', () => {
-    const repoInfo: RepositoryInfo = {
-      path: '/repos/backend',
+    const attached: AttachedRepo = {
+      github: 'org/backend',
       branch_states: {
         'feat/a': { pr_number: 42 },
       },
     };
-    expect(findBranchStateByPR(repoInfo, 999)).toBeUndefined();
+    expect(findBranchStateByPR(attached, 999)).toBeUndefined();
   });
 
   it('returns undefined when no branch_states', () => {
-    const repoInfo: RepositoryInfo = { path: '/repos/backend' };
-    expect(findBranchStateByPR(repoInfo, 42)).toBeUndefined();
-  });
-});
-
-describe('legacy hydration', () => {
-  it('old metadata with feature_branch hydrates into branch_states', () => {
-    const repoInfo: RepositoryInfo = {
-      path: '/repos/backend',
-      feature_branch: 'feature/task-old',
-      base_branch: 'master',
-      pr_number: 55,
-      last_processed_comment_id: 20,
-    };
-
-    // Simulate the hydration from spawn.ts
-    if (repoInfo.feature_branch && !repoInfo.branch_states) {
-      hydrateBranchState(repoInfo, repoInfo.feature_branch, repoInfo.base_branch);
-      const state = repoInfo.branch_states![repoInfo.feature_branch];
-      state.pr_number = repoInfo.pr_number;
-      state.last_processed_comment_id = repoInfo.last_processed_comment_id;
-    }
-
-    expect(repoInfo.current_branch).toBe('feature/task-old');
-    expect(repoInfo.branch_states!['feature/task-old']).toEqual({
-      base_branch: 'master',
-      pr_number: 55,
-      last_processed_comment_id: 20,
-    });
-  });
-
-  it('new metadata with branch_states skips hydration', () => {
-    const repoInfo: RepositoryInfo = {
-      path: '/repos/backend',
-      feature_branch: 'feature/task-new',
-      current_branch: 'feature/task-new',
-      branch_states: {
-        'feature/task-new': { base_branch: 'main', pr_number: 10 },
-      },
-    };
-
-    // Hydration guard
-    if (repoInfo.feature_branch && !repoInfo.branch_states) {
-      hydrateBranchState(repoInfo, repoInfo.feature_branch, repoInfo.base_branch);
-    }
-
-    // Should be unchanged
-    expect(repoInfo.branch_states!['feature/task-new'].pr_number).toBe(10);
-    expect(repoInfo.branch_states!['feature/task-new'].base_branch).toBe('main');
-  });
-
-  it('empty metadata without feature_branch does not crash', () => {
-    const repoInfo: RepositoryInfo = { path: '/repos/backend' };
-
-    if (repoInfo.feature_branch && !repoInfo.branch_states) {
-      hydrateBranchState(repoInfo, repoInfo.feature_branch, repoInfo.base_branch);
-    }
-
-    expect(repoInfo.branch_states).toBeUndefined();
-    expect(repoInfo.current_branch).toBeUndefined();
+    const attached: AttachedRepo = { github: 'org/backend' };
+    expect(findBranchStateByPR(attached, 42)).toBeUndefined();
   });
 });

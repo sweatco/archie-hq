@@ -36,9 +36,8 @@ function mkRepo(pluginName: string, key: string, visibility: 'global' | 'local')
     pluginName,
     visibility,
     repo: {
-      githubRepo: `org/${key}`,
-      repoKey: key,
-      defaultPath: `/repos/${key}`,
+      repos: [{ github: `org/${key}`, baseBranch: 'main' }],
+      primary: `org/${key}`,
     },
   } as AgentDef;
 }
@@ -143,7 +142,7 @@ describe('buildPeerListForSender', () => {
   it('renders repo peers and plugin peers in their respective formats', () => {
     const sender = mkPlugin('analytics', 'analytics', 'global');
     const list = buildPeerListForSender(sender);
-    expect(list).toContain('- backend-agent: backend role (backend repository)');
+    expect(list).toContain('- backend-agent: backend role (org/backend repository)');
     expect(list).toContain('- analytics-helper-agent: analytics-helper role [analytics]');
     expect(list).not.toContain('frontend-internal-agent');
   });

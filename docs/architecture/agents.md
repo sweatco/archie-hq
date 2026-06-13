@@ -10,7 +10,7 @@ Archie uses three active agent types (plus a disabled triage classifier). Each i
 |---|---|---|---|
 | ~~Triage Agent~~ | Haiku | — | Event classifier (**currently disabled** — see below) |
 | PM Agent | Opus (default) | 1 per task | Task manager, user interface, agent coordinator |
-| Repo Agents | Sonnet (default, configurable) | 1 per repository per task | Codebase investigation and modification |
+| Repo Agents | Sonnet (default, configurable) | 1 per plugin-defined repo agent per task | Codebase investigation and modification; declares one or more repos in frontmatter, all mounted at spawn |
 | Plugin Agents | Sonnet (default, configurable) | 1 per plugin agent per task | Lightweight, read-only domain specialists |
 
 Models for repo and plugin agents come from each agent's plugin frontmatter (`model` field, with `effort` and `maxTurns` also supported); `Sonnet` is the fallback when frontmatter is silent. The PM agent defaults to Opus but can be overridden by the `pm` plugin overlay's frontmatter (see `src/agents/registry.ts` `buildPmDef()` and `src/agents/spawn.ts`).
@@ -82,9 +82,13 @@ PR lifecycle tools (push, create PR, merge, etc.) live on repo agents via the `r
 
 **Source**: `src/agents/agent.ts`, `src/agents/spawn.ts`
 
-Repo agents are specialized for a single repository. They investigate code, make changes (in edit mode), and coordinate with other agents. Configuration comes from plugins via `src/agents/registry.ts`.
+Repo agents declare one or more repositories in their plugin frontmatter (`metadata.archie.repos: [...]` plus optional `primary`). **Every declared repo is mounted at spawn** — there is no runtime attach. The primary is the default target for `repo-tools` when the `github` arg is omitted. They investigate code, make changes (in edit mode), and coordinate with other agents. Configuration comes from plugins via `src/agents/registry.ts`.
+
+The pre-v30 singular shape (`metadata.archie.repo: {github, baseBranch}`) is still accepted — the plugin loader synthesizes the plural shape on load.
 
 **Model**: Sonnet by default (`def.model || 'sonnet'` in `spawn.ts`). Overridable per-agent via plugin frontmatter.
+
+**Multi-repo mounts**: Each spawn iterates the agent's declared `repos` list, ensures an `AttachedRepo` record exists in `metadata.repositories[agentId]` for each (preserving the clone/branch state of repos already present), runs `setupSharedClone` per repo, and aggregates all clone paths into `additionalDirectories` and the sandbox `allowReadPaths`/`allowWritePaths`/`denyWritePaths`. Each repo gets its own task-local clone at `sessions/{taskId}/repos/{agentId}/{org}/{repo}/` — two agents that declare the same github get two independent clones with independent branch state. Because the loop iterates the *declared* list, adding a repo to an agent's frontmatter makes it mount on the next spawn (so an old task picks it up on recovery), and removing one simply stops mounting it (a stale metadata record is harmless).
 
 **Tools** (via MCP servers `repo-agent-tools`, `repo-tools`, and `research-tools`):
 
@@ -121,9 +125,11 @@ Repo agents are specialized for a single repository. They investigate code, make
 
 `WebSearch` and `WebFetch` are explicitly disallowed for repo agents. In read-only mode the write-side `repo-tools` entries above are added to `disallowedTools` in `spawn.ts`, and the OS-level sandbox + `createFilesystemGuardHooks` together block `Write`/`Edit` to the clone.
 
-**Dual mode system**: The agent's mode is set per-task by `metadata.edit_allowed`. In read-only mode the sandbox makes the clone read-only and write-side MCP tools are disallowed; in edit mode the clone is writable and all `repo-tools` entries are exposed. The agent observes its mode through the available tool set and the injected `READ-ONLY` / `READ-WRITE` annotation in its system prompt.
+**Multi-repo `github` arg**: every `repo-tools` entry that targets a specific repo accepts an optional `github: "org/repo"` argument. Omitted, the tool acts on the agent's primary repo. The handler validates the github is in the agent's declared `repos` list (via `resolveGithub`); local-clone tools additionally require the repo to have a local clone present (via `requireAttached`), which it always does post-spawn.
 
-**Working directory**: The agent's cwd is its per-agent workspace at `sessions/{taskId}/agents/{key}/`. The repository itself lives at a task-local shared clone under `sessions/{taskId}/repos/{repoKey}` and is exposed via `additionalDirectories`. In read-only mode the clone is checked out on the base branch; in edit mode it carries an `archie/{taskId}` branch (or a previously persisted one). Shared task state at `sessions/{taskId}/shared/` is also mounted read-only.
+**Dual mode system**: The agent's mode is set per-task by `metadata.edit_allowed`. In read-only mode the sandbox makes every attached clone read-only and write-side MCP tools are disallowed; in edit mode every attached clone is writable and all `repo-tools` entries are exposed. The agent observes its mode through the available tool set and the injected `READ-ONLY` / `READ-WRITE` annotation in its system prompt. Edit mode is global to the task — when approved, RW applies to the primary and to every attached repo.
+
+**Working directory**: The agent's cwd is its per-agent workspace at `sessions/{taskId}/agents/{agentId}/` — a pure scratch space that never contains repo state. Each mounted repo lives at `sessions/{taskId}/repos/{agentId}/{org}/{repo}/` (sibling of the agent's cwd, not nested inside it) and is exposed via `additionalDirectories`. Per-agent clone paths mean two agents that declare the same github get fully independent working trees. In read-only mode each clone is checked out on its base branch; in edit mode each carries an `archie/{taskId}` branch (or a previously persisted one). Shared task state at `sessions/{taskId}/shared/` is also mounted read-only.
 
 ### Plugin Agents
 
@@ -220,12 +226,13 @@ Template variables: `{{AGENT_ID}}`, `{{AGENT_ROLE}}`, `{{EXPERTISE}}`, `{{PEER_L
 Different for each agent track:
 
 **Repo agents** (`prompts/repo-agent.md`):
-- Repository responsibility
+- Repository responsibility (primary + any other declared repos, all mounted at spawn)
+- Multi-repo working model (the optional `github` arg on repo-tools, default = primary)
 - Task lifecycle context (Research, Implement, Review, Conflicts)
 - Dual mode system (Read-Only vs Edit, determined by available tools)
 - Git workflow: branch management (`switch_branch`, `create_branch`, `fetch`), staging, committing, PR lifecycle
 - Honesty and transparency guidelines
-- Template variables: `{{REPO_KEY}}`, `{{BASE_BRANCH}}`
+- No template variables — per-repo data (github, clone path, current/base branch, RO/RW mode) is surfaced through the dynamic Current Context block built at spawn, not via static substitution. This keeps the prompt structurally correct for any number of repos.
 
 **Plugin agents** (`prompts/plugin-agent.md`):
 - Read-only mode declaration
@@ -258,7 +265,7 @@ The PM agent uses a separate prompt (`prompts/pm-agent.md`) that is not layered.
 ```
 Repo Agent:
   agent-core.md(AGENT_ID, AGENT_ROLE, EXPERTISE, PEER_LIST)
-  + repo-agent.md(REPO_KEY, BASE_BRANCH)
+  + repo-agent.md()
   + plugins/<name>/agents/<key>.md body (optional)
 
 Plugin Agent:
@@ -298,15 +305,16 @@ hasRetried = true;
 
 ### Peer Awareness
 
-Every repo and plugin agent's prompt includes a dynamically generated peer list. This is built by `buildPeerList()` in `src/agents/registry.ts`:
+Every repo and plugin agent's prompt includes a dynamically generated peer list. This is built by `buildPeerList()` in `src/agents/registry.ts`, called from `spawn.ts` with the current task's team:
 
 ```typescript
-export function buildPeerList(excludeAgentId: string): string {
-  const repoPeers = registry
+export function buildPeerList(excludeAgentId: string, team?: AgentDef[]): string {
+  const source = team ?? registry;
+  const repoPeers = source
     .filter((d) => d.track === 'repo' && d.id !== excludeAgentId)
-    .map((d) => `- ${d.id}: ${d.role} (${d.repo!.repoKey} repository)`);
+    .map((d) => `- ${d.id}: ${d.role} (${d.repo!.primary} repository)`);
 
-  const pluginPeers = registry
+  const pluginPeers = source
     .filter((d) => d.track === 'plugin' && d.id !== excludeAgentId)
     .map((d) => `- ${d.id}: ${d.role} [${d.pluginName}]`);
 
@@ -314,7 +322,7 @@ export function buildPeerList(excludeAgentId: string): string {
 }
 ```
 
-The list excludes the current agent and the PM (which is hardcoded in the agent-core prompt). This ensures agents know who they can communicate with and what each peer specializes in.
+Spawn passes `task.team` (registry agents plus any PM-spawned dynamic agents merged in at `Task.get` / `Task.create` time) so dynamic peers are visible. The list excludes the current agent and the PM (which is hardcoded in the agent-core prompt). This ensures agents know who they can communicate with and what each peer specializes in.
 
 ### Streaming Input
 

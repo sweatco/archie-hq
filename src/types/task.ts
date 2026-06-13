@@ -136,18 +136,59 @@ export interface BranchState {
   stash_name?: string;                 // set if dirty work was auto-stashed when leaving
 }
 
+/**
+ * One repo attached to a specific agent in a specific task.
+ *
+ * Each agent has its own clone — two agents attaching the same `github` get two
+ * independent `AttachedRepo` records under different agent IDs in
+ * `TaskMetadata.repositories`. The base-cache path is derivable as
+ * `join(REPOS_DIR, github)` and is not stored here.
+ */
+export interface AttachedRepo {
+  /** Github identifier, e.g. 'sweatco/backend'. */
+  github: string;
+  /**
+   * Task-local shared clone path, e.g.
+   * `sessions/<id>/repos/<agentId>/sweatco/backend`. Set when the clone is
+   * created during agent spawn; undefined briefly between attachment record
+   * creation and clone setup. Lives outside the agent's cwd
+   * (`sessions/<id>/agents/<agentId>/`) so workspace and repo state are
+   * cleanly separated.
+   */
+  clone_path?: string;
+  /**
+   * Absolute path to the base cache this clone borrows from — i.e. the
+   * directory the clone's `.git/objects/info/alternates` file points at the
+   * parent of. Pinned at clone time and used by the sandbox to grant read
+   * access to the borrowed object store, so the clone keeps working even if
+   * the layout convention changes underneath it (pre-v30 caches lived at
+   * `$ARCHIE_WORKDIR/repos/<short-key>/`; new caches at
+   * `$ARCHIE_WORKDIR/repos/<org>/<repo>/`). Migration preserves the legacy
+   * `path` here; fresh clones populate it from `getBaseCachePath(github)`.
+   */
+  base_path?: string;
+  /** Branch the agent is on right now (key into `branch_states`). */
+  current_branch?: string;
+  /** Per-branch state — PR number, base branch, stash, last-processed-comment id. */
+  branch_states?: Record<string, BranchState>;
+}
+
+/**
+ * Legacy per-repo state shape (pre-v30).
+ * Retained only to type the lazy migration path in Task.get; new code uses
+ * `AttachedRepo` and `metadata.repositories: Record<agentId, AttachedRepo[]>`.
+ */
 export interface RepositoryInfo {
   path: string;
-  branch?: string;                     // legacy, unused
-  base_branch?: string;                // legacy — now per-branch in BranchState
-  base_sha?: string;                   // legacy, unused
-  clone_path?: string;                 // Path to shared clone (task-local independent repo)
-  feature_branch?: string;             // legacy — now current_branch
-  pr_number?: number;                  // legacy — now per-branch in BranchState
-  last_processed_comment_id?: number;  // legacy — now per-branch in BranchState
-
-  current_branch?: string;                          // branch agent is on right now (key into branch_states)
-  branch_states?: Record<string, BranchState>;      // keyed by branch name
+  branch?: string;
+  base_branch?: string;
+  base_sha?: string;
+  clone_path?: string;
+  feature_branch?: string;
+  pr_number?: number;
+  last_processed_comment_id?: number;
+  current_branch?: string;
+  branch_states?: Record<string, BranchState>;
 }
 
 /**
@@ -169,7 +210,15 @@ export interface TaskMetadata {
   title?: string;                      // AI-generated one-line summary; absent on pre-feature tasks
   slack_threads?: SlackThreadRef[];    // Legacy — only present on old tasks loaded from disk, removed after migration
   agent_sessions: Record<string, AgentSessionState | string>; // union handles legacy string values on disk
-  repositories: Record<string, RepositoryInfo>;
+  /**
+   * Per-agent attached repos. Keyed by agent ID. Each value is the list of
+   * repos that agent currently has mounted (always includes the agent's
+   * primary at minimum, once it has spawned).
+   *
+   * Legacy on-disk shape (pre-v30): `Record<repoKey, RepositoryInfo>` keyed by
+   * short repo name. Migrated lazily in `Task.get`.
+   */
+  repositories: Record<string, AttachedRepo[]>;
   status: TaskStatus;
   edit_allowed?: boolean;     // Has user approved edit mode for this task?
   research_budget_extra?: number;    // Additional research budget granted via Slack approval (+5 per approval)

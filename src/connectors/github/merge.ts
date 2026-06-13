@@ -21,13 +21,11 @@ import { appendAgentFinding } from '../../tasks/persistence.js';
 import { Task } from '../../tasks/task.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { createGitHubClient, type GitHubClient } from './client.js';
-import { getAgentDef } from '../../agents/registry.js';
 import { logger } from '../../system/logger.js';
 import type { PRStatus } from '../../agents/tools.js';
 
 interface LinkedPRStatus {
-  repoKey: string;
-  githubRepo: string;
+  github: string;
   prNumber: number;
   status: PRStatus;
 }
@@ -69,18 +67,22 @@ export async function triggerMergeCheck(taskId: string): Promise<MergeCheckResul
     return result;
   }
 
-  // Collect all PRs linked to this task (from branch_states, with legacy fallback)
-  const linkedPRs: Array<{ repoKey: string; prNumber: number }> = [];
-  for (const [repoKey, repoInfo] of Object.entries(task.metadata.repositories)) {
-    if (repoInfo.branch_states) {
-      for (const state of Object.values(repoInfo.branch_states)) {
-        if (state.pr_number) {
-          linkedPRs.push({ repoKey, prNumber: state.pr_number });
-        }
+  // Collect all PRs linked to this task by iterating every attached repo across
+  // every agent. A PR is identified by (github, prNumber); dedupe so two agents
+  // pointing at the same PR don't generate duplicate work.
+  const linkedPRSet = new Set<string>();
+  const linkedPRs: Array<{ github: string; prNumber: number }> = [];
+  for (const attachments of Object.values(task.metadata.repositories)) {
+    if (!Array.isArray(attachments)) continue;
+    for (const attached of attachments) {
+      if (!attached.branch_states) continue;
+      for (const state of Object.values(attached.branch_states)) {
+        if (!state.pr_number) continue;
+        const key = `${attached.github}#${state.pr_number}`;
+        if (linkedPRSet.has(key)) continue;
+        linkedPRSet.add(key);
+        linkedPRs.push({ github: attached.github, prNumber: state.pr_number });
       }
-    } else if (repoInfo.pr_number) {
-      // Legacy fallback
-      linkedPRs.push({ repoKey, prNumber: repoInfo.pr_number });
     }
   }
 
@@ -160,33 +162,33 @@ export async function triggerMergeCheck(taskId: string): Promise<MergeCheckResul
     }
 
     const reasonStr = reason ? ` - ${reason}` : '';
-    logger.system(`Task ${taskId}: ${pr.repoKey}#${pr.prNumber} → ${category}${reasonStr} (${flags.join(', ')})`);
+    logger.system(`Task ${taskId}: ${pr.github}#${pr.prNumber} → ${category}${reasonStr} (${flags.join(', ')})`);
   }
 
   // Format already merged PRs
   for (const pr of alreadyMerged) {
-    result.merged.push(`${pr.repoKey}#${pr.prNumber} (already merged)`);
+    result.merged.push(`${pr.github}#${pr.prNumber} (already merged)`);
   }
 
   // Merge what's ready
   for (const pr of mergeable) {
     try {
-      const mergeResult = await githubClient.mergePullRequest(pr.githubRepo, pr.prNumber);
+      const mergeResult = await githubClient.mergePullRequest(pr.github, pr.prNumber);
       if (mergeResult.success) {
-        result.merged.push(`${pr.repoKey}#${pr.prNumber}`);
-        logger.system(`Merged ${pr.githubRepo}#${pr.prNumber}`);
+        result.merged.push(`${pr.github}#${pr.prNumber}`);
+        logger.system(`Merged ${pr.github}#${pr.prNumber}`);
       } else {
-        result.pending.push(`${pr.repoKey}#${pr.prNumber}: ${mergeResult.message}`);
+        result.pending.push(`${pr.github}#${pr.prNumber}: ${mergeResult.message}`);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
-      result.pending.push(`${pr.repoKey}#${pr.prNumber}: ${message}`);
+      result.pending.push(`${pr.github}#${pr.prNumber}: ${message}`);
     }
   }
 
   // Record conflicts
   for (const pr of conflicted) {
-    result.conflicts.push(`${pr.repoKey}#${pr.prNumber}`);
+    result.conflicts.push(`${pr.github}#${pr.prNumber}`);
   }
 
   // Record pending PRs
@@ -194,7 +196,7 @@ export async function triggerMergeCheck(taskId: string): Promise<MergeCheckResul
     const reasons: string[] = [];
     if (!pr.status.approved) reasons.push('needs approval');
     if (pr.status.mergeableState !== 'clean') reasons.push(pr.status.mergeableState);
-    result.pending.push(`${pr.repoKey}#${pr.prNumber}: ${reasons.join(', ')}`);
+    result.pending.push(`${pr.github}#${pr.prNumber}: ${reasons.join(', ')}`);
   }
 
   return result;
@@ -205,29 +207,18 @@ export async function triggerMergeCheck(taskId: string): Promise<MergeCheckResul
  */
 async function fetchAllPRStatuses(
   githubClient: GitHubClient,
-  linkedPRs: Array<{ repoKey: string; prNumber: number }>
+  linkedPRs: Array<{ github: string; prNumber: number }>
 ): Promise<LinkedPRStatus[]> {
   const results: LinkedPRStatus[] = [];
 
-  for (const { repoKey, prNumber } of linkedPRs) {
-    const def = getAgentDef(`${repoKey}-agent`);
-    if (!def?.repo) {
-      logger.warn('merge-orchestrator', `No config found for repo key: ${repoKey}`);
-      continue;
-    }
-
+  for (const { github, prNumber } of linkedPRs) {
     try {
-      const status = await githubClient.getPRStatus(def.repo.githubRepo, prNumber);
-      results.push({
-        repoKey,
-        githubRepo: def.repo.githubRepo,
-        prNumber,
-        status,
-      });
+      const status = await githubClient.getPRStatus(github, prNumber);
+      results.push({ github, prNumber, status });
     } catch (error) {
       logger.error(
         'merge-orchestrator',
-        `Failed to get status for ${def.repo!.githubRepo}#${prNumber}`,
+        `Failed to get status for ${github}#${prNumber}`,
         error
       );
     }

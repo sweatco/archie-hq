@@ -57,17 +57,29 @@ export interface AgentHandle {
 }
 
 /**
- * Repo-specific fields (present only when the agent has repo access attached)
+ * A single repo entry declared by a repo agent in its frontmatter.
+ * The `github` identifier (e.g. 'sweatco/backend') doubles as the entry's key —
+ * no separate repoKey field, no short-name derivation.
+ */
+export interface RepoEntry {
+  /** GitHub repository identifier, e.g., 'sweatco/backend'. Also the key. */
+  github: string;
+  /** Base branch for PRs and merges. Defaults applied at consume sites. */
+  baseBranch: string;
+}
+
+/**
+ * Repo-specific fields (present only when the agent has repo access attached).
+ *
+ * Multi-repo: each repo agent declares one or more repos in its frontmatter.
+ * ALL of them are mounted at spawn; `primary` is the default target for
+ * repo-tools when the `github` arg is omitted.
  */
 export interface AgentRepoDef {
-  /** GitHub repository identifier, e.g., 'sweatco/backend' */
-  githubRepo: string;
-  /** Base branch for PRs and merges. Defaults to 'main' if not specified. */
-  baseBranch?: string;
-  /** Default repository path on disk */
-  defaultPath: string;
-  /** Key in TaskMetadata.repositories, e.g., 'backend', 'mobile' */
-  repoKey: string;
+  /** All repos this agent works with — every entry is mounted at spawn. At least one. */
+  repos: RepoEntry[];
+  /** Github identifier of the primary repo. Must match one entry's `github`. */
+  primary: string;
 }
 
 /**

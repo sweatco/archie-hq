@@ -89,6 +89,12 @@ export interface PluginRepoConfig {
   prompt: string;
 }
 
+/** A single repo entry parsed from agent frontmatter `metadata.archie.repos[]`. */
+export interface PluginRepoEntry {
+  github: string;
+  baseBranch?: string;
+}
+
 export interface PluginAgentDef {
   /** Filename without .md, e.g., 'copywriter' */
   key: string;
@@ -112,10 +118,22 @@ export interface PluginAgentDef {
   visibility?: 'global' | 'local';
   /** Markdown body (domain-specific instructions) */
   prompt: string;
-  /** Repo metadata from frontmatter (if present, agent is a repo agent) */
+  /**
+   * Repo metadata from frontmatter (if present, agent is a repo agent).
+   *
+   * Accepted frontmatter shapes:
+   *  - New (preferred):
+   *      metadata.archie.repos: [{ github, baseBranch }, ...]
+   *      metadata.archie.primary: <github>   # optional, defaults to repos[0].github
+   *  - Legacy (auto-migrated):
+   *      metadata.archie.repo: { github, baseBranch }
+   *
+   * Both shapes in the same file → fail at load. The loader normalises to the
+   * plural shape so downstream consumers only ever see this.
+   */
   repo?: {
-    github: string;
-    baseBranch?: string;
+    repos: PluginRepoEntry[];
+    primary: string;
   };
   /** MCP server names this agent should have access to (from plugin's .mcp.json) */
   mcpServers?: string[];
@@ -237,12 +255,56 @@ function scanPlugins(): LoadedPlugin[] {
           prompt: substitutePluginVars(content.trim()),
         };
 
-        // If frontmatter has repo metadata, this is a repo agent
-        const repoMeta = data.metadata?.archie?.repo;
-        if (repoMeta && typeof repoMeta === 'object' && repoMeta.github) {
+        // If frontmatter has repo metadata, this is a repo agent. Accept both
+        // the new plural shape (`metadata.archie.repos: [...]` + optional
+        // `primary`) and the legacy singular shape (`metadata.archie.repo`).
+        // Reject if both appear in the same file.
+        const archie = data.metadata?.archie;
+        const repoMeta = archie?.repo;
+        const reposMeta = archie?.repos;
+        const primaryMeta = archie?.primary;
+
+        if (repoMeta && reposMeta) {
+          throw new Error(
+            `Plugin ${pluginName}, agent ${key}: frontmatter declares both ` +
+            `metadata.archie.repo and metadata.archie.repos — use one.`
+          );
+        }
+
+        if (Array.isArray(reposMeta) && reposMeta.length > 0) {
+          const repos: PluginRepoEntry[] = reposMeta.map((entry: any, idx: number) => {
+            if (!entry || typeof entry !== 'object' || typeof entry.github !== 'string') {
+              throw new Error(
+                `Plugin ${pluginName}, agent ${key}: metadata.archie.repos[${idx}] ` +
+                `must be an object with a string \`github\` field.`
+              );
+            }
+            return {
+              github: entry.github,
+              baseBranch: typeof entry.baseBranch === 'string' ? entry.baseBranch : undefined,
+            };
+          });
+          let primary: string;
+          if (typeof primaryMeta === 'string') {
+            if (!repos.some((r) => r.github === primaryMeta)) {
+              throw new Error(
+                `Plugin ${pluginName}, agent ${key}: metadata.archie.primary ` +
+                `"${primaryMeta}" does not match any entry in metadata.archie.repos.`
+              );
+            }
+            primary = primaryMeta;
+          } else {
+            primary = repos[0].github;
+          }
+          agentDef.repo = { repos, primary };
+        } else if (repoMeta && typeof repoMeta === 'object' && typeof repoMeta.github === 'string') {
+          // Legacy singular shape — synthesise the new plural form.
           agentDef.repo = {
-            github: repoMeta.github,
-            baseBranch: repoMeta.baseBranch || undefined,
+            repos: [{
+              github: repoMeta.github,
+              baseBranch: typeof repoMeta.baseBranch === 'string' ? repoMeta.baseBranch : undefined,
+            }],
+            primary: repoMeta.github,
           };
         }
 
