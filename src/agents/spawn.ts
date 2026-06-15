@@ -502,7 +502,13 @@ Shared folder: ${sharedPath} [READ-ONLY]
 
   // Inject OAuth Bearer tokens into any HTTP/SSE MCP servers that have
   // a vault record. Drops entries whose tokens can't be refreshed.
-  await applyOAuthBindings(mcpServers);
+  const oauthBindings = await applyOAuthBindings(mcpServers);
+  if (oauthBindings.injected.length > 0) {
+    logger.agent(def.id, `OAuth tokens bound: ${oauthBindings.injected.join(', ')}`);
+  }
+  for (const { serverName, error } of oauthBindings.dropped) {
+    logger.error(def.id, `MCP "${serverName}" dropped before connect — OAuth bind failed: ${error.message}`);
+  }
 
   // ---- Build query options (session ID may change on retry) ----
 
@@ -588,9 +594,29 @@ Shared folder: ${sharedPath} [READ-ONLY]
               task.updateAgentState(def.id, true, event.session_id);
               logger.agent(def.id, `Model: ${(event as any).model || 'unknown'}`);
               if (Array.isArray(event.mcp_servers)) {
+                // The init snapshot only carries { name, status }. Pull the
+                // richer status so a non-connected server records WHY (its
+                // error) and its true status — instead of a bare "FAILED" that
+                // forces the agent (and us) to guess.
+                let errorByName = new Map<string, string>();
+                try {
+                  const detailed = await agentQuery.mcpServerStatus();
+                  errorByName = new Map(
+                    detailed.filter((m) => m.error).map((m) => [m.name, m.error as string]),
+                  );
+                } catch {
+                  // Control request unavailable — fall back to the snapshot status.
+                }
                 for (const mcp of event.mcp_servers) {
-                  const status = mcp.status === 'connected' ? 'connected' : `FAILED`;
-                  logger.agent(def.id, `MCP ${mcp.name}: ${status}`);
+                  if (mcp.status === 'connected') {
+                    logger.agent(def.id, `MCP ${mcp.name}: connected`);
+                    continue;
+                  }
+                  const reason = errorByName.get(mcp.name);
+                  const line = `MCP ${mcp.name}: ${mcp.status || 'unknown'}${reason ? ` — ${reason}` : ''}`;
+                  // 'failed' is a hard error; pending/needs-auth/disabled are not.
+                  if (mcp.status === 'failed') logger.error(def.id, line);
+                  else logger.warn(def.id, line);
                 }
               }
             }
