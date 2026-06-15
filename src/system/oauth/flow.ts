@@ -68,6 +68,8 @@ export interface TokenExchangeInput {
   state: string;
   redirectUri: string;
   codeVerifier: string;
+  /** RFC 8707 resource indicator — audience-binds the issued token. */
+  resource?: string;
 }
 
 /**
@@ -85,6 +87,7 @@ export async function exchangeCodeForTokens(input: TokenExchangeInput): Promise<
     validated,
     input.redirectUri,
     input.codeVerifier,
+    input.resource ? { additionalParameters: { resource: input.resource } } : undefined,
   );
   return await oauth.processAuthorizationCodeResponse(input.as, input.client, res);
 }
@@ -94,6 +97,8 @@ export interface RefreshInput {
   client: oauth.Client;
   clientAuth: oauth.ClientAuth;
   refreshToken: string;
+  /** RFC 8707 resource indicator — must be replayed so the rotated token keeps its audience. */
+  resource?: string;
 }
 
 export async function refreshAccessToken(input: RefreshInput): Promise<oauth.TokenEndpointResponse> {
@@ -102,6 +107,7 @@ export async function refreshAccessToken(input: RefreshInput): Promise<oauth.Tok
     input.client,
     input.clientAuth,
     input.refreshToken,
+    input.resource ? { additionalParameters: { resource: input.resource } } : undefined,
   );
   return await oauth.processRefreshTokenResponse(input.as, input.client, res);
 }

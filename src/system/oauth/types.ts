@@ -22,6 +22,13 @@ export interface OAuthRecordMeta {
   issuer: string;
   token_endpoint: string;
   scopes: string[];
+  /**
+   * RFC 8707 resource indicator (the MCP server's canonical URL). Replayed on
+   * every token-endpoint request so refreshed tokens keep the audience binding
+   * the resource server enforces. Optional: records connected before this was
+   * tracked won't have it — reconnect to populate.
+   */
+  resource?: string;
 }
 
 /** What we encrypt inside the OAuth vault record. */
@@ -48,6 +55,8 @@ export interface OAuthPendingMeta {
   token_endpoint: string;
   authorization_endpoint: string;
   scopes: string[];
+  /** RFC 8707 resource indicator, carried from connect through to the token exchange. */
+  resource?: string;
   redirect_uri: string;
   created_at: number;
 }

@@ -141,6 +141,68 @@ describe('ensureFreshToken', () => {
     expect(result.expiresAt).toBe(reread!.expires_at);
   });
 
+  it('replays the stored RFC 8707 resource indicator on refresh and carries it forward', async () => {
+    // Regression: without resource on the refresh request, an audience-enforcing
+    // resource server (e.g. Monday) rejects the rotated token with 401 even
+    // though the refresh itself returned 200.
+    const { refresh, storage } = await importFresh();
+    const nowSec = Math.floor(Date.now() / 1000);
+    await storage.writeOAuthRecord(
+      {
+        server_name: 'audience',
+        expires_at: nowSec + 5,
+        created_at: nowSec, updated_at: nowSec,
+        issuer: 'https://auth.example.com',
+        token_endpoint: 'https://auth.example.com/token',
+        scopes: [],
+        resource: 'https://mcp.example.com/mcp',
+      },
+      { access_token: 'AT-old', refresh_token: 'RT', client_id: 'cli', token_type: 'Bearer' },
+    );
+    let bodyCaptured: URLSearchParams | null = null;
+    globalThis.fetch = vi.fn(async (_url: any, init: any) => {
+      bodyCaptured = new URLSearchParams(init.body);
+      return new Response(
+        JSON.stringify({ access_token: 'AT-new', token_type: 'Bearer', expires_in: 3600 }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }) as any;
+
+    await refresh.ensureFreshToken('audience');
+    expect(bodyCaptured!.get('grant_type')).toBe('refresh_token');
+    expect(bodyCaptured!.get('resource')).toBe('https://mcp.example.com/mcp');
+    // The indicator survives the rotated record so the next refresh replays it too.
+    const reread = await storage.readOAuthRecord('audience');
+    expect(reread!.resource).toBe('https://mcp.example.com/mcp');
+  });
+
+  it('omits the resource parameter on refresh for legacy records without one', async () => {
+    const { refresh, storage } = await importFresh();
+    const nowSec = Math.floor(Date.now() / 1000);
+    await storage.writeOAuthRecord(
+      {
+        server_name: 'legacy',
+        expires_at: nowSec + 5,
+        created_at: nowSec, updated_at: nowSec,
+        issuer: 'https://auth.example.com',
+        token_endpoint: 'https://auth.example.com/token',
+        scopes: [],
+      },
+      { access_token: 'AT-old', refresh_token: 'RT', client_id: 'cli', token_type: 'Bearer' },
+    );
+    let bodyCaptured: URLSearchParams | null = null;
+    globalThis.fetch = vi.fn(async (_url: any, init: any) => {
+      bodyCaptured = new URLSearchParams(init.body);
+      return new Response(
+        JSON.stringify({ access_token: 'AT-new', token_type: 'Bearer', expires_in: 3600 }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }) as any;
+
+    await refresh.ensureFreshToken('legacy');
+    expect(bodyCaptured!.has('resource')).toBe(false);
+  });
+
   it('keeps the old refresh_token when the issuer does not rotate it', async () => {
     const { refresh, storage } = await importFresh();
     const nowSec = Math.floor(Date.now() / 1000);

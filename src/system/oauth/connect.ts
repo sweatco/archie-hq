@@ -131,6 +131,11 @@ export async function beginConnect(input: ConnectInput): Promise<ConnectResult> 
   const state = generateState();
   const scopes = resource.scopes_supported ?? [];
 
+  // RFC 8707 resource indicator — the audience the resource server enforces.
+  // Persisted so it can be replayed on every token-endpoint request (initial
+  // exchange + refresh), not just the authorize step.
+  const resourceIndicator = resource.resource || serverUrl;
+
   const authorizeUrl = buildAuthorizeUrl({
     authorizationEndpoint: authServer.authorization_endpoint,
     clientId,
@@ -138,7 +143,7 @@ export async function beginConnect(input: ConnectInput): Promise<ConnectResult> 
     scope: scopes.length ? scopes.join(' ') : undefined,
     state,
     codeChallenge: pkce.challenge,
-    resource: resource.resource || serverUrl,
+    resource: resourceIndicator,
   });
 
   await writePendingRecord(
@@ -150,6 +155,7 @@ export async function beginConnect(input: ConnectInput): Promise<ConnectResult> 
       token_endpoint: authServer.token_endpoint,
       authorization_endpoint: authServer.authorization_endpoint,
       scopes,
+      resource: resourceIndicator,
       redirect_uri: redirectUri,
       created_at: Math.floor(Date.now() / 1000),
     },

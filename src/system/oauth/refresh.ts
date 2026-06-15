@@ -83,6 +83,9 @@ export async function ensureFreshToken(
         client: { client_id: sealed.client_id },
         clientAuth: clientAuthFor(sealed.client_secret),
         refreshToken: sealed.refresh_token,
+        // Replay the RFC 8707 audience binding. Legacy records without a stored
+        // resource send nothing (preserving prior behavior); reconnect to populate.
+        resource: record.resource,
       });
     } catch (err) {
       throw new OAuthRefreshError(serverName, err);

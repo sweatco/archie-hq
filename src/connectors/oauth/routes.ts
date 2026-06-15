@@ -133,6 +133,7 @@ async function completeFlow(state: string, code: string): Promise<CallbackOutcom
       state,
       redirectUri: pending.redirect_uri,
       codeVerifier: sealed.code_verifier,
+      resource: pending.resource,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -158,6 +159,7 @@ async function completeFlow(state: string, code: string): Promise<CallbackOutcom
       issuer: pending.issuer,
       token_endpoint: pending.token_endpoint,
       scopes: pending.scopes,
+      resource: pending.resource,
     },
     {
       access_token: tokens.access_token,
