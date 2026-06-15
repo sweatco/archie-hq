@@ -32,6 +32,11 @@ interface TaskListProps {
 
 const PAGE_SIZE = 20;
 const PREFETCH_BUFFER = 10;
+// How long to wait before retrying a page whose fetch failed (server restart,
+// transient network error). Without a retry, a failed page leaves a permanent
+// gap in the list — most visibly an all-empty page 0, which renders as a bare
+// header with no rows.
+const RETRY_DELAY_MS = 1500;
 
 function StatusIcon({ status }: { status: string }) {
   switch (status) {
@@ -54,14 +59,33 @@ export function TaskList({ onSelect, onCreate, refreshTrigger, active }: TaskLis
   const [scrollTop, setScrollTop] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [retryTick, setRetryTick] = useState(0);
   const fetchedPages = useRef(new Set<number>());
   const fetchingPages = useRef(new Set<number>());
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Bumped on every refresh. A fetch started under an old generation must not
+  // write into the array (or mutate the page-tracking sets) belonging to a
+  // newer generation — otherwise a stale, in-flight response can repopulate a
+  // freshly-reset list out of order.
+  const generation = useRef(0);
 
-  const fetchPage = useCallback(async (page: number) => {
+  // Schedule a single debounced retry. Failed pages are left unmarked so the
+  // prefetch effect re-attempts them when this fires.
+  const scheduleRetry = useCallback(() => {
+    if (retryTimer.current) return;
+    retryTimer.current = setTimeout(() => {
+      retryTimer.current = null;
+      setRetryTick((n) => n + 1);
+    }, RETRY_DELAY_MS);
+  }, []);
+
+  const loadPage = useCallback(async (page: number) => {
     if (fetchedPages.current.has(page) || fetchingPages.current.has(page)) return;
+    const gen = generation.current;
     fetchingPages.current.add(page);
     try {
       const { tasks, total: t } = await fetchTasks({ limit: PAGE_SIZE, offset: page * PAGE_SIZE });
+      if (gen !== generation.current) return; // superseded by a refresh — discard
       fetchedPages.current.add(page);
       setTotal(t);
       setAllTasks((prev) => {
@@ -75,34 +99,65 @@ export function TaskList({ onSelect, onCreate, refreshTrigger, active }: TaskLis
         }
         return next;
       });
+      setError(null);
+      if (page === 0) setLoading(false);
+    } catch (err) {
+      if (gen !== generation.current) return; // superseded — ignore
+      // Leave the page unmarked so it is retried. Only surface an error when
+      // page 0 fails, since that is what leaves the list with nothing to show.
+      if (page === 0) {
+        setLoading(false);
+        setError(err instanceof Error ? err.message : 'Failed to load tasks');
+      }
+      scheduleRetry();
     } finally {
-      fetchingPages.current.delete(page);
+      // Only the owning generation may clear the marker, so a stale fetch can't
+      // delete the tracking entry of a fetch started after a refresh.
+      if (gen === generation.current) fetchingPages.current.delete(page);
     }
-  }, []);
+  }, [scheduleRetry]);
 
   // Initial load + reset on refresh
   useEffect(() => {
+    generation.current += 1;
     fetchedPages.current.clear();
     fetchingPages.current.clear();
+    if (retryTimer.current) {
+      clearTimeout(retryTimer.current);
+      retryTimer.current = null;
+    }
     setAllTasks([]);
+    setTotal(0);
     setCursor(0);
     setScrollTop(0);
+    setError(null);
     setLoading(true);
-    fetchPage(0).finally(() => setLoading(false));
-  }, [refreshTrigger, fetchPage]);
+    loadPage(0);
+  }, [refreshTrigger, loadPage]);
 
-  // Prefetch pages to cover visible area + buffer ahead of cursor
+  // Fetch (and retry) every page overlapping the visible window + buffer.
+  // This deliberately does NOT assume pages load contiguously from 0: it fills
+  // whichever pages in range are still missing, so a page that previously
+  // failed — including page 0 — gets re-fetched instead of being skipped.
   useEffect(() => {
-    const needed = cursor + visibleRows + PREFETCH_BUFFER;
-    const loadedCount = allTasks.filter(Boolean).length;
-    if (loadedCount < total) {
-      const startPage = Math.floor(loadedCount / PAGE_SIZE);
-      const endPage = Math.floor(Math.min(needed, total - 1) / PAGE_SIZE);
-      for (let p = startPage; p <= endPage; p++) {
-        fetchPage(p).catch(() => {});
-      }
+    if (total === 0) {
+      // Page 0 hasn't established the total yet (still loading or it failed).
+      // Re-attempt it; loadPage de-dupes if it is already in flight.
+      loadPage(0);
+      return;
     }
-  }, [cursor, allTasks, total, visibleRows, fetchPage]);
+    const needed = cursor + visibleRows + PREFETCH_BUFFER;
+    const firstPage = Math.max(0, Math.floor(scrollTop / PAGE_SIZE));
+    const lastPage = Math.floor(Math.min(needed, total - 1) / PAGE_SIZE);
+    for (let p = firstPage; p <= lastPage; p++) {
+      loadPage(p);
+    }
+  }, [cursor, scrollTop, total, visibleRows, retryTick, loadPage]);
+
+  // Cancel any pending retry on unmount.
+  useEffect(() => () => {
+    if (retryTimer.current) clearTimeout(retryTimer.current);
+  }, []);
 
   // Keep cursor in view
   useEffect(() => {
@@ -128,6 +183,10 @@ export function TaskList({ onSelect, onCreate, refreshTrigger, active }: TaskLis
     }
   });
 
+  // Count real entries, not the sparse array length: a page of `undefined`
+  // placeholders must not read as "tasks exist".
+  const loadedCount = allTasks.filter(Boolean).length;
+
   if (loading) {
     return (
       <Box flexDirection="column" padding={1}>
@@ -136,16 +195,16 @@ export function TaskList({ onSelect, onCreate, refreshTrigger, active }: TaskLis
     );
   }
 
-  if (error) {
+  if (error && loadedCount === 0) {
     return (
       <Box flexDirection="column" padding={1}>
         <Text color="red">Error: {error}</Text>
-        <Text dimColor>Is the Archie server running?</Text>
+        <Text dimColor>Is the Archie server running? Retrying…</Text>
       </Box>
     );
   }
 
-  if (allTasks.length === 0) {
+  if (loadedCount === 0) {
     return (
       <Box flexDirection="column" padding={1}>
         <Text bold>No tasks found</Text>
