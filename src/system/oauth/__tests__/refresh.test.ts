@@ -101,6 +101,46 @@ describe('ensureFreshToken', () => {
     expect(sealed.refresh_token).toBe('RT-new');
   });
 
+  it('force-refreshes a token that is nowhere near expiry and stamps real timestamps', async () => {
+    // Regression: the `oauth:refresh` CLI used to force a refresh by passing a
+    // fake far-future `now`, which leaked into updated_at/expires_at (the
+    // "-31535788s ago" / "in 372d" bug). With `force`, timestamps stay real.
+    const { refresh, storage } = await importFresh();
+    const nowSec = Math.floor(Date.now() / 1000);
+    await storage.writeOAuthRecord(
+      {
+        server_name: 'forced',
+        expires_at: nowSec + 3600, // plenty of life left — would normally be cached
+        created_at: nowSec - 600, updated_at: nowSec - 600,
+        issuer: 'https://auth.example.com',
+        token_endpoint: 'https://auth.example.com/token',
+        scopes: [],
+      },
+      { access_token: 'AT-old', refresh_token: 'RT', client_id: 'cli', token_type: 'Bearer' },
+    );
+    let fetchCalled = false;
+    globalThis.fetch = vi.fn(async () => {
+      fetchCalled = true;
+      return new Response(
+        JSON.stringify({ access_token: 'AT-new', token_type: 'Bearer', expires_in: 600 }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }) as any;
+
+    const result = await refresh.ensureFreshToken('forced', { force: true });
+    expect(fetchCalled).toBe(true); // force bypasses the freshness short-circuit
+    expect(result.accessToken).toBe('AT-new');
+
+    const reread = await storage.readOAuthRecord('forced');
+    // updated_at must be ~real now, never a far-future sentinel.
+    expect(reread!.updated_at).toBeGreaterThanOrEqual(nowSec);
+    expect(reread!.updated_at).toBeLessThan(nowSec + 5);
+    // expires_at must be ~now + expires_in (600s), not a year-plus out.
+    expect(reread!.expires_at).toBeGreaterThanOrEqual(nowSec + 595);
+    expect(reread!.expires_at).toBeLessThan(nowSec + 700);
+    expect(result.expiresAt).toBe(reread!.expires_at);
+  });
+
   it('keeps the old refresh_token when the issuer does not rotate it', async () => {
     const { refresh, storage } = await importFresh();
     const nowSec = Math.floor(Date.now() / 1000);

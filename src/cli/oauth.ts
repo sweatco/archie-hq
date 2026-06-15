@@ -181,9 +181,9 @@ async function runRevoke(args: string[]): Promise<void> {
 async function runRefresh(args: string[]): Promise<void> {
   const serverName = args[0];
   if (!serverName) fatal('Usage: oauth:refresh <server-name>');
-  // Force a refresh by claiming the token already expired.
-  const farFuture = Date.now() + 365 * 24 * 60 * 60 * 1000;
-  const result = await ensureFreshToken(serverName, farFuture).catch((err) => {
+  // Force a refresh regardless of remaining token lifetime. (Faking "now" would
+  // also force it, but that timestamp leaks into the stored updated_at/expires_at.)
+  const result = await ensureFreshToken(serverName, { force: true }).catch((err) => {
     fatal(err);
   });
   if (!result) return;

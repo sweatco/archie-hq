@@ -35,18 +35,34 @@ export class OAuthRefreshError extends Error {
   }
 }
 
+export interface EnsureFreshTokenOptions {
+  /** Current time as unix epoch ms. Overridable for tests; defaults to Date.now(). */
+  now?: number;
+  /**
+   * Refresh regardless of how much life the cached token has left. Used by the
+   * `oauth:refresh` CLI to rotate a token on demand. Without this, a caller
+   * would have to fake `now` to force a refresh — and that fake value would
+   * leak into the stamped `updated_at`/`expires_at`, corrupting the record.
+   */
+  force?: boolean;
+}
+
 /**
- * Read the vault record, refresh if near expiry, and return a live
- * access token. Writes back the rotated record atomically. Concurrent
- * callers for the same server name share one refresh.
+ * Read the vault record, refresh if near expiry (or when `force` is set), and
+ * return a live access token. Writes back the rotated record atomically.
+ * Concurrent callers for the same server name share one refresh.
  */
-export async function ensureFreshToken(serverName: string, now = Date.now()): Promise<FreshToken> {
+export async function ensureFreshToken(
+  serverName: string,
+  options: EnsureFreshTokenOptions = {},
+): Promise<FreshToken> {
+  const { now = Date.now(), force = false } = options;
   return withKeyMutex(`oauth:${serverName}`, async () => {
     const record = await readOAuthRecord(serverName);
     if (!record) throw new OAuthRecordMissingError(serverName);
 
     const nowSec = Math.floor(now / 1000);
-    if (record.expires_at - nowSec > REFRESH_LEEWAY_SECONDS) {
+    if (!force && record.expires_at - nowSec > REFRESH_LEEWAY_SECONDS) {
       const sealed = await readOAuthSealed(record);
       return {
         accessToken: sealed.access_token,
