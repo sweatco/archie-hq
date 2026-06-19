@@ -311,7 +311,7 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     getCallerAgentId: () => def.id,
     checkResearchBudget: () => task.checkResearchBudget(),
     incrementResearchCount: () => task.incrementResearchCount(),
-    onResearchBudgetExceeded: () => task.onResearchBudgetExceeded(),
+    onResearchBudgetExceeded: () => task.onResearchBudgetExceeded(agent),
   });
 
   // ---- Per-agent config ----
@@ -563,6 +563,13 @@ Shared folder: ${sharedPath} [READ-ONLY]
 
   // ---- Session recovery (try → reset → retry → give up) ----
 
+  // Start each spawn with a clean teardown slot. Agent objects are reused when a
+  // task parks (complete()) and reopens onto the same agents, so a teardown armed
+  // by report_completion/request_edit_mode/research-budget in a previous run would
+  // otherwise still be set here and fire against this fresh run. deferTeardown
+  // re-arms it within this run as needed.
+  agent.clearPendingTeardown();
+
   const existingSessionId = agent.session.session_id;
   const recoverable = createRecoverableInputGenerator(agent.queue);
 
@@ -600,6 +607,26 @@ Shared folder: ${sharedPath} [READ-ONLY]
               additionalDirectories,
               isRepoAgent(def) && metadata.edit_allowed === true,
             );
+
+            // Deferred teardown (report_completion / request_edit_mode / research
+            // budget): now that the turn has fully ended (the SDK `result` event),
+            // run it. The teardown stops this agent's queue, which closes the input
+            // stream and lets the query generator terminate *naturally* on the next
+            // pull — the same path the pre-change code relied on.
+            //
+            // Do NOT `return` here. `Query` is an AsyncGenerator, so returning from
+            // the for-await calls its .return(), abruptly tearing down the SDK
+            // subprocess mid-stream instead of letting it exit gracefully. That left
+            // the session in a state that broke the next `resume`, so the first
+            // attempt completed cleanly but every reopened attempt after it fell
+            // into recovery.
+            if (event.type === 'result' && agent.pendingTeardown) {
+              const teardown = agent.pendingTeardown;
+              agent.clearPendingTeardown();
+              await teardown().catch((err) =>
+                logger.error(def.id, 'Error during deferred teardown', err)
+              );
+            }
           }
 
           return;

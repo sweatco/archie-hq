@@ -827,7 +827,11 @@ export class Task {
     this.debouncedSave();
   }
 
-  async onResearchBudgetExceeded(): Promise<void> {
+  async onResearchBudgetExceeded(agent: Agent): Promise<void> {
+    // Already pausing this turn — the spawn loop stops the task at turn-end.
+    // Skip a duplicate approval post if web_research goes over budget again.
+    if (agent.pendingTeardown) return;
+
     logger.warn(
       'budget',
       `Research budget exceeded for task ${this.taskId} (${this.budgets.researchRequestCount}/${this.budgets.researchRequestLimit})`,
@@ -867,7 +871,10 @@ export class Task {
       'research_budget',
     ).catch((err: unknown) => logger.error('budget', 'Failed to post budget approval request', err));
 
-    await this.stop();
+    // Defer the stop to the calling agent's turn-end (see report_completion):
+    // web_research is mid-turn here, so stopping the queue now would close the
+    // input stream under an in-flight hook ("stream closed" error).
+    agent.deferTeardown(() => this.stop());
   }
 
   // ---- Approval handlers ----

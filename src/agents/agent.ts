@@ -27,10 +27,47 @@ export class Agent {
    */
   sandbox?: SandboxOptions;
 
+  /**
+   * A task teardown (complete/stop) deferred until this agent's current turn
+   * ends. The spawn loop runs it when it sees the SDK `result` event, so the
+   * triggering tool's response and the Stop hook's control round-trip both
+   * finish over an open input stream. Tearing down mid-turn closes the stream
+   * while a hook is still doing its control round-trip, which the SDK surfaces
+   * as a "stream closed" error. Set via `deferTeardown`.
+   */
+  private _pendingTeardown?: () => Promise<void>;
+
   constructor(def: AgentDef) {
     this.def = def;
     this.queue = new MessageQueue();
     this.session = { active: false };
+  }
+
+  /**
+   * Defer a task teardown (e.g. `task.complete()` / `task.stop()`) until this
+   * agent's current turn ends — see {@link pendingTeardown}. First request wins;
+   * later calls in the same turn are ignored, so a tool that fires twice can't
+   * trigger a double teardown or duplicate side-effects.
+   */
+  deferTeardown(action: () => Promise<void>): void {
+    this._pendingTeardown ??= action;
+  }
+
+  /**
+   * The teardown queued by {@link deferTeardown}, run by the spawn loop once the
+   * SDK emits this turn's `result` event. Undefined when nothing is pending.
+   */
+  get pendingTeardown(): (() => Promise<void>) | undefined {
+    return this._pendingTeardown;
+  }
+
+  /**
+   * Drop any queued teardown. Called at the start of each spawn so a flag armed
+   * in a previous run on this reused Agent object (tasks park via `complete()`
+   * and reopen onto the same agents) can't fire against the next run.
+   */
+  clearPendingTeardown(): void {
+    this._pendingTeardown = undefined;
   }
 
   /**

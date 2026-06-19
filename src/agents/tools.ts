@@ -411,6 +411,12 @@ function createRequestEditModeTool(agent: Agent, task: Task) {
     async (args) => {
       const agentName = agent.def.id as AgentName;
 
+      // Already pausing this turn — the spawn loop tears the task down at turn
+      // end. Skip a duplicate approval post if the tool fires twice.
+      if (agent.pendingTeardown) {
+        return ok('Edit mode request already sent — task is pausing pending user approval.');
+      }
+
       // Validate an explicit target before posting so a bad key surfaces as
       // actionable feedback instead of silently dropping to the CLI log. The
       // task is left running so the agent can retry with a valid channel.
@@ -456,7 +462,9 @@ function createRequestEditModeTool(agent: Agent, task: Task) {
       ];
       await task.postInteractiveToUser(`Edit mode request: ${args.reason}`, blocks, 'edit_mode', args.channel);
 
-      await task.stop();
+      // Defer the pause to turn-end (see report_completion) so stopping the queue
+      // doesn't close the input stream under an in-flight hook ("stream closed").
+      agent.deferTeardown(() => task.stop());
       return { content: [{ type: 'text' as const, text: 'Edit mode request sent. Task paused pending user approval.' }] };
     },
   );
@@ -476,6 +484,11 @@ function createReportCompletionTool(agent: Agent, task: Task) {
       // (the previous complete() tore down the agent mid-response, so the retry is spurious).
       if (!task.isActive) {
         return ok('Task already completed.');
+      }
+      // Already asked to complete this turn — the spawn loop tears the task down
+      // when the turn ends. Skip duplicate side-effects (e.g. a second Slack post).
+      if (agent.pendingTeardown) {
+        return ok('Task already completing.');
       }
       // Refuse completion while a peer agent is still mid-turn — completing now
       // would stop their queue and drop the reply they're about to send back,
@@ -508,14 +521,12 @@ function createReportCompletionTool(agent: Agent, task: Task) {
       }
       logger.agentAction(agentName, 'Reporting completion', '');
       task.touch();
-      // Run complete() on next tick so this tool response streams back to the agent
-      // before the runtime tears it down. Without this, the response is lost and the
-      // agent's SDK reports "stream closed", causing a retry loop.
-      setImmediate(() => {
-        task.complete().catch((err) =>
-          logger.error('report_completion', 'Error completing task', err)
-        );
-      });
+      // Defer teardown to the spawn loop: it runs this once the agent's turn
+      // fully ends (the SDK `result` event), so this tool response and the Stop
+      // hook's control round-trip both finish over an open input stream. Stopping
+      // the queue here (mid-turn) closes the stream under an in-flight hook, which
+      // the SDK surfaces as a "stream closed" error.
+      agent.deferTeardown(() => task.complete());
       return ok(args.message ? 'Posted message to Slack and stopped task.' : 'Stopped task.');
     },
   );
