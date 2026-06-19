@@ -101,7 +101,7 @@ Each task gets its own `Task` instance (a class that encapsulates runtime state)
 
 ### Shared Git Clones
 
-All repo agents work in isolated `git clone --shared` checkouts (`src/connectors/github/repo-clone.ts`), regardless of mode. Each clone has its own `.git/` directory, refs, index, and HEAD, but borrows objects from the base repo's object store via alternates. In **readonly mode**, the clone is checked out on `origin/{baseBranch}`. In **edit mode**, the clone has a feature branch (`feature/task-{taskId}`) based on the repository's default branch. Agents can track multiple branches per clone via `BranchState` records. Agents commit locally and manage their own PRs via the `repo-tools` MCP server; clones for readonly tasks are cleaned up on task stop/complete. Legacy worktrees are migrated to shared clones on first encounter (`migrateWorktreeToClone`).
+All repo agents work in isolated `git clone --shared` checkouts (`src/connectors/github/repo-clone.ts`), regardless of mode. Each clone has its own `.git/` directory, refs, index, and HEAD, but borrows objects from the base repo's object store via alternates. In **readonly mode**, the clone is checked out on `origin/{baseBranch}`. In **edit mode**, the clone has a feature branch (`archie/task-{taskId}`) based on the repository's default branch. Agents can track multiple branches per clone via `BranchState` records. Agents commit locally and manage their own PRs via the `repo-tools` MCP server; clones for readonly tasks are cleaned up on task stop/complete. Legacy worktrees are migrated to shared clones on first encounter (`migrateWorktreeToClone`).
 
 ### Plugin Architecture
 
@@ -155,7 +155,7 @@ See [plugin-system.md](plugin-system.md) for details.
    → connectors/github/events.ts receives via Express endpoint
 
 2. connectors/github/webhooks.ts performs deterministic routing:
-   → Matches task by branch name (feature/task-{id}) or PR number
+   → Matches task by branch name (archie/task-{id}, legacy feature/task-{id}) or PR number
    → Routes to: direct (reviews, CI, comments), merge_check, or discard
 
 3. Events are appended to the matched task and the PM agent is messaged

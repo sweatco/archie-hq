@@ -46,7 +46,7 @@ The webhook router (`src/connectors/github/webhooks.ts`) uses purely determinist
 The router identifies which task an event belongs to by:
 
 1. **Branch name extraction** -- For events with a `pull_request` object, extracts `head.ref`. For `push` events, extracts from `refs/heads/...`. For `workflow_run`, uses `head_branch`.
-2. **Task ID extraction** -- Matches the branch name against the pattern `feature/task-{taskId}` via `extractTaskIdFromBranch()`.
+2. **Task ID extraction** -- Matches the branch name against the pattern `archie/task-{taskId}` via `extractTaskIdFromBranch()`. The legacy `feature/task-{taskId}` prefix is also accepted so pull requests opened before the branch-naming migration keep attributing to their task.
 3. **PR number fallback** -- For `issue_comment` events (which lack branch info), looks up the task by PR number using `findTaskByPRNumber()`.
 
 If no task ID is found, the event is discarded as "Not our branch pattern."
@@ -83,8 +83,8 @@ Route actions map to handler types:
 
 - `from=alice, destination=PR #42, message=approved`
 - `from=bob, destination=PR #42, message=requested changes: needs more tests`
-- `from=ci, destination=branch:feature/task-abc123, message=workflow failure`
-- `from=alice, destination=branch:feature/task-abc123, message=pushed`
+- `from=ci, destination=branch:archie/task-abc123, message=workflow failure`
+- `from=alice, destination=branch:archie/task-abc123, message=pushed`
 
 These entries are written to the task's knowledge log so the PM agent can understand what happened.
 
@@ -116,7 +116,7 @@ All tools below are registered on the same `repo-tools` MCP server. Whether a to
 |---|---|
 | `push_branch` | Push commits from the local shared clone to origin via `git push -u origin HEAD:{branch}`. |
 | `create_pull_request` | Create a PR on GitHub. Stores the PR number in the current branch's `BranchState`. |
-| `create_branch` | Create a new branch (auto-named `feature/{taskId}` or `feature/{taskId}-N`) and switch to it. |
+| `create_branch` | Create a new branch (auto-named `archie/{taskId}` or `archie/{taskId}-N`) and switch to it. |
 | `update_pr` | Update the title, description, and/or base branch of an existing PR (all fields optional). |
 | `add_pr_comment` | Add a general comment to a PR (issue comment). |
 | `add_review_comment` | Start a NEW review thread on a specific file and line. |

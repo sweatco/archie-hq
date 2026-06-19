@@ -25,6 +25,7 @@ import {
   createSchedulingMcpServer,
 } from './tools.js';
 import { hydrateBranchState } from '../connectors/github/branch-state.js';
+import { taskBranchName } from '../connectors/github/branch-naming.js';
 import { createResearchMcpServer, createResearchPostToolHook, createResearchDefenseTagHook } from '../mcp/research-tools.js';
 import { buildPeerListForSender } from './registry.js';
 import {
@@ -207,7 +208,7 @@ async function prepareRepoClone(agent: Agent, task: Task): Promise<RepoCloneSetu
     let checkout: CloneCheckout;
     if (editAllowed && wasOnBaseBranch) {
       // RW mode, was on base branch (or no branch) — create feature branch for new work
-      checkout = { type: 'new_branch', name: `feature/${taskId}` };
+      checkout = { type: 'new_branch', name: taskBranchName(taskId) };
     } else if (editAllowed && !wasOnBaseBranch) {
       // RW but was on a specific branch — restore it
       checkout = { type: 'branch', name: previousBranch! };

@@ -20,6 +20,7 @@ import { getAgentIds, getVisiblePeerIdsForSender, getAgentDef } from './registry
 import { getGitHubClient, parseCheckRef } from '../connectors/github/client.js';
 import { gitExec } from '../connectors/github/repo-clone.js';
 import { mirrorLegacyFields, hydrateBranchState, findBranchStateByPR } from '../connectors/github/branch-state.js';
+import { taskBranchName } from '../connectors/github/branch-naming.js';
 import { appendAgentFinding, appendArtifactShared } from '../tasks/persistence.js';
 import { copyArtifactToShared, assertReadable } from './artifacts.js';
 import { launchTask } from '../tasks/launch.js';
@@ -776,7 +777,7 @@ function createPullRequestTool(agent: Agent, task: Task) {
       const repoInfo = task.metadata.repositories[repoKey];
       const branch = repoInfo?.current_branch;
       const state = branch ? repoInfo?.branch_states?.[branch] : undefined;
-      const head = branch || `feature/task-${task.taskId}`;
+      const head = branch || taskBranchName(task.taskId);
       const base = state?.base_branch || agent.def.repo!.baseBranch || 'main';
 
       const result = await client.createPullRequest(githubRepo, head, base, args.title, args.body);
@@ -1321,9 +1322,7 @@ function createCreateBranchTool(agent: Agent, task: Task) {
 
       // Count existing branches to generate unique name
       const existing = Object.keys(repoInfo.branch_states || {}).length;
-      const branchName = existing === 0
-        ? `feature/${task.taskId}`
-        : `feature/${task.taskId}-${existing + 1}`;
+      const branchName = taskBranchName(task.taskId, existing);
 
       const base = args.base || 'HEAD';
       await gitExec(repoInfo.clone_path, `checkout -b ${branchName} ${base}`);

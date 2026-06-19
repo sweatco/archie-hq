@@ -123,7 +123,7 @@ Repo agents are specialized for a single repository. They investigate code, make
 
 **Dual mode system**: The agent's mode is set per-task by `metadata.edit_allowed`. In read-only mode the sandbox makes the clone read-only and write-side MCP tools are disallowed; in edit mode the clone is writable and all `repo-tools` entries are exposed. The agent observes its mode through the available tool set and the injected `READ-ONLY` / `READ-WRITE` annotation in its system prompt.
 
-**Working directory**: The agent's cwd is its per-agent workspace at `sessions/{taskId}/agents/{key}/`. The repository itself lives at a task-local shared clone under `sessions/{taskId}/repos/{repoKey}` and is exposed via `additionalDirectories`. In read-only mode the clone is checked out on the base branch; in edit mode it carries a `feature/{taskId}` branch (or a previously persisted one). Shared task state at `sessions/{taskId}/shared/` is also mounted read-only.
+**Working directory**: The agent's cwd is its per-agent workspace at `sessions/{taskId}/agents/{key}/`. The repository itself lives at a task-local shared clone under `sessions/{taskId}/repos/{repoKey}` and is exposed via `additionalDirectories`. In read-only mode the clone is checked out on the base branch; in edit mode it carries an `archie/{taskId}` branch (or a previously persisted one). Shared task state at `sessions/{taskId}/shared/` is also mounted read-only.
 
 ### Plugin Agents
 

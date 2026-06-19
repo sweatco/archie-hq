@@ -437,8 +437,9 @@ type GitHubRouteResult =
   | { action: 'direct'; handler: 'merge_check' | 'existing_task'; taskId: string };
 ```
 
-The router extracts a task ID from the branch name pattern (`feature/task-{id}`) or,
-for `issue_comment` events, looks up the task by PR number via `findTaskByPRNumber()`.
+The router extracts a task ID from the branch name pattern (`archie/task-{id}`, with
+the legacy `feature/task-{id}` prefix still accepted) or, for `issue_comment` events,
+looks up the task by PR number via `findTaskByPRNumber()`.
 
 **Deterministic routing** (no triage step exists for GitHub):
 - `pull_request_review` (approved) -> `merge_check`

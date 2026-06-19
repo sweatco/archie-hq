@@ -12,7 +12,7 @@ In readonly mode the clone is checked out on the base branch (`{ type: 'base' }`
 
 ### Edit Mode (After Approval)
 
-Once edit mode is approved for a task, the repo path's sandbox flips from read-only to read-write (`Write`, `Edit`, and write-capable `Bash` commands are now allowed against the clone), and the previously-disallowed MCP tools become available: `push_branch`, `create_pull_request`, `update_pr`, `add_pr_comment`, `add_review_comment`, `reply_to_review_comment`, `resolve_review_thread`, `request_re_review`, `merge_pull_request`, `close_pull_request`, and `create_branch`. The next time a repo agent is spawned, the clone is set up on a fresh feature branch (`{ type: 'new_branch', name: 'feature/{taskId}' }`). Edit mode is a one-way, permanent transition for the task — once approved, it cannot be revoked. Clones for tasks with `edit_allowed === true` are NOT removed on stop/complete (they hold local commits, branches, and PR state).
+Once edit mode is approved for a task, the repo path's sandbox flips from read-only to read-write (`Write`, `Edit`, and write-capable `Bash` commands are now allowed against the clone), and the previously-disallowed MCP tools become available: `push_branch`, `create_pull_request`, `update_pr`, `add_pr_comment`, `add_review_comment`, `reply_to_review_comment`, `resolve_review_thread`, `request_re_review`, `merge_pull_request`, `close_pull_request`, and `create_branch`. The next time a repo agent is spawned, the clone is set up on a fresh feature branch (`{ type: 'new_branch', name: 'archie/{taskId}' }`). Edit mode is a one-way, permanent transition for the task — once approved, it cannot be revoked. Clones for tasks with `edit_allowed === true` are NOT removed on stop/complete (they hold local commits, branches, and PR state).
 
 ## Human-in-the-Loop Approval Flow
 
@@ -44,7 +44,7 @@ Immediately after posting the approval request, `request_edit_mode` calls `task.
 - `handleEditModeApproval()` in `src/tasks/task.ts` is called.
 - Sets `metadata.edit_allowed = true` on the task and persists via `debouncedSave()`.
 - Appends the system finding `Edit mode approved by user` (decision) to `knowledge.log`.
-- Reactivates the PM agent by sending the `existingTask` agent prompt (which reactivates the task and re-spawns agents — repo agents now spawn into a fresh `feature/{taskId}` branch).
+- Reactivates the PM agent by sending the `existingTask` agent prompt (which reactivates the task and re-spawns agents — repo agents now spawn into a fresh `archie/{taskId}` branch).
 
 **Deny** (handled in `src/connectors/slack/events.ts: app.action("deny_edit_mode")`, with the same API equivalent):
 - The original message is updated to replace the buttons with `Edit mode denied by <@user>`.
@@ -102,7 +102,7 @@ spawnAgent() called (repo track)
   -> If task-local path is a legacy worktree → migrateWorktreeToClone()
   -> If a shared clone already exists at the path → reuse it
   -> Otherwise pick a CloneCheckout from previous branch state + edit mode:
-       editAllowed && (no previous branch || previous == base) → new_branch (feature/{taskId})
+       editAllowed && (no previous branch || previous == base) → new_branch (archie/{taskId})
        editAllowed && previous != base                          → branch (restore previous_branch)
        readonly                                                 → base
      Then call setupSharedClone(...) with that checkout.
@@ -191,10 +191,10 @@ The full single allowed-tool list (set as `def.tools` on the repo agent definiti
 
 ## Branch Strategy
 
-The first feature branch follows the pattern `feature/{taskId}`, where `taskId` is the full task identifier (e.g., `task-20260101-1823-abc123`) and so already begins with `task-`. If the agent calls `create_branch` again on the same task, additional branches are auto-numbered as `feature/{taskId}-2`, `feature/{taskId}-3`, etc. This naming serves double duty:
+The first feature branch follows the pattern `archie/{taskId}`, where `taskId` is the full task identifier (e.g., `task-20260101-1823-abc123`) and so already begins with `task-`. If the agent calls `create_branch` again on the same task, additional branches are auto-numbered as `archie/{taskId}-2`, `archie/{taskId}-3`, etc. Branch naming lives in `src/connectors/github/branch-naming.ts` (`taskBranchName()`). This naming serves double duty:
 
 1. **Isolation**: Each task gets its own branch (or family of branches), preventing cross-task interference.
-2. **Webhook routing**: The webhook router uses `extractTaskIdFromBranch()` in `src/connectors/github/webhooks.ts` to match incoming GitHub events (pushes, CI results, reviews) back to the correct task. The regex `^feature\/(task-\d{8}-\d{4}-[a-z0-9]+)(?:-\d+)?$` extracts the task ID, allowing the optional `-N` suffix from multi-branch tasks.
+2. **Webhook routing**: The webhook router uses `extractTaskIdFromBranch()` (re-exported from `src/connectors/github/webhooks.ts`) to match incoming GitHub events (pushes, CI results, reviews) back to the correct task. The regex `^(?:archie|feature)\/(task-\d{8}-\d{4}-[a-z0-9]+)(?:-\d+)?$` extracts the task ID, allowing the optional `-N` suffix from multi-branch tasks. The legacy `feature/` prefix remains accepted so pull requests opened before the migration keep attributing to their task.
 
 ## Cross-Agent Isolation
 
@@ -217,13 +217,13 @@ sessions/
 Key isolation properties:
 
 - **Separate clones**: Each repo agent gets its own task-local shared clone derived from a different base repository, so there is no cross-contamination between repositories.
-- **Separate branches**: Each clone has its own `feature/{taskId}` branch (created in RW mode), branched from the respective repository's base branch.
+- **Separate branches**: Each clone has its own `archie/{taskId}` branch (created in RW mode), branched from the respective repository's base branch.
 - **Base repo isolation**: Clones are created with `git clone --shared` from the base repository. They borrow objects via `objects/info/alternates` but have independent refs/index, and `origin` is rewritten to GitHub so pushes never go back to the base repo. Multiple tasks can share the same base repo without conflict.
 - **Git identity**: `configureGitIdentity(clonePath)` runs after clone creation so commits get the configured user name and email.
 
 ## Session Handling on Mode Transition
 
-The PM agent's reactivation after approval/denial uses `task.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent')`, which routes through the standard task-reactivation path. When the PM later sends work to a repo agent, `ensureAgentSpawned()` calls `spawnAgent()` for that agent. Because the readonly clone was deleted on the earlier `task.stop()`, `cloneExists()` returns false and a brand-new clone is created — in RW mode that means `setupSharedClone({ type: 'new_branch', name: 'feature/{taskId}' })`. The SDK session for the repo agent is started without a prior `session_id`, so it starts fresh against the new clone path.
+The PM agent's reactivation after approval/denial uses `task.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent')`, which routes through the standard task-reactivation path. When the PM later sends work to a repo agent, `ensureAgentSpawned()` calls `spawnAgent()` for that agent. Because the readonly clone was deleted on the earlier `task.stop()`, `cloneExists()` returns false and a brand-new clone is created — in RW mode that means `setupSharedClone({ type: 'new_branch', name: 'archie/{taskId}' })`. The SDK session for the repo agent is started without a prior `session_id`, so it starts fresh against the new clone path.
 
 If a clone is reused across stop/reactivate cycles (e.g., RW reactivation where the clone was preserved), the existing SDK `session_id` (stored in `metadata.agent_sessions[agentId]`) is passed via `resume`, and the spawn flow runs `fetch origin` on the reused clone before continuing.
 

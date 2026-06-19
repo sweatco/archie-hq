@@ -9,6 +9,7 @@
  */
 
 import crypto from 'crypto';
+import { extractTaskIdFromBranch } from './branch-naming.js';
 import { checkAndMergeLinkedPRs } from './merge.js';
 import { findTaskByPRNumber, loadMetadata, appendGitHubEvent } from '../../tasks/persistence.js';
 import { Task } from '../../tasks/task.js';
@@ -150,16 +151,10 @@ export function extractBranchFromPayload(
   return undefined;
 }
 
-/**
- * Extract task ID from branch name
- * Branch format: feature/{taskId} or feature/{taskId}-{N} (multi-branch suffix)
- * Task ID format: task-YYYYMMDD-HHMM-random
- */
-export function extractTaskIdFromBranch(branch: string | undefined): string | undefined {
-  if (!branch) return undefined;
-  const match = branch.match(/^feature\/(task-\d{8}-\d{4}-[a-z0-9]+)(?:-\d+)?$/i);
-  return match ? match[1] : undefined;
-}
+// Task ID is parsed out of the branch name by `extractTaskIdFromBranch`
+// (re-exported from ./branch-naming), which accepts both the current `archie/`
+// prefix and the legacy `feature/` prefix so historical PRs keep attributing.
+export { extractTaskIdFromBranch };
 
 // ============================================================================
 // Event Message Formatting
@@ -435,7 +430,7 @@ export async function routeGitHubEvent(
   }
 
   // For check_suite events, fall back to PR-number lookup if the branch
-  // doesn't match our feature/{taskId} pattern (e.g. suite attached to base).
+  // doesn't match our {prefix}/{taskId} pattern (e.g. suite attached to base).
   if (!taskId && eventType === 'check_suite' && context.prNumber) {
     taskId = await findTaskByPRNumber(context.githubRepo, context.prNumber) ?? undefined;
   }
