@@ -56,9 +56,9 @@ async function generatePMPrompt(task: Task): Promise<string> {
   });
 }
 
-async function generateRepoAgentPrompt(agent: Agent): Promise<string> {
+async function generateRepoAgentPrompt(agent: Agent, task: Task): Promise<string> {
   const def = agent.def;
-  const peerList = buildPeerListForSender(def);
+  const peerList = buildPeerListForSender(def, task.team);
 
   const corePrompt = await loadPrompt('agent-core', {
     AGENT_ID: def.id,
@@ -79,9 +79,9 @@ async function generateRepoAgentPrompt(agent: Agent): Promise<string> {
   return layers.join('\n\n');
 }
 
-async function generatePluginAgentPrompt(agent: Agent): Promise<string> {
+async function generatePluginAgentPrompt(agent: Agent, task: Task): Promise<string> {
   const def = agent.def;
-  const peerList = buildPeerListForSender(def);
+  const peerList = buildPeerListForSender(def, task.team);
 
   const corePrompt = await loadPrompt('agent-core', {
     AGENT_ID: def.id,
@@ -398,7 +398,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
       });
     }
 
-    systemPrompt = await generateRepoAgentPrompt(agent);
+    systemPrompt = await generateRepoAgentPrompt(agent, task);
     const repoMode = editAllowed ? 'READ-WRITE' : 'READ-ONLY';
     const mountLines = repoMounts.map((m) =>
       `  - ${m.github}${m.github === def.repo!.primary ? ' (primary)' : ''}\n` +
@@ -460,7 +460,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
     };
   } else {
     // ---- Plain plugin agent ----
-    systemPrompt = await generatePluginAgentPrompt(agent);
+    systemPrompt = await generatePluginAgentPrompt(agent, task);
   }
 
   // ---- Organizational memory injection (read path; gated by ARCHIE_MEMORY_INJECT, default off) ----
