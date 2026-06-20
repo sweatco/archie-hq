@@ -74,10 +74,19 @@ export interface AgentRepoDef {
  * PM-specific fields (present only on the PM coordinator agent)
  */
 export interface AgentPmDef {
-  /** Formatted team list for prompt template */
+  /**
+   * Formatted team list for prompt template. Each teammate's line is annotated
+   * with the external systems it can reach via MCP, so the PM knows which agent
+   * to route an integration request to instead of assuming Archie lacks access.
+   */
   teamList: string;
   /** Formatted team expertise for prompt template */
   teamExpertise: string;
+  /**
+   * One sentence naming the integrations the PM can query directly (the PM is
+   * not part of its own roster). Empty string when it has no MCP servers.
+   */
+  pmIntegrations: string;
 }
 
 /**

@@ -51,6 +51,7 @@ async function generatePMPrompt(task: Task): Promise<string> {
   return loadPrompt('pm-agent', {
     TEAM_LIST: pmDef?.pmConfig?.teamList ?? '',
     TEAM_EXPERTISE: pmDef?.pmConfig?.teamExpertise ?? '',
+    PM_INTEGRATIONS: pmDef?.pmConfig?.pmIntegrations ?? '',
   });
 }
 

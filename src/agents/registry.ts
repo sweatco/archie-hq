@@ -267,17 +267,37 @@ function buildPmDef(teamDefs: AgentDef[], rootMcp: LoadedMcpConfig): AgentDef {
     (d) => d.pluginName === 'pm' || d.visibility === 'global',
   );
 
+  // PM overlay from the "pm" plugin (extra prompt, MCP, tool permissions)
+  const overlay = getPmOverlay();
+  const resolvedMcp = overlay ? resolveAgentMcpServers(overlay, rootMcp) : {};
+
+  // Annotate each teammate's roster line with the external systems it can reach
+  // via MCP. Without this the PM sees only roles/expertise and can wrongly tell a
+  // user that checking Jira / Rollbar / the admin panel / etc. isn't possible —
+  // the roster is its only window into what teammates can reach.
+  const describeServer = (name: string): string => {
+    const desc = rootMcp.descriptions[name];
+    return desc ? `${name} (${desc})` : name;
+  };
+  const integrationsSuffix = (d: AgentDef): string => {
+    const names = d.mcpServers ? Object.keys(d.mcpServers) : [];
+    return names.length > 0 ? ` — integrations: ${names.map(describeServer).join('; ')}` : '';
+  };
+
   const teamList = visibleTeam
-    .map((d) => `- ${d.id}: ${d.role}`)
+    .map((d) => `- ${d.id}: ${d.role}${integrationsSuffix(d)}`)
     .join('\n');
 
   const teamExpertise = visibleTeam
     .map((d) => `- ${d.id}: ${d.expertise}`)
     .join('\n');
 
-  // PM overlay from the "pm" plugin (extra prompt, MCP, tool permissions)
-  const overlay = getPmOverlay();
-  const resolvedMcp = overlay ? resolveAgentMcpServers(overlay, rootMcp) : {};
+  // The PM isn't part of its own roster, so surface the integrations it can call
+  // directly as a self-contained sentence (empty when it has none).
+  const pmServerNames = resolvedMcp.mcpServers ? Object.keys(resolvedMcp.mcpServers) : [];
+  const pmIntegrations = pmServerNames.length > 0
+    ? `You can also query these external systems yourself directly: ${pmServerNames.map(describeServer).join('; ')}.`
+    : '';
 
   return {
     id: 'pm-agent',
@@ -291,7 +311,7 @@ function buildPmDef(teamDefs: AgentDef[], rootMcp: LoadedMcpConfig): AgentDef {
     pluginName: 'pm',
     visibility: 'global',
     pluginDataPath: join(PLUGINS_DATA_DIR, 'pm'),
-    pmConfig: { teamList, teamExpertise },
+    pmConfig: { teamList, teamExpertise, pmIntegrations },
     pmOverlayPrompt: overlay?.prompt || undefined,
     skillsPath: pmPlugin?.skillsPath || undefined,
     coreSkillsPath: existsSync(CORE_SKILLS_DIR) ? CORE_SKILLS_DIR : undefined,

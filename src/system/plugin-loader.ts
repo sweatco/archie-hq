@@ -28,18 +28,26 @@ import { logger } from './logger.js';
 
 export { PLUGINS_DIR };
 
-/** Parsed root .mcp.json — server connection configs only */
+/** Parsed root .mcp.json — server connection configs plus optional descriptions */
 export interface LoadedMcpConfig {
   servers: Record<string, any>;
+  /**
+   * Human-readable description per server, taken from an optional `description`
+   * key on each server entry. Stripped from `servers` so the Claude Agent SDK
+   * only ever receives valid connection config. Used to annotate each teammate's
+   * roster line with what its integrations are (see registry.buildPmDef).
+   */
+  descriptions: Record<string, string>;
 }
 
 /**
  * Load and parse an .mcp.json file, substituting ${MCP_*} env vars.
- * Returns pure server connection configs. Tool permissions are controlled
- * by agent frontmatter, not by .mcp.json.
+ * Returns pure server connection configs plus any human-readable `description`
+ * keys (pulled out so they never reach the SDK). Tool permissions are
+ * controlled by agent frontmatter, not by .mcp.json.
  */
 export function loadMcpJson(path: string): LoadedMcpConfig {
-  const empty: LoadedMcpConfig = { servers: {} };
+  const empty: LoadedMcpConfig = { servers: {}, descriptions: {} };
   if (!existsSync(path)) return empty;
   try {
     const raw = readFileSync(path, 'utf-8');
@@ -52,11 +60,22 @@ export function loadMcpJson(path: string): LoadedMcpConfig {
     const rawServers: Record<string, any> = parsed.mcpServers ?? {};
 
     const servers: Record<string, any> = {};
+    const descriptions: Record<string, string> = {};
     for (const [name, config] of Object.entries(rawServers)) {
-      servers[name] = config;
+      // `description` is metadata for surfacing to the PM, not connection
+      // config — split it out so the SDK only sees valid server fields.
+      if (config && typeof config === 'object' && !Array.isArray(config) && 'description' in config) {
+        const { description, ...connectionConfig } = config as Record<string, any>;
+        if (typeof description === 'string' && description.trim()) {
+          descriptions[name] = description.trim();
+        }
+        servers[name] = connectionConfig;
+      } else {
+        servers[name] = config;
+      }
     }
 
-    return { servers };
+    return { servers, descriptions };
   } catch {
     logger.warn('system', `MCP config: failed to parse ${path}`);
     return empty;

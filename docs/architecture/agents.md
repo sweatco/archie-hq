@@ -242,7 +242,8 @@ For repo agents, this is the `agentPrompt` field from `RepoAgentConfig`. For plu
 ### PM Agent Prompt
 
 The PM agent uses a separate prompt (`prompts/pm-agent.md`) that is not layered. It includes:
-- Team list and expertise (dynamically injected via `{{TEAM_LIST}}` and `{{TEAM_EXPERTISE}}`)
+- Team list and expertise (dynamically injected via `{{TEAM_LIST}}` and `{{TEAM_EXPERTISE}}`). Each `{{TEAM_LIST}}` line is annotated by `buildPmDef()` with the external systems that teammate can reach via MCP — built from the agent's resolved `mcpServers` plus the optional `description` of each server in the plugins' `.mcp.json` — so the PM can route an integration request to the agent that owns it instead of assuming Archie lacks access
+- The PM's own directly-callable integrations (`{{PM_INTEGRATIONS}}`), since the PM is not part of its own roster (empty when it has none)
 - Core mental models (Single Read Principle, Turn Flow, Communication Channel Philosophy, Unified Persona, Delegation Protocol, Task Completion Philosophy)
 - Available tools categorized as Action Tools vs Turn-Ending Tools
 - Structured reasoning process (`<situation_analysis>` tags)
@@ -266,7 +267,7 @@ Plugin Agent:
   + plugins/<name>/agents/<key>.md body (optional)
 
 PM Agent:
-  pm-agent.md(TEAM_LIST, TEAM_EXPERTISE)
+  pm-agent.md(TEAM_LIST, TEAM_EXPERTISE, PM_INTEGRATIONS)
   + (optional) pm overlay prompt body from the `pm` plugin
 
 Triage Agent (disabled):
