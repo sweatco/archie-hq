@@ -256,7 +256,9 @@ sessions/{task-id}/agents/{agentKey}/.claude/skills/{skillName} -> plugins/{plug
 
 The PM agent also gets its own workspace with skills symlinked from its plugin at spawn time.
 
-**Source:** `src/agents/spawn.ts` (`setupAgentWorkspace`)
+Skill symlinking is uniform across all tracks: every agent — repo, plugin, and PM — gets its own workspace, and `setupAgentWorkspace` symlinks the owning plugin's `skills/` the same way regardless of track. A repo agent whose plugin ships a `skills/` directory loads those skills via the `Skill` tool exactly like a plugin agent does. (For this to resolve, the agent def carries `pluginPath` so the symlink targets — which live under the plugins dir inside `WORKDIR` — are inside the agent's sandbox read paths; the registry sets `pluginPath`/`skillsPath` on both repo and plugin agents.)
+
+**Source:** `src/agents/spawn.ts` (`setupAgentWorkspace`), `src/agents/registry.ts`
 
 ## Task Directory Structure
 

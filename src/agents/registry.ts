@@ -75,6 +75,7 @@ export function scanAgentDefs(): AgentDef[] {
           pluginName: plugin.name,
           visibility,
           agentPrompt: agent.prompt || undefined,
+          pluginPath: plugin.dir,
           repo: {
             repos: agent.repo.repos.map((r) => ({
               github: r.github,
@@ -83,6 +84,7 @@ export function scanAgentDefs(): AgentDef[] {
             primary: agent.repo.primary,
           },
           pluginDataPath: join(PLUGINS_DATA_DIR, plugin.name),
+          skillsPath: plugin.skillsPath || undefined,
           pluginHooks: plugin.hooks || undefined,
           allowedNetworkDomains: agent.allowedNetworkDomains,
           ...resolvedMcp,
