@@ -55,7 +55,7 @@ GitHub App with fine-grained, read-only permissions scoped to the organization. 
 
 ## CI/CD Pipeline
 
-Continuous integration runs via GitHub Actions (`.github/workflows/ci.yml`): on every push and pull request it installs dependencies, type-checks, builds, runs the test suite, and runs a [gitleaks](https://github.com/gitleaks/gitleaks) secret scan over the working tree and full history. A merge that fails any of these gates is blocked.
+Continuous integration runs via GitHub Actions: on every push and pull request it installs dependencies, type-checks, builds, runs the test suite, and runs a [gitleaks](https://github.com/gitleaks/gitleaks) secret scan over the working tree and full history. A merge that fails any of these gates is blocked. The workflow ships at `ci/ci.yml`; copy it to `.github/workflows/ci.yml` to activate (see the note at the top of that file).
 
 Building and publishing the production container image is operator-driven and intentionally left to your own registry/automation:
 

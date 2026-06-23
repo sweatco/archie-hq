@@ -1,0 +1,49 @@
+# Archie HQ — CI workflow (typecheck, build, test, gitleaks secret scan).
+#
+# Lives at ci/ci.yml rather than .github/workflows/ci.yml because the automation
+# that prepared the initial open-source PR cannot create files under
+# .github/workflows/ without GitHub's `workflows` permission. To ACTIVATE, copy
+# it into place:
+#     mkdir -p .github/workflows && cp ci/ci.yml .github/workflows/ci.yml
+# (or grant the app the `workflows` scope and move it there). No content changes
+# are needed.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Typecheck, build & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+
+  gitleaks:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the scan covers every commit, not just the tip.
+          fetch-depth: 0
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITLEAKS_LICENSE is only required for private repos / orgs; public
+          # repositories run gitleaks-action for free.
