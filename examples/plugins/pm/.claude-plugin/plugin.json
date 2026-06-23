@@ -1,0 +1,5 @@
+{
+  "name": "pm",
+  "version": "1.0.0",
+  "description": "PM extension — example orchestration skill and a minimal PM overlay. Shows how the PM agent is extended with business context and workflows."
+}

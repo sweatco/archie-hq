@@ -1,0 +1,5 @@
+{
+  "name": "helper",
+  "version": "1.0.0",
+  "description": "Example domain plugin — a generic assistant agent that summarizes text and drafts short responses. A minimal, runnable starting point for building your own plugins."
+}

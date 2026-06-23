@@ -58,6 +58,7 @@ archie-data-*
 *.partial.*
 
 # Legacy (kept for transition — can be removed once all environments use workdir/)
-sessions/
-repos/
-plugins
+# Root-anchored so they don't also ignore nested paths like examples/plugins/.
+/sessions/
+/repos/
+/plugins
