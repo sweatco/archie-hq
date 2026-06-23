@@ -20,32 +20,35 @@ Slack / CLI → PM Agent → Domain Agents
 
 Each agent is sandboxed: filesystem access is restricted to its workspace, network is blocked from Bash, and code changes require human approval.
 
-## Quick Start
+## Quick Start (no Slack, no GitHub — just an API key)
+
+Archie ships with a small **example plugin set** (a PM plus a general assistant agent) so a fresh clone does something useful immediately. This path needs only an Anthropic API key — no Slack app, no GitHub App, no SSH keys.
 
 ```bash
 # 1. Clone and install
-git clone git@github.com:<org>/archie-hq.git && cd archie-hq
+git clone https://github.com/<your-org>/archie-hq.git && cd archie-hq
+npm install
+
+# 2. Configure — the only required value is your Anthropic API key
 cp .env.example .env
-# Set ANTHROPIC_API_KEY in .env (minimum requirement)
+# edit .env and set ANTHROPIC_API_KEY=sk-ant-...
 
-# 2. Set up plugins (defines which domains, agents, and repos exist)
-git clone git@github.com:<org>/archie-plugins.git ../archie-plugins
-mkdir -p workdir
-ln -s ../archie-plugins workdir/plugins
+# 3. Use the bundled example plugins (symlinks examples/plugins -> workdir/plugins)
+npm run example:setup
 
-# 3. Ensure SSH key is loaded (used for git inside Docker)
-ssh-add
+# 4. Start the server in CLI-only mode (no Slack/GitHub required)
+npm run dev          # or: npm run docker:dev  (runs inside the OS sandbox)
 
-# 4. Start server
-npm run docker:dev
-
-# 5. Interact via CLI (separate terminal)
+# 5. In a second terminal, chat with Archie via the interactive CLI
 npm run cli
 ```
 
-Repos defined in plugins are auto-cloned on startup — no manual setup needed.
+Ask it something like *"summarize this: <paste a few paragraphs>"* — the PM will delegate to the example assistant agent and return a structured summary.
 
-The **CLI** (`npm run cli`) provides an interactive terminal UI for creating tasks and chatting with Archie without Slack. For Slack integration, add `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET` to `.env` for HTTP webhook mode, or set `SLACK_APP_TOKEN` (`xapp-...`) for Socket Mode (no public URL needed — skip ngrok). See [Local Development Guide](docs/guides/local-development.md) for full setup including Slack bot creation and GitHub App.
+**Going further:**
+- **Your own plugins** — point `ARCHIE_PLUGINS` at a git URL, or replace `workdir/plugins` with your own checkout. See the [Writing Plugins guide](docs/guides/writing-plugins.md).
+- **Slack** — add `SLACK_BOT_TOKEN` + `SLACK_SIGNING_SECRET` for HTTP webhook mode, or `SLACK_APP_TOKEN` (`xapp-...`) for Socket Mode (no public URL needed). See [Local Development](docs/guides/local-development.md).
+- **GitHub / repo agents** — needed only for code-writing agents that open PRs; configure a GitHub App per the same guide. Repos declared by plugins are auto-cloned on startup.
 
 ## Plugins
 
@@ -161,8 +164,14 @@ See [Security Architecture](docs/architecture/security.md) for the full threat m
 **Guides:**
 
 - [Local Development](docs/guides/local-development.md) — full setup with Slack, GitHub App, ngrok
+- [Writing Plugins](docs/guides/writing-plugins.md) — author your own agents, skills, and PM workflows
 - [Docker Setup](DOCKER.md) — container configuration and troubleshooting
 - [Deployment](docs/guides/deployment.md) — production deployment and operations
+
+**Project:**
+
+- [Contributing](CONTRIBUTING.md) — how to set up, the dev loop, and PR expectations
+- [Security Policy](SECURITY.md) — how to report a vulnerability
 
 ## Technology Stack
 
