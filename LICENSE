@@ -1,0 +1,37 @@
+                    GNU AFFERO GENERAL PUBLIC LICENSE
+                       Version 3, 19 November 2007
+
+Copyright (C) 2026 Archie HQ contributors
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License along
+with this program. If not, see <https://www.gnu.org/licenses/>.
+
+================================================================================
+ACTION REQUIRED BEFORE PUBLIC RELEASE
+================================================================================
+The COMPLETE, VERBATIM text of the GNU Affero General Public License, Version 3,
+must be inserted below this notice before this repository is published. The full
+text was not embedded automatically because the environment that prepared this
+change had no network access, and a license document must be byte-exact rather
+than hand-transcribed. To complete it, run (with network):
+
+    ./scripts/fetch-license.sh
+    # equivalently:
+    curl -fsSL https://www.gnu.org/licenses/agpl-3.0.txt -o LICENSE
+
+The canonical machine-readable identifier for this project is:
+
+    SPDX-License-Identifier: AGPL-3.0-or-later
+
+(also declared in package.json). Verify the fetched text against
+<https://www.gnu.org/licenses/agpl-3.0.txt> during the legal review.
+================================================================================

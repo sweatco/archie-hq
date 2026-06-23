@@ -174,4 +174,10 @@ See [Security Architecture](docs/architecture/security.md) for the full threat m
 
 ## License
 
-Proprietary — Sweatco Ltd.
+Licensed under the **GNU Affero General Public License v3.0 or later** (AGPL-3.0-or-later). See [LICENSE](LICENSE).
+
+In plain terms: you are free to use, study, modify, and self-host Archie, including inside your own organization, without restriction. The AGPL's network-copyleft condition means that if you run a **modified** version as a service made available to others (e.g. a hosted offering), you must make the corresponding source of your modifications available under the same license. This keeps improvements flowing back to the community.
+
+This software is provided "as is", without warranty of any kind, express or implied. See the LICENSE for the full terms.
+
+> The final license terms are subject to an external legal review.

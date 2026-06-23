@@ -2,6 +2,7 @@
   "name": "archie-hq",
   "version": "0.1.0",
   "description": "Archie - Autonomous Responsive and Collaborative Hyper Intelligent Employee",
+  "license": "AGPL-3.0-or-later",
   "type": "module",
   "main": "dist/index.js",
   "packageManager": "npm@11.16.0",
