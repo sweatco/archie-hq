@@ -58,11 +58,11 @@ export interface AgentHandle {
 
 /**
  * A single repo entry declared by a repo agent in its frontmatter.
- * The `github` identifier (e.g. 'sweatco/backend') doubles as the entry's key —
+ * The `github` identifier (e.g. 'acme/backend') doubles as the entry's key —
  * no separate repoKey field, no short-name derivation.
  */
 export interface RepoEntry {
-  /** GitHub repository identifier, e.g., 'sweatco/backend'. Also the key. */
+  /** GitHub repository identifier, e.g., 'acme/backend'. Also the key. */
   github: string;
   /** Base branch for PRs and merges. Defaults applied at consume sites. */
   baseBranch: string;

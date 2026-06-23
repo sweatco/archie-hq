@@ -86,14 +86,14 @@ Extracted from hardcoded `src/agents/repo-configs.ts` (lines 10-31). Uses object
   "backend": {
     "role": "Senior Ruby on Rails engineer. Expert in APIs, databases, authentication, background jobs.",
     "expertise": "APIs, databases, business logic, infrastructure, Ruby on Rails best practices, database queries and optimization, authentication and authorization, background jobs and queues",
-    "githubRepo": "sweatco/sweatcoin-backend",
+    "githubRepo": "acme/backend",
     "baseBranch": "master",
     "repoPath": "/repos/backend"
   },
   "mobile": {
     "role": "Senior React Native engineer with Swift/Kotlin expertise. Expert in mobile UI/UX, deep linking, push notifications.",
     "expertise": "React Native, Swift for iOS native modules, Kotlin for Android native modules, iOS and Android platform specifics, mobile UI/UX patterns, deep linking and push notifications, app store deployment, mobile performance optimization, network handling and offline support",
-    "githubRepo": "sweatco/sweatcoin-mobile",
+    "githubRepo": "acme/mobile",
     "baseBranch": "main",
     "repoPath": "/repos/mobile"
   }

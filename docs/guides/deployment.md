@@ -55,14 +55,15 @@ GitHub App with fine-grained, read-only permissions scoped to the organization. 
 
 ## CI/CD Pipeline
 
-Jenkins builds and publishes the production container image:
+Continuous integration runs via GitHub Actions (`.github/workflows/ci.yml`): on every push and pull request it installs dependencies, type-checks, builds, runs the test suite, and runs a [gitleaks](https://github.com/gitleaks/gitleaks) secret scan over the working tree and full history. A merge that fails any of these gates is blocked.
 
-1. Jenkins runs `Jenkinsfile.build` (`containerBuildPipeline_v1` shared library)
-2. Image is built from `Dockerfile.prod` and pushed under the `sweatcoin-archie-hq` repo
-3. Operator pulls the new tag on the VM and restarts the service
-4. Health check verification via `GET /health`
+Building and publishing the production container image is operator-driven and intentionally left to your own registry/automation:
 
-There is no GitHub Actions workflow in this repo. Deployment to the VM is operator-driven.
+1. Build the image from `Dockerfile.prod` and push it to your container registry (e.g. `<registry>/archie-hq:latest`)
+2. Pull the new tag on the host and restart the service
+3. Verify health via `GET /health`
+
+You can wire image build/publish into the same GitHub Actions workflow (or your CI of choice) using your registry credentials as repository secrets.
 
 ## Docker Configuration
 
@@ -88,7 +89,7 @@ ExecStart=/usr/bin/docker run --name archie-app \
   -v /app/secrets:/app/secrets \
   -v /data/claude:/home/archie/.claude \
   -v /data/claude/.claude.json:/home/archie/.claude.json \
-  <registry>/sweatcoin-archie-hq:latest
+  <registry>/archie-hq:latest
 Restart=always
 RestartSec=10
 ```

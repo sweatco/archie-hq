@@ -159,7 +159,7 @@ export function getAgentDef(id: string): AgentDef | undefined {
 
 /**
  * Get repo AgentDef whose **primary** is the given GitHub repository identifier
- * (e.g., 'sweatco/backend'). Matches on the primary only; an agent that merely
+ * (e.g., 'acme/backend'). Matches on the primary only; an agent that merely
  * lists the repo as a secondary is not returned.
  */
 export function getAgentDefByGithubRepo(githubRepo: string): AgentDef | undefined {

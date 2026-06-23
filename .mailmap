@@ -1,0 +1,8 @@
+# Consolidates duplicate author identities so `git log`/`git shortlog` show one
+# entry per contributor. Format:
+#   Canonical Name <canonical-email> <other-commit-email>
+# Note: a .mailmap only changes how history is *displayed*; it does not rewrite
+# the commits themselves. To remove contributor emails from history entirely,
+# a history rewrite (e.g. squash to a fresh initial commit) is required.
+Egor Khmelev <40200+egorkhmelev@users.noreply.github.com> <hmelyoff@gmail.com>
+Igor Sova <hardworker@users.noreply.github.com> <skysova@gmail.com>

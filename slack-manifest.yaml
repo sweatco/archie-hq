@@ -43,9 +43,9 @@ oauth_config:
 settings:
   interactivity:
     is_enabled: true
-    request_url: https://archie.sweatco.team/webhooks/slack
+    request_url: https://your-domain.example.com/webhooks/slack
   event_subscriptions:
-    request_url: https://archie.sweatco.team/webhooks/slack
+    request_url: https://your-domain.example.com/webhooks/slack
     bot_events:
       - app_mention
       - assistant_thread_started

@@ -107,11 +107,11 @@ In the GitHub App settings page:
   - (do NOT need `Check run` — suite-complete is the batch signal we use)
   - Workflow run (already set; harmless to keep)
 
-After saving, each installation must re-accept new permissions at https://github.com/organizations/sweatco/settings/installations. Until accepted, `check-runs` API calls return 403.
+After saving, each installation must re-accept new permissions at https://github.com/organizations/<your-org>/settings/installations. Until accepted, `check-runs` API calls return 403.
 
 ### 5. Prompt update (separate, in `archie-plugins`)
 
-**File**: `/Users/khmelev/Projects/swc/archie-plugins/pm/skills/engineering-team/SKILL.md`
+**File**: `archie-plugins/pm/skills/engineering-team/SKILL.md`
 
 Add one sentence under the PR-handling section: `"When a 'CI checks updated' event arrives or get_pr_status returns mergeableState=unstable, call get_pr_checks(pr_number) to read failed checks before deciding how to fix."`
 
@@ -126,7 +126,7 @@ Ship as a separate commit in that repo. Standalone — does not block the archie
 - `src/agents/spawn.ts` — allowedTools list (~line 300)
 - `src/agents/__tests__/tool-contract.test.ts` — keep test in sync
 - `src/system/workdir.ts` — read `WORKDIR` for debug dump path
-- `/Users/khmelev/Projects/swc/archie-plugins/pm/skills/engineering-team/SKILL.md` — prompt sentence
+- `archie-plugins/pm/skills/engineering-team/SKILL.md` — prompt sentence
 
 ## Reused Existing Patterns
 

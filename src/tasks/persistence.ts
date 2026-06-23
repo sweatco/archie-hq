@@ -471,7 +471,7 @@ export async function appendAgentMessage(
  * Accepts a structured payload matching the Slack/CLI shape so the CLI can
  * render GitHub events uniformly: `[from in destination] @pm-agent message`.
  *
- * @param githubRepo - Full "owner/repo" identifier (e.g., 'sweatco/sweatcoin-mobile')
+ * @param githubRepo - Full "owner/repo" identifier (e.g., 'acme/mobile')
  * @param event - Structured event with author, destination (e.g. "PR #42"), and clean message body
  */
 export async function appendGitHubEvent(
