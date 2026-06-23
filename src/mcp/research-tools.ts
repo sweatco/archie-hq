@@ -17,9 +17,8 @@ import { join } from 'path';
 import { query, tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { HookCallbackMatcher, HookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
 import { z, toJSONSchema } from 'zod';
-import { processAgentEventForLogging, logger } from '../system/logger.js';
+import { logger } from '../system/logger.js';
 import { appendAgentFinding } from '../tasks/persistence.js';
-import { SESSIONS_DIR } from '../system/workdir.js';
 
 // ============================================================================
 // Callbacks Interface
@@ -43,22 +42,31 @@ const PresetSchema = z.object({
   reasoning: z.string(),
 });
 
-const presetJsonSchema = toJSONSchema(PresetSchema) as Record<string, unknown>;
+// Mirror the title-generator pattern: strip the JSON Schema dialect URL
+// ($schema) — the SDK's structured-output validator rejects it, which caused
+// classification to silently fail and always fall back to pro-search.
+const rawPresetSchema = toJSONSchema(PresetSchema) as Record<string, unknown>;
+const { $schema: _dropSchema, ...presetJsonSchema } = rawPresetSchema;
 
-/**
- * Classify query complexity to select the right Perplexity preset.
- * Uses Haiku with structured JSON output (same pattern as triage).
- * Falls back to pro-search on any failure.
- */
-async function classifyPreset(topic: string, context?: string): Promise<string> {
-  const input = `Classify this research query and select the appropriate Perplexity preset.
+const CLASSIFIER_SYSTEM_PROMPT = `You are a research query classifier. Analyze the query and select the most appropriate Perplexity search preset.
 
-Research topic: ${topic}${context ? `\nContext: ${context}` : ''}
-
-Guidelines:
+Presets:
 - fast-search: Simple factual lookups, definitions, single-entity queries, quick answers
 - pro-search: Multi-faceted questions, comparisons, current events, moderate research
 - deep-research: Comprehensive analysis, market research, technical deep-dives, broad strategic topics
+
+Respond with JSON only.`;
+
+/**
+ * Classify query complexity to select the right Perplexity preset.
+ * Uses Haiku with structured JSON output (same lean shape as the title
+ * generator, which is the proven-working one-shot pattern).
+ * Falls back to pro-search on any failure.
+ */
+async function classifyPreset(topic: string, context?: string): Promise<string> {
+  const prompt = `Classify this research query and select the appropriate Perplexity preset.
+
+Research topic: ${topic}${context ? `\nContext: ${context}` : ''}
 
 Respond with JSON only.`;
 
@@ -66,31 +74,35 @@ Respond with JSON only.`;
     let result: z.infer<typeof PresetSchema> | null = null;
 
     for await (const event of query({
-      prompt: input,
+      prompt,
       options: {
         model: 'haiku',
-        systemPrompt: 'You are a research query classifier. Analyze the query and select the most appropriate search preset. Respond with JSON only.',
-        cwd: SESSIONS_DIR,
+        systemPrompt: CLASSIFIER_SYSTEM_PROMPT,
         executable: 'node',
         env: {
           NODE_ENV: process.env.NODE_ENV || 'development',
           ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
           PATH: process.env.PATH,
         },
-        allowedTools: [],
+        tools: [],
+        maxTurns: 2,
         outputFormat: {
           type: 'json_schema',
           schema: presetJsonSchema,
         },
       },
     })) {
-      processAgentEventForLogging(event, 'research-classifier', [SESSIONS_DIR]);
-      if (event.type === 'result' && event.subtype === 'success') {
+      if (event.type !== 'result') continue;
+      if (event.subtype === 'success') {
         const parsed = PresetSchema.safeParse((event as any).structured_output);
         if (parsed.success) {
           result = parsed.data;
           logger.agent('research', `Classified as ${result.preset}: ${result.reasoning}`);
+        } else {
+          logger.warn('research', `preset schema validation failed: ${parsed.error.message}`);
         }
+      } else {
+        logger.warn('research', `preset classification failed: ${event.subtype}`);
       }
     }
 
