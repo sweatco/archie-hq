@@ -33,9 +33,20 @@ jobs:
         with:
           # Full history so the scan covers every commit, not just the tip.
           fetch-depth: 0
-      - name: Run gitleaks
-        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+      # We run the open-source gitleaks CLI directly rather than the
+      # gitleaks-action wrapper: that wrapper requires a paid GITLEAKS_LICENSE
+      # when the repo lives under a GitHub organization. The CLI (MIT) has no
+      # such gate. We resolve the latest release dynamically so no version is
+      # hardcoded, and scan the full git history with the repo's .gitleaks.toml.
+      - name: Run gitleaks (open-source CLI)
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # GITLEAKS_LICENSE is only required for private repos / orgs; public
-          # repositories run gitleaks-action for free.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ver=$(curl -sSfL -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
+            | grep -oP '"tag_name":\s*"v\K[^"]+')
+          echo "Using gitleaks v${ver}"
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${ver}/gitleaks_${ver}_linux_x64.tar.gz" -o gitleaks.tar.gz
+          tar -xzf gitleaks.tar.gz gitleaks
+          ./gitleaks detect --source . --redact --config .gitleaks.toml --exit-code 1
