@@ -49,4 +49,12 @@ jobs:
           echo "Using gitleaks v${ver}"
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${ver}/gitleaks_${ver}_linux_x64.tar.gz" -o gitleaks.tar.gz
           tar -xzf gitleaks.tar.gz gitleaks
-          ./gitleaks detect --source . --redact --config .gitleaks.toml --exit-code 1
+          rc=0
+          ./gitleaks detect --source . --redact --config .gitleaks.toml \
+            --report-format json --report-path gitleaks-report.json --exit-code 1 || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::group::gitleaks findings (secrets redacted)"
+            cat gitleaks-report.json || true
+            echo "::endgroup::"
+          fi
+          exit "$rc"

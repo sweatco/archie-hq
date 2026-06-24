@@ -5,19 +5,22 @@ title = "Archie gitleaks config"
 [extend]
 useDefault = true
 
-[allowlist]
+# Modern gitleaks (8.19+) uses the plural [[allowlists]] array-of-tables; the
+# legacy singular [allowlist] table is ignored by newer versions.
+[[allowlists]]
 description = "Intentional non-secret fixtures and placeholders"
 
-# Placeholder values live here (sk-ant-..., xoxb-..., your-webhook-secret, etc.)
-# and the sanitizer test deliberately embeds dummy token-shaped strings to test
-# the secret detector itself.
+# Placeholder values live in .env.example (sk-ant-..., xoxb-..., your-webhook-secret,
+# etc.), and the sanitizer test deliberately embeds dummy token-shaped strings to
+# test the secret detector itself. Match on the file path...
 paths = [
   '''\.env\.example$''',
   '''src/memory/__tests__/sanitize\.test\.ts$''',
 ]
 
-# Belt-and-suspenders: the specific dummy values, in case they ever move files.
+# ...and, belt-and-suspenders, on the specific dummy values in case they move.
 regexes = [
   '''ghp_abcdef1234567890ABCDEF12''',
   '''AKIAIOSFODNN7EXAMPLE''',
+  '''sk-abcdefghijklmnopqrstuv''',
 ]
