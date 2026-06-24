@@ -30,14 +30,14 @@
     "npm": ">=11.0.0"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.156",
-    "@anthropic-ai/sdk": "^0.100.1",
-    "@aws-sdk/client-bedrock-runtime": "^3.1020.0",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.187",
+    "@anthropic-ai/sdk": "^0.105.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.1075.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@octokit/app": "^16.1.2",
     "@octokit/webhooks": "^14.2.0",
     "@slack/bolt": "^4.6.0",
-    "@slack/web-api": "^7.0.0",
+    "@slack/web-api": "^7.17.0",
     "chrono-node": "^2.9.0",
     "dotenv": "^16.3.0",
     "gray-matter": "^4.0.3",
@@ -56,6 +56,6 @@
     "@types/react": "^18.3.28",
     "tsx": "^4.7.0",
     "typescript": "^5.3.0",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.9"
   }
 }
