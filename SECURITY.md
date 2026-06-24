@@ -4,15 +4,9 @@ Thanks for helping keep Archie HQ and its users safe. This document explains how
 
 ## Reporting a Vulnerability
 
-**Please report security issues privately. Do not open a public GitHub issue or pull request for a vulnerability.**
+**Please report security issues privately through GitHub. Do not open a public issue or pull request, and do not include exploit details in any public thread.**
 
-Preferred channel:
-
-- **GitHub private security advisories** — go to the repository's **Security** tab and click **"Report a vulnerability"**. This opens a private advisory visible only to maintainers.
-
-Alternative channel:
-
-- **Email** — `<security@your-org — set before publishing>`
+To report, use **GitHub Private Vulnerability Reporting**: go to the repository's **Security** tab and click **"Report a vulnerability"**. This opens a private advisory visible only to the maintainers and routes into GitHub Security Advisories, where we can discuss, fix, and coordinate disclosure with you privately.
 
 ### What to include
 
