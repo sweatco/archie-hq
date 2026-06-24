@@ -57,9 +57,9 @@ GitHub access is via a GitHub App installation token (auto-rotating, through Oct
 
 Continuous integration runs via GitHub Actions: on every push and pull request it installs dependencies, type-checks, builds, runs the test suite, and runs a [gitleaks](https://github.com/gitleaks/gitleaks) secret scan over the working tree and full history. A merge that fails any of these gates is blocked. The workflow lives at `.github/workflows/ci.yml`.
 
-Building and publishing the production container image currently runs through an internal Jenkins pipeline defined in `Jenkinsfile.build` (the image is built from `Dockerfile.prod`). The operator then pulls the new tag on the host, restarts the service, and verifies health via `GET /health`.
+Building and publishing the production container image also runs via GitHub Actions. `.github/workflows/docker-publish.yml` runs on pushes to `main` and via manual `workflow_dispatch`, builds `Dockerfile.prod` with Docker Buildx, and publishes to GitHub Container Registry as `ghcr.io/<owner>/<repo>:main-<commit-sha>`.
 
-The GitHub Actions workflow above (CI: typecheck/build/test/secret-scan) is independent of and coexists with that deploy pipeline. The internal Jenkins deploy path is being migrated/genericized separately; self-hosters can instead wire image build/publish into GitHub Actions (or their own CI) using their registry credentials as repository secrets.
+Deployment to the VM remains operator-driven: the operator pulls the published image tag on the host, restarts the service, and verifies health via `GET /health`.
 
 ## Docker Configuration
 
