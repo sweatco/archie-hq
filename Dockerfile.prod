@@ -28,14 +28,14 @@ COPY package.json package-lock.json* ./
 RUN npm ci
 
 # Copy source code
-COPY tsconfig.json ./
+COPY tsconfig.json tsconfig.scripts.json ./
 COPY src/ ./src/
 COPY prompts/ ./prompts/
 COPY scripts/ ./scripts/
 
-# Build TypeScript
+# Build TypeScript (main app, then the standalone git-askpass token helper)
 RUN npm run build && \
-    npx tsc scripts/github-token.ts --outDir dist/scripts --module ESNext --moduleResolution node --esModuleInterop --skipLibCheck
+    npx tsc -p tsconfig.scripts.json
 
 # Remove devDependencies
 RUN npm prune --production
