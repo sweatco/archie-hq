@@ -41,7 +41,7 @@
     "chrono-node": "^2.9.0",
     "dotenv": "^17.4.2",
     "gray-matter": "^4.0.3",
-    "ink": "^5.2.1",
+    "ink": "^7.1.0",
     "ink-scroll-view": "^0.3.6",
     "ink-spinner": "^5.0.0",
     "ink-text-input": "^6.0.0",
