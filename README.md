@@ -46,7 +46,7 @@ npm run cli
 Ask it something like *"summarize this: <paste a few paragraphs>"* — the PM will delegate to the example assistant agent and return a structured summary.
 
 **Going further:**
-- **Your own plugins** — point `ARCHIE_PLUGINS` at a git URL, or replace `workdir/plugins` with your own checkout. See the [Writing Plugins guide](docs/guides/writing-plugins.md).
+- **Your own plugins** — point `ARCHIE_PLUGINS` at a git URL, or replace `workdir/plugins` with your own checkout. Read the bundled **`writing-plugins`** skill at [`examples/plugins/.claude/skills/writing-plugins/SKILL.md`](examples/plugins/.claude/skills/writing-plugins/SKILL.md) and the [Plugin System](docs/architecture/plugin-system.md) doc.
 - **Slack** — add `SLACK_BOT_TOKEN` + `SLACK_SIGNING_SECRET` for HTTP webhook mode, or `SLACK_APP_TOKEN` (`xapp-...`) for Socket Mode (no public URL needed). See [Local Development](docs/guides/local-development.md).
 - **GitHub / repo agents** — needed only for code-writing agents that open PRs; configure a GitHub App per the same guide. Repos declared by plugins are auto-cloned on startup.
 
@@ -164,7 +164,7 @@ See [Security Architecture](docs/architecture/security.md) for the full threat m
 **Guides:**
 
 - [Local Development](docs/guides/local-development.md) — full setup with Slack, GitHub App, ngrok
-- [Writing Plugins](docs/guides/writing-plugins.md) — author your own agents, skills, and PM workflows
+- [Plugin System](docs/architecture/plugin-system.md) — how plugins are structured and loaded (plus the bundled `writing-plugins` skill under `examples/plugins/.claude/skills/`)
 - [Docker Setup](DOCKER.md) — container configuration and troubleshooting
 - [Deployment](docs/guides/deployment.md) — production deployment and operations
 

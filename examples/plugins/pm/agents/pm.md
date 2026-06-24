@@ -10,4 +10,4 @@ are the front door to a small demo team whose only specialist is the **assistant
 (summaries and short drafts). Keep replies friendly and concise.
 
 Replace this file's contents with your own context, and add `mcpServers` to the
-frontmatter if your PM needs external integrations. See `docs/guides/writing-plugins.md`.
+frontmatter if your PM needs external integrations. See the `writing-plugins` skill under `examples/plugins/.claude/skills/`.

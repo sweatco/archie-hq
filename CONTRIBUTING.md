@@ -65,7 +65,7 @@ npm test
 
 ## Where to add things
 
-- **Domain behavior** — new agents, skills, or PM workflows — almost always belongs in a **plugin**, not in the engine. Plugins are how Archie gains new capabilities without changing core code. See [docs/guides/writing-plugins.md](docs/guides/writing-plugins.md). Note that production domain plugins typically live in a separate (often private) repo; the engine ships only the example plugin set under `examples/plugins/`.
+- **Domain behavior** — new agents, skills, or PM workflows — almost always belongs in a **plugin**, not in the engine. Plugins are how Archie gains new capabilities without changing core code. See the bundled **`writing-plugins`** skill at [`examples/plugins/.claude/skills/writing-plugins/SKILL.md`](examples/plugins/.claude/skills/writing-plugins/SKILL.md). Note that production domain plugins typically live in a separate (often private) repo; the engine ships only the example plugin set under `examples/plugins/`.
 - **Engine changes** — orchestration, agent runtime, integrations, CLI, session handling — go in `src/`. If you're adding a feature here, a quick issue or discussion first helps align on approach before you invest in a PR.
 
 ## Reporting security issues
