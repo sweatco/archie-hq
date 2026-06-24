@@ -171,7 +171,7 @@ ANTHROPIC_API_KEY=sk-ant-...           # Claude API key
 See [`.env.example`](../../.env.example) for the full list, including per-MCP plugin tokens (Atlassian, Bugsnag, TeamCity, Firebase, Rollbar) that get substituted into `plugins/.mcp.json`.
 
 Without Slack credentials, the server runs in **CLI-only mode**.
-Without GitHub App credentials, **PR tools are disabled** but agents can still read/write code, commit, and push via SSH.
+Without GitHub App credentials, **PR tools are disabled** but agents can still read/write code, commit, and push via SSH. To enable PR tools, follow the **[GitHub App Setup guide](github-setup.md)** — it covers creating the App, the exact repository permissions and webhook events, the private key, installation, and the env vars above.
 
 ## Slack Bot Setup
 

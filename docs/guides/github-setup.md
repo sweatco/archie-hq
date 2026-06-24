@@ -29,7 +29,7 @@ Set exactly these under **Permissions → Repository permissions**. Each line no
 | **Commit statuses** | Read | **Required** | Read legacy combined commit statuses (`/commits/{ref}/status`) — some CIs report as statuses rather than check runs. |
 | **Actions** | Read | **Required** | Read workflow runs, their jobs, and failing job-log tails (`/actions/runs/...`, `/actions/jobs/{id}/logs`). Also governs the `workflow_run` event. |
 | **Workflows** | Read & write | **Required** | Commit or modify files under `.github/workflows/`. Without it, **any push that touches a workflow file is rejected** by GitHub — which matters because repo agents can edit CI. |
-| **Issues** | Read & write | **Optional** | Only needed if you want Archie to read/write comments on **standalone (non-PR) issues**. PR conversation comments and the `issue_comment` event are already covered by **Pull requests**; grant Issues only if you hit a permission error on conversation comments or want issue support. |
+| **Issues** | Read | **Optional** | The engine **never writes issues** and never comments on standalone (non-PR) issues. It only posts/reads comments on **pull requests** — which, because PRs are issues, is authorized by **Pull requests: write/read**, not by Issues. The `issue_comment` event is likewise covered by **Pull requests: read**. Grant **Issues: Read** only if you additionally want to support standalone issues; `write` is not needed. |
 
 No other repository permissions are needed. The engine makes **no** calls requiring Administration, Deployments, Packages, Secrets, Members, or Organization permissions (branch protection is configured by you in repo settings, not by the App).
 
