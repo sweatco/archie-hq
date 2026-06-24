@@ -1,0 +1,60 @@
+# Archie HQ — CI workflow (typecheck, build, test, gitleaks secret scan).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Typecheck, build & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+
+  gitleaks:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # Full history so the scan covers every commit, not just the tip.
+          fetch-depth: 0
+      # We run the open-source gitleaks CLI directly rather than the
+      # gitleaks-action wrapper: that wrapper requires a paid GITLEAKS_LICENSE
+      # when the repo lives under a GitHub organization. The CLI (MIT) has no
+      # such gate. We resolve the latest release dynamically so no version is
+      # hardcoded, and scan the full git history with the repo's .gitleaks.toml.
+      - name: Run gitleaks (open-source CLI)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ver=$(curl -sSfL -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
+            | grep -oP '"tag_name":\s*"v\K[^"]+')
+          echo "Using gitleaks v${ver}"
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${ver}/gitleaks_${ver}_linux_x64.tar.gz" -o gitleaks.tar.gz
+          tar -xzf gitleaks.tar.gz gitleaks
+          rc=0
+          ./gitleaks detect --source . --redact --config .gitleaks.toml \
+            --report-format json --report-path gitleaks-report.json --exit-code 1 || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::group::gitleaks findings (secrets redacted)"
+            cat gitleaks-report.json || true
+            echo "::endgroup::"
+          fi
+          exit "$rc"

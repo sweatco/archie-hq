@@ -72,7 +72,7 @@ Add GitHub repo identifier to config:
 
 ```typescript
 // Add to RepoAgentConfig interface
-githubRepo: string;  // e.g., "sweatco/backend"
+githubRepo: string;  // e.g., "acme/backend"
 ```
 
 Add lookup helper for webhook handling:

@@ -145,11 +145,11 @@ export interface BranchState {
  * `join(REPOS_DIR, github)` and is not stored here.
  */
 export interface AttachedRepo {
-  /** Github identifier, e.g. 'sweatco/backend'. */
+  /** Github identifier, e.g. 'acme/backend'. */
   github: string;
   /**
    * Task-local shared clone path, e.g.
-   * `sessions/<id>/repos/<agentId>/sweatco/backend`. Set when the clone is
+   * `sessions/<id>/repos/<agentId>/acme/backend`. Set when the clone is
    * created during agent spawn; undefined briefly between attachment record
    * creation and clone setup. Lives outside the agent's cwd
    * (`sessions/<id>/agents/<agentId>/`) so workspace and repo state are

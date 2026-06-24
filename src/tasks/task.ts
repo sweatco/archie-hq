@@ -428,7 +428,7 @@ export class Task {
   /**
    * Format a SlackChannel as a destination string for logs.
    * For knowledge log: includes IDs (e.g., "slack:#<C123:bot-test>:threadTs")
-   * For CLI/server: human-readable (e.g., "#bot-test", "DM with Egor")
+   * For CLI/server: human-readable (e.g., "#bot-test", "DM with Dana")
    */
   private static formatSlackDest(ch: SlackChannel): { log: string; display: string } {
     return {

@@ -10,7 +10,7 @@ import { MessageInput } from './MessageInput.js';
  *
  * Patterns:
  *   [cli] @pm-agent message                      — CLI input
- *   [Egor in #bot-test] @pm-agent message         — Slack incoming
+ *   [Dana in #bot-test] @pm-agent message         — Slack incoming
  *   [pm-agent in #bot-test] message               — agent posting to a channel
  *   [pm-agent in cli] message                     — agent posting to CLI
  *   [pm-agent] @backend-agent message             — agent messaging another agent

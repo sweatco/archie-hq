@@ -42,10 +42,10 @@ Type/union cleanup:
 
 Slack and CLI both use a structured event shape — author goes into `from`, channel/context into `destination`, `message` is the clean body:
 
-- Slack: `{ from: "Egor", to: "pm-agent", destination: "#bot-test", message: "hello" }` ([persistence.ts:204](src/tasks/persistence.ts#L204))
+- Slack: `{ from: "Dana", to: "pm-agent", destination: "#bot-test", message: "hello" }` ([persistence.ts:204](src/tasks/persistence.ts#L204))
 - CLI: `{ from: "cli", to: "pm-agent", message: "hello" }` ([persistence.ts:297](src/tasks/persistence.ts#L297))
 
-Which the CLI renders as `[Egor in #bot-test] @pm-agent hello` via `formatMessageParts` ([TaskDetail.tsx:18-22](src/cli/components/TaskDetail.tsx#L18-L22)).
+Which the CLI renders as `[Dana in #bot-test] @pm-agent hello` via `formatMessageParts` ([TaskDetail.tsx:18-22](src/cli/components/TaskDetail.tsx#L18-L22)).
 
 GitHub events currently jam the author into the message body (`"PR #42: alice commented: fix bug"`) and set `from: "github:backend"` — the structured shape loses author information, and the CLI can't render `[alice in PR #42]` cleanly.
 
@@ -79,7 +79,7 @@ GitHub events currently jam the author into the message body (`"PR #42: alice co
 
 4. Only caller of `appendGitHubEvent` is [events.ts](src/connectors/github/events.ts) (plus the soon-deleted processGitHubTriage backfill loop). Update that call site in the new `handleExistingTaskDirect`.
 
-**Result in CLI:** PR comments render as `[alice in backend/PR #42] @pm-agent fix the bug` instead of the current `[github:backend] @pm-agent PR #42: alice commented: fix the bug`. Matches Slack's `[Egor in #bot-test] @pm-agent hello`.
+**Result in CLI:** PR comments render as `[alice in backend/PR #42] @pm-agent fix the bug` instead of the current `[github:backend] @pm-agent PR #42: alice commented: fix the bug`. Matches Slack's `[Dana in #bot-test] @pm-agent hello`.
 
 **Knowledge-log format change:** the on-disk format of GitHub entries changes (`source` goes from `github:backend` to `github:backend/PR #42` and the author is separated from the message body). Historical entries stay readable — the format is still `[timestamp] [source] message`. No parser elsewhere consumes the exact GitHub line format (grepped — only `appendGitHubEvent` writes it).
 

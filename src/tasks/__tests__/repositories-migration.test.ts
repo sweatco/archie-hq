@@ -45,8 +45,8 @@ function meta(repositories: any): TaskMetadata {
 
 beforeEach(() => {
   __setRegistryForTesting([
-    repoDef('backend', 'sweatco/backend'),
-    repoDef('mobile', 'sweatco/mobile'),
+    repoDef('backend', 'acme/backend'),
+    repoDef('mobile', 'acme/mobile'),
   ]);
 });
 
@@ -77,7 +77,7 @@ describe('migrateRepositoriesShape', () => {
     expect(entries).toHaveLength(1);
 
     const att = entries[0];
-    expect(att.github).toBe('sweatco/backend');
+    expect(att.github).toBe('acme/backend');
     // clone_path preserved → RW task reuses its existing working tree, no re-clone.
     expect(att.clone_path).toBe('/sessions/task-test/repos/backend');
     // base_path preserved → sandbox grants read access to the OLD base cache
@@ -109,7 +109,7 @@ describe('migrateRepositoriesShape', () => {
     migrateRepositoriesShape(m);
 
     const att = m.repositories['backend-agent'][0];
-    expect(att.github).toBe('sweatco/backend');
+    expect(att.github).toBe('acme/backend');
     expect(att.current_branch).toBe('feature/old');
     expect(att.branch_states!['feature/old']).toEqual({
       base_branch: 'develop',
@@ -152,8 +152,8 @@ describe('migrateRepositoriesShape', () => {
     const m = meta({
       'backend-agent': [
         {
-          github: 'sweatco/backend',
-          clone_path: '/sessions/task-test/repos/backend-agent/sweatco/backend',
+          github: 'acme/backend',
+          clone_path: '/sessions/task-test/repos/backend-agent/acme/backend',
           current_branch: 'feature/new',
           branch_states: { 'feature/new': { base_branch: 'main', pr_number: 42 } },
         },
@@ -193,8 +193,8 @@ describe('migrateRepositoriesShape', () => {
     migrateRepositoriesShape(m);
 
     expect(Object.keys(m.repositories).sort()).toEqual(['backend-agent', 'mobile-agent']);
-    expect(m.repositories['backend-agent'][0].github).toBe('sweatco/backend');
-    expect(m.repositories['mobile-agent'][0].github).toBe('sweatco/mobile');
+    expect(m.repositories['backend-agent'][0].github).toBe('acme/backend');
+    expect(m.repositories['mobile-agent'][0].github).toBe('acme/mobile');
   });
 
   it('drops entries whose agent is no longer registered (plugin removed)', () => {
@@ -213,8 +213,8 @@ describe('migrateRepositoriesShape', () => {
     const alreadyNew = {
       'backend-agent': [
         {
-          github: 'sweatco/backend',
-          clone_path: '/sessions/task-test/repos/backend-agent/sweatco/backend',
+          github: 'acme/backend',
+          clone_path: '/sessions/task-test/repos/backend-agent/acme/backend',
           current_branch: 'feature/task-test',
           branch_states: { 'feature/task-test': { base_branch: 'main', pr_number: 42 } },
         },
@@ -247,7 +247,7 @@ describe('migrateRepositoriesShape', () => {
     const m = meta({
       // already new
       'mobile-agent': [
-        { github: 'sweatco/mobile', clone_path: '/c/mobile', current_branch: 'main', branch_states: {} },
+        { github: 'acme/mobile', clone_path: '/c/mobile', current_branch: 'main', branch_states: {} },
       ],
       // still legacy
       backend: { clone_path: '/c/backend', current_branch: 'main', branch_states: {} },
@@ -256,8 +256,8 @@ describe('migrateRepositoriesShape', () => {
     migrateRepositoriesShape(m);
 
     expect(Object.keys(m.repositories).sort()).toEqual(['backend-agent', 'mobile-agent']);
-    expect(m.repositories['mobile-agent'][0].github).toBe('sweatco/mobile');
-    expect(m.repositories['backend-agent'][0].github).toBe('sweatco/backend');
+    expect(m.repositories['mobile-agent'][0].github).toBe('acme/mobile');
+    expect(m.repositories['backend-agent'][0].github).toBe('acme/backend');
   });
 
   it('no-ops on an empty repositories map', () => {

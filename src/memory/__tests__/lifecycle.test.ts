@@ -126,7 +126,7 @@ import { postSlackMessage } from '../../connectors/slack/client.js';
 // ============================================================================
 
 const TASK_ID = 'task-20260410-1000-abc123';
-const USER_EGOR = 'U07EGOR001';
+const USER_DANA = 'U07DANA001';
 const USER_ALICE = 'U07ALIC002';
 const USER_BOB = 'U07BOB0003';
 
@@ -152,7 +152,7 @@ const METADATA = {
 };
 
 const KNOWLEDGE_LOG = [
-  `[2026-04-10T10:00:00Z] [slack:#<C1:general>:1234] [@<${USER_EGOR}:Egor Khmelev>] Fix the login bug`,
+  `[2026-04-10T10:00:00Z] [slack:#<C1:general>:1234] [@<${USER_DANA}:Dana Lee>] Fix the login bug`,
   '[2026-04-10T10:01:00Z] [pm-agent] [decision] Assigned backend-agent',
   '[2026-04-10T10:05:00Z] [backend-agent] [discovery] Missing validation in auth handler',
 ].join('\n');
@@ -193,7 +193,7 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     vi.mocked(runExtraction).mockClear();
     vi.mocked(runExtraction).mockResolvedValue({
       user_updates: {
-        [USER_EGOR]: [
+        [USER_DANA]: [
           { action: 'add', section: 'Work Style', content: 'Prefers direct communication' },
         ],
       },
@@ -231,11 +231,11 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     handleTaskCompleted(TASK_ID);
     await drain();
 
-    const userPath = join(usersDir, `${USER_EGOR}.md`);
+    const userPath = join(usersDir, `${USER_DANA}.md`);
     expect(existsSync(userPath)).toBe(true);
     const content = await readFile(userPath, 'utf-8');
-    expect(content).toContain(`slack_user_id: ${USER_EGOR}`);
-    expect(content).toContain('display_name: "Egor Khmelev"');
+    expect(content).toContain(`slack_user_id: ${USER_DANA}`);
+    expect(content).toContain('display_name: "Dana Lee"');
     expect(content).toContain('Prefers direct communication');
   });
 
@@ -261,7 +261,7 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     expect(content).not.toContain('### org.md');
     expect(content).toContain('### entities/backend.md');
     expect(content).toContain('Uses NestJS with PostgreSQL');
-    expect(content).toContain(`### users/${USER_EGOR}.md`);
+    expect(content).toContain(`### users/${USER_DANA}.md`);
     expect(content).toContain('**added** `## Work Style` › Prefers direct communication');
   });
 
@@ -304,7 +304,7 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     expect(existsSync(activityPath)).toBe(true);
     const content = await readFile(activityPath, 'utf-8');
     expect(content).toContain('Fixed login validation bug');
-    expect(content).toContain(USER_EGOR); // user column is the raw Slack ID
+    expect(content).toContain(USER_DANA); // user column is the raw Slack ID
   });
 
   it('does NOT post any "Learned from this task" Slack message (post was removed)', async () => {
@@ -330,7 +330,7 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     await drain();
 
     // Reschedule should have completed extraction and removed the entry
-    expect(existsSync(join(usersDir, `${USER_EGOR}.md`))).toBe(true);
+    expect(existsSync(join(usersDir, `${USER_DANA}.md`))).toBe(true);
     expect(await readPending()).toEqual([]);
   });
 
@@ -446,42 +446,42 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
 
 describe('extractUsernames(transcript)', () => {
   it('returns raw Slack IDs with display names', () => {
-    const log = `[@<${USER_EGOR}:Egor Khmelev>] hello\n[@<${USER_ALICE}:Alice Smith>] hi`;
+    const log = `[@<${USER_DANA}:Dana Lee>] hello\n[@<${USER_ALICE}:Alice Smith>] hi`;
     const refs = extractUsernames(log);
     expect(refs).toHaveLength(2);
-    expect(refs[0]).toEqual({ userId: USER_EGOR, displayName: 'Egor Khmelev' });
+    expect(refs[0]).toEqual({ userId: USER_DANA, displayName: 'Dana Lee' });
     expect(refs[1]).toEqual({ userId: USER_ALICE, displayName: 'Alice Smith' });
   });
 
   it('matches the production log format with channel context after the mention', () => {
     // Real-world log lines have additional context between the mention's `>`
     // and the outer bracket's `]`, e.g.:
-    //   `[@<U03RQQTE1EF:Igor Sova> in slack:#<D0AUZLR6ZJQ:DM with Igor Sova>:179...]`
+    //   `[@<U03RQQTE1EF:Riley Quinn> in slack:#<D0AUZLR6ZJQ:DM with Riley Quinn>:179...]`
     const log =
-      '[2026-05-28T17:18:38.189Z] [@<U03RQQTE1EF:Igor Sova> in slack:#<D0AUZLR6ZJQ:DM with Igor Sova>:1779988687.863119] Hey Archie';
+      '[2026-05-28T17:18:38.189Z] [@<U03RQQTE1EF:Riley Quinn> in slack:#<D0AUZLR6ZJQ:DM with Riley Quinn>:1779988687.863119] Hey Archie';
     const refs = extractUsernames(log);
     expect(refs).toHaveLength(1);
-    expect(refs[0]).toEqual({ userId: 'U03RQQTE1EF', displayName: 'Igor Sova' });
+    expect(refs[0]).toEqual({ userId: 'U03RQQTE1EF', displayName: 'Riley Quinn' });
   });
 
   it('does not treat channel references (#<…:…>) as user mentions', () => {
     // The `#<D…:…>` channel reference uses the same UID:Name shape but lacks
     // the `@` prefix, so it must not be picked up as a user mention.
-    const log = '[@<U07ABC123:Alex> in slack:#<D0AUZLR6ZJQ:DM with Igor>:1779988687] msg';
+    const log = '[@<U07ABC123:Alex> in slack:#<D0AUZLR6ZJQ:DM with Riley>:1779988687] msg';
     const refs = extractUsernames(log);
     expect(refs).toHaveLength(1);
     expect(refs[0].userId).toBe('U07ABC123');
   });
 
   it('deduplicates by user ID', () => {
-    const log = `[@<${USER_EGOR}:Egor Khmelev>] one\n[@<${USER_EGOR}:Egor K.>] two`;
+    const log = `[@<${USER_DANA}:Dana Lee>] one\n[@<${USER_DANA}:Dana L.>] two`;
     const refs = extractUsernames(log);
     expect(refs).toHaveLength(1);
-    expect(refs[0].userId).toBe(USER_EGOR);
+    expect(refs[0].userId).toBe(USER_DANA);
   });
 
   it('ignores malformed mentions', () => {
-    const log = '[@<u1:Egor>] short ID\n[@<NOTAVALID:Bob>] non-Slack prefix';
+    const log = '[@<u1:Dana>] short ID\n[@<NOTAVALID:Bob>] non-Slack prefix';
     const refs = extractUsernames(log);
     expect(refs).toHaveLength(0);
   });

@@ -11,7 +11,7 @@ Do NOT extract single-incident stories ("we rolled back the v3.2 deploy"), tempo
 USER PREFERENCES — how a specific person prefers to work or communicate, that would help when working WITH THEM specifically.
 
 Examples of what to extract:
-- "Egor prefers concise Slack updates, not play-by-play"
+- "Dana prefers concise Slack updates, not play-by-play"
 - "Sarah wants bullet-point summaries for marketing reviews"
 - "Hattie provides structured briefs with all challenge parameters upfront"
 

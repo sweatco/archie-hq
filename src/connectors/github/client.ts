@@ -221,7 +221,7 @@ export class GitHubClient {
   }
 
   /**
-   * Parse owner and repo from a full repo identifier (e.g., "sweatco/backend")
+   * Parse owner and repo from a full repo identifier (e.g., "acme/backend")
    */
   private parseRepo(githubRepo: string): { owner: string; repo: string } {
     const [owner, repo] = githubRepo.split('/');

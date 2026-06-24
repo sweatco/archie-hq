@@ -44,7 +44,7 @@ describe('recent activity', () => {
         '',
         '| Date | Task ID | Summary | Domain | User |',
         '|------|---------|---------|--------|------|',
-        '| 2026-04-10 | task-001 | Fixed bug | engineering | egor |',
+        '| 2026-04-10 | task-001 | Fixed bug | engineering | dana |',
         '| 2026-04-09 | task-002 | Added feature | product | alice |',
       ].join('\n');
       await writeFile(activityPath, content, 'utf-8');
@@ -56,7 +56,7 @@ describe('recent activity', () => {
         taskId: 'task-001',
         summary: 'Fixed bug',
         domain: 'engineering',
-        user: 'egor',
+        user: 'dana',
       });
       expect(result[1]).toEqual({
         date: '2026-04-09',
@@ -73,7 +73,7 @@ describe('recent activity', () => {
         '',
         '| Date | Task ID | Summary | Domain | User |',
         '|------|---------|---------|--------|------|',
-        '| 2026-04-10 | task-001 | Fixed bug | engineering | egor |',
+        '| 2026-04-10 | task-001 | Fixed bug | engineering | dana |',
       ].join('\n');
       await writeFile(activityPath, content, 'utf-8');
 
@@ -91,7 +91,7 @@ describe('recent activity', () => {
         taskId: 'task-001',
         summary: 'Fixed bug',
         domain: 'engineering',
-        user: 'egor',
+        user: 'dana',
       };
 
       await appendActivity(entry);
@@ -100,7 +100,7 @@ describe('recent activity', () => {
       expect(content).toContain('# Recent Activity');
       expect(content).toContain('| Date | Task ID | Summary | Domain | User |');
       expect(content).toContain('|------|---------|---------|--------|------|');
-      expect(content).toContain('| 2026-04-10 | task-001 | Fixed bug | engineering | egor |');
+      expect(content).toContain('| 2026-04-10 | task-001 | Fixed bug | engineering | dana |');
     });
 
     it('appends new entry at TOP of table (newest first) in existing file', async () => {
@@ -109,7 +109,7 @@ describe('recent activity', () => {
         '',
         '| Date | Task ID | Summary | Domain | User |',
         '|------|---------|---------|--------|------|',
-        '| 2026-04-09 | task-001 | Old task | engineering | egor |',
+        '| 2026-04-09 | task-001 | Old task | engineering | dana |',
       ].join('\n');
       await writeFile(activityPath, existingContent, 'utf-8');
 
@@ -158,7 +158,7 @@ describe('recent activity', () => {
         '',
         '| Date | Task ID | Summary | Domain | User |',
         '|------|---------|---------|--------|------|',
-        '| 2026-04-09 | task-001 | Old task | engineering | egor |',
+        '| 2026-04-09 | task-001 | Old task | engineering | dana |',
       ].join('\n');
       await writeFile(activityPath, existingContent, 'utf-8');
 
@@ -179,7 +179,7 @@ describe('recent activity', () => {
         taskId: 'task-001',
         summary: 'Old task',
         domain: 'engineering',
-        user: 'egor',
+        user: 'dana',
       });
     });
   });
@@ -193,7 +193,7 @@ describe('recent activity', () => {
         '',
         '| Date | Task ID | Summary | Domain | User |',
         '|------|---------|---------|--------|------|',
-        '| 2026-04-10 | task-001 | Task one | engineering | egor |',
+        '| 2026-04-10 | task-001 | Task one | engineering | dana |',
         '| 2026-04-09 | task-002 | Task two | product | alice |',
       ].join('\n');
       await writeFile(activityPath, content, 'utf-8');
@@ -210,7 +210,7 @@ describe('recent activity', () => {
         '',
         '| Date | Task ID | Summary | Domain | User |',
         '|------|---------|---------|--------|------|',
-        '| 2026-04-10 | task-001 | Newest | engineering | egor |',
+        '| 2026-04-10 | task-001 | Newest | engineering | dana |',
         '| 2026-04-09 | task-002 | Middle | product | alice |',
         '| 2026-04-08 | task-003 | Oldest | operations | bob |',
       ].join('\n');

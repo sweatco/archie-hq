@@ -117,7 +117,7 @@ describe('looksLikeSecret', () => {
   it.each([
     'Backend uses NestJS with PostgreSQL',
     'Prefers async updates',
-    'Email igor@example.com is the on-call address',
+    'Email riley@example.com is the on-call address',
   ])('does not flag legitimate fact %j', (s) => {
     expect(looksLikeSecret(s)).toBe(false);
   });

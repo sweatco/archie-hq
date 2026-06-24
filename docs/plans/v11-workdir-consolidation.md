@@ -52,7 +52,7 @@ SESSIONS_DIR = join(WORKDIR, 'sessions')
 - `cloneRepos(repos)` — clones repos declared by loaded plugins into `REPOS_DIR`
 
 Git helpers:
-- `githubRepoToUrl(githubRepo)` — converts `"sweatco/sweatcoin-backend"` → `"https://github.com/sweatco/sweatcoin-backend.git"`
+- `githubRepoToUrl(githubRepo)` — converts `"acme/backend"` → `"https://github.com/acme/backend.git"`
 - `cloneOrPull(url, dir, label)` — clone if missing, `git pull --ff-only` if exists (for plugins)
 - `cloneOrFetch(url, dir, label)` — clone if missing, `git fetch --all` if exists (for source repos)
 
@@ -135,7 +135,7 @@ import { initPluginAgentConfigs } from './agents/plugin-configs.js';
 - `mkdir -p /app/sessions /app/repos /app/secrets` → `mkdir -p /workdir /app/secrets`
 
 **`docker-compose.yml`:**
-- Environment: replace `ARCHIE_REPOS_DIR=/app/repos` with `ARCHIE_WORKDIR=/workdir` and `ARCHIE_PLUGINS=https://github.com/sweatco/archie-plugins.git`
+- Environment: replace `ARCHIE_REPOS_DIR=/app/repos` with `ARCHIE_WORKDIR=/workdir` and `ARCHIE_PLUGINS=https://github.com/your-org/your-plugins-repo.git`
 - Volumes: replace 3 separate mounts (`./plugins:/app/plugins`, `./sessions:/app/sessions`, `./repos:/app/repos`) with single `./workdir:/workdir`
 
 **`docker-compose.dev.yml`:**
@@ -156,7 +156,7 @@ ARCHIE_REPOS_DIR=/path/to/repos
 With:
 ```
 ARCHIE_WORKDIR=./workdir
-# ARCHIE_PLUGINS=https://github.com/sweatco/archie-plugins.git
+# ARCHIE_PLUGINS=https://github.com/your-org/your-plugins-repo.git
 ```
 
 ### 9. Update documentation

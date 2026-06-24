@@ -2,7 +2,7 @@
 
 ## Context
 
-Tasks today are identified by `task_id` (timestamp + random) and `channel_name` (e.g. `DM with Egor`). Neither communicates what the task is about. Goal: generate a Haiku-authored one-line title at task creation, surface it via API + CLI, and push it to Slack DM thread titles via `assistant.threads.setTitle` for DM-originated tasks.
+Tasks today are identified by `task_id` (timestamp + random) and `channel_name` (e.g. `DM with Dana`). Neither communicates what the task is about. Goal: generate a Haiku-authored one-line title at task creation, surface it via API + CLI, and push it to Slack DM thread titles via `assistant.threads.setTitle` for DM-originated tasks.
 
 Trigger: every `task.append(thread)` in `events.ts`, fire-and-forget, guarded by `if (!task.metadata.title)` so pre-feature tasks pick up a title on next interaction. Once set, never regenerated. No active backfill.
 

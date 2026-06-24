@@ -44,7 +44,7 @@ Secrets are injected via the container's environment file plus the mounted
 
 ### Repository Access
 
-GitHub App with fine-grained, read-only permissions scoped to the organization. Edit mode grants write access through the app's installation token. Auto-rotating tokens via Octokit.
+GitHub access is via a GitHub App installation token (auto-rotating, through Octokit), scoped to the repositories the App is installed on. Archie's read-only-by-default posture is enforced by its own edit-mode gate, not by changing GitHub permissions at runtime. For the complete App setup — the exact repository permissions, webhook events, and env vars — see the [GitHub App Setup guide](github-setup.md).
 
 ### Network Security
 
@@ -55,14 +55,11 @@ GitHub App with fine-grained, read-only permissions scoped to the organization. 
 
 ## CI/CD Pipeline
 
-Jenkins builds and publishes the production container image:
+Continuous integration runs via GitHub Actions: on every push and pull request it installs dependencies, type-checks, builds, runs the test suite, and runs a [gitleaks](https://github.com/gitleaks/gitleaks) secret scan over the working tree and full history. A merge that fails any of these gates is blocked. The workflow lives at `.github/workflows/ci.yml`.
 
-1. Jenkins runs `Jenkinsfile.build` (`containerBuildPipeline_v1` shared library)
-2. Image is built from `Dockerfile.prod` and pushed under the `sweatcoin-archie-hq` repo
-3. Operator pulls the new tag on the VM and restarts the service
-4. Health check verification via `GET /health`
+Building and publishing the production container image currently runs through an internal Jenkins pipeline defined in `Jenkinsfile.build` (the image is built from `Dockerfile.prod`). The operator then pulls the new tag on the host, restarts the service, and verifies health via `GET /health`.
 
-There is no GitHub Actions workflow in this repo. Deployment to the VM is operator-driven.
+The GitHub Actions workflow above (CI: typecheck/build/test/secret-scan) is independent of and coexists with that deploy pipeline. The internal Jenkins deploy path is being migrated/genericized separately; self-hosters can instead wire image build/publish into GitHub Actions (or their own CI) using their registry credentials as repository secrets.
 
 ## Docker Configuration
 
@@ -88,7 +85,7 @@ ExecStart=/usr/bin/docker run --name archie-app \
   -v /app/secrets:/app/secrets \
   -v /data/claude:/home/archie/.claude \
   -v /data/claude/.claude.json:/home/archie/.claude.json \
-  <registry>/sweatcoin-archie-hq:latest
+  <registry>/archie-hq:latest
 Restart=always
 RestartSec=10
 ```

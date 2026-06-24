@@ -56,8 +56,3 @@ temp/
 # Local data snapshots pulled by scripts/pull-remote-data.sh
 archie-data-*
 *.partial.*
-
-# Legacy (kept for transition — can be removed once all environments use workdir/)
-sessions/
-repos/
-plugins

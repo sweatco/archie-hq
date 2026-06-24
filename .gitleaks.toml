@@ -1,0 +1,31 @@
+title = "Archie gitleaks config"
+
+# Use gitleaks' built-in rules, plus the allowlist below for known, intentional
+# non-secrets so the CI gate doesn't false-positive on them.
+[extend]
+useDefault = true
+
+# Modern gitleaks (8.19+) uses the plural [[allowlists]] array-of-tables; the
+# legacy singular [allowlist] table is ignored by newer versions.
+[[allowlists]]
+description = "Intentional non-secret fixtures and placeholders"
+
+# Placeholder values live in .env.example (sk-ant-..., xoxb-..., your-webhook-secret,
+# etc.), and the sanitizer test deliberately embeds dummy token-shaped strings to
+# test the secret detector itself. Match on the file path...
+paths = [
+  '''\.env\.example$''',
+  '''src/memory/__tests__/sanitize\.test\.ts$''',
+  # The local-development setup guide contains illustrative example credentials
+  # (e.g. xoxb-1234567890-..., a sequential signing-secret placeholder). These
+  # are documentation examples, not real secrets. Matches the current path
+  # (docs/guides/) and the historical one (docs/).
+  '''local-development\.md$''',
+]
+
+# ...and, belt-and-suspenders, on the specific dummy values in case they move.
+regexes = [
+  '''ghp_abcdef1234567890ABCDEF12''',
+  '''AKIAIOSFODNN7EXAMPLE''',
+  '''sk-abcdefghijklmnopqrstuv''',
+]

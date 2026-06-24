@@ -84,7 +84,7 @@ When a user edits a message, Slack delivers a `message` event with subtype `mess
 When they hold, mentions in the new text are resolved to the `@<ID:Name>` form (`cleanSlackText`) and `task.appendSlackEdit` writes a **fresh** knowledge-log entry — the log is append-only, so edits are never mutations of the original line. The entry reuses the original message's `msg:<ts>` id and its body, built by the pure `renderEditForContext`, is just the new text tagged as an edit:
 
 ```
-@<U123:Egor> in slack:#<C456:deploys>:1700000000.000100 | msg:1700000000.000100
+@<U123:Dana> in slack:#<C456:deploys>:1700000000.000100 | msg:1700000000.000100
   [edited] deploy to prod
 ```
 

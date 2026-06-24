@@ -74,7 +74,7 @@ function makeThread(overrides?: Partial<SlackThread>): SlackThread {
       {
         ts: '1.0',
         text: 'hello, can you help fix the broken auth flow on Android',
-        user: { id: 'U1', username: 'me', realName: 'Egor', teamId: 'T_HOME' },
+        user: { id: 'U1', username: 'me', realName: 'Dana', teamId: 'T_HOME' },
       },
     ],
     ...overrides,
@@ -170,7 +170,7 @@ describe('generateTaskTitle', () => {
         {
           ts: '2.0',
           text: 'internal subject',
-          user: { id: 'UINT', username: 'me', realName: 'Egor', teamId: 'T_HOME' },
+          user: { id: 'UINT', username: 'me', realName: 'Dana', teamId: 'T_HOME' },
         },
       ],
     });
@@ -178,7 +178,7 @@ describe('generateTaskTitle', () => {
     expect(query).toHaveBeenCalled();
     const transcript = state.lastQueryArgs.prompt as string;
     expect(transcript).toContain('[external]: [redacted: external participant in shared channel]');
-    expect(transcript).toContain('[Egor]: internal subject');
+    expect(transcript).toContain('[Dana]: internal subject');
     expect(transcript).not.toContain('should be redacted');
   });
 
@@ -190,7 +190,7 @@ describe('generateTaskTitle', () => {
         {
           ts: '1.0',
           text: 'fyi',
-          user: { id: 'UINT', username: 'me', realName: 'Egor', teamId: 'T_HOME' },
+          user: { id: 'UINT', username: 'me', realName: 'Dana', teamId: 'T_HOME' },
           attachments: [
             {
               text: 'forwarded body',
