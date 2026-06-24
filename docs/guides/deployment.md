@@ -44,7 +44,7 @@ Secrets are injected via the container's environment file plus the mounted
 
 ### Repository Access
 
-GitHub App with fine-grained, read-only permissions scoped to the organization. Edit mode grants write access through the app's installation token. Auto-rotating tokens via Octokit.
+GitHub access is via a GitHub App installation token (auto-rotating, through Octokit), scoped to the repositories the App is installed on. Archie's read-only-by-default posture is enforced by its own edit-mode gate, not by changing GitHub permissions at runtime. For the complete App setup — the exact repository permissions, webhook events, and env vars — see the [GitHub App Setup guide](github-setup.md).
 
 ### Network Security
 

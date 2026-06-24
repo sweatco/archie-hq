@@ -10,7 +10,7 @@ The project is licensed under **AGPL-3.0-or-later**, and contributions are accep
 - **npm >= 11** (the repo commits `package-lock.json`)
 - An **Anthropic API key** to run the engine locally
 
-Slack and GitHub are optional integrations — you do **not** need them to build, test, or run Archie locally.
+Slack and GitHub are optional integrations — you do **not** need them to build, test, or run Archie locally. To wire up GitHub (repo agents / PRs), see the [GitHub App Setup guide](docs/guides/github-setup.md).
 
 ## Getting set up
 
