@@ -80,12 +80,12 @@ describe('memory context builder', () => {
     it('includes <user_preferences user_id="..."> block when user file exists', async () => {
       await mkdir(usersDir, { recursive: true });
       const userContent = '## Communication\n- Prefers async\n';
-      await writeFile(join(usersDir, 'U07EGOR001.md'), userContent, 'utf-8');
+      await writeFile(join(usersDir, 'U07DANA001.md'), userContent, 'utf-8');
 
-      const result = await buildMemoryContext([{ userId: 'U07EGOR001', displayName: 'Egor K' }]);
+      const result = await buildMemoryContext([{ userId: 'U07DANA001', displayName: 'Dana L' }]);
 
-      expect(result).toContain('<user_preferences user_id="U07EGOR001"');
-      expect(result).toContain('display_name="Egor K"');
+      expect(result).toContain('<user_preferences user_id="U07DANA001"');
+      expect(result).toContain('display_name="Dana L"');
       expect(result).toContain('</user_preferences>');
       expect(result).toContain('## Communication');
       expect(result).toContain('- Prefers async');
@@ -93,25 +93,25 @@ describe('memory context builder', () => {
 
     it('omits display_name attribute when it equals the user_id', async () => {
       await mkdir(usersDir, { recursive: true });
-      await writeFile(join(usersDir, 'U07EGOR001.md'), '- fact\n', 'utf-8');
+      await writeFile(join(usersDir, 'U07DANA001.md'), '- fact\n', 'utf-8');
 
-      const result = await buildMemoryContext([{ userId: 'U07EGOR001', displayName: 'U07EGOR001' }]);
+      const result = await buildMemoryContext([{ userId: 'U07DANA001', displayName: 'U07DANA001' }]);
 
-      expect(result).toContain('<user_preferences user_id="U07EGOR001">');
+      expect(result).toContain('<user_preferences user_id="U07DANA001">');
       expect(result).not.toContain('display_name=');
     });
 
     it('accepts legacy string array for backward compatibility', async () => {
       await mkdir(usersDir, { recursive: true });
-      await writeFile(join(usersDir, 'U07EGOR001.md'), '- fact\n', 'utf-8');
+      await writeFile(join(usersDir, 'U07DANA001.md'), '- fact\n', 'utf-8');
 
-      const result = await buildMemoryContext(['U07EGOR001']);
+      const result = await buildMemoryContext(['U07DANA001']);
 
-      expect(result).toContain('<user_preferences user_id="U07EGOR001">');
+      expect(result).toContain('<user_preferences user_id="U07DANA001">');
     });
 
     it('includes <recent_activity> block when recent-activity.md has content', async () => {
-      const activityContent = '# Recent Activity\n\n| Date | Task ID | Summary | Domain | User |\n|------|---------|---------|--------|------|\n| 2026-04-10 | task-001 | Fixed bug | engineering | egor |\n';
+      const activityContent = '# Recent Activity\n\n| Date | Task ID | Summary | Domain | User |\n|------|---------|---------|--------|------|\n| 2026-04-10 | task-001 | Fixed bug | engineering | dana |\n';
       await writeFile(activityPath, activityContent, 'utf-8');
 
       const result = await buildMemoryContext([]);
@@ -137,14 +137,14 @@ describe('memory context builder', () => {
     it('joins multiple non-empty blocks with double newlines', async () => {
       await mkdir(usersDir, { recursive: true });
       const userContent = '## Communication\n- Prefers async\n';
-      await writeFile(join(usersDir, 'U07EGOR001.md'), userContent, 'utf-8');
+      await writeFile(join(usersDir, 'U07DANA001.md'), userContent, 'utf-8');
 
-      const activityContent = '# Recent Activity\n\n| Date | Task ID | Summary | Domain | User |\n|------|---------|---------|--------|------|\n| 2026-04-10 | task-001 | Fixed bug | engineering | egor |\n';
+      const activityContent = '# Recent Activity\n\n| Date | Task ID | Summary | Domain | User |\n|------|---------|---------|--------|------|\n| 2026-04-10 | task-001 | Fixed bug | engineering | dana |\n';
       await writeFile(activityPath, activityContent, 'utf-8');
 
-      const result = await buildMemoryContext([{ userId: 'U07EGOR001', displayName: 'Egor' }]);
+      const result = await buildMemoryContext([{ userId: 'U07DANA001', displayName: 'Dana' }]);
 
-      expect(result).toContain('<user_preferences user_id="U07EGOR001"');
+      expect(result).toContain('<user_preferences user_id="U07DANA001"');
       expect(result).toContain('<recent_activity>');
       expect(result).toContain('</user_preferences>\n\n<recent_activity>');
     });
@@ -156,22 +156,22 @@ describe('memory context builder', () => {
     it('appends memory context to prompt when injection is enabled and memory exists', async () => {
       injectionEnabled = true;
       await mkdir(usersDir, { recursive: true });
-      await writeFile(join(usersDir, 'U07EGOR001.md'), '## Communication\n- Prefers async\n', 'utf-8');
+      await writeFile(join(usersDir, 'U07DANA001.md'), '## Communication\n- Prefers async\n', 'utf-8');
 
-      const result = await enrichPromptWithMemory('base prompt', [{ userId: 'U07EGOR001', displayName: 'Egor' }]);
+      const result = await enrichPromptWithMemory('base prompt', [{ userId: 'U07DANA001', displayName: 'Dana' }]);
 
       expect(result).toContain('base prompt');
       expect(result).toContain('## Organizational Memory');
       expect(result).toContain('The following is what you know from previous tasks');
-      expect(result).toContain('<user_preferences user_id="U07EGOR001"');
+      expect(result).toContain('<user_preferences user_id="U07DANA001"');
     });
 
     it('returns systemPrompt unchanged when memory is disabled', async () => {
       memoryEnabled = false;
       await mkdir(usersDir, { recursive: true });
-      await writeFile(join(usersDir, 'U07EGOR001.md'), '## Communication\n- Prefers async\n', 'utf-8');
+      await writeFile(join(usersDir, 'U07DANA001.md'), '## Communication\n- Prefers async\n', 'utf-8');
 
-      const result = await enrichPromptWithMemory('base prompt', [{ userId: 'U07EGOR001', displayName: 'Egor' }]);
+      const result = await enrichPromptWithMemory('base prompt', [{ userId: 'U07DANA001', displayName: 'Dana' }]);
 
       expect(result).toBe('base prompt');
     });
@@ -187,9 +187,9 @@ describe('memory context builder', () => {
       injectionEnabled = false; // production default
       const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
       await mkdir(usersDir, { recursive: true });
-      await writeFile(join(usersDir, 'U07EGOR001.md'), '## Communication\n- Prefers async\n', 'utf-8');
+      await writeFile(join(usersDir, 'U07DANA001.md'), '## Communication\n- Prefers async\n', 'utf-8');
 
-      const result = await enrichPromptWithMemory('base prompt', [{ userId: 'U07EGOR001', displayName: 'Egor' }]);
+      const result = await enrichPromptWithMemory('base prompt', [{ userId: 'U07DANA001', displayName: 'Dana' }]);
 
       expect(result).toBe('base prompt');
       expect(result).not.toContain('## Organizational Memory');
@@ -203,9 +203,9 @@ describe('memory context builder', () => {
       memoryEnabled = false;
       injectionEnabled = true;
       await mkdir(usersDir, { recursive: true });
-      await writeFile(join(usersDir, 'U07EGOR001.md'), '- fact\n', 'utf-8');
+      await writeFile(join(usersDir, 'U07DANA001.md'), '- fact\n', 'utf-8');
 
-      const result = await enrichPromptWithMemory('base prompt', [{ userId: 'U07EGOR001', displayName: 'Egor' }]);
+      const result = await enrichPromptWithMemory('base prompt', [{ userId: 'U07DANA001', displayName: 'Dana' }]);
 
       expect(result).toBe('base prompt');
     });

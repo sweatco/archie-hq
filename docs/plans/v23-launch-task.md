@@ -265,17 +265,17 @@ Existing functions/utilities reused:
 2. **Existing CLI flow (create)** — `POST /tasks` with a message. Expect: task has `channels: { 'cli:local': { type: 'cli', id: 'cli:local' } }`, `default_channel: 'cli:local'`. PM's `post_to_user` with no target logs to knowledge.log under `cli` destination, same as today. CLI UI reads messages from log as today.
 3. **Existing CLI flow (follow-up)** — `POST /tasks/:id/message` on an existing CLI task. Expect: `linkCliChannel` re-assigns the same channel, state unchanged, follow-up processed. Also on an old task that never had a CLI channel: now picks one up on first follow-up.
 4. **Launched task, happy path** —
-   - From a live Slack or CLI task, PM calls `launch_task({ prompt: "Ask Egor about deploy status", reason: "nightly check" })`
+   - From a live Slack or CLI task, PM calls `launch_task({ prompt: "Ask Dana about deploy status", reason: "nightly check" })`
    - Expect: notification posted to originating task's default channel (e.g. Slack thread); tool returns `"Task task-xxx launched. User was already notified..."`
    - New task created with empty `channels`, `default_channel: null`
    - New PM sees `Channel(s): none — ...` in system prompt
-   - New PM calls `find_slack_user("Egor")` → gets user ID
+   - New PM calls `find_slack_user("Dana")` → gets user ID
    - New PM calls `post_to_user({ message: "Hey, deploy status?", target: { new_dm: "U123" } })` → DM opened, channel linked as `default_channel`
    - New PM calls `report_completion()` without message → task stops
 5. **Guardrail on post** — PM calls `post_to_user({ message: "..." })` without target on a task with empty channels. Expect: tool returns error string instructing to use target.new_dm/new_thread or complete silently. Agent retries correctly.
 6. **Guardrail on completion** — PM calls `report_completion({ message: "done" })` without having opened a channel. Expect: tool returns error string. Agent either opens a channel first, or calls `report_completion()` with no message.
 7. **Silent completion** — Launched-task PM decides no ping is needed, calls `report_completion()` with no message. Expect: task stops cleanly, nothing posted anywhere. Knowledge log shows launch finding + completion.
 8. **Fan-out block** — From a launched task that has not yet opened any channel, PM calls `launch_task(...)`. Expect: tool returns error string explaining the block (channel-less task cannot launch more). After the PM opens a DM or thread, a subsequent `launch_task` call succeeds.
-9. **Multi-channel rendering** — Task with both a Slack thread and an open DM. Expect spawn context to render both: e.g. `Channel(s): #bot-test, DM with Egor` + `Default channel: #bot-test` on a separate line.
+9. **Multi-channel rendering** — Task with both a Slack thread and an open DM. Expect spawn context to render both: e.g. `Channel(s): #bot-test, DM with Dana` + `Default channel: #bot-test` on a separate line.
 10. **Type check + build** — `npm run typecheck && npm run build`.
 11. **Unit tests** — existing `tool-contract.test.ts` should keep passing; add tests for the two new guardrail paths, the fan-out block, and multi-channel spawn rendering.

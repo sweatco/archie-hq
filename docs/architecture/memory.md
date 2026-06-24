@@ -120,7 +120,7 @@ The helper `extractTaskUsernames(taskId)` (`spawn.ts:132`) parses the task's `kn
 `buildMemoryContext(usernames)` (`src/memory/context.ts`) assembles up to three XML-tagged blocks:
 
 ```
-<user_preferences user_id="U07ABC123" display_name="Egor">
+<user_preferences user_id="U07ABC123" display_name="Dana">
 {contents of users/U07ABC123.md}
 </user_preferences>
 
@@ -233,7 +233,7 @@ The transcript is truncated to 100,000 characters before being substituted; long
 ```markdown
 ---
 slack_user_id: U07ABC123
-display_name: "Egor"
+display_name: "Dana"
 aliases: []
 ---
 ## Communication
@@ -281,7 +281,7 @@ links:
   cli:
 users:
   - id: U07ABC123
-    display_name: "Egor"
+    display_name: "Dana"
 ---
 
 # Summary

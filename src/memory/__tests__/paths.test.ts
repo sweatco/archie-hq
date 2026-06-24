@@ -44,7 +44,7 @@ describe('isSlackUserId', () => {
 });
 
 describe('isFallbackUserId', () => {
-  it.each(['cli:s-001', 'cli:task-abc', 'local:igor', 'local:bot_x'])('accepts %s', (id) => {
+  it.each(['cli:s-001', 'cli:task-abc', 'local:riley', 'local:bot_x'])('accepts %s', (id) => {
     expect(isFallbackUserId(id)).toBe(true);
   });
 
@@ -62,11 +62,11 @@ describe('isFallbackUserId', () => {
 });
 
 describe('isAllowedUserId', () => {
-  it.each(['U07ABC123', 'cli:s-001', 'local:igor', 'B0X1Y2Z3A4'])('accepts %s', (id) => {
+  it.each(['U07ABC123', 'cli:s-001', 'local:riley', 'B0X1Y2Z3A4'])('accepts %s', (id) => {
     expect(isAllowedUserId(id)).toBe(true);
   });
 
-  it.each(['alex', 'egor', 'admin', '', 'foo:bar'])('rejects %j', (id) => {
+  it.each(['alex', 'dana', 'admin', '', 'foo:bar'])('rejects %j', (id) => {
     expect(isAllowedUserId(id)).toBe(false);
   });
 });
@@ -88,7 +88,7 @@ describe('getUserPath', () => {
 
   it('normalises the colon in fallback IDs to a double underscore', () => {
     expect(getUserPath('cli:task-abc')).toMatch(/users\/cli__task-abc\.md$/);
-    expect(getUserPath('local:igor')).toMatch(/users\/local__igor\.md$/);
+    expect(getUserPath('local:riley')).toMatch(/users\/local__riley\.md$/);
   });
 
   it('throws on bare first names', () => {
@@ -100,7 +100,7 @@ describe('getUserPath', () => {
   });
 
   it('throws on non-Slack-shaped prefixes', () => {
-    expect(() => getUserPath('admin:igor')).toThrow();
+    expect(() => getUserPath('admin:riley')).toThrow();
   });
 });
 

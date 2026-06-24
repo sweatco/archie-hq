@@ -214,11 +214,11 @@ async function processExtraction(taskId: string): Promise<void> {
 // Match the `@<UID:Display Name>` mention component wherever it appears.
 // Production log lines often have additional context inside the same outer
 // brackets, e.g.:
-//   `[@<U03RQQTE1EF:Igor Sova> in slack:#<D0AUZLR6ZJQ:DM with Igor Sova>:...]`
+//   `[@<U03RQQTE1EF:Riley Quinn> in slack:#<D0AUZLR6ZJQ:DM with Riley Quinn>:...]`
 // so we anchor on the `@<` prefix and the `>` terminator rather than the
 // surrounding `[...]`. The leading `@` (with no space before the UID) is
 // what distinguishes a user mention from a channel reference like
-// `#<D0AUZLR6ZJQ:DM with Igor Sova>` which uses the same `<UID:Name>` shape.
+// `#<D0AUZLR6ZJQ:DM with Riley Quinn>` which uses the same `<UID:Name>` shape.
 const MENTION_RE = /@<([A-Z][A-Z0-9]{6,}):([^>]+)>/g;
 
 /**
@@ -226,7 +226,7 @@ const MENTION_RE = /@<([A-Z][A-Z0-9]{6,}):([^>]+)>/g;
  * per unique user. The raw Slack ID is the canonical filename identifier;
  * the display name is retained for prompt labels and YAML frontmatter.
  *
- * Channel references like `#<D0AUZLR6ZJQ:DM with Igor Sova>` do NOT match
+ * Channel references like `#<D0AUZLR6ZJQ:DM with Riley Quinn>` do NOT match
  * because they lack the `@` prefix. User IDs whose prefix is not Slack-shaped
  * (`U`/`W`/`B`/`T`) are filtered out by `isSlackUserId`.
  */
