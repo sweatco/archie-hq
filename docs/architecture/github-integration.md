@@ -109,6 +109,8 @@ All tools below are registered on the same `repo-tools` MCP server. Whether a to
 | `get_pr_reviews` | Review-level summary for a PR (approvals, change requests, review bodies). |
 | `get_pr_comments` | Top-level PR conversation comments (issue comments). |
 | `get_review_threads` | Every review thread on a PR via GraphQL: `thread_id` (for `resolve_review_thread`) and per-comment `comment_id` (for `reply_to_review_comment`). |
+| `list_code_scanning_alerts` | List code scanning security alerts (e.g. CodeQL) from the repo's Security tab. Filter by state (default open), git ref/branch, or severity. Requires the App's "Code scanning alerts" read permission. |
+| `get_code_scanning_alert` | Full detail for one code scanning alert by number: rule description, severity, state, dismissal info, and the most recent instance (file, line range, ref, message). |
 
 **Edit mode only:**
 

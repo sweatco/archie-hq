@@ -121,6 +121,50 @@ export interface WorkflowRunReport {
   jobs: WorkflowJobEntry[];
 }
 
+export interface CodeScanningAlertInstance {
+  /** Git ref the instance was seen on, e.g. `refs/heads/main`. */
+  ref: string | null;
+  state: string | null;
+  path: string | null;
+  startLine: number | null;
+  endLine: number | null;
+  /** The alert message text for this instance. */
+  message: string | null;
+}
+
+export interface CodeScanningAlert {
+  number: number;
+  /** open / dismissed / fixed (GitHub may add others). */
+  state: string;
+  /** Analysis tool that produced the alert, e.g. `CodeQL`. */
+  tool: string;
+  ruleId: string | null;
+  ruleName: string | null;
+  ruleDescription: string | null;
+  /** Rule severity: none / note / warning / error. */
+  severity: string | null;
+  /** Security severity: low / medium / high / critical (when classified). */
+  securitySeverity: string | null;
+  url: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  dismissedReason: string | null;
+  dismissedComment: string | null;
+  mostRecentInstance: CodeScanningAlertInstance | null;
+}
+
+export interface CodeScanningAlertFilters {
+  /** Alert state filter. Defaults to `open` at the call site. */
+  state?: 'open' | 'dismissed' | 'fixed';
+  /** Git ref filter, e.g. `refs/heads/main` or a branch name. */
+  ref?: string;
+  /** Limit to a single tool, e.g. `CodeQL`. */
+  toolName?: string;
+  /** Severity filter (critical/high/medium/low or note/warning/error). */
+  severity?: string;
+  per_page?: number;
+}
+
 export interface ParsedCheckRef {
   /** `check_run` covers check-run permalinks and Actions job links (job id == check-run id). */
   kind: 'check_run' | 'workflow_run';
@@ -905,6 +949,93 @@ export class GitHubClient {
       url: run.html_url ?? null,
       jobs,
     };
+  }
+
+  /**
+   * Normalize a raw code-scanning alert payload (list item or single alert)
+   * into the trimmed shape agents consume.
+   */
+  private mapCodeScanningAlert(a: any): CodeScanningAlert {
+    const instance = a.most_recent_instance;
+    return {
+      number: a.number,
+      state: a.state,
+      tool: a.tool?.name ?? 'unknown',
+      ruleId: a.rule?.id ?? null,
+      ruleName: a.rule?.name ?? null,
+      ruleDescription: a.rule?.description ?? a.rule?.full_description ?? null,
+      severity: a.rule?.severity ?? null,
+      securitySeverity: a.rule?.security_severity_level ?? null,
+      url: a.html_url ?? null,
+      createdAt: a.created_at ?? null,
+      updatedAt: a.updated_at ?? null,
+      dismissedReason: a.dismissed_reason ?? null,
+      dismissedComment: a.dismissed_comment ?? null,
+      mostRecentInstance: instance
+        ? {
+            ref: instance.ref ?? null,
+            state: instance.state ?? null,
+            path: instance.location?.path ?? null,
+            startLine: instance.location?.start_line ?? null,
+            endLine: instance.location?.end_line ?? null,
+            message: instance.message?.text ?? null,
+          }
+        : null,
+    };
+  }
+
+  /**
+   * List code scanning (e.g. CodeQL) alerts — the findings shown in a repo's
+   * Security tab. Requires the App's "Code scanning alerts" read permission;
+   * 403 if it's missing, 404 if code scanning isn't enabled for the repo.
+   */
+  async listCodeScanningAlerts(
+    githubRepo: string,
+    filters: CodeScanningAlertFilters = {}
+  ): Promise<CodeScanningAlert[]> {
+    const octokit = await this.getOctokit();
+    const { owner, repo } = this.parseRepo(githubRepo);
+
+    const response = await octokit.request(
+      'GET /repos/{owner}/{repo}/code-scanning/alerts',
+      {
+        owner,
+        repo,
+        state: filters.state,
+        ref: filters.ref,
+        tool_name: filters.toolName,
+        severity: filters.severity,
+        sort: 'created',
+        direction: 'desc',
+        per_page: filters.per_page ?? 30,
+      }
+    );
+
+    const alerts = response.data.map((a: any) => this.mapCodeScanningAlert(a));
+    logger.system(
+      `GitHub: code scanning alerts for ${githubRepo}` +
+        `${filters.state ? ` (state=${filters.state})` : ''}: ${alerts.length}`
+    );
+    return alerts;
+  }
+
+  /**
+   * Fetch a single code scanning alert by its number.
+   */
+  async getCodeScanningAlert(
+    githubRepo: string,
+    alertNumber: number
+  ): Promise<CodeScanningAlert> {
+    const octokit = await this.getOctokit();
+    const { owner, repo } = this.parseRepo(githubRepo);
+
+    const response = await octokit.request(
+      'GET /repos/{owner}/{repo}/code-scanning/alerts/{alert_number}',
+      { owner, repo, alert_number: alertNumber }
+    );
+
+    logger.system(`GitHub: code scanning alert #${alertNumber} for ${githubRepo}`);
+    return this.mapCodeScanningAlert(response.data);
   }
 
   /**

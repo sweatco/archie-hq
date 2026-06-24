@@ -1009,6 +1009,150 @@ function createGetCheckRunTool(agent: Agent, task: Task) {
   );
 }
 
+/**
+ * Code scanning endpoints 403 when the GitHub App lacks the "Code scanning
+ * alerts" read permission, and 404 when code scanning isn't enabled for the
+ * repo (or there are no analyses / the alert number doesn't exist). Translate
+ * both into guidance the agent can act on instead of a raw HTTP error.
+ */
+function codeScanningErrorHint(e: unknown, githubRepo: string): string {
+  const status = (e as { status?: number })?.status;
+  const message = e instanceof Error ? e.message : String(e);
+  if (status === 403) {
+    return (
+      `Access denied reading code scanning alerts for ${githubRepo}. The GitHub App ` +
+      `likely needs the "Code scanning alerts" (read) permission granted and the ` +
+      `installation re-approved. Report this rather than retrying. (${message})`
+    );
+  }
+  if (status === 404) {
+    return (
+      `No code scanning data for ${githubRepo} — code scanning may not be enabled, ` +
+      `there are no analyses yet, or the alert number doesn't exist. (${message})`
+    );
+  }
+  return message;
+}
+
+function createListCodeScanningAlertsTool(agent: Agent, task: Task) {
+  return tool(
+    'list_code_scanning_alerts',
+    'List code scanning security alerts (e.g. CodeQL) from the repo\'s Security tab. ' +
+    'Returns each alert\'s number, state, severity, rule, file location, and URL. ' +
+    'Use this to review security findings, audit open vulnerabilities, or check a specific branch. ' +
+    'Filter by state (defaults to open), a git ref/branch, or severity. For full detail on one alert, use get_code_scanning_alert.',
+    {
+      github: githubArgSchema,
+      state: z
+        .enum(['open', 'dismissed', 'fixed'])
+        .optional()
+        .describe('Filter by alert state. Defaults to open.'),
+      ref: z
+        .string()
+        .optional()
+        .describe('Git ref to filter by, e.g. "refs/heads/main" or a branch name.'),
+      severity: z
+        .enum(['critical', 'high', 'medium', 'low', 'warning', 'note', 'error'])
+        .optional()
+        .describe('Filter by severity level.'),
+    },
+    async (args) => {
+      const resolved = resolveGithub(agent, args.github);
+      if (!resolved.ok) return err(resolved.error);
+      const client = getGitHubClient();
+      if (!client) throw new Error('GitHub client not configured');
+
+      let alerts;
+      try {
+        alerts = await client.listCodeScanningAlerts(resolved.github, {
+          state: args.state ?? 'open',
+          ref: args.ref,
+          severity: args.severity,
+        });
+      } catch (e) {
+        return err(codeScanningErrorHint(e, resolved.github));
+      }
+
+      if (alerts.length === 0) {
+        return ok(
+          `No code scanning alerts found for ${resolved.github} (state=${args.state ?? 'open'}).`
+        );
+      }
+
+      const lines: string[] = [
+        `Code scanning alerts for ${resolved.github} (${alerts.length}):`,
+      ];
+      for (const a of alerts) {
+        const sev = a.securitySeverity ?? a.severity ?? 'unknown';
+        const inst = a.mostRecentInstance;
+        const loc = inst?.path
+          ? ` — ${inst.path}${inst.startLine ? `:${inst.startLine}` : ''}`
+          : '';
+        const urlPart = a.url ? ` — ${a.url}` : '';
+        lines.push(
+          `- #${a.number} [${a.state}] [${sev}] ${a.ruleName ?? a.ruleId ?? 'unknown rule'} (${a.tool})${loc}${urlPart}`
+        );
+      }
+      return ok(lines.join('\n'));
+    },
+  );
+}
+
+function createGetCodeScanningAlertTool(agent: Agent, task: Task) {
+  return tool(
+    'get_code_scanning_alert',
+    'Fetch full detail for a single code scanning alert (e.g. CodeQL) by its number. ' +
+    'Returns the rule description, severity, state, dismissal info, and the most recent instance ' +
+    '(file path, line range, git ref, and the alert message). Get the alert number from list_code_scanning_alerts.',
+    {
+      alert_number: z.number().describe('The code scanning alert number.'),
+      github: githubArgSchema,
+    },
+    async (args) => {
+      const resolved = resolveGithub(agent, args.github);
+      if (!resolved.ok) return err(resolved.error);
+      const client = getGitHubClient();
+      if (!client) throw new Error('GitHub client not configured');
+
+      let alert;
+      try {
+        alert = await client.getCodeScanningAlert(resolved.github, args.alert_number);
+      } catch (e) {
+        return err(codeScanningErrorHint(e, resolved.github));
+      }
+
+      const ruleLabel = alert.ruleName ?? alert.ruleId ?? 'unknown';
+      const lines: string[] = [
+        `Code scanning alert #${alert.number} (${resolved.github}) [${alert.state}]`,
+        `Tool: ${alert.tool}`,
+        `Rule: ${ruleLabel}${alert.ruleId && alert.ruleName ? ` (${alert.ruleId})` : ''}`,
+        `Severity: ${alert.securitySeverity ?? alert.severity ?? 'unknown'}`,
+      ];
+      if (alert.url) lines.push(`URL: ${alert.url}`);
+      if (alert.ruleDescription) lines.push('', `Description: ${alert.ruleDescription}`);
+
+      const inst = alert.mostRecentInstance;
+      if (inst) {
+        const endPart =
+          inst.endLine && inst.endLine !== inst.startLine ? `-${inst.endLine}` : '';
+        const loc = inst.path
+          ? `${inst.path}${inst.startLine ? `:${inst.startLine}${endPart}` : ''}`
+          : 'unknown';
+        lines.push('', `Location: ${loc}`);
+        if (inst.ref) lines.push(`Ref: ${inst.ref}`);
+        if (inst.message) lines.push(`Message: ${inst.message}`);
+      }
+
+      if (alert.state === 'dismissed') {
+        if (alert.dismissedReason) lines.push('', `Dismissed reason: ${alert.dismissedReason}`);
+        if (alert.dismissedComment) lines.push(`Dismissed comment: ${alert.dismissedComment}`);
+      }
+
+      return ok(lines.join('\n'));
+    },
+  );
+}
+
 function createGetPRReviewsTool(agent: Agent, task: Task) {
   return tool(
     'get_pr_reviews',
@@ -1603,6 +1747,9 @@ export function createRepoToolsMcpServer(agent: Agent, task: Task) {
       createGetPRReviewsTool(agent, task),
       createGetPRCommentsTool(agent, task),
       createGetReviewThreadsTool(agent, task),
+      // Security / code scanning
+      createListCodeScanningAlertsTool(agent, task),
+      createGetCodeScanningAlertTool(agent, task),
       // PR write
       createPushBranchTool(agent, task),
       createPullRequestTool(agent, task),
