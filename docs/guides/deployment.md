@@ -57,13 +57,9 @@ GitHub access is via a GitHub App installation token (auto-rotating, through Oct
 
 Continuous integration runs via GitHub Actions: on every push and pull request it installs dependencies, type-checks, builds, runs the test suite, and runs a [gitleaks](https://github.com/gitleaks/gitleaks) secret scan over the working tree and full history. A merge that fails any of these gates is blocked. The workflow lives at `.github/workflows/ci.yml`.
 
-Building and publishing the production container image is operator-driven and intentionally left to your own registry/automation:
+Building and publishing the production container image currently runs through an internal Jenkins pipeline defined in `Jenkinsfile.build` (the image is built from `Dockerfile.prod`). The operator then pulls the new tag on the host, restarts the service, and verifies health via `GET /health`.
 
-1. Build the image from `Dockerfile.prod` and push it to your container registry (e.g. `<registry>/archie-hq:latest`)
-2. Pull the new tag on the host and restart the service
-3. Verify health via `GET /health`
-
-You can wire image build/publish into the same GitHub Actions workflow (or your CI of choice) using your registry credentials as repository secrets.
+The GitHub Actions workflow above (CI: typecheck/build/test/secret-scan) is independent of and coexists with that deploy pipeline. The internal Jenkins deploy path is being migrated/genericized separately; self-hosters can instead wire image build/publish into GitHub Actions (or their own CI) using their registry credentials as repository secrets.
 
 ## Docker Configuration
 

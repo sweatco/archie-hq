@@ -1,0 +1,7 @@
+// https://www.notion.so/sweatco/Using-Jenkins-shared-libs-to-build-container-images-1c1964d3bcdd80ac8a2fe4b3a87d9500
+@Library('SweatcoinSharedLibs') _
+
+containerBuildPipeline_v1 (
+    containerRepoName: 'sweatcoin-archie-hq',
+    dockerfilePath: "./Dockerfile.prod"
+)
