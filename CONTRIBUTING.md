@@ -58,7 +58,7 @@ npm test
 1. **Fork or branch** off the default branch (don't commit to it directly).
 2. Make **atomic commits** — each commit is one coherent, self-contained change with a clear message.
 3. Open a **pull request** describing what changed and why.
-4. **CI must pass.** The GitHub Actions workflow (shipped at `ci/ci.yml`; copy it to `.github/workflows/ci.yml` to activate) runs `typecheck`, `build`, `test`, and a **gitleaks** secret scan over the full history on every push and PR.
+4. **CI must pass.** The GitHub Actions workflow at `.github/workflows/ci.yml` runs `typecheck`, `build`, `test`, and a **gitleaks** secret scan over the full history on every push and PR.
 5. **Expect review.** A maintainer will review your PR; please be responsive to feedback.
 
 **Never commit secrets.** Keep `.env`, API keys, and tokens out of commits — gitleaks will flag them, and once something lands in history it's hard to remove. If you accidentally expose a credential, rotate it.
