@@ -117,7 +117,7 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
   const logHeight = Math.max(5, termHeight - reservedLines);
 
   // Build log lines with inline approvals
-  const logLines: { node: React.ReactNode; approval?: { approvalType: 'edit_mode' | 'research_budget'; eventIndex: number } }[] = [];
+  const logLines: { node: React.ReactNode; approval?: { approvalType: 'edit_mode' | 'research_budget' | 'trigger'; eventIndex: number } }[] = [];
 
   // Fold pr_card events so a card renders once, at its most recent `post`
   // (anchor), showing the latest merged state. `update` events refresh the data
@@ -185,7 +185,7 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
             logLines.push({
               node: <Text color="yellow" bold>⏳ {event.data.text as string}  [y] approve / [n] deny</Text>,
               approval: {
-                approvalType: event.data.approvalType as 'edit_mode' | 'research_budget',
+                approvalType: event.data.approvalType as 'edit_mode' | 'research_budget' | 'trigger',
                 eventIndex: idx,
               },
             });

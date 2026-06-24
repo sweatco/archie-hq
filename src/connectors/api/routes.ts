@@ -23,6 +23,9 @@ import {
 import { SESSIONS_DIR } from '../../system/workdir.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
+import { listTriggers, loadTrigger, saveTrigger, deleteTrigger } from '../../system/trigger-store.js';
+import { indexTrigger, deindexTrigger, announceTriggerChange, describeTrigger } from '../../system/trigger-scheduler.js';
+import type { Trigger } from '../../types/trigger.js';
 
 /**
  * Mount API routes on an existing Express app.
@@ -262,6 +265,14 @@ export function mountApiRoutes(app: Application): void {
         } else {
           await task.handleResearchBudgetDenial();
         }
+      } else if (type === 'trigger') {
+        // CLI [y]/[n] on a proposed trigger — same task-level handler the Slack
+        // Approve/Deny buttons call. Approver is the operator running the CLI.
+        if (approve) {
+          await task.handleTriggerApproval('cli');
+        } else {
+          await task.handleTriggerDenial();
+        }
       } else {
         res.status(400).json({ error: `Unknown approval type: ${type}` });
         return;
@@ -275,6 +286,107 @@ export function mountApiRoutes(app: Application): void {
     }
   });
 
+  // ---- Triggers (operator surface — full visibility, mirrors /tasks) ----
+
+  /** Shape a trigger for the CLI/API, surfacing its bound channel like /tasks. */
+  const shapeTrigger = (t: Trigger) => ({
+    id: t.id,
+    status: t.status,
+    created_by: t.created_by,
+    created_at: t.created_at,
+    last_fired_at: t.last_fired_at ?? null,
+    binding_kind: t.binding.type,
+    channel_name: t.binding.type === 'channel' ? t.binding.channel_name : 'DM',
+    action_prompt: t.action.prompt,
+    summary: describeTrigger(t),
+  });
+
+  // GET /triggers — list all triggers with their bound channel
+  router.get('/triggers', async (_req: Request, res: Response) => {
+    try {
+      const triggers = (await listTriggers())
+        .filter((t) => t.status !== 'pending')
+        .sort((a, b) => b.created_at.localeCompare(a.created_at));
+      res.json({ triggers: triggers.map(shapeTrigger), total: triggers.length });
+    } catch (error) {
+      logger.error('api', 'Failed to list triggers', error);
+      res.status(500).json({ error: 'Failed to list triggers' });
+    }
+  });
+
+  // GET /triggers/:id — trigger detail
+  router.get('/triggers/:id', async (req: Request, res: Response) => {
+    try {
+      const trigger = await loadTrigger(req.params.id as string);
+      if (!trigger || trigger.status === 'pending') {
+        res.status(404).json({ error: 'Trigger not found' });
+        return;
+      }
+      res.json({ trigger });
+    } catch (error) {
+      logger.error('api', 'Failed to get trigger', error);
+      res.status(500).json({ error: 'Failed to get trigger' });
+    }
+  });
+
+  // PATCH /triggers/:id — pause/resume or edit the action prompt
+  router.patch('/triggers/:id', async (req: Request, res: Response) => {
+    try {
+      const id = req.params.id as string;
+      const { status, action_prompt } = req.body as { status?: 'paused' | 'enabled'; action_prompt?: string };
+      const trigger = await loadTrigger(id);
+      if (!trigger || trigger.status === 'pending') {
+        res.status(404).json({ error: 'Trigger not found' });
+        return;
+      }
+
+      const editedContent = typeof action_prompt === 'string';
+      let statusChange: 'paused' | 'resumed' | null = null;
+      if (editedContent) trigger.action.prompt = action_prompt as string;
+      if (status && status !== trigger.status) {
+        trigger.status = status;
+        statusChange = status === 'paused' ? 'paused' : 'resumed';
+      }
+      if (!editedContent && !statusChange) {
+        res.status(400).json({ error: 'Pass status or action_prompt to update.' });
+        return;
+      }
+
+      await saveTrigger(trigger);
+      if (trigger.status === 'enabled') indexTrigger(trigger);
+      else deindexTrigger(trigger.id);
+
+      if (statusChange === 'paused') emitEvent('trigger:paused', trigger.id, { trigger_id: trigger.id });
+      else if (statusChange === 'resumed') emitEvent('trigger:resumed', trigger.id, { trigger_id: trigger.id });
+      await announceTriggerChange(trigger, editedContent ? 'edited' : statusChange!);
+
+      res.json({ ok: true, trigger: shapeTrigger(trigger) });
+    } catch (error) {
+      logger.error('api', 'Failed to update trigger', error);
+      res.status(500).json({ error: 'Failed to update trigger' });
+    }
+  });
+
+  // DELETE /triggers/:id — remove a trigger
+  router.delete('/triggers/:id', async (req: Request, res: Response) => {
+    try {
+      const id = req.params.id as string;
+      const trigger = await loadTrigger(id);
+      if (!trigger) {
+        res.status(404).json({ error: 'Trigger not found' });
+        return;
+      }
+      deindexTrigger(id);
+      await deleteTrigger(id);
+      emitEvent('trigger:deleted', id, { trigger_id: id });
+      if (trigger.status !== 'pending') await announceTriggerChange(trigger, 'deleted');
+      res.json({ ok: true });
+    } catch (error) {
+      logger.error('api', 'Failed to delete trigger', error);
+      res.status(500).json({ error: 'Failed to delete trigger' });
+    }
+  });
+
   app.use('/api', router);
-  logger.plain('API routes: /api/tasks, /api/events/stream');
+  logger.plain('API routes: /api/tasks, /api/triggers, /api/events/stream');
 }

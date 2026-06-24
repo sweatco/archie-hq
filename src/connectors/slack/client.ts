@@ -1076,26 +1076,36 @@ export async function postEphemeral(
 /**
  * Get channel info
  */
-export async function getChannelInfo(channelId: string): Promise<{ id: string; name: string }> {
+export async function getChannelInfo(
+  channelId: string,
+): Promise<{ id: string; name: string; isPrivate: boolean; isIm: boolean; imUserId?: string }> {
   const client = getSlackClient();
 
   try {
     const result = await client.conversations.info({ channel: channelId });
-    const channel = result.channel as { name?: string; is_im?: boolean; user?: string } | undefined;
+    const channel = result.channel as
+      | { name?: string; is_im?: boolean; is_private?: boolean; user?: string }
+      | undefined;
+
+    const isIm = channel?.is_im === true;
+    // DMs are inherently private; otherwise read the channel's is_private flag.
+    const isPrivate = isIm || channel?.is_private === true;
 
     // For DMs, resolve the other user's name instead of showing a raw ID
-    if (channel?.is_im && channel.user) {
+    if (isIm && channel?.user) {
       const userInfo = await getUserInfo(channel.user);
-      return { id: channelId, name: `DM with ${userInfo.realName}` };
+      return { id: channelId, name: `DM with ${userInfo.realName}`, isPrivate, isIm, imUserId: channel.user };
     }
 
     return {
       id: channelId,
       name: channel?.name || channelId,
+      isPrivate,
+      isIm,
     };
   } catch (error) {
     logger.warn('Slack', `Failed to get channel info for ${channelId}`);
-    return { id: channelId, name: channelId };
+    return { id: channelId, name: channelId, isPrivate: false, isIm: false };
   }
 }
 

@@ -23,6 +23,8 @@ Read knowledge.log to see where you left off, then take action.`,
 
   reminder: (reason: string) => `Your scheduled reminder has fired. Reason: ${reason}\n\nCheck knowledge.log for the latest context and decide what to do next.`,
 
+  triggered: (prompt: string, context: string) => `A trigger you were set up with has fired (${context}).\n\nDo the following now: ${prompt}\n\nThis is a fresh task spawned by the trigger — there is no prior conversation. Carry out the instruction and post the result to the bound channel. You are read-only by default; if the work requires code changes, request edit mode first.`,
+
   reinforceAgent: `RECOVERY: You went idle without reporting back.
 
 Your turn must end with:
