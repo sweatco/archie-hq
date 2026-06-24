@@ -16,6 +16,11 @@ description = "Intentional non-secret fixtures and placeholders"
 paths = [
   '''\.env\.example$''',
   '''src/memory/__tests__/sanitize\.test\.ts$''',
+  # The local-development setup guide contains illustrative example credentials
+  # (e.g. xoxb-1234567890-..., a sequential signing-secret placeholder). These
+  # are documentation examples, not real secrets. Matches the current path
+  # (docs/guides/) and the historical one (docs/).
+  '''local-development\.md$''',
 ]
 
 # ...and, belt-and-suspenders, on the specific dummy values in case they move.
