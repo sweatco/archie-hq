@@ -1,0 +1,39 @@
+# Dependabot — automated dependency & GitHub Actions update PRs.
+# Grouped minor/patch updates on a weekly cadence to keep noise low; major
+# updates still arrive as individual PRs (they may be breaking). Dependabot
+# *security* updates (driven by Dependabot alerts) are enabled separately in
+# repo Settings → Code security, independent of this version-update config.
+# Docs: https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+version: 2
+updates:
+  # JavaScript/TypeScript dependencies (package.json + package-lock.json at root)
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    groups:
+      npm-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions pinned in .github/workflows/* — keeps the SHA pins current.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    groups:
+      actions-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"

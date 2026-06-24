@@ -1,0 +1,51 @@
+# CodeQL — static analysis security scanning (ADVANCED setup).
+#
+# IMPORTANT: This is the *advanced* (workflow-based) CodeQL setup. Do NOT also
+# enable GitHub's "Default setup" for code scanning under
+# Settings -> Code security -> Code scanning -> CodeQL analysis. The two are
+# mutually exclusive — with default setup enabled, the analyze step below fails
+# with a "default setup is enabled" error. Keep code scanning on the
+# "Advanced" workflow option (this file). See the PR description for the full
+# repo-settings checklist.
+#
+# Actions are SHA-pinned per org policy (full commit SHA + version comment).
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, Mondays 03:27 UTC (catches newly-published advisories on a cadence).
+    - cron: "27 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (javascript-typescript)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write # upload analysis results to code scanning
+      actions: read # read workflow run metadata
+      contents: read # checkout
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
+        with:
+          languages: javascript-typescript
+          # JS/TS is an interpreted language — no compilation step needed.
+          build-mode: none
+          # Standard ("default") query suite. Omit to use the default set;
+          # not security-extended.
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
+        with:
+          category: "/language:javascript-typescript"
