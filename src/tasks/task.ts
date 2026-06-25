@@ -968,6 +968,15 @@ export class Task {
   // ---- Approval handlers ----
 
   async handleEditModeApproval(): Promise<void> {
+    // Cancel any park armed by request_edit_mode on the PM this turn. The tool
+    // defers task.stop() to the PM's turn-end so it doesn't close the input
+    // stream under an in-flight hook. If the user approves *before* that turn
+    // ends, the stop is still armed and fires right after approval — stopping
+    // the task we just approved and tearing the stream out from under the PM's
+    // delegation (the "stream closed" loop). Approval means "continue", so drop
+    // the park: the PM stays read-only; the repo agent it delegates to is what
+    // spawns read-write off edit_allowed.
+    this.agentProcesses.get('pm-agent')?.clearPendingTeardown();
     this.metadata.edit_allowed = true;
     this.debouncedSave();
     await appendAgentFinding(this.taskId, 'system', 'Edit mode approved by user', 'decision');
