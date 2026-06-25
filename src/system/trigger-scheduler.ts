@@ -335,7 +335,7 @@ export async function announceTriggerChange(trigger: Trigger, change: TriggerCha
 export function describeTrigger(trigger: Trigger): string {
   const parts = trigger.conditions.map((c) => {
     if (c.type === 'schedule') {
-      return c.cron ? `on schedule (${c.cron}, ${c.tz})` : `once at ${c.next_run_at}`;
+      return c.cron ? `on schedule (${c.cron}, ${c.tz})` : `once at ${formatInTz(c.next_run_at, c.tz)}`;
     }
     const filters: string[] = [];
     if (c.match?.contains) filters.push(`containing "${c.match.contains}"`);
@@ -343,6 +343,16 @@ export function describeTrigger(trigger: Trigger): string {
     return `on a new message${filters.length ? ' ' + filters.join(' ') : ''}`;
   });
   return `${parts.join(' or ')} → ${trigger.action.prompt}`;
+}
+
+/** Render an ISO instant in a given IANA timezone as a readable, user-facing string. */
+function formatInTz(iso: string, tz: string): string {
+  try {
+    const formatted = new Date(iso).toLocaleString('en-US', { timeZone: tz, dateStyle: 'medium', timeStyle: 'short' });
+    return `${formatted} (${tz})`;
+  } catch {
+    return iso; // bad tz/date — fall back to the raw value rather than throw
+  }
 }
 
 /** Post a plain message to a trigger's binding (channel thread or user DM). */
