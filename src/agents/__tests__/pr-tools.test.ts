@@ -145,6 +145,7 @@ function makeTask(overrides: Partial<Task['metadata']> = {}): Task {
     },
     touch: vi.fn(),
     debouncedSave: vi.fn(),
+    suspendStatus: vi.fn(),
     postToUser: vi.fn().mockResolvedValue(undefined),
     postInteractiveToUser: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),

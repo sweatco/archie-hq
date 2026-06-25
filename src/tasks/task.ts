@@ -568,6 +568,16 @@ export class Task {
   }
 
   /**
+   * Freeze the live status — called when a turn is winding down to stop/complete
+   * (report_completion, edit-mode request, research-budget stop) so trailing
+   * tool calls in the teardown window don't resurface the indicator a couple of
+   * seconds after the final message.
+   */
+  suspendStatus(): void {
+    this.statusController.suspend();
+  }
+
+  /**
    * Feed an agent's SDK event into the status indicator. Called once per event
    * from the spawn loop; it inspects tool_use blocks and, when one maps to a
    * surfaceable action, records the agent's current activity. No-op for events
@@ -943,6 +953,7 @@ export class Task {
     // Defer the stop to the calling agent's turn-end (see report_completion):
     // web_research is mid-turn here, so stopping the queue now would close the
     // input stream under an in-flight hook ("stream closed" error).
+    this.statusController.suspend(); // don't let the wind-down resurface the status
     agent.deferTeardown(() => this.stop());
   }
 

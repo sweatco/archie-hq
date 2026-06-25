@@ -532,6 +532,9 @@ function createRequestEditModeTool(agent: Agent, task: Task) {
       ];
       await task.postInteractiveToUser(`Edit mode request: ${args.reason}`, blocks, 'edit_mode', args.channel);
 
+      // Task is now paused pending approval — freeze the status so the wind-down
+      // doesn't resurface a "working…" indicator.
+      task.suspendStatus();
       // Defer the pause to turn-end (see report_completion) so stopping the queue
       // doesn't close the input stream under an in-flight hook ("stream closed").
       agent.deferTeardown(() => task.stop());
@@ -591,6 +594,10 @@ function createReportCompletionTool(agent: Agent, task: Task) {
       }
       logger.agentAction(agentName, 'Reporting completion', '');
       task.touch();
+      // Blank the live status now: the final message is sent and we're done, but
+      // the teardown below is deferred to turn-end, so without this the indicator
+      // would pop back for a couple seconds during the wind-down.
+      task.suspendStatus();
       // Defer teardown to the spawn loop: it runs this once the agent's turn
       // fully ends (the SDK `result` event), so this tool response and the Stop
       // hook's control round-trip both finish over an open input stream. Stopping

@@ -94,7 +94,7 @@ function makeTask(): Task {
       },
       edit_allowed: true, status: 'active', channels: {}, participants: [], agent_sessions: {},
     },
-    touch: vi.fn(), debouncedSave: vi.fn(),
+    touch: vi.fn(), debouncedSave: vi.fn(), suspendStatus: vi.fn(),
     postToUser: vi.fn(), postInteractiveToUser: vi.fn(),
     stop: vi.fn(), complete: vi.fn(), toolSendMessage: vi.fn(), getAgentStatus: vi.fn(),
     updateAgentState: vi.fn(), checkResearchBudget: vi.fn(), incrementResearchCount: vi.fn(), onResearchBudgetExceeded: vi.fn(),

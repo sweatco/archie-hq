@@ -113,6 +113,24 @@ describe('TaskStatusController', () => {
     expect(pushed).toEqual(['is researching…', 'is researching…', 'is researching…']);
   });
 
+  it('freezes the indicator on suspend and ignores the turn’s wind-down', () => {
+    ctl.note('pm-agent', true, '', 'putting this together');
+    flush();
+    expect(pushed.at(-1)).toBe('is putting this together…');
+
+    // Turn winding down to completion — blank it now, not at turn-end.
+    ctl.suspend();
+    expect(pushed.at(-1)).toBe('');
+
+    // Trailing tool calls during the wind-down must NOT resurface it...
+    ctl.note('pm-agent', true, '', 'going through the details');
+    flush();
+    expect(pushed.at(-1)).toBe('');
+    // ...and the keepalive must not re-push either.
+    vi.advanceTimersByTime(300_000);
+    expect(pushed.at(-1)).toBe('');
+  });
+
   it('stops re-asserting after clear', () => {
     ctl.note('backend-agent', false, 'backend', 'researching');
     flush();
