@@ -412,6 +412,34 @@ describe('PM agent tools', () => {
   });
 });
 
+describe('request_edit_mode', () => {
+  it('is a no-op when edit mode is already approved (idempotent)', async () => {
+    const agent = makeAgent({ isPm: true, repo: undefined, id: 'pm-agent' });
+    const task = makeTask({ edit_allowed: true });
+    const handler = getToolFromServer(createOrchestrationMcpServer(agent, task), 'request_edit_mode');
+
+    const result = await handler({ reason: 'tweak the config' });
+
+    expect(result.content[0].text).toMatch(/already approved/i);
+    // Must not prompt the user again or pause the task.
+    expect(task.postInteractiveToUser).not.toHaveBeenCalled();
+    expect(task.stop).not.toHaveBeenCalled();
+  });
+
+  it('posts an approval prompt when edit mode is not yet approved', async () => {
+    const agent = makeAgent({ isPm: true, repo: undefined, id: 'pm-agent' });
+    (agent as any).pendingTeardown = false;
+    (agent as any).deferTeardown = vi.fn();
+    const task = makeTask({ edit_allowed: false });
+    const handler = getToolFromServer(createOrchestrationMcpServer(agent, task), 'request_edit_mode');
+
+    const result = await handler({ reason: 'apply the fix' });
+
+    expect(result.content[0].text).toMatch(/request sent|pending user approval/i);
+    expect(task.postInteractiveToUser).toHaveBeenCalledTimes(1);
+  });
+});
+
 // ---- Branch state helper tests ----
 
 describe('hydrateBranchState', () => {

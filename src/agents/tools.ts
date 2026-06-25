@@ -464,6 +464,7 @@ function createRequestEditModeTool(agent: Agent, task: Task) {
   return tool(
     'request_edit_mode',
     'Request permission to make code changes. Call this AFTER explaining to the user what changes are needed and why. Task will pause until user approves or denies. ' +
+    'Edit mode is a task-LIFETIME grant: once approved it stays in effect for the rest of the task, so you only ever need to request it once. If it is already approved this call is a no-op — it will not prompt the user again, it just confirms the grant. ' +
     'Without `channel`, the request posts to the task\'s default channel. Pass `channel` (a channel key like "slack:C123:456.789") to post it to a specific linked thread — useful when the task has no default channel yet or you opened a new thread to talk to the user.',
     {
       reason: z.string().describe('Brief summary of what changes need to be made'),
@@ -471,6 +472,14 @@ function createRequestEditModeTool(agent: Agent, task: Task) {
     },
     async (args) => {
       const agentName = agent.def.id as AgentName;
+
+      // Idempotency: edit mode is a task-lifetime grant. If it is already active,
+      // don't post another approval prompt or pause the task — just tell the
+      // caller it's already granted so it proceeds instead of waiting on a user
+      // who has nothing to approve.
+      if (task.metadata.edit_allowed === true) {
+        return ok('Edit mode is already approved for this task and persists for its lifetime — no need to request it again. Go ahead and make the changes.');
+      }
 
       // Already pausing this turn — the spawn loop tears the task down at turn
       // end. Skip a duplicate approval post if the tool fires twice.
