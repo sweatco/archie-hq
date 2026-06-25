@@ -16,7 +16,7 @@ import { z } from 'zod';
 import type { AgentName, FindingType, AttachedRepo } from '../types/task.js';
 import type { Task } from '../tasks/task.js';
 import type { Agent } from './agent.js';
-import { getVisiblePeerIdsForSender, getAgentIds } from './registry.js';
+import { getVisiblePeerIdsForSender, findAgentDefsContainingRepo, synthesizeDynamicAgentDef } from './registry.js';
 import { getGitHubClient, parseCheckRef } from '../connectors/github/client.js';
 import { gitExec } from '../connectors/github/repo-clone.js';
 import { hydrateBranchState, findBranchStateByPR } from '../connectors/github/branch-state.js';
@@ -220,8 +220,11 @@ export interface PRChecksReport {
  */
 function visibleTargetsForSender(
   senderDef: import('../types/agent.js').AgentDef,
+  task: Task,
 ): [string, ...string[]] {
-  const visible = new Set<string>(getVisiblePeerIdsForSender(senderDef));
+  // Filter over the task team (registry + any PM-spawned dynamic agents), not
+  // just the registry, so a dynamic agent is a valid message target.
+  const visible = new Set<string>(getVisiblePeerIdsForSender(senderDef, task.team));
   // PM is always reachable (escalation channel), except when the sender is PM itself.
   if (senderDef.id !== 'pm-agent') visible.add('pm-agent');
   const list = Array.from(visible);
@@ -235,10 +238,23 @@ function createSendMessageTool(agent: Agent, task: Task) {
     'send_message_to_agent',
     'Send a message to another agent and wait for their response. Use this to coordinate with peer agents.',
     {
-      target: z.enum(visibleTargetsForSender(agent.def)).describe('The agent to send the message to'),
+      // Free-form string (validated at runtime against the live task team) so a
+      // dynamic agent spawned mid-session is immediately addressable — a static
+      // enum would freeze the peer set at MCP-server creation time.
+      target: z.string().describe(
+        'The agent id to send the message to. Visible peers right now: ' +
+        visibleTargetsForSender(agent.def, task).join(', ') +
+        '. PM-spawned dynamic agents added during this session are also valid targets.',
+      ),
       message: z.string().describe('The message content to send'),
     },
     async (args) => {
+      const allowed = new Set(visibleTargetsForSender(agent.def, task));
+      if (!allowed.has(args.target)) {
+        return err(
+          `"${args.target}" is not a visible peer. Allowed: ${Array.from(allowed).join(', ')}.`,
+        );
+      }
       const response = await task.toolSendMessage(agent.def.id as AgentName, args.target as AgentName, args.message);
       return { content: [{ type: 'text' as const, text: response }] };
     },
@@ -429,20 +445,27 @@ function createFindSlackChannelTool(_agent: Agent, _task: Task) {
 }
 
 function createAssignTaskOwnerTool(agent: Agent, task: Task) {
-  // PM can only assign to agents it can see — globals + same-plugin (pm) locals.
-  const visibleIds = getVisiblePeerIdsForSender(agent.def);
-  // Defensive fallback: if no visible peers (misconfigured deployment), expose
-  // the full registry list so Zod construction doesn't crash on an empty enum;
-  // PM will get a clearer runtime error from the actual delegation attempt.
-  const taskOwnerAgents = (visibleIds.length > 0 ? visibleIds : getAgentIds()) as [string, ...string[]];
   return tool(
     'assign_task_owner',
     'Assign a task owner who will lead the investigation. Call this before sending the initial assignment message.',
     {
-      agent: z.enum(taskOwnerAgents).describe('The agent to assign as task owner'),
+      // Free-form string (validated at runtime against the live task team) so a
+      // PM-spawned dynamic agent can be made owner in the same session — a
+      // static enum would freeze the set at MCP-server creation time.
+      agent: z.string().describe(
+        'The agent id to assign as task owner. Visible candidates right now: ' +
+        getVisiblePeerIdsForSender(agent.def, task.team).join(', ') +
+        '. PM-spawned dynamic agents added during this session are also valid.',
+      ),
     },
     async (args) => {
       const agentName = agent.def.id as AgentName;
+      const allowed = new Set(getVisiblePeerIdsForSender(agent.def, task.team));
+      if (allowed.size > 0 && !allowed.has(args.agent)) {
+        return err(
+          `"${args.agent}" is not a visible candidate. Allowed: ${Array.from(allowed).join(', ')}.`,
+        );
+      }
       const targetAgent = args.agent as AgentName;
       logger.agentAction(agentName, 'Assigning task owner', targetAgent);
       task.touch();
@@ -1705,7 +1728,147 @@ export function createCommsMcpServer(agent: Agent, task: Task) {
   });
 }
 
-/** Task orchestration (ownership, completion, edit mode, team status). */
+/**
+ * `list_available_repos` — PM discovers which repos the GitHub App can reach.
+ * Tags repos already covered by a plugin specialist so PM prefers the
+ * specialist over spawning a generic agent. Cached on the task for the turn.
+ */
+function createListAvailableReposTool(_agent: Agent, task: Task) {
+  return tool(
+    'list_available_repos',
+    'List every GitHub repository this installation can reach. Use this before ' +
+    '`spawn_repo_agent` to see what is available. Repos already covered by a ' +
+    'plugin specialist are marked — prefer messaging that specialist over ' +
+    'spawning a generic agent.',
+    {},
+    async () => {
+      const client = getGitHubClient();
+      if (!client) return err('GitHub client not configured');
+
+      // Cache on the Task instance to avoid re-listing within a task.
+      type Cached = Array<{ github: string; default_branch: string; description?: string }>;
+      const t = task as Task & { _availableRepos?: Cached };
+      let repos = t._availableRepos;
+      if (!repos) {
+        repos = await client.listAccessibleRepos();
+        t._availableRepos = repos;
+      }
+      if (repos.length === 0) {
+        return ok('No repositories accessible to this installation.');
+      }
+      const lines = repos.map((r) => {
+        const owners = findAgentDefsContainingRepo(r.github);
+        const primaryOf = owners.find((d) => d.repo!.primary === r.github);
+        const tags: string[] = [];
+        if (primaryOf) tags.push(`primary of ${primaryOf.id}`);
+        else if (owners.length > 0) tags.push(`declared by ${owners.map((d) => d.id).join(', ')}`);
+        const desc = r.description ? ` — ${r.description}` : '';
+        const tagStr = tags.length > 0 ? ` [${tags.join('; ')}]` : '';
+        return `- ${r.github} (default: ${r.default_branch})${tagStr}${desc}`;
+      });
+      return ok(`Repos accessible to this installation:\n${lines.join('\n')}`);
+    },
+  );
+}
+
+/**
+ * `spawn_repo_agent` — PM creates an on-demand repo agent bound to a chosen
+ * list of available repos. The agent eager-mounts all of them at spawn (first
+ * = primary), behaving like a plugin-defined repo agent. Persisted in
+ * `metadata.dynamic_agents` and added to the live `task.team`.
+ *
+ * Anti-duplication: rejects a repo already covered as a plugin specialist's
+ * primary — PM should message that specialist instead.
+ */
+function createSpawnRepoAgentTool(agent: Agent, task: Task) {
+  return tool(
+    'spawn_repo_agent',
+    [
+      'Spawn an on-demand repo agent for one or more GitHub repos, chosen from',
+      '`list_available_repos`. Use when no plugin specialist covers the repo(s)',
+      'you need. All listed repos are mounted at spawn; the first is the primary',
+      '(the default target for the agent\'s repo-tools).',
+      '',
+      'Prefer an existing plugin specialist when one exists — it has a curated',
+      'prompt and skills. After spawning, `send_message_to_agent` to the returned',
+      'id to give it work.',
+    ].join('\n'),
+    {
+      shortname: z.string().regex(/^[a-z][a-z0-9-]*$/).describe(
+        'Short identifier matching /^[a-z][a-z0-9-]*$/. The agent id becomes `<shortname>-<4hex>-agent`.',
+      ),
+      repos: z.array(z.object({
+        github: z.string().describe('Github identifier, e.g. "org/repo"'),
+        baseBranch: z.string().optional().describe('Base branch (default: the repo\'s default branch)'),
+      })).min(1).describe('Repos this agent will work with. First entry is the primary.'),
+      role: z.string().optional().describe('Short role description (default: "Generic engineer for <primary>")'),
+      expertise: z.string().optional().describe('Detailed expertise string used in the agent\'s prompt'),
+    },
+    async (args) => {
+      const agentName = agent.def.id as AgentName;
+      const primary = args.repos[0].github;
+
+      // Anti-duplication: a repo that's already a plugin specialist's primary
+      // should be reached via that specialist, not a generic clone.
+      for (const r of args.repos) {
+        const conflict = findAgentDefsContainingRepo(r.github)
+          .find((d) => d.pluginName !== '<dynamic>' && d.repo!.primary === r.github);
+        if (conflict) {
+          return err(
+            `Repo "${r.github}" is already the primary of ${conflict.id}. ` +
+            `Use send_message_to_agent with target=${conflict.id} instead of spawning a new agent.`,
+          );
+        }
+      }
+
+      // Validate every requested repo is reachable; fill in default branches.
+      const client = getGitHubClient();
+      if (!client) return err('GitHub client not configured');
+      const resolvedRepos: Array<{ github: string; baseBranch: string }> = [];
+      for (const r of args.repos) {
+        const reachable = await client.resolveRepo(r.github);
+        if (!reachable) {
+          return err(
+            `GitHub App cannot reach "${r.github}". Check it appears in ` +
+            `list_available_repos (the App must be installed on it), then retry.`,
+          );
+        }
+        resolvedRepos.push({ github: r.github, baseBranch: r.baseBranch || reachable.default_branch });
+      }
+
+      // Stable id; 4-hex suffix makes same-task shortname collisions negligible.
+      const suffix = Math.floor(Math.random() * 0xffff).toString(16).padStart(4, '0');
+      const id = `${args.shortname}-${suffix}-agent`;
+
+      const spec = {
+        id,
+        shortname: args.shortname,
+        repos: resolvedRepos,
+        role: args.role || `Generic engineer for ${primary}`,
+        expertise: args.expertise || `Investigation and work in ${resolvedRepos.map((r) => r.github).join(', ')}.`,
+      };
+
+      task.metadata.dynamic_agents ??= [];
+      task.metadata.dynamic_agents.push(spec);
+      task.team.push(synthesizeDynamicAgentDef(spec));
+      task.debouncedSave();
+
+      await appendAgentFinding(
+        task.taskId,
+        agentName,
+        `Spawned repo agent ${id} for ${resolvedRepos.map((r) => r.github).join(', ')}`,
+        'decision',
+      );
+
+      return ok(
+        `Spawned repo agent ${id} (primary: ${primary}). ` +
+        `Use send_message_to_agent with target=${id} to give it work.`,
+      );
+    },
+  );
+}
+
+/** Task orchestration (ownership, completion, edit mode, team status, repo-agent spawning). */
 export function createOrchestrationMcpServer(agent: Agent, task: Task) {
   return createSdkMcpServer({
     name: 'orchestration-tools',
@@ -1716,6 +1879,8 @@ export function createOrchestrationMcpServer(agent: Agent, task: Task) {
       createRequestEditModeTool(agent, task),
       createGetAgentsStatusTool(agent, task),
       createLaunchTaskTool(agent, task),
+      createListAvailableReposTool(agent, task),
+      createSpawnRepoAgentTool(agent, task),
     ],
   });
 }

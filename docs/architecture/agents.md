@@ -65,6 +65,8 @@ One PM agent instance is spawned per task. It is the orchestrator: it receives a
 | `mute_channel` | Disengage from one Slack channel/thread (the one named via `channel`, or the task's default channel) until the bot is @mentioned there again. DM channels cannot be muted |
 | `launch_task` | Launch a new independent background task (with notification posted to the current channel). The prompt steers the PM to keep follow-up work inside the current task and reserve this for explicit user requests or workflow-driven background work, since a launched task has no trace back to the originating one. |
 | `parse_datetime` / `set_reminder` / `cancel_reminder` | Schedule a reminder that wakes the task at an ISO datetime |
+| `list_available_repos` | List repos the GitHub App installation can reach (paginates `GET /installation/repositories`); tags repos a plugin specialist already covers. Cached per task. |
+| `spawn_repo_agent` | Create an on-demand repo agent bound to a chosen list of available repos (eager-mounted at spawn). Persists a `DynamicAgentSpec` to `metadata.dynamic_agents` and adds it to `task.team`. Rejects a repo already owned as a plugin specialist's primary. |
 
 The `Skill` tool is provided by the Claude Agent SDK itself (not by `pm-agent-tools`); skills are mounted from the `pm` plugin's `skills/` directory and surfaced via `.claude/skills/` symlinks plus `settingSources: ['project']`. Built-in `Read`, `Glob`, and `Grep` tools are available against the PM workspace and the shared task folder (which is mounted read-only via `additionalDirectories`); `WebSearch` and `WebFetch` are explicitly disallowed.
 
@@ -130,6 +132,18 @@ The pre-v30 singular shape (`metadata.archie.repo: {github, baseBranch}`) is sti
 **Dual mode system**: The agent's mode is set per-task by `metadata.edit_allowed`. In read-only mode the sandbox makes every attached clone read-only and write-side MCP tools are disallowed; in edit mode every attached clone is writable and all `repo-tools` entries are exposed. The agent observes its mode through the available tool set and the injected `READ-ONLY` / `READ-WRITE` annotation in its system prompt. Edit mode is global to the task — when approved, RW applies to the primary and to every attached repo.
 
 **Working directory**: The agent's cwd is its per-agent workspace at `sessions/{taskId}/agents/{agentId}/` — a pure scratch space that never contains repo state. Each mounted repo lives at `sessions/{taskId}/repos/{agentId}/{org}/{repo}/` (sibling of the agent's cwd, not nested inside it) and is exposed via `additionalDirectories`. Per-agent clone paths mean two agents that declare the same github get fully independent working trees. In read-only mode each clone is checked out on its base branch; in edit mode each carries an `archie/{taskId}` branch (or a previously persisted one). Shared task state at `sessions/{taskId}/shared/` is also mounted read-only.
+
+### Dynamic Repo Agents (PM-spawned)
+
+The PM can spawn a repo agent on demand via `spawn_repo_agent({shortname, repos, role?, expertise?})` — for repositories no plugin agent covers, without a redeploy. It behaves exactly like a plugin-defined repo agent (eager-mounts all its repos at spawn, same `repo-tools`, same lifecycle), differing only in:
+
+- No plugin Layer-3 prompt body, no skills, no plugin MCP servers — just the universal protocol + the repo-agent track extension + a generic role/expertise.
+- Its `repos` come from the PM's spawn args (validated reachable via `GitHubClient.resolveRepo`) rather than plugin frontmatter.
+- Its id is `<shortname>-<4hex>-agent`, and its `visibility` is `global`.
+
+Only the PM-supplied inputs are persisted, as a `DynamicAgentSpec` in `metadata.dynamic_agents`. On every `Task.get`, `synthesizeDynamicAgentDef` rebuilds the live `AgentDef` from each spec and merges it into `task.team` — so peer lists, `send_message_to_agent`/`assign_task_owner` enums (all filtered over `task.team`), and `ensureAgentSpawned` see it after a reload or process restart. There is no respawn machinery: a freshly-spawned agent just mounts its repos when first messaged.
+
+**Anti-duplication**: `spawn_repo_agent` rejects a github already covered as a plugin specialist's primary, steering the PM to message that specialist instead. `list_available_repos` tags such repos so the PM sees it before spawning.
 
 ### Plugin Agents
 

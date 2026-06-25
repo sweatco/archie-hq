@@ -1054,6 +1054,55 @@ export class GitHubClient {
   }
 
   /**
+   * List every repository this GitHub App installation can reach.
+   * Used by the PM's `list_available_repos` tool. Paginates the installation
+   * repositories endpoint and returns lightweight identifiers.
+   */
+  async listAccessibleRepos(): Promise<Array<{ github: string; default_branch: string; description?: string }>> {
+    const octokit = await this.getOctokit();
+    const results: Array<{ github: string; default_branch: string; description?: string }> = [];
+    let page = 1;
+    const perPage = 100;
+    while (true) {
+      const response = await octokit.request('GET /installation/repositories', {
+        per_page: perPage,
+        page,
+      });
+      const repos = (response.data?.repositories ?? []) as Array<{
+        full_name: string;
+        default_branch: string;
+        description?: string | null;
+      }>;
+      for (const r of repos) {
+        results.push({
+          github: r.full_name,
+          default_branch: r.default_branch,
+          description: r.description || undefined,
+        });
+      }
+      if (repos.length < perPage) break;
+      page += 1;
+    }
+    return results;
+  }
+
+  /**
+   * Resolve a repo's default branch, or null if the installation can't reach it.
+   * Used by `spawn_repo_agent` to validate each requested repo is available and
+   * to fill in a default base branch.
+   */
+  async resolveRepo(githubRepo: string): Promise<{ default_branch: string } | null> {
+    try {
+      const octokit = await this.getOctokit();
+      const { owner, repo } = this.parseRepo(githubRepo);
+      const response = await octokit.request('GET /repos/{owner}/{repo}', { owner, repo });
+      return { default_branch: (response.data as { default_branch: string }).default_branch };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Merge a pull request
    */
   async mergePullRequest(

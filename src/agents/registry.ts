@@ -8,7 +8,8 @@
  * Scanned fresh at startup (validate + fail-fast) and on every task start/restart.
  */
 
-import { type AgentDef, isRepoAgent, isPmAgent } from '../types/agent.js';
+import { type AgentDef, type RepoEntry, isRepoAgent, isPmAgent } from '../types/agent.js';
+import type { DynamicAgentSpec } from '../types/task.js';
 import { getPlugins, getRootMcpConfig, getPmOverlay, type LoadedMcpConfig, type PluginAgentDef } from '../system/plugin-loader.js';
 import { PLUGINS_DATA_DIR } from '../system/workdir.js';
 import { existsSync } from 'fs';
@@ -169,6 +170,45 @@ export function getAgentDefByGithubRepo(githubRepo: string): AgentDef | undefine
 }
 
 /**
+ * All registered repo agents that declare the given github anywhere in their
+ * `repos` list (primary or otherwise). Used by `spawn_repo_agent`'s
+ * anti-duplication check and by `list_available_repos` to tag repos that a
+ * plugin specialist already covers.
+ */
+export function findAgentDefsContainingRepo(githubRepo: string): AgentDef[] {
+  return registry.filter(
+    (d) => isRepoAgent(d) && d.repo!.repos.some((r) => r.github === githubRepo),
+  );
+}
+
+/**
+ * Re-synthesize a live AgentDef from a stored DynamicAgentSpec (PM-spawned
+ * repo agent). Deterministic and idempotent — called on every `Task.get` to
+ * rebuild the agent from the persisted spec, so no derived state lives on disk.
+ */
+export function synthesizeDynamicAgentDef(spec: DynamicAgentSpec): AgentDef {
+  const repos: RepoEntry[] = spec.repos.map((r) => ({
+    github: r.github,
+    baseBranch: r.baseBranch || 'main',
+  }));
+  if (repos.length === 0) {
+    throw new Error(`Dynamic agent spec ${spec.id} has no repos`);
+  }
+  return {
+    id: spec.id,
+    key: spec.shortname,
+    role: spec.role,
+    expertise: spec.expertise,
+    pluginName: '<dynamic>',
+    // PM-spawned agents are globally addressable across the task — they only
+    // exist because PM created them on demand, so peers should be able to
+    // reach them without a same-plugin relationship.
+    visibility: 'global',
+    repo: { repos, primary: repos[0].github },
+  };
+}
+
+/**
  * Get the PM AgentDef
  */
 export function getPmDef(): AgentDef | undefined {
@@ -182,9 +222,14 @@ export function getPmDef(): AgentDef | undefined {
  *   - Other-plugin peers are visible only if visibility === 'global'.
  *   - PM is excluded (the send_message_to_agent enum adds it back as a fallback).
  *   - The sender itself is excluded.
+ *
+ * @param team Optional roster to filter over. Defaults to the global registry;
+ *   pass `task.team` so PM-spawned dynamic agents (which live only in the task
+ *   team, not the registry) are reachable. When the task has no dynamic agents
+ *   `task.team` equals the registry, so the default and override agree.
  */
-export function getVisiblePeerIdsForSender(senderDef: AgentDef): string[] {
-  return registry
+export function getVisiblePeerIdsForSender(senderDef: AgentDef, team: AgentDef[] = registry): string[] {
+  return team
     .filter((d) => !isPmAgent(d))
     .filter((d) => d.id !== senderDef.id)
     .filter((d) => d.pluginName === senderDef.pluginName || d.visibility === 'global')
@@ -193,16 +238,19 @@ export function getVisiblePeerIdsForSender(senderDef: AgentDef): string[] {
 
 /**
  * Build a formatted peer list for the sender's prompt, applying visibility rules.
+ *
+ * @param team Optional roster (see {@link getVisiblePeerIdsForSender}). Pass
+ *   `task.team` to include PM-spawned dynamic agents.
  */
-export function buildPeerListForSender(senderDef: AgentDef): string {
-  const visibleIds = new Set(getVisiblePeerIdsForSender(senderDef));
+export function buildPeerListForSender(senderDef: AgentDef, team: AgentDef[] = registry): string {
+  const visibleIds = new Set(getVisiblePeerIdsForSender(senderDef, team));
 
-  const repoPeers = registry
+  const repoPeers = team
     .filter((d) => isRepoAgent(d) && visibleIds.has(d.id))
     .map((d) => `- ${d.id}: ${d.role} (${d.repo!.primary} repository)`);
 
   // Non-repo peers (visibleIds already excludes the PM).
-  const pluginPeers = registry
+  const pluginPeers = team
     .filter((d) => !isRepoAgent(d) && visibleIds.has(d.id))
     .map((d) => `- ${d.id}: ${d.role} [${d.pluginName}]`);
 

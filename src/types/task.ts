@@ -192,6 +192,28 @@ export interface RepositoryInfo {
 }
 
 /**
+ * Spec for a repo agent the PM spawned on demand via `spawn_repo_agent`.
+ *
+ * Stores only the PM-supplied inputs (not a full AgentDef); the live AgentDef
+ * is re-synthesized from this on every `Task.get` via `synthesizeDynamicAgentDef`,
+ * so resolved/derived fields never go stale on disk. Persisted in
+ * `TaskMetadata.dynamic_agents`. Such an agent eager-mounts its `repos` at spawn
+ * exactly like a plugin-defined repo agent — there is no on-demand attach.
+ */
+export interface DynamicAgentSpec {
+  /** Final agent ID, e.g. 'explorer-a3f9-agent'. */
+  id: string;
+  /** PM-supplied short name (`[a-z][a-z0-9-]*`). */
+  shortname: string;
+  /** Repos this agent works with. First entry is the primary. */
+  repos: Array<{ github: string; baseBranch?: string }>;
+  /** Role string used in peer lists and the agent's own prompt. */
+  role: string;
+  /** Expertise string used in the agent's prompt. */
+  expertise: string;
+}
+
+/**
  * Per-agent session state — tracks whether each agent is active
  * and preserves session IDs for SDK resume.
  */
@@ -219,6 +241,12 @@ export interface TaskMetadata {
    * short repo name. Migrated lazily in `Task.get`.
    */
   repositories: Record<string, AttachedRepo[]>;
+  /**
+   * Specs for repo agents the PM spawned on demand (via `spawn_repo_agent`).
+   * Re-synthesized into AgentDefs and merged into the task team on every
+   * `Task.get`. Absent on tasks that never spawned one.
+   */
+  dynamic_agents?: DynamicAgentSpec[];
   status: TaskStatus;
   edit_allowed?: boolean;     // Has user approved edit mode for this task?
   research_budget_extra?: number;    // Additional research budget granted via Slack approval (+5 per approval)

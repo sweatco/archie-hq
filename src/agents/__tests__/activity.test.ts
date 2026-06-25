@@ -148,6 +148,8 @@ describe('deriveActivity', () => {
     expect(deriveActivity('mcp__comms-tools__find_slack_channel', {}, pm)).toBe('finding the right channel');
     expect(deriveActivity('mcp__orchestration-tools__get_agents_status', {}, pm)).toBe('checking on progress');
     expect(deriveActivity('mcp__orchestration-tools__launch_task', {}, pm)).toBe('kicking off a task');
+    expect(deriveActivity('mcp__orchestration-tools__list_available_repos', {}, pm)).toBe('looking over the repos');
+    expect(deriveActivity('mcp__orchestration-tools__spawn_repo_agent', {}, pm)).toBe('getting set up on a new repo');
     expect(deriveActivity('mcp__scheduling-tools__set_reminder', {}, pm)).toBe('setting a reminder');
   });
 
