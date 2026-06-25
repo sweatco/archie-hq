@@ -233,21 +233,26 @@ function checkCollision(agentId: string, pluginName: string, seen: Map<string, s
 function resolveAgentMcpServers(
   agent: PluginAgentDef,
   rootMcp: LoadedMcpConfig,
-): Pick<AgentDef, 'mcpServers' | 'tools' | 'disallowedTools'> {
-  const result: Pick<AgentDef, 'mcpServers' | 'tools' | 'disallowedTools'> = {};
+): Pick<AgentDef, 'mcpServers' | 'mcpDescriptions' | 'tools' | 'disallowedTools'> {
+  const result: Pick<AgentDef, 'mcpServers' | 'mcpDescriptions' | 'tools' | 'disallowedTools'> = {};
 
   if (agent.mcpServers && agent.mcpServers.length > 0) {
     const resolved: Record<string, any> = {};
+    const descriptions: Record<string, string> = {};
     for (const name of agent.mcpServers) {
       const config = rootMcp.servers[name];
       if (config) {
         resolved[name] = config;
+        if (rootMcp.descriptions[name]) descriptions[name] = rootMcp.descriptions[name];
       } else {
         logger.warn('registry', `Agent "${agent.key}" references MCP server "${name}" not found in root .mcp.json`);
       }
     }
     if (Object.keys(resolved).length > 0) {
       result.mcpServers = resolved;
+    }
+    if (Object.keys(descriptions).length > 0) {
+      result.mcpDescriptions = descriptions;
     }
   }
 

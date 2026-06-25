@@ -14,7 +14,7 @@
  *      the backend…". The caller composes the surrounding "is …".
  */
 
-import type { AgentDef } from '../types/agent.js';
+import type { AgentDef, McpToolMeta } from '../types/agent.js';
 import { isPmAgent } from '../types/agent.js';
 
 export interface ActivityContext {
@@ -24,6 +24,17 @@ export interface ActivityContext {
   editMode: boolean;
   /** Short domain noun for a specialist ("mobile", "backend"); '' for the PM. */
   domain: string;
+  /**
+   * MCP server descriptions from `.mcp.json` (server name → "Rollbar — …"),
+   * used to phrase external-integration activity without a hardcoded map.
+   */
+  mcpDescriptions?: Record<string, string>;
+  /**
+   * Server-reported per-tool metadata (namespaced tool name → meta), captured
+   * from the live MCP connection. `readOnly` picks the verb; `serverName` is a
+   * label fallback.
+   */
+  mcpTools?: Map<string, McpToolMeta>;
 }
 
 /**
@@ -117,8 +128,8 @@ export function deriveActivity(
     return null;
   }
 
-  // External integrations (plugin MCP servers) — phrase by the system involved.
-  return integrationPhrase(server, here);
+  // External integrations (plugin MCP servers) — phrase from metadata, no map.
+  return integrationPhrase(toolName, server, here, ctx);
 }
 
 /**
@@ -185,22 +196,51 @@ function repoToolPhrase(tool: string, domain: string): string {
   }
 }
 
-function integrationPhrase(server: string, here: string): string {
-  const s = server.toLowerCase();
-  if (s.includes('rollbar')) return 'checking the error reports';
-  if (s.includes('atlassian') || s.includes('jira') || s.includes('rovo')) return 'checking Jira';
-  if (s.includes('confluence')) return 'checking Confluence';
-  if (s.includes('monday')) return 'updating the board';
-  if (s.includes('clickhouse') || s.includes('analytics')) return 'querying the data';
-  if (s.includes('admin')) return 'working in the admin panel';
-  if (s.includes('gws') || s.includes('sheet') || s.includes('google')) return 'checking the spreadsheet';
-  if (s.includes('github')) return 'checking GitHub';
-  if (s.includes('slack')) return 'checking Slack';
-  if (s.includes('firebase')) return 'checking Firebase';
-  if (s.includes('teamcity')) return 'checking the build';
-  if (s.includes('smartbear')) return 'checking the tests';
-  if (s.includes('n8n')) return 'checking the workflow';
-  if (s.includes('gmail') || s.includes('mail')) return 'checking email';
-  if (s.includes('notion')) return 'checking Notion';
-  return `working on ${here}`;
+/**
+ * Phrase an external-integration tool call without any per-server map.
+ *
+ *   • Verb  — from the server-reported `readOnly` annotation: read → "checking",
+ *     mutating → "updating", unknown → "checking" (most MCP calls are reads).
+ *   • Label — the `.mcp.json` description (already maintained for the PM roster),
+ *     falling back to the server's self-reported name, then a cleaned server key.
+ *
+ * So a new integration self-describes: give its server a one-line description (or
+ * let it report a sensible serverInfo.name) and it gets a phrase for free.
+ */
+function integrationPhrase(toolName: string, server: string, here: string, ctx: ActivityContext): string {
+  const meta = ctx.mcpTools?.get(toolName);
+  const label =
+    labelFromDescription(ctx.mcpDescriptions?.[server]) ??
+    cleanServerLabel(meta?.serverName) ??
+    cleanServerLabel(server);
+  if (!label) return `working on ${here}`;
+  const verb = meta?.readOnly === false ? 'updating' : 'checking';
+  return `${verb} ${label}`;
+}
+
+/**
+ * Pull a short label from a `.mcp.json` description. Descriptions follow the
+ * convention "<Label> — <details>", so take the part before the first separator
+ * and drop a trailing parenthetical qualifier:
+ *   "Jira & Confluence (Atlassian) — issues, …" → "Jira & Confluence"
+ *   "BugSnag (SmartBear) — crash reports"       → "BugSnag"
+ *   "Rollbar — backend error tracking"          → "Rollbar"
+ */
+function labelFromDescription(desc?: string): string | undefined {
+  if (!desc) return undefined;
+  let label = desc.split(/\s[—–-]\s|:|,/)[0].trim();
+  label = label.replace(/\s*\([^)]*\)\s*$/, '').trim();
+  return label || undefined;
+}
+
+/** Tidy a server slug / self-reported name into a usable label, or undefined. */
+function cleanServerLabel(name?: string): string | undefined {
+  if (!name) return undefined;
+  const s = name
+    .trim()
+    .replace(/^plugin[_-]/i, '')
+    .replace(/[-_](mcp|server|context[-_]?grabber)$/i, '')
+    .replace(/[-_]+/g, ' ')
+    .trim();
+  return s || undefined;
 }

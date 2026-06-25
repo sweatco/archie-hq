@@ -69,14 +69,41 @@ describe('deriveActivity', () => {
     expect(deriveActivity('mcp__repo-tools__merge_pull_request', {}, sub)).toBe('merging the changes');
   });
 
-  it('maps external integrations by the system involved', () => {
-    expect(deriveActivity('mcp__rollbar__list_items', {}, sub)).toBe('checking the error reports');
+  it('phrases external integrations from the .mcp.json description, no map', () => {
+    const descriptions = {
+      rollbar: 'Rollbar — backend error tracking and exception monitoring',
+      'atlassian-rovo-mcp': 'Jira & Confluence (Atlassian) — issues, tickets, sprints',
+      monday: 'Monday.com — Campaign Management boards',
+    };
+    expect(deriveActivity('mcp__rollbar__list_items', {}, { ...sub, mcpDescriptions: descriptions })).toBe(
+      'checking Rollbar',
+    );
     expect(
-      deriveActivity('mcp__atlassian-rovo-mcp__search', {}, { isPm: false, editMode: false, domain: 'QA' }),
-    ).toBe('checking Jira');
+      deriveActivity('mcp__atlassian-rovo-mcp__search', {}, { ...sub, mcpDescriptions: descriptions }),
+    ).toBe('checking Jira & Confluence');
+    expect(deriveActivity('mcp__monday__create_item', {}, { ...sub, mcpDescriptions: descriptions })).toBe(
+      'checking Monday.com',
+    );
+  });
+
+  it('uses the server-reported readOnly annotation to pick the verb', () => {
+    const mcpTools = new Map([
+      ['mcp__monday__create_item', { serverName: 'monday', readOnly: false }],
+      ['mcp__monday__get_board', { serverName: 'monday', readOnly: true }],
+    ]);
+    const descriptions = { monday: 'Monday.com — Campaign Management boards' };
+    const ctx = { ...sub, mcpDescriptions: descriptions, mcpTools };
+    expect(deriveActivity('mcp__monday__create_item', {}, ctx)).toBe('updating Monday.com');
+    expect(deriveActivity('mcp__monday__get_board', {}, ctx)).toBe('checking Monday.com');
+  });
+
+  it('falls back to the server self-name, then a cleaned server key', () => {
+    // No description; server reports its own name.
     expect(
-      deriveActivity('mcp__monday__create_item', {}, { isPm: false, editMode: false, domain: 'ops' }),
-    ).toBe('updating the board');
+      deriveActivity('mcp__x__y', {}, { ...sub, mcpTools: new Map([['mcp__x__y', { serverName: 'Firebase' }]]) }),
+    ).toBe('checking Firebase');
+    // No description and no metadata at all → cleaned server slug.
+    expect(deriveActivity('mcp__n8n-context-grabber__pull', {}, sub)).toBe('checking n8n');
   });
 
   it('hides internal coordination + user comms (those are plumbing, not work)', () => {

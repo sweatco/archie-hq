@@ -6,7 +6,7 @@
  * Spawned by spawnAgent() from spawn.ts.
  */
 
-import type { AgentDef, AgentHandle } from '../types/agent.js';
+import type { AgentDef, AgentHandle, McpToolMeta } from '../types/agent.js';
 import type { AgentName, AgentSessionState } from '../types/task.js';
 import type { SandboxOptions } from './sandbox.js';
 import { MessageQueue } from './message-queue.js';
@@ -18,6 +18,13 @@ export class Agent {
   readonly queue: MessageQueue;
   handle?: AgentHandle;
   session: AgentSessionState;
+  /**
+   * Per-tool metadata reported by this agent's connected MCP servers (from the
+   * SDK `mcpServerStatus()` snapshot at turn start), keyed by the namespaced
+   * tool name `mcp__<server>__<tool>`. Used to phrase the Slack status line from
+   * server-reported `readOnly` annotations + names — no per-integration map.
+   */
+  mcpTools?: Map<string, McpToolMeta>;
   /**
    * Sandbox config for this agent (read/write paths, network rules).
    * Populated by `spawnAgent` after the per-track sandbox is computed. Used by

@@ -4,6 +4,19 @@
 
 import type { AgentName, TaskMetadata } from './task.js';
 
+/**
+ * Per-tool metadata as reported by a connected MCP server (subset of the SDK's
+ * `McpServerStatus`). Used to phrase the Slack status line without a per-server
+ * map: `readOnly` picks the verb (checking vs updating) and `serverName` is a
+ * fallback label.
+ */
+export interface McpToolMeta {
+  /** Server's self-reported name (serverInfo.name), if any. */
+  serverName?: string;
+  /** Tool annotation: true = read-only, false = mutating, undefined = unknown. */
+  readOnly?: boolean;
+}
+
 export interface AgentMessage {
   from: AgentName;
   to: AgentName;
@@ -179,6 +192,13 @@ export interface AgentDef {
 
   /** MCP server configs resolved from plugin's .mcp.json (server name → config) */
   mcpServers?: Record<string, any>;
+
+  /**
+   * Human-readable descriptions for this agent's MCP servers (server name →
+   * description), from `.mcp.json`. Authored for the PM roster; also used to
+   * phrase the Slack status line ("checking Rollbar") without a hardcoded map.
+   */
+  mcpDescriptions?: Record<string, string>;
 
   /** Additional tools to allow (from agent frontmatter) */
   tools?: string[];

@@ -567,7 +567,13 @@ export class Task {
     const isPm = isPmAgent(def);
     const domain = agentDomainLabel(def);
     const editMode = isRepoAgent(def) && this.metadata.edit_allowed === true;
-    const phrase = deriveActivityFromEvent(event, { isPm, editMode, domain });
+    const phrase = deriveActivityFromEvent(event, {
+      isPm,
+      editMode,
+      domain,
+      mcpDescriptions: def.mcpDescriptions,
+      mcpTools: agent.mcpTools,
+    });
     if (phrase) this.statusController.note(agentId, isPm, domain, phrase);
   }
 
