@@ -19,7 +19,9 @@
  *
  * Output is the fragment after the app name (Slack prepends "Archie"), composed
  * as "is <fragment>…". Pushes are debounced and de-duplicated so we never spam
- * Slack or flicker the indicator between turns.
+ * Slack or flicker the indicator between turns, and a keepalive re-asserts the
+ * current status on an interval so it survives Slack's ~2-minute timeout during
+ * long, quiet tool calls (e.g. research).
  */
 
 import { logger } from '../system/logger.js';
@@ -41,12 +43,20 @@ interface AgentEntry {
 }
 
 const DEBOUNCE_MS = 800;
+/**
+ * Slack auto-clears a status after ~2 minutes if nothing refreshes it. A
+ * long-running tool (e.g. web_research) emits no intervening tool calls, so the
+ * status would silently vanish mid-work. Re-assert it on this interval to reset
+ * Slack's timer — comfortably under the ~120s timeout.
+ */
+const KEEPALIVE_MS = 90_000;
 
 export class TaskStatusController {
   private readonly agents = new Map<string, AgentEntry>();
   /** Last fragment pushed to Slack ('' means cleared / nothing shown). */
   private current = '';
   private timer?: ReturnType<typeof setTimeout>;
+  private keepalive?: ReturnType<typeof setInterval>;
   private disposed = false;
 
   /** `push('')` clears the indicator; `push('is …')` sets it. */
@@ -95,6 +105,7 @@ export class TaskStatusController {
       clearTimeout(this.timer);
       this.timer = undefined;
     }
+    this.stopKeepalive();
     if (this.current !== '') {
       this.current = '';
       this.safePush('');
@@ -106,6 +117,27 @@ export class TaskStatusController {
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = undefined;
+    }
+    this.stopKeepalive();
+  }
+
+  /**
+   * Keep the current status alive against Slack's ~2-minute timeout by
+   * re-asserting it on an interval — so a long-running tool that emits no new
+   * activity doesn't lose the indicator. Self-stops once nothing is shown.
+   */
+  private armKeepalive(): void {
+    if (this.disposed || this.keepalive) return;
+    this.keepalive = setInterval(() => {
+      if (this.current) this.safePush(this.current);
+      else this.stopKeepalive();
+    }, KEEPALIVE_MS);
+  }
+
+  private stopKeepalive(): void {
+    if (this.keepalive) {
+      clearInterval(this.keepalive);
+      this.keepalive = undefined;
     }
   }
 
@@ -135,6 +167,7 @@ export class TaskStatusController {
     if (next === this.current) return; // no change
     this.current = next;
     this.safePush(next);
+    this.armKeepalive(); // keep it alive through long, quiet tool calls
   }
 
   private safePush(status: string): void {

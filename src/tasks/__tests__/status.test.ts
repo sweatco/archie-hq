@@ -100,4 +100,26 @@ describe('TaskStatusController', () => {
     flush();
     expect(pushed.at(-1)).toBe('is digging into the backend…');
   });
+
+  it('re-asserts the status on an interval to beat Slack’s ~2-min timeout', () => {
+    ctl.note('backend-agent', false, 'backend', 'researching');
+    flush();
+    expect(pushed).toEqual(['is researching…']);
+
+    // No new activity for a long-running tool — keepalive should re-push.
+    vi.advanceTimersByTime(90_000);
+    expect(pushed).toEqual(['is researching…', 'is researching…']);
+    vi.advanceTimersByTime(90_000);
+    expect(pushed).toEqual(['is researching…', 'is researching…', 'is researching…']);
+  });
+
+  it('stops re-asserting after clear', () => {
+    ctl.note('backend-agent', false, 'backend', 'researching');
+    flush();
+    ctl.clear();
+    const len = pushed.length; // includes the '' from clear
+    expect(pushed.at(-1)).toBe('');
+    vi.advanceTimersByTime(300_000);
+    expect(pushed.length).toBe(len); // no keepalive pushes after clear
+  });
 });
