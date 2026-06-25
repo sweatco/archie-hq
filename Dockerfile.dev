@@ -29,13 +29,13 @@ COPY package.json package-lock.json* ./
 # Install ALL dependencies (keep devDependencies for tsx)
 RUN npm ci
 
-# Copy tsconfig (needed for tsx)
-COPY tsconfig.json ./
+# Copy tsconfig (needed for tsx) and the scripts build config
+COPY tsconfig.json tsconfig.scripts.json ./
 
 # Copy and compile scripts for git authentication
 COPY scripts/ ./scripts/
 RUN chmod +x /app/scripts/git-askpass.sh && \
-    npx tsc scripts/github-token.ts --outDir dist/scripts --module ESNext --moduleResolution node --esModuleInterop --skipLibCheck
+    npx tsc -p tsconfig.scripts.json
 ENV GIT_ASKPASS=/app/scripts/git-askpass.sh
 
 # Create non-root user (required: bypassPermissions refuses to run as root)
