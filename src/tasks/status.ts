@@ -57,6 +57,7 @@ export class TaskStatusController {
   private current = '';
   private timer?: ReturnType<typeof setTimeout>;
   private keepalive?: ReturnType<typeof setInterval>;
+  private suspended = false;
   private disposed = false;
 
   /** `push('')` clears the indicator; `push('is …')` sets it. */
@@ -122,6 +123,28 @@ export class TaskStatusController {
   }
 
   /**
+   * Freeze the indicator for the rest of this turn's wind-down. Called when the
+   * agent has decided to finish or pause the task (report_completion, edit-mode
+   * request, research-budget stop): the real teardown's clear() is deferred to
+   * turn-end, but trailing tool calls in that window would otherwise resurface
+   * the status a couple of seconds after the final message. Blank it now and
+   * ignore further activity until the controller is cleared/disposed.
+   */
+  suspend(): void {
+    this.suspended = true;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
+    this.stopKeepalive();
+    this.agents.clear();
+    if (this.current !== '') {
+      this.current = '';
+      this.safePush('');
+    }
+  }
+
+  /**
    * Keep the current status alive against Slack's ~2-minute timeout by
    * re-asserting it on an interval — so a long-running tool that emits no new
    * activity doesn't lose the indicator. Self-stops once nothing is shown.
@@ -154,7 +177,7 @@ export class TaskStatusController {
   }
 
   private schedule(): void {
-    if (this.disposed || this.timer) return;
+    if (this.disposed || this.suspended || this.timer) return;
     this.timer = setTimeout(() => {
       this.timer = undefined;
       this.flush();
