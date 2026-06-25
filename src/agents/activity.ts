@@ -204,6 +204,8 @@ function orchestrationToolPhrase(tool: string): string | null {
   switch (tool) {
     case 'get_agents_status': return 'checking on progress';
     case 'launch_task': return 'kicking off a task';
+    case 'list_available_repos': return 'looking over the repos';
+    case 'spawn_repo_agent': return 'getting set up on a new repo';
     default: return null;
   }
 }
