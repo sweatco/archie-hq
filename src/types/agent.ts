@@ -116,6 +116,14 @@ export interface AgentDef {
   /** Short key, e.g., 'backend', 'copywriter' */
   key: string;
 
+  /**
+   * Optional short domain noun for the first-person Slack status indicator
+   * (e.g. 'mobile', 'backend', 'marketing'). From `metadata.archie.statusLabel`.
+   * When absent, a label is derived from the key/plugin (see agentDomainLabel).
+   * Never expose the agent id or role in status text — only this domain noun.
+   */
+  statusLabel?: string;
+
   /** Short role description */
   role: string;
 

@@ -67,6 +67,7 @@ export function scanAgentDefs(): AgentDef[] {
         defs.push({
           id: agentId,
           key: agent.key,
+          statusLabel: agent.statusLabel,
           role: agent.role,
           expertise: agent.expertise,
           model: agent.model,
@@ -94,6 +95,7 @@ export function scanAgentDefs(): AgentDef[] {
         defs.push({
           id: agentId,
           key: agent.key,
+          statusLabel: agent.statusLabel,
           role: agent.role,
           expertise: agent.expertise,
           model: agent.model,

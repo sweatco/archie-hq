@@ -612,6 +612,10 @@ Shared folder: ${sharedPath} [READ-ONLY]
               isRepoAgent(def) && metadata.edit_allowed === true,
             );
 
+            // Derive the Slack "Archie is …" loading status from this agent's
+            // tool calls. Best-effort and debounced inside the task.
+            task.noteActivityFromEvent(def.id, event);
+
             // Deferred teardown (report_completion / request_edit_mode / research
             // budget): now that the turn has fully ended (the SDK `result` event),
             // run it. The teardown stops this agent's queue, which closes the input
