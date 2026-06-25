@@ -1825,9 +1825,16 @@ async function resolveTriggerOrigin(task: Task): Promise<TriggerOrigin> {
   const key = task.metadata.default_channel;
   const ch = key ? task.metadata.channels[key] : null;
   if (!ch || ch.type !== 'slack') return { kind: 'operator' };
-  const info = await getChannelInfo(ch.channel_id);
-  if (info.isIm) return { kind: 'dm', userId: info.imUserId };
-  return { kind: 'channel', channelId: ch.channel_id };
+  try {
+    const info = await getChannelInfo(ch.channel_id);
+    if (info.isIm) return { kind: 'dm', userId: info.imUserId };
+    return { kind: 'channel', channelId: ch.channel_id };
+  } catch {
+    // Fail closed: a Slack lookup failure must not widen visibility. Treat the
+    // origin as this exact channel (sees public + its own triggers only), never
+    // operator. A DM misclassified this way under-permits, which is the safe way.
+    return { kind: 'channel', channelId: ch.channel_id };
+  }
 }
 
 /** Memoized live channel-privacy resolver for one list/visibility pass. */
@@ -1836,7 +1843,10 @@ function makePrivacyResolver(): (channelId: string) => Promise<boolean> {
   return (channelId: string) => {
     let p = cache.get(channelId);
     if (!p) {
-      p = getChannelInfo(channelId).then((i) => i.isPrivate).catch(() => false);
+      // Fail closed: if privacy can't be resolved, treat the channel as PRIVATE
+      // so a private trigger is never leaked into a public/DM listing on a
+      // transient error. Worst case a genuinely-public trigger is hidden.
+      p = getChannelInfo(channelId).then((i) => i.isPrivate).catch(() => true);
       cache.set(channelId, p);
     }
     return p;
@@ -1965,7 +1975,7 @@ function createProposeTriggerTool(agent: Agent, task: Task) {
           ],
         },
       ];
-      await task.postInteractiveToUser(`New trigger — approve? ${summary}`, blocks, 'trigger');
+      await task.postInteractiveToUser(`New trigger — approve? ${summary}`, blocks, 'trigger', undefined, trigger.id);
       return ok('Trigger proposed and posted for approval. It will not run until the user approves (or types y in the CLI). No need to pause — continue if there is other work.');
     },
   );
@@ -2024,6 +2034,19 @@ function createUpdateTriggerTool(_agent: Agent, task: Task) {
         trigger.conditions = built.conditions;
       }
       if (args.status && args.status !== trigger.status) {
+        // Re-check caps when resuming, so pausing to slip under a cap and then
+        // resuming can't exceed it. (Counts exclude this still-paused trigger.)
+        if (args.status === 'enabled') {
+          if (trigger.binding.type === 'channel') {
+            const channelId = trigger.binding.channel_id;
+            const perChannel = await countActiveTriggers((t) => t.binding.type === 'channel' && t.binding.channel_id === channelId);
+            if (perChannel >= MAX_TRIGGERS_PER_CHANNEL) return ok(`Can't resume — this channel is already at the maximum of ${MAX_TRIGGERS_PER_CHANNEL} active triggers.`);
+          }
+          if (trigger.created_by && trigger.created_by !== 'unknown') {
+            const perUser = await countActiveTriggers((t) => t.created_by === trigger.created_by);
+            if (perUser >= MAX_TRIGGERS_PER_USER) return ok(`Can't resume — you're already at the maximum of ${MAX_TRIGGERS_PER_USER} active triggers.`);
+          }
+        }
         trigger.status = args.status;
         statusChange = args.status === 'paused' ? 'paused' : 'resumed';
       }

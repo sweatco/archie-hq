@@ -53,6 +53,16 @@ describe('validateRecurringInterval (≥1h floor)', () => {
     expect(validateRecurringInterval('0 9 * * 1-5', 'America/New_York').ok).toBe(true);
   });
 
+  it('rejects a sub-hour gap even when the first inter-run gap is wide', () => {
+    // 9:00 and 9:30 daily: the 9:00→9:30 gap (30m) is below the floor, even
+    // though 9:30→next-day-9:00 is ~23.5h. The tightest-gap check must catch it.
+    expect(validateRecurringInterval('0,30 9 * * *', 'UTC').ok).toBe(false);
+  });
+
+  it('accepts two daily runs that are ≥1h apart', () => {
+    expect(validateRecurringInterval('0 9,18 * * *', 'UTC').ok).toBe(true);
+  });
+
   it('rejects an invalid cron expression with an error', () => {
     const r = validateRecurringInterval('nonsense', 'UTC');
     expect(r.ok).toBe(false);

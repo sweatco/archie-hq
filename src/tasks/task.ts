@@ -548,8 +548,11 @@ export class Task {
    * approvals are also surfaced in the CLI via the `approval:requested` event
    * regardless of Slack delivery.
    */
-  async postInteractiveToUser(text: string, blocks: unknown[], approvalType: 'edit_mode' | 'research_budget' | 'trigger', channelKey?: string): Promise<void> {
-    emitEvent('approval:requested', this.taskId, { text, approvalType });
+  async postInteractiveToUser(text: string, blocks: unknown[], approvalType: 'edit_mode' | 'research_budget' | 'trigger', channelKey?: string, ref?: string): Promise<void> {
+    // `ref` is an opaque id the approval applies to (e.g. a trigger id), echoed
+    // in the event so the CLI can pass it back and resolve the exact item —
+    // disambiguating when several approvals of the same type are outstanding.
+    emitEvent('approval:requested', this.taskId, { text, approvalType, ...(ref ? { ref } : {}) });
 
     const ch = this.resolveSlackChannel(channelKey);
     if (ch) {

@@ -88,11 +88,12 @@ export async function sendApproval(
   taskId: string,
   type: 'edit_mode' | 'research_budget' | 'trigger',
   approve: boolean,
+  ref?: string,
 ): Promise<void> {
   const res = await fetch(`${getBaseUrl()}/api/tasks/${taskId}/approve`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ type, approve }),
+    body: JSON.stringify({ type, approve, ...(ref ? { ref } : {}) }),
   });
   if (!res.ok) throw new Error(`Failed to send approval: ${res.status}`);
 }

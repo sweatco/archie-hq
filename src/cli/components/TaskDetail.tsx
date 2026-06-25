@@ -117,7 +117,7 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
   const logHeight = Math.max(5, termHeight - reservedLines);
 
   // Build log lines with inline approvals
-  const logLines: { node: React.ReactNode; approval?: { approvalType: 'edit_mode' | 'research_budget' | 'trigger'; eventIndex: number } }[] = [];
+  const logLines: { node: React.ReactNode; approval?: { approvalType: 'edit_mode' | 'research_budget' | 'trigger'; ref?: string; eventIndex: number } }[] = [];
 
   // Fold pr_card events so a card renders once, at its most recent `post`
   // (anchor), showing the latest merged state. `update` events refresh the data
@@ -186,6 +186,7 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
               node: <Text color="yellow" bold>⏳ {event.data.text as string}  [y] approve / [n] deny</Text>,
               approval: {
                 approvalType: event.data.approvalType as 'edit_mode' | 'research_budget' | 'trigger',
+                ref: event.data.ref as string | undefined,
                 eventIndex: idx,
               },
             });
@@ -373,11 +374,11 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
       // Scroll mode / approval handling
       if (input === 'q' || input === 'Q') exit();
       if (focusedApproval && (input === 'y' || input === 'Y')) {
-        sendApproval(taskId, focusedApproval.approvalType, true).catch((err: any) => setError(err.message));
+        sendApproval(taskId, focusedApproval.approvalType, true, focusedApproval.ref).catch((err: any) => setError(err.message));
         setFocusedApprovalLine(null);
         setInputActive(true);
       } else if (focusedApproval && (input === 'n' || input === 'N')) {
-        sendApproval(taskId, focusedApproval.approvalType, false).catch((err: any) => setError(err.message));
+        sendApproval(taskId, focusedApproval.approvalType, false, focusedApproval.ref).catch((err: any) => setError(err.message));
         setFocusedApprovalLine(null);
         setInputActive(true);
       }

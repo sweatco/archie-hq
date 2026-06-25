@@ -23,8 +23,8 @@ import {
 import { SESSIONS_DIR } from '../../system/workdir.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
-import { listTriggers, loadTrigger, saveTrigger, deleteTrigger } from '../../system/trigger-store.js';
-import { indexTrigger, deindexTrigger, announceTriggerChange, describeTrigger } from '../../system/trigger-scheduler.js';
+import { listTriggers, loadTrigger, saveTrigger, deleteTrigger, countActiveTriggers } from '../../system/trigger-store.js';
+import { indexTrigger, deindexTrigger, announceTriggerChange, describeTrigger, MAX_TRIGGERS_PER_USER, MAX_TRIGGERS_PER_CHANNEL } from '../../system/trigger-scheduler.js';
 import type { Trigger } from '../../types/trigger.js';
 
 /**
@@ -221,13 +221,16 @@ export function mountApiRoutes(app: Application): void {
   router.post('/tasks/:id/approve', async (req: Request, res: Response) => {
     try {
       const taskId = req.params.id as string;
-      const { type, approve, approver } = req.body as {
+      const { type, approve, approver, ref } = req.body as {
         type: string;
         approve: boolean;
         // Optional resolved human (id/name/email) to author commits as. CLI/API
         // callers have no Slack identity by default; when omitted, commits stay
         // bot-authored.
         approver?: { id: string; name: string; email?: string };
+        // Optional opaque id the approval applies to (e.g. a trigger id), echoed
+        // from the approval event so the right pending item resolves.
+        ref?: string;
       };
 
       if (!type || typeof approve !== 'boolean') {
@@ -267,11 +270,13 @@ export function mountApiRoutes(app: Application): void {
         }
       } else if (type === 'trigger') {
         // CLI [y]/[n] on a proposed trigger — same task-level handler the Slack
-        // Approve/Deny buttons call. Approver is the operator running the CLI.
+        // Approve/Deny buttons call. `ref` carries the specific trigger id (the
+        // CLI echoes it from the approval event), so the right one resolves even
+        // when several proposals are outstanding. Approver is the CLI operator.
         if (approve) {
-          await task.handleTriggerApproval('cli');
+          await task.handleTriggerApproval('cli', ref);
         } else {
-          await task.handleTriggerDenial();
+          await task.handleTriggerDenial(ref);
         }
       } else {
         res.status(400).json({ error: `Unknown approval type: ${type}` });
@@ -344,6 +349,25 @@ export function mountApiRoutes(app: Application): void {
       let statusChange: 'paused' | 'resumed' | null = null;
       if (editedContent) trigger.action.prompt = action_prompt as string;
       if (status && status !== trigger.status) {
+        // Re-check caps on resume so pause→resume can't bypass the limit.
+        if (status === 'enabled') {
+          if (trigger.binding.type === 'channel') {
+            const channelId = trigger.binding.channel_id;
+            const perChannel = await countActiveTriggers((t) => t.binding.type === 'channel' && t.binding.channel_id === channelId);
+            if (perChannel >= MAX_TRIGGERS_PER_CHANNEL) {
+              res.status(409).json({ error: `Channel is at the maximum of ${MAX_TRIGGERS_PER_CHANNEL} active triggers.` });
+              return;
+            }
+          }
+          if (trigger.created_by && trigger.created_by !== 'unknown') {
+            const createdBy = trigger.created_by;
+            const perUser = await countActiveTriggers((t) => t.created_by === createdBy);
+            if (perUser >= MAX_TRIGGERS_PER_USER) {
+              res.status(409).json({ error: `User is at the maximum of ${MAX_TRIGGERS_PER_USER} active triggers.` });
+              return;
+            }
+          }
+        }
         trigger.status = status;
         statusChange = status === 'paused' ? 'paused' : 'resumed';
       }

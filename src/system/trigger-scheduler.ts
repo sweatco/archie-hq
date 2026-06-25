@@ -75,15 +75,21 @@ export function computeNextRun(cron: string, tz: string, from?: Date): Date | nu
 export function validateRecurringInterval(cron: string, tz: string): { ok: true } | { ok: false; error: string } {
   let runs: Date[];
   try {
-    runs = new Cron(cron, { timezone: tz }).nextRuns(2);
+    // Sample several upcoming runs and check the TIGHTEST gap, not just the
+    // first — a schedule like "0 9,9:30 …" can have a wide first gap but a
+    // sub-hour gap later in its cycle.
+    runs = new Cron(cron, { timezone: tz }).nextRuns(6);
   } catch (err) {
     return { ok: false, error: `Invalid cron expression: ${err instanceof Error ? err.message : String(err)}` };
   }
   if (runs.length < 2) {
     return { ok: false, error: 'Cron expression does not produce a recurring schedule.' };
   }
-  const gap = runs[1].getTime() - runs[0].getTime();
-  if (gap < MIN_RECURRING_INTERVAL_MS) {
+  let minGap = Infinity;
+  for (let i = 1; i < runs.length; i++) {
+    minGap = Math.min(minGap, runs[i].getTime() - runs[i - 1].getTime());
+  }
+  if (minGap < MIN_RECURRING_INTERVAL_MS) {
     return { ok: false, error: 'Recurring triggers must fire at most once per hour.' };
   }
   return { ok: true };
@@ -195,8 +201,20 @@ async function checkDue(): Promise<void> {
         // Recurring: advance to the next future run. computeNextRun(now) skips
         // any windows missed during downtime — one fire, not one-per-window.
         const next = computeNextRun(cond.cron, cond.tz);
-        cond.next_run_at = next ? next.toISOString() : cond.next_run_at;
-        await saveTrigger(trigger);
+        if (next) {
+          cond.next_run_at = next.toISOString();
+          await saveTrigger(trigger);
+        } else {
+          // Cron became uncomputable (e.g. invalid tz). Don't leave next_run_at
+          // in the past — that would re-fire every tick. Pause and notify.
+          logger.warn('trigger-scheduler', `Trigger ${trigger.id} has an uncomputable next run — pausing`);
+          trigger.status = 'paused';
+          await saveTrigger(trigger);
+          deindexTrigger(trigger.id);
+          emitEvent('trigger:paused', trigger.id, { reason: 'uncomputable next run' });
+          await notifyCreator(trigger, `⚠️ A trigger you set up was paused — its schedule could no longer be computed. Recreate it if you still need it.`);
+          break;
+        }
       } else {
         // One-off: auto-pause after firing once.
         trigger.status = 'paused';

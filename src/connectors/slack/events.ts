@@ -165,10 +165,17 @@ export async function mountSlackApp(
 
     const isDm = event.channel?.startsWith('D');
     const isThreadReply = event.thread_ts && event.thread_ts !== event.ts;
+    // A top-level channel post is normally ignored (ambient chatter). We only
+    // forward it when an enabled channel-message trigger is watching this exact
+    // channel — kept cheap via the in-memory index, so unwatched channels stay
+    // a no-op. handleSlackEvent then runs the same own-bot/external/@mention
+    // filtering before firing any trigger.
+    const isTopLevelChannelMsg = !isDm && !isThreadReply && !event.thread_ts;
+    const watchedByTrigger = isTopLevelChannelMsg && getChannelMessageTriggers(event.channel).length > 0;
     if (
       event.type === 'message' &&
       (!event.subtype || ['file_share', 'thread_broadcast'].includes(event.subtype)) &&
-      (isThreadReply || isDm)
+      (isThreadReply || isDm || watchedByTrigger)
     ) {
       // In channels, @mentions are handled by app_mention handler, so skip them here
       // to avoid double-processing. But in DMs, app_mention doesn't fire, so we must
