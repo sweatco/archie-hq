@@ -98,7 +98,7 @@ Scoped by the **tier of the space the request comes from** (`src/system/trigger-
 - **From a DM:** your own DM triggers + all public-channel triggers.
 - **Hard invariant:** a private space's triggers are never visible from outside that exact space.
 
-Privacy is resolved **live** at list time (`conversations.info`, memoized per call), not cached — so a channel that becomes private immediately drops out of public/DM listings.
+Privacy is resolved from the **workspace channel map** (`listWorkspaceChannels()` → `conversations.list`, `id → isPrivate`, a process-wide ~10-min cache shared with the `find_slack_channel` tool), so a listing is O(1) lookups with no per-channel Slack calls. A channel not in the cached map (brand-new, just-converted, or archived) falls through to a live `conversations.info` lookup. Both paths **fail closed** — an unresolved channel is treated as private — so a private trigger is never leaked into a public/DM listing. The trade is a bounded ≤10-min staleness window after a public→private conversion of an already-cached channel.
 
 The **operator CLI** (`/api/triggers`, the `t` view) operates at operator trust and sees all triggers, consistent with the existing CLI task list.
 

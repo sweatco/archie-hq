@@ -38,7 +38,7 @@ function formatSlackSendError(err: unknown): string {
   const reason = err instanceof Error ? err.message : String(err);
   return `Failed to post message: ${reason}`;
 }
-import { findSlackUsers, findSlackChannels, getSlackFileInfo, downloadSlackFile, getChannelInfo, getUserInfo } from '../connectors/slack/client.js';
+import { findSlackUsers, findSlackChannels, getSlackFileInfo, downloadSlackFile, getChannelInfo, getUserInfo, listWorkspaceChannels } from '../connectors/slack/client.js';
 import { readCanvas } from '../connectors/slack/canvas-read.js';
 import { scheduleReminder, cancelReminder } from '../system/reminder-scheduler.js';
 import * as chrono from 'chrono-node';
@@ -1840,13 +1840,29 @@ async function resolveTriggerOrigin(task: Task): Promise<TriggerOrigin> {
 /** Memoized live channel-privacy resolver for one list/visibility pass. */
 function makePrivacyResolver(): (channelId: string) => Promise<boolean> {
   const cache = new Map<string, Promise<boolean>>();
+  // Built once per resolver: the workspace channel map (id → isPrivate), served
+  // from listWorkspaceChannels()'s 10-min process-wide cache. The common case is
+  // then an O(1) lookup with zero per-channel Slack calls. On a workspace-list
+  // failure the map is empty and every channel falls through to the live path.
+  let mapPromise: Promise<Map<string, boolean>> | undefined;
+  const workspaceMap = () => {
+    if (!mapPromise) {
+      mapPromise = listWorkspaceChannels()
+        .then((channels) => new Map(channels.map((c) => [c.id, c.isPrivate])))
+        .catch(() => new Map<string, boolean>());
+    }
+    return mapPromise;
+  };
   return (channelId: string) => {
     let p = cache.get(channelId);
     if (!p) {
-      // Fail closed: if privacy can't be resolved, treat the channel as PRIVATE
-      // so a private trigger is never leaked into a public/DM listing on a
-      // transient error. Worst case a genuinely-public trigger is hidden.
-      p = getChannelInfo(channelId).then((i) => i.isPrivate).catch(() => true);
+      p = workspaceMap().then((map) => {
+        if (map.has(channelId)) return map.get(channelId)!;
+        // Miss — a brand-new, just-converted, or archived channel not in the
+        // cached list. Resolve it live and fail closed (treat as private on
+        // error) so a private channel is never leaked into a public listing.
+        return getChannelInfo(channelId).then((i) => i.isPrivate).catch(() => true);
+      });
       cache.set(channelId, p);
     }
     return p;
