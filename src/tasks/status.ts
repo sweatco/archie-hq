@@ -20,8 +20,10 @@
  * Output is the fragment after the app name (Slack prepends "Archie"), composed
  * as "is <fragment>…". Pushes are debounced and de-duplicated so we never spam
  * Slack or flicker the indicator between turns, and a keepalive re-asserts the
- * current status on an interval so it survives Slack's ~2-minute timeout during
- * long, quiet tool calls (e.g. research).
+ * current status on an interval — alternating the trailing ellipsis glyph so
+ * each beat is a distinct value Slack can't dedupe — so it survives Slack's
+ * ~2-minute timeout during long, quiet stretches (research, or any single agent
+ * working a while without a status change).
  */
 
 import { logger } from '../system/logger.js';
@@ -57,6 +59,7 @@ export class TaskStatusController {
   private current = '';
   private timer?: ReturnType<typeof setTimeout>;
   private keepalive?: ReturnType<typeof setInterval>;
+  private heartbeat = 0;
   private disposed = false;
 
   /** `push('')` clears the indicator; `push('is …')` sets it. */
@@ -129,8 +132,17 @@ export class TaskStatusController {
   private armKeepalive(): void {
     if (this.disposed || this.keepalive) return;
     this.keepalive = setInterval(() => {
-      if (this.current) this.safePush(this.current);
-      else this.stopKeepalive();
+      if (!this.current) {
+        this.stopKeepalive();
+        return;
+      }
+      // Re-assert to reset Slack's ~2-min timeout. Slack may ignore an identical
+      // re-send, so alternate the trailing ellipsis glyph (…/...) — the value is
+      // distinct each beat but renders the same, so the timer resets with no
+      // visible flicker. `current` stays canonical for dedup.
+      this.heartbeat += 1;
+      const beat = this.heartbeat % 2 === 1 ? this.current.replace(/…$/, '...') : this.current;
+      this.safePush(beat);
     }, KEEPALIVE_MS);
   }
 

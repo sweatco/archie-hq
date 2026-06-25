@@ -101,16 +101,20 @@ describe('TaskStatusController', () => {
     expect(pushed.at(-1)).toBe('is digging into the backend…');
   });
 
-  it('re-asserts the status on an interval to beat Slack’s ~2-min timeout', () => {
+  it('re-asserts a DISTINCT value on an interval to beat Slack’s ~2-min timeout', () => {
     ctl.note('backend-agent', false, 'backend', 'researching');
     flush();
     expect(pushed).toEqual(['is researching…']);
 
-    // No new activity for a long-running tool — keepalive should re-push.
+    // No new activity for a long-running tool — keepalive re-pushes, but each
+    // beat must differ from the last so Slack can't dedupe it into a no-op.
     vi.advanceTimersByTime(90_000);
-    expect(pushed).toEqual(['is researching…', 'is researching…']);
+    expect(pushed.at(-1)).toBe('is researching...'); // distinct glyph, same look
+    expect(pushed.at(-1)).not.toBe(pushed.at(-2));
     vi.advanceTimersByTime(90_000);
-    expect(pushed).toEqual(['is researching…', 'is researching…', 'is researching…']);
+    expect(pushed.at(-1)).toBe('is researching…');
+    expect(pushed.at(-1)).not.toBe(pushed.at(-2));
+    expect(pushed.length).toBe(3);
   });
 
   it('stops re-asserting after clear', () => {
