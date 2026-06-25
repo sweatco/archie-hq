@@ -589,6 +589,19 @@ Shared folder: ${sharedPath} [READ-ONLY]
                   errorByName = new Map(
                     detailed.filter((m) => m.error).map((m) => [m.name, m.error as string]),
                   );
+                  // Capture server-reported per-tool metadata (readOnly + server
+                  // name) so the Slack status line can phrase any integration
+                  // ("checking Rollbar", "updating Monday.com") without a map.
+                  const toolMeta = new Map<string, import('../types/agent.js').McpToolMeta>();
+                  for (const m of detailed) {
+                    for (const t of m.tools ?? []) {
+                      toolMeta.set(`mcp__${m.name}__${t.name}`, {
+                        serverName: m.serverInfo?.name,
+                        readOnly: t.annotations?.readOnly,
+                      });
+                    }
+                  }
+                  if (toolMeta.size > 0) agent.mcpTools = toolMeta;
                 } catch {
                   // Control request unavailable — fall back to the snapshot status.
                 }
@@ -611,6 +624,10 @@ Shared folder: ${sharedPath} [READ-ONLY]
               additionalDirectories,
               isRepoAgent(def) && metadata.edit_allowed === true,
             );
+
+            // Derive the Slack "Archie is …" loading status from this agent's
+            // tool calls. Best-effort and debounced inside the task.
+            task.noteActivityFromEvent(def.id, event);
 
             // Deferred teardown (report_completion / request_edit_mode / research
             // budget): now that the turn has fully ended (the SDK `result` event),

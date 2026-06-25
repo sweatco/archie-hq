@@ -116,6 +116,12 @@ export interface PluginAgentDef {
    * Claude Code subagent frontmatter spec.
    */
   visibility?: 'global' | 'local';
+  /**
+   * Optional short domain noun for the Slack status indicator, from
+   * `metadata.archie.statusLabel` (e.g. 'mobile', 'backend'). Namespaced under
+   * metadata.archie like `visibility`/`repo`.
+   */
+  statusLabel?: string;
   /** Markdown body (domain-specific instructions) */
   prompt: string;
   /**
@@ -243,6 +249,9 @@ function scanPlugins(): LoadedPlugin[] {
         // no `visibility` field). Same pattern as `metadata.archie.repo` below.
         const visibility: 'global' | 'local' =
           data.metadata?.archie?.visibility === 'local' ? 'local' : 'global';
+        const statusLabel = typeof data.metadata?.archie?.statusLabel === 'string'
+          ? data.metadata.archie.statusLabel.trim() || undefined
+          : undefined;
 
         const agentDef: PluginAgentDef = {
           key,
@@ -252,6 +261,7 @@ function scanPlugins(): LoadedPlugin[] {
           effort,
           maxTurns,
           visibility,
+          statusLabel,
           prompt: substitutePluginVars(content.trim()),
         };
 

@@ -73,6 +73,9 @@ export function TaskDetail({ taskId, onBack, onEvent, onConnect }: TaskDetailPro
   const [focusedApprovalLine, setFocusedApprovalLine] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string>('');
+  // Live "Archie is …" indicator — the same line pushed to Slack, mirrored here
+  // so the status can be tested without Slack. Transient; not persisted.
+  const [liveStatus, setLiveStatus] = useState<string>('');
   const [reminder, setReminder] = useState<{ trigger_at: string; reason: string } | null>(null);
   const [title, setTitle] = useState<string | null>(null);
   const prevOnEvent = useRef<SystemEvent | null>(null);
@@ -170,6 +173,7 @@ export function TaskDetail({ taskId, onBack, onEvent, onConnect }: TaskDetailPro
       setReminder(detail.metadata?.reminder ?? null);
       setTitle(detail.metadata?.title ?? null);
       setAgents(detail.agents || []);
+      setLiveStatus(''); // ephemeral — repopulates from the next `status` event
       setEvents(eventsResult.events);
       setEventCursor(eventsResult.total);
 
@@ -196,6 +200,14 @@ export function TaskDetail({ taskId, onBack, onEvent, onConnect }: TaskDetailPro
   useEffect(() => {
     if (onEvent && onEvent !== prevOnEvent.current) {
       prevOnEvent.current = onEvent;
+
+      // Live status is transient UI, not a log entry — update and stop here so
+      // it never lands in the scrollback.
+      if (onEvent.type === 'status') {
+        setLiveStatus((onEvent.data?.status as string) || '');
+        return;
+      }
+
       setEvents((prev) => [...prev, onEvent]);
       setEventCursor((c) => c + 1);
 
@@ -213,8 +225,8 @@ export function TaskDetail({ taskId, onBack, onEvent, onConnect }: TaskDetailPro
 
       // Update status from task events
       if (onEvent.type === 'task:resumed') setStatus('in_progress');
-      if (onEvent.type === 'task:completed') setStatus('completed');
-      if (onEvent.type === 'task:stopped') setStatus('stopped');
+      if (onEvent.type === 'task:completed') { setStatus('completed'); setLiveStatus(''); }
+      if (onEvent.type === 'task:stopped') { setStatus('stopped'); setLiveStatus(''); }
 
       // Update reminder from reminder events
       if (onEvent.type === 'reminder:set') {
@@ -407,6 +419,12 @@ export function TaskDetail({ taskId, onBack, onEvent, onConnect }: TaskDetailPro
         </ScrollView>
       )}
       <Box paddingX={1} height={2} flexDirection="column" justifyContent="flex-end">
+        {liveStatus ? (
+          <Box gap={1}>
+            <Text color="cyan"><Spinner type="dots" /></Text>
+            <Text dimColor>Archie {liveStatus}</Text>
+          </Box>
+        ) : null}
         {linesBelow > 0 && (
           <Text dimColor>↓ {linesBelow} more below</Text>
         )}

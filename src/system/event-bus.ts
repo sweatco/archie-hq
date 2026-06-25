@@ -11,6 +11,7 @@ export type EventType =
   | 'task:created' | 'task:resumed' | 'task:stopped' | 'task:completed'
   | 'agent:active' | 'agent:inactive'
   | 'message' | 'agent:log'
+  | 'status'
   | 'approval:requested' | 'approval:resolved'
   | 'reminder:set' | 'reminder:cancelled' | 'reminder:fired';
 

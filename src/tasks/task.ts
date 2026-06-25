@@ -9,6 +9,7 @@ import { mkdir, writeFile } from 'fs/promises';
 import type { AgentName, SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata } from '../types/task.js';
 import { CLI_CHANNEL_KEY } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
+import { isPmAgent, isRepoAgent } from '../types/agent.js';
 
 /**
  * Target for postToUser — controls where the message is delivered.
@@ -61,6 +62,9 @@ import { basename } from 'path';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
 import { emitEvent } from '../system/event-bus.js';
+import { TaskStatusController, isStatusEnabled } from './status.js';
+import { setSlackThreadStatus } from '../connectors/slack/status.js';
+import { agentDomainLabel, deriveActivityFromEvent } from '../agents/activity.js';
 
 // ---- Global state ----
 
@@ -78,10 +82,13 @@ export class Task {
   lastActivity: Date = new Date();
   recoveryAttempts: number = 0;
   taskTimeoutTimer?: ReturnType<typeof setInterval>;
+  /** Drives the "Archie is …" Slack loading indicator from agent activity. */
+  private readonly statusController: TaskStatusController;
 
   private constructor(taskId: string, metadata: TaskMetadata, team: AgentDef[]) {
     this.taskId = taskId;
     this.team = team;
+    this.statusController = new TaskStatusController((status) => this.onStatusRendered(status));
     this.budgets = {
       researchRequestCount: metadata.research_request_count ?? 0,
       researchRequestLimit: 5 + (metadata.research_budget_extra ?? 0),
@@ -443,6 +450,9 @@ export class Task {
     logger.agentToSlack(sender, message, { destination: display });
     emitEvent('message', this.taskId, { from: sender, to: 'user', destination: display, message });
     appendMessageToUser(this.taskId, sender, message, logDest);
+    // The app just posted into the thread — Slack auto-clears the loading
+    // indicator, so sync our notion of what's shown (re-pushes if work continues).
+    this.statusController.notePosted();
   }
 
   /**
@@ -528,6 +538,60 @@ export class Task {
       ? this.metadata.channels[channelKey]
       : (this.metadata.default_channel ? this.metadata.channels[this.metadata.default_channel] : null);
     return ch?.type === 'slack' ? ch : null;
+  }
+
+  /**
+   * Single sink for a rendered status line ('' clears it). Delivers it to every
+   * surface so the indicator can be observed without Slack:
+   *   - a `status` event on the bus → SSE → the CLI shows the same line live
+   *   - the Slack assistant-thread indicator (best-effort)
+   * Gated as a whole by ARCHIE_LIVE_STATUS so the feature has one off switch.
+   */
+  private onStatusRendered(status: string): void {
+    if (!isStatusEnabled()) return;
+    emitEvent('status', this.taskId, { status });
+    this.pushSlackStatus(status);
+  }
+
+  /**
+   * Push (or clear, with an empty string) the "Archie is …" loading indicator
+   * on every linked Slack thread. Fire-and-forget and best-effort — each call
+   * swallows its own errors. Muted channels are skipped so a thread the PM has
+   * gone quiet in doesn't keep shimmering. No-op when there are no Slack
+   * channels (e.g. CLI-only tasks), where the CLI shows the status instead.
+   */
+  private pushSlackStatus(status: string): void {
+    for (const ch of Object.values(this.metadata.channels)) {
+      if (ch.type !== 'slack' || ch.muted) continue;
+      void setSlackThreadStatus(ch.channel_id, ch.thread_id, status);
+    }
+  }
+
+  /**
+   * Feed an agent's SDK event into the status indicator. Called once per event
+   * from the spawn loop; it inspects tool_use blocks and, when one maps to a
+   * surfaceable action, records the agent's current activity. No-op for events
+   * without a status-worthy tool call.
+   */
+  noteActivityFromEvent(agentId: string, event: unknown): void {
+    const agent = this.agentProcesses.get(agentId as AgentName);
+    if (!agent) return;
+    const def = agent.def;
+    const isPm = isPmAgent(def);
+    const domain = agentDomainLabel(def);
+    const editMode = isRepoAgent(def) && this.metadata.edit_allowed === true;
+    const phrase = deriveActivityFromEvent(event, {
+      isPm,
+      editMode,
+      domain,
+      mcpDescriptions: def.mcpDescriptions,
+      mcpTools: agent.mcpTools,
+      resolveAgentDomain: (id) => {
+        const d = this.team.find((x) => x.id === id);
+        return d ? agentDomainLabel(d) : undefined;
+      },
+    });
+    if (phrase) this.statusController.note(agentId, isPm, domain, phrase);
   }
 
   /**
@@ -636,6 +700,7 @@ export class Task {
     }
 
     this.clearAcks();
+    this.statusController.clear();
 
     this.metadata.status = 'stopped';
     await this.save(true);
@@ -669,6 +734,7 @@ export class Task {
     }
 
     this.clearAcks();
+    this.statusController.clear();
 
     this.metadata.status = 'completed';
     await this.save(true);
@@ -928,6 +994,11 @@ export class Task {
 
     if (agent) {
       agent.updateSession(active, sessionId);
+      if (active) {
+        this.statusController.setActive(name, isPmAgent(agent.def), agentDomainLabel(agent.def));
+      } else {
+        this.statusController.setIdle(name);
+      }
     }
 
     emitEvent(active ? 'agent:active' : 'agent:inactive', this.taskId, {}, name);
