@@ -132,3 +132,5 @@ Every **configuration change** — created/enabled, edited, paused/resumed, dele
 | `src/tasks/task.ts` | `handleTriggerApproval` / `handleTriggerDenial`, `linkSlackThread` |
 | `src/connectors/slack/events.ts` | Approve/Deny buttons + channel-message dispatch hook |
 | `src/connectors/api/routes.ts` | `/triggers` endpoints + the `trigger` approval branch |
+| `skills/triggers/SKILL.md` | Engine-owned PM skill (the orchestration playbook), loaded via the `Skill` tool |
+| `prompts/pm-agent.md` | Short always-present blurb so the PM knows triggers exist before loading the skill |

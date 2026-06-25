@@ -149,7 +149,7 @@ Reminders are a separate, untouched feature: `set_reminder`/`parse_datetime` wak
 - `src/index.ts:240-242` — call `initTriggerScheduler()` right after `initReminderScheduler()` (after recovery, before opening webhooks).
 - `src/connectors/slack/client.ts` — extend `getChannelInfo` (`:1029-1050`) to also return `isPrivate`/`isIm` (already on the raw `conversations.info` response) for live privacy resolution in `list_triggers`; reuse `openDMChannel` (`:1431`) and `getUserInfo().tz` (`:889-928`).
 - `src/connectors/api/routes.ts` + `src/cli/api.ts` + `src/cli/components/TriggerList.tsx` — `GET /triggers` (+ `PATCH`/`DELETE`) endpoints and a CLI trigger-list view showing each trigger's bound channel, mirroring `TaskList.tsx` (see CLI & API surface).
-- PM skill `pm/skills/triggers/SKILL.md` in **archie-plugins** — intake (cadence/channel/DM, what to do, which repos), the propose-then-confirm protocol, visibility/announcement rules, delivery format. Teaches judgement, not tool mechanics (plugins CLAUDE.md).
+- PM skill `skills/triggers/SKILL.md` in **archie-hq** (engine-owned, alongside `self-awareness` — triggers are a core engine capability, not a domain plugin) — intake (cadence/channel/DM, what to do), the propose-then-confirm protocol, visibility/announcement rules, delivery format. Plus a short always-present blurb in `prompts/pm-agent.md` so the PM knows triggers exist before loading the skill.
 - Docs: add `docs/architecture/triggers.md` and note in `docs/architecture/overview.md` that Archie is no longer purely reactive.
 - `package.json` — add `croner` (zero-dependency cron parser with built-in tz/DST). `chrono-node` is already present for one-off parsing.
 
