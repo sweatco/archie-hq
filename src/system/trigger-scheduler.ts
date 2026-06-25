@@ -13,11 +13,11 @@
 import { Cron } from 'croner';
 import { Task } from '../tasks/task.js';
 import type { Trigger, TriggerBinding } from '../types/trigger.js';
-import { listTriggers, saveTrigger, setTriggerStatus } from './trigger-store.js';
+import { listTriggers, saveTrigger, deleteTrigger } from './trigger-store.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { emitEvent } from './event-bus.js';
 import { logger } from './logger.js';
-import { openDMChannel, postSlackMessage } from '../connectors/slack/client.js';
+import { openDMChannel, postSlackMessage, isChannelReachable } from '../connectors/slack/client.js';
 
 // ---- Limits / config ----
 
@@ -119,12 +119,27 @@ export async function initTriggerScheduler(): Promise<void> {
   checkDue().catch((err) => logger.error('trigger-scheduler', 'Error on initial trigger check', err));
 }
 
-/** Rebuild the in-memory index from disk (enabled triggers only). */
+/** Pending proposals older than this are GC'd on the boot scan. */
+const PENDING_TTL_MS = 24 * 60 * 60_000;
+
+/**
+ * Rebuild the in-memory index from disk (enabled triggers only). Also GC's
+ * stale `pending` proposals — a proposal that was never approved/denied (e.g.
+ * the process restarted before the user acted) would otherwise leave an inert
+ * file forever. Pending triggers are never indexed regardless, so this is pure
+ * cleanup.
+ */
 async function rebuildFromDisk(): Promise<void> {
   enabledTriggers.clear();
   try {
+    const now = Date.now();
     for (const trigger of await listTriggers()) {
-      if (trigger.status === 'enabled') indexTrigger(trigger);
+      if (trigger.status === 'enabled') {
+        indexTrigger(trigger);
+      } else if (trigger.status === 'pending' && now - new Date(trigger.created_at).getTime() > PENDING_TTL_MS) {
+        await deleteTrigger(trigger.id);
+        logger.system(`Trigger ${trigger.id}: GC'd stale pending proposal`);
+      }
     }
   } catch (err) {
     logger.error('trigger-scheduler', 'Failed to rebuild triggers from disk', err);
@@ -241,6 +256,23 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
     logger.warn('trigger-scheduler', `Daily fire cap (${DAILY_FIRE_CAP}) reached — dropping trigger ${trigger.id}`);
     await notifyCreator(trigger, `⚠️ A trigger you set up couldn't run — Archie hit its daily limit of automated runs. It will resume tomorrow.`);
     return;
+  }
+
+  // Pre-flight for a channel-bound schedule fire: if the bound channel was
+  // deleted or archived (or the bot removed and it archived), pause the trigger
+  // and DM the creator instead of spawning a task that would post into the void.
+  // Message-context fires skip this — we just received a message there, so it's
+  // live — and DMs can't be deleted.
+  if (context.kind !== 'message' && trigger.binding.type === 'channel') {
+    if (!(await isChannelReachable(trigger.binding.channel_id))) {
+      logger.warn('trigger-scheduler', `Trigger ${trigger.id} bound channel ${trigger.binding.channel_id} unreachable — pausing`);
+      trigger.status = 'paused';
+      await saveTrigger(trigger);
+      deindexTrigger(trigger.id);
+      emitEvent('trigger:paused', trigger.id, { reason: 'bound channel unreachable' });
+      await notifyCreator(trigger, `⚠️ A trigger you set up was paused — its channel (#${trigger.binding.channel_name}) is gone or archived. Recreate it elsewhere if you still need it.`);
+      return;
+    }
   }
 
   const task = await Task.create();

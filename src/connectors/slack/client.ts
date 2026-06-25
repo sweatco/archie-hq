@@ -1229,6 +1229,26 @@ export async function fetchSlackFileBody(fileUrl: string): Promise<string> {
   return await response.text();
 }
 
+/**
+ * Probe whether a channel can currently receive a post from the bot. Returns
+ * false when the channel no longer exists or is archived (e.g. deleted, or the
+ * bot was removed and the channel archived). A successful `conversations.info`
+ * on a live, non-archived channel returns true. Note: a public channel returns
+ * true even if the bot isn't a member (Slack allows posting), so this primarily
+ * catches the deleted/archived cases — the strongest signal available without
+ * actually posting.
+ */
+export async function isChannelReachable(channelId: string): Promise<boolean> {
+  const client = getSlackClient();
+  try {
+    const result = await client.conversations.info({ channel: channelId });
+    const channel = result.channel as { is_archived?: boolean } | undefined;
+    return channel ? channel.is_archived !== true : false;
+  } catch {
+    return false;
+  }
+}
+
 
 /**
  * Post a question to a thread and wait for a response

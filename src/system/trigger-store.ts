@@ -12,7 +12,7 @@
 import { mkdir, readFile, writeFile, readdir, unlink } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import type { Trigger, TriggerStatus } from '../types/trigger.js';
+import type { Trigger } from '../types/trigger.js';
 import { TRIGGERS_DIR } from './workdir.js';
 import { logger } from './logger.js';
 
@@ -107,18 +107,6 @@ export async function enableProposedTrigger(
   if (!trigger || trigger.status !== 'pending') return null;
   trigger.status = 'enabled';
   trigger.approved_by = approverId;
-  await saveTrigger(trigger);
-  return trigger;
-}
-
-/** Update a trigger's status and persist. Returns the updated trigger or null. */
-export async function setTriggerStatus(
-  id: string,
-  status: TriggerStatus,
-): Promise<Trigger | null> {
-  const trigger = await loadTrigger(id);
-  if (!trigger) return null;
-  trigger.status = status;
   await saveTrigger(trigger);
   return trigger;
 }
