@@ -1,17 +1,19 @@
 /**
- * Slack assistant-thread status wrapper.
+ * Slack renderer for the live status indicator.
  *
- * Wraps `assistant.threads.setStatus` — the ephemeral "<App Name> is …" loading
- * line shown in a thread while a task is being worked on. It is the progress
- * sibling of `setTitle` (see title.ts): same `assistant.threads.*` accessor,
- * same `channel_id` + `thread_ts`. Slack auto-prepends the app name, so `status`
- * is a verb fragment ("is digging into the backend…"); an empty string clears
- * the indicator. Slack also clears it automatically when the app posts a reply,
- * and after a built-in ~2-minute timeout.
+ * The status string itself is composed surface-agnostically by
+ * `TaskStatusController` (src/tasks/status.ts) and gated by `isStatusEnabled()`;
+ * this module only renders it to Slack. It wraps `assistant.threads.setStatus` —
+ * the ephemeral "<App Name> is …" loading line — the progress sibling of
+ * `setTitle` (see title.ts): same `assistant.threads.*` accessor, same
+ * `channel_id` + `thread_ts`. Slack auto-prepends the app name, so `status` is a
+ * verb fragment ("is digging into the backend…"); an empty string clears the
+ * indicator. Slack also clears it automatically when the app posts a reply, and
+ * after a built-in ~2-minute timeout.
  *
  * Best-effort: errors — and an uninitialised client (e.g. CLI-only runs) — are
  * logged and swallowed so a failed status update never breaks the work it
- * describes. Honours Slack dry-run. Gated by `ARCHIE_SLACK_STATUS` (default on).
+ * describes. Honours Slack dry-run.
  *
  * Scope: since the 2026-03 platform change, `setStatus` accepts `chat:write`
  * and works in regular channel threads as well as DM/assistant threads, so it is
@@ -23,11 +25,6 @@
 
 import { getSlackClient, isSlackDryRun } from './client.js';
 import { logger } from '../../system/logger.js';
-
-/** Feature gate — default on; set ARCHIE_SLACK_STATUS=false to disable. */
-export function isSlackStatusEnabled(): boolean {
-  return process.env.ARCHIE_SLACK_STATUS !== 'false';
-}
 
 /**
  * Set (or, with an empty string, clear) the loading status on a Slack thread.

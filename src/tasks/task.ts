@@ -62,8 +62,8 @@ import { basename } from 'path';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
 import { emitEvent } from '../system/event-bus.js';
-import { TaskStatusController } from './status.js';
-import { setSlackThreadStatus, isSlackStatusEnabled } from '../connectors/slack/status.js';
+import { TaskStatusController, isStatusEnabled } from './status.js';
+import { setSlackThreadStatus } from '../connectors/slack/status.js';
 import { agentDomainLabel, deriveActivityFromEvent } from '../agents/activity.js';
 
 // ---- Global state ----
@@ -546,12 +546,12 @@ export class Task {
    *   - a `status` event on the bus → SSE → the CLI shows the same line live
    *   - the unified logger → visible in headless / dry-run / `npm run dev` output
    *   - the Slack assistant-thread indicator (best-effort)
-   * Gated as a whole by ARCHIE_SLACK_STATUS so the feature has one off switch.
+   * Gated as a whole by ARCHIE_LIVE_STATUS so the feature has one off switch.
    */
   private onStatusRendered(status: string): void {
-    if (!isSlackStatusEnabled()) return;
+    if (!isStatusEnabled()) return;
     emitEvent('status', this.taskId, { status });
-    logger.slack(status ? `status [${this.taskId}]: Archie ${status}` : `status [${this.taskId}]: cleared`);
+    logger.system(status ? `status [${this.taskId}]: Archie ${status}` : `status [${this.taskId}]: cleared`);
     this.pushSlackStatus(status);
   }
 

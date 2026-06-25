@@ -1,6 +1,8 @@
 /**
  * Task status controller — composes the single first-person "Archie is …" line
- * shown in a task's Slack thread(s) while work is in flight.
+ * shown while a task is working. The line is surface-agnostic: the same string
+ * is rendered to Slack (assistant-thread status), the CLI (live indicator), and
+ * the logs. This module owns the *composition*; renderers live elsewhere.
  *
  * It tracks which agents are active and what each is currently doing (fed from
  * the SDK tool-call stream and the agent active/idle transitions) and renders
@@ -21,6 +23,14 @@
  */
 
 import { logger } from '../system/logger.js';
+
+/**
+ * Master gate for the live status indicator (all surfaces — CLI, logs, Slack).
+ * Default on; set ARCHIE_LIVE_STATUS=false to disable.
+ */
+export function isStatusEnabled(): boolean {
+  return process.env.ARCHIE_LIVE_STATUS !== 'false';
+}
 
 interface AgentEntry {
   isPm: boolean;
