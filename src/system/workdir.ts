@@ -116,11 +116,21 @@ export async function bootstrapWorkdir(): Promise<void> {
 export async function cloneRepos(
   repos: Array<{ github: string; baseBranch?: string }>
 ): Promise<void> {
-  for (const { github, baseBranch } of repos) {
-    const repoPath = getBaseCachePath(github);
-    const repoUrl = githubRepoToUrl(github);
-    await cloneOrFetch(repoUrl, repoPath, github, baseBranch);
-  }
+  // Pull every repo in parallel. Each one targets its own directory, so there's
+  // no shared working tree or cross-repo git lock to contend over — total time
+  // becomes the slowest single repo instead of the sum of all of them.
+  // `allSettled` keeps one repo's failure from aborting startup (matching the
+  // "log and carry on" behaviour cloneOrFetch already has on the fetch path).
+  const results = await Promise.allSettled(
+    repos.map(({ github, baseBranch }) =>
+      cloneOrFetch(githubRepoToUrl(github), getBaseCachePath(github), github, baseBranch)
+    )
+  );
+  results.forEach((result, i) => {
+    if (result.status === 'rejected') {
+      logger.warn('workdir', `Failed to clone/fetch ${repos[i].github}: ${result.reason}`);
+    }
+  });
 }
 
 /**
