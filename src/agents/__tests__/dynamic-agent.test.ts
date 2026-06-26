@@ -51,6 +51,7 @@ describe('synthesizeDynamicAgentDef', () => {
     ]);
     expect(def.visibility).toBe('global');
     expect(def.pluginName).toBe('<dynamic>');
+    expect(def.model).toBe('opus'); // defaults to opus, like configured repo agents
   });
 
   it('throws on an empty repos list', () => {

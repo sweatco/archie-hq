@@ -200,6 +200,12 @@ export function synthesizeDynamicAgentDef(spec: DynamicAgentSpec): AgentDef {
     role: spec.role,
     expertise: spec.expertise,
     pluginName: '<dynamic>',
+    // Dynamic agents are repo agents, so default them to opus like the
+    // configured repo agents (which all set `model: opus` in frontmatter).
+    // Without this they fell through spawn.ts's non-PM default to sonnet,
+    // whose smaller context window overflowed on the large injected system
+    // prompt — the failure mode seen in task-20260625-2243-dj79r4.
+    model: 'opus',
     // PM-spawned agents are globally addressable across the task — they only
     // exist because PM created them on demand, so peers should be able to
     // reach them without a same-plugin relationship.
