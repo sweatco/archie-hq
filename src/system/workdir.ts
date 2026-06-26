@@ -102,6 +102,13 @@ export async function bootstrapWorkdir(): Promise<void> {
       `Set ARCHIE_PLUGINS to a git URL, or manually place plugins in ${PLUGINS_DIR}.`
     );
   }
+
+  // Materialise plugin submodules on every startup, independent of whether the
+  // plugins branch moved. refreshPlugins() only touches submodules when the
+  // branch tip changes, so a clone already at HEAD with an un-initialised
+  // submodule (e.g. one added while an earlier init failed under the old SSH
+  // URL) would never self-heal. This makes a redeploy/restart always force it.
+  if (managedPlugins) await ensureSubmodules();
 }
 
 /**
@@ -136,6 +143,28 @@ export function getBaseCachePath(github: string): string {
 
 let managedPlugins = false;
 let pluginsRefreshPromise: Promise<boolean> | null = null;
+
+/**
+ * Materialise the plugins repo's git submodules. Idempotent: a no-op when they
+ * are already checked out, a self-heal when they aren't.
+ *
+ * `submodule sync` first copies the current .gitmodules URLs into .git/config —
+ * without it an existing clone keeps a stale cached URL (e.g. an SSH URL that
+ * fails under the HTTPS/GIT_ASKPASS auth used in prod) and the submodule never
+ * materialises. Then `update --init --recursive` checks out each submodule at
+ * its recorded commit (and initialises any newly added one).
+ *
+ * Best-effort: logs and returns on failure so a submodule problem never blocks
+ * startup — the rest of the plugin tree still loads.
+ */
+async function ensureSubmodules(): Promise<void> {
+  try {
+    await execAsync('git submodule sync --recursive', { cwd: PLUGINS_DIR });
+    await execAsync('git submodule update --init --recursive', { cwd: PLUGINS_DIR });
+  } catch (err) {
+    logger.error('workdir', 'Plugin submodule init failed', err);
+  }
+}
 
 /**
  * Check the plugins remote for new commits and, if the branch tip moved,
@@ -178,14 +207,9 @@ export async function refreshPlugins(): Promise<boolean> {
         await execAsync('git fetch --all --prune', { cwd: PLUGINS_DIR });
         await execAsync(`git checkout "${branch}"`, { cwd: PLUGINS_DIR });
         await execAsync(`git reset --hard "origin/${branch}"`, { cwd: PLUGINS_DIR });
-        // `reset --hard` moves the gitlink but not submodule working trees, so sync
-        // submodules onto their recorded commits (and init any newly added ones).
-        // `submodule sync` first propagates any .gitmodules URL change into this
-        // clone's .git/config — without it an existing clone keeps a stale cached
-        // URL (e.g. an SSH URL that fails under HTTPS/GIT_ASKPASS auth) and the
-        // submodule never materialises.
-        await execAsync('git submodule sync --recursive', { cwd: PLUGINS_DIR });
-        await execAsync('git submodule update --init --recursive', { cwd: PLUGINS_DIR });
+        // `reset --hard` moves the gitlink but not submodule working trees, so
+        // sync+update them onto their recorded commits (and init newly added ones).
+        await ensureSubmodules();
         logger.system('Plugins refreshed from remote');
         // Re-scan plugin definitions (picks up new/changed agents, prompts, etc.)
         initPlugins();
