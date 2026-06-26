@@ -34,6 +34,7 @@ import { bootstrapWorkdir, cloneRepos, OAUTH_DIR, REPOS_DIR } from './system/wor
 import { join } from 'path';
 import { validateMasterKey } from './system/secrets-vault.js';
 import { initPlugins, getPlugins } from './system/plugin-loader.js';
+import { startContextProbe } from './system/context-probe.js';
 import { initRegistry, getAllAgentDefs } from './agents/registry.js';
 import { isRepoAgent, isPmAgent } from './types/agent.js';
 import { configureGitIdentity } from './connectors/github/client.js';
@@ -107,6 +108,10 @@ async function main(): Promise<void> {
     initRegistry();
     initEventPersistence();
     await initMemory();
+
+    // DEBUG: start the context-probe logging proxy (no-op when disabled). Must
+    // be before any agent spawns so getProbeBaseUrl() is live at spawn time.
+    startContextProbe();
 
     // Clone repos declared by plugins (every entry across every repo agent,
     // deduplicated by github identifier).

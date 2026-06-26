@@ -41,6 +41,7 @@ import { setupSharedClone, cloneExists, type CloneCheckout } from '../connectors
 import { configureGitIdentity } from '../connectors/github/client.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { processAgentEventForLogging, logger } from '../system/logger.js';
+import { getProbeBaseUrl } from '../system/context-probe.js';
 import { buildSandboxConfig, createFilesystemGuardHooks, type SandboxOptions } from './sandbox.js';
 import { applyOAuthBindings } from '../system/oauth/inject.js';
 import { enrichPromptWithMemory, isMemoryEnabled, isInjectionEnabled } from '../memory/index.js';
@@ -507,6 +508,10 @@ Shared folder: ${sharedPath} [READ-ONLY]
       PATH: process.env.PATH,
       HOME: process.env.HOME,
       CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
+      // DEBUG: when the context-probe is enabled, route this agent's API traffic
+      // through the in-process logging proxy so we can measure its real context
+      // breakdown. No-op (key absent) when the probe is disabled or not listening.
+      ...(getProbeBaseUrl() ? { ANTHROPIC_BASE_URL: getProbeBaseUrl()! } : {}),
       ...(useClaudeDirs ? {
         CLAUDE_CONFIG_DIR: claudeConfigDir,
         CLAUDE_CODE_TMPDIR: claudeTmpDir,
