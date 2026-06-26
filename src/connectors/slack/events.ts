@@ -27,6 +27,7 @@ import {
   getSlackClient,
   cleanSlackText,
 } from './client.js';
+import { shouldCreateNewTask } from './task-routing.js';
 import { Task } from '../../tasks/task.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
@@ -481,7 +482,7 @@ async function handleSlackEvent(event: {
     }
     await sendSharedChannelWarnings(task, event.channel, threadId, thread, shared);
     await task.sendMessage(AGENT_PROMPTS.existingTask);
-  } else if (event.type === 'app_mention' || event.channel.startsWith('D') || thread.rootAuthorWasBot) {
+  } else if (shouldCreateNewTask(event.type, event.channel, thread.rootAuthorWasBot)) {
     logger.system(`Processing #${thread.channel.name} (thread: ${threadId})`);
 
     // Start a new task when: the bot was @mentioned, this is a DM, OR a human is

@@ -1023,7 +1023,10 @@ async function assertPublicChannel(channelId: string): Promise<{ id: string; nam
     | { id?: string; name?: string; is_private?: boolean; is_im?: boolean; is_mpim?: boolean }
     | undefined;
   if (!ch) throw new Error('channel_not_found');
-  if (ch.is_private || ch.is_im || ch.is_mpim) throw new PrivateChannelError(channelId);
+  // Fail CLOSED: only proceed when Slack explicitly marks the channel public.
+  // A private channel, a DM/group-DM, or a response missing `is_private` all
+  // refuse — privacy must never depend on an absent flag.
+  if (ch.is_private !== false || ch.is_im || ch.is_mpim) throw new PrivateChannelError(channelId);
   return { id: ch.id ?? channelId, name: ch.name ?? channelId };
 }
 
@@ -1608,23 +1611,5 @@ export async function findSlackChannels(query: string): Promise<SlackChannelInfo
     c.topic.toLowerCase().includes(q) ||
     c.purpose.toLowerCase().includes(q)
   );
-}
-
-// ============================================================================
-// DM & Channel Messaging
-// ============================================================================
-
-/**
- * Open (or get existing) DM channel with a user.
- * Returns the DM channel ID (e.g., "D1234567").
- */
-export async function openDMChannel(userId: string): Promise<string> {
-  if (dryRun) {
-    logger.system(`[DRY RUN] openDMChannel for user ${userId}`);
-    return `D_DRYRUN_${userId}`;
-  }
-  const client = getSlackClient();
-  const result = await client.conversations.open({ users: userId });
-  return result.channel!.id!;
 }
 

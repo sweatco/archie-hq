@@ -24,57 +24,17 @@ import { taskBranchName } from '../connectors/github/branch-naming.js';
 import { appendAgentFinding, appendArtifactShared } from '../tasks/persistence.js';
 import { copyArtifactToShared, assertReadable } from './artifacts.js';
 import { logger } from '../system/logger.js';
-import { SLACK_MARKDOWN_LIMIT, SlackMarkdownLimitError } from '../connectors/slack/client.js';
-
-function formatSlackSendError(err: unknown): string {
-  if (err instanceof SlackMarkdownLimitError) {
-    return (
-      `Slack rejected the message: ${err.actualLength} chars exceeds the ${SLACK_MARKDOWN_LIMIT}-char per-message limit. ` +
-      `Nothing was delivered or logged. Split the content into multiple messages under the limit, ` +
-      `breaking on paragraphs and keeping code blocks/tables whole.`
-    );
-  }
-  const reason = err instanceof Error ? err.message : String(err);
-  return `Failed to post message: ${reason}`;
-}
-
 /**
  * Reject DM targets for the explore/post tools. These tools are channel-only;
  * 1:1 DM channel ids start with 'D', and a user id ('U'/'W') passed as a channel
- * would be coerced into a DM by Slack — block both.
+ * would be coerced into a DM by Slack — block both. (Private channels / group DMs
+ * are caught at the API layer via assertPublicChannel.)
  */
 function rejectDmTarget(channel: string): string | null {
-  if (/^[DUW]/.test(channel)) {
+  if (isDmOrUserId(channel)) {
     return 'This tool is channel-only and never touches DMs. Pass a channel ID (e.g. "C…"), not a DM or user ID.';
   }
   return null;
-}
-
-/** Pull Slack's error code (e.g. "not_in_channel") off a WebAPI error. */
-function slackErrorCode(err: unknown): string | undefined {
-  return (err as { data?: { error?: string } })?.data?.error;
-}
-
-function formatSlackPostError(err: unknown, channel: string): string {
-  if (err instanceof SlackMarkdownLimitError) return formatSlackSendError(err);
-  const code = slackErrorCode(err);
-  if (code === 'not_in_channel' || code === 'channel_not_found') {
-    return `Couldn't post to ${channel}: Archie isn't in that channel. Someone needs to invite it (\`/invite @Archie\`) — Archie can only write where it's been added.`;
-  }
-  if (code === 'is_archived') return `Couldn't post to ${channel}: the channel is archived.`;
-  return formatSlackSendError(err);
-}
-
-function formatSlackReadError(err: unknown, channel: string): string {
-  if (err instanceof PrivateChannelError) {
-    return `Couldn't read ${channel}: it's a private channel or DM. Archie only explores PUBLIC channels.`;
-  }
-  const code = slackErrorCode(err);
-  if (code === 'not_in_channel' || code === 'channel_not_found') {
-    return `Couldn't read ${channel}: Archie isn't a member of that public channel (or it doesn't exist). Invite it (\`/invite @Archie\`) — Archie can only read public channels it's been added to.`;
-  }
-  const reason = err instanceof Error ? err.message : String(err);
-  return `Couldn't read ${channel}: ${reason}`;
 }
 
 /** Render explore messages in the same `@<id:name> | msg:ts` shape the PM sees elsewhere. */
@@ -97,8 +57,14 @@ import {
   fetchExploreThread,
   searchSlackMessages,
   postSlackMessage,
-  PrivateChannelError,
 } from '../connectors/slack/client.js';
+import { isDmOrUserId } from '../connectors/slack/channel-ids.js';
+import {
+  slackErrorCode,
+  formatSlackSendError,
+  formatSlackPostError,
+  formatSlackReadError,
+} from '../connectors/slack/format-errors.js';
 import { scheduleReminder, cancelReminder } from '../system/reminder-scheduler.js';
 import * as chrono from 'chrono-node';
 
@@ -888,8 +854,8 @@ function createSearchMessagesTool(_agent: Agent, _task: Task) {
         const code = slackErrorCode(e);
         if (code === 'not_allowed_token_type' || code === 'missing_scope') {
           return ok(
-            "Search isn't enabled yet: Archie needs the `search:read.public` (and `search:read.private`) bot scopes — " +
-            'reinstall the Slack app with those scopes. Reading channel history still works.',
+            "Search isn't enabled yet: Archie needs the `search:read.public` bot scope — " +
+            'reinstall the Slack app with that scope. Reading channel history still works.',
           );
         }
         const reason = e instanceof Error ? e.message : String(e);
