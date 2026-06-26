@@ -16,8 +16,9 @@ A PM reply *inside an existing human-started thread* never creates a task, even 
 
 ## Scope decisions (updated per user direction)
 
-- **Read/search across ALL channels → via a Slack USER token.** The app today uses only a bot token (`initSlackClient(config.slackBotToken)`), which is member-gated for `conversations.history` and cannot call `search.messages` at all. To read any channel + search, add a **user token** (`SLACK_USER_TOKEN`) with user scopes `search:read`, `channels:history`, `groups:history`, `channels:read`, `groups:read`. The explore/search tools use this client. **Requires installing the app with user scopes + reinstall.** Tools degrade gracefully (return "user token not configured") when it's absent, so the app still boots on a bot token alone.
-- **Write only where invited → bot token (unchanged).** `post_to_channel` posts with the bot token; Slack returns `not_in_channel` for channels the bot wasn't added to — which *is* the "only where manually invited" rule. No `channels:join`.
+- **Read/search → PUBLIC channels Archie was added to, bot token only.** Decided: no user token, no service account, and **never read or search private channels** (even when the request originates from a public channel). Reads (`conversations.history`/`replies`) are member-gated by Slack AND pre-checked with `conversations.info` → refuse if `is_private`/`is_im`/`is_mpim` (`PrivateChannelError`). Search uses `search.messages` on the bot token with **only** `search:read.public` (no `search:read.private`), so results are public + Archie's channels; private/DM matches are also filtered defensively. NOT the AI/sidebar `assistant.search.context` API. Adding the search scope requires a **Slack app reinstall**; reads work immediately.
+- **Write → channels Archie was invited to, bot token.** `post_to_channel` is member-gated by Slack (`not_in_channel` otherwise). (Not private-gated — posting into a private channel Archie was added to doesn't expose private content; the privacy concern is about *reading*.)
+- **Task ingestion is a separate path.** `fetchSlackThread` (used when a task is created/continued) is NOT private-gated — a task may legitimately live in a private channel Archie was @mentioned into. Only the *explore* read/search tools are public-only.
 - **Explore tools do NOT filter bot messages.** `read_channel_history`/`read_thread`/`search_messages` show everything, including Archie's and other bots' posts (full picture for exploration).
 - **Dead code → DELETED** (not left dormant); git history is the safety net.
 - **Inbound DMs → UNCHANGED.** Only outbound DM-opening (`new_dm`) is removed.
@@ -51,25 +52,31 @@ Inside that branch nothing special is needed for context — because `fetchSlack
 
 Dropped. Keeping the bot root in `fetchSlackThread` (§1) preserves context for both the knowledge log and title generation automatically. No new persistence helper.
 
-### 4. User-token client + explore/post tools — `client.ts`, `tools.ts`, `spawn.ts`, config, manifest
+### 4. Explore/post tools (bot token only) — `client.ts`, `tools.ts`, `spawn.ts`, manifest
 
-**User-token client** (NEW):
-- `slack-manifest.yaml`: add `oauth_config.scopes.user`: `search:read`, `channels:history`, `channels:read`, `groups:history`, `groups:read`.
-- Config/env: add `slackUserToken` (`SLACK_USER_TOKEN`) to the Slack config type + loader; pass into `mountSlackApp`.
-- `client.ts`: add a second `WebClient` (`slackUserClient`) initialized from the user token; `getSlackUserClient()` returns it or `null`. All explore reads/search use it.
+**Manifest** (`slack-manifest.yaml`): add bot scope `search:read.public` ONLY (no `search:read.private` — private channels are never searched). (Reinstall required to grant; reads need no new scope.) No user scopes, no `SLACK_USER_TOKEN`.
 
-**Read/search helpers in `client.ts`** (user client; **no bot-message filtering** — show everything):
-- `fetchChannelHistory(channelId, limit?)`: wraps `conversations.history` (newest-first → reverse to chronological).
-- `fetchThreadMessages(channelId, threadTs)`: wraps `conversations.replies`, no filter (distinct from `fetchSlackThread`, which is task-ingestion and filters).
-- `searchSlackMessages(query, count?)`: wraps `search.messages`.
-- **Refactor:** lift the extractors nested in `fetchThreadHistory` (`extractBlockText`, `extractRichTextElements`, `extractMessageParts`, `extractFiles`, `extractReactions`, ~`client.ts:520-740`) to module scope so all fetchers share them. Author resolution can reuse the bot client's `getUserInfo`.
+**Read/search helpers in `client.ts`** (bot client; **public channels only**; **no bot-message filtering** — show everything):
+- `assertPublicChannel(channelId)`: `conversations.info` → throws `PrivateChannelError` if `is_private`/`is_im`/`is_mpim`. Read tools call this FIRST (before any history fetch), so private content is never read into memory.
+- `fetchChannelHistory(channelId, limit?)`: assert-public, then `conversations.history` (newest-first → reverse to chronological).
+- `fetchExploreThread(channelId, threadTs)`: assert-public, then `conversations.replies`, no filter (distinct from `fetchSlackThread`, which is task-ingestion and filters bot chatter except the root).
+- `searchSlackMessages(query, count?)`: bot `search.messages`; `search:read.public` already limits to public — we also drop `is_private`/`is_im`/`is_mpim` (+ `D…` id) matches defensively.
+- **Refactor:** factored the post-fetch extraction in `fetchThreadHistory` into a shared `resolveRawMessages(messages, channel)` (reused by replies + history); factored author-resolution+mapping into `resolveAuthorsAndMap`.
 
 **Four PM tools in the existing `comms-tools` server** (`createCommsMcpServer`, `tools.ts:1721`):
-  - `read_channel_history(channel, limit?)` — reject `D` ids; user client; "user token not configured" if absent.
-  - `read_thread(channel, thread_ts)` — reject `D`; user client.
-  - `search_messages(query, count?)` — user client.
-  - `post_to_channel(channel, message, thread_ts?)` — **bot** client via `postSlackMessage` directly (does NOT register a channel in `task.metadata`); reject `D`; return the posted `ts`; catch `not_in_channel`/`channel_not_found` (→ "invite Archie to that channel first") and route `SlackMarkdownLimitError` through `formatSlackSendError`.
+  - `read_channel_history(channel, limit?)` — bot client, public only; `limit` 1–100 (default 30), chronological. `PrivateChannelError` → "private channel — off-limits"; `not_in_channel` → "invite Archie first".
+  - `read_thread(channel, thread_ts)` — bot client, public only; parent ts + replies.
+  - `search_messages(query, count?)` — bot client; `count` 1–20 (Slack's search cap); `not_allowed_token_type`/`missing_scope` → "reinstall with search:read.public".
+  - `post_to_channel(channel, message, thread_ts?)` — bot client via `postSlackMessage` directly (does NOT register a channel in `task.metadata`); return the posted `ts`; `not_in_channel`/`channel_not_found` → "invite Archie first"; route `SlackMarkdownLimitError` through `formatSlackSendError`. (Member-gated; not private-gated — posting doesn't expose private content.)
+- All four **reject DMs**: read/post reject `D…` (DM channel) and `U…`/`W…` (user-id-as-channel, which Slack coerces into a DM); search filters DM matches out of results.
 - Add the four `mcp__comms-tools__*` names to the PM's `allowedTools` in `spawn.ts`.
+
+**Design notes — from reviewing the official Slack MCP tool set (this session):**
+- **Search power lives in the query string.** Document Slack's modifiers in the `search_messages` description so the PM uses them: `in:#channel`, `from:@user`, `before:/after:/on:YYYY-MM-DD`, `is:thread`, `has:link`, `"exact phrase"`, `-exclude`, `*` wildcard. Result count is capped (~20) — surface that.
+- **Read shape:** `limit` + chronological is the core; `oldest/latest/cursor` pagination is a clean follow-on, not in v1.
+- **DMs:** the official tools deliberately *allow* DMs by passing a `user_id` as the channel — we do the opposite (the `D/U/W` guard + search DM-filter).
+- **Search API choice:** `search.messages` with the bot scope `search:read.public` (public only) — NOT the `assistant.search.context` Real-time Search API, which is for the AI-assistant sidebar context panel and needs a per-event `action_token`.
+- **Why native, not the session's MCP server:** those Slack tools belong to the Claude Code session, not the Archie runtime — Archie can't borrow them.
 
 ### 5. Remove `new_dm` / `new_thread` (keep default + existing-channel targets)
 

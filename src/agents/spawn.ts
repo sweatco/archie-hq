@@ -281,8 +281,7 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     ];
     if (channelEntries.length === 0) {
       contextLines.push(
-        'Channel(s): none — to reply you must first open a destination via ' +
-        'post_to_user(target.new_dm <userId>) or post_to_user(target.new_thread <channelId>)'
+        'Channel(s): none — there is nowhere to reply in this task; finish with report_completion() (no message).'
       );
     } else {
       contextLines.push(`Channel(s): ${channelEntries.map(([id, ch]) => renderChannel(id, ch)).join(', ')}`);

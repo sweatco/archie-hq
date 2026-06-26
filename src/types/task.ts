@@ -74,8 +74,14 @@ export interface SlackThread {
   threadId: string;
   channel: { id: string; name: string };
   shared: boolean;
-  messages: SlackThreadMessage[];  // full thread, bot messages excluded
+  messages: SlackThreadMessage[];  // bot messages excluded, EXCEPT the root when our bot started the thread
   currentMessageTs: string;
+  /**
+   * True when OUR bot authored the thread's root message. The router uses this
+   * to seed a task when a human replies to a thread Archie itself started
+   * (a post made via the task-decoupled `post_to_channel` explore tool).
+   */
+  rootAuthorWasBot: boolean;
 }
 
 // ---- Channel types (replace slack_threads) ----

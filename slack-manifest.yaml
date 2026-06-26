@@ -33,6 +33,7 @@ oauth_config:
       - im:history
       - im:read
       - im:write
+      - search:read.public
       - users:read
       - usergroups:read
       - files:read

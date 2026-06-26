@@ -190,20 +190,22 @@ function agentToolPhrase(tool: string, input: unknown, ctx: ActivityContext): st
   }
 }
 
-/** PM Slack lookups — other comms tools (post_to_user, reactions, mute) stay hidden. */
+/** PM Slack lookups + exploration — posting/reactions/mute stay hidden. */
 function commsToolPhrase(tool: string): string | null {
   switch (tool) {
     case 'find_slack_user': return 'looking someone up';
     case 'find_slack_channel': return 'finding the right channel';
+    case 'read_channel_history': return 'catching up on a channel';
+    case 'read_thread': return 'reading a thread';
+    case 'search_messages': return 'searching Slack';
     default: return null;
   }
 }
 
-/** PM orchestration — surface progress checks and task launches; hide the rest. */
+/** PM orchestration — surface progress checks; hide the rest. */
 function orchestrationToolPhrase(tool: string): string | null {
   switch (tool) {
     case 'get_agents_status': return 'checking on progress';
-    case 'launch_task': return 'kicking off a task';
     case 'list_available_repos': return 'looking over the repos';
     case 'spawn_repo_agent': return 'getting set up on a new repo';
     default: return null;

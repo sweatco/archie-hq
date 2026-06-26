@@ -146,8 +146,10 @@ describe('deriveActivity', () => {
   it('surfaces the user-meaningful PM comms / orchestration / scheduling actions', () => {
     expect(deriveActivity('mcp__comms-tools__find_slack_user', {}, pm)).toBe('looking someone up');
     expect(deriveActivity('mcp__comms-tools__find_slack_channel', {}, pm)).toBe('finding the right channel');
+    expect(deriveActivity('mcp__comms-tools__read_channel_history', {}, pm)).toBe('catching up on a channel');
+    expect(deriveActivity('mcp__comms-tools__read_thread', {}, pm)).toBe('reading a thread');
+    expect(deriveActivity('mcp__comms-tools__search_messages', {}, pm)).toBe('searching Slack');
     expect(deriveActivity('mcp__orchestration-tools__get_agents_status', {}, pm)).toBe('checking on progress');
-    expect(deriveActivity('mcp__orchestration-tools__launch_task', {}, pm)).toBe('kicking off a task');
     expect(deriveActivity('mcp__orchestration-tools__list_available_repos', {}, pm)).toBe('looking over the repos');
     expect(deriveActivity('mcp__orchestration-tools__spawn_repo_agent', {}, pm)).toBe('getting set up on a new repo');
     expect(deriveActivity('mcp__scheduling-tools__set_reminder', {}, pm)).toBe('setting a reminder');
@@ -155,6 +157,7 @@ describe('deriveActivity', () => {
 
   it('hides the remaining plumbing', () => {
     expect(deriveActivity('mcp__comms-tools__post_to_user', {}, pm)).toBeNull();
+    expect(deriveActivity('mcp__comms-tools__post_to_channel', {}, pm)).toBeNull();
     expect(deriveActivity('mcp__comms-tools__mute_channel', {}, pm)).toBeNull();
     expect(deriveActivity('mcp__orchestration-tools__assign_task_owner', {}, pm)).toBeNull();
     expect(deriveActivity('mcp__orchestration-tools__report_completion', {}, pm)).toBeNull();

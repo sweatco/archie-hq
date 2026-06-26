@@ -481,13 +481,19 @@ async function handleSlackEvent(event: {
     }
     await sendSharedChannelWarnings(task, event.channel, threadId, thread, shared);
     await task.sendMessage(AGENT_PROMPTS.existingTask);
-  } else if (event.type === 'app_mention' || event.channel.startsWith('D')) {
+  } else if (event.type === 'app_mention' || event.channel.startsWith('D') || thread.rootAuthorWasBot) {
     logger.system(`Processing #${thread.channel.name} (thread: ${threadId})`);
 
-    // Bot was @mentioned, or this is a DM — start a new task
+    // Start a new task when: the bot was @mentioned, this is a DM, OR a human is
+    // replying to a thread Archie itself started (a top-level post it made via the
+    // post_to_channel explore tool). A reply inside a human-started thread never
+    // lands here — its root author isn't the bot — so it stays ignored, as before.
     const task = await Task.create();
     await task.append(thread);
-    if (isAckable) task.ackMessage(channelKey, event.ts);
+    // Ack the triggering message. For @mention/DM the :eyes: was already added
+    // before the thread fetch; for a reply to a bot-started thread, add it now.
+    if (!isAckable && thread.rootAuthorWasBot) addReaction(event.channel, event.ts, 'eyes');
+    if (isAckable || thread.rootAuthorWasBot) task.ackMessage(channelKey, event.ts);
     if (!task.metadata.title) {
       generateTitleAndSync(task, thread).catch((err) =>
         logger.warn('title-generator', `pipeline failed: ${err}`),
@@ -496,7 +502,7 @@ async function handleSlackEvent(event: {
     await sendSharedChannelWarnings(task, event.channel, threadId, thread, shared);
     await task.sendMessage(AGENT_PROMPTS.newTask);
   }
-  // Otherwise: thread reply in a thread the bot was never part of — ignore
+  // Otherwise: a reply in a human-started thread the bot wasn't part of — ignore
 }
 
 /**

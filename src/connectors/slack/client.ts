@@ -76,6 +76,12 @@ function markdownBlock(text: string): unknown[] {
   return [{ type: 'markdown', text }];
 }
 
+/**
+ * Message element shape returned by conversations.history / conversations.replies.
+ * Derived from the WebClient method type to avoid importing a response type.
+ */
+type SlackHistoryMessage = NonNullable<Awaited<ReturnType<WebClient['conversations']['history']>>['messages']>[number];
+
 let slackClient: WebClient | null = null;
 let botUserId: string | null = null;
 let botId: string | null = null;
@@ -554,7 +560,22 @@ async function fetchThreadHistory(
     inclusive: oldest ? false : true,
   });
 
-  if (!result.messages) {
+  return resolveRawMessages(result.messages ?? [], channel);
+}
+
+/**
+ * Resolve raw Slack message elements (from conversations.replies OR
+ * conversations.history) into RawSlackMessage[]: extract text from
+ * blocks/files/attachments, resolve mentions, and surface bot identity +
+ * reactions. Author resolution into SlackAuthor happens later
+ * (resolveAuthorsAndMap / fetchSlackThread). Order is preserved, so the caller
+ * controls chronology (history is newest-first and must be reversed first).
+ */
+async function resolveRawMessages(
+  rawMessages: SlackHistoryMessage[],
+  channel: string,
+): Promise<RawSlackMessage[]> {
+  if (rawMessages.length === 0) {
     return [];
   }
 
@@ -566,7 +587,7 @@ async function fetchThreadHistory(
   // attachments. Each attachment carries its own text and the original
   // author's user ID when Slack provides one. Keeping author+text correlated
   // per attachment lets downstream code redact / label individual attachments.
-  const extractMessageParts = (msg: typeof result.messages[0]): {
+  const extractMessageParts = (msg: SlackHistoryMessage): {
     ownText: string;
     attachments: RawAttachment[];
   } => {
@@ -789,7 +810,7 @@ async function fetchThreadHistory(
   // Batch fetch user/group/channel info for all messages.
   // For mention extraction we just need every text segment we'll surface,
   // so concatenate ownText and all attachment texts into one blob.
-  const messages = result.messages.map((m) => {
+  const messages = rawMessages.map((m) => {
     const { ownText, attachments } = extractMessageParts(m);
     return {
       text: [ownText, ...attachments.map((a) => a.text)].filter(Boolean).join('\n'),
@@ -799,7 +820,7 @@ async function fetchThreadHistory(
   const { userInfoMap, groupInfoMap, channelInfoMap } = await fetchMentionInfo(messages, channelIds);
 
   // Extract files from a message (including from attachments/forwarded messages)
-  const extractFiles = (msg: typeof result.messages[0]): SlackFile[] | undefined => {
+  const extractFiles = (msg: SlackHistoryMessage): SlackFile[] | undefined => {
     const allFiles: SlackFile[] = [];
 
     // Helper to process a files array
@@ -860,7 +881,7 @@ async function fetchThreadHistory(
 
   // Extract emoji reactions Slack attaches to each message. Slack delivers them
   // as `{ name, count, users }`; we keep just name + count for the snapshot.
-  const extractReactions = (msg: typeof result.messages[0]): SlackReaction[] => {
+  const extractReactions = (msg: SlackHistoryMessage): SlackReaction[] => {
     const raw = (msg as { reactions?: Array<{ name?: string; count?: number }> }).reactions;
     if (!raw || !Array.isArray(raw)) return [];
     return raw
@@ -870,7 +891,7 @@ async function fetchThreadHistory(
 
   // Resolve attachment authors to SlackAuthor objects up-front so each
   // attachment carries its full author info (name, team, restriction flags).
-  const extractedPerMessage = result.messages.map((m) => extractMessageParts(m));
+  const extractedPerMessage = rawMessages.map((m) => extractMessageParts(m));
   const attachmentAuthorIds = new Set<string>();
   for (const { attachments } of extractedPerMessage) {
     for (const att of attachments) {
@@ -897,7 +918,7 @@ async function fetchThreadHistory(
   const authorMap = new Map(authorEntries);
 
   // Apply replacements to all messages
-  return result.messages.map((msg, i) => {
+  return rawMessages.map((msg, i) => {
     const files = extractFiles(msg);
     const { ownText, attachments } = extractedPerMessage[i];
     const resolvedAttachments: SlackAttachment[] = attachments.map((a) => {
@@ -928,6 +949,156 @@ async function fetchThreadHistory(
       ...(reactions.length > 0 ? { reactions } : {}),
     };
   });
+}
+
+/**
+ * Resolve top-level message authors and map RawSlackMessage[] into the public
+ * SlackThreadMessage[] shape. Does NOT filter anything — the caller decides
+ * which messages to pass in (fetchSlackThread filters bot chatter; explore
+ * reads pass everything).
+ */
+async function resolveAuthorsAndMap(messages: RawSlackMessage[]): Promise<SlackThreadMessage[]> {
+  const authorIds = new Set(messages.filter((m) => m.user).map((m) => m.user));
+  const userInfoEntries = await Promise.all(
+    Array.from(authorIds).map(async (uid): Promise<readonly [string, SlackAuthor]> => {
+      try {
+        const info = await getUserInfo(uid);
+        return [uid, {
+          id: uid,
+          username: info.name,
+          realName: info.realName,
+          teamId: info.teamId,
+          isRestricted: info.isRestricted,
+          isUltraRestricted: info.isUltraRestricted,
+        }];
+      } catch {
+        return [uid, { id: uid, username: uid, realName: uid }];
+      }
+    })
+  );
+  const userInfoMap = new Map(userInfoEntries);
+
+  return messages.map((msg) => {
+    const author: SlackAuthor = msg.user
+      ? userInfoMap.get(msg.user)!
+      : { id: msg.botId!, username: msg.botName || 'bot', realName: msg.botName || 'bot', teamId: msg.teamId };
+    return {
+      user: author,
+      text: msg.text,
+      ts: msg.ts,
+      ...(msg.files && msg.files.length > 0 ? { files: msg.files } : {}),
+      ...(msg.attachments && msg.attachments.length > 0 ? { attachments: msg.attachments } : {}),
+      ...(msg.reactions && msg.reactions.length > 0 ? { reactions: msg.reactions } : {}),
+    };
+  });
+}
+
+/** Result of an explore read — a channel's messages plus its resolved name. */
+export interface SlackChannelMessages {
+  channel: { id: string; name: string };
+  messages: SlackThreadMessage[];
+}
+
+/** Thrown when an explore read/search is pointed at a private channel, DM, or group DM. */
+export class PrivateChannelError extends Error {
+  readonly channelId: string;
+  constructor(channelId: string) {
+    super(`Channel ${channelId} is private`);
+    this.name = 'PrivateChannelError';
+    this.channelId = channelId;
+  }
+}
+
+/**
+ * Resolve a channel's {id,name}, throwing PrivateChannelError if it is private,
+ * a DM, or a group DM. The explore read tools call this FIRST so Archie never
+ * reads private content — not even for a request that originated in a public
+ * channel. (Task ingestion via fetchSlackThread is a separate path and is not
+ * gated: a task may legitimately live in a private channel Archie was added to.)
+ */
+async function assertPublicChannel(channelId: string): Promise<{ id: string; name: string }> {
+  const client = getSlackClient();
+  const info = await client.conversations.info({ channel: channelId });
+  const ch = info.channel as
+    | { id?: string; name?: string; is_private?: boolean; is_im?: boolean; is_mpim?: boolean }
+    | undefined;
+  if (!ch) throw new Error('channel_not_found');
+  if (ch.is_private || ch.is_im || ch.is_mpim) throw new PrivateChannelError(channelId);
+  return { id: ch.id ?? channelId, name: ch.name ?? channelId };
+}
+
+/**
+ * Read a public channel's recent top-level messages (bot token — works only for
+ * public channels Archie is a member of; `not_in_channel` otherwise). Private
+ * channels are refused (PrivateChannelError). Returns chronological order
+ * (oldest first). Bot messages are NOT filtered — exploration shows everything.
+ */
+export async function fetchChannelHistory(channelId: string, limit = 30): Promise<SlackChannelMessages> {
+  const client = getSlackClient();
+  // Gate on public-ness BEFORE fetching, so private history is never read into memory.
+  const channelInfo = await assertPublicChannel(channelId);
+  const result = await client.conversations.history({ channel: channelId, limit });
+  // conversations.history returns newest-first; reverse to chronological.
+  const raw = await resolveRawMessages((result.messages ?? []).slice().reverse() as SlackHistoryMessage[], channelId);
+  return { channel: channelInfo, messages: await resolveAuthorsAndMap(raw) };
+}
+
+/**
+ * Read a specific thread in a PUBLIC channel (bot token — member channels only;
+ * private channels refused). Unlike fetchSlackThread (task ingestion), this does
+ * NOT filter bot messages.
+ */
+export async function fetchExploreThread(channelId: string, threadTs: string): Promise<SlackChannelMessages> {
+  const client = getSlackClient();
+  const channelInfo = await assertPublicChannel(channelId);
+  const result = await client.conversations.replies({ channel: channelId, ts: threadTs });
+  const raw = await resolveRawMessages((result.messages ?? []) as SlackHistoryMessage[], channelId);
+  return { channel: channelInfo, messages: await resolveAuthorsAndMap(raw) };
+}
+
+/** A single match from a Slack message search. */
+export interface SlackSearchMatch {
+  channelId: string;
+  channelName: string;
+  author: string;
+  text: string;
+  ts: string;
+  permalink?: string;
+}
+
+/**
+ * Search messages via the bot token's `search.messages`. With the `search:read.public`
+ * bot scope, Slack scopes results to the PUBLIC channels Archie is a member of and
+ * never includes private channels or DMs. Mentions in matched text are resolved.
+ * Private/DM/group-DM matches are filtered out defensively.
+ */
+export async function searchSlackMessages(query: string, count = 20): Promise<SlackSearchMatch[]> {
+  const client = getSlackClient();
+  const result = await client.search.messages({ query, count });
+  const allMatches = result.messages?.matches ?? [];
+  // Public channels only: the search:read.public scope already excludes private
+  // channels and DMs, but we filter defensively on is_private/is_im/is_mpim
+  // (and a 'D…' id fallback) so private content can never surface.
+  const matches = allMatches.filter((m) => {
+    const ch = m.channel as { id?: string; is_im?: boolean; is_mpim?: boolean; is_private?: boolean } | undefined;
+    if (!ch?.id) return false;
+    return !ch.is_im && !ch.is_mpim && !ch.is_private && !ch.id.startsWith('D');
+  });
+  const channelIds = new Set(
+    matches.map((m) => m.channel?.id).filter((id): id is string => !!id),
+  );
+  const { userInfoMap, groupInfoMap, channelInfoMap } = await fetchMentionInfo(
+    matches.map((m) => ({ text: m.text ?? '' })),
+    channelIds,
+  );
+  return matches.map((m) => ({
+    channelId: m.channel?.id ?? '',
+    channelName: m.channel?.name ?? '',
+    author: m.username ?? m.user ?? 'unknown',
+    text: applyMentionReplacements(m.text ?? '', userInfoMap, groupInfoMap, channelInfoMap),
+    ts: m.ts ?? '',
+    permalink: m.permalink,
+  }));
 }
 
 /**
@@ -1212,19 +1383,27 @@ export async function fetchSlackThread(
     isChannelShared(channelId),
   ]);
 
-  // Skip:
-  //  - our own bot's messages (botUserId)
-  //  - external bots (bot messages whose team_id differs from our home team).
-  // Keep:
-  //  - real users (msg.user set)
-  //  - internal bots (e.g. bug-tracker integrations posting to channels) so
-  //    their thread starters survive into the knowledge log.
-  const visibleMessages = rawMessages.filter((msg) => {
+  // Detect whether OUR bot authored the thread root, computed BEFORE filtering.
+  // This is the signal the router uses to seed a task when a human replies to a
+  // thread Archie itself started (see handleSlackEvent).
+  const root = rawMessages[0];
+  const rootAuthorWasBot =
+    !!root && ((!!root.user && root.user === botUserId) || (!!root.botId && root.botId === botId));
+
+  // Filter rules:
+  //  - drop our own bot's messages — EXCEPT the thread root, so a task seeded
+  //    from a bot-started thread still carries Archie's originating post.
+  //  - drop external bots (messages from another workspace).
+  // Keep: real users, and internal bots (e.g. bug-tracker integrations) so their
+  // thread starters survive into the knowledge log.
+  const visibleMessages = rawMessages.filter((msg, i) => {
+    const isRoot = i === 0;
     if (msg.user) {
-      return msg.user !== botUserId;
+      if (msg.user === botUserId) return isRoot; // our own bot — keep only at root
+      return true;
     }
     if (msg.botId) {
-      if (msg.botId === botId) return false; // our own bot
+      if (msg.botId === botId) return isRoot; // our own bot — keep only at root
       if (homeTeamId && msg.teamId && msg.teamId !== homeTeamId) return false; // external bot
       return true;
     }
@@ -1232,44 +1411,7 @@ export async function fetchSlackThread(
     return false;
   });
 
-  // Resolve top-level message authors for human messages. Attachment authors are
-  // already resolved on each msg.attachments[].author by fetchThreadHistory.
-  // Bot messages synthesize an author from bot_profile.
-  const authorIds = new Set(visibleMessages.filter((m) => m.user).map((m) => m.user));
-  const userInfoEntries = await Promise.all(
-    Array.from(authorIds).map(async (uid): Promise<readonly [string, SlackAuthor]> => {
-      try {
-        const info = await getUserInfo(uid);
-        return [uid, {
-          id: uid,
-          username: info.name,
-          realName: info.realName,
-          teamId: info.teamId,
-          isRestricted: info.isRestricted,
-          isUltraRestricted: info.isUltraRestricted,
-        }];
-      } catch {
-        return [uid, { id: uid, username: uid, realName: uid }];
-      }
-    })
-  );
-  const userInfoMap = new Map(userInfoEntries);
-
-  // Surface structured pieces (text, attachments, files) and let consumers
-  // decide redaction / labeling using `thread.shared` + `isExternalUser`.
-  const messages: SlackThreadMessage[] = visibleMessages.map((msg) => {
-    const author: SlackAuthor = msg.user
-      ? userInfoMap.get(msg.user)!
-      : { id: msg.botId!, username: msg.botName || 'bot', realName: msg.botName || 'bot', teamId: msg.teamId };
-    return {
-      user: author,
-      text: msg.text,
-      ts: msg.ts,
-      ...(msg.files && msg.files.length > 0 ? { files: msg.files } : {}),
-      ...(msg.attachments && msg.attachments.length > 0 ? { attachments: msg.attachments } : {}),
-      ...(msg.reactions && msg.reactions.length > 0 ? { reactions: msg.reactions } : {}),
-    };
-  });
+  const messages = await resolveAuthorsAndMap(visibleMessages);
 
   return {
     threadId: threadTs,
@@ -1277,6 +1419,7 @@ export async function fetchSlackThread(
     shared,
     messages,
     currentMessageTs,
+    rootAuthorWasBot,
   };
 }
 

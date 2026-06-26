@@ -21,10 +21,6 @@ import { createKeyedLock } from '../system/keyed-lock.js';
 export interface PostTarget {
   /** Post to an existing linked thread (channel key, e.g., "slack:C123:456.789") */
   channel?: string;
-  /** Start a new DM with a user (Slack user ID). Reuses existing DM thread if one is linked. */
-  new_dm?: string;
-  /** Start a new thread in a channel (Slack channel ID). */
-  new_thread?: string;
 }
 
 /**
@@ -61,7 +57,7 @@ import { scheduleIdleCheck } from './recovery.js';
 import { scanAgentDefs, getAgentDef, getVisiblePeerIdsForSender, synthesizeDynamicAgentDef } from '../agents/registry.js';
 import type { AttachedRepo } from '../types/task.js';
 import { syncPlugins } from '../system/plugin-sync.js';
-import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, openDMChannel, getChannelInfo, getUserInfo, isExternalUser, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, isExternalUser, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
 import { basename } from 'path';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
@@ -376,10 +372,11 @@ export class Task {
    * Targeting modes:
    * - No target: post to default_channel only
    * - target.channel: post to a specific already-linked thread
-   * - target.new_dm: open DM with user, post message, link thread (reuses existing DM if found)
-   * - target.new_thread: post top-level message in channel, link thread
    *
-   * Returns the channel key when a new channel is created/reused, null otherwise.
+   * Opening new DMs/threads is intentionally not supported — the PM reaches
+   * other channels via the task-decoupled `post_to_channel` explore tool, which
+   * deliberately does NOT link them to this task. Always returns null (the
+   * return type is kept for call-site compatibility).
    */
   async postToUser(message: string, agentName?: string, target?: PostTarget): Promise<string | null> {
     const sender = agentName || 'system';
@@ -387,42 +384,6 @@ export class Task {
     // a Slack `context` block, and the same string on the `message` event so the
     // CLI can render it dimmed (see logOutgoingMessage / TaskDetail).
     const footer = this.buildUserFooter();
-
-    // New DM — open DM channel, reuse existing thread or create new
-    if (target?.new_dm) {
-      const dmChannelId = await openDMChannel(target.new_dm);
-      const existing = this.findChannelBySlackId(dmChannelId);
-      if (existing) {
-        await postSlackMessage({
-          channel: existing.channel.channel_id,
-          threadTs: existing.channel.thread_id,
-          text: message,
-          footer,
-        });
-        this.logOutgoingMessage(sender, message, Task.formatSlackDest(existing.channel).display, existing.channel, footer);
-        return existing.key;
-      } else {
-        const userInfo = await getUserInfo(target.new_dm);
-        const channelName = `DM with ${userInfo.realName}`;
-        const ts = await postSlackMessage({ channel: dmChannelId, text: message, footer });
-        if (!ts) return null; // dry-run
-        const key = this.registerSlackChannel(dmChannelId, ts, channelName);
-        const ch = this.metadata.channels[key] as SlackChannel;
-        this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch, footer);
-        return key;
-      }
-    }
-
-    // New thread in a channel
-    if (target?.new_thread) {
-      const channelInfo = await getChannelInfo(target.new_thread);
-      const ts = await postSlackMessage({ channel: target.new_thread, text: message, footer });
-      if (!ts) return null; // dry-run
-      const key = this.registerSlackChannel(target.new_thread, ts, channelInfo.name);
-      const ch = this.metadata.channels[key] as SlackChannel;
-      this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch, footer);
-      return key;
-    }
 
     // Specific existing channel
     if (target?.channel) {
@@ -848,42 +809,6 @@ export class Task {
       return null;
     }
     return getMessageReactions(ch.channel_id, messageTs);
-  }
-
-  /**
-   * Find an existing channel entry by Slack channel ID.
-   * Used for DM reuse — conversations.open returns the same channel ID for a given user.
-   */
-  private findChannelBySlackId(slackChannelId: string): { key: string; channel: SlackChannel } | null {
-    for (const [key, ch] of Object.entries(this.metadata.channels)) {
-      if (ch.type === 'slack' && ch.channel_id === slackChannelId) return { key, channel: ch };
-    }
-    return null;
-  }
-
-  /**
-   * Register a new Slack channel/thread in the task metadata.
-   *
-   * Promotes the channel to `default_channel` when the task has none yet. This
-   * matters for self-launched tasks, which start with zero channels (and a null
-   * default): the first channel the PM opens via `post_to_user(new_thread/new_dm)`
-   * becomes the default so subsequent default-routed messages — including
-   * interactive approval prompts like edit-mode requests — reach Slack instead of
-   * being dropped to the CLI log.
-   */
-  private registerSlackChannel(channelId: string, threadTs: string, channelName: string): string {
-    const key = `slack:${channelId}:${threadTs}`;
-    this.metadata.channels[key] = {
-      type: 'slack',
-      thread_id: threadTs,
-      channel_id: channelId,
-      channel_name: channelName,
-      last_processed_ts: threadTs,
-      url: buildThreadUrl(channelId, threadTs) ?? undefined,
-    };
-    this.metadata.default_channel ??= key;
-    this.debouncedSave();
-    return key;
   }
 
   /**

@@ -513,32 +513,6 @@ export async function appendCliMessage(
 }
 
 /**
- * Append a launch prompt to the knowledge log of a freshly-launched task.
- * The entry preserves the exact prompt and the originating task/reason so the
- * PM can see what triggered it.
- */
-export async function appendLaunchMessage(
-  taskId: string,
-  originatingTaskId: string,
-  reason: string,
-  prompt: string,
-): Promise<void> {
-  const body = `Reason: ${reason}
-
-${prompt}
-
-Note: this task was launched in the background and has no channel yet. Open a destination via post_to_user(target.new_dm <userId>) or post_to_user(target.new_thread <channelId>) before posting, or call report_completion() with no message to finish silently.`;
-  const entry: LogEntry = {
-    timestamp: new Date().toISOString(),
-    source: `task:${originatingTaskId}`,
-    message: body,
-  };
-
-  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
-  emitEvent('message', taskId, { from: originatingTaskId, to: 'pm-agent', message: body });
-}
-
-/**
  * Read the knowledge log
  */
 export async function readKnowledgeLog(taskId: string): Promise<string> {

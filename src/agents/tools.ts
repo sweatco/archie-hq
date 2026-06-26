@@ -13,7 +13,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import type { AgentName, FindingType, AttachedRepo } from '../types/task.js';
+import type { AgentName, FindingType, AttachedRepo, SlackThreadMessage } from '../types/task.js';
 import type { Task } from '../tasks/task.js';
 import type { Agent } from './agent.js';
 import { getVisiblePeerIdsForSender, findAgentDefsContainingRepo, synthesizeDynamicAgentDef } from './registry.js';
@@ -23,7 +23,6 @@ import { hydrateBranchState, findBranchStateByPR } from '../connectors/github/br
 import { taskBranchName } from '../connectors/github/branch-naming.js';
 import { appendAgentFinding, appendArtifactShared } from '../tasks/persistence.js';
 import { copyArtifactToShared, assertReadable } from './artifacts.js';
-import { launchTask } from '../tasks/launch.js';
 import { logger } from '../system/logger.js';
 import { SLACK_MARKDOWN_LIMIT, SlackMarkdownLimitError } from '../connectors/slack/client.js';
 
@@ -38,7 +37,68 @@ function formatSlackSendError(err: unknown): string {
   const reason = err instanceof Error ? err.message : String(err);
   return `Failed to post message: ${reason}`;
 }
-import { findSlackUsers, findSlackChannels } from '../connectors/slack/client.js';
+
+/**
+ * Reject DM targets for the explore/post tools. These tools are channel-only;
+ * 1:1 DM channel ids start with 'D', and a user id ('U'/'W') passed as a channel
+ * would be coerced into a DM by Slack — block both.
+ */
+function rejectDmTarget(channel: string): string | null {
+  if (/^[DUW]/.test(channel)) {
+    return 'This tool is channel-only and never touches DMs. Pass a channel ID (e.g. "C…"), not a DM or user ID.';
+  }
+  return null;
+}
+
+/** Pull Slack's error code (e.g. "not_in_channel") off a WebAPI error. */
+function slackErrorCode(err: unknown): string | undefined {
+  return (err as { data?: { error?: string } })?.data?.error;
+}
+
+function formatSlackPostError(err: unknown, channel: string): string {
+  if (err instanceof SlackMarkdownLimitError) return formatSlackSendError(err);
+  const code = slackErrorCode(err);
+  if (code === 'not_in_channel' || code === 'channel_not_found') {
+    return `Couldn't post to ${channel}: Archie isn't in that channel. Someone needs to invite it (\`/invite @Archie\`) — Archie can only write where it's been added.`;
+  }
+  if (code === 'is_archived') return `Couldn't post to ${channel}: the channel is archived.`;
+  return formatSlackSendError(err);
+}
+
+function formatSlackReadError(err: unknown, channel: string): string {
+  if (err instanceof PrivateChannelError) {
+    return `Couldn't read ${channel}: it's a private channel or DM. Archie only explores PUBLIC channels.`;
+  }
+  const code = slackErrorCode(err);
+  if (code === 'not_in_channel' || code === 'channel_not_found') {
+    return `Couldn't read ${channel}: Archie isn't a member of that public channel (or it doesn't exist). Invite it (\`/invite @Archie\`) — Archie can only read public channels it's been added to.`;
+  }
+  const reason = err instanceof Error ? err.message : String(err);
+  return `Couldn't read ${channel}: ${reason}`;
+}
+
+/** Render explore messages in the same `@<id:name> | msg:ts` shape the PM sees elsewhere. */
+function formatExploreMessages(messages: SlackThreadMessage[]): string {
+  return messages
+    .map((m) => {
+      const who = m.user.realName || m.user.username;
+      const files = m.files?.length ? `\n  [files: ${m.files.map((f) => f.name).join(', ')}]` : '';
+      const reactions = m.reactions?.length
+        ? `\n  [reactions: ${m.reactions.map((r) => `:${r.name}:×${r.count}`).join(' ')}]`
+        : '';
+      return `@<${m.user.id}:${who}> | msg:${m.ts}\n${m.text}${files}${reactions}`;
+    })
+    .join('\n\n');
+}
+import {
+  findSlackUsers,
+  findSlackChannels,
+  fetchChannelHistory,
+  fetchExploreThread,
+  searchSlackMessages,
+  postSlackMessage,
+  PrivateChannelError,
+} from '../connectors/slack/client.js';
 import { scheduleReminder, cancelReminder } from '../system/reminder-scheduler.js';
 import * as chrono from 'chrono-node';
 
@@ -323,29 +383,24 @@ function createShareArtifactTool(agent: Agent, task: Task) {
 function createPostToUserTool(agent: Agent, task: Task) {
   return tool(
     'post_to_user',
-    'Send a message to the user. Without target, posts to the default channel — wherever this task already lives. ' +
-    'Use that default almost always; use target.channel to reach another already-linked thread. ' +
-    'target.new_dm (user ID) and target.new_thread (channel ID) OPEN A NEW conversation and link it to this task — ' +
-    'use them ONLY when the user explicitly asks you to reach someone elsewhere, or a loaded skill/workflow requires it. ' +
-    'If this task lives in a channel thread, bring someone in by @mentioning them in that thread, not by DMing them. ' +
-    'If it lives in a DM, you are 1:1 with that user — keep it private and don\'t pull others in. ' +
-    'When creating new DMs/threads, returns the channel key for future use. ' +
+    'Send a message to the user in this task. Without target, posts to the default channel — wherever this task already lives (use that almost always). ' +
+    'Use target.channel only to reach another thread ALREADY linked to this task. ' +
+    'If this task lives in a channel thread, bring someone in by @mentioning them in that thread. ' +
+    'To say something in a channel that is NOT part of this task (exploration/outreach), use `post_to_channel` — it deliberately does not link to this task. ' +
     'To attach files, send the message first, then call `post_files_to_user` with the same target.',
     {
       message: z.string().describe('The message to send'),
       target: z.object({
         channel: z.string().optional().describe('Channel key of an existing linked thread (e.g., "slack:C123:456.789")'),
-        new_dm: z.string().optional().describe('User ID to start a new DM conversation with'),
-        new_thread: z.string().optional().describe('Channel ID to start a new thread in'),
       }).optional().describe('Where to post. Omit to post to the default channel.'),
     },
     async (args) => {
       const agentName = agent.def.id as AgentName;
-      const hasTarget = !!(args.target?.channel || args.target?.new_dm || args.target?.new_thread);
+      const hasTarget = !!args.target?.channel;
       if (!hasTarget && Object.keys(task.metadata.channels).length === 0) {
         return ok(
-          'No channel linked to this task. Use target.new_dm <userId> or target.new_thread <channelId> ' +
-          'to open a destination, or call report_completion() without a message to finish silently.'
+          'No channel is linked to this task, so there is nowhere to post. ' +
+          'Call report_completion() without a message to finish silently.'
         );
       }
       task.touch();
@@ -368,7 +423,7 @@ function createPostFilesToUserTool(agent: Agent, task: Task) {
     'post_files_to_user',
     'Upload one or more files as Slack file attachments to the user. Files must point to absolute paths inside your readable sandbox (e.g. shared/artifacts/...). ' +
     'Without `channel`, attaches to the default channel. With `channel`, attaches to an already-linked thread. ' +
-    'This tool only attaches files to existing threads — it does not create new threads or DMs. To open a destination, call `post_to_user` first with `target.new_dm` or `target.new_thread`, then pass the returned channel key here. ' +
+    'This tool only attaches files to threads already linked to this task (the default channel, or a linked `channel` key). It does not open new threads or DMs. ' +
     'Files are sent without accompanying text — call `post_to_user` separately for any message you want next to the files.',
     {
       paths: z.array(z.string()).min(1).describe('Absolute file paths to upload as Slack attachments'),
@@ -378,7 +433,7 @@ function createPostFilesToUserTool(agent: Agent, task: Task) {
       const agentName = agent.def.id as AgentName;
       if (!args.channel && Object.keys(task.metadata.channels).length === 0) {
         return ok(
-          'No channel linked to this task. Open one first with post_to_user(target.new_dm or target.new_thread), then call post_files_to_user with the returned channel key.'
+          'No channel is linked to this task, so there is nowhere to attach files.'
         );
       }
       let validatedPaths: string[];
@@ -516,7 +571,7 @@ function createRequestEditModeTool(agent: Agent, task: Task) {
       if (args.channel) {
         const ch = task.metadata.channels[args.channel];
         if (!ch) {
-          return ok(`Channel ${args.channel} is not linked to this task. Open one with post_to_user(target.new_thread/new_dm), or omit channel to use the default.`);
+          return ok(`Channel ${args.channel} is not linked to this task. Omit channel to use the default.`);
         }
         if (ch.type !== 'slack') {
           return ok(`Channel ${args.channel} is not a Slack channel (type: ${ch.type}).`);
@@ -591,9 +646,8 @@ function createReportCompletionTool(agent: Agent, task: Task) {
       if (args.message) {
         if (Object.keys(task.metadata.channels).length === 0) {
           return ok(
-            'Cannot post a completion message — no channel linked. ' +
-            'Either open a destination via post_to_user(target.new_dm/new_thread) first, ' +
-            'or call report_completion() without a message to finish silently.'
+            'Cannot post a completion message — no channel linked to this task. ' +
+            'Call report_completion() without a message to finish silently.'
           );
         }
         try {
@@ -761,29 +815,115 @@ function createGetMessageReactionsTool(_agent: Agent, task: Task) {
   );
 }
 
-function createLaunchTaskTool(_agent: Agent, task: Task) {
+function createReadChannelHistoryTool(_agent: Agent, _task: Task) {
   return tool(
-    'launch_task',
-    'Launch a SEPARATE, independent background task with NO link back to this one — its origin is invisible to whoever picks it up. ' +
-    'Keep follow-up work inside the current task by delegating to an agent here, so everything stays on one traceable thread. ' +
-    'Use this ONLY when the user explicitly asks for separate/background work, or a loaded skill/workflow requires it. ' +
-    'The launched task starts with no channel — its own PM decides whether to reach someone or complete silently. ' +
-    'Cannot be called from a task that has no channel of its own.',
+    'read_channel_history',
+    "Read a PUBLIC channel's recent messages to understand what's happening there — exploration only, NOT linked to this task. " +
+    'Pass a channel ID (use find_slack_channel to look one up). Returns messages oldest→newest, including Archie\'s own and other bots\' posts. ' +
+    'Reading never creates or joins a task. Limited to public channels Archie has been added to — private channels and DMs are off-limits.',
     {
-      prompt: z.string().describe('The task prompt for the launched PM agent'),
-      reason: z.string().describe('Why this task is being launched (shown to the new PM and in the notification)'),
+      channel: z.string().describe('Slack channel ID (e.g. "C1234567")'),
+      limit: z.number().int().min(1).max(100).optional().describe('How many recent messages to read (default 30, max 100)'),
+    },
+    async (args) => {
+      const dm = rejectDmTarget(args.channel);
+      if (dm) return ok(dm);
+      try {
+        const { channel, messages } = await fetchChannelHistory(args.channel, args.limit ?? 30);
+        if (messages.length === 0) return ok(`#${channel.name} has no readable recent messages.`);
+        return ok(`#${channel.name} — last ${messages.length} message(s):\n\n${formatExploreMessages(messages)}`);
+      } catch (e) {
+        return ok(formatSlackReadError(e, args.channel));
+      }
+    },
+  );
+}
+
+function createReadThreadTool(_agent: Agent, _task: Task) {
+  return tool(
+    'read_thread',
+    'Read a specific thread (parent message + all replies) in a PUBLIC channel — exploration only, NOT linked to this task. ' +
+    'Pass the channel ID and the parent message ts (from search_messages or read_channel_history). Includes Archie\'s own and other bots\' messages. Private channels and DMs are off-limits.',
+    {
+      channel: z.string().describe('Slack channel ID (e.g. "C1234567")'),
+      thread_ts: z.string().describe('Parent message ts of the thread (e.g. "1716998400.123456")'),
+    },
+    async (args) => {
+      const dm = rejectDmTarget(args.channel);
+      if (dm) return ok(dm);
+      try {
+        const { channel, messages } = await fetchExploreThread(args.channel, args.thread_ts);
+        if (messages.length === 0) return ok(`No messages found in that thread.`);
+        return ok(`#${channel.name} thread ${args.thread_ts} — ${messages.length} message(s):\n\n${formatExploreMessages(messages)}`);
+      } catch (e) {
+        return ok(formatSlackReadError(e, args.channel));
+      }
+    },
+  );
+}
+
+function createSearchMessagesTool(_agent: Agent, _task: Task) {
+  return tool(
+    'search_messages',
+    'Search Slack messages across PUBLIC channels Archie is a member of — exploration only, NOT linked to this task. Private channels and DMs are never searched. ' +
+    'Put keywords or a natural-language question in `query`, and narrow with Slack search modifiers: ' +
+    '`in:#channel`, `from:@user`, `before:YYYY-MM-DD` / `after:YYYY-MM-DD` / `on:YYYY-MM-DD`, `is:thread`, `has:link`, `"exact phrase"`, `-exclude`, `*` wildcard. ' +
+    'Returns the top matches with channel, author, text, and a permalink. To read around a match, use read_thread or read_channel_history.',
+    {
+      query: z.string().describe('Search query, e.g. \'deploy failed in:#incidents after:2026-06-01\''),
+      count: z.number().int().min(1).max(20).optional().describe('Max matches to return (default 20, max 20)'),
     },
     async (args) => {
       try {
-        const { newTaskId, notifiedInChannel } = await launchTask(task, args.prompt, args.reason);
+        const matches = await searchSlackMessages(args.query, args.count ?? 20);
+        if (matches.length === 0) return ok(`No messages matched "${args.query}".`);
+        const list = matches
+          .map((m) => {
+            const link = m.permalink ? `\n  ${m.permalink}` : '';
+            return `#${m.channelName} — @${m.author} | msg:${m.ts}\n${m.text}${link}`;
+          })
+          .join('\n\n');
+        return ok(`${matches.length} match(es) for "${args.query}":\n\n${list}`);
+      } catch (e) {
+        const code = slackErrorCode(e);
+        if (code === 'not_allowed_token_type' || code === 'missing_scope') {
+          return ok(
+            "Search isn't enabled yet: Archie needs the `search:read.public` (and `search:read.private`) bot scopes — " +
+            'reinstall the Slack app with those scopes. Reading channel history still works.',
+          );
+        }
+        const reason = e instanceof Error ? e.message : String(e);
+        return ok(`Search failed: ${reason}`);
+      }
+    },
+  );
+}
+
+function createPostToChannelTool(_agent: Agent, task: Task) {
+  return tool(
+    'post_to_channel',
+    'Post a message into a Slack channel or thread WITHOUT linking it to this task — for chiming in while exploring. ' +
+    'Fire-and-forget: it does not become a touchpoint of this task. If a human later replies to a NEW top-level message you post here, that reply starts its OWN fresh task; a reply inside someone else\'s existing thread never does. ' +
+    'Pass a channel ID; optionally `thread_ts` to reply inside an existing thread. Archie must be a member of the channel to post (you can only write where it has been invited). Does NOT work on DMs. ' +
+    'To talk to the user about THIS task, use post_to_user instead.',
+    {
+      channel: z.string().describe('Slack channel ID (e.g. "C1234567")'),
+      message: z.string().describe('The message to post'),
+      thread_ts: z.string().optional().describe('Parent message ts to reply inside an existing thread; omit to post a new top-level message'),
+    },
+    async (args) => {
+      const dm = rejectDmTarget(args.channel);
+      if (dm) return ok(dm);
+      task.touch();
+      try {
+        const ts = await postSlackMessage({ channel: args.channel, text: args.message, threadTs: args.thread_ts });
         return ok(
-          notifiedInChannel
-            ? `Task ${newTaskId} launched. User was already notified in the current channel — do not repost.`
-            : `Task ${newTaskId} launched. No channel notified.`
+          ts
+            ? `Message posted to ${args.channel}${args.thread_ts ? ` (in thread ${args.thread_ts})` : ` (new thread ts: ${ts})`}. Not linked to this task.`
+            : 'Message posted (dry-run).',
         );
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        return ok(`Failed to launch task: ${msg}`);
+      } catch (e) {
+        return ok(formatSlackPostError(e, args.channel));
       }
     },
   );
@@ -1726,6 +1866,10 @@ export function createCommsMcpServer(agent: Agent, task: Task) {
       createPostFilesToUserTool(agent, task),
       createFindSlackUserTool(agent, task),
       createFindSlackChannelTool(agent, task),
+      createReadChannelHistoryTool(agent, task),
+      createReadThreadTool(agent, task),
+      createSearchMessagesTool(agent, task),
+      createPostToChannelTool(agent, task),
       createMuteChannelTool(agent, task),
       createReactToMessageTool(agent, task),
       createUnreactFromMessageTool(agent, task),
@@ -1884,7 +2028,6 @@ export function createOrchestrationMcpServer(agent: Agent, task: Task) {
       createReportCompletionTool(agent, task),
       createRequestEditModeTool(agent, task),
       createGetAgentsStatusTool(agent, task),
-      createLaunchTaskTool(agent, task),
       createListAvailableReposTool(agent, task),
       createSpawnRepoAgentTool(agent, task),
     ],
