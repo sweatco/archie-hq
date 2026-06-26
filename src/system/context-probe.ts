@@ -29,7 +29,7 @@ import { join } from 'node:path';
 import { logger } from './logger.js';
 
 // ░░ MASTER SWITCH — set to false + redeploy to fully disable. ░░
-export const CONTEXT_PROBE_ENABLED = true;
+export const CONTEXT_PROBE_ENABLED = false;
 
 const PROBE_PORT = 8788;
 const PROBE_HOST = '127.0.0.1';
