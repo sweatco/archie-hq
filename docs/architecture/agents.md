@@ -21,9 +21,9 @@ Models for repo and plugin agents come from each agent's plugin frontmatter (`mo
 
 The triage agent is **not invoked** by the running system. In `src/connectors/slack/events.ts` the `triageSlackMessage` import and dispatch block are commented out — every incoming Slack event is routed directly to the PM agent:
 
-- A new thread (or DM, or @mention in a channel) creates a fresh `Task` and sends `AGENT_PROMPTS.newTask` to the PM.
+- A fresh `Task` is created (and `AGENT_PROMPTS.newTask` sent to the PM) on an `@mention`, a DM, or a human reply to a thread Archie itself started (`rootAuthorWasBot` — a top-level message it posted via the `post_to_channel` explore tool).
 - A reply in a thread already linked to a task appends the new messages and sends `AGENT_PROMPTS.existingTask` to that task's PM.
-- Replies in threads the bot was never part of are ignored.
+- A reply in a human-started thread the bot didn't start is ignored.
 
 GitHub events follow the same deterministic pattern in `connectors/github/webhooks.ts` (PR reviews, push events, CI results) — none of them call triage either.
 

@@ -132,9 +132,11 @@ See [plugin-system.md](plugin-system.md) for details.
    → findTaskByThread(threadId): if a task is already linked to this Slack
      thread, route to it (Task.get → task.append → task.sendMessage with
      AGENT_PROMPTS.existingTask)
-   → Otherwise, if it's an @mention or DM, start a new task
+   → Otherwise start a new task if it's an @mention, a DM, or a human reply to
+     a thread Archie itself started (rootAuthorWasBot — a post it made via the
+     post_to_channel explore tool)
      (Task.create → task.append → task.sendMessage with AGENT_PROMPTS.newTask)
-   → Plain replies in threads the bot was never part of are ignored
+   → Replies in human-started threads the bot didn't start are ignored
 
 4. PM Agent processes input:
    → Reads knowledge.log for context
