@@ -11,7 +11,7 @@
  */
 
 import { join } from 'path';
-import { mkdir, symlink, readdir, writeFile } from 'fs/promises';
+import { mkdir, symlink, readdir, writeFile, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Agent } from './agent.js';
@@ -117,11 +117,20 @@ async function setupAgentWorkspace(taskId: string, agent: Agent): Promise<string
 
     for (const skillsPath of skillSources) {
       for (const skillEntry of await readdir(skillsPath, { withFileTypes: true })) {
-        if (!skillEntry.isDirectory()) continue;
+        const entryPath = join(skillsPath, skillEntry.name);
+        // Mount real skill dirs AND symlinks that resolve to a dir. A skill can
+        // be vendored as a git submodule and exposed via a symlink (e.g. the
+        // data-analytics data-context); readdir's Dirent.isDirectory() is false
+        // for a symlink, so stat-follow to classify it. A dangling link is skipped.
+        let isDir = skillEntry.isDirectory();
+        if (!isDir && skillEntry.isSymbolicLink()) {
+          isDir = await stat(entryPath).then((s) => s.isDirectory()).catch(() => false);
+        }
+        if (!isDir) continue;
         const target = join(agentSkillsDir, skillEntry.name);
         if (!existsSync(target)) {
           await mkdir(agentSkillsDir, { recursive: true });
-          await symlink(join(skillsPath, skillEntry.name), target);
+          await symlink(entryPath, target);
         }
       }
     }
