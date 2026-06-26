@@ -180,6 +180,11 @@ export async function refreshPlugins(): Promise<boolean> {
         await execAsync(`git reset --hard "origin/${branch}"`, { cwd: PLUGINS_DIR });
         // `reset --hard` moves the gitlink but not submodule working trees, so sync
         // submodules onto their recorded commits (and init any newly added ones).
+        // `submodule sync` first propagates any .gitmodules URL change into this
+        // clone's .git/config — without it an existing clone keeps a stale cached
+        // URL (e.g. an SSH URL that fails under HTTPS/GIT_ASKPASS auth) and the
+        // submodule never materialises.
+        await execAsync('git submodule sync --recursive', { cwd: PLUGINS_DIR });
         await execAsync('git submodule update --init --recursive', { cwd: PLUGINS_DIR });
         logger.system('Plugins refreshed from remote');
         // Re-scan plugin definitions (picks up new/changed agents, prompts, etc.)
