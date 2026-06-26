@@ -32,7 +32,7 @@ export interface TaskBudgets {
   interAgentMessageCount: number;   // send_message_to_agent calls
   interAgentMessageLimit: number;   // default: 100
   taskStartTime: Date;              // for wall-clock timeout
-  taskTimeoutMs: number;            // default: 1_800_000 (30 minutes)
+  taskTimeoutMs: number;            // default: 3_600_000 (60 minutes)
 }
 import { Agent } from '../agents/agent.js';
 
@@ -95,7 +95,7 @@ export class Task {
       interAgentMessageCount: 0,
       interAgentMessageLimit: 100,
       taskStartTime: new Date(),
-      taskTimeoutMs: 1_800_000, // 30 minutes
+      taskTimeoutMs: 3_600_000, // 60 minutes
     };
 
     // Migrate legacy slack_threads → channels
