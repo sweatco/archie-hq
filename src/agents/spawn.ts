@@ -197,7 +197,11 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
 
   const workspace = await setupAgentWorkspace(taskId, agent);
   const cwd = workspace;
-  const model = def.model || (isPmAgent(def) ? 'opus' : 'sonnet');
+  // Default non-PM agents to sonnet with the 1M context window. The `[1m]`
+  // suffix is how the SDK enables it (it strips the suffix and adds the
+  // `context-1m-2025-08-07` beta); plain `sonnet` caps at 200K and overflows
+  // on the large injected system prompt. Opus is 1M natively, no suffix needed.
+  const model = def.model || (isPmAgent(def) ? 'opus' : 'sonnet[1m]');
   const tools = def.tools;
 
   const pluginPaths = def.pluginPath ? [def.pluginPath] : [];
