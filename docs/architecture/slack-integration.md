@@ -78,7 +78,7 @@ When a user edits a message, Slack delivers a `message` event with subtype `mess
 
 - **The text actually changed.** Slack fires `message_changed` for link unfurls and attachment re-renders too, where `message.text === previous_message.text`. These are dropped up front — they're the dominant source of edit-event noise.
 - **The edit is not bot-authored.** Edits carrying a `bot_id`, a `bot_message` subtype, or authored by Archie's own user are skipped.
-- **A task already follows the thread.** Resolved via `findTaskByThread(message.thread_ts || message.ts)`; edits in threads the bot was never part of are ignored, mirroring plain-reply handling.
+- **A task already follows the thread.** Resolved via `findTaskByThread(message.thread_ts || message.ts)`; an edit only wakes a thread that already has a task — an edit never *creates* one (unlike a fresh reply, which can seed a task for an @mention, a DM, or a bot-started thread).
 - **The editor is internal.** The same external/guest bail-out (`isExternalUser`) used by `handleSlackEvent` applies, and a muted channel is not woken.
 
 When they hold, mentions in the new text are resolved to the `@<ID:Name>` form (`cleanSlackText`) and `task.appendSlackEdit` writes a **fresh** knowledge-log entry — the log is append-only, so edits are never mutations of the original line. The entry reuses the original message's `msg:<ts>` id and its body, built by the pure `renderEditForContext`, is just the new text tagged as an edit:
@@ -104,15 +104,18 @@ The Haiku-based triage agent in `src/system/triage.ts` is **currently disabled**
 Slack webhook
   -> routeSlackEvent()                       [drop own bot's messages]
   -> External-author bail-out                [resolve user, skip if external/guest]
-  -> Eyes reaction (ack)                     [add to current msg, remove from prev]
-  -> fetchSlackThread()                      [history + author resolution + shared flag]
+  -> Eyes reaction (ack)                     [@mention/DM: add to current msg, remove from prev]
+  -> fetchSlackThread()                      [history + author resolution + shared flag + rootAuthorWasBot]
   -> findTaskByThread(threadId):
        found    -> Task.get() -> task.append(thread)
                    -> task.sendMessage(AGENT_PROMPTS.existingTask)
-       not found, app_mention OR DM -> Task.create() -> task.append(thread)
-                                       -> task.sendMessage(AGENT_PROMPTS.newTask)
-       not found, plain thread reply -> ignore (bot was never invited)
+       not found, app_mention OR DM OR rootAuthorWasBot -> Task.create() -> task.append(thread)
+                   (a reply to a bot-started thread is acked here, post-fetch)
+                   -> task.sendMessage(AGENT_PROMPTS.newTask)
+       not found, reply in a thread the bot didn't start -> ignore
 ```
+
+`rootAuthorWasBot` (computed by `fetchSlackThread` from the raw root message, before bot-message filtering) is true when the thread's root was posted by Archie itself — i.e. a top-level message it made via the task-decoupled `post_to_channel` explore tool. A human reply to such a thread seeds a new task (and the bot's root message is kept in the thread so the task has context); a reply in a thread Archie merely posted into, or never touched, has a non-bot root and is ignored.
 
 A muted thread (`SlackChannel.muted = true`, set by the PM's `mute_channel` tool) is unmuted by an `@mention` and otherwise skipped. In DM channels, any inbound message also unmutes — there is no `@mention` path in a DM, so a DM message is treated as the equivalent. `mute_channel` mutes a single channel — the one the PM names, or the task's `default_channel` if omitted; it refuses to mute DM channels (channel IDs starting with `D`) up front, but the DM-as-unmute rule above is the backstop that recovers any legacy task whose DM channel was muted before this restriction existed. Title generation runs as a fire-and-forget Haiku call after the first append; for DM-rooted tasks the resulting title is pushed to Slack via `assistant.threads.setTitle` (see `src/connectors/slack/title.ts`). External users (different `team_id`, or `is_restricted` / `is_ultra_restricted` guests) are filtered out before any work is spawned; their messages are still re-read on later events because `fetchSlackThread` refreshes full history each time.
 

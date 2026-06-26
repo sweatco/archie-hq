@@ -87,8 +87,8 @@ Slack webhook (POST /webhooks/slack)
         - fetchSlackThread() — full thread history with redaction
         - findTaskByThread(threadId):
             existing task -> Task.get() + append() new messages + sendMessage(pm-agent, existingTask)
-            no task, and (app_mention OR DM) -> Task.create() + append() + sendMessage(pm-agent, newTask)
-            no task, plain channel reply -> ignore (bot was never in this thread)
+            no task, and (app_mention OR DM OR rootAuthorWasBot) -> Task.create() + append() + sendMessage(pm-agent, newTask)
+            no task, reply in a human-started thread the bot didn't start -> ignore
         - shared-channel ephemeral warnings (per user, per thread)
         - fire-and-forget title generation (Haiku) on first message
 ```
