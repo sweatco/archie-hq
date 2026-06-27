@@ -22,7 +22,7 @@ import {
   verifyWebhookSignature,
   extractBranchFromPayload,
 } from './webhooks.js';
-import { Task } from '../../tasks/task.js';
+import { Task, activeTasks } from '../../tasks/task.js';
 import { appendGitHubEvent, findTaskByPRNumber, findTaskByBranch } from '../../tasks/persistence.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { findBranchStateByPR } from './branch-state.js';
@@ -156,12 +156,41 @@ const CARD_REFRESH_DEBOUNCE_MS = 2500;
  * semantically-named branches and PR-number-less events like workflow_run) →
  * PR number. Returns null (with a debug log) when nothing resolves.
  */
+function taskOwnsRef(
+  task: Task,
+  githubRepo: string,
+  branch: string | undefined,
+  prNumber: number | undefined,
+): boolean {
+  for (const attachments of Object.values(task.metadata.repositories ?? {})) {
+    if (!Array.isArray(attachments)) continue;
+    for (const attached of attachments) {
+      if (attached.github !== githubRepo) continue;
+      const states = attached.branch_states ?? {};
+      if (branch && branch in states) return true;
+      if (prNumber !== undefined) {
+        for (const s of Object.values(states)) if (s.pr_number === prNumber) return true;
+      }
+    }
+  }
+  return false;
+}
+
 async function resolveCardTask(
   eventType: string,
   payload: Record<string, unknown>,
   context: ReturnType<typeof formatGitHubContext>
 ): Promise<Task | null> {
   const branch = extractBranchFromPayload(eventType, payload);
+
+  // Active tasks first: the in-memory instance is authoritative and never stale,
+  // so resolve from `activeTasks` with no disk read at all.
+  for (const task of activeTasks.values()) {
+    if (taskOwnsRef(task, context.githubRepo, branch, context.prNumber)) return task;
+  }
+
+  // Inactive task: nothing live owns this ref, so look it up on disk (where the
+  // authoritative state now lives) and load it.
   let taskId = extractTaskIdFromBranch(branch);
   if (!taskId && branch) taskId = (await findTaskByBranch(context.githubRepo, branch)) ?? undefined;
   if (!taskId && context.prNumber) {
@@ -171,12 +200,6 @@ async function resolveCardTask(
     logger.system(`PR card: ${eventType}/${context.action} on ${context.githubRepo} (branch=${branch ?? '?'}, pr=${context.prNumber ?? '?'}) — no task resolved`);
     return null;
   }
-
-  // No disk pre-check here: it would read stale on-disk metadata while Task.get
-  // returns the live in-memory instance for an active task, so a card present in
-  // memory (debounced save not yet flushed) could be wrongly skipped. The
-  // refresh methods self-gate on the authoritative instance and no-op cheaply
-  // when there's no card; the CI path is debounced, so the Task.get cost is fine.
   try {
     return await Task.get(taskId);
   } catch {
