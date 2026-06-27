@@ -646,6 +646,56 @@ export async function findTaskByPRNumber(
 }
 
 /**
+ * Find the task that owns a given head branch in a repo. Branch names key the
+ * per-branch state, so this resolves a task from a CI/webhook event even when
+ * the branch isn't the `archie/{taskId}` pattern and no PR number is in the
+ * payload (e.g. `workflow_run`). Returns null if none match.
+ */
+export async function findTaskByBranch(
+  githubRepo: string,
+  branch: string
+): Promise<string | null> {
+  await ensureSessionsDir();
+  if (!branch) return null;
+
+  try {
+    const { execSync } = await import('child_process');
+    // The branch appears as a branch_states key. Fixed-string grep (-F) because
+    // branch names contain regex-special chars like '/'.
+    const grepResult = execSync(
+      `grep -lF '"${branch}"' ${SESSIONS_DIR}/task-*/shared/metadata.json 2>/dev/null || true`,
+      { encoding: 'utf-8' }
+    ).trim();
+
+    if (!grepResult) return null;
+
+    for (const filePath of grepResult.split('\n')) {
+      const taskIdMatch = filePath.match(/task-[a-z0-9-]+/i);
+      if (!taskIdMatch) continue;
+
+      const taskId = taskIdMatch[0];
+      const metadata = await loadMetadata(taskId);
+      if (!metadata) continue;
+
+      const { migrateRepositoriesShape } = await import('./task.js');
+      migrateRepositoriesShape(metadata);
+
+      for (const attachments of Object.values(metadata.repositories || {})) {
+        if (!Array.isArray(attachments)) continue;
+        for (const attached of attachments) {
+          if (attached.github !== githubRepo) continue;
+          if (attached.branch_states && branch in attached.branch_states) return taskId;
+        }
+      }
+    }
+  } catch {
+    // Fallback silently if grep fails
+  }
+
+  return null;
+}
+
+/**
  * Find all tasks with a given status.
  * Uses grep to find matching files in one pass (faster than reading every metadata.json).
  */
