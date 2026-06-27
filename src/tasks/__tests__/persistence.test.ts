@@ -28,6 +28,9 @@ vi.mock('../../system/event-bus.js', () => ({
 
 vi.mock('../../system/workdir.js', () => ({
   SESSIONS_DIR: '/tmp/sessions',
+  // WORKDIR is consumed transitively (channel-store derives SLACK_CHANNELS_DIR
+  // from it); provide it so the mock is complete for the module graph.
+  WORKDIR: '/tmp',
 }));
 
 vi.mock('./task.js', () => ({

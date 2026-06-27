@@ -40,6 +40,7 @@ import {
 } from './message-queue.js';
 import { setupSharedClone, cloneExists, type CloneCheckout } from '../connectors/github/repo-clone.js';
 import { configureGitIdentity } from '../connectors/github/client.js';
+import { buildChannelCanvasPromptSection } from '../connectors/slack/channel-canvas.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { processAgentEventForLogging, logger } from '../system/logger.js';
 import { emitEvent } from '../system/event-bus.js';
@@ -321,6 +322,15 @@ Shared folder: ${sharedPath} [READ-ONLY]
     systemPrompt = `${systemPrompt}\n\nCurrent Task Context:\n${context}`;
     if (inSharedChannel) {
       systemPrompt = `${systemPrompt}\n\nNOTE: This task is active in a Slack channel shared with an external organisation. Messages from external participants are filtered before they reach you. Be mindful that anything you post will be visible to the external org. Do not share repository contents, credentials, internal URLs, or task history with external parties.`;
+    }
+
+    // Inject per-channel "Archie" canvas as standing project context (XML-wrapped
+    // so it stays contained). Rebuilt every spawn, so canvas edits propagate on
+    // the next wake. Only the PM sees it; specialists get relevant slices via
+    // delegation.
+    const channelCanvasSection = await buildChannelCanvasPromptSection(metadata);
+    if (channelCanvasSection) {
+      systemPrompt = `${systemPrompt}\n\n${channelCanvasSection}`;
     }
 
     // Append PM overlay prompt from the pm plugin (business context, etc.)

@@ -124,6 +124,7 @@ const PM_COMMS_TOOLS = [
   'mcp__comms-tools__react_to_message',
   'mcp__comms-tools__unreact_from_message',
   'mcp__comms-tools__get_message_reactions',
+  'mcp__comms-tools__fetch_slack_reference',
 ];
 
 const PM_ORCHESTRATION_TOOLS = [

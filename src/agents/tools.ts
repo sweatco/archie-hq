@@ -38,9 +38,12 @@ function formatSlackSendError(err: unknown): string {
   const reason = err instanceof Error ? err.message : String(err);
   return `Failed to post message: ${reason}`;
 }
-import { findSlackUsers, findSlackChannels } from '../connectors/slack/client.js';
+import { findSlackUsers, findSlackChannels, getSlackFileInfo, downloadSlackFile } from '../connectors/slack/client.js';
+import { readCanvas } from '../connectors/slack/canvas-read.js';
 import { scheduleReminder, cancelReminder } from '../system/reminder-scheduler.js';
 import * as chrono from 'chrono-node';
+import { writeFile } from 'fs/promises';
+import { join } from 'path';
 
 // Re-export branch state helpers for consumers that import from tools.ts
 export { hydrateBranchState, findBranchStateByPR };
@@ -1708,6 +1711,72 @@ function createCancelReminderTool(agent: Agent, task: Task) {
   );
 }
 
+/** Pull a Slack file id (F…) out of a file permalink or a bare id. */
+function extractSlackFileId(ref: string): string | null {
+  const m =
+    ref.match(/\/files\/[^/]+\/(F[0-9A-Z]+)/) || // /files/<U>/<F>/name permalink
+    ref.match(/\b(F[0-9A-Z]{6,})\b/);            // bare F… id
+  return m ? m[1] : null;
+}
+
+/** Make a referenced file's name safe to write into the workspace. */
+function safeReferenceFileName(name: string, forceExt?: string): string {
+  let base = (name.split('/').pop() || 'file').replace(/[^A-Za-z0-9._ -]/g, '_').trim() || 'file';
+  if (forceExt && !base.toLowerCase().endsWith(forceExt)) base += forceExt;
+  return base;
+}
+
+/**
+ * `fetch_slack_reference` (PM-only) — pull a file referenced in the channel's
+ * project-context canvas into the PM workspace so it can be read. The agent
+ * never has to know whether the reference is a canvas or a plain file: the tool
+ * inspects `files.info.filetype` and routes internally (canvas → converted
+ * markdown; anything else → native bytes). The file lands in the PM's own
+ * workspace, not shared — the PM decides what to do with it next.
+ */
+function createFetchSlackReferenceTool(agent: Agent, task: Task) {
+  return tool(
+    'fetch_slack_reference',
+    'Fetch a file referenced in the channel\'s project-context canvas and save it into your workspace so you can read it. ' +
+    'Pass the reference exactly as it appears in the canvas — a Slack file link or a file id. ' +
+    'Documents and images are saved in their original form; a referenced canvas is saved as readable markdown.',
+    {
+      reference: z.string().describe(
+        'A Slack file link (e.g. https://….slack.com/files/…/F…/name) or a bare file id (F…) taken from the channel canvas.',
+      ),
+    },
+    async (args) => {
+      const fileId = extractSlackFileId(args.reference);
+      if (!fileId) {
+        return err(`No Slack file id found in "${args.reference}". Pass a Slack file link or an F… id.`);
+      }
+      const cwd = requireSandbox(agent).cwd;
+      try {
+        const info = await getSlackFileInfo(fileId);
+        if (!info) return err(`Could not load file ${fileId} — it may be inaccessible.`);
+
+        if (info.filetype === 'quip') {
+          const read = await readCanvas(fileId, info);
+          if (!read) return err(`Could not read canvas ${fileId}.`);
+          const dest = join(cwd, safeReferenceFileName(read.title || fileId, '.md'));
+          await writeFile(dest, read.markdown);
+          task.touch();
+          return ok(`Saved to ${dest}.`);
+        }
+
+        const url = info.url_private_download || info.url_private;
+        if (!url) return err(`File ${fileId} has no downloadable URL.`);
+        const dest = join(cwd, safeReferenceFileName(info.name || info.title || fileId));
+        await downloadSlackFile(url, dest);
+        task.touch();
+        return ok(`Saved to ${dest}.`);
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e));
+      }
+    },
+  );
+}
+
 // ---- MCP Server creation ----
 
 /**
@@ -1730,6 +1799,7 @@ export function createCommsMcpServer(agent: Agent, task: Task) {
       createReactToMessageTool(agent, task),
       createUnreactFromMessageTool(agent, task),
       createGetMessageReactionsTool(agent, task),
+      createFetchSlackReferenceTool(agent, task),
     ],
   });
 }

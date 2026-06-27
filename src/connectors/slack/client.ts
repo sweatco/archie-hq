@@ -1096,6 +1096,126 @@ export async function getChannelInfo(channelId: string): Promise<{ id: string; n
   }
 }
 
+// ---- Channel canvas tabs + file reads (project-context canvases) ----------
+// A channel canvas pinned as a tab surfaces under conversations.info
+// `channel.properties.tabs[]` (type === 'canvas'). We read the canvas body as a
+// FILE (files.info → url_private_download → bot Bearer GET → HTML); there is no
+// markdown read API for bots. Only `files:read` is required.
+
+interface CanvasTabsCacheEntry {
+  tabs: CanvasTab[];
+  fetchedAt: number;
+}
+const canvasTabsCache = new Map<string, CanvasTabsCacheEntry>();
+const CANVAS_TABS_TTL_MS = 60_000;
+
+/** A canvas tab pinned in a channel header. `title` is best-effort; the
+ *  authoritative title for prefix-matching comes from `getSlackFileInfo`. */
+export interface CanvasTab {
+  file_id: string;
+  title?: string;
+}
+
+/** Metadata for a Slack file (canvas or regular file). */
+export interface SlackFileInfo {
+  url_private?: string;
+  url_private_download?: string;
+  filetype?: string;
+  user?: string;     // creator user id
+  title?: string;
+  name?: string;
+  updated?: number;  // edit timestamp — drives canvas change detection
+}
+
+/**
+ * List canvas tabs pinned in a channel (returns their file ids). Cached for
+ * 1 minute, mirroring `isChannelShared`. DMs never have canvas tabs.
+ */
+export async function getChannelCanvasTabs(channelId: string): Promise<CanvasTab[]> {
+  if (channelId.startsWith('D')) return [];
+
+  const cached = canvasTabsCache.get(channelId);
+  if (cached && Date.now() - cached.fetchedAt < CANVAS_TABS_TTL_MS) {
+    return cached.tabs;
+  }
+
+  try {
+    const client = getSlackClient();
+    const result = await client.conversations.info({ channel: channelId });
+    // `properties` (canvas tabs) isn't in the WebClient types — cast to read it.
+    const channel = result.channel as {
+      properties?: {
+        tabs?: Array<{ type?: string; label?: string; data?: { file_id?: string } }>;
+      };
+    } | undefined;
+    const tabs: CanvasTab[] = [];
+    for (const tab of channel?.properties?.tabs ?? []) {
+      if (tab.type === 'canvas' && tab.data?.file_id) {
+        tabs.push({ file_id: tab.data.file_id, title: tab.label });
+      }
+    }
+    canvasTabsCache.set(channelId, { tabs, fetchedAt: Date.now() });
+    return tabs;
+  } catch (error) {
+    logger.warn('Slack', `Failed to fetch canvas tabs for ${channelId}`, error);
+    return [];
+  }
+}
+
+/** Fetch metadata for a Slack file via `files.info`. Returns null on failure. */
+export async function getSlackFileInfo(fileId: string): Promise<SlackFileInfo | null> {
+  try {
+    const client = getSlackClient();
+    const result = await client.files.info({ file: fileId });
+    const f = result.file as {
+      url_private?: string;
+      url_private_download?: string;
+      filetype?: string;
+      user?: string;
+      title?: string;
+      name?: string;
+      updated?: number;
+      created?: number;
+    } | undefined;
+    if (!f) return null;
+    return {
+      url_private: f.url_private,
+      url_private_download: f.url_private_download,
+      filetype: f.filetype,
+      user: f.user,
+      title: f.title,
+      name: f.name,
+      updated: f.updated ?? f.created,
+    };
+  } catch (error) {
+    logger.warn('Slack', `Failed to fetch file info for ${fileId}`, error);
+    return null;
+  }
+}
+
+/**
+ * Fetch a Slack file body as a UTF-8 string (authenticated with the bot token).
+ * Sibling of `downloadSlackFile`, but returns the body instead of writing to
+ * disk and — crucially — does NOT treat `text/html` as an error: a canvas body
+ * is legitimately HTML (that guard in `downloadSlackFile` exists to catch Slack
+ * auth/login pages, which is a different case).
+ */
+export async function fetchSlackFileBody(fileUrl: string): Promise<string> {
+  const client = getSlackClient();
+  const token = (client as unknown as { token: string }).token;
+
+  const response = await fetch(fileUrl, {
+    headers: { 'Authorization': `Bearer ${token}` },
+    redirect: 'follow',
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch Slack file body: ${response.status} ${response.statusText}`);
+  }
+
+  return await response.text();
+}
+
 
 /**
  * Post a question to a thread and wait for a response

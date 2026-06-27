@@ -27,6 +27,7 @@ import {
   getSlackClient,
   cleanSlackText,
 } from './client.js';
+import { ensureChannelCanvas } from './channel-canvas.js';
 import { Task } from '../../tasks/task.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
@@ -194,6 +195,21 @@ export async function mountSlackApp(
         thread_ts: event.thread_ts,
       }).catch((err: unknown) => logger.error('Server', 'Error processing Slack event', err));
     }
+  });
+
+  // Handle the bot itself being added to a channel — scan for an existing
+  // "Archie" canvas and adopt/announce it immediately (so a canvas already in
+  // the channel isn't missed until the first message). Only the bot's own join
+  // matters; `routeSlackEvent`'s own-bot filter is not on this path, so the
+  // self-join check here is load-bearing.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  app!.event('member_joined_channel', async ({ event }: { event: any }) => {
+    if (getIsShuttingDown()) return;
+    const botUserId = getBotUserId();
+    if (!botUserId || event.user !== botUserId) return;
+    if (typeof event.channel !== 'string' || event.channel.startsWith('D')) return;
+    ensureChannelCanvas(event.channel).catch((err: unknown) =>
+      logger.error('Server', 'Error scanning canvas on channel join', err));
   });
 
   // Handle edit mode approval button
@@ -416,6 +432,12 @@ async function handleSlackEvent(event: {
 
   const thread = await fetchSlackThread(event.channel, threadId, event.ts);
   const shared = await isChannelShared(event.channel);
+
+  // Refresh the channel's "Archie" project-context canvas before the PM wakes,
+  // so the spawn-time injection reads fresh state. No-op for DMs and TTL-bounded.
+  // Runs after the external-author bail-out above, so a purely-external trigger
+  // never causes a scan. Never throws.
+  await ensureChannelCanvas(event.channel);
 
   // const triageResult = await triageSlackMessage(thread);
   // switch (triageResult.action) {

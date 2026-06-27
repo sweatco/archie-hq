@@ -195,6 +195,7 @@ function commsToolPhrase(tool: string): string | null {
   switch (tool) {
     case 'find_slack_user': return 'looking someone up';
     case 'find_slack_channel': return 'finding the right channel';
+    case 'fetch_slack_reference': return 'pulling in a reference';
     default: return null;
   }
 }
