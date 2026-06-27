@@ -74,43 +74,46 @@ async function recoverTaskAgents(task: Task): Promise<void> {
  * Small delay to avoid racing with message delivery
  * (another agent may be about to send a message that wakes this one).
  */
-export function scheduleIdleCheck(task: Task): void {
-  setTimeout(async () => {
-    if (!task.isActive || getIsShuttingDown()) return;
-
-    // A pending teardown means a forced stop (request_edit_mode / research-budget)
-    // already called task.stop(), deferred to this turn's SDK `result` event. The
-    // Stop hook that arms this 3s check fires *before* that result event, and the
-    // gap can exceed 3s — so without this guard the check fires first, sees
-    // isActive still true with all agents parked, and "recovers" an agent that
-    // stop() then orphans mid-turn (→ "Stream closed" loop). Winding down, not stalled.
-    if ([...task.agentProcesses.values()].some((a) => a.pendingTeardown)) return;
-
-    // Act only once the system is quiescent — every agent idle. With agents marked
-    // active at message enqueue, all-idle faithfully means "no work in flight."
-    if (!checkAllAgentsInactive(task)) return;
-
-    // Quiescent. If PM signalled "waiting on no one" (report_completion), park the
-    // task. Otherwise an agent went idle without anyone parking — a dropped ball
-    // → recover. (This branch is the whole completion-vs-stall decision.)
-    if (task.completionIntent) {
-      await task.complete();
-      return;
-    }
-    await triggerRecovery(task);
-  }, 3000);
+/**
+ * What the idle-check should do for a task. Pure (no timers/IO) so the
+ * completion-vs-recover-vs-wait decision is unit-testable:
+ * - `'wait'`     — not active; a forced-stop teardown (request_edit_mode /
+ *                  research-budget) is pending and deferred to turn-end; or not
+ *                  yet quiescent (some agent still active, or none spawned).
+ * - `'complete'` — quiescent and PM signalled completion (report_completion).
+ * - `'recover'`  — quiescent but nobody parked: an agent went idle without
+ *                  reporting (a dropped ball).
+ *
+ * Quiescence relies on agents being marked active at message *enqueue* (see
+ * Task.sendMessage / toolSendMessage), so "all idle" faithfully means "no work
+ * in flight." Shutdown is handled by the caller (it owns the process-global flag).
+ */
+export function idleDecision(
+  task: Pick<Task, 'isActive' | 'completionIntent' | 'agentProcesses'>,
+): 'wait' | 'complete' | 'recover' {
+  if (!task.isActive) return 'wait';
+  const agents = [...task.agentProcesses.values()];
+  // A pending teardown means a forced stop already called task.stop(), deferred
+  // to this turn's SDK `result` event. The Stop hook that arms this check fires
+  // *before* that event (gap can exceed the 3s delay), so without this guard the
+  // check would "recover" an agent that stop() then orphans mid-turn.
+  if (agents.some((a) => a.pendingTeardown)) return 'wait';
+  // Quiescent = at least one agent spawned and none active.
+  if (agents.length === 0) return 'wait';
+  if (agents.some((a) => a.session.active)) return 'wait';
+  return task.completionIntent ? 'complete' : 'recover';
 }
 
-/**
- * Check if all spawned agents are inactive.
- */
-function checkAllAgentsInactive(task: Task): boolean {
-  if (task.agentProcesses.size === 0) return false;
-
-  for (const [, agent] of task.agentProcesses) {
-    if (agent.session.active) return false;
-  }
-  return true;
+export function scheduleIdleCheck(task: Task): void {
+  setTimeout(async () => {
+    if (getIsShuttingDown()) return;
+    const action = idleDecision(task);
+    if (action === 'complete') {
+      await task.complete();
+    } else if (action === 'recover') {
+      await triggerRecovery(task);
+    }
+  }, 3000);
 }
 
 /**

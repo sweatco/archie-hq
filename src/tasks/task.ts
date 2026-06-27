@@ -72,6 +72,21 @@ export const activeTasks = new Map<string, Task>();
 
 // ---- Task class ----
 
+/**
+ * Whether an `updateAgentState` transition should clear a pending completion
+ * intent: PM genuinely re-engaging on a real inactive→active edge. Gating on the
+ * pre-update `wasActive` keeps it edge-exact — the SDK `init` re-fire arrives with
+ * the agent already active (the synchronous enqueue mark won the race), so it must
+ * not re-clear intent on every resumed turn. Pure, for unit testing.
+ */
+export function shouldClearCompletionIntent(
+  agentName: string,
+  active: boolean,
+  wasActive: boolean,
+): boolean {
+  return active && !wasActive && agentName === 'pm-agent';
+}
+
 export class Task {
   readonly taskId: string;
   metadata: TaskMetadata;
@@ -1046,11 +1061,9 @@ export class Task {
 
     // Clear a pending completion intent when PM genuinely re-engages: its prior
     // "waiting on no one" is stale, so the next quiescence should re-decide.
-    // Edge-exact: gate on the real inactive→active transition (agent.session.active
-    // is still the pre-update value here), NOT merely active===true — the SDK
-    // `init` re-fire passes a sessionId and bypasses the idempotency guard above,
-    // so a looser check would clear intent on every resumed turn.
-    if (active && name === 'pm-agent' && agent && !agent.session.active) {
+    // agent.session.active is still the pre-update value here (updateSession runs
+    // below), so this is edge-exact — see shouldClearCompletionIntent.
+    if (agent && shouldClearCompletionIntent(name, active, agent.session.active)) {
       this.completionIntent = false;
     }
 
