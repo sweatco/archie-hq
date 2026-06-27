@@ -78,19 +78,26 @@ export function scheduleIdleCheck(task: Task): void {
   setTimeout(async () => {
     if (!task.isActive || getIsShuttingDown()) return;
 
-    // A pending teardown means a tool (report_completion / request_edit_mode /
-    // research-budget) already called task.complete()/stop(), deferred to this
-    // turn's SDK `result` event. The Stop hook that arms this 3s check fires
-    // *before* that result event, and the gap can exceed 3s — so without this
-    // guard the check fires first, sees isActive still true with all agents
-    // parked, and "recovers" an agent that complete() then orphans mid-turn
-    // (→ "Stream closed" loop). The task is winding down, not stalled.
+    // A pending teardown means a forced stop (request_edit_mode / research-budget)
+    // already called task.stop(), deferred to this turn's SDK `result` event. The
+    // Stop hook that arms this 3s check fires *before* that result event, and the
+    // gap can exceed 3s — so without this guard the check fires first, sees
+    // isActive still true with all agents parked, and "recovers" an agent that
+    // stop() then orphans mid-turn (→ "Stream closed" loop). Winding down, not stalled.
     if ([...task.agentProcesses.values()].some((a) => a.pendingTeardown)) return;
 
-    const allInactive = checkAllAgentsInactive(task);
-    if (allInactive) {
-      await triggerRecovery(task);
+    // Act only once the system is quiescent — every agent idle. With agents marked
+    // active at message enqueue, all-idle faithfully means "no work in flight."
+    if (!checkAllAgentsInactive(task)) return;
+
+    // Quiescent. If PM signalled "waiting on no one" (report_completion), park the
+    // task. Otherwise an agent went idle without anyone parking — a dropped ball
+    // → recover. (This branch is the whole completion-vs-stall decision.)
+    if (task.completionIntent) {
+      await task.complete();
+      return;
     }
+    await triggerRecovery(task);
   }, 3000);
 }
 
@@ -155,9 +162,10 @@ async function triggerRecovery(task: Task): Promise<void> {
         : AGENT_PROMPTS.reinforceAgent;
       targetAgent.queue.addMessage(prompt);
 
-      // Mark agent as active after nudge
-      targetAgent.updateSession(true);
-      task.save();
+      // Mark active after nudge — via updateAgentState (not updateSession) so it
+      // emits agent:active and clears any stale completionIntent on a nudged PM
+      // (which would otherwise park on the next quiescence instead of re-deciding).
+      task.updateAgentState(targetAgent.def.id, true);
     } else {
       // No live agent to nudge — re-spawn rather than silently stalling.
       // recoverTaskAgents re-sends the recovery prompt to previously-active

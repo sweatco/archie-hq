@@ -138,8 +138,16 @@ export class Agent {
 
     const hadSession = !!this.session.session_id;
 
-    // Spawn the SDK process
-    await spawnAgent(this, task);
+    // Spawn the SDK process. spawnAgent marks the agent active up-front (before
+    // MCP/clone setup that can throw); if that setup fails, undo the optimistic
+    // active mark so the agent doesn't linger "active" forever — which would wedge
+    // quiescence/idle detection (the task would never park or recover).
+    try {
+      await spawnAgent(this, task);
+    } catch (err) {
+      task.updateAgentState(this.def.id, false);
+      throw err;
+    }
 
     // Wire crash detection: when the SDK iterator exits, mark inactive.
     if (this.handle) {
