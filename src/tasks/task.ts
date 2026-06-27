@@ -77,11 +77,13 @@ export const activeTasks = new Map<string, Task>();
 /**
  * Per-task serialization for PR-card writes. A PM turn-end (resurfacePrCards)
  * and an async GitHub webhook (refreshPrCardInPlace) can both touch the same
- * PR's card concurrently — and for an inactive task each webhook may even load
- * its own Task instance from disk. Keyed by taskId (not instance), this lock
- * makes card operations run one at a time across instances, so the stored
- * `pr_card.slack.ts`/fingerprint can't be clobbered or leave a deleted message
- * referenced.
+ * PR's card. Keyed by taskId, this lock runs card operations one at a time, so
+ * for the live in-memory instance the stored `pr_card.slack.ts`/fingerprint is
+ * never interleaved (no double-post or reference to a just-deleted message).
+ * For an inactive task two webhooks could load separate instances; the lock
+ * still serializes their writes, and since both recompute the card from the
+ * same fresh GitHub state the result is idempotent. Card writes flush
+ * synchronously (save(true)) so the next op sees them.
  */
 const cardLock = createKeyedLock();
 
@@ -688,7 +690,9 @@ export class Task {
           logger.warn('task', `Failed to (re)post PR card for ${github}#${prNumber}`, error);
         }
       }
-      if (dirty) this.debouncedSave();
+      // Flush synchronously: the fingerprint/slack ref gates future updates, so a
+      // debounced (lossy on restart) write would risk a redundant re-edit.
+      if (dirty) await this.save(true);
     });
   }
 
@@ -722,7 +726,7 @@ export class Task {
         }
         emitEvent('pr_card', this.taskId, { action: 'update', cardId: `${github}#${prNumber}`, ...card });
         target.state.pr_card.fingerprint = fingerprint;
-        this.debouncedSave();
+        await this.save(true); // flush synchronously — the fingerprint gates future updates
       } catch (error) {
         logger.warn('task', `Failed to update PR card for ${github}#${prNumber}`, error);
       }

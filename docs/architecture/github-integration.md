@@ -190,7 +190,7 @@ After a merge check, the orchestrator notifies the PM agent only for noteworthy 
 
 ## PR Cards
 
-A **PR card** is a compact, self-updating summary of a pull request (state, `+/−` lines, files changed, CI verdict, link) rendered in the originating Slack thread and the CLI. It is driven by a channel-agnostic `pr_card` event on the event bus — one event, rendered by every surface (see [Slack Integration → PR Cards](slack-integration.md) for the Slack/CLI rendering).
+A **PR card** is a compact, self-updating summary of a pull request (PR number + head branch, repo, state, and CI progress) rendered in the originating Slack thread and the CLI. It is driven by a channel-agnostic `pr_card` event on the event bus — one event, rendered by every surface (see [Slack Integration → PR Cards](slack-integration.md) for the Slack/CLI rendering).
 
 - **Data**: `GitHubClient.getPRCardData(repo, prNumber)` does a lean PR fetch (head branch, state, head sha) plus a CI summary over `listPRChecks()` (`summarizeCi` in `src/system/pr-card-format.ts` → verdict + `passed`/`total` counts: any failure-class → `failed`; else any pending → `pending`; else `passed`). The snapshot shape is `PrCardData` (`src/types/task.ts`).
 - **Posting**: nothing is posted while the PM works. `Task.resurfacePrCards()` posts/reposts a card for any PR whose `prCardFingerprint` changed since its last card, emitting a `pr_card` `post` event and (on Slack) deleting the old card and reposting at the bottom. It runs **eagerly from `report_completion`** (instant, under the final message) and again from `complete()`/`stop()` (idempotent). The card ref + fingerprint live in `BranchState.pr_card`.
@@ -240,7 +240,7 @@ The system is designed so that the PM agent is only reactivated for GitHub event
 
 - `src/connectors/github/client.ts` -- `GitHubClient` class wrapping `@octokit/app`, `configureGitIdentity()`, `fetchOrigin()`, `getGitHubClient()` singleton; PR ops (`listPRs`, `getPRDetails`, `getPRStatus`, `getPRCardData`, `getPRReviews`, `getReviewThreads`, `getPRComments`, `createPullRequest`, `updatePR`, `addPRComment`, `addReviewComment`, `replyToReviewComment`, `resolveReviewThread` (GraphQL), `requestReReview`, `mergePullRequest`, `closePullRequest`)
 - `src/connectors/github/events.ts` -- `mountGitHubWebhook()` Express handler, `handleGitHubWebhook()`, `maybeRefreshPrCards()` (in-place PR-card updates), `handleExistingTaskDirect()` (with comment dedup)
-- `src/system/pr-card-format.ts` -- pure PR-card formatting shared by Slack + CLI: `rollupCi`, `prCardFingerprint`, `prCardStatsLine`, `prCardTitleLine`, `prCardStateIcon`
+- `src/system/pr-card-format.ts` -- pure PR-card formatting shared by Slack + CLI: `summarizeCi`, `prCardFingerprint`, `prCardSubtitle`, `prCardTitlePlain`, `SLACK_PR_CARD_EMOJI`/`CLI_PR_CARD_EMOJI`
 - `src/connectors/github/webhooks.ts` -- HMAC-SHA256 signature verification, context extraction, deterministic routing (`routeGitHubEvent`, `determineRouteAction`), structured event formatting (`formatGitHubEvent`), merge check debouncing (`handleMergeCheckDirect`)
 - `src/connectors/github/merge.ts` -- Auto-merge logic (`checkAndMergeLinkedPRs`, `triggerMergeCheck`), linked PR collection from `branch_states`, PM notification on conflicts/merges
 - `src/connectors/github/repo-clone.ts` -- Shared-clone lifecycle (`setupSharedClone`, `removeClone`, `CloneCheckout`); each agent gets its own `git clone --shared` from the base repo

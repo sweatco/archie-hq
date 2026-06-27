@@ -660,8 +660,10 @@ export async function findTaskByBranch(
 
   try {
     const { execSync } = await import('child_process');
-    // The branch appears as a branch_states key. Fixed-string grep (-F) because
-    // branch names contain regex-special chars like '/'.
+    // Candidate-narrowing grep: the branch string appears as a branch_states
+    // key (it may also match a current_branch/base_branch value — harmless, the
+    // `branch in branch_states` check below filters those out). Fixed-string
+    // (-F) because branch names contain regex-special chars like '/'.
     const grepResult = execSync(
       `grep -lF '"${branch}"' ${SESSIONS_DIR}/task-*/shared/metadata.json 2>/dev/null || true`,
       { encoding: 'utf-8' }

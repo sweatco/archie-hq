@@ -90,7 +90,9 @@ export function formatGitHubContext(
     context.branch = (pullRequest?.head as Record<string, unknown>)?.ref as string | undefined;
   } else if (eventType === 'pull_request') {
     context.prNumber = pullRequest?.number as number | undefined;
-    context.state = pullRequest?.merged as boolean ? 'merged' : 'closed';
+    // Only meaningful for the `closed` action — don't label an opened/synchronized
+    // PR as 'closed' (a trap for any future consumer of `context.state`).
+    if (action === 'closed') context.state = pullRequest?.merged as boolean ? 'merged' : 'closed';
     context.branch = (pullRequest?.head as Record<string, unknown>)?.ref as string | undefined;
   } else if (eventType === 'issue_comment') {
     const issue = payload.issue as Record<string, unknown> | undefined;
