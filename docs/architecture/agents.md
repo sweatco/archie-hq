@@ -58,10 +58,10 @@ One PM agent instance is spawned per task. It is the orchestrator: it receives a
 | `post_files_to_user` | Upload files to an already-linked thread (default channel or `channel` key). Does not open new destinations. |
 | `share_artifact` | Publish an immutable, deduped snapshot of a file under `<task>/shared/artifacts/` for inter-agent sharing. |
 | `find_slack_user` / `find_slack_channel` | Look up Slack user/channel IDs and metadata (e.g. a channel ID before reading, searching, or posting to it). |
-| `list_channels` | List the channels Archie is a member of (`users.conversations`) — the set the explore/post tools can act on. **Context-aware**: public-only from a public-channel or DM request; private channels listed only when the request originates in a private channel. |
-| `read_channel_history` / `read_thread` | Read a PUBLIC channel's recent messages, or a specific thread — exploration only, not linked to the task. Private channels and DMs are refused (`assertPublicChannel`). |
-| `search_messages` | Search messages across PUBLIC channels Archie is in (`search.messages`, `search:read.public` scope); private/DM matches are excluded. |
-| `post_to_channel` | Post into a channel/thread WITHOUT linking it to the task. Member-gated by Slack; DMs refused. A human reply to a new top-level message posted here starts its own fresh task. |
+| `list_channels` | List the channels readable for this task (`users.conversations`): every public channel Archie's in, **plus this task's own channel** if it's private/a DM (appended from task metadata). Never enumerates other private channels/DMs. |
+| `read_channel_history` / `read_thread` | Read a channel's recent messages, or a specific thread — exploration only, not linked to the task. **Accessible-set gate** (`assertAccessibleChannel`): any public channel, plus this task's own channel (even if private/DM); any *other* private channel/DM is refused. |
+| `search_messages` | Search messages across PUBLIC channels Archie is in (`search.messages`, `search:read.public` only). Standard Slack search — public-only, never reaches private channels/DMs (to find something in this task's own private channel, read it). |
+| `post_to_channel` | Post into **any** channel Archie's a member of — public **or** private (e.g. escalate to a private management channel) — WITHOUT linking it to the task. DMs refused. NOT accessible-set-gated (posting outward is intentional); a prompt guardrail warns against leaking sensitive content. A human reply to a new top-level post here starts its own fresh task. |
 | `assign_task_owner` | Designate an agent as task owner |
 | `report_completion` | Optionally post a final message, then stop the task |
 | `request_edit_mode` | Post an interactive Approve/Deny prompt to the default channel and pause the task |

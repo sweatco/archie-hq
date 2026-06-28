@@ -2,8 +2,10 @@
  * Tests for the Slack client behaviours added in the v32 permissions rework:
  *  - fetchSlackThread.rootAuthorWasBot detection + keeping the bot's root message
  *  - searchSlackMessages excludes private channels / DMs / group DMs
- *  - fetchChannelHistory refuses private channels (assertPublicChannel) and
- *    returns history chronologically
+ *  - fetchChannelHistory / fetchExploreThread accessible-set gate
+ *    (assertAccessibleChannel): public, or this task's own channel via allowedIds;
+ *    other private/DMs refused. History returned chronologically.
+ *  - listBotChannels lists public memberships only
  *
  * The whole Slack WebClient is faked via @slack/web-api. The module is reset
  * before each test so the client's internal caches (channel info, shared status,
@@ -169,10 +171,23 @@ describe('fetchChannelHistory — public only, chronological', () => {
     expect(channel).toMatchObject({ id: 'C_pub', name: 'general' });
     expect(messages.map((m) => m.text)).toEqual(['oldest', 'middle', 'newest']);
   });
+
+  it("allows this task's OWN channel even when it's private (via allowedIds)", async () => {
+    slackApi.conversations.info.mockResolvedValue({
+      ok: true, channel: { id: 'C_own', name: 'mgmt', is_private: true },
+    });
+    slackApi.conversations.history.mockResolvedValue({
+      messages: [rawMsg({ ts: '1.0', user: 'U1', text: 'private but ours' })],
+    });
+
+    const { messages } = await client.fetchChannelHistory('C_own', 30, new Set(['C_own']));
+
+    expect(messages.map((m) => m.text)).toEqual(['private but ours']);
+  });
 });
 
-describe('listBotChannels — bot memberships, context-gated privacy', () => {
-  it('lists the public channels the bot is a member of (public-only by default)', async () => {
+describe('listBotChannels — public memberships only', () => {
+  it('lists the public channels the bot is a member of (never private)', async () => {
     slackApi.users.conversations.mockResolvedValue({
       ok: true,
       channels: [
@@ -187,33 +202,21 @@ describe('listBotChannels — bot memberships, context-gated privacy', () => {
     expect(channels.map((c) => c.id)).toEqual(['C1', 'C2']);
     expect(channels[1]).toMatchObject({ name: 'eng', topic: 'engineering' });
   });
-
-  it('requests private channels too ONLY when includePrivate is set', async () => {
-    slackApi.users.conversations.mockResolvedValue({ ok: true, channels: [] });
-    await client.listBotChannels(true);
-    expect(slackApi.users.conversations).toHaveBeenCalledWith(
-      expect.objectContaining({ types: 'public_channel,private_channel' }),
-    );
-  });
 });
 
-describe('channelIsPrivate — origin-context detector', () => {
-  it('reports a private channel', async () => {
-    slackApi.conversations.info.mockResolvedValue({ ok: true, channel: { id: 'Cp', is_private: true } });
-    expect(await client.channelIsPrivate('Cp')).toBe(true);
+describe('fetchExploreThread — accessible-set gate, no bot filtering', () => {
+  it("allows this task's OWN channel even when it's private (via allowedIds)", async () => {
+    slackApi.conversations.info.mockResolvedValue({
+      ok: true, channel: { id: 'C_own', name: 'mgmt', is_private: true },
+    });
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [rawMsg({ ts: '1.0', user: 'U1', text: 'ours' })],
+    });
+    const { messages } = await client.fetchExploreThread('C_own', '1.0', new Set(['C_own']));
+    expect(messages.map((m) => m.text)).toEqual(['ours']);
   });
-  it('reports a public channel as not private', async () => {
-    slackApi.conversations.info.mockResolvedValue({ ok: true, channel: { id: 'C1', is_private: false } });
-    expect(await client.channelIsPrivate('C1')).toBe(false);
-  });
-  it('fails safe to not-private when the lookup errors', async () => {
-    slackApi.conversations.info.mockRejectedValue(new Error('boom'));
-    expect(await client.channelIsPrivate('Cx')).toBe(false);
-  });
-});
 
-describe('fetchExploreThread — public only, no bot filtering', () => {
-  it('refuses a private channel before reading replies', async () => {
+  it('refuses a private channel that is NOT this task\'s own (no allowedIds)', async () => {
     slackApi.conversations.info.mockResolvedValue({
       ok: true, channel: { id: 'C_pt', name: 'secret', is_private: true },
     });

@@ -254,10 +254,10 @@ Tools are defined in `src/agents/tools.ts` and exposed via MCP servers created p
 | `post_files_to_user` | Upload one or more files as Slack attachments to an already-linked channel; does not open new threads |
 | `share_artifact` | Publish an immutable snapshot to `shared/artifacts/` for inter-agent file sharing (deduped by hash) |
 | `find_slack_user` / `find_slack_channel` | Look up Slack user/channel metadata (e.g. a channel ID before reading, searching, or posting to it) |
-| `list_channels` | List channels Archie is a member of (`users.conversations`); context-aware — public-only from a public/DM request, private channels only from a private-channel request |
-| `read_channel_history` / `read_thread` | Read a PUBLIC channel's recent messages or a specific thread — exploration only, not linked to the task; private channels/DMs refused |
-| `search_messages` | Search messages in PUBLIC channels Archie is in (`search.messages` + `search:read.public`); private/DM matches excluded |
-| `post_to_channel` | Post into a channel/thread NOT linked to the task (fire-and-forget). A human reply to a new top-level post here seeds its own fresh task |
+| `list_channels` | List channels readable for this task: public channels Archie's in (`users.conversations`) + this task's own channel if private/a DM; never other private channels/DMs |
+| `read_channel_history` / `read_thread` | Read a channel's recent messages or a thread — exploration, not linked to the task. Accessible-set gate (`assertAccessibleChannel`): any public channel + this task's own channel (even if private/DM); other private/DMs refused |
+| `search_messages` | Standard Slack search over PUBLIC channels Archie's in (`search.messages` + `search:read.public`); never private/DMs (read this task's own private channel instead) |
+| `post_to_channel` | Post into ANY channel Archie's a member of — public or private (escalation), DMs aside — NOT linked to the task and NOT accessible-set-gated (egress is intentional; prompt guardrail against leaking). A human reply to a new top-level post seeds its own fresh task |
 | `assign_task_owner` | Assign a repo/plugin agent as task owner |
 | `report_completion` | Optionally post a final message via `post_to_user`, then complete the task |
 | `request_edit_mode` | Post Approve/Deny buttons to the default channel and stop the task until the user responds |

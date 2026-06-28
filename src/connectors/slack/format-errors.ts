@@ -40,7 +40,7 @@ export function formatSlackPostError(err: unknown, channel: string): string {
 /** Explore-read failure → guidance (private refused / not a member). */
 export function formatSlackReadError(err: unknown, channel: string): string {
   if (err instanceof PrivateChannelError) {
-    return `Couldn't read ${channel}: it's a private channel or DM. Archie only explores PUBLIC channels.`;
+    return `Couldn't read ${channel}: it's a private channel or DM that isn't this task's own. Reading is limited to public channels (plus the channel this task lives in).`;
   }
   const code = slackErrorCode(err);
   if (code === 'not_in_channel' || code === 'channel_not_found') {
