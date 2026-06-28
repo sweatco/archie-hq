@@ -1302,7 +1302,6 @@ export function migrateRepositoriesShape(metadata: TaskMetadata): boolean {
     const list = (migrated[agentId] ??= []);
     if (!list.some((a) => a.github === attached.github)) {
       list.push(attached);
-      logger.debug('task', `[migrate] task ${metadata.task_id}: ${key} -> ${agentId}/${primary}`);
     } else {
       logger.warn('task', `[migrate] task ${metadata.task_id}: skipping legacy ${key} — ${agentId} already has ${attached.github}`);
     }
