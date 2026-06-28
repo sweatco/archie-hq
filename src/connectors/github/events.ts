@@ -20,11 +20,13 @@ import {
   formatGitHubContext,
   formatGitHubEvent,
   verifyWebhookSignature,
+  extractBranchFromPayload,
 } from './webhooks.js';
 import { Task } from '../../tasks/task.js';
-import { appendGitHubEvent } from '../../tasks/persistence.js';
+import { appendGitHubEvent, findTaskByPRNumber, findTaskByBranch } from '../../tasks/persistence.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { findBranchStateByPR } from './branch-state.js';
+import { extractTaskIdFromBranch } from './branch-naming.js';
 import { logger } from '../../system/logger.js';
 import { getIsShuttingDown } from '../../system/shutdown.js';
 import { WORKDIR } from '../../system/workdir.js';
@@ -115,6 +117,10 @@ async function handleGitHubWebhook(
       (context.state ? ` state=${context.state}` : '')
   );
 
+  // Keep PR cards fresh on CI completion and PR close, independent of the
+  // merge/checks routing decision (CI-success check_suites route to noop).
+  await maybeRefreshPrCards(eventType, payload, context);
+
   const route = await routeGitHubEvent(eventType, payload);
 
   if (route.action === 'discard') {
@@ -131,6 +137,122 @@ async function handleGitHubWebhook(
       handleChecksReadyDirect(route.taskId, route.githubRepo, route.prNumber);
     }
   }
+}
+
+/**
+ * Per-(repo+branch) debounce for CI-driven PR-card refreshes. A single PR
+ * completion fans out into many webhooks (one check_run per job, plus the
+ * check_suite and workflow_run), each of which would otherwise trigger its own
+ * card refresh + GitHub fetch. Coalesce them into one refresh shortly after the
+ * burst settles; the refresh re-reads all checks, so the final count is correct.
+ */
+const cardRefreshTimers = new Map<string, NodeJS.Timeout>();
+const CARD_REFRESH_DEBOUNCE_MS = 2500;
+
+/**
+ * Resolve the task that owns this event's branch/PR, but only if it already has
+ * a posted PR card (the first card is posted at the PM turn-end, not here).
+ * Resolution order: `archie/{taskId}` branch pattern → branch lookup (handles
+ * semantically-named branches and PR-number-less events like workflow_run) →
+ * PR number. Returns null (with a debug log) when nothing resolves.
+ */
+async function resolveCardTask(
+  eventType: string,
+  payload: Record<string, unknown>,
+  context: ReturnType<typeof formatGitHubContext>
+): Promise<Task | null> {
+  // Resolve the task *id* from the event: the `archie/{id}` branch pattern is a
+  // pure regex (no disk); the branch / PR-number lookups are disk greps used
+  // only as a fallback for non-archie branches (e.g. PR-number-less
+  // workflow_run events). They locate the id — they don't read task state.
+  const branch = extractBranchFromPayload(eventType, payload);
+  let taskId = extractTaskIdFromBranch(branch);
+  if (!taskId && branch) taskId = (await findTaskByBranch(context.githubRepo, branch)) ?? undefined;
+  if (!taskId && context.prNumber) {
+    taskId = (await findTaskByPRNumber(context.githubRepo, context.prNumber)) ?? undefined;
+  }
+  if (!taskId) {
+    logger.system(`PR card: ${eventType}/${context.action} on ${context.githubRepo} (branch=${branch ?? '?'}, pr=${context.prNumber ?? '?'}) — no task resolved`);
+    return null;
+  }
+
+  // Task.get returns the live in-memory instance for an active task and loads
+  // from disk only for an inactive one — so task state is always read from the
+  // authoritative source. (The removed `hasCard` pre-check was a separate raw
+  // disk read that could be stale against an active task; that was the bug.)
+  try {
+    return await Task.get(taskId);
+  } catch {
+    return null; // task not found / unreadable
+  }
+}
+
+/**
+ * Update PR cards in place for events that change a card without an accompanying
+ * PM message: CI completion (check_run / check_suite / workflow_run completed)
+ * and PR close/merge. Routing-independent so it also catches CI *successes*,
+ * which route to noop. CI refreshes are debounced; PR close is immediate.
+ */
+async function maybeRefreshPrCards(
+  eventType: string,
+  payload: Record<string, unknown>,
+  context: ReturnType<typeof formatGitHubContext>
+): Promise<void> {
+  // Re-sync the card from a broad set of received PR events, not just CI
+  // completions. Two reasons: (1) a check *appearing* (check_run.created, a
+  // commit `status` post like TeamCity's queued build, check_suite.requested)
+  // bumps the total so the count tracks 0/2 → 0/3 → 0/4; (2) crucially, some CI
+  // results only reach us indirectly — e.g. Danger reports a failure via a
+  // commit status + an issue_comment, and depending on the GitHub App's event
+  // subscriptions the only signal we reliably receive may be the comment. So
+  // any PR-scoped event is a chance to re-fetch checks and refresh. The refresh
+  // is always in-place (never moves the card), debounced per branch, and
+  // fingerprint-gated, so broadening the triggers is cheap and safe. PR title/
+  // description edits are deliberately excluded (the `edited` action isn't here,
+  // and the fingerprint ignores title/body) so editing those never touches it.
+  const isPrClosed = eventType === 'pull_request' && context.action === 'closed';
+  const isCardRelevant =
+    isPrClosed ||
+    eventType === 'check_run' ||
+    eventType === 'check_suite' ||
+    eventType === 'workflow_run' ||
+    eventType === 'status' ||
+    eventType === 'push' ||
+    eventType === 'issue_comment' ||
+    eventType === 'pull_request_review' ||
+    eventType === 'pull_request_review_comment' ||
+    (eventType === 'pull_request' &&
+      (context.action === 'synchronize' || context.action === 'opened' || context.action === 'reopened'));
+  if (!isCardRelevant) return;
+
+  if (isPrClosed) {
+    const task = await resolveCardTask(eventType, payload, context);
+    if (task && context.prNumber) {
+      try {
+        await task.refreshPrCardInPlace(context.githubRepo, context.prNumber);
+      } catch (error) {
+        logger.warn('Server', `PR card refresh failed on PR close`, error);
+      }
+    }
+    return;
+  }
+
+  // CI: debounce the burst (per repo+branch) into a single refresh.
+  const branch = extractBranchFromPayload(eventType, payload);
+  const key = `${context.githubRepo}:${branch ?? context.prNumber ?? '?'}`;
+  const existing = cardRefreshTimers.get(key);
+  if (existing) clearTimeout(existing);
+  cardRefreshTimers.set(key, setTimeout(() => {
+    cardRefreshTimers.delete(key);
+    void (async () => {
+      try {
+        const task = await resolveCardTask(eventType, payload, context);
+        if (task) await task.refreshAllPrCards();
+      } catch (error) {
+        logger.warn('Server', `PR card CI refresh failed (${key})`, error);
+      }
+    })();
+  }, CARD_REFRESH_DEBOUNCE_MS));
 }
 
 /**

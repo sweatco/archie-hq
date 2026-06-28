@@ -6,10 +6,14 @@
  */
 
 import { mkdir, writeFile } from 'fs/promises';
-import type { AgentName, SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata } from '../types/task.js';
+import type { AgentName, SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, BranchState } from '../types/task.js';
 import { CLI_CHANNEL_KEY } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
 import { isPmAgent, isRepoAgent } from '../types/agent.js';
+import { modelDisplayLabel, resolveAgentModel } from '../agents/model-label.js';
+import { prCardFingerprint, prCardTitlePlain } from '../system/pr-card-format.js';
+import { getGitHubClient } from '../connectors/github/client.js';
+import { createKeyedLock } from '../system/keyed-lock.js';
 
 /**
  * Target for postToUser — controls where the message is delivered.
@@ -57,7 +61,7 @@ import { scheduleIdleCheck } from './recovery.js';
 import { scanAgentDefs, getAgentDef, getVisiblePeerIdsForSender, synthesizeDynamicAgentDef } from '../agents/registry.js';
 import type { AttachedRepo } from '../types/task.js';
 import { syncPlugins } from '../system/plugin-sync.js';
-import { postSlackMessage, postSlackFiles, postInteractiveToThreads, addReaction, removeReaction, getMessageReactions, buildThreadUrl, openDMChannel, getChannelInfo, getUserInfo, isExternalUser, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, openDMChannel, getChannelInfo, getUserInfo, isExternalUser, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
 import { basename } from 'path';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
@@ -69,6 +73,19 @@ import { agentDomainLabel, deriveActivityFromEvent } from '../agents/activity.js
 // ---- Global state ----
 
 export const activeTasks = new Map<string, Task>();
+
+/**
+ * Per-task serialization for PR-card writes. A PM turn-end (resurfacePrCards)
+ * and an async GitHub webhook (refreshPrCardInPlace) can both touch the same
+ * PR's card. Keyed by taskId, this lock runs card operations one at a time, so
+ * for the live in-memory instance the stored `pr_card.slack.ts`/fingerprint is
+ * never interleaved (no double-post or reference to a just-deleted message).
+ * For an inactive task two webhooks could load separate instances; the lock
+ * still serializes their writes, and since both recompute the card from the
+ * same fresh GitHub state the result is idempotent. Card writes flush
+ * synchronously (save(true)) so the next op sees them.
+ */
+const cardLock = createKeyedLock();
 
 // ---- Task class ----
 
@@ -366,6 +383,10 @@ export class Task {
    */
   async postToUser(message: string, agentName?: string, target?: PostTarget): Promise<string | null> {
     const sender = agentName || 'system';
+    // Grey footer (task id + PM model) appended to every user-facing message:
+    // a Slack `context` block, and the same string on the `message` event so the
+    // CLI can render it dimmed (see logOutgoingMessage / TaskDetail).
+    const footer = this.buildUserFooter();
 
     // New DM — open DM channel, reuse existing thread or create new
     if (target?.new_dm) {
@@ -376,17 +397,18 @@ export class Task {
           channel: existing.channel.channel_id,
           threadTs: existing.channel.thread_id,
           text: message,
+          footer,
         });
-        this.logOutgoingMessage(sender, message, Task.formatSlackDest(existing.channel).display, existing.channel);
+        this.logOutgoingMessage(sender, message, Task.formatSlackDest(existing.channel).display, existing.channel, footer);
         return existing.key;
       } else {
         const userInfo = await getUserInfo(target.new_dm);
         const channelName = `DM with ${userInfo.realName}`;
-        const ts = await postSlackMessage({ channel: dmChannelId, text: message });
+        const ts = await postSlackMessage({ channel: dmChannelId, text: message, footer });
         if (!ts) return null; // dry-run
         const key = this.registerSlackChannel(dmChannelId, ts, channelName);
         const ch = this.metadata.channels[key] as SlackChannel;
-        this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch);
+        this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch, footer);
         return key;
       }
     }
@@ -394,11 +416,11 @@ export class Task {
     // New thread in a channel
     if (target?.new_thread) {
       const channelInfo = await getChannelInfo(target.new_thread);
-      const ts = await postSlackMessage({ channel: target.new_thread, text: message });
+      const ts = await postSlackMessage({ channel: target.new_thread, text: message, footer });
       if (!ts) return null; // dry-run
       const key = this.registerSlackChannel(target.new_thread, ts, channelInfo.name);
       const ch = this.metadata.channels[key] as SlackChannel;
-      this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch);
+      this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch, footer);
       return key;
     }
 
@@ -406,8 +428,8 @@ export class Task {
     if (target?.channel) {
       const ch = this.metadata.channels[target.channel];
       if (ch?.type === 'slack') {
-        await postSlackMessage({ channel: ch.channel_id, threadTs: ch.thread_id, text: message });
-        this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch);
+        await postSlackMessage({ channel: ch.channel_id, threadTs: ch.thread_id, text: message, footer });
+        this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch, footer);
       }
       return null;
     }
@@ -421,10 +443,10 @@ export class Task {
       return null;
     }
     if (defaultCh.type === 'slack') {
-      await postSlackMessage({ channel: defaultCh.channel_id, threadTs: defaultCh.thread_id, text: message });
-      this.logOutgoingMessage(sender, message, Task.formatSlackDest(defaultCh).display, defaultCh);
+      await postSlackMessage({ channel: defaultCh.channel_id, threadTs: defaultCh.thread_id, text: message, footer });
+      this.logOutgoingMessage(sender, message, Task.formatSlackDest(defaultCh).display, defaultCh, footer);
     } else if (defaultCh.type === 'cli') {
-      this.logOutgoingMessage(sender, message, 'cli');
+      this.logOutgoingMessage(sender, message, 'cli', undefined, footer);
     }
     return null;
   }
@@ -477,11 +499,11 @@ export class Task {
     };
   }
 
-  private logOutgoingMessage(sender: string, message: string, destination: string, slackChannel?: SlackChannel): void {
+  private logOutgoingMessage(sender: string, message: string, destination: string, slackChannel?: SlackChannel, footer?: string): void {
     const display = destination;
     const logDest = slackChannel ? Task.formatSlackDest(slackChannel).log : destination;
     logger.agentToSlack(sender, message, { destination: display });
-    emitEvent('message', this.taskId, { from: sender, to: 'user', destination: display, message });
+    emitEvent('message', this.taskId, { from: sender, to: 'user', destination: display, message, ...(footer ? { footer } : {}) });
     appendMessageToUser(this.taskId, sender, message, logDest);
     // The app just posted into the thread — Slack auto-clears the loading
     // indicator, so sync our notion of what's shown (re-pushes if work continues).
@@ -571,6 +593,151 @@ export class Task {
       ? this.metadata.channels[channelKey]
       : (this.metadata.default_channel ? this.metadata.channels[this.metadata.default_channel] : null);
     return ch?.type === 'slack' ? ch : null;
+  }
+
+  /**
+   * Build the grey footer appended to every user-facing message: the task id
+   * plus the PM's resolved model label (preserving any `[1m]` marker). Reads the
+   * PM agent's configured model, mirroring spawn's `def.model || 'opus'` default.
+   */
+  private buildUserFooter(): string {
+    const labels = this.collectModelsUsed().map(modelDisplayLabel);
+    return `${this.taskId} · ${labels.join(' + ')}`;
+  }
+
+  /**
+   * The distinct models the task has actually used, PM first. Reads the PM from
+   * the team roster (always present, so the footer is right even before the PM
+   * process spawns) and every spawned agent's resolved model, deduped in order.
+   * As specialists join, the footer grows (e.g. `Opus 4.8 + Sonnet 4.6 (1M)`).
+   */
+  private collectModelsUsed(): string[] {
+    const raw: string[] = [];
+    const pmDef = this.team.find((d) => isPmAgent(d));
+    if (pmDef) raw.push(resolveAgentModel(pmDef));
+    for (const a of this.agentProcesses.values()) raw.push(resolveAgentModel(a.def));
+    if (raw.length === 0) raw.push('opus');
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const m of raw) {
+      if (seen.has(m)) continue;
+      seen.add(m);
+      out.push(m);
+    }
+    return out;
+  }
+
+  // ---- PR cards ----------------------------------------------------------
+  //
+  // A PR card is a compact, updating block describing a pull request. It is
+  // driven by a channel-agnostic `pr_card` event (rendered by the CLI / any SSE
+  // client) and, for tasks with a Slack channel, a posted Slack message. Cards
+  // are coalesced to PM turn-ends (resurfacePrCards, called from complete/stop)
+  // and updated in place on async GitHub webhooks (refreshPrCardInPlace).
+
+  /**
+   * Collect every PR tracked by this task (deduped by repo#number), along with
+   * the branch state that owns its card bookkeeping.
+   */
+  private collectPrCards(): Array<{ github: string; prNumber: number; state: BranchState }> {
+    const seen = new Set<string>();
+    const out: Array<{ github: string; prNumber: number; state: BranchState }> = [];
+    for (const attachments of Object.values(this.metadata.repositories)) {
+      if (!Array.isArray(attachments)) continue;
+      for (const attached of attachments) {
+        for (const state of Object.values(attached.branch_states ?? {})) {
+          if (!state.pr_number) continue;
+          const cardId = `${attached.github}#${state.pr_number}`;
+          if (seen.has(cardId)) continue;
+          seen.add(cardId);
+          out.push({ github: attached.github, prNumber: state.pr_number, state });
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * (Re)post PR cards for any PR that changed since its last card. Called when
+   * the PM yields its turn to the user (complete/stop), so a card lands right
+   * under the PM's final message. On change, the Slack card is deleted and
+   * reposted at the bottom (resurface); the CLI re-anchors via the `pr_card`
+   * event. Unchanged PRs are skipped. Best-effort — never throws.
+   */
+  async resurfacePrCards(): Promise<void> {
+    const client = getGitHubClient();
+    if (!client) return;
+    await cardLock(this.taskId, async () => {
+      const slack = this.resolveSlackChannel();
+      let dirty = false;
+      for (const { github, prNumber, state } of this.collectPrCards()) {
+        try {
+          const card = await client.getPRCardData(github, prNumber);
+          const fingerprint = prCardFingerprint(card);
+          if (state.pr_card && state.pr_card.fingerprint === fingerprint) continue; // unchanged
+          // Do the Slack work first; only emit + persist once it lands, so a
+          // failed repost doesn't diverge the CLI (which renders off the event).
+          let slackRef = state.pr_card?.slack;
+          if (slack) {
+            if (slackRef?.ts) await deleteMessage(slackRef.channel_id, slackRef.ts);
+            const ts = await postInteractiveToThread(slack.channel_id, slack.thread_id, prCardTitlePlain(card), buildPrCardBlocks(card));
+            slackRef = ts ? { ts, channel_id: slack.channel_id, thread_id: slack.thread_id } : undefined;
+          }
+          emitEvent('pr_card', this.taskId, { action: 'post', cardId: `${github}#${prNumber}`, ...card });
+          state.pr_card = { fingerprint, ...(slackRef ? { slack: slackRef } : {}) };
+          dirty = true;
+        } catch (error) {
+          logger.warn('task', `Failed to (re)post PR card for ${github}#${prNumber}`, error);
+        }
+      }
+      // Flush synchronously: the fingerprint/slack ref gates future updates, so a
+      // debounced (lossy on restart) write would risk a redundant re-edit.
+      if (dirty) await this.save(true);
+    });
+  }
+
+  /**
+   * Update an already-posted PR card in place (no resurface) — used by async
+   * GitHub webhooks (CI conclusion, PR merged/closed). No-ops if the PR has no
+   * card yet (the first card waits for the next PM turn-end). Best-effort.
+   */
+  async refreshPrCardInPlace(github: string, prNumber: number): Promise<void> {
+    const client = getGitHubClient();
+    if (!client) return;
+    await cardLock(this.taskId, async () => {
+      // Re-resolve under the lock — a concurrent resurface may have just created
+      // or replaced this card.
+      const target = this.collectPrCards().find((c) => c.github === github && c.prNumber === prNumber);
+      if (!target || !target.state.pr_card) {
+        logger.system(`PR card ${github}#${prNumber}: no card posted yet — skipping in-place update`);
+        return;
+      }
+      try {
+        const card = await client.getPRCardData(github, prNumber);
+        const fingerprint = prCardFingerprint(card);
+        if (target.state.pr_card.fingerprint === fingerprint) {
+          logger.system(`PR card ${github}#${prNumber}: unchanged (${fingerprint}) — no update`);
+          return;
+        }
+        const slackRef = target.state.pr_card.slack;
+        logger.system(`PR card ${github}#${prNumber}: updating in place (${target.state.pr_card.fingerprint} → ${fingerprint}), slack=${slackRef?.ts ? 'yes' : 'no'}`);
+        if (slackRef?.ts) {
+          await updateMessage(slackRef.channel_id, slackRef.ts, prCardTitlePlain(card), buildPrCardBlocks(card));
+        }
+        emitEvent('pr_card', this.taskId, { action: 'update', cardId: `${github}#${prNumber}`, ...card });
+        target.state.pr_card.fingerprint = fingerprint;
+        await this.save(true); // flush synchronously — the fingerprint gates future updates
+      } catch (error) {
+        logger.warn('task', `Failed to update PR card for ${github}#${prNumber}`, error);
+      }
+    });
+  }
+
+  /** Update every PR card this task has already posted (used on CI webhooks). */
+  async refreshAllPrCards(): Promise<void> {
+    for (const { github, prNumber, state } of this.collectPrCards()) {
+      if (state.pr_card) await this.refreshPrCardInPlace(github, prNumber);
+    }
   }
 
   /**
@@ -728,6 +895,10 @@ export class Task {
       return;
     }
 
+    // PM has yielded the turn — (re)post any changed PR cards so they land under
+    // the final message. Best-effort; must never block teardown.
+    await this.resurfacePrCards().catch((e) => logger.warn('task', 'PR card resurface failed on stop', e));
+
     this.isActive = false;
     activeTasks.delete(this.taskId);
     this.clearTaskTimeout();
@@ -768,6 +939,10 @@ export class Task {
       logger.system(`Task ${this.taskId} already completed/stopped`);
       return;
     }
+
+    // PM has yielded the turn — (re)post any changed PR cards so they land under
+    // the final message. Best-effort; must never block teardown.
+    await this.resurfacePrCards().catch((e) => logger.warn('task', 'PR card resurface failed on complete', e));
 
     this.isActive = false;
     activeTasks.delete(this.taskId);

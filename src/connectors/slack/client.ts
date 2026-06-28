@@ -7,6 +7,8 @@
 
 import { WebClient } from '@slack/web-api';
 import type { SlackThreadRef, SlackFile, SlackThread, SlackThreadMessage, SlackAuthor, SlackAttachment, SlackReaction } from '../../types/index.js';
+import type { PrCardData } from '../../types/task.js';
+import { prCardSubtitle, SLACK_PR_CARD_EMOJI } from '../../system/pr-card-format.js';
 
 /**
  * Internal raw shape produced by `fetchThreadHistory`. Carries the unresolved
@@ -176,8 +178,13 @@ export async function postSlackMessage(args: {
   channel: string;
   text: string;
   threadTs?: string;
+  /**
+   * Optional grey footer line rendered as a trailing `context` block beneath the
+   * message (e.g. the task id + PM model). Short and plain — not length-checked.
+   */
+  footer?: string;
 }): Promise<string | undefined> {
-  const { channel, text, threadTs } = args;
+  const { channel, text, threadTs, footer } = args;
   if (dryRun) {
     const target = threadTs ? `${channel}:${threadTs}` : channel;
     logger.system(`[DRY RUN] postSlackMessage ${target} — ${text.slice(0, 120)}`);
@@ -186,11 +193,15 @@ export async function postSlackMessage(args: {
   const renderedText = restoreMentions(text);
   assertSlackMarkdownLength(renderedText);
   const client = getSlackClient();
+  const blocks = markdownBlock(renderedText);
+  if (footer) {
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: footer }] });
+  }
   const result = await client.chat.postMessage({
     channel,
     ...(threadTs ? { thread_ts: threadTs } : {}),
     text: renderedText,
-    blocks: markdownBlock(renderedText) as any,
+    blocks: blocks as any,
   });
   return result.ts;
 }
@@ -359,6 +370,42 @@ export async function updateMessage(
     text,
     blocks: blocks as any,
   });
+}
+
+/**
+ * Delete a message by timestamp. Used to drop a stale PR card before reposting
+ * a fresh one at the bottom of the thread. Best-effort — swallows errors
+ * (message already gone, missing scope, etc.) so a failed delete never blocks
+ * the repost.
+ */
+export async function deleteMessage(channel: string, ts: string): Promise<void> {
+  if (dryRun) {
+    logger.system(`[DRY RUN] deleteMessage ${channel}:${ts}`);
+    return;
+  }
+  try {
+    const client = getSlackClient();
+    await client.chat.delete({ channel, ts });
+  } catch (error) {
+    logger.warn('Slack', `Failed to delete message ${channel}:${ts}`, error);
+  }
+}
+
+/**
+ * Build the Block Kit `card` block for a PR card: a title row (`#number` linked
+ * to the PR, then the head branch) and a subtitle (`repo · CI summary`, or the
+ * merged/closed state). Subtitle text is shared with the CLI via
+ * `pr-card-format`; here it uses Slack emoji shortcodes.
+ */
+export function buildPrCardBlocks(card: PrCardData): unknown[] {
+  const escape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return [
+    {
+      type: 'card',
+      title: { type: 'mrkdwn', text: `<${card.url}|#${card.prNumber}> ${escape(card.headRef)}` },
+      subtitle: { type: 'mrkdwn', text: prCardSubtitle(card, SLACK_PR_CARD_EMOJI) },
+    },
+  ];
 }
 
 /**

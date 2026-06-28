@@ -128,12 +128,42 @@ export const CLI_CHANNEL_KEY = 'cli:local' as const;
 
 export type Channel = SlackChannel | GitHubChannel | CliChannel;
 
+/**
+ * Snapshot of a pull request as shown on its "PR card" — the compact, updating
+ * block rendered in Slack and the CLI. Carried verbatim in the `pr_card` event
+ * (so every surface renders the same data) and used to build the Slack blocks.
+ */
+export interface PrCardData {
+  repo: string;          // 'owner/name'
+  prNumber: number;
+  url: string;           // html_url to the PR
+  headRef: string;       // head branch name, shown in the card title
+  state: 'open' | 'merged' | 'closed';
+  head_sha: string;
+  ci: 'none' | 'pending' | 'passed' | 'failed';  // rolled-up CI verdict
+  ciPassed: number;      // checks concluded OK
+  ciTotal: number;       // total checks (0 = no CI)
+}
+
+/**
+ * Per-PR card bookkeeping stored on the branch state. `fingerprint` is the
+ * channel-agnostic "has this card changed?" gate (see `prCardFingerprint`);
+ * `slack` holds the posted message ref so it can be deleted/reposted (resurface)
+ * or edited in place. The CLI keeps no server-side state — it folds the
+ * `pr_card` event stream client-side.
+ */
+export interface PrCardState {
+  fingerprint: string;
+  slack?: { ts: string; channel_id: string; thread_id: string };
+}
+
 /** Per-branch state — tracks PR lifecycle and stash */
 export interface BranchState {
   base_branch?: string;                // PR target branch (e.g. 'main', 'master')
   pr_number?: number;                  // PR associated with this branch
   last_processed_comment_id?: number;  // triage tracking for this branch's PR
   stash_name?: string;                 // set if dirty work was auto-stashed when leaving
+  pr_card?: PrCardState;               // PR-card message ref + change-detection fingerprint
 }
 
 /**

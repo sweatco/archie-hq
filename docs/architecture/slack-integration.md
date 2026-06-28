@@ -156,6 +156,24 @@ There is no `post_to_slack` MCP tool and no event-bus subscription that ferries 
 
 `@<U…:Real Name>` mention syntax used in agent prompts is converted back to Slack's `<@U…>` form by `restoreMentions` inside `postSlackMessage` so notifications fire correctly.
 
+## Message Footer
+
+Every user-facing message carries a small grey footer: `task-<id> · <models>`, where `<models>` is the **distinct set of models the task has actually used** — PM first, then each spawned specialist — joined with ` + ` (e.g. `task-20260626-2130-a3f9k2 · Opus 4.8 + Sonnet 4.6 (1M)`). As more agents join, the set grows. It is built once per send by `Task.buildUserFooter()` → `collectModelsUsed()` (each agent's model resolved via `resolveAgentModel`, shared with `spawn.ts` so the labels can't drift), then beautified by `modelDisplayLabel` in `src/agents/model-label.ts` (drops the `claude-` prefix, capitalises the family, dots the version, renders the `[1m]` 1M-context window as `(1M)`). Delivered to both surfaces:
+
+- **Slack** — `postToUser` passes it as `postSlackMessage({ …, footer })`, which appends a trailing `context` block beneath the `markdown` block.
+- **CLI** — `logOutgoingMessage` includes `footer` in the `message` event data; `TaskDetail.tsx` renders it dimmed under the message text. Slack ignores the event field (it uses the context block).
+
+The task id is plain text today; it is the single render site to later wrap in a session-share link.
+
+## PR Cards
+
+When a repo agent opens a PR, Archie posts a compact, self-updating **PR card** so it's obvious a PR exists, its state, and CI progress. The card is driven by a channel-agnostic `pr_card` event (see [GitHub Integration → PR Cards](github-integration.md)); Slack is one renderer:
+
+- `buildPrCardBlocks` emits a Block Kit **`card`** block: a title row (`<url|#number> head-branch`) and a subtitle (`repo · CI summary`), e.g. `sweatcoin-mobile · :hourglass: CI checks (1/2)`. A merged/closed PR shows its final state in the subtitle instead of CI. Subtitle text is shared with the CLI via `pr-card-format`; Slack uses emoji shortcodes (`:hourglass:`/`:white_check_mark:`/`:x:`/`:large_purple_circle:`).
+- `Task.resurfacePrCards()` posts the card with `postInteractiveToThread` into the default thread and stores the message `ts` in `BranchState.pr_card.slack`. It runs **eagerly from `report_completion`** (right after the final message, so the card appears instantly rather than at deferred teardown) and again from `complete()`/`stop()` as an idempotent safety net.
+- When the PR changed since its last card, the old card is **deleted** (`deleteMessage`) and reposted at the bottom so it sits under the PM's final message.
+- Async GitHub webhooks (CI conclusion, merge/close) call `Task.refreshPrCardInPlace`, which **edits** the existing message via `updateMessage` (no resurface — the card stays put). The fingerprint excludes PR title/description, so editing those never moves or refreshes the card.
+
 ## Live Status Indicator
 
 While a task is being worked on, Archie shows a live "**Archie is …**" status line of what it's currently doing. This is a **surface-agnostic** capability: one status string is composed per task and rendered to whatever surfaces are available — the CLI, the logs, and Slack. Slack happens to render it natively as the assistant-thread loading shimmer under the composer (via `assistant.threads.setStatus`, the progress sibling of the title pipeline — same `client.assistant.threads.*` accessor and `channel_id` + `thread_ts`, wrapped best-effort in `src/connectors/slack/status.ts`). Slack auto-prepends the app name, so the string is always a verb fragment (`"is checking mobile and backend…"` → "**Archie** is checking mobile and backend…"). Since the 2026-03 platform change `setStatus` accepts `chat:write` as well as `assistant:write`, so it works in regular channel threads as well as DM/assistant threads — Archie sets it on every linked, non-muted Slack thread. (Documented here because Slack is the primary renderer; the engine itself is generic and lives in `src/tasks/status.ts`.)

@@ -98,6 +98,10 @@ Calling `report_completion` doesn't abandon work - it means "I've responded to m
 
 - After internal coordination steps that don't need user visibility
 
+### PR cards — the user sees CI live
+
+Opening a PR auto-posts a **PR card** to the user's chat with the link, state, and live-updating CI status. So don't monitor or poll CI, don't ask a teammate to "watch the checks," and don't narrate CI progress — the card shows it. Reporting the PR is the deliverable; act only on a definitive CI failure that needs a fix (delegate it, then end your turn).
+
 ## Available Tools
 
 ### Action Tools

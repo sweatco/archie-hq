@@ -19,6 +19,8 @@ import type {
   PRChecksReport,
   PRCheckEntry,
 } from '../../agents/tools.js';
+import type { PrCardData } from '../../types/task.js';
+import { summarizeCi } from '../../system/pr-card-format.js';
 import { logger } from '../../system/logger.js';
 
 const execAsync = promisify(exec);
@@ -414,6 +416,43 @@ export class GitHubClient {
       base: pr.base.ref,
       diff: String(diffResponse.data),
       url: pr.html_url,
+    };
+  }
+
+  /**
+   * Fetch the compact data shown on a PR card: head branch, state, head sha, and
+   * a CI summary (verdict + passed/total counts). Lean by design — the PR
+   * endpoint plus `listPRChecks` for CI; avoids `getPRDetails` (full diff).
+   */
+  async getPRCardData(githubRepo: string, prNumber: number): Promise<PrCardData> {
+    const octokit = await this.getOctokit();
+    const { owner, repo } = this.parseRepo(githubRepo);
+
+    const prResponse = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+      owner, repo, pull_number: prNumber,
+    });
+    const pr = prResponse.data;
+    const state: PrCardData['state'] = pr.merged ? 'merged' : (pr.state as 'open' | 'closed');
+
+    let ci = { state: 'none' as PrCardData['ci'], passed: 0, total: 0 };
+    try {
+      const checks = await this.listPRChecks(githubRepo, prNumber);
+      ci = summarizeCi(checks.entries);
+    } catch (error) {
+      // CI is best-effort — a card without a verdict is better than no card.
+      logger.warn('GitHub', `Failed to fetch checks for PR #${prNumber} card`, error);
+    }
+
+    return {
+      repo: githubRepo,
+      prNumber,
+      url: pr.html_url,
+      headRef: pr.head.ref,
+      state,
+      head_sha: pr.head.sha,
+      ci: ci.state,
+      ciPassed: ci.passed,
+      ciTotal: ci.total,
     };
   }
 

@@ -150,6 +150,8 @@ Write:
 4. `create_pull_request(title, body)` with a clear description
 5. Notify pm-agent: "PR #123 created: <url>"
 
+**Don't wait for CI after opening a PR.** The user sees checks live in a self-updating PR card — there's nothing to watch. Never `sleep` or loop on `get_pr_checks` waiting for checks; report the PR and stop. Inspect checks only when asked to fix a specific failure.
+
 ### Handling Reviews
 
 1. `get_pr_reviews(pr_number)` for review-level verdicts (approvals, change requests); `get_review_threads(pr_number)` for inline comments with their `thread_id` and `comment_id`

@@ -4,6 +4,31 @@ import Spinner from 'ink-spinner';
 import { ScrollView, type ScrollViewRef } from 'ink-scroll-view';
 import { fetchTaskDetail, fetchTaskEvents, sendMessage, sendApproval } from '../api.js';
 import { MessageInput } from './MessageInput.js';
+import type { PrCardData } from '../../types/task.js';
+import { prCardSubtitle, CLI_PR_CARD_EMOJI } from '../../system/pr-card-format.js';
+
+/**
+ * Render a PR card from a `pr_card` event's data. Two lines: a colored title row
+ * (`#num branch`) and a dimmed subtitle (`repo · CI summary`) + URL — the same
+ * content shown on Slack, with unicode emoji instead of Slack shortcodes.
+ */
+function renderPrCard(d: Record<string, unknown>): React.ReactNode {
+  const card: PrCardData = {
+    repo: String(d.repo ?? ''),
+    prNumber: Number(d.prNumber ?? 0),
+    url: String(d.url ?? ''),
+    headRef: String(d.headRef ?? ''),
+    state: (d.state as PrCardData['state']) ?? 'open',
+    head_sha: String(d.head_sha ?? ''),
+    ci: (d.ci as PrCardData['ci']) ?? 'none',
+    ciPassed: Number(d.ciPassed ?? 0),
+    ciTotal: Number(d.ciTotal ?? 0),
+  };
+  const color = card.state === 'merged' ? 'magenta' : card.state === 'closed' ? 'red' : 'cyan';
+  const title = `#${card.prNumber} ${card.headRef}`;
+  const subtitle = `${prCardSubtitle(card, CLI_PR_CARD_EMOJI)} · ${card.url}`;
+  return <Text color={color}>{title}{'\n'}<Text dimColor>{subtitle}</Text></Text>;
+}
 
 /**
  * Format message for CLI display using from, to, and destination fields.
@@ -94,14 +119,35 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
   // Build log lines with inline approvals
   const logLines: { node: React.ReactNode; approval?: { approvalType: 'edit_mode' | 'research_budget'; eventIndex: number } }[] = [];
 
+  // Fold pr_card events so a card renders once, at its most recent `post`
+  // (anchor), showing the latest merged state. `update` events refresh the data
+  // without moving the card; a fresh `post` re-anchors it to the bottom.
+  const prCardAnchor = new Map<string, number>();
+  const prCardLatest = new Map<string, Record<string, unknown>>();
+  events.forEach((e, idx) => {
+    if (e.type !== 'pr_card') return;
+    const cardId = e.data.cardId as string | undefined;
+    if (!cardId) return;
+    prCardLatest.set(cardId, e.data);
+    if (e.data.action === 'post' || !prCardAnchor.has(cardId)) {
+      prCardAnchor.set(cardId, idx);
+    }
+  });
+
   if (events.length > 0) {
     events.forEach((event, idx) => {
       switch (event.type) {
         case 'message':
           logLines.push({
-            node: (() => { const p = formatMessageParts(event.data.from as string, event.data.to as string, event.data.destination as string | undefined); return <><Text dimColor>[{p.label}]</Text>{p.mention ? <Text color="cyan">{p.mention}</Text> : null} {event.data.message as string}</>; })(),
+            node: (() => { const p = formatMessageParts(event.data.from as string, event.data.to as string, event.data.destination as string | undefined); const footer = event.data.footer as string | undefined; return <><Text dimColor>[{p.label}]</Text>{p.mention ? <Text color="cyan">{p.mention}</Text> : null} {event.data.message as string}{footer ? <Text dimColor>{'\n'}{footer}</Text> : null}</>; })(),
           });
           break;
+        case 'pr_card': {
+          const cardId = event.data.cardId as string | undefined;
+          if (!cardId || prCardAnchor.get(cardId) !== idx) break; // render once, at the anchor
+          logLines.push({ node: renderPrCard(prCardLatest.get(cardId) ?? event.data) });
+          break;
+        }
         case 'agent:log':
           logLines.push({
             node: <Text dimColor>[{event.agentName}] {event.data.finding as string}</Text>,

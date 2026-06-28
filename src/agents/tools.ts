@@ -607,6 +607,12 @@ function createReportCompletionTool(agent: Agent, task: Task) {
       }
       logger.agentAction(agentName, 'Reporting completion', '');
       task.touch();
+      // Post any changed PR card now, right under the final message. Under the
+      // quiescence model the task isn't torn down here — complete() runs later
+      // from the idle-check once the system goes quiet — so this is the prompt
+      // path for the card; posting now also means it exists before CI webhooks
+      // arrive, so they have something to update in place.
+      await task.resurfacePrCards();
       // Blank the live status now — the final message is sent and the turn is
       // ending; without this the indicator would pop back during the wind-down.
       task.suspendStatus();

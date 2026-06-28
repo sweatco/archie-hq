@@ -2,6 +2,11 @@
 
 Historical record of Archie's incremental development. Each plan represents a milestone that was designed, reviewed, and (in most cases) implemented. Plans are preserved as-is for historical reference, with a status header indicating their implementation state.
 
+## Naming convention
+
+- **New plans** are named `YYYYMMDD-{name}.md` (date the plan was written, e.g. `20260626-response-formatting.md`). Dates don't collide, so several plans can be drafted in parallel without coordinating a shared counter.
+- **Legacy plans** use the sequential `vN-{name}.md` scheme and are kept under their original names as a frozen historical record — they are not renamed.
+
 ## Implementation Status
 
 | Plan | Feature | Status |
@@ -16,6 +21,8 @@ Historical record of Archie's incremental development. Each plan represents a mi
 | [v8](v8-web-research.md) | Web research MCP tool | Implemented |
 | [v9](v9-prompt-injection-defense.md) | Prompt injection defense | Implemented |
 | [v10](v10-agent-recovery-impl.md) | Agent recovery implementation | Partially implemented |
+| … | (v11–v31 — see files in this directory) | — |
+| [20260626](20260626-response-formatting.md) | Message footer + self-updating PR cards | Implemented |
 
 ## Evolution Arc
 

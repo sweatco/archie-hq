@@ -17,6 +17,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Agent } from './agent.js';
 import type { Task } from '../tasks/task.js';
 import { isRepoAgent, isPmAgent } from '../types/agent.js';
+import { resolveAgentModel } from './model-label.js';
 import {
   createBaseAgentMcpServer,
   createRepoToolsMcpServer,
@@ -211,7 +212,8 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   // suffix is how the SDK enables it (it strips the suffix and adds the
   // `context-1m-2025-08-07` beta); plain `sonnet` caps at 200K and overflows
   // on the large injected system prompt. Opus is 1M natively, no suffix needed.
-  const model = def.model || (isPmAgent(def) ? 'opus' : 'sonnet[1m]');
+  // (Resolution shared with the footer via resolveAgentModel.)
+  const model = resolveAgentModel(def);
   const tools = def.tools;
 
   const pluginPaths = def.pluginPath ? [def.pluginPath] : [];

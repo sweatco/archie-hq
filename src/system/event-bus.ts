@@ -13,6 +13,7 @@ export type EventType =
   | 'message' | 'agent:log' | 'agent:bg_task'
   | 'status'
   | 'approval:requested' | 'approval:resolved'
+  | 'pr_card'
   | 'reminder:set' | 'reminder:cancelled' | 'reminder:fired';
 
 export interface SystemEvent {
