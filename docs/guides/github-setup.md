@@ -36,19 +36,23 @@ No other repository permissions are needed. The engine makes **no** calls requir
 
 ## 3. Subscribe to webhook events
 
-Under **Subscribe to events**, enable exactly these. All seven are handled by the engine's router (`determineRouteAction` in `src/connectors/github/webhooks.ts`); each drives a specific behavior.
+Under **Subscribe to events**, enable exactly these. Each drives a specific behavior in the engine's router (`determineRouteAction`) and/or the PR-card refresh (`maybeRefreshPrCards`) in `src/connectors/github/webhooks.ts` / `events.ts`.
 
 | Event | Required? | Governing permission | What it drives in Archie |
 |---|---|---|---|
-| **Pull request** (`pull_request`) | **Required** | Pull requests: read | `opened` / `synchronize` → run merge checks; `closed` → update the owning task. |
-| **Pull request review** (`pull_request_review`) | **Required** | Pull requests: read | `approved` → merge check; `changes_requested` / `commented` → wake the task to address feedback. |
-| **Pull request review comment** (`pull_request_review_comment`) | **Required** | Pull requests: read | Inline code-review comments → wake the task to respond. |
-| **Issue comment** (`issue_comment`) | **Required** | Pull requests: read | New PR conversation comment → wake the task (deduped by last processed comment id). |
-| **Push** (`push`) | **Required** | Contents: read | New commits on a PR branch → re-run merge checks. |
-| **Workflow run** (`workflow_run`) | **Required** | Actions: read | CI finished: `success` → merge check; `failure` → wake the task with the failure detail. |
-| **Check suite** (`check_suite`) | **Required** | Checks: read | CI check suite completed → "checks ready" routing for the PR. |
+| **Pull request** (`pull_request`) | **Required** | Pull requests: read | `opened` / `synchronize` → run merge checks; `closed` → update the owning task. Also refreshes the PR card. |
+| **Pull request review** (`pull_request_review`) | **Required** | Pull requests: read | `approved` → merge check; `changes_requested` / `commented` → wake the task to address feedback. Also refreshes the PR card. |
+| **Pull request review comment** (`pull_request_review_comment`) | **Required** | Pull requests: read | Inline code-review comments → wake the task to respond. Also refreshes the PR card. |
+| **Issue comment** (`issue_comment`) | **Required** | Pull requests: read | New PR conversation comment → wake the task (deduped by last processed comment id). Also refreshes the PR card (so a CI bot's result comment — e.g. Danger — updates the card). |
+| **Push** (`push`) | **Required** | Contents: read | New commits on a PR branch → re-run merge checks. Also refreshes the PR card. |
+| **Workflow run** (`workflow_run`) | **Required** | Actions: read | CI finished: `success` → merge check; `failure` → wake the task with the failure detail. Also refreshes the PR card. |
+| **Check suite** (`check_suite`) | **Required** | Checks: read | CI check suite completed → "checks ready" routing for the PR. Also refreshes the PR card. |
+| **Check run** (`check_run`) | **Required** | Checks: read | Per-check granularity — a check appearing / completing refreshes the PR card so its live CI count tracks `0/2 → 0/3 → 0/4` and flips to passed/failed. Without it, the card only sees the coarse suite-level result. |
+| **Status** (`status`) | **Required** | Commit statuses: read | Commit-status updates from CIs that report via the **Statuses API** rather than checks (e.g. **TeamCity**, Danger posting via a token). Without it, those checks are invisible to the PR card until some other event happens to refresh it. |
 
-If you knowingly don't use a given signal (e.g. you have no CI), you can omit its event — the engine simply won't receive it. For the full PR lifecycle, subscribe to all seven.
+These last two — **Check run** and **Status** — are what make the PR card's CI status reliable; the permissions they need (Checks: read, Commit statuses: read) are already required above, but the **event subscriptions** are easy to miss. If your CI reports via either checks or commit statuses (most do), subscribe to both.
+
+If you knowingly don't use a given signal (e.g. you have no CI), you can omit its event — the engine simply won't receive it. For the full PR lifecycle, subscribe to all nine.
 
 ## 4. Generate and install the private key
 
