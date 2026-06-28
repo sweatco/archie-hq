@@ -45,7 +45,9 @@ interface SystemEvent {
 interface TaskDetailProps {
   taskId: string;
   onBack: () => void;
-  onEvent?: SystemEvent | null;
+  /** Append-only queue of live SSE events from the parent (accumulated so bursts
+   *  aren't lost to React batching). TaskDetail processes the delta each render. */
+  liveEvents?: SystemEvent[];
   onConnect?: boolean;
 }
 
@@ -61,7 +63,7 @@ function isApprovalResolved(req: SystemEvent, allEvents: SystemEvent[]): boolean
   );
 }
 
-export function TaskDetail({ taskId, onBack, onEvent, onConnect }: TaskDetailProps) {
+export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetailProps) {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const termHeight = stdout?.rows ?? 24;
@@ -78,7 +80,7 @@ export function TaskDetail({ taskId, onBack, onEvent, onConnect }: TaskDetailPro
   const [liveStatus, setLiveStatus] = useState<string>('');
   const [reminder, setReminder] = useState<{ trigger_at: string; reason: string } | null>(null);
   const [title, setTitle] = useState<string | null>(null);
-  const prevOnEvent = useRef<SystemEvent | null>(null);
+  const processedRef = useRef(0); // count of liveEvents already applied
   const prevOnConnect = useRef<boolean | undefined>(undefined);
   const scrollRef = useRef<ScrollViewRef>(null);
   const autoScroll = useRef(true); // stick to bottom unless user scrolls up
@@ -218,52 +220,58 @@ export function TaskDetail({ taskId, onBack, onEvent, onConnect }: TaskDetailPro
     loadInitial();
   }, [loadInitial]);
 
-  // Handle SSE events from parent
+  // Handle live SSE events from parent. `liveEvents` is an append-only queue, so
+  // process only the delta since the last render and apply each event in order —
+  // nothing is dropped when several arrive in the same tick.
   useEffect(() => {
-    if (onEvent && onEvent !== prevOnEvent.current) {
-      prevOnEvent.current = onEvent;
+    const queue = liveEvents ?? [];
+    // Buffer was reset (task switch / fresh connect) — start from the top.
+    if (processedRef.current > queue.length) processedRef.current = 0;
+    const fresh = queue.slice(processedRef.current);
+    if (fresh.length === 0) return;
+    processedRef.current = queue.length;
 
-      // Live status is transient UI, not a log entry — update and stop here so
-      // it never lands in the scrollback.
-      if (onEvent.type === 'status') {
-        setLiveStatus((onEvent.data?.status as string) || '');
-        return;
+    for (const ev of fresh) {
+      // Live status is transient UI, not a log entry — never lands in scrollback.
+      if (ev.type === 'status') {
+        setLiveStatus((ev.data?.status as string) || '');
+        continue;
       }
 
-      setEvents((prev) => [...prev, onEvent]);
+      setEvents((prev) => [...prev, ev]);
       setEventCursor((c) => c + 1);
 
       // Update agents bar from agent events
-      if (onEvent.type === 'agent:active' || onEvent.type === 'agent:inactive') {
+      if (ev.type === 'agent:active' || ev.type === 'agent:inactive') {
         setAgents((prev) => {
-          const existing = prev.find((a) => a.agent === onEvent.agentName);
-          const active = onEvent.type === 'agent:active';
+          const existing = prev.find((a) => a.agent === ev.agentName);
+          const active = ev.type === 'agent:active';
           if (existing) {
-            return prev.map((a) => a.agent === onEvent.agentName ? { ...a, active } : a);
+            return prev.map((a) => a.agent === ev.agentName ? { ...a, active } : a);
           }
-          return [...prev, { agent: onEvent.agentName!, active }];
+          return [...prev, { agent: ev.agentName!, active }];
         });
       }
 
       // Update status from task events
-      if (onEvent.type === 'task:resumed') setStatus('in_progress');
-      if (onEvent.type === 'task:completed') { setStatus('completed'); setLiveStatus(''); }
-      if (onEvent.type === 'task:stopped') { setStatus('stopped'); setLiveStatus(''); }
+      if (ev.type === 'task:resumed') setStatus('in_progress');
+      if (ev.type === 'task:completed') { setStatus('completed'); setLiveStatus(''); }
+      if (ev.type === 'task:stopped') { setStatus('stopped'); setLiveStatus(''); }
 
       // Update reminder from reminder events
-      if (onEvent.type === 'reminder:set') {
-        setReminder({ trigger_at: onEvent.data.trigger_at as string, reason: onEvent.data.reason as string });
+      if (ev.type === 'reminder:set') {
+        setReminder({ trigger_at: ev.data.trigger_at as string, reason: ev.data.reason as string });
       }
-      if (onEvent.type === 'reminder:cancelled' || onEvent.type === 'reminder:fired') {
+      if (ev.type === 'reminder:cancelled' || ev.type === 'reminder:fired') {
         setReminder(null);
       }
-
-      // Auto-scroll to bottom when new events arrive (if user hasn't scrolled up)
-      if (autoScroll.current) {
-        setTimeout(() => scrollRef.current?.scrollToBottom(), 0);
-      }
     }
-  }, [onEvent]);
+
+    // Auto-scroll to bottom when new events arrive (if user hasn't scrolled up)
+    if (autoScroll.current) {
+      setTimeout(() => scrollRef.current?.scrollToBottom(), 0);
+    }
+  }, [liveEvents]);
 
   // Handle reconnect — fetch missed events
   useEffect(() => {

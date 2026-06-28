@@ -16,7 +16,7 @@ export function App() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
-  const [lastEvent, setLastEvent] = useState<any>(null);
+  const [liveEvents, setLiveEvents] = useState<any[]>([]);
   const disconnectRef = useRef<(() => void) | null>(null);
 
   const refresh = useCallback(() => {
@@ -30,9 +30,12 @@ export function App() {
       onEvent: (event) => {
         if (event.type === 'connected') return;
 
-        // For detail view: pass event directly to TaskDetail
+        // For detail view: queue the event for TaskDetail. Accumulate via a
+        // functional update — plain replace (setLastEvent(event)) collapses bursts
+        // under React batching, dropping events that arrive in the same tick (e.g.
+        // an inter-agent message immediately followed by agent:active).
         if (view === 'detail') {
-          setLastEvent(event);
+          setLiveEvents((prev) => [...prev, event]);
         }
 
         // For list view: refresh on task-level events
@@ -66,14 +69,14 @@ export function App() {
   });
 
   const handleSelectTask = (taskId: string) => {
-    setLastEvent(null);
+    setLiveEvents([]);
     setSelectedTaskId(taskId);
     setView('detail');
   };
 
   const handleBack = () => {
     setSelectedTaskId(null);
-    setLastEvent(null);
+    setLiveEvents([]);
     setView('list');
     refresh();
   };
@@ -85,7 +88,7 @@ export function App() {
   const handleCreateTask = async (message: string) => {
     try {
       const taskId = await createTask(message);
-      setLastEvent(null);
+      setLiveEvents([]);
       setSelectedTaskId(taskId);
       setView('detail');
     } catch {
@@ -118,7 +121,7 @@ export function App() {
           <TaskDetail
             taskId={selectedTaskId}
             onBack={handleBack}
-            onEvent={lastEvent}
+            liveEvents={liveEvents}
             onConnect={connected}
           />
         )}
