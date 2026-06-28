@@ -653,8 +653,10 @@ Shared folder: ${sharedPath} [READ-ONLY]
             // not stalled — no spurious recovery) and re-engage the agent on settle.
             if (event.type === 'system' && event.subtype === 'task_started') {
               agent.backgroundTasks.add(event.task_id);
+              logger.agent(def.id, `background task started — ${event.description}`);
             } else if (event.type === 'system' && event.subtype === 'task_notification') {
               agent.backgroundTasks.delete(event.task_id);
+              logger.agent(def.id, `background task ${event.status} — ${event.summary}`);
               if (!agent.queue.isStopped()) {
                 agent.queue.addMessage(
                   `Background task ${event.status}: ${event.summary}. ` +

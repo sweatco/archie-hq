@@ -1056,6 +1056,13 @@ export class Task {
     const name = agentName as AgentName;
     const agent = this.agentProcesses.get(name);
 
+    // An agent with in-flight background work is still "busy": keep it shown as
+    // active (status indicator + agent:active state) and don't arm the idle-check
+    // when its turn ends. It flips inactive once the task settles and the resumed
+    // turn finishes (backgroundTasks drained), or on subprocess exit (the spawn
+    // loop's finally drains them first, so the exit still marks it inactive).
+    if (!active && agent && agent.backgroundTasks.size > 0) return;
+
     // Idempotency: skip if agent is already in the requested state (no sessionId update needed)
     if (agent && agent.session.active === active && !sessionId) return;
 
