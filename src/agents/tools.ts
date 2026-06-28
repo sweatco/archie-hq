@@ -569,34 +569,24 @@ function createRequestEditModeTool(agent: Agent, task: Task) {
 function createReportCompletionTool(agent: Agent, task: Task) {
   return tool(
     'report_completion',
-    'Stop the task. If message is provided, post it to Slack first.',
+    'Finish your turn: signal you have responded and are now waiting only on the user (not on any agent). If a message is provided, it is posted first.',
     {
-      message: z.string().optional().describe('Optional message to post to Slack before stopping'),
+      message: z.string().optional().describe('Optional message to post to Slack before finishing'),
     },
     async (args) => {
       const agentName = agent.def.id as AgentName;
-      // Idempotency: if the task is already completing/completed, skip side-effects.
-      // Prevents duplicate Slack posts when the agent retries after a stream-closed error
-      // (the previous complete() tore down the agent mid-response, so the retry is spurious).
+      // Idempotency: task already parked/stopped — nothing to do.
       if (!task.isActive) {
-        return ok('Task already completed.');
+        return ok('Task already completed. End your turn.');
       }
-      // Already asked to complete this turn — the spawn loop tears the task down
-      // when the turn ends. Skip duplicate side-effects (e.g. a second Slack post).
+      // A forced stop (request_edit_mode / research-budget) is already deferred
+      // this turn — don't double up.
       if (agent.pendingTeardown) {
-        return ok('Task already completing.');
+        return ok('Task already stopping. End your turn.');
       }
-      // Refuse completion while a peer agent is still mid-turn — completing now
-      // would stop their queue and drop the reply they're about to send back,
-      // orphaning the relay. Non-destructive: nothing posted, task stays active,
-      // the peer's reply reopens this turn. (report_completion is PM-only.)
-      const activePeers = task.activePeers(agentName);
-      if (activePeers.length > 0) {
-        return ok(
-          `Completion refused: ${activePeers.join(', ')} still working. ` +
-          `Not an error, nothing to retry — stop and wait, their report reopens your turn. ` +
-          `Need to update the user meanwhile? Use post_to_user.`
-        );
+      // Already recorded completion this turn — don't re-post or re-signal.
+      if (task.completionIntent) {
+        return ok('Completion already recorded. End your turn.');
       }
       if (args.message) {
         if (Object.keys(task.metadata.channels).length === 0) {
@@ -610,24 +600,27 @@ function createReportCompletionTool(agent: Agent, task: Task) {
           await task.postToUser(args.message, agentName);
         } catch (err) {
           // Surface the error to the agent so it can retry (e.g. split the
-          // message). Do NOT complete the task — completion only proceeds
-          // after a successful post (or no message at all).
+          // message). Do NOT record completion — it only proceeds after a
+          // successful post (or no message at all).
           return ok(formatSlackSendError(err));
         }
       }
       logger.agentAction(agentName, 'Reporting completion', '');
       task.touch();
-      // Blank the live status now: the final message is sent and we're done, but
-      // the teardown below is deferred to turn-end, so without this the indicator
-      // would pop back for a couple seconds during the wind-down.
+      // Blank the live status now — the final message is sent and the turn is
+      // ending; without this the indicator would pop back during the wind-down.
       task.suspendStatus();
-      // Defer teardown to the spawn loop: it runs this once the agent's turn
-      // fully ends (the SDK `result` event), so this tool response and the Stop
-      // hook's control round-trip both finish over an open input stream. Stopping
-      // the queue here (mid-turn) closes the stream under an in-flight hook, which
-      // the SDK surfaces as a "stream closed" error.
-      agent.deferTeardown(() => task.complete());
-      return ok(args.message ? 'Posted message to Slack and stopped task.' : 'Stopped task.');
+      // Record intent instead of tearing down. The idle-check parks the task once
+      // every agent is idle (quiescent); if a peer is in fact still working, the
+      // task stays active until it's done — so completion can't orphan a peer, and
+      // no synchronous peer-gate races the Stop-hook boundary. The agent must end
+      // its turn now: that's what lets the system reach quiescence and park.
+      task.setCompletionIntent();
+      return ok(
+        args.message
+          ? 'Message posted. Nothing left to do — end your turn.'
+          : 'Completion recorded. Nothing left to do — end your turn.'
+      );
     },
   );
 }

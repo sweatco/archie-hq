@@ -67,6 +67,13 @@ export interface AgentHandle {
   running: Promise<void>;
   /** Whether the agent is still processing messages */
   isRunning: boolean;
+  /**
+   * Hard-abort the SDK subprocess (via its AbortController). Task teardown
+   * calls this after stopping the queue, to kill an agent that is mid-turn when
+   * its stream is closed — otherwise it loops on "Stream closed" control
+   * requests until maxTurns.
+   */
+  abort(): void;
 }
 
 /**

@@ -72,6 +72,21 @@ export const activeTasks = new Map<string, Task>();
 
 // ---- Task class ----
 
+/**
+ * Whether an `updateAgentState` transition should clear a pending completion
+ * intent: PM genuinely re-engaging on a real inactive→active edge. Gating on the
+ * pre-update `wasActive` keeps it edge-exact — the SDK `init` re-fire arrives with
+ * the agent already active (the synchronous enqueue mark won the race), so it must
+ * not re-clear intent on every resumed turn. Pure, for unit testing.
+ */
+export function shouldClearCompletionIntent(
+  agentName: string,
+  active: boolean,
+  wasActive: boolean,
+): boolean {
+  return active && !wasActive && agentName === 'pm-agent';
+}
+
 export class Task {
   readonly taskId: string;
   metadata: TaskMetadata;
@@ -81,6 +96,13 @@ export class Task {
   isActive: boolean = false;
   lastActivity: Date = new Date();
   recoveryAttempts: number = 0;
+  /**
+   * Set by report_completion: PM has responded and is waiting on no one but the
+   * user. The idle-check parks the task (instead of recovering) once all agents
+   * are idle. Cleared when PM next goes active (see updateAgentState). In-memory
+   * only — lost on restart, where recovery re-arms the lifecycle instead.
+   */
+  completionIntent: boolean = false;
   taskTimeoutTimer?: ReturnType<typeof setInterval>;
   /** Drives the "Archie is …" Slack loading indicator from agent activity. */
   private readonly statusController: TaskStatusController;
@@ -221,6 +243,11 @@ export class Task {
       throw new Error(`No agent ${agentName} after spawn`);
     }
     agent.queue.addMessage(message);
+    // Mark active synchronously at enqueue (not lazily at the SDK `init` re-fire,
+    // which lags). Keeps "all agents idle" a faithful proxy for "no work in
+    // flight" so the idle-check can't park a recipient that's about to process,
+    // and fires PM's intent-clear edge the moment work is delivered.
+    this.updateAgentState(agentName, true);
   }
 
   /**
@@ -705,9 +732,17 @@ export class Task {
     activeTasks.delete(this.taskId);
     this.clearTaskTimeout();
 
-    // Stop all queues — agent:inactive emitted by Stop hook / crash handler
+    // Stop all queues. A parked or just-finished agent (session inactive) exits
+    // gracefully on its next queue pull — the resume-safe path the deferred
+    // teardown relies on (see spawn.ts: never .return() the generator), so do
+    // NOT abort it. But an agent still mid-turn keeps generating and hits
+    // "Stream closed" on every tool/hook control request, looping until maxTurns
+    // — stopping its queue can't end it, so hard-abort those. agent:inactive is
+    // emitted by the Stop hook / crash handler (or the aborted loop exiting).
     for (const a of this.agentProcesses.values()) {
+      const midTurn = a.session.active;
       a.queue.stop();
+      if (midTurn) a.handle?.abort();
     }
 
     // Clean up clones to free disk space (only when not in edit mode)
@@ -738,9 +773,17 @@ export class Task {
     activeTasks.delete(this.taskId);
     this.clearTaskTimeout();
 
-    // Stop all queues — agent:inactive emitted by Stop hook / crash handler
+    // Stop all queues. A parked or just-finished agent (session inactive) exits
+    // gracefully on its next queue pull — the resume-safe path the deferred
+    // teardown relies on (see spawn.ts: never .return() the generator), so do
+    // NOT abort it. But an agent still mid-turn keeps generating and hits
+    // "Stream closed" on every tool/hook control request, looping until maxTurns
+    // — stopping its queue can't end it, so hard-abort those. agent:inactive is
+    // emitted by the Stop hook / crash handler (or the aborted loop exiting).
     for (const a of this.agentProcesses.values()) {
+      const midTurn = a.session.active;
       a.queue.stop();
+      if (midTurn) a.handle?.abort();
     }
 
     // Clean up clones to free disk space (only when not in edit mode).
@@ -796,21 +839,13 @@ export class Task {
   }
 
   /**
-   * Names of spawned agents currently mid-turn (active), excluding `exclude`.
-   *
-   * An agent can only emit inter-agent messages while its turn is running, and a
-   * turn is exactly the window in which `session.active` is true (the `inactive`
-   * marker fires from the Stop hook *after* the turn ends). So "any peer active"
-   * is a reliable signal that a delegated round-trip is still in flight — used by
-   * report_completion to refuse premature completion that would tear down a peer
-   * mid-work and orphan its reply.
+   * Record that PM has finished and is waiting on no one but the user (called by
+   * report_completion). The idle-check parks the task — instead of recovering —
+   * once all agents are idle (quiescent). Completion is thus decided at
+   * quiescence, not by a synchronous peer-active gate that races the Stop hook.
    */
-  activePeers(exclude: AgentName): AgentName[] {
-    const peers: AgentName[] = [];
-    for (const [name, agent] of this.agentProcesses) {
-      if (name !== exclude && agent.session.active) peers.push(name);
-    }
-    return peers;
+  setCompletionIntent(): void {
+    this.completionIntent = true;
   }
 
   /**
@@ -890,6 +925,10 @@ export class Task {
       throw new Error(`No agent ${target} after spawn`);
     }
     targetAgent.queue.addMessage(message, fromAgent);
+    // Mark active synchronously at enqueue (see sendMessage). A peer reporting to
+    // PM marks PM active here — so a parked-intent PM is never read as idle while
+    // its relay is in flight, and its intent-clear edge fires immediately.
+    this.updateAgentState(target, true);
 
     return `Message sent to ${target}. They will process it and log findings.`;
   }
@@ -1020,6 +1059,14 @@ export class Task {
     // Idempotency: skip if agent is already in the requested state (no sessionId update needed)
     if (agent && agent.session.active === active && !sessionId) return;
 
+    // Clear a pending completion intent when PM genuinely re-engages: its prior
+    // "waiting on no one" is stale, so the next quiescence should re-decide.
+    // agent.session.active is still the pre-update value here (updateSession runs
+    // below), so this is edge-exact — see shouldClearCompletionIntent.
+    if (agent && shouldClearCompletionIntent(name, active, agent.session.active)) {
+      this.completionIntent = false;
+    }
+
     if (agent) {
       agent.updateSession(active, sessionId);
       if (active) {
@@ -1063,6 +1110,11 @@ export class Task {
    */
   private activate(): void {
     this.isActive = true;
+    // A fresh activation (new task or reopen of a parked one) starts a new cycle —
+    // any completion intent from a prior cycle is stale. Clearing here covers
+    // reopens routed to a specialist (which don't pass through PM's active edge);
+    // the updateAgentState edge-clear covers mid-cycle PM re-engagement.
+    this.completionIntent = false;
     this.metadata.status = 'in_progress';
     activeTasks.set(this.taskId, this);
     this.startTaskTimeout();

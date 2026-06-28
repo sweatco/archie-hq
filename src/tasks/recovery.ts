@@ -74,27 +74,46 @@ async function recoverTaskAgents(task: Task): Promise<void> {
  * Small delay to avoid racing with message delivery
  * (another agent may be about to send a message that wakes this one).
  */
+/**
+ * What the idle-check should do for a task. Pure (no timers/IO) so the
+ * completion-vs-recover-vs-wait decision is unit-testable:
+ * - `'wait'`     — not active; a forced-stop teardown (request_edit_mode /
+ *                  research-budget) is pending and deferred to turn-end; or not
+ *                  yet quiescent (some agent still active, or none spawned).
+ * - `'complete'` — quiescent and PM signalled completion (report_completion).
+ * - `'recover'`  — quiescent but nobody parked: an agent went idle without
+ *                  reporting (a dropped ball).
+ *
+ * Quiescence relies on agents being marked active at message *enqueue* (see
+ * Task.sendMessage / toolSendMessage), so "all idle" faithfully means "no work
+ * in flight." Shutdown is handled by the caller (it owns the process-global flag).
+ */
+export function idleDecision(
+  task: Pick<Task, 'isActive' | 'completionIntent' | 'agentProcesses'>,
+): 'wait' | 'complete' | 'recover' {
+  if (!task.isActive) return 'wait';
+  const agents = [...task.agentProcesses.values()];
+  // A pending teardown means a forced stop already called task.stop(), deferred
+  // to this turn's SDK `result` event. The Stop hook that arms this check fires
+  // *before* that event (gap can exceed the 3s delay), so without this guard the
+  // check would "recover" an agent that stop() then orphans mid-turn.
+  if (agents.some((a) => a.pendingTeardown)) return 'wait';
+  // Quiescent = at least one agent spawned and none active.
+  if (agents.length === 0) return 'wait';
+  if (agents.some((a) => a.session.active)) return 'wait';
+  return task.completionIntent ? 'complete' : 'recover';
+}
+
 export function scheduleIdleCheck(task: Task): void {
   setTimeout(async () => {
-    if (!task.isActive || getIsShuttingDown()) return;
-
-    const allInactive = checkAllAgentsInactive(task);
-    if (allInactive) {
+    if (getIsShuttingDown()) return;
+    const action = idleDecision(task);
+    if (action === 'complete') {
+      await task.complete();
+    } else if (action === 'recover') {
       await triggerRecovery(task);
     }
   }, 3000);
-}
-
-/**
- * Check if all spawned agents are inactive.
- */
-function checkAllAgentsInactive(task: Task): boolean {
-  if (task.agentProcesses.size === 0) return false;
-
-  for (const [, agent] of task.agentProcesses) {
-    if (agent.session.active) return false;
-  }
-  return true;
 }
 
 /**
@@ -146,9 +165,10 @@ async function triggerRecovery(task: Task): Promise<void> {
         : AGENT_PROMPTS.reinforceAgent;
       targetAgent.queue.addMessage(prompt);
 
-      // Mark agent as active after nudge
-      targetAgent.updateSession(true);
-      task.save();
+      // Mark active after nudge — via updateAgentState (not updateSession) so it
+      // emits agent:active and clears any stale completionIntent on a nudged PM
+      // (which would otherwise park on the next quiescence instead of re-deciding).
+      task.updateAgentState(targetAgent.def.id, true);
     } else {
       // No live agent to nudge — re-spawn rather than silently stalling.
       // recoverTaskAgents re-sends the recovery prompt to previously-active
