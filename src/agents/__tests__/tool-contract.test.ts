@@ -120,6 +120,7 @@ const PM_COMMS_TOOLS = [
   'mcp__comms-tools__post_files_to_user',
   'mcp__comms-tools__find_slack_user',
   'mcp__comms-tools__find_slack_channel',
+  'mcp__comms-tools__list_channels',
   'mcp__comms-tools__read_channel_history',
   'mcp__comms-tools__read_thread',
   'mcp__comms-tools__search_messages',

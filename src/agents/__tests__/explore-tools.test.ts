@@ -34,10 +34,14 @@ vi.mock('../registry.js', () => ({
 // Partial-mock the Slack client: keep the REAL error classes (format-errors uses
 // `instanceof`) and just stub the network call. `vi.hoisted` makes the mock fn
 // available to the hoisted vi.mock factory.
-const { postSlackMessage } = vi.hoisted(() => ({ postSlackMessage: vi.fn() }));
+const { postSlackMessage, listBotChannels, channelIsPrivate } = vi.hoisted(() => ({
+  postSlackMessage: vi.fn(),
+  listBotChannels: vi.fn(),
+  channelIsPrivate: vi.fn(),
+}));
 vi.mock('../../connectors/slack/client.js', async (importActual) => {
   const actual = await importActual<typeof import('../../connectors/slack/client.js')>();
-  return { ...actual, postSlackMessage };
+  return { ...actual, postSlackMessage, listBotChannels, channelIsPrivate };
 });
 
 import { createCommsMcpServer } from '../tools.js';
@@ -47,13 +51,20 @@ import type { Task } from '../../tasks/task.js';
 function makeAgent(): Agent {
   return { def: { id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'pm', isPm: true }, queue: {} as any, session: { active: false } } as unknown as Agent;
 }
-function makeTask(): Task {
-  return { taskId: 'task-1', metadata: { channels: {} }, touch: vi.fn(), debouncedSave: vi.fn() } as unknown as Task;
+function makeTask(originChannelId?: string): Task {
+  const channels: Record<string, unknown> = {};
+  let default_channel: string | undefined;
+  if (originChannelId) {
+    const key = `slack:${originChannelId}:1.0`;
+    channels[key] = { type: 'slack', channel_id: originChannelId, thread_id: '1.0', channel_name: 'origin' };
+    default_channel = key;
+  }
+  return { taskId: 'task-1', metadata: { channels, default_channel }, touch: vi.fn(), debouncedSave: vi.fn() } as unknown as Task;
 }
 
 /** Build the comms server and pull a tool's invokable handler out of the MCP registry. */
-function getHandler(name: string): (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }> {
-  const server = createCommsMcpServer(makeAgent(), makeTask());
+function getHandler(name: string, task: Task = makeTask()): (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }> {
+  const server = createCommsMcpServer(makeAgent(), task);
   const raw = (server.instance as any)._registeredTools ?? Object.fromEntries((server.instance as any)._tools ?? []);
   const entry = raw[name];
   const fn = entry.callback ?? entry.handler ?? entry.cb;
@@ -98,5 +109,52 @@ describe('post_to_channel handler', () => {
     const out = await textOf(await post({ channel: 'C123', message: 'hi' }));
 
     expect(out).toContain('/invite @Archie');
+  });
+});
+
+describe('list_channels handler — context-aware privacy', () => {
+  beforeEach(() => {
+    listBotChannels.mockReset();
+    channelIsPrivate.mockReset();
+    listBotChannels.mockResolvedValue([{ id: 'C1', name: 'general', isPrivate: false, topic: '' }]);
+  });
+
+  it('public-channel origin → lists public only (includePrivate = false)', async () => {
+    channelIsPrivate.mockResolvedValue(false);
+    const list = getHandler('list_channels', makeTask('C_pub'));
+
+    const out = await textOf(await list({}));
+
+    expect(channelIsPrivate).toHaveBeenCalledWith('C_pub');
+    expect(listBotChannels).toHaveBeenCalledWith(false);
+    expect(out).toContain('#general');
+  });
+
+  it('private-channel origin → includes private (includePrivate = true)', async () => {
+    channelIsPrivate.mockResolvedValue(true);
+    const list = getHandler('list_channels', makeTask('C_priv'));
+
+    await list({});
+
+    expect(listBotChannels).toHaveBeenCalledWith(true);
+  });
+
+  it('DM origin → public only, never probes channel privacy', async () => {
+    const list = getHandler('list_channels', makeTask('D123'));
+
+    await list({});
+
+    expect(channelIsPrivate).not.toHaveBeenCalled();
+    expect(listBotChannels).toHaveBeenCalledWith(false);
+  });
+
+  it('no memberships → friendly invite hint', async () => {
+    channelIsPrivate.mockResolvedValue(false);
+    listBotChannels.mockResolvedValue([]);
+    const list = getHandler('list_channels', makeTask('C_pub'));
+
+    const out = await textOf(await list({}));
+
+    expect(out).toMatch(/invite/i);
   });
 });

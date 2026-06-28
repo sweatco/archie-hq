@@ -1576,7 +1576,7 @@ export async function listWorkspaceChannels(): Promise<SlackChannelInfo[]> {
         name: ch.name ?? ch.id!,
         topic: (ch.topic as { value?: string })?.value ?? '',
         purpose: (ch.purpose as { value?: string })?.value ?? '',
-        memberCount: ch.num_members ?? 0,
+        memberCount: (ch as { num_members?: number }).num_members ?? 0,
         isPrivate: ch.is_private ?? false,
         isArchived: ch.is_archived ?? false,
       });
@@ -1588,6 +1588,61 @@ export async function listWorkspaceChannels(): Promise<SlackChannelInfo[]> {
   channelCacheTimestamp = Date.now();
   logger.slack(`Cached ${channels.length} workspace channels`);
   return channels;
+}
+
+/**
+ * List the channels the bot is actually a MEMBER of — i.e. the channels the
+ * explore/post tools can act on. Uses `users.conversations` (membership of the
+ * calling token), so it never includes channels the bot was not invited to.
+ * Archived excluded; not cached (membership changes when the bot is
+ * invited/removed, and freshness matters right after an invite).
+ *
+ * `includePrivate` defaults to FALSE — private channels are listed only when the
+ * caller has confirmed the request context is itself private (see the
+ * `list_channels` tool), so a public-channel or DM requester never learns that
+ * private channels exist.
+ */
+export async function listBotChannels(includePrivate = false): Promise<SlackChannelInfo[]> {
+  const client = getSlackClient();
+  const channels: SlackChannelInfo[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const result = await client.users.conversations({
+      cursor,
+      limit: 200,
+      exclude_archived: true,
+      types: includePrivate ? 'public_channel,private_channel' : 'public_channel',
+    });
+    for (const ch of result.channels ?? []) {
+      channels.push({
+        id: ch.id!,
+        name: ch.name ?? ch.id!,
+        topic: (ch.topic as { value?: string })?.value ?? '',
+        purpose: (ch.purpose as { value?: string })?.value ?? '',
+        memberCount: (ch as { num_members?: number }).num_members ?? 0,
+        isPrivate: ch.is_private ?? false,
+        isArchived: ch.is_archived ?? false,
+      });
+    }
+    cursor = result.response_metadata?.next_cursor || undefined;
+  } while (cursor);
+
+  return channels;
+}
+
+/**
+ * Whether a channel is private (a Slack group). Used to decide the privacy
+ * context of a task's origin channel. Fails SAFE: any error → false (treat as
+ * not-private), so an uncertain context never over-exposes private channels.
+ */
+export async function channelIsPrivate(channelId: string): Promise<boolean> {
+  try {
+    const info = await getSlackClient().conversations.info({ channel: channelId });
+    return (info.channel as { is_private?: boolean } | undefined)?.is_private === true;
+  } catch {
+    return false;
+  }
 }
 
 /**

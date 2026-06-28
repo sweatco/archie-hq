@@ -254,6 +254,7 @@ Tools are defined in `src/agents/tools.ts` and exposed via MCP servers created p
 | `post_files_to_user` | Upload one or more files as Slack attachments to an already-linked channel; does not open new threads |
 | `share_artifact` | Publish an immutable snapshot to `shared/artifacts/` for inter-agent file sharing (deduped by hash) |
 | `find_slack_user` / `find_slack_channel` | Look up Slack user/channel metadata (e.g. a channel ID before reading, searching, or posting to it) |
+| `list_channels` | List channels Archie is a member of (`users.conversations`); context-aware — public-only from a public/DM request, private channels only from a private-channel request |
 | `read_channel_history` / `read_thread` | Read a PUBLIC channel's recent messages or a specific thread — exploration only, not linked to the task; private channels/DMs refused |
 | `search_messages` | Search messages in PUBLIC channels Archie is in (`search.messages` + `search:read.public`); private/DM matches excluded |
 | `post_to_channel` | Post into a channel/thread NOT linked to the task (fire-and-forget). A human reply to a new top-level post here seeds its own fresh task |

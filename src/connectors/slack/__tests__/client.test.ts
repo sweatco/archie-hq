@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const slackApi = {
   auth: { test: vi.fn() },
   conversations: { info: vi.fn(), replies: vi.fn(), history: vi.fn() },
-  users: { info: vi.fn() },
+  users: { info: vi.fn(), conversations: vi.fn() },
   usergroups: { list: vi.fn() },
   search: { messages: vi.fn() },
 };
@@ -168,6 +168,47 @@ describe('fetchChannelHistory — public only, chronological', () => {
 
     expect(channel).toMatchObject({ id: 'C_pub', name: 'general' });
     expect(messages.map((m) => m.text)).toEqual(['oldest', 'middle', 'newest']);
+  });
+});
+
+describe('listBotChannels — bot memberships, context-gated privacy', () => {
+  it('lists the public channels the bot is a member of (public-only by default)', async () => {
+    slackApi.users.conversations.mockResolvedValue({
+      ok: true,
+      channels: [
+        { id: 'C1', name: 'general', is_private: false },
+        { id: 'C2', name: 'eng', is_private: false, topic: { value: 'engineering' } },
+      ],
+    });
+    const channels = await client.listBotChannels();
+    expect(slackApi.users.conversations).toHaveBeenCalledWith(
+      expect.objectContaining({ types: 'public_channel', exclude_archived: true }),
+    );
+    expect(channels.map((c) => c.id)).toEqual(['C1', 'C2']);
+    expect(channels[1]).toMatchObject({ name: 'eng', topic: 'engineering' });
+  });
+
+  it('requests private channels too ONLY when includePrivate is set', async () => {
+    slackApi.users.conversations.mockResolvedValue({ ok: true, channels: [] });
+    await client.listBotChannels(true);
+    expect(slackApi.users.conversations).toHaveBeenCalledWith(
+      expect.objectContaining({ types: 'public_channel,private_channel' }),
+    );
+  });
+});
+
+describe('channelIsPrivate — origin-context detector', () => {
+  it('reports a private channel', async () => {
+    slackApi.conversations.info.mockResolvedValue({ ok: true, channel: { id: 'Cp', is_private: true } });
+    expect(await client.channelIsPrivate('Cp')).toBe(true);
+  });
+  it('reports a public channel as not private', async () => {
+    slackApi.conversations.info.mockResolvedValue({ ok: true, channel: { id: 'C1', is_private: false } });
+    expect(await client.channelIsPrivate('C1')).toBe(false);
+  });
+  it('fails safe to not-private when the lookup errors', async () => {
+    slackApi.conversations.info.mockRejectedValue(new Error('boom'));
+    expect(await client.channelIsPrivate('Cx')).toBe(false);
   });
 });
 

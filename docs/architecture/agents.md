@@ -58,6 +58,7 @@ One PM agent instance is spawned per task. It is the orchestrator: it receives a
 | `post_files_to_user` | Upload files to an already-linked thread (default channel or `channel` key). Does not open new destinations. |
 | `share_artifact` | Publish an immutable, deduped snapshot of a file under `<task>/shared/artifacts/` for inter-agent sharing. |
 | `find_slack_user` / `find_slack_channel` | Look up Slack user/channel IDs and metadata (e.g. a channel ID before reading, searching, or posting to it). |
+| `list_channels` | List the channels Archie is a member of (`users.conversations`) — the set the explore/post tools can act on. **Context-aware**: public-only from a public-channel or DM request; private channels listed only when the request originates in a private channel. |
 | `read_channel_history` / `read_thread` | Read a PUBLIC channel's recent messages, or a specific thread — exploration only, not linked to the task. Private channels and DMs are refused (`assertPublicChannel`). |
 | `search_messages` | Search messages across PUBLIC channels Archie is in (`search.messages`, `search:read.public` scope); private/DM matches are excluded. |
 | `post_to_channel` | Post into a channel/thread WITHOUT linking it to the task. Member-gated by Slack; DMs refused. A human reply to a new top-level message posted here starts its own fresh task. |

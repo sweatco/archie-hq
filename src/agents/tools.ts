@@ -53,6 +53,8 @@ function formatExploreMessages(messages: SlackThreadMessage[]): string {
 import {
   findSlackUsers,
   findSlackChannels,
+  listBotChannels,
+  channelIsPrivate,
   fetchChannelHistory,
   fetchExploreThread,
   searchSlackMessages,
@@ -461,6 +463,41 @@ function createFindSlackChannelTool(_agent: Agent, _task: Task) {
         return `- ${parts.join('\n')}`;
       }).join('\n');
       return ok(`Found ${matches.length} channel(s):\n${list}`);
+    },
+  );
+}
+
+function createListChannelsTool(_agent: Agent, task: Task) {
+  return tool(
+    'list_channels',
+    'List the channels Archie has been added to — the ones you can actually read, search, and post in. ' +
+    'Use this to discover where you can explore instead of guessing channel names. ' +
+    'Context-aware: from a public channel or a DM it lists only PUBLIC channels; private channels appear only when you are working inside a private channel.',
+    {},
+    async () => {
+      // Privacy context: only a request that ORIGINATES in a private channel may
+      // see private channels. Public-channel and DM requests get public-only, so
+      // a public/DM requester never learns that private channels exist. Fails
+      // safe — anything other than a confirmed private origin → public-only.
+      let includePrivate = false;
+      const defaultKey = task.metadata.default_channel;
+      const origin = defaultKey ? task.metadata.channels[defaultKey] : undefined;
+      if (origin?.type === 'slack' && !origin.channel_id.startsWith('D')) {
+        includePrivate = await channelIsPrivate(origin.channel_id);
+      }
+      try {
+        const channels = await listBotChannels(includePrivate);
+        if (channels.length === 0) {
+          return ok("Archie isn't a member of any channels you can use yet. Invite it to a channel (`/invite @Archie`) to explore there.");
+        }
+        const list = channels
+          .map((ch) => `- #${ch.name}${ch.isPrivate ? ' (private)' : ''} — ID: ${ch.id}${ch.topic ? ` — ${ch.topic}` : ''}`)
+          .join('\n');
+        return ok(`Archie is in ${channels.length} channel(s) you can use:\n${list}`);
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        return ok(`Couldn't list channels: ${reason}`);
+      }
     },
   );
 }
@@ -1832,6 +1869,7 @@ export function createCommsMcpServer(agent: Agent, task: Task) {
       createPostFilesToUserTool(agent, task),
       createFindSlackUserTool(agent, task),
       createFindSlackChannelTool(agent, task),
+      createListChannelsTool(agent, task),
       createReadChannelHistoryTool(agent, task),
       createReadThreadTool(agent, task),
       createSearchMessagesTool(agent, task),

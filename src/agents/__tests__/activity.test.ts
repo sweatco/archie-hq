@@ -146,6 +146,7 @@ describe('deriveActivity', () => {
   it('surfaces the user-meaningful PM comms / orchestration / scheduling actions', () => {
     expect(deriveActivity('mcp__comms-tools__find_slack_user', {}, pm)).toBe('looking someone up');
     expect(deriveActivity('mcp__comms-tools__find_slack_channel', {}, pm)).toBe('finding the right channel');
+    expect(deriveActivity('mcp__comms-tools__list_channels', {}, pm)).toBe('looking over the channels');
     expect(deriveActivity('mcp__comms-tools__read_channel_history', {}, pm)).toBe('catching up on a channel');
     expect(deriveActivity('mcp__comms-tools__read_thread', {}, pm)).toBe('reading a thread');
     expect(deriveActivity('mcp__comms-tools__search_messages', {}, pm)).toBe('searching Slack');
