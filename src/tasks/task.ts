@@ -1207,13 +1207,15 @@ export class Task {
     this.agentProcesses.get('pm-agent')?.clearPendingTeardown();
     this.metadata.edit_allowed = true;
     // Remember who approved so repo agents author their commits as this person
-    // (committer stays the bot — see spawnAgent's GIT_AUTHOR_* env). Only set
-    // when resolved, so a re-approval without a user can't clobber a known one.
-    if (approver) {
+    // (committer stays the bot — see spawnAgent's GIT_AUTHOR_* env). First
+    // resolved approver wins: only set when we don't already have one, so a
+    // later re-approval (e.g. a repeat POST to the approve route) can't reassign
+    // authorship mid-task or clobber it with an unresolved user.
+    if (approver && !this.metadata.edit_approved_by) {
       this.metadata.edit_approved_by = approver;
     }
     this.debouncedSave();
-    const approvedBy = this.metadata.edit_approved_by?.name ?? 'user';
+    const approvedBy = this.metadata.edit_approved_by?.name || 'user';
     await appendAgentFinding(this.taskId, 'system', `Edit mode approved by ${approvedBy}`, 'decision');
     await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
   }

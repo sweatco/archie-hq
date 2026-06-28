@@ -232,11 +232,27 @@ export function mountApiRoutes(app: Application): void {
         return;
       }
 
+      // Normalize the optional approver: a non-empty name is required (an empty
+      // git author name fatals every commit), so drop the approver entirely when
+      // it's missing/blank rather than persisting garbage — authoring then falls
+      // back to the bot.
+      const cleanApprover =
+        approver && typeof approver.name === 'string' && approver.name.trim()
+          ? {
+              id: typeof approver.id === 'string' ? approver.id : '',
+              name: approver.name.trim(),
+              email:
+                typeof approver.email === 'string' && approver.email.trim()
+                  ? approver.email.trim()
+                  : undefined,
+            }
+          : undefined;
+
       const task = await Task.get(taskId);
 
       if (type === 'edit_mode') {
         if (approve) {
-          await task.handleEditModeApproval(approver);
+          await task.handleEditModeApproval(cleanApprover);
         } else {
           await task.handleEditModeDenial();
         }
