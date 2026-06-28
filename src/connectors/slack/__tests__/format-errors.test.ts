@@ -47,7 +47,9 @@ describe('formatSlackPostError', () => {
 
 describe('formatSlackReadError', () => {
   it('explains a private-channel refusal', () => {
-    expect(formatSlackReadError(new PrivateChannelError('C9'), 'C9')).toContain('PUBLIC');
+    const msg = formatSlackReadError(new PrivateChannelError('C9'), 'C9');
+    expect(msg).toMatch(/private channel or DM/i);
+    expect(msg).toContain('public');
   });
   it('maps not_in_channel to an invite hint', () => {
     expect(formatSlackReadError(apiErr('not_in_channel'), 'C1')).toContain('/invite @Archie');

@@ -34,14 +34,13 @@ vi.mock('../registry.js', () => ({
 // Partial-mock the Slack client: keep the REAL error classes (format-errors uses
 // `instanceof`) and just stub the network call. `vi.hoisted` makes the mock fn
 // available to the hoisted vi.mock factory.
-const { postSlackMessage, listBotChannels, channelIsPrivate } = vi.hoisted(() => ({
+const { postSlackMessage, listBotChannels } = vi.hoisted(() => ({
   postSlackMessage: vi.fn(),
   listBotChannels: vi.fn(),
-  channelIsPrivate: vi.fn(),
 }));
 vi.mock('../../connectors/slack/client.js', async (importActual) => {
   const actual = await importActual<typeof import('../../connectors/slack/client.js')>();
-  return { ...actual, postSlackMessage, listBotChannels, channelIsPrivate };
+  return { ...actual, postSlackMessage, listBotChannels };
 });
 
 import { createCommsMcpServer } from '../tools.js';
@@ -112,49 +111,41 @@ describe('post_to_channel handler', () => {
   });
 });
 
-describe('list_channels handler — context-aware privacy', () => {
+describe('list_channels handler — public channels + this task\'s own channel', () => {
   beforeEach(() => {
     listBotChannels.mockReset();
-    channelIsPrivate.mockReset();
     listBotChannels.mockResolvedValue([{ id: 'C1', name: 'general', isPrivate: false, topic: '' }]);
   });
 
-  it('public-channel origin → lists public only (includePrivate = false)', async () => {
-    channelIsPrivate.mockResolvedValue(false);
-    const list = getHandler('list_channels', makeTask('C_pub'));
-
+  it('lists the public channels Archie is in', async () => {
+    const list = getHandler('list_channels', makeTask('C1')); // origin is a public channel it's in
     const out = await textOf(await list({}));
-
-    expect(channelIsPrivate).toHaveBeenCalledWith('C_pub');
-    expect(listBotChannels).toHaveBeenCalledWith(false);
     expect(out).toContain('#general');
   });
 
-  it('private-channel origin → includes private (includePrivate = true)', async () => {
-    channelIsPrivate.mockResolvedValue(true);
-    const list = getHandler('list_channels', makeTask('C_priv'));
-
-    await list({});
-
-    expect(listBotChannels).toHaveBeenCalledWith(true);
+  it("appends this task's OWN private channel (not in the public list)", async () => {
+    // Task lives in a private channel C_priv that users.conversations won't return.
+    const out = await textOf(await getHandler('list_channels', makeTask('C_priv'))({}));
+    expect(out).toContain('#general');               // public
+    expect(out).toContain('C_priv');                 // the task's own private channel
+    expect(out).toMatch(/this task's own channel/i);
   });
 
-  it('DM origin → public only, never probes channel privacy', async () => {
-    const list = getHandler('list_channels', makeTask('D123'));
-
-    await list({});
-
-    expect(channelIsPrivate).not.toHaveBeenCalled();
-    expect(listBotChannels).toHaveBeenCalledWith(false);
+  it("appends this task's OWN DM", async () => {
+    const out = await textOf(await getHandler('list_channels', makeTask('D123'))({}));
+    expect(out).toContain('D123');
+    expect(out).toMatch(/this task's own channel/i);
   });
 
-  it('no memberships → friendly invite hint', async () => {
-    channelIsPrivate.mockResolvedValue(false);
+  it('never enumerates other private channels (only public + own come from the data)', async () => {
+    // listBotChannels is public-only by construction; the handler must not ask it for more.
+    await getHandler('list_channels', makeTask('C_priv'))({});
+    expect(listBotChannels).toHaveBeenCalledWith(); // no arguments — public-only
+  });
+
+  it('no memberships and no own channel → friendly invite hint', async () => {
     listBotChannels.mockResolvedValue([]);
-    const list = getHandler('list_channels', makeTask('C_pub'));
-
-    const out = await textOf(await list({}));
-
+    const out = await textOf(await getHandler('list_channels', makeTask())({}));
     expect(out).toMatch(/invite/i);
   });
 });

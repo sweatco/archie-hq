@@ -28,7 +28,6 @@ import {
   findSlackUsers,
   findSlackChannels,
   listBotChannels,
-  channelIsPrivate,
   getSlackFileInfo,
   downloadSlackFile,
   fetchChannelHistory,
@@ -49,14 +48,27 @@ import {
 /**
  * Reject DM targets for the explore/post tools. These tools are channel-only;
  * 1:1 DM channel ids start with 'D', and a user id ('U'/'W') passed as a channel
- * would be coerced into a DM by Slack — block both. (Private channels / group DMs
- * are caught at the API layer via assertPublicChannel.)
+ * would be coerced into a DM by Slack — block both. (Other private channels /
+ * group DMs are caught at the API layer via assertAccessibleChannel.)
  */
 function rejectDmTarget(channel: string): string | null {
   if (isDmOrUserId(channel)) {
     return 'This tool is channel-only and never touches DMs. Pass a channel ID (e.g. "C…"), not a DM or user ID.';
   }
   return null;
+}
+
+/**
+ * The Slack channel ids THIS task is linked to (its own origin channel(s)).
+ * Explore reads treat these as accessible regardless of type — so the PM can read
+ * the private channel or DM the task itself lives in, but no other private/DM.
+ */
+function taskSlackChannelIds(task: Task): Set<string> {
+  const ids = new Set<string>();
+  for (const ch of Object.values(task.metadata.channels)) {
+    if (ch.type === 'slack') ids.add(ch.channel_id);
+  }
+  return ids;
 }
 
 /** Render explore messages in the same `@<id:name> | msg:ts` shape the PM sees elsewhere. */
@@ -477,30 +489,32 @@ function createFindSlackChannelTool(_agent: Agent, _task: Task) {
 function createListChannelsTool(_agent: Agent, task: Task) {
   return tool(
     'list_channels',
-    'List the channels Archie has been added to — the ones you can actually read, search, and post in. ' +
-    'Use this to discover where you can explore instead of guessing channel names. ' +
-    'Context-aware: from a public channel or a DM it lists only PUBLIC channels; private channels appear only when you are working inside a private channel.',
+    "List the channels you can read and search for THIS task — every PUBLIC channel Archie has been added to, plus this task's own channel if it happens to be a private channel or DM. " +
+    'Use this to discover where you can explore instead of guessing channel names. It never lists other private channels or DMs. ' +
+    '(Posting is broader — see post_to_channel — but reading/searching is limited to this list.)',
     {},
     async () => {
-      // Privacy context: only a request that ORIGINATES in a private channel may
-      // see private channels. Public-channel and DM requests get public-only, so
-      // a public/DM requester never learns that private channels exist. Fails
-      // safe — anything other than a confirmed private origin → public-only.
-      let includePrivate = false;
-      const defaultKey = task.metadata.default_channel;
-      const origin = defaultKey ? task.metadata.channels[defaultKey] : undefined;
-      if (origin?.type === 'slack' && !origin.channel_id.startsWith('D')) {
-        includePrivate = await channelIsPrivate(origin.channel_id);
-      }
       try {
-        const channels = await listBotChannels(includePrivate);
-        if (channels.length === 0) {
+        const publicChannels = await listBotChannels();
+        // Append this task's OWN channels that aren't already public (its private
+        // channel / DM origin) — accessible because the task lives there. Other
+        // private channels / DMs are never enumerated.
+        const seen = new Set(publicChannels.map((c) => c.id));
+        const own: { name: string; id: string }[] = [];
+        for (const ch of Object.values(task.metadata.channels)) {
+          if (ch.type === 'slack' && !seen.has(ch.channel_id)) {
+            seen.add(ch.channel_id);
+            own.push({ name: ch.channel_name || ch.channel_id, id: ch.channel_id });
+          }
+        }
+        if (publicChannels.length === 0 && own.length === 0) {
           return ok("Archie isn't a member of any channels you can use yet. Invite it to a channel (`/invite @Archie`) to explore there.");
         }
-        const list = channels
-          .map((ch) => `- #${ch.name}${ch.isPrivate ? ' (private)' : ''} — ID: ${ch.id}${ch.topic ? ` — ${ch.topic}` : ''}`)
-          .join('\n');
-        return ok(`Archie is in ${channels.length} channel(s) you can use:\n${list}`);
+        const lines = [
+          ...publicChannels.map((ch) => `- #${ch.name} — ID: ${ch.id}${ch.topic ? ` — ${ch.topic}` : ''}`),
+          ...own.map((ch) => `- #${ch.name} — ID: ${ch.id} (this task's own channel)`),
+        ];
+        return ok(`Channels you can read/search${own.length ? " (public channels Archie's in, plus this task's own channel)" : ''}:\n${lines.join('\n')}`);
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
         return ok(`Couldn't list channels: ${reason}`);
@@ -825,21 +839,24 @@ function createGetMessageReactionsTool(_agent: Agent, task: Task) {
   );
 }
 
-function createReadChannelHistoryTool(_agent: Agent, _task: Task) {
+function createReadChannelHistoryTool(_agent: Agent, task: Task) {
   return tool(
     'read_channel_history',
-    "Read a PUBLIC channel's recent messages to understand what's happening there — exploration only, NOT linked to this task. " +
-    'Pass a channel ID (use find_slack_channel to look one up). Returns messages oldest→newest, including Archie\'s own and other bots\' posts. ' +
-    'Reading never creates or joins a task. Limited to public channels Archie has been added to — private channels and DMs are off-limits.',
+    "Read a channel's recent messages to understand what's happening there — exploration only, NOT linked to this task. " +
+    'Pass a channel ID (use list_channels or find_slack_channel). Returns messages oldest→newest, including Archie\'s own and other bots\' posts. ' +
+    "Reading never creates or joins a task. Allowed for any PUBLIC channel Archie's in, plus this task's own channel if it is private or a DM — other private channels and DMs are off-limits.",
     {
       channel: z.string().describe('Slack channel ID (e.g. "C1234567")'),
       limit: z.number().int().min(1).max(100).optional().describe('How many recent messages to read (default 30, max 100)'),
     },
     async (args) => {
-      const dm = rejectDmTarget(args.channel);
-      if (dm) return ok(dm);
+      const allowed = taskSlackChannelIds(task);
+      if (!allowed.has(args.channel)) {
+        const dm = rejectDmTarget(args.channel);
+        if (dm) return ok(dm);
+      }
       try {
-        const { channel, messages } = await fetchChannelHistory(args.channel, args.limit ?? 30);
+        const { channel, messages } = await fetchChannelHistory(args.channel, args.limit ?? 30, allowed);
         if (messages.length === 0) return ok(`#${channel.name} has no readable recent messages.`);
         return ok(`#${channel.name} — last ${messages.length} message(s):\n\n${formatExploreMessages(messages)}`);
       } catch (e) {
@@ -849,20 +866,24 @@ function createReadChannelHistoryTool(_agent: Agent, _task: Task) {
   );
 }
 
-function createReadThreadTool(_agent: Agent, _task: Task) {
+function createReadThreadTool(_agent: Agent, task: Task) {
   return tool(
     'read_thread',
-    'Read a specific thread (parent message + all replies) in a PUBLIC channel — exploration only, NOT linked to this task. ' +
-    'Pass the channel ID and the parent message ts (from search_messages or read_channel_history). Includes Archie\'s own and other bots\' messages. Private channels and DMs are off-limits.',
+    'Read a specific thread (parent message + all replies) — exploration only, NOT linked to this task. ' +
+    'Pass the channel ID and the parent message ts (from search_messages or read_channel_history). Includes Archie\'s own and other bots\' messages. ' +
+    "Allowed for any PUBLIC channel Archie's in, plus this task's own channel if it is private or a DM — other private channels and DMs are off-limits.",
     {
       channel: z.string().describe('Slack channel ID (e.g. "C1234567")'),
       thread_ts: z.string().describe('Parent message ts of the thread (e.g. "1716998400.123456")'),
     },
     async (args) => {
-      const dm = rejectDmTarget(args.channel);
-      if (dm) return ok(dm);
+      const allowed = taskSlackChannelIds(task);
+      if (!allowed.has(args.channel)) {
+        const dm = rejectDmTarget(args.channel);
+        if (dm) return ok(dm);
+      }
       try {
-        const { channel, messages } = await fetchExploreThread(args.channel, args.thread_ts);
+        const { channel, messages } = await fetchExploreThread(args.channel, args.thread_ts, allowed);
         if (messages.length === 0) return ok(`No messages found in that thread.`);
         return ok(`#${channel.name} thread ${args.thread_ts} — ${messages.length} message(s):\n\n${formatExploreMessages(messages)}`);
       } catch (e) {
@@ -912,10 +933,11 @@ function createSearchMessagesTool(_agent: Agent, _task: Task) {
 function createPostToChannelTool(_agent: Agent, task: Task) {
   return tool(
     'post_to_channel',
-    'Post a message into a Slack channel or thread WITHOUT linking it to this task — for chiming in while exploring. ' +
-    'Fire-and-forget: it does not become a touchpoint of this task. If a human later replies to a NEW top-level message you post here, that reply starts its OWN fresh task; a reply inside someone else\'s existing thread never does. ' +
-    'Pass a channel ID; optionally `thread_ts` to reply inside an existing thread. Archie must be a member of the channel to post (you can only write where it has been invited). Does NOT work on DMs. ' +
-    'To talk to the user about THIS task, use post_to_user instead.',
+    'Post a message into any channel Archie is a member of, WITHOUT linking it to this task — for chiming in while exploring, or escalating somewhere (e.g. a private management channel). ' +
+    "Works in PUBLIC and PRIVATE channels Archie has been invited to (DMs are not allowed). Unlike reading, posting is NOT limited to this task's channel — escalating outward is a valid use. " +
+    'Fire-and-forget: it does not become a touchpoint of this task, and any reply is invisible to you here. If a human replies to a NEW top-level message you post, that reply starts its OWN fresh task; a reply inside someone else\'s existing thread never does. ' +
+    "GUARDRAIL: match what you post to the destination's audience — never relay private or sensitive task content into a broader or unrelated channel. " +
+    'Pass a channel ID; optionally `thread_ts` to reply in an existing thread. To talk to the user about THIS task, use post_to_user instead.',
     {
       channel: z.string().describe('Slack channel ID (e.g. "C1234567")'),
       message: z.string().describe('The message to post'),
