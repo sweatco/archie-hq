@@ -19,11 +19,12 @@ import { shouldClearCompletionIntent } from '../task.js';
 import type { Task } from '../task.js';
 import type { Agent } from '../../agents/agent.js';
 
-/** Minimal agent stand-in — idleDecision only reads `pendingTeardown` + `session.active`. */
-function fakeAgent(opts: { active?: boolean; pendingTeardown?: boolean } = {}): Agent {
+/** Minimal agent stand-in — idleDecision reads `pendingTeardown`, `session.active`, `backgroundTasks`. */
+function fakeAgent(opts: { active?: boolean; pendingTeardown?: boolean; bgTasks?: string[] } = {}): Agent {
   return {
     pendingTeardown: opts.pendingTeardown ? () => Promise.resolve() : undefined,
     session: { active: opts.active ?? false },
+    backgroundTasks: new Set<string>(opts.bgTasks ?? []),
   } as unknown as Agent;
 }
 
@@ -59,6 +60,14 @@ describe('idleDecision', () => {
   it('waits when any agent is still active (work in flight)', () => {
     expect(
       idleDecision(fakeTask({ completionIntent: true, agents: [fakeAgent({ active: true }), fakeAgent()] })),
+    ).toBe('wait');
+  });
+
+  it('waits when an agent has an in-flight background task (busy, not stalled)', () => {
+    // Turn ended (session inactive) but a backgrounded wait is pending — must not
+    // park or recover under it, even with completion intent set.
+    expect(
+      idleDecision(fakeTask({ completionIntent: true, agents: [fakeAgent({ bgTasks: ['t1'] })] })),
     ).toBe('wait');
   });
 

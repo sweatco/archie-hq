@@ -35,6 +35,16 @@ export class Agent {
   sandbox?: SandboxOptions;
 
   /**
+   * In-flight background task ids (SDK `task_started` → `task_notification`): a
+   * backgrounded Bash wait, a subagent, etc. The agent's turn can END while one
+   * is still running, so the idle-check treats an agent with non-empty
+   * backgroundTasks as *busy* (not stalled) — otherwise recovery fires under a
+   * legitimate wait. Drained on settle (the spawn loop re-engages the agent) and
+   * on subprocess exit (a dead process can't settle them).
+   */
+  readonly backgroundTasks: Set<string> = new Set();
+
+  /**
    * A task teardown (complete/stop) deferred until this agent's current turn
    * ends. The spawn loop runs it when it sees the SDK `result` event, so the
    * triggering tool's response and the Stop hook's control round-trip both

@@ -78,8 +78,8 @@ async function recoverTaskAgents(task: Task): Promise<void> {
  * What the idle-check should do for a task. Pure (no timers/IO) so the
  * completion-vs-recover-vs-wait decision is unit-testable:
  * - `'wait'`     — not active; a forced-stop teardown (request_edit_mode /
- *                  research-budget) is pending and deferred to turn-end; or not
- *                  yet quiescent (some agent still active, or none spawned).
+ *                  research-budget) is pending; or not yet quiescent (an agent is
+ *                  active, has an in-flight background task, or none are spawned).
  * - `'complete'` — quiescent and PM signalled completion (report_completion).
  * - `'recover'`  — quiescent but nobody parked: an agent went idle without
  *                  reporting (a dropped ball).
@@ -98,9 +98,12 @@ export function idleDecision(
   // *before* that event (gap can exceed the 3s delay), so without this guard the
   // check would "recover" an agent that stop() then orphans mid-turn.
   if (agents.some((a) => a.pendingTeardown)) return 'wait';
-  // Quiescent = at least one agent spawned and none active.
+  // Quiescent = at least one agent spawned and none busy. An agent is busy if its
+  // turn is active OR it has an in-flight background task (a backgrounded wait /
+  // subagent the SDK will settle later) — without the latter, recovery would fire
+  // under a legitimate wait, since the agent's turn ends while the task runs.
   if (agents.length === 0) return 'wait';
-  if (agents.some((a) => a.session.active)) return 'wait';
+  if (agents.some((a) => a.session.active || a.backgroundTasks.size > 0)) return 'wait';
   return task.completionIntent ? 'complete' : 'recover';
 }
 
