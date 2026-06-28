@@ -105,6 +105,28 @@ export function TaskDetail({ taskId, onBack, onEvent, onConnect }: TaskDetailPro
             node: <Text dimColor>[{event.agentName}] {event.data.finding as string}</Text>,
           });
           break;
+        case 'agent:bg_task': {
+          // One entry per background task, keyed by task_id: render the 'start' as
+          // ⏳ running, and once the matching 'end' has arrived (events is rebuilt on
+          // every update) fold it into ✅/❌. Skip the 'end' itself.
+          if (event.data.action !== 'start') break;
+          const key = event.data.key as string;
+          const ended = events.find(
+            (e) => e.type === 'agent:bg_task' && e.data.action === 'end' && e.data.key === key,
+          );
+          const desc = (event.data.description as string) || 'background task';
+          if (ended) {
+            const status = ended.data.status as string;
+            logLines.push({
+              node: <Text dimColor>{status === 'completed' ? '✅' : '❌'} [{event.agentName}] background task {status} — {desc}</Text>,
+            });
+          } else {
+            logLines.push({
+              node: <Text color="yellow">⏳ [{event.agentName}] background task running — {desc}</Text>,
+            });
+          }
+          break;
+        }
         case 'approval:requested': {
           const resolved = isApprovalResolved(event, events);
           if (resolved) {

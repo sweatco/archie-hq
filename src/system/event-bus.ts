@@ -10,7 +10,7 @@ import { EventEmitter } from 'events';
 export type EventType =
   | 'task:created' | 'task:resumed' | 'task:stopped' | 'task:completed'
   | 'agent:active' | 'agent:inactive'
-  | 'message' | 'agent:log'
+  | 'message' | 'agent:log' | 'agent:bg_task'
   | 'status'
   | 'approval:requested' | 'approval:resolved'
   | 'reminder:set' | 'reminder:cancelled' | 'reminder:fired';

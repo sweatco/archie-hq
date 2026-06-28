@@ -41,6 +41,7 @@ import { setupSharedClone, cloneExists, type CloneCheckout } from '../connectors
 import { configureGitIdentity } from '../connectors/github/client.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { processAgentEventForLogging, logger } from '../system/logger.js';
+import { emitEvent } from '../system/event-bus.js';
 import { getProbeBaseUrl } from '../system/context-probe.js';
 import { buildSandboxConfig, createFilesystemGuardHooks, type SandboxOptions } from './sandbox.js';
 import { applyOAuthBindings } from '../system/oauth/inject.js';
@@ -654,9 +655,17 @@ Shared folder: ${sharedPath} [READ-ONLY]
             if (event.type === 'system' && event.subtype === 'task_started') {
               agent.backgroundTasks.add(event.task_id);
               logger.agent(def.id, `background task started — ${event.description}`);
+              // Chat/CLI: one transcript entry per task, keyed by task_id — rendered
+              // as ⏳ running, then folded to ✅/❌ when the matching 'end' arrives.
+              emitEvent('agent:bg_task', taskId, {
+                action: 'start', key: event.task_id, description: event.description,
+              }, def.id);
             } else if (event.type === 'system' && event.subtype === 'task_notification') {
               agent.backgroundTasks.delete(event.task_id);
               logger.agent(def.id, `background task ${event.status} — ${event.summary}`);
+              emitEvent('agent:bg_task', taskId, {
+                action: 'end', key: event.task_id, status: event.status, summary: event.summary,
+              }, def.id);
               if (!agent.queue.isStopped()) {
                 agent.queue.addMessage(
                   `Background task ${event.status}: ${event.summary}. ` +
