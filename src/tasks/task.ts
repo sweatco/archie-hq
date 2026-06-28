@@ -1195,7 +1195,7 @@ export class Task {
 
   // ---- Approval handlers ----
 
-  async handleEditModeApproval(): Promise<void> {
+  async handleEditModeApproval(approver?: { id: string; name: string; email?: string }): Promise<void> {
     // Cancel any park armed by request_edit_mode on the PM this turn. The tool
     // defers task.stop() to the PM's turn-end so it doesn't close the input
     // stream under an in-flight hook. If the user approves *before* that turn
@@ -1206,8 +1206,17 @@ export class Task {
     // spawns read-write off edit_allowed.
     this.agentProcesses.get('pm-agent')?.clearPendingTeardown();
     this.metadata.edit_allowed = true;
+    // Remember who approved so repo agents author their commits as this person
+    // (committer stays the bot — see spawnAgent's GIT_AUTHOR_* env). First
+    // resolved approver wins: only set when we don't already have one, so a
+    // later re-approval (e.g. a repeat POST to the approve route) can't reassign
+    // authorship mid-task or clobber it with an unresolved user.
+    if (approver && !this.metadata.edit_approved_by) {
+      this.metadata.edit_approved_by = approver;
+    }
     this.debouncedSave();
-    await appendAgentFinding(this.taskId, 'system', 'Edit mode approved by user', 'decision');
+    const approvedBy = this.metadata.edit_approved_by?.name || 'user';
+    await appendAgentFinding(this.taskId, 'system', `Edit mode approved by ${approvedBy}`, 'decision');
     await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
   }
 

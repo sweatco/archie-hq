@@ -17,6 +17,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Agent } from './agent.js';
 import type { Task } from '../tasks/task.js';
 import { isRepoAgent, isPmAgent } from '../types/agent.js';
+import { buildCommitAuthorEnv } from './commit-author.js';
 import { resolveAgentModel } from './model-label.js';
 import {
   createBaseAgentMcpServer,
@@ -524,6 +525,10 @@ Shared folder: ${sharedPath} [READ-ONLY]
   // path that reaches the subprocess.
   const abortController = new AbortController();
 
+  // GIT_AUTHOR_* so repo-agent commits are authored by the human who approved
+  // edit mode (the committer stays the GitHub App bot). See buildCommitAuthorEnv.
+  const commitAuthorEnv = buildCommitAuthorEnv(def, metadata);
+
   const buildQueryOptions = (sessionId?: string) => ({
     model: model as any,
     systemPrompt,
@@ -551,6 +556,8 @@ Shared folder: ${sharedPath} [READ-ONLY]
       } : {}),
       ...(def.pluginPath ? { CLAUDE_PLUGIN_ROOT: def.pluginPath } : {}),
       ...(def.pluginDataPath ? { CLAUDE_PLUGIN_DATA: def.pluginDataPath } : {}),
+      // Commit authorship — see commitAuthorEnv above.
+      ...commitAuthorEnv,
     },
     resume: sessionId,
     abortController,

@@ -41,9 +41,10 @@ Immediately after posting the approval request, `request_edit_mode` calls `task.
 
 **Approve** (handled in `src/connectors/slack/events.ts: app.action("approve_edit_mode")`, with an equivalent path in `src/connectors/api/routes.ts` for the CLI/API):
 - The original message is updated to replace the buttons with `Edit mode approved by <@user>`.
-- `handleEditModeApproval()` in `src/tasks/task.ts` is called.
-- Sets `metadata.edit_allowed = true` on the task and persists via `debouncedSave()`.
-- Appends the system finding `Edit mode approved by user` (decision) to `knowledge.log`.
+- The handler resolves the clicking user via `getUserInfo()` and passes `{ id, name, email }` (email requires the `users:read.email` scope) to `handleEditModeApproval()`.
+- `handleEditModeApproval(approver?)` in `src/tasks/task.ts` is called.
+- Sets `metadata.edit_allowed = true` on the task and, when an approver was resolved, `metadata.edit_approved_by = { id, name, email }`. Persists via `debouncedSave()`. The approver is later used as the git **author** for commits (see [Commit Authorship](#commit-authorship)).
+- Appends the system finding `Edit mode approved by <name>` (decision) to `knowledge.log`.
 - Reactivates the PM agent by sending the `existingTask` agent prompt (which reactivates the task and re-spawns agents — repo agents now spawn into a fresh `archie/{taskId}` branch).
 
 **Deny** (handled in `src/connectors/slack/events.ts: app.action("deny_edit_mode")`, with the same API equivalent):
@@ -219,7 +220,18 @@ Key isolation properties:
 - **Separate clones**: Each repo agent gets its own task-local shared clone derived from a different base repository, so there is no cross-contamination between repositories.
 - **Separate branches**: Each clone has its own `archie/{taskId}` branch (created in RW mode), branched from the respective repository's base branch.
 - **Base repo isolation**: Clones are created with `git clone --shared` from the base repository. They borrow objects via `objects/info/alternates` but have independent refs/index, and `origin` is rewritten to GitHub so pushes never go back to the base repo. Multiple tasks can share the same base repo without conflict.
-- **Git identity**: `configureGitIdentity(clonePath)` runs after clone creation so commits get the configured user name and email.
+- **Git identity**: `configureGitIdentity(clonePath)` runs after clone creation so commits get the configured user name and email (the GitHub App bot). This sets the commit **committer**; the **author** can differ — see below.
+
+## Commit Authorship
+
+By default a repo agent's commits are both authored and committed by the GitHub App bot (`archie[bot]`), because `configureGitIdentity()` writes that identity into the clone's `user.name`/`user.email`. To make `git blame` and GitHub point to the person who requested the work, the **author** is set to the human who approved edit mode while the **committer** stays the bot:
+
+- On approval, `metadata.edit_approved_by = { id, name, email }` is recorded (see step 4 above).
+- At spawn, `spawnAgent()` injects `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL` into the repo agent's process environment from that field (trimmed; a blank name is dropped so authoring falls back to the bot rather than failing `git commit`). Git applies these to the author only; the committer keeps falling back to the `user.*` config (the bot). No agent cooperation is needed — every *new* commit the agent creates (ordinary commits, merge commits, conflict resolutions) is authored by the human. Commits *replayed* by `git cherry-pick`/`git rebase` keep their original author, which is the correct behaviour.
+- The author **email** lets GitHub link the commit to the person's profile when it matches a verified address on their GitHub account (e.g. an SSO-linked corporate email). Until the `users:read.email` Slack scope is granted, `email` is undefined and a `${slackUserId}@users.noreply.archie.invalid` fallback is used — the name still shows in `git blame`, it just doesn't link.
+- When no approver was resolved (tasks created before this feature, or CLI/API approvals without an `approver` in the request body), `edit_approved_by` is absent and authoring falls back to the bot — the prior behaviour.
+
+Because `edit_allowed` is one-way and approved once, there is a single author per task; all commits in the task (including follow-up work after reactivation) are attributed to that approver.
 
 ## Session Handling on Mode Transition
 
@@ -231,12 +243,13 @@ If a clone is reused across stop/reactivate cycles (e.g., RW reactivation where 
 
 - `src/connectors/github/repo-clone.ts` — `setupSharedClone()`, `removeClone()`, `cloneExists()`, `isWorktree()`, `migrateWorktreeToClone()`, `CloneCheckout` type, `getDefaultBranch()`, `gitExec()`
 - `src/connectors/github/branch-state.ts` — `hydrateBranchState()`, `mirrorLegacyFields()`, `findBranchStateByPR()` (per-branch state helpers)
-- `src/agents/spawn.ts` — `spawnAgent()` with repo-track logic, tool gating, clone creation trigger, sandbox config
+- `src/agents/spawn.ts` — `spawnAgent()` with repo-track logic, tool gating, clone creation trigger, sandbox config, `GIT_AUTHOR_*` env injection for commit authorship
 - `src/agents/sandbox.ts` — `buildSandboxConfig()`, `createFilesystemGuardHooks()` — the two layers that enforce the read-only clone in RO mode
 - `src/agents/tools.ts` — `createPMAgentMcpServer` / `createRepoToolsMcpServer` / `createBaseAgentMcpServer`, `request_edit_mode` tool definition
 - `src/tasks/task.ts` — `handleEditModeApproval()`, `handleEditModeDenial()`, `cleanupClones()`, `postInteractiveToUser()`
 - `src/connectors/slack/events.ts` — `approve_edit_mode` and `deny_edit_mode` Bolt action handlers
 - `src/connectors/api/routes.ts` — non-Slack approval/denial path (CLI/HTTP) that calls the same `handleEditMode*` methods
-- `src/types/task.ts` — `TaskMetadata.edit_allowed`, `RepositoryInfo` with `clone_path` and `branch_states`, `BranchState` type
-- `src/connectors/github/client.ts` — `configureGitIdentity()`, `fetchOrigin()`
+- `src/types/task.ts` — `TaskMetadata.edit_allowed`, `TaskMetadata.edit_approved_by` (commit author), `RepositoryInfo` with `clone_path` and `branch_states`, `BranchState` type
+- `src/connectors/slack/client.ts` — `getUserInfo()` (resolves approver name + email)
+- `src/connectors/github/client.ts` — `configureGitIdentity()` (sets the committer), `fetchOrigin()`
 - `src/connectors/github/webhooks.ts` — `extractTaskIdFromBranch()` for branch-to-task mapping

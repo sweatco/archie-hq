@@ -233,7 +233,29 @@ export async function mountSlackApp(
       }
 
       const task = await Task.get(taskId);
-      await task.handleEditModeApproval();
+      // Resolve the approver to a name (+email when the users:read.email scope is
+      // granted) so repo agents can author their commits as this person. Best
+      // effort: a lookup failure just leaves commits bot-authored.
+      //
+      // Skip external/guest approvers: in a shared channel an outside
+      // collaborator can see and click the button, and we don't want their
+      // name/email written into our git history. Edit mode is still approved —
+      // their commits just stay bot-authored (mirrors the external-author
+      // bail-out the message-ingest path already applies).
+      let approver: { id: string; name: string; email?: string } | undefined;
+      if (userId && userId !== 'unknown') {
+        try {
+          const info = await getUserInfo(userId);
+          if (isExternalUser(info)) {
+            logger.system(`Edit-mode approver ${userId} is external/guest — commits stay bot-authored`);
+          } else {
+            approver = { id: userId, name: info.realName, email: info.email };
+          }
+        } catch (error) {
+          logger.warn('Slack', `Failed to resolve edit-mode approver ${userId}`, error);
+        }
+      }
+      await task.handleEditModeApproval(approver);
     } catch (error) {
       logger.error('Server', 'Error handling edit mode approval', error);
     }

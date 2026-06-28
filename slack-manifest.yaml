@@ -34,6 +34,7 @@ oauth_config:
       - im:read
       - im:write
       - users:read
+      - users:read.email
       - usergroups:read
       - files:read
       - files:write

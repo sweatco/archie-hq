@@ -279,6 +279,14 @@ export interface TaskMetadata {
   dynamic_agents?: DynamicAgentSpec[];
   status: TaskStatus;
   edit_allowed?: boolean;     // Has user approved edit mode for this task?
+  /**
+   * The human who approved edit mode. Used as the git *author* on every commit
+   * the repo agents make for this task (the committer stays the GitHub App bot),
+   * so `git blame` and GitHub attribute the change to a person you can ask about
+   * it. Absent on pre-feature tasks and on CLI/API approvals with no resolved
+   * user — in which case authoring falls back to the bot (the prior behaviour).
+   */
+  edit_approved_by?: { id: string; name: string; email?: string };
   research_budget_extra?: number;    // Additional research budget granted via Slack approval (+5 per approval)
   research_request_count?: number;   // Persisted research request count (survives stop/reactivate)
   failure_counter?: number;          // Consecutive recovery attempts (Stage 3 idle detection)

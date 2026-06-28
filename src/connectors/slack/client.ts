@@ -936,6 +936,7 @@ async function fetchThreadHistory(
 export async function getUserInfo(userId: string): Promise<{
   name: string;
   realName: string;
+  email?: string;
   tz?: string;
   teamId?: string;
   isRestricted?: boolean;
@@ -947,7 +948,7 @@ export async function getUserInfo(userId: string): Promise<{
   const user = result.user as {
     name?: string;
     real_name?: string;
-    profile?: { real_name?: string; display_name?: string; real_name_normalized?: string };
+    profile?: { real_name?: string; display_name?: string; real_name_normalized?: string; email?: string };
     tz?: string;
     team_id?: string;
     is_restricted?: boolean;
@@ -967,6 +968,8 @@ export async function getUserInfo(userId: string): Promise<{
   return {
     name: user?.name || userId,
     realName,
+    // Requires the `users:read.email` bot scope; undefined without it.
+    email: user?.profile?.email,
     tz: user?.tz,
     teamId: user?.team_id,
     isRestricted: user?.is_restricted,
