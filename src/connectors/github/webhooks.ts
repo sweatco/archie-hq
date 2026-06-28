@@ -129,6 +129,12 @@ export function formatGitHubContext(
     const prs = (checkRun?.pull_requests ?? suite?.pull_requests) as Array<Record<string, unknown>> | undefined;
     const firstPr = prs && prs.length > 0 ? prs[0] : undefined;
     if (firstPr?.number !== undefined) context.prNumber = firstPr.number as number;
+  } else if (eventType === 'status') {
+    // Commit-status events (e.g. TeamCity / Danger posting via the Statuses
+    // API). No PR number; `branches` lists branches whose head is this commit.
+    context.state = payload.state as string | undefined; // pending | success | failure | error
+    const branches = payload.branches as Array<Record<string, unknown>> | undefined;
+    context.branch = branches && branches.length > 0 ? (branches[0].name as string | undefined) : undefined;
   }
 
   return context;
@@ -165,6 +171,11 @@ export function extractBranchFromPayload(
     const checkRun = payload.check_run as Record<string, unknown> | undefined;
     const suite = checkRun?.check_suite as Record<string, unknown> | undefined;
     return suite?.head_branch as string | undefined;
+  }
+
+  if (eventType === 'status') {
+    const branches = payload.branches as Array<Record<string, unknown>> | undefined;
+    return branches && branches.length > 0 ? (branches[0].name as string | undefined) : undefined;
   }
 
   return undefined;

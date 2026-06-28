@@ -198,11 +198,32 @@ async function maybeRefreshPrCards(
   payload: Record<string, unknown>,
   context: ReturnType<typeof formatGitHubContext>
 ): Promise<void> {
-  const isCiDone =
-    (eventType === 'check_run' || eventType === 'check_suite' || eventType === 'workflow_run') &&
-    context.action === 'completed';
+  // Re-sync the card from a broad set of received PR events, not just CI
+  // completions. Two reasons: (1) a check *appearing* (check_run.created, a
+  // commit `status` post like TeamCity's queued build, check_suite.requested)
+  // bumps the total so the count tracks 0/2 → 0/3 → 0/4; (2) crucially, some CI
+  // results only reach us indirectly — e.g. Danger reports a failure via a
+  // commit status + an issue_comment, and depending on the GitHub App's event
+  // subscriptions the only signal we reliably receive may be the comment. So
+  // any PR-scoped event is a chance to re-fetch checks and refresh. The refresh
+  // is always in-place (never moves the card), debounced per branch, and
+  // fingerprint-gated, so broadening the triggers is cheap and safe. PR title/
+  // description edits are deliberately excluded (the `edited` action isn't here,
+  // and the fingerprint ignores title/body) so editing those never touches it.
   const isPrClosed = eventType === 'pull_request' && context.action === 'closed';
-  if (!isCiDone && !isPrClosed) return;
+  const isCardRelevant =
+    isPrClosed ||
+    eventType === 'check_run' ||
+    eventType === 'check_suite' ||
+    eventType === 'workflow_run' ||
+    eventType === 'status' ||
+    eventType === 'push' ||
+    eventType === 'issue_comment' ||
+    eventType === 'pull_request_review' ||
+    eventType === 'pull_request_review_comment' ||
+    (eventType === 'pull_request' &&
+      (context.action === 'synchronize' || context.action === 'opened' || context.action === 'reopened'));
+  if (!isCardRelevant) return;
 
   if (isPrClosed) {
     const task = await resolveCardTask(eventType, payload, context);
