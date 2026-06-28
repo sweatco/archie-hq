@@ -224,6 +224,10 @@ export class Task {
     // migration drop those entries). Only an active task ever re-saves on its own.
     if (didMigrate) {
       await writeFile(getMetadataPath(taskId), JSON.stringify(metadata, null, 2));
+      // Log once, here — the migration persisted, so it won't run again. (The
+      // migrate fn stays silent: it runs on every load, incl. read-only
+      // findTaskByPRNumber, so logging there would spam.)
+      logger.system(`[migrate] task ${taskId}: upgraded repositories to v30 (${Object.keys(metadata.repositories).join(', ')})`);
     }
 
     const team = scanAgentDefs();
