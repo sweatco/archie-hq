@@ -15,7 +15,7 @@ Slack and GitHub are optional integrations — you do **not** need them to build
 ## Getting set up
 
 ```bash
-git clone https://github.com/<your-org>/archie-hq.git
+git clone https://github.com/sweatco/archie-hq.git
 cd archie-hq
 npm install
 cp .env.example .env        # then set ANTHROPIC_API_KEY in .env

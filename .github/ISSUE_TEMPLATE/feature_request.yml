@@ -1,0 +1,51 @@
+name: Feature request
+description: Suggest an idea or enhancement for Archie HQ
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement! For new domain behavior (agents, skills, workflows), note that this usually belongs in a **plugin** rather than the engine — see [CONTRIBUTING.md](https://github.com/sweatco/archie-hq/blob/main/CONTRIBUTING.md).
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the use case or pain point. What are you trying to do that's hard or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like to see happen? Describe the behavior or API you have in mind.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds or other approaches you've thought about.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of the system does this touch?
+      options:
+        - Engine (orchestration / agent runtime / integrations)
+        - Plugin system
+        - CLI
+        - Slack integration
+        - GitHub integration
+        - Security / sandbox
+        - Docs
+        - Other / not sure
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission checks
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true

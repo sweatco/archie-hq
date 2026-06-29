@@ -2,7 +2,26 @@
 
 **A**utonomous **R**esponsive and **C**ollaborative **H**yper **I**ntelligent **E**mployee
 
+[![CI](https://github.com/sweatco/archie-hq/actions/workflows/ci.yml/badge.svg)](https://github.com/sweatco/archie-hq/actions/workflows/ci.yml)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](LICENSE)
+[![Built with Claude Agent SDK](https://img.shields.io/badge/built%20with-Claude%20Agent%20SDK-d97757.svg)](https://docs.anthropic.com/en/docs/claude-code/sdk)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
 A multi-agent AI system that handles work across any domain — engineering, marketing, analytics, ops, or anything you plug in. Agents collaborate on tasks via Slack, using whatever tools each domain needs. Built on the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk) with a plugin architecture: add a new domain by dropping in a plugin directory, no core code changes.
+
+**What makes it different:** unlike single-purpose agent frameworks, Archie is a *team* — a PM agent orchestrates specialist agents that talk to each other, share findings, and operate under an OS-level sandbox with a human approval gate before any code is written. New domains are plugins, not forks.
+
+## Contents
+
+- [How It Works](#how-it-works)
+- [Quick Start](#quick-start-no-slack-no-github--just-an-api-key)
+- [Plugins](#plugins)
+- [Architecture](#architecture)
+- [Security](#security)
+- [Documentation](#documentation)
+- [Technology Stack](#technology-stack)
+- [Contributing](CONTRIBUTING.md)
+- [License](#license)
 
 ## How It Works
 
@@ -26,7 +45,7 @@ Archie ships with a small **example plugin set** (a PM plus a general assistant 
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/<your-org>/archie-hq.git && cd archie-hq
+git clone https://github.com/sweatco/archie-hq.git && cd archie-hq
 npm install
 
 # 2. Configure — the only required value is your Anthropic API key
@@ -173,6 +192,8 @@ See [Security Architecture](docs/architecture/security.md) for the full threat m
 
 - [Contributing](CONTRIBUTING.md) — how to set up, the dev loop, and PR expectations
 - [Security Policy](SECURITY.md) — how to report a vulnerability
+- [Code of Conduct](CODE_OF_CONDUCT.md) — community standards
+- [Changelog](CHANGELOG.md) — notable changes by version
 
 ## Technology Stack
 
