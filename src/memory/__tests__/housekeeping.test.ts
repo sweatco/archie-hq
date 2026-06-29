@@ -32,6 +32,8 @@ vi.mock('../paths.js', () => ({
   getEntityPath: (slug: string) => join(entitiesDir, `${slug}.md`),
   getEntityCap: () => 300,
   getEntityInjectMax: () => 8,
+  getOrgInjectMax: () => 8,
+  getEntityObsCap: () => 30,
   isValidEntitySlug: (s: string) => /^[a-z0-9][a-z0-9-]{0,63}$/.test(s) && s !== 'index',
 }));
 
