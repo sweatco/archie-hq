@@ -29,7 +29,7 @@ When a task durably concerned such a subject, emit an `entity_updates` entry. Th
 
 - `slug`: lowercase-kebab identifier (e.g. `payment-service`). If the subject already appears in the entity index above (by name or alias), REUSE its exact slug so the update folds in — do not invent a near-duplicate.
 - `type`: one of `service | system | integration | concept | repo` (required when the entity is new).
-- `scope`: `org` (cross-cutting — people-by-reference, third-party integrations, company-wide systems), `domain`, or `repo` (specific to one or more repos). Default to `org` for anything not clearly repo-specific.
+- `scope`: choose the NARROWEST applicable level. Use `repo` (and set `repos`) when the fact is specific to one or more repositories; `domain` for a single domain's cross-repo concern; `org` ONLY for genuinely company-wide facts (third-party integrations, company-wide systems, processes). When unsure between `org` and a narrower scope, prefer the narrower one — or skip. Do NOT default to `org`.
 - `repos`: repo keys this entity belongs to, when `scope: repo`.
 - `summary`: a single L0 one-liner describing the entity.
 - `observations`: typed facts. Each has a `category` from the CLOSED set `fact | config | decision | caveat` and one-line `text`. Unknown categories are dropped.
