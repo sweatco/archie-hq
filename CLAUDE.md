@@ -58,5 +58,3 @@ When creating commits (only when asked):
 - **Group related changes**: If multiple files change for the same feature, commit them together
 - **Clear commit messages**: Use descriptive messages that explain what changed and why
 - **Exclude drafts**: Don't commit draft documentation or proposals unless specifically requested
-
-> Note: `.github/PULL_REQUEST_TEMPLATE.md` (including its smoke-test checklist) exists for **external open-source contributors** opening PRs against this public repo. It is not a workflow gate for internal work or Archie's own agents.
