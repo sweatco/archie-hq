@@ -40,7 +40,7 @@ import {
   createRecoverableInputGenerator,
 } from './message-queue.js';
 import { setupSharedClone, cloneExists, type CloneCheckout } from '../connectors/github/repo-clone.js';
-import { configureGitIdentity } from '../connectors/github/client.js';
+import { configureGitIdentity, getGitHubAppIdentity } from '../connectors/github/client.js';
 import { buildChannelCanvasPromptSection } from '../connectors/slack/channel-canvas.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { processAgentEventForLogging, logger } from '../system/logger.js';
@@ -140,13 +140,27 @@ async function setupAgentWorkspace(taskId: string, agent: Agent): Promise<string
     }
   }
 
-  // Write .claude/settings.json with plugin hooks (picked up by SDK via settingSources)
-  if (agent.def.pluginHooks) {
-    const settingsPath = join(claudeDir, 'settings.json');
-    const settings = { hooks: agent.def.pluginHooks };
-    await writeFile(settingsPath, JSON.stringify(settings, null, 2));
-    logger.agent(agent.def.id, `Mounted plugin hooks to ${settingsPath}`);
-  }
+  // Write .claude/settings.json (picked up by the SDK via settingSources: ['project']).
+  //
+  // attribution.commit replaces Claude Code's default commit trailer: we swap the
+  // harness-default "Co-Authored-By: Claude <model>" line for Archie (the GitHub
+  // App bot) so commits credit Archie as co-author, not the model. sessionUrl:false
+  // drops the Claude-Session trailer too. When the bot identity isn't configured
+  // the empty string simply hides the trailer. Plugin hooks are merged in when set.
+  const settingsPath = join(claudeDir, 'settings.json');
+  const archie = getGitHubAppIdentity();
+  const settings: Record<string, unknown> = {
+    attribution: {
+      commit: archie ? `Co-Authored-By: ${archie.name} <${archie.email}>` : '',
+      sessionUrl: false,
+    },
+  };
+  if (agent.def.pluginHooks) settings.hooks = agent.def.pluginHooks;
+  await writeFile(settingsPath, JSON.stringify(settings, null, 2));
+  logger.agent(
+    agent.def.id,
+    `Wrote agent settings.json (attribution${agent.def.pluginHooks ? ' + plugin hooks' : ''})`,
+  );
 
   return agentWorkspace;
 }
@@ -528,6 +542,19 @@ Shared folder: ${sharedPath} [READ-ONLY]
   // GIT_AUTHOR_* so repo-agent commits are authored by the human who approved
   // edit mode (the committer stays the GitHub App bot). See buildCommitAuthorEnv.
   const commitAuthorEnv = buildCommitAuthorEnv(def, metadata);
+
+  // Diagnostic: surface whether the human author is actually being applied. If a
+  // repo agent commits as the bot, this line distinguishes "approver was never
+  // captured" (edit_approved_by=NONE) from "captured but env didn't take effect".
+  if (isRepoAgent(def)) {
+    const ea = metadata.edit_approved_by;
+    logger.agent(
+      def.id,
+      `Commit author: edit_approved_by=${ea ? `${ea.name} <${ea.email ?? 'no-email'}>` : 'NONE'}; ` +
+        `GIT_AUTHOR ${'GIT_AUTHOR_NAME' in commitAuthorEnv ? 'injected' : 'absent → bot authors'}`,
+      { editMode: metadata.edit_allowed === true },
+    );
+  }
 
   const buildQueryOptions = (sessionId?: string) => ({
     model: model as any,
