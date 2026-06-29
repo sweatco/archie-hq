@@ -13,8 +13,9 @@ the release, rename this section to `## [0.1.0] - YYYY-MM-DD` and start a fresh
 
 ### Added
 
-- Multi-agent orchestration: a PM agent that delegates to specialist agents and
-  synthesizes their results.
+- Archie as an **AI employee** you delegate work to in Slack: a PM agent takes
+  the request, brings in the right specialist agents, has them collaborate, and
+  reports back.
 - Plugin architecture — add a new domain by dropping in a plugin directory, with
   no core code changes. Supports repo agents (git/GitHub/PRs) and plugin agents
   (workspace + MCP tools).

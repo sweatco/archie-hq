@@ -7,9 +7,11 @@
 [![Built with Claude Agent SDK](https://img.shields.io/badge/built%20with-Claude%20Agent%20SDK-d97757.svg)](https://docs.anthropic.com/en/docs/claude-code/sdk)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-A multi-agent AI system that handles work across any domain — engineering, marketing, analytics, ops, or anything you plug in. Agents collaborate on tasks via Slack, using whatever tools each domain needs. Built on the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk) with a plugin architecture: add a new domain by dropping in a plugin directory, no core code changes.
+**Archie is an AI employee** — you delegate real work to it in Slack, the same way you would to a colleague, and it gets the job done across any domain: engineering, marketing, analytics, ops, or anything you plug in.
 
-**What makes it different:** unlike single-purpose agent frameworks, Archie is a *team* — a PM agent orchestrates specialist agents that talk to each other, share findings, and operate under an OS-level sandbox with a human approval gate before any code is written. New domains are plugins, not forks.
+Under the hood it's not one chatbot but a whole team: a PM agent takes your request, brings in the right specialist agents, has them collaborate, and reports back. It's built on the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk) with a plugin architecture — add a new skill or department by dropping in a plugin directory, no core code changes.
+
+**Why "employee" and not just "agent":** unlike single-purpose agent frameworks, Archie has coworkers, a manager, a workplace (Slack), and rules of conduct — specialist agents talk to each other, share findings, and operate under an OS-level sandbox with a human approval gate before any code ships. You onboard new abilities as plugins, not forks.
 
 ## Contents
 
