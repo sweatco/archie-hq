@@ -1205,7 +1205,7 @@ export function createGitHubClient(): GitHubClient | null {
 /**
  * Get GitHub App bot identity for git commits
  */
-function getGitHubAppIdentity(): { name: string; email: string } | null {
+export function getGitHubAppIdentity(): { name: string; email: string } | null {
   const appId = process.env.GITHUB_APP_ID;
   const appSlug = process.env.GITHUB_APP_SLUG;
 
