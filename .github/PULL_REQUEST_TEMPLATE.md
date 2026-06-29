@@ -1,34 +1,14 @@
 <!--
-Thanks for contributing to Archie HQ! Please fill out the sections below.
-Keep PRs focused — one logical change per PR makes review faster (see CONTRIBUTING.md).
+Nothing here is mandatory — it's a starting point. Delete any section that
+doesn't apply. Keep PRs focused: one logical change per PR (see CONTRIBUTING.md).
 -->
 
-## What does this PR do?
+## What & why
 
-<!-- A clear description of the change and the motivation behind it. -->
-
-## Related issues
-
-<!-- e.g. "Closes #123" or "Part of #456". Delete if none. -->
-
-## Type of change
-
-- [ ] Bug fix
-- [ ] New feature
-- [ ] Refactor / internal change
-- [ ] Documentation
-- [ ] Build / CI / tooling
+<!-- What changed and the motivation. Link issues with "Closes #123" if relevant. -->
 
 ## Checklist
 
-- [ ] `npm run typecheck` passes
-- [ ] `npm run build` passes
-- [ ] `npm test` passes
-- [ ] New source files include the SPDX header (`// SPDX-License-Identifier: AGPL-3.0-or-later`)
-- [ ] All output goes through the unified logger (`src/system/logger.ts`), not `console.*`
+- [ ] `npm run typecheck`, `npm run build`, and `npm test` pass
+- [ ] New source files carry the SPDX header (`// SPDX-License-Identifier: AGPL-3.0-or-later`)
 - [ ] Docs updated if behavior or setup changed
-- [ ] No secrets, tokens, or `.env` values committed
-
-## Notes for reviewers
-
-<!-- Anything specific you'd like reviewers to focus on, or context that helps the review. -->
