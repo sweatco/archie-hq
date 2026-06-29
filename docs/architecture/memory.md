@@ -139,13 +139,11 @@ The helper `extractTaskUsernames(taskId)` (`spawn.ts:132`) parses the task's `kn
 
 **Entity selection is push, not pull** — the system decides which entity pages to inject; there is no agent-callable query tool. `enrichPromptWithMemory(prompt, users, selectors)` receives spawn-context selectors (`{ repo?, plugin?, taskTitle? }`): PM passes `taskTitle`, repo agents pass `repo: def.repo.repoKey`, plugin agents pass `plugin: def.pluginName`. `selectEntities()` (`entity-index.ts`) then:
 
-1. **Always** includes `scope: org` entities (people-by-reference, integrations, company-wide systems).
-2. Includes entities tagged to the spawned `repo`.
-3. Scores the rest by token overlap of the task title / users against each entity's name, aliases, and summary.
-4. **Expands one hop** along `[[wikilink]]` relations from the selected set (so selecting `payment-service` pulls `postgres-prod` even if it wasn't directly matched).
-5. Bounds **the non-`org` pages** to `ARCHIE_MEMORY_ENTITY_INJECT_MAX` and logs which slugs were dropped. `scope: org` entities are exempt from this bound — they carry organizational knowledge (the role `org.md` used to play) and are always injected in full.
+1. Scores every active entity against the spawn context: `scope: org` entities get a base bonus, repo matches and entities `owned_by` a participating user are boosted, and the rest score by token overlap of the task title / users against each entity's name, aliases, and summary.
+2. **Expands one hop** along `[[wikilink]]` relations from the selected set (so selecting `payment-service` pulls `postgres-prod` even if it wasn't directly matched).
+3. Applies **two independent budgets** to the score-ranked list (last-touched recency breaks ties): `scope: org` pages are bounded by `ARCHIE_MEMORY_ORG_INJECT_MAX`, all other pages by `ARCHIE_MEMORY_ENTITY_INJECT_MAX`. Pages over either budget are dropped and their slugs logged. `scope: org` entities are **not** exempt — bounding them is what keeps the system prompt from scaling with the org's entity count.
 
-The thin `<entity_index>` is never subject to the page bound — the agent always sees the full catalogue of what exists.
+The thin `<entity_index>` is never subject to a page bound — the agent always sees the full catalogue of what exists, so an `org` page dropped from full injection stays discoverable via its `L0` summary (the recall path until pull/embeddings land in a later phase).
 
 `enrichPromptWithMemory()` appends the block to the prompt under a fixed `## Organizational Memory` header with a short instruction line. It returns the prompt unchanged — and performs no store reads — if the layer is disabled (`ARCHIE_MEMORY=false`), if **injection is disabled** (`ARCHIE_MEMORY_INJECT` ≠ `true`, the default — see [Feature Flags](#feature-flags)), or if no memory exists.
 
@@ -383,7 +381,9 @@ Disabled by `ARCHIE_MEMORY_HOUSEKEEPING=false` — overflow is still logged but 
 | `ARCHIE_MEMORY_SECTION_CAP` | `30` | Soft cap on bullets per `## Section` (org or user). |
 | `ARCHIE_MEMORY_STALENESS_DAYS` | `180` | Days after which an unrefreshed bullet / entity observation is eligible for drop. |
 | `ARCHIE_MEMORY_ENTITY_CAP` | `300` | Soft cap on total entity pages; entity housekeeping (merge/archive) auto-triggers when exceeded. |
-| `ARCHIE_MEMORY_ENTITY_INJECT_MAX` | `8` | Max full entity pages pushed into a single agent prompt (the index is always injected in full). |
+| `ARCHIE_MEMORY_ENTITY_INJECT_MAX` | `8` | Max full **non-`org`** entity pages pushed into a single agent prompt (the index is always injected in full). |
+| `ARCHIE_MEMORY_ORG_INJECT_MAX` | `8` | Max full `scope: org` entity pages injected into a single prompt. Org is no longer exempt; pages over the budget stay listed in the always-injected index. |
+| `ARCHIE_MEMORY_ENTITY_OBS_CAP` | `30` | Soft cap on observations kept per entity page; on write the newest-touched are retained and the oldest surplus dropped. |
 
 All variables are documented in `.env.example`.
 
