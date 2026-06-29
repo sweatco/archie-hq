@@ -29,6 +29,23 @@ export interface SandboxOptions {
   allowedNetworkDomains?: string[];
 }
 
+/**
+ * Trusted public package registries that repo build sandboxes may reach when a
+ * human has approved edit mode — just enough egress to run `npm`/`yarn` installs
+ * and regenerate lockfiles. Deliberately minimal: these two hosts cover npm
+ * (tarballs serve from registry.npmjs.org) and Yarn 4 (default
+ * registry.yarnpkg.com). Listing the hostnames also permits DNS resolution for
+ * them, so no separate DNS rule is needed.
+ *
+ * This list is intentionally a hardcoded constant — NOT plugin- or PM-settable —
+ * so the egress surface can't be widened from a hot-reloaded plugins change or a
+ * compromised orchestrator. A broader "trusted" list is tracked separately.
+ */
+export const TRUSTED_PACKAGE_REGISTRY_DOMAINS = [
+  'registry.npmjs.org',
+  'registry.yarnpkg.com',
+];
+
 // ---- Sandbox config (OS-level, Bash only) ----
 
 /**

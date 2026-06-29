@@ -46,7 +46,7 @@ import { loadPrompt } from '../utils/prompt-loader.js';
 import { processAgentEventForLogging, logger } from '../system/logger.js';
 import { emitEvent } from '../system/event-bus.js';
 import { getProbeBaseUrl } from '../system/context-probe.js';
-import { buildSandboxConfig, createFilesystemGuardHooks, type SandboxOptions } from './sandbox.js';
+import { buildSandboxConfig, createFilesystemGuardHooks, TRUSTED_PACKAGE_REGISTRY_DOMAINS, type SandboxOptions } from './sandbox.js';
 import { applyOAuthBindings } from '../system/oauth/inject.js';
 import { enrichPromptWithMemory, isMemoryEnabled, isInjectionEnabled } from '../memory/index.js';
 
@@ -484,7 +484,14 @@ Shared folder: ${sharedPath} [READ-ONLY]
       denyWritePaths: editAllowed
         ? [...readOnlyPaths, ...protectedWorkspaceFiles, ...cloneGitHeads]
         : [...allClonePaths, ...readOnlyPaths],
-      allowedNetworkDomains: def.allowedNetworkDomains,
+      // In edit mode, repo build sandboxes may reach the trusted package
+      // registries so agents can run installs / regenerate lockfiles. Read-only
+      // agents stay fully network-denied. The list is a curated constant — see
+      // TRUSTED_PACKAGE_REGISTRY_DOMAINS.
+      allowedNetworkDomains: [
+        ...(def.allowedNetworkDomains ?? []),
+        ...(editAllowed ? TRUSTED_PACKAGE_REGISTRY_DOMAINS : []),
+      ],
     };
   } else {
     // ---- Plain plugin agent ----
