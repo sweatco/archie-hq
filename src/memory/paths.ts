@@ -52,6 +52,10 @@ export function getStalenessDays(): number { return envInt('ARCHIE_MEMORY_STALEN
 export function getEntityCap(): number { return envInt('ARCHIE_MEMORY_ENTITY_CAP', 300); }
 /** Maximum number of full entity pages injected into a single agent prompt. */
 export function getEntityInjectMax(): number { return envInt('ARCHIE_MEMORY_ENTITY_INJECT_MAX', 8); }
+/** Maximum number of full `scope: org` entity pages injected into a single agent prompt (org is no longer unbounded; the thin index still lists every entity). */
+export function getOrgInjectMax(): number { return envInt('ARCHIE_MEMORY_ORG_INJECT_MAX', 8); }
+/** Soft cap on observations kept on a single entity page; on write the newest-touched are retained and the oldest surplus dropped. */
+export function getEntityObsCap(): number { return envInt('ARCHIE_MEMORY_ENTITY_OBS_CAP', 30); }
 
 // ---- Directory & file paths ----
 

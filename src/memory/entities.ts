@@ -36,6 +36,7 @@ import {
   getEntityPath,
   getEntitiesDir,
   getEntityCap,
+  getEntityObsCap,
   isValidEntitySlug,
 } from './paths.js';
 import {
@@ -275,6 +276,19 @@ export async function applyEntityUpdate(
     }
   }
 
+  // Per-page observation cap: keep the newest-touched N, drop the oldest
+  // surplus. Deterministic (ordered by `touched:`, undated treated as oldest),
+  // no side-agent. Relations are NOT capped. Bounds single-page growth so even
+  // a bounded entity selection can't re-inflate the prompt over time.
+  const obsCap = getEntityObsCap();
+  if (record.observations.length > obsCap) {
+    const droppedCount = record.observations.length - obsCap;
+    record.observations = [...record.observations]
+      .sort((a, b) => (b.touched ?? '').localeCompare(a.touched ?? ''))
+      .slice(0, obsCap);
+    logger.warn('memory', `applyEntityUpdate: ${record.entity} exceeded observation cap ${obsCap} — dropped ${droppedCount} oldest`);
+  }
+
   // Relations — add sanitized, dedupe by (type, target).
   if (Array.isArray(update.relations)) {
     for (const r of update.relations) {
@@ -297,6 +311,14 @@ export async function applyEntityUpdate(
 // Helpers
 // ============================================================================
 
+/**
+ * Resolve an entity's scope from the (sanitized) extractor input. An explicit,
+ * valid scope wins; otherwise a repo-bearing entity is `repo`-scoped. `org` is
+ * ONLY the no-signal structural fallback (scope omitted AND no repos) — not an
+ * active default: the extractor prompt steers toward the narrowest applicable
+ * scope, and org injection is now bounded (see selectEntities), so this
+ * fallback no longer drives unbounded context.
+ */
 function pickScope(raw: string | undefined, repos: string[]): EntityScope {
   if (typeof raw === 'string' && isAllowedEntityScope(raw.toLowerCase().trim())) {
     return raw.toLowerCase().trim() as EntityScope;

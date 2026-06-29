@@ -13,7 +13,7 @@
  */
 
 import { readFile, writeFile, mkdir } from 'fs/promises';
-import { getEntityIndexPath, getEntitiesDir, getEntityInjectMax } from './paths.js';
+import { getEntityIndexPath, getEntitiesDir, getEntityInjectMax, getOrgInjectMax } from './paths.js';
 import { listEntities, resolveEntity } from './entities.js';
 import type { EntityRecord } from './types.js';
 
@@ -118,18 +118,21 @@ const SCORE_EXPANSION = 50;
 const SCORE_PER_TOKEN = 10;
 
 /**
- * Select which full entity pages to inject for a spawn. Always includes
- * `scope: org` entities, scores the rest against the context, and expands one
- * hop along relations. `scope: org` pages carry the organizational knowledge
- * that used to live in `org.md`, so they are injected in full and are EXEMPT
- * from the page bound; `max` (default from config) caps only the remaining
- * repo/domain/title-scored and graph-expanded pages. Archived entities are
- * never injected.
+ * Select which full entity pages to inject for a spawn. Scores every active
+ * entity against the context (repo / participating users / task title) and
+ * expands one hop along relations, then applies TWO independent budgets:
+ * `orgMax` bounds `scope: org` pages and `max` bounds the rest. Org pages are
+ * no longer exempt — they compete on relevance (score) with last-touched
+ * recency as the tiebreak, and the highest-scoring `orgMax` are injected. The
+ * thin entity index (always injected in full by the caller) keeps org pages
+ * dropped here discoverable via their L0 summary. Archived entities are never
+ * injected.
  */
 export function selectEntities(
   records: EntityRecord[],
   ctx: SelectionContext,
   max = getEntityInjectMax(),
+  orgMax = getOrgInjectMax(),
 ): SelectionResult {
   const active = records.filter((r) => r.status !== 'archived');
   const ctxRepo = ctx.repo?.toLowerCase();
@@ -181,14 +184,20 @@ export function selectEntities(
       return t !== 0 ? t : a.entity.localeCompare(b.entity);
     });
 
-  // `scope: org` pages are exempt from the bound; `max` caps only the rest.
+  // Two independent budgets: `orgMax` bounds scope:org pages, `max` bounds the
+  // rest. `ranked` is already ordered by score (relevance) then recency, so
+  // taking the first that fit each budget yields the highest-scoring pages of
+  // each class; the remainder are dropped (still discoverable via the index).
   const selected: EntityRecord[] = [];
   const dropped: string[] = [];
+  let orgBudget = orgMax;
   let nonOrgBudget = max;
   for (const r of ranked) {
-    if (r.scope === 'org' || nonOrgBudget > 0) {
+    const hasBudget = r.scope === 'org' ? orgBudget > 0 : nonOrgBudget > 0;
+    if (hasBudget) {
       selected.push(r);
-      if (r.scope !== 'org') nonOrgBudget--;
+      if (r.scope === 'org') orgBudget--;
+      else nonOrgBudget--;
     } else {
       dropped.push(r.entity);
     }

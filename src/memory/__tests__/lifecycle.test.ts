@@ -53,6 +53,8 @@ vi.mock('../paths.js', () => ({
   getEntityPath: (slug: string) => join(memoryDir, 'entities', `${slug}.md`),
   getEntityCap: () => 300,
   getEntityInjectMax: () => 8,
+  getOrgInjectMax: () => 8,
+  getEntityObsCap: () => 30,
   isValidEntitySlug: (s: string) => /^[a-z0-9][a-z0-9-]{0,63}$/.test(s) && s !== 'index',
   getTaskSummaryPath: (taskId: string) => join(sessionsDir, taskId, 'shared', 'summary.md'),
 }));
