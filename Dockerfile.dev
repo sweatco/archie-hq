@@ -7,10 +7,10 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 # Install git, ssh (for git fetch over ssh), git-lfs, bash (required by Claude CLI),
 # bubblewrap + socat (sandbox runtime), gosu (entrypoint privilege drop),
-# python3 + pip (for agent scripts)
+# curl (container healthcheck), python3 + pip (for agent scripts)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-      git openssh-client git-lfs bash bubblewrap socat gosu ca-certificates \
+      git openssh-client git-lfs bash bubblewrap socat gosu ca-certificates curl \
       python3 python3-pip python3-venv && \
     git lfs install && \
     mkdir -p ~/.ssh && \
