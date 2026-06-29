@@ -2,7 +2,45 @@
 
 **A**utonomous **R**esponsive and **C**ollaborative **H**yper **I**ntelligent **E**mployee
 
-A multi-agent AI system that handles work across any domain — engineering, marketing, analytics, ops, or anything you plug in. Agents collaborate on tasks via Slack, using whatever tools each domain needs. Built on the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk) with a plugin architecture: add a new domain by dropping in a plugin directory, no core code changes.
+[![CI](https://github.com/sweatco/archie-hq/actions/workflows/ci.yml/badge.svg)](https://github.com/sweatco/archie-hq/actions/workflows/ci.yml)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](LICENSE)
+[![Built with Claude Agent SDK](https://img.shields.io/badge/built%20with-Claude%20Agent%20SDK-d97757.svg)](https://docs.anthropic.com/en/docs/claude-code/sdk)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
+**Archie is an AI employee** — you delegate real work to it in Slack, the same way you would to a colleague, and it gets the job done across any domain: engineering, marketing, analytics, ops, or anything you plug in.
+
+Under the hood it's not one chatbot but a whole team: a PM agent takes your request, brings in the right specialist agents, has them collaborate, and reports back. It's built on the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk) with a plugin architecture — add a new skill or department by dropping in a plugin directory, no core code changes.
+
+## Contents
+
+- [Why a team, not a single agent?](#why-a-team-not-a-single-agent)
+- [Runs your whole team on one server](#runs-your-whole-team-on-one-server)
+- [How It Works](#how-it-works)
+- [Quick Start](#quick-start-no-slack-no-github--just-an-api-key)
+- [Plugins](#plugins)
+- [Architecture](#architecture)
+- [Security](#security)
+- [Documentation](#documentation)
+- [Technology Stack](#technology-stack)
+- [Contributing](CONTRIBUTING.md)
+- [License](#license)
+
+## Why a team, not a single agent?
+
+A single agent can call sub-agents, so why model a whole team? Three reasons:
+
+- **Context stays focused.** One agent grinding through a long task fills its context window fast and starts losing the thread. Splitting the work across agents keeps each one's context small, relevant, and sharp.
+- **Specialists beat a generalist.** An agent with a well-defined role — backed by peers it can question and reach agreement with — produces better work than a single generic agent reasoning alone. Collaboration and disagreement are features, not overhead.
+- **A coordinator delegates; a lead hoards.** Give one "lead" agent some sub-agents and it tends to do the whole job itself — it sees itself as the one in charge of the *work*. Archie's PM is a coordinator by design: its job is to delegate and synthesize, never to do the work. That structural choice is what actually distributes the work to the right specialists instead of one model trying to be everything.
+
+This is also why Archie reads as an **employee**, not a tool: it has coworkers, a manager, a workplace (Slack), and a human approval gate before anything ships. You onboard new abilities as plugins, not forks.
+
+## Runs your whole team on one server
+
+Archie is a production system, not a demo — and it's deliberately cheap to operate:
+
+- **Massively parallel, single box.** Every task is its own lightweight, isolated runtime, so many run concurrently on one server. In production, a single instance serves an entire ~100-person company running tasks in parallel, with no resource strain.
+- **Near-zero infrastructure.** No database, no message broker, no external state store — just files on disk and git. All runtime state lives under one working directory, which makes deploying, backing up, and recovering trivial. Crash recovery is built in: tasks check-point to disk and resume after a restart.
 
 ## How It Works
 
@@ -26,7 +64,7 @@ Archie ships with a small **example plugin set** (a PM plus a general assistant 
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/<your-org>/archie-hq.git && cd archie-hq
+git clone https://github.com/sweatco/archie-hq.git && cd archie-hq
 npm install
 
 # 2. Configure — the only required value is your Anthropic API key
@@ -173,6 +211,8 @@ See [Security Architecture](docs/architecture/security.md) for the full threat m
 
 - [Contributing](CONTRIBUTING.md) — how to set up, the dev loop, and PR expectations
 - [Security Policy](SECURITY.md) — how to report a vulnerability
+- [Code of Conduct](CODE_OF_CONDUCT.md) — community standards
+- [Changelog](CHANGELOG.md) — notable changes by version
 
 ## Technology Stack
 

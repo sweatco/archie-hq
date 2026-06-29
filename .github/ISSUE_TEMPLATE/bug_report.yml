@@ -1,0 +1,59 @@
+name: Bug report
+description: Report something that isn't working as expected
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Please fill out the sections below so we can reproduce and fix the issue quickly.
+
+        > **Security issues:** do not file them here. Follow the private process in [SECURITY.md](https://github.com/sweatco/archie-hq/blob/main/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the bug, including what you expected to happen instead.
+      placeholder: When I run `npm run cli` and ask the PM to…, it…
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to reproduce the behavior.
+      placeholder: |
+        1. Clone and `npm install`
+        2. `npm run example:setup`
+        3. `npm run dev` then `npm run cli`
+        4. Send "…"
+        5. See error
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or output
+      description: Paste any relevant log output. This will be rendered as code, so no need for backticks.
+      render: shell
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: How are you running Archie?
+      placeholder: |
+        - OS: macOS 15.3 / Ubuntu 24.04
+        - Node.js: 20.x
+        - Run mode: npm run dev / docker:dev
+        - Commit or version: e.g. v0.1.0 or git SHA
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission checks
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: This is not a security vulnerability (those go through SECURITY.md).
+          required: true
