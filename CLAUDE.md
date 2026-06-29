@@ -59,6 +59,4 @@ When creating commits (only when asked):
 - **Clear commit messages**: Use descriptive messages that explain what changed and why
 - **Exclude drafts**: Don't commit draft documentation or proposals unless specifically requested
 
-### Pull Requests
-
-When opening a PR against this repo (only when asked), populate the description from `.github/PULL_REQUEST_TEMPLATE.md`: fill in **What & why** and tick the checklist items that apply. Delete any section that doesn't. This keeps PR descriptions consistent without manual effort from maintainers — the author (usually an agent) fills it, not the reviewer.
+> Note: `.github/PULL_REQUEST_TEMPLATE.md` (including its smoke-test checklist) exists for **external open-source contributors** opening PRs against this public repo. It is not a workflow gate for internal work or Archie's own agents.
