@@ -16,7 +16,7 @@ import {
 } from './paths.js';
 import { readUser, applyUserUpdatesWithIdentity } from './store.js';
 import { runExtraction } from './extractor.js';
-import { applyEntityUpdate, readEntity } from './entities.js';
+import { applyEntityUpdate, listEntities, readEntity } from './entities.js';
 import { rebuildIndex, readIndexMarkdown } from './entity-index.js';
 import { appendActivity, trimActivity, readActivity } from './activity.js';
 import { sanitizeTaskSummary } from './sanitize.js';
@@ -159,8 +159,12 @@ async function processExtraction(taskId: string): Promise<void> {
   // Apply entity updates (resolve-or-create; sanitizer runs inside entities.ts).
   // Each applied update auto-adds a `touched_by [[taskId]]` edge.
   const touchedEntities: string[] = [];
+  // Read the entity store once for the whole batch; applyEntityUpdate keeps this
+  // array coherent as it creates/updates entities (avoids an O(updates×files)
+  // re-read + re-parse on every update).
+  const entityRecords = await listEntities();
   for (const update of result.entity_updates) {
-    const applied = await applyEntityUpdate(update, taskId);
+    const applied = await applyEntityUpdate(update, taskId, undefined, entityRecords);
     if (!applied) continue;
     touchedEntities.push(applied.slug);
     if (applied.capExceeded) housekeepingTargets.add('entities');
