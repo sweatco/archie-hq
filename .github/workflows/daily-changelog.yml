@@ -1,0 +1,175 @@
+# Daily changelog — summarize the previous day's commits into CHANGELOG.md.
+#
+# How it works:
+#   1. Gather the day's changes as PR context (scripts/changelog-gather.sh):
+#      each PR merged yesterday with its description, linked issues, commit
+#      subjects, and diffstat — so the model understands intent without reading
+#      code — plus a raw-commit backstop for direct-to-main pushes.
+#   2. If nothing landed — or that day already has an entry — stop (no empty commit).
+#   3. Have the Claude Code Action write ONLY the dated entry to new-entry.md
+#      (it never edits CHANGELOG.md itself).
+#   4. scripts/changelog-insert.mjs splices that entry into CHANGELOG.md in the
+#      right place (below [Unreleased], above the newest dated entry).
+#   5. Commit straight to `main` with [skip ci] so it doesn't trigger a rebuild.
+#
+# Setup prerequisites:
+#   - Repo secret ANTHROPIC_API_KEY.
+#   - main must allow this workflow to push. If branch protection requires PRs
+#     or status checks, add the github-actions bot to the bypass list (Settings
+#     -> Branches), or switch this job to open a PR instead of pushing.
+#
+# Actions are SHA-pinned per org policy (full commit SHA + version comment).
+name: Daily changelog
+
+on:
+  schedule:
+    # 02:00 UTC daily — late enough to capture the full previous UTC day.
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Day to summarize (YYYY-MM-DD, UTC). Defaults to yesterday."
+        required: false
+        type: string
+
+# Never let two runs edit the changelog at once.
+concurrency:
+  group: daily-changelog
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  changelog:
+    name: Summarize yesterday into CHANGELOG.md
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main (full history)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Gather the day's changes (PR context)
+        id: gather
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TARGET_DATE="${{ inputs.date }}"
+          if [ -z "$TARGET_DATE" ]; then
+            TARGET_DATE="$(date -u -d 'yesterday' +%F)"
+          fi
+          echo "date=$TARGET_DATE" >> "$GITHUB_OUTPUT"
+          echo "Target day: $TARGET_DATE (UTC)"
+
+          # Already documented? Then there's nothing to do.
+          if grep -qE "^## ${TARGET_DATE}\b" CHANGELOG.md; then
+            echo "Entry for $TARGET_DATE already exists — skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          set +e
+          bash scripts/changelog-gather.sh "$TARGET_DATE" "${{ github.repository }}" context.md
+          code=$?
+          set -e
+          if [ "$code" = "10" ]; then
+            echo "Nothing landed on $TARGET_DATE — skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [ "$code" = "0" ] || exit "$code"
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "::group::Context for the model"
+          cat context.md
+          echo "::endgroup::"
+
+      - name: Write the entry with Claude
+        if: steps.gather.outputs.skip == 'false'
+        uses: anthropics/claude-code-action@4633baf5267540f3f8cb58b684f79901d564c280 # v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: |
+            --allowedTools Read,Write
+            --max-turns 8
+            --model claude-sonnet-4-6
+          prompt: |
+            You are updating Archie HQ's CHANGELOG.md. Write the entry for ${{ steps.gather.outputs.date }}.
+
+            First read two files in the repo:
+            - `context.md` — the changes that landed that day. Merged pull requests are the
+              primary source: each PR's description explains *what and why*, with its linked
+              issues, commit subjects, and diffstat. A raw-commit list at the end is a backstop
+              for anything pushed straight to main. Use the PR descriptions to understand the
+              VALUE and intent of each change — you do not need to read the code.
+            - `CHANGELOG.md` — copy the exact voice, formatting, and density of the existing
+              dated entries near the top.
+
+            Rules (follow exactly):
+            - The output is ONE section. The first line is the heading `## ${{ steps.gather.outputs.date }}` and nothing comes before it.
+            - One logical change = one bullet. A PR is normally one bullet, even when it spans
+              several commits. Do not write one bullet per commit, and do not list every commit.
+            - Lead each bullet with the VALUE the change delivers for business users — a bold
+              lead-in sentence drawn from the PR's "what & why" — then add engineer detail in a
+              trailing `_Technical: …_` clause.
+            - A change that is pure plumbing with no user-facing value stays purely technical:
+              write it as an italic `_Technical: …_` bullet with no bold business lead.
+            - Be concise and faithful. Never invent a change that is not in `context.md`.
+
+            Then self-review your draft before saving: does every bullet either lead with real
+            user value or stand as an explicit `_Technical:_` note? Is anything invented or
+            mis-summarized versus `context.md`? Are related changes grouped? Revise, then save.
+
+            Write ONLY the finished entry to a new file named `new-entry.md`.
+            Do NOT modify CHANGELOG.md or any other file.
+
+      - name: Insert the entry and commit
+        if: steps.gather.outputs.skip == 'false'
+        env:
+          TARGET_DATE: ${{ steps.gather.outputs.date }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -s new-entry.md ]; then
+            echo "Claude produced no new-entry.md — aborting." >&2
+            exit 1
+          fi
+
+          # Discard any stray edits Claude may have made; we only trust new-entry.md.
+          git checkout -- CHANGELOG.md
+
+          set +e
+          node scripts/changelog-insert.mjs CHANGELOG.md new-entry.md
+          code=$?
+          set -e
+          # 3 == entry already present (race / re-run): treat as a clean no-op.
+          if [ "$code" = "3" ]; then
+            echo "Already present — nothing to commit."
+            exit 0
+          fi
+          [ "$code" = "0" ] || exit "$code"
+
+          rm -f new-entry.md context.md
+
+          if git diff --quiet -- CHANGELOG.md; then
+            echo "No changelog change — nothing to commit."
+            exit 0
+          fi
+
+          git config user.name "archie-changelog[bot]"
+          git config user.email "archie-changelog@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "docs(changelog): add entry for ${TARGET_DATE} [skip ci]"
+
+          # Retry the push a few times to ride out transient failures.
+          n=0
+          until git push origin HEAD:main; do
+            n=$((n + 1))
+            [ "$n" -ge 4 ] && { echo "push failed after retries" >&2; exit 1; }
+            sleep $((2 ** n))
+            git pull --rebase origin main
+          done
