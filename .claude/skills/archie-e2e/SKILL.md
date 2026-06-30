@@ -4,7 +4,7 @@ description: Test Archie full-cycle on your machine. Boots Archie in Docker, tal
 license: MIT
 metadata:
   author: archie-hq
-  version: "1.3"
+  version: "1.4"
 ---
 
 # Archie full-cycle E2E harness
@@ -26,9 +26,9 @@ claude.ai Slack MCP (posts as you)  →  DM the dev Archie bot
 Why Slack and not the debug MCP for *input*: the debug MCP's `create_task`/`send_message`
 write `source:'cli'` log lines with **no `@<UID:Name>` marker**, so memory extraction files them
 under a `cli:<taskId>` fallback — never your real Slack id. Only the Slack inbound path
-(`src/connectors/slack/events.ts` → `task.append` → `appendSlackMessage`,
-`src/tasks/persistence.ts:254`) writes the `@<U…:Name>` marker that `extractUsernames`
-(`src/memory/lifecycle.ts:108,222`) keys on.
+(`src/connectors/slack/events.ts` → `task.append` → `appendSlackMessage` in
+`src/tasks/persistence.ts`) writes the `@<U…:Name>` marker that `extractUsernames`
+(`src/memory/lifecycle.ts`) keys on.
 
 ## Tools this skill uses
 
@@ -130,8 +130,10 @@ bash SKILL_DIR/scripts/wait-task.sh <nonce> 240
 ```
 
   Prints `TASK=` (found by nonce — no snapshot diffing), `LOG_HEAD=` (first knowledge-log
-  line), `STATE=` and any `PM_REPLY:` lines. Assert `LOG_HEAD` contains
-  `@<<user_id>:<user_name>>` **and** the nonce — that marker is the attribution proof.
+  line), `STATE=` and any `PM_REPLY:` lines. Assert `LOG_HEAD` contains the
+  `@<<user_id>:<user_name>>` marker — that is the attribution proof. (Nonce correlation is
+  already guaranteed: `wait-task.sh` located the task *by* matching the nonce in its log, so
+  don't re-assert the nonce against the possibly-truncated `LOG_HEAD`.)
 - `STATE` handling:
   - `COMPLETED` → done; extraction will run.
   - `APPROVAL_REQUESTED` → `mcp__archie-debug__approve { task_id, type, approve: true }`
@@ -158,8 +160,8 @@ finishes. Poll for up to ~90 s.
 - **Deterministic (primary) — this is the real proof:**
   - `Read workdir/memory/summaries/<task_id>.md` → YAML `users:` block lists `id: <user_id>`.
   - `Read workdir/memory/recent-activity.md` → a row for `<task_id>` with `User = <user_id>`.
-  - Written unconditionally by `writeSummary`/`appendActivity` (`src/memory/lifecycle.ts:194,198`),
-    so they prove the message was attributed to you and keyed to your id.
+  - Written unconditionally by `writeSummary` (`src/memory/lifecycle.ts`) / `appendActivity`
+    (`src/memory/activity.ts`), so they prove the message was attributed to you and keyed to your id.
 - **Best-effort (secondary):**
   - `Read workdir/memory/users/<user_id>.md`. A new bullet may or may not appear: the
     extractor errs on extracting *less* and, importantly, **rejects explicit "please remember X"
@@ -181,7 +183,7 @@ what's stored.
 - Wait via `wait-task.sh <nonce2>`; read the threaded reply.
 - **PASS** if the reply recites a stored preference from the user file. The PM has no other
   source for it, so this proves the `<user_preferences user_id="<user_id>">` block was injected
-  via `enrichPromptWithMemory`/`buildMemoryContext` (`src/agents/spawn.ts:251-253`).
+  via `enrichPromptWithMemory` (`src/agents/spawn.ts`) → `buildMemoryContext` (`src/memory/context.ts`).
 
 ### 8. Report
 
