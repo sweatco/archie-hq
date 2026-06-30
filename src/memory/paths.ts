@@ -7,6 +7,7 @@
 
 import { join } from 'path';
 import { WORKDIR } from '../system/workdir.js';
+import { logger } from '../system/logger.js';
 
 // ---- Feature flags ----
 
@@ -35,11 +36,20 @@ export function isInjectionEnabled(): boolean {
 
 // ---- Configurable caps ----
 
-function envInt(name: string, fallback: number): number {
-  const raw = process.env[name];
+/**
+ * Read an integer flag. An unset/empty value silently uses `fallback`. A value
+ * that is *set* but invalid — not an integer (`parseInt` would leniently accept
+ * "8x"), or below `min` — is rejected with a warning rather than silently
+ * swallowed. `min` defaults to 1; pass `min: 0` for flags where "none" is a
+ * meaningful setting (e.g. ARCHIE_MEMORY_ORG_INJECT_MAX=0 → index-only).
+ */
+function envInt(name: string, fallback: number, min = 1): number {
+  const raw = process.env[name]?.trim();
   if (!raw) return fallback;
-  const n = parseInt(raw, 10);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
+  const n = /^-?\d+$/.test(raw) ? Number(raw) : NaN;
+  if (Number.isInteger(n) && n >= min) return n;
+  logger.warn('memory', `${name}: ignoring invalid value ${JSON.stringify(raw)} (expected integer >= ${min}); using ${fallback}`);
+  return fallback;
 }
 
 /** Soft cap on total bullets in each user file before housekeeping triggers. */
@@ -53,7 +63,7 @@ export function getEntityCap(): number { return envInt('ARCHIE_MEMORY_ENTITY_CAP
 /** Maximum number of full entity pages injected into a single agent prompt. */
 export function getEntityInjectMax(): number { return envInt('ARCHIE_MEMORY_ENTITY_INJECT_MAX', 8); }
 /** Maximum number of full `scope: org` entity pages injected into a single agent prompt (org is no longer unbounded; the thin index still lists every entity). */
-export function getOrgInjectMax(): number { return envInt('ARCHIE_MEMORY_ORG_INJECT_MAX', 8); }
+export function getOrgInjectMax(): number { return envInt('ARCHIE_MEMORY_ORG_INJECT_MAX', 8, 0); }
 /** Soft cap on observations kept on a single entity page; on write the newest-touched are retained and the oldest surplus dropped. */
 export function getEntityObsCap(): number { return envInt('ARCHIE_MEMORY_ENTITY_OBS_CAP', 30); }
 

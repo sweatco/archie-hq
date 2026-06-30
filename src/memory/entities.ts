@@ -136,7 +136,34 @@ export async function readEntity(slug: string): Promise<EntityRecord | null> {
 }
 
 /** Write an entity record to its file, creating entities/ if needed. */
+/**
+ * Bound a page to the per-page observation cap, mutating `record.observations`
+ * in place. Retains the newest-touched observations up to the cap and drops the
+ * oldest surplus. Ordering is deterministic: by `touched:` descending, then by
+ * original array position descending — so on a same-date tie the most-recently
+ * applied observation (appended last) wins and the current update's freshly
+ * extracted facts are never dropped in favor of equally-dated older ones.
+ * Undated observations sort last (treated as oldest). Returns the count dropped.
+ */
+export function applyObservationCap(record: EntityRecord): number {
+  const cap = getEntityObsCap();
+  const total = record.observations.length;
+  if (total <= cap) return 0;
+  record.observations = record.observations
+    .map((o, i) => ({ o, i }))
+    .sort((a, b) => (b.o.touched ?? '').localeCompare(a.o.touched ?? '') || b.i - a.i)
+    .slice(0, cap)
+    .map((x) => x.o);
+  return total - cap;
+}
+
 export async function writeEntity(record: EntityRecord): Promise<void> {
+  // Enforce the per-page observation cap at the single persistence boundary, so
+  // no write path (applyEntityUpdate or the housekeeping merge) can exceed it.
+  const dropped = applyObservationCap(record);
+  if (dropped > 0) {
+    logger.warn('memory', `writeEntity: ${record.entity} exceeded observation cap ${getEntityObsCap()} — dropped ${dropped} oldest`);
+  }
   const path = getEntityPath(record.entity);
   await mkdir(getEntitiesDir(), { recursive: true });
   await writeFile(path, serializeEntity(record), 'utf-8');
@@ -205,11 +232,14 @@ export async function applyEntityUpdate(
   update: EntityUpdate,
   taskId: string,
   today?: string,
+  records?: EntityRecord[],
 ): Promise<AppliedEntity | null> {
   if (!update || typeof update.slug !== 'string') return null;
   const date = today ?? new Date().toISOString().slice(0, 10);
 
-  const all = await listEntities();
+  // Reuse the caller's in-memory record set when provided (one listEntities()
+  // per task instead of one re-read per update); otherwise read the store here.
+  const all = records ?? (await listEntities());
   const proposedSlug = sanitizeEntitySlug(update.slug);
   let record = (proposedSlug && resolveEntity(proposedSlug, all)) || resolveEntity(update.slug, all);
   let created = false;
@@ -266,27 +296,22 @@ export async function applyEntityUpdate(
     }
   }
 
-  // Observations — append sanitized, dedupe by (category, normalized text), stamp touched.
+  // Observations — append sanitized, dedupe by (category, normalized text).
+  // A re-emitted (already-present) observation is re-stamped to today rather
+  // than skipped, so a repeatedly re-affirmed fact stays recent and is not aged
+  // out by the per-page cap or the staleness sweep. The cap itself is enforced
+  // at the writeEntity persistence boundary (see applyObservationCap).
   if (Array.isArray(update.observations)) {
     for (const o of update.observations) {
       const clean = sanitizeEntityObservation(o);
       if (!clean) continue;
-      if (hasObservation(record.observations, clean)) continue;
+      const existing = findObservation(record.observations, clean);
+      if (existing) {
+        existing.touched = date;
+        continue;
+      }
       record.observations.push({ ...clean, touched: date });
     }
-  }
-
-  // Per-page observation cap: keep the newest-touched N, drop the oldest
-  // surplus. Deterministic (ordered by `touched:`, undated treated as oldest),
-  // no side-agent. Relations are NOT capped. Bounds single-page growth so even
-  // a bounded entity selection can't re-inflate the prompt over time.
-  const obsCap = getEntityObsCap();
-  if (record.observations.length > obsCap) {
-    const droppedCount = record.observations.length - obsCap;
-    record.observations = [...record.observations]
-      .sort((a, b) => (b.touched ?? '').localeCompare(a.touched ?? ''))
-      .slice(0, obsCap);
-    logger.warn('memory', `applyEntityUpdate: ${record.entity} exceeded observation cap ${obsCap} — dropped ${droppedCount} oldest`);
   }
 
   // Relations — add sanitized, dedupe by (type, target).
@@ -301,9 +326,12 @@ export async function applyEntityUpdate(
   // Auto touched_by edge for provenance + the related-tasks signal.
   addRelation(record.relations, { type: 'touched_by', target: taskId });
 
-  await writeEntity(record);
-
   const count = created ? all.length + 1 : all.length;
+  await writeEntity(record);
+  // Keep a caller-provided record set coherent: a later update to a just-created
+  // entity in the same task must resolve it, not create a duplicate. (Existing
+  // entities are already references into `all`, so their mutations are visible.)
+  if (created && records) records.push(record);
   return { slug: record.entity, created, capExceeded: count > getEntityCap() };
 }
 
@@ -352,9 +380,10 @@ function dedupe(items: string[]): string[] {
   return out;
 }
 
-function hasObservation(list: EntityObservation[], o: EntityObservation): boolean {
+/** Find an existing observation matching by (category, normalized text), or undefined. */
+function findObservation(list: EntityObservation[], o: EntityObservation): EntityObservation | undefined {
   const norm = o.text.toLowerCase().replace(/\s+/g, ' ').trim();
-  return list.some((x) => x.category === o.category && x.text.toLowerCase().replace(/\s+/g, ' ').trim() === norm);
+  return list.find((x) => x.category === o.category && x.text.toLowerCase().replace(/\s+/g, ' ').trim() === norm);
 }
 
 /** Add a relation if (type, target) is not already present. */

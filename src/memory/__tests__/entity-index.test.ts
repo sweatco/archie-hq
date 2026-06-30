@@ -172,6 +172,22 @@ describe('selectEntities (push selection)', () => {
     }
   });
 
+  it('orgMax=0 injects no full org pages but keeps them all in the index (index-only)', () => {
+    const records = [
+      rec({ entity: 'a', scope: 'org', summary: 'alpha summary' }),
+      rec({ entity: 'b', scope: 'org', summary: 'bravo summary' }),
+      rec({ entity: 'c', scope: 'org', summary: 'charlie summary' }),
+    ];
+    const { selected, dropped } = selectEntities(records, {}, 8, 0);
+    expect(selected).toHaveLength(0);
+    expect(dropped.sort()).toEqual(['a', 'b', 'c']);
+    const indexMd = renderIndex(records);
+    for (const r of records) {
+      expect(indexMd).toContain(`[[${r.entity}]]`);
+      expect(indexMd).toContain(r.summary);
+    }
+  });
+
   it('never injects archived entities', () => {
     const records = [
       rec({ entity: 'old', scope: 'org', status: 'archived' }),

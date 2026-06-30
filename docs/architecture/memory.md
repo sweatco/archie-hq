@@ -311,7 +311,7 @@ entity: payment-service
 type: service                 # service | system | integration | concept | repo
 display_name: "Payment Service"
 aliases: [payments-api]
-scope: repo                   # org | domain | repo  (org ⇒ always injected)
+scope: repo                   # org | domain | repo  (org pages are relevance-selected up to ARCHIE_MEMORY_ORG_INJECT_MAX, not always injected; the index always lists them)
 repos: [backend]
 domain: engineering
 status: active                # active | archived
