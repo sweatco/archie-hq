@@ -759,6 +759,28 @@ Shared folder: ${sharedPath} [READ-ONLY]
               await teardown().catch((err) =>
                 logger.error(def.id, 'Error during deferred teardown', err)
               );
+            } else if (
+              event.type === 'result' &&
+              event.subtype !== 'success' &&
+              agent.session.active
+            ) {
+              // The turn ended with an ERROR result (API "Overloaded" once the
+              // SDK's own retries are exhausted, max_turns, …). Unlike a clean stop
+              // this does NOT fire the SDK `Stop` hook, so nothing marks the agent
+              // inactive: the active flag stays set, the idle-check never arms, and
+              // the task hangs until the 60-min wall-clock cap (observed: a 44-min
+              // orphan after an Overloaded, broken only by an external poke). Mark
+              // the agent inactive so the normal quiescence/recovery path runs —
+              // recovery re-engages the agent, which retries the work. The
+              // `agent.session.active` guard makes this a safety-net: a success
+              // result is owned by the Stop hook, and if the Stop hook or
+              // crash-detection already cleared the flag this is a no-op, so it
+              // can't double-fire recovery.
+              logger.warn(
+                def.id,
+                `Turn ended with error result '${event.subtype}' — marking inactive so recovery can run`,
+              );
+              task.updateAgentState(def.id, false);
             }
           }
 
