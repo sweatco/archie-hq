@@ -54,14 +54,15 @@ Use `AskUserQuestion` only if `.env` / tokens are missing — otherwise run with
 
 Each worktree is its own compose project (project name = dir name) running its own Archie.
 The worktrunk pre-start hooks (`.config/wt.toml`) copy `.env` from the base worktree and assign
-a **unique PORT** (`hash_port`) so worktrees don't collide on 3000. Consequences:
+a **unique PORT** (`hash_port`) so worktrees don't collide on 3000. Both the helper scripts and
+the `archie-debug` MCP key off **this checkout's `.env`**, so both target this worktree's Archie
+automatically — nothing to pass around:
 
-- The scripts read `PORT` from this checkout's `.env` (fallback 3000) — nothing to pass around.
-- The `archie-debug` MCP defaults to `http://localhost:3000`; when PORT differs, set
-  `ARCHIE_URL=http://localhost:<PORT>` (an `"env"` block on the `archie-debug` entry in
-  `.mcp.json`, or export before launching Claude Code) and reconnect — otherwise its tools talk
-  to the wrong Archie. The REST API (`http://localhost:<PORT>/api/...`) is an equivalent
-  fallback within an already-running session.
+- The helper scripts read `PORT` from `.env` (fallback 3000).
+- The `archie-debug` MCP resolves its base URL as `ARCHIE_URL` → `$PORT` → **`PORT` from
+  `.env`** → `http://localhost:3000`, so in a worktree it picks up the right port on its own.
+  Set `ARCHIE_URL` only to aim it at a remote / non-standard host. The REST API
+  (`http://localhost:<PORT>/api/...`) is the equivalent surface the scripts use.
 
 ---
 
