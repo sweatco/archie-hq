@@ -1,10 +1,6 @@
 # Changelog
 
-Archie ships continuously, so changes are grouped by the **date they landed** on
-`main` rather than by version. Each entry leads with the **value** it delivers,
-then adds **technical detail**; pure plumbing stays technical. The
-[starting-point snapshot](#before-this-log--the-starting-point) at the bottom is
-where Archie stood before the first entry.
+Archie ships continuously, so changes are grouped by the **date they landed** on `main` rather than by version. Each entry leads with the **value** it delivers, then adds **technical detail**; pure plumbing stays technical. The [starting-point snapshot](#before-this-log--the-starting-point) at the bottom is where Archie stood before the first entry.
 
 ## [Unreleased]
 
@@ -12,112 +8,57 @@ _Changes on `main` that haven't been summarized into a dated entry yet._
 
 ## 2026-06-29
 
-- **Every change Archie makes is traceable to the person who approved it.**
-  Commits made in edit mode are now authored as the human who approved edit
-  mode, with an Archie co-author trailer — a clean, auditable attribution chain.
-  _Technical: swapped the Claude commit trailer for an Archie one, added an
-  author diagnostic, and hardened the author injection against spoofing (review
-  follow-up)._
+- **Every change Archie makes is traceable to the person who approved it.** Commits made in edit mode are now authored as the human who approved edit mode, with an Archie co-author trailer — a clean, auditable attribution chain. _Technical: swapped the Claude commit trailer for an Archie one, added an author diagnostic, and hardened the author injection against spoofing (review follow-up)._
 
-- **Agents can build and test projects that pull dependencies.** Repo build
-  sandboxes in edit mode may now reach trusted package registries, so dependency
-  installs and builds work inside the sandbox. _Technical: network allowlist for
-  trusted package registries within the edit-mode sandbox._
+- **Agents can build and test projects that pull dependencies.** Repo build sandboxes in edit mode may now reach trusted package registries, so dependency installs and builds work inside the sandbox. _Technical: network allowlist for trusted package registries within the edit-mode sandbox._
 
-- _Technical: README and first-impression polish (positioning as an "AI
-  employee", "why a team, not a single agent", "runs on one server"), PR
-  template rewritten to the repo's house style, and the changelog switched to
-  this date-based model._
+- _Technical: README and first-impression polish (positioning as an "AI employee", "why a team, not a single agent", "runs on one server"), PR template rewritten to the repo's house style, and the changelog switched to this date-based model._
 
 ## 2026-06-28
 
-- **Archie keeps a living project context per Slack channel.** A per-channel
-  "Archie" canvas gives the PM durable project context for each channel, so it
-  stays oriented across separate threads in the same channel. _Technical:
-  `feat(slack)` channel-canvas plus a channel-canvas PM skill shipped as an
-  engine core skill._
+- **Archie keeps a living project context per Slack channel.** A per-channel "Archie" canvas gives the PM durable project context for each channel, so it stays oriented across separate threads in the same channel. _Technical: `feat(slack)` channel-canvas plus a channel-canvas PM skill shipped as an engine core skill._
 
-- **A live PR status card in the thread — no one has to poll CI.** Pull requests
-  now post a self-updating Slack card showing CI and review state, refreshing as
-  events arrive. _Technical: dedicated card block with instant post and CI
-  counts; refreshes on more events (subscribe to `check_run` + `status`
-  webhooks); task resolved by branch; a keyed-lock mutex serializes card writes;
-  PM/agents told not to poll CI._
+- **A live PR status card in the thread — no one has to poll CI.** Pull requests now post a self-updating Slack card showing CI and review state, refreshing as events arrive. _Technical: dedicated card block with instant post and CI counts; refreshes on more events (subscribe to `check_run` + `status` webhooks); task resolved by branch; a keyed-lock mutex serializes card writes; PM/agents told not to poll CI._
 
-- **Transparency into which models did the work.** A response footer lists every
-  distinct model used in a turn. _Technical: footer aggregates and beautifies
-  the model list._
+- **Transparency into which models did the work.** A response footer lists every distinct model used in a turn. _Technical: footer aggregates and beautifies the model list._
 
-- **Clearer progress on long-running work.** Background tasks surface as a single
-  chat entry that moves from running → done, and agents stay shown as active
-  while background work is pending. _Technical: also fixed the CLI dropping
-  events that arrive in the same tick._
+- **Clearer progress on long-running work.** Background tasks surface as a single chat entry that moves from running → done, and agents stay shown as active while background work is pending. _Technical: also fixed the CLI dropping events that arrive in the same tick._
 
-- _Technical: persisted the v30 repositories-shape migration once (at persist,
-  not per load) and quieted its log; added completion-quiescence unit tests._
+- _Technical: persisted the v30 repositories-shape migration once (at persist, not per load) and quieted its log; added completion-quiescence unit tests._
 
 ## 2026-06-27
 
-- **Tasks reliably finish and recover instead of hanging.** Reworked task
-  completion to a "completion-as-quiescence" model. _Technical: run deferred
-  teardown on agent exit (not only on `result`), fixed the recovery loop when a
-  task completes during deferred teardown, and added a design doc._
+- **Tasks reliably finish and recover instead of hanging.** Reworked task completion to a "completion-as-quiescence" model. _Technical: run deferred teardown on agent exit (not only on `result`), fixed the recovery loop when a task completes during deferred teardown, and added a design doc._
 
 ## 2026-06-26
 
-- **Agents handle much larger tasks and codebases without losing context.**
-  Specialist agents default to the 1M-context model and dynamic agents spawn on
-  Opus. _Technical: non-PM agents default to `sonnet[1m]`; dynamic agents
-  default to Opus._
+- **Agents handle much larger tasks and codebases without losing context.** Specialist agents default to the 1M-context model and dynamic agents spawn on Opus. _Technical: non-PM agents default to `sonnet[1m]`; dynamic agents default to Opus._
 
-- **Long jobs have room to finish.** The per-task wall-clock cap was raised from
-  30 to 60 minutes.
+- **Long jobs have room to finish.** The per-task wall-clock cap was raised from 30 to 60 minutes.
 
-- _Technical: plugin submodule robustness (sync submodule URLs before update,
-  force submodule init on every startup, mount symlinked skill dirs into the
-  agent workspace); added `pull-tasks.sh` to download task sessions by id or day
-  over SSH; added then disabled a context-probe debug proxy._
+- _Technical: plugin submodule robustness (sync submodule URLs before update, force submodule init on every startup, mount symlinked skill dirs into the agent workspace); added `pull-tasks.sh` to download task sessions by id or day over SSH; added then disabled a context-probe debug proxy._
 
 ## 2026-06-25
 
-- **You can see what Archie is doing in real time.** A live "Archie is…" status
-  indicator in Slack reflects current agent activity — which domain it's in,
-  whether it's coordinating, what external system it's touching — instead of a
-  silent wait. _Technical: driven by agent activity; phrasing derived from MCP
-  metadata; mirrored to the CLI and logs; kept alive past Slack's ~2-minute
-  timeout; gated behind `ARCHIE_LIVE_STATUS`. Branded rotating loading messages
-  added too._
+- **You can see what Archie is doing in real time.** A live "Archie is…" status indicator in Slack reflects current agent activity — which domain it's in, whether it's coordinating, what external system it's touching — instead of a silent wait. _Technical: driven by agent activity; phrasing derived from MCP metadata; mirrored to the CLI and logs; kept alive past Slack's ~2-minute timeout; gated behind `ARCHIE_LIVE_STATUS`. Branded rotating loading messages added too._
 
-- **Approve edit mode once and it covers the whole task.** Edit mode is now a
-  clear task-lifetime grant and `request_edit_mode` is idempotent. _Technical:
-  also fixed a stream-closed loop when edit mode is approved very fast._
+- **Approve edit mode once and it covers the whole task.** Edit mode is now a clear task-lifetime grant and `request_edit_mode` is idempotent. _Technical: also fixed a stream-closed loop when edit mode is approved very fast._
 
-- **The PM can pull in an engineer for any configured repo on the fly.** New
-  on-demand repo-agent spawning. _Technical: `list_available_repos` and
-  `spawn_repo_agent` tools (data + infra + prompt), with the dynamic agent
-  reachable in the same session._
+- **The PM can pull in an engineer for any configured repo on the fly.** New on-demand repo-agent spawning. _Technical: `list_available_repos` and `spawn_repo_agent` tools (data + infra + prompt), with the dynamic agent reachable in the same session._
 
-- **Agents can read a repo's security alerts.** Added code-scanning (CodeQL)
-  alert tools for repo agents.
+- **Agents can read a repo's security alerts.** Added code-scanning (CodeQL) alert tools for repo agents.
 
-- _Technical: TypeScript 6 / Docker prod-build fixes and a batch of dependency
-  bumps (typescript, @types/node, react, ink, dotenv, GitHub Actions)._
+- _Technical: TypeScript 6 / Docker prod-build fixes and a batch of dependency bumps (typescript, @types/node, react, ink, dotenv, GitHub Actions)._
 
 ## 2026-06-24
 
-- **Archie is now open source.** v1 open-source preparation under AGPL-3.0.
-  _Technical: de-identification, bundled example plugins, docs, and CI; dropped a
-  stale license note from the README._
+- **Archie is now open source.** v1 open-source preparation under AGPL-3.0. _Technical: de-identification, bundled example plugins, docs, and CI; dropped a stale license note from the README._
 
-- _Technical: CI hardening — Dependabot config plus an advanced CodeQL workflow,
-  Docker build migrated into GitHub Actions, and pinned action versions._
+- _Technical: CI hardening — Dependabot config plus an advanced CodeQL workflow, Docker build migrated into GitHub Actions, and pinned action versions._
 
 ## 2026-06-23
 
-- **Research requests come back with fuller answers.** Fixed and tuned the web
-  research pipeline. _Technical: send `max_output_tokens` to Perplexity for
-  Anthropic models, raise the default to 64000, and fix the research preset
-  classifier always falling back to pro-search._
+- **Research requests come back with fuller answers.** Fixed and tuned the web research pipeline. _Technical: send `max_output_tokens` to Perplexity for Anthropic models, raise the default to 64000, and fix the research preset classifier always falling back to pro-search._
 
 ## 2026-06-22
 
@@ -125,31 +66,19 @@ _Changes on `main` that haven't been summarized into a dated entry yet._
 
 ## 2026-06-20
 
-- **One agent can work across several related repositories.** Multi-repo agents
-  declare and eager-mount multiple repos. _Technical: also migrated repo-agent
-  branches to an `archie/` prefix and symlinked plugin skills for repo agents,
-  not just plugin agents._
+- **One agent can work across several related repositories.** Multi-repo agents declare and eager-mount multiple repos. _Technical: also migrated repo-agent branches to an `archie/` prefix and symlinked plugin skills for repo agents, not just plugin agents._
 
 ## 2026-06-18
 
-- **The PM routes "check Jira / look at Rollbar" to the teammate that actually
-  has access.** Each agent's external (MCP) integrations are surfaced in the PM's
-  live context. _Technical: added `pull-remote-data.sh` to fetch memory and
-  sessions over SSH._
+- **The PM routes "check Jira / look at Rollbar" to the teammate that actually has access.** Each agent's external (MCP) integrations are surfaced in the PM's live context. _Technical: added `pull-remote-data.sh` to fetch memory and sessions over SSH._
 
 ## 2026-06-15
 
-- **External integrations stay connected.** OAuth reliability fixes. _Technical:
-  replay the RFC 8707 resource indicator on token requests; stop the CLI refresh
-  from corrupting `updated_at`/`expires_at`; log MCP connection failure reasons
-  instead of a bare `FAILED`._
+- **External integrations stay connected.** OAuth reliability fixes. _Technical: replay the RFC 8707 resource indicator on token requests; stop the CLI refresh from corrupting `updated_at`/`expires_at`; log MCP connection failure reasons instead of a bare `FAILED`._
 
 ## 2026-06-11
 
-- **Archie doesn't bleed one request's work into unrelated threads.** The PM now
-  contains work within the current task/thread by default. _Technical: also
-  repaired the idle-recovery target so waiting tasks don't hit the wall-clock
-  cap._
+- **Archie doesn't bleed one request's work into unrelated threads.** The PM now contains work within the current task/thread by default. _Technical: also repaired the idle-recovery target so waiting tasks don't hit the wall-clock cap._
 
 ## 2026-06-08
 
@@ -161,104 +90,50 @@ _Changes on `main` that haven't been summarized into a dated entry yet._
 
 ## 2026-06-02
 
-- **Editing a Slack message Archie is following is picked up.** Tasks wake on
-  message edits in followed threads. _Technical: drop the previous text from
-  edit-log entries._
+- **Editing a Slack message Archie is following is picked up.** Tasks wake on message edits in followed threads. _Technical: drop the previous text from edit-log entries._
 
-- _Technical: large agent-spawn/tools refactor — PM tools split into
-  comms/orchestration/scheduling, shared agent-tools hoisted into the MCP
-  default, plain-plugin config made the default with repo/branch deviations, and
-  dead code removed._
+- _Technical: large agent-spawn/tools refactor — PM tools split into comms/orchestration/scheduling, shared agent-tools hoisted into the MCP default, plain-plugin config made the default with repo/branch deviations, and dead code removed._
 
 ## 2026-06-01
 
-- **Archie works in private channels and group DMs.** Added private channel and
-  group DM support to the Slack manifest (and dropped the unused `message.mpim`
-  subscription).
+- **Archie works in private channels and group DMs.** Added private channel and group DM support to the Slack manifest (and dropped the unused `message.mpim` subscription).
 
-- **Plugin changes go live without a restart.** Plugin updates are picked up on a
-  task's next ping, the PM context shows the plugins-repo version, and refresh
-  uses a HEAD check instead of a TTL. _Technical: dropped repo cloning from
-  plugin sync; sync only when a task reloads from disk, not in-flight._
+- **Plugin changes go live without a restart.** Plugin updates are picked up on a task's next ping, the PM context shows the plugins-repo version, and refresh uses a HEAD check instead of a TTL. _Technical: dropped repo cloning from plugin sync; sync only when a task reloads from disk, not in-flight._
 
-- _Technical: pinned npm to v11 across environments and fixed Docker `npm ci`
-  (complete lockfile + Express param types)._
+- _Technical: pinned npm to v11 across environments and fixed Docker `npm ci` (complete lockfile + Express param types)._
 
 ## Before this log — the starting point
 
-Where Archie HQ stood before the first dated entry (late May 2026) — the
-foundation everything above built on.
+Where Archie HQ stood before the first dated entry (late May 2026) — the foundation everything above built on.
 
 ### Already in place
 
-- **An AI employee you work with in Slack.** Delegate a task in a Slack thread
-  (or the local CLI) and Archie gets it done, then reports back. To users it
-  presents as a single assistant that writes as "I" — the multi-agent machinery
-  underneath is never exposed. It is **non-proactive** (only acts in response to
-  a Slack message or GitHub webhook, never on its own) and **interruptible**
-  (tasks can be stopped, resumed, and recovered).
+- **An AI employee you work with in Slack.** Delegate a task in a Slack thread (or the local CLI) and Archie gets it done, then reports back. To users it presents as a single assistant that writes as "I" — the multi-agent machinery underneath is never exposed. It is **non-proactive** (only acts in response to a Slack message or GitHub webhook, never on its own) and **interruptible** (tasks can be stopped, resumed, and recovered).
 
-- **A team of agents, not one chatbot.** A **PM agent** (Opus) reads the
-  request, loads the relevant skill, and delegates to specialist agents
-  (Sonnet). A designated **task owner** coordinates the work — sequentially or
-  in parallel — and synthesizes the result. Agents talk to each other
-  peer-to-peer and write discoveries, decisions, and blockers to a shared
-  **knowledge log** that every agent reads for context.
+- **A team of agents, not one chatbot.** A **PM agent** (Opus) reads the request, loads the relevant skill, and delegates to specialist agents (Sonnet). A designated **task owner** coordinates the work — sequentially or in parallel — and synthesizes the result. Agents talk to each other peer-to-peer and write discoveries, decisions, and blockers to a shared **knowledge log** that every agent reads for context.
 
-- **Plugin architecture — add a department, not a fork.** New domains and
-  abilities are added by dropping a plugin directory into the plugins repo; the
-  engine discovers and loads them at startup with no core code changes. A plugin
-  can contribute repo agents, plugin agents, a PM overlay, agent skills, hooks,
-  and MCP server bindings.
+- **Plugin architecture — add a department, not a fork.** New domains and abilities are added by dropping a plugin directory into the plugins repo; the engine discovers and loads them at startup with no core code changes. A plugin can contribute repo agents, plugin agents, a PM overlay, agent skills, hooks, and MCP server bindings.
 
-- **Repo agents for engineering work.** Agents bound to a GitHub repository work
-  in isolated shared git clones. They are **read-only by default**; once a human
-  approves **edit mode**, the agent gets a feature branch, commits, and opens and
-  manages its own pull requests.
+- **Repo agents for engineering work.** Agents bound to a GitHub repository work in isolated shared git clones. They are **read-only by default**; once a human approves **edit mode**, the agent gets a feature branch, commits, and opens and manages its own pull requests.
 
-- **Plugin agents for every other domain.** Marketing, analytics, ops, support,
-  research, and more — lightweight agents that get a workspace, skills, and any
-  MCP tools you wire up, with no git infrastructure.
+- **Plugin agents for every other domain.** Marketing, analytics, ops, support, research, and more — lightweight agents that get a workspace, skills, and any MCP tools you wire up, with no git infrastructure.
 
-- **GitHub integration with a merge orchestrator.** A webhook-driven PR workflow
-  routes reviews, comments, CI results, and pushes to the right task, and merges
-  pull requests automatically once they're ready. Force pushes are disallowed
-  and pushing is blocked from agent Bash.
+- **GitHub integration with a merge orchestrator.** A webhook-driven PR workflow routes reviews, comments, CI results, and pushes to the right task, and merges pull requests automatically once they're ready. Force pushes are disallowed and pushing is blocked from agent Bash.
 
-- **Human approval gate for any change.** Agents cannot modify code until a
-  human approves edit mode via Slack buttons — the read-only-to-edit transition
-  is an explicit, auditable step.
+- **Human approval gate for any change.** Agents cannot modify code until a human approves edit mode via Slack buttons — the read-only-to-edit transition is an explicit, auditable step.
 
-- **OS-level sandbox with defense-in-depth.** Each agent runs under per-agent
-  filesystem isolation (bubblewrap on Linux, sandbox-exec on macOS), a
-  network deny-all from agent Bash, and tool denylists — so a misbehaving or
-  prompt-injected agent stays contained.
+- **OS-level sandbox with defense-in-depth.** Each agent runs under per-agent filesystem isolation (bubblewrap on Linux, sandbox-exec on macOS), a network deny-all from agent Bash, and tool denylists — so a misbehaving or prompt-injected agent stays contained.
 
-- **Web research pipeline.** Multi-agent web research with structured output and
-  prompt-injection defenses, bounded by per-task budgets.
+- **Web research pipeline.** Multi-agent web research with structured output and prompt-injection defenses, bounded by per-task budgets.
 
-- **Per-task isolation and recovery.** Every task is its own runtime with
-  isolated message queues, task-scoped budgets (research requests, inter-agent
-  messages, wall-clock timeout), and metadata plus the knowledge log persisted
-  to disk. Tasks recover automatically after a restart.
+- **Per-task isolation and recovery.** Every task is its own runtime with isolated message queues, task-scoped budgets (research requests, inter-agent messages, wall-clock timeout), and metadata plus the knowledge log persisted to disk. Tasks recover automatically after a restart.
 
-- **Persistent memory (optional, behind `ARCHIE_MEMORY`).** A cross-task memory
-  layer so agents "arrive informed" instead of starting cold each time — user
-  preferences, a rolling activity index, per-task summaries, and a graph of
-  entity pages for the systems and concepts the work keeps touching. Plain
-  Markdown, no database, removable as a single unit.
+- **Persistent memory (optional, behind `ARCHIE_MEMORY`).** A cross-task memory layer so agents "arrive informed" instead of starting cold each time — user preferences, a rolling activity index, per-task summaries, and a graph of entity pages for the systems and concepts the work keeps touching. Plain Markdown, no database, removable as a single unit.
 
-- **Encrypted secrets and OAuth.** External integrations connect via an OAuth
-  flow, with tokens stored in an encrypted vault validated by a master key at
-  startup.
+- **Encrypted secrets and OAuth.** External integrations connect via an OAuth flow, with tokens stored in an encrypted vault validated by a master key at startup.
 
-- **Runs without Slack or GitHub.** A bundled example plugin set and an
-  interactive CLI make a fresh clone runnable with only an Anthropic API key;
-  Slack and GitHub are optional integrations.
+- **Runs without Slack or GitHub.** A bundled example plugin set and an interactive CLI make a fresh clone runnable with only an Anthropic API key; Slack and GitHub are optional integrations.
 
-- **Deployment and CI.** Docker Compose for dev and prod, an image published to
-  GitHub Container Registry on every `main` build, and CI that runs typecheck,
-  build, and tests. _(Dependabot, the CodeQL scan, the Docker-in-GitHub-Actions
-  build, and AGPL-3.0 open-sourcing all arrived during the window above.)_
+- **Deployment and CI.** Docker Compose for dev and prod, an image published to GitHub Container Registry on every `main` build, and CI that runs typecheck, build, and tests. _(Dependabot, the CodeQL scan, the Docker-in-GitHub-Actions build, and AGPL-3.0 open-sourcing all arrived during the window above.)_
 
 [Unreleased]: https://github.com/sweatco/archie-hq/commits/main
