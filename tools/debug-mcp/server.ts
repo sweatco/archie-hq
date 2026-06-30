@@ -4,15 +4,50 @@
  * Standalone stdio MCP server. No imports from src/.
  * Ejectable: copy tools/debug-mcp/ anywhere, install deps, run.
  *
- * Config: ARCHIE_URL env var (default: http://localhost:3000)
+ * Target Archie URL resolution:
+ *   1. ARCHIE_URL      — explicit override (e.g. a remote host)
+ *   2. PORT env var    — http://localhost:$PORT
+ *   3. PORT from .env  — the same file the server reads its PORT from
+ *   4. http://localhost:3000
  */
 
+import { readFileSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { ArchieClient } from './archie-client.js';
 
-const client = new ArchieClient(process.env.ARCHIE_URL || 'http://localhost:3000');
+/** Read PORT from a .env file without pulling in a dotenv dependency. */
+function portFromEnvFile(): string | undefined {
+  const candidates = [
+    join(process.cwd(), '.env'),
+    join(dirname(fileURLToPath(import.meta.url)), '..', '..', '.env'), // repo root from tools/debug-mcp/
+  ];
+  for (const path of candidates) {
+    try {
+      // Capture the value only — stop at whitespace, a quote, or an inline `#`
+      const m = readFileSync(path, 'utf-8').match(/^\s*PORT\s*=\s*["']?([^\s"'#]+)/m);
+      if (m) return m[1];
+    } catch {
+      // file absent — try the next candidate
+    }
+  }
+  return undefined;
+}
+
+/** Resolve the Archie base URL (see precedence in the file header). */
+function resolveArchieUrl(): string {
+  if (process.env.ARCHIE_URL) return process.env.ARCHIE_URL;
+  const port = process.env.PORT || portFromEnvFile() || '3000';
+  return `http://localhost:${port}`;
+}
+
+const archieUrl = resolveArchieUrl();
+// stderr only — stdout carries the MCP protocol and must not be polluted.
+console.error(`[archie-debug] targeting ${archieUrl}`);
+const client = new ArchieClient(archieUrl);
 const server = new McpServer({
   name: 'archie-debug',
   version: '1.0.0',
