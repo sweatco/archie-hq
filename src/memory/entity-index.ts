@@ -174,15 +174,19 @@ export function selectEntities(
     }
   }
 
-  const ranked = Array.from(scores.keys())
+  const candidates = Array.from(scores.keys())
     .map((slug) => bySlug.get(slug)!)
-    .filter(Boolean)
-    .sort((a, b) => {
-      const s = (scores.get(b.entity) ?? 0) - (scores.get(a.entity) ?? 0);
-      if (s !== 0) return s;
-      const t = lastTouched(b).localeCompare(lastTouched(a));
-      return t !== 0 ? t : a.entity.localeCompare(b.entity);
-    });
+    .filter(Boolean);
+  // Precompute last-touched once per candidate; a comparator runs O(n log n)
+  // times and lastTouched() scans the whole observation list, so calling it
+  // inside the comparator rescans each record's observations repeatedly.
+  const lastTouchedBySlug = new Map(candidates.map((r) => [r.entity, lastTouched(r)]));
+  const ranked = candidates.sort((a, b) => {
+    const s = (scores.get(b.entity) ?? 0) - (scores.get(a.entity) ?? 0);
+    if (s !== 0) return s;
+    const t = (lastTouchedBySlug.get(b.entity) ?? '').localeCompare(lastTouchedBySlug.get(a.entity) ?? '');
+    return t !== 0 ? t : a.entity.localeCompare(b.entity);
+  });
 
   // Two independent budgets: `orgMax` bounds scope:org pages, `max` bounds the
   // rest. `ranked` is already ordered by score (relevance) then recency, so
