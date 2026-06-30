@@ -13,10 +13,12 @@
 #   5. Commit straight to `main` with [skip ci] so it doesn't trigger a rebuild.
 #
 # Setup prerequisites:
-#   - Repo secret ANTHROPIC_API_KEY.
-#   - main must allow this workflow to push. If branch protection requires PRs
-#     or status checks, add the github-actions bot to the bypass list (Settings
-#     -> Branches), or switch this job to open a PR instead of pushing.
+#   - Repo secret ANTHROPIC_API_KEY (the Claude Code Action authenticates with it).
+#   - Repo secret CHANGELOG_DEPLOY_KEY — the PRIVATE half of a write-enabled
+#     deploy key whose PUBLIC half is added to the repo (Settings -> Deploy keys,
+#     "Allow write access") AND to the branch ruleset's bypass list. The built-in
+#     github-actions bot cannot be a ruleset bypass actor, so the job pushes over
+#     SSH as this deploy key to land the entry directly on main.
 #
 # Actions are SHA-pinned per org policy (full commit SHA + version comment).
 name: Daily changelog
@@ -50,6 +52,10 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+          # Push as a write-enabled deploy key that's on the ruleset bypass list,
+          # so the entry can land directly on the protected main branch. Checkout
+          # configures the SSH remote and persists the key for the later push.
+          ssh-key: ${{ secrets.CHANGELOG_DEPLOY_KEY }}
 
       - name: Gather the day's changes (PR context)
         id: gather
