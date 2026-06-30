@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# archie-e2e: preconditions — required .env keys present (values never printed),
-# memory flag, and this checkout's PORT. Resolves the repo root from its own location.
+# archie-e2e: preconditions — required .env keys present (values never printed)
+# and this checkout's PORT. Resolves the repo root from its own location.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 cd "$ROOT"
@@ -13,8 +13,6 @@ missing=0
 for v in ANTHROPIC_API_KEY SLACK_BOT_TOKEN SLACK_APP_TOKEN; do
   if [ -n "$(get "$v")" ]; then echo "$v: present"; else echo "$v: MISSING"; missing=1; fi
 done
-mem="$(get ARCHIE_MEMORY)"
-echo "ARCHIE_MEMORY: ${mem:-(unset -> enabled)}"
 port="$(get PORT)"
 echo "PORT: ${port:-3000}"
 exit "$missing"

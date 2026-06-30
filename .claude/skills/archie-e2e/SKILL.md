@@ -1,34 +1,32 @@
 ---
 name: archie-e2e
-description: Test Archie full-cycle on your machine. Boots Archie in Docker, talks to it as your real Slack user by DMing the dev bot via the claude.ai Slack MCP, observes the task through the archie-debug MCP, and verifies the memory layer end-to-end (extraction keying + injection). Use to smoke-test a Slack → PM → memory round-trip locally without writing throwaway scripts.
+description: Smoke-test Archie's Slack round-trip on your machine. Boots Archie in Docker (npm run docker:dev), DMs the dev bot as your real Slack user via the claude.ai Slack MCP, and observes the task through the archie-debug MCP — proving the DM is ingested via the real socket-mode path, attributed to your user, and answered by the PM. Use to verify a Slack → PM round-trip locally without writing throwaway scripts.
 license: MIT
 metadata:
   author: archie-hq
-  version: "1.4"
+  version: "2.0"
 ---
 
-# Archie full-cycle E2E harness
+# Archie Slack round-trip E2E harness
 
-Drive a **real Slack round-trip** against a locally dockerized Archie and verify the memory
-layer. Input goes in as the Slack MCP's **current authorized user** (so memory keys to their
-`U…` id); observation is via the existing `archie-debug` MCP; memory is read off the mounted
-`./workdir`. **No Archie code changes — this skill only orchestrates tools that already exist.**
+Drive a **real Slack round-trip** against a locally dockerized Archie. Input goes in as the
+Slack MCP's **current authorized user** (so the task is attributed to their real `U…` id via the
+socket-mode path, not the synthetic `cli` ingress); observation is via the existing
+`archie-debug` MCP. **No Archie code changes — this skill only orchestrates tools that already
+exist.**
 
 ```
 claude.ai Slack MCP (posts as you)  →  DM the dev Archie bot
    →  dockerized Archie (dev Slack app, socket mode) receives it as your U… id
    →  PM agent processes, replies in the DM (threaded under your message)
    →  archie-debug MCP / REST API observes task/events/log + approves gates
-   →  read ./workdir/memory to prove extraction keyed to you
-   →  2nd DM proves injection (PM recites your stored memory)
 ```
 
 Why Slack and not the debug MCP for *input*: the debug MCP's `create_task`/`send_message`
-write `source:'cli'` log lines with **no `@<UID:Name>` marker**, so memory extraction files them
-under a `cli:<taskId>` fallback — never your real Slack id. Only the Slack inbound path
-(`src/connectors/slack/events.ts` → `task.append` → `appendSlackMessage` in
-`src/tasks/persistence.ts`) writes the `@<U…:Name>` marker that `extractUsernames`
-(`src/memory/lifecycle.ts`) keys on.
+write `source:'cli'` log lines — a synthetic ingress. Only the Slack inbound path
+(`src/connectors/slack/events.ts` → `task.append` → `appendSlackMessage`) runs the real
+socket-mode handler and stamps the `@<U…:Name>` attribution marker, so DMing as your real user
+is what actually exercises (and proves) the production Slack path end-to-end.
 
 ## Tools this skill uses
 
@@ -40,11 +38,11 @@ under a `cli:<taskId>` fallback — never your real Slack id. Only the Slack inb
   `…get_events`, `…approve`. (Observation only — never for input. See port note below.)
 - **Helper scripts** (this skill's `scripts/` dir — run with `bash`, they resolve the repo
   root themselves): `check-env.sh`, `resolve-bot.sh`, `ensure-archie.sh`, `wait-task.sh`.
-- **Bash + Read** — nonce minting, reading `workdir/memory/*`.
+- **Bash** — nonce minting; the helper scripts run under `bash`.
 
 ## Inputs (all optional)
 
-- `teardown` — `docker compose down` at the end. Default **false** (leave running).
+- `teardown` — `npm run docker:stop` at the end. Default **false** (leave running).
 - `restart` — force a clean container restart first (`ensure-archie.sh --restart`).
   Default **auto**: restart when the container is unhealthy or recent logs are
   socket-mode warning spam.
@@ -64,9 +62,6 @@ a **unique PORT** (`hash_port`) so worktrees don't collide on 3000. Consequences
   `.mcp.json`, or export before launching Claude Code) and reconnect — otherwise its tools talk
   to the wrong Archie. The REST API (`http://localhost:<PORT>/api/...`) is an equivalent
   fallback within an already-running session.
-- A **fresh worktree's `workdir/` starts empty** — no prior memory. Step-7 injection needs an
-  already-stored bullet; on a first run accept step-6 extraction-keying as the proof. Memory
-  assertions also require the checkout to actually contain the memory layer (`src/memory/`).
 
 ---
 
@@ -82,16 +77,14 @@ bash SKILL_DIR/scripts/check-env.sh
 ```
 
 Prints presence (never values) of `ANTHROPIC_API_KEY`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`,
-plus `ARCHIE_MEMORY` and this checkout's `PORT`. Non-zero exit = missing key → stop.
-`SLACK_APP_TOKEN` (xapp-) is required for socket mode; `ARCHIE_MEMORY` must not be `false`.
-Note the printed `PORT` — it drives the debug-MCP/REST note above.
+plus this checkout's `PORT`. Non-zero exit = missing key → stop. `SLACK_APP_TOKEN` (xapp-) is
+required for socket mode. Note the printed `PORT` — it drives the debug-MCP/REST note above.
 
 ### 2. Resolve identities (current user + dev bot, same workspace)
 
 - **Current user** (who the harness posts as):
   `mcp__claude_ai_Slack__slack_read_user_profile { response_format: "detailed" }` (no
-  `user_id`) → record `User ID` as `<user_id>` and `Real Name` as `<user_name>`. Every
-  assertion below keys on `<user_id>`.
+  `user_id`) → record `User ID` as `<user_id>` and `Real Name` as `<user_name>`.
 - **Dev bot**:
 
 ```bash
@@ -105,7 +98,7 @@ bash SKILL_DIR/scripts/resolve-bot.sh
 ### 3. Boot / ensure a healthy Archie in Docker
 
 ```bash
-bash SKILL_DIR/scripts/ensure-archie.sh          # boots if down, waits for /health
+bash SKILL_DIR/scripts/ensure-archie.sh          # boots if down (npm run docker:dev), waits for /health
 bash SKILL_DIR/scripts/ensure-archie.sh --restart # force clean restart (unhealthy / pong spam)
 ```
 
@@ -131,14 +124,14 @@ bash SKILL_DIR/scripts/wait-task.sh <nonce> 240
 
   Prints `TASK=` (found by nonce — no snapshot diffing), `LOG_HEAD=` (first knowledge-log
   line), `STATE=` and any `PM_REPLY:` lines. Assert `LOG_HEAD` contains the
-  `@<<user_id>:<user_name>>` marker — that is the attribution proof. (Nonce correlation is
-  already guaranteed: `wait-task.sh` located the task *by* matching the nonce in its log, so
-  don't re-assert the nonce against the possibly-truncated `LOG_HEAD`.)
+  `@<<user_id>:<user_name>>` marker — that proves the DM was ingested via the real socket-mode
+  path and attributed to your user (not the `cli` fallback). (Nonce correlation is already
+  guaranteed: `wait-task.sh` located the task *by* matching the nonce in its log.)
 - `STATE` handling:
-  - `COMPLETED` → done; extraction will run.
+  - `COMPLETED` → done.
   - `APPROVAL_REQUESTED` → `mcp__archie-debug__approve { task_id, type, approve: true }`
     (type from the event: `edit_mode` | `research_budget`), then re-run `wait-task.sh`.
-  - `STOPPED` → ended **without** completion → no extraction (see Troubleshooting).
+  - `STOPPED` → ended without completion (see Troubleshooting).
   - `TIMEOUT` → inspect `mcp__archie-debug__task_status` / the events API.
 
 > Note: `task_owner`/`participants` in task metadata are **agent** names (e.g.
@@ -152,40 +145,7 @@ bash SKILL_DIR/scripts/wait-task.sh <nonce> 240
 (fall back to `slack_read_channel` for top-level). Assert a coherent, non-empty reply — the
 round-trip proof. (`wait-task.sh` already showed it as `PM_REPLY` from the events side.)
 
-### 6. Verify EXTRACTION keyed to you (read mounted `./workdir`, with retry)
-
-Extraction is **async** (queued on `task:completed`); the summary file appears when it
-finishes. Poll for up to ~90 s.
-
-- **Deterministic (primary) — this is the real proof:**
-  - `Read workdir/memory/summaries/<task_id>.md` → YAML `users:` block lists `id: <user_id>`.
-  - `Read workdir/memory/recent-activity.md` → a row for `<task_id>` with `User = <user_id>`.
-  - Written unconditionally by `writeSummary` (`src/memory/lifecycle.ts`) / `appendActivity`
-    (`src/memory/activity.ts`), so they prove the message was attributed to you and keyed to your id.
-- **Best-effort (secondary):**
-  - `Read workdir/memory/users/<user_id>.md`. A new bullet may or may not appear: the
-    extractor errs on extracting *less* and, importantly, **rejects explicit "please remember X"
-    instructions as an untrusted prompt-injection surface** — verified: such a Turn-1 yields a
-    summary of `## Memory Updates: _no durable learnings_`. **Expect no new bullet from
-    instruction-style input; that is correct, not a failure.** Never fail the run on a missing
-    bullet.
-
-### 7. Verify INJECTION — behavioral 2nd turn
-
-Ask about memory the user file **already** holds (don't rely on Turn-1 having written a new
-bullet — it usually won't, per step 6). First `Read workdir/memory/users/<user_id>.md` to see
-what's stored.
-
-- Send a 2nd DM (new top-level message → new task), answerable **only** from injected memory:
-  `mcp__claude_ai_Slack__slack_send_message`
-  `{ channel_id:"<bot_user_id>", message:"Before any work — what do you already know about how I prefer to work or communicate? (<nonce2>)" }`
-  (mint a fresh nonce so `wait-task.sh <nonce2>` can correlate).
-- Wait via `wait-task.sh <nonce2>`; read the threaded reply.
-- **PASS** if the reply recites a stored preference from the user file. The PM has no other
-  source for it, so this proves the `<user_preferences user_id="<user_id>">` block was injected
-  via `enrichPromptWithMemory` (`src/agents/spawn.ts`) → `buildMemoryContext` (`src/memory/context.ts`).
-
-### 8. Report
+### 6. Report
 
 | Check | Result | Evidence |
 |---|---|---|
@@ -193,15 +153,12 @@ what's stored.
 | Archie up + Slack connected | ✅/❌ | health, "Socket Mode connected" |
 | Turn-1 task created, attributed to current user | ✅/❌ | task_id, `@<U…:Name>` LOG_HEAD + nonce |
 | Round-trip reply received | ✅/❌ | threaded reply excerpt |
-| Extraction keyed to user (deterministic) | ✅/❌ | summary `users:` + recent-activity row |
-| New bullet stored (best-effort; often correctly rejected) | ✅/⚠️ | user-file diff; "no durable learnings" is OK |
-| Injection: 2nd reply recites stored memory | ✅/⚠️ | 2nd reply excerpt |
 
-Include both `task_id`s. End with the headline result.
+Include the `task_id`. End with the headline result.
 
-### 9. Teardown
+### 7. Teardown
 
-Only if `teardown` was requested: `docker compose down`. **Never** delete `workdir/memory/*`.
+Only if `teardown` was requested: `npm run docker:stop`.
 
 ---
 
@@ -216,13 +173,9 @@ Only if `teardown` was requested: `docker compose down`. **Never** delete `workd
   rebuild.
 - **Socket-mode "pong wasn't received" spam / container `unhealthy`** — a long-lived instance
   can degrade; `ensure-archie.sh --restart` for a fresh WebSocket before testing.
-- **`STATE=STOPPED` (never completed)** — extraction won't run. Phrase Turn-1 as a
-  self-contained request that invites a short confirmation so the PM calls
-  `report_completion`. Avoid open-ended asks that leave the PM waiting.
-- **No bullet extracted** — expected for "remember this" phrasing: the extractor treats
-  in-transcript instructions as untrusted (anti-prompt-injection) and records durable
-  preferences only from observed behavior. Don't chase a bullet; rely on step-6 keying +
-  step-7 injection.
+- **`STATE=STOPPED` (never completed)** — phrase Turn-1 as a self-contained request that invites
+  a short confirmation so the PM calls `report_completion`. Avoid open-ended asks that leave the
+  PM waiting.
 - **Workspace mismatch** — the bot's `team` (resolve-bot.sh) must equal the workspace your
   claude.ai Slack connection posts to, or the DM never reaches this Archie.
 - **Multiple Archies on the same dev app** — Slack socket mode delivers each event to only one
