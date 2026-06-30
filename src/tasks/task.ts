@@ -87,6 +87,24 @@ export const activeTasks = new Map<string, Task>();
  */
 const cardLock = createKeyedLock();
 
+/**
+ * Per-task serialization for the activation flow (sendMessage → activate/spawn),
+ * keyed by taskId and shared across Task instances.
+ *
+ * `Task.get` returns the cached instance only once it's in `activeTasks`, and the
+ * slot is set in `activate()` — well into the first sendMessage. So concurrent
+ * reopen triggers for the same parked task (GitHub webhook + Slack reply +
+ * startup recovery routinely fire in one tick) can each hold a *separate* Task
+ * built by their own `Task.get` miss; left unserialized, each activates and
+ * spawns its own cli.js on the same session id — two subprocesses racing edits
+ * on one session (the per-Agent isRunning guard can't see across instances).
+ *
+ * This lock funnels them: whichever runs first activates and registers itself in
+ * `activeTasks`; the rest then resolve to that canonical instance and enqueue
+ * onto it, so exactly one set of agents ever spawns.
+ */
+const activationLock = createKeyedLock();
+
 // ---- Task class ----
 
 /**
@@ -265,6 +283,22 @@ export class Task {
    * Activates the task on first call (starts timeout, sets status).
    */
   async sendMessage(message: string, agentName: AgentName = 'pm-agent'): Promise<void> {
+    // Serialize activation per taskId across all Task instances, and resolve to
+    // the canonical instance *inside* the lock. If a concurrent trigger already
+    // activated (registered itself in activeTasks), this routes the message onto
+    // that instance rather than activating and spawning a duplicate; otherwise
+    // `this` is the first in and becomes canonical. See `activationLock`.
+    await activationLock(this.taskId, () =>
+      (activeTasks.get(this.taskId) ?? this).deliver(message, agentName),
+    );
+  }
+
+  /**
+   * The activation + enqueue body, run under {@link activationLock} on the
+   * canonical instance. Never call directly — go through `sendMessage`, which
+   * holds the lock and picks the canonical instance.
+   */
+  private async deliver(message: string, agentName: AgentName): Promise<void> {
     if (!this.isActive) {
       this.activate();
     }
