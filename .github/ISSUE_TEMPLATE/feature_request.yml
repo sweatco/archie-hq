@@ -1,7 +1,6 @@
 name: Feature request
 description: Suggest an idea or enhancement for Archie HQ
-title: "[Feature]: "
-labels: ["enhancement"]
+type: Feature
 body:
   - type: markdown
     attributes:
