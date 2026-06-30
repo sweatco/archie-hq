@@ -4,7 +4,7 @@
  * The app passes short aliases (`opus`, `sonnet`, `haiku`) to the Claude Agent
  * SDK, optionally suffixed with `[1m]` to enable the 1M context window (the SDK
  * strips the suffix and adds the `context-1m` beta — see `spawn.ts`). For the
- * footer we beautify these into names like `Opus 4.8` / `Sonnet 4.6 (1M)`:
+ * footer we beautify these into names like `Opus 4.8` / `Sonnet 5 (1M)`:
  * the `claude-` provider prefix is dropped, the family is capitalised, the
  * version is dotted, and the 1M marker is shown as `(1M)`.
  */
@@ -15,7 +15,7 @@ import { isPmAgent } from '../types/agent.js';
 /** Beautified display names for the short aliases the app uses. */
 const MODEL_DISPLAY_NAMES: Record<string, string> = {
   opus: 'Opus 4.8',
-  sonnet: 'Sonnet 4.6',
+  sonnet: 'Sonnet 5',
   haiku: 'Haiku 4.5',
 };
 
@@ -45,7 +45,7 @@ function beautify(model: string): string {
 
 /**
  * Beautified label for a single model string, preserving the 1M-context marker
- * as `(1M)`. Examples: `opus → Opus 4.8`, `sonnet[1m] → Sonnet 4.6 (1M)`,
+ * as `(1M)`. Examples: `opus → Opus 4.8`, `sonnet[1m] → Sonnet 5 (1M)`,
  * `claude-opus-4-8 → Opus 4.8`. Unknown non-Claude ids pass through unchanged.
  */
 export function modelDisplayLabel(model: string): string {

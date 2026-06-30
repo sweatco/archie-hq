@@ -11,12 +11,12 @@ import { modelDisplayLabel, resolveAgentModel } from '../model-label.js';
 describe('modelDisplayLabel', () => {
   it('beautifies the short aliases', () => {
     expect(modelDisplayLabel('opus')).toBe('Opus 4.8');
-    expect(modelDisplayLabel('sonnet')).toBe('Sonnet 4.6');
+    expect(modelDisplayLabel('sonnet')).toBe('Sonnet 5');
     expect(modelDisplayLabel('haiku')).toBe('Haiku 4.5');
   });
 
   it('renders the [1m] marker as (1M)', () => {
-    expect(modelDisplayLabel('sonnet[1m]')).toBe('Sonnet 4.6 (1M)');
+    expect(modelDisplayLabel('sonnet[1m]')).toBe('Sonnet 5 (1M)');
     expect(modelDisplayLabel('opus[1m]')).toBe('Opus 4.8 (1M)');
   });
 
@@ -32,7 +32,7 @@ describe('modelDisplayLabel', () => {
   });
 
   it('is case-insensitive on the [1m] marker and tolerates whitespace', () => {
-    expect(modelDisplayLabel('sonnet[1M]')).toBe('Sonnet 4.6 (1M)');
+    expect(modelDisplayLabel('sonnet[1M]')).toBe('Sonnet 5 (1M)');
     expect(modelDisplayLabel('  opus  ')).toBe('Opus 4.8');
   });
 });
