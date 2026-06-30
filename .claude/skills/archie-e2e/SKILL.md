@@ -4,7 +4,7 @@ description: Smoke-test Archie's Slack round-trip on your machine. Boots Archie 
 license: MIT
 metadata:
   author: archie-hq
-  version: "2.0"
+  version: "2.1"
 ---
 
 # Archie Slack round-trip E2E harness
@@ -34,10 +34,11 @@ is what actually exercises (and proves) the production Slack path end-to-end.
   current user — no `user_id`, `response_format:"detailed"`), `…slack_send_message` (DM the
   bot: `channel_id` = bot's user id), `…slack_read_thread` (the bot's threaded reply),
   `…slack_read_channel` (DM history).
-- **archie-debug MCP** — `mcp__archie-debug__list_tasks`, `…task_status`, `…get_log`,
-  `…get_events`, `…approve`. (Observation only — never for input. See port note below.)
+- **archie-debug MCP** — `mcp__archie-debug__wait_for_task` (correlate by nonce + block until
+  the task settles, in one call), `…approve`, plus `…list_tasks`, `…task_status`, `…get_log`,
+  `…get_events` for ad-hoc inspection. (Observation only — never for input. See port note below.)
 - **Helper scripts** (this skill's `scripts/` dir — run with `bash`, they resolve the repo
-  root themselves): `check-env.sh`, `resolve-bot.sh`, `ensure-archie.sh`, `wait-task.sh`.
+  root themselves): `check-env.sh`, `resolve-bot.sh`, `ensure-archie.sh`.
 - **Bash** — nonce minting; the helper scripts run under `bash`.
 
 ## Inputs (all optional)
@@ -62,7 +63,7 @@ automatically — nothing to pass around:
 - The `archie-debug` MCP resolves its base URL as `ARCHIE_URL` → `$PORT` → **`PORT` from
   `.env`** → `http://localhost:3000`, so in a worktree it picks up the right port on its own.
   Set `ARCHIE_URL` only to aim it at a remote / non-standard host. The REST API
-  (`http://localhost:<PORT>/api/...`) is the equivalent surface the scripts use.
+  (`http://localhost:<PORT>/api/...`) is the equivalent surface.
 
 ---
 
@@ -117,23 +118,23 @@ echo "E2E-$(openssl rand -hex 4)"   # mint a nonce
   `mcp__claude_ai_Slack__slack_send_message`
   `{ channel_id: "<bot_user_id>", message: "Quick smoke check — reply 'noted' please. (<nonce>)" }`
   Capture the returned **channel** (`D…`) and message **ts**.
-- Correlate + wait in one shot:
-
-```bash
-bash SKILL_DIR/scripts/wait-task.sh <nonce> 240
-```
-
-  Prints `TASK=` (found by nonce — no snapshot diffing), `LOG_HEAD=` (first knowledge-log
-  line), `STATE=` and any `PM_REPLY:` lines. Assert `LOG_HEAD` contains the
+- Correlate + wait in one call — the debug MCP finds the task by nonce and blocks until it
+  settles: `mcp__archie-debug__wait_for_task { nonce: "<nonce>", timeout_seconds: 240 }`.
+  It returns `TASK=`, `STATE=`, `ATTRIBUTION=` (first knowledge-log line), any `PM_REPLY:`
+  lines, and (when not yet settled) `CURSOR=`. Assert `ATTRIBUTION` contains the
   `@<<user_id>:<user_name>>` marker — that proves the DM was ingested via the real socket-mode
   path and attributed to your user (not the `cli` fallback). (Nonce correlation is already
-  guaranteed: `wait-task.sh` located the task *by* matching the nonce in its log.)
+  guaranteed: the tool located the task *by* matching the nonce.)
 - `STATE` handling:
-  - `COMPLETED` → done.
-  - `APPROVAL_REQUESTED` → `mcp__archie-debug__approve { task_id, type, approve: true }`
-    (type from the event: `edit_mode` | `research_budget`), then re-run `wait-task.sh`.
-  - `STOPPED` → ended without completion (see Troubleshooting).
-  - `TIMEOUT` → inspect `mcp__archie-debug__task_status` / the events API.
+  - `completed` → done.
+  - `approval_requested` →
+    `mcp__archie-debug__approve { task_id: "<TASK>", type: "<APPROVAL_TYPE>", approve: true }`
+    (`edit_mode` | `research_budget`), then call `wait_for_task` again with
+    `{ task_id: "<TASK>", cursor: <CURSOR> }` to resume.
+  - `stopped` → ended without completion (see Troubleshooting).
+  - `pending` → the cap was reached before settling; call `wait_for_task` again with
+    `{ task_id: "<TASK>", cursor: <CURSOR> }` to keep waiting.
+  - `not_found` → nothing matched the nonce in time (see Troubleshooting).
 
 > Note: `task_owner`/`participants` in task metadata are **agent** names (e.g.
 > `backend-agent`), NOT the requester — don't assert on them for user identity. The requester
@@ -144,7 +145,7 @@ bash SKILL_DIR/scripts/wait-task.sh <nonce> 240
 **Archie threads its reply under your DM message** (verified):
 `mcp__claude_ai_Slack__slack_read_thread { channel_id:"<D… from step 4>", message_ts:"<ts from step 4>" }`
 (fall back to `slack_read_channel` for top-level). Assert a coherent, non-empty reply — the
-round-trip proof. (`wait-task.sh` already showed it as `PM_REPLY` from the events side.)
+round-trip proof. (`wait_for_task` already surfaced it as `PM_REPLY` from the events side.)
 
 ### 6. Report
 
@@ -152,7 +153,7 @@ round-trip proof. (`wait-task.sh` already showed it as `PM_REPLY` from the event
 |---|---|---|
 | Identities resolved + same workspace | ✅/❌ | `<user_id>`, bot_user_id, team |
 | Archie up + Slack connected | ✅/❌ | `docker compose ps` healthy, "Socket Mode connected" |
-| Turn-1 task created, attributed to current user | ✅/❌ | task_id, `@<U…:Name>` LOG_HEAD + nonce |
+| Turn-1 task created, attributed to current user | ✅/❌ | task_id, `@<U…:Name>` ATTRIBUTION + nonce |
 | Round-trip reply received | ✅/❌ | threaded reply excerpt |
 
 Include the `task_id`. End with the headline result.
@@ -165,7 +166,7 @@ Only if `teardown` was requested: `npm run docker:stop`.
 
 ## Troubleshooting
 
-- **No task appears after the DM** (`wait-task.sh` → `NO_TASK_FOUND`) — socket likely
+- **No task appears after the DM** (`wait_for_task` → `STATE=not_found`) — socket likely
   disconnected/stale: `ensure-archie.sh --restart`. If the dev app lacks the `message.im`
   event subscription or `im:history` scope, DMs won't arrive → fall back to `@mention`ing the
   bot in a channel (`app_mention` handler). Also check no **other** Archie instance is
@@ -174,7 +175,7 @@ Only if `teardown` was requested: `npm run docker:stop`.
   rebuild.
 - **Socket-mode "pong wasn't received" spam / container `unhealthy`** — a long-lived instance
   can degrade; `ensure-archie.sh --restart` for a fresh WebSocket before testing.
-- **`STATE=STOPPED` (never completed)** — phrase Turn-1 as a self-contained request that invites
+- **`STATE=stopped` (never completed)** — phrase Turn-1 as a self-contained request that invites
   a short confirmation so the PM calls `report_completion`. Avoid open-ended asks that leave the
   PM waiting.
 - **Workspace mismatch** — the bot's `team` (resolve-bot.sh) must equal the workspace your
