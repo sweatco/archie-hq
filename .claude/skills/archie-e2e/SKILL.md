@@ -98,7 +98,7 @@ bash SKILL_DIR/scripts/resolve-bot.sh
 ### 3. Boot / ensure a healthy Archie in Docker
 
 ```bash
-bash SKILL_DIR/scripts/ensure-archie.sh          # boots if down (npm run docker:dev), waits for /health
+bash SKILL_DIR/scripts/ensure-archie.sh          # boots if down (npm run docker:dev), waits until docker compose ps shows healthy
 bash SKILL_DIR/scripts/ensure-archie.sh --restart # force clean restart (unhealthy / pong spam)
 ```
 
@@ -150,7 +150,7 @@ round-trip proof. (`wait-task.sh` already showed it as `PM_REPLY` from the event
 | Check | Result | Evidence |
 |---|---|---|
 | Identities resolved + same workspace | ✅/❌ | `<user_id>`, bot_user_id, team |
-| Archie up + Slack connected | ✅/❌ | health, "Socket Mode connected" |
+| Archie up + Slack connected | ✅/❌ | `docker compose ps` healthy, "Socket Mode connected" |
 | Turn-1 task created, attributed to current user | ✅/❌ | task_id, `@<U…:Name>` LOG_HEAD + nonce |
 | Round-trip reply received | ✅/❌ | threaded reply excerpt |
 

@@ -5,29 +5,29 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 cd "$ROOT"
-PORT="$(grep -E '^PORT=' .env 2>/dev/null | head -1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//" || true)"
-PORT="${PORT:-3000}"
-HEALTH="http://localhost:$PORT/health"
+
+# Health comes from the compose healthcheck (authoritative, and independent of the
+# host port mapping — which varies per worktree): `docker compose ps` shows the
+# STATUS as "(healthy)". Note that "(unhealthy)" and "(health: starting)" do NOT
+# contain the literal substring "(healthy)", so the fixed-string match is exact.
+healthy() { docker compose ps archie 2>/dev/null | grep -qF '(healthy)'; }
 
 if [ "${1:-}" = "--restart" ]; then
   # Fall back to a fresh build+up when there is no container yet (fresh worktree's first run).
-  # `npm run docker:dev -- -d` => `docker compose up --build -d` (detached, so we can poll /health).
+  # `npm run docker:dev -- -d` => `docker compose up --build -d` (detached, so we can poll status).
   docker compose restart archie || npm run docker:dev -- -d
-elif ! curl -fsS -m 5 "$HEALTH" >/dev/null 2>&1; then
+elif ! healthy; then
   npm run docker:dev -- -d
 fi
 
-echo "waiting for health on :$PORT ..."
-# Manual retry loop instead of `curl --retry-all-errors` (that flag needs curl
-# >=7.71, absent on stock macOS which ships 7.64): retries on ANY failure incl.
-# connection-refused during boot, portable across macOS/Linux curl versions.
+echo "waiting for archie to become healthy ..."
 ok=""
 for _ in $(seq 1 60); do
-  if curl -fsS -m 5 "$HEALTH" >/dev/null 2>&1; then ok=1; break; fi
+  if healthy; then ok=1; break; fi
   sleep 3
 done
-[ -n "$ok" ] || { echo "FAILED: no health on :$PORT"; exit 1; }
-curl -fsS -m 5 "$HEALTH" || true
+[ -n "$ok" ] || { echo "FAILED: archie did not become healthy"; docker compose ps 2>/dev/null || true; exit 1; }
+docker compose ps archie
 echo
 echo "--- startup/slack lines ---"
 docker compose logs archie 2>/dev/null \
