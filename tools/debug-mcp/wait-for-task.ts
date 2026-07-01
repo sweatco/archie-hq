@@ -129,28 +129,42 @@ export async function waitForTask(
       const res = await client.getEvents(taskId, cursor);
       cursor = res.total;
 
-      let completed = false;
-      let stopped = false;
-      let approval = false;
+      let lifecycle: 'running' | 'stopped' | 'completed' | undefined;
+      let awaitingApproval = false;
       let approvalType: ApprovalType | undefined;
 
       for (const e of res.events) {
-        if (e.type === 'task:completed') completed = true;
-        else if (e.type === 'task:stopped') stopped = true;
-        else if (e.type === 'approval:requested') {
-          approval = true;
-          const ty = e.data['type'];
-          if (ty === 'edit_mode' || ty === 'research_budget') approvalType = ty;
-        }
-        if (e.type === 'message' && e.data['from'] === 'pm-agent') {
-          pmReplies.push(String(e.data['message'] ?? ''));
+        switch (e.type) {
+          case 'task:created':
+          case 'task:resumed':
+            lifecycle = 'running';
+            awaitingApproval = false;
+            break;
+          case 'task:stopped':
+            lifecycle = 'stopped';
+            break;
+          case 'task:completed':
+            lifecycle = 'completed';
+            awaitingApproval = false;
+            break;
+          case 'approval:requested': {
+            awaitingApproval = true;
+            const ty = e.data['type'];
+            if (ty === 'edit_mode' || ty === 'research_budget') approvalType = ty;
+            break;
+          }
+          case 'approval:resolved':
+            awaitingApproval = false;
+            break;
+          case 'message':
+            if (e.data['from'] === 'pm-agent') pmReplies.push(String(e.data['message'] ?? ''));
+            break;
         }
       }
 
-      // Terminal states win over a replayed approval gate (the feed replays full history).
-      if (completed) return settle('completed');
-      if (stopped) return settle('stopped');
-      if (approval) return settle('approval_requested', approvalType && { approval_type: approvalType });
+      if (lifecycle === 'completed') return settle('completed');
+      if (awaitingApproval) return settle('approval_requested', approvalType && { approval_type: approvalType });
+      if (lifecycle === 'stopped') return settle('stopped');
     }
 
     if (now() >= deadline) {

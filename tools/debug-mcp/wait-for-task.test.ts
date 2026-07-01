@@ -134,3 +134,28 @@ describe('waitForTask — bounded & resumable', () => {
     expect(second.pm_replies).not.toContain('early'); // events before the cursor are not reprocessed
   });
 });
+
+describe('waitForTask — approval-gate ordering', () => {
+  it('reports approval_requested even when the gate stop lands in the same window', async () => {
+    const c = makeClient({
+      events: { t1: [{ type: 'approval:requested', data: { type: 'edit_mode' } }, { type: 'task:stopped' }] },
+    });
+    const r = await waitForTask(c, { taskId: 't1' }, { ...fakeClock(), ...tunables });
+    expect(r.state).toBe('approval_requested');
+    expect(r.approval_type).toBe('edit_mode');
+  });
+
+  it('a task:resumed cancels an earlier task:stopped (no spurious stopped)', async () => {
+    const c = makeClient({ events: { t1: [{ type: 'task:stopped' }, { type: 'task:resumed' }] } });
+    const r = await waitForTask(c, { taskId: 't1' }, { ...fakeClock(), capSeconds: 5, pollIntervalMs: 2000 });
+    expect(r.state).toBe('pending');
+  });
+
+  it('reaches completed across a resume that follows the gate stop', async () => {
+    const c = makeClient({
+      events: { t1: [{ type: 'task:stopped' }, { type: 'task:resumed' }, { type: 'task:completed' }] },
+    });
+    const r = await waitForTask(c, { taskId: 't1' }, { ...fakeClock(), ...tunables });
+    expect(r.state).toBe('completed');
+  });
+});
