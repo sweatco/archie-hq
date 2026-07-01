@@ -50,6 +50,11 @@ on:
         description: "Day to summarize (YYYY-MM-DD, UTC). Defaults to yesterday."
         required: false
         type: string
+      dry_run:
+        description: "Preview the drafted entry in the run summary without committing."
+        required: false
+        type: boolean
+        default: false
 
 # Never let two runs edit the changelog at once.
 concurrency:
@@ -173,10 +178,27 @@ jobs:
             echo 'CHANGELOG_ENTRY_EOF'
           } >> "$GITHUB_OUTPUT"
 
+      - name: Preview the drafted entry (dry run)
+        if: steps.gather.outputs.skip == 'false' && github.event.inputs.dry_run == 'true'
+        run: |
+          set -euo pipefail
+          {
+            echo "### Drafted changelog entry for ${{ steps.gather.outputs.date }} (dry run — not committed)"
+            echo
+            echo "This is exactly what would be spliced into CHANGELOG.md. Re-run with dry_run off to publish it."
+            echo
+            echo '```markdown'
+            cat new-entry.md
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "----- drafted entry (dry run) -----"
+          cat new-entry.md
+
   publish:
     name: Insert and push
     needs: generate
-    if: needs.generate.outputs.skip == 'false'
+    # Skip entirely on a dry run so nothing is committed.
+    if: needs.generate.outputs.skip == 'false' && github.event.inputs.dry_run != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Check out main (full history)
