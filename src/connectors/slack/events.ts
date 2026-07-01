@@ -288,6 +288,71 @@ export async function mountSlackApp(
     }
   });
 
+  // Handle max mode approval button
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  app!.action('approve_max_mode', async ({ action, ack, body }: any) => {
+    await ack();
+
+    const taskId = action.value;
+    const userId = body.user?.id || 'unknown';
+
+    logger.server(`Max mode approved by ${userId} for task ${taskId}`);
+
+    try {
+      if (body.channel?.id && body.message?.ts) {
+        await updateMessage(
+          body.channel.id,
+          body.message.ts,
+          `✅ *Max mode approved* by <@${userId}>`,
+          []
+        );
+      }
+
+      const task = await Task.get(taskId);
+      // Best-effort display name for the knowledge.log finding. Unlike edit mode,
+      // max mode has no git-authorship stake, so we skip the external-user skip
+      // and email capture — the name is nice-to-have, not load-bearing.
+      let approverName: string | undefined;
+      if (userId && userId !== 'unknown') {
+        try {
+          approverName = (await getUserInfo(userId)).realName;
+        } catch (error) {
+          logger.warn('Slack', `Failed to resolve max-mode approver ${userId}`, error);
+        }
+      }
+      await task.handleMaxModeApproval(approverName);
+    } catch (error) {
+      logger.error('Server', 'Error handling max mode approval', error);
+    }
+  });
+
+  // Handle max mode denial button
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  app!.action('deny_max_mode', async ({ action, ack, body }: any) => {
+    await ack();
+
+    const taskId = action.value;
+    const userId = body.user?.id || 'unknown';
+
+    logger.server(`Max mode denied by ${userId} for task ${taskId}`);
+
+    try {
+      if (body.channel?.id && body.message?.ts) {
+        await updateMessage(
+          body.channel.id,
+          body.message.ts,
+          `❌ *Max mode denied* by <@${userId}>`,
+          []
+        );
+      }
+
+      const task = await Task.get(taskId);
+      await task.handleMaxModeDenial();
+    } catch (error) {
+      logger.error('Server', 'Error handling max mode denial', error);
+    }
+  });
+
   // Handle research budget approval button (Defense 4)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app!.action('approve_research_budget', async ({ action, ack, body }: any) => {

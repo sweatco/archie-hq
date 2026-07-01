@@ -25,6 +25,7 @@ import { join } from 'path';
 import matter from 'gray-matter';
 import { PLUGINS_DIR, PLUGINS_DATA_DIR } from './workdir.js';
 import { logger } from './logger.js';
+import type { MaxModeSpec } from '../types/agent.js';
 
 export { PLUGINS_DIR };
 
@@ -106,6 +107,8 @@ export interface PluginAgentDef {
   model?: string;
   /** Reasoning effort level from frontmatter */
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  /** Per-agent max-mode override from `metadata.archie.maxMode` */
+  maxMode?: MaxModeSpec;
   /** Maximum agentic turns from frontmatter */
   maxTurns?: number;
   /**
@@ -252,6 +255,21 @@ function scanPlugins(): LoadedPlugin[] {
         const statusLabel = typeof data.metadata?.archie?.statusLabel === 'string'
           ? data.metadata.archie.statusLabel.trim() || undefined
           : undefined;
+        // metadata.archie.maxMode — per-agent upgrade applied only when the task
+        // has max mode approved. Both fields optional; an empty/invalid spec is
+        // dropped so it behaves identically to "unset".
+        let maxMode: MaxModeSpec | undefined;
+        const mmRaw = data.metadata?.archie?.maxMode;
+        if (mmRaw && typeof mmRaw === 'object') {
+          const mmModel =
+            typeof mmRaw.model === 'string' && mmRaw.model.trim() ? mmRaw.model.trim() : undefined;
+          const mmEffort = ['low', 'medium', 'high', 'xhigh', 'max'].includes(mmRaw.effort)
+            ? (mmRaw.effort as MaxModeSpec['effort'])
+            : undefined;
+          if (mmModel || mmEffort) {
+            maxMode = { ...(mmModel ? { model: mmModel } : {}), ...(mmEffort ? { effort: mmEffort } : {}) };
+          }
+        }
 
         const agentDef: PluginAgentDef = {
           key,
@@ -259,6 +277,7 @@ function scanPlugins(): LoadedPlugin[] {
           expertise: data.expertise || '',
           model: data.model || undefined,
           effort,
+          maxMode,
           maxTurns,
           visibility,
           statusLabel,

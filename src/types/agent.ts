@@ -129,6 +129,17 @@ export interface AgentPmDef {
  *   - repo access is attached when `repo` is set
  *   - the PM coordinator is the one agent with `isPm` set (overlaid by the pm plugin)
  */
+/**
+ * Per-agent "max mode" spec from `metadata.archie.maxMode`. Applied only when
+ * the task has max mode approved; see resolveAgentModel / resolveAgentEffort.
+ */
+export interface MaxModeSpec {
+  /** Model to run on in max mode (e.g. 'claude-fable-5'). Omit to keep the normal model. */
+  model?: string;
+  /** Reasoning effort in max mode. Omit to use the default (repo/dynamic → 'max'). */
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+}
+
 export interface AgentDef {
   /** Unique agent identifier, e.g., 'backend-agent', 'pm-agent' */
   id: string;
@@ -155,6 +166,15 @@ export interface AgentDef {
 
   /** Reasoning effort level (default: 'high') */
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+  /**
+   * Per-agent "max mode" upgrade, from `metadata.archie.maxMode` in frontmatter.
+   * When the task has max mode approved, these override the agent's normal
+   * model/effort (see resolveAgentModel / resolveAgentEffort). Absent → repo/
+   * dynamic agents default to max effort with the model unchanged; generic
+   * agents and the PM are unchanged.
+   */
+  maxMode?: MaxModeSpec;
 
   /** Maximum agentic turns before stopping (default: 100) */
   maxTurns?: number;

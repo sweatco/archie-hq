@@ -279,6 +279,7 @@ export interface TaskMetadata {
   dynamic_agents?: DynamicAgentSpec[];
   status: TaskStatus;
   edit_allowed?: boolean;     // Has user approved edit mode for this task?
+  max_mode?: boolean;         // Has user approved "max mode" (per-task model/effort upgrade) for this task?
   /**
    * The human who approved edit mode. Used as the git *author* on every commit
    * the repo agents make for this task (the committer stays the GitHub App bot),

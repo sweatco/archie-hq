@@ -18,7 +18,7 @@ import type { Agent } from './agent.js';
 import type { Task } from '../tasks/task.js';
 import { isRepoAgent, isPmAgent } from '../types/agent.js';
 import { buildCommitAuthorEnv } from './commit-author.js';
-import { resolveAgentModel } from './model-label.js';
+import { resolveAgentModel, resolveAgentEffort } from './model-label.js';
 import {
   createBaseAgentMcpServer,
   createRepoToolsMcpServer,
@@ -229,7 +229,13 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   // `context-1m-2025-08-07` beta); plain `sonnet` caps at 200K and overflows
   // on the large injected system prompt. Opus is 1M natively, no suffix needed.
   // (Resolution shared with the footer via resolveAgentModel.)
-  const model = resolveAgentModel(def);
+  // "Max mode": a task-lifetime, human-approved upgrade (see request_max_mode /
+  // handleMaxModeApproval). When on, resolveAgentModel/Effort apply the agent's
+  // maxMode overrides — repo/dynamic agents default to max effort; a model swap
+  // (e.g. Fable) is a per-agent frontmatter opt-in.
+  const maxMode = metadata.max_mode === true;
+  const model = resolveAgentModel(def, maxMode);
+  const effort = resolveAgentEffort(def, maxMode);
   const tools = def.tools;
 
   const pluginPaths = def.pluginPath ? [def.pluginPath] : [];
@@ -596,7 +602,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
     resume: sessionId,
     abortController,
     maxTurns: def.maxTurns ?? 100,
-    ...(def.effort ? { effort: def.effort } : {}),
+    ...(effort ? { effort } : {}),
     permissionMode: 'bypassPermissions' as const,
     allowDangerouslySkipPermissions: true,
     sandbox: buildSandboxConfig(sandboxOpts),

@@ -2,6 +2,8 @@
 
 Archie operates in two modes: **readonly** (the default) and **edit** (after human approval). This two-mode system implements a human-in-the-loop safety gate that prevents agents from modifying code without explicit user consent.
 
+> A sibling gate, [max mode](max-mode.md), reuses this same request → approve → respawn shape to upgrade the coding agents' model/effort for a task. The two are independent — a task can have either, both, or neither.
+
 ## Two-Mode System
 
 ### Readonly Mode (Default)

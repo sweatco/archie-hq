@@ -10,7 +10,7 @@ import type { AgentName, SlackAuthor, SlackChannel, SlackThread, SlackReaction, 
 import { CLI_CHANNEL_KEY } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
 import { isPmAgent, isRepoAgent } from '../types/agent.js';
-import { modelDisplayLabel, resolveAgentModel } from '../agents/model-label.js';
+import { modelDisplayLabel, resolveAgentModel, modelChangingAgentIds } from '../agents/model-label.js';
 import { prCardFingerprint, prCardTitlePlain } from '../system/pr-card-format.js';
 import { getGitHubClient } from '../connectors/github/client.js';
 import { createKeyedLock } from '../system/keyed-lock.js';
@@ -582,7 +582,7 @@ export class Task {
    * approvals are also surfaced in the CLI via the `approval:requested` event
    * regardless of Slack delivery.
    */
-  async postInteractiveToUser(text: string, blocks: unknown[], approvalType: 'edit_mode' | 'research_budget', channelKey?: string): Promise<void> {
+  async postInteractiveToUser(text: string, blocks: unknown[], approvalType: 'edit_mode' | 'research_budget' | 'max_mode', channelKey?: string): Promise<void> {
     emitEvent('approval:requested', this.taskId, { text, approvalType });
 
     const ch = this.resolveSlackChannel(channelKey);
@@ -660,10 +660,11 @@ export class Task {
    * As specialists join, the footer grows (e.g. `Opus 4.8 + Sonnet 4.6 (1M)`).
    */
   private collectModelsUsed(): string[] {
+    const maxMode = this.metadata.max_mode === true;
     const raw: string[] = [];
     const pmDef = this.team.find((d) => isPmAgent(d));
-    if (pmDef) raw.push(resolveAgentModel(pmDef));
-    for (const a of this.agentProcesses.values()) raw.push(resolveAgentModel(a.def));
+    if (pmDef) raw.push(resolveAgentModel(pmDef, maxMode));
+    for (const a of this.agentProcesses.values()) raw.push(resolveAgentModel(a.def, maxMode));
     if (raw.length === 0) raw.push('opus');
     const seen = new Set<string>();
     const out: string[] = [];
@@ -1256,6 +1257,52 @@ export class Task {
 
   async handleEditModeDenial(): Promise<void> {
     await appendAgentFinding(this.taskId, 'system', 'Edit mode denied by user', 'decision');
+    await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+  }
+
+  async handleMaxModeApproval(approverName?: string): Promise<void> {
+    // Idempotency: max mode is a one-way, task-lifetime grant. A repeat approval
+    // (e.g. a duplicate API POST) must not re-run the session reset below and
+    // clear a freshly-spawned upgraded session mid-work. The Slack path is
+    // guarded by the button-strip; the API path is not, so guard here.
+    if (this.metadata.max_mode === true) return;
+
+    // Cancel any park armed by request_max_mode on the PM this turn — same race
+    // as edit mode (see handleEditModeApproval): approval means "continue", so
+    // drop the deferred stop before it fires and tears down the task we just
+    // approved.
+    this.agentProcesses.get('pm-agent')?.clearPendingTeardown();
+    this.metadata.max_mode = true;
+
+    // Force a fresh SDK session for every non-PM agent whose resolved MODEL
+    // changes under max mode (e.g. a repo agent that opts into Fable via
+    // maxMode.model). A resumed session can pin its original model, which would
+    // make the swap a silent no-op; a fresh session guarantees the new model
+    // takes effect. Effort-only upgrades don't change the model, so they need no
+    // reset (a raised effort is a per-turn query() option the next turn uses).
+    //
+    // Source the set from the TEAM, not live handles: request_max_mode paused
+    // and evicted the task, so the instance handling this approval was reloaded
+    // via Task.get and its `agentProcesses` is empty. Clearing the PERSISTED
+    // `agent_sessions` entry is what survives to disk — save() only re-syncs
+    // sessions for agents still in `agentProcesses` (none here), so the cleared
+    // entry sticks and the agent's next spawn restores no session_id → resumes
+    // nothing → runs on the new model. Context survives via knowledge.log, which
+    // the fresh spawn re-reads. Also null a live handle if approval landed before
+    // the pause fired (same-instance race).
+    for (const id of modelChangingAgentIds(this.team)) {
+      if (this.metadata.agent_sessions[id]) this.metadata.agent_sessions[id] = { active: false };
+      const live = this.agentProcesses.get(id as AgentName);
+      if (live) live.session.session_id = undefined;
+    }
+
+    this.debouncedSave();
+    await appendAgentFinding(this.taskId, 'system', `Max mode approved by ${approverName || 'user'}`, 'decision');
+    await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+  }
+
+  async handleMaxModeDenial(): Promise<void> {
+    await appendAgentFinding(this.taskId, 'system', 'Max mode denied by user', 'decision');
     await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
   }
 

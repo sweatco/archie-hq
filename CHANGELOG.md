@@ -4,7 +4,7 @@ Archie ships continuously, so changes are grouped by the **date they landed** on
 
 ## [Unreleased]
 
-_Changes on `main` that haven't been summarized into a dated entry yet._
+- **Tasks can be upgraded to "max mode" on request, with human approval.** A user can ask Archie to "use Fable" / "activate max mode"; the PM requests it via `request_max_mode`, the user approves with a Slack (or CLI) button, and from then on the coding agents run with more capability for the rest of the task — mirroring the edit-mode gate, applied to model/effort instead of write access. By default repo agents jump to maximum reasoning effort; the engineering repo agents (backend, mobile, infrastructure) and the `archie` agent additionally swap to **Fable** (`claude-fable-5`). Per-agent behaviour is set in the plugins repo via `metadata.archie.maxMode`; `ARCHIE_MAX_MODE_MODEL` / `ARCHIE_MAX_MODE_EFFORT` cover runtime-spawned dynamic agents. _Technical: `max_mode` flag on `TaskMetadata`; `resolveAgentModel`/`resolveAgentEffort` gained a `maxMode` argument and a `MaxModeSpec` frontmatter field; `request_max_mode` on the PM `orchestration-tools` server with `approve_max_mode`/`deny_max_mode` handlers across Slack and the API/CLI; `handleMaxModeApproval` resets the in-memory SDK session of any agent whose model changes so the swap actually takes effect on resume. Independent of edit mode. See docs/architecture/max-mode.md._
 
 ## 2026-06-30
 

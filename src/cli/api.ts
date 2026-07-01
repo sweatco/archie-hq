@@ -63,7 +63,7 @@ export async function fetchTaskEvents(
 
 export async function sendApproval(
   taskId: string,
-  type: 'edit_mode' | 'research_budget',
+  type: 'edit_mode' | 'research_budget' | 'max_mode',
   approve: boolean,
 ): Promise<void> {
   const res = await fetch(`${getBaseUrl()}/api/tasks/${taskId}/approve`, {
