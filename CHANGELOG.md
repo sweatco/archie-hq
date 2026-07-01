@@ -6,6 +6,16 @@ Archie ships continuously, so changes are grouped by the **date they landed** on
 
 _Changes on `main` that haven't been summarized into a dated entry yet._
 
+## 2026-06-30
+
+- **Specialist and plugin agents now run on Sonnet 5.** All specialist and plugin agents move from Sonnet 4.6 to Sonnet 5 — frontier-class with native 1M context — on the next deploy, with no configuration change required. _Technical: bumped `@anthropic-ai/claude-agent-sdk` to 0.3.197 (Claude Code v2.1.197), which resolves the `sonnet` alias to Sonnet 5; updated the Slack footer display label from "Sonnet 4.6" to "Sonnet 5" and its tests. PM stays on `opus` → Opus 4.8, unchanged._
+
+- **Agents self-heal from API Overloaded errors instead of silently hanging for up to an hour.** When a turn ends with an SDK error (e.g. API "Overloaded" after the SDK exhausts its own retries), the agent now marks itself inactive immediately and enters the normal quiescence/recovery path — retrying the work rather than sitting orphaned. Previously this caused 44-minute stalls observed in production. _Technical: in the spawn loop, a `result` event with a non-success subtype calls `updateAgentState(false)`, guarded on `agent.session.active` to prevent double-fire with the `Stop` hook._
+
+- **Concurrent task triggers no longer cause duplicate agent spawns.** When a GitHub webhook, Slack reply, and startup recovery all fire for the same parked task in one async tick, exactly one set of agents spawns — previously each trigger built its own `Task` instance and raced, leading to duplicate PR actions and looping agents. _Technical: `Task.sendMessage` funneled through a per-`taskId` keyed lock; the first caller activates and registers the canonical instance, the rest enqueue onto it. Regression test added._
+
+- _Technical: CHANGELOG rewritten as a 30-day day-by-day history with value-first entries (PR #154); GitHub issue templates cleaned up to a single Type badge, dropping the redundant title prefix and label (PR #146); `archie-debug` MCP port resolution now reads from `ARCHIE_URL`, `PORT` env, or repo `.env` instead of hardcoding `localhost:3000` (PR #134); Docker dev healthcheck switched to `curl` (installed in the image) because `wget` is absent from the base image (PR #133); CI changelog job now pushes via deploy key to clear the protected-branch ruleset; dependency bumps: `@anthropic-ai/sdk` 0.105→0.107, `@aws-sdk/client-bedrock-runtime` 3.1075→3.1076, `@types/node` 26.0.0→26.0.1; no-hard-wrap prose convention added to CLAUDE.md._
+
 ## 2026-06-29
 
 - **Every change Archie makes is traceable to the person who approved it.** Commits made in edit mode are now authored as the human who approved edit mode, with an Archie co-author trailer — a clean, auditable attribution chain. _Technical: swapped the Claude commit trailer for an Archie one, added an author diagnostic, and hardened the author injection against spoofing (review follow-up)._
