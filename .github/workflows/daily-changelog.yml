@@ -1,23 +1,40 @@
-# Daily changelog — summarize the previous day's commits into CHANGELOG.md.
+# Daily changelog — summarize the previous day's changes into CHANGELOG.md.
+#
+# Two jobs, split for security (see "Security" below):
+#   generate — gather the day's PR context, have Claude draft the dated entry,
+#              expose it as a job output. Has the Anthropic key; NO push access.
+#   publish  — on a fresh checkout, splice the entry into CHANGELOG.md with the
+#              trusted insert script and push to main. Has the deploy key; runs
+#              NO model.
 #
 # How it works:
-#   1. Gather the day's changes as PR context (scripts/changelog-gather.sh):
-#      each PR merged yesterday with its description, linked issues, commit
-#      subjects, and diffstat — so the model understands intent without reading
-#      code — plus a raw-commit backstop for direct-to-main pushes.
+#   1. generate: scripts/changelog-gather.sh builds the model's context — each PR
+#      merged that day with its description, linked issues, commit subjects, and
+#      diffstat (so the model grasps intent without reading code), plus a
+#      raw-commit backstop for direct-to-main pushes.
 #   2. If nothing landed — or that day already has an entry — stop (no empty commit).
-#   3. Have the Claude Code Action write ONLY the dated entry to new-entry.md
-#      (it never edits CHANGELOG.md itself).
-#   4. scripts/changelog-insert.mjs splices that entry into CHANGELOG.md in the
-#      right place (below [Unreleased], above the newest dated entry).
-#   5. Commit straight to `main` with [skip ci] so it doesn't trigger a rebuild.
+#   3. generate: the Claude Code Action writes ONLY the dated entry to new-entry.md;
+#      a step captures it into the `entry` job output.
+#   4. publish: scripts/changelog-insert.mjs splices the entry below [Unreleased],
+#      above the newest dated entry, leaving structure and the bottom snapshot alone.
+#   5. publish: commit straight to main with [skip ci] so it doesn't trigger a rebuild.
+#
+# Security:
+#   The gather step feeds attacker-influenceable text (PR/issue/commit bodies) to
+#   the model, so the model step is treated as untrusted. It is isolated in the
+#   `generate` job, which never holds the deploy key — so a prompt-injected model
+#   cannot read/exfiltrate the push credential or tamper with a script that later
+#   runs alongside it. `publish` runs no model and checks out fresh, so the insert
+#   script it runs is the trusted repo version; the drafted entry crosses the job
+#   boundary as a job output consumed via an env var (never expression-interpolated
+#   into a shell), and the insert script only ever writes CHANGELOG.md.
 #
 # Setup prerequisites:
 #   - Repo secret ANTHROPIC_API_KEY (the Claude Code Action authenticates with it).
 #   - Repo secret CHANGELOG_DEPLOY_KEY — the PRIVATE half of a write-enabled
 #     deploy key whose PUBLIC half is added to the repo (Settings -> Deploy keys,
 #     "Allow write access") AND to the branch ruleset's bypass list. The built-in
-#     github-actions bot cannot be a ruleset bypass actor, so the job pushes over
+#     github-actions bot cannot be a ruleset bypass actor, so publish pushes over
 #     SSH as this deploy key to land the entry directly on main.
 #
 # Actions are SHA-pinned per org policy (full commit SHA + version comment).
@@ -40,22 +57,25 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  changelog:
-    name: Summarize yesterday into CHANGELOG.md
+  generate:
+    name: Draft the entry
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      skip: ${{ steps.gather.outputs.skip }}
+      date: ${{ steps.gather.outputs.date }}
+      entry: ${{ steps.capture.outputs.entry }}
     steps:
       - name: Check out main (full history)
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: main
           fetch-depth: 0
-          # Push as a write-enabled deploy key that's on the ruleset bypass list,
-          # so the entry can land directly on the protected main branch. Checkout
-          # configures the SSH remote and persists the key for the later push.
-          ssh-key: ${{ secrets.CHANGELOG_DEPLOY_KEY }}
 
       - name: Gather the day's changes (PR context)
         id: gather
@@ -135,20 +155,51 @@ jobs:
             Write ONLY the finished entry to a new file named `new-entry.md`.
             Do NOT modify CHANGELOG.md or any other file.
 
-      - name: Insert the entry and commit
+      - name: Capture the drafted entry
+        id: capture
         if: steps.gather.outputs.skip == 'false'
-        env:
-          TARGET_DATE: ${{ steps.gather.outputs.date }}
         run: |
           set -euo pipefail
-
           if [ ! -s new-entry.md ]; then
             echo "Claude produced no new-entry.md — aborting." >&2
             exit 1
           fi
+          # Pass the entry to the publish job as a job output. It is consumed there
+          # via an env var (never interpolated into a shell), so its content — which
+          # is attacker-influenceable — cannot inject commands downstream.
+          {
+            echo 'entry<<CHANGELOG_ENTRY_EOF'
+            cat new-entry.md
+            echo 'CHANGELOG_ENTRY_EOF'
+          } >> "$GITHUB_OUTPUT"
 
-          # Discard any stray edits Claude may have made; we only trust new-entry.md.
-          git checkout -- CHANGELOG.md
+  publish:
+    name: Insert and push
+    needs: generate
+    if: needs.generate.outputs.skip == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main (full history)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: main
+          fetch-depth: 0
+          # Deploy key on the ruleset bypass list — lets this job push the entry
+          # directly to the protected main branch over SSH.
+          ssh-key: ${{ secrets.CHANGELOG_DEPLOY_KEY }}
+
+      - name: Insert the entry and push
+        env:
+          TARGET_DATE: ${{ needs.generate.outputs.date }}
+          ENTRY: ${{ needs.generate.outputs.entry }}
+        run: |
+          set -euo pipefail
+
+          # Materialize the drafted entry from the env var (safe: no shell
+          # interpolation of untrusted content). The insert script — the trusted
+          # repo version, since no model ran in this job — sanitizes it and only
+          # ever writes CHANGELOG.md.
+          printf '%s\n' "$ENTRY" > new-entry.md
 
           set +e
           node scripts/changelog-insert.mjs CHANGELOG.md new-entry.md
@@ -161,7 +212,7 @@ jobs:
           fi
           [ "$code" = "0" ] || exit "$code"
 
-          rm -f new-entry.md context.md
+          rm -f new-entry.md
 
           if git diff --quiet -- CHANGELOG.md; then
             echo "No changelog change — nothing to commit."
