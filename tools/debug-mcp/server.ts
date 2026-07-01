@@ -18,6 +18,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { ArchieClient } from './archie-client.js';
+import { waitForTask } from './wait-for-task.js';
 
 /** Read PORT from a .env file without pulling in a dotenv dependency. */
 function portFromEnvFile(): string | undefined {
@@ -187,6 +188,42 @@ server.tool(
     await client.approve(task_id, type, approve);
     const action = approve ? 'Approved' : 'Denied';
     return { content: [{ type: 'text', text: `${action} ${type} for ${task_id}` }] };
+  },
+);
+
+server.tool(
+  'wait_for_task',
+  'Block server-side until a task settles, in one call instead of polling get_events. Locate it by task_id or by a nonce in its knowledge log, then wait until completed / stopped / approval_requested or a ~45s cap. Returns STATE with the attribution line and any pm-agent replies. On the cap: STATE=pending plus a CURSOR — call again with that cursor and task_id to resume. On approval_requested: approve via the "approve" tool, then resume.',
+  {
+    task_id: z.string().optional().describe('Task to wait on. Provide this or "nonce".'),
+    nonce: z
+      .string()
+      .optional()
+      .describe("Substring matched in the task's knowledge log — use when you tagged a message with a nonce but don't yet know the task id."),
+    timeout_seconds: z
+      .number()
+      .optional()
+      .describe('Overall wait budget for this call (capped server-side, default ~45s).'),
+    cursor: z
+      .number()
+      .optional()
+      .describe('Resume cursor from a prior STATE=pending result (pass together with task_id).'),
+  },
+  async ({ task_id, nonce, timeout_seconds, cursor }) => {
+    const r = await waitForTask(client, {
+      taskId: task_id,
+      nonce,
+      timeoutSeconds: timeout_seconds,
+      cursor,
+    });
+    const lines: string[] = [];
+    lines.push(`TASK=${r.task_id ?? '(none)'}`);
+    lines.push(`STATE=${r.state}`);
+    if (r.approval_type) lines.push(`APPROVAL_TYPE=${r.approval_type}`);
+    lines.push(`ATTRIBUTION=${r.attribution ?? '(none)'}`);
+    for (const m of r.pm_replies) lines.push(`PM_REPLY: ${m.slice(0, 300)}`);
+    if (r.cursor !== undefined) lines.push(`CURSOR=${r.cursor}`);
+    return { content: [{ type: 'text', text: lines.join('\n') }] };
   },
 );
 
