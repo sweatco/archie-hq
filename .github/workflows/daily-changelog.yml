@@ -122,7 +122,7 @@ jobs:
           claude_args: |
             --allowedTools Read,Write
             --max-turns 8
-            --model claude-sonnet-4-6
+            --model sonnet
           prompt: |
             You are updating Archie HQ's CHANGELOG.md. Write the entry for ${{ steps.gather.outputs.date }}.
 
