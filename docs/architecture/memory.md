@@ -137,7 +137,7 @@ The helper `extractTaskUsernames(taskId)` (`spawn.ts:132`) parses the task's `kn
 </entity>
 ```
 
-**Entity selection is push, not pull** — the system decides which entity pages to inject; there is no agent-callable query tool. `enrichPromptWithMemory(prompt, users, selectors)` receives spawn-context selectors (`{ repo?, plugin?, taskTitle? }`): PM passes `taskTitle`, repo agents pass `repo: def.repo.repoKey`, plugin agents pass `plugin: def.pluginName`. `selectEntities()` (`entity-index.ts`) then:
+**Entity selection is push, not pull** — the system decides which entity pages to inject; there is no agent-callable query tool. `enrichPromptWithMemory(prompt, users, selectors)` receives spawn-context selectors (`{ repo?, plugin?, taskTitle?, taskId?, agent? }`): every track passes `taskId` and `agent` (they feed the selection sensor below); PM adds `taskTitle`, repo agents pass `repo: def.repo.repoKey`, plugin agents pass `plugin: def.pluginName`. `selectEntities()` (`entity-index.ts`) then:
 
 1. Scores every active entity against the spawn context. An entity of **any scope** becomes an injection candidate only when it carries a relevance signal: a repo match, an `owned_by` relation to a participating user, or token overlap of the task title / users against its name, aliases, and summary.
 2. **Expands one hop** along `[[wikilink]]` relations from the signal-bearing set (so selecting `payment-service` pulls `postgres-prod` even if it wasn't directly matched).
@@ -146,6 +146,8 @@ The helper `extractTaskUsernames(taskId)` (`spawn.ts:132`) parses the task's `kn
 The thin `<entity_index>` is never subject to a page bound — the agent always sees the full catalogue of what exists, so a page not selected for full injection stays discoverable via its `L0` summary (the recall path until pull/embeddings land in a later phase).
 
 When a selected page is rendered into its `<entity>` block, the auto-appended `touched_by` relations are truncated to the newest `ARCHIE_MEMORY_TOUCHED_BY_INJECT_MAX` (they grow by one per touching task and would otherwise re-inflate the prompt without bound). Truncation is render-time only: the file on disk keeps the full `touched_by` history for provenance and related-task selection, and all other relation types render in full.
+
+**Selection sensor.** When injection is enabled and the selectors carry a `taskId`, `buildMemoryContext` appends one JSON line to `sessions/<taskId>/shared/memory-injection.jsonl` recording the decision it just made — inputs (selector snapshot + user IDs), outcome (selected pages with slug/score/scope, dropped-over-budget slugs, zero-signal exclusion count, candidate count, budgets in effect), and cost (a chars/4 estimate of the rendered context tokens). A zero-injection spawn still writes a record: the zero-injection rate is itself a tuning signal. The sensor is fail-safe — any assembly or write error logs a warning and the enriched prompt is returned exactly as if the sensor did not exist — and it never runs when injection is off, preserving the write-free collect-only posture. Records live with the session (joinable with the task's `knowledge.log`, harvested by `scripts/pull-remote-data.sh`), not under `memory/`; see the [storage format](#sessionstaskidsharedmemory-injectionjsonl-selection-sensor) below.
 
 `enrichPromptWithMemory()` appends the block to the prompt under a fixed `## Organizational Memory` header with a short instruction line. It returns the prompt unchanged — and performs no store reads — if the layer is disabled (`ARCHIE_MEMORY=false`), if **injection is disabled** (`ARCHIE_MEMORY_INJECT` ≠ `true`, the default — see [Feature Flags](#feature-flags)), or if no memory exists.
 
@@ -344,6 +346,16 @@ A **derived** thin table — one row per entity (`[[slug]]`, type, scope, L0 sum
 | [[payment-service]] | service | repo:backend | NestJS payments API | 2026-06-01 |
 ```
 
+### `sessions/<taskId>/shared/memory-injection.jsonl` (selection sensor)
+
+The one memory-written file **outside** `memory/` — per-spawn selection records (see [Read Path](#read-path--memory-injection-at-spawn)). One JSON object per line, one line per enriched spawn:
+
+```json
+{"v":1,"ts":"2026-07-02T14:03:11.412Z","taskId":"task-20260702-1401-ab12cd","agent":"backend","ctx":{"repo":"backend","plugin":null,"taskTitle":"payment bug","userIds":["U07ABC123"]},"selected":[{"slug":"payment-service","score":510,"scope":"repo"}],"dropped":[],"zeroSignalExcluded":141,"candidates":3,"budgets":{"org":8,"nonOrg":8},"renderedTokensEst":3120}
+```
+
+It is telemetry, not memory: nothing reads it at runtime. Budget tuning after prod enablement and the later memory-value eval consume it offline (`docs/proposals/memory-v2-roadmap.md`), which is why each line is self-contained — a labeled selection case with inputs, outcome, and cost.
+
 ## Housekeeping
 
 `users/*.md` files are bounded by two coupled mechanisms (organizational knowledge lives in entities, which have their own housekeeping below):
@@ -414,7 +426,7 @@ The plan was built to support clean removal in five steps:
 4. Remove `import { enrichPromptWithMemory, isMemoryEnabled }`, the `extractTaskUsernames()` helper, and the three memory-injection call sites from `src/agents/spawn.ts`.
 5. `rm -rf workdir/memory/`
 
-No type changes propagate to other modules, no database migrations, no external service cleanup. Core never imports from `src/memory/`.
+No type changes propagate to other modules, no database migrations, no external service cleanup. Core never imports from `src/memory/`. Selection-sensor records (`sessions/*/shared/memory-injection.jsonl`) are session artifacts — they disappear with their sessions, not with `memory/`; any left behind are inert telemetry.
 
 ## Testing
 
@@ -423,13 +435,13 @@ No type changes propagate to other modules, no database migrations, no external 
 | `sanitize.test.ts` | Every validator rule + injection / secret heuristics, positive + negative cases |
 | `paths.test.ts` | Slack-ID acceptance, fallback-ID acceptance, malformed-ID rejection, filename construction |
 | `store.test.ts` | `readUser`/`writeUser`, `applyUpdate` (add / update / skip-unmatched on user files), `applyUserUpdates*`, `softCapExceeded` |
-| `context.test.ts` | `buildMemoryContext` user-tag attributes, `enrichPromptWithMemory` disabled-flag passthrough |
+| `context.test.ts` | `buildMemoryContext` user-tag attributes, `enrichPromptWithMemory` disabled-flag passthrough, selection-sensor record shape / fail-safe / gating |
 | `extractor.test.ts` | `buildExtractionPrompt` substitution, `parseExtractionResponse` happy/sad/fenced cases |
 | `activity.test.ts` | `readActivity`, `appendActivity`, `trimActivity` (newest-first, cap behaviour) |
 | `pending-queue.test.ts` | Round-trip enqueue/dequeue/read, idempotent enqueue, malformed-file resilience |
 | `housekeeping.test.ts` | Annotation parsing, `extractBullets`, trace-back validator, soft-cap thresholds, entity merge-plan / staleness / merge+archive integration |
 | `entities.test.ts` | parse/serialize round-trip, alias resolution, `applyEntityUpdate` (resolve-or-create, auto touched_by, closed-vocab drops, traversal-slug rejection, cap) |
-| `entity-index.test.ts` | `rebuildIndex` derive/drop, `selectEntities` (org-always, repo match, 1-hop expansion, bound + dropped, archived excluded, title scoring) |
+| `entity-index.test.ts` | `rebuildIndex` derive/drop, `selectEntities` (org-always, repo match, 1-hop expansion, bound + dropped, archived excluded, title scoring, telemetry fields) |
 | `lifecycle.test.ts` | End-to-end: org / user / entity / summary / activity writes; entity-based related tasks; restart-resilience; multi-user allowed set; no Slack post |
 
 Run with `npx vitest run src/memory/__tests__/` or `npm test`.
