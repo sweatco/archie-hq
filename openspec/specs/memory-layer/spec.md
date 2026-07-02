@@ -1,7 +1,7 @@
 # Memory Layer
 
 **Capability ID:** `memory-layer`
-**Status:** Target spec — reflects shipped behavior, including the entity layer and `org.md` retirement (see archived changes `harden-memory-layer`, `add-memory-entity-layer`)
+**Status:** Target spec — reflects shipped behavior, including the entity layer, `org.md` retirement, and bounded relevance-gated injection (see archived changes `harden-memory-layer`, `add-memory-entity-layer`, `gate-memory-injection`, `memory-v2-phase1`, `memory-v2-fixes`, `memory-v2-injection-bounds`)
 **Implementation:** `src/memory/` — see `docs/architecture/memory.md` for the architecture as-built
 
 ## Purpose
@@ -115,25 +115,45 @@ The system SHALL persist pending extractions to disk so that a `task:completed` 
 
 ### Requirement: Memory injection at agent spawn
 
-The system SHALL append a memory context block to the system prompt of every spawned agent (PM track, repo track, plugin track) **when memory is enabled AND injection is enabled** (`ARCHIE_MEMORY_INJECT=true`; see "Memory injection MUST be independently gated and default off"). The block SHALL contain `<user_preferences user="...">` per Slack user mentioned in the task who has a memory file, `<recent_activity>` (when recent-activity.md is non-empty), `<entity_index>` (when at least one entity exists), and `<entity slug="..." ...>` blocks for the entities selected for this task. Organizational knowledge is carried by the injected `scope: org` entity pages, not a separate `<organizational_knowledge>` block. The block SHALL be appended after the agent's track-specific context and any plugin overlays, under a header `## Organizational Memory`. If no memory exists, the prompt SHALL be returned unchanged. When injection is disabled, the system SHALL return the prompt unchanged and SHALL NOT perform any store reads or entity selection.
+The system SHALL append a memory context block to the system prompt of every spawned agent (PM track, repo track, plugin track) **when memory is enabled AND injection is enabled** (`ARCHIE_MEMORY_INJECT=true`; see "Memory injection MUST be independently gated and default off"). The block SHALL contain `<user_preferences user="...">` per Slack user mentioned in the task who has a memory file, `<recent_activity>` (when recent-activity.md is non-empty), `<entity_index>` (when at least one entity exists), and `<entity slug="..." ...>` blocks for the entities selected for this task. Organizational knowledge is carried by the injected `scope: org` entity pages **and the always-injected `<entity_index>`**, not a separate `<organizational_knowledge>` block. The block SHALL be appended after the agent's track-specific context and any plugin overlays, under a header `## Organizational Memory`. If no memory exists, the prompt SHALL be returned unchanged. When injection is disabled, the system SHALL return the prompt unchanged and SHALL NOT perform any store reads or entity selection.
 
-Entity-page selection SHALL be **push** (decided by the system at spawn, with no agent-callable query tool). The system SHALL select full entity pages by scoring the entity index against the spawn context — the agent's repo or plugin, the participating users, and the task title — SHALL always include entities whose `scope` is `org`, and SHALL expand one hop along `[[wikilink]]` relations from the selected set. Entities whose `scope` is `org` SHALL always be injected in full and SHALL NOT be subject to the page bound — they hold the organizational knowledge that previously lived in `org.md` and must remain always-on. The bound (`ARCHIE_MEMORY_ENTITY_INJECT_MAX`) SHALL apply only to the remaining repo/domain/title-scored and graph-expanded pages; when more of those qualify than the bound allows, the system SHALL inject the highest-scoring ones and SHALL log which entities were dropped. The thin `<entity_index>` is likewise not subject to the page bound.
+Entity-page selection SHALL be **push** (decided by the system at spawn, with no agent-callable query tool). The system SHALL select full entity pages by scoring the entity index against the spawn context — the agent's repo or plugin, the participating users, and the task title — and SHALL expand one hop along `[[wikilink]]` relations from the selected set. A page of any scope SHALL become an injection candidate only when it carries at least one relevance signal from the spawn context: a repo match, an `owned_by` relation to a participating user, token overlap with the context, or one-hop graph expansion from a signal-bearing page. `scope: org` entity pages SHALL be bounded by `ARCHIE_MEMORY_ORG_INJECT_MAX` as a **ceiling, not a target**: the highest-scoring signal-bearing org pages are injected up to the bound, with last-touched recency as the tiebreak, and an org page with no relevance signal SHALL NOT be injected even when the org budget has spare capacity. The bound `ARCHIE_MEMORY_ENTITY_INJECT_MAX` SHALL apply to the remaining repo/domain/title-scored and graph-expanded (non-`org`) pages. When more signal-bearing pages of either class qualify than its bound allows, the system SHALL inject the highest-scoring ones and SHALL log which entities were dropped; pages with no signal are not candidates and SHALL NOT be logged as drops. The thin `<entity_index>` SHALL always be injected in full and SHALL NOT be subject to any page bound — it is the catalogue through which org knowledge not selected for full injection remains discoverable via its `L0` summary.
+
+When rendering a selected entity page into its `<entity>` block, the system SHALL bound the number of `touched_by` relations rendered to `ARCHIE_MEMORY_TOUCHED_BY_INJECT_MAX` (default 10), retaining the newest (most recently appended) edges; `0` SHALL be honored as "render no `touched_by` edges". Rendering SHALL NOT modify the stored entity page — the full `touched_by` history SHALL remain on disk for provenance and related-task selection. Relation types other than `touched_by` SHALL NOT be subject to this bound.
 
 #### Scenario: Spawned agent receives memory context
 
-- **WHEN** a `scope: org` entity exists and a user with memory is mentioned in the task
+- **WHEN** a `scope: org` entity relevant to the task (e.g. its name appears in the task title) exists and a user with memory is mentioned in the task
 - **AND** `ARCHIE_MEMORY_INJECT=true`
 - **AND** an agent spawns for that task
 - **THEN** its system prompt contains both the `scope: org` `<entity ...>` block and a `<user_preferences user="...">` block
 - **AND** no `<organizational_knowledge>` block is present
 
-#### Scenario: Org-scoped entities are exempt from the injection bound
+#### Scenario: Org-scoped entities are bounded by the org injection budget
 
-- **WHEN** more `scope: org` entities exist than `ARCHIE_MEMORY_ENTITY_INJECT_MAX`
+- **WHEN** more signal-bearing `scope: org` entities qualify than `ARCHIE_MEMORY_ORG_INJECT_MAX`
 - **AND** `ARCHIE_MEMORY_INJECT=true`
 - **AND** an agent spawns
-- **THEN** every `scope: org` entity page is injected in full
-- **AND** the bound applies only to the repo/domain/title-selected and graph-expanded pages
+- **THEN** at most `ARCHIE_MEMORY_ORG_INJECT_MAX` `scope: org` entity pages are injected in full
+- **AND** the injected pages are the highest-scoring org pages by relevance, with last-touched date breaking ties
+- **AND** the dropped org entity slugs are logged
+
+#### Scenario: Zero-signal org page is not injected and not logged as a drop
+
+- **WHEN** a `scope: org` entity carries no relevance signal for the spawn context (no repo match, no `owned_by` participant, no token overlap, not reachable by one-hop expansion)
+- **AND** fewer signal-bearing org pages qualify than `ARCHIE_MEMORY_ORG_INJECT_MAX`
+- **AND** `ARCHIE_MEMORY_INJECT=true`
+- **AND** an agent spawns
+- **THEN** that entity's full page is not injected despite spare org budget
+- **AND** its slug is not logged as an over-cap drop
+- **AND** the `<entity_index>` still contains its row including its `L0` summary
+
+#### Scenario: Dropped org page remains discoverable via the index
+
+- **WHEN** a `scope: org` entity is not selected for full injection
+- **AND** `ARCHIE_MEMORY_INJECT=true`
+- **AND** an agent spawns
+- **THEN** the `<entity_index>` still contains that entity's row including its `L0` summary
 
 #### Scenario: Entity index is always injected when entities exist
 
@@ -144,10 +164,11 @@ Entity-page selection SHALL be **push** (decided by the system at spawn, with no
 
 #### Scenario: Repo-scoped and org-scoped entities are selected
 
-- **WHEN** a repo agent spawns for repo `backend`
+- **WHEN** a repo agent spawns for repo `backend` on a task titled "Stripe webhooks failing"
 - **AND** `ARCHIE_MEMORY_INJECT=true`
 - **AND** an entity `payment-service` has `repos: [backend]` and an entity `stripe` has `scope: org`
-- **THEN** both `payment-service` and `stripe` full pages are injected
+- **AND** the number of signal-bearing `scope: org` entities is within `ARCHIE_MEMORY_ORG_INJECT_MAX`
+- **THEN** both `payment-service` (repo match) and `stripe` (token overlap with the task title) full pages are injected
 
 #### Scenario: One-hop graph expansion pulls a linked entity
 
@@ -158,10 +179,19 @@ Entity-page selection SHALL be **push** (decided by the system at spawn, with no
 
 #### Scenario: Injection bound drops are logged
 
-- **WHEN** more entities qualify for injection than `ARCHIE_MEMORY_ENTITY_INJECT_MAX`
+- **WHEN** more signal-bearing non-`org` entities qualify for injection than `ARCHIE_MEMORY_ENTITY_INJECT_MAX`
 - **AND** `ARCHIE_MEMORY_INJECT=true`
 - **THEN** only the bound's worth of highest-scoring pages are injected
 - **AND** the dropped entity slugs are logged
+
+#### Scenario: touched_by relations are truncated at render time only
+
+- **WHEN** a selected entity page holds more `touched_by` relations than `ARCHIE_MEMORY_TOUCHED_BY_INJECT_MAX`
+- **AND** `ARCHIE_MEMORY_INJECT=true`
+- **AND** an agent spawns
+- **THEN** the injected `<entity>` block contains only the newest `ARCHIE_MEMORY_TOUCHED_BY_INJECT_MAX` `touched_by` relations
+- **AND** relations of other types are rendered in full
+- **AND** the entity file on disk retains every `touched_by` relation
 
 #### Scenario: Feature-disabled passthrough
 
@@ -417,6 +447,48 @@ The system SHALL track the number of entity files against a configurable soft ca
 - **THEN** an entity-housekeeping pass is enqueued
 - **AND** extraction completes without blocking
 
+### Requirement: Entity pages SHALL be bounded by a per-page observation cap
+
+The system SHALL bound the number of observations stored on any single entity page by a configurable soft cap (`ARCHIE_MEMORY_ENTITY_OBS_CAP`, default 30). The cap SHALL be enforced at the entity persistence boundary, so that **no write path** — including the housekeeping merge that folds a duplicate page into its canonical page — can persist a page whose observation count exceeds the cap. When a write would push a page's observation count above the cap, the system SHALL retain the newest-touched observations up to the cap and SHALL drop the oldest-touched surplus, logging the number dropped. Dropping SHALL be deterministic, ordered by the `touched:` annotation (newest retained, undated treated as oldest); when two observations share the same `touched:` date the system SHALL retain the **most-recently-applied** one, so observations written by the current update are never dropped in favor of equally-dated pre-existing ones. Capping SHALL NOT invoke a side-agent. Relations SHALL NOT be subject to this cap.
+
+When an applied update re-emits an observation that already exists on the page (matched by category and normalized text), the system SHALL refresh that observation's `touched:` date to the update's date rather than adding a duplicate, so that a repeatedly re-affirmed fact is not aged out of the cap (or the staleness sweep).
+
+**Rationale:** Entity observations are append-only and only deduplicated, never bounded per page. Without a per-page cap a single page grows without limit and re-inflates the injected system prompt even when the *number* of injected pages is bounded. Enforcing at the persistence boundary closes every write path at once. The cap mirrors the per-section bullet cap already enforced on user memory files.
+
+#### Scenario: Over-cap page keeps the newest observations
+
+- **WHEN** an entity page already holds `ARCHIE_MEMORY_ENTITY_OBS_CAP` observations
+- **AND** an applied update adds a further distinct observation
+- **THEN** the page retains exactly `ARCHIE_MEMORY_ENTITY_OBS_CAP` observations
+- **AND** the retained observations are the newest by `touched:` date
+- **AND** the number of dropped observations is logged
+
+#### Scenario: Same-day tie retains the freshly-applied observation
+
+- **WHEN** an entity page already holds `ARCHIE_MEMORY_ENTITY_OBS_CAP` observations all dated today
+- **AND** an applied update adds a further distinct observation dated today
+- **THEN** the newly-applied observation is among the retained `ARCHIE_MEMORY_ENTITY_OBS_CAP` observations
+- **AND** the oldest-positioned same-dated observation is the one dropped
+
+#### Scenario: Cap is enforced on the housekeeping merge path
+
+- **WHEN** entity housekeeping merges a duplicate page into its canonical page
+- **AND** the combined observation count exceeds `ARCHIE_MEMORY_ENTITY_OBS_CAP`
+- **THEN** the persisted canonical page retains exactly `ARCHIE_MEMORY_ENTITY_OBS_CAP` observations
+- **AND** the number of dropped observations is logged
+
+#### Scenario: Re-affirming an observation refreshes its touched date
+
+- **WHEN** an applied update emits an observation whose category and normalized text already exist on the page
+- **THEN** no duplicate observation is added
+- **AND** the existing observation's `touched:` date is updated to the update's date
+
+#### Scenario: Relations are not affected by the observation cap
+
+- **WHEN** an entity page has more relations than `ARCHIE_MEMORY_ENTITY_OBS_CAP`
+- **AND** an entity update is applied to it
+- **THEN** no relations are dropped by the observation cap
+
 ### Requirement: Housekeeping SHALL dedup, merge, prune, and rebuild the entity index
 
 Entity housekeeping SHALL: merge entities that another entity lists as an alias (folding observations, relations, and aliases into a single canonical slug, deleting the duplicate file, and repointing inbound edges so no orphan remains); prune entities whose observations are all stale beyond the staleness window (reusing the `touched:` annotation) by setting `status: archived` rather than deleting; and rebuild `entities/index.md`. Unlike the user-memory consolidation side-agent, entity merging SHALL be performed deterministically in code (not by the side-agent), which structurally satisfies the no-new-facts constraint — only existing observations and relations are moved, never authored.
@@ -439,7 +511,7 @@ Entity housekeeping SHALL: merge entities that another entity lists as an alias 
 
 The system SHALL represent organizational knowledge — cross-cutting facts about the company, its products, processes, and conventions — as entity pages, not as a flat `org.md` file. Cross-cutting facts SHALL be `scope: org` entities; facts specific to one or more repos SHALL be repo-scoped entities. The system SHALL NOT create or write `workdir/memory/org.md`, and the extraction side-agent SHALL NOT emit a separate `org_updates` channel — an organizational fact SHALL be recorded as a typed observation on the relevant entity (creating it when absent). Organizational knowledge that predates this change SHALL be backfilled into entities.
 
-**Rationale:** Once entities are first-class, every org-level fact already maps to a nameable subject, and `scope: org` entities are always injected — so a separate flat file with its parallel `org_updates` channel, soft cap, and consolidation side-agent is redundant. The extractor prompt aimed `org_updates` and `scope: org` entities at an identical bar ("applies across the organization, durable, reusable"), forcing an arbitrary per-fact channel choice. Collapsing to one model removes that ambiguity and an entire housekeeping path.
+**Rationale:** Once entities are first-class, every org-level fact already maps to a nameable subject, and `scope: org` entities are relevance-selected for injection and always discoverable through the injected `<entity_index>` — so a separate flat file with its parallel `org_updates` channel, soft cap, and consolidation side-agent is redundant. The extractor prompt aimed `org_updates` and `scope: org` entities at an identical bar ("applies across the organization, durable, reusable"), forcing an arbitrary per-fact channel choice. Collapsing to one model removes that ambiguity and an entire housekeeping path.
 
 #### Scenario: No org.md is written
 
@@ -451,7 +523,7 @@ The system SHALL represent organizational knowledge — cross-cutting facts abou
 
 - **WHEN** a task durably establishes a cross-cutting fact such as "feature flags are managed via LaunchDarkly"
 - **THEN** the fact is written as a typed observation on a `scope: org` entity (e.g. `launchdarkly`), created if absent
-- **AND** that entity is always injected at agent spawn
+- **AND** that entity is listed in the always-injected `<entity_index>` and is eligible for full-page injection when relevant to the spawn context
 
 #### Scenario: Pre-existing org knowledge is backfilled
 
@@ -574,6 +646,6 @@ The implementation SHALL emit log entries (via `src/system/logger.ts`) for:
 
 These remain unresolved and SHOULD be settled before the next major increment:
 
-1. **What is the canonical user identifier when origin is non-Slack (CLI, future channels)?** Current shipped behavior falls back to `"cli"`; this collides for multiple CLI users. Options: include OS username, include a hash of the originating session ID, or skip user updates entirely for non-Slack origins.
+1. **What is the canonical user identifier when origin is non-Slack (CLI, future channels)?** Resolved by "User memory MUST be keyed by stable identifier": non-Slack origins use the documented prefixed fallback (`cli:<sessionId>`, `local:<osUser>`), deterministic per originating session and non-colliding with the Slack ID namespace.
 2. **Should `org.md` ever be auto-pruned?** Resolved by `add-memory-entity-layer`: `org.md` is retired — organizational knowledge is captured as `scope: org` entities and bounded by the entity-housekeeping mechanism (merge/archive + entity soft cap).
 3. **Where do eval artifacts belong?** The stashed memory-eval tooling (`scripts/memory-eval.ts`, `src/memory/eval/`) uses JSON fixtures and JSON model contracts. This is consistent if "Markdown-only" applies only to persistent runtime memory; inconsistent if it applies to all feature artifacts. Decision pending.

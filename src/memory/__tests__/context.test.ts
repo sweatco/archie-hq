@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, mkdir, writeFile } from 'fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, readFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -17,6 +17,7 @@ let memoryEnabled = true;
 let injectionEnabled = false;
 
 let entitiesDir: string;
+let touchedByMax = 10;
 
 vi.mock('../paths.js', () => ({
   isMemoryEnabled: () => memoryEnabled,
@@ -33,6 +34,9 @@ vi.mock('../paths.js', () => ({
   getEntityPath: (slug: string) => join(entitiesDir, `${slug}.md`),
   getEntityCap: () => 300,
   getEntityInjectMax: () => 8,
+  getOrgInjectMax: () => 8,
+  getEntityObsCap: () => 30,
+  getTouchedByInjectMax: () => touchedByMax,
   isValidEntitySlug: (s: string) => /^[a-z0-9][a-z0-9-]{0,63}$/.test(s) && s !== 'index',
 }));
 
@@ -48,6 +52,7 @@ describe('memory context builder', () => {
     entitiesDir = join(tempDir, 'entities');
     memoryEnabled = true;
     injectionEnabled = false; // production default; positive tests opt in explicitly
+    touchedByMax = 10;
   });
 
   // Helper: write an entity file into the temp entities dir.
@@ -234,15 +239,24 @@ describe('memory context builder', () => {
       expect(result).toContain('[[payment-service]]');
     });
 
-    it('selects repo-scoped and org-scoped entities for a repo agent', async () => {
+    it('selects repo-scoped and signal-bearing org-scoped entities for a repo agent', async () => {
       await writeEntity('payment-service', FM({ display_name: '"Payment Service"', scope: 'repo', repos: '[backend]' }));
       await writeEntity('stripe', FM({ display_name: '"Stripe"', type: 'integration', scope: 'org' }));
       await writeEntity('mobile-app', FM({ display_name: '"Mobile App"', scope: 'repo', repos: '[mobile]' }));
 
-      const result = await buildMemoryContext([], { repo: 'backend' });
-      expect(result).toContain('<entity slug="payment-service"');
-      expect(result).toContain('<entity slug="stripe"'); // scope:org always selected
+      const result = await buildMemoryContext([], { repo: 'backend', taskTitle: 'stripe webhooks failing' });
+      expect(result).toContain('<entity slug="payment-service"'); // repo match
+      expect(result).toContain('<entity slug="stripe"'); // scope:org with a title-token signal
       expect(result).not.toContain('<entity slug="mobile-app"'); // other repo, no signal
+    });
+
+    it('keeps a zero-signal org entity index-only (org budget is a ceiling)', async () => {
+      await writeEntity('launchdarkly', FM({ display_name: '"LaunchDarkly"', type: 'integration', scope: 'org' }));
+
+      const result = await buildMemoryContext([], { repo: 'backend', taskTitle: 'fix login flow' });
+      expect(result).toContain('<entity_index>');
+      expect(result).toContain('[[launchdarkly]]'); // discoverable via its index row
+      expect(result).not.toContain('<entity slug="launchdarkly"'); // no full page despite spare budget
     });
 
     it('pulls a one-hop linked entity even when not directly matched', async () => {
@@ -263,6 +277,50 @@ describe('memory context builder', () => {
       const result = await buildMemoryContext([], { repo: 'backend' });
       expect(result).not.toContain('<entity_index>');
       expect(result).not.toContain('<entity slug=');
+    });
+
+    it('renders only the newest touched_by edges, leaves other relations and the file intact', async () => {
+      touchedByMax = 2;
+      await writeEntity(
+        'payment-service',
+        FM({ display_name: '"Payment Service"', scope: 'repo', repos: '[backend]' }),
+        [],
+        [
+          '- depends_on [[postgres-prod]]',
+          '- touched_by [[task-001]]',
+          '- touched_by [[task-002]]',
+          '- touched_by [[task-003]]',
+          '- touched_by [[task-004]]',
+        ],
+      );
+
+      const result = await buildMemoryContext([], { repo: 'backend' });
+      const block = result.slice(result.indexOf('<entity slug="payment-service"'), result.indexOf('</entity>'));
+      expect(block).toContain('depends_on [[postgres-prod]]'); // other types uncapped
+      expect(block).not.toContain('touched_by [[task-001]]');
+      expect(block).not.toContain('touched_by [[task-002]]');
+      expect(block).toContain('touched_by [[task-003]]'); // newest two kept
+      expect(block).toContain('touched_by [[task-004]]');
+
+      // Render-time only: the stored page keeps the full history.
+      const onDisk = await readFile(join(entitiesDir, 'payment-service.md'), 'utf-8');
+      for (const t of ['task-001', 'task-002', 'task-003', 'task-004']) {
+        expect(onDisk).toContain(`touched_by [[${t}]]`);
+      }
+    });
+
+    it('renders no touched_by edges when the render cap is 0', async () => {
+      touchedByMax = 0;
+      await writeEntity(
+        'payment-service',
+        FM({ display_name: '"Payment Service"', scope: 'repo', repos: '[backend]' }),
+        [],
+        ['- depends_on [[postgres-prod]]', '- touched_by [[task-001]]'],
+      );
+
+      const result = await buildMemoryContext([], { repo: 'backend' });
+      expect(result).toContain('depends_on [[postgres-prod]]');
+      expect(result).not.toContain('touched_by');
     });
   });
 });

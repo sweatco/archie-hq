@@ -139,13 +139,13 @@ The helper `extractTaskUsernames(taskId)` (`spawn.ts:132`) parses the task's `kn
 
 **Entity selection is push, not pull** — the system decides which entity pages to inject; there is no agent-callable query tool. `enrichPromptWithMemory(prompt, users, selectors)` receives spawn-context selectors (`{ repo?, plugin?, taskTitle? }`): PM passes `taskTitle`, repo agents pass `repo: def.repo.repoKey`, plugin agents pass `plugin: def.pluginName`. `selectEntities()` (`entity-index.ts`) then:
 
-1. **Always** includes `scope: org` entities (people-by-reference, integrations, company-wide systems).
-2. Includes entities tagged to the spawned `repo`.
-3. Scores the rest by token overlap of the task title / users against each entity's name, aliases, and summary.
-4. **Expands one hop** along `[[wikilink]]` relations from the selected set (so selecting `payment-service` pulls `postgres-prod` even if it wasn't directly matched).
-5. Bounds **the non-`org` pages** to `ARCHIE_MEMORY_ENTITY_INJECT_MAX` and logs which slugs were dropped. `scope: org` entities are exempt from this bound — they carry organizational knowledge (the role `org.md` used to play) and are always injected in full.
+1. Scores every active entity against the spawn context. An entity of **any scope** becomes an injection candidate only when it carries a relevance signal: a repo match, an `owned_by` relation to a participating user, or token overlap of the task title / users against its name, aliases, and summary.
+2. **Expands one hop** along `[[wikilink]]` relations from the signal-bearing set (so selecting `payment-service` pulls `postgres-prod` even if it wasn't directly matched).
+3. Applies **two independent budgets** to the score-ranked candidates (last-touched recency breaks ties): `scope: org` pages are bounded by `ARCHIE_MEMORY_ORG_INJECT_MAX`, all other pages by `ARCHIE_MEMORY_ENTITY_INJECT_MAX`. Each budget is a **ceiling, not a target** — a zero-signal page is never injected to fill spare capacity. Candidates over a budget are dropped and their slugs logged; zero-signal pages are not candidates and are not logged as drops.
 
-The thin `<entity_index>` is never subject to the page bound — the agent always sees the full catalogue of what exists.
+The thin `<entity_index>` is never subject to a page bound — the agent always sees the full catalogue of what exists, so a page not selected for full injection stays discoverable via its `L0` summary (the recall path until pull/embeddings land in a later phase).
+
+When a selected page is rendered into its `<entity>` block, the auto-appended `touched_by` relations are truncated to the newest `ARCHIE_MEMORY_TOUCHED_BY_INJECT_MAX` (they grow by one per touching task and would otherwise re-inflate the prompt without bound). Truncation is render-time only: the file on disk keeps the full `touched_by` history for provenance and related-task selection, and all other relation types render in full.
 
 `enrichPromptWithMemory()` appends the block to the prompt under a fixed `## Organizational Memory` header with a short instruction line. It returns the prompt unchanged — and performs no store reads — if the layer is disabled (`ARCHIE_MEMORY=false`), if **injection is disabled** (`ARCHIE_MEMORY_INJECT` ≠ `true`, the default — see [Feature Flags](#feature-flags)), or if no memory exists.
 
@@ -313,7 +313,7 @@ entity: payment-service
 type: service                 # service | system | integration | concept | repo
 display_name: "Payment Service"
 aliases: [payments-api]
-scope: repo                   # org | domain | repo  (org ⇒ always injected)
+scope: repo                   # org | domain | repo  (org pages are injected only when relevance-matched, up to ARCHIE_MEMORY_ORG_INJECT_MAX; the index always lists them)
 repos: [backend]
 domain: engineering
 status: active                # active | archived
@@ -329,7 +329,7 @@ status: active                # active | archived
 - touched_by [[task-20260601-1000-abc]]
 ```
 
-Observations carry a **closed** category (`fact | config | decision | caveat`); relations a **closed** type (`depends_on | integrates | owned_by | part_of | touched_by | related_to`). Unknown categories/types are dropped by `sanitize.ts`. Every applied update auto-adds a `touched_by [[taskId]]` edge — this is what powers entity-based related-task selection.
+Observations carry a **closed** category (`fact | config | decision | caveat`); relations a **closed** type (`depends_on | integrates | owned_by | part_of | touched_by | related_to`). Unknown categories/types are dropped by `sanitize.ts`. Every applied update auto-adds a `touched_by [[taskId]]` edge — this is what powers entity-based related-task selection. On disk the `touched_by` list is unbounded (it is the provenance record); prompt rendering truncates it to the newest `ARCHIE_MEMORY_TOUCHED_BY_INJECT_MAX`.
 
 ### `entities/index.md`
 
@@ -383,7 +383,10 @@ Disabled by `ARCHIE_MEMORY_HOUSEKEEPING=false` — overflow is still logged but 
 | `ARCHIE_MEMORY_SECTION_CAP` | `30` | Soft cap on bullets per `## Section` (org or user). |
 | `ARCHIE_MEMORY_STALENESS_DAYS` | `180` | Days after which an unrefreshed bullet / entity observation is eligible for drop. |
 | `ARCHIE_MEMORY_ENTITY_CAP` | `300` | Soft cap on total entity pages; entity housekeeping (merge/archive) auto-triggers when exceeded. |
-| `ARCHIE_MEMORY_ENTITY_INJECT_MAX` | `8` | Max full entity pages pushed into a single agent prompt (the index is always injected in full). |
+| `ARCHIE_MEMORY_ENTITY_INJECT_MAX` | `8` | Ceiling on full **non-`org`** entity pages pushed into a single agent prompt (the index is always injected in full). `0` → index-only. |
+| `ARCHIE_MEMORY_ORG_INJECT_MAX` | `8` | Ceiling on full `scope: org` entity pages injected into a single prompt — only relevance-matched pages consume slots; zero-signal pages stay index-only. `0` → index-only. |
+| `ARCHIE_MEMORY_ENTITY_OBS_CAP` | `30` | Soft cap on observations kept per entity page; on write the newest-touched are retained and the oldest surplus dropped. |
+| `ARCHIE_MEMORY_TOUCHED_BY_INJECT_MAX` | `10` | Max `touched_by` relations rendered into an injected `<entity>` block (newest kept; `0` → none). Render-time only — the stored page keeps the full history. |
 
 All variables are documented in `.env.example`.
 
@@ -447,10 +450,8 @@ The layer's safety guards close seven gaps found in review; each is enforced in 
 
 ## Future Enhancements (Not in scope)
 
-The entity/domain layer (this change) deliberately stays **push-only** and **keyword-scored**. The natural next experiments — to try and measure, not assumed:
+The layer deliberately stays **push-only** and **keyword-scored**. The sequenced plan for what comes next — eval gate, pull/read tools, buy-vs-build spike, semantic dedupe, selection embeddings — lives in [`docs/proposals/memory-v2-roadmap.md`](../proposals/memory-v2-roadmap.md). Smaller deferred ideas not on that roadmap:
 
-- **Hybrid pull (`read_memory` tool/MCP)** — add an agent-callable tool to fetch an entity page by slug mid-task, on top of the pushed index. The open question is whether pull recovers the entities that push's bounded selection drops, at an acceptable latency/turn cost. A/B it against selective-push on selection precision/recall, prompt tokens, and task outcome quality.
-- **Embedding / semantic selection** — replace token-overlap scoring of the index with embeddings once the measured miss-rate of the deterministic scorer justifies it.
 - **Domain-directory splitting** — promote `domain` from a frontmatter dimension to an `entities/<domain>/` split once entity volume makes a flat directory unwieldy.
 - **Channel visibility / access control** — public-vs-private filtering at retrieval time. Deferred until a concrete leak surface is identified.
 - **Slack reaction → revert** — let users react ❌ to remove just-applied entries.

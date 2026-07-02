@@ -4,7 +4,12 @@
  * Validates user-identifier acceptance rules and filename construction.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+
+vi.mock('../../system/logger.js', () => ({
+  logger: { warn: vi.fn(), system: vi.fn(), debug: vi.fn(), info: vi.fn(), error: vi.fn() },
+}));
+
 import {
   isSlackUserId,
   isFallbackUserId,
@@ -16,8 +21,73 @@ import {
   getEntityPath,
   getEntityCap,
   getEntityInjectMax,
+  getOrgInjectMax,
+  getEntityObsCap,
+  getTouchedByInjectMax,
   isInjectionEnabled,
 } from '../paths.js';
+import { logger } from '../../system/logger.js';
+
+describe('envInt flag parsing (inject maxes / obs cap / touched_by render max)', () => {
+  const ORG = 'ARCHIE_MEMORY_ORG_INJECT_MAX';
+  const OBS = 'ARCHIE_MEMORY_ENTITY_OBS_CAP';
+  const NONORG = 'ARCHIE_MEMORY_ENTITY_INJECT_MAX';
+  const TOUCHED = 'ARCHIE_MEMORY_TOUCHED_BY_INJECT_MAX';
+  afterEach(() => {
+    delete process.env[ORG];
+    delete process.env[OBS];
+    delete process.env[NONORG];
+    delete process.env[TOUCHED];
+    vi.clearAllMocks();
+  });
+
+  it('uses defaults when unset (no warning)', () => {
+    expect(getOrgInjectMax()).toBe(8);
+    expect(getEntityObsCap()).toBe(30);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('honors ARCHIE_MEMORY_ORG_INJECT_MAX=0 (index-only), without warning', () => {
+    process.env[ORG] = '0';
+    expect(getOrgInjectMax()).toBe(0);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('honors ARCHIE_MEMORY_ENTITY_INJECT_MAX=0 (index-only for non-org pages), without warning', () => {
+    process.env[NONORG] = '0';
+    expect(getEntityInjectMax()).toBe(0);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('touched_by render max defaults to 10 and honors 0', () => {
+    expect(getTouchedByInjectMax()).toBe(10);
+    process.env[TOUCHED] = '0';
+    expect(getTouchedByInjectMax()).toBe(0);
+    expect(logger.warn).not.toHaveBeenCalled();
+    process.env[TOUCHED] = '-3';
+    expect(getTouchedByInjectMax()).toBe(10);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts a valid positive value', () => {
+    process.env[ORG] = '12';
+    expect(getOrgInjectMax()).toBe(12);
+  });
+
+  it('warns and falls back on a non-integer value like "8x"', () => {
+    process.env[ORG] = '8x';
+    expect(getOrgInjectMax()).toBe(8);
+    expect(logger.warn).toHaveBeenCalled();
+  });
+
+  it('warns and falls back when below the per-flag minimum', () => {
+    process.env[OBS] = '0'; // obs cap min is 1 → falls back to default 30
+    expect(getEntityObsCap()).toBe(30);
+    process.env[ORG] = '-1'; // org min is 0 → -1 still invalid
+    expect(getOrgInjectMax()).toBe(8);
+    expect(logger.warn).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe('isSlackUserId', () => {
   it.each([

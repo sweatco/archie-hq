@@ -13,7 +13,7 @@
  */
 
 import { readFile, writeFile, mkdir } from 'fs/promises';
-import { getEntityIndexPath, getEntitiesDir, getEntityInjectMax } from './paths.js';
+import { getEntityIndexPath, getEntitiesDir, getEntityInjectMax, getOrgInjectMax } from './paths.js';
 import { listEntities, resolveEntity } from './entities.js';
 import type { EntityRecord } from './types.js';
 
@@ -112,24 +112,23 @@ function recordTokens(r: EntityRecord): Set<string> {
 }
 
 const SCORE_REPO = 500;
-const SCORE_ORG = 1000;
 const SCORE_OWNER = 200;
 const SCORE_EXPANSION = 50;
 const SCORE_PER_TOKEN = 10;
 
 /**
- * Select which full entity pages to inject for a spawn. Always includes
- * `scope: org` entities, scores the rest against the context, and expands one
- * hop along relations. `scope: org` pages carry the organizational knowledge
- * that used to live in `org.md`, so they are injected in full and are EXEMPT
- * from the page bound; `max` (default from config) caps only the remaining
- * repo/domain/title-scored and graph-expanded pages. Archived entities are
- * never injected.
+ * Select full entity pages to inject for a spawn. Candidacy requires a
+ * relevance signal (repo match, owned_by user, token overlap, one-hop
+ * expansion). `orgMax` / `max` are independent ceilings for org / non-org
+ * candidates, ranked by score then last-touched recency. Zero-signal pages
+ * are neither injected nor in `dropped` ("qualified but over budget") —
+ * the always-injected index keeps them discoverable.
  */
 export function selectEntities(
   records: EntityRecord[],
   ctx: SelectionContext,
   max = getEntityInjectMax(),
+  orgMax = getOrgInjectMax(),
 ): SelectionResult {
   const active = records.filter((r) => r.status !== 'archived');
   const ctxRepo = ctx.repo?.toLowerCase();
@@ -145,7 +144,6 @@ export function selectEntities(
   const bump = (slug: string, by: number) => scores.set(slug, (scores.get(slug) ?? 0) + by);
 
   for (const r of active) {
-    if (r.scope === 'org') bump(r.entity, SCORE_ORG);
     if (ctxRepo && r.repos.some((repo) => repo.toLowerCase() === ctxRepo)) bump(r.entity, SCORE_REPO);
     if (userIds.size) {
       for (const rel of r.relations) {
@@ -171,24 +169,34 @@ export function selectEntities(
     }
   }
 
-  const ranked = Array.from(scores.keys())
+  const candidates = Array.from(scores.keys())
     .map((slug) => bySlug.get(slug)!)
-    .filter(Boolean)
-    .sort((a, b) => {
-      const s = (scores.get(b.entity) ?? 0) - (scores.get(a.entity) ?? 0);
-      if (s !== 0) return s;
-      const t = lastTouched(b).localeCompare(lastTouched(a));
-      return t !== 0 ? t : a.entity.localeCompare(b.entity);
-    });
+    .filter(Boolean);
+  // Precompute last-touched once per candidate; a comparator runs O(n log n)
+  // times and lastTouched() scans the whole observation list, so calling it
+  // inside the comparator rescans each record's observations repeatedly.
+  const lastTouchedBySlug = new Map(candidates.map((r) => [r.entity, lastTouched(r)]));
+  const ranked = candidates.sort((a, b) => {
+    const s = (scores.get(b.entity) ?? 0) - (scores.get(a.entity) ?? 0);
+    if (s !== 0) return s;
+    const t = (lastTouchedBySlug.get(b.entity) ?? '').localeCompare(lastTouchedBySlug.get(a.entity) ?? '');
+    return t !== 0 ? t : a.entity.localeCompare(b.entity);
+  });
 
-  // `scope: org` pages are exempt from the bound; `max` caps only the rest.
+  // Two independent budgets: `orgMax` bounds scope:org pages, `max` bounds the
+  // rest. `ranked` is already ordered by score (relevance) then recency, so
+  // taking the first that fit each budget yields the highest-scoring pages of
+  // each class; the remainder are dropped (still discoverable via the index).
   const selected: EntityRecord[] = [];
   const dropped: string[] = [];
+  let orgBudget = orgMax;
   let nonOrgBudget = max;
   for (const r of ranked) {
-    if (r.scope === 'org' || nonOrgBudget > 0) {
+    const hasBudget = r.scope === 'org' ? orgBudget > 0 : nonOrgBudget > 0;
+    if (hasBudget) {
       selected.push(r);
-      if (r.scope !== 'org') nonOrgBudget--;
+      if (r.scope === 'org') orgBudget--;
+      else nonOrgBudget--;
     } else {
       dropped.push(r.entity);
     }

@@ -21,6 +21,7 @@ import {
 import { parseLastTouched, stripLastTouched, appendLastTouched } from '../annotations.js';
 
 let entitiesDir = '/tmp/fake-entities';
+let entityObsCap = 30;
 
 vi.mock('../paths.js', () => ({
   isHousekeepingEnabled: () => true,
@@ -32,6 +33,8 @@ vi.mock('../paths.js', () => ({
   getEntityPath: (slug: string) => join(entitiesDir, `${slug}.md`),
   getEntityCap: () => 300,
   getEntityInjectMax: () => 8,
+  getOrgInjectMax: () => 8,
+  getEntityObsCap: () => entityObsCap,
   isValidEntitySlug: (s: string) => /^[a-z0-9][a-z0-9-]{0,63}$/.test(s) && s !== 'index',
 }));
 
@@ -228,10 +231,13 @@ describe('isFullyStale', () => {
 // ============================================================================
 
 import { writeEntity, readEntity, listEntities } from '../entities.js';
+import { logger } from '../../system/logger.js';
 
 describe('runHousekeeping("entities")', () => {
   beforeEach(async () => {
     entitiesDir = await mkdtemp(join(tmpdir(), 'archie-hk-entities-'));
+    entityObsCap = 30;
+    vi.clearAllMocks();
   });
   afterEach(async () => {
     await rm(entitiesDir, { recursive: true, force: true });
@@ -256,6 +262,36 @@ describe('runHousekeeping("entities")', () => {
     expect(texts).toContain('canonical fact');
     expect(texts).toContain('duplicate fact');
     expect(await listEntities()).toHaveLength(1);
+  });
+
+  it('bounds the merged page to the observation cap (merge-path enforcement)', async () => {
+    entityObsCap = 4;
+    await writeEntity(entity({
+      entity: 'payment-service',
+      aliases: ['payments-api'],
+      observations: [
+        { category: 'fact', text: 'c1', touched: '2026-05-01' },
+        { category: 'fact', text: 'c2', touched: '2026-05-02' },
+        { category: 'fact', text: 'c3', touched: '2026-05-03' },
+      ],
+    }));
+    await writeEntity(entity({
+      entity: 'payments-api',
+      observations: [
+        { category: 'fact', text: 'd1', touched: '2026-05-04' },
+        { category: 'fact', text: 'd2', touched: '2026-05-05' },
+        { category: 'fact', text: 'd3', touched: '2026-05-06' },
+      ],
+    }));
+
+    await runHousekeeping('entities');
+
+    const survivor = (await readEntity('payment-service'))!;
+    expect(survivor.observations).toHaveLength(4); // 3 + 3 merged → capped to 4
+    const texts = survivor.observations.map((o) => o.text);
+    expect(texts).toEqual(expect.arrayContaining(['d1', 'd2', 'd3'])); // newest retained
+    expect(texts).not.toContain('c1'); // oldest dropped
+    expect(logger.warn).toHaveBeenCalledWith('memory', expect.stringContaining('exceeded observation cap'));
   });
 
   it('archives a fully-stale entity instead of deleting it', async () => {
