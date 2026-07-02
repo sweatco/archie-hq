@@ -117,17 +117,12 @@ const SCORE_EXPANSION = 50;
 const SCORE_PER_TOKEN = 10;
 
 /**
- * Select which full entity pages to inject for a spawn. A page of any scope
- * becomes a candidate only when it carries a relevance signal from the context
- * — repo match, `owned_by` participating user, token overlap, or one-hop
- * expansion from a signal-bearing page. Candidates compete under TWO
- * independent budgets: `orgMax` bounds `scope: org` pages and `max` bounds the
- * rest, ranked by score with last-touched recency as the tiebreak. Each budget
- * is a ceiling, not a target — a zero-signal page is not injected even when
- * its budget has spare capacity, and is not reported in `dropped` (which means
- * "qualified but over budget"). The thin entity index (always injected in full
- * by the caller) keeps non-injected pages discoverable via their L0 summary.
- * Archived entities are never injected.
+ * Select full entity pages to inject for a spawn. Candidacy requires a
+ * relevance signal (repo match, owned_by user, token overlap, one-hop
+ * expansion). `orgMax` / `max` are independent ceilings for org / non-org
+ * candidates, ranked by score then last-touched recency. Zero-signal pages
+ * are neither injected nor in `dropped` ("qualified but over budget") —
+ * the always-injected index keeps them discoverable.
  */
 export function selectEntities(
   records: EntityRecord[],
