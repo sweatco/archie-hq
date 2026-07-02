@@ -569,6 +569,89 @@ function createRequestEditModeTool(agent: Agent, task: Task) {
   );
 }
 
+function createRequestMaxModeTool(agent: Agent, task: Task) {
+  return tool(
+    'request_max_mode',
+    'Request permission to switch this task into "max mode" — an upgrade that runs the coding agents with more capability (maximum reasoning effort, plus a premium model such as Fable for agents configured to swap). Call this AFTER explaining to the user why the extra cost is worth it (max mode is more expensive). Task will pause until the user approves or denies. ' +
+    'Max mode is a task-LIFETIME grant: once approved it stays in effect for the rest of the task, so you only ever need to request it once. If it is already approved this call is a no-op — it will not prompt the user again, it just confirms the grant. ' +
+    'Without `channel`, the request posts to the task\'s default channel. Pass `channel` (a channel key like "slack:C123:456.789") to post it to a specific linked thread — useful when the task has no default channel yet or you opened a new thread to talk to the user.',
+    {
+      reason: z.string().describe('Brief explanation of why max mode is warranted for this task'),
+      channel: z.string().optional().describe('Channel key of an existing linked thread to post the request to (e.g., "slack:C123:456.789"). Omit to use the task\'s default channel.'),
+    },
+    async (args) => {
+      const agentName = agent.def.id as AgentName;
+
+      // Idempotency: max mode is a task-lifetime grant. If it is already active,
+      // don't post another approval prompt or pause the task — just tell the
+      // caller it's already granted so it proceeds instead of waiting on a user
+      // who has nothing to approve.
+      if (task.metadata.max_mode === true) {
+        return ok('Max mode is already approved for this task and persists for its lifetime — no need to request it again. Continue the work.');
+      }
+
+      // Already pausing this turn — the spawn loop tears the task down at turn
+      // end. Skip a duplicate approval post if the tool fires twice.
+      if (agent.pendingTeardown) {
+        return ok('Max mode request already sent — task is pausing pending user approval.');
+      }
+
+      // Validate an explicit target before posting so a bad key surfaces as
+      // actionable feedback instead of silently dropping to the CLI log. The
+      // task is left running so the agent can retry with a valid channel.
+      if (args.channel) {
+        const ch = task.metadata.channels[args.channel];
+        if (!ch) {
+          return ok(`Channel ${args.channel} is not linked to this task. Open one with post_to_user(target.new_thread/new_dm), or omit channel to use the default.`);
+        }
+        if (ch.type !== 'slack') {
+          return ok(`Channel ${args.channel} is not a Slack channel (type: ${ch.type}).`);
+        }
+      }
+
+      logger.agentAction(agentName, 'Requesting max mode', args.reason);
+      task.touch();
+
+      await appendAgentFinding(task.taskId, 'system', `Max mode requested: ${args.reason}`, 'decision');
+
+      const blocks = [
+        {
+          type: 'section',
+          text: { type: 'mrkdwn', text: `*Max mode request:* ${args.reason}` },
+        },
+        {
+          type: 'actions',
+          elements: [
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Approve' },
+              action_id: 'approve_max_mode',
+              value: task.taskId,
+              style: 'primary',
+            },
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Deny' },
+              action_id: 'deny_max_mode',
+              value: task.taskId,
+              style: 'danger',
+            },
+          ],
+        },
+      ];
+      await task.postInteractiveToUser(`Max mode request: ${args.reason}`, blocks, 'max_mode', args.channel);
+
+      // Task is now paused pending approval — freeze the status so the wind-down
+      // doesn't resurface a "working…" indicator.
+      task.suspendStatus();
+      // Defer the pause to turn-end (see report_completion) so stopping the queue
+      // doesn't close the input stream under an in-flight hook ("stream closed").
+      agent.deferTeardown(() => task.stop());
+      return { content: [{ type: 'text' as const, text: 'Max mode request sent. Task paused pending user approval.' }] };
+    },
+  );
+}
+
 function createReportCompletionTool(agent: Agent, task: Task) {
   return tool(
     'report_completion',
@@ -1953,6 +2036,7 @@ export function createOrchestrationMcpServer(agent: Agent, task: Task) {
       createAssignTaskOwnerTool(agent, task),
       createReportCompletionTool(agent, task),
       createRequestEditModeTool(agent, task),
+      createRequestMaxModeTool(agent, task),
       createGetAgentsStatusTool(agent, task),
       createLaunchTaskTool(agent, task),
       createListAvailableReposTool(agent, task),

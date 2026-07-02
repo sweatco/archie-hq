@@ -10,7 +10,7 @@
  */
 
 import type { AgentDef } from '../types/agent.js';
-import { isPmAgent } from '../types/agent.js';
+import { isPmAgent, isRepoAgent } from '../types/agent.js';
 
 /** Beautified display names for the short aliases the app uses. */
 const MODEL_DISPLAY_NAMES: Record<string, string> = {
@@ -23,9 +23,72 @@ const MODEL_DISPLAY_NAMES: Record<string, string> = {
  * Resolve the model string an agent actually runs on — mirrors the default in
  * `spawn.ts` (PM → opus, others → sonnet[1m]) so the footer and the spawn loop
  * never drift. Exported and reused by `spawn.ts`.
+ *
+ * When `maxMode` is true (the task has an approved upgrade), an explicit
+ * per-agent `maxMode.model` override wins. There is NO built-in model default:
+ * an agent with no `maxMode.model` keeps its normal model even in max mode —
+ * the built-in "increase accuracy" default is effort-only (see
+ * `resolveAgentEffort`), so a model swap (e.g. to Fable) is always an explicit
+ * frontmatter opt-in.
  */
-export function resolveAgentModel(def: AgentDef): string {
+export function resolveAgentModel(def: AgentDef, maxMode = false): string {
+  if (maxMode) {
+    // 1) explicit per-agent frontmatter opt-in wins, for ANY agent (e.g. repo
+    //    agents → Fable).
+    if (def.maxMode?.model) return def.maxMode.model;
+    // 2) env fallback for REPO / DYNAMIC-REPO agents only — notably dynamic
+    //    agents (synthesized at runtime, so no frontmatter to edit). Generic
+    //    plugin agents and the PM are unaffected. Lets a deployment turn on a
+    //    model swap for these via ARCHIE_MAX_MODE_MODEL without editing plugins.
+    if (isRepoAgent(def)) {
+      const envModel = process.env.ARCHIE_MAX_MODE_MODEL?.trim();
+      if (envModel) return envModel;
+    }
+  }
   return def.model || (isPmAgent(def) ? 'opus' : 'sonnet[1m]');
+}
+
+/**
+ * Resolve the reasoning effort an agent runs at. In max mode an explicit
+ * `maxMode.effort` wins; otherwise repo/dynamic agents default to `'max'` (the
+ * "increase accuracy" default) while generic agents and the PM keep their
+ * normal effort. Off max mode this is just `def.effort` (may be undefined → the
+ * SDK default). Shared with `spawn.ts`.
+ */
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+export function resolveAgentEffort(def: AgentDef, maxMode = false): AgentDef['effort'] {
+  if (maxMode) {
+    // 1) explicit per-agent frontmatter opt-in wins, for ANY agent.
+    if (def.maxMode?.effort) return def.maxMode.effort;
+    // 2) REPO / DYNAMIC-REPO agents only: an env override (ARCHIE_MAX_MODE_EFFORT,
+    //    handy for dynamic agents with no frontmatter), else the built-in
+    //    "increase accuracy" default of max effort. Generic plugin agents and
+    //    the PM keep their normal effort in max mode.
+    if (isRepoAgent(def)) {
+      const envEffort = process.env.ARCHIE_MAX_MODE_EFFORT?.trim();
+      if (envEffort && (EFFORT_LEVELS as readonly string[]).includes(envEffort)) {
+        return envEffort as AgentDef['effort'];
+      }
+      return 'max';
+    }
+  }
+  return def.effort;
+}
+
+/**
+ * The ids of the non-PM agents whose resolved MODEL changes when max mode turns
+ * on — i.e. the agents that must start a fresh SDK session on approval so the
+ * swap actually takes effect (a resumed session can pin the old model). Sourced
+ * from the task TEAM (which survives a task reload), not from live agent
+ * handles: `request_max_mode` pauses/evicts the task, so on the reloaded
+ * instance that handles the approval there are no live handles yet. Effort-only
+ * upgrades don't change the model, so they're absent here (no reset needed).
+ */
+export function modelChangingAgentIds(team: AgentDef[]): string[] {
+  return team
+    .filter((def) => !isPmAgent(def) && resolveAgentModel(def, true) !== resolveAgentModel(def, false))
+    .map((def) => def.id);
 }
 
 /** Beautify a full/unknown model id: `claude-sonnet-4-6-2025… → Sonnet 4.6`. */
