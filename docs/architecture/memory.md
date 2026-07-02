@@ -147,9 +147,23 @@ The thin `<entity_index>` is never subject to a page bound — the agent always 
 
 When a selected page is rendered into its `<entity>` block, the auto-appended `touched_by` relations are truncated to the newest `ARCHIE_MEMORY_TOUCHED_BY_INJECT_MAX` (they grow by one per touching task and would otherwise re-inflate the prompt without bound). Truncation is render-time only: the file on disk keeps the full `touched_by` history for provenance and related-task selection, and all other relation types render in full.
 
-**Selection sensor.** When injection is enabled and the selectors carry a `taskId`, `buildMemoryContext` appends one JSON line to `sessions/<taskId>/shared/memory-injection.jsonl` recording the decision it just made — inputs (selector snapshot + user IDs), outcome (selected pages with slug/score/scope, dropped-over-budget slugs, zero-signal exclusion count, candidate count, budgets in effect), and cost (a chars/4 estimate of the rendered context tokens). A zero-injection spawn still writes a record: the zero-injection rate is itself a tuning signal. The sensor is fail-safe — any assembly or write error logs a warning and the enriched prompt is returned exactly as if the sensor did not exist — and it never runs when injection is off, preserving the write-free collect-only posture. Records live with the session (joinable with the task's `knowledge.log`, harvested by `scripts/pull-remote-data.sh`), not under `memory/`; see the [storage format](#sessionstaskidsharedmemory-injectionjsonl-selection-sensor) below.
+**Selection sensor.** Every enriched spawn also leaves a one-line JSON record of the selection decision it just received, written into the task's session dir — see [Telemetry](#telemetry) for where, how, and why.
 
 `enrichPromptWithMemory()` appends the block to the prompt under a fixed `## Organizational Memory` header with a short instruction line. It returns the prompt unchanged — and performs no store reads — if the layer is disabled (`ARCHIE_MEMORY=false`), if **injection is disabled** (`ARCHIE_MEMORY_INJECT` ≠ `true`, the default — see [Feature Flags](#feature-flags)), or if no memory exists.
+
+## Telemetry
+
+One sensor today: the **selection sensor** — a per-spawn record of what the read path injected and why. The remaining memory-v2 decisions (budget defaults, zero-signal recency floor, ossification, the value eval) are deferred to live data (`docs/proposals/memory-v2-roadmap.md`), and telemetry cannot be backfilled — so the sensor ships before injection is enabled.
+
+`recordSelection()` (`src/memory/context.ts`, end of `buildMemoryContext`) appends one JSON line per enriched spawn to `sessions/<taskId>/shared/memory-injection.jsonl`; `spawn.ts` passes `taskId` + `agent` via `MemorySelectors`. It fires only when injection is enabled and a `taskId` is present — no separate flag; with injection off, nothing is read or written. Each line is a self-contained selection case:
+
+```json
+{"v":1,"ts":"2026-07-02T19:08:26.034Z","taskId":"task-20260702-1908-jgjfb6","agent":"pm-agent","ctx":{"repo":null,"plugin":null,"taskTitle":null,"userIds":[]},"selected":[],"dropped":[],"zeroSignalExcluded":138,"candidates":0,"budgets":{"org":8,"nonOrg":8},"renderedTokensEst":8207}
+```
+
+`selected` is the injected set in ranked order; `dropped` lost to a budget; `candidates` vs. `zeroSignalExcluded` splits signal-bearing from no-signal pages; `renderedTokensEst` is chars/4 of the injected block (relative, not exact). A zero-injection spawn still records — that rate is itself a tuning signal (the example is real: a CLI spawn with no title/users; the ~8.2K tokens are the always-injected index). Fail-safe: any error logs one warning and the prompt is returned as if the sensor did not exist; lines are single appends, and readers skip unparseable ones.
+
+Records live with the session, not `memory/`: they join the task's `knowledge.log` with no correlation machinery, `scripts/pull-remote-data.sh` harvests them for free, and they are removed with sessions (see [Ejection](#ejection)). Lines are versioned (`v: 1`) and self-contained so they survive aggregation and double as replay cases. Consumers, in order: post-enablement budget tuning, spawn debugging ("what did memory tell this agent?"), and the roadmap's Phase 5 value eval.
 
 ## Write Path — Extraction on Task Completion
 
@@ -348,13 +362,7 @@ A **derived** thin table — one row per entity (`[[slug]]`, type, scope, L0 sum
 
 ### `sessions/<taskId>/shared/memory-injection.jsonl` (selection sensor)
 
-The one memory-written file **outside** `memory/` — per-spawn selection records (see [Read Path](#read-path--memory-injection-at-spawn)). One JSON object per line, one line per enriched spawn:
-
-```json
-{"v":1,"ts":"2026-07-02T14:03:11.412Z","taskId":"task-20260702-1401-ab12cd","agent":"backend","ctx":{"repo":"backend","plugin":null,"taskTitle":"payment bug","userIds":["U07ABC123"]},"selected":[{"slug":"payment-service","score":510,"scope":"repo"}],"dropped":[],"zeroSignalExcluded":141,"candidates":3,"budgets":{"org":8,"nonOrg":8},"renderedTokensEst":3120}
-```
-
-It is telemetry, not memory: nothing reads it at runtime. Budget tuning after prod enablement and the later memory-value eval consume it offline (`docs/proposals/memory-v2-roadmap.md`), which is why each line is self-contained — a labeled selection case with inputs, outcome, and cost.
+Per-spawn selection records — the one memory-written file **outside** `memory/`, and telemetry rather than memory: nothing reads it at runtime. Format, fire conditions, and design rationale live in [Telemetry](#telemetry).
 
 ## Housekeeping
 
