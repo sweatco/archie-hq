@@ -101,9 +101,7 @@ describe('selectEntities (push selection)', () => {
     ];
     const { selected, dropped } = selectEntities(records, { repo: 'backend', taskTitle: 'fix login flow' });
     expect(selected).toHaveLength(0);
-    // Zero-signal pages are not candidates, so they are not "drops" either —
-    // dropped keeps its meaning of "qualified but over budget".
-    expect(dropped).toHaveLength(0);
+    expect(dropped).toHaveLength(0); // not candidates → not "drops"
   });
 
   it('selects an org page reachable only via one-hop expansion', () => {
