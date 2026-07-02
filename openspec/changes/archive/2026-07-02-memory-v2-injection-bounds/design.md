@@ -11,10 +11,10 @@ Constraints (from `src/memory/CLAUDE.md`): file-based, no DB, single-step ejecta
 - No injected `<entity>` block grows without bound through its `touched_by` list; the on-disk page keeps full history.
 - Operator flags are symmetric: index-only (`0`) is valid for both entity-injection budgets.
 - The canonical spec no longer contradicts itself about org injection.
-- The memory-v2 decision doc reflects shipped reality and the re-cut roadmap, and is committed so the archived changes' references to it resolve.
+- The re-cut roadmap for the remaining memory work is committed as a concise doc.
 
 **Non-Goals:**
-- The eval harness, pull/read tools, the Branch-A native-memory-tool spike, semantic dedupe, and embedding-backed selection — sequenced in the re-cut roadmap (`docs/proposals/memory-v2.md` §9), not built here.
+- The eval harness, pull/read tools, the Branch-A native-memory-tool spike, semantic dedupe, and embedding-backed selection — sequenced in `docs/proposals/memory-v2-roadmap.md`, not built here.
 - Any change to on-disk entity format, the write path, extraction, or housekeeping.
 - Capping curated relation types (`depends_on`, `integrates`, `owned_by`, `part_of`, `related_to`) — only the auto-growing `touched_by` is bounded, and only at render time.
 
@@ -40,9 +40,8 @@ Org pages become candidates exactly like non-org pages: repo match (`SCORE_REPO`
 ### 4. Editorial spec fixes go directly into the canonical spec
 The stale rationale/scenario text inside the org-knowledge requirement travels as a MODIFIED requirement in this change's delta (normative surface, even though the fix is editorial). The status header and the resolved CLI-identifier open question live outside requirement blocks, where delta composition cannot reach — they are edited directly in `openspec/specs/memory-layer/spec.md` in the same commit.
 
-### 5. Commit the decision doc, re-cut the roadmap inside it
-`docs/proposals/memory-v2.md` is referenced by both archived memory-v2 changes but exists only as an untracked file in the author's checkout. It is updated (Phase 1 + fixes marked shipped; appendices refreshed; phases re-cut: eval harness promoted to the prod-enablement gate, Branch-A spike + read tools ahead of embeddings, semantic dedupe split from embedding-backed selection) and committed.
-- **Why commit a "draft":** the repo already links to it from two archived changes; an unresolvable reference is worse than a committed decision doc. The project convention against committing drafts yields to the explicit request to land these review changes.
+### 5. Commit a concise roadmap, keep the research doc untracked
+The re-cut phase plan (eval harness as the prod-enablement gate, Branch-A spike + read tools ahead of embeddings, semantic dedupe split from embedding-backed selection) is committed as `docs/proposals/memory-v2-roadmap.md`. The full research/decision doc (`docs/proposals/memory-v2.md`) stays untracked — per the author, only the actionable roadmap is worth carrying in the repo.
 
 ## Risks / Trade-offs
 
@@ -50,7 +49,6 @@ The stale rationale/scenario text inside the org-knowledge requirement travels a
 - **[`touched_by` truncation hides older provenance from agents]** → Only in the prompt; disk retains all edges and related-task selection reads disk. Raise the flag if agents demonstrably need deeper history.
 - **[Existing tests assert unconditional org injection]** → Updated in the same change; the spec delta rewrites the affected scenarios so spec and tests stay aligned.
 - **[Prompt block ordering changes]** → Cosmetic; no consumer parses order.
-- **[Untracked local copy of the decision doc conflicts on merge]** → The author's checkout has `docs/proposals/memory-v2.md` untracked; merging this change will refuse until that copy is removed/stashed. Called out in the PR description.
 
 ## Migration Plan
 
