@@ -3,8 +3,8 @@
  *
  * rebuildIndex/readIndexMarkdown use a temp dir (paths mocked). selectEntities
  * is pure and is exercised with hand-built records covering the spec scenarios:
- * org-always, repo match, one-hop expansion, bound + logged drops, archived
- * excluded.
+ * signal-gated candidacy (org budget is a ceiling), repo match, one-hop
+ * expansion, bound + logged drops, archived excluded.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -83,15 +83,36 @@ describe('entity index (derived)', () => {
 });
 
 describe('selectEntities (push selection)', () => {
-  it('includes scope:org entities within the org budget', () => {
+  it('includes signal-bearing scope:org entities within the org budget', () => {
     const records = [
       rec({ entity: 'stripe', scope: 'org' }),
       rec({ entity: 'mobile-app', scope: 'repo', repos: ['mobile'] }),
     ];
-    const { selected } = selectEntities(records, { repo: 'backend' });
+    const { selected } = selectEntities(records, { repo: 'backend', taskTitle: 'stripe webhooks failing' });
     const slugs = selected.map((r) => r.entity);
     expect(slugs).toContain('stripe');
     expect(slugs).not.toContain('mobile-app');
+  });
+
+  it('does not inject a zero-signal org page even with spare org budget (ceiling, not target)', () => {
+    const records = [
+      rec({ entity: 'stripe', scope: 'org' }),
+      rec({ entity: 'launchdarkly', scope: 'org' }),
+    ];
+    const { selected, dropped } = selectEntities(records, { repo: 'backend', taskTitle: 'fix login flow' });
+    expect(selected).toHaveLength(0);
+    // Zero-signal pages are not candidates, so they are not "drops" either —
+    // dropped keeps its meaning of "qualified but over budget".
+    expect(dropped).toHaveLength(0);
+  });
+
+  it('selects an org page reachable only via one-hop expansion', () => {
+    const records = [
+      rec({ entity: 'payment-service', scope: 'repo', repos: ['backend'], relations: [{ type: 'integrates', target: 'stripe' }] }),
+      rec({ entity: 'stripe', scope: 'org' }),
+    ];
+    const { selected } = selectEntities(records, { repo: 'backend' });
+    expect(selected.map((r) => r.entity).sort()).toEqual(['payment-service', 'stripe']);
   });
 
   it('includes entities tagged to the spawned repo', () => {
@@ -125,14 +146,14 @@ describe('selectEntities (push selection)', () => {
     expect([...selected.map((r) => r.entity), ...dropped].sort()).toEqual(['a', 'b', 'c']);
   });
 
-  it('bounds scope:org entities by the org budget and reports dropped org slugs', () => {
+  it('bounds signal-bearing scope:org entities by the org budget and reports dropped org slugs', () => {
     const records = [
-      rec({ entity: 'a', scope: 'org' }),
-      rec({ entity: 'b', scope: 'org' }),
-      rec({ entity: 'c', scope: 'org' }),
+      rec({ entity: 'a', scope: 'org', displayName: 'alpha bravo' }),
+      rec({ entity: 'b', scope: 'org', displayName: 'alpha bravo' }),
+      rec({ entity: 'c', scope: 'org', displayName: 'alpha bravo' }),
     ];
-    // orgMax=2 keeps the top 2 org pages and drops 1 — org is no longer exempt.
-    const { selected, dropped } = selectEntities(records, {}, 8, 2);
+    // All three carry a token-overlap signal; orgMax=2 keeps the top 2, drops 1.
+    const { selected, dropped } = selectEntities(records, { taskTitle: 'alpha bravo' }, 8, 2);
     expect(selected).toHaveLength(2);
     expect(dropped).toHaveLength(1);
     expect([...selected.map((r) => r.entity), ...dropped].sort()).toEqual(['a', 'b', 'c']);
@@ -140,13 +161,13 @@ describe('selectEntities (push selection)', () => {
 
   it('applies independent budgets to org and non-org pages', () => {
     const records = [
-      rec({ entity: 'org1', scope: 'org' }),
-      rec({ entity: 'org2', scope: 'org' }),
+      rec({ entity: 'org1', scope: 'org', displayName: 'alpha' }),
+      rec({ entity: 'org2', scope: 'org', displayName: 'alpha' }),
       rec({ entity: 'r1', scope: 'repo', repos: ['backend'] }),
       rec({ entity: 'r2', scope: 'repo', repos: ['backend'] }),
     ];
-    // non-org max=1 drops one repo page; org max=2 keeps both org pages.
-    const { selected, dropped } = selectEntities(records, { repo: 'backend' }, 1, 2);
+    // non-org max=1 drops one repo page; org max=2 keeps both signal-bearing org pages.
+    const { selected, dropped } = selectEntities(records, { repo: 'backend', taskTitle: 'alpha' }, 1, 2);
     const slugs = selected.map((r) => r.entity);
     expect(slugs).toContain('org1');
     expect(slugs).toContain('org2');
@@ -156,11 +177,11 @@ describe('selectEntities (push selection)', () => {
 
   it('keeps an org page dropped from injection discoverable in the rendered index', () => {
     const records = [
-      rec({ entity: 'a', scope: 'org', summary: 'alpha summary' }),
-      rec({ entity: 'b', scope: 'org', summary: 'bravo summary' }),
-      rec({ entity: 'c', scope: 'org', summary: 'charlie summary' }),
+      rec({ entity: 'a', scope: 'org', displayName: 'alpha bravo', summary: 'alpha summary' }),
+      rec({ entity: 'b', scope: 'org', displayName: 'alpha bravo', summary: 'bravo summary' }),
+      rec({ entity: 'c', scope: 'org', displayName: 'alpha bravo', summary: 'charlie summary' }),
     ];
-    const { selected, dropped } = selectEntities(records, {}, 8, 2);
+    const { selected, dropped } = selectEntities(records, { taskTitle: 'alpha bravo' }, 8, 2);
     expect(selected).toHaveLength(2);
     expect(dropped).toHaveLength(1);
     // every entity — including the one dropped from full injection — keeps an
@@ -174,11 +195,11 @@ describe('selectEntities (push selection)', () => {
 
   it('orgMax=0 injects no full org pages but keeps them all in the index (index-only)', () => {
     const records = [
-      rec({ entity: 'a', scope: 'org', summary: 'alpha summary' }),
-      rec({ entity: 'b', scope: 'org', summary: 'bravo summary' }),
-      rec({ entity: 'c', scope: 'org', summary: 'charlie summary' }),
+      rec({ entity: 'a', scope: 'org', displayName: 'alpha bravo', summary: 'alpha summary' }),
+      rec({ entity: 'b', scope: 'org', displayName: 'alpha bravo', summary: 'bravo summary' }),
+      rec({ entity: 'c', scope: 'org', displayName: 'alpha bravo', summary: 'charlie summary' }),
     ];
-    const { selected, dropped } = selectEntities(records, {}, 8, 0);
+    const { selected, dropped } = selectEntities(records, { taskTitle: 'alpha bravo' }, 8, 0);
     expect(selected).toHaveLength(0);
     expect(dropped.sort()).toEqual(['a', 'b', 'c']);
     const indexMd = renderIndex(records);
@@ -190,10 +211,10 @@ describe('selectEntities (push selection)', () => {
 
   it('never injects archived entities', () => {
     const records = [
-      rec({ entity: 'old', scope: 'org', status: 'archived' }),
-      rec({ entity: 'live', scope: 'org' }),
+      rec({ entity: 'old', scope: 'org', status: 'archived', displayName: 'billing portal' }),
+      rec({ entity: 'live', scope: 'org', displayName: 'billing portal' }),
     ];
-    const { selected } = selectEntities(records, {});
+    const { selected } = selectEntities(records, { taskTitle: 'billing portal down' });
     expect(selected.map((r) => r.entity)).toEqual(['live']);
   });
 
