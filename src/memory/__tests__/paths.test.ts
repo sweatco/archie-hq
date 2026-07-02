@@ -23,16 +23,21 @@ import {
   getEntityInjectMax,
   getOrgInjectMax,
   getEntityObsCap,
+  getTouchedByInjectMax,
   isInjectionEnabled,
 } from '../paths.js';
 import { logger } from '../../system/logger.js';
 
-describe('envInt flag parsing (org inject max / obs cap)', () => {
+describe('envInt flag parsing (inject maxes / obs cap / touched_by render max)', () => {
   const ORG = 'ARCHIE_MEMORY_ORG_INJECT_MAX';
   const OBS = 'ARCHIE_MEMORY_ENTITY_OBS_CAP';
+  const NONORG = 'ARCHIE_MEMORY_ENTITY_INJECT_MAX';
+  const TOUCHED = 'ARCHIE_MEMORY_TOUCHED_BY_INJECT_MAX';
   afterEach(() => {
     delete process.env[ORG];
     delete process.env[OBS];
+    delete process.env[NONORG];
+    delete process.env[TOUCHED];
     vi.clearAllMocks();
   });
 
@@ -46,6 +51,22 @@ describe('envInt flag parsing (org inject max / obs cap)', () => {
     process.env[ORG] = '0';
     expect(getOrgInjectMax()).toBe(0);
     expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('honors ARCHIE_MEMORY_ENTITY_INJECT_MAX=0 (index-only for non-org pages), without warning', () => {
+    process.env[NONORG] = '0';
+    expect(getEntityInjectMax()).toBe(0);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('touched_by render max defaults to 10 and honors 0', () => {
+    expect(getTouchedByInjectMax()).toBe(10);
+    process.env[TOUCHED] = '0';
+    expect(getTouchedByInjectMax()).toBe(0);
+    expect(logger.warn).not.toHaveBeenCalled();
+    process.env[TOUCHED] = '-3';
+    expect(getTouchedByInjectMax()).toBe(10);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
   });
 
   it('accepts a valid positive value', () => {
