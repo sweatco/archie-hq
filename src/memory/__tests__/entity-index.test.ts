@@ -157,6 +157,37 @@ describe('selectEntities (push selection)', () => {
     expect([...selected.map((r) => r.entity), ...dropped].sort()).toEqual(['a', 'b', 'c']);
   });
 
+  it('exposes selection telemetry: meta mirrors selected in ranked order, counts split candidates vs zero-signal', () => {
+    const records = [
+      rec({ entity: 'payment-service', scope: 'repo', repos: ['backend'] }), // repo signal
+      rec({ entity: 'stripe', scope: 'org', displayName: 'stripe billing' }), // title-token signal
+      rec({ entity: 'launchdarkly', scope: 'org' }), // zero signal
+    ];
+    const { selected, selectedMeta, candidates, zeroSignalExcluded } = selectEntities(records, {
+      repo: 'backend',
+      taskTitle: 'stripe billing bug',
+    });
+    expect(selectedMeta.map((m) => m.slug)).toEqual(selected.map((r) => r.entity));
+    expect(selectedMeta.map((m) => m.scope)).toEqual(selected.map((r) => r.scope));
+    expect(selectedMeta[0].slug).toBe('payment-service'); // repo match outranks token overlap
+    expect(selectedMeta[0].score).toBeGreaterThan(selectedMeta[1].score);
+    expect(candidates).toBe(2);
+    expect(zeroSignalExcluded).toBe(1);
+  });
+
+  it('counts budget-dropped pages as candidates, not zero-signal', () => {
+    const records = [
+      rec({ entity: 'a', scope: 'org', displayName: 'alpha bravo' }),
+      rec({ entity: 'b', scope: 'org', displayName: 'alpha bravo' }),
+      rec({ entity: 'zero', scope: 'org' }),
+    ];
+    const { selectedMeta, dropped, candidates, zeroSignalExcluded } = selectEntities(records, { taskTitle: 'alpha bravo' }, 8, 1);
+    expect(selectedMeta).toHaveLength(1);
+    expect(dropped).toHaveLength(1);
+    expect(candidates).toBe(2);
+    expect(zeroSignalExcluded).toBe(1);
+  });
+
   it('applies independent budgets to org and non-org pages', () => {
     const records = [
       rec({ entity: 'org1', scope: 'org', displayName: 'alpha' }),

@@ -5,12 +5,20 @@
  * for injection into agent system prompts.
  */
 
-import { readFile } from 'fs/promises';
+import { readFile, appendFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { readUser } from './store.js';
 import { listEntities, serializeEntity } from './entities.js';
-import { readIndexMarkdown, renderIndex, selectEntities } from './entity-index.js';
-import { isMemoryEnabled, isInjectionEnabled, getRecentActivityPath, getTouchedByInjectMax } from './paths.js';
+import { readIndexMarkdown, renderIndex, selectEntities, type SelectionResult } from './entity-index.js';
+import {
+  isMemoryEnabled,
+  isInjectionEnabled,
+  getRecentActivityPath,
+  getTouchedByInjectMax,
+  getSessionInjectionLogPath,
+  getOrgInjectMax,
+  getEntityInjectMax,
+} from './paths.js';
 import { logger } from '../system/logger.js';
 import type { UserRef, EntityRecord } from './types.js';
 
@@ -19,6 +27,9 @@ export interface MemorySelectors {
   repo?: string;
   plugin?: string;
   taskTitle?: string;
+  /** Identify the spawn for the selection sensor; without `taskId` no record is written. */
+  taskId?: string;
+  agent?: string;
 }
 
 /**
@@ -71,21 +82,62 @@ export async function buildMemoryContext(
   // Entity layer: always inject the thin index when any entity exists, then
   // push the full pages selected for this spawn (repo/plugin + users + title).
   const records = await listEntities();
+  let selection: SelectionResult | null = null;
   if (records.length > 0) {
     const indexMd = (await readIndexMarkdown()).trim() || renderIndex(records).trim();
     if (indexMd) {
       blocks.push(`<entity_index>\n${indexMd}\n</entity_index>`);
     }
-    const { selected, dropped } = selectEntities(records, { ...selectors, users: refs });
-    if (dropped.length > 0) {
-      logger.system(`[memory] entity selection dropped ${dropped.length} over inject cap: ${dropped.join(', ')}`);
+    selection = selectEntities(records, { ...selectors, users: refs });
+    if (selection.dropped.length > 0) {
+      logger.system(`[memory] entity selection dropped ${selection.dropped.length} over inject cap: ${selection.dropped.join(', ')}`);
     }
-    for (const rec of selected) {
+    for (const rec of selection.selected) {
       blocks.push(renderEntityBlock(rec));
     }
   }
 
-  return blocks.join('\n\n');
+  const context = blocks.join('\n\n');
+  await recordSelection(selectors, refs, selection, context);
+  return context;
+}
+
+/**
+ * Selection sensor: append one JSONL record of this spawn's injection decision
+ * to the task's session dir. Fail-safe — never throws, never alters the
+ * prompt; skipped without a `taskId` and when injection is off, so the
+ * collect-only posture stays write-free.
+ */
+async function recordSelection(
+  selectors: MemorySelectors,
+  users: UserRef[],
+  selection: SelectionResult | null,
+  context: string,
+): Promise<void> {
+  if (!selectors.taskId || !isInjectionEnabled()) return;
+  try {
+    const record = {
+      v: 1,
+      ts: new Date().toISOString(),
+      taskId: selectors.taskId,
+      agent: selectors.agent ?? null,
+      ctx: {
+        repo: selectors.repo ?? null,
+        plugin: selectors.plugin ?? null,
+        taskTitle: selectors.taskTitle ?? null,
+        userIds: users.map((u) => u.userId),
+      },
+      selected: selection?.selectedMeta ?? [],
+      dropped: selection?.dropped ?? [],
+      zeroSignalExcluded: selection?.zeroSignalExcluded ?? 0,
+      candidates: selection?.candidates ?? 0,
+      budgets: { org: getOrgInjectMax(), nonOrg: getEntityInjectMax() },
+      renderedTokensEst: Math.round(context.length / 4),
+    };
+    await appendFile(getSessionInjectionLogPath(selectors.taskId), `${JSON.stringify(record)}\n`, 'utf-8');
+  } catch (err: any) {
+    logger.warn('memory', `selection sensor write failed (spawn unaffected): ${err?.message ?? err}`);
+  }
 }
 
 /**
