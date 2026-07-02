@@ -450,10 +450,8 @@ The layer's safety guards close seven gaps found in review; each is enforced in 
 
 ## Future Enhancements (Not in scope)
 
-The entity/domain layer (this change) deliberately stays **push-only** and **keyword-scored**. The natural next experiments — to try and measure, not assumed:
+The layer deliberately stays **push-only** and **keyword-scored**. The sequenced plan for what comes next — eval gate, pull/read tools, buy-vs-build spike, semantic dedupe, selection embeddings — lives in [`docs/proposals/memory-v2-roadmap.md`](../proposals/memory-v2-roadmap.md). Smaller deferred ideas not on that roadmap:
 
-- **Hybrid pull (`read_memory` tool/MCP)** — add an agent-callable tool to fetch an entity page by slug mid-task, on top of the pushed index. The open question is whether pull recovers the entities that push's bounded selection drops, at an acceptable latency/turn cost. A/B it against selective-push on selection precision/recall, prompt tokens, and task outcome quality.
-- **Embedding / semantic selection** — replace token-overlap scoring of the index with embeddings once the measured miss-rate of the deterministic scorer justifies it.
 - **Domain-directory splitting** — promote `domain` from a frontmatter dimension to an `entities/<domain>/` split once entity volume makes a flat directory unwieldy.
 - **Channel visibility / access control** — public-vs-private filtering at retrieval time. Deferred until a concrete leak surface is identified.
 - **Slack reaction → revert** — let users react ❌ to remove just-applied entries.
