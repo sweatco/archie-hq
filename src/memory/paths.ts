@@ -60,12 +60,14 @@ export function getSectionCap(): number { return envInt('ARCHIE_MEMORY_SECTION_C
 export function getStalenessDays(): number { return envInt('ARCHIE_MEMORY_STALENESS_DAYS', 180); }
 /** Soft cap on total entity files before entity housekeeping triggers. */
 export function getEntityCap(): number { return envInt('ARCHIE_MEMORY_ENTITY_CAP', 300); }
-/** Maximum number of full entity pages injected into a single agent prompt. */
-export function getEntityInjectMax(): number { return envInt('ARCHIE_MEMORY_ENTITY_INJECT_MAX', 8); }
+/** Max full non-`org` entity pages per prompt (`0` → index-only). */
+export function getEntityInjectMax(): number { return envInt('ARCHIE_MEMORY_ENTITY_INJECT_MAX', 8, 0); }
 /** Maximum number of full `scope: org` entity pages injected into a single agent prompt (org is no longer unbounded; the thin index still lists every entity). */
 export function getOrgInjectMax(): number { return envInt('ARCHIE_MEMORY_ORG_INJECT_MAX', 8, 0); }
 /** Soft cap on observations kept on a single entity page; on write the newest-touched are retained and the oldest surplus dropped. */
 export function getEntityObsCap(): number { return envInt('ARCHIE_MEMORY_ENTITY_OBS_CAP', 30); }
+/** Max `touched_by` relations rendered into an injected entity block (newest kept; `0` → none); the stored page keeps full history. */
+export function getTouchedByInjectMax(): number { return envInt('ARCHIE_MEMORY_TOUCHED_BY_INJECT_MAX', 10, 0); }
 
 // ---- Directory & file paths ----
 

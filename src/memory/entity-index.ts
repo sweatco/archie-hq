@@ -112,21 +112,17 @@ function recordTokens(r: EntityRecord): Set<string> {
 }
 
 const SCORE_REPO = 500;
-const SCORE_ORG = 1000;
 const SCORE_OWNER = 200;
 const SCORE_EXPANSION = 50;
 const SCORE_PER_TOKEN = 10;
 
 /**
- * Select which full entity pages to inject for a spawn. Scores every active
- * entity against the context (repo / participating users / task title) and
- * expands one hop along relations, then applies TWO independent budgets:
- * `orgMax` bounds `scope: org` pages and `max` bounds the rest. Org pages are
- * no longer exempt — they compete on relevance (score) with last-touched
- * recency as the tiebreak, and the highest-scoring `orgMax` are injected. The
- * thin entity index (always injected in full by the caller) keeps org pages
- * dropped here discoverable via their L0 summary. Archived entities are never
- * injected.
+ * Select full entity pages to inject for a spawn. Candidacy requires a
+ * relevance signal (repo match, owned_by user, token overlap, one-hop
+ * expansion). `orgMax` / `max` are independent ceilings for org / non-org
+ * candidates, ranked by score then last-touched recency. Zero-signal pages
+ * are neither injected nor in `dropped` ("qualified but over budget") —
+ * the always-injected index keeps them discoverable.
  */
 export function selectEntities(
   records: EntityRecord[],
@@ -148,7 +144,6 @@ export function selectEntities(
   const bump = (slug: string, by: number) => scores.set(slug, (scores.get(slug) ?? 0) + by);
 
   for (const r of active) {
-    if (r.scope === 'org') bump(r.entity, SCORE_ORG);
     if (ctxRepo && r.repos.some((repo) => repo.toLowerCase() === ctxRepo)) bump(r.entity, SCORE_REPO);
     if (userIds.size) {
       for (const rel of r.relations) {
