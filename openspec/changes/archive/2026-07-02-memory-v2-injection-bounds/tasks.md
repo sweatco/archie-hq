@@ -17,7 +17,7 @@
 
 - [x] 4.1 `docs/architecture/memory.md` — selection section: org candidacy requires a relevance signal, budget is a ceiling; flags table: add `ARCHIE_MEMORY_TOUCHED_BY_INJECT_MAX`, note `0` now valid for `ARCHIE_MEMORY_ENTITY_INJECT_MAX`; entity-page injection prose: `touched_by` truncated at render time, full history on disk
 - [x] 4.2 `.env.example` — add `ARCHIE_MEMORY_TOUCHED_BY_INJECT_MAX`
-- [x] 4.3 `docs/proposals/memory-v2.md` — commit the decision doc updated to shipped reality: status header (Phase 1 + fixes shipped), §9 re-cut roadmap (eval harness as prod-enablement gate; Branch-A spike + read tools before embeddings; semantic dedupe split from embedding-backed selection; this change noted), Appendix A/B refreshed (cap lives in `writeEntity`; org no longer exempt; new flags)
+- [x] 4.3 `docs/proposals/memory-v2-roadmap.md` — commit a concise roadmap for the remaining phases: eval harness as prod-enablement gate; Branch-A spike + read tools before embeddings; semantic dedupe split from embedding-backed selection (the full research doc stays untracked)
 
 ## 5. Verify
 
