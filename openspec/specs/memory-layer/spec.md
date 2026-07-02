@@ -1,7 +1,7 @@
 # Memory Layer
 
 **Capability ID:** `memory-layer`
-**Status:** Target spec — reflects shipped behavior, including the entity layer and `org.md` retirement (see archived changes `harden-memory-layer`, `add-memory-entity-layer`)
+**Status:** Target spec — reflects shipped behavior, including the entity layer, `org.md` retirement, and bounded relevance-gated injection (see archived changes `harden-memory-layer`, `add-memory-entity-layer`, `gate-memory-injection`, `memory-v2-phase1`, `memory-v2-fixes`, `memory-v2-injection-bounds`)
 **Implementation:** `src/memory/` — see `docs/architecture/memory.md` for the architecture as-built
 
 ## Purpose
@@ -625,6 +625,6 @@ The implementation SHALL emit log entries (via `src/system/logger.ts`) for:
 
 These remain unresolved and SHOULD be settled before the next major increment:
 
-1. **What is the canonical user identifier when origin is non-Slack (CLI, future channels)?** Current shipped behavior falls back to `"cli"`; this collides for multiple CLI users. Options: include OS username, include a hash of the originating session ID, or skip user updates entirely for non-Slack origins.
+1. **What is the canonical user identifier when origin is non-Slack (CLI, future channels)?** Resolved by "User memory MUST be keyed by stable identifier": non-Slack origins use the documented prefixed fallback (`cli:<sessionId>`, `local:<osUser>`), deterministic per originating session and non-colliding with the Slack ID namespace.
 2. **Should `org.md` ever be auto-pruned?** Resolved by `add-memory-entity-layer`: `org.md` is retired — organizational knowledge is captured as `scope: org` entities and bounded by the entity-housekeeping mechanism (merge/archive + entity soft cap).
 3. **Where do eval artifacts belong?** The stashed memory-eval tooling (`scripts/memory-eval.ts`, `src/memory/eval/`) uses JSON fixtures and JSON model contracts. This is consistent if "Markdown-only" applies only to persistent runtime memory; inconsistent if it applies to all feature artifacts. Decision pending.

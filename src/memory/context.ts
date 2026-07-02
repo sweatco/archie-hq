@@ -10,7 +10,7 @@ import { existsSync } from 'fs';
 import { readUser } from './store.js';
 import { listEntities, serializeEntity } from './entities.js';
 import { readIndexMarkdown, renderIndex, selectEntities } from './entity-index.js';
-import { isMemoryEnabled, isInjectionEnabled, getRecentActivityPath } from './paths.js';
+import { isMemoryEnabled, isInjectionEnabled, getRecentActivityPath, getTouchedByInjectMax } from './paths.js';
 import { logger } from '../system/logger.js';
 import type { UserRef, EntityRecord } from './types.js';
 
@@ -88,9 +88,22 @@ export async function buildMemoryContext(
   return blocks.join('\n\n');
 }
 
-/** Wrap a full entity page in an `<entity ...>` block for prompt injection. */
+/**
+ * Wrap a full entity page in an `<entity ...>` block for prompt injection.
+ * The auto-appended `touched_by` edges grow by one per touching task, so only
+ * the newest `ARCHIE_MEMORY_TOUCHED_BY_INJECT_MAX` are rendered; other relation
+ * types render in full. Render-time only — the record and its file keep the
+ * complete history (provenance + related-task selection read from disk).
+ */
 function renderEntityBlock(rec: EntityRecord): string {
-  return `<entity slug="${escapeAttr(rec.entity)}" type="${escapeAttr(rec.type)}" scope="${escapeAttr(rec.scope)}">\n${serializeEntity(rec).trimEnd()}\n</entity>`;
+  const max = getTouchedByInjectMax();
+  const touchedBy = rec.relations.filter((r) => r.type === 'touched_by');
+  let view = rec;
+  if (touchedBy.length > max) {
+    const keep = new Set(touchedBy.slice(touchedBy.length - max));
+    view = { ...rec, relations: rec.relations.filter((r) => r.type !== 'touched_by' || keep.has(r)) };
+  }
+  return `<entity slug="${escapeAttr(rec.entity)}" type="${escapeAttr(rec.type)}" scope="${escapeAttr(rec.scope)}">\n${serializeEntity(view).trimEnd()}\n</entity>`;
 }
 
 /**
