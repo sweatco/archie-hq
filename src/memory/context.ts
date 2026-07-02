@@ -90,10 +90,8 @@ export async function buildMemoryContext(
 
 /**
  * Wrap a full entity page in an `<entity ...>` block for prompt injection.
- * The auto-appended `touched_by` edges grow by one per touching task, so only
- * the newest `ARCHIE_MEMORY_TOUCHED_BY_INJECT_MAX` are rendered; other relation
- * types render in full. Render-time only — the record and its file keep the
- * complete history (provenance + related-task selection read from disk).
+ * Only the newest `touched_by` edges are rendered (they grow one per task);
+ * the stored record keeps the full history.
  */
 function renderEntityBlock(rec: EntityRecord): string {
   const max = getTouchedByInjectMax();
