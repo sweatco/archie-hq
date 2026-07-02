@@ -129,6 +129,19 @@ export function getEntityPath(slug: string): string {
   return join(getEntitiesDir(), `${slug}.md`);
 }
 
+/**
+ * Selection-sensor log: workdir/sessions/<taskId>/shared/memory-injection.jsonl.
+ * Deliberately the one memory-owned path outside memory/ — the record lives
+ * with the task session (joinable with knowledge.log, harvested by the session
+ * pull) and is removed with sessions, not with memory/.
+ */
+export function getSessionInjectionLogPath(taskId: string): string {
+  if (!isAllowedTaskId(taskId)) {
+    throw new Error(`getSessionInjectionLogPath: invalid taskId ${JSON.stringify(taskId)}`);
+  }
+  return join(WORKDIR, 'sessions', taskId, 'shared', 'memory-injection.jsonl');
+}
+
 // ---- User identifier validation ----
 
 const SLACK_ID_RE = /^(U|W|B|T)[A-Z0-9]{6,}$/;

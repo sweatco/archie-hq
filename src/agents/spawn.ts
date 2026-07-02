@@ -525,11 +525,13 @@ Shared folder: ${sharedPath} [READ-ONLY]
 
   // ---- Organizational memory injection (read path; gated by ARCHIE_MEMORY_INJECT, default off) ----
   const taskTitle = metadata.title ?? undefined;
+  // taskId + agent feed the selection sensor (memory-injection.jsonl in the session dir).
+  const memoryBase = { taskId, agent: def.id, taskTitle };
   const memorySelectors = isPmAgent(def)
-    ? { taskTitle }
+    ? memoryBase
     : isRepoAgent(def)
-      ? { repo: def.repo!.primary, taskTitle }
-      : { plugin: def.pluginName, taskTitle };
+      ? { ...memoryBase, repo: def.repo!.primary }
+      : { ...memoryBase, plugin: def.pluginName };
   const memoryUsernames = await extractTaskUsernames(taskId);
   systemPrompt = await enrichPromptWithMemory(systemPrompt, memoryUsernames, memorySelectors);
 
