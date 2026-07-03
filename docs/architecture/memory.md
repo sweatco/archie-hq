@@ -33,7 +33,7 @@ This document describes the implementation as-built. The capability spec lives a
                 ┌────────── workdir/memory/ (Markdown store) ──────┐
                 │   users/<U…>.md           ── frontmatter + bullets│
                 │   recent-activity.md      ── markdown table (≤50)│
-                │   summaries/<taskId>.md   ── per-task audit log  │
+                │   tasks/<taskId>/         ── summary + telemetry │
                 │   entities/<slug>.md      ── frontmatter + facts │
                 │   entities/index.md       ── derived thin index  │
                 │   pending-extractions.md  ── durable queue       │
@@ -61,7 +61,7 @@ This document describes the implementation as-built. The capability spec lives a
                 │       (writes touched: annotations)              │
                 │   6. applyEntityUpdate per entity (resolve-or-   │
                 │       create, auto touched_by) → rebuildIndex    │
-                │   7. write workdir/memory/summaries/<taskId>.md  │
+                │   7. write memory/tasks/<taskId>/summary.md      │
                 │       (memory-diff + entity-based related-tasks) │
                 │   8. appendActivity + trimActivity(50)           │
                 │   9. if soft cap exceeded → runHousekeeping()    │
@@ -99,7 +99,8 @@ scripts/
 workdir/memory/                                  (runtime, gitignored)
 ├── users/<id>.md
 ├── recent-activity.md
-├── summaries/<taskId>.md
+├── tasks/<taskId>/summary.md
+├── tasks/<taskId>/telemetry.jsonl
 ├── entities/<slug>.md
 ├── entities/index.md
 └── pending-extractions.md
@@ -147,7 +148,7 @@ The thin `<entity_index>` is never subject to a page bound — the agent always 
 
 When a selected page is rendered into its `<entity>` block, the auto-appended `touched_by` relations are truncated to the newest `ARCHIE_MEMORY_TOUCHED_BY_INJECT_MAX` (they grow by one per touching task and would otherwise re-inflate the prompt without bound). Truncation is render-time only: the file on disk keeps the full `touched_by` history for provenance and related-task selection, and all other relation types render in full.
 
-**Selection sensor.** Every enriched spawn also leaves a one-line JSON record of the selection decision it just received, written into the task's session dir — see [Telemetry](#telemetry) for where, how, and why.
+**Selection sensor.** Every enriched spawn also leaves a one-line JSON record of the selection decision it just received, written under `memory/tasks/<taskId>/` — see [Telemetry](#telemetry) for where, how, and why.
 
 `enrichPromptWithMemory()` appends the block to the prompt under a fixed `## Organizational Memory` header with a short instruction line. It returns the prompt unchanged — and performs no store reads — if the layer is disabled (`ARCHIE_MEMORY=false`), if **injection is disabled** (`ARCHIE_MEMORY_INJECT` ≠ `true`, the default — see [Feature Flags](#feature-flags)), or if no memory exists.
 
@@ -155,7 +156,7 @@ When a selected page is rendered into its `<entity>` block, the auto-appended `t
 
 One sensor today: the **selection sensor** — a per-spawn record of what the read path injected and why. The remaining memory-v2 decisions (budget defaults, zero-signal recency floor, ossification, the value eval) are deferred to live data (`docs/proposals/memory-v2-roadmap.md`), and telemetry cannot be backfilled — so the sensor ships before injection is enabled.
 
-`recordSelection()` (`src/memory/context.ts`, end of `buildMemoryContext`) appends one JSON line per enriched spawn to `sessions/<taskId>/shared/memory-injection.jsonl`; `spawn.ts` passes `taskId` + `agent` via `MemorySelectors`. It fires only when injection is enabled and a `taskId` is present — no separate flag; with injection off, nothing is read or written. Each line is a self-contained selection case:
+`recordSelection()` (`src/memory/context.ts`, end of `buildMemoryContext`) appends one JSON line per enriched spawn to `memory/tasks/<taskId>/telemetry.jsonl`, creating the task dir on first write; `spawn.ts` passes `taskId` + `agent` via `MemorySelectors`. It fires only when injection is enabled and a `taskId` is present — no separate flag; with injection off, nothing is read or written. Each line is a self-contained selection case:
 
 ```json
 {"v":1,"ts":"2026-07-02T19:08:26.034Z","taskId":"task-20260702-1908-jgjfb6","agent":"pm-agent","ctx":{"repo":null,"plugin":null,"taskTitle":null,"userIds":[]},"selected":[],"dropped":[],"zeroSignalExcluded":138,"candidates":0,"budgets":{"org":8,"nonOrg":8},"renderedTokensEst":8207}
@@ -163,7 +164,7 @@ One sensor today: the **selection sensor** — a per-spawn record of what the re
 
 `selected` is the injected set in ranked order; `dropped` lost to a budget; `candidates` vs. `zeroSignalExcluded` splits signal-bearing from no-signal pages; `renderedTokensEst` is chars/4 of the injected block (relative, not exact). A zero-injection spawn still records — that rate is itself a tuning signal (the example is real: a CLI spawn with no title/users; the ~8.2K tokens are the always-injected index). Fail-safe: any error logs one warning and the prompt is returned as if the sensor did not exist; lines are single appends, and readers skip unparseable ones.
 
-Records live with the session, not `memory/`: they join the task's `knowledge.log` with no correlation machinery, `scripts/pull-remote-data.sh` harvests them for free, and they are removed with sessions (see [Ejection](#ejection)). Lines are versioned (`v: 1`) and self-contained so they survive aggregation and double as replay cases. Consumers, in order: post-enablement budget tuning, spawn debugging ("what did memory tell this agent?"), and the roadmap's Phase 5 value eval.
+Records live in `memory/tasks/<taskId>/` — the per-task (episodic) side of the store, next to the task's `summary.md` — so `scripts/pull-remote-data.sh` harvests them even with `-m/--memory-only`, and ejection stays a single `rm -rf workdir/memory/`. Lines are versioned (`v: 1`) and self-contained (the `taskId` is embedded) so they survive aggregation and double as replay cases. Consumers, in order: post-enablement budget tuning, spawn debugging ("what did memory tell this agent?"), and the roadmap's Phase 5 value eval.
 
 ## Write Path — Extraction on Task Completion
 
@@ -193,7 +194,7 @@ When the event fires, `handleTaskCompleted(taskId)` is invoked. It is fire-and-f
 5. runExtraction({...}, allowedUserIds)                  ──▶ Sonnet side-agent (maxTurns: 1, no tools)
 6. applyUserUpdatesWithIdentity(userId, name, updates) per user
 7. applyEntityUpdate(update, taskId) per entity (resolve-or-create, auto touched_by) → rebuildIndex()
-8. writeSummary() ──▶ workdir/memory/summaries/<taskId>.md (frontmatter + Memory Updates + Related Tasks)
+8. writeSummary() ──▶ workdir/memory/tasks/<taskId>/summary.md (frontmatter + Memory Updates + Related Tasks)
 9. appendActivity({...}) + trimActivity(50)
 
 (If a user file or the entity count overflows its soft cap in steps 6–7, runHousekeeping(target) — including target 'entities' — is enqueued on the same queue. See "Housekeeping".)
@@ -276,9 +277,9 @@ aliases: []
 
 `appendActivity()` inserts new rows immediately after the separator (newest first). `trimActivity(50)` rewrites the file with only the most recent 50 rows when the cap is exceeded.
 
-### `summaries/<taskId>.md`
+### `tasks/<taskId>/summary.md`
 
-Written by `writeSummary()` under `workdir/memory/`. (The old `sessions/<taskId>/shared/summary.md` location is deprecated — see `getTaskSummaryPath`, retained only to clean up legacy files.)
+Written by `writeSummary()` into the task's directory under `workdir/memory/tasks/` — the per-task (episodic) side of the store, shared with the task's `telemetry.jsonl`. Legacy `memory/summaries/<taskId>.md` files are relocated here once at startup (`migrateLegacySummaries`).
 
 ```markdown
 ---
@@ -360,9 +361,9 @@ A **derived** thin table — one row per entity (`[[slug]]`, type, scope, L0 sum
 | [[payment-service]] | service | repo:backend | NestJS payments API | 2026-06-01 |
 ```
 
-### `sessions/<taskId>/shared/memory-injection.jsonl` (selection sensor)
+### `tasks/<taskId>/telemetry.jsonl`
 
-Per-spawn selection records — the one memory-written file **outside** `memory/`, and telemetry rather than memory: nothing reads it at runtime. Format, fire conditions, and design rationale live in [Telemetry](#telemetry).
+Per-spawn selection records — telemetry rather than memory: nothing reads it at runtime. Format, fire conditions, and design rationale live in [Telemetry](#telemetry).
 
 ## Housekeeping
 
@@ -422,7 +423,7 @@ All variables are documented in `.env.example`.
 
 **Rollout:** deploy with injection unset (collect-only), evaluate the stored facts, then set `ARCHIE_MEMORY_INJECT=true` to enable injection. Rollback is unsetting the flag — the store is untouched.
 
-The "Learned from this task" Slack post does **not** exist — visibility into what was learned comes from structured logs (`logger.system('[memory] Extraction complete for ...')`) and the per-task summary file in `workdir/memory/summaries/`.
+The "Learned from this task" Slack post does **not** exist — visibility into what was learned comes from structured logs (`logger.system('[memory] Extraction complete for ...')`) and the per-task summary file in `workdir/memory/tasks/<taskId>/`.
 
 ## Ejection
 
@@ -434,7 +435,7 @@ The plan was built to support clean removal in five steps:
 4. Remove `import { enrichPromptWithMemory, isMemoryEnabled }`, the `extractTaskUsernames()` helper, and the three memory-injection call sites from `src/agents/spawn.ts`.
 5. `rm -rf workdir/memory/`
 
-No type changes propagate to other modules, no database migrations, no external service cleanup. Core never imports from `src/memory/`. Selection-sensor records (`sessions/*/shared/memory-injection.jsonl`) are session artifacts — they disappear with their sessions, not with `memory/`; any left behind are inert telemetry.
+No type changes propagate to other modules, no database migrations, no external service cleanup. Core never imports from `src/memory/`. Everything the layer writes — including per-task summaries and telemetry under `tasks/` — lives inside `workdir/memory/` and is removed by step 5.
 
 ## Testing
 
@@ -465,7 +466,7 @@ The layer's safety guards close seven gaps found in review; each is enforced in 
 | Unmatched `update` actions becoming orphan bullets | `applyUpdate` now skips + warns when `old` is not found. No silent fallback. |
 | Lost extraction on crash | `pending-extractions.md` persists in-flight task IDs; `initMemory()` drains on startup. |
 | Prompt injection via transcripts | Extractor prompt marks transcript as untrusted data; sanitizer rejects instruction-shaped lines, role-play directives, and secret-shaped tokens. |
-| "Learned from this task" Slack noise | Slack post removed entirely; the audit trail lives in `summaries/<taskId>.md`. |
+| "Learned from this task" Slack noise | Slack post removed entirely; the audit trail lives in `tasks/<taskId>/summary.md`. |
 | Only first user's memory loaded | All involved users' memory loaded in parallel; `parseExtractionResponse` drops updates for users outside the allowed set. |
 
 ## Future Enhancements (Not in scope)
