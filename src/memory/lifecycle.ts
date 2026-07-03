@@ -5,10 +5,11 @@
  * prevent concurrent writes from corrupting shared memory files.
  */
 
-import { writeFile, mkdir } from 'fs/promises';
-import { dirname } from 'path';
+import { writeFile, mkdir, readdir, rename, rmdir } from 'fs/promises';
+import { dirname, join } from 'path';
 import {
   isMemoryEnabled,
+  getMemoryDir,
   getSummaryPath,
   isAllowedUserId,
   isSlackUserId,
@@ -273,7 +274,44 @@ export function resolveFallbackId(metadata: TaskMetadata): UserRef {
 // ============================================================================
 
 /**
- * Write the per-task summary to workdir/memory/summaries/<taskId>.md.
+ * One-time layout migration: memory/summaries/<taskId>.md →
+ * memory/tasks/<taskId>/summary.md. Idempotent — a missing legacy dir is a
+ * no-op, non-matching files are left in place, and the legacy dir is removed
+ * only once emptied.
+ */
+export async function migrateLegacySummaries(): Promise<void> {
+  const legacyDir = join(getMemoryDir(), 'summaries');
+  let entries: string[];
+  try {
+    entries = await readdir(legacyDir);
+  } catch {
+    return;
+  }
+  let moved = 0;
+  for (const name of entries) {
+    if (!name.endsWith('.md')) continue;
+    let dest: string;
+    try {
+      dest = getSummaryPath(name.slice(0, -3)); // the real path guard decides validity
+    } catch {
+      continue;
+    }
+    await mkdir(dirname(dest), { recursive: true });
+    await rename(join(legacyDir, name), dest);
+    moved++;
+  }
+  if (moved > 0) {
+    logger.system(`[memory] migrated ${moved} task summaries to memory/tasks/<taskId>/summary.md`);
+  }
+  try {
+    await rmdir(legacyDir);
+  } catch {
+    // leftover non-summary files — leave the dir for the operator
+  }
+}
+
+/**
+ * Write the per-task summary to workdir/memory/tasks/<taskId>/summary.md.
  * Content schema is the minimum viable shape — the richer "Memory Updates"
  * and "Related Tasks" sections are added by a later pass (§8).
  */

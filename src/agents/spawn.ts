@@ -525,7 +525,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
 
   // ---- Organizational memory injection (read path; gated by ARCHIE_MEMORY_INJECT, default off) ----
   const taskTitle = metadata.title ?? undefined;
-  // taskId + agent feed the selection sensor (memory-injection.jsonl in the session dir).
+  // taskId + agent feed the selection sensor (memory/tasks/<taskId>/telemetry.jsonl).
   const memoryBase = { taskId, agent: def.id, taskTitle };
   const memorySelectors = isPmAgent(def)
     ? memoryBase
