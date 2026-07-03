@@ -17,6 +17,10 @@ import {
   deleteOAuthRecord,
   readPendingRecord,
   deletePendingRecord,
+  listOAuthUserIds,
+  listUserServers,
+  readUserOAuthRecord,
+  deleteUserOAuthRecord,
 } from '../system/oauth/storage.js';
 import { beginConnect } from '../system/oauth/connect.js';
 import { ensureFreshToken } from '../system/oauth/refresh.js';
@@ -26,8 +30,12 @@ const USAGE = `archie oauth — manage OAuth credentials for HTTP/SSE MCP server
 Usage:
   npm run oauth:connect <server-name> [--label <text>] [--client-id <id> --client-secret <secret>]
   npm run oauth:list
-  npm run oauth:revoke <server-name>
+  npm run oauth:revoke <server-name> [--user <slack-user-id>]
   npm run oauth:refresh <server-name>
+
+Revoking with --user deletes only that user's token for the server; other
+users' tokens and the shared client registration are untouched. Per-user
+tokens are created from Slack (the authorization wall), not from this CLI.
 
 Environment:
   ARCHIE_SECRETS_KEY   32-byte master key (base64)            (required)
@@ -144,30 +152,66 @@ async function pollForCompletion(
 
 async function runList(): Promise<void> {
   const names = await listOAuthServers();
-  if (!names.length) {
+  const userIds = await listOAuthUserIds();
+  if (!names.length && !userIds.length) {
     process.stdout.write('No OAuth records yet. Connect one with `npm run oauth:connect <server-name>`.\n');
     return;
   }
   const now = Math.floor(Date.now() / 1000);
-  process.stdout.write('Server               Label               Expires             Updated\n');
-  process.stdout.write('───────────────────  ──────────────────  ──────────────────  ──────────────────\n');
-  for (const name of names) {
-    const record = await readOAuthRecord(name);
-    if (!record) continue;
-    const expiresIn = record.expires_at - now;
-    const expiry = expiresIn > 0 ? `in ${formatDuration(expiresIn)}` : `expired ${formatDuration(-expiresIn)} ago`;
-    const updatedAgo = formatDuration(now - record.updated_at);
-    process.stdout.write(
-      `${pad(name, 19)}  ${pad(record.label ?? '', 18)}  ${pad(expiry, 18)}  ${updatedAgo} ago\n`,
-    );
+  if (names.length) {
+    process.stdout.write('Server               Label               Expires             Updated\n');
+    process.stdout.write('───────────────────  ──────────────────  ──────────────────  ──────────────────\n');
+    for (const name of names) {
+      const record = await readOAuthRecord(name);
+      if (!record) continue;
+      const expiresIn = record.expires_at - now;
+      const expiry = expiresIn > 0 ? `in ${formatDuration(expiresIn)}` : `expired ${formatDuration(-expiresIn)} ago`;
+      const updatedAgo = formatDuration(now - record.updated_at);
+      process.stdout.write(
+        `${pad(name, 19)}  ${pad(record.label ?? '', 18)}  ${pad(expiry, 18)}  ${updatedAgo} ago\n`,
+      );
+    }
+  }
+
+  let printedUserHeader = false;
+  for (const uid of userIds) {
+    for (const server of await listUserServers(uid)) {
+      const record = await readUserOAuthRecord(uid, server);
+      if (!record) continue;
+      if (!printedUserHeader) {
+        process.stdout.write(`${names.length ? '\n' : ''}Per-user records:\n`);
+        process.stdout.write('Server               User                Expires             Updated\n');
+        process.stdout.write('───────────────────  ──────────────────  ──────────────────  ──────────────────\n');
+        printedUserHeader = true;
+      }
+      const expiresIn = record.expires_at - now;
+      const expiry = expiresIn > 0 ? `in ${formatDuration(expiresIn)}` : `expired ${formatDuration(-expiresIn)} ago`;
+      const updatedAgo = formatDuration(now - record.updated_at);
+      process.stdout.write(
+        `${pad(server, 19)}  ${pad(uid, 18)}  ${pad(expiry, 18)}  ${updatedAgo} ago\n`,
+      );
+    }
   }
 }
 
 // ---- revoke -----------------------------------------------------------------
 
 async function runRevoke(args: string[]): Promise<void> {
-  const serverName = args[0];
-  if (!serverName) fatal('Usage: oauth:revoke <server-name>');
+  const parsed = parseArgs(args, { flags: ['--user'] });
+  const serverName = parsed.positional[0];
+  if (!serverName) fatal('Usage: oauth:revoke <server-name> [--user <slack-user-id>]');
+
+  const slackUserId = parsed.flags['--user'];
+  if (slackUserId) {
+    const removed = await deleteUserOAuthRecord(slackUserId, serverName);
+    if (removed) {
+      process.stdout.write(`Revoked ${slackUserId}'s OAuth record for "${serverName}". Other users and the shared client are untouched.\n`);
+    } else {
+      process.stdout.write(`No OAuth record for user ${slackUserId} on "${serverName}" — nothing to do.\n`);
+    }
+    return;
+  }
+
   const removed = await deleteOAuthRecord(serverName);
   if (removed) {
     process.stdout.write(`Revoked OAuth record for "${serverName}".\n`);

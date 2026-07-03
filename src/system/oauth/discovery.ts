@@ -92,3 +92,44 @@ function stringifyError(err: unknown): string {
   if (err === null || err === undefined) return 'unknown error';
   return String(err);
 }
+
+// ---- Needs-auth classification ----------------------------------------------
+
+export type ServerAuthClass = 'oauth' | 'open' | 'unknown';
+
+interface AuthClassCacheEntry {
+  cls: ServerAuthClass;
+  at: number;
+}
+
+const authClassCache = new Map<string, AuthClassCacheEntry>();
+const AUTH_CLASS_TTL_MS = 10 * 60_000;
+// Probe errors are transient (server down, network) — retry much sooner.
+const AUTH_CLASS_ERROR_TTL_MS = 60_000;
+
+/**
+ * Classify whether an MCP server requires OAuth, using the spec probe
+ * (401 + `WWW-Authenticate: … resource_metadata="…"`). Provider-agnostic:
+ * this is the only signal, no per-service configuration. Cached per URL so
+ * spawn-time checks don't hammer providers.
+ */
+export async function classifyServerAuth(serverUrl: string): Promise<ServerAuthClass> {
+  const cached = authClassCache.get(serverUrl);
+  if (cached) {
+    const ttl = cached.cls === 'unknown' ? AUTH_CLASS_ERROR_TTL_MS : AUTH_CLASS_TTL_MS;
+    if (Date.now() - cached.at < ttl) return cached.cls;
+  }
+  let cls: ServerAuthClass;
+  try {
+    cls = (await probeResourceMetadataUrl(serverUrl)) ? 'oauth' : 'open';
+  } catch {
+    cls = 'unknown';
+  }
+  authClassCache.set(serverUrl, { cls, at: Date.now() });
+  return cls;
+}
+
+/** Test hook — drop all cached classifications. */
+export function resetServerAuthClassCache(): void {
+  authClassCache.clear();
+}

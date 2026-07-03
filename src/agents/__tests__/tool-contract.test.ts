@@ -113,6 +113,7 @@ const AGENT_TOOLS = [
   'mcp__agent-tools__send_message_to_agent',
   'mcp__agent-tools__log_finding',
   'mcp__agent-tools__share_artifact',
+  'mcp__agent-tools__request_mcp_auth',
 ];
 
 const PM_COMMS_TOOLS = [
