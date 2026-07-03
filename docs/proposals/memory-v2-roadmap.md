@@ -16,7 +16,7 @@ Not a metrics gate — a checklist plus permanent instrumentation. Enablement ri
 
 - Pre-flight replay (disposable script, not maintained infra): pull prod data (`scripts/pull-remote-data.sh`), run recent tasks' `SelectionContext`s through `selectEntities` against the pulled store, print would-be injections + rendered token counts; eyeball for nonsense (does a payments task pull `payment-service` or noise?). Worst-case token arithmetic goes in the enablement PR description.
 - Store review (human, ~1–2h): skim the most-connected entity pages for junk, staleness, and prompt-injection residue — content quality is the real enablement risk, and no selection metric measures it.
-- Selection sensor (permanent): at spawn, write a small JSON record — selected slugs with scores and scope, dropped-over-budget, zero-signal count, rendered block tokens — into the task's session dir, so `pull-remote-data.sh` harvests it with zero extra plumbing.
+- Selection sensor (permanent): at spawn, write a small JSON record — selected slugs with scores and scope, dropped-over-budget, zero-signal count, rendered block tokens — into `memory/tasks/<taskId>/telemetry.jsonl`, so `pull-remote-data.sh` harvests it even in `-m` memory-only pulls and ejection stays one `rm -rf`.
 - Store snapshots: run the existing pull on a schedule and keep the dated tarballs — store-at-time-T history for later evals, no prod-side change needed.
 - Enable in prod (PM track first if a per-track gate is cheap, else globally — cost is bounded); watch the sensor for a few weeks; tune `ORG_INJECT_MAX` / `ENTITY_INJECT_MAX` by flag. Rollback is the flag.
 
@@ -24,7 +24,7 @@ Not a metrics gate — a checklist plus permanent instrumentation. Enablement ri
 
 - Spike the SDK-native memory tool + context editing behind a flag; decide buy-vs-build on the spike's own measurements (tokens, turns, latency, recall on replayed tasks) compared against live push telemetry from Phase 1.5.
 - Read tools for agents: `search_memory`, `read_entity`, `read_task_summary`, `grep_task_log`. All agents read; writes stay funneled through the extractor.
-- Pull sensor (permanent): record every read-tool call (query, results, whether a returned page was subsequently read) into the session dir. Pull calls are revealed ground truth: a pulled-but-not-injected page is a measured push-recall miss; a zero-result search is a measured store gap. This is what makes Phase 5 honest.
+- Pull sensor (permanent): record every read-tool call (query, results, whether a returned page was subsequently read) into the task's `memory/tasks/<taskId>/telemetry.jsonl` alongside selection records. Pull calls are revealed ground truth: a pulled-but-not-injected page is a measured push-recall miss; a zero-result search is a measured store gap. This is what makes Phase 5 honest.
 
 ### Phase 3 — Semantic dedupe (can run alongside Phase 2)
 
