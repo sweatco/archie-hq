@@ -10,8 +10,13 @@ import {
   readOAuthRecord,
   readOAuthSealed,
   writeOAuthRecord,
+  readOAuthClientRecord,
+  readOAuthClientSealed,
+  readUserOAuthRecord,
+  readUserOAuthSealed,
+  writeUserOAuthRecord,
 } from './storage.js';
-import type { OAuthSealed } from './types.js';
+import type { OAuthSealed, OAuthUserSealed } from './types.js';
 
 /** Refresh if the token expires within this many seconds. */
 const REFRESH_LEEWAY_SECONDS = 60;
@@ -25,6 +30,15 @@ export interface FreshToken {
 export class OAuthRecordMissingError extends Error {
   constructor(public readonly serverName: string) {
     super(`No OAuth record for MCP server "${serverName}"`);
+  }
+}
+
+export class OAuthUserRecordMissingError extends Error {
+  constructor(
+    public readonly slackUserId: string,
+    public readonly serverName: string,
+  ) {
+    super(`No OAuth record for user ${slackUserId} on MCP server "${serverName}"`);
   }
 }
 
@@ -104,6 +118,81 @@ export async function ensureFreshToken(
       : record.expires_at; // unknown lifetime — leave as-is so we re-try next time
 
     await writeOAuthRecord(
+      {
+        ...record,
+        updated_at: nowSec,
+        expires_at: expiresAt,
+      },
+      refreshedSealed,
+    );
+
+    return {
+      accessToken: response.access_token,
+      tokenType: response.token_type,
+      expiresAt,
+    };
+  });
+}
+
+/**
+ * Per-user variant of `ensureFreshToken`. The token lives in the user's own
+ * record; client credentials come from the shared client registration written
+ * at connect time. The mutex is keyed per (user, server) so refreshes are
+ * isolated per user — one user's dead refresh token never blocks or breaks
+ * another's.
+ */
+export async function ensureFreshUserToken(
+  slackUserId: string,
+  serverName: string,
+  options: EnsureFreshTokenOptions = {},
+): Promise<FreshToken> {
+  const { now = Date.now(), force = false } = options;
+  return withKeyMutex(`oauth:user:${slackUserId}:${serverName}`, async () => {
+    const record = await readUserOAuthRecord(slackUserId, serverName);
+    if (!record) throw new OAuthUserRecordMissingError(slackUserId, serverName);
+
+    const nowSec = Math.floor(now / 1000);
+    const sealed = await readUserOAuthSealed(record);
+    if (!force && record.expires_at - nowSec > REFRESH_LEEWAY_SECONDS) {
+      return {
+        accessToken: sealed.access_token,
+        tokenType: sealed.token_type,
+        expiresAt: record.expires_at,
+      };
+    }
+
+    if (!sealed.refresh_token) {
+      throw new OAuthRefreshError(serverName, new Error('No refresh_token stored — re-authorization required'));
+    }
+    const clientRecord = await readOAuthClientRecord(serverName);
+    if (!clientRecord) {
+      throw new OAuthRefreshError(serverName, new Error('Shared client registration missing — re-authorization required'));
+    }
+    const client = await readOAuthClientSealed(clientRecord);
+
+    let response;
+    try {
+      response = await refreshAccessToken({
+        as: { issuer: record.issuer, token_endpoint: record.token_endpoint },
+        client: { client_id: client.client_id },
+        clientAuth: clientAuthFor(client.client_secret),
+        refreshToken: sealed.refresh_token,
+        resource: record.resource,
+      });
+    } catch (err) {
+      throw new OAuthRefreshError(serverName, err);
+    }
+
+    const refreshedSealed: OAuthUserSealed = {
+      access_token: response.access_token,
+      refresh_token: typeof response.refresh_token === 'string' ? response.refresh_token : sealed.refresh_token,
+      token_type: response.token_type,
+    };
+    const expiresAt = typeof response.expires_in === 'number'
+      ? nowSec + response.expires_in
+      : record.expires_at; // unknown lifetime — leave as-is so we re-try next time
+
+    await writeUserOAuthRecord(
       {
         ...record,
         updated_at: nowSec,

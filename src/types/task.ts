@@ -274,6 +274,29 @@ export interface AgentSessionState {
   last_activity?: string;    // ISO timestamp
 }
 
+/**
+ * An outstanding per-user MCP OAuth wall request — parked work awaiting a
+ * user's authorization. Keyed by `auth_request_id` in
+ * `TaskMetadata.mcp_auth_requests`; the same id travels through the pending
+ * OAuth record so the public callback resolves exactly this request (never
+ * `slack_user_id` alone, which is ambiguous across concurrent tasks).
+ */
+export interface McpAuthRequest {
+  /** MCP server name the agent asked for. */
+  server: string;
+  /** Agent that called `request_mcp_auth`. */
+  agent_id: string;
+  /** Channel key the wall was posted to (for reference / re-posts). */
+  channel_key?: string;
+  /** OAuth `state` of the most recent authorize attempt minted for this request. */
+  state?: string;
+  /** Wall message ref, captured at click time — lets completion edit the wall in place. */
+  channel_id?: string;
+  message_ts?: string;
+  /** Unix seconds. Requests older than the pending TTL are pruned. */
+  created_at: number;
+}
+
 export interface TaskMetadata {
   task_id: string;
   task_owner: AgentName | null;
@@ -321,6 +344,14 @@ export interface TaskMetadata {
     requested_by: string; // agent id — to clear its parked teardown on resolution
     requested_at: string; // ISO 8601, for the audit finding
   };
+  /**
+   * Per-user MCP OAuth: completed acting-user bindings, server name → Slack
+   * user id. A bound (task, server) pair is user-scoped — injection uses that
+   * user's token or re-walls; it never falls back to the shared operator token.
+   */
+  mcp_auth_bindings?: Record<string, string>;
+  /** Outstanding authorization wall requests, keyed by auth_request_id. */
+  mcp_auth_requests?: Record<string, McpAuthRequest>;
   research_budget_extra?: number;    // Additional research budget granted via Slack approval (+5 per approval)
   research_request_count?: number;   // Persisted research request count (survives stop/reactivate)
   failure_counter?: number;          // Consecutive recovery attempts (Stage 3 idle detection)
@@ -375,4 +406,3 @@ export interface SlackAttachment {
   /** Text content of the attachment (forwarded message body, unfurled preview, etc.). */
   text: string;
 }
-
