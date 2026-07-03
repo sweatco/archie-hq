@@ -81,17 +81,31 @@ export function getUsersDir(): string {
   return join(getMemoryDir(), 'users');
 }
 
-/** Summaries directory: workdir/memory/summaries/ */
-export function getSummariesDir(): string {
-  return join(getMemoryDir(), 'summaries');
+/** Per-task artifacts root: workdir/memory/tasks/ (episodic memory — summaries + telemetry). */
+export function getTasksDir(): string {
+  return join(getMemoryDir(), 'tasks');
 }
 
-/** Per-task summary file: workdir/memory/summaries/<taskId>.md */
-export function getSummaryPath(taskId: string): string {
-  if (!isAllowedTaskId(taskId)) {
-    throw new Error(`getSummaryPath: invalid taskId ${JSON.stringify(taskId)}`);
+/**
+ * Per-task artifact directory: workdir/memory/tasks/<taskId>/. The taskId is a
+ * directory segment here, so pure-dot names are rejected on top of the shared
+ * guard — `isAllowedTaskId` accepts dots, and `.`/`..` would escape the tree.
+ */
+export function getTaskDir(taskId: string): string {
+  if (!isAllowedTaskId(taskId) || /^\.+$/.test(taskId)) {
+    throw new Error(`getTaskDir: invalid taskId ${JSON.stringify(taskId)}`);
   }
-  return join(getSummariesDir(), `${taskId}.md`);
+  return join(getTasksDir(), taskId);
+}
+
+/** Per-task summary file: workdir/memory/tasks/<taskId>/summary.md */
+export function getSummaryPath(taskId: string): string {
+  return join(getTaskDir(taskId), 'summary.md');
+}
+
+/** Per-task selection-sensor log: workdir/memory/tasks/<taskId>/telemetry.jsonl */
+export function getTaskTelemetryPath(taskId: string): string {
+  return join(getTaskDir(taskId), 'telemetry.jsonl');
 }
 
 /** Pending-extraction queue file: workdir/memory/pending-extractions.md */
@@ -127,19 +141,6 @@ export function getEntityPath(slug: string): string {
     throw new Error(`getEntityPath: invalid entity slug ${JSON.stringify(slug)}`);
   }
   return join(getEntitiesDir(), `${slug}.md`);
-}
-
-/**
- * Selection-sensor log: workdir/sessions/<taskId>/shared/memory-injection.jsonl.
- * Deliberately the one memory-owned path outside memory/ — the record lives
- * with the task session (joinable with knowledge.log, harvested by the session
- * pull) and is removed with sessions, not with memory/.
- */
-export function getSessionInjectionLogPath(taskId: string): string {
-  if (!isAllowedTaskId(taskId)) {
-    throw new Error(`getSessionInjectionLogPath: invalid taskId ${JSON.stringify(taskId)}`);
-  }
-  return join(WORKDIR, 'sessions', taskId, 'shared', 'memory-injection.jsonl');
 }
 
 // ---- User identifier validation ----
@@ -199,14 +200,4 @@ export function getUserPath(id: string): string {
   // normalise `:` to `__` for the fallback namespace only.
   const safe = id.includes(':') ? id.replace(':', '__') : id;
   return join(getUsersDir(), `${safe}.md`);
-}
-
-// ---- Legacy (kept for callers that need to remove old session-dir summaries) ----
-
-/**
- * @deprecated Use `getSummaryPath` (memory dir) instead. Retained only so callers
- * can locate and clean up legacy summaries written under sessions/<taskId>/shared/.
- */
-export function getTaskSummaryPath(taskId: string): string {
-  return join(WORKDIR, 'sessions', taskId, 'shared', 'summary.md');
 }

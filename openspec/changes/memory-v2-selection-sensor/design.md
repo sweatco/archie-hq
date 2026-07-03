@@ -8,7 +8,7 @@ The read path (`spawn.ts:523` → `enrichPromptWithMemory` → `buildMemoryConte
 
 **Goals:**
 - Every injection-enabled spawn leaves one durable, self-contained JSON record of the selection decision: inputs (context), outputs (selected/dropped with scores), and cost (token estimate).
-- Records land where the existing ops tooling already harvests them (`sessions/<taskId>/shared/`), joinable against `knowledge.log` for the Phase 5 eval.
+- Records land where the existing ops tooling already harvests them (`memory/tasks/<taskId>/`, included in `-m` memory-only pulls), joinable against the task's `knowledge.log` by the embedded `taskId`.
 - Telemetry can never break a spawn.
 
 **Non-Goals:**
@@ -23,11 +23,12 @@ The read path (`spawn.ts:523` → `enrichPromptWithMemory` → `buildMemoryConte
 `buildMemoryContext` is the only place where the selection result, the rendered blocks, and the inputs coexist. Writing there keeps `enrichPromptWithMemory`'s signature (`Promise<string>`) and the two-seam invariant intact.
 - **Alternative — return a record object to `spawn.ts` and write from core:** rejected; it leaks memory types into core and widens the seam, the exact coupling `src/memory/CLAUDE.md` forbids.
 
-### 2. Destination: `<WORKDIR>/sessions/<taskId>/shared/memory-injection.jsonl`, one line per enriched spawn
+### 2. Destination: `memory/tasks/<taskId>/telemetry.jsonl` — the per-task (episodic) side of the store
 
-A `getSessionInjectionLogPath(taskId)` helper goes in `paths.ts` (which already imports `WORKDIR`). JSONL because a task sees multiple spawns (PM, then specialists) and append-only lines need no read-modify-write.
-- **Why the session dir and not `memory/`:** colocation with `knowledge.log` is what makes Phase 5 joins trivial; `scripts/pull-remote-data.sh` already tarballs `sessions/`, so harvesting needs zero new plumbing; per-task sharding avoids a global file with cross-task write contention.
-- **Trade-off accepted:** the memory module learns one session-layout path. It is contained in a single `paths.ts` helper; the inverse (core writes memory's record) leaks types the other way and was rejected in Decision 1. The ejection recipe in `memory.md` gains one line: telemetry files live under `sessions/` and disappear with sessions, not with `memory/`.
+`paths.ts` gains `getTasksDir()` / `getTaskDir(taskId)` / `getTaskTelemetryPath(taskId)`, and `getSummaryPath` moves under the same roof (`memory/tasks/<taskId>/summary.md`, migrated from the flat `memory/summaries/` by a one-time idempotent `migrateLegacySummaries()` at init). JSONL because a task sees multiple spawns (PM, then specialists) and append-only lines need no read-modify-write. The sensor creates the task dir on first write.
+- **Why `memory/` and not the session dir:** ejectability is the layer's core invariant — everything it writes disappears with `rm -rf workdir/memory/`, no ejection asterisk; `memory/summaries/<taskId>.md` already established the task-keyed-under-memory precedent; telemetry lifetime follows the store, not session GC; and `-m` memory-only pulls carry it. A session-dir placement was implemented first and rejected on review: its only real advantage — directory colocation with `knowledge.log` — is aesthetic, since lines embed `taskId` and every join is a taskId join anyway.
+- **Why a per-task directory (`tasks/<id>/{summary.md,telemetry.jsonl}`) instead of flat per-kind dirs:** one home for all per-task artifacts (Phase 2's pull-tool records join the same file with a `kind` field), and the tree now encodes the episodic (per-task) vs semantic (`entities/`, `users/`) split. Named `tasks/`, not `sessions/` — the word "sessions" already means the runtime area under `workdir/sessions/`.
+- **Trade-off accepted:** telemetry appends happen outside the serialized lifecycle queue. Safe by construction — append-only, per-task file, no read-modify-write — but it is a documented exception to "all memory writes go through the queue". taskId also becomes a directory segment, so `getTaskDir` rejects pure-dot names on top of the shared guard.
 - **Concurrency:** each record is serialized to a single small `appendFile` call (O_APPEND); concurrent spawns are rare and temporally spread, and a worst-case interleave corrupts one telemetry line, never app state. Phase 5 readers must skip unparseable lines.
 
 ### 3. Each line is a self-contained replay case: inputs + outputs + cost, versioned
@@ -50,7 +51,7 @@ A `getSessionInjectionLogPath(taskId)` helper goes in `paths.ts` (which already 
 
 ### 5. `MemorySelectors` gains optional `taskId` and `agent`; spawn passes both
 
-Both are in scope at the call site (`taskId`, `def.id`). Optional fields keep every other caller (tests, future CLI paths) valid; when `taskId` is absent, the sensor is skipped silently — there is no session dir to write into.
+Both are in scope at the call site (`taskId`, `def.id`). Optional fields keep every other caller (tests, future CLI paths) valid; when `taskId` is absent, the sensor is skipped silently — there is no task directory to address.
 
 ### 6. Fail-safe by construction; no new flag
 
@@ -61,11 +62,12 @@ The entire assemble-and-append path is wrapped in try/catch; failure logs one `l
 - **[Schema drifts before Phase 5 consumes it]** → `v` field per line; readers skip lines with unknown versions or parse failures.
 - **[Token estimate inaccuracy]** → labeled `Est`; tuning decisions compare configurations relative to each other, where a constant-factor error cancels.
 - **[User IDs and task titles duplicated into another session file]** → same trust/PII class as `metadata.json` and `knowledge.log` already in the same directory; no new exposure surface.
-- **[Sensor writes on every spawn forever]** → bounded: a few KB per task, sharded per session dir, cleaned up with sessions; no compaction needed.
+- **[Sensor writes on every spawn forever]** → bounded: a few KB per task, sharded per task dir under `memory/tasks/`; records outlive session cleanup (a feature for the eval), so housekeeping eventually wants an age-based prune — not needed at current volumes.
+- **[Legacy summaries migration runs at every startup]** → idempotent and O(1) when `memory/summaries/` is absent (the steady state); invalid filenames are skipped, and the legacy dir survives only if it still holds unmigratable files.
 
 ## Migration Plan
 
-Purely additive; dark until `ARCHIE_MEMORY_INJECT=true`. No data migration, no flag changes. Rollback: revert the commit, or disable injection (which also stops the sensor). Verify: `npm run typecheck`; `npx vitest run src/memory/__tests__/`; manual: enable injection locally, run a task, inspect `sessions/<taskId>/shared/memory-injection.jsonl`.
+Sensor is dark until `ARCHIE_MEMORY_INJECT=true`; the summaries reshape happens once at first startup via `migrateLegacySummaries()` (no flags, no manual steps). Rollback: revert the commit, or disable injection (which stops the sensor); already-migrated summaries stay valid since the path helper defines the layout. Verify: `npm run typecheck`; `npx vitest run src/memory/__tests__/`; manual: enable injection locally, run a task, inspect `memory/tasks/<taskId>/telemetry.jsonl`.
 
 ## Open Questions
 

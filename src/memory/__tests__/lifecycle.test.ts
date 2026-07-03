@@ -37,8 +37,12 @@ vi.mock('../paths.js', () => ({
     return join(usersDir, `${safe}.md`);
   },
   getRecentActivityPath: () => activityPath,
-  getSummariesDir: () => summariesDir,
-  getSummaryPath: (taskId: string) => join(summariesDir, `${taskId}.md`),
+  getSummaryPath: (taskId: string) => {
+    if (!/^[A-Za-z0-9._\-]+$/.test(taskId) || /^\.+$/.test(taskId)) {
+      throw new Error(`getTaskDir: invalid taskId ${JSON.stringify(taskId)}`);
+    }
+    return join(memoryDir, 'tasks', taskId, 'summary.md');
+  },
   getPendingPath: () => join(memoryDir, 'pending-extractions.md'),
   isAllowedUserId: (id: string) =>
     /^(U|W|B|T)[A-Z0-9]{6,}$/.test(id) || /^(cli|local):[A-Za-z0-9_\-]+$/.test(id),
@@ -56,7 +60,6 @@ vi.mock('../paths.js', () => ({
   getOrgInjectMax: () => 8,
   getEntityObsCap: () => 30,
   isValidEntitySlug: (s: string) => /^[a-z0-9][a-z0-9-]{0,63}$/.test(s) && s !== 'index',
-  getTaskSummaryPath: (taskId: string) => join(sessionsDir, taskId, 'shared', 'summary.md'),
 }));
 
 // ============================================================================
@@ -118,7 +121,7 @@ vi.mock('../extractor.js', async (importOriginal) => {
 // Import the module under test and mocked modules (after mocks are set up)
 // ============================================================================
 
-import { handleTaskCompleted, rescheduleTaskCompleted, extractUsernames, selectRelatedTasksByEntity } from '../lifecycle.js';
+import { handleTaskCompleted, rescheduleTaskCompleted, extractUsernames, selectRelatedTasksByEntity, migrateLegacySummaries } from '../lifecycle.js';
 import { enqueuePending, readPending } from '../pending-queue.js';
 import { runExtraction } from '../extractor.js';
 import { postSlackMessage } from '../../connectors/slack/client.js';
@@ -177,7 +180,6 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
 
     await mkdir(join(sessionsDir, TASK_ID, 'shared'), { recursive: true });
     await mkdir(usersDir, { recursive: true });
-    await mkdir(summariesDir, { recursive: true });
     await mkdir(memoryDir, { recursive: true });
 
     await writeFile(
@@ -241,11 +243,11 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     expect(content).toContain('Prefers direct communication');
   });
 
-  it('writes summary.md under workdir/memory/summaries/ (not session dir)', async () => {
+  it('writes summary.md under workdir/memory/tasks/<taskId>/ (not session dir)', async () => {
     handleTaskCompleted(TASK_ID);
     await drain();
 
-    const newSummaryPath = join(summariesDir, `${TASK_ID}.md`);
+    const newSummaryPath = join(memoryDir, 'tasks', TASK_ID, 'summary.md');
     const oldSummaryPath = join(sessionsDir, TASK_ID, 'shared', 'summary.md');
     expect(existsSync(newSummaryPath)).toBe(true);
     expect(existsSync(oldSummaryPath)).toBe(false);
@@ -255,10 +257,32 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     expect(content).toContain('Investigated and fixed the login bug.');
   });
 
+  it('migrateLegacySummaries moves memory/summaries/*.md into memory/tasks/<id>/summary.md and removes the legacy dir', async () => {
+    await mkdir(summariesDir, { recursive: true });
+    await writeFile(join(summariesDir, 'task-20260101-0001-aaaaaa.md'), 'A', 'utf-8');
+    await writeFile(join(summariesDir, 'task-20260101-0002-bbbbbb.md'), 'B', 'utf-8');
+
+    await migrateLegacySummaries();
+
+    expect(await readFile(join(memoryDir, 'tasks', 'task-20260101-0001-aaaaaa', 'summary.md'), 'utf-8')).toBe('A');
+    expect(await readFile(join(memoryDir, 'tasks', 'task-20260101-0002-bbbbbb', 'summary.md'), 'utf-8')).toBe('B');
+    expect(existsSync(summariesDir)).toBe(false);
+  });
+
+  it('migrateLegacySummaries no-ops without a legacy dir and leaves non-migratable files behind', async () => {
+    await migrateLegacySummaries(); // absent legacy dir → no throw
+
+    await mkdir(summariesDir, { recursive: true });
+    await writeFile(join(summariesDir, 'not a task id.md'), 'X', 'utf-8');
+    await migrateLegacySummaries();
+
+    expect(existsSync(join(summariesDir, 'not a task id.md'))).toBe(true); // skipped, legacy dir kept
+  });
+
   it('summary contains Memory Updates section with per-file bullets', async () => {
     handleTaskCompleted(TASK_ID);
     await drain();
-    const content = await readFile(join(summariesDir, `${TASK_ID}.md`), 'utf-8');
+    const content = await readFile(join(memoryDir, 'tasks', TASK_ID, 'summary.md'), 'utf-8');
     expect(content).toContain('## Memory Updates');
     expect(content).not.toContain('### org.md');
     expect(content).toContain('### entities/backend.md');
@@ -277,7 +301,7 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     });
     handleTaskCompleted(TASK_ID);
     await drain();
-    const content = await readFile(join(summariesDir, `${TASK_ID}.md`), 'utf-8');
+    const content = await readFile(join(memoryDir, 'tasks', TASK_ID, 'summary.md'), 'utf-8');
     expect(content).toContain('## Memory Updates');
     expect(content).toContain('_no durable learnings_');
   });
@@ -285,7 +309,7 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
   it('summary contains Related Tasks section with placeholder when activity index is empty', async () => {
     handleTaskCompleted(TASK_ID);
     await drain();
-    const content = await readFile(join(summariesDir, `${TASK_ID}.md`), 'utf-8');
+    const content = await readFile(join(memoryDir, 'tasks', TASK_ID, 'summary.md'), 'utf-8');
     expect(content).toContain('## Related Tasks');
     expect(content).toContain('_no related tasks found_');
   });
@@ -293,7 +317,7 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
   it('summary includes Slack thread link in frontmatter', async () => {
     handleTaskCompleted(TASK_ID);
     await drain();
-    const content = await readFile(join(summariesDir, `${TASK_ID}.md`), 'utf-8');
+    const content = await readFile(join(memoryDir, 'tasks', TASK_ID, 'summary.md'), 'utf-8');
     expect(content).toContain('links:');
     expect(content).toContain('channel_id: C1');
     expect(content).toContain('thread_id: "1234"');

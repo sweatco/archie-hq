@@ -5,8 +5,9 @@
  * for injection into agent system prompts.
  */
 
-import { readFile, appendFile } from 'fs/promises';
+import { readFile, appendFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
+import { dirname } from 'path';
 import { readUser } from './store.js';
 import { listEntities, serializeEntity } from './entities.js';
 import { readIndexMarkdown, renderIndex, selectEntities, type SelectionResult } from './entity-index.js';
@@ -15,7 +16,7 @@ import {
   isInjectionEnabled,
   getRecentActivityPath,
   getTouchedByInjectMax,
-  getSessionInjectionLogPath,
+  getTaskTelemetryPath,
   getOrgInjectMax,
   getEntityInjectMax,
 } from './paths.js';
@@ -104,9 +105,9 @@ export async function buildMemoryContext(
 
 /**
  * Selection sensor: append one JSONL record of this spawn's injection decision
- * to the task's session dir. Fail-safe — never throws, never alters the
- * prompt; skipped without a `taskId` and when injection is off, so the
- * collect-only posture stays write-free.
+ * to memory/tasks/<taskId>/telemetry.jsonl. Fail-safe — never throws, never
+ * alters the prompt; skipped without a `taskId` and when injection is off, so
+ * the collect-only posture stays write-free.
  */
 async function recordSelection(
   selectors: MemorySelectors,
@@ -134,7 +135,9 @@ async function recordSelection(
       budgets: { org: getOrgInjectMax(), nonOrg: getEntityInjectMax() },
       renderedTokensEst: Math.round(context.length / 4),
     };
-    await appendFile(getSessionInjectionLogPath(selectors.taskId), `${JSON.stringify(record)}\n`, 'utf-8');
+    const path = getTaskTelemetryPath(selectors.taskId);
+    await mkdir(dirname(path), { recursive: true });
+    await appendFile(path, `${JSON.stringify(record)}\n`, 'utf-8');
   } catch (err: any) {
     logger.warn('memory', `selection sensor write failed (spawn unaffected): ${err?.message ?? err}`);
   }

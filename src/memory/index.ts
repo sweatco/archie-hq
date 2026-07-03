@@ -11,12 +11,12 @@
 import { mkdir, readdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { onEvent } from '../system/event-bus.js';
-import { handleTaskCompleted, rescheduleTaskCompleted } from './lifecycle.js';
+import { handleTaskCompleted, rescheduleTaskCompleted, migrateLegacySummaries } from './lifecycle.js';
 import { readPending } from './pending-queue.js';
 import {
   getMemoryDir,
   getUsersDir,
-  getSummariesDir,
+  getTasksDir,
   getEntitiesDir,
   isMemoryEnabled,
   isAllowedUserId,
@@ -35,9 +35,10 @@ export async function initMemory(): Promise<void> {
 
   await mkdir(getMemoryDir(), { recursive: true });
   await mkdir(getUsersDir(), { recursive: true });
-  await mkdir(getSummariesDir(), { recursive: true });
+  await mkdir(getTasksDir(), { recursive: true });
   await mkdir(getEntitiesDir(), { recursive: true });
 
+  await migrateLegacySummaries();
   await warnLegacyUserFiles();
   await drainPendingExtractions();
 

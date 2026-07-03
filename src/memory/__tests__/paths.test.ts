@@ -18,6 +18,7 @@ import {
   isValidEntitySlug,
   getUserPath,
   getSummaryPath,
+  getTaskTelemetryPath,
   getEntityPath,
   getEntityCap,
   getEntityInjectMax,
@@ -175,12 +176,24 @@ describe('getUserPath', () => {
 });
 
 describe('getSummaryPath', () => {
-  it('places summaries under memory/summaries/', () => {
-    expect(getSummaryPath('task-20260410-1000-abc')).toMatch(/memory\/summaries\/task-20260410-1000-abc\.md$/);
+  it('places summaries under memory/tasks/<taskId>/', () => {
+    expect(getSummaryPath('task-20260410-1000-abc')).toMatch(/memory\/tasks\/task-20260410-1000-abc\/summary\.md$/);
   });
 
   it('throws on malformed taskId', () => {
     expect(() => getSummaryPath('has space')).toThrow(/invalid taskId/);
+  });
+});
+
+describe('getTaskTelemetryPath', () => {
+  it('places telemetry next to the task summary', () => {
+    expect(getTaskTelemetryPath('task-20260410-1000-abc')).toMatch(/memory\/tasks\/task-20260410-1000-abc\/telemetry\.jsonl$/);
+  });
+
+  it('throws on malformed or traversal taskIds', () => {
+    expect(() => getTaskTelemetryPath('../escape')).toThrow(/invalid taskId/);
+    expect(() => getTaskTelemetryPath('..')).toThrow(/invalid taskId/);
+    expect(() => getTaskTelemetryPath('.')).toThrow(/invalid taskId/);
   });
 });
 

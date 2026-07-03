@@ -18,7 +18,7 @@ let memoryEnabled = true;
 let injectionEnabled = false;
 
 let entitiesDir: string;
-let sessionsDir: string;
+let tasksDir: string;
 let touchedByMax = 10;
 
 vi.mock('../paths.js', () => ({
@@ -39,7 +39,7 @@ vi.mock('../paths.js', () => ({
   getOrgInjectMax: () => 8,
   getEntityObsCap: () => 30,
   getTouchedByInjectMax: () => touchedByMax,
-  getSessionInjectionLogPath: (taskId: string) => join(sessionsDir, taskId, 'shared', 'memory-injection.jsonl'),
+  getTaskTelemetryPath: (taskId: string) => join(tasksDir, taskId, 'telemetry.jsonl'),
   isValidEntitySlug: (s: string) => /^[a-z0-9][a-z0-9-]{0,63}$/.test(s) && s !== 'index',
 }));
 
@@ -56,7 +56,7 @@ describe('memory context builder', () => {
     memoryEnabled = true;
     injectionEnabled = false; // production default; positive tests opt in explicitly
     touchedByMax = 10;
-    sessionsDir = join(tempDir, 'sessions');
+    tasksDir = join(tempDir, 'tasks');
   });
 
   // Helper: write an entity file into the temp entities dir.
@@ -328,7 +328,7 @@ describe('memory context builder', () => {
     });
   });
 
-  describe('selection sensor (memory-injection.jsonl)', () => {
+  describe('selection sensor (memory/tasks/<taskId>/telemetry.jsonl)', () => {
     const TASK = 'task-20260702-0001-sensor';
     const FM = (over: Record<string, string>) => ({
       type: 'service',
@@ -340,11 +340,10 @@ describe('memory context builder', () => {
       status: 'active',
       ...over,
     });
-    const sensorFile = () => join(sessionsDir, TASK, 'shared', 'memory-injection.jsonl');
+    const sensorFile = () => join(tasksDir, TASK, 'telemetry.jsonl');
 
     it('appends one parseable record per enriched spawn, with context, outcome, and cost', async () => {
       injectionEnabled = true;
-      await mkdir(join(sessionsDir, TASK, 'shared'), { recursive: true });
       await writeEntity('payment-service', FM({ display_name: '"Payment Service"', scope: 'repo', repos: '[backend]' }));
       await writeEntity('launchdarkly', FM({ display_name: '"LaunchDarkly"', type: 'integration' })); // zero-signal org
       await mkdir(usersDir, { recursive: true });
@@ -375,7 +374,6 @@ describe('memory context builder', () => {
 
     it('appends one line per enrichment — a zero-injection spawn still leaves a record', async () => {
       injectionEnabled = true;
-      await mkdir(join(sessionsDir, TASK, 'shared'), { recursive: true });
       await buildMemoryContext([], { taskId: TASK, agent: 'pm' });
       await buildMemoryContext([], { taskId: TASK, agent: 'backend-agent' });
 
@@ -387,9 +385,10 @@ describe('memory context builder', () => {
       expect(record.renderedTokensEst).toBe(0);
     });
 
-    it('sensor failure never affects enrichment: missing session dir → warning, identical context', async () => {
+    it('sensor failure never affects enrichment: unwritable telemetry path → warning, identical context', async () => {
       injectionEnabled = true;
       const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      await writeFile(tasksDir, 'blocks mkdir', 'utf-8'); // a file where the tasks dir should be
       await writeEntity('payment-service', FM({ display_name: '"Payment Service"', scope: 'repo', repos: '[backend]' }));
 
       const withSensor = await buildMemoryContext([], { repo: 'backend', taskId: TASK });
@@ -402,7 +401,6 @@ describe('memory context builder', () => {
     });
 
     it('disabled injection writes nothing even when a taskId is supplied', async () => {
-      await mkdir(join(sessionsDir, TASK, 'shared'), { recursive: true });
       await writeEntity('payment-service', FM({ display_name: '"Payment Service"', scope: 'repo', repos: '[backend]' }));
 
       await buildMemoryContext([], { repo: 'backend', taskId: TASK });
@@ -417,7 +415,7 @@ describe('memory context builder', () => {
       const result = await buildMemoryContext([], { repo: 'backend', agent: 'backend-agent' });
 
       expect(result).toContain('<entity slug="payment-service"');
-      expect(existsSync(sessionsDir)).toBe(false);
+      expect(existsSync(tasksDir)).toBe(false);
     });
   });
 });
