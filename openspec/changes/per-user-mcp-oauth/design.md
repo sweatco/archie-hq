@@ -45,14 +45,14 @@ oauth/
   _clients/<server>.json          # DCR client_id/secret — registered once, shared
   users/<slackUserId>/<server>.json# per-user access + refresh token
   <server>.json                    # legacy shared operator record (unchanged)
-  .pending/<state>.json            # in-flight, now carries slack_user_id
+  .pending/<state>.json            # in-flight; now carries auth_request_id + task_id + slack_user_id (D5a)
 ```
 
 One DCR client per server, N per-user authorization-code flows against it — the textbook multi-tenant OAuth shape. Per-user subtree gives a clean per-user revoke (`rm oauth/users/U/<server>.json`) and a future offboarding purge (`rm -rf oauth/users/U`). The legacy flat `oauth/<server>.json` record is untouched and read as the shared fallback.
 
 *Alternative considered — keep client+token bundled per user:* rejected; it re-runs DCR per user for no benefit and couples client lifecycle to token lifecycle.
 
-### D4: Injection precedence — per-user wins, shared falls back, else requestable
+### D4: Injection precedence — binding locks out fallback; shared is a cold-start default that escalates on access-denied
 
 At spawn, for each http/sse server the agent references:
 
@@ -61,27 +61,59 @@ resolve acting user for (task, server):
   bound on task?           -> use binding
   else task has one human
        with a stored token? -> auto-bind (D6), use it
-  else                      -> unresolved
+  else                      -> unbound
 
 pick credential:
-  acting user's per-user token (fresh/refreshable)  -> inject
-  else shared operator token (oauth/<server>.json)  -> inject
-  else                                              -> drop server, mark requestable
+  IF (task, server) is BOUND to an acting user:          # user-scoped — no shared fallback
+    per-user token fresh/refreshable  -> inject
+    else                              -> re-wall (drop server, mark requestable)
+  ELSE (unbound, cold):
+    shared operator token exists      -> inject shared    # cold-start default (coexistence)
+    else                              -> drop server, mark requestable
 ```
 
-This makes existing shared connections keep working (fallback) while per-user becomes the default for anything not operator-provisioned.
+Two rules make this both backward-compatible and non-regressive:
+
+1. **The binding is the policy boundary.** Once `(task, server)` is bound to an acting user, that pair is *user-scoped*: a missing, revoked, or refresh-failed per-user token **re-walls** and never silently falls back to the shared operator token. This closes the least-privilege downgrade and removes the earlier contradiction between "fall back to shared" and "failed refresh re-walls."
+2. **Escalate-on-access-denied.** A cold server with a shared token is used optimistically (no upfront wall). If a shared-token call returns an authorization/permission failure (401/403/insufficient scope) at runtime, the agent escalates by calling `request_mcp_auth` (D2) — posting the wall and binding the acting user's own credentials. So shared is the convenient default *until it is insufficient*, at which point the flow upgrades to permission fidelity.
+
+Existing shared connections keep working unchanged for cold, sufficient cases; per-user takes over whenever shared is absent, bound, or denied.
+
+*Alternative considered — always fall back to shared when no per-user token is usable:* rejected. It lets a revoked/expired per-user token silently regain broad shared access and hides the credential failure (flagged by adversarial review). The binding boundary preserves coexistence without that regression.
 
 ### D5: Discovery + DCR move daemon-side, triggered by the click
 
-`beginConnect`'s logic (probe → resource metadata → auth-server metadata → DCR → PKCE/state → write pending) runs in the daemon on button click instead of in the CLI. The shared client is cached at `oauth/_clients/<server>.json`, so DCR runs only on the first-ever authorization of a server. The pending record gains `slack_user_id`; the callback (`routes.ts`) reads it and writes to `oauth/users/<slackUserId>/<server>.json`. The CLI connect path stays for operator/shared connections.
+`beginConnect`'s logic (probe → resource metadata → auth-server metadata → DCR → PKCE/state → write pending) runs in the daemon on button click instead of in the CLI. The shared client is cached at `oauth/_clients/<server>.json`, so DCR runs only on the first-ever authorization of a server. The CLI connect path stays for operator/shared connections.
+
+### D5a: Durable callback↔task correlation (the pending record links back to the exact parked request)
+
+The public `/oauth/callback` is a cold HTTP request that arrives with only `state`. The token binding is per-`(task, server)`, so the callback must resolve *which* parked request it completes — `slack_user_id` alone is insufficient (two tasks can authorize the same user+server concurrently, and a daemon restart between click and callback loses any in-memory park state). Flagged by adversarial review.
+
+The pending record therefore carries a durable correlation tuple, written at button-click time and mirrored into task metadata:
+
+```jsonc
+// oauth/.pending/<state>.json  (plaintext meta, extended)
+{
+  "state": "...",
+  "auth_request_id": "...",   // unique per wall request
+  "task_id": "...",           // the parked task
+  "server_name": "...",
+  "slack_user_id": "...",     // the clicking user (D1)
+  "agent_id": "...",          // who requested (for wake targeting)
+  "channel_key": "...",       // where the wall was posted
+  // ...existing issuer/token_endpoint/scopes/resource/redirect_uri/created_at
+}
+```
+
+On successful exchange the callback: (1) takes the per-`(task, server)` lock (extend the existing `withKeyMutex(pending:${state})` pattern to also key on the task/server), (2) verifies the pending request still matches an outstanding parked request in the task's metadata, (3) writes the token to `oauth/users/<slackUserId>/<server>.json`, (4) records the binding, (5) reactivates the task by loading it from persistence (`Task.get()`), so a daemon restart is survivable. Completion is **idempotent** — a duplicate/replayed callback (provider retry, tab reload) that finds the request already consumed is a no-op, not a second bind/wake.
 
 ### D6: Auto-bind on reuse — the wall is a first-time/expiry event
 
 Tokens persist per user across tasks. When an agent needs a server and an acting user can be resolved who already holds a usable token, the system binds it and skips the wall. In practice: a DM-rooted task (one human) with a returning user never sees a wall; a channel task with no prior binding gets one wall per new server, then remembers.
 
-### D7: Acting-user binding lives in `TaskMetadata`
+### D7: Acting-user binding and pending requests live in `TaskMetadata`
 
-A `mcpAuthBindings: Record<serverName, slackUserId>` map on the task. Written on callback completion, read at spawn. This mirrors how `approvedBy` (edit-mode approver) is a task-level human-identity fact that drives later behavior.
+A `mcpAuthBindings: Record<serverName, slackUserId>` map on the task holds completed bindings — written on callback completion, read at spawn — mirroring how `approvedBy` (edit-mode approver) is a task-level human-identity fact that drives later behavior. Alongside it, an `mcpAuthRequests: Record<authRequestId, { server, agent_id, channel_key, state, created_at }>` map tracks *outstanding* parked requests so the callback (D5a) can verify and resolve the exact request, and so an un-completed request is recoverable after a restart. A completed or expired request is removed from `mcpAuthRequests`.
 
 ## Risks / Trade-offs
 
@@ -89,9 +121,11 @@ A `mcpAuthBindings: Record<serverName, slackUserId>` map on the task. Written on
 - **Agent fails to call `request_mcp_auth` when it should** (LLM reliability) → Same risk class as `request_edit_mode`, which works in production; mitigated by the explicit spawn-time prompt line listing requestable servers.
 - **Group-thread ambiguity — the "wrong" person clicks** → Accepted by design: whoever clicks binds. The binding is per `(task, server)` and revocable; the acting identity is always a real, authenticated human, never a guess.
 - **Parked work stalls if nobody authorizes** → Task simply remains parked (mirrors an un-approved edit-mode request); the agent can re-request. No credentials are ever fabricated.
-- **Token refresh failure for one user** → Isolated: that `(task, server)` becomes requestable again; other servers, other users, and the rest of the task are unaffected (contrast with today's "drop the server" for everyone).
+- **Token refresh failure for a bound user** → Isolated *and* non-downgrading: that `(task, server)` re-walls (D4 rule 1) rather than falling back to the shared token; other servers, other users, and the rest of the task are unaffected (contrast with today's "drop the server" for everyone).
+- **Silent downgrade to shared access on revocation** (adversarial-review finding) → Closed by the D4 binding boundary: once a pair is user-scoped, shared fallback is disabled for it.
+- **Callback bound to the wrong / a stranded task** (adversarial-review finding) → Closed by D5a: durable `auth_request_id` + `task_id` in the pending record, verified under lock, idempotent, restart-survivable via `Task.get()`.
 - **Two participants click near-simultaneously** → Serialize per `(task, server)` with the existing `withKeyMutex` pattern; first binding wins, later clicks no-op or rebind explicitly. Decide the exact tie-break in implementation.
-- **`.mcp.json` must stay vanilla** (the subsystem's stated ethos) → The per-user-vs-shared distinction is inferred at runtime (token presence + probe), not declared in `.mcp.json`; no Archie-specific keys added there.
+- **`.mcp.json` must stay vanilla** (the subsystem's stated ethos) → The per-user-vs-shared distinction is inferred at runtime (token presence + probe + runtime access-denied), not declared in `.mcp.json`; no Archie-specific keys added there.
 
 ## Migration Plan
 
@@ -105,3 +139,4 @@ A `mcpAuthBindings: Record<serverName, slackUserId>` map on the task. Written on
 - Tie-break when two participants click the same wall near-simultaneously (first-wins vs. last-wins vs. reject-second).
 - Should a confirmation DM ("connected X") be in scope now or deferred?
 - Self-service disconnect surface: a PM tool, a slash-style DM command, or CLI-only for v1?
+- **Access-denied detection for escalate-on-access-denied (D4 rule 2):** the agent recognizing a 401/403/insufficient-scope tool error and choosing to call `request_mcp_auth` is the tool-based (LLM-driven) path, consistent with the trigger decision. Do we also need a deterministic backstop (e.g. surfacing a normalized "authorization required — call request_mcp_auth" hint when a shared-token MCP call returns an auth error) so escalation doesn't depend solely on the model interpreting a raw provider error?
