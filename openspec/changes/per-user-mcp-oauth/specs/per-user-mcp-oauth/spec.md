@@ -79,24 +79,43 @@ The system SHALL persist the resolved acting user for each authorized server on 
 - **WHEN** `(task, notion)` is bound to user U and any agent in that task is later spawned with `notion`
 - **THEN** the system injects U's Notion token for that server on every subsequent spawn within the task
 
-### Requirement: Injection precedence with shared-model coexistence
+### Requirement: Injection precedence with binding as the policy boundary
 
-At spawn time, for each http/sse MCP server, the system SHALL resolve credentials in this order: (1) the acting user's per-user token if bound and usable, (2) a shared operator token if one exists, (3) otherwise treat the server as unauthorized (requestable). Existing shared per-server records SHALL continue to work unchanged.
+At spawn time, for each http/sse MCP server, the system SHALL resolve credentials by first determining whether `(task, server)` is bound to an acting user, then selecting credentials as follows:
 
-#### Scenario: Per-user token wins over shared token
+- If the pair **is bound** (user-scoped): inject the acting user's per-user token when fresh or refreshable; otherwise treat the server as unauthorized (requestable). A bound pair SHALL NOT fall back to a shared operator token.
+- If the pair **is unbound** (cold): inject a shared operator token if one exists; otherwise treat the server as unauthorized (requestable).
 
-- **WHEN** both a per-user token for the acting user and a shared operator token exist for a server
-- **THEN** the system injects the acting user's per-user token
+Existing shared per-server records SHALL continue to work unchanged for unbound, sufficient cases.
 
-#### Scenario: Falls back to shared token
+#### Scenario: Bound pair uses only the per-user token
 
-- **WHEN** no per-user token is bound for a server but a shared operator token exists
+- **WHEN** `(task, notion)` is bound to user U and U's token is usable, even if a shared operator token also exists
+- **THEN** the system injects U's per-user token
+
+#### Scenario: Bound pair re-walls instead of falling back to shared
+
+- **WHEN** `(task, notion)` is bound to user U but U's token is missing, revoked, or fails to refresh, and a shared operator token exists
+- **THEN** the system treats the server as unauthorized (requestable) and does NOT inject the shared operator token
+
+#### Scenario: Cold server uses the shared token without a wall
+
+- **WHEN** `(task, server)` is unbound and a shared operator token exists
 - **THEN** the system injects the shared operator token and does not post a wall
 
 #### Scenario: No credentials available
 
-- **WHEN** neither a per-user token nor a shared token exists for a server the agent needs
+- **WHEN** `(task, server)` is unbound and no shared token exists for a server the agent needs
 - **THEN** the system treats the server as unauthorized and the agent may request authorization via the wall
+
+### Requirement: Escalation from shared to per-user on access denial
+
+When a cold server is served by a shared operator token and a call to that server fails with an authorization or permission error (e.g. 401, 403, or insufficient scope), the agent SHALL be able to escalate by calling `request_mcp_auth` for that server, which posts the wall and binds the acting user's own credentials. The system SHALL NOT continue to rely on the shared token for that `(task, server)` once it has escalated and bound an acting user.
+
+#### Scenario: Shared token insufficient triggers escalation
+
+- **WHEN** an agent's call to a shared-token server returns an authorization/permission failure and the agent calls `request_mcp_auth` for that server
+- **THEN** the system posts the authorization wall, and on completion binds the acting user's per-user token to `(task, server)` and uses it for subsequent calls
 
 ### Requirement: Auto-bind on existing token without a wall
 
@@ -130,33 +149,52 @@ The system SHALL perform OAuth discovery, dynamic client registration, and PKCE/
 - **WHEN** a user clicks the wall button for a server with no cached client registration
 - **THEN** the daemon runs discovery and DCR, caches the shared client, writes the pending record, and issues the authorize URL — with no operator CLI involvement
 
+### Requirement: Durable callback-to-task correlation
+
+The pending authorization record and the task metadata SHALL both persist a durable correlation for each wall request — at minimum a unique `auth_request_id`, the `task_id`, the `server_name`, and the acting `slack_user_id` — so the public callback can resolve the exact parked `(task, server)` request from `state` alone. Resolution SHALL NOT rely on `slack_user_id` alone (which is ambiguous across concurrent tasks) nor on in-memory state (which does not survive a daemon restart). Completion SHALL be idempotent: a replayed or duplicate callback for an already-consumed request SHALL be a no-op.
+
+#### Scenario: Concurrent requests for the same user and server are disambiguated
+
+- **WHEN** two tasks each have an outstanding wall request for the same user and server, and one callback arrives
+- **THEN** the system resolves the specific `(task, server)` request via its `auth_request_id`/`task_id` and binds and wakes only that task
+
+#### Scenario: Callback resolves after a daemon restart
+
+- **WHEN** the daemon restarts between the button click and the callback
+- **THEN** the callback resolves the parked request from the persisted pending record and task metadata, loads the task from persistence, and completes the binding and wake
+
+#### Scenario: Duplicate callback is a no-op
+
+- **WHEN** a callback is delivered twice for the same `state` (e.g. provider retry or tab reload)
+- **THEN** the second delivery does not write a second token, does not rebind, and does not re-wake the task
+
 ### Requirement: Park and wake around authorization
 
-The system SHALL park the requesting agent's work while authorization is pending and, upon successful callback completion, record the acting-user binding and reactivate the task so the agent resumes with the newly available token injected.
+The system SHALL park the requesting agent's work while authorization is pending and, upon successful callback completion, record the acting-user binding and reactivate the task so the agent resumes with the newly available token injected. Reactivation SHALL load the task from persistence so it is unaffected by any restart between click and callback.
 
 #### Scenario: Agent resumes after authorization completes
 
 - **WHEN** the OAuth callback completes successfully for a parked `(task, server)` request
-- **THEN** the system writes the user's token, records the `(task, server)` acting-user binding, and reactivates the task so the agent is re-spawned with the token injected
+- **THEN** the system writes the user's token, records the `(task, server)` acting-user binding, clears the outstanding request, and reactivates the task so the agent is re-spawned with the token injected
 
 #### Scenario: Task remains parked on abandoned authorization
 
 - **WHEN** the user never completes the authorization and the pending record expires
-- **THEN** the parked work is not resumed with credentials and the agent may request authorization again
+- **THEN** the parked work is not resumed with credentials, the outstanding request is cleared, and the agent may request authorization again
 
 ### Requirement: Per-user token refresh and expiry re-wall
 
-The system SHALL refresh a per-user token when it is near expiry using that user's refresh token, isolated per user. When refresh fails for an acting user's token, the system SHALL treat that server as unauthorized for that user (eligible for a fresh wall) rather than failing the whole task or affecting other users.
+The system SHALL refresh a per-user token when it is near expiry using that user's refresh token, isolated per user. When refresh fails for a bound acting user's token, the system SHALL treat that `(task, server)` as unauthorized and eligible for a fresh wall, and SHALL NOT fall back to a shared operator token for that bound pair (per the binding policy boundary), rather than failing the whole task or affecting other users.
 
 #### Scenario: Expired token refreshed transparently
 
 - **WHEN** an acting user's token is within the refresh leeway of expiry at spawn time and a valid refresh token exists
 - **THEN** the system refreshes it, writes back the updated record, and injects the fresh token
 
-#### Scenario: Failed refresh re-walls only the affected user
+#### Scenario: Failed refresh re-walls the bound pair without shared fallback
 
-- **WHEN** refresh fails for an acting user's token
-- **THEN** the system treats that `(task, server)` as unauthorized so the agent can request re-authorization, without dropping other servers or other users' bindings
+- **WHEN** refresh fails for a bound acting user's token and a shared operator token also exists for that server
+- **THEN** the system treats that `(task, server)` as unauthorized so the agent can request re-authorization, does NOT inject the shared token, and does not drop other servers or other users' bindings
 
 ### Requirement: Per-user revocation and self-service disconnect
 
