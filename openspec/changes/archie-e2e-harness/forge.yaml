@@ -2,8 +2,8 @@ run: archie-e2e-harness
 source: { type: issue, ref: "175" }
 repo: sweatco/archie-hq
 branch: forge/archie-e2e-harness
-stage: plan
-stage_rounds: {}
+stage: implement
+stage_rounds: { plan: 1 }
 acceptance_criteria:
   - id: AC1
     text: "From a clean checkout of a branch with valid .env, a single documented invocation boots the instance and reports healthy; a broken branch produces a clear failure, not a hang."
