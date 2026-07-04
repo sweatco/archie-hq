@@ -23,9 +23,9 @@
 
 ## 4. Teardown
 
-- [ ] 4.1 Create `tools/e2e/teardown.ts` with a pure `parseComposePs(jsonLines)` → list of remaining project containers, tolerant of empty output and both array/NDJSON `docker compose ps --format json` shapes
-- [ ] 4.2 Add `tools/e2e/teardown.test.ts`: empty output → clean; leftover container → named in the failure; malformed line → clear parse error
-- [ ] 4.3 Wire the CLI `main`: `docker compose down`, then `docker compose ps --format json`; clean → print confirmation line (suitable for evidence), survivors → list them and exit non-zero
+- [x] 4.1 Create `tools/e2e/teardown.ts` with a pure `parseComposePs(jsonLines)` → list of remaining project containers, tolerant of empty output and both array/NDJSON `docker compose ps --format json` shapes
+- [x] 4.2 Add `tools/e2e/teardown.test.ts`: empty output → clean; leftover container → named in the failure; malformed line → clear parse error
+- [x] 4.3 Wire the CLI `main`: `docker compose down`, then `docker compose ps --format json`; clean → print confirmation line (suitable for evidence), survivors → list them and exit non-zero
 
 ## 5. Skill document
 
