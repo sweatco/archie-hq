@@ -4,7 +4,7 @@
 
 ## Summary
 
-Forge is a staged development process that takes an idea — described in chat, filed as a GitHub issue, or embodied in an existing PR — and produces a verified, end-to-end-tested pull request. It runs as a Claude Code harness in this repo (skills + a `/forge` command + persisted per-run state), reusing three assets that already exist: **OpenSpec** as the plan artifact store, the **archie-debug MCP + REST API** as the headless E2E driver, and the **QA plugin's analyst → independent-reviewer pattern** as the verification model. Forge is the intended basis of Archie's future self-improvement loop: once stable as a local workflow, it ports into Archie itself (`archie-agent` already mounts both `archie-hq` and `archie-plugins`).
+Forge is a staged development process that takes an idea — described in chat, filed as a GitHub issue, or embodied in an existing PR — and produces a verified, end-to-end-tested pull request. It is a **local Claude Code process**, not an Archie runtime workflow: a harness in this repo (skills + a `/forge` command + persisted per-run state) that the operator launches manually, one run at a time. It reuses three assets that already exist: **OpenSpec** as the plan artifact store, the **archie-debug MCP + REST API** as the headless E2E driver, and the **QA plugin's analyst → independent-reviewer pattern** as the verification model. Forge is the intended basis of a self-improvement loop; whether and how it later moves into Archie itself is an open question deferred until the local process is proven.
 
 The name: raw idea in, forged into a tested artifact out. Commands read naturally as verbs — `/forge <idea>`, `/forge issue 150`, `/forge pr 112`, `/forge resume`.
 
@@ -26,7 +26,7 @@ The pieces of this process exist but are disconnected: OpenSpec captures plans b
 - Automatic launch on PR-opened / issue-opened webhooks (later phase, see Rollout).
 - Moving the inception interview into GitHub issue conversations (depends on issue tools, #150).
 - Automatic rebase-and-resolve of sibling PRs on merge (later phase).
-- Running inside Archie's production agents (port after the local workflow is proven).
+- Running inside Archie's production agents. Forge stays a local process for now; an Archie port is reconsidered only once the local loop is proven.
 
 ## The stages
 
@@ -86,6 +86,10 @@ Assemble the PR in house style (What & why / How it works / Verification), with 
 - `/forge issue <n>` — the issue body seeds the inception interview.
 - `/forge pr <n>` — finish-this-PR mode: a reverse-inception pass reconstructs the brief and ACs from the PR description and linked issue (asking the user to confirm gaps — "what would make you comfortable merging this?"), then runs Stages 3→5: finish, verify, QA live, ship.
 - `/forge resume` — continue the active run from its recorded stage.
+
+## Execution model
+
+Forge is run **manually, one run at a time**, in an interactive Claude Code session on the operator's machine: the operator invokes an entry point, answers inception questions in the chat, and makes the merge decision at the end. Since every stage persists its artifacts and `forge.yaml` records the current stage, a run survives interruption and resumes with `/forge resume` — which is all the machinery scheduled or unattended operation would later need. Headless scheduled runs (with human gates handled asynchronously via issue/PR comments) are a possible later step, not part of the initial design.
 
 ## Concurrency: one run at a time
 
