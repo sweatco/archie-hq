@@ -166,9 +166,9 @@ export function validateEvidence(payload: unknown): ValidationResult {
 
 // ---- Markdown rendering (pure) ----
 
-/** Escape a value for a one-line markdown table cell. */
+/** Escape a value for a one-line markdown table cell (backslashes first, so escapes stay unambiguous). */
 function cell(text: string): string {
-  return text.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+  return text.replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
 }
 
 /** Render the reviewer-facing markdown companion from validated evidence. */

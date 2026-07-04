@@ -127,6 +127,13 @@ describe('renderEvidenceMarkdown', () => {
     expect(md).toContain('| task-completed |');
     expect(md).toMatch(/task-completed.*FAIL \|/);
   });
+
+  it('escapes backslashes before pipes in table cells so escapes stay unambiguous', () => {
+    const p = validPayload();
+    p.assertions[0]!.observed = 'path C:\\dir | raw pipe';
+    const md = renderEvidenceMarkdown(p);
+    expect(md).toContain('C:\\\\dir \\| raw pipe');
+  });
 });
 
 describe('parseEvidenceJson', () => {
