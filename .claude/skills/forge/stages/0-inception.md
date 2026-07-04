@@ -28,4 +28,4 @@ Because Stage 2 is normally skipped in `pr` mode, reverse inception also writes 
 
 ## Exit criteria (human gate)
 
-Present the brief compactly and get explicit user sign-off. Record ACs in `forge.yaml`, set `stage: research` (or `implement` in `pr` mode with no open design questions), create the branch, commit `brief.md`.
+Render the brief **in the chat message** — problem, goals, non-goals, constraints, risk class, and every AC verbatim with its verification method — then ask for sign-off. Writing `brief.md` is persistence, not presentation: the user must be able to approve or correct without opening any file or tool output. Only after explicit sign-off: record ACs in `forge.yaml`, set `stage: research` (or `implement` in `pr` mode with no open design questions), create the branch, commit `brief.md`.

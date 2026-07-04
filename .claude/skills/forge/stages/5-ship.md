@@ -8,7 +8,7 @@
 2. **Push and open the PR** (or update the existing one in `pr` mode) as ready for review. Record the number in `forge.yaml`.
 3. **Watch CI.** On failure: diagnose, fix on the branch, push — re-running the Stage 3 reviewers only if the fix is more than mechanical. On persistent unrelated-looking failure, report to the user rather than force-fixing someone else's breakage.
 4. **Address review feedback.** Reviewer comments route like QA failures: trivial → fix directly; substantive → back through Stage 3's reviewers; scope-changing → back to the user. If a human pushes fixes to the branch directly, treat their diff as ground truth — never revert it; reconcile the plan artifacts to match.
-5. **Merge gate (human).** Never merge without the user's explicit go — per-repo policy may add stricter rules (multiple approvals, manual rollout), which always win.
+5. **Merge gate (human).** Never merge without the user's explicit go — per-repo policy may add stricter rules (multiple approvals, manual rollout), which always win. When asking, include the verification manifest (the per-AC status table) in the chat message itself, plus the PR link — the user decides from the message, not from the PR tab.
 
 ## Post-merge
 
