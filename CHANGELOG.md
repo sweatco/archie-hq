@@ -6,6 +6,10 @@ Archie ships continuously, so changes are grouped by the **date they landed** on
 
 _Changes on `main` that haven't been summarized into a dated entry yet._
 
+## 2026-07-03
+
+_No changes landed on `main` this day._
+
 ## 2026-07-02
 
 _No changes landed on `main` this day._
