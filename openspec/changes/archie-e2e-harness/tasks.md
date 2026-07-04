@@ -1,8 +1,8 @@
 ## 1. Shared config and exec plumbing (`tools/e2e/`)
 
-- [ ] 1.1 Create `tools/e2e/config.ts` with a pure `resolveBaseUrl(env, dotenvText)` mirroring the debug MCP precedence (`ARCHIE_URL` → `PORT` env → `.env` PORT → `http://localhost:3000`) — it receives the `.env` content as an already-read string (the CLI `main` does the disk read; the pure function never touches the filesystem) — plus a `resolveTimeoutSeconds(flag, env, default)` helper for boot/evidence tunables
-- [ ] 1.2 Add `tools/e2e/config.test.ts` covering all four precedence branches and the timeout override chain (flag beats env beats default); confirm vitest picks it up via the existing `tools/**/*.test.ts` include
-- [ ] 1.3 Create `tools/e2e/exec.ts`: a thin typed wrapper over `child_process` for `docker compose …` invocations (returns `{code, stdout, stderr}`), injected as a dependency everywhere so cores stay fake-able
+- [x] 1.1 Create `tools/e2e/config.ts` with a pure `resolveBaseUrl(env, dotenvText)` mirroring the debug MCP precedence (`ARCHIE_URL` → `PORT` env → `.env` PORT → `http://localhost:3000`) — it receives the `.env` content as an already-read string (the CLI `main` does the disk read; the pure function never touches the filesystem) — plus a `resolveTimeoutSeconds(flag, env, default)` helper for boot/evidence tunables
+- [x] 1.2 Add `tools/e2e/config.test.ts` covering all four precedence branches and the timeout override chain (flag beats env beats default); confirm vitest picks it up via the existing `tools/**/*.test.ts` include
+- [x] 1.3 Create `tools/e2e/exec.ts`: a thin typed wrapper over `child_process` for `docker compose …` invocations (returns `{code, stdout, stderr}`), injected as a dependency everywhere so cores stay fake-able
 
 ## 2. Boot from branch
 
