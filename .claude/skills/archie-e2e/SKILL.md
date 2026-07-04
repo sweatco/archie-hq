@@ -18,6 +18,7 @@ Verify acceptance criteria against a live Archie instance booted from the branch
 - `.env` at the repo root with a non-empty `ANTHROPIC_API_KEY`. **No Slack tokens are needed** — scenarios enter through the CLI/API channel.
 - The `archie-debug` MCP available (registered in `.mcp.json` as `npx tsx tools/debug-mcp/server.ts`). The harness consumes it as-is and never modifies `tools/debug-mcp/`.
 - For the edit-mode scenario only: at least one configured engineering repo in the workdir (see the recipe's prerequisite note).
+- macOS Docker Desktop caveat: a wedged `docker-credential-desktop` helper can stall `docker compose up --build` during registry auth — upstream of the harness's bounded wait, so boot appears to hang before any diagnostics. Verify with `docker-credential-desktop list </dev/null`; if it hangs, point `DOCKER_CONFIG` at a scratch dir without `credsStore` for the run (leave your real `~/.docker/config.json` untouched).
 
 **Prior art / supersede note:** this skill takes the `.claude/skills/archie-e2e/` path from draft PR #71 (`feature/e2e-harness`), whose surviving value is Slack-specific (DM ingress, `resolve-bot.sh`, Slack round-trip assertions). PR #71 rebases on top of this skill and re-lands its Slack material as an extension (e.g. an additional scenario recipe); CLI/API ingress here is the general-purpose harness Forge Stage 4 needs.
 
@@ -71,7 +72,7 @@ A change request against a configured repo trips the edit-mode gate, is approved
 1. Mint a fresh nonce as above.
 2. `create_task` with a small, real change request against a configured repo, e.g. `"[${NONCE}] In <repo>, add a comment line '// archie-e2e touch' to the top of README-adjacent file X and open a PR."`
 3. `wait_for_task(nonce: NONCE)`, then resume with `task_id` + `cursor` while `STATE=pending`.
-4. On `STATE=approval_requested` with `APPROVAL_TYPE=edit_mode`: call `approve(task_id: <id>, type: "edit_mode", approve: true)` (this is the `POST /api/tasks/:id/approve` path).
+4. On `STATE=approval_requested`: confirm the approval type via `get_events` (the `approval:requested` event carries `data.approvalType: "edit_mode"`; the `wait_for_task` text output may not include an `APPROVAL_TYPE=` line), then call `approve(task_id: <id>, type: "edit_mode", approve: true)` (this is the `POST /api/tasks/:id/approve` path).
 5. Continue the `wait_for_task` loop; assert the task reaches `STATE=completed`.
 6. Excerpts for evidence: events must show `approval:requested` (`data.type: "edit_mode"`) followed by `approval:resolved` and eventually `task:completed`; the knowledge log records the approval decision line.
 

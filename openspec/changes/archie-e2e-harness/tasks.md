@@ -39,4 +39,4 @@
 
 - [x] 6.1 Targeted typecheck over `tools/e2e/*.ts` (`tsc --noEmit`, mirroring the debug-mcp precedent since repo `typecheck` scopes to `src/`); `npm run typecheck`, `npm run build`, `npm test` all green with the new tests included in the run
 - [x] 6.2 Footprint check: diff against the branch point is confined to `.claude/skills/archie-e2e/`, `tools/e2e/`, `.gitignore`, and docs — `src/` and `tools/debug-mcp/` untouched
-- [ ] 6.3 Live smoke on this branch: boot → basic scenario → edit-mode scenario → evidence files written and validating → teardown clean — the dry run for the self-hosted Stage 4 pass (evidence lands under `openspec/changes/archie-e2e-harness/qa-evidence/`)
+- [x] 6.3 Live smoke on this branch: boot → basic scenario → edit-mode scenario → evidence files written and validating → teardown clean — the dry run for the self-hosted Stage 4 pass (evidence lands under `openspec/changes/archie-e2e-harness/qa-evidence/`)
