@@ -1,0 +1,12 @@
+# SHA-256 comparison — AC7 live E2E
+fixture file: forge-qa.png (planted at workdir/sessions/task-20260705-1516-btskgt/shared/attachments/forge-qa.png)
+fixture bytes: 7028
+fixture sha256: 991ed71e60f6390a96c703c7e76fd50f26646bdd7e807754142917aaadb10706
+recording entries: 1
+
+entry 0: received_at=2026-07-05T15:18:00.239Z name="forge-qa"
+  decoded bytes: 7028
+  decoded sha256 (recomputed by verifier): 991ed71e60f6390a96c703c7e76fd50f26646bdd7e807754142917aaadb10706
+  byte-exact equal to fixture: true
+  sha match: true
+  name === "forge-qa": true
