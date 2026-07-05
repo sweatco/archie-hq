@@ -1,11 +1,13 @@
 /**
  * MCP file bridge tests — send_file_to_mcp_tool.
  *
- * Verifies the guardrails (server must be one the agent has; http/sse only;
- * path must be sandbox-readable; size ceiling) and the happy path: the file's
- * bytes are base64-encoded by the tool and injected as the named argument, the
- * outbound client reuses the server's resolved url + auth headers, and the
- * target tool's response (incl. isError) is surfaced verbatim.
+ * Verifies the guardrails (server must be one the agent has; streamable-http
+ * only; every path must be sandbox-readable; size ceiling on the SUM of files;
+ * no duplicate target arguments) and the happy path: each file's bytes are
+ * base64-encoded by the tool and injected under its named argument (winning
+ * collisions with plain arguments), the outbound client reuses the server's
+ * resolved url + auth headers, and the target tool's response (incl. isError)
+ * is surfaced verbatim.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -57,6 +59,7 @@ function makeAgent(overrides: Record<string, unknown> = {}) {
           headers: { 'CF-Access-Client-Id': 'cid', 'CF-Access-Client-Secret': 'sec' },
         },
         'stdio-server': { command: 'npx', args: ['foo'] },
+        'legacy-sse': { type: 'sse', url: 'https://old.example/sse' },
       },
     },
     sandbox: { allowReadPaths: ['/shared'] },
@@ -89,43 +92,88 @@ describe('send_file_to_mcp_tool', () => {
     const res = await runTool({
       server: 'nope',
       tool_name: 'set_offer_image',
-      file_path: '/shared/x.png',
-      file_argument: 'image_base64',
+      files: [{ path: '/shared/x.png', argument: 'image_base64' }],
     });
     expect(textOf(res)).toMatch(/not connected to an MCP server named "nope"/);
     expect(mockCallTool).not.toHaveBeenCalled();
   });
 
-  it('rejects a non-http/sse server', async () => {
+  it('rejects a stdio server', async () => {
     const res = await runTool({
       server: 'stdio-server',
       tool_name: 't',
-      file_path: '/shared/x.png',
-      file_argument: 'image_base64',
+      files: [{ path: '/shared/x.png', argument: 'image_base64' }],
     });
-    expect(textOf(res)).toMatch(/not an HTTP\/SSE server/);
+    expect(textOf(res)).toMatch(/not a Streamable HTTP server/);
+    expect(mockConnect).not.toHaveBeenCalled();
     expect(mockCallTool).not.toHaveBeenCalled();
   });
 
-  it('surfaces an unreadable-path error and does not call out', async () => {
-    mockAssertReadable.mockRejectedValueOnce(new Error('path is outside readable roots'));
+  it('rejects a legacy SSE server', async () => {
+    const res = await runTool({
+      server: 'legacy-sse',
+      tool_name: 't',
+      files: [{ path: '/shared/x.png', argument: 'image_base64' }],
+    });
+    expect(textOf(res)).toMatch(/legacy SSE transport is not supported/);
+    expect(mockConnect).not.toHaveBeenCalled();
+    expect(mockCallTool).not.toHaveBeenCalled();
+  });
+
+  it('rejects two files targeting the same argument', async () => {
     const res = await runTool({
       server: 'sweatco-admin',
-      tool_name: 'set_offer_image',
-      file_path: '/etc/passwd',
-      file_argument: 'image_base64',
+      tool_name: 't',
+      files: [
+        { path: '/shared/a.png', argument: 'image_base64' },
+        { path: '/shared/b.png', argument: 'image_base64' },
+      ],
     });
-    expect(textOf(res)).toMatch(/outside readable roots/);
+    expect(textOf(res)).toMatch(/same argument "image_base64"/);
+    expect(mockReadFile).not.toHaveBeenCalled();
     expect(mockConnect).not.toHaveBeenCalled();
   });
 
-  it('rejects files over the size ceiling before reading them', async () => {
+  it('surfaces an unreadable-path error, reads nothing, and does not call out', async () => {
+    mockAssertReadable
+      .mockResolvedValueOnce('/shared/ok.png')
+      .mockRejectedValueOnce(new Error('path is outside readable roots'));
+    const res = await runTool({
+      server: 'sweatco-admin',
+      tool_name: 'set_offer_image',
+      files: [
+        { path: '/shared/ok.png', argument: 'image_base64' },
+        { path: '/etc/passwd', argument: 'extra_base64' },
+      ],
+    });
+    expect(textOf(res)).toMatch(/outside readable roots/);
+    expect(mockReadFile).not.toHaveBeenCalled();
+    expect(mockConnect).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the combined size is over the ceiling, before reading anything', async () => {
+    mockStat
+      .mockResolvedValueOnce({ isFile: () => true, size: 6 * 1024 * 1024 })
+      .mockResolvedValueOnce({ isFile: () => true, size: 5 * 1024 * 1024 });
+    const res = await runTool({
+      server: 'sweatco-admin',
+      tool_name: 'set_offer_image',
+      files: [
+        { path: '/shared/a.png', argument: 'a_base64' },
+        { path: '/shared/b.png', argument: 'b_base64' },
+      ],
+    });
+    expect(textOf(res)).toMatch(/over this tool's 10 MB ceiling/);
+    expect(mockReadFile).not.toHaveBeenCalled();
+    expect(mockCallTool).not.toHaveBeenCalled();
+  });
+
+  it('rejects a single file over the ceiling before reading it', async () => {
     mockStat.mockResolvedValueOnce({ isFile: () => true, size: 11 * 1024 * 1024 });
     const res = await runTool({
       server: 'sweatco-admin',
       tool_name: 'set_offer_image',
-      file_path: '/shared/big.png',
-      file_argument: 'image_base64',
+      files: [{ path: '/shared/big.png', argument: 'image_base64' }],
     });
     expect(textOf(res)).toMatch(/over this tool's 10 MB ceiling/);
     expect(mockReadFile).not.toHaveBeenCalled();
@@ -136,8 +184,7 @@ describe('send_file_to_mcp_tool', () => {
     const res = await runTool({
       server: 'sweatco-admin',
       tool_name: 'set_offer_image',
-      file_path: '/shared/x.png',
-      file_argument: 'image_base64',
+      files: [{ path: '/shared/x.png', argument: 'image_base64' }],
       arguments: { offer_id: 123, dry_run: true },
     });
 
@@ -157,13 +204,38 @@ describe('send_file_to_mcp_tool', () => {
     expect(mockClose).toHaveBeenCalled();
   });
 
+  it('injects multiple files under their own arguments, file bytes winning collisions', async () => {
+    mockReadFile
+      .mockResolvedValueOnce(Buffer.from('first'))
+      .mockResolvedValueOnce(Buffer.from('second'));
+    const res = await runTool({
+      server: 'sweatco-admin',
+      tool_name: 'compare_docs',
+      files: [
+        { path: '/shared/a.pdf', argument: 'doc_a_base64' },
+        { path: '/shared/b.pdf', argument: 'doc_b_base64' },
+      ],
+      // doc_a_base64 collides with a file argument — the real bytes must win.
+      arguments: { mode: 'strict', doc_a_base64: 'model-supplied-garbage' },
+    });
+
+    expect(mockCallTool).toHaveBeenCalledWith({
+      name: 'compare_docs',
+      arguments: {
+        mode: 'strict',
+        doc_a_base64: Buffer.from('first').toString('base64'),
+        doc_b_base64: Buffer.from('second').toString('base64'),
+      },
+    });
+    expect(textOf(res)).toBe('done');
+  });
+
   it('surfaces a tool-reported error (isError) as an error result', async () => {
     mockCallTool.mockResolvedValueOnce({ isError: true, content: [{ type: 'text', text: 'offer not found' }] });
     const res = await runTool({
       server: 'sweatco-admin',
       tool_name: 'set_offer_image',
-      file_path: '/shared/x.png',
-      file_argument: 'image_base64',
+      files: [{ path: '/shared/x.png', argument: 'image_base64' }],
       arguments: { offer_id: 999 },
     });
     expect(textOf(res)).toMatch(/Error:.*offer not found/);
