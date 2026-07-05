@@ -50,7 +50,7 @@ Parse the invocation input:
 
 - **Idea text** → full run from Stage 0.
 - **`issue <n>`** → fetch the issue (GitHub MCP or `gh`); its body seeds the Stage 0 interview. Derive the change name from the issue title.
-- **`pr <n>`** → finish-this-PR mode. Check out the PR's branch. Stage 0 runs as **reverse inception**: reconstruct the brief and ACs from the PR description, linked issues, and diff; ask the user to confirm gaps ("what would make you comfortable merging this?"). Reverse inception also writes `verification-plan.md` (Stage 2 is skipped, and Stage 4 requires it). Then skip Stages 1–2 unless the reconstruction exposes an unresolved design question, and run Stages 3→5 (finish, verify, QA, ship). The change dir is named `pr-<n>-<slug>`.
+- **`pr <n>`** → finish-this-PR mode. Check out the PR's branch. Stage 0 runs as **reverse inception**, which begins with a mandatory code-grounding research pass (diff mapper, codebase context, base-branch drift — see the stage file) before any brief is presented; the brief is built from the PR *and* that fact-checked dossier, with contradictions surfaced. Reverse inception also writes `research.md` and `verification-plan.md` (Stages 1–2 are skipped, and Stage 4 requires the latter). Then run Stages 3→5 (finish, verify, QA, ship), returning to Stage 2 only if reverse inception exposed an unresolved design question. The change dir is named `pr-<n>-<slug>`.
 - **`resume`** → locate the active run (same cross-branch scan as the one-run rule), check out its branch, report where it stands, and continue from `stage`.
 - **`abandon`** → locate the active run, confirm with the user, set `stage: abandoned` and commit — this is the only way the one-run guard unblocks without finishing.
 

@@ -22,7 +22,15 @@ Ask explicitly: "how would we know this works end to end?" — the answer usuall
 
 ### Reverse inception (`pr` mode)
 
-Reconstruct the same brief from the PR: description (What & why / Verification sections), linked issues, the diff, and review comments. Mark every reconstructed item as **inferred** and have the user confirm or correct it. Always ask: "what would make you comfortable merging this?" — their answer becomes ACs. Pay special attention to the PR's own "couldn't verify" admissions: each becomes an AC with method `live-e2e` or an explicit `deploy-only` waiver.
+**Research before brief.** Do not build the brief from the PR's description alone — the description is the author's claim, not ground truth. Before presenting anything, run a code-grounding pass with Stage 1's machinery (fresh-context lenses, in parallel; output contract: factual claims with `file:line` citations):
+
+- **Diff mapper** — what the diff actually does, function by function; where it diverges from or exceeds what the PR description claims.
+- **Codebase context** — the subsystems the diff touches, the patterns and invariants there, existing test coverage for the touched area.
+- **Drift check** — what changed on the base branch since this PR branched (commits touching the same files, merged PRs in the same territory); flags for likely conflicts or invalidated assumptions.
+
+Run the Stage 1 research-verifier pass over the merged findings, then write the surviving dossier to `research.md` — it feeds the brief and later stages exactly as in a full run.
+
+Then reconstruct the brief from the PR **and** the dossier: description (What & why / Verification sections), linked issues, review comments, and what the code actually shows. Mark every reconstructed item as **inferred** and have the user confirm or correct it; where the dossier contradicts the PR's claims, surface the contradiction explicitly in the brief. Always ask: "what would make you comfortable merging this?" — their answer becomes ACs. Pay special attention to the PR's own "couldn't verify" admissions: each becomes an AC with method `live-e2e` or an explicit `deploy-only` waiver.
 
 Because Stage 2 is normally skipped in `pr` mode, reverse inception also writes `verification-plan.md`: the AC table expanded with the concrete scenario/check that will produce each AC's evidence and where the evidence will live (Stage 4 requires this file).
 
