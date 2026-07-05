@@ -1,0 +1,51 @@
+{
+  "schema": "archie-e2e-evidence/v1",
+  "scenario": "boot-healthy",
+  "ac_ids": [
+    "AC1"
+  ],
+  "started_at": "2026-07-04T18:52:55Z",
+  "finished_at": "2026-07-04T18:56:34Z",
+  "environment": {
+    "base_url": "http://localhost:3000",
+    "git_branch": "forge/archie-e2e-harness",
+    "git_commit": "1cb2497"
+  },
+  "nonce": "n/a (boot lifecycle step — no task)",
+  "task_id": "n/a (boot lifecycle step — no task)",
+  "terminal_state": "not_found",
+  "assertions": [
+    {
+      "id": "single-invocation-boots",
+      "description": "One documented invocation (npx tsx tools/e2e/boot.ts) builds, starts detached, and waits for health",
+      "expected": "boot exits 0 after printing the resolved base URL and /health body",
+      "observed": "'Healthy: http://localhost:3000' and '/health body: {\"status\":\"ok\",\"activeTasks\":0}' printed; EXIT_CODE=0",
+      "pass": true
+    },
+    {
+      "id": "base-url-resolution",
+      "description": "Base URL resolution matches the MCP (PORT from .env)",
+      "expected": "target http://localhost:3000 (PORT=3000 in .env)",
+      "observed": "boot line: 'Booting archie via `docker compose up --build -d` (target http://localhost:3000)'",
+      "pass": true
+    },
+    {
+      "id": "wall-time-bounded",
+      "description": "Healthy boot completes well within the 600s default cap",
+      "expected": "< 600s",
+      "observed": "~3m40s from invocation to Healthy (log written 18:52:55–18:56:34 UTC; image layers cached from prior build)",
+      "pass": true
+    }
+  ],
+  "excerpts": {
+    "knowledge_log": [
+      "Booting archie via `docker compose up --build -d` (target http://localhost:3000) ...",
+      "Compose up succeeded — polling http://localhost:3000/health (cap 600s) ...",
+      "Healthy: http://localhost:3000",
+      "/health body: {\"status\":\"ok\",\"activeTasks\":0}",
+      "EXIT_CODE=0"
+    ],
+    "events": []
+  },
+  "result": "pass"
+}

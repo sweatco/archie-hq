@@ -1,0 +1,141 @@
+{
+  "schema": "archie-e2e-evidence/v1",
+  "scenario": "basic-nonce",
+  "ac_ids": [
+    "AC2"
+  ],
+  "started_at": "2026-07-04T18:57:39Z",
+  "finished_at": "2026-07-04T18:58:38Z",
+  "environment": {
+    "base_url": "http://localhost:3000",
+    "git_branch": "forge/archie-e2e-harness",
+    "git_commit": "1cb2497"
+  },
+  "nonce": "E2E-7e989c30",
+  "task_id": "task-20260704-1857-9nigbb",
+  "terminal_state": "completed",
+  "assertions": [
+    {
+      "id": "nonce-correlation",
+      "description": "wait_for_task(nonce) correlates the nonce to a task id on the first call",
+      "expected": "TASK=<id> returned for nonce E2E-7e989c30",
+      "observed": "TASK=task-20260704-1857-9nigbb",
+      "pass": true
+    },
+    {
+      "id": "terminal-state-completed",
+      "description": "The task reaches the completed terminal state",
+      "expected": "STATE=completed",
+      "observed": "STATE=completed (task:completed event at 2026-07-04T18:58:12.647Z)",
+      "pass": true
+    },
+    {
+      "id": "pm-reply-observed",
+      "description": "A PM reply to the user is observed (message event with from=pm-agent)",
+      "expected": "message event with data.from === 'pm-agent' answering the question",
+      "observed": "PM_REPLY line in wait_for_task output; events show message from pm-agent to user at 2026-07-04T18:58:08.081Z listing 10 configured agents and confirming read-only",
+      "pass": true
+    },
+    {
+      "id": "knowledge-log-contains-nonce",
+      "description": "get_log(task_id, tail: 40) contains the nonce",
+      "expected": "a knowledge-log line containing E2E-7e989c30",
+      "observed": "line 1 of the log: '[2026-07-04T18:57:40.756Z] [cli] [E2E-7e989c30] What agents are configured in this instance? ...'",
+      "pass": true
+    },
+    {
+      "id": "lifecycle-events",
+      "description": "Events span task:created through task:completed",
+      "expected": "task:created first, task:completed last",
+      "observed": "task:created at 18:57:40.755Z ... task:completed at 18:58:12.647Z (10 events total)",
+      "pass": true
+    }
+  ],
+  "excerpts": {
+    "knowledge_log": [
+      "[2026-07-04T18:57:40.756Z] [cli] [E2E-7e989c30] What agents are configured in this instance? Reply with a short list and do not modify anything.",
+      "[2026-07-04T18:58:08.081Z] [pm-agent in cli] Here are the agents configured in this instance:",
+      "- **archie-agent** — Archie's platform engineer (agents, skills, workflows, core engine)",
+      "- **data-analyst-agent** — Sweatcoin data analyst (ClickHouse warehouse)",
+      "- **backend-agent** — Ruby on Rails / backend engineer",
+      "- **infrastructure-agent** — SRE/DevOps (AWS, Kubernetes, Terraform, CI/CD)",
+      "- **mobile-agent** — React Native / iOS / Android engineer",
+      "- **copywriter-agent** — Sweatcoin copywriter",
+      "- **tov-reviewer-agent** — Tone-of-voice / brand reviewer",
+      "- **ops-agent** — Commercial marketing ops (Monday.com, admin panel)",
+      "- **qa-analyst-agent** — QA engineer (test cases, PR review)",
+      "- **qa-reviewer-agent** — QA output reviewer",
+      "Nothing was modified — read-only as requested."
+    ],
+    "events": [
+      {
+        "timestamp": "2026-07-04T18:57:40.755Z",
+        "type": "task:created",
+        "data": {}
+      },
+      {
+        "timestamp": "2026-07-04T18:57:40.756Z",
+        "type": "message",
+        "data": {
+          "from": "cli",
+          "to": "pm-agent",
+          "message": "[E2E-7e989c30] What agents are configured in this instance? Reply with a short list and do not modify anything."
+        }
+      },
+      {
+        "timestamp": "2026-07-04T18:57:40.756Z",
+        "type": "task:resumed",
+        "data": {}
+      },
+      {
+        "timestamp": "2026-07-04T18:57:40.757Z",
+        "type": "agent:active",
+        "data": {},
+        "actor": "pm-agent"
+      },
+      {
+        "timestamp": "2026-07-04T18:57:41.558Z",
+        "type": "status",
+        "data": {
+          "status": "is working on this…"
+        }
+      },
+      {
+        "timestamp": "2026-07-04T18:57:41.932Z",
+        "type": "agent:active",
+        "data": {},
+        "actor": "pm-agent"
+      },
+      {
+        "timestamp": "2026-07-04T18:57:50.652Z",
+        "type": "status",
+        "data": {
+          "status": "is going through the details…"
+        }
+      },
+      {
+        "timestamp": "2026-07-04T18:58:08.081Z",
+        "type": "message",
+        "data": {
+          "from": "pm-agent",
+          "to": "user",
+          "destination": "cli",
+          "message": "Here are the agents configured in this instance:\n\n- **archie-agent** — Archie's platform engineer (agents, skills, workflows, core engine)\n- **data-analyst-agent** — Sweatcoin data analyst (ClickHouse warehouse)\n- **backend-agent** — Ruby on Rails / backend engineer\n- **infrastructure-agent** — SRE/DevOps (AWS, Kubernetes, Terraform, CI/CD)\n- **mobile-agent** — React Native / iOS / Android engineer\n- **copywriter-agent** — Sweatcoin copywriter\n- **tov-reviewer-agent** — Tone-of-voice / brand reviewer\n- **ops-agent** — Commercial marketing ops (Monday.com, admin panel)\n- **qa-analyst-agent** — QA engineer (test cases, PR review)\n- **qa-reviewer-agent** — QA output reviewer\n\nNothing was modified — read-only as requested.",
+          "footer": "task-20260704-1857-9nigbb · Opus 4.8"
+        }
+      },
+      {
+        "timestamp": "2026-07-04T18:58:09.636Z",
+        "type": "agent:inactive",
+        "data": {},
+        "actor": "pm-agent"
+      },
+      {
+        "timestamp": "2026-07-04T18:58:12.647Z",
+        "type": "task:completed",
+        "data": {}
+      }
+    ]
+  },
+  "result": "pass"
+}

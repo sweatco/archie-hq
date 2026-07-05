@@ -6,6 +6,26 @@ Archie ships continuously, so changes are grouped by the **date they landed** on
 
 _Changes on `main` that haven't been summarized into a dated entry yet._
 
+## 2026-07-04
+
+- **Operators now have a repeatable, adversarially-verified loop — Forge — for taking any idea, GitHub issue, or existing PR to a tested, verified pull request.** The `/forge` command walks through inception (testable acceptance criteria with named verification methods: `unit`/`integration`/`live-e2e`/`manual`/`deploy-only`), fact-checked research, critic-hardened planning, adversarial implementation review, and black-box QA against a live instance via the `archie-debug` MCP; `live-e2e` ACs that need infrastructure not yet built are waived with a named post-merge step rather than silently skipped. Operation is local and operator-driven — one run at a time, two human gates (inception sign-off and merge decision), no Archie runtime change. _Technical: ships as `.claude/skills/forge/` (orchestrator `SKILL.md` + six self-contained stage files carrying verbatim role prompts) and `.claude/commands/forge.md`; run state in `forge.yaml` on a `forge/*` branch; entry points: idea, issue, pr (finish-mode), resume, abandon; `docs/proposals/forge.md` contains the full design rationale; Stage 1 machinery dry-run verified on a real target (30 cited claims, 29 confirmed, 0 wrong); a consistency review caught 3 blocking gaps — all fixed before merge (PR #174)._
+
+## 2026-07-03
+
+_No changes landed on `main` this day._
+
+## 2026-07-02
+
+_No changes landed on `main` this day._
+
+## 2026-07-01
+
+- **Debugging a task no longer requires busy-polling — one call blocks server-side until it settles.** The `archie-debug` MCP gains a `wait_for_task` tool that correlates a task by ID or nonce, then waits server-side until it reaches `completed`, `stopped`, or `approval_requested` (capped at ~45 s, resumable via cursor), returning the final state, attribution line, and any PM replies in one shot. _Technical: events are folded in order — `task:resumed` cancels a stale `task:stopped`, an unresolved `approval:requested` outranks the gate's deferred stop, and `completed` always wins; incremental polling via the existing `/events?after=` cursor; 13 unit tests; no Archie runtime change (PR #158)._
+
+- **The daily changelog now writes itself.** A scheduled GitHub Actions workflow gathers merged-PR context (title, body, linked issues, commit subjects, diffstat) for the previous day, drafts the dated entry via Claude, and splices it into `CHANGELOG.md` on `main` automatically. _Technical: split into isolated `generate` (holds the Anthropic key, never the deploy key) and `publish` (runs no model, checks out fresh, pushes via deploy key) jobs; drafted entry crosses the job boundary as an env var to prevent injection; insert script is idempotent, tolerant of minor model noise, and refuses a malformed entry (PR #155)._
+
+- _Technical: changelog workflow prompt refined in two follow-on passes — added a consolidation rule (fold minor plumbing into combined `_Technical:_` bullets, 3–6 bullet target) and then reframed it as theme-based grouping capped at three technical bullets (PRs #164, #165); dry-run mode added so a draft can be previewed in the run summary without committing to `main` (PR #163)._
+
 ## 2026-06-30
 
 - **Specialist and plugin agents now run on Sonnet 5.** All specialist and plugin agents move from Sonnet 4.6 to Sonnet 5 — frontier-class with native 1M context — on the next deploy, with no configuration change required. _Technical: bumped `@anthropic-ai/claude-agent-sdk` to 0.3.197 (Claude Code v2.1.197), which resolves the `sonnet` alias to Sonnet 5; updated the Slack footer display label from "Sonnet 4.6" to "Sonnet 5" and its tests. PM stays on `opus` → Opus 4.8, unchanged._

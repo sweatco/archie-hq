@@ -1,0 +1,57 @@
+{
+  "schema": "archie-e2e-evidence/v1",
+  "scenario": "boot-broken",
+  "ac_ids": [
+    "AC1"
+  ],
+  "started_at": "2026-07-04T19:05:30Z",
+  "finished_at": "2026-07-04T19:10:30Z",
+  "environment": {
+    "base_url": "http://localhost:3000",
+    "git_branch": "forge/archie-e2e-harness",
+    "git_commit": "1cb2497"
+  },
+  "nonce": "n/a (boot lifecycle step — no task)",
+  "task_id": "n/a (boot lifecycle step — no task)",
+  "terminal_state": "not_found",
+  "assertions": [
+    {
+      "id": "preflight-missing-env",
+      "description": "Boot with no .env at the repo root fails immediately, naming the missing item, with no compose invocation",
+      "expected": "non-zero exit, clear message, instant return",
+      "observed": "'preflight failed: .env not found at the repo root — copy .env.example and set ANTHROPIC_API_KEY'; EXIT_CODE=1; returned in seconds; no compose output",
+      "pass": true
+    },
+    {
+      "id": "preflight-empty-key",
+      "description": "Boot with ANTHROPIC_API_KEY emptied in .env fails immediately, naming the key",
+      "expected": "non-zero exit naming ANTHROPIC_API_KEY",
+      "observed": "'preflight failed: ANTHROPIC_API_KEY is missing or empty in .env'; EXIT_CODE=1; no compose invocation",
+      "pass": true
+    },
+    {
+      "id": "poll-cap-bounded",
+      "description": "A non-serving state with --timeout-seconds 15 fails at the cap with diagnostics instead of hanging",
+      "expected": "'Boot failed (timeout)' at ~15s, diagnostics block (compose ps + log tail), non-zero exit",
+      "observed": "'Boot failed (timeout): /health did not return 200 within 15s (last: GET /health failed: fetch failed)' followed by '--- diagnostics: docker compose ps ---' and the 100-line archie log tail; EXIT_CODE=1",
+      "pass": true
+    }
+  ],
+  "excerpts": {
+    "knowledge_log": [
+      "preflight failed: .env not found at the repo root — copy .env.example and set ANTHROPIC_API_KEY",
+      "EXIT_CODE=1",
+      "preflight failed: ANTHROPIC_API_KEY is missing or empty in .env",
+      "EXIT_CODE=1",
+      "Booting archie via `docker compose up --build -d` (target http://localhost:3000) ...",
+      "Compose up succeeded — polling http://localhost:3000/health (cap 15s) ...",
+      "Boot failed (timeout): /health did not return 200 within 15s (last: GET /health failed: fetch failed)",
+      "--- diagnostics: docker compose ps ---",
+      "--- diagnostics: archie logs (last 100 lines) ---",
+      "--- end diagnostics ---",
+      "EXIT_CODE=1"
+    ],
+    "events": []
+  },
+  "result": "pass"
+}

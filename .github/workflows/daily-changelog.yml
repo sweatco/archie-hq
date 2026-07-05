@@ -149,19 +149,25 @@ jobs:
               trailing `_Technical: …_` clause.
             - A change that is pure plumbing with no user-facing value stays purely technical:
               write it as an italic `_Technical: …_` bullet with no bold business lead.
-            - Consolidate the long tail: fold minor plumbing — chores, dependency bumps,
-              CI / tooling / dev-environment fixes — into one or two combined `_Technical: …_`
-              bullets rather than giving each its own. Reserve a standalone bullet for a change
-              with real user value or notable engineering significance.
+            - Consolidate the long tail of minor plumbing (chores, dependency bumps,
+              CI / tooling / dev-environment fixes) into `_Technical: …_` bullets, grouped by
+              theme. Prefer a single combined bullet; split into a separate `_Technical:_`
+              bullet only when the changes are genuinely unrelated (e.g. a docs/process change
+              vs. a runtime fix vs. dependency bumps). Never exceed three technical-only bullets:
+              don't give every chore its own, and don't cram unrelated changes into one
+              run-on line either.
+            - Reserve a standalone bullet for a change with real user value or notable
+              engineering significance.
             - Aim for the most important 3–6 bullets on a typical day; group the rest.
             - Write each bullet on a SINGLE line — never hard-wrap prose across multiple lines.
               Only fenced code may span lines.
             - Be concise and faithful. Never invent a change that is not in `context.md`.
 
             Then self-review your draft before saving: does every bullet either lead with real
-            user value or stand as an explicit `_Technical:_` note? Is the minor plumbing
-            consolidated rather than one bullet per chore? Is anything invented or mis-summarized
-            versus `context.md`? Are related changes grouped? Revise, then save.
+            user value or stand as an explicit `_Technical:_` note? Is the minor plumbing grouped
+            by theme into at most three technical bullets — neither one-per-chore nor a single
+            run-on dump? Is anything invented or mis-summarized versus `context.md`? Are related
+            changes grouped? Revise, then save.
 
             Write ONLY the finished entry to a new file named `new-entry.md`.
             Do NOT modify CHANGELOG.md or any other file.
