@@ -1,0 +1,48 @@
+run: pr-167-mcp-file-bridge
+source: { type: pr, ref: "167" }
+repo: sweatco/archie-hq
+branch: archie/task-20260605-1434-l7is2a
+stage: implement
+stage_rounds: {}
+acceptance_criteria:
+  - id: AC1
+    text: "Plain plugin agent gets send_file_to_mcp_tool; PM and repo agents do NOT"
+    method: integration
+    status: pending
+    evidence: null
+  - id: AC2
+    text: "Unknown server -> error listing connected servers, no outbound call"
+    method: unit
+    status: pending
+    evidence: null
+  - id: AC3
+    text: "Non-Streamable-HTTP server (stdio or sse) -> rejected, no connect"
+    method: unit
+    status: pending
+    evidence: null
+  - id: AC4
+    text: "Any path failing assertReadable -> error, no connect, no other file read"
+    method: unit
+    status: pending
+    evidence: null
+  - id: AC5
+    text: "Sum of file sizes > 10 MB -> rejected before reading"
+    method: unit
+    status: pending
+    evidence: null
+  - id: AC6
+    text: "Valid call with 1..N files -> each base64-injected under its argument, merged with arguments (files win collisions), url+headers reused, response incl. isError surfaced verbatim"
+    method: unit
+    status: pending
+    evidence: null
+  - id: AC7
+    text: "Live plugin agent sends a sandbox file through the bridge to a stub HTTP MCP server; stub receives byte-exact content under the right argument; agent relays the response"
+    method: live-e2e
+    status: pending
+    evidence: null
+  - id: AC8
+    text: "Image-swap works against real set_offer_image"
+    method: deploy-only
+    status: waived
+    evidence: "Post-merge step: run one dry-run swap via the bridge once sweatcoin-backend #13905 deploys"
+pr: 167
