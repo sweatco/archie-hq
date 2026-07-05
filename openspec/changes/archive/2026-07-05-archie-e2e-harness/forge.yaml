@@ -2,7 +2,7 @@ run: archie-e2e-harness
 source: { type: issue, ref: "175" }
 repo: sweatco/archie-hq
 branch: forge/archie-e2e-harness
-stage: ship
+stage: done
 stage_rounds: { plan: 1, implement: 1, qa: 1 }
 acceptance_criteria:
   - id: AC1
