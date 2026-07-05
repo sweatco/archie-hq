@@ -162,6 +162,62 @@ describe('send_file_to_mcp_tool', () => {
     expect(mockConnect).not.toHaveBeenCalled();
   });
 
+  it('rejects a whole-server disallow rule (mcp__<server> form)', async () => {
+    const agent = makeAgent({
+      def: { id: 'ops-agent', mcpServers: makeLiveServers(), disallowedTools: ['mcp__sweatco-admin'] },
+    });
+    const res = await runTool(
+      {
+        server: 'sweatco-admin',
+        tool_name: 'set_offer_image',
+        files: [{ path: '/shared/x.png', argument: 'image_base64' }],
+      },
+      agent,
+    );
+    expect(textOf(res)).toMatch(/disallowed for you/);
+    expect(mockConnect).not.toHaveBeenCalled();
+  });
+
+  it('enforces a tools allowlist when the def has one', async () => {
+    const agent = makeAgent({
+      def: { id: 'ops-agent', mcpServers: makeLiveServers(), tools: ['mcp__file-bridge__send_file_to_mcp_tool', 'mcp__sweatco-admin__set_offer_image'] },
+    });
+    // Listed tool goes through.
+    const okRes = await runTool(
+      {
+        server: 'sweatco-admin',
+        tool_name: 'set_offer_image',
+        files: [{ path: '/shared/x.png', argument: 'image_base64' }],
+      },
+      agent,
+    );
+    expect(textOf(okRes)).toBe('done');
+    // Unlisted tool on the same server is rejected.
+    const badRes = await runTool(
+      {
+        server: 'sweatco-admin',
+        tool_name: 'delete_offer',
+        files: [{ path: '/shared/x.png', argument: 'image_base64' }],
+      },
+      agent,
+    );
+    expect(textOf(badRes)).toMatch(/not in your allowed tools list/);
+    expect(mockConnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects when files grow past the ceiling between stat and read (TOCTOU)', async () => {
+    // stat says small, but the actual read returns > 10 MB.
+    mockStat.mockResolvedValueOnce({ isFile: () => true, size: 5 });
+    mockReadFile.mockResolvedValueOnce(Buffer.alloc(11 * 1024 * 1024));
+    const res = await runTool({
+      server: 'sweatco-admin',
+      tool_name: 'set_offer_image',
+      files: [{ path: '/shared/growing.png', argument: 'image_base64' }],
+    });
+    expect(textOf(res)).toMatch(/grew past this tool's 10 MB ceiling/);
+    expect(mockConnect).not.toHaveBeenCalled();
+  });
+
   it('rejects two files targeting the same argument', async () => {
     const res = await runTool({
       server: 'sweatco-admin',

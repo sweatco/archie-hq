@@ -123,11 +123,23 @@ export function createSendFileToMcpTool(agent: Agent, _task: Task, liveServers: 
         );
       }
 
-      // 2. Honor the agent's tool-level restrictions: the bridge must not let
-      //    an agent reach a tool its session has explicitly disallowed.
+      // 2. Honor the agent's tool-level restrictions: the bridge must not
+      //    grant reach the agent wouldn't have calling the tool directly.
+      //    disallowedTools blocks in both the exact (mcp__<server>__<tool>)
+      //    and whole-server (mcp__<server>) forms; a `tools` allowlist, when
+      //    present, must contain the target in one of those forms (registry
+      //    semantics: tools defined → use exactly what's listed).
       const qualifiedName = `mcp__${args.server}__${args.tool_name}`;
-      if (agent.def.disallowedTools?.includes(qualifiedName)) {
+      const serverWideName = `mcp__${args.server}`;
+      const denied = agent.def.disallowedTools ?? [];
+      if (denied.includes(qualifiedName) || denied.includes(serverWideName)) {
         return err(`Tool "${args.tool_name}" on "${args.server}" is disallowed for you and cannot be called through this bridge.`);
+      }
+      const allowed = agent.def.tools;
+      if (allowed && allowed.length > 0 && !allowed.includes(qualifiedName) && !allowed.includes(serverWideName)) {
+        return err(
+          `Tool "${args.tool_name}" on "${args.server}" is not in your allowed tools list and cannot be called through this bridge.`,
+        );
       }
 
       // 3. Reject duplicate target arguments — two files cannot land on one.
@@ -167,8 +179,18 @@ export function createSendFileToMcpTool(agent: Agent, _task: Task, liveServers: 
               `Use smaller files.`,
           );
         }
+        // Re-check on the bytes actually read — a file can grow between the
+        // stat pass and the read (TOCTOU); never forward an oversized payload.
+        let readTotal = 0;
         for (const f of resolved) {
-          fileArgs[f.argument] = (await readFile(f.path)).toString('base64');
+          const buf = await readFile(f.path);
+          readTotal += buf.length;
+          if (readTotal > HARD_MAX_BYTES) {
+            return err(
+              `Combined file size grew past this tool's ${HARD_MAX_BYTES / 1024 / 1024} MB ceiling while reading. Use smaller files.`,
+            );
+          }
+          fileArgs[f.argument] = buf.toString('base64');
         }
       } catch (e) {
         return err(`Could not read files: ${e instanceof Error ? e.message : String(e)}`);
