@@ -27,8 +27,19 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { Agent } from './agent.js';
 import type { Task } from '../tasks/task.js';
+import { isPmAgent, isRepoAgent, type AgentDef } from '../types/agent.js';
 import { assertReadable } from './artifacts.js';
 import { logger } from '../system/logger.js';
+
+/**
+ * Only plain plugin agents get the file bridge: they carry the domain/admin
+ * MCP servers that sometimes need a local file's bytes (e.g. uploading an
+ * image). The PM overlay and repo agents do not get it. `spawnAgent` wires the
+ * bridge through this predicate so the gating decision is testable on its own.
+ */
+export function shouldAttachFileBridge(def: AgentDef): boolean {
+  return !isPmAgent(def) && !isRepoAgent(def);
+}
 
 const ok = (text: string) => ({ content: [{ type: 'text' as const, text }] });
 const err = (text: string) => ({ content: [{ type: 'text' as const, text: `Error: ${text}` }] });

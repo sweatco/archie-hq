@@ -46,7 +46,8 @@ vi.mock('../../system/logger.js', () => ({
   logger: { error: vi.fn(), warn: vi.fn(), system: vi.fn(), info: vi.fn(), debug: vi.fn(), agent: vi.fn() },
 }));
 
-import { createSendFileToMcpTool } from '../mcp-file-bridge.js';
+import { createSendFileToMcpTool, shouldAttachFileBridge } from '../mcp-file-bridge.js';
+import type { AgentDef } from '../../types/agent.js';
 
 function makeAgent(overrides: Record<string, unknown> = {}) {
   return {
@@ -240,5 +241,26 @@ describe('send_file_to_mcp_tool', () => {
     });
     expect(textOf(res)).toMatch(/Error:.*offer not found/);
     expect(mockClose).toHaveBeenCalled();
+  });
+});
+
+describe('shouldAttachFileBridge', () => {
+  // Uses the REAL isPmAgent/isRepoAgent predicates — this is the gating
+  // decision spawnAgent wires the bridge through, so these cases pin down
+  // which agent tracks get the tool.
+  const base = { id: 'a', name: 'A', description: '', prompt: '' } as unknown as AgentDef;
+
+  it('attaches for a plain plugin agent', () => {
+    expect(shouldAttachFileBridge({ ...base, pluginName: 'ops' } as AgentDef)).toBe(true);
+  });
+
+  it('does not attach for the PM agent', () => {
+    expect(shouldAttachFileBridge({ ...base, isPm: true } as AgentDef)).toBe(false);
+  });
+
+  it('does not attach for a repo agent', () => {
+    expect(
+      shouldAttachFileBridge({ ...base, repo: { primary: 'sweatco/x', repos: [{ github: 'sweatco/x' }] } } as unknown as AgentDef),
+    ).toBe(false);
   });
 });
