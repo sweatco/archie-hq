@@ -518,7 +518,9 @@ Shared folder: ${sharedPath} [READ-ONLY]
   // so they can forward file contents into those calls without routing bytes
   // through the model. Bounded to servers the agent already has.
   if (shouldAttachFileBridge(def)) {
-    mcpServers['file-bridge'] = createFileBridgeMcpServer(agent, task);
+    // The bridge resolves targets from this same live map at call time, so it
+    // sees OAuth-bound headers and never reaches servers dropped below.
+    mcpServers['file-bridge'] = createFileBridgeMcpServer(agent, task, mcpServers);
   }
 
   // ---- Organizational memory injection (read path; gated by ARCHIE_MEMORY_INJECT, default off) ----

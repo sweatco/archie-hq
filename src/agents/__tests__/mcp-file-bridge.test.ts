@@ -49,19 +49,25 @@ vi.mock('../../system/logger.js', () => ({
 import { createSendFileToMcpTool, shouldAttachFileBridge } from '../mcp-file-bridge.js';
 import type { AgentDef } from '../../types/agent.js';
 
+// The live server map — what spawnAgent passes to the SDK after OAuth binding.
+// The bridge must resolve targets from THIS, not from agent.def.mcpServers.
+function makeLiveServers(): Record<string, unknown> {
+  return {
+    'sweatco-admin': {
+      type: 'http',
+      url: 'https://admin.example/mcp',
+      headers: { 'CF-Access-Client-Id': 'cid', 'CF-Access-Client-Secret': 'sec' },
+    },
+    'stdio-server': { command: 'npx', args: ['foo'] },
+    'legacy-sse': { type: 'sse', url: 'https://old.example/sse' },
+  };
+}
+
 function makeAgent(overrides: Record<string, unknown> = {}) {
   return {
     def: {
       id: 'ops-agent',
-      mcpServers: {
-        'sweatco-admin': {
-          type: 'http',
-          url: 'https://admin.example/mcp',
-          headers: { 'CF-Access-Client-Id': 'cid', 'CF-Access-Client-Secret': 'sec' },
-        },
-        'stdio-server': { command: 'npx', args: ['foo'] },
-        'legacy-sse': { type: 'sse', url: 'https://old.example/sse' },
-      },
+      mcpServers: makeLiveServers(),
     },
     sandbox: { allowReadPaths: ['/shared'] },
     ...overrides,
@@ -70,8 +76,8 @@ function makeAgent(overrides: Record<string, unknown> = {}) {
 
 const task = {} as never;
 
-function runTool(args: Record<string, unknown>, agent = makeAgent()) {
-  return createSendFileToMcpTool(agent, task).handler(args as never, {});
+function runTool(args: Record<string, unknown>, agent = makeAgent(), liveServers = makeLiveServers()) {
+  return createSendFileToMcpTool(agent, task, liveServers).handler(args as never, {});
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -119,6 +125,41 @@ describe('send_file_to_mcp_tool', () => {
     expect(textOf(res)).toMatch(/legacy SSE transport is not supported/);
     expect(mockConnect).not.toHaveBeenCalled();
     expect(mockCallTool).not.toHaveBeenCalled();
+  });
+
+  it('resolves servers from the live map, not the agent def — a dropped server is unreachable', async () => {
+    // def still lists sweatco-admin, but the spawn dropped it (e.g. OAuth
+    // refresh failed) so it is absent from the live map.
+    const live = makeLiveServers();
+    delete (live as Record<string, unknown>)['sweatco-admin'];
+    const res = await runTool(
+      {
+        server: 'sweatco-admin',
+        tool_name: 'set_offer_image',
+        files: [{ path: '/shared/x.png', argument: 'image_base64' }],
+      },
+      makeAgent(),
+      live,
+    );
+    expect(textOf(res)).toMatch(/not connected to an MCP server named "sweatco-admin"/);
+    expect(mockConnect).not.toHaveBeenCalled();
+  });
+
+  it('rejects a tool the agent has in disallowedTools', async () => {
+    const agent = makeAgent({
+      def: { id: 'ops-agent', mcpServers: makeLiveServers(), disallowedTools: ['mcp__sweatco-admin__delete_offer'] },
+    });
+    const res = await runTool(
+      {
+        server: 'sweatco-admin',
+        tool_name: 'delete_offer',
+        files: [{ path: '/shared/x.png', argument: 'image_base64' }],
+      },
+      agent,
+    );
+    expect(textOf(res)).toMatch(/disallowed for you/);
+    expect(mockReadFile).not.toHaveBeenCalled();
+    expect(mockConnect).not.toHaveBeenCalled();
   });
 
   it('rejects two files targeting the same argument', async () => {

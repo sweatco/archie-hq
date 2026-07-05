@@ -9,11 +9,13 @@
  * (not the model) reads the bytes.
  *
  * It opens a short-lived MCP client to one of the agent's OWN already-connected
- * HTTP MCP servers (resolved config + auth headers come straight off the
- * AgentDef), base64-encodes each file, and forwards a `tools/call` with the
- * bytes injected as named arguments. It grants no new reach: the agent can
- * only target servers it is already configured with and files it can already
- * read.
+ * HTTP MCP servers, base64-encodes each file, and forwards a `tools/call` with
+ * the bytes injected as named arguments. It grants no new reach: the agent can
+ * only target servers its session is actually connected to (the bridge
+ * resolves against the same live server map the spawn hands to the SDK, AFTER
+ * OAuth binding — so dropped servers are unreachable and refreshed credentials
+ * are picked up), only tools not blocked by the agent's `disallowedTools`, and
+ * only files it can already read.
  *
  * Only Streamable HTTP servers are supported. The legacy HTTP+SSE transport
  * (deprecated in the MCP 2025-03-26 spec revision) is rejected rather than
@@ -62,7 +64,10 @@ function extractResultText(result: unknown): { text: string; isError: boolean } 
   return { text: text || (isError ? '(tool reported an error with no message)' : '(tool returned no text content)'), isError };
 }
 
-export function createSendFileToMcpTool(agent: Agent, _task: Task) {
+/** Shape of an entry in the live server map that the bridge can forward to. */
+type HttpServerConfig = { type?: string; url?: string; headers?: Record<string, string> };
+
+export function createSendFileToMcpTool(agent: Agent, _task: Task, liveServers: Record<string, unknown>) {
   return tool(
     'send_file_to_mcp_tool',
     "Call a tool on one of your connected MCP servers, injecting local files' raw bytes (base64-encoded) as named arguments of the tool. " +
@@ -94,14 +99,20 @@ export function createSendFileToMcpTool(agent: Agent, _task: Task) {
         .describe('Other arguments to pass to the target tool as a JSON object, e.g. { "offer_id": 123, "dry_run": true }.'),
     },
     async (args) => {
-      // 1. Resolve the target server off the agent's own resolved MCP config.
-      //    This both authorizes (must be a server the agent already has) and
-      //    supplies the url + auth headers, so we reuse existing credentials.
-      const servers = (agent.def.mcpServers || {}) as Record<string, { type?: string; url?: string; headers?: Record<string, string> }>;
+      // 1. Resolve the target server off the LIVE server map — the same one the
+      //    spawn hands to the SDK, after OAuth binding. This both authorizes
+      //    (must be a server this session is actually connected to; servers
+      //    dropped at spawn are absent) and supplies the url + freshly-bound
+      //    auth headers, so we reuse existing credentials.
+      const servers = liveServers as Record<string, HttpServerConfig | undefined>;
       const cfg = servers[args.server];
       if (!cfg) {
-        const avail = Object.keys(servers).join(', ') || '(none)';
-        return err(`You are not connected to an MCP server named "${args.server}". Your connected servers: ${avail}.`);
+        const avail =
+          Object.entries(servers)
+            .filter(([, c]) => (c?.type ?? 'http') === 'http' && typeof c?.url === 'string')
+            .map(([name]) => name)
+            .join(', ') || '(none)';
+        return err(`You are not connected to an MCP server named "${args.server}". Your forwardable servers: ${avail}.`);
       }
       const type = cfg.type ?? 'http';
       if (type !== 'http' || !cfg.url) {
@@ -112,14 +123,21 @@ export function createSendFileToMcpTool(agent: Agent, _task: Task) {
         );
       }
 
-      // 2. Reject duplicate target arguments — two files cannot land on one.
+      // 2. Honor the agent's tool-level restrictions: the bridge must not let
+      //    an agent reach a tool its session has explicitly disallowed.
+      const qualifiedName = `mcp__${args.server}__${args.tool_name}`;
+      if (agent.def.disallowedTools?.includes(qualifiedName)) {
+        return err(`Tool "${args.tool_name}" on "${args.server}" is disallowed for you and cannot be called through this bridge.`);
+      }
+
+      // 3. Reject duplicate target arguments — two files cannot land on one.
       const argNames = args.files.map((f) => f.argument);
       const dupe = argNames.find((name, i) => argNames.indexOf(name) !== i);
       if (dupe) {
         return err(`Two files target the same argument "${dupe}" — each file must go to a distinct argument.`);
       }
 
-      // 3. Validate every path is inside the agent's readable sandbox before
+      // 4. Validate every path is inside the agent's readable sandbox before
       //    touching any bytes.
       if (!agent.sandbox) {
         return err('Agent sandbox is not initialized.');
@@ -133,7 +151,7 @@ export function createSendFileToMcpTool(agent: Agent, _task: Task) {
         }
       }
 
-      // 4. Stat everything and enforce the ceiling on the SUM before reading
+      // 5. Stat everything and enforce the ceiling on the SUM before reading
       //    a single byte, then read and base64-encode.
       const fileArgs: Record<string, string> = {};
       try {
@@ -156,7 +174,7 @@ export function createSendFileToMcpTool(agent: Agent, _task: Task) {
         return err(`Could not read files: ${e instanceof Error ? e.message : String(e)}`);
       }
 
-      // 5. Open a short-lived MCP client to that server and forward the call
+      // 6. Open a short-lived MCP client to that server and forward the call
       //    with the file bytes injected. Bytes never pass through the model.
       //    File arguments win collisions with `arguments` — the real bytes
       //    always land under their declared names.
@@ -192,12 +210,14 @@ export function createSendFileToMcpTool(agent: Agent, _task: Task) {
 /**
  * MCP server exposing the file bridge. Wired to generic plugin agents only
  * (they carry the admin/domain MCP servers that need file bytes); the PM and
- * repo agents don't get it.
+ * repo agents don't get it. `liveServers` must be the same map the spawn
+ * passes to the SDK — the bridge resolves targets from it at call time, so
+ * OAuth-injected headers and dropped servers are reflected.
  */
-export function createFileBridgeMcpServer(agent: Agent, task: Task) {
+export function createFileBridgeMcpServer(agent: Agent, task: Task, liveServers: Record<string, unknown>) {
   return createSdkMcpServer({
     name: 'file-bridge',
     version: '1.0.0',
-    tools: [createSendFileToMcpTool(agent, task)],
+    tools: [createSendFileToMcpTool(agent, task, liveServers)],
   });
 }
