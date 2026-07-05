@@ -26,6 +26,7 @@ import {
   createOrchestrationMcpServer,
   createSchedulingMcpServer,
 } from './tools.js';
+import { createFileBridgeMcpServer, shouldAttachFileBridge } from './mcp-file-bridge.js';
 import { hydrateBranchState } from '../connectors/github/branch-state.js';
 import { taskBranchName } from '../connectors/github/branch-naming.js';
 import { createResearchMcpServer, createResearchPostToolHook, createResearchDefenseTagHook } from '../mcp/research-tools.js';
@@ -510,6 +511,16 @@ Shared folder: ${sharedPath} [READ-ONLY]
   } else {
     // ---- Plain plugin agent ----
     systemPrompt = await generatePluginAgentPrompt(agent, task);
+  }
+
+  // Plugin agents carry the domain/admin MCP servers that sometimes need a
+  // local file's bytes (e.g. uploading an image). Give them the file bridge
+  // so they can forward file contents into those calls without routing bytes
+  // through the model. Bounded to servers the agent already has.
+  if (shouldAttachFileBridge(def)) {
+    // The bridge resolves targets from this same live map at call time, so it
+    // sees OAuth-bound headers and never reaches servers dropped below.
+    mcpServers['file-bridge'] = createFileBridgeMcpServer(agent, task, mcpServers);
   }
 
   // ---- Organizational memory injection (read path; gated by ARCHIE_MEMORY_INJECT, default off) ----

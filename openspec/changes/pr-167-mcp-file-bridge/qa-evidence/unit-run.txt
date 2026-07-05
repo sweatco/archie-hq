@@ -1,0 +1,29 @@
+Fetching malware lists from https://malware-list.aikido.dev (default)
+Fetching malware lists from https://malware-list.aikido.dev (default)
+
+ RUN  v4.1.9 /Users/khmelev/Projects/swc/archie-hq
+
+ ✓ src/agents/__tests__/mcp-file-bridge.test.ts > send_file_to_mcp_tool > rejects a server the agent is not connected to, listing the connected ones 3ms
+ ✓ src/agents/__tests__/mcp-file-bridge.test.ts > send_file_to_mcp_tool > rejects a stdio server 0ms
+ ✓ src/agents/__tests__/mcp-file-bridge.test.ts > send_file_to_mcp_tool > rejects a legacy SSE server 0ms
+ ✓ src/agents/__tests__/mcp-file-bridge.test.ts > send_file_to_mcp_tool > resolves servers from the live map, not the agent def — a dropped server is unreachable 0ms
+ ✓ src/agents/__tests__/mcp-file-bridge.test.ts > send_file_to_mcp_tool > rejects a tool the agent has in disallowedTools 0ms
+ ✓ src/agents/__tests__/mcp-file-bridge.test.ts > send_file_to_mcp_tool > rejects a whole-server disallow rule (mcp__<server> form) 0ms
+ ✓ src/agents/__tests__/mcp-file-bridge.test.ts > send_file_to_mcp_tool > enforces a tools allowlist when the def has one 1ms
+ ✓ src/agents/__tests__/mcp-file-bridge.test.ts > send_file_to_mcp_tool > rejects when files grow past the ceiling between stat and read (TOCTOU) 0ms
+ ✓ src/agents/__tests__/mcp-file-bridge.test.ts > send_file_to_mcp_tool > rejects two files targeting the same argument 0ms
+ ✓ src/agents/__tests__/mcp-file-bridge.test.ts > send_file_to_mcp_tool > surfaces an unreadable-path error, reads nothing, and does not call out 0ms
+ ✓ src/agents/__tests__/mcp-file-bridge.test.ts > send_file_to_mcp_tool > rejects when the combined size is over the ceiling, before reading anything 0ms
+ ✓ src/agents/__tests__/mcp-file-bridge.test.ts > send_file_to_mcp_tool > rejects a single file over the ceiling before reading it 0ms
+ ✓ src/agents/__tests__/mcp-file-bridge.test.ts > send_file_to_mcp_tool > injects base64 bytes, reuses the server url + headers, and returns the result 1ms
+ ✓ src/agents/__tests__/mcp-file-bridge.test.ts > send_file_to_mcp_tool > injects multiple files under their own arguments, file bytes winning collisions 0ms
+ ✓ src/agents/__tests__/mcp-file-bridge.test.ts > send_file_to_mcp_tool > surfaces a tool-reported error (isError) as an error result 0ms
+ ✓ src/agents/__tests__/mcp-file-bridge.test.ts > shouldAttachFileBridge > attaches for a plain plugin agent 0ms
+ ✓ src/agents/__tests__/mcp-file-bridge.test.ts > shouldAttachFileBridge > does not attach for the PM agent 0ms
+ ✓ src/agents/__tests__/mcp-file-bridge.test.ts > shouldAttachFileBridge > does not attach for a repo agent 0ms
+
+ Test Files  1 passed (1)
+      Tests  18 passed (18)
+   Start at  16:25:36
+   Duration  213ms (transform 39ms, setup 0ms, import 98ms, tests 9ms, environment 0ms)
+

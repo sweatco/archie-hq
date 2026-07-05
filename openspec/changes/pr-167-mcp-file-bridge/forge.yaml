@@ -1,0 +1,48 @@
+run: pr-167-mcp-file-bridge
+source: { type: pr, ref: "167" }
+repo: sweatco/archie-hq
+branch: archie/task-20260605-1434-l7is2a
+stage: ship
+stage_rounds: { implement: 3, qa: 2 }
+acceptance_criteria:
+  - id: AC1
+    text: "Plain plugin agent gets send_file_to_mcp_tool; PM and repo agents do NOT"
+    method: integration
+    status: verified
+    evidence: "qa-evidence/unit-mapping.md (shouldAttachFileBridge cases) + live use in qa-evidence/ac7-live-e2e/"
+  - id: AC2
+    text: "Unknown server -> error listing connected servers, no outbound call"
+    method: unit
+    status: verified
+    evidence: "unit: 'rejects a server the agent is not connected to, listing the connected ones' (qa-evidence/unit-run.txt)"
+  - id: AC3
+    text: "Non-Streamable-HTTP server (stdio or sse) -> rejected, no connect"
+    method: unit
+    status: verified
+    evidence: "unit: stdio + legacy-SSE rejection cases (qa-evidence/unit-run.txt)"
+  - id: AC4
+    text: "Any path failing assertReadable -> error, no connect, no other file read"
+    method: unit
+    status: verified
+    evidence: "unit: unreadable-path multi-file case (qa-evidence/unit-run.txt)"
+  - id: AC5
+    text: "Sum of file sizes > 10 MB -> rejected before reading"
+    method: unit
+    status: verified
+    evidence: "unit: single + summed ceiling cases, TOCTOU re-check (qa-evidence/unit-run.txt)"
+  - id: AC6
+    text: "Valid call with 1..N files -> each base64-injected under its argument, merged with arguments (files win collisions), url+headers reused, response incl. isError surfaced verbatim"
+    method: unit
+    status: verified
+    evidence: "unit: happy path, two-file collision-win, isError (qa-evidence/unit-run.txt)"
+  - id: AC7
+    text: "Live plugin agent sends a sandbox file through the bridge to a stub HTTP MCP server; stub receives byte-exact content under the right argument; agent relays the response"
+    method: live-e2e
+    status: verified
+    evidence: "qa-evidence/ac7-live-e2e/ — SHA-256-verified byte-exact delivery via live agent, relay confirmed"
+  - id: AC8
+    text: "Image-swap works against real set_offer_image"
+    method: deploy-only
+    status: waived
+    evidence: "Post-merge step: run one dry-run swap via the bridge once sweatcoin-backend #13905 deploys"
+pr: 167

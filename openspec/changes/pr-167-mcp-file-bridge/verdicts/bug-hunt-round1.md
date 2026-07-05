@@ -1,0 +1,13 @@
+# Adversarial bug hunt — round 1
+
+**Verdict: FINDINGS (2, both PLAUSIBLE, both treated as blocking and fixed)**
+
+1. **Tool-level permission bypass** — `src/agents/mcp-file-bridge.ts:100-101,169-171`. PLAUSIBLE. The bridge authorizes only at the *server* level (`servers[args.server]` off `agent.def.mcpServers`) and then does a raw `client.callTool({ name: args.tool_name, arguments: {...} })` against that server. This bypasses the SDK's `tools` / `disallowedTools` filtering, which normally gates which tools on a connected MCP server an agent may invoke. An agent whose frontmatter restricts it to a subset of a server's tools (or `disallowedTools` a destructive one on that server) could still invoke any tool on that server via the bridge, with arbitrary `arguments`. The module docstring's claim "It grants no new reach" is therefore inaccurate at the tool granularity. Currently latent, not exploitable in the shipped config: only the `mobile` agent sets `disallowedTools` in archie-plugins, and repo agents are excluded from the bridge; no plain plugin agent restricts server tools today. Still a real capability gap the moment such a restriction is added.
+
+2. **Bridge server set diverges from the spawn's actually-authorized set (OAuth-dropped servers stay reachable)** — `src/agents/mcp-file-bridge.ts:100`; interacts with `src/agents/spawn.ts:541` and `src/system/oauth/inject.ts:57`. PLAUSIBLE. `applyOAuthBindings` mutates and, on refresh failure, `delete`s entries from the spawn-local `mcpServers` map so the SDK never connects them. But the bridge resolves against `agent.def.mcpServers`, from which nothing was deleted (and whose `headers` retain a possibly-stale `Authorization` from a prior successful spawn, since these config objects are shared references from the root `.mcp.json`). Consequently the bridge will still attempt to reach a server the session intentionally dropped, using stale credentials. Usually degrades to a 401 (graceful `err`), so low severity, but a genuine invariant mismatch.
+
+Mutation-check note: all 13 new tests at the time of review were genuine — each guard fails under mutation of the code it covers.
+
+**Disposition:** both fixed in commit `1dc73e9`:
+- Finding 1: the handler now rejects `mcp__<server>__<tool_name>` matches against `agent.def.disallowedTools` before touching any file; test "rejects a tool the agent has in disallowedTools".
+- Finding 2: `createFileBridgeMcpServer(agent, task, liveServers)` now closes over the same live `mcpServers` map the spawn passes to the SDK (post-OAuth mutation/deletion visible at call time); test "resolves servers from the live map, not the agent def — a dropped server is unreachable".
