@@ -95,13 +95,17 @@ beforeEach(() => {
 });
 
 describe('send_file_to_mcp_tool', () => {
-  it('rejects a server the agent is not connected to', async () => {
+  it('rejects a server the agent is not connected to, listing the connected ones', async () => {
     const res = await runTool({
       server: 'nope',
       tool_name: 'set_offer_image',
       files: [{ path: '/shared/x.png', argument: 'image_base64' }],
     });
     expect(textOf(res)).toMatch(/not connected to an MCP server named "nope"/);
+    // The error enumerates the forwardable (http) servers so the agent can
+    // self-correct — and must not advertise non-forwardable ones.
+    expect(textOf(res)).toContain('sweatco-admin');
+    expect(textOf(res)).not.toContain('stdio-server');
     expect(mockCallTool).not.toHaveBeenCalled();
   });
 
