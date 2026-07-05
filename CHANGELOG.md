@@ -6,6 +6,10 @@ Archie ships continuously, so changes are grouped by the **date they landed** on
 
 _Changes on `main` that haven't been summarized into a dated entry yet._
 
+## 2026-07-04
+
+- **Operators now have a repeatable, adversarially-verified loop — Forge — for taking any idea, GitHub issue, or existing PR to a tested, verified pull request.** The `/forge` command walks through inception (testable acceptance criteria with named verification methods: `unit`/`integration`/`live-e2e`/`manual`/`deploy-only`), fact-checked research, critic-hardened planning, adversarial implementation review, and black-box QA against a live instance via the `archie-debug` MCP; `live-e2e` ACs that need infrastructure not yet built are waived with a named post-merge step rather than silently skipped. Operation is local and operator-driven — one run at a time, two human gates (inception sign-off and merge decision), no Archie runtime change. _Technical: ships as `.claude/skills/forge/` (orchestrator `SKILL.md` + six self-contained stage files carrying verbatim role prompts) and `.claude/commands/forge.md`; run state in `forge.yaml` on a `forge/*` branch; entry points: idea, issue, pr (finish-mode), resume, abandon; `docs/proposals/forge.md` contains the full design rationale; Stage 1 machinery dry-run verified on a real target (30 cited claims, 29 confirmed, 0 wrong); a consistency review caught 3 blocking gaps — all fixed before merge (PR #174)._
+
 ## 2026-07-03
 
 _No changes landed on `main` this day._
