@@ -2,8 +2,8 @@ run: pr-167-mcp-file-bridge
 source: { type: pr, ref: "167" }
 repo: sweatco/archie-hq
 branch: archie/task-20260605-1434-l7is2a
-stage: implement
-stage_rounds: {}
+stage: qa
+stage_rounds: { implement: 3 }
 acceptance_criteria:
   - id: AC1
     text: "Plain plugin agent gets send_file_to_mcp_tool; PM and repo agents do NOT"
