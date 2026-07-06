@@ -139,7 +139,7 @@ Write:
 - `reply_to_review_comment(pr_number, comment_id, comment)` — reply inside an EXISTING review thread
 - `resolve_review_thread(pr_number, thread_id)` — mark thread resolved (thread_id from `get_review_threads`)
 - `request_re_review(pr_number)` — notify reviewers after fixes
-- `merge_pull_request(pr_number)` — merge the PR (checks mergeability first, returns status if not ready)
+- `merge_pull_request(pr_number)` — merge the PR, subject to the repo's merge policy: on an auto-merge repo it merges directly after the mergeability check; on any other repo it posts a merge-approval request to the user and pauses the task until they approve or deny. Returns the current status if the PR is not ready
 - `close_pull_request(pr_number)` — close PR without merging
 
 ### Creating a PR
