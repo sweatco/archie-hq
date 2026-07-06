@@ -1,6 +1,6 @@
 ## 1. Frontmatter flag and type threading (AC7)
 
-- [ ] 1.1 Add `autoMerge?: boolean` to `PluginRepoEntry` (`src/system/plugin-loader.ts:92-96`) and populate it in the plural-shape map (`plugin-loader.ts:293-296`) and the legacy-singular migration (`plugin-loader.ts:310-319`), strict-boolean: only `entry.autoMerge === true` yields `true`
+- [x] 1.1 Add `autoMerge?: boolean` to `PluginRepoEntry` (`src/system/plugin-loader.ts:92-96`) and populate it in the plural-shape map (`plugin-loader.ts:293-296`) and the legacy-singular migration (`plugin-loader.ts:310-319`), strict-boolean: only `entry.autoMerge === true` yields `true`
 - [ ] 1.2 Add `autoMerge: boolean` to `RepoEntry` (`src/types/agent.ts:84-89`) and thread it through the registry copy (`src/agents/registry.ts:81-86`) as `autoMerge: r.autoMerge === true`; hardcode `autoMerge: false` in `synthesizeDynamicAgentDef` (`registry.ts:190`)
 - [ ] 1.3 Tests in `src/system/__tests__/plugin-loader.test.ts` (new frontmatter-parsing describe) or a new co-located test: plural entry with `autoMerge: true` parses true; absent → false; non-boolean (`"true"`, `1`) → false; legacy singular `metadata.archie.repo.autoMerge: true` migrates; registry test (`src/agents/__tests__/`) asserting `RepoEntry.autoMerge` defaults false and dynamic agents are always false (AC7)
 
