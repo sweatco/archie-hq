@@ -62,6 +62,7 @@ vi.mock('../registry.js', () => ({
   getAgentIds: vi.fn().mockReturnValue(['backend-agent', 'mobile-agent']),
   getVisiblePeerIdsForSender: vi.fn().mockReturnValue(['backend-agent', 'mobile-agent']),
   getAgentDef: vi.fn().mockReturnValue(undefined),
+  isAutoMergeRepo: vi.fn().mockReturnValue(true),
 }));
 
 // ---- Helpers ----
