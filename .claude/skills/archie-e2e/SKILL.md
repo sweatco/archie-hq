@@ -19,7 +19,7 @@ Verify acceptance criteria against a live Archie instance booted from the branch
 - Docker (Desktop or daemon) running locally; `docker compose version` works.
 - `.env` at the repo root with a non-empty `ANTHROPIC_API_KEY`. **No Slack tokens are needed** — scenarios enter through the CLI/API channel.
 - The `archie-debug` MCP available (registered in `.mcp.json` as `npx tsx tools/debug-mcp/server.ts`). The harness consumes it as-is and never modifies `tools/debug-mcp/`.
-- For the edit-mode scenario only: at least one configured engineering repo in the workdir (see the recipe's prerequisite note).
+- For the edit-mode and merge-approval scenarios: at least one configured engineering repo in the workdir (see the recipes' prerequisite notes).
 - macOS Docker Desktop caveat: a wedged `docker-credential-desktop` helper can stall `docker compose up --build` during registry auth — upstream of the harness's bounded wait, so boot appears to hang before any diagnostics. Verify with `docker-credential-desktop list </dev/null`; if it hangs, point `DOCKER_CONFIG` at a scratch dir without `credsStore` for the run (leave your real `~/.docker/config.json` untouched). The scratch config also drops the `desktop-linux` context, so additionally set `DOCKER_HOST=unix://$HOME/.docker/run/docker.sock` or every docker command will fail to reach the daemon (observed in the 2026-07-05 QA run).
 
 **Rollback:** delete `.claude/skills/archie-e2e/` and `tools/e2e/` — the harness has no side effects and nothing else references them (plus one `e2e-evidence/` line in `.gitignore`).
@@ -48,7 +48,7 @@ On success it prints the resolved base URL, the `/health` body, and a final `ARC
 
 Scenarios are agent-driven: you call the MCP tools directly, following these recipes. The recipe names below are canonical and **must be used verbatim as the evidence files' `scenario` field**.
 
-**Constraints (both recipes):**
+**Constraints (all recipes):**
 
 - **Serial only** — run one scenario at a time; parallel runs are unvalidated.
 - **Nonce window** — `wait_for_task`'s nonce scan covers only the **25 most-recent tasks**, so on a long-lived instance old nonces fall out of the window; remedy: fresh boot before a scenario session.
@@ -78,6 +78,22 @@ A change request against a configured repo trips the edit-mode gate, is approved
 5. Continue the `wait_for_task` loop; assert the task reaches `STATE=completed`.
 6. Excerpts for evidence: events must show `approval:requested` (`data.approvalType: "edit_mode"`) followed by `approval:resolved` and eventually `task:completed`; the knowledge log records the approval decision line.
 
+### Recipe: `merge-approval-deny`
+
+An explicit merge request in a repo without `autoMerge: true` trips the `merge` approval gate, is denied via the API path, and no merge ever executes — the deny path keeps QA from really merging anything (pr-merge-policy AC3).
+
+**Prerequisite:** same as `edit-mode-approval` — the workdir has at least one configured engineering repo, and that repo must not resolve to `autoMerge: true` (the shipped default: any repo whose declaring agents don't all set the flag). If the prerequisite is unmet, do NOT fake a pass — report the scenario as `BLOCKED`, stating: what is missing (no configured engineering repo in the workdir, or only auto-merge repos), what was attempted, and the remedy (configure a repo via the plugins setup, reboot, re-run). A BLOCKED scenario produces no evidence file; it appears in the run report only.
+
+1. Mint a fresh nonce as above.
+2. `create_task` with a small, real change request against a configured repo that ends in an open PR, e.g. `"[${NONCE}] In <repo>, add a comment line '// archie-e2e touch' to the top of README-adjacent file X and open a PR. Do not merge it."`
+3. `wait_for_task(nonce: NONCE)`, then resume with `task_id` + `cursor` while `STATE=pending`. On `STATE=approval_requested` with `APPROVAL_TYPE=edit_mode`: `approve(task_id: <id>, type: "edit_mode", approve: true)` and keep waiting.
+4. Wait until the task settles with the PR opened (`STATE=completed`, PM reply announcing the PR). Note the PR number and repo from the PM reply or the knowledge log — the approve call in step 7 needs exactly this identity.
+5. `send_message(task_id: <id>, message: "[${NONCE}] Please merge that PR.")` — the PM delegates to the repo agent, whose `merge_pull_request` call posts the merge approval prompt instead of merging.
+6. Resume the `wait_for_task` loop; assert `STATE=approval_requested` with `APPROVAL_TYPE=merge`. The knowledge log now carries the decision finding `Merge approval requested for <github>#<pr_number>` — this names the identity to resolve against.
+7. `approve(task_id: <id>, type: "merge", approve: false, github: "<github>", pr_number: <pr_number>)` with the identity of the PR the scenario drove open — the API rejects merge-type resolutions that omit `github`/`pr_number`.
+8. Continue the `wait_for_task` loop; assert the task settles (`STATE=completed`) and **no merge occurred**: the knowledge log contains the denial finding `Merge denied by user — PR not merged`, and neither the log nor the events contain a merged completion (`PR … merged on user approval`) for this PR.
+9. Excerpts for evidence: events must show `approval:requested` (`data.approvalType: "merge"`) followed by `approval:resolved` (`data.approve: false`) with no merge in between; knowledge-log lines for the merge-approval request and the denial finding.
+
 ## 3. Capture evidence
 
 Each scenario produces a `<scenario>.json` (canonical) + `<scenario>.md` (rendered for reviewers) pair, written by the validated writer:
@@ -97,7 +113,7 @@ cat payload.json | npx tsx tools/e2e/evidence.ts --out-dir <dir>
 | Field | Type | Meaning |
 |---|---|---|
 | `schema` | `"archie-e2e-evidence/v1"` | Schema tag, exact string. |
-| `scenario` | string, kebab-case | Canonical recipe name (`basic-nonce`, `edit-mode-approval`); names the output files. |
+| `scenario` | string, kebab-case | Canonical recipe name (`basic-nonce`, `edit-mode-approval`, `merge-approval-deny`); names the output files. |
 | `ac_ids` | string[], non-empty | Brief AC ids this scenario verifies, e.g. `["AC2"]`. |
 | `started_at` / `finished_at` | ISO 8601 strings | Scenario wall-clock bounds. |
 | `environment.base_url` | string | Resolved base URL the scenario ran against. |
