@@ -2,7 +2,7 @@ run: pr-merge-policy
 source: { type: issue, ref: "139" }
 repo: sweatco/archie-hq
 branch: forge/pr-merge-policy
-stage: research
+stage: plan
 stage_rounds: {}
 acceptance_criteria:
   - id: AC1
