@@ -2,52 +2,52 @@ run: pr-merge-policy
 source: { type: issue, ref: "139" }
 repo: sweatco/archie-hq
 branch: forge/pr-merge-policy
-stage: qa
-stage_rounds: { plan: 3, implement: 2 }
+stage: ship
+stage_rounds: { plan: 3, implement: 2, qa: 1 }
 acceptance_criteria:
   - id: AC1
     text: "WHEN a PR linked to a task is in a repo whose agent frontmatter lacks autoMerge: true, and an approval webhook arrives with the PR mergeable, THEN the system does not merge, and the PM posts exactly one Slack-thread notification that the PR is ready and can be merged on request — including when multiple merge-triggering webhooks (approval, synchronize, push, workflow_run) arrive for the same PR state."
     method: integration
-    status: pending
-    evidence: null
+    status: verified
+    evidence: "src/connectors/github/__tests__/merge.test.ts (burst once-ness, pending-approval suppression, marker clear/re-notify, reload persistence); PM Slack-post half proxied engine-side, live check on AC9 checklist — see qa-evidence/suite-evidence.md"
   - id: AC2
     text: "WHEN the repo agent frontmatter sets autoMerge: true and an approval webhook arrives with the PR mergeable, THEN the system squash-merges as today."
     method: integration
-    status: pending
-    evidence: null
+    status: verified
+    evidence: "src/connectors/github/__tests__/merge.test.ts (auto-repo squash merge + mixed-policy per-PR split)"
   - id: AC3
     text: "WHEN an agent calls merge_pull_request in a non-auto repo, THEN the tool does not merge; the task pauses with an approval_requested event of type merge (observed live via wait_for_task APPROVAL_TYPE=merge), and denying the request results in no merge."
     method: live-e2e
-    status: pending
-    evidence: null
+    status: verified
+    evidence: "qa-evidence/merge-approval-deny.json (blind QA re-run, 5/5 assertions, boot attested from 1cf34ce, PR sweatco/archie-plugins#81 denied and confirmed unmerged via gh)"
   - id: AC4
     text: "WHEN the user approves the surfaced merge request AND GitHub reports the PR mergeable, THEN the merge executes and the user is notified; if not mergeable, the tool reports why instead."
     method: integration
-    status: pending
-    evidence: null
+    status: verified
+    evidence: "src/tasks/__tests__/merge-approval.test.ts (cases a-d incl. merge-API-failure-after-approval and supersede races) + src/agents/__tests__/pr-tools.test.ts (not-ready pre-check)"
   - id: AC5
     text: "WHEN the explicit-request merge path runs on a PR with zero GitHub review approvals but GitHub reports it mergeable, THEN the merge proceeds — no Archie-side approval floor."
     method: unit
-    status: pending
-    evidence: null
+    status: verified
+    evidence: "src/tasks/__tests__/merge-approval.test.ts + src/connectors/github/__tests__/mergeability.test.ts (6-case truth table, no case consults review approvals)"
   - id: AC6
     text: "WHEN an agent calls merge_pull_request in an autoMerge: true repo in edit mode, THEN it merges directly with no extra approval prompt (current behavior)."
     method: integration
-    status: pending
-    evidence: null
+    status: verified
+    evidence: "src/agents/__tests__/pr-tools.test.ts (direct merge, no approval:requested, no pause; blocked+mergeable aligned condition)"
   - id: AC7
     text: "WHEN no frontmatter is changed anywhere, THEN no repo auto-merges — the default is off for every agent, including Archie's own repo."
     method: unit
-    status: pending
-    evidence: null
+    status: verified
+    evidence: "src/system/__tests__/plugin-loader-frontmatter.test.ts + src/agents/__tests__/registry-auto-merge.test.ts (strict-boolean parse, dynamic agents hardcoded false); corroborated live — AC3 run gated a merge on Archie's own plugins repo with unchanged frontmatter"
   - id: AC8
     text: "WHEN a user clicks the approve/deny button on a merge-approval Slack message, THEN the merge approval resolves identically to the API path (new action ids wired to the same resolution code as approve_edit_mode/deny_edit_mode)."
     method: integration
-    status: pending
-    evidence: null
+    status: verified
+    evidence: "src/connectors/__tests__/merge-approval-surfaces.test.ts (both surfaces call identical Task methods with same parsed identity; stale button, API 409, API 400)"
   - id: AC9
     text: "First real merge-on-request after deploy: in a non-auto repo, a merge request is approved via the actual Slack button and the PR actually merges."
     method: deploy-only
-    status: pending
-    evidence: null
+    status: waived
+    evidence: "Named post-merge step: operator (Egor) performs the first real merge-on-request via the Slack Approve button after deploy, also observing (a) exactly one 'ready' post per ready period and (b) the PM relaying per the updated engineering-team skill; outcome recorded as a PR comment"
 pr: null
