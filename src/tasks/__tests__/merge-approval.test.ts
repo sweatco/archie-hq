@@ -5,7 +5,8 @@
  * mocked GitHubClient) to prove the resolution semantics: the atomic
  * read-compare-clear identity gate, engine-side merge on approval with no
  * `approved` floor (AC5), failure reporting (AC4 both halves), deny without
- * any GitHub call, and the supersede-during-resolution race staying a no-op.
+ * any GitHub call, the supersede-during-resolution race staying a no-op, and
+ * the clear-before-awaits invariant (a supersede landing mid-await survives).
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -222,6 +223,36 @@ describe('handleMergeApproval', () => {
     expect(second).toBe('resolved');
     expect(mockGitHubClient.mergePullRequest).toHaveBeenCalledWith('org/backend', 2);
     expect(task.metadata.pending_merge_approval).toBeUndefined();
+  });
+
+  it('supersede landing mid-await survives: the slot is cleared before any await, so PR#2 written during resolution is never wiped', async () => {
+    // Exercises the clear-before-awaits invariant (the synchronous
+    // read-compare-clear gate): the first awaited GitHub call synchronously
+    // rewrites the slot to PR#2, simulating a supersede landing during the
+    // resolution's await window. Correct code consumed PR#1's slot before the
+    // await and never touches the slot again — PR#2 must survive. Code that
+    // clears after the awaits would wipe the superseding PR#2 request.
+    const task = makeFakeTask(pendingSlot(PR1));
+    mockGitHubClient.getPRStatus.mockImplementation(async () => {
+      task.metadata.pending_merge_approval = pendingSlot(PR2);
+      return { state: 'open', mergeable: true, mergeableState: 'clean', approved: true };
+    });
+    mockGitHubClient.mergePullRequest.mockResolvedValue({ success: true, message: 'merged' });
+
+    const disposition = await approve(task, PR1);
+
+    expect(disposition).toBe('resolved');
+    expect(mockGitHubClient.mergePullRequest).toHaveBeenCalledTimes(1);
+    expect(mockGitHubClient.mergePullRequest).toHaveBeenCalledWith('org/backend', 1);
+    expect(task.metadata.pending_merge_approval).toEqual(pendingSlot(PR2));
+
+    // The superseding request is still resolvable afterwards.
+    mockGitHubClient.getPRStatus.mockResolvedValue({
+      state: 'open', mergeable: true, mergeableState: 'clean', approved: true,
+    });
+    const second = await approve(task, PR2);
+    expect(second).toBe('resolved');
+    expect(mockGitHubClient.mergePullRequest).toHaveBeenCalledWith('org/backend', 2);
   });
 });
 

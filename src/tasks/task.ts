@@ -1311,6 +1311,10 @@ export class Task {
       );
       return 'stale';
     }
+    // Clear-before-awaits invariant: the slot is consumed here, synchronously
+    // with the read+compare above. Moving this clear after the GitHub awaits
+    // below would let a supersede that lands mid-await pass the compare too
+    // (double resolution) and then be wiped by this resolution's clear.
     this.metadata.pending_merge_approval = undefined;
 
     // Cancel the park armed by merge_pull_request on the requesting agent —
