@@ -51,7 +51,49 @@ export async function checkAndMergeLinkedPRs(taskId: string): Promise<void> {
   } else if (newlyMerged.length > 0) {
     await notifyPMAboutMerge(taskId, newlyMerged, []);
   }
+
+  // Held-ready PRs in non-auto repos: notify once per continuous ready period.
+  const notifiable = await markNewlyNotifiableReadyPRs(taskId, result.ready);
+  if (notifiable.length > 0) {
+    await notifyPMAboutReadyPRs(taskId, notifiable);
+  }
   // If only pending PRs, wait silently (retry on next webhook)
+}
+
+/**
+ * Filter the held-ready bucket down to PRs that still need their ready
+ * notification, setting the `merge_ready_notified` marker on every matching
+ * BranchState entry as they are selected. Skips a PR whose merge-approval
+ * prompt is currently pending — the user already holds an actionable prompt
+ * for it, and a simultaneous "ready" nudge would be a confusing double prompt.
+ */
+async function markNewlyNotifiableReadyPRs(taskId: string, readyPRs: string[]): Promise<string[]> {
+  if (readyPRs.length === 0) return [];
+
+  const task = await Task.get(taskId);
+  const notifiable: string[] = [];
+  for (const prRef of readyPRs) {
+    // prRef is `<github>#<pr_number>` — split on the last '#' (repo names never contain one)
+    const sep = prRef.lastIndexOf('#');
+    const github = prRef.slice(0, sep);
+    const prNumber = Number(prRef.slice(sep + 1));
+
+    const pending = task.metadata.pending_merge_approval;
+    if (pending && pending.github === github && pending.pr_number === prNumber) continue;
+
+    const states = findBranchStatesForPR(task, github, prNumber);
+    if (states.some((s) => s.merge_ready_notified)) continue;
+
+    for (const state of states) {
+      state.merge_ready_notified = true;
+    }
+    notifiable.push(prRef);
+  }
+
+  if (notifiable.length > 0) {
+    task.debouncedSave();
+  }
+  return notifiable;
 }
 
 /**
@@ -297,6 +339,28 @@ async function notifyPMAboutConflicts(
   logger.system(`Task ${taskId}: Notifying PM about conflicts`);
 
   await appendAgentFinding(taskId, 'system', message, 'blocker');
+
+  const task = await Task.get(taskId);
+  await task.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+}
+
+/**
+ * Notify PM that held-ready PRs (non-auto repos) can be merged on request
+ * Logs to knowledge.log and sends message to PM
+ */
+async function notifyPMAboutReadyPRs(
+  taskId: string,
+  readyPRs: string[]
+): Promise<void> {
+  const prList = readyPRs.map((pr) => `- ${pr}`).join('\n');
+
+  const message =
+    `The following PRs are approved and green, but their repos do not auto-merge:\n${prList}\n\n` +
+    `Tell the user in the thread that the PR is ready and will be merged on their request.`;
+
+  logger.system(`Task ${taskId}: Notifying PM about ready PRs`);
+
+  await appendAgentFinding(taskId, 'system', message, 'decision');
 
   const task = await Task.get(taskId);
   await task.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
