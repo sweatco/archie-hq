@@ -213,23 +213,38 @@ export function mountApiRoutes(app: Application): void {
     }
   });
 
-  // ---- POST /tasks/:id/approve — approve/deny edit mode or research budget ----
+  // ---- POST /tasks/:id/approve — approve/deny edit mode, research budget, or merge ----
 
   router.post('/tasks/:id/approve', async (req: Request, res: Response) => {
     try {
       const taskId = req.params.id as string;
-      const { type, approve, approver } = req.body as {
+      const { type, approve, approver, github, pr_number } = req.body as {
         type: string;
         approve: boolean;
         // Optional resolved human (id/name/email) to author commits as. CLI/API
         // callers have no Slack identity by default; when omitted, commits stay
         // bot-authored.
         approver?: { id: string; name: string; email?: string };
+        // PR identity — required for merge-type requests, verified against the
+        // pending request inside the Task resolution methods.
+        github?: string;
+        pr_number?: number;
       };
 
       if (!type || typeof approve !== 'boolean') {
         res.status(400).json({ error: 'type and approve are required' });
         return;
+      }
+
+      // Merge-type requests must name the PR being resolved; the Task method
+      // verifies it against the pending request atomically.
+      let mergeExpected: { github: string; pr_number: number } | undefined;
+      if (type === 'merge') {
+        if (typeof github !== 'string' || !github || typeof pr_number !== 'number') {
+          res.status(400).json({ error: 'merge approval requires github and pr_number' });
+          return;
+        }
+        mergeExpected = { github, pr_number };
       }
 
       // Normalize the optional approver: a non-empty name is required (an empty
@@ -261,6 +276,12 @@ export function mountApiRoutes(app: Application): void {
           await task.handleResearchBudgetApproval();
         } else {
           await task.handleResearchBudgetDenial();
+        }
+      } else if (mergeExpected) {
+        if (approve) {
+          await task.handleMergeApproval(cleanApprover, mergeExpected);
+        } else {
+          await task.handleMergeDenial(mergeExpected);
         }
       } else {
         res.status(400).json({ error: `Unknown approval type: ${type}` });
