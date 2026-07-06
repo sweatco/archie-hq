@@ -149,7 +149,8 @@ export async function waitForTask(
             break;
           case 'approval:requested': {
             awaitingApproval = true;
-            const ty = e.data['type'];
+            // The engine emits { text, approvalType } (src/tasks/task.ts).
+            const ty = e.data['approvalType'];
             if (ty === 'edit_mode' || ty === 'research_budget') approvalType = ty;
             break;
           }

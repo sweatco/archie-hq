@@ -70,9 +70,9 @@ A change request against a configured repo trips the edit-mode gate, is approved
 1. Mint a fresh nonce as above.
 2. `create_task` with a small, real change request against a configured repo, e.g. `"[${NONCE}] In <repo>, add a comment line '// archie-e2e touch' to the top of README-adjacent file X and open a PR."`
 3. `wait_for_task(nonce: NONCE)`, then resume with `task_id` + `cursor` while `STATE=pending`.
-4. On `STATE=approval_requested`: confirm the approval type via `get_events` (the `approval:requested` event carries `data.approvalType: "edit_mode"`; the `wait_for_task` text output may not include an `APPROVAL_TYPE=` line), then call `approve(task_id: <id>, type: "edit_mode", approve: true)` (this is the `POST /api/tasks/:id/approve` path).
+4. On `STATE=approval_requested`: read the approval type from the `APPROVAL_TYPE=` line of the `wait_for_task` output, then call `approve(task_id: <id>, type: "edit_mode", approve: true)` (this is the `POST /api/tasks/:id/approve` path).
 5. Continue the `wait_for_task` loop; assert the task reaches `STATE=completed`.
-6. Excerpts for evidence: events must show `approval:requested` (`data.type: "edit_mode"`) followed by `approval:resolved` and eventually `task:completed`; the knowledge log records the approval decision line.
+6. Excerpts for evidence: events must show `approval:requested` (`data.approvalType: "edit_mode"`) followed by `approval:resolved` and eventually `task:completed`; the knowledge log records the approval decision line.
 
 ## 3. Capture evidence
 

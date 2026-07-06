@@ -54,7 +54,7 @@ describe('waitForTask — state detection', () => {
   });
 
   it('returns approval_requested with the approval type', async () => {
-    const c = makeClient({ events: { t1: [{ type: 'approval:requested', data: { type: 'edit_mode' } }] } });
+    const c = makeClient({ events: { t1: [{ type: 'approval:requested', data: { approvalType: 'edit_mode' } }] } });
     const r = await waitForTask(c, { taskId: 't1' }, { ...fakeClock(), ...tunables });
     expect(r.state).toBe('approval_requested');
     expect(r.approval_type).toBe('edit_mode');
@@ -64,7 +64,7 @@ describe('waitForTask — state detection', () => {
     const c = makeClient({
       events: {
         t1: [
-          { type: 'approval:requested', data: { type: 'edit_mode' } },
+          { type: 'approval:requested', data: { approvalType: 'edit_mode' } },
           { type: 'task:completed' },
         ],
       },
@@ -138,7 +138,7 @@ describe('waitForTask — bounded & resumable', () => {
 describe('waitForTask — approval-gate ordering', () => {
   it('reports approval_requested even when the gate stop lands in the same window', async () => {
     const c = makeClient({
-      events: { t1: [{ type: 'approval:requested', data: { type: 'edit_mode' } }, { type: 'task:stopped' }] },
+      events: { t1: [{ type: 'approval:requested', data: { approvalType: 'edit_mode' } }, { type: 'task:stopped' }] },
     });
     const r = await waitForTask(c, { taskId: 't1' }, { ...fakeClock(), ...tunables });
     expect(r.state).toBe('approval_requested');
