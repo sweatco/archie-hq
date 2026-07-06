@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   archieContainerState,
+  decidePortAction,
+  looksLikeArchie,
   parseArgs,
   preflight,
   renderDiagnostics,
@@ -229,6 +231,40 @@ function bootDeps(overrides: Partial<BootDeps>): BootDeps & { logs: string[]; er
   };
 }
 
+describe('looksLikeArchie', () => {
+  it('accepts the /health payload shape (200 and shutting_down alike)', () => {
+    expect(looksLikeArchie('{"status":"ok","activeTasks":0}')).toBe(true);
+    expect(looksLikeArchie('{"status":"shutting_down","activeTasks":2,"git_sha":"abc"}')).toBe(true);
+  });
+
+  it('rejects non-Archie responses', () => {
+    expect(looksLikeArchie('')).toBe(false);
+    expect(looksLikeArchie('<html>It works!</html>')).toBe(false);
+    expect(looksLikeArchie('{"status":"ok"}')).toBe(false); // no activeTasks — some other JSON service
+    expect(looksLikeArchie('{"activeTasks":0}')).toBe(false);
+    expect(looksLikeArchie('null')).toBe(false);
+  });
+});
+
+describe('decidePortAction', () => {
+  it('proceeds on a free port', () => {
+    expect(decidePortAction({ kind: 'free' }, false)).toBe('proceed');
+  });
+
+  it("recreates when this project's own archie holds the port (never reuse — code may be stale)", () => {
+    expect(decidePortAction({ kind: 'archie' }, true)).toBe('recreate');
+  });
+
+  it('relocates when a foreign archie holds the port (not ours to stop)', () => {
+    expect(decidePortAction({ kind: 'archie' }, false)).toBe('relocate');
+  });
+
+  it('relocates when a non-archie process holds the port', () => {
+    expect(decidePortAction({ kind: 'other' }, false)).toBe('relocate');
+    expect(decidePortAction({ kind: 'other' }, true)).toBe('relocate');
+  });
+});
+
 describe('runBoot — orchestration ordering', () => {
   it('a failed compose-up prints diagnostics and returns non-zero with ZERO /health fetches', async () => {
     let fetches = 0;
@@ -269,6 +305,53 @@ describe('runBoot — orchestration ordering', () => {
     expect(code).toBe(0);
     expect(deps.logs.join('\n')).toContain('http://localhost:3000');
     expect(deps.logs.join('\n')).toContain('{"status":"ok"}');
+  });
+
+  it('attestation: a healthy instance reporting the expected git_sha passes', async () => {
+    const { exec } = fakeExec((_cmd, args) =>
+      args.includes('up') ? { code: 0, stdout: '', stderr: '' } : { code: 0, stdout: RUNNING_PS, stderr: '' },
+    );
+    const deps = bootDeps({
+      exec,
+      fetchHealth: async () => ({ status: 200, body: '{"status":"ok","activeTasks":0,"git_sha":"abc123"}' }),
+    });
+
+    const code = await runBoot(deps, { baseUrl: 'http://localhost:3000', timeoutSeconds: 600, expectedSha: 'abc123' });
+
+    expect(code).toBe(0);
+    expect(deps.logs.join('\n')).toContain('Attested: instance runs abc123');
+  });
+
+  it('attestation: a healthy instance reporting a DIFFERENT git_sha fails the boot with diagnostics', async () => {
+    const { exec } = fakeExec((_cmd, args) =>
+      args.includes('up') ? { code: 0, stdout: '', stderr: '' } : { code: 0, stdout: RUNNING_PS, stderr: '' },
+    );
+    const deps = bootDeps({
+      exec,
+      fetchHealth: async () => ({ status: 200, body: '{"status":"ok","activeTasks":0,"git_sha":"stale99"}' }),
+    });
+
+    const code = await runBoot(deps, { baseUrl: 'http://localhost:3000', timeoutSeconds: 600, expectedSha: 'abc123' });
+
+    expect(code).toBe(1);
+    expect(deps.errors.join('\n')).toContain('git_sha=stale99');
+    expect(deps.errors.join('\n')).toContain('expected abc123');
+    expect(deps.errors.join('\n')).toContain('docker compose ps'); // diagnostics block rendered
+  });
+
+  it('attestation: a healthy instance with NO git_sha in /health fails when a SHA is expected', async () => {
+    const { exec } = fakeExec((_cmd, args) =>
+      args.includes('up') ? { code: 0, stdout: '', stderr: '' } : { code: 0, stdout: RUNNING_PS, stderr: '' },
+    );
+    const deps = bootDeps({
+      exec,
+      fetchHealth: async () => ({ status: 200, body: '{"status":"ok","activeTasks":0}' }),
+    });
+
+    const code = await runBoot(deps, { baseUrl: 'http://localhost:3000', timeoutSeconds: 600, expectedSha: 'abc123' });
+
+    expect(code).toBe(1);
+    expect(deps.errors.join('\n')).toContain('git_sha=(none)');
   });
 
   it('a transient compose ps failure (non-zero exit, empty stdout) skips the container check instead of aborting', async () => {

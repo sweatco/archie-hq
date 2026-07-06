@@ -41,6 +41,14 @@ services:
 
     # Override paths for containerized environment
     environment:
+      # Make the shell's PORT authoritative inside the container too — env_file
+      # (.env) would otherwise pin the app to its PORT while the mapping above
+      # follows the shell, silently splitting the two on an override.
+      - PORT=${PORT:-3000}
+      # Checkout attestation: the e2e harness passes the composing checkout's
+      # commit SHA; /health reports it so boot can verify the instance runs the
+      # code under test (src/ is bind-mounted, so compose-time attestation holds).
+      - GIT_SHA=${GIT_SHA:-}
       - CLAUDE_PATH=/usr/local/bin/claude
       - ARCHIE_WORKDIR=/workdir
       # - GITHUB_APP_PRIVATE_KEY_PATH=/app/secrets/github-private-key.pem

@@ -214,6 +214,9 @@ async function main(): Promise<void> {
       res.status(shutting ? 503 : 200).json({
         status: shutting ? 'shutting_down' : 'ok',
         activeTasks: getActiveTaskIds().length,
+        // Checkout attestation for the e2e harness (docker-compose passes the
+        // composing shell's GIT_SHA); null when not composed with one.
+        git_sha: process.env.GIT_SHA || null,
       });
     });
 

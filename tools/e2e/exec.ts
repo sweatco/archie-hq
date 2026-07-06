@@ -22,12 +22,18 @@ export interface ExecOptions {
   cwd?: string;
   /** Mirror the child's output to this process's stderr as it streams (useful for long docker builds). */
   echo?: boolean;
+  /** Extra environment variables merged over process.env (e.g. PORT / GIT_SHA for compose interpolation). */
+  env?: Record<string, string>;
 }
 
 export function makeExec(options: ExecOptions = {}): ExecFn {
   return (cmd, args) =>
     new Promise<ExecResult>((resolve) => {
-      const child = spawn(cmd, args, { cwd: options.cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(cmd, args, {
+        cwd: options.cwd,
+        env: options.env ? { ...process.env, ...options.env } : undefined,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
       let stdout = '';
       let stderr = '';
       child.stdout.on('data', (chunk: Buffer) => {
