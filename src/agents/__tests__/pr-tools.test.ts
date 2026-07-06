@@ -218,6 +218,21 @@ describe('merge_pull_request', () => {
     expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
   });
 
+  it('merges when blocked but mergeable=true (aligned to orchestrator Rulesets tolerance)', async () => {
+    mockGitHubClient.getPRStatus.mockResolvedValue({
+      state: 'open', mergeable: true, mergeableState: 'blocked', approved: true,
+    });
+    mockGitHubClient.mergePullRequest.mockResolvedValue({
+      success: true, message: 'PR #42 merged successfully',
+    });
+
+    const tool = getRepoTool(makeAgent(), makeTask(), 'merge_pull_request');
+    const result = await tool({ pr_number: 42 }, {});
+
+    expect(mockGitHubClient.mergePullRequest).toHaveBeenCalledWith('org/backend', 42);
+    expect(result.content[0].text).toContain('merged successfully');
+  });
+
   it('merges when PR is open and clean', async () => {
     mockGitHubClient.getPRStatus.mockResolvedValue({
       state: 'open', mergeable: true, mergeableState: 'clean', approved: true,

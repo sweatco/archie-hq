@@ -9,7 +9,7 @@
 - [x] 2.1 Add `isAutoMergeRepo(github: string): boolean` to `src/agents/registry.ts` beside `findAgentDefsContainingRepo` (`registry.ts:178`): false when no registered agent declares the repo; true only when every declaring agent's matching entries all set `autoMerge === true`; `logger.warn` once per call on mixed flags
 - [x] 2.2 Unit tests for `isAutoMergeRepo`: undeclared repo → false; single agent true → true; single agent absent → false; two agents true+true → true; two agents true+false → false (and warn logged); agent declaring the repo twice with mixed entries → false
 - [x] 2.3 Create `src/connectors/github/mergeability.ts` exporting `isMergeReadyPerGithub(status: PRStatus): boolean` (`clean` OR `mergeable === true && blocked`), with `import type` for `PRStatus`; unit tests for the four state combinations plus `dirty`/`unstable` → false
-- [ ] 2.4 Switch the orchestrator's mergeable-bucket condition (`src/connectors/github/merge.ts:111-117`) and the tool's readiness check (`src/agents/tools.ts:1473`) to the shared helper; update `src/agents/__tests__/pr-tools.test.ts` so `blocked + mergeable=true` now merges (tool aligned to orchestrator); `npm run typecheck` and `npm test` green
+- [x] 2.4 Switch the orchestrator's mergeable-bucket condition (`src/connectors/github/merge.ts:111-117`) and the tool's readiness check (`src/agents/tools.ts:1473`) to the shared helper; update `src/agents/__tests__/pr-tools.test.ts` so `blocked + mergeable=true` now merges (tool aligned to orchestrator); `npm run typecheck` and `npm test` green
 
 ## 3. Merge approval type and pending state (AC4, AC5 resolution side)
 

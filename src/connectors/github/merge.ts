@@ -21,6 +21,7 @@ import { appendAgentFinding } from '../../tasks/persistence.js';
 import { Task } from '../../tasks/task.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { createGitHubClient, type GitHubClient } from './client.js';
+import { isMergeReadyPerGithub } from './mergeability.js';
 import { logger } from '../../system/logger.js';
 import type { PRStatus } from '../../agents/tools.js';
 
@@ -101,19 +102,12 @@ export async function triggerMergeCheck(taskId: string): Promise<MergeCheckResul
   // PR is mergeable when:
   // - state is open (not already merged/closed)
   // - approved by reviewer
-  // - mergeableState is 'clean' OR (mergeable=true AND mergeableState='blocked')
-  //
-  // Note on 'blocked' state: GitHub Rulesets (vs classic branch protection) have a known
-  // issue where API reports 'blocked' even when the UI shows a green merge button.
-  // See: https://github.com/runatlantis/atlantis/issues/4116
-  // When mergeable=true, GitHub has determined the PR CAN be merged, so we attempt it.
-  // The merge API call will fail if it's actually blocked, which we handle gracefully.
+  // - GitHub reports it ready (see isMergeReadyPerGithub for the 'blocked' tolerance)
   const mergeable = prStatuses.filter(
     (pr) =>
       pr.status.state === 'open' &&
       pr.status.approved &&
-      (pr.status.mergeableState === 'clean' ||
-        (pr.status.mergeable && pr.status.mergeableState === 'blocked'))
+      isMergeReadyPerGithub(pr.status)
   );
   const conflicted = prStatuses.filter(
     (pr) => pr.status.state === 'open' && pr.status.mergeableState === 'dirty'

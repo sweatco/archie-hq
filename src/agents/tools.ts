@@ -20,6 +20,7 @@ import { getVisiblePeerIdsForSender, findAgentDefsContainingRepo, synthesizeDyna
 import { getGitHubClient, parseCheckRef } from '../connectors/github/client.js';
 import { gitExec } from '../connectors/github/repo-clone.js';
 import { hydrateBranchState, findBranchStateByPR } from '../connectors/github/branch-state.js';
+import { isMergeReadyPerGithub } from '../connectors/github/mergeability.js';
 import { taskBranchName } from '../connectors/github/branch-naming.js';
 import { appendAgentFinding, appendArtifactShared } from '../tasks/persistence.js';
 import { copyArtifactToShared, assertReadable } from './artifacts.js';
@@ -1471,7 +1472,7 @@ function createMergePRTool(agent: Agent, task: Task) {
       if (status.state !== 'open') {
         return ok(`Cannot merge: PR #${args.pr_number} (${resolved.github}) is ${status.state}`);
       }
-      if (!status.mergeable || status.mergeableState !== 'clean') {
+      if (!isMergeReadyPerGithub(status)) {
         return ok(`Cannot merge: PR #${args.pr_number} (${resolved.github}) is not ready (mergeable=${status.mergeable}, state=${status.mergeableState})`);
       }
 
