@@ -26,6 +26,7 @@ import { createGitHubClient, type GitHubClient } from './client.js';
 import { isMergeReadyPerGithub } from './mergeability.js';
 import { logger } from '../../system/logger.js';
 import type { PRStatus } from '../../agents/tools.js';
+import type { BranchState } from '../../types/task.js';
 
 interface LinkedPRStatus {
   github: string;
@@ -126,6 +127,28 @@ export async function triggerMergeCheck(taskId: string): Promise<MergeCheckResul
   const autoMergeable = mergeable.filter((pr) => isAutoMergeRepo(pr.github));
   const held = mergeable.filter((pr) => !autoMergeable.includes(pr));
 
+  // Notify-once bookkeeping: a PR observed no longer ready — not ready while
+  // open, or closed without merging — drops its `merge_ready_notified`
+  // markers, so the next continuous ready period notifies again (a
+  // closed-then-reopened PR included).
+  const notReady = prStatuses.filter(
+    (pr) =>
+      (pr.status.state === 'open' && !mergeable.includes(pr)) ||
+      pr.status.state === 'closed'
+  );
+  let markersCleared = false;
+  for (const pr of notReady) {
+    for (const state of findBranchStatesForPR(task, pr.github, pr.prNumber)) {
+      if (state.merge_ready_notified) {
+        delete state.merge_ready_notified;
+        markersCleared = true;
+      }
+    }
+  }
+  if (markersCleared) {
+    task.debouncedSave();
+  }
+
   // Log categorization for debugging
   logger.system(
     `Task ${taskId}: PR categorization: ` +
@@ -210,6 +233,26 @@ export async function triggerMergeCheck(taskId: string): Promise<MergeCheckResul
   }
 
   return result;
+}
+
+/**
+ * Map a PR back to its BranchState entries — the same repositories walk the
+ * PR collection does. A PR attached under several agents may match several
+ * branch states, so callers treat the result as a set: "notified" is true if
+ * any entry carries the marker; setting/clearing applies to all of them.
+ */
+function findBranchStatesForPR(task: Task, github: string, prNumber: number): BranchState[] {
+  const matches: BranchState[] = [];
+  for (const attachments of Object.values(task.metadata.repositories)) {
+    if (!Array.isArray(attachments)) continue;
+    for (const attached of attachments) {
+      if (attached.github !== github || !attached.branch_states) continue;
+      for (const state of Object.values(attached.branch_states)) {
+        if (state.pr_number === prNumber) matches.push(state);
+      }
+    }
+  }
+  return matches;
 }
 
 /**
