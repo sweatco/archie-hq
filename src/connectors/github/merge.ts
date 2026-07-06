@@ -189,15 +189,13 @@ async function runMergeCheck(task: Task): Promise<MergeCheckResult> {
   const autoMergeable = mergeable.filter((pr) => isAutoMergeRepo(pr.github));
   const held = mergeable.filter((pr) => !autoMergeable.includes(pr));
 
-  // Notify-once bookkeeping: a PR observed no longer ready — not ready while
-  // open, or closed without merging — drops its `merge_ready_notified`
-  // markers, so the next continuous ready period notifies again (a
-  // closed-then-reopened PR included).
-  const notReady = prStatuses.filter(
-    (pr) =>
-      (pr.status.state === 'open' && !mergeable.includes(pr)) ||
-      pr.status.state === 'closed'
-  );
+  // Notify-once bookkeeping: a PR observed out of the ready state — not ready
+  // while open, closed without merging, or merged — drops its
+  // `merge_ready_notified` markers. Open/closed clears let the next continuous
+  // ready period notify again (a closed-then-reopened PR included); the merged
+  // clear matters because a BranchState's `pr_number` can later be overwritten
+  // by a new PR on the same branch, which must not inherit the stale marker.
+  const notReady = prStatuses.filter((pr) => !mergeable.includes(pr));
   let markersCleared = false;
   for (const pr of notReady) {
     for (const state of findBranchStatesForPR(task, pr.github, pr.prNumber)) {

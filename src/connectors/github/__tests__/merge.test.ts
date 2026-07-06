@@ -6,8 +6,8 @@
  * exactly once per continuous ready period (AC1) — including when every
  * Task.get loads a fresh instance from persisted metadata, the parked-task
  * production reality — auto repos merge as today (AC2), mixed-policy tasks
- * are evaluated per PR, the marker clears on un-ready and survives reload,
- * and a pending merge approval suppresses the ready nudge.
+ * are evaluated per PR, the marker clears on un-ready and on merged, survives
+ * reload, and a pending merge approval suppresses the ready nudge.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -191,6 +191,32 @@ describe('checkAndMergeLinkedPRs — non-auto policy (AC1)', () => {
     mockGitHubClient.getPRStatus.mockResolvedValue(READY);
     await checkAndMergeLinkedPRs('task-123');
     expect(readyNotifications()).toHaveLength(2);
+  });
+
+  it('clears the marker when the PR is observed merged, so a new PR reusing the branch is notified', async () => {
+    const task = makeTask(singlePRRepositories('org/backend', 42));
+    vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
+
+    mockGitHubClient.getPRStatus.mockResolvedValue(READY);
+    await checkAndMergeLinkedPRs('task-123');
+    expect(branchState(task, 'backend-agent', 'feat/x').merge_ready_notified).toBe(true);
+
+    // PR #42 merges (externally or on approval); the marker must not survive it.
+    mockGitHubClient.getPRStatus.mockResolvedValue({
+      state: 'merged', mergeable: false, mergeableState: 'unknown', approved: true,
+    });
+    await checkAndMergeLinkedPRs('task-123');
+    expect(branchState(task, 'backend-agent', 'feat/x').merge_ready_notified).toBeUndefined();
+
+    // The same BranchState later carries a new PR (create_pull_request
+    // overwrites pr_number) — its first ready period must notify.
+    branchState(task, 'backend-agent', 'feat/x').pr_number = 43;
+    mockGitHubClient.getPRStatus.mockResolvedValue(READY);
+    await checkAndMergeLinkedPRs('task-123');
+
+    const notifications = readyNotifications();
+    expect(notifications).toHaveLength(2);
+    expect(String(notifications[1]![2])).toContain('org/backend#43');
   });
 
 
