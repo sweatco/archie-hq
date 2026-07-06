@@ -79,6 +79,20 @@ export type PortProbe =
   | { kind: 'archie' } // an Archie /health answered
   | { kind: 'other' }; // something answered (or held the socket) that isn't Archie
 
+/**
+ * Was this fetch failure a connection refusal (= nothing listens on the port)?
+ * Undici surfaces it either as a cause with code ECONNREFUSED, or — on
+ * dual-stack localhost — as a cause AggregateError whose per-address errors
+ * carry the code while the top level may not.
+ */
+export function isConnectionRefused(err: unknown): boolean {
+  const cause = (err as { cause?: { code?: string; errors?: Array<{ code?: string } | undefined> } }).cause;
+  return (
+    cause?.code === 'ECONNREFUSED' ||
+    (Array.isArray(cause?.errors) && cause.errors.some((e) => e?.code === 'ECONNREFUSED'))
+  );
+}
+
 export type PortAction =
   | 'proceed' // port is free — boot on it
   | 'recreate' // our own project holds it — compose down, then boot on it (never reuse: running code may be stale)
@@ -362,14 +376,8 @@ async function probePort(baseUrl: string): Promise<PortProbe> {
     return looksLikeArchie(await res.text()) ? { kind: 'archie' } : { kind: 'other' };
   } catch (err) {
     // Connection refused = nothing listens. Anything else responded, hung, or
-    // held the socket without speaking HTTP — treat as occupied. On dual-stack
-    // localhost the refusal may arrive as an AggregateError over per-address
-    // errors with no top-level code, so check both shapes.
-    const cause = (err as { cause?: { code?: string; errors?: Array<{ code?: string } | undefined> } }).cause;
-    const refused =
-      cause?.code === 'ECONNREFUSED' ||
-      (Array.isArray(cause?.errors) && cause.errors.some((e) => e?.code === 'ECONNREFUSED'));
-    return refused ? { kind: 'free' } : { kind: 'other' };
+    // held the socket without speaking HTTP — treat as occupied.
+    return isConnectionRefused(err) ? { kind: 'free' } : { kind: 'other' };
   }
 }
 

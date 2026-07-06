@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   archieContainerState,
   decidePortAction,
+  isConnectionRefused,
   looksLikeArchie,
   parseArgs,
   preflight,
@@ -268,16 +269,41 @@ describe('decidePortAction', () => {
 });
 
 describe('archieContainerState — published ports', () => {
-  it('extracts PublishedPort entries from Publishers', () => {
+  it('extracts PublishedPort (not TargetPort) and drops unpublished PublishedPort:0 entries', () => {
+    // Real compose ps shape from a live relocated boot: the EXPOSEd-but-unpublished
+    // target port shows up as PublishedPort:0 and must not count, and the
+    // published entry's Target/Published ports differ so the extraction can't
+    // read the wrong field.
     const ps =
-      '{"Name":"archie-hq-archie-1","Service":"archie","State":"running","Publishers":[{"URL":"","TargetPort":3177,"PublishedPort":3177,"Protocol":"tcp"}]}';
-    expect(archieContainerState(ps)).toEqual({ found: true, state: 'running', publishedPorts: [3177] });
+      '{"Name":"archie-hq-archie-1","Service":"archie","State":"running","Publishers":[' +
+      '{"URL":"","TargetPort":3000,"PublishedPort":0,"Protocol":"tcp"},' +
+      '{"URL":"0.0.0.0","TargetPort":3000,"PublishedPort":53787,"Protocol":"tcp"}]}';
+    expect(archieContainerState(ps)).toEqual({ found: true, state: 'running', publishedPorts: [53787] });
   });
 
   it('reads missing/empty Publishers as no published ports', () => {
     expect(archieContainerState(RUNNING_PS).publishedPorts).toEqual([]);
     const nullPub = '{"Service":"archie","State":"running","Publishers":null}';
     expect(archieContainerState(nullPub).publishedPorts).toEqual([]);
+  });
+});
+
+describe('isConnectionRefused', () => {
+  it('detects a plain ECONNREFUSED cause', () => {
+    expect(isConnectionRefused(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }))).toBe(true);
+  });
+
+  it('detects dual-stack AggregateError causes with no top-level code', () => {
+    const cause = { errors: [{ code: 'ECONNREFUSED' }, { code: 'ECONNREFUSED' }] };
+    expect(isConnectionRefused(Object.assign(new TypeError('fetch failed'), { cause }))).toBe(true);
+  });
+
+  it('does not classify timeouts, DNS failures, or aborts as refused', () => {
+    expect(isConnectionRefused(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ETIMEDOUT' } }))).toBe(false);
+    expect(isConnectionRefused(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ENOTFOUND' } }))).toBe(false);
+    expect(isConnectionRefused(Object.assign(new TypeError('fetch failed'), { cause: { errors: [{ code: 'ETIMEDOUT' }] } }))).toBe(false);
+    expect(isConnectionRefused(new DOMException('aborted', 'TimeoutError'))).toBe(false);
+    expect(isConnectionRefused(new Error('anything'))).toBe(false);
   });
 });
 
