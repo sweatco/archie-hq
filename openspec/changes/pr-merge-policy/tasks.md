@@ -55,5 +55,5 @@
 ## 9. E2E recipe and final verification
 
 - [x] 9.1 Add canonical recipe `merge-approval-deny` to `.claude/skills/archie-e2e/SKILL.md` §2, mirroring `edit-mode-approval`: nonce → change request opening a PR in a configured (non-auto) repo → edit-mode gate approved → PR opened → `send_message` asking to merge → `wait_for_task` asserts `STATE=approval_requested` with `APPROVAL_TYPE=merge` → `approve(type: "merge", approve: false, github, pr_number)` (identity of the PR the scenario drove open, per the API merge contract) → assert no merge occurred (denial finding in the log, no merged event/finding); include the configured-repo prerequisite + BLOCKED reporting rule from the edit-mode recipe
-- [ ] 9.2 Full gate: `npm run typecheck`, `npm run build`, `npm test` all green; targeted `tsc --noEmit` over the touched `tools/debug-mcp/*.ts` files (repo typecheck scopes to `src/**`)
+- [x] 9.2 Full gate: `npm run typecheck`, `npm run build`, `npm test` all green; targeted `tsc --noEmit` over the touched `tools/debug-mcp/*.ts` files (repo typecheck scopes to `src/**`)
 - [ ] 9.3 Run the `merge-approval-deny` recipe against a live instance (archie-e2e skill) and write evidence to `openspec/changes/pr-merge-policy/qa-evidence/merge-approval-deny.json` + `.md` (AC3); if docker/env is unavailable, stop and return to the user before taking the brief's degradation waiver
