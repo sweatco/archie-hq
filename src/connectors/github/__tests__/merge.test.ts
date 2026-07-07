@@ -35,6 +35,7 @@ vi.mock('../../../system/logger.js', () => ({
 }));
 
 import { checkAndMergeLinkedPRs } from '../merge.js';
+import { assignPrNumber } from '../branch-state.js';
 import { createGitHubClient } from '../client.js';
 import { Task } from '../../../tasks/task.js';
 import { appendAgentFinding } from '../../../tasks/persistence.js';
@@ -341,6 +342,37 @@ describe('checkAndMergeLinkedPRs — armed bucket (AC5)', () => {
 
     expect(branchState(task, 'backend-agent', 'feat/x').merge_armed).toBeUndefined();
     expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('does NOT auto-merge a new PR that reuses a branch whose previous PR was armed (F1 branch-reuse fail-open)', async () => {
+    // Fail-open regression: PR#1 armed on branch B, PR#1 closed unmerged (its
+    // close routes to the task lifecycle, not a merge check, so the arm is not
+    // cleared there), then create_pull_request reuses branch B for PR#2. The
+    // pr_number reassignment must reset merge_armed / merge_ready_notified so
+    // PR#2 does NOT inherit the arm and auto-merge without a fresh approval.
+    const task = makeTask(armedRepositories('org/backend', 1));
+    const state = branchState(task, 'backend-agent', 'feat/x');
+    state.merge_ready_notified = true; // also a per-PR marker that must reset
+    expect(state.merge_armed).toBe(true);
+
+    // create_pull_request reuses the branch for PR#2 (goes through assignPrNumber).
+    assignPrNumber(state, 2);
+    expect(state.pr_number).toBe(2);
+    expect(state.merge_armed).toBeUndefined();
+    expect(state.merge_ready_notified).toBeUndefined();
+
+    vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
+    // PR#2 is open + clean: if the arm had survived, the armed bucket would
+    // merge it. With the arm cleared it is merely a held-ready non-auto PR.
+    mockGitHubClient.getPRStatus.mockResolvedValue(READY);
+    mockGitHubClient.mergePullRequest.mockResolvedValue({ success: true, message: 'merged' });
+
+    await checkAndMergeLinkedPRs('task-123');
+
+    expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
+    // It surfaces as a ready-for-approval notification instead — the human gate.
+    expect(readyNotifications()).toHaveLength(1);
+    expect(String(readyNotifications()[0]![2])).toContain('org/backend#2');
   });
 });
 

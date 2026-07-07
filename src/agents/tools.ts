@@ -19,7 +19,7 @@ import type { Agent } from './agent.js';
 import { getVisiblePeerIdsForSender, findAgentDefsContainingRepo, synthesizeDynamicAgentDef, isAutoMergeRepo } from './registry.js';
 import { getGitHubClient, parseCheckRef } from '../connectors/github/client.js';
 import { gitExec } from '../connectors/github/repo-clone.js';
-import { hydrateBranchState, findBranchStateByPR } from '../connectors/github/branch-state.js';
+import { hydrateBranchState, findBranchStateByPR, assignPrNumber } from '../connectors/github/branch-state.js';
 import { taskBranchName } from '../connectors/github/branch-naming.js';
 import { appendAgentFinding, appendArtifactShared } from '../tasks/persistence.js';
 import { copyArtifactToShared, assertReadable } from './artifacts.js';
@@ -889,7 +889,9 @@ function createPullRequestTool(agent: Agent, task: Task) {
       const result = await client.createPullRequest(github, head, base, args.title, args.body);
 
       if (state) {
-        state.pr_number = result.pr_number;
+        // Reset per-PR markers when this branch's pr_number changes — a reused
+        // branch must not inherit the previous PR's merge_armed / merge_ready.
+        assignPrNumber(state, result.pr_number);
       }
       task.debouncedSave();
 
