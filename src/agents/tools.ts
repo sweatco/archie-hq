@@ -20,7 +20,6 @@ import { getVisiblePeerIdsForSender, findAgentDefsContainingRepo, synthesizeDyna
 import { getGitHubClient, parseCheckRef } from '../connectors/github/client.js';
 import { gitExec } from '../connectors/github/repo-clone.js';
 import { hydrateBranchState, findBranchStateByPR } from '../connectors/github/branch-state.js';
-import { isMergeReadyPerGithub } from '../connectors/github/mergeability.js';
 import { taskBranchName } from '../connectors/github/branch-naming.js';
 import { appendAgentFinding, appendArtifactShared } from '../tasks/persistence.js';
 import { copyArtifactToShared, assertReadable } from './artifacts.js';
@@ -1460,7 +1459,7 @@ function createRequestReReviewTool(agent: Agent, task: Task) {
 function createMergePRTool(agent: Agent, task: Task) {
   return tool(
     'merge_pull_request',
-    'Merge a pull request, subject to the repo\'s merge policy. On an auto-merge repo it merges directly after the mergeability check; on any other repo it posts a merge-approval request to the user and pauses the task until they approve or deny. Returns the current status if the PR is not ready.',
+    'Merge a pull request, subject to the repo\'s merge policy. On an auto-merge repo it merges directly if the PR is clean (returns the current status otherwise). On any other repo it posts an auto-merge approval request and pauses the task; once the user approves, the PR is armed to merge automatically as soon as all checks and required reviews pass. Works for any open PR — it does not require the PR to be mergeable yet.',
     { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
       const resolved = resolveGithub(agent, args.github);
@@ -1473,7 +1472,9 @@ function createMergePRTool(agent: Agent, task: Task) {
         if (status.state !== 'open') {
           return ok(`Cannot merge: PR #${args.pr_number} (${resolved.github}) is ${status.state}`);
         }
-        if (!isMergeReadyPerGithub(status)) {
+        // Auto repo direct merge: clean-only (no blocked tolerance). A non-clean
+        // PR returns the not-ready message and does not merge.
+        if (status.mergeableState !== 'clean') {
           return ok(`Cannot merge: PR #${args.pr_number} (${resolved.github}) is not ready (mergeable=${status.mergeable}, state=${status.mergeableState})`);
         }
 
@@ -1500,12 +1501,13 @@ function createMergePRTool(agent: Agent, task: Task) {
         // prompt being resolved — supersede the stale slot with this request.
       }
 
+      // Non-auto repo: approving now means "merge as soon as it is ready". The
+      // human approval is the gate; the merge is delegated to the orchestrator's
+      // armed bucket. Prompt for ANY open PR — a not-yet-green PR is correct to
+      // approve (it merges when checks pass). Only bail on a closed/merged PR.
       const status = await client.getPRStatus(resolved.github, args.pr_number);
       if (status.state !== 'open') {
         return ok(`Cannot merge: PR #${args.pr_number} (${resolved.github}) is ${status.state}`);
-      }
-      if (!isMergeReadyPerGithub(status)) {
-        return ok(`Cannot merge: PR #${args.pr_number} (${resolved.github}) is not ready (mergeable=${status.mergeable}, state=${status.mergeableState})`);
       }
 
       const agentName = agent.def.id as AgentName;
@@ -1518,7 +1520,7 @@ function createMergePRTool(agent: Agent, task: Task) {
       const blocks = [
         {
           type: 'section',
-          text: { type: 'mrkdwn', text: `*Merge request:* PR #${args.pr_number} (${resolved.github}) is ready to merge. Approve?` },
+          text: { type: 'mrkdwn', text: `*Merge request:* Approve auto-merge for PR #${args.pr_number} (${resolved.github})? It will merge automatically once all checks and required reviews pass.` },
         },
         {
           type: 'actions',
@@ -1540,7 +1542,7 @@ function createMergePRTool(agent: Agent, task: Task) {
           ],
         },
       ];
-      await task.postInteractiveToUser(`Merge approval requested for PR #${args.pr_number} (${resolved.github})`, blocks, 'merge');
+      await task.postInteractiveToUser(`Approve auto-merge for PR #${args.pr_number} (${resolved.github})? It will merge automatically once all checks and required reviews pass.`, blocks, 'merge');
 
       task.metadata.pending_merge_approval = {
         github: resolved.github,
