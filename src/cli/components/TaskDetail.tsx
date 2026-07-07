@@ -76,6 +76,17 @@ interface TaskDetailProps {
   onConnect?: boolean;
 }
 
+// Extract the PR identity a merge approval must send back to the API. The
+// approve route rejects type:'merge' without github+pr_number; other approval
+// types carry no identity and resolve with it omitted (backward compatible).
+function mergeIdentity(
+  approval: { approvalType: string; github?: string; pr_number?: number },
+): { github: string; pr_number: number } | undefined {
+  return approval.approvalType === 'merge' && approval.github && typeof approval.pr_number === 'number'
+    ? { github: approval.github, pr_number: approval.pr_number }
+    : undefined;
+}
+
 // Check if a given approval:requested event has been resolved
 function isApprovalResolved(req: SystemEvent, allEvents: SystemEvent[]): boolean {
   const reqType = req.data.approvalType as string;
@@ -117,7 +128,7 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
   const logHeight = Math.max(5, termHeight - reservedLines);
 
   // Build log lines with inline approvals
-  const logLines: { node: React.ReactNode; approval?: { approvalType: 'edit_mode' | 'research_budget'; eventIndex: number } }[] = [];
+  const logLines: { node: React.ReactNode; approval?: { approvalType: 'edit_mode' | 'research_budget' | 'merge'; eventIndex: number; github?: string; pr_number?: number } }[] = [];
 
   // Fold pr_card events so a card renders once, at its most recent `post`
   // (anchor), showing the latest merged state. `update` events refresh the data
@@ -185,8 +196,12 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
             logLines.push({
               node: <Text color="yellow" bold>⏳ {event.data.text as string}  [y] approve / [n] deny</Text>,
               approval: {
-                approvalType: event.data.approvalType as 'edit_mode' | 'research_budget',
+                approvalType: event.data.approvalType as 'edit_mode' | 'research_budget' | 'merge',
                 eventIndex: idx,
+                // Merge approvals carry the PR identity; the API requires it on
+                // resolution. Absent for other types (undefined → omitted).
+                github: event.data.github as string | undefined,
+                pr_number: event.data.pr_number as number | undefined,
               },
             });
           }
@@ -373,11 +388,11 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
       // Scroll mode / approval handling
       if (input === 'q' || input === 'Q') exit();
       if (focusedApproval && (input === 'y' || input === 'Y')) {
-        sendApproval(taskId, focusedApproval.approvalType, true).catch((err: any) => setError(err.message));
+        sendApproval(taskId, focusedApproval.approvalType, true, mergeIdentity(focusedApproval)).catch((err: any) => setError(err.message));
         setFocusedApprovalLine(null);
         setInputActive(true);
       } else if (focusedApproval && (input === 'n' || input === 'N')) {
-        sendApproval(taskId, focusedApproval.approvalType, false).catch((err: any) => setError(err.message));
+        sendApproval(taskId, focusedApproval.approvalType, false, mergeIdentity(focusedApproval)).catch((err: any) => setError(err.message));
         setFocusedApprovalLine(null);
         setInputActive(true);
       }

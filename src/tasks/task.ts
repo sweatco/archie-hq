@@ -582,8 +582,21 @@ export class Task {
    * approvals are also surfaced in the CLI via the `approval:requested` event
    * regardless of Slack delivery.
    */
-  async postInteractiveToUser(text: string, blocks: unknown[], approvalType: 'edit_mode' | 'research_budget' | 'merge', channelKey?: string): Promise<void> {
-    emitEvent('approval:requested', this.taskId, { text, approvalType });
+  async postInteractiveToUser(
+    text: string,
+    blocks: unknown[],
+    approvalType: 'edit_mode' | 'research_budget' | 'merge',
+    channelKey?: string,
+    context?: { github: string; pr_number: number },
+  ): Promise<void> {
+    // Merge approvals carry the PR identity so CLI/SSE consumers can echo it
+    // back on resolution (the API route requires github+pr_number for
+    // type:'merge'); other approval types omit it (backward compatible).
+    emitEvent('approval:requested', this.taskId, {
+      text,
+      approvalType,
+      ...(context ? { github: context.github, pr_number: context.pr_number } : {}),
+    });
 
     const ch = this.resolveSlackChannel(channelKey);
     if (ch) {

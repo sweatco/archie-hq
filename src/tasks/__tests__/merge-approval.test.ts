@@ -28,11 +28,14 @@ vi.mock('../../system/logger.js', () => ({
   },
 }));
 
+vi.mock('../../system/event-bus.js', () => ({ emitEvent: vi.fn() }));
+
 import { Task } from '../task.js';
 import { getGitHubClient } from '../../connectors/github/client.js';
 import { appendAgentFinding } from '../persistence.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
+import { emitEvent } from '../../system/event-bus.js';
 import type { TaskMetadata } from '../../types/task.js';
 
 const mockGitHubClient = {
@@ -291,6 +294,48 @@ describe('handleMergeApproval', () => {
     const second = await approve(task, PR2);
     expect(second).toBe('resolved');
     expect(mockGitHubClient.mergePullRequest).toHaveBeenCalledWith('org/backend', 2);
+  });
+});
+
+describe('postInteractiveToUser — merge approval event identity (AC8)', () => {
+  // The other half of the CLI regression: the approval:requested event must
+  // carry github+pr_number for merge so the CLI can echo them back (and the API
+  // route accepts the resolution). resolveSlackChannel is stubbed to null so no
+  // Slack delivery happens — only the emitted event matters here.
+  function fakeTask(): { taskId: string; resolveSlackChannel: () => null } {
+    return { taskId: 'task-123', resolveSlackChannel: () => null };
+  }
+
+  it('emits the PR identity for a merge approval', async () => {
+    await Task.prototype.postInteractiveToUser.call(
+      fakeTask() as unknown as Task,
+      'Approve auto-merge for PR #42 (org/backend)?',
+      [],
+      'merge',
+      undefined,
+      { github: 'org/backend', pr_number: 42 },
+    );
+
+    expect(emitEvent).toHaveBeenCalledWith('approval:requested', 'task-123', {
+      text: 'Approve auto-merge for PR #42 (org/backend)?',
+      approvalType: 'merge',
+      github: 'org/backend',
+      pr_number: 42,
+    });
+  });
+
+  it('omits identity for non-merge approvals (backward compatible)', async () => {
+    await Task.prototype.postInteractiveToUser.call(
+      fakeTask() as unknown as Task,
+      'Edit mode request: apply the fix',
+      [],
+      'edit_mode',
+    );
+
+    expect(emitEvent).toHaveBeenCalledWith('approval:requested', 'task-123', {
+      text: 'Edit mode request: apply the fix',
+      approvalType: 'edit_mode',
+    });
   });
 });
 

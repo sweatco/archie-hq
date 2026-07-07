@@ -1542,7 +1542,13 @@ function createMergePRTool(agent: Agent, task: Task) {
           ],
         },
       ];
-      await task.postInteractiveToUser(`Approve auto-merge for PR #${args.pr_number} (${resolved.github})? It will merge automatically once all checks and required reviews pass.`, blocks, 'merge');
+      await task.postInteractiveToUser(
+        `Approve auto-merge for PR #${args.pr_number} (${resolved.github})? It will merge automatically once all checks and required reviews pass.`,
+        blocks,
+        'merge',
+        undefined,
+        { github: resolved.github, pr_number: args.pr_number },
+      );
 
       task.metadata.pending_merge_approval = {
         github: resolved.github,
