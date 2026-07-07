@@ -54,20 +54,40 @@ function pendingSlot(pr: { github: string; pr_number: number }): NonNullable<Tas
 
 type FakeTask = {
   taskId: string;
-  metadata: { pending_merge_approval?: TaskMetadata['pending_merge_approval'] };
+  metadata: {
+    pending_merge_approval?: TaskMetadata['pending_merge_approval'];
+    repositories: TaskMetadata['repositories'];
+  };
   agentProcesses: Map<string, { clearPendingTeardown: ReturnType<typeof vi.fn> }>;
   debouncedSave: ReturnType<typeof vi.fn>;
   sendMessage: ReturnType<typeof vi.fn>;
 };
 
-function makeFakeTask(slot?: TaskMetadata['pending_merge_approval']): FakeTask {
+function makeFakeTask(
+  slot?: TaskMetadata['pending_merge_approval'],
+  repositories: TaskMetadata['repositories'] = {},
+): FakeTask {
   return {
     taskId: 'task-123',
-    metadata: { pending_merge_approval: slot },
+    metadata: { pending_merge_approval: slot, repositories },
     agentProcesses: new Map([['backend-agent', { clearPendingTeardown: vi.fn() }]]),
     debouncedSave: vi.fn(),
     sendMessage: vi.fn().mockResolvedValue(undefined),
   };
+}
+
+/** Repositories map with a single branch_state carrying `pr`'s number. */
+function reposWithPR(pr: { github: string; pr_number: number }): TaskMetadata['repositories'] {
+  return {
+    'backend-agent': [
+      { github: pr.github, branch_states: { 'feat/x': { pr_number: pr.pr_number, base_branch: 'main' } } },
+    ],
+  };
+}
+
+/** Read the merge_armed flag off the reposWithPR branch state. */
+function armedFlag(task: FakeTask): boolean | undefined {
+  return task.metadata.repositories['backend-agent']![0]!.branch_states!['feat/x']!.merge_armed;
 }
 
 const approver = { id: 'U1', name: 'Dana' };
@@ -105,34 +125,52 @@ describe('handleMergeApproval', () => {
     expect(task.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask, 'pm-agent');
   });
 
-  it('does not merge a dirty PR; appends the reason and reactivates the PM (AC4)', async () => {
+  it('arms a not-clean PR: no merge, merge_armed set, armed finding, slot cleared, PM reactivated (AC4)', async () => {
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'open', mergeable: false, mergeableState: 'dirty', approved: true,
+      state: 'open', mergeable: false, mergeableState: 'blocked', approved: true,
     });
-    const task = makeFakeTask(pendingSlot(PR1));
+    const task = makeFakeTask(pendingSlot(PR1), reposWithPR(PR1));
 
     const disposition = await approve(task, PR1);
 
     expect(disposition).toBe('resolved');
     expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
     expect(task.metadata.pending_merge_approval).toBeUndefined();
+    // The whole reframe: instead of merging or refusing, the PR is armed.
+    expect(armedFlag(task)).toBe(true);
     expect(appendAgentFinding).toHaveBeenCalledWith(
-      'task-123', 'system', expect.stringContaining('mergeableState=dirty'), 'decision',
+      'task-123', 'system', expect.stringContaining('Auto-merge armed for org/backend#1'), 'decision',
     );
     expect(task.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask, 'pm-agent');
   });
 
-  it('does not merge a closed PR; appends the reason (AC4)', async () => {
+  it('arms a dirty PR too — any non-clean open PR arms rather than merging', async () => {
     mockGitHubClient.getPRStatus.mockResolvedValue({
-      state: 'closed', mergeable: false, mergeableState: 'unknown', approved: false,
+      state: 'open', mergeable: false, mergeableState: 'dirty', approved: true,
     });
-    const task = makeFakeTask(pendingSlot(PR1));
+    const task = makeFakeTask(pendingSlot(PR1), reposWithPR(PR1));
 
     await approve(task, PR1);
 
     expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
+    expect(armedFlag(task)).toBe(true);
     expect(appendAgentFinding).toHaveBeenCalledWith(
-      'task-123', 'system', expect.stringContaining('state=closed'), 'decision',
+      'task-123', 'system', expect.stringContaining('Auto-merge armed'), 'decision',
+    );
+  });
+
+  it('does not merge a closed PR; arms it (harmlessly — the orchestrator clears the marker on close)', async () => {
+    mockGitHubClient.getPRStatus.mockResolvedValue({
+      state: 'closed', mergeable: false, mergeableState: 'unknown', approved: false,
+    });
+    const task = makeFakeTask(pendingSlot(PR1), reposWithPR(PR1));
+
+    await approve(task, PR1);
+
+    expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
+    expect(armedFlag(task)).toBe(true);
+    expect(appendAgentFinding).toHaveBeenCalledWith(
+      'task-123', 'system', expect.stringContaining('Auto-merge armed'), 'decision',
     );
   });
 

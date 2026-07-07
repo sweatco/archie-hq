@@ -13,7 +13,6 @@ import { isPmAgent, isRepoAgent } from '../types/agent.js';
 import { modelDisplayLabel, resolveAgentModel } from '../agents/model-label.js';
 import { prCardFingerprint, prCardTitlePlain } from '../system/pr-card-format.js';
 import { getGitHubClient } from '../connectors/github/client.js';
-import { isMergeReadyPerGithub } from '../connectors/github/mergeability.js';
 import { createKeyedLock } from '../system/keyed-lock.js';
 
 /**
@@ -1291,12 +1290,15 @@ export class Task {
    * the superseding PR. Adapters (Slack handlers, API route) do no slot
    * verification of their own; this method is the single verification point.
    *
-   * On match the engine merges directly (no agent re-wake): fetch PR status,
-   * merge when open and GitHub reports it ready — **no `approved` check**,
-   * GitHub branch protection is the sole review authority on this path —
-   * append a completion finding on success or a decision finding carrying the
-   * exact reason on failure, and reactivate the PM so the user learns the
-   * outcome either way.
+   * On match the engine takes the merge-now-or-arm decision (no agent re-wake):
+   * fetch PR status, and if it is open and GitHub reports it **clean** merge
+   * immediately (completion finding on success, decision finding on a merge-API
+   * failure). Otherwise the PR is **armed** for auto-merge — its BranchState
+   * gains `merge_armed`, the orchestrator merges it on the next
+   * merge-triggering webhook once it turns clean, and a decision finding records
+   * the arming with no error surfaced (AC4). **No `approved` check anywhere on
+   * this path** (AC5) — GitHub branch protection is the sole review authority.
+   * Either way the PM is reactivated so the user learns the outcome.
    */
   async handleMergeApproval(
     approver: { id: string; name: string; email?: string } | undefined,
@@ -1333,7 +1335,8 @@ export class Task {
     } else {
       try {
         const status = await client.getPRStatus(pending.github, pending.pr_number);
-        if (status.state === 'open' && isMergeReadyPerGithub(status)) {
+        if (status.state === 'open' && status.mergeableState === 'clean') {
+          // Merge-now path: the PR is already green, so merge on approval.
           const result = await client.mergePullRequest(pending.github, pending.pr_number);
           if (result.success) {
             findingType = 'completion';
@@ -1343,9 +1346,25 @@ export class Task {
             finding = `Merge approved${bySuffix} but PR ${prRef} was not merged: ${result.message}`;
           }
         } else {
+          // Not clean yet: arm the PR for auto-merge (no error). The merge
+          // orchestrator merges it on the next merge-triggering webhook once
+          // GitHub reports it clean — the reframe's whole point (AC4). Mark
+          // every BranchState entry for the PR via the same
+          // repositories → AttachedRepo[] → branch_states walk the orchestrator
+          // uses (mirrored here, not imported, to avoid a task ↔ orchestrator
+          // circular dependency: arming is the Task's job, the deferred merge
+          // is the orchestrator's).
+          for (const attachments of Object.values(this.metadata.repositories)) {
+            if (!Array.isArray(attachments)) continue;
+            for (const attached of attachments) {
+              if (attached.github !== pending.github || !attached.branch_states) continue;
+              for (const state of Object.values(attached.branch_states)) {
+                if (state.pr_number === pending.pr_number) state.merge_armed = true;
+              }
+            }
+          }
           findingType = 'decision';
-          finding = `Merge approved${bySuffix} but PR ${prRef} was not merged: ` +
-            `state=${status.state}, mergeable=${status.mergeable}, mergeableState=${status.mergeableState}`;
+          finding = `Auto-merge armed for ${prRef} — will merge once checks pass`;
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
