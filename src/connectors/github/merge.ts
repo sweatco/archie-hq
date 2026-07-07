@@ -184,10 +184,35 @@ async function runMergeCheck(task: Task): Promise<MergeCheckResult> {
       !mergeable.includes(pr)
   );
 
-  // Policy split: the orchestrator only merges PRs in auto-merge repos. Ready
-  // PRs in non-auto repos are held for an explicit user-requested merge.
+  // Policy split: the orchestrator merges PRs in auto-merge repos (AC2).
   const autoMergeable = mergeable.filter((pr) => isAutoMergeRepo(pr.github));
-  const held = mergeable.filter((pr) => !autoMergeable.includes(pr));
+
+  // Armed bucket: a PR the user explicitly approved for merge (its BranchState
+  // carries merge_armed) merges as soon as GitHub reports it clean — GitHub's
+  // authoritative "all required reviews + checks satisfied, no conflicts"
+  // signal, with NO Archie `approved` floor (AC5) and NO `blocked` tolerance
+  // (a blocked PR has an unsatisfied required gate). Independent of repo policy:
+  // arming exists precisely for non-auto repos, and isMergeReadyPerGithub is
+  // deliberately not used here (it tolerates blocked+mergeable, only safe when
+  // paired with `approved`).
+  const armed = prStatuses.filter(
+    (pr) =>
+      pr.status.state === 'open' &&
+      pr.status.mergeableState === 'clean' &&
+      findBranchStatesForPR(task, pr.github, pr.prNumber).some((s) => s.merge_armed)
+  );
+
+  // PRs the orchestrator merges = auto-merge repos ∪ armed PRs, deduped by
+  // object reference (both are filtered from the same prStatuses array).
+  const toMerge = [...autoMergeable];
+  for (const pr of armed) {
+    if (!toMerge.includes(pr)) toMerge.push(pr);
+  }
+
+  // Held-ready PRs (non-auto repos, not armed) are never merged here — they get
+  // a once-per-ready-period notification. Armed PRs are excluded (AC1): the user
+  // already approved them, so a "ready — ask me to merge" nudge would be noise.
+  const held = mergeable.filter((pr) => !autoMergeable.includes(pr) && !armed.includes(pr));
 
   // Notify-once bookkeeping: a PR observed out of the ready state — not ready
   // while open, closed without merging, or merged — drops its
@@ -205,6 +230,23 @@ async function runMergeCheck(task: Task): Promise<MergeCheckResult> {
       }
     }
   }
+
+  // Clear merge_armed once the PR leaves the open state (merged or closed): the
+  // arm is one-shot, and a BranchState's pr_number can later be reused by a new
+  // PR that must not inherit a stale arm. Unlike merge_ready_notified, an armed
+  // PR that is merely not-clean-yet while still open stays armed until it merges.
+  const leftOpen = prStatuses.filter(
+    (pr) => pr.status.state === 'merged' || pr.status.state === 'closed'
+  );
+  for (const pr of leftOpen) {
+    for (const state of findBranchStatesForPR(task, pr.github, pr.prNumber)) {
+      if (state.merge_armed) {
+        delete state.merge_armed;
+        markersCleared = true;
+      }
+    }
+  }
+
   if (markersCleared) {
     task.debouncedSave();
   }
@@ -213,7 +255,8 @@ async function runMergeCheck(task: Task): Promise<MergeCheckResult> {
   logger.system(
     `Task ${taskId}: PR categorization: ` +
       `alreadyMerged=${alreadyMerged.length}, ` +
-      `mergeable=${autoMergeable.length}, ` +
+      `mergeable=${toMerge.length}, ` +
+      `armed=${armed.length}, ` +
       `ready=${held.length}, ` +
       `conflicted=${conflicted.length}, ` +
       `pending=${pending.length}`
@@ -232,8 +275,9 @@ async function runMergeCheck(task: Task): Promise<MergeCheckResult> {
 
     let category: string;
     let reason = '';
-    if (autoMergeable.includes(pr)) {
+    if (toMerge.includes(pr)) {
       category = 'READY TO MERGE';
+      if (armed.includes(pr) && !autoMergeable.includes(pr)) reason = 'armed for auto-merge';
     } else if (held.includes(pr)) {
       category = 'READY (merge on request)';
       reason = 'repo is not auto-merge';
@@ -258,8 +302,8 @@ async function runMergeCheck(task: Task): Promise<MergeCheckResult> {
     result.merged.push(`${pr.github}#${pr.prNumber} (already merged)`);
   }
 
-  // Merge what's ready — auto-merge repos only (AC2)
-  for (const pr of autoMergeable) {
+  // Merge what's ready — auto-merge repos (AC2) plus armed PRs (AC5)
+  for (const pr of toMerge) {
     try {
       const mergeResult = await githubClient.mergePullRequest(pr.github, pr.prNumber);
       if (mergeResult.success) {

@@ -170,6 +170,15 @@ export interface BranchState {
    * PR no longer ready — so each continuous ready period notifies exactly once.
    */
   merge_ready_notified?: boolean;
+  /**
+   * Set when the user approved an explicit merge request for this branch's PR
+   * but GitHub did not yet report it clean (non-auto repos only): the PR is
+   * *armed* for auto-merge. The merge orchestrator merges an armed PR on the
+   * next merge-triggering webhook once `mergeableState === 'clean'`, with no
+   * Archie-side approval floor. Cleared when the PR is observed merged or
+   * closed.
+   */
+  merge_armed?: boolean;
 }
 
 /**

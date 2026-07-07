@@ -1,9 +1,15 @@
 /**
- * Shared GitHub mergeability predicate.
+ * Orchestrator-only GitHub mergeability predicate — **must be paired with an
+ * `approved` check** (see `merge.ts`'s auto-merge bucket). The
+ * `blocked`-but-`mergeable` tolerance is only safe under that pairing; used
+ * bare it would treat a PR blocked on required human review with CI incomplete
+ * (`mergeable:true` = no conflicts, `mergeableState:'blocked'`) as ready.
  *
- * One definition for both merge paths (the orchestrator's webhook-driven check
- * and the `merge_pull_request` tool) so they can't drift apart. Callers add
- * their own `state === 'open'` (and, on the auto path only, `approved`) checks.
+ * Callers add their own `state === 'open'` check. Neither the
+ * `merge_pull_request` tool nor the armed-PR merge path calls this: the tool
+ * arms instead of interpreting mergeability, and both the tool's auto branch
+ * and the armed orchestrator bucket gate on `mergeableState === 'clean'`
+ * directly (no `blocked` tolerance).
  *
  * The `blocked`-but-`mergeable` tolerance covers a known GitHub Rulesets quirk
  * where the API reports 'blocked' while the UI shows a green merge button

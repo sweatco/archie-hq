@@ -260,6 +260,90 @@ describe('checkAndMergeLinkedPRs — auto policy (AC2)', () => {
   });
 });
 
+describe('checkAndMergeLinkedPRs — armed bucket (AC5)', () => {
+  function armedRepositories(github: string, prNumber: number): TaskMetadata['repositories'] {
+    return {
+      'backend-agent': [
+        { github, branch_states: { 'feat/x': { pr_number: prNumber, base_branch: 'main', merge_armed: true } } },
+      ],
+    };
+  }
+
+  it('merges an armed non-auto PR reported clean, with no approved floor (AC5)', async () => {
+    // isAutoMergeRepo=false (beforeEach) and approved:false — the only reason
+    // this merges is the armed marker + clean state. If the armed bucket were
+    // gated on `approved` or on isAutoMergeRepo, nothing would merge.
+    const task = makeTask(armedRepositories('org/backend', 42));
+    vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
+    mockGitHubClient.getPRStatus.mockResolvedValue({
+      state: 'open', mergeable: true, mergeableState: 'clean', approved: false,
+    });
+    mockGitHubClient.mergePullRequest.mockResolvedValue({ success: true, message: 'merged' });
+
+    await checkAndMergeLinkedPRs('task-123');
+
+    expect(mockGitHubClient.mergePullRequest).toHaveBeenCalledWith('org/backend', 42);
+    expect(readyNotifications()).toHaveLength(0);
+  });
+
+  it('does NOT merge an armed PR that is blocked+mergeable (clean-only gate, no blocked tolerance)', async () => {
+    // KEY mutation guard: blocked+mergeable=true passes isMergeReadyPerGithub.
+    // The armed bucket must gate on mergeableState==='clean' ONLY. Reverting to
+    // isMergeReadyPerGithub here would merge this PR — this test would fail.
+    const task = makeTask(armedRepositories('org/backend', 42));
+    vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
+    mockGitHubClient.getPRStatus.mockResolvedValue({
+      state: 'open', mergeable: true, mergeableState: 'blocked', approved: true,
+    });
+
+    await checkAndMergeLinkedPRs('task-123');
+
+    expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
+    // Still open-and-not-clean → stays armed (arm is not cleared while open).
+    expect(branchState(task, 'backend-agent', 'feat/x').merge_armed).toBe(true);
+  });
+
+  it('excludes an armed PR from the ready notification even when clean+approved (AC1)', async () => {
+    // Clean + approved + non-auto would normally be "held" and notified. Armed
+    // must be excluded from held — the user already approved it, and it merges.
+    const task = makeTask(armedRepositories('org/backend', 42));
+    vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
+    mockGitHubClient.getPRStatus.mockResolvedValue(READY);
+    mockGitHubClient.mergePullRequest.mockResolvedValue({ success: true, message: 'merged' });
+
+    await checkAndMergeLinkedPRs('task-123');
+
+    expect(mockGitHubClient.mergePullRequest).toHaveBeenCalledWith('org/backend', 42);
+    expect(readyNotifications()).toHaveLength(0);
+  });
+
+  it('clears merge_armed when the PR is observed merged', async () => {
+    const task = makeTask(armedRepositories('org/backend', 42));
+    vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
+    mockGitHubClient.getPRStatus.mockResolvedValue({
+      state: 'merged', mergeable: false, mergeableState: 'unknown', approved: true,
+    });
+
+    await checkAndMergeLinkedPRs('task-123');
+
+    expect(branchState(task, 'backend-agent', 'feat/x').merge_armed).toBeUndefined();
+    expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('clears merge_armed when the PR is observed closed', async () => {
+    const task = makeTask(armedRepositories('org/backend', 42));
+    vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
+    mockGitHubClient.getPRStatus.mockResolvedValue({
+      state: 'closed', mergeable: false, mergeableState: 'unknown', approved: false,
+    });
+
+    await checkAndMergeLinkedPRs('task-123');
+
+    expect(branchState(task, 'backend-agent', 'feat/x').merge_armed).toBeUndefined();
+    expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
+  });
+});
+
 describe('checkAndMergeLinkedPRs — mixed-policy task', () => {
   it('merges the auto PR while the non-auto PR is held with a ready notification', async () => {
     vi.mocked(isAutoMergeRepo).mockImplementation((github: string) => github === 'org/auto');
