@@ -1248,7 +1248,28 @@ export class Task {
     if (approver && !this.metadata.edit_approved_by) {
       this.metadata.edit_approved_by = approver;
     }
-    this.debouncedSave();
+    // Flush synchronously (not debouncedSave): a repo agent reads edit_allowed at
+    // spawn time, so the writable-mount flag must be on disk before any (re)spawn
+    // — including one after a park/reload — rather than 500ms later.
+    await this.save(true);
+
+    // Restart any live repo agent so it re-mounts its clone writable. Edit mode
+    // only flips the sandbox at spawn time (editAllowed puts the clone in
+    // allowWritePaths); an agent that is already running keeps its read-only mount
+    // and never re-reads the flag, so writes keep hitting a read-only filesystem
+    // after approval (observed on task-20260625-1122-30wkzk: EROFS persisted for
+    // ~20 min post-approval). Tear it down so PM's delegation re-spawns it fresh —
+    // it resumes the same session (session_id persists in metadata), just with a
+    // writable checkout. PM is not a repo agent, so it is left running.
+    for (const [name, agent] of [...this.agentProcesses]) {
+      if (isRepoAgent(agent.def) && agent.isRunning) {
+        agent.handle?.abort();
+        agent.queue.stop();
+        this.agentProcesses.delete(name);
+        logger.system(`Edit mode approved — restarting ${name} for a writable mount`);
+      }
+    }
+
     const approvedBy = this.metadata.edit_approved_by?.name || 'user';
     await appendAgentFinding(this.taskId, 'system', `Edit mode approved by ${approvedBy}`, 'decision');
     await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
