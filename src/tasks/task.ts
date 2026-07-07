@@ -1341,6 +1341,10 @@ export class Task {
     const bySuffix = approver?.name ? ` by ${approver.name}` : '';
     let findingType: 'completion' | 'decision';
     let finding: string;
+    // Arming must reach a later webhook-loaded instance, so it persists durably
+    // (save(true)) rather than via the 500ms debounce that a concurrent
+    // activation could clobber. Every other outcome uses the debounced save.
+    let armed = false;
     const client = getGitHubClient();
     if (!client) {
       findingType = 'decision';
@@ -1358,11 +1362,11 @@ export class Task {
             findingType = 'decision';
             finding = `Merge approved${bySuffix} but PR ${prRef} was not merged: ${result.message}`;
           }
-        } else {
-          // Not clean yet: arm the PR for auto-merge (no error). The merge
-          // orchestrator merges it on the next merge-triggering webhook once
-          // GitHub reports it clean — the reframe's whole point (AC4). Mark
-          // every BranchState entry for the PR via the same
+        } else if (status.state === 'open') {
+          // Open but not clean yet: arm the PR for auto-merge (no error). The
+          // merge orchestrator merges it on the next merge-triggering webhook
+          // once GitHub reports it clean — the reframe's whole point (AC4).
+          // Mark every BranchState entry for the PR via the same
           // repositories → AttachedRepo[] → branch_states walk the orchestrator
           // uses (mirrored here, not imported, to avoid a task ↔ orchestrator
           // circular dependency: arming is the Task's job, the deferred merge
@@ -1376,8 +1380,16 @@ export class Task {
               }
             }
           }
+          armed = true;
           findingType = 'decision';
           finding = `Auto-merge armed for ${prRef} — will merge once checks pass`;
+        } else {
+          // Closed or merged by the time the click resolved (the PR can close
+          // during the approval window): there is nothing to merge and arming a
+          // dead PR would seed a stale merge_armed onto the branch. Report the
+          // real outcome (AC4) and do not arm.
+          findingType = 'decision';
+          finding = `Merge approval resolved but PR ${prRef} is ${status.state} — nothing to merge`;
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
@@ -1386,7 +1398,15 @@ export class Task {
       }
     }
 
-    this.debouncedSave();
+    if (armed) {
+      // Flush the arm synchronously before the PM reactivation: a debounced
+      // write could be lost if a concurrent trigger registers a different
+      // canonical instance before it lands, and the armed PR would then never
+      // auto-merge despite the user being told it would.
+      await this.save(true);
+    } else {
+      this.debouncedSave();
+    }
     await appendAgentFinding(this.taskId, 'system', finding, findingType);
     await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
     return 'resolved';

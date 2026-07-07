@@ -63,6 +63,7 @@ type FakeTask = {
   };
   agentProcesses: Map<string, { clearPendingTeardown: ReturnType<typeof vi.fn> }>;
   debouncedSave: ReturnType<typeof vi.fn>;
+  save: ReturnType<typeof vi.fn>;
   sendMessage: ReturnType<typeof vi.fn>;
 };
 
@@ -75,6 +76,7 @@ function makeFakeTask(
     metadata: { pending_merge_approval: slot, repositories },
     agentProcesses: new Map([['backend-agent', { clearPendingTeardown: vi.fn() }]]),
     debouncedSave: vi.fn(),
+    save: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn().mockResolvedValue(undefined),
   };
 }
@@ -162,18 +164,62 @@ describe('handleMergeApproval', () => {
     );
   });
 
-  it('does not merge a closed PR; arms it (harmlessly — the orchestrator clears the marker on close)', async () => {
+  it('arming persists durably (save(true)) before the PM reactivation, not via debouncedSave (F3)', async () => {
+    // The arm must survive to a later webhook-loaded instance. A debounced
+    // write could be dropped if a concurrent trigger registers a different
+    // canonical instance before it lands — then the armed PR never auto-merges
+    // though the user was told it would. Flush it synchronously, ordered before
+    // the activating sendMessage (mirrors the notify-once marker in merge.ts).
+    mockGitHubClient.getPRStatus.mockResolvedValue({
+      state: 'open', mergeable: false, mergeableState: 'blocked', approved: true,
+    });
+    const task = makeFakeTask(pendingSlot(PR1), reposWithPR(PR1));
+
+    await approve(task, PR1);
+
+    expect(armedFlag(task)).toBe(true);
+    expect(task.save).toHaveBeenCalledWith(true);
+    expect(task.save.mock.invocationCallOrder[0]!)
+      .toBeLessThan(task.sendMessage.mock.invocationCallOrder[0]!);
+  });
+
+  it('does not arm a PR closed during the approval window: no merge, no merge_armed, explicit closed finding, slot cleared, PM reactivated (F2)', async () => {
+    // The tool bails on non-open PRs at request time, but a PR can close between
+    // the prompt and the click. Arming a dead PR would (a) mislead the user that
+    // it "will merge once checks pass" and (b) seed a stale merge_armed onto the
+    // branch that a reused pr_number could inherit. So: report the real state,
+    // never arm.
     mockGitHubClient.getPRStatus.mockResolvedValue({
       state: 'closed', mergeable: false, mergeableState: 'unknown', approved: false,
+    });
+    const task = makeFakeTask(pendingSlot(PR1), reposWithPR(PR1));
+
+    const disposition = await approve(task, PR1);
+
+    expect(disposition).toBe('resolved');
+    expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
+    expect(armedFlag(task)).toBeUndefined();
+    expect(task.metadata.pending_merge_approval).toBeUndefined();
+    expect(appendAgentFinding).toHaveBeenCalledWith(
+      'task-123', 'system',
+      expect.stringContaining('PR org/backend#1 is closed — nothing to merge'), 'decision',
+    );
+    expect(task.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask, 'pm-agent');
+  });
+
+  it('does not arm a PR merged during the approval window: reports the merged state, does not arm (F2)', async () => {
+    mockGitHubClient.getPRStatus.mockResolvedValue({
+      state: 'merged', mergeable: false, mergeableState: 'unknown', approved: true,
     });
     const task = makeFakeTask(pendingSlot(PR1), reposWithPR(PR1));
 
     await approve(task, PR1);
 
     expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
-    expect(armedFlag(task)).toBe(true);
+    expect(armedFlag(task)).toBeUndefined();
     expect(appendAgentFinding).toHaveBeenCalledWith(
-      'task-123', 'system', expect.stringContaining('Auto-merge armed'), 'decision',
+      'task-123', 'system',
+      expect.stringContaining('PR org/backend#1 is merged — nothing to merge'), 'decision',
     );
   });
 
