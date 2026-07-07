@@ -14,6 +14,8 @@ Verify acceptance criteria against a live Archie instance booted from the branch
 
 ## Prerequisites
 
+> Running in a cloud sandbox / CI behind a TLS-intercepting proxy (e.g. Claude Code on the web)? See `docs/guides/e2e-in-cloud-sandbox.md` for the cold-start setup (CA trust, key mapping, bind-mount ownership, `setsid` for long-running processes). The steps below assume direct internet egress.
+
 - Docker (Desktop or daemon) running locally; `docker compose version` works.
 - `.env` at the repo root with a non-empty `ANTHROPIC_API_KEY`. **No Slack tokens are needed** — scenarios enter through the CLI/API channel.
 - The `archie-debug` MCP available (registered in `.mcp.json` as `npx tsx tools/debug-mcp/server.ts`). The harness consumes it as-is and never modifies `tools/debug-mcp/`.
