@@ -4,77 +4,71 @@
   "ac_ids": [
     "AC3"
   ],
-  "started_at": "2026-07-06T12:56:26Z",
-  "finished_at": "2026-07-06T13:04:30Z",
+  "started_at": "2026-07-07T21:11:21Z",
+  "finished_at": "2026-07-07T21:16:32Z",
   "environment": {
     "base_url": "http://localhost:3000",
     "git_branch": "forge/pr-merge-policy",
-    "git_commit": "1cf34ce"
+    "git_commit": "b541c9a"
   },
-  "nonce": "E2E-f032d83d",
-  "task_id": "task-20260706-1256-psqkhz",
+  "nonce": "E2E-9c4bd221",
+  "task_id": "task-20260707-2111-xuh66c",
   "terminal_state": "completed",
   "assertions": [
     {
-      "id": "boot-attestation",
-      "description": "Boot attested the instance was composed from the checkout under test (branch forge/pr-merge-policy)",
-      "expected": "boot.ts prints 'Attested: instance composed from <HEAD sha>' and /health reports the same git_sha",
-      "observed": "Attested: instance composed from 1cf34ce92e47d0d73b7994fb00b7da7d23c778ad; /health body: {\"status\":\"ok\",\"activeTasks\":0,\"git_sha\":\"1cf34ce92e47d0d73b7994fb00b7da7d23c778ad\"} — matches git rev-parse HEAD (1cf34ce, clean tree)",
+      "id": "A1",
+      "description": "Non-auto repo: merge_pull_request pauses instead of merging",
+      "expected": "After the user requests merge, the task reaches STATE=approval_requested with APPROVAL_TYPE=merge; nothing is merged and nothing is armed at request time",
+      "observed": "wait_for_task returned STATE=approval_requested APPROVAL_TYPE=merge; event approval:requested carried approvalType=merge, github=sweatco/archie-hq, pr_number=192; PR #192 still OPEN, mergedAt=null at this point",
       "pass": true
     },
     {
-      "id": "pr-opened",
-      "description": "Task made a small real change in a configured non-auto repo and opened a PR (edit-mode gate approved along the way)",
-      "expected": "STATE=approval_requested APPROVAL_TYPE=edit_mode, approved via approve(type: edit_mode), then STATE=completed with a PM reply announcing the PR",
-      "observed": "Edit-mode gate surfaced (APPROVAL_TYPE=edit_mode), approved via API; task settled completed with PM reply announcing PR #81 on sweatco/archie-plugins (https://github.com/sweatco/archie-plugins/pull/81); knowledge log: 'Created PR #81 on sweatco/archie-plugins'",
+      "id": "A2",
+      "description": "Merge-approval request records identity in the knowledge log",
+      "expected": "Knowledge log line: Merge approval requested for sweatco/archie-hq#192",
+      "observed": "[system] [decision] Merge approval requested for sweatco/archie-hq#192 present in the knowledge log",
       "pass": true
     },
     {
-      "id": "merge-gate-surfaced",
-      "description": "After send_message asking the PM to merge, merge_pull_request in the non-auto repo does not merge — the task pauses with an approval_requested event of type merge, observed live via wait_for_task",
-      "expected": "wait_for_task returns STATE=approval_requested with APPROVAL_TYPE=merge; events show approval:requested with data.approvalType 'merge'; knowledge log carries 'Merge approval requested for sweatco/archie-plugins#81'",
-      "observed": "wait_for_task returned STATE=approval_requested APPROVAL_TYPE=merge; events: 2026-07-06T12:59:37.074Z approval:requested {\"text\":\"Merge approval requested for PR #81 (sweatco/archie-plugins)\",\"approvalType\":\"merge\"} followed by task:stopped; knowledge log: '[system] [decision] Merge approval requested for sweatco/archie-plugins#81'",
+      "id": "A3",
+      "description": "Deny via API path with github+pr_number succeeds (no 400)",
+      "expected": "approve(type=merge, approve=false, github=sweatco/archie-hq, pr_number=192) returns success",
+      "observed": "MCP approve tool returned Denied merge for task-20260707-2111-xuh66c, exit=0; event approval:resolved {type:merge, approve:false} recorded",
       "pass": true
     },
     {
-      "id": "deny-resolves-via-api",
-      "description": "Denying via the identity-carrying API call resolves the merge approval and the task settles",
-      "expected": "approve(type: merge, approve: false, github: sweatco/archie-plugins, pr_number: 81) succeeds; events show approval:resolved {type: merge, approve: false}; task reaches STATE=completed",
-      "observed": "API returned 'Denied merge for task-20260706-1256-psqkhz'; events: 2026-07-06T13:00:03.905Z approval:resolved {\"type\":\"merge\",\"approve\":false}; wait_for_task then returned STATE=completed with PM reply 'the merge was denied, so PR #81 remains open and unmerged'",
+      "id": "A4",
+      "description": "Denial results in no merge and no arming",
+      "expected": "Knowledge log: Merge denied by user — PR not merged; no merged-on-approval or armed line; gh pr view mergedAt=null, state OPEN",
+      "observed": "[system] [decision] Merge denied by user — PR not merged present; grep for merged on user approval / armed for auto-merge returned none; gh pr view #192 -> state OPEN, mergedAt null, mergeStateStatus BLOCKED",
       "pass": true
     },
     {
-      "id": "no-merge-occurred",
-      "description": "Denial results in no merge: denial finding recorded, no merged-completion finding/event, and GitHub confirms the PR was never merged",
-      "expected": "Knowledge log contains 'Merge denied by user — PR not merged'; no 'PR … merged on user approval' finding or merge event between approval:requested and approval:resolved or after; gh pr view reports mergedAt null",
-      "observed": "Knowledge log: '[system] [decision] Merge denied by user — PR not merged'; no merge finding/event anywhere in the task's events or log; gh pr view 81 --repo sweatco/archie-plugins → {\"mergedAt\":null,\"state\":\"OPEN\"} at verification time. Test PR then closed by QA (gh pr close 81, branch archie/task-20260706-1256-psqkhz-2 deleted) — final state CLOSED with mergedAt still null",
+      "id": "A5",
+      "description": "Task settles cleanly after denial",
+      "expected": "STATE=completed with PM relaying the merge was denied and PR stays open",
+      "observed": "STATE=completed; PM_REPLY: the merge was denied, so PR #192 stays open and unmerged",
       "pass": true
     }
   ],
   "excerpts": {
     "knowledge_log": [
-      "[2026-07-06T12:56:38.582Z] [cli] [E2E-f032d83d] In sweatco/archie-plugins, add a comment line \"<!-- archie-e2e touch E2E-f032d83d -->\" to the top of README.md and open a PR. Do not merge it.",
-      "[2026-07-06T12:57:31.338Z] [system] [decision] Edit mode requested: Add a comment line to the top of README.md in sweatco/archie-plugins and open a PR (will not merge).",
-      "[2026-07-06T12:57:47.528Z] [system] [decision] Edit mode approved by user",
-      "[2026-07-06T12:58:42.923Z] [archie-agent] [decision] Created PR #81 on sweatco/archie-plugins: https://github.com/sweatco/archie-plugins/pull/81",
-      "[2026-07-06T12:59:22.087Z] [cli] [E2E-f032d83d] Please merge that PR.",
-      "[2026-07-06T12:59:29.959Z] [pm-agent] → archie-agent: The user has asked to merge PR #81 (https://github.com/sweatco/archie-plugins/pull/81). Please merge it using your merge_pull_request tool. Report back once it's merged.",
-      "[2026-07-06T12:59:37.073Z] [system] [decision] Merge approval requested for sweatco/archie-plugins#81",
-      "[2026-07-06T12:59:41.591Z] [archie-agent] → pm-agent: I initiated the merge of PR #81 (sweatco/archie-plugins). This repo isn't auto-merge, so the merge tool posted a merge-approval request and paused the task pending user approval. Once the user approves, the merge will complete. I'll confirm once it's merged.",
-      "[2026-07-06T13:00:03.860Z] [system] [decision] Merge denied by user — PR not merged",
-      "[2026-07-06T13:00:16.471Z] [pm-agent in cli] Understood — the merge was denied, so PR #81 remains open and unmerged: https://github.com/sweatco/archie-plugins/pull/81"
+      "[2026-07-07T21:13:49.438Z] [archie-agent] [decision] Created PR #192 on sweatco/archie-hq: https://github.com/sweatco/archie-hq/pull/192",
+      "[2026-07-07T21:14:51.508Z] [system] [decision] Merge approval requested for sweatco/archie-hq#192",
+      "[2026-07-07T21:15:11.508Z] [system] [decision] Merge denied by user — PR not merged",
+      "[2026-07-07T21:15:22.275Z] [pm-agent in cli] Got it — the merge was denied, so PR #192 in sweatco/archie-hq stays open and unmerged."
     ],
     "events": [
       {
-        "timestamp": "2026-07-06T12:57:31.339Z",
+        "ts": "2026-07-07T21:12:39.375Z",
         "type": "approval:requested",
         "data": {
-          "text": "Edit mode request: Add a comment line to the top of README.md in sweatco/archie-plugins and open a PR (will not merge).",
+          "text": "Edit mode request: Create throwaway file e2e-touch-E2E-9c4bd221.md in sweatco/archie-hq, commit on a new branch, and open a PR (no merge) for the E2E test.",
           "approvalType": "edit_mode"
         }
       },
       {
-        "timestamp": "2026-07-06T12:57:47.562Z",
+        "ts": "2026-07-07T21:12:53.051Z",
         "type": "approval:resolved",
         "data": {
           "type": "edit_mode",
@@ -82,37 +76,25 @@
         }
       },
       {
-        "timestamp": "2026-07-06T12:58:59.165Z",
-        "type": "pr_card",
+        "ts": "2026-07-07T21:14:51.613Z",
+        "type": "agent:log",
         "data": {
-          "action": "post",
-          "cardId": "sweatco/archie-plugins#81",
-          "repo": "sweatco/archie-plugins",
-          "prNumber": 81,
-          "url": "https://github.com/sweatco/archie-plugins/pull/81",
-          "headRef": "archie/task-20260706-1256-psqkhz-2",
-          "state": "open",
-          "head_sha": "3a836ce4b22e26c02e4b30388b8a91f51d104cba",
-          "ci": "none",
-          "ciPassed": 0,
-          "ciTotal": 0
+          "finding": "Merge approval requested for sweatco/archie-hq#192",
+          "type": "decision"
         }
       },
       {
-        "timestamp": "2026-07-06T12:59:37.074Z",
+        "ts": "2026-07-07T21:14:51.613Z",
         "type": "approval:requested",
         "data": {
-          "text": "Merge approval requested for PR #81 (sweatco/archie-plugins)",
-          "approvalType": "merge"
+          "text": "Approve auto-merge for PR #192 (sweatco/archie-hq)? It will merge automatically once all checks and required reviews pass.",
+          "approvalType": "merge",
+          "github": "sweatco/archie-hq",
+          "pr_number": 192
         }
       },
       {
-        "timestamp": "2026-07-06T12:59:47.158Z",
-        "type": "task:stopped",
-        "data": {}
-      },
-      {
-        "timestamp": "2026-07-06T13:00:03.905Z",
+        "ts": "2026-07-07T21:15:11.539Z",
         "type": "approval:resolved",
         "data": {
           "type": "merge",
@@ -120,9 +102,13 @@
         }
       },
       {
-        "timestamp": "2026-07-06T13:00:27.548Z",
-        "type": "task:completed",
-        "data": {}
+        "ts": "2026-07-07T21:15:22.275Z",
+        "type": "message",
+        "data": {
+          "from": "pm-agent",
+          "to": "user",
+          "message": "Got it — the merge was denied, so PR #192 in sweatco/archie-hq stays open and unmerged."
+        }
       }
     ]
   },
