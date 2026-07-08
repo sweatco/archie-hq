@@ -44,6 +44,10 @@ npm run typecheck    # Type checking only
 
 See `docs/guides/local-development.md` for full setup instructions.
 
+## E2E harness
+
+A live boot-from-branch E2E harness ships here (the `archie-e2e` skill + `tools/e2e/`). To verify a branch against a running instance, load the `archie-e2e` skill instead of hand-rolling a boot. In a fresh checkout or cloud sandbox it can *look* unavailable (preflight / Docker / TLS errors) until it's prepared — that's a setup gap, not a missing capability, so load the skill; for a cloud sandbox behind a TLS-intercepting proxy the runbook is `docs/guides/e2e-in-cloud-sandbox.md`.
+
 ## Logging
 
 Use the unified logger (`src/system/logger.ts`) for all console output. Never use `console.log/error/warn` directly. The logger provides color-coded, semantic logging methods for agents, system events, and errors.
