@@ -41,3 +41,6 @@ npm-debug.log*
 # Testing
 coverage/
 .nyc_output/
+
+# Opt-in extra CA for TLS-intercepting proxies (build needs it for npm; not a secret)
+!secrets/extra-ca.crt

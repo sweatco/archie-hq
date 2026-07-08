@@ -588,6 +588,12 @@ Shared folder: ${sharedPath} [READ-ONLY]
     env: {
       NODE_ENV: process.env.NODE_ENV || 'development',
       ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+      // CA-trust config for the spawned CLI. The SDK REPLACES env (see note
+      // above), so without forwarding these an operator-provided CA (e.g. a
+      // TLS-intercepting egress proxy) never reaches the child and its
+      // Anthropic API calls fail cert validation. No-op when both are unset.
+      ...(process.env.NODE_USE_SYSTEM_CA ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA } : {}),
+      ...(process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS } : {}),
       PATH: process.env.PATH,
       HOME: process.env.HOME,
       CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',

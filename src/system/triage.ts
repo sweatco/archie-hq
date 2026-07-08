@@ -58,6 +58,9 @@ async function runTriage<T extends z.ZodType>(
       env: {
         NODE_ENV: process.env.NODE_ENV || "development",
         ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+        // Forward CA-trust to the spawned CLI (TLS-intercepting proxy); no-op when unset.
+        ...(process.env.NODE_USE_SYSTEM_CA ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA } : {}),
+        ...(process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS } : {}),
         PATH: process.env.PATH,
       },
       allowedTools: ["Glob", "Grep", "Read"],

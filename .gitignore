@@ -59,3 +59,4 @@ e2e-evidence/
 # Local data snapshots pulled by scripts/pull-remote-data.sh
 archie-data-*
 *.partial.*
+secrets/extra-ca.crt

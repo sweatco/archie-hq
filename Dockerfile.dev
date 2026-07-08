@@ -14,8 +14,21 @@ RUN apt-get update && \
       python3 python3-pip python3-venv && \
     git lfs install && \
     mkdir -p ~/.ssh && \
-    ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null && \
+    { ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null || true; } && \
     rm -rf /var/lib/apt/lists/*
+
+# Optional: trust an operator-supplied extra CA (corporate root, or a
+# TLS-intercepting egress proxy). Drop a PEM at ./secrets/extra-ca.crt before
+# building; absent → no-op. This must happen BEFORE `npm ci` below, and
+# NODE_USE_SYSTEM_CA lets Node (the app AND the spawned agent CLIs) validate
+# TLS against the OS trust store we just updated. `secrets/` is otherwise
+# dockerignored — only this one file is re-included (see .dockerignore).
+COPY secrets/ /tmp/ca-src/
+RUN if [ -s /tmp/ca-src/extra-ca.crt ]; then \
+      cp /tmp/ca-src/extra-ca.crt /usr/local/share/ca-certificates/extra-ca.crt && \
+      update-ca-certificates; \
+    fi && rm -rf /tmp/ca-src
+ENV NODE_USE_SYSTEM_CA=1
 
 # Set SHELL environment variable (required by Claude CLI)
 ENV SHELL=/bin/bash
