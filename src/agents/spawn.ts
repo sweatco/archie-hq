@@ -261,7 +261,18 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
 
   let systemPrompt: string;
   let additionalDirectories: string[] = [sharedPath, ...pluginPaths];
-  let disallowedTools: string[] = ['WebSearch', 'WebFetch', ...(def.disallowedTools || [])];
+  // Cron* are harness tools that only live for the current Claude session — they
+  // die when the agent's ephemeral subprocess exits (which is every time a turn
+  // ends), so a scheduled job never fires. An agent reaching for them to "monitor"
+  // or "check back later" silently gets nothing (observed: task-20260617-1454-i1a08v
+  // set a self-re-arming cron that died at turn-end and never woke for 6 days).
+  // Block them so agents use the durable `set_reminder` instead. Native recurring
+  // triggers are planned separately.
+  let disallowedTools: string[] = [
+    'WebSearch', 'WebFetch',
+    'CronCreate', 'CronList', 'CronDelete',
+    ...(def.disallowedTools || []),
+  ];
   let sandboxOpts: SandboxOptions = {
     cwd,
     denyReadPaths: [WORKDIR],
