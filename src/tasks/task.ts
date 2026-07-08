@@ -582,8 +582,21 @@ export class Task {
    * approvals are also surfaced in the CLI via the `approval:requested` event
    * regardless of Slack delivery.
    */
-  async postInteractiveToUser(text: string, blocks: unknown[], approvalType: 'edit_mode' | 'research_budget', channelKey?: string): Promise<void> {
-    emitEvent('approval:requested', this.taskId, { text, approvalType });
+  async postInteractiveToUser(
+    text: string,
+    blocks: unknown[],
+    approvalType: 'edit_mode' | 'research_budget' | 'merge',
+    channelKey?: string,
+    context?: { github: string; pr_number: number },
+  ): Promise<void> {
+    // Merge approvals carry the PR identity so CLI/SSE consumers can echo it
+    // back on resolution (the API route requires github+pr_number for
+    // type:'merge'); other approval types omit it (backward compatible).
+    emitEvent('approval:requested', this.taskId, {
+      text,
+      approvalType,
+      ...(context ? { github: context.github, pr_number: context.pr_number } : {}),
+    });
 
     const ch = this.resolveSlackChannel(channelKey);
     if (ch) {
@@ -1278,6 +1291,151 @@ export class Task {
   async handleEditModeDenial(): Promise<void> {
     await appendAgentFinding(this.taskId, 'system', 'Edit mode denied by user', 'decision');
     await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+  }
+
+  /**
+   * Resolve a pending merge approval (approve side).
+   *
+   * The identity gate is a **synchronous read-compare-clear** on
+   * `pending_merge_approval`: no await between reading the slot, comparing it
+   * to `expected`, and clearing it. A supersede landing mid-resolution
+   * therefore turns an in-flight click into a stale no-op — it can never merge
+   * the superseding PR. Adapters (Slack handlers, API route) do no slot
+   * verification of their own; this method is the single verification point.
+   *
+   * On match the engine takes the merge-now-or-arm decision (no agent re-wake):
+   * fetch PR status, and if it is open and GitHub reports it **clean** merge
+   * immediately (completion finding on success, decision finding on a merge-API
+   * failure). Otherwise the PR is **armed** for auto-merge — its BranchState
+   * gains `merge_armed`, the orchestrator merges it on the next
+   * merge-triggering webhook once it turns clean, and a decision finding records
+   * the arming with no error surfaced (AC4). **No `approved` check anywhere on
+   * this path** (AC5) — GitHub branch protection is the sole review authority.
+   * Either way the PM is reactivated so the user learns the outcome.
+   */
+  async handleMergeApproval(
+    approver: { id: string; name: string; email?: string } | undefined,
+    expected: { github: string; pr_number: number },
+  ): Promise<'resolved' | 'stale'> {
+    const pending = this.metadata.pending_merge_approval;
+    if (!pending || pending.github !== expected.github || pending.pr_number !== expected.pr_number) {
+      logger.warn(
+        'task',
+        `Stale merge approval for ${expected.github}#${expected.pr_number} on task ${this.taskId} — ` +
+        `slot ${pending ? `holds ${pending.github}#${pending.pr_number}` : 'is empty'}`,
+      );
+      return 'stale';
+    }
+    // Clear-before-awaits invariant: the slot is consumed here, synchronously
+    // with the read+compare above. Moving this clear after the GitHub awaits
+    // below would let a supersede that lands mid-await pass the compare too
+    // (double resolution) and then be wiped by this resolution's clear.
+    this.metadata.pending_merge_approval = undefined;
+
+    // Cancel the park armed by merge_pull_request on the requesting agent —
+    // same stream-closed-loop protection edit mode applies to the PM, but
+    // targeted at whichever repo agent parked the task.
+    this.agentProcesses.get(pending.requested_by as AgentName)?.clearPendingTeardown();
+
+    const prRef = `${pending.github}#${pending.pr_number}`;
+    const bySuffix = approver?.name ? ` by ${approver.name}` : '';
+    let findingType: 'completion' | 'decision';
+    let finding: string;
+    // Arming must reach a later webhook-loaded instance, so it persists durably
+    // (save(true)) rather than via the 500ms debounce that a concurrent
+    // activation could clobber. Every other outcome uses the debounced save.
+    let armed = false;
+    const client = getGitHubClient();
+    if (!client) {
+      findingType = 'decision';
+      finding = `Merge approved${bySuffix} but PR ${prRef} was not merged: GitHub client not configured`;
+    } else {
+      try {
+        const status = await client.getPRStatus(pending.github, pending.pr_number);
+        if (status.state === 'open' && status.mergeableState === 'clean') {
+          // Merge-now path: the PR is already green, so merge on approval.
+          const result = await client.mergePullRequest(pending.github, pending.pr_number);
+          if (result.success) {
+            findingType = 'completion';
+            finding = `PR ${prRef} merged on user approval${bySuffix}`;
+          } else {
+            findingType = 'decision';
+            finding = `Merge approved${bySuffix} but PR ${prRef} was not merged: ${result.message}`;
+          }
+        } else if (status.state === 'open') {
+          // Open but not clean yet: arm the PR for auto-merge (no error). The
+          // merge orchestrator merges it on the next merge-triggering webhook
+          // once GitHub reports it clean — the reframe's whole point (AC4).
+          // Mark every BranchState entry for the PR via the same
+          // repositories → AttachedRepo[] → branch_states walk the orchestrator
+          // uses (mirrored here, not imported, to avoid a task ↔ orchestrator
+          // circular dependency: arming is the Task's job, the deferred merge
+          // is the orchestrator's).
+          for (const attachments of Object.values(this.metadata.repositories)) {
+            if (!Array.isArray(attachments)) continue;
+            for (const attached of attachments) {
+              if (attached.github !== pending.github || !attached.branch_states) continue;
+              for (const state of Object.values(attached.branch_states)) {
+                if (state.pr_number === pending.pr_number) state.merge_armed = true;
+              }
+            }
+          }
+          armed = true;
+          findingType = 'decision';
+          finding = `Auto-merge armed for ${prRef} — will merge once checks pass`;
+        } else {
+          // Closed or merged by the time the click resolved (the PR can close
+          // during the approval window): there is nothing to merge and arming a
+          // dead PR would seed a stale merge_armed onto the branch. Report the
+          // real outcome (AC4) and do not arm.
+          findingType = 'decision';
+          finding = `Merge approval resolved but PR ${prRef} is ${status.state} — nothing to merge`;
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        findingType = 'decision';
+        finding = `Merge approved${bySuffix} but PR ${prRef} was not merged: ${message}`;
+      }
+    }
+
+    if (armed) {
+      // Flush the arm synchronously before the PM reactivation: a debounced
+      // write could be lost if a concurrent trigger registers a different
+      // canonical instance before it lands, and the armed PR would then never
+      // auto-merge despite the user being told it would.
+      await this.save(true);
+    } else {
+      this.debouncedSave();
+    }
+    await appendAgentFinding(this.taskId, 'system', finding, findingType);
+    await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+    return 'resolved';
+  }
+
+  /**
+   * Resolve a pending merge approval (deny side). Same synchronous
+   * read-compare-clear gate as {@link handleMergeApproval}; on match the slot
+   * and the parked teardown are cleared and the PM is reactivated. No GitHub
+   * call of any kind — deny must never merge.
+   */
+  async handleMergeDenial(expected: { github: string; pr_number: number }): Promise<'resolved' | 'stale'> {
+    const pending = this.metadata.pending_merge_approval;
+    if (!pending || pending.github !== expected.github || pending.pr_number !== expected.pr_number) {
+      logger.warn(
+        'task',
+        `Stale merge denial for ${expected.github}#${expected.pr_number} on task ${this.taskId} — ` +
+        `slot ${pending ? `holds ${pending.github}#${pending.pr_number}` : 'is empty'}`,
+      );
+      return 'stale';
+    }
+    this.metadata.pending_merge_approval = undefined;
+
+    this.agentProcesses.get(pending.requested_by as AgentName)?.clearPendingTeardown();
+
+    this.debouncedSave();
+    await appendAgentFinding(this.taskId, 'system', 'Merge denied by user — PR not merged', 'decision');
+    await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+    return 'resolved';
   }
 
   async handleResearchBudgetApproval(): Promise<void> {

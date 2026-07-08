@@ -178,14 +178,24 @@ server.tool(
 
 server.tool(
   'approve',
-  'Approve or deny a pending request (edit mode or research budget) for a task.',
+  'Approve or deny a pending request (edit mode, research budget, or merge) for a task. For type "merge", pass github and pr_number identifying the pending PR — the API rejects merge resolutions without them.',
   {
     task_id: z.string().describe('The task ID'),
-    type: z.enum(['edit_mode', 'research_budget']).describe('The request type to approve/deny'),
+    type: z.enum(['edit_mode', 'research_budget', 'merge']).describe('The request type to approve/deny'),
     approve: z.boolean().describe('true to approve, false to deny'),
+    github: z.string().optional().describe('Repo of the pending PR, e.g. "org/repo" (required for type "merge")'),
+    pr_number: z.number().optional().describe('Number of the pending PR (required for type "merge")'),
   },
-  async ({ task_id, type, approve }) => {
-    await client.approve(task_id, type, approve);
+  async ({ task_id, type, approve, github, pr_number }) => {
+    const { stale } = await client.approve(task_id, type, approve, { github, pr_number });
+    if (stale) {
+      return {
+        content: [{
+          type: 'text',
+          text: `STALE: ${type} resolution for ${task_id} did not match the pending request — nothing was approved or denied`,
+        }],
+      };
+    }
     const action = approve ? 'Approved' : 'Denied';
     return { content: [{ type: 'text', text: `${action} ${type} for ${task_id}` }] };
   },

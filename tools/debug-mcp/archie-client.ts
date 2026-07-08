@@ -97,12 +97,32 @@ export class ArchieClient {
     return (await res.json()) as EventsResult;
   }
 
-  async approve(taskId: string, type: string, approve: boolean): Promise<void> {
+  async approve(
+    taskId: string,
+    type: string,
+    approve: boolean,
+    // PR identity for merge-type approvals, forwarded verbatim in the request
+    // body (the API requires github + pr_number when type is "merge").
+    pr?: { github?: string; pr_number?: number },
+  ): Promise<{ stale: boolean }> {
     const res = await fetch(`${this.baseUrl}/api/tasks/${taskId}/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type, approve }),
+      body: JSON.stringify({ type, approve, github: pr?.github, pr_number: pr?.pr_number }),
     });
-    if (!res.ok) throw new Error(`Failed to send approval: ${res.status} ${await res.text()}`);
+    if (res.ok) return { stale: false };
+    const text = await res.text();
+    // A 409 {stale: true} is a semantic outcome, not a transport failure: the
+    // merge resolution missed the pending request (empty/mismatched slot) and
+    // nothing was resolved. Surface it as data so the tool can report it.
+    if (res.status === 409) {
+      try {
+        const body = JSON.parse(text) as { stale?: boolean };
+        if (body.stale) return { stale: true };
+      } catch {
+        // Not our stale shape — fall through to the generic error.
+      }
+    }
+    throw new Error(`Failed to send approval: ${res.status} ${text}`);
   }
 }

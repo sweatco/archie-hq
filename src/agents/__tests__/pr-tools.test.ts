@@ -62,11 +62,13 @@ vi.mock('../registry.js', () => ({
   getAgentIds: vi.fn().mockReturnValue(['backend-agent', 'mobile-agent']),
   getVisiblePeerIdsForSender: vi.fn().mockReturnValue(['backend-agent', 'mobile-agent']),
   getAgentDef: vi.fn().mockReturnValue(undefined),
+  isAutoMergeRepo: vi.fn().mockReturnValue(true),
 }));
 
 // ---- Helpers ----
 
 import { getGitHubClient } from '../../connectors/github/client.js';
+import { isAutoMergeRepo } from '../registry.js';
 
 const mockGitHubClient = {
   getPRStatus: vi.fn(),
@@ -143,6 +145,7 @@ function makeTask(overrides: Partial<Task['metadata']> = {}): Task {
       agent_sessions: {},
       ...overrides,
     },
+    agentProcesses: new Map(),
     touch: vi.fn(),
     debouncedSave: vi.fn(),
     suspendStatus: vi.fn(),
@@ -178,6 +181,7 @@ describe('merge_pull_request', () => {
     vi.mocked(getGitHubClient).mockReturnValue(mockGitHubClient as any);
     vi.clearAllMocks();
     vi.mocked(getGitHubClient).mockReturnValue(mockGitHubClient as any);
+    vi.mocked(isAutoMergeRepo).mockReturnValue(true);
   });
 
   it('rejects when PR is not open', async () => {
@@ -218,6 +222,21 @@ describe('merge_pull_request', () => {
     expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
   });
 
+  it('does not merge a blocked+mergeable PR in an auto repo — clean-only gate (AC6)', async () => {
+    // R2: the auto branch gates on mergeableState==='clean' only, with no
+    // blocked tolerance. isMergeReadyPerGithub would merge this PR; the tool
+    // must not. Reverting to isMergeReadyPerGithub here fails this test.
+    mockGitHubClient.getPRStatus.mockResolvedValue({
+      state: 'open', mergeable: true, mergeableState: 'blocked', approved: true,
+    });
+
+    const tool = getRepoTool(makeAgent(), makeTask(), 'merge_pull_request');
+    const result = await tool({ pr_number: 42 }, {});
+
+    expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain('not ready');
+  });
+
   it('merges when PR is open and clean', async () => {
     mockGitHubClient.getPRStatus.mockResolvedValue({
       state: 'open', mergeable: true, mergeableState: 'clean', approved: true,
@@ -243,7 +262,7 @@ describe('merge_pull_request', () => {
 
     const agent = makeAgent({
       id: 'mobile-agent',
-      repo: { repos: [{ github: 'org/mobile', baseBranch: 'main' }], primary: 'org/mobile' },
+      repo: { repos: [{ github: 'org/mobile', baseBranch: 'main', autoMerge: false }], primary: 'org/mobile' },
     });
     const tool = getRepoTool(agent, makeTask(), 'merge_pull_request');
     await tool({ pr_number: 7 }, {});
@@ -257,6 +276,208 @@ describe('merge_pull_request', () => {
 
     const tool = getRepoTool(makeAgent(), makeTask(), 'merge_pull_request');
     await expect(tool({ pr_number: 42 }, {})).rejects.toThrow('GitHub client not configured');
+  });
+});
+
+describe('merge_pull_request — policy gating', () => {
+  /** Agent whose deferTeardown arms pendingTeardown, like the real Agent class. */
+  function makeMergeAgent(): Agent {
+    const agent = makeAgent();
+    (agent as any).deferTeardown = vi.fn(() => {
+      (agent as any).pendingTeardown = () => Promise.resolve();
+    });
+    return agent;
+  }
+
+  function readyStatus(overrides: Record<string, unknown> = {}) {
+    return { state: 'open', mergeable: true, mergeableState: 'clean', approved: true, ...overrides };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getGitHubClient).mockReturnValue(mockGitHubClient as any);
+    vi.mocked(isAutoMergeRepo).mockReturnValue(false);
+  });
+
+  it('auto repo: merges directly with no approval request and no pause (AC6)', async () => {
+    vi.mocked(isAutoMergeRepo).mockReturnValue(true);
+    mockGitHubClient.getPRStatus.mockResolvedValue(readyStatus());
+    mockGitHubClient.mergePullRequest.mockResolvedValue({ success: true, message: 'PR #42 merged successfully' });
+
+    const agent = makeMergeAgent();
+    const task = makeTask();
+    const tool = getRepoTool(agent, task, 'merge_pull_request');
+    const result = await tool({ pr_number: 42 }, {});
+
+    expect(mockGitHubClient.mergePullRequest).toHaveBeenCalledWith('org/backend', 42);
+    expect(result.content[0].text).toContain('merged successfully');
+    expect(task.postInteractiveToUser).not.toHaveBeenCalled();
+    expect(task.suspendStatus).not.toHaveBeenCalled();
+    expect((agent as any).deferTeardown).not.toHaveBeenCalled();
+    expect(task.metadata.pending_merge_approval).toBeUndefined();
+  });
+
+  it('non-auto ready: requests approval instead of merging (AC3 plumbing)', async () => {
+    mockGitHubClient.getPRStatus.mockResolvedValue(readyStatus());
+
+    const agent = makeMergeAgent();
+    const task = makeTask();
+    const tool = getRepoTool(agent, task, 'merge_pull_request');
+    const result = await tool({ pr_number: 42 }, {});
+
+    expect(result.content[0].text).toContain('Merge approval requested');
+    expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
+
+    expect(task.postInteractiveToUser).toHaveBeenCalledTimes(1);
+    const [text, blocks, approvalType] = vi.mocked(task.postInteractiveToUser).mock.calls[0];
+    expect(approvalType).toBe('merge');
+    expect(text).toContain('org/backend');
+    const buttons = (blocks as any[]).find((b) => b.type === 'actions').elements;
+    expect(buttons.map((b: any) => b.action_id)).toEqual(['approve_merge', 'deny_merge']);
+    expect(buttons[0].value).toBe('task-123|org/backend#42');
+
+    expect(task.metadata.pending_merge_approval).toEqual({
+      github: 'org/backend',
+      pr_number: 42,
+      requested_by: 'backend-agent',
+      requested_at: expect.any(String),
+    });
+    expect(task.debouncedSave).toHaveBeenCalled();
+    expect(task.suspendStatus).toHaveBeenCalledTimes(1);
+    expect((agent as any).deferTeardown).toHaveBeenCalledTimes(1);
+  });
+
+  it('non-auto blocked PR: still prompts + sets the slot, no refusal (KEY R2 regression)', async () => {
+    // R2 reframe: a non-auto repo prompts for ANY open PR. A blocked/not-green
+    // PR must surface the approve/deny prompt (approving arms it for auto-merge),
+    // NOT a "not ready" refusal. Restoring the isMergeReadyPerGithub gate here
+    // would return the refusal and skip the prompt — this test would fail.
+    mockGitHubClient.getPRStatus.mockResolvedValue(readyStatus({ mergeable: false, mergeableState: 'blocked' }));
+
+    const agent = makeMergeAgent();
+    const task = makeTask();
+    const tool = getRepoTool(agent, task, 'merge_pull_request');
+    const result = await tool({ pr_number: 42 }, {});
+
+    expect(result.content[0].text).toContain('Merge approval requested');
+    expect(result.content[0].text).not.toContain('not ready');
+    expect(task.postInteractiveToUser).toHaveBeenCalledTimes(1);
+    expect(task.metadata.pending_merge_approval).toEqual({
+      github: 'org/backend',
+      pr_number: 42,
+      requested_by: 'backend-agent',
+      requested_at: expect.any(String),
+    });
+    expect(task.suspendStatus).toHaveBeenCalledTimes(1);
+    expect((agent as any).deferTeardown).toHaveBeenCalledTimes(1);
+    expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('non-auto closed PR: no prompt, no slot (bails on non-open)', async () => {
+    mockGitHubClient.getPRStatus.mockResolvedValue(readyStatus({ state: 'closed' }));
+
+    const agent = makeMergeAgent();
+    const task = makeTask();
+    const tool = getRepoTool(agent, task, 'merge_pull_request');
+    const result = await tool({ pr_number: 42 }, {});
+
+    expect(result.content[0].text).toContain('closed');
+    expect(task.postInteractiveToUser).not.toHaveBeenCalled();
+    expect(task.metadata.pending_merge_approval).toBeUndefined();
+    expect((agent as any).deferTeardown).not.toHaveBeenCalled();
+    expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('same-turn duplicate request posts a single prompt', async () => {
+    mockGitHubClient.getPRStatus.mockResolvedValue(readyStatus());
+
+    const agent = makeMergeAgent();
+    const task = makeTask();
+    (task.agentProcesses as Map<string, Agent>).set('backend-agent', agent);
+    const tool = getRepoTool(agent, task, 'merge_pull_request');
+
+    await tool({ pr_number: 42 }, {});
+    const second = await tool({ pr_number: 42 }, {});
+
+    expect(second.content[0].text).toContain('already pending');
+    expect(task.postInteractiveToUser).toHaveBeenCalledTimes(1);
+    expect((agent as any).deferTeardown).toHaveBeenCalledTimes(1);
+  });
+
+  it('concurrent agent: a different agent holding the pending teardown blocks supersede', async () => {
+    const agent = makeMergeAgent();
+    const task = makeTask({
+      pending_merge_approval: {
+        github: 'org/backend', pr_number: 1,
+        requested_by: 'mobile-agent', requested_at: '2026-07-06T00:00:00.000Z',
+      },
+    });
+    (task.agentProcesses as Map<string, unknown>).set('mobile-agent', {
+      pendingTeardown: () => Promise.resolve(),
+    });
+    const tool = getRepoTool(agent, task, 'merge_pull_request');
+
+    const result = await tool({ pr_number: 2 }, {});
+
+    expect(result.content[0].text).toContain('already pending');
+    expect(result.content[0].text).toContain('org/backend#1');
+    expect(task.postInteractiveToUser).not.toHaveBeenCalled();
+    expect(task.metadata.pending_merge_approval!.pr_number).toBe(1);
+    expect(mockGitHubClient.getPRStatus).not.toHaveBeenCalled();
+  });
+
+  it('stale slot with nobody parked is superseded for the same PR', async () => {
+    mockGitHubClient.getPRStatus.mockResolvedValue(readyStatus());
+
+    const agent = makeMergeAgent();
+    const task = makeTask({
+      pending_merge_approval: {
+        github: 'org/backend', pr_number: 42,
+        requested_by: 'backend-agent', requested_at: '2026-07-06T00:00:00.000Z',
+      },
+    });
+    (task.agentProcesses as Map<string, Agent>).set('backend-agent', agent);
+    const tool = getRepoTool(agent, task, 'merge_pull_request');
+
+    const result = await tool({ pr_number: 42 }, {});
+
+    expect(result.content[0].text).toContain('Merge approval requested');
+    expect(task.postInteractiveToUser).toHaveBeenCalledTimes(1);
+    expect(task.metadata.pending_merge_approval!.pr_number).toBe(42);
+    expect(task.metadata.pending_merge_approval!.requested_at).not.toBe('2026-07-06T00:00:00.000Z');
+  });
+
+  it('stale slot with nobody parked is superseded for a different PR', async () => {
+    mockGitHubClient.getPRStatus.mockResolvedValue(readyStatus());
+
+    const agent = makeMergeAgent();
+    const task = makeTask({
+      pending_merge_approval: {
+        github: 'org/backend', pr_number: 1,
+        requested_by: 'backend-agent', requested_at: '2026-07-06T00:00:00.000Z',
+      },
+    });
+    (task.agentProcesses as Map<string, Agent>).set('backend-agent', agent);
+    const tool = getRepoTool(agent, task, 'merge_pull_request');
+
+    const result = await tool({ pr_number: 2 }, {});
+
+    expect(result.content[0].text).toContain('Merge approval requested');
+    expect(task.postInteractiveToUser).toHaveBeenCalledTimes(1);
+    expect(task.metadata.pending_merge_approval!.pr_number).toBe(2);
+  });
+
+  it('zero review approvals but clean: approval is requested, not refused (AC5)', async () => {
+    mockGitHubClient.getPRStatus.mockResolvedValue(readyStatus({ approved: false }));
+
+    const agent = makeMergeAgent();
+    const task = makeTask();
+    const tool = getRepoTool(agent, task, 'merge_pull_request');
+    const result = await tool({ pr_number: 42 }, {});
+
+    expect(result.content[0].text).toContain('Merge approval requested');
+    expect(task.postInteractiveToUser).toHaveBeenCalledTimes(1);
+    expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
   });
 });
 

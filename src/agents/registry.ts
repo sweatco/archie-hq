@@ -82,6 +82,7 @@ export function scanAgentDefs(): AgentDef[] {
             repos: agent.repo.repos.map((r) => ({
               github: r.github,
               baseBranch: r.baseBranch || 'main',
+              autoMerge: r.autoMerge === true,
             })),
             primary: agent.repo.primary,
           },
@@ -182,6 +183,33 @@ export function findAgentDefsContainingRepo(githubRepo: string): AgentDef[] {
 }
 
 /**
+ * Merge policy for a repo: may Archie merge its PRs without asking the user?
+ *
+ * True only when every registered agent declaring the repo sets
+ * `autoMerge: true` on all of its matching entries (AND semantics — a conflict
+ * means at least one declaration wants supervision, and supervision wins).
+ * Repos declared by no registered agent (dynamic-agent-only attachments,
+ * retired agents) resolve to false — never auto-merge a repo nobody
+ * statically owns. Consults the live registry, so a frontmatter change takes
+ * effect on the next merge check after a rescan.
+ */
+export function isAutoMergeRepo(github: string): boolean {
+  const defs = findAgentDefsContainingRepo(github);
+  if (defs.length === 0) return false;
+  const flags = defs.flatMap((d) =>
+    d.repo!.repos.filter((r) => r.github === github).map((r) => r.autoMerge === true),
+  );
+  const allAuto = flags.every(Boolean);
+  if (!allAuto && flags.some(Boolean)) {
+    logger.warn(
+      'registry',
+      `Mixed autoMerge flags for ${github} across declaring agents — resolving to manual-approval merges (AND semantics)`,
+    );
+  }
+  return allAuto;
+}
+
+/**
  * Re-synthesize a live AgentDef from a stored DynamicAgentSpec (PM-spawned
  * repo agent). Deterministic and idempotent — called on every `Task.get` to
  * rebuild the agent from the persisted spec, so no derived state lives on disk.
@@ -190,6 +218,8 @@ export function synthesizeDynamicAgentDef(spec: DynamicAgentSpec): AgentDef {
   const repos: RepoEntry[] = spec.repos.map((r) => ({
     github: r.github,
     baseBranch: r.baseBranch || 'main',
+    // PM-spawned dynamic agents can never confer auto-merge.
+    autoMerge: false,
   }));
   if (repos.length === 0) {
     throw new Error(`Dynamic agent spec ${spec.id} has no repos`);

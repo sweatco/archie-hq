@@ -16,10 +16,10 @@ import { z } from 'zod';
 import type { AgentName, FindingType, AttachedRepo } from '../types/task.js';
 import type { Task } from '../tasks/task.js';
 import type { Agent } from './agent.js';
-import { getVisiblePeerIdsForSender, findAgentDefsContainingRepo, synthesizeDynamicAgentDef } from './registry.js';
+import { getVisiblePeerIdsForSender, findAgentDefsContainingRepo, synthesizeDynamicAgentDef, isAutoMergeRepo } from './registry.js';
 import { getGitHubClient, parseCheckRef } from '../connectors/github/client.js';
 import { gitExec } from '../connectors/github/repo-clone.js';
-import { hydrateBranchState, findBranchStateByPR } from '../connectors/github/branch-state.js';
+import { hydrateBranchState, findBranchStateByPR, assignPrNumber } from '../connectors/github/branch-state.js';
 import { taskBranchName } from '../connectors/github/branch-naming.js';
 import { appendAgentFinding, appendArtifactShared } from '../tasks/persistence.js';
 import { copyArtifactToShared, assertReadable } from './artifacts.js';
@@ -889,7 +889,9 @@ function createPullRequestTool(agent: Agent, task: Task) {
       const result = await client.createPullRequest(github, head, base, args.title, args.body);
 
       if (state) {
-        state.pr_number = result.pr_number;
+        // Reset per-PR markers when this branch's pr_number changes — a reused
+        // branch must not inherit the previous PR's merge_armed / merge_ready.
+        assignPrNumber(state, result.pr_number);
       }
       task.debouncedSave();
 
@@ -1459,7 +1461,7 @@ function createRequestReReviewTool(agent: Agent, task: Task) {
 function createMergePRTool(agent: Agent, task: Task) {
   return tool(
     'merge_pull_request',
-    'Merge a pull request. Checks mergeability first and returns the current status if not ready.',
+    'Merge a pull request, subject to the repo\'s merge policy. On an auto-merge repo it merges directly if the PR is clean (returns the current status otherwise). On any other repo it posts an auto-merge approval request and pauses the task; once the user approves, the PR is armed to merge automatically as soon as all checks and required reviews pass. Works for any open PR — it does not require the PR to be mergeable yet.',
     { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
       const resolved = resolveGithub(agent, args.github);
@@ -1467,16 +1469,104 @@ function createMergePRTool(agent: Agent, task: Task) {
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
 
+      if (isAutoMergeRepo(resolved.github)) {
+        const status = await client.getPRStatus(resolved.github, args.pr_number);
+        if (status.state !== 'open') {
+          return ok(`Cannot merge: PR #${args.pr_number} (${resolved.github}) is ${status.state}`);
+        }
+        // Auto repo direct merge: clean-only (no blocked tolerance). A non-clean
+        // PR returns the not-ready message and does not merge.
+        if (status.mergeableState !== 'clean') {
+          return ok(`Cannot merge: PR #${args.pr_number} (${resolved.github}) is not ready (mergeable=${status.mergeable}, state=${status.mergeableState})`);
+        }
+
+        const result = await client.mergePullRequest(resolved.github, args.pr_number);
+        return { content: [{ type: 'text' as const, text: result.message }] };
+      }
+
+      // Non-auto repo: merging requires a user-approved `merge` gate. The
+      // suppression-vs-supersede fork applies only when a merge slot is set —
+      // a parked teardown with an empty slot belongs to some other approval
+      // type (edit mode, research budget) and neither suppresses nor
+      // supersedes a first merge request.
+      const pending = task.metadata.pending_merge_approval;
+      if (pending) {
+        // Task-level quiescence (same predicate as idleDecision): the slot is
+        // per-task while pendingTeardown is per-agent, so a concurrently
+        // running second repo agent must not misread a seconds-old request as
+        // stale and supersede it.
+        const parked = [...task.agentProcesses.values()].some((a) => a.pendingTeardown);
+        if (parked) {
+          return ok(`Merge approval already pending for ${pending.github}#${pending.pr_number} — task is pausing until the user approves or denies it.`);
+        }
+        // Slot set but nobody parked: the task was reactivated without the
+        // prompt being resolved — supersede the stale slot with this request.
+      }
+
+      // Non-auto repo: approving now means "merge as soon as it is ready". The
+      // human approval is the gate; the merge is delegated to the orchestrator's
+      // armed bucket. Prompt for ANY open PR — a not-yet-green PR is correct to
+      // approve (it merges when checks pass). Only bail on a closed/merged PR.
       const status = await client.getPRStatus(resolved.github, args.pr_number);
       if (status.state !== 'open') {
         return ok(`Cannot merge: PR #${args.pr_number} (${resolved.github}) is ${status.state}`);
       }
-      if (!status.mergeable || status.mergeableState !== 'clean') {
-        return ok(`Cannot merge: PR #${args.pr_number} (${resolved.github}) is not ready (mergeable=${status.mergeable}, state=${status.mergeableState})`);
-      }
 
-      const result = await client.mergePullRequest(resolved.github, args.pr_number);
-      return { content: [{ type: 'text' as const, text: result.message }] };
+      const agentName = agent.def.id as AgentName;
+      logger.agentAction(agentName, 'Requesting merge approval', `${resolved.github}#${args.pr_number}`);
+      task.touch();
+
+      await appendAgentFinding(task.taskId, 'system', `Merge approval requested for ${resolved.github}#${args.pr_number}`, 'decision');
+
+      const buttonValue = `${task.taskId}|${resolved.github}#${args.pr_number}`;
+      const blocks = [
+        {
+          type: 'section',
+          text: { type: 'mrkdwn', text: `*Merge request:* Approve auto-merge for PR #${args.pr_number} (${resolved.github})? It will merge automatically once all checks and required reviews pass.` },
+        },
+        {
+          type: 'actions',
+          elements: [
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Approve merge' },
+              action_id: 'approve_merge',
+              value: buttonValue,
+              style: 'primary',
+            },
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Deny' },
+              action_id: 'deny_merge',
+              value: buttonValue,
+              style: 'danger',
+            },
+          ],
+        },
+      ];
+      await task.postInteractiveToUser(
+        `Approve auto-merge for PR #${args.pr_number} (${resolved.github})? It will merge automatically once all checks and required reviews pass.`,
+        blocks,
+        'merge',
+        undefined,
+        { github: resolved.github, pr_number: args.pr_number },
+      );
+
+      task.metadata.pending_merge_approval = {
+        github: resolved.github,
+        pr_number: args.pr_number,
+        requested_by: agent.def.id,
+        requested_at: new Date().toISOString(),
+      };
+      task.debouncedSave();
+
+      // Task is now paused pending approval — freeze the status so the
+      // wind-down doesn't resurface a "working…" indicator, and defer the pause
+      // to turn-end (see report_completion) so stopping the queue doesn't close
+      // the input stream under an in-flight hook ("stream closed").
+      task.suspendStatus();
+      agent.deferTeardown(() => task.stop());
+      return { content: [{ type: 'text' as const, text: 'Merge approval requested. Task paused pending user approval.' }] };
     },
   );
 }

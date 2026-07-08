@@ -275,7 +275,8 @@ export class Logger {
    */
   error(prefix: string, message: string, error?: any): void {
     if (error) {
-      console.error(`${c.red('[' + prefix + ']')} ${message}`, error);
+      // '%s' pins the format string so % specifiers in caller-provided text are never interpreted
+      console.error('%s', `${c.red('[' + prefix + ']')} ${message}`, error);
     } else {
       console.error(`${c.red('[' + prefix + ']')} ${message}`);
     }
@@ -286,7 +287,8 @@ export class Logger {
    */
   warn(prefix: string, message: string, error?: any): void {
     if (error) {
-      console.warn(`${c.yellow('[' + prefix + ']')} ${message}`, error);
+      // '%s' pins the format string so % specifiers in caller-provided text are never interpreted
+      console.warn('%s', `${c.yellow('[' + prefix + ']')} ${message}`, error);
     } else {
       console.warn(`${c.yellow('[' + prefix + ']')} ${message}`);
     }

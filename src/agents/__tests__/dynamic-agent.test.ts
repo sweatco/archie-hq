@@ -46,8 +46,8 @@ describe('synthesizeDynamicAgentDef', () => {
     expect(isRepoAgent(def)).toBe(true);
     expect(def.repo!.primary).toBe('org/payments');
     expect(def.repo!.repos).toEqual([
-      { github: 'org/payments', baseBranch: 'main' },   // default filled in
-      { github: 'org/shared', baseBranch: 'develop' },  // explicit preserved
+      { github: 'org/payments', baseBranch: 'main', autoMerge: false },   // default filled in
+      { github: 'org/shared', baseBranch: 'develop', autoMerge: false },  // explicit preserved
     ]);
     expect(def.visibility).toBe('global');
     expect(def.pluginName).toBe('<dynamic>');

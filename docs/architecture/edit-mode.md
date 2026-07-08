@@ -12,7 +12,7 @@ In readonly mode the clone is checked out on the base branch (`{ type: 'base' }`
 
 ### Edit Mode (After Approval)
 
-Once edit mode is approved for a task, the repo path's sandbox flips from read-only to read-write (`Write`, `Edit`, and write-capable `Bash` commands are now allowed against the clone), and the previously-disallowed MCP tools become available: `push_branch`, `create_pull_request`, `update_pr`, `add_pr_comment`, `add_review_comment`, `reply_to_review_comment`, `resolve_review_thread`, `request_re_review`, `merge_pull_request`, `close_pull_request`, and `create_branch`. The next time a repo agent is spawned, the clone is set up on a fresh feature branch (`{ type: 'new_branch', name: 'archie/{taskId}' }`). Edit mode is a one-way, permanent transition for the task — once approved, it cannot be revoked. Clones for tasks with `edit_allowed === true` are NOT removed on stop/complete (they hold local commits, branches, and PR state).
+Once edit mode is approved for a task, the repo path's sandbox flips from read-only to read-write (`Write`, `Edit`, and write-capable `Bash` commands are now allowed against the clone), and the previously-disallowed MCP tools become available: `push_branch`, `create_pull_request`, `update_pr`, `add_pr_comment`, `add_review_comment`, `reply_to_review_comment`, `resolve_review_thread`, `request_re_review`, `merge_pull_request`, `close_pull_request`, and `create_branch`. Note that `merge_pull_request` carries a second gate on top of edit mode: in repos without `autoMerge: true` it does not merge directly but posts a `merge` approval request the user must resolve, and approving *arms* auto-merge (the PR merges once all checks and required reviews pass) rather than merging on the spot (see [GitHub Integration → Merge Policy](github-integration.md#merge-policy-automerge)). The next time a repo agent is spawned, the clone is set up on a fresh feature branch (`{ type: 'new_branch', name: 'archie/{taskId}' }`). Edit mode is a one-way, permanent transition for the task — once approved, it cannot be revoked. Clones for tasks with `edit_allowed === true` are NOT removed on stop/complete (they hold local commits, branches, and PR state).
 
 ## Human-in-the-Loop Approval Flow
 
@@ -146,12 +146,16 @@ interface BranchState {
   pr_number?: number;                  // PR associated with this branch
   last_processed_comment_id?: number;  // triage tracking for this branch's PR
   stash_name?: string;                 // set if dirty work was auto-stashed when leaving
+  merge_armed?: boolean;               // user approved auto-merge; orchestrator merges once clean
+  merge_ready_notified?: boolean;      // ready notification already posted for this ready period
 }
 ```
 
+The two merge markers are per-PR: they are reset by `assignPrNumber()` whenever a branch's `pr_number` changes, so a new PR opened on a reused branch never inherits a prior PR's arm or notification state (see [GitHub Integration → Merge Policy](github-integration.md#merge-policy-automerge)).
+
 Branch state helpers live in `src/connectors/github/branch-state.ts`:
+- `assignPrNumber()` -- set the branch's PR number and reset the per-PR `merge_armed`/`merge_ready_notified` markers when the PR changes
 - `hydrateBranchState()` -- initialize `branch_states` from a newly created branch
-- `mirrorLegacyFields()` -- sync current branch state to legacy top-level fields
 - `findBranchStateByPR()` -- look up a branch by its PR number (for webhook routing)
 
 ## Tool Restrictions
@@ -182,7 +186,7 @@ The full single allowed-tool list (set as `def.tools` on the repo agent definiti
 - `mcp__repo-tools__reply_to_review_comment`
 - `mcp__repo-tools__resolve_review_thread`
 - `mcp__repo-tools__request_re_review`
-- `mcp__repo-tools__merge_pull_request`
+- `mcp__repo-tools__merge_pull_request` — in non-auto-merge repos this tool adds its own `merge` approval gate on top of edit mode (it posts an auto-merge approval request instead of merging; approving arms the PR to merge once checks pass)
 - `mcp__repo-tools__close_pull_request`
 - `mcp__repo-tools__create_branch`
 
@@ -242,7 +246,7 @@ If a clone is reused across stop/reactivate cycles (e.g., RW reactivation where 
 ## Relevant Source Files
 
 - `src/connectors/github/repo-clone.ts` — `setupSharedClone()`, `removeClone()`, `cloneExists()`, `isWorktree()`, `migrateWorktreeToClone()`, `CloneCheckout` type, `getDefaultBranch()`, `gitExec()`
-- `src/connectors/github/branch-state.ts` — `hydrateBranchState()`, `mirrorLegacyFields()`, `findBranchStateByPR()` (per-branch state helpers)
+- `src/connectors/github/branch-state.ts` — `assignPrNumber()` (resets per-PR merge markers on branch reuse), `hydrateBranchState()`, `findBranchStateByPR()` (per-branch state helpers)
 - `src/agents/spawn.ts` — `spawnAgent()` with repo-track logic, tool gating, clone creation trigger, sandbox config, `GIT_AUTHOR_*` env injection for commit authorship
 - `src/agents/sandbox.ts` — `buildSandboxConfig()`, `createFilesystemGuardHooks()` — the two layers that enforce the read-only clone in RO mode
 - `src/agents/tools.ts` — `createPMAgentMcpServer` / `createRepoToolsMcpServer` / `createBaseAgentMcpServer`, `request_edit_mode` tool definition

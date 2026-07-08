@@ -1,11 +1,20 @@
 /**
- * Unit tests for renderMessageForContext.
+ * Unit tests for renderMessageForContext, plus metadata round-trip persistence.
  *
  * Direct tests on the pure rendering helper extracted from appendSlackMessage.
  * Covers redaction, forwarded-attachment labels, file lists, edge cases.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterAll } from 'vitest';
+import { mkdir, writeFile, rm } from 'fs/promises';
+import { dirname } from 'path';
+
+const SESSIONS_ROOT = await vi.hoisted(async () => {
+  const { mkdtempSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  return mkdtempSync(join(tmpdir(), 'archie-persistence-test-'));
+});
 
 vi.mock('../../connectors/slack/client.js', () => ({
   isExternalUser: (user: { teamId?: string; isRestricted?: boolean; isUltraRestricted?: boolean }) => {
@@ -27,17 +36,22 @@ vi.mock('../../system/event-bus.js', () => ({
 }));
 
 vi.mock('../../system/workdir.js', () => ({
-  SESSIONS_DIR: '/tmp/sessions',
+  SESSIONS_DIR: SESSIONS_ROOT,
   // WORKDIR is consumed transitively (channel-store derives SLACK_CHANNELS_DIR
   // from it); provide it so the mock is complete for the module graph.
-  WORKDIR: '/tmp',
+  WORKDIR: SESSIONS_ROOT,
 }));
 
 vi.mock('./task.js', () => ({
   activeTasks: new Map(),
 }));
 
-import { renderMessageForContext, renderEditForContext } from '../persistence.js';
+import { renderMessageForContext, renderEditForContext, loadMetadata, getMetadataPath } from '../persistence.js';
+import type { TaskMetadata } from '../../types/task.js';
+
+afterAll(async () => {
+  await rm(SESSIONS_ROOT, { recursive: true, force: true });
+});
 
 describe('renderMessageForContext', () => {
   it('renders plain message text with no attachments', () => {
@@ -168,6 +182,62 @@ describe('renderMessageForContext', () => {
       { redacted: false },
     );
     expect(out).toBe('top\n[forwarded from @<UG:G> — external]\nguest content');
+  });
+});
+
+describe('metadata round-trip — pending_merge_approval', () => {
+  it('persists and reloads the pending merge-approval slot', async () => {
+    const taskId = 'task-merge-approval-rt';
+    const slot = {
+      github: 'org/backend',
+      pr_number: 42,
+      requested_by: 'backend-agent',
+      requested_at: '2026-07-06T00:00:00.000Z',
+    };
+    const metadata: TaskMetadata = {
+      task_id: taskId,
+      task_owner: null,
+      participants: [],
+      channels: {},
+      default_channel: null,
+      agent_sessions: {},
+      repositories: {},
+      status: 'in_progress',
+      pending_merge_approval: slot,
+      created_at: '2026-07-06T00:00:00.000Z',
+      updated_at: '2026-07-06T00:00:00.000Z',
+    };
+
+    const path = getMetadataPath(taskId);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, JSON.stringify(metadata, null, 2));
+
+    const loaded = await loadMetadata(taskId);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.pending_merge_approval).toEqual(slot);
+  });
+
+  it('is absent after a reload when never set', async () => {
+    const taskId = 'task-no-merge-approval';
+    const metadata: TaskMetadata = {
+      task_id: taskId,
+      task_owner: null,
+      participants: [],
+      channels: {},
+      default_channel: null,
+      agent_sessions: {},
+      repositories: {},
+      status: 'in_progress',
+      created_at: '2026-07-06T00:00:00.000Z',
+      updated_at: '2026-07-06T00:00:00.000Z',
+    };
+
+    const path = getMetadataPath(taskId);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, JSON.stringify(metadata, null, 2));
+
+    const loaded = await loadMetadata(taskId);
+    expect(loaded!.pending_merge_approval).toBeUndefined();
   });
 });
 

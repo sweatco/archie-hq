@@ -15,14 +15,18 @@ export interface MergeCheckResult {
   merged: string[];    // PRs that were merged
   pending: string[];   // PRs waiting for approval/CI
   conflicts: string[]; // PRs with merge conflicts
+  ready: string[];     // Ready PRs in non-auto repos — held for an explicit merge request
 }
 
 import { appendAgentFinding } from '../../tasks/persistence.js';
 import { Task } from '../../tasks/task.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
+import { isAutoMergeRepo } from '../../agents/registry.js';
 import { createGitHubClient, type GitHubClient } from './client.js';
+import { isMergeReadyPerGithub } from './mergeability.js';
 import { logger } from '../../system/logger.js';
 import type { PRStatus } from '../../agents/tools.js';
+import type { BranchState } from '../../types/task.js';
 
 interface LinkedPRStatus {
   github: string;
@@ -35,19 +39,72 @@ interface LinkedPRStatus {
  *
  * Called from webhook handlers on: approval, push, CI success.
  * Notifies PM about results (conflicts, merges, failures).
+ *
+ * The Task is resolved exactly once per run and threaded through every step.
+ * For an inactive (parked) task each `Task.get` loads a fresh instance from
+ * disk, so marker writes on one instance would race the instance a PM
+ * notification activates — the marker must be set on, and flushed from, the
+ * same instance that gets activated.
  */
 export async function checkAndMergeLinkedPRs(taskId: string): Promise<void> {
-  const result = await triggerMergeCheck(taskId);
+  const task = await Task.get(taskId);
+  const result = await runMergeCheck(task);
 
   // Only notify PM if something noteworthy happened
   const newlyMerged = result.merged.filter((pr) => !pr.includes('already merged'));
 
   if (result.conflicts.length > 0) {
-    await notifyPMAboutConflicts(taskId, result.conflicts);
+    await notifyPMAboutConflicts(task, result.conflicts);
   } else if (newlyMerged.length > 0) {
-    await notifyPMAboutMerge(taskId, newlyMerged, []);
+    await notifyPMAboutMerge(task, newlyMerged, []);
+  }
+
+  // Held-ready PRs in non-auto repos: notify once per continuous ready period.
+  const notifiable = markNewlyNotifiableReadyPRs(task, result.ready);
+  if (notifiable.length > 0) {
+    // Flush the marker synchronously before the PM reactivation. A debounced
+    // save is not enough: the activation makes this instance canonical and it
+    // saves constantly from then on, but any instance loaded elsewhere before
+    // the deferred write lands would miss the marker and re-notify.
+    await task.save(true);
+    await notifyPMAboutReadyPRs(task, notifiable);
   }
   // If only pending PRs, wait silently (retry on next webhook)
+}
+
+/**
+ * Filter the held-ready bucket down to PRs that still need their ready
+ * notification, setting the `merge_ready_notified` marker on every matching
+ * BranchState entry as they are selected. Skips a PR whose merge-approval
+ * prompt is currently pending — the user already holds an actionable prompt
+ * for it, and a simultaneous "ready" nudge would be a confusing double prompt.
+ *
+ * Pure marker bookkeeping — the caller persists (synchronously, before any
+ * task activation) when the result is non-empty.
+ */
+function markNewlyNotifiableReadyPRs(task: Task, readyPRs: string[]): string[] {
+  if (readyPRs.length === 0) return [];
+
+  const notifiable: string[] = [];
+  for (const prRef of readyPRs) {
+    // prRef is `<github>#<pr_number>` — split on the last '#' (repo names never contain one)
+    const sep = prRef.lastIndexOf('#');
+    const github = prRef.slice(0, sep);
+    const prNumber = Number(prRef.slice(sep + 1));
+
+    const pending = task.metadata.pending_merge_approval;
+    if (pending && pending.github === github && pending.pr_number === prNumber) continue;
+
+    const states = findBranchStatesForPR(task, github, prNumber);
+    if (states.some((s) => s.merge_ready_notified)) continue;
+
+    for (const state of states) {
+      state.merge_ready_notified = true;
+    }
+    notifiable.push(prRef);
+  }
+
+  return notifiable;
 }
 
 /**
@@ -57,9 +114,18 @@ export async function checkAndMergeLinkedPRs(taskId: string): Promise<void> {
  * notifying PM (since PM is calling this via a tool).
  */
 export async function triggerMergeCheck(taskId: string): Promise<MergeCheckResult> {
-  const result: MergeCheckResult = { merged: [], pending: [], conflicts: [] };
+  return runMergeCheck(await Task.get(taskId));
+}
 
-  const task = await Task.get(taskId);
+/**
+ * The merge-check body, operating on an already-resolved Task instance so a
+ * single run never mixes state across separately loaded instances (see
+ * checkAndMergeLinkedPRs).
+ */
+async function runMergeCheck(task: Task): Promise<MergeCheckResult> {
+  const result: MergeCheckResult = { merged: [], pending: [], conflicts: [], ready: [] };
+
+  const taskId = task.taskId;
 
   const githubClient = createGitHubClient();
   if (!githubClient) {
@@ -101,19 +167,12 @@ export async function triggerMergeCheck(taskId: string): Promise<MergeCheckResul
   // PR is mergeable when:
   // - state is open (not already merged/closed)
   // - approved by reviewer
-  // - mergeableState is 'clean' OR (mergeable=true AND mergeableState='blocked')
-  //
-  // Note on 'blocked' state: GitHub Rulesets (vs classic branch protection) have a known
-  // issue where API reports 'blocked' even when the UI shows a green merge button.
-  // See: https://github.com/runatlantis/atlantis/issues/4116
-  // When mergeable=true, GitHub has determined the PR CAN be merged, so we attempt it.
-  // The merge API call will fail if it's actually blocked, which we handle gracefully.
+  // - GitHub reports it ready (see isMergeReadyPerGithub for the 'blocked' tolerance)
   const mergeable = prStatuses.filter(
     (pr) =>
       pr.status.state === 'open' &&
       pr.status.approved &&
-      (pr.status.mergeableState === 'clean' ||
-        (pr.status.mergeable && pr.status.mergeableState === 'blocked'))
+      isMergeReadyPerGithub(pr.status)
   );
   const conflicted = prStatuses.filter(
     (pr) => pr.status.state === 'open' && pr.status.mergeableState === 'dirty'
@@ -125,11 +184,80 @@ export async function triggerMergeCheck(taskId: string): Promise<MergeCheckResul
       !mergeable.includes(pr)
   );
 
+  // Policy split: the orchestrator merges PRs in auto-merge repos (AC2).
+  const autoMergeable = mergeable.filter((pr) => isAutoMergeRepo(pr.github));
+
+  // Armed bucket: a PR the user explicitly approved for merge (its BranchState
+  // carries merge_armed) merges as soon as GitHub reports it clean — GitHub's
+  // authoritative "all required reviews + checks satisfied, no conflicts"
+  // signal, with NO Archie `approved` floor (AC5) and NO `blocked` tolerance
+  // (a blocked PR has an unsatisfied required gate). Independent of repo policy:
+  // arming exists precisely for non-auto repos, and isMergeReadyPerGithub is
+  // deliberately not used here (it tolerates blocked+mergeable, only safe when
+  // paired with `approved`).
+  const armed = prStatuses.filter(
+    (pr) =>
+      pr.status.state === 'open' &&
+      pr.status.mergeableState === 'clean' &&
+      findBranchStatesForPR(task, pr.github, pr.prNumber).some((s) => s.merge_armed)
+  );
+
+  // PRs the orchestrator merges = auto-merge repos ∪ armed PRs, deduped by
+  // object reference (both are filtered from the same prStatuses array).
+  const toMerge = [...autoMergeable];
+  for (const pr of armed) {
+    if (!toMerge.includes(pr)) toMerge.push(pr);
+  }
+
+  // Held-ready PRs (non-auto repos, not armed) are never merged here — they get
+  // a once-per-ready-period notification. Armed PRs are excluded (AC1): the user
+  // already approved them, so a "ready — ask me to merge" nudge would be noise.
+  const held = mergeable.filter((pr) => !autoMergeable.includes(pr) && !armed.includes(pr));
+
+  // Notify-once bookkeeping: a PR observed out of the ready state — not ready
+  // while open, closed without merging, or merged — drops its
+  // `merge_ready_notified` markers. Open/closed clears let the next continuous
+  // ready period notify again (a closed-then-reopened PR included); the merged
+  // clear matters because a BranchState's `pr_number` can later be overwritten
+  // by a new PR on the same branch, which must not inherit the stale marker.
+  const notReady = prStatuses.filter((pr) => !mergeable.includes(pr));
+  let markersCleared = false;
+  for (const pr of notReady) {
+    for (const state of findBranchStatesForPR(task, pr.github, pr.prNumber)) {
+      if (state.merge_ready_notified) {
+        delete state.merge_ready_notified;
+        markersCleared = true;
+      }
+    }
+  }
+
+  // Clear merge_armed once the PR leaves the open state (merged or closed): the
+  // arm is one-shot, and a BranchState's pr_number can later be reused by a new
+  // PR that must not inherit a stale arm. Unlike merge_ready_notified, an armed
+  // PR that is merely not-clean-yet while still open stays armed until it merges.
+  const leftOpen = prStatuses.filter(
+    (pr) => pr.status.state === 'merged' || pr.status.state === 'closed'
+  );
+  for (const pr of leftOpen) {
+    for (const state of findBranchStatesForPR(task, pr.github, pr.prNumber)) {
+      if (state.merge_armed) {
+        delete state.merge_armed;
+        markersCleared = true;
+      }
+    }
+  }
+
+  if (markersCleared) {
+    task.debouncedSave();
+  }
+
   // Log categorization for debugging
   logger.system(
     `Task ${taskId}: PR categorization: ` +
       `alreadyMerged=${alreadyMerged.length}, ` +
-      `mergeable=${mergeable.length}, ` +
+      `mergeable=${toMerge.length}, ` +
+      `armed=${armed.length}, ` +
+      `ready=${held.length}, ` +
       `conflicted=${conflicted.length}, ` +
       `pending=${pending.length}`
   );
@@ -147,8 +275,12 @@ export async function triggerMergeCheck(taskId: string): Promise<MergeCheckResul
 
     let category: string;
     let reason = '';
-    if (mergeable.includes(pr)) {
+    if (toMerge.includes(pr)) {
       category = 'READY TO MERGE';
+      if (armed.includes(pr) && !autoMergeable.includes(pr)) reason = 'armed for auto-merge';
+    } else if (held.includes(pr)) {
+      category = 'READY (merge on request)';
+      reason = 'repo is not auto-merge';
     } else if (conflicted.includes(pr)) {
       category = 'CONFLICTED';
       reason = 'merge conflicts';
@@ -170,8 +302,8 @@ export async function triggerMergeCheck(taskId: string): Promise<MergeCheckResul
     result.merged.push(`${pr.github}#${pr.prNumber} (already merged)`);
   }
 
-  // Merge what's ready
-  for (const pr of mergeable) {
+  // Merge what's ready — auto-merge repos (AC2) plus armed PRs (AC5)
+  for (const pr of toMerge) {
     try {
       const mergeResult = await githubClient.mergePullRequest(pr.github, pr.prNumber);
       if (mergeResult.success) {
@@ -184,6 +316,11 @@ export async function triggerMergeCheck(taskId: string): Promise<MergeCheckResul
       const message = error instanceof Error ? error.message : 'Unknown error';
       result.pending.push(`${pr.github}#${pr.prNumber}: ${message}`);
     }
+  }
+
+  // Record held-ready PRs (non-auto repos — never merged here, AC1)
+  for (const pr of held) {
+    result.ready.push(`${pr.github}#${pr.prNumber}`);
   }
 
   // Record conflicts
@@ -200,6 +337,26 @@ export async function triggerMergeCheck(taskId: string): Promise<MergeCheckResul
   }
 
   return result;
+}
+
+/**
+ * Map a PR back to its BranchState entries — the same repositories walk the
+ * PR collection does. A PR attached under several agents may match several
+ * branch states, so callers treat the result as a set: "notified" is true if
+ * any entry carries the marker; setting/clearing applies to all of them.
+ */
+function findBranchStatesForPR(task: Task, github: string, prNumber: number): BranchState[] {
+  const matches: BranchState[] = [];
+  for (const attachments of Object.values(task.metadata.repositories)) {
+    if (!Array.isArray(attachments)) continue;
+    for (const attached of attachments) {
+      if (attached.github !== github || !attached.branch_states) continue;
+      for (const state of Object.values(attached.branch_states)) {
+        if (state.pr_number === prNumber) matches.push(state);
+      }
+    }
+  }
+  return matches;
 }
 
 /**
@@ -232,7 +389,7 @@ async function fetchAllPRStatuses(
  * Logs to knowledge.log and sends message to PM
  */
 async function notifyPMAboutConflicts(
-  taskId: string,
+  task: Task,
   conflictedPRs: string[]
 ): Promise<void> {
   const prList = conflictedPRs.map((pr) => `- ${pr}`).join('\n');
@@ -241,11 +398,31 @@ async function notifyPMAboutConflicts(
     `The following PRs have merge conflicts that need resolution:\n${prList}\n\n` +
     `Please instruct the team to merge from the base branch and resolve conflicts.`;
 
-  logger.system(`Task ${taskId}: Notifying PM about conflicts`);
+  logger.system(`Task ${task.taskId}: Notifying PM about conflicts`);
 
-  await appendAgentFinding(taskId, 'system', message, 'blocker');
+  await appendAgentFinding(task.taskId, 'system', message, 'blocker');
 
-  const task = await Task.get(taskId);
+  await task.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+}
+
+/**
+ * Notify PM that held-ready PRs (non-auto repos) can be merged on request
+ * Logs to knowledge.log and sends message to PM
+ */
+async function notifyPMAboutReadyPRs(
+  task: Task,
+  readyPRs: string[]
+): Promise<void> {
+  const prList = readyPRs.map((pr) => `- ${pr}`).join('\n');
+
+  const message =
+    `The following PRs are approved and green, but their repos do not auto-merge:\n${prList}\n\n` +
+    `Tell the user in the thread that the PR is ready and will be merged on their request.`;
+
+  logger.system(`Task ${task.taskId}: Notifying PM about ready PRs`);
+
+  await appendAgentFinding(task.taskId, 'system', message, 'decision');
+
   await task.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
 }
 
@@ -254,7 +431,7 @@ async function notifyPMAboutConflicts(
  * Logs to knowledge.log and sends message to PM
  */
 async function notifyPMAboutMerge(
-  taskId: string,
+  task: Task,
   mergedPRs: string[],
   failedPRs: string[]
 ): Promise<void> {
@@ -273,11 +450,10 @@ async function notifyPMAboutMerge(
     return;
   }
 
-  logger.system(`Task ${taskId}: Notifying PM about merge results`);
+  logger.system(`Task ${task.taskId}: Notifying PM about merge results`);
 
   const findingType = failedPRs.length > 0 ? 'blocker' : 'completion';
-  await appendAgentFinding(taskId, 'system', message, findingType);
+  await appendAgentFinding(task.taskId, 'system', message, findingType);
 
-  const task = await Task.get(taskId);
   await task.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
 }

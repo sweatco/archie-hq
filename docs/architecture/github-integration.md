@@ -125,21 +125,43 @@ All tools below are registered on the same `repo-tools` MCP server. Whether a to
 | `reply_to_review_comment` | Reply inside an existing review thread, given any `comment_id` from that thread. |
 | `resolve_review_thread` | Mark a review thread as resolved via the `resolveReviewThread` GraphQL mutation. Requires the GraphQL `thread_id` (e.g. `PRRT_...`). |
 | `request_re_review` | Request re-review from all previous reviewers. Fetches existing reviewers and sends review requests. |
-| `merge_pull_request` | Merge a pull request. Checks mergeability first and returns status if not ready. |
+| `merge_pull_request` | Merge a pull request, subject to the repo's merge policy: on an auto-merge repo it merges directly when the PR is clean (returns the current status otherwise); on any other repo it posts an *auto-merge approval* request and pauses the task — once the user approves, the PR is armed to merge automatically as soon as all checks and required reviews pass. Works for any open PR; it does not require the PR to be mergeable yet. |
 | `close_pull_request` | Close a pull request without merging. |
 
 Each repo agent's tools are scoped to its own repository (the `githubRepo` from the agent's config). PR numbers are stored per-branch in `BranchState.pr_number`.
 
 ## Merge Orchestrator
 
-The merge orchestrator (`src/connectors/github/merge.ts`) is a system-level component (not part of any agent) that handles automatic PR merging.
+The merge orchestrator (`src/connectors/github/merge.ts`) is a system-level component (not part of any agent) that handles policy-gated automatic PR merging.
 
 ### Trigger Points
 
 The merge orchestrator is triggered by:
 
 1. **Webhook events** -- Via `handleMergeCheckDirect()` on approving review, `pull_request opened/synchronize`, `push`, and successful `workflow_run`.
-2. **Repo agent tool call** -- Repo agents can merge an individual PR directly via the `merge_pull_request` tool. That tool calls `GitHubClient.mergePullRequest()` and bypasses the cross-repo orchestrator (it operates on a single PR scoped to the agent's repo).
+2. **Repo agent tool call** -- Repo agents can merge an individual PR via the `merge_pull_request` tool, which operates on a single PR scoped to the agent's repo but enforces the same merge policy: in an auto-merge repo it calls `GitHubClient.mergePullRequest()` directly when the PR is clean; in any other repo it posts an auto-merge *approval* request instead of merging, and the actual merge is delegated to the orchestrator's armed bucket once the user approves and the PR turns clean (see [Merge Policy](#merge-policy-automerge)).
+
+### Merge Policy (`autoMerge`)
+
+Whether a repo may be merged automatically is a per-repo boolean, `autoMerge`, declared in repo-agent frontmatter on each repo entry (`metadata.archie.repos[].autoMerge`; the legacy singular `metadata.archie.repo.autoMerge` is picked up by the same auto-migration as the rest of the singular shape). The flag defaults to **off** and parses strictly: only the boolean literal `true` enables it — absent, `false`, or any non-boolean value (e.g. the string `"true"`) resolves to `false`. The value is threaded through both explicit copy points (`PluginRepoEntry` in `src/system/plugin-loader.ts`, `RepoEntry` in `src/agents/registry.ts`); dynamic (PM-spawned) agents always resolve to `false`.
+
+Policy is resolved at merge time by `isAutoMergeRepo(github)` (`src/agents/registry.ts`) with **AND semantics across declaring agents**: a repo is auto-mergeable only when at least one registered agent declares it and every declaring agent's entries for it set `autoMerge: true`. A repo declared by no registered agent (e.g. attached only via a dynamic agent) never auto-merges. Mixed flags resolve to off and log a warning. The lookup consults the live registry, not task-time snapshots, so a frontmatter change takes effect on the next merge check after a registry rescan.
+
+Both merge paths — the orchestrator and the tool — share one GitHub-mergeability predicate, `isMergeReadyPerGithub()` (`src/connectors/github/mergeability.ts`): `mergeableState === 'clean'`, or `mergeable === true` with `mergeableState === 'blocked'` (the GitHub Rulesets quirk, see below).
+
+**Non-auto repos: hold, notify once, merge on request.** A ready PR (open, approved, mergeable per GitHub) in a non-auto repo is never merged by the orchestrator. It lands in the `ready` bucket of `MergeCheckResult` (logged as `READY (merge on request)`), and `checkAndMergeLinkedPRs()` prompts the PM — via a decision finding plus reactivation — to tell the thread once that the PR is ready and will be merged on request. Once-ness is enforced by a persisted `BranchState.merge_ready_notified` marker: set on every matching branch state when the notification fires, cleared whenever a merge check observes the PR no longer ready (not ready while open, or closed without merging). The semantics are one notification per *continuous ready period* — webhook bursts and restarts never re-notify, while a PR that becomes un-ready and later ready again notifies again. A ready PR whose merge approval is currently pending (`task.metadata.pending_merge_approval` matches its `github` + `pr_number`) is skipped — the user already holds an actionable prompt for it. A ready PR that is already **armed** for auto-merge (`BranchState.merge_armed`) is skipped too — the user has already approved it, so a "ready — ask me to merge" nudge would be noise; the orchestrator merges it directly (see [Armed auto-merge](#armed-auto-merge) below).
+
+**Explicit-request path — approval arms auto-merge.** When the user asks to merge, the repo agent calls `merge_pull_request`. In a non-auto repo the tool never merges and never interprets the PR's mergeable state: for **any open PR** (it bails only on a closed/merged PR) it posts an interactive *auto-merge* approval prompt (approval type `merge`, action ids `approve_merge`/`deny_merge`), persists the request as `task.metadata.pending_merge_approval` (`github`, `pr_number`, requesting agent, timestamp), suspends the task status, and defers a task pause. Approving a not-yet-green PR is correct — that is the feature: approval means "merge this PR as soon as it is ready", not "merge it now". A repeat call while any agent process in the task still holds the parked pause reports the request as already pending; a pending request left unresolved after the task quiesced and was reactivated is superseded by a later call (slot rewritten, fresh prompt).
+
+Resolution converges from every surface — Slack buttons and `POST /api/tasks/:id/approve` with `type: "merge"` (which requires `github` + `pr_number` in the body) — on `Task.handleMergeApproval()` / `Task.handleMergeDenial()`, which verify the resolved PR's identity against the pending request atomically with clearing it (a synchronous read-compare-clear), so a stale, repeated, or mismatched resolution is a no-op. On a matching **approval** the engine re-checks the PR with GitHub, with no review-approval floor (GitHub branch protection is the sole authority): if GitHub already reports it **clean** it merges immediately (completion finding); if it is open but not yet clean, the PR is **armed** — its `BranchState.merge_armed` marker is set and persisted durably, a decision finding records "auto-merge armed — will merge once checks pass", and the orchestrator merges it on the next merge-triggering webhook once it turns clean; if it has been closed/merged in the meantime, nothing is armed and the real outcome is recorded. On **denial** no GitHub call is made and nothing is armed. Either way the PM is reactivated so the user learns the outcome. The debug MCP surfaces the gate (`wait_for_task` → `APPROVAL_TYPE=merge`) and resolves it via its `approve` tool with the pending PR's `github`/`pr_number`.
+
+#### Armed auto-merge
+
+The orchestrator's merge check maintains an **armed bucket** alongside the auto-merge bucket. A PR whose `BranchState.merge_armed` marker is set merges as soon as GitHub reports it `state: open` and `mergeableState: clean` — GitHub's authoritative "all required reviews + checks satisfied, no conflicts" signal — with **no** Archie `approved` floor (AC5) and **no** `blocked` tolerance (a `blocked` PR has an unsatisfied required gate, so it stays armed until it turns clean). The set of PRs the orchestrator merges is the union of the auto-merge-repo bucket and the armed bucket (deduped by reference). The `merge_armed` marker is cleared when the PR is observed merged or closed.
+
+Because a branch's `pr_number` outlives any single PR (a closed-unmerged PR leaves the branch, and `create_pull_request` reuses the same `BranchState` for the next PR), both per-PR markers — `merge_armed` and `merge_ready_notified` — are reset in `assignPrNumber()` (`src/connectors/github/branch-state.ts`) whenever a branch's PR number changes. This is the authoritative reset: it stops a new PR from inheriting a prior PR's arm (a fail-open that would auto-merge a PR the user never approved). The close/merge webhook does clear `merge_armed` too, but it routes to `existing_task` rather than a merge check, so the branch-reuse reset cannot rely on it.
+
+**Auto repos** (`autoMerge: true`) keep the pre-policy behavior byte-for-byte: the orchestrator squash-merges on approval + green, and `merge_pull_request` merges directly with no prompt.
 
 ### Debouncing
 
@@ -147,38 +169,43 @@ Webhook-triggered merge checks are debounced per task with a 5-second delay (`ME
 
 ### Merge Logic
 
-`triggerMergeCheck()` collects all PRs linked to a task (from `branch_states` across all repositories, with legacy fallback to `repoInfo.pr_number`) and categorizes them:
+`triggerMergeCheck()` collects all PRs linked to a task (from `branch_states` across all attached repos) and categorizes them:
 
 | Category | Criteria | Action |
 |---|---|---|
 | Already merged | `state === 'merged'` | Record in results |
-| Mergeable | `state === 'open'` AND `approved` AND (`mergeableState === 'clean'` OR (`mergeable === true` AND `mergeableState === 'blocked'`)) | Attempt merge (squash by default) |
+| Mergeable (auto repo) | `state === 'open'` AND `approved` AND `isMergeReadyPerGithub()` AND `isAutoMergeRepo()` | Attempt merge (squash by default) |
+| Armed (any repo) | `state === 'open'` AND `mergeableState === 'clean'` AND `BranchState.merge_armed` | Attempt merge — no `approved` floor, no `blocked` tolerance |
+| Ready (non-auto repo, not armed) | Same GitHub state as Mergeable, but the repo's policy is not auto-merge and the PR is not armed | Hold; notify the PM once per continuous ready period |
 | Conflicted | `mergeableState === 'dirty'` | Record as conflict |
 | Pending | Everything else that's open | Record as pending with reasons |
 
-The `blocked` + `mergeable=true` case handles a known GitHub Rulesets issue where the API reports `blocked` even when the merge button is green in the UI. The merge API call itself will fail gracefully if the PR is actually blocked.
+The auto-repo bucket's `blocked` + `mergeable=true` tolerance (via `isMergeReadyPerGithub()`) handles a known GitHub Rulesets issue where the API reports `blocked` even when the merge button is green in the UI; the merge API call itself fails gracefully if the PR is actually blocked. The armed bucket deliberately does **not** use that tolerance — it gates strictly on `mergeableState === 'clean'`, because it has no `approved` floor to make the looser condition safe.
 
 ### Linked PR Checking
 
-A single task can have PRs across multiple repositories and multiple branches. The orchestrator collects all PRs from `branch_states` across all repositories:
+A single task can have PRs across multiple repositories and multiple branches. `task.metadata.repositories` maps each agent ID to its list of `AttachedRepo` records, and the orchestrator walks every attachment's `branch_states`, deduplicating by `(github, prNumber)` since two agents can attach the same repo:
 
 ```typescript
 // From src/connectors/github/merge.ts
-for (const [repoKey, repoInfo] of Object.entries(task.metadata.repositories)) {
-  if (repoInfo.branch_states) {
-    for (const state of Object.values(repoInfo.branch_states)) {
-      if (state.pr_number) {
-        linkedPRs.push({ repoKey, prNumber: state.pr_number });
-      }
+const linkedPRSet = new Set<string>();
+const linkedPRs: Array<{ github: string; prNumber: number }> = [];
+for (const attachments of Object.values(task.metadata.repositories)) {
+  if (!Array.isArray(attachments)) continue;
+  for (const attached of attachments) {
+    if (!attached.branch_states) continue;
+    for (const state of Object.values(attached.branch_states)) {
+      if (!state.pr_number) continue;
+      const key = `${attached.github}#${state.pr_number}`;
+      if (linkedPRSet.has(key)) continue;
+      linkedPRSet.add(key);
+      linkedPRs.push({ github: attached.github, prNumber: state.pr_number });
     }
-  } else if (repoInfo.pr_number) {
-    // Legacy fallback for tasks created before branch_states
-    linkedPRs.push({ repoKey, prNumber: repoInfo.pr_number });
   }
 }
 ```
 
-PR numbers are stored when a repo agent calls `create_pull_request` and are referenced in log entries using the `repo#123` format (e.g., `backend#42`).
+PR numbers are stored when a repo agent calls `create_pull_request` and are referenced in log entries using the `org/repo#123` format.
 
 ### PM Notification
 
@@ -186,6 +213,7 @@ After a merge check, the orchestrator notifies the PM agent only for noteworthy 
 
 - **Conflicts**: Logs a blocker finding and reactivates PM to inform the user and coordinate resolution.
 - **Successful merges**: Logs a completion finding and reactivates PM to announce the merge.
+- **Newly ready PRs (non-auto repos)**: Logs a decision finding instructing the PM to tell the thread the PR is ready and will be merged on request, then reactivates PM. Fires once per continuous ready period (deduped by the `merge_ready_notified` marker) and skips PRs with a pending merge approval.
 - **Pending PRs**: No notification. The system waits silently for the next webhook trigger (approval, CI pass, etc.).
 
 ## PR Cards
@@ -234,7 +262,7 @@ The system is designed so that the PM agent is only reactivated for GitHub event
 - **CI failures** (`workflow_run` with `conclusion === 'failure'`): Routed as `existing_task`, PM is reactivated to assess and delegate investigation.
 - **Review feedback** (`changes_requested`, review comments, PR conversation comments): Routed as `existing_task`, PM reads the feedback and coordinates changes with repo agents.
 - **PR closed/merged externally** (`pull_request closed`): Routed as `existing_task` so the PM is informed.
-- **Approvals and CI passes**: Trigger a debounced merge check via the orchestrator. PM is only notified if a merge actually happens or a conflict is detected.
+- **Approvals and CI passes**: Trigger a debounced merge check via the orchestrator. PM is only notified if a merge actually happens, a conflict is detected, or a held PR in a non-auto repo just became ready.
 
 ## Relevant Source Files
 
@@ -242,8 +270,12 @@ The system is designed so that the PM agent is only reactivated for GitHub event
 - `src/connectors/github/events.ts` -- `mountGitHubWebhook()` Express handler, `handleGitHubWebhook()`, `maybeRefreshPrCards()` (in-place PR-card updates), `handleExistingTaskDirect()` (with comment dedup)
 - `src/system/pr-card-format.ts` -- pure PR-card formatting shared by Slack + CLI: `summarizeCi`, `prCardFingerprint`, `prCardSubtitle`, `prCardTitlePlain`, `SLACK_PR_CARD_EMOJI`/`CLI_PR_CARD_EMOJI`
 - `src/connectors/github/webhooks.ts` -- HMAC-SHA256 signature verification, context extraction, deterministic routing (`routeGitHubEvent`, `determineRouteAction`), structured event formatting (`formatGitHubEvent`), merge check debouncing (`handleMergeCheckDirect`)
-- `src/connectors/github/merge.ts` -- Auto-merge logic (`checkAndMergeLinkedPRs`, `triggerMergeCheck`), linked PR collection from `branch_states`, PM notification on conflicts/merges
+- `src/connectors/github/merge.ts` -- Policy-gated auto-merge logic (`checkAndMergeLinkedPRs`, `triggerMergeCheck`), the auto-merge and `merge_armed` armed buckets, linked PR collection from `branch_states`, PM notification on conflicts/merges/ready PRs, `merge_ready_notified` bookkeeping
+- `src/connectors/github/mergeability.ts` -- `isMergeReadyPerGithub()`, the GitHub-mergeability predicate shared by the orchestrator and `merge_pull_request`
+- `src/agents/registry.ts` -- `isAutoMergeRepo()` policy lookup (AND semantics across declaring agents)
+- `src/tasks/task.ts` -- `handleMergeApproval()` (merge-now-if-clean, else arm) / `handleMergeDenial()` merge-approval resolution, `pending_merge_approval` slot
+- `src/connectors/slack/events.ts` -- `approve_merge` / `deny_merge` Bolt action handlers; `src/connectors/api/routes.ts` -- the equivalent `type: "merge"` approval route
 - `src/connectors/github/repo-clone.ts` -- Shared-clone lifecycle (`setupSharedClone`, `removeClone`, `CloneCheckout`); each agent gets its own `git clone --shared` from the base repo
-- `src/connectors/github/branch-state.ts` -- Per-branch state helpers (`hydrateBranchState`, `mirrorLegacyFields`, `findBranchStateByPR`)
+- `src/connectors/github/branch-state.ts` -- Per-branch state helpers (`assignPrNumber` — assigns the PR number and resets the per-PR `merge_armed`/`merge_ready_notified` markers on branch reuse, `hydrateBranchState`, `findBranchStateByPR`)
 - `src/agents/tools.ts` -- `createRepoToolsMcpServer` (`repo-tools` MCP: git workflow + PR tools), `createPMAgentMcpServer` (`pm-agent-tools` MCP)
 - `src/types/task.ts` -- `RepositoryInfo` with `branch_states`, `BranchState` type with per-branch PR tracking

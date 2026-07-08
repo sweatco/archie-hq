@@ -342,6 +342,8 @@ export async function mountSlackApp(
     }
   });
 
+  registerMergeActionHandlers(app!);
+
   // Return a lifecycle handle. start()/stop() are no-ops in HTTP mode —
   // the shared HTTP server in src/index.ts drives the ExpressReceiver.
   return {
@@ -358,6 +360,100 @@ export async function mountSlackApp(
       }
     },
   };
+}
+
+/** Parse a merge-button value (`<taskId>|<github>#<pr_number>`) into the task id + expected PR identity. */
+function parseMergeButtonValue(value: string): { taskId: string; expected: { github: string; pr_number: number } } {
+  const pipe = value.indexOf('|');
+  const taskId = value.slice(0, pipe);
+  const prRef = value.slice(pipe + 1);
+  const hash = prRef.lastIndexOf('#');
+  return {
+    taskId,
+    expected: { github: prRef.slice(0, hash), pr_number: Number(prRef.slice(hash + 1)) },
+  };
+}
+
+const STALE_MERGE_PROMPT_TEXT =
+  '⚠️ This merge prompt is stale — the pending request changed or was already resolved. Nothing was merged.';
+
+/**
+ * Register the merge approve/deny button handlers.
+ *
+ * Mirrors the edit-mode pair with one deliberate ordering change: the in-place
+ * message update happens *after* the Task method, driven by its returned
+ * disposition. The handlers do no slot verification of their own — the Task
+ * method's atomic read-compare-clear is the single verification point, and a
+ * handler-side verify-then-await would reopen the supersede race.
+ *
+ * Exported for tests, which pass a fake Bolt app recording `.action`
+ * registrations; production registration happens in mountSlackApp.
+ */
+export function registerMergeActionHandlers(boltApp: Pick<AppType, 'action'>): void {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  boltApp.action('approve_merge', async ({ action, ack, body }: any) => {
+    await ack();
+
+    const { taskId, expected } = parseMergeButtonValue(String(action.value ?? ''));
+    const userId = body.user?.id || 'unknown';
+
+    logger.server(`Merge approved by ${userId} for task ${taskId} (${expected.github}#${expected.pr_number})`);
+
+    try {
+      const task = await Task.get(taskId);
+      // Resolve the approver for the audit finding. External/guest approvers
+      // still resolve the approval (they can see and intentionally click the
+      // button) — only their identity is omitted, mirroring edit mode.
+      let approver: { id: string; name: string; email?: string } | undefined;
+      if (userId && userId !== 'unknown') {
+        try {
+          const info = await getUserInfo(userId);
+          if (isExternalUser(info)) {
+            logger.system(`Merge approver ${userId} is external/guest — identity omitted from the finding`);
+          } else {
+            approver = { id: userId, name: info.realName, email: info.email };
+          }
+        } catch (error) {
+          logger.warn('Slack', `Failed to resolve merge approver ${userId}`, error);
+        }
+      }
+
+      const disposition = await task.handleMergeApproval(approver, expected);
+
+      if (body.channel?.id && body.message?.ts) {
+        const text = disposition === 'resolved'
+          ? `✅ *Merge approved* by <@${userId}>`
+          : STALE_MERGE_PROMPT_TEXT;
+        await updateMessage(body.channel.id, body.message.ts, text, []);
+      }
+    } catch (error) {
+      logger.error('Server', 'Error handling merge approval', error);
+    }
+  });
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  boltApp.action('deny_merge', async ({ action, ack, body }: any) => {
+    await ack();
+
+    const { taskId, expected } = parseMergeButtonValue(String(action.value ?? ''));
+    const userId = body.user?.id || 'unknown';
+
+    logger.server(`Merge denied by ${userId} for task ${taskId} (${expected.github}#${expected.pr_number})`);
+
+    try {
+      const task = await Task.get(taskId);
+      const disposition = await task.handleMergeDenial(expected);
+
+      if (body.channel?.id && body.message?.ts) {
+        const text = disposition === 'resolved'
+          ? `❌ *Merge denied* by <@${userId}>`
+          : STALE_MERGE_PROMPT_TEXT;
+        await updateMessage(body.channel.id, body.message.ts, text, []);
+      }
+    } catch (error) {
+      logger.error('Server', 'Error handling merge denial', error);
+    }
+  });
 }
 
 

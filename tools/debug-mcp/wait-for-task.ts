@@ -11,7 +11,7 @@ export type WaitState =
   | 'pending'
   | 'not_found';
 
-export type ApprovalType = 'edit_mode' | 'research_budget';
+export type ApprovalType = 'edit_mode' | 'research_budget' | 'merge';
 
 export interface WaitResult {
   task_id: string | null;
@@ -151,7 +151,7 @@ export async function waitForTask(
             awaitingApproval = true;
             // The engine emits { text, approvalType } (src/tasks/task.ts).
             const ty = e.data['approvalType'];
-            if (ty === 'edit_mode' || ty === 'research_budget') approvalType = ty;
+            if (ty === 'edit_mode' || ty === 'research_budget' || ty === 'merge') approvalType = ty;
             break;
           }
           case 'approval:resolved':

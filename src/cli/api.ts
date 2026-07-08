@@ -63,13 +63,21 @@ export async function fetchTaskEvents(
 
 export async function sendApproval(
   taskId: string,
-  type: 'edit_mode' | 'research_budget',
+  type: 'edit_mode' | 'research_budget' | 'merge',
   approve: boolean,
+  identity?: { github: string; pr_number: number },
 ): Promise<void> {
+  // merge-type resolutions must carry the PR identity or the API 400s — this
+  // was the CLI approval bug (blank screen on a merge prompt). Other types omit
+  // it (backward compatible).
   const res = await fetch(`${getBaseUrl()}/api/tasks/${taskId}/approve`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ type, approve }),
+    body: JSON.stringify({
+      type,
+      approve,
+      ...(identity ? { github: identity.github, pr_number: identity.pr_number } : {}),
+    }),
   });
   if (!res.ok) throw new Error(`Failed to send approval: ${res.status}`);
 }

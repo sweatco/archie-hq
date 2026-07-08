@@ -60,6 +60,15 @@ describe('waitForTask — state detection', () => {
     expect(r.approval_type).toBe('edit_mode');
   });
 
+  it('surfaces a merge approval gate with its deferred stop (APPROVAL_TYPE=merge)', async () => {
+    const c = makeClient({
+      events: { t1: [{ type: 'approval:requested', data: { approvalType: 'merge' } }, { type: 'task:stopped' }] },
+    });
+    const r = await waitForTask(c, { taskId: 't1' }, { ...fakeClock(), ...tunables });
+    expect(r.state).toBe('approval_requested');
+    expect(r.approval_type).toBe('merge');
+  });
+
   it('prefers a terminal state over a replayed approval (precedence)', async () => {
     const c = makeClient({
       events: {

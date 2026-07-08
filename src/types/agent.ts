@@ -86,6 +86,12 @@ export interface RepoEntry {
   github: string;
   /** Base branch for PRs and merges. Defaults applied at consume sites. */
   baseBranch: string;
+  /**
+   * Merge policy for this repo. Resolved (non-optional) — the default `false`
+   * is applied at the registry copy. `true` keeps the automatic merge-on-green
+   * behavior; `false` requires an explicit user approval to merge.
+   */
+  autoMerge: boolean;
 }
 
 /**

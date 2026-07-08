@@ -93,6 +93,12 @@ export interface PluginRepoConfig {
 export interface PluginRepoEntry {
   github: string;
   baseBranch?: string;
+  /**
+   * Merge policy from frontmatter. Strict-boolean parse: only the literal
+   * `true` enables auto-merge — absent, `false`, or any non-boolean value
+   * (a YAML typo like `"true"`) fails safe to manual-approval merges.
+   */
+  autoMerge?: boolean;
 }
 
 export interface PluginAgentDef {
@@ -292,6 +298,7 @@ function scanPlugins(): LoadedPlugin[] {
             return {
               github: entry.github,
               baseBranch: typeof entry.baseBranch === 'string' ? entry.baseBranch : undefined,
+              autoMerge: entry.autoMerge === true,
             };
           });
           let primary: string;
@@ -313,6 +320,7 @@ function scanPlugins(): LoadedPlugin[] {
             repos: [{
               github: repoMeta.github,
               baseBranch: typeof repoMeta.baseBranch === 'string' ? repoMeta.baseBranch : undefined,
+              autoMerge: repoMeta.autoMerge === true,
             }],
             primary: repoMeta.github,
           };

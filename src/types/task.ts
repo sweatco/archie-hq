@@ -164,6 +164,21 @@ export interface BranchState {
   last_processed_comment_id?: number;  // triage tracking for this branch's PR
   stash_name?: string;                 // set if dirty work was auto-stashed when leaving
   pr_card?: PrCardState;               // PR-card message ref + change-detection fingerprint
+  /**
+   * Set when the "PR ready — merges on request" notification fired for this
+   * branch's PR (non-auto repos only), cleared when a merge check observes the
+   * PR no longer ready — so each continuous ready period notifies exactly once.
+   */
+  merge_ready_notified?: boolean;
+  /**
+   * Set when the user approved an explicit merge request for this branch's PR
+   * but GitHub did not yet report it clean (non-auto repos only): the PR is
+   * *armed* for auto-merge. The merge orchestrator merges an armed PR on the
+   * next merge-triggering webhook once `mergeableState === 'clean'`, with no
+   * Archie-side approval floor. Cleared when the PR is observed merged or
+   * closed.
+   */
+  merge_armed?: boolean;
 }
 
 /**
@@ -287,6 +302,18 @@ export interface TaskMetadata {
    * user — in which case authoring falls back to the bot (the prior behaviour).
    */
   edit_approved_by?: { id: string; name: string; email?: string };
+  /**
+   * The single pending merge-approval request (written by `merge_pull_request`
+   * on a non-auto repo, cleared on every resolution — approve or deny). A
+   * request record, not a grant: merge approval is one-shot per PR, not a
+   * task-lifetime mode. Survives restart like `edit_allowed`.
+   */
+  pending_merge_approval?: {
+    github: string;       // repo of the requested PR
+    pr_number: number;    // which PR to merge on approval
+    requested_by: string; // agent id — to clear its parked teardown on resolution
+    requested_at: string; // ISO 8601, for the audit finding
+  };
   research_budget_extra?: number;    // Additional research budget granted via Slack approval (+5 per approval)
   research_request_count?: number;   // Persisted research request count (survives stop/reactivate)
   failure_counter?: number;          // Consecutive recovery attempts (Stage 3 idle detection)
