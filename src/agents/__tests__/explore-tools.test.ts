@@ -34,16 +34,18 @@ vi.mock('../registry.js', () => ({
 // Partial-mock the Slack client: keep the REAL error classes (format-errors uses
 // `instanceof`) and just stub the network call. `vi.hoisted` makes the mock fn
 // available to the hoisted vi.mock factory.
-const { postSlackMessage, listBotChannels } = vi.hoisted(() => ({
+const { postSlackMessage, listBotChannels, assertPostableChannel } = vi.hoisted(() => ({
   postSlackMessage: vi.fn(),
   listBotChannels: vi.fn(),
+  assertPostableChannel: vi.fn(),
 }));
 vi.mock('../../connectors/slack/client.js', async (importActual) => {
   const actual = await importActual<typeof import('../../connectors/slack/client.js')>();
-  return { ...actual, postSlackMessage, listBotChannels };
+  return { ...actual, postSlackMessage, listBotChannels, assertPostableChannel };
 });
 
 import { createCommsMcpServer } from '../tools.js';
+import { DmPostError } from '../../connectors/slack/client.js';
 import type { Agent } from '../agent.js';
 import type { Task } from '../../tasks/task.js';
 
@@ -77,6 +79,8 @@ async function textOf(result: { content: { text: string }[] }): Promise<string> 
 describe('post_to_channel handler', () => {
   beforeEach(() => {
     postSlackMessage.mockReset();
+    assertPostableChannel.mockReset();
+    assertPostableChannel.mockResolvedValue(undefined); // default: target is a postable channel
   });
 
   it('posts a new top-level message and reports the ts, not linked to the task', async () => {
@@ -99,6 +103,18 @@ describe('post_to_channel handler', () => {
     expect(dm).toMatch(/channel-only|never touches DMs/i);
     expect(user).toMatch(/channel-only|never touches DMs/i);
     expect(postSlackMessage).not.toHaveBeenCalled();
+  });
+
+  it('rejects a group DM (mpim) — the gate refuses it, message is never delivered', async () => {
+    // A `G…` id passes the prefix pre-check, so the API-backed gate must catch it.
+    assertPostableChannel.mockRejectedValue(new DmPostError('G777'));
+    const post = getHandler('post_to_channel');
+
+    const out = await textOf(await post({ channel: 'G777', message: 'sensitive' }));
+
+    expect(assertPostableChannel).toHaveBeenCalledWith('G777');
+    expect(postSlackMessage).not.toHaveBeenCalled();
+    expect(out).toMatch(/DM or group DM/i);
   });
 
   it('maps not_in_channel to invite guidance', async () => {

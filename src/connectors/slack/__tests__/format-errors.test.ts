@@ -5,7 +5,7 @@ import {
   formatSlackPostError,
   formatSlackReadError,
 } from '../format-errors.js';
-import { SlackMarkdownLimitError, PrivateChannelError } from '../client.js';
+import { SlackMarkdownLimitError, PrivateChannelError, DmPostError } from '../client.js';
 
 /** A fake Slack WebAPI error carries its code under `.data.error`. */
 const apiErr = (code: string) => ({ data: { error: code } });
@@ -42,6 +42,11 @@ describe('formatSlackPostError', () => {
   });
   it('routes a markdown-limit error through the send formatter', () => {
     expect(formatSlackPostError(new SlackMarkdownLimitError(13000), 'C1')).toContain('exceeds');
+  });
+  it('explains a DM / group-DM refusal', () => {
+    const msg = formatSlackPostError(new DmPostError('G6'), 'G6');
+    expect(msg).toMatch(/DM or group DM/i);
+    expect(msg).toMatch(/post_to_user/);
   });
 });
 

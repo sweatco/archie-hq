@@ -1009,6 +1009,16 @@ export class PrivateChannelError extends Error {
   }
 }
 
+/** Thrown when `post_to_channel` is aimed at a 1:1 DM or a group DM (mpim). */
+export class DmPostError extends Error {
+  readonly channelId: string;
+  constructor(channelId: string) {
+    super(`Channel ${channelId} is a DM or group DM`);
+    this.name = 'DmPostError';
+    this.channelId = channelId;
+  }
+}
+
 /**
  * Resolve a channel's {id,name} for an explore READ, enforcing the accessible-set
  * rule: a channel is readable iff it is PUBLIC, or it is one of `allowedIds` —
@@ -1034,6 +1044,25 @@ async function assertAccessibleChannel(
   // Otherwise fail CLOSED: only a channel Slack explicitly marks public passes.
   if (ch.is_private !== false || ch.is_im || ch.is_mpim) throw new PrivateChannelError(channelId);
   return { id: ch.id ?? channelId, name: ch.name ?? channelId };
+}
+
+/**
+ * Gate a `post_to_channel` target. Posting is intentionally broad — any PUBLIC or
+ * PRIVATE channel Archie belongs to is fine (e.g. escalating into a private
+ * management channel) — but 1:1 DMs and group DMs (mpims) are refused, so task
+ * content is never relayed into a small private audience. The `is_im`/`is_mpim`
+ * API flags are the only reliable signal: a `G…` id is ambiguous between a legacy
+ * private channel and a group DM, so we consult the API rather than the id shape
+ * (the `D…`/`U…`/`W…` prefix pre-check in the tool handles obvious 1:1 DMs without
+ * a round-trip; this catches the group-DM case it can't see).
+ */
+export async function assertPostableChannel(channelId: string): Promise<void> {
+  if (dryRun) return;
+  const client = getSlackClient();
+  const info = await client.conversations.info({ channel: channelId });
+  const ch = info.channel as { is_im?: boolean; is_mpim?: boolean } | undefined;
+  if (!ch) throw new Error('channel_not_found');
+  if (ch.is_im || ch.is_mpim) throw new DmPostError(channelId);
 }
 
 /**

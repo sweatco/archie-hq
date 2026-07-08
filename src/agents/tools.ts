@@ -34,6 +34,7 @@ import {
   fetchExploreThread,
   searchSlackMessages,
   postSlackMessage,
+  assertPostableChannel,
 } from '../connectors/slack/client.js';
 import { readCanvas } from '../connectors/slack/canvas-read.js';
 import { collectCanvasFileAllowlist } from '../connectors/slack/channel-canvas.js';
@@ -948,6 +949,9 @@ function createPostToChannelTool(_agent: Agent, task: Task) {
       if (dm) return ok(dm);
       task.touch();
       try {
+        // The prefix check above rejects 1:1 DMs/user ids; this rejects group DMs
+        // (mpims), which share the ambiguous `G…` prefix with private channels.
+        await assertPostableChannel(args.channel);
         const ts = await postSlackMessage({ channel: args.channel, text: args.message, threadTs: args.thread_ts });
         return ok(
           ts

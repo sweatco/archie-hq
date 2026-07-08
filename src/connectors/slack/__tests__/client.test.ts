@@ -249,3 +249,33 @@ describe('fetchExploreThread — accessible-set gate, no bot filtering', () => {
     expect(withReaction?.reactions?.[0]).toMatchObject({ name: 'eyes', count: 2 });
   });
 });
+
+describe('assertPostableChannel — posting is open to channels, closed to DMs', () => {
+  it('refuses a group DM (mpim) — the case the id-prefix check cannot see', async () => {
+    slackApi.conversations.info.mockResolvedValue({
+      ok: true, channel: { id: 'G_mpim', name: 'mpdm', is_private: true, is_mpim: true },
+    });
+    await expect(client.assertPostableChannel('G_mpim')).rejects.toBeInstanceOf(client.DmPostError);
+  });
+
+  it('refuses a 1:1 DM', async () => {
+    slackApi.conversations.info.mockResolvedValue({
+      ok: true, channel: { id: 'D_dm', name: 'dm', is_im: true },
+    });
+    await expect(client.assertPostableChannel('D_dm')).rejects.toBeInstanceOf(client.DmPostError);
+  });
+
+  it('ALLOWS a private channel (posting is intentionally broad — e.g. escalation)', async () => {
+    slackApi.conversations.info.mockResolvedValue({
+      ok: true, channel: { id: 'C_priv', name: 'mgmt', is_private: true, is_im: false, is_mpim: false },
+    });
+    await expect(client.assertPostableChannel('C_priv')).resolves.toBeUndefined();
+  });
+
+  it('ALLOWS a public channel', async () => {
+    slackApi.conversations.info.mockResolvedValue({
+      ok: true, channel: { id: 'C_pub', name: 'general', is_private: false, is_im: false, is_mpim: false },
+    });
+    await expect(client.assertPostableChannel('C_pub')).resolves.toBeUndefined();
+  });
+});
