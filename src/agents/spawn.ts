@@ -629,7 +629,25 @@ Shared folder: ${sharedPath} [READ-ONLY]
         createResearchDefenseTagHook(),
       ],
       Stop: [{
-        hooks: [async () => {
+        hooks: [async (input: unknown) => {
+          // Reconcile in-flight background tasks against the SDK's authoritative
+          // list (StopHookInput.background_tasks — running/pending, empty when
+          // nothing is in flight) before parking. A bg task that settles MID-TURN
+          // never emits a `task_notification` event (the SDK folds it into the
+          // active turn), so without this a completed task leaks in
+          // backgroundTasks and the idle-check's `size > 0` guard wedges the task
+          // until the wall-clock cap (observed: task-20260625-1122-30wkzk). This
+          // fires at turn-end, right before the idle-check, and drops anything the
+          // SDK no longer reports as in flight — no notification parsing needed.
+          const live = new Set(
+            ((input as { background_tasks?: { id: string }[] }).background_tasks ?? []).map((t) => t.id),
+          );
+          for (const id of [...agent.backgroundTasks]) {
+            if (!live.has(id)) {
+              agent.backgroundTasks.delete(id);
+              emitEvent('agent:bg_task', taskId, { action: 'end', key: id, status: 'completed', summary: '' }, def.id);
+            }
+          }
           task.updateAgentState(def.id, false);
           return { continue: true };
         }],
