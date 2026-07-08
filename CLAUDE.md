@@ -44,11 +44,9 @@ npm run typecheck    # Type checking only
 
 See `docs/guides/local-development.md` for full setup instructions.
 
-## E2E harness — don't assume it's unavailable
+## E2E harness
 
-A live boot-from-branch E2E harness ships in this repo: the `archie-e2e` skill plus `tools/e2e/`. Whenever you need to verify a branch against a running instance — Forge Stage 4 QA, "run the e2e harness", "boot archie for testing", "verify this AC live" — load the `archie-e2e` skill and follow it. Do not hand-roll your own boot.
-
-In a fresh checkout or a cloud sandbox the harness will *appear* broken before it is prepared: `boot.ts` preflight exits with `.env not found`, the Docker daemon may not be running, or `npm ci` fails with `SELF_SIGNED_CERT_IN_CHAIN` behind a TLS-intercepting egress proxy. These are setup gaps, not a missing capability — do NOT conclude the harness "isn't available here" and skip it. That failure is exactly the cue to load the `archie-e2e` skill, which explains how to prepare the environment. For a cloud sandbox behind an intercepting proxy, follow the cold-start runbook at `docs/guides/e2e-in-cloud-sandbox.md` (map the API key into `.env`, trust the proxy CA, start the daemon, fix bind-mount ownership); once prepared, the `basic-nonce` scenario boots to green.
+A live boot-from-branch E2E harness ships here (the `archie-e2e` skill + `tools/e2e/`). To verify a branch against a running instance, load the `archie-e2e` skill instead of hand-rolling a boot. In a fresh checkout or cloud sandbox it can *look* unavailable (preflight / Docker / TLS errors) until it's prepared — that's a setup gap, not a missing capability, so load the skill; for a cloud sandbox behind a TLS-intercepting proxy the runbook is `docs/guides/e2e-in-cloud-sandbox.md`.
 
 ## Logging
 
