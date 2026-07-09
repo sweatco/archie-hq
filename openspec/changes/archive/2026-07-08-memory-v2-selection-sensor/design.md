@@ -2,7 +2,7 @@
 
 ## Context
 
-The read path (`spawn.ts:523` → `enrichPromptWithMemory` → `buildMemoryContext` → `selectEntities` + render) is fully assembled and gated by the default-off `ARCHIE_MEMORY_INJECT`. Phase 1 made selection bounded and relevance-gated; the roadmap's Phase 1.5 flips the flag in prod and tunes budgets from live data. Today the only trace of a selection decision is a console line listing dropped slugs (`context.ts:81`) — ephemeral, incomplete (no scores, no tokens, no selected set), and not joinable to the task afterwards. Constraints from `src/memory/CLAUDE.md`: memory stays ejectable (no DB), core↔memory coupling stays at the two existing seams, no memory types leak into core, model output is untrusted, and behavior changes ship with doc/spec/test updates in the same change.
+The read path (`spawn.ts:523` → `enrichPromptWithMemory` → `buildMemoryContext` → `selectEntities` + render) is fully assembled and gated by the default-off `ARCHIE_MEMORY_INJECT`. Phase 1's hardening made selection bounded and relevance-gated; the same phase's enablement step flips the flag in prod and tunes budgets from live data. Today the only trace of a selection decision is a console line listing dropped slugs (`context.ts:81`) — ephemeral, incomplete (no scores, no tokens, no selected set), and not joinable to the task afterwards. Constraints from `src/memory/CLAUDE.md`: memory stays ejectable (no DB), core↔memory coupling stays at the two existing seams, no memory types leak into core, model output is untrusted, and behavior changes ship with doc/spec/test updates in the same change.
 
 ## Goals / Non-Goals
 
