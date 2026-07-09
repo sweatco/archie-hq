@@ -53,7 +53,7 @@ The re-cut phase plan (eval harness as the prod-enablement gate, Branch-A spike 
 ## Migration Plan
 
 - Purely additive flag + selection-semantics change behind the default-off `ARCHIE_MEMORY_INJECT`; no data migration, no on-disk format change.
-- **Rollout:** land dark → replay a representative task set and compare injected block size and org-page composition against Phase-1 behavior → the eval-harness gate (roadmap Phase 1.5) decides prod enablement.
+- **Rollout:** land dark → replay a representative task set and compare injected block size and org-page composition against pre-bounds behavior → the enablement pre-flight (roadmap Phase 1) decides prod enablement.
 - **Rollback:** revert the commit or set `ARCHIE_MEMORY_TOUCHED_BY_INJECT_MAX` high / adjust budgets; no schema to revert.
 - **Verify:** `npm run typecheck`; `npx vitest run src/memory/__tests__/`.
 

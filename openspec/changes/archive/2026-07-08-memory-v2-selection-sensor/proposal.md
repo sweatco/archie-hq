@@ -2,7 +2,7 @@
 
 ## Why
 
-Roadmap Phase 1.5 enables `ARCHIE_MEMORY_INJECT=true` in prod with every tuning decision (budget defaults, zero-signal recency floor, org allowlist, ossification response) deliberately deferred to live data — but the read path emits no durable record of what was injected; the only trace is an ephemeral console line listing dropped slugs. Without a per-spawn record, those deferred decisions stay anecdotal, "what did memory tell this agent?" is unanswerable after the fact (the store moves on, spawn context isn't kept), and the Phase 5 value eval loses ground truth that cannot be backfilled.
+Roadmap Phase 1's enablement step turns `ARCHIE_MEMORY_INJECT=true` in prod with every tuning decision (budget defaults, zero-signal recency floor, org allowlist, ossification response) deliberately deferred to live data — but the read path emits no durable record of what was injected; the only trace is an ephemeral console line listing dropped slugs. Without a per-spawn record, those deferred decisions stay anecdotal, "what did memory tell this agent?" is unanswerable after the fact (the store moves on, spawn context isn't kept), and the Phase 5 value eval loses ground truth that cannot be backfilled.
 
 ## What Changes
 
@@ -27,4 +27,4 @@ Roadmap Phase 1.5 enables `ARCHIE_MEMORY_INJECT=true` in prod with every tuning 
 - **Code:** `src/memory/context.ts` (assemble + write the record), `src/memory/paths.ts` (`tasks/<taskId>/` path helpers replace the flat summaries path), `src/memory/entity-index.ts` (selection result must expose scores and the zero-signal count, which are currently internal), `src/memory/lifecycle.ts` (summary path + one-time `migrateLegacySummaries`), `src/memory/index.ts` (init creates `tasks/`, runs the migration), `src/agents/spawn.ts` (pass `taskId`/`agent` in the selectors object).
 - **Docs:** `docs/architecture/memory.md` read-path + Telemetry section + storage layout; spec delta for `memory-layer` (sensor requirement added, summary-path requirement modified).
 - **Ops:** none — `scripts/pull-remote-data.sh` already tarballs `memory/`, so records are harvested by the existing pull (including `-m` memory-only) with zero new plumbing.
-- **Sequencing:** lands before the Phase 1.5 enablement flip; the pre-flight checklist and later Phase 5 eval both consume these records.
+- **Sequencing:** lands before the Phase 1 enablement flip; the pre-flight checklist and later Phase 5 eval both consume these records.
