@@ -21,12 +21,20 @@ OUT="${3:?missing out-file}"
 
 SINCE="$DATE 00:00:00 +0000"
 UNTIL="$DATE 23:59:59 +0000"
+# The automation's own changelog commits are excluded everywhere. They must not
+# count as a day's "changes": on a quiet day the only commit on main is often the
+# previous day's `docs(changelog): add entry for …` push, and if that counted as
+# activity the day would slip past the bail-out below and reach the model with
+# empty context — which then drafts a bogus "_No changes landed_" entry.
 SKIP_OWN='^docs(changelog): add entry for'
 
-# Bail early if nothing landed at all (no PRs, no direct commits).
+# Bail early if nothing worth documenting landed. `commits` uses the SAME
+# `SKIP_OWN` filter as the backstop context below, so this check is exactly
+# "would the context be empty?" — PRs merged that day plus non-automation commits.
 prs="$(gh pr list --repo "$REPO" --search "is:merged base:main merged:$DATE" \
         --json number --jq '.[].number' --limit 100 || true)"
-commits="$(git log --no-merges --since="$SINCE" --until="$UNTIL" --pretty=format:'%h')"
+commits="$(git log --no-merges --since="$SINCE" --until="$UNTIL" \
+            --invert-grep --grep="$SKIP_OWN" --pretty=format:'%h')"
 if [ -z "$prs" ] && [ -z "$commits" ]; then
   exit 10
 fi

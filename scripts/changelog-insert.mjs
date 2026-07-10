@@ -13,6 +13,7 @@
 //   1  the entry file has no "## YYYY-MM-DD" heading (refuse to insert)
 //   2  bad arguments
 //   3  an entry for that date is already present (no-op; safe to ignore)
+//   4  the entry has a heading but no bullets (an empty "no changes" record; refuse)
 
 import { readFileSync, writeFileSync } from 'node:fs';
 
@@ -44,6 +45,20 @@ let entry = (nextSection === -1
 ).replace(/```[a-z]*\s*$/i, '').trim();
 
 const date = entry.match(DATE_HEADING)[1];
+
+// Refuse an empty day record. The automation is supposed to skip a day with
+// nothing to report (changelog-gather.sh bails before the model runs), so a
+// bulletless entry arriving here means something upstream misfired — never
+// commit a hollow "_No changes landed_" section. Fail loudly instead.
+const body = entry.slice(entry.indexOf('\n') + 1);
+if (!/^\s*[-*] /m.test(body)) {
+  console.error(
+    `Refusing to insert: entry for ${date} has a heading but no changelog bullets ` +
+      `(an empty "no changes" record). A quiet day should be skipped upstream, not committed.\n` +
+      'Got:\n' + entry.slice(0, 200),
+  );
+  process.exit(4);
+}
 
 // Idempotency: never add a second section for the same date.
 if (new RegExp(`^## ${date}\\b`, 'm').test(changelog)) {
