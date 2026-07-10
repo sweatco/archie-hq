@@ -56,6 +56,10 @@ Use the unified logger (`src/system/logger.ts`) for all console output. Never us
 
 **Never hard-wrap prose.** In Markdown and other prose (docs, `CHANGELOG.md`, PR descriptions, comments), write each paragraph or bullet as a single line and let it soft-wrap. Do not insert manual line breaks to hit a column width — they make edits and diffs noisy. Only code (fenced blocks, indented samples) may span fixed-width lines.
 
+## Changelog
+
+`CHANGELOG.md` is generated automatically — **do not maintain it by hand.** A scheduled GitHub Actions workflow (`.github/workflows/daily-changelog.yml`) summarizes each day's merged PRs into a dated entry and commits it to `main` on its own. Do not add, edit, or remove `CHANGELOG.md` entries as part of your work — not on a feature branch, not in a PR, not "while you're in there." The way to shape what appears is to write a clear PR description: that is the source the automation reads. Quiet days with nothing merged are skipped on purpose, so gaps between dates are expected and not something to fill in. The only legitimate reason to touch `CHANGELOG.md` or its workflow directly is to fix the automation itself.
+
 ## Git Workflow
 
 **IMPORTANT**: Only create commits when explicitly requested by the user. Never commit code automatically.

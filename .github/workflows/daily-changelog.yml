@@ -256,6 +256,10 @@ jobs:
           git config user.name "archie-changelog[bot]"
           git config user.email "archie-changelog@users.noreply.github.com"
           git add CHANGELOG.md
+          # Keep this message prefix in sync with SKIP_OWN in
+          # scripts/changelog-gather.sh: it excludes the automation's own
+          # changelog commits so a quiet day (whose only commit is the previous
+          # day's entry) isn't mistaken for an active one and summarized empty.
           git commit -m "docs(changelog): add entry for ${TARGET_DATE} [skip ci]"
 
           # Retry the push a few times to ride out transient failures.
