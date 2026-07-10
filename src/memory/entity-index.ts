@@ -102,7 +102,12 @@ const STOPWORDS = new Set([
   'as', 'by', 'is', 'was', 'be', 'this', 'that', 'it', 'from', 'into',
 ]);
 
-function tokenize(s: string): Set<string> {
+/**
+ * Selection tokenizer — exported so the pull path (`search_memory`) ranks by
+ * the same signal push selection scores by: a pull hit that push missed then
+ * indicts budgets/context, never scorer skew.
+ */
+export function tokenize(s: string): Set<string> {
   return new Set(
     (s || '')
       .toLowerCase()

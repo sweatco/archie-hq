@@ -49,7 +49,7 @@ import { emitEvent } from '../system/event-bus.js';
 import { getProbeBaseUrl } from '../system/context-probe.js';
 import { buildSandboxConfig, createFilesystemGuardHooks, TRUSTED_PACKAGE_REGISTRY_DOMAINS, type SandboxOptions } from './sandbox.js';
 import { applyOAuthBindings } from '../system/oauth/inject.js';
-import { enrichPromptWithMemory, isMemoryEnabled, isInjectionEnabled } from '../memory/index.js';
+import { enrichPromptWithMemory, isMemoryEnabled, isInjectionEnabled, isMemoryToolsEnabled, createMemoryToolsMcpServer } from '../memory/index.js';
 
 // ---- Prompt generation (per agent kind) ----
 
@@ -277,6 +277,13 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     'agent-tools': createBaseAgentMcpServer(agent, task),
     'research-tools': researchServer,
   };
+
+  // Memory read tools (pull path) — every track, read-only, gated by
+  // ARCHIE_MEMORY_TOOLS (default off; ARCHIE_MEMORY=false overrides). Rides
+  // the existing spawn.ts memory seam, so ejection still removes the same files.
+  if (isMemoryToolsEnabled()) {
+    mcpServers['memory-tools'] = createMemoryToolsMcpServer({ taskId, agent: def.id });
+  }
 
   if (isPmAgent(def)) {
     // ---- PM coordinator ----

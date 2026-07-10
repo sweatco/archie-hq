@@ -26,6 +26,7 @@ import {
   getEntityObsCap,
   getTouchedByInjectMax,
   isInjectionEnabled,
+  isMemoryToolsEnabled,
 } from '../paths.js';
 import { logger } from '../../system/logger.js';
 
@@ -255,5 +256,40 @@ describe('isInjectionEnabled', () => {
   it.each(['false', '1', 'TRUE', 'True', 'yes', ''])('stays off for %j', (v) => {
     process.env[KEY] = v;
     expect(isInjectionEnabled()).toBe(false);
+  });
+});
+
+describe('isMemoryToolsEnabled', () => {
+  const KEY = 'ARCHIE_MEMORY_TOOLS';
+  const MASTER = 'ARCHIE_MEMORY';
+  const originalKey = process.env[KEY];
+  const originalMaster = process.env[MASTER];
+
+  afterEach(() => {
+    if (originalKey === undefined) delete process.env[KEY];
+    else process.env[KEY] = originalKey;
+    if (originalMaster === undefined) delete process.env[MASTER];
+    else process.env[MASTER] = originalMaster;
+  });
+
+  it('defaults to off when unset', () => {
+    delete process.env[KEY];
+    expect(isMemoryToolsEnabled()).toBe(false);
+  });
+
+  it('is on only for the exact string "true"', () => {
+    process.env[KEY] = 'true';
+    expect(isMemoryToolsEnabled()).toBe(true);
+  });
+
+  it.each(['false', '1', 'TRUE', 'yes', ''])('stays off for %j', (v) => {
+    process.env[KEY] = v;
+    expect(isMemoryToolsEnabled()).toBe(false);
+  });
+
+  it('master flag overrides: ARCHIE_MEMORY=false wins over ARCHIE_MEMORY_TOOLS=true', () => {
+    process.env[MASTER] = 'false';
+    process.env[KEY] = 'true';
+    expect(isMemoryToolsEnabled()).toBe(false);
   });
 });

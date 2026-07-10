@@ -34,6 +34,17 @@ export function isInjectionEnabled(): boolean {
   return process.env.ARCHIE_MEMORY_INJECT === 'true';
 }
 
+/**
+ * Memory read-tools flag: gates the agent-callable pull path (search_memory /
+ * read_entity / read_task_summary / grep_task_log), independent of injection.
+ * Defaults OFF like ARCHIE_MEMORY_INJECT — set ARCHIE_MEMORY_TOOLS=true to
+ * register the tools. The master flag still wins: when ARCHIE_MEMORY=false the
+ * tools are off regardless of this value.
+ */
+export function isMemoryToolsEnabled(): boolean {
+  return isMemoryEnabled() && process.env.ARCHIE_MEMORY_TOOLS === 'true';
+}
+
 // ---- Configurable caps ----
 
 /**
