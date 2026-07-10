@@ -1,6 +1,6 @@
 # Memory Layer
 
-The memory layer gives Archie persistent cross-task knowledge — user preferences, a rolling activity index, per-task summaries, and a graph of **entity pages** (the durable subjects the work keeps touching: services, systems, integrations, concepts, repos). Organization-wide facts are themselves entity pages, scoped `org`. It is a self-contained subsystem under `src/memory/`, gated by the `ARCHIE_MEMORY` feature flag, and designed to be removable as a single unit.
+The memory layer gives Archie persistent cross-task knowledge — user preferences, a rolling activity index, per-task summaries, and a graph of **entity pages** (the durable subjects the work keeps touching: services, systems, integrations, concepts, repos). Organization-wide facts are themselves entity pages, scoped `org`. Memory reaches agents two ways: **push** (selected content injected at spawn) and **pull** (read-only agent tools, flag-gated). It is a self-contained subsystem under `src/memory/`, gated by the `ARCHIE_MEMORY` feature flag, and designed to be removable as a single unit.
 
 This document describes the implementation as-built. The capability spec lives at `openspec/specs/memory-layer/spec.md` and is fully reflected in the code (the `harden-memory-layer` change is now archived).
 
@@ -82,7 +82,9 @@ src/memory/
 ├── housekeeping.ts   — runHousekeeping (org/user side-agent + entity merge/archive), trace-back validator
 ├── entities.ts       — parse/serialize/read/write entity pages, resolveEntity, applyEntityUpdate
 ├── entity-index.ts   — rebuildIndex (derived), selectEntities (push selection + 1-hop expansion)
-├── context.ts        — buildMemoryContext, enrichPromptWithMemory (read path; entity injection)
+├── context.ts        — buildMemoryContext, enrichPromptWithMemory (push read path; exported render helpers)
+├── tools.ts          — read tools (search/read/summary/grep) + memory-tools MCP server (pull read path)
+├── telemetry.ts      — shared fail-safe telemetry appender (selection + pull sensors)
 ├── activity.ts       — readActivity, appendActivity, trimActivity
 ├── extractor.ts      — buildExtractionPrompt, parseExtractionResponse, runExtraction (Sonnet)
 ├── lifecycle.ts      — handleTaskCompleted, processExtraction, buildSummaryMarkdown, related-by-entity
@@ -94,7 +96,9 @@ prompts/
 └── memory-housekeeper.md — consolidation prompt template (Sonnet side-agent)
 
 scripts/
-└── memory-housekeeping.ts — manual `npm run memory:housekeeping -- --target <org|all|U…>`
+├── memory-housekeeping.ts — manual `npm run memory:housekeeping -- --target <all|entities|U…>`
+├── memory-eval.ts    — `npm run memory:eval` (two-tier eval over a pulled snapshot; see tools/memory-eval/)
+└── snapshot-memory.sh — dated memory-only prod snapshots (launchd; feeds the eval trend metrics)
 
 workdir/memory/                                  (runtime, gitignored)
 ├── users/<id>.md
@@ -138,7 +142,7 @@ The helper `extractTaskUsernames(taskId)` (`spawn.ts:132`) parses the task's `kn
 </entity>
 ```
 
-**Entity selection is push, not pull** — the system decides which entity pages to inject; there is no agent-callable query tool. `enrichPromptWithMemory(prompt, users, selectors)` receives spawn-context selectors (`{ repo?, plugin?, taskTitle?, taskId?, agent? }`): every track passes `taskId` and `agent` (they feed the selection sensor below); PM adds `taskTitle`, repo agents pass `repo: def.repo.repoKey`, plugin agents pass `plugin: def.pluginName`. `selectEntities()` (`entity-index.ts`) then:
+**Entity selection is push** — the system decides which entity pages to inject at spawn. The complementary **pull path** (below) lets agents read the rest of the store mid-task; selection itself takes no agent input. `enrichPromptWithMemory(prompt, users, selectors)` receives spawn-context selectors (`{ repo?, plugin?, taskTitle?, taskId?, agent? }`): every track passes `taskId` and `agent` (they feed the selection sensor below); PM adds `taskTitle`, repo agents pass `repo: def.repo.repoKey`, plugin agents pass `plugin: def.pluginName`. `selectEntities()` (`entity-index.ts`) then:
 
 1. Scores every active entity against the spawn context. An entity of **any scope** becomes an injection candidate only when it carries a relevance signal: a repo match, an `owned_by` relation to a participating user, or token overlap of the task title / users against its name, aliases, and summary.
 2. **Expands one hop** along `[[wikilink]]` relations from the signal-bearing set (so selecting `payment-service` pulls `postgres-prod` even if it wasn't directly matched).
@@ -152,9 +156,22 @@ When a selected page is rendered into its `<entity>` block, the auto-appended `t
 
 `enrichPromptWithMemory()` appends the block to the prompt under a fixed `## Organizational Memory` header with a short instruction line. It returns the prompt unchanged — and performs no store reads — if the layer is disabled (`ARCHIE_MEMORY=false`), if **injection is disabled** (`ARCHIE_MEMORY_INJECT` ≠ `true`, the default — see [Feature Flags](#feature-flags)), or if no memory exists.
 
+## Read Path — Pull Tools (agent-callable)
+
+When `ARCHIE_MEMORY_TOOLS=true` (default off; `ARCHIE_MEMORY=false` overrides), every agent track gets the in-process `memory-tools` MCP server (`createMemoryToolsMcpServer`, `src/memory/tools.ts`), registered in `spawn.ts`'s base server map — the same seam file as push injection, so ejection still removes the same files. Four read-only tools:
+
+| Tool | Reads | Bounds |
+|------|-------|--------|
+| `search_memory(query[, max_results])` | active entity pages (name/aliases/L0/facts), user files, task summaries, recent activity — lexical, the selection scorer's own tokenizer | ranked thin hits (id + one-liner), max 10 by default |
+| `read_entity(slug)` | one full entity page, `touched_by` render-truncated exactly like injection; aliases resolve; archived pages marked | ~8K chars/result |
+| `read_task_summary(taskId)` | `memory/tasks/<id>/summary.md` | ~8K chars/result |
+| `grep_task_log(taskId, pattern)` | the task's `knowledge.log` (literal, case-insensitive) | 50 line-numbered matches, untrusted-data framing wrapper |
+
+Every identifier passes the `paths.ts` guards before any filesystem access; the server registers zero mutating tools (writes stay funneled through the extraction side-agent). Search shares `selectEntities`' tokenizer deliberately: a pulled-but-not-injected page then indicts push budgets/signals, never scorer skew. Each call leaves a pull-sensor record (next section).
+
 ## Telemetry
 
-One sensor today: the **selection sensor** — a per-spawn record of what the read path injected and why. The remaining memory-v2 decisions (budget defaults, zero-signal recency floor, ossification, the value eval) are deferred to live data (`docs/proposals/memory-v2-roadmap.md`), and telemetry cannot be backfilled — so the sensor ships before injection is enabled.
+Two sensors, one file: the **selection sensor** — a per-spawn record of what push injected and why — and the **pull sensor** — one record per read-tool call (tool, query/args, returned ids, zero-result flag, `kind: "pull"`). Selection lines carry no `kind` field; readers treat kind-less lines as selection records. Both share the fail-safe appender in `src/memory/telemetry.ts`. The remaining memory-v2 decisions (budget defaults, zero-signal recency floor, ossification, the value eval) are deferred to live data (`docs/proposals/memory-v2-roadmap.md`), and telemetry cannot be backfilled — so the sensor ships before injection is enabled.
 
 `recordSelection()` (`src/memory/context.ts`, end of `buildMemoryContext`) appends one JSON line per enriched spawn to `memory/tasks/<taskId>/telemetry.jsonl`, creating the task dir on first write; `spawn.ts` passes `taskId` + `agent` via `MemorySelectors`. It fires only when injection is enabled and a `taskId` is present — no separate flag; with injection off, nothing is read or written. Each line is a self-contained selection case:
 
@@ -399,6 +416,7 @@ Disabled by `ARCHIE_MEMORY_HOUSEKEEPING=false` — overflow is still logged but 
 |------|---------|---------|
 | `ARCHIE_MEMORY` | `true` | Master switch. `false` → `initMemory`/`enrichPromptWithMemory`/`handleTaskCompleted` all no-op. Enabling the layer does **not** by itself enable injection — see `ARCHIE_MEMORY_INJECT`. |
 | `ARCHIE_MEMORY_INJECT` | `false` | **Read-path gate, default OFF (inverts the convention).** `true` → stored memory is injected into agent prompts. Unset / anything else → injection off and `enrichPromptWithMemory` does no store reads; extraction still stores facts. `ARCHIE_MEMORY=false` overrides. |
+| `ARCHIE_MEMORY_TOOLS` | `false` | **Pull-path gate, default OFF.** `true` → the read tools (`search_memory`, `read_entity`, `read_task_summary`, `grep_task_log`) are registered for every agent track. Independent of `ARCHIE_MEMORY_INJECT`; `ARCHIE_MEMORY=false` overrides. |
 | `ARCHIE_MEMORY_HOUSEKEEPING` | `true` | Auto + manual housekeeping. `false` → no consolidation runs. |
 | `ARCHIE_MEMORY_USER_CAP` | `100` | Soft cap on total bullets in each user file. |
 | `ARCHIE_MEMORY_SECTION_CAP` | `30` | Soft cap on bullets per `## Section` (org or user). |
@@ -432,8 +450,9 @@ The plan was built to support clean removal in five steps:
 1. `rm -rf src/memory/`
 2. `rm prompts/memory-extractor.md`
 3. Remove `import { initMemory } from './memory/index.js'` and the `await initMemory();` call from `src/index.ts`.
-4. Remove `import { enrichPromptWithMemory, isMemoryEnabled }`, the `extractTaskUsernames()` helper, and the three memory-injection call sites from `src/agents/spawn.ts`.
+4. Remove the memory imports (`enrichPromptWithMemory`, `isMemoryEnabled`, `isMemoryToolsEnabled`, `createMemoryToolsMcpServer`), the `extractTaskUsernames()` helper, the three memory-injection call sites, and the `memory-tools` server registration from `src/agents/spawn.ts` (one seam file — the pull path rides the same import).
 5. `rm -rf workdir/memory/`
+6. (Tooling, optional) `rm -rf tools/memory-eval/ scripts/memory-eval.ts scripts/snapshot-memory.sh` and drop the `memory:eval` npm script.
 
 No type changes propagate to other modules, no database migrations, no external service cleanup. Core never imports from `src/memory/`. Everything the layer writes — including per-task summaries and telemetry under `tasks/` — lives inside `workdir/memory/` and is removed by step 5.
 
@@ -451,6 +470,7 @@ No type changes propagate to other modules, no database migrations, no external 
 | `housekeeping.test.ts` | Annotation parsing, `extractBullets`, trace-back validator, soft-cap thresholds, entity merge-plan / staleness / merge+archive integration |
 | `entities.test.ts` | parse/serialize round-trip, alias resolution, `applyEntityUpdate` (resolve-or-create, auto touched_by, closed-vocab drops, traversal-slug rejection, cap) |
 | `entity-index.test.ts` | `rebuildIndex` derive/drop, `selectEntities` (org-always, repo match, 1-hop expansion, bound + dropped, archived excluded, title scoring, telemetry fields) |
+| `tools.test.ts` | Read tools: search ranking + zero-result, guard rejections, result bounds, archived marking, pull-record shape/fail-safety, no-write surface |
 | `lifecycle.test.ts` | End-to-end: org / user / entity / summary / activity writes; entity-based related tasks; restart-resilience; multi-user allowed set; no Slack post |
 
 Run with `npx vitest run src/memory/__tests__/` or `npm test`.
@@ -471,7 +491,7 @@ The layer's safety guards close seven gaps found in review; each is enforced in 
 
 ## Future Enhancements (Not in scope)
 
-The layer deliberately stays **push-only** and **keyword-scored**. The sequenced plan for what comes next — eval gate, pull/read tools, buy-vs-build spike, semantic dedupe, selection embeddings — lives in [`docs/proposals/memory-v2-roadmap.md`](../proposals/memory-v2-roadmap.md). Smaller deferred ideas not on that roadmap:
+The layer stays **keyword-scored** (push selection and pull search share one lexical tokenizer). The sequenced plan for what comes next — write-path rewrite (dedupe + forgetting), buy-vs-build spike, selection embeddings — lives in [`docs/proposals/memory-v2-roadmap.md`](../proposals/memory-v2-roadmap.md). Smaller deferred ideas not on that roadmap:
 
 - **Domain-directory splitting** — promote `domain` from a frontmatter dimension to an `entities/<domain>/` split once entity volume makes a flat directory unwieldy.
 - **Channel visibility / access control** — public-vs-private filtering at retrieval time. Deferred until a concrete leak surface is identified.
