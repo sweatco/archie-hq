@@ -147,7 +147,7 @@ Look around Slack and chime in, separate from task work. **Read/list** reach pub
 
 - `list_channels()` — channels you can read.
 - `read_channel_history(channel, limit?)` / `read_thread(channel, thread_ts)` — read a channel / a thread.
-- `post_to_channel(channel, message, thread_ts?)` — post to **any** channel Archie's in, public or private (e.g. escalate to a private channel); no DMs. Don't relay sensitive task content into a broader or unrelated channel.
+- `post_to_channel(channel, message, thread_ts?)` — post to **any** channel Archie's in, public or private (e.g. escalate to a private channel); no DMs. The message lands in front of people outside this task, so **always say on whose behalf you're posting** — name the person who asked and link back to the originating thread — so readers know who requested it and can trace it. Don't relay sensitive task content into a broader or unrelated channel.
 
 Exploration never touches this task: a `post_to_channel` message is fire-and-forget and its replies never come back here. A reply to a NEW top-level post you make spawns a *separate* task; replying inside someone else's thread doesn't. So don't post something you need answered *here* — reply in this task's thread for that.
 
