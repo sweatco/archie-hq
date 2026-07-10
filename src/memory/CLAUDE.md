@@ -30,10 +30,11 @@ If you're unsure whether a change is big enough to document: it is.
 
 ## Invariants — don't break these
 
-- **One coupling, two seams.** `src/memory/` imports freely from core. Core imports *from*
-  memory in exactly two places — `initMemory()` in `src/index.ts` and
-  `enrichPromptWithMemory()` / `isMemoryEnabled()` in `src/agents/spawn.ts`. Keep it that
-  way; a third seam breaks one-step ejection.
+- **One coupling, two seam files.** `src/memory/` imports freely from core. Core imports *from*
+  memory in exactly two files — `initMemory()` in `src/index.ts`, and in `src/agents/spawn.ts`
+  the read paths: `enrichPromptWithMemory()` / `isMemoryEnabled()` (push) plus
+  `isMemoryToolsEnabled()` / `createMemoryToolsMcpServer()` (pull tools). Keep it that way;
+  a new seam file breaks one-step ejection.
 - **Stays ejectable.** No database, no migrations, no new external service, no memory types
   leaking into core. If a change adds coupling or a new persistence backend, fix the
   "Ejection" section of `memory.md` to match — or reconsider the change.
@@ -47,8 +48,12 @@ If you're unsure whether a change is big enough to document: it is.
   never by display name. Always go through the `paths.ts` guards (`getUserPath`,
   `isAllowedUserId`); never hand-build a memory path.
 - **Writes are serialized.** Extraction and housekeeping share one sequential queue in
-  `lifecycle.ts`. Don't write `org.md` / `users/*.md` / `recent-activity.md` outside it —
-  concurrent task completions will corrupt the files.
+  `lifecycle.ts`. Don't write `users/*.md` / `recent-activity.md` / entity pages outside it —
+  concurrent task completions will corrupt the files. (Telemetry appends in `telemetry.ts`
+  are the one exception: single-line appends, fail-safe, never read back at runtime.)
+- **Read tools stay read-only.** `tools.ts` exposes zero mutating tools; every identifier
+  passes the `paths.ts` guards before any filesystem access. Don't add a write/forget tool
+  here — runtime writes are a separate, gated phase (see the roadmap).
 
 ## Files that carry those invariants
 
