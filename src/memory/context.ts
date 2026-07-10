@@ -5,9 +5,8 @@
  * for injection into agent system prompts.
  */
 
-import { readFile, appendFile, mkdir } from 'fs/promises';
+import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
-import { dirname } from 'path';
 import { readUser } from './store.js';
 import { listEntities, serializeEntity } from './entities.js';
 import { readIndexMarkdown, renderIndex, selectEntities, type SelectionResult } from './entity-index.js';
@@ -16,10 +15,10 @@ import {
   isInjectionEnabled,
   getRecentActivityPath,
   getTouchedByInjectMax,
-  getTaskTelemetryPath,
   getOrgInjectMax,
   getEntityInjectMax,
 } from './paths.js';
+import { appendTelemetry } from './telemetry.js';
 import { logger } from '../system/logger.js';
 import type { UserRef, EntityRecord } from './types.js';
 
@@ -64,10 +63,7 @@ export async function buildMemoryContext(
       continue;
     }
     if (userContent.trim()) {
-      const display = ref.displayName !== ref.userId ? ` display_name="${escapeAttr(ref.displayName)}"` : '';
-      blocks.push(
-        `<user_preferences user_id="${escapeAttr(ref.userId)}"${display}>\n${userContent.trimEnd()}\n</user_preferences>`
-      );
+      blocks.push(renderUserPreferencesBlock(ref, userContent));
     }
   }
 
@@ -76,7 +72,7 @@ export async function buildMemoryContext(
   if (existsSync(activityPath)) {
     const activityContent = await readFile(activityPath, 'utf-8');
     if (activityContent.trim()) {
-      blocks.push(`<recent_activity>\n${activityContent.trimEnd()}\n</recent_activity>`);
+      blocks.push(renderRecentActivityBlock(activityContent));
     }
   }
 
@@ -87,7 +83,7 @@ export async function buildMemoryContext(
   if (records.length > 0) {
     const indexMd = (await readIndexMarkdown()).trim() || renderIndex(records).trim();
     if (indexMd) {
-      blocks.push(`<entity_index>\n${indexMd}\n</entity_index>`);
+      blocks.push(renderEntityIndexBlock(indexMd));
     }
     selection = selectEntities(records, { ...selectors, users: refs });
     if (selection.dropped.length > 0) {
@@ -116,8 +112,13 @@ async function recordSelection(
   context: string,
 ): Promise<void> {
   if (!selectors.taskId || !isInjectionEnabled()) return;
+  // Record ASSEMBLY sits inside the fail-safe too: the spec's sensor clause
+  // covers "any write or assembly error", so a throwing accessor or field
+  // read must degrade to a warning, never abort the spawn.
   try {
-    const record = {
+    // Selection records are the original sensor shape: `v: 1` and no `kind`
+    // field — readers treat kind-less telemetry lines as selection records.
+    await appendTelemetry(selectors.taskId, {
       v: 1,
       ts: new Date().toISOString(),
       taskId: selectors.taskId,
@@ -127,28 +128,31 @@ async function recordSelection(
         plugin: selectors.plugin ?? null,
         taskTitle: selectors.taskTitle ?? null,
         userIds: users.map((u) => u.userId),
+        // Display names feed selection token overlap; recording them makes a
+        // harvested golden replay byte-faithfully. Additive — old readers keep
+        // using userIds.
+        users: users.map((u) => ({ id: u.userId, name: u.displayName })),
       },
       selected: selection?.selectedMeta ?? [],
       dropped: selection?.dropped ?? [],
       zeroSignalExcluded: selection?.zeroSignalExcluded ?? 0,
       candidates: selection?.candidates ?? 0,
       budgets: { org: getOrgInjectMax(), nonOrg: getEntityInjectMax() },
-      renderedTokensEst: Math.round(context.length / 4),
-    };
-    const path = getTaskTelemetryPath(selectors.taskId);
-    await mkdir(dirname(path), { recursive: true });
-    await appendFile(path, `${JSON.stringify(record)}\n`, 'utf-8');
+      renderedTokensEst: estimateTokens(context),
+    });
   } catch (err: any) {
-    logger.warn('memory', `selection sensor write failed (spawn unaffected): ${err?.message ?? err}`);
+    logger.warn('memory', `selection record assembly failed (spawn unaffected): ${err?.message ?? err}`);
   }
 }
 
 /**
  * Wrap a full entity page in an `<entity ...>` block for prompt injection.
  * Only the newest `touched_by` edges are rendered (they grow one per task);
- * the stored record keeps the full history.
+ * the stored record keeps the full history. Exported so offline tooling
+ * (memory:eval's worst-case token bound) measures the production rendering,
+ * never a reimplementation.
  */
-function renderEntityBlock(rec: EntityRecord): string {
+export function renderEntityBlock(rec: EntityRecord): string {
   const max = getTouchedByInjectMax();
   const touchedBy = rec.relations.filter((r) => r.type === 'touched_by');
   let view = rec;
@@ -157,6 +161,35 @@ function renderEntityBlock(rec: EntityRecord): string {
     view = { ...rec, relations: rec.relations.filter((r) => r.type !== 'touched_by' || keep.has(r)) };
   }
   return `<entity slug="${escapeAttr(rec.entity)}" type="${escapeAttr(rec.type)}" scope="${escapeAttr(rec.scope)}">\n${serializeEntity(view).trimEnd()}\n</entity>`;
+}
+
+/**
+ * Wrap a user memory file in its `<user_preferences ...>` block — the exact
+ * bytes injection produces. Exported for the same offline-tooling reason as
+ * `renderEntityBlock`.
+ */
+export function renderUserPreferencesBlock(ref: UserRef, content: string): string {
+  const display = ref.displayName !== ref.userId ? ` display_name="${escapeAttr(ref.displayName)}"` : '';
+  return `<user_preferences user_id="${escapeAttr(ref.userId)}"${display}>\n${content.trimEnd()}\n</user_preferences>`;
+}
+
+/** Wrap recent-activity content in its `<recent_activity>` block (production bytes). */
+export function renderRecentActivityBlock(content: string): string {
+  return `<recent_activity>\n${content.trimEnd()}\n</recent_activity>`;
+}
+
+/** Wrap the entity-index Markdown in its `<entity_index>` block (production bytes). */
+export function renderEntityIndexBlock(indexMd: string): string {
+  return `<entity_index>\n${indexMd.trim()}\n</entity_index>`;
+}
+
+/**
+ * The sensor's token estimator (chars/4). One home, exported so the eval's
+ * worst-case bound and functional-tier estimates stay comparable with
+ * telemetry by construction.
+ */
+export function estimateTokens(s: string): number {
+  return Math.round(s.length / 4);
 }
 
 /**

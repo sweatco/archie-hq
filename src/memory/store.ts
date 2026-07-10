@@ -5,12 +5,13 @@
  * All path resolution is delegated to paths.ts.
  */
 
-import { readFile, writeFile, mkdir } from 'fs/promises';
+import { readFile, writeFile, mkdir, readdir } from 'fs/promises';
 import {
   getUserPath,
   getUsersDir,
   getUserCap,
   getSectionCap,
+  isAllowedUserId,
   isHousekeepingEnabled,
 } from './paths.js';
 import { sanitizeUpdate } from './sanitize.js';
@@ -34,6 +35,51 @@ export async function readUser(username: string): Promise<string> {
 export async function writeUser(username: string, content: string): Promise<void> {
   await mkdir(getUsersDir(), { recursive: true });
   await writeFile(getUserPath(username), content, 'utf-8');
+}
+
+/** A loaded user memory file: guarded id, display name, raw content. */
+export interface UserFile {
+  id: string;
+  displayName: string;
+  text: string;
+}
+
+/** Parse the display_name frontmatter value, or '' when absent/unparseable. */
+export function parseUserDisplayName(text: string): string {
+  return text.match(/^display_name:\s*"?([^"\n]+)"?\s*$/m)?.[1]?.trim() ?? '';
+}
+
+/**
+ * Read every user memory file. The single shared reader for the pull tools
+ * and the eval — filenames decode through the inverse of getUserPath's
+ * normalization (the first `__` is the encoded `:` of a fallback id), ids
+ * failing `isAllowedUserId` are skipped with a warning (never ingested), and
+ * reads go through getUserPath, not hand-built paths.
+ */
+export async function listUserFiles(): Promise<UserFile[]> {
+  let names: string[];
+  try {
+    names = await readdir(getUsersDir());
+  } catch {
+    return [];
+  }
+  const out: UserFile[] = [];
+  for (const name of names) {
+    if (!name.endsWith('.md')) continue;
+    const id = name.slice(0, -3).replace('__', ':');
+    if (!isAllowedUserId(id)) {
+      logger.warn('memory', `listUserFiles: skipping non-user file users/${name}`);
+      continue;
+    }
+    let text: string;
+    try {
+      text = await readFile(getUserPath(id), 'utf-8');
+    } catch {
+      continue;
+    }
+    out.push({ id, displayName: parseUserDisplayName(text) || id, text });
+  }
+  return out;
 }
 
 /**
