@@ -34,6 +34,8 @@ import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
 import { getIsShuttingDown } from '../../system/shutdown.js';
 import { findTaskByThread } from '../../tasks/persistence.js';
+import { getChannelMessageTriggers, fireTrigger, triggerWhat } from '../../system/trigger-scheduler.js';
+import type { Trigger } from '../../types/trigger.js';
 import { generateTaskTitle } from '../../tasks/title-generator.js';
 import { setAssistantThreadTitle } from './title.js';
 import type { SlackThread, SlackAuthor } from '../../types/task.js';
@@ -164,10 +166,17 @@ export async function mountSlackApp(
 
     const isDm = event.channel?.startsWith('D');
     const isThreadReply = event.thread_ts && event.thread_ts !== event.ts;
+    // A top-level channel post is normally ignored (ambient chatter). We only
+    // forward it when an enabled channel-message trigger is watching this exact
+    // channel — kept cheap via the in-memory index, so unwatched channels stay
+    // a no-op. handleSlackEvent then runs the same own-bot/external/@mention
+    // filtering before firing any trigger.
+    const isTopLevelChannelMsg = !isDm && !isThreadReply && !event.thread_ts;
+    const watchedByTrigger = isTopLevelChannelMsg && getChannelMessageTriggers(event.channel).length > 0;
     if (
       event.type === 'message' &&
       (!event.subtype || ['file_share', 'thread_broadcast'].includes(event.subtype)) &&
-      (isThreadReply || isDm)
+      (isThreadReply || isDm || watchedByTrigger)
     ) {
       // In channels, @mentions are handled by app_mention handler, so skip them here
       // to avoid double-processing. But in DMs, app_mention doesn't fire, so we must
@@ -344,6 +353,75 @@ export async function mountSlackApp(
   });
 
   registerMergeActionHandlers(app!);
+
+  // Handle trigger approval button
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  app!.action('approve_trigger', async ({ action, ack, body }: any) => {
+    await ack();
+
+    const triggerId = action.value;
+    const userId = body.user?.id || 'unknown';
+    // The approval prompt was posted into a task thread; that task carries the
+    // pending_trigger_id. Find it by the message thread so the same task-level
+    // handler (shared with the CLI /approve path) runs.
+    const threadId = body.message?.thread_ts || body.message?.ts;
+
+    logger.server(`Trigger ${triggerId} approved by ${userId}`);
+
+    try {
+      // Enable first so we have the trigger to describe, then swap the card for a
+      // friendly confirmation (the full details also post to the bound channel
+      // via the announcement inside handleTriggerApproval).
+      const taskId = threadId ? await findTaskByThread(threadId) : null;
+      let trigger: import('../../types/trigger.js').Trigger | null = null;
+      if (taskId) {
+        const task = await Task.get(taskId);
+        trigger = await task.handleTriggerApproval(userId, triggerId);
+      } else {
+        logger.warn('Server', `approve_trigger: no task found for thread ${threadId}; enabling trigger directly`);
+        const { enableProposedTrigger } = await import('../../system/trigger-store.js');
+        const { indexTrigger, announceTriggerChange } = await import('../../system/trigger-scheduler.js');
+        trigger = await enableProposedTrigger(triggerId, userId);
+        if (trigger) { indexTrigger(trigger); await announceTriggerChange(trigger, 'enabled'); }
+      }
+      if (body.channel?.id && body.message?.ts) {
+        const text = trigger
+          ? `✅ Approved by <@${userId}> — *${triggerWhat(trigger)}* is now on.`
+          : `⚠️ Approved by <@${userId}>, but the automation couldn't be enabled (it may already be active or a limit was reached).`;
+        await updateMessage(body.channel.id, body.message.ts, text, []);
+      }
+    } catch (error) {
+      logger.error('Server', 'Error handling trigger approval', error);
+    }
+  });
+
+  // Handle trigger denial button
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  app!.action('deny_trigger', async ({ action, ack, body }: any) => {
+    await ack();
+
+    const triggerId = action.value;
+    const userId = body.user?.id || 'unknown';
+    const threadId = body.message?.thread_ts || body.message?.ts;
+
+    logger.server(`Trigger ${triggerId} denied by ${userId}`);
+
+    try {
+      if (body.channel?.id && body.message?.ts) {
+        await updateMessage(body.channel.id, body.message.ts, `❌ Declined by <@${userId}> — no automation was set up.`, []);
+      }
+      const taskId = threadId ? await findTaskByThread(threadId) : null;
+      if (taskId) {
+        const task = await Task.get(taskId);
+        await task.handleTriggerDenial(triggerId);
+      } else {
+        const { deleteTrigger } = await import('../../system/trigger-store.js');
+        await deleteTrigger(triggerId);
+      }
+    } catch (error) {
+      logger.error('Server', 'Error handling trigger denial', error);
+    }
+  });
 
   // Return a lifecycle handle. start()/stop() are no-ops in HTTP mode —
   // the shared HTTP server in src/index.ts drives the ExpressReceiver.
@@ -642,8 +720,49 @@ async function handleSlackEvent(event: {
     }
     await sendSharedChannelWarnings(task, event.channel, threadId, thread, shared);
     await task.sendMessage(AGENT_PROMPTS.newTask);
+  } else if (event.type === 'message' && !event.channel.startsWith('D') && !event.thread_ts) {
+    // Ambient top-level channel message (no task, not an @mention, not a thread
+    // reply) — the only place channel-message triggers fire. @mentions and DMs
+    // are excluded above so a message aimed at Archie never also fires a trigger.
+    await dispatchChannelMessageTriggers(event, thread.channel.name);
   }
   // Otherwise: a reply in a human-started thread the bot wasn't part of — ignore
+}
+
+/**
+ * Fire any channel-message triggers watching this channel whose filter matches
+ * the message. Each match spawns an independent read-only task that replies in
+ * the triggering thread. External authors are already filtered upstream.
+ */
+async function dispatchChannelMessageTriggers(
+  event: { channel: string; user: string; text: string; ts: string },
+  channelName: string,
+): Promise<void> {
+  const triggers = getChannelMessageTriggers(event.channel);
+  if (triggers.length === 0) return;
+
+  const matches = (trigger: Trigger): boolean =>
+    trigger.conditions.some((c) => {
+      if (c.type !== 'channel_message' || c.channel_id !== event.channel) return false;
+      if (c.match?.contains && !event.text.toLowerCase().includes(c.match.contains.toLowerCase())) return false;
+      if (c.match?.from_user && event.user !== c.match.from_user) return false;
+      return true;
+    });
+
+  for (const trigger of triggers) {
+    if (!matches(trigger)) continue;
+    try {
+      await fireTrigger(trigger, {
+        kind: 'message',
+        text: event.text,
+        threadId: event.ts,
+        channelId: event.channel,
+        channelName,
+      });
+    } catch (err) {
+      logger.error('Slack', `Failed to fire channel-message trigger ${trigger.id}`, err);
+    }
+  }
 }
 
 /**

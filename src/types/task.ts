@@ -327,6 +327,8 @@ export interface TaskMetadata {
     trigger_at: string;              // ISO 8601 datetime when the task should be reactivated
     reason: string;                  // Why — shown to agent when woken
   };
+  triggered_by?: string;             // Trigger ID that spawned this task (set by fireTrigger). Blocks the task from creating triggers.
+  pending_trigger_id?: string;       // Trigger ID proposed by this task, awaiting approve/deny (read by handleTriggerApproval/Denial)
   created_at: string;
   updated_at: string;
 }

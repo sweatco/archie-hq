@@ -324,6 +324,9 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     if (metadata.reminder) {
       contextLines.push(`Reminder: ${metadata.reminder.trigger_at} — ${metadata.reminder.reason}`);
     }
+    if (metadata.triggered_by) {
+      contextLines.push(`Spawned by trigger: ${metadata.triggered_by} (this is a fresh, trigger-initiated task — deliver the result as instructed in the first message)`);
+    }
     // Surface the live plugins-repo version so the PM can tell users when the
     // plugins/agents were last updated. Refreshed on every task start/load.
     const pluginsHead = await getPluginsHeadInfo();

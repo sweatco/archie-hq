@@ -546,17 +546,21 @@ export class Task {
   async postInteractiveToUser(
     text: string,
     blocks: unknown[],
-    approvalType: 'edit_mode' | 'research_budget' | 'merge',
+    approvalType: 'edit_mode' | 'research_budget' | 'merge' | 'trigger',
     channelKey?: string,
     context?: { github: string; pr_number: number },
+    ref?: string,
   ): Promise<void> {
     // Merge approvals carry the PR identity so CLI/SSE consumers can echo it
     // back on resolution (the API route requires github+pr_number for
-    // type:'merge'); other approval types omit it (backward compatible).
+    // type:'merge'). `ref` is an opaque id the approval applies to (e.g. a
+    // trigger id), echoed so the CLI can resolve the exact item when several
+    // approvals of the same type are outstanding. Other types omit both.
     emitEvent('approval:requested', this.taskId, {
       text,
       approvalType,
       ...(context ? { github: context.github, pr_number: context.pr_number } : {}),
+      ...(ref ? { ref } : {}),
     });
 
     const ch = this.resolveSlackChannel(channelKey);
@@ -870,6 +874,30 @@ export class Task {
       return null;
     }
     return getMessageReactions(ch.channel_id, messageTs);
+  }
+
+  /**
+   * Link an existing Slack thread to this task and promote it to the default
+   * channel. Posts nothing — used by `fireTrigger` for channel-message triggers
+   * so the spawned PM replies in the triggering thread rather than opening a new
+   * one. Idempotent; mirrors the channel-registration shape used by `append`.
+   * Returns the channel key.
+   */
+  linkSlackThread(channelId: string, threadTs: string, channelName: string): string {
+    const key = `slack:${channelId}:${threadTs}`;
+    if (!this.metadata.channels[key]) {
+      this.metadata.channels[key] = {
+        type: 'slack',
+        thread_id: threadTs,
+        channel_id: channelId,
+        channel_name: channelName,
+        last_processed_ts: threadTs,
+        url: buildThreadUrl(channelId, threadTs) ?? undefined,
+      };
+    }
+    this.metadata.default_channel ??= key;
+    this.debouncedSave();
+    return key;
   }
 
   /**
@@ -1379,6 +1407,65 @@ export class Task {
   async handleResearchBudgetDenial(): Promise<void> {
     await appendAgentFinding(this.taskId, 'system', 'Additional research denied by user', 'decision');
     await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+  }
+
+  /**
+   * Approve the trigger this task proposed (read from `metadata.pending_trigger_id`).
+   * Flips it to `enabled`, indexes the scheduler, and announces to the bound
+   * channel. Shared by the Slack `approve_trigger` button and the CLI
+   * `/tasks/:id/approve` endpoint. Returns the enabled trigger (or null if the
+   * pending proposal is gone). Dynamic imports avoid a static task↔scheduler cycle.
+   */
+  async handleTriggerApproval(approverId: string, triggerId?: string): Promise<import('../types/trigger.js').Trigger | null> {
+    const id = triggerId ?? this.metadata.pending_trigger_id;
+    if (!id) {
+      logger.warn('task', `handleTriggerApproval on ${this.taskId} with no trigger id`);
+      return null;
+    }
+    const { loadTrigger, enableProposedTrigger, deleteTrigger, countActiveTriggers } = await import('../system/trigger-store.js');
+    const { indexTrigger, announceTriggerChange, MAX_TRIGGERS_PER_USER, MAX_TRIGGERS_PER_CHANNEL } = await import('../system/trigger-scheduler.js');
+
+    // Re-check caps at approval: pending proposals don't count toward the caps,
+    // so approving several proposed while under the limit could otherwise blow
+    // past it. Refuse (delete the pending file) if enabling would exceed a cap.
+    const pending = await loadTrigger(id);
+    if (pending && pending.status === 'pending') {
+      const overChannel = pending.binding.type === 'channel'
+        && (await countActiveTriggers((t) => t.binding.type === 'channel' && t.binding.channel_id === (pending.binding as { channel_id: string }).channel_id)) >= MAX_TRIGGERS_PER_CHANNEL;
+      const overUser = pending.created_by && pending.created_by !== 'unknown'
+        && (await countActiveTriggers((t) => t.created_by === pending.created_by)) >= MAX_TRIGGERS_PER_USER;
+      if (overChannel || overUser) {
+        await deleteTrigger(id);
+        if (this.metadata.pending_trigger_id === id) this.metadata.pending_trigger_id = undefined;
+        this.debouncedSave();
+        await appendAgentFinding(this.taskId, 'system', `Trigger ${id} not enabled — active-trigger cap reached`, 'decision');
+        return null;
+      }
+    }
+
+    const trigger = await enableProposedTrigger(id, approverId);
+    if (this.metadata.pending_trigger_id === id) this.metadata.pending_trigger_id = undefined;
+    this.debouncedSave();
+    if (!trigger) return null;
+    indexTrigger(trigger);
+    await appendAgentFinding(this.taskId, 'system', `Trigger ${id} approved by user`, 'decision');
+    emitEvent('trigger:created', this.taskId, { trigger_id: id });
+    await announceTriggerChange(trigger, 'enabled');
+    return trigger;
+  }
+
+  /**
+   * Deny the trigger this task proposed — delete the pending file. Shared by the
+   * Slack `deny_trigger` button and the CLI `/approve` endpoint.
+   */
+  async handleTriggerDenial(triggerId?: string): Promise<void> {
+    const id = triggerId ?? this.metadata.pending_trigger_id;
+    if (this.metadata.pending_trigger_id === id) this.metadata.pending_trigger_id = undefined;
+    this.debouncedSave();
+    if (!id) return;
+    const { deleteTrigger } = await import('../system/trigger-store.js');
+    await deleteTrigger(id);
+    await appendAgentFinding(this.taskId, 'system', `Trigger ${id} denied by user`, 'decision');
   }
 
   // ---- Internal methods ----

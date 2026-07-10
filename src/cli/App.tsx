@@ -3,10 +3,11 @@ import { Box, Text, useInput, useApp, useStdout } from 'ink';
 import { connectSSE, createTask } from './api.js';
 import { TaskList } from './components/TaskList.js';
 import { TaskDetail } from './components/TaskDetail.js';
+import { TriggerList } from './components/TriggerList.js';
 import { StatusBar } from './components/StatusBar.js';
 import { MessageInput } from './components/MessageInput.js';
 
-type View = 'list' | 'detail' | 'create';
+type View = 'list' | 'detail' | 'create' | 'triggers';
 
 export function App() {
   const { exit } = useApp();
@@ -42,6 +43,11 @@ export function App() {
         if (view === 'list' && event.type?.startsWith('task:')) {
           refresh();
         }
+
+        // For triggers view: refresh on trigger-level events
+        if (view === 'triggers' && event.type?.startsWith('trigger:')) {
+          refresh();
+        }
       },
       onConnect: () => setConnected(true),
       onDisconnect: () => setConnected(false),
@@ -56,6 +62,11 @@ export function App() {
   useInput((input, key) => {
     if (view === 'create') return; // create view captures input
     if (view === 'detail') return; // detail view handles its own navigation (esc to go back)
+    if (view === 'triggers') return; // triggers view handles its own navigation
+    if (view === 'list' && (input === 't' || input === 'T')) {
+      setView('triggers');
+      return;
+    }
     if (input === 'q' || input === 'Q') {
       exit();
     }
@@ -127,6 +138,13 @@ export function App() {
         )}
         {view === 'create' && (
           <CreateTaskPrompt onSubmit={handleCreateTask} onCancel={handleCancelCreate} />
+        )}
+        {view === 'triggers' && (
+          <TriggerList
+            onBack={() => setView('list')}
+            active={view === 'triggers'}
+            refreshTrigger={refreshTrigger}
+          />
         )}
       </Box>
 
