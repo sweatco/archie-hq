@@ -35,6 +35,9 @@ export const REPOS_DIR = join(WORKDIR, 'repos');
 /** Sessions directory (task runtime data) */
 export const SESSIONS_DIR = join(WORKDIR, 'sessions');
 
+/** Triggers directory (one JSON file per persistent trigger) */
+export const TRIGGERS_DIR = join(WORKDIR, 'triggers');
+
 /** Persistent per-plugin data directory */
 export const PLUGINS_DATA_DIR = join(WORKDIR, 'plugins-data');
 
@@ -72,6 +75,7 @@ export async function bootstrapWorkdir(): Promise<void> {
   await mkdir(WORKDIR, { recursive: true });
   await mkdir(REPOS_DIR, { recursive: true });
   await mkdir(SESSIONS_DIR, { recursive: true });
+  await mkdir(TRIGGERS_DIR, { recursive: true });
   await mkdir(PLUGINS_DATA_DIR, { recursive: true });
   await mkdir(OAUTH_DIR, { recursive: true, mode: 0o700 });
   await mkdir(OAUTH_PENDING_DIR, { recursive: true, mode: 0o700 });

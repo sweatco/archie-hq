@@ -61,11 +61,35 @@ export async function fetchTaskEvents(
   return res.json() as Promise<{ events: any[]; total: number }>;
 }
 
+export async function fetchTriggers(): Promise<{ triggers: any[]; total: number }> {
+  const res = await fetch(`${getBaseUrl()}/api/triggers`);
+  if (!res.ok) throw new Error(`Failed to fetch triggers: ${res.status}`);
+  return res.json() as Promise<{ triggers: any[]; total: number }>;
+}
+
+export async function updateTrigger(
+  id: string,
+  patch: { status?: 'paused' | 'enabled'; action_prompt?: string },
+): Promise<void> {
+  const res = await fetch(`${getBaseUrl()}/api/triggers/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error(`Failed to update trigger: ${res.status}`);
+}
+
+export async function deleteTrigger(id: string): Promise<void> {
+  const res = await fetch(`${getBaseUrl()}/api/triggers/${id}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(`Failed to delete trigger: ${res.status}`);
+}
+
 export async function sendApproval(
   taskId: string,
-  type: 'edit_mode' | 'research_budget' | 'merge',
+  type: 'edit_mode' | 'research_budget' | 'merge' | 'trigger',
   approve: boolean,
   identity?: { github: string; pr_number: number },
+  ref?: string,
 ): Promise<void> {
   // merge-type resolutions must carry the PR identity or the API 400s — this
   // was the CLI approval bug (blank screen on a merge prompt). Other types omit
@@ -77,6 +101,7 @@ export async function sendApproval(
       type,
       approve,
       ...(identity ? { github: identity.github, pr_number: identity.pr_number } : {}),
+      ...(ref ? { ref } : {}),
     }),
   });
   if (!res.ok) throw new Error(`Failed to send approval: ${res.status}`);

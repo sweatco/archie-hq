@@ -1250,27 +1250,51 @@ export async function postEphemeral(
 /**
  * Get channel info
  */
-export async function getChannelInfo(channelId: string): Promise<{ id: string; name: string }> {
+export async function getChannelInfo(
+  channelId: string,
+): Promise<{ id: string; name: string; isPrivate: boolean; isIm: boolean; imUserId?: string }> {
   const client = getSlackClient();
 
   try {
     const result = await client.conversations.info({ channel: channelId });
-    const channel = result.channel as { name?: string; is_im?: boolean; user?: string } | undefined;
+    const channel = result.channel as
+      | { name?: string; is_im?: boolean; is_private?: boolean; user?: string }
+      | undefined;
+
+    const isIm = channel?.is_im === true;
+    // DMs are inherently private; otherwise read the channel's is_private flag.
+    const isPrivate = isIm || channel?.is_private === true;
 
     // For DMs, resolve the other user's name instead of showing a raw ID
-    if (channel?.is_im && channel.user) {
+    if (isIm && channel?.user) {
       const userInfo = await getUserInfo(channel.user);
-      return { id: channelId, name: `DM with ${userInfo.realName}` };
+      return { id: channelId, name: `DM with ${userInfo.realName}`, isPrivate, isIm, imUserId: channel.user };
     }
 
     return {
       id: channelId,
       name: channel?.name || channelId,
+      isPrivate,
+      isIm,
     };
   } catch (error) {
     logger.warn('Slack', `Failed to get channel info for ${channelId}`);
-    return { id: channelId, name: channelId };
+    return { id: channelId, name: channelId, isPrivate: false, isIm: false };
   }
+}
+
+/**
+ * Resolve a channel's current privacy, **throwing** on any API error rather than
+ * swallowing it. Unlike `getChannelInfo` (which returns `isPrivate:false` on
+ * failure), this lets callers that must fail *closed* — e.g. trigger visibility,
+ * where an unresolvable channel must be treated as private, never public —
+ * distinguish a genuine public channel from an unreachable one. A DM is private.
+ */
+export async function fetchChannelIsPrivate(channelId: string): Promise<boolean> {
+  const client = getSlackClient();
+  const result = await client.conversations.info({ channel: channelId });
+  const channel = result.channel as { is_im?: boolean; is_private?: boolean } | undefined;
+  return channel?.is_im === true || channel?.is_private === true;
 }
 
 // ---- Channel canvas tabs + file reads (project-context canvases) ----------
@@ -1391,6 +1415,29 @@ export async function fetchSlackFileBody(fileUrl: string): Promise<string> {
   }
 
   return await response.text();
+}
+
+/**
+ * Probe whether a channel can currently receive a post from the bot. Returns
+ * false when the channel no longer exists or is archived (e.g. deleted, or the
+ * bot was removed and the channel archived). A successful `conversations.info`
+ * on a live, non-archived channel returns true. Note: a public channel returns
+ * true even if the bot isn't a member (Slack allows posting), so this primarily
+ * catches the deleted/archived cases — the strongest signal available without
+ * actually posting.
+ */
+export async function isChannelReachable(channelId: string): Promise<boolean> {
+  try {
+    // getSlackClient() is inside the try on purpose: if the client isn't
+    // initialized it throws, and this probe must return false (→ fireTrigger
+    // pauses the trigger) rather than propagate and error-loop every tick.
+    const client = getSlackClient();
+    const result = await client.conversations.info({ channel: channelId });
+    const channel = result.channel as { is_archived?: boolean } | undefined;
+    return channel ? channel.is_archived !== true : false;
+  } catch {
+    return false;
+  }
 }
 
 
