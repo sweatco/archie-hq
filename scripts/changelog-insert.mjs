@@ -50,8 +50,14 @@ const date = entry.match(DATE_HEADING)[1];
 // nothing to report (changelog-gather.sh bails before the model runs), so a
 // bulletless entry arriving here means something upstream misfired — never
 // commit a hollow "_No changes landed_" section. Fail loudly instead.
+//
+// The test is "does the body have a markdown list item?": every real entry —
+// including a pure-plumbing day, written as `- _Technical: …_` — leads its
+// content with a bullet, while the empty-day draft is a bare italic line.
+// Match only list markers (`-`, `*`, `+`), NEVER a leading `_`: accepting `_`
+// would let the empty "_No changes landed_" sentinel pass straight through.
 const body = entry.slice(entry.indexOf('\n') + 1);
-if (!/^\s*[-*] /m.test(body)) {
+if (!/^\s*[-*+] /m.test(body)) {
   console.error(
     `Refusing to insert: entry for ${date} has a heading but no changelog bullets ` +
       `(an empty "no changes" record). A quiet day should be skipped upstream, not committed.\n` +
