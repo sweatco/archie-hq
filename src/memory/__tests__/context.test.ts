@@ -363,7 +363,15 @@ describe('memory context builder', () => {
       expect(record.ts).toMatch(/^\d{4}-\d{2}-\d{2}T/);
       expect(record.taskId).toBe(TASK);
       expect(record.agent).toBe('backend-agent');
-      expect(record.ctx).toEqual({ repo: 'backend', plugin: null, taskTitle: 'payment bug', userIds: ['U07DANA001'] });
+      expect(record.ctx).toEqual({
+        repo: 'backend',
+        plugin: null,
+        taskTitle: 'payment bug',
+        userIds: ['U07DANA001'],
+        // Display names ride along so harvested goldens replay the exact
+        // token-overlap signal the spawn scored with.
+        users: [{ id: 'U07DANA001', name: 'Dana' }],
+      });
       expect(record.selected).toEqual([{ slug: 'payment-service', score: expect.any(Number), scope: 'repo' }]);
       expect(record.dropped).toEqual([]);
       expect(record.zeroSignalExcluded).toBe(1);
@@ -395,7 +403,7 @@ describe('memory context builder', () => {
       const withoutSensor = await buildMemoryContext([], { repo: 'backend' });
 
       expect(withSensor).toBe(withoutSensor);
-      expect(warn).toHaveBeenCalledWith('memory', expect.stringContaining('selection sensor write failed'));
+      expect(warn).toHaveBeenCalledWith('memory', expect.stringContaining('telemetry write failed'));
       expect(existsSync(sensorFile())).toBe(false);
       warn.mockRestore();
     });
