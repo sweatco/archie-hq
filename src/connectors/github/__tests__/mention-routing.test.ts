@@ -233,6 +233,13 @@ describe('routeGitHubEvent — existing routing unchanged (AC11)', () => {
     expect(route).toEqual({ action: 'direct', handler: 'merge_check', taskId: TASK_ID });
   });
 
+  it('routes push events to merge_check byte-identically', async () => {
+    vi.mocked(loadMetadata).mockResolvedValue({ task_id: TASK_ID } as never);
+
+    const route = await routeGitHubEvent('push', loadFixture('push'));
+    expect(route).toEqual({ action: 'direct', handler: 'merge_check', taskId: TASK_ID });
+  });
+
   it('routes failed check_suite completions to checks_ready byte-identically', async () => {
     vi.mocked(loadMetadata).mockResolvedValue({ task_id: TASK_ID } as never);
 

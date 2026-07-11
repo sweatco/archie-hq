@@ -204,6 +204,28 @@ describe('handleGitHubMentionDirect — creation path (AC2, AC4, AC5)', () => {
     expect(sendMessageSpy).toHaveBeenCalledWith(AGENT_PROMPTS.newTask, 'pm-agent');
   });
 
+  it('does not abort creation when the ack calls throw — task, seed, and PM ping still land (AC5)', async () => {
+    const mention = await mentionFromPayload('issue_comment', commentMentionPayload());
+    mockClient.addCommentReaction.mockRejectedValue(new Error('403 reactions disabled'));
+    mockClient.addPRComment.mockRejectedValue(new Error('issue locked'));
+
+    await handleGitHubMentionDirect(mention);
+
+    const taskId = createdTaskId();
+    const onDisk = await loadMetadata(taskId);
+    expect(onDisk?.channels['github:acme/backend#55']).toMatchObject({ type: 'github', issue_number: 55 });
+    const log = await readFile(getKnowledgeLogPath(taskId), 'utf-8');
+    expect(log).toContain(`@${SLUG} please investigate [comment_id=9001]`);
+    expect(sendMessageSpy).toHaveBeenCalledWith(AGENT_PROMPTS.newTask, 'pm-agent');
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+      'Server', expect.stringContaining('Failed to add ack reaction'), expect.any(Error),
+    );
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+      'Server', expect.stringContaining('Failed to post ack comment'), expect.any(Error),
+    );
+    expect(vi.mocked(logger.error)).not.toHaveBeenCalled();
+  });
+
   it('delivers to the existing task instead of duplicating when the thread mapped mid-flight', async () => {
     // Route the mention while no task exists (both webhooks race past the
     // mapping), then map the thread before the handler runs — the D6 re-check
@@ -422,7 +444,7 @@ describe('handleExistingTaskDirect — GitHub-born follow-ups (AC7) and AC11 pin
     expect(sendMessageSpy).toHaveBeenCalledTimes(2);
   });
 
-  it('skips a redelivered comment id via the channel watermark (AC7 dedup)', async () => {
+  it('skips a redelivered follow-up comment id via the channel watermark (AC7 dedup)', async () => {
     const task = await makeGitHubBornTask(160, 9800);
 
     await handleExistingTaskDirect(task.taskId, followUpContext(160, 9800, 'writer2'));
@@ -432,6 +454,26 @@ describe('handleExistingTaskDirect — GitHub-born follow-ups (AC7) and AC11 pin
     expect(log).not.toContain('a plain follow-up');
     expect(vi.mocked(logger.system)).toHaveBeenCalledWith(
       expect.stringContaining('Skipping already-processed comment 9800'),
+    );
+  });
+
+  it('dedups a redelivered triggering comment via the creation-time watermark (AC7)', async () => {
+    // Full mention path first: creation seeds the comment AND sets the channel
+    // watermark to the triggering comment id (9001).
+    const mention = await mentionFromPayload('issue_comment', commentMentionPayload());
+    await handleGitHubMentionDirect(mention);
+    const taskId = createdTaskId();
+    sendMessageSpy.mockClear();
+
+    // Webhook redelivery of that same comment now resolves via the mapping and
+    // arrives as existing-task delivery — the seed consumed it, so it must skip.
+    await handleExistingTaskDirect(taskId, followUpContext(55, 9001, 'dana', `@${SLUG} please investigate`));
+
+    expect(sendMessageSpy).not.toHaveBeenCalled();
+    const log = await readFile(getKnowledgeLogPath(taskId), 'utf-8');
+    expect(log.split('[comment_id=9001]').length - 1).toBe(1); // the seed entry only — no duplicate append
+    expect(vi.mocked(logger.system)).toHaveBeenCalledWith(
+      expect.stringContaining('Skipping already-processed comment 9001'),
     );
   });
 
