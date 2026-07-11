@@ -55,8 +55,8 @@ vi.mock('../../../system/logger.js', () => ({
   },
 }));
 
-import { handleGitHubMentionDirect } from '../events.js';
-import { routeGitHubEvent, type GitHubMentionEvent } from '../webhooks.js';
+import { handleGitHubMentionDirect, handleExistingTaskDirect } from '../events.js';
+import { routeGitHubEvent, formatGitHubContext, type GitHubMentionEvent } from '../webhooks.js';
 import { Task } from '../../../tasks/task.js';
 import { loadMetadata, getKnowledgeLogPath } from '../../../tasks/persistence.js';
 import { AGENT_PROMPTS } from '../../../agents/prompts.js';
@@ -322,5 +322,159 @@ describe('handleGitHubMentionDirect — gates (AC3, AC9)', () => {
     expect(mockClient.addPRComment).not.toHaveBeenCalled();
     expect(mockClient.addCommentReaction).not.toHaveBeenCalled();
     expect(sendMessageSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('handleExistingTaskDirect — GitHub-born follow-ups (AC7) and AC11 pins', () => {
+  async function makeGitHubBornTask(issueNumber: number, watermark?: number): Promise<Task> {
+    const task = await Task.create();
+    const key = task.linkGitHubChannel('acme/backend', issueNumber, false);
+    if (watermark !== undefined) {
+      (task.metadata.channels[key] as { last_processed_comment_id?: number }).last_processed_comment_id = watermark;
+    }
+    await task.save(true);
+    return task;
+  }
+
+  function followUpContext(
+    issueNumber: number,
+    commentId: number,
+    user: string,
+    body = 'a plain follow-up',
+  ): ReturnType<typeof formatGitHubContext> {
+    const p = loadFixture('issue-comment-created');
+    (p.issue as Record<string, unknown>).number = issueNumber;
+    (p.comment as Record<string, unknown>).id = commentId;
+    (p.comment as Record<string, unknown>).body = body;
+    ((p.comment as Record<string, unknown>).user as Record<string, unknown>).login = user;
+    (p.sender as Record<string, unknown>).login = user;
+    return formatGitHubContext('issue_comment', p);
+  }
+
+  /** The Task instance the handler loaded (fresh from disk each call). */
+  async function loadedInstance(getSpy: ReturnType<typeof vi.spyOn>, call = 0): Promise<Task> {
+    return (await getSpy.mock.results[call]!.value) as Task;
+  }
+
+  it('routes an authorized mention-free follow-up: appends, advances the watermark, pings the PM (AC7)', async () => {
+    const task = await makeGitHubBornTask(155);
+    const getSpy = vi.spyOn(Task, 'get');
+
+    await handleExistingTaskDirect(task.taskId, followUpContext(155, 9500, 'writer1'));
+
+    expect(mockClient.getCollaboratorPermission).toHaveBeenCalledWith('acme/backend', 'writer1');
+    const log = await readFile(getKnowledgeLogPath(task.taskId), 'utf-8');
+    expect(log).toContain('a plain follow-up [comment_id=9500]');
+    expect(log).toContain('github:acme/backend/issue #155');
+    expect(sendMessageSpy).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask, 'pm-agent');
+
+    const inst = await loadedInstance(getSpy);
+    expect((inst.metadata.channels['github:acme/backend#155'] as { last_processed_comment_id?: number }).last_processed_comment_id).toBe(9500);
+  });
+
+  it('silently drops a read/none follow-up author: no append, no PM wake, watermark unchanged (AC7 gate)', async () => {
+    const task = await makeGitHubBornTask(156, 111);
+    mockClient.getCollaboratorPermission.mockResolvedValue('read');
+    const getSpy = vi.spyOn(Task, 'get');
+
+    await handleExistingTaskDirect(task.taskId, followUpContext(156, 9600, 'reader1'));
+
+    const log = await readFile(getKnowledgeLogPath(task.taskId), 'utf-8');
+    expect(log).not.toContain('a plain follow-up');
+    expect(sendMessageSpy).not.toHaveBeenCalled();
+    expect(vi.mocked(logger.system)).toHaveBeenCalledWith(expect.stringContaining("permission 'read'"));
+
+    const inst = await loadedInstance(getSpy);
+    expect((inst.metadata.channels['github:acme/backend#156'] as { last_processed_comment_id?: number }).last_processed_comment_id).toBe(111);
+  });
+
+  it('fails closed on a thrown lookup and does not cache the failure — a retry re-queries', async () => {
+    const task = await makeGitHubBornTask(157);
+    mockClient.getCollaboratorPermission.mockRejectedValue(new Error('502'));
+
+    await handleExistingTaskDirect(task.taskId, followUpContext(157, 9601, 'flaky1'));
+    await handleExistingTaskDirect(task.taskId, followUpContext(157, 9602, 'flaky1'));
+
+    expect(sendMessageSpy).not.toHaveBeenCalled();
+    expect(mockClient.getCollaboratorPermission).toHaveBeenCalledTimes(2);
+    const log = await readFile(getKnowledgeLogPath(task.taskId), 'utf-8');
+    expect(log).not.toContain('a plain follow-up');
+  });
+
+  it('drops [bot] follow-up authors before any permission lookup', async () => {
+    const task = await makeGitHubBornTask(158);
+
+    await handleExistingTaskDirect(task.taskId, followUpContext(158, 9603, 'otherbot[bot]'));
+
+    expect(mockClient.getCollaboratorPermission).not.toHaveBeenCalled();
+    expect(sendMessageSpy).not.toHaveBeenCalled();
+    const log = await readFile(getKnowledgeLogPath(task.taskId), 'utf-8');
+    expect(log).not.toContain('a plain follow-up');
+  });
+
+  it('performs exactly one permission lookup for two follow-ups by the same author within the TTL', async () => {
+    const task = await makeGitHubBornTask(159);
+
+    await handleExistingTaskDirect(task.taskId, followUpContext(159, 9701, 'cacher1'));
+    await handleExistingTaskDirect(task.taskId, followUpContext(159, 9702, 'cacher1'));
+
+    expect(mockClient.getCollaboratorPermission).toHaveBeenCalledTimes(1);
+    expect(sendMessageSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips a redelivered comment id via the channel watermark (AC7 dedup)', async () => {
+    const task = await makeGitHubBornTask(160, 9800);
+
+    await handleExistingTaskDirect(task.taskId, followUpContext(160, 9800, 'writer2'));
+
+    expect(sendMessageSpy).not.toHaveBeenCalled();
+    const log = await readFile(getKnowledgeLogPath(task.taskId), 'utf-8');
+    expect(log).not.toContain('a plain follow-up');
+    expect(vi.mocked(logger.system)).toHaveBeenCalledWith(
+      expect.stringContaining('Skipping already-processed comment 9800'),
+    );
+  });
+
+  it('keeps the Archie-managed PR path ungated with byte-identical advance dedup (AC11)', async () => {
+    const task = await Task.create();
+    task.metadata.repositories['backend-agent'] = [{
+      github: 'acme/backend',
+      branch_states: { 'archie/task-x': { pr_number: 88, last_processed_comment_id: 9000 } },
+    }];
+    await task.save(true);
+    const getSpy = vi.spyOn(Task, 'get');
+
+    const p = loadFixture('issue-comment-created-pr');
+    (p.sender as Record<string, unknown>).login = 'prcommenter';
+    ((p.comment as Record<string, unknown>).user as Record<string, unknown>).login = 'prcommenter';
+    await handleExistingTaskDirect(task.taskId, formatGitHubContext('issue_comment', p));
+
+    expect(mockClient.getCollaboratorPermission).not.toHaveBeenCalled();
+    const log = await readFile(getKnowledgeLogPath(task.taskId), 'utf-8');
+    expect(log).toContain('Ship it once CI is green. [comment_id=9100]');
+    expect(sendMessageSpy).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask, 'pm-agent');
+
+    const inst = await loadedInstance(getSpy);
+    expect(inst.metadata.repositories['backend-agent']![0]!.branch_states!['archie/task-x']!.last_processed_comment_id).toBe(9100);
+  });
+
+  it('keeps the Archie-managed PR skip path byte-identical, still with no permission lookup (AC11)', async () => {
+    const task = await Task.create();
+    task.metadata.repositories['backend-agent'] = [{
+      github: 'acme/backend',
+      branch_states: { 'archie/task-x': { pr_number: 88, last_processed_comment_id: 9100 } },
+    }];
+    await task.save(true);
+
+    const p = loadFixture('issue-comment-created-pr');
+    (p.sender as Record<string, unknown>).login = 'prcommenter';
+    ((p.comment as Record<string, unknown>).user as Record<string, unknown>).login = 'prcommenter';
+    await handleExistingTaskDirect(task.taskId, formatGitHubContext('issue_comment', p));
+
+    expect(mockClient.getCollaboratorPermission).not.toHaveBeenCalled();
+    expect(sendMessageSpy).not.toHaveBeenCalled();
+    expect(vi.mocked(logger.system)).toHaveBeenCalledWith(
+      expect.stringContaining('Skipping already-processed comment 9100 on PR #88'),
+    );
   });
 });

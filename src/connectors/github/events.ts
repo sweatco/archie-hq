@@ -424,45 +424,124 @@ async function maybeRefreshPrCards(
 }
 
 /**
+ * Per-(repo, author) permission cache for follow-up gating. Every ungated GET
+ * spends the shared installation token's primary budget, so resolved outcomes
+ * — including read/none (negative caching is the point) — are cached for a
+ * short TTL; thrown lookups are never cached (a transient blip must not pin an
+ * author to fail-closed). Lazily evicted on access. Staleness cost: a
+ * revocation takes up to the TTL to take effect (accepted trade-off).
+ */
+const PERMISSION_CACHE_TTL_MS = 5 * 60_000;
+const permissionCache = new Map<string, { permission: string; at: number }>();
+
+/** Cached collaborator-permission lookup. Null on lookup failure or unconfigured client (fail closed). */
+async function getCachedPermission(githubRepo: string, author: string): Promise<string | null> {
+  const now = Date.now();
+  for (const [key, entry] of permissionCache) {
+    if (now - entry.at >= PERMISSION_CACHE_TTL_MS) permissionCache.delete(key);
+  }
+  const key = `${githubRepo}:${author}`;
+  const cached = permissionCache.get(key);
+  if (cached) return cached.permission;
+
+  const client = getGitHubClient();
+  if (!client) return null;
+  try {
+    const permission = await client.getCollaboratorPermission(githubRepo, author);
+    permissionCache.set(key, { permission, at: now });
+    return permission;
+  } catch (error) {
+    logger.warn('Server', `Permission lookup for ${author} on ${githubRepo} failed (fail closed)`, error);
+    return null;
+  }
+}
+
+/**
  * Handle an existing-task event: log to shared knowledge, update PR bookkeeping
- * (for issue_comment), and wake the PM agent.
+ * (for issue_comment), and wake the PM agent. Exported for tests.
  *
  * The issue_comment branch preserves `last_processed_comment_id` on both
  * branch_states and legacy repoInfo so future features (e.g. backfill from
  * external PR tracking) can resume mid-conversation. The same field doubles
- * as a dedup guard against webhook redelivery.
+ * as a dedup guard against webhook redelivery. GitHub-born threads (a github
+ * channel matching this repo+number) additionally gate the comment author on
+ * repo permission and dedup via the channel's own watermark.
  */
-async function handleExistingTaskDirect(
+export async function handleExistingTaskDirect(
   taskId: string,
   context: ReturnType<typeof formatGitHubContext>
 ): Promise<void> {
   const task = await Task.get(taskId);
 
-  if (context.eventType === 'issue_comment' && context.prNumber && context.commentId) {
+  const threadNumber = context.issueNumber ?? context.prNumber;
+  const githubChannel =
+    threadNumber === undefined
+      ? undefined
+      : (Object.values(task.metadata.channels).find(
+          (ch) => ch.type === 'github' && ch.repo === context.githubRepo && ch.issue_number === threadNumber,
+        ) as GitHubChannel | undefined);
+
+  // Author gate for GitHub-born threads: the thread is an open ingress, so the
+  // comment author's repo permission is re-checked before anything reaches the
+  // log or the PM. [bot] authors short-circuit before any API call; read/none
+  // and lookup failures drop silently — no append, no PM wake, and the
+  // watermark stays put so redeliveries behave identically. The Archie-managed
+  // PR path (no matching github channel) is not gated (AC11).
+  if (context.eventType === 'issue_comment' && githubChannel) {
+    if (context.user.endsWith('[bot]')) {
+      logger.system(`GitHub: dropping [bot] follow-up by ${context.user} on ${context.githubRepo}#${threadNumber}`);
+      return;
+    }
+    const permission = await getCachedPermission(context.githubRepo, context.user);
+    if (permission !== 'admin' && permission !== 'write') {
+      logger.system(
+        `GitHub: dropping follow-up by ${context.user} on ${context.githubRepo}#${threadNumber} — ` +
+        `permission '${permission ?? 'lookup failed'}' (write/admin required)`,
+      );
+      return;
+    }
+  }
+
+  if (context.eventType === 'issue_comment' && context.commentId && (context.prNumber || githubChannel)) {
     // Walk every attached repo across every agent looking for a branch state
     // matching this PR. Update `last_processed_comment_id` on every match
-    // (two agents on the same PR should both dedup against the same id).
+    // (two agents on the same PR should both dedup against the same id). A
+    // matching github channel folds into the same max/skip/advance computation
+    // — for plain issues and non-Archie PRs it is the only dedup store; for
+    // tasks without one the computation reduces to today's exact behavior.
     let lastProcessedId = 0;
     const matches: Array<{ state: { last_processed_comment_id?: number } }> = [];
-    for (const attachments of Object.values(task.metadata.repositories)) {
-      if (!Array.isArray(attachments)) continue;
-      for (const attached of attachments) {
-        if (attached.github !== context.githubRepo) continue;
-        const branchMatch = findBranchStateByPR(attached, context.prNumber);
-        if (!branchMatch) continue;
-        matches.push(branchMatch);
-        const seen = branchMatch.state.last_processed_comment_id ?? 0;
-        if (seen > lastProcessedId) lastProcessedId = seen;
+    if (context.prNumber) {
+      for (const attachments of Object.values(task.metadata.repositories)) {
+        if (!Array.isArray(attachments)) continue;
+        for (const attached of attachments) {
+          if (attached.github !== context.githubRepo) continue;
+          const branchMatch = findBranchStateByPR(attached, context.prNumber);
+          if (!branchMatch) continue;
+          matches.push(branchMatch);
+          const seen = branchMatch.state.last_processed_comment_id ?? 0;
+          if (seen > lastProcessedId) lastProcessedId = seen;
+        }
       }
+    }
+    if (githubChannel) {
+      const seen = githubChannel.last_processed_comment_id ?? 0;
+      if (seen > lastProcessedId) lastProcessedId = seen;
     }
 
     if (context.commentId <= lastProcessedId) {
-      logger.system(`GitHub: Skipping already-processed comment ${context.commentId} on PR #${context.prNumber}`);
+      logger.system(
+        `GitHub: Skipping already-processed comment ${context.commentId} on ` +
+        (context.prNumber ? `PR #${context.prNumber}` : `issue #${threadNumber}`),
+      );
       return;
     }
 
     for (const m of matches) {
       m.state.last_processed_comment_id = context.commentId;
+    }
+    if (githubChannel) {
+      githubChannel.last_processed_comment_id = context.commentId;
     }
     task.debouncedSave();
   }
