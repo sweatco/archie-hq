@@ -415,6 +415,33 @@ export class Task {
   }
 
   /**
+   * Link a GitHub issue/PR thread to this task and promote it to the default
+   * channel. The channel entry doubles as the task's GitHub-origin record (see
+   * isGitHubBorn), so creation-path callers must flush it synchronously via
+   * save(true) right after linking. Idempotent — re-linking keeps the existing
+   * entry (and its comment watermark); default_channel is only promoted the
+   * first time via ??=. Returns the channel key.
+   */
+  linkGitHubChannel(repo: string, issueNumber: number, isPr: boolean): string {
+    const key = `github:${repo}#${issueNumber}`;
+    this.metadata.channels[key] ??= { type: 'github', repo, issue_number: issueNumber, is_pr: isPr };
+    this.metadata.default_channel ??= key;
+    this.debouncedSave();
+    return key;
+  }
+
+  /**
+   * Whether this task was born from GitHub — exactly "has a github channel" in
+   * v1, since only the mention handler constructs them. The single predicate
+   * behind the readonly guards and the PM's GitHub-born spawn context; if a
+   * future feature links github channels to tasks born elsewhere, an explicit
+   * origin field must replace this body.
+   */
+  isGitHubBorn(): boolean {
+    return Object.values(this.metadata.channels).some((ch) => ch.type === 'github');
+  }
+
+  /**
    * Post a message to the user.
    *
    * Targeting modes:
