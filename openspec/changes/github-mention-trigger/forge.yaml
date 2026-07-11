@@ -2,8 +2,8 @@ run: github-mention-trigger
 source: { type: issue, ref: "200" }
 repo: sweatco/archie-hq
 branch: forge/github-mention-trigger
-stage: implement
-stage_rounds: { plan: 3 }
+stage: qa
+stage_rounds: { plan: 3, implement: 1 }
 acceptance_criteria:
   - id: AC1
     text: "WHEN an issue_comment.created webhook arrives whose body mentions @{GITHUB_APP_SLUG} and no existing task resolves (branch pattern, PR lookup, issue mapping) THEN the router returns a new new_task action carrying repo, issue/PR number, comment id, and author. WHEN the body contains no mention THEN the event is discarded exactly as today."
