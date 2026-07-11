@@ -2,8 +2,8 @@ run: github-mention-trigger
 source: { type: issue, ref: "200" }
 repo: sweatco/archie-hq
 branch: forge/github-mention-trigger
-stage: plan
-stage_rounds: {}
+stage: implement
+stage_rounds: { plan: 3 }
 acceptance_criteria:
   - id: AC1
     text: "WHEN an issue_comment.created webhook arrives whose body mentions @{GITHUB_APP_SLUG} and no existing task resolves (branch pattern, PR lookup, issue mapping) THEN the router returns a new new_task action carrying repo, issue/PR number, comment id, and author. WHEN the body contains no mention THEN the event is discarded exactly as today."
@@ -36,7 +36,7 @@ acceptance_criteria:
     status: pending
     evidence: null
   - id: AC7
-    text: "WHEN a subsequent non-bot comment lands on the same issue/PR THEN it routes to the existing task via the issue→task mapping, deduplicated by comment id, and the PM is pinged with the existing-task prompt."
+    text: "WHEN a subsequent non-bot comment by an author with write/maintain/admin permission lands on the same issue/PR THEN it routes to the existing task via the issue→task mapping, deduplicated by comment id, and the PM is pinged with the existing-task prompt; comments from read/none authors are silently ignored. (Amended at plan stage per red-team B1.)"
     method: integration
     status: pending
     evidence: null

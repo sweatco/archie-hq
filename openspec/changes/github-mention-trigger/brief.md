@@ -43,7 +43,7 @@ The only entry point for new work is Slack. The GitHub webhook router is purely 
 - **AC4** (`integration`) — WHEN an `issues.opened` webhook arrives with the mention in the issue body THEN behavior matches AC2 (the `issues` event is newly routed; today it falls to noop).
 - **AC5** (`integration`) — WHEN a task is created from a mention THEN Archie acknowledges in-thread: 👀 reaction on the triggering comment (or the issue for `issues.opened`) plus a short comment naming the task.
 - **AC6** (`integration`) — WHEN the PM posts to the user on a GitHub-born task THEN the message lands as a comment on the originating issue/PR thread — never the "no default channel — message dropped" path.
-- **AC7** (`integration`) — WHEN a subsequent non-bot comment lands on the same issue/PR THEN it routes to the existing task via the issue→task mapping, deduplicated by comment id, and the PM is pinged with the existing-task prompt.
+- **AC7** (`integration`) — WHEN a subsequent non-bot comment by an author with write/maintain/admin permission lands on the same issue/PR THEN it routes to the existing task via the issue→task mapping, deduplicated by comment id, and the PM is pinged with the existing-task prompt; comments from read/none authors are silently ignored. *(Amended at plan stage — see Amendments.)*
 - **AC8** (`unit`) — WHEN the comment author is `{GITHUB_APP_SLUG}[bot]` — including Archie's own acknowledgments — THEN nothing is routed and no task is created (loop safety).
 - **AC9** (`unit`) — WHEN an authorized mention arrives in a repo no plugin declares THEN a polite decline comment is posted and no task is created.
 - **AC10** (`unit`) — WHEN an agent calls `request_edit_mode` on a GitHub-born task THEN the request is declined immediately with a message stating GitHub-born tasks are readonly in v1; `edit_allowed` is never set; no silent hang.
@@ -56,6 +56,10 @@ The only entry point for new work is Slack. The GitHub webhook router is purely 
 - **AC12** needs dev GitHub App credentials and a reachable test repo inside the E2E harness. If absent, it degrades to `manual` (locally booted instance, real comment posted by hand) or an explicit waiver with AC13's post-merge verification named as the fallback.
 - **AC13** is `deploy-only` by nature: a GitHub App settings console change, verifiable only after merge/deploy.
 - AC5/AC6 integration tests mock the GitHub API; real-thread behavior is only proven by AC12/AC13.
+
+## Amendments
+
+- **2026-07-11 (plan stage, red-team blocking finding B1)** — AC7 tightened: follow-up comments are permission-gated like summons (write/maintain/admin; read/none silently ignored). Rationale: the original AC let any GitHub account inject text into the PM on a public repo, and a readonly PM can still *read* any installation-accessible repo via dynamic agents and relay content onto the thread — an exfiltration path. Same gate as summoning keeps AC7's UX for authorized users. Flagged for the user at plan publication and again at the merge gate.
 
 ## Design decisions locked at inception
 
