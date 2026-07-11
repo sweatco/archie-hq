@@ -149,6 +149,7 @@ function makeTask(overrides: Partial<Task['metadata']> = {}): Task {
     touch: vi.fn(),
     debouncedSave: vi.fn(),
     suspendStatus: vi.fn(),
+    isGitHubBorn: vi.fn().mockReturnValue(false),
     postToUser: vi.fn().mockResolvedValue(undefined),
     postInteractiveToUser: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
