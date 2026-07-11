@@ -2,7 +2,7 @@ run: github-mention-trigger
 source: { type: issue, ref: "200" }
 repo: sweatco/archie-hq
 branch: forge/github-mention-trigger
-stage: research
+stage: plan
 stage_rounds: {}
 acceptance_criteria:
   - id: AC1
