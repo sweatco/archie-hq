@@ -2,7 +2,7 @@ run: github-mention-trigger
 source: { type: issue, ref: "200" }
 repo: sweatco/archie-hq
 branch: forge/github-mention-trigger
-stage: qa
+stage: ship
 stage_rounds: { plan: 3, implement: 1, qa: 2 }
 acceptance_criteria:
   - id: AC1
@@ -62,9 +62,9 @@ acceptance_criteria:
     evidence: "qa-evidence/AC11/evidence.md — pins incl. push→merge_check, review→merge_check, failing check_suite→checks_ready, byte-identical formatGitHubEvent, no-permission-lookup dedup on Archie-PR path"
   - id: AC12
     text: "Against a running dockerized instance: POST a correctly signed issue_comment webhook mentioning the slug for a plugin-covered test repo THEN a task appears via the archie-debug MCP with the seeded knowledge log, and the acknowledgment is visible on the real GitHub issue."
-    method: live-e2e
+    method: manual
     status: pending
-    evidence: "qa-evidence/AC12/evidence.md — BLOCKED: no GITHUB_APP_* dev credentials in .env, no designated test repo; awaiting user choice (provide creds+repo → run github-mention recipe / manual operator run / waive naming AC13 fallback)"
+    evidence: "qa-evidence/AC12/evidence.md — degraded live-e2e→manual at the QA gate (user choice, per brief's QA limitations): Igor boots locally with dev creds (npm run docker:dev), posts a real mention on a plugin-covered repo issue, reports observations; to be recorded here before merge"
   - id: AC13
     text: "The production GitHub App subscribes to issues (and keeps issue_comment). Post-merge step: update webhook subscriptions in the GitHub App settings, then verify one real mention creates a task."
     method: deploy-only
