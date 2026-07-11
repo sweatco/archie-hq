@@ -1,0 +1,24 @@
+{
+  "action": "completed",
+  "check_suite": {
+    "head_branch": "archie/task-20260101-1200-abc123",
+    "status": "completed",
+    "conclusion": "failure",
+    "pull_requests": [
+      {
+        "number": 90
+      }
+    ]
+  },
+  "repository": {
+    "full_name": "acme/backend",
+    "name": "backend",
+    "owner": {
+      "login": "acme"
+    }
+  },
+  "sender": {
+    "login": "acme-ci[bot]",
+    "type": "Bot"
+  }
+}

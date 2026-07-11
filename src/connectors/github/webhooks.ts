@@ -367,7 +367,91 @@ export type GitHubRouteResult =
       taskId: string;
       githubRepo: string;
       prNumber: number;
-    };
+    }
+  | { action: 'direct'; handler: 'new_task'; mention: GitHubMentionEvent };
+
+// ============================================================================
+// Mention Detection
+// ============================================================================
+
+/**
+ * A summoning mention, extracted from the raw payload — everything the
+ * new-task handler needs to gate, create, seed, and acknowledge.
+ */
+export interface GitHubMentionEvent {
+  githubRepo: string;
+  issueNumber: number;
+  isPr: boolean;
+  /** Mentioning comment/issue author — the sender identity the self-filter vetted. */
+  author: string;
+  /** Set for comment-born mentions only. */
+  commentId?: number;
+  commentBody?: string;
+  issueTitle: string;
+  issueBody?: string;
+  issueAuthor?: string;
+  /** Link back to the mentioning comment (comment-born) or the issue. */
+  htmlUrl: string;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Word-boundary mention matcher (claude-code-action parity): `@{slug}` preceded
+ * by start-or-whitespace and followed by whitespace/punctuation/end,
+ * case-insensitive. Markdown-unaware by design — a mention inside a fenced code
+ * block matches.
+ */
+export function matchesMention(body: string, slug: string): boolean {
+  return new RegExp(`(^|\\s)@${escapeRegExp(slug)}([\\s.,!?;:]|$)`, 'i').test(body);
+}
+
+/**
+ * Mention-eligibility + detection for the new-task path. Runs only after the
+ * self-event filter and every task-resolution attempt (see routeGitHubEvent).
+ * Inert when GITHUB_APP_SLUG is unset — the slug is both the detection target
+ * and the self-filter, so the mention path must never run without it. Detection
+ * reads bodies only (issue titles never trigger) and only `created`/`opened`
+ * actions are eligible — edited-in mentions never trigger.
+ */
+function detectMention(
+  eventType: string,
+  payload: Record<string, unknown>,
+  context: GitHubEventContext
+): GitHubMentionEvent | null {
+  const slug = process.env.GITHUB_APP_SLUG;
+  if (!slug) return null;
+  const eligible =
+    (eventType === 'issue_comment' && context.action === 'created') ||
+    (eventType === 'issues' && context.action === 'opened');
+  if (!eligible) return null;
+  // Bot-to-bot hygiene: any [bot] author is skipped (our own bot was already
+  // discarded upstream by the self-filter).
+  if (context.user.endsWith('[bot]')) return null;
+  if (!context.body || !matchesMention(context.body, slug)) return null;
+
+  const issue = payload.issue as Record<string, unknown> | undefined;
+  if (!issue || context.issueNumber === undefined) return null;
+  const mention: GitHubMentionEvent = {
+    githubRepo: context.githubRepo,
+    issueNumber: context.issueNumber,
+    isPr: Boolean(issue.pull_request),
+    author: context.user,
+    issueTitle: (issue.title as string) || '',
+    issueBody: issue.body as string | undefined,
+    issueAuthor: (issue.user as Record<string, unknown> | undefined)?.login as string | undefined,
+    htmlUrl: (issue.html_url as string) || '',
+  };
+  if (eventType === 'issue_comment') {
+    const comment = payload.comment as Record<string, unknown> | undefined;
+    mention.commentId = context.commentId;
+    mention.commentBody = context.body;
+    mention.htmlUrl = (comment?.html_url as string) || mention.htmlUrl;
+  }
+  return mention;
+}
 
 /**
  * Internal route action
@@ -480,8 +564,15 @@ export async function routeGitHubEvent(
     taskId = await findTaskByPRNumber(context.githubRepo, context.prNumber) ?? undefined;
   }
 
-  // No task found - discard
+  // No task found — a summoning mention routes to new_task; otherwise discard
+  // exactly as before. Detection runs strictly after the self-filter and every
+  // resolution attempt, so mentions on threads that map to a task never mint a
+  // duplicate.
   if (!taskId) {
+    const mention = detectMention(eventType, payload, context);
+    if (mention) {
+      return { action: 'direct', handler: 'new_task', mention };
+    }
     return { action: 'discard', reason: 'Not our branch pattern' };
   }
 
