@@ -45,6 +45,9 @@ export interface GitHubClientConfig {
   installationId: number;
 }
 
+/** Reaction emoji accepted by GitHub's reactions endpoints. */
+export type ReactionContent = '+1' | '-1' | 'laugh' | 'confused' | 'heart' | 'hooray' | 'rocket' | 'eyes';
+
 export interface CreatePRResult {
   pr_number: number;
   pr_url: string;
@@ -634,6 +637,67 @@ export class GitHubClient {
     });
 
     logger.system(`GitHub: Added comment to PR #${prNumber}`);
+  }
+
+  /**
+   * Repository permission level for a user, as the legacy `permission` value
+   * (admin|write|read|none — GitHub maps maintain→write and triage→read).
+   */
+  async getCollaboratorPermission(
+    githubRepo: string,
+    username: string
+  ): Promise<'admin' | 'write' | 'read' | 'none'> {
+    const octokit = await this.getOctokit();
+    const { owner, repo } = this.parseRepo(githubRepo);
+
+    const response = await octokit.request(
+      'GET /repos/{owner}/{repo}/collaborators/{username}/permission',
+      { owner, repo, username }
+    );
+
+    return response.data.permission as 'admin' | 'write' | 'read' | 'none';
+  }
+
+  /**
+   * Add an emoji reaction to an issue/PR comment.
+   */
+  async addCommentReaction(
+    githubRepo: string,
+    commentId: number,
+    content: ReactionContent = 'eyes'
+  ): Promise<void> {
+    const octokit = await this.getOctokit();
+    const { owner, repo } = this.parseRepo(githubRepo);
+
+    await octokit.request('POST /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions', {
+      owner,
+      repo,
+      comment_id: commentId,
+      content,
+    });
+
+    logger.system(`GitHub: Added ${content} reaction to comment ${commentId}`);
+  }
+
+  /**
+   * Add an emoji reaction to an issue (or PR) itself.
+   */
+  async addIssueReaction(
+    githubRepo: string,
+    issueNumber: number,
+    content: ReactionContent = 'eyes'
+  ): Promise<void> {
+    const octokit = await this.getOctokit();
+    const { owner, repo } = this.parseRepo(githubRepo);
+
+    await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/reactions', {
+      owner,
+      repo,
+      issue_number: issueNumber,
+      content,
+    });
+
+    logger.system(`GitHub: Added ${content} reaction to issue #${issueNumber}`);
   }
 
   /**

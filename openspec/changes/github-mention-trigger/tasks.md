@@ -6,7 +6,7 @@
 
 ## 2. GitHub client helpers (design D4, D9; C2)
 
-- [ ] 2.1 Add `getCollaboratorPermission(githubRepo, username)` to `src/connectors/github/client.ts` wrapping `GET /repos/{owner}/{repo}/collaborators/{username}/permission`, returning the legacy `permission` value (`admin|write|read|none`; maintain→write, triage→read per H4), and reaction helpers `addCommentReaction(githubRepo, commentId, content = 'eyes')` (`POST /repos/{o}/{r}/issues/comments/{comment_id}/reactions`) and `addIssueReaction(githubRepo, issueNumber, content = 'eyes')` (`POST /repos/{o}/{r}/issues/{issue_number}/reactions`) per H3. Unit tests in new `src/connectors/github/__tests__/client-helpers.test.ts` with a stubbed octokit `request` asserting endpoint paths, params, and the permission passthrough.
+- [x] 2.1 Add `getCollaboratorPermission(githubRepo, username)` to `src/connectors/github/client.ts` wrapping `GET /repos/{owner}/{repo}/collaborators/{username}/permission`, returning the legacy `permission` value (`admin|write|read|none`; maintain→write, triage→read per H4), and reaction helpers `addCommentReaction(githubRepo, commentId, content = 'eyes')` (`POST /repos/{o}/{r}/issues/comments/{comment_id}/reactions`) and `addIssueReaction(githubRepo, issueNumber, content = 'eyes')` (`POST /repos/{o}/{r}/issues/{issue_number}/reactions`) per H3. Unit tests in new `src/connectors/github/__tests__/client-helpers.test.ts` with a stubbed octokit `request` asserting endpoint paths, params, and the permission passthrough.
 
 ## 3. Router: context, detection, route variant (design D1, D2, D3)
 
