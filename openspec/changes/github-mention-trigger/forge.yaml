@@ -70,4 +70,4 @@ acceptance_criteria:
     method: deploy-only
     status: waived
     evidence: "qa-evidence/AC13/evidence.md — named post-merge operator step (Igor): App settings → subscribe issues webhook, confirm Issues read & write permission, then one real mention → task + eyes reaction + ack comment + PM reply lands in-thread"
-pr: null
+pr: 208
