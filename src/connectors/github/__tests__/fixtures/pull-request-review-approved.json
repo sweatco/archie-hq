@@ -1,0 +1,32 @@
+{
+  "action": "submitted",
+  "review": {
+    "state": "approved",
+    "body": null,
+    "user": {
+      "login": "reviewer",
+      "type": "User"
+    }
+  },
+  "pull_request": {
+    "number": 90,
+    "state": "open",
+    "head": {
+      "ref": "archie/task-20260101-1200-abc123"
+    },
+    "base": {
+      "ref": "main"
+    }
+  },
+  "repository": {
+    "full_name": "acme/backend",
+    "name": "backend",
+    "owner": {
+      "login": "acme"
+    }
+  },
+  "sender": {
+    "login": "reviewer",
+    "type": "User"
+  }
+}

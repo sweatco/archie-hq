@@ -11,7 +11,7 @@
 import crypto from 'crypto';
 import { extractTaskIdFromBranch } from './branch-naming.js';
 import { checkAndMergeLinkedPRs } from './merge.js';
-import { findTaskByPRNumber, loadMetadata, appendGitHubEvent } from '../../tasks/persistence.js';
+import { findTaskByPRNumber, findTaskByIssueChannel, loadMetadata, appendGitHubEvent } from '../../tasks/persistence.js';
 import { Task } from '../../tasks/task.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
@@ -46,6 +46,8 @@ export interface GitHubEventContext {
   action: string;
   githubRepo: string;
   prNumber?: number;
+  /** Issue (or PR) number — set for all issue_comment and issues events. */
+  issueNumber?: number;
   branch?: string;
   user: string;
   body?: string;
@@ -97,11 +99,18 @@ export function formatGitHubContext(
   } else if (eventType === 'issue_comment') {
     const issue = payload.issue as Record<string, unknown> | undefined;
     const comment = payload.comment as Record<string, unknown> | undefined;
+    context.issueNumber = issue?.number as number | undefined;
+    context.body = comment?.body as string | undefined;
+    context.commentId = comment?.id as number | undefined;
+    // prNumber stays gated on issue.pull_request — a PR is an issue, not vice versa.
     if (issue?.pull_request) {
       context.prNumber = issue?.number as number | undefined;
-      context.body = comment?.body as string | undefined;
-      context.commentId = comment?.id as number | undefined;
     }
+  } else if (eventType === 'issues') {
+    const issue = payload.issue as Record<string, unknown> | undefined;
+    context.issueNumber = issue?.number as number | undefined;
+    context.body = issue?.body as string | undefined;
+    context.state = issue?.state as string | undefined;
   } else if (eventType === 'push') {
     const ref = payload.ref as string | undefined;
     context.branch = ref?.replace('refs/heads/', '');
@@ -205,7 +214,7 @@ export interface FormattedGitHubEvent {
  * Format a GitHub event into the structured Slack/CLI-compatible shape.
  */
 export function formatGitHubEvent(context: GitHubEventContext): FormattedGitHubEvent {
-  const { eventType, action, user, prNumber, body, state, commentId } = context;
+  const { eventType, action, user, prNumber, issueNumber, body, state, commentId } = context;
   const prDest = prNumber ? `PR #${prNumber}` : 'PR';
   const branchDest = `branch:${context.branch || 'unknown'}`;
   const cidTag = commentId ? ` [comment_id=${commentId}]` : '';
@@ -224,7 +233,13 @@ export function formatGitHubEvent(context: GitHubEventContext): FormattedGitHubE
       return { from: user, destination: prDest, message: body ? `commented on code${cidTag}: ${body}` : `commented on code${cidTag}` };
 
     case 'issue_comment':
-      return { from: user, destination: prDest, message: body ? `${body}${cidTag}` : `(empty)${cidTag}` };
+      // PR comments render exactly as before; only plain-issue comments (no
+      // prNumber) pick up the issue #N destination.
+      return {
+        from: user,
+        destination: !prNumber && issueNumber ? `issue #${issueNumber}` : prDest,
+        message: body ? `${body}${cidTag}` : `(empty)${cidTag}`,
+      };
 
     case 'pull_request':
       if (action === 'closed') {
@@ -352,7 +367,91 @@ export type GitHubRouteResult =
       taskId: string;
       githubRepo: string;
       prNumber: number;
-    };
+    }
+  | { action: 'direct'; handler: 'new_task'; mention: GitHubMentionEvent };
+
+// ============================================================================
+// Mention Detection
+// ============================================================================
+
+/**
+ * A summoning mention, extracted from the raw payload — everything the
+ * new-task handler needs to gate, create, seed, and acknowledge.
+ */
+export interface GitHubMentionEvent {
+  githubRepo: string;
+  issueNumber: number;
+  isPr: boolean;
+  /** Mentioning comment/issue author — the sender identity the self-filter vetted. */
+  author: string;
+  /** Set for comment-born mentions only. */
+  commentId?: number;
+  commentBody?: string;
+  issueTitle: string;
+  issueBody?: string;
+  issueAuthor?: string;
+  /** Link back to the mentioning comment (comment-born) or the issue. */
+  htmlUrl: string;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Word-boundary mention matcher (claude-code-action parity): `@{slug}` preceded
+ * by start-or-whitespace and followed by whitespace/punctuation/end,
+ * case-insensitive. Markdown-unaware by design — a mention inside a fenced code
+ * block matches.
+ */
+export function matchesMention(body: string, slug: string): boolean {
+  return new RegExp(`(^|\\s)@${escapeRegExp(slug)}([\\s.,!?;:]|$)`, 'i').test(body);
+}
+
+/**
+ * Mention-eligibility + detection for the new-task path. Runs only after the
+ * self-event filter and every task-resolution attempt (see routeGitHubEvent).
+ * Inert when GITHUB_APP_SLUG is unset — the slug is both the detection target
+ * and the self-filter, so the mention path must never run without it. Detection
+ * reads bodies only (issue titles never trigger) and only `created`/`opened`
+ * actions are eligible — edited-in mentions never trigger.
+ */
+function detectMention(
+  eventType: string,
+  payload: Record<string, unknown>,
+  context: GitHubEventContext
+): GitHubMentionEvent | null {
+  const slug = process.env.GITHUB_APP_SLUG;
+  if (!slug) return null;
+  const eligible =
+    (eventType === 'issue_comment' && context.action === 'created') ||
+    (eventType === 'issues' && context.action === 'opened');
+  if (!eligible) return null;
+  // Bot-to-bot hygiene: any [bot] author is skipped (our own bot was already
+  // discarded upstream by the self-filter).
+  if (context.user.endsWith('[bot]')) return null;
+  if (!context.body || !matchesMention(context.body, slug)) return null;
+
+  const issue = payload.issue as Record<string, unknown> | undefined;
+  if (!issue || context.issueNumber === undefined) return null;
+  const mention: GitHubMentionEvent = {
+    githubRepo: context.githubRepo,
+    issueNumber: context.issueNumber,
+    isPr: Boolean(issue.pull_request),
+    author: context.user,
+    issueTitle: (issue.title as string) || '',
+    issueBody: issue.body as string | undefined,
+    issueAuthor: (issue.user as Record<string, unknown> | undefined)?.login as string | undefined,
+    htmlUrl: (issue.html_url as string) || '',
+  };
+  if (eventType === 'issue_comment') {
+    const comment = payload.comment as Record<string, unknown> | undefined;
+    mention.commentId = context.commentId;
+    mention.commentBody = context.body;
+    mention.htmlUrl = (comment?.html_url as string) || mention.htmlUrl;
+  }
+  return mention;
+}
 
 /**
  * Internal route action
@@ -465,8 +564,29 @@ export async function routeGitHubEvent(
     taskId = await findTaskByPRNumber(context.githubRepo, context.prNumber) ?? undefined;
   }
 
-  // No task found - discard
+  // GitHub-born threads: resolve issue_comment and issues events via the
+  // issue→task mapping. Slug-gated so the whole GitHub-born surface (detection
+  // AND follow-up routing) is inert together when GITHUB_APP_SLUG is unset —
+  // with the self-filter also off, a routed follow-up could otherwise
+  // self-wake its task in an unbounded loop.
+  if (
+    !taskId &&
+    (eventType === 'issue_comment' || eventType === 'issues') &&
+    context.issueNumber !== undefined &&
+    process.env.GITHUB_APP_SLUG
+  ) {
+    taskId = await findTaskByIssueChannel(context.githubRepo, context.issueNumber) ?? undefined;
+  }
+
+  // No task found — a summoning mention routes to new_task; otherwise discard
+  // exactly as before. Detection runs strictly after the self-filter and every
+  // resolution attempt, so mentions on threads that map to a task never mint a
+  // duplicate.
   if (!taskId) {
+    const mention = detectMention(eventType, payload, context);
+    if (mention) {
+      return { action: 'direct', handler: 'new_task', mention };
+    }
     return { action: 'discard', reason: 'Not our branch pattern' };
   }
 

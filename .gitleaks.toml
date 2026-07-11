@@ -28,4 +28,8 @@ regexes = [
   '''ghp_abcdef1234567890ABCDEF12''',
   '''AKIAIOSFODNN7EXAMPLE''',
   '''sk-abcdefghijklmnopqrstuv''',
+  # sanitize.test.ts dummy that vitest verbose output reproduces in committed
+  # QA evidence logs (openspec/changes/*/qa-evidence/) — the test file itself is
+  # path-allowlisted above, but captured test output is not.
+  '''sk-abc123def456ghi789jkl012''',
 ]

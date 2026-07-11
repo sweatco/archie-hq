@@ -1,0 +1,34 @@
+{
+  "action": "created",
+  "issue": {
+    "number": 55,
+    "title": "Login button broken",
+    "body": "The login button 500s on tap.",
+    "state": "open",
+    "html_url": "https://github.com/acme/backend/issues/55",
+    "user": {
+      "login": "issue-author",
+      "type": "User"
+    }
+  },
+  "comment": {
+    "id": 9001,
+    "body": "Can someone look at this?",
+    "html_url": "https://github.com/acme/backend/issues/55#issuecomment-9001",
+    "user": {
+      "login": "dana",
+      "type": "User"
+    }
+  },
+  "repository": {
+    "full_name": "acme/backend",
+    "name": "backend",
+    "owner": {
+      "login": "acme"
+    }
+  },
+  "sender": {
+    "login": "dana",
+    "type": "User"
+  }
+}

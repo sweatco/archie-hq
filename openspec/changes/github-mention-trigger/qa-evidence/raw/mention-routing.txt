@@ -1,0 +1,30 @@
+
+ RUN  v4.1.10 /Users/igorsova/Projects/archie-hq.forge-github-mention-trigger
+
+ ✓ src/connectors/github/__tests__/mention-routing.test.ts > matchesMention — word boundaries > rejects prefix collisions and embedded slugs 1ms
+ ✓ src/connectors/github/__tests__/mention-routing.test.ts > matchesMention — word boundaries > accepts trailing punctuation and end-of-line, case-insensitively 0ms
+ ✓ src/connectors/github/__tests__/mention-routing.test.ts > routeGitHubEvent — mention detection (AC1) > routes a mentioning issue_comment.created with no resolving task to new_task 1ms
+ ✓ src/connectors/github/__tests__/mention-routing.test.ts > routeGitHubEvent — mention detection (AC1) > discards a comment without a mention exactly as today 0ms
+ ✓ src/connectors/github/__tests__/mention-routing.test.ts > routeGitHubEvent — mention detection (AC1) > does not route @slug-other (word boundary) to new_task 0ms
+ ✓ src/connectors/github/__tests__/mention-routing.test.ts > routeGitHubEvent — mention detection (AC1) > detects a mention inside a fenced code block (markdown-unaware, accepted parity) 0ms
+ ✓ src/connectors/github/__tests__/mention-routing.test.ts > routeGitHubEvent — mention detection (AC1) > routes a newly opened issue with a body mention to new_task (AC4) 0ms
+ ✓ src/connectors/github/__tests__/mention-routing.test.ts > routeGitHubEvent — mention detection (AC1) > does not trigger on a mention appearing only in the issue title 0ms
+ ✓ src/connectors/github/__tests__/mention-routing.test.ts > routeGitHubEvent — mention detection (AC1) > never triggers on issue_comment.edited, even with a newly edited-in mention 0ms
+ ✓ src/connectors/github/__tests__/mention-routing.test.ts > routeGitHubEvent — loop safety (AC8) > discards our own bot comment (ack-shaped, mention included) as Own bot event 0ms
+ ✓ src/connectors/github/__tests__/mention-routing.test.ts > routeGitHubEvent — loop safety (AC8) > skips mentions from other [bot] authors 0ms
+ ✓ src/connectors/github/__tests__/mention-routing.test.ts > routeGitHubEvent — loop safety (AC8) > is inert with GITHUB_APP_SLUG unset: no detection, and the self-filter is off 0ms
+ ✓ src/connectors/github/__tests__/mention-routing.test.ts > routeGitHubEvent — issue→task mapping > resolves a follow-up comment on a mapped issue to existing_task via the mapping 1ms
+ ✓ src/connectors/github/__tests__/mention-routing.test.ts > routeGitHubEvent — issue→task mapping > discards a redelivered issues.opened for a mapped issue via noop — no new_task, no duplicate 0ms
+ ✓ src/connectors/github/__tests__/mention-routing.test.ts > routeGitHubEvent — issue→task mapping > never consults the mapping when GITHUB_APP_SLUG is unset — github-born follow-ups stop routing 0ms
+ ✓ src/connectors/github/__tests__/mention-routing.test.ts > routeGitHubEvent — existing routing unchanged (AC11) > routes a mentioning comment on an Archie-managed PR to existing_task, not new_task 0ms
+ ✓ src/connectors/github/__tests__/mention-routing.test.ts > routeGitHubEvent — existing routing unchanged (AC11) > routes pull_request_review approvals to merge_check byte-identically 0ms
+ ✓ src/connectors/github/__tests__/mention-routing.test.ts > routeGitHubEvent — existing routing unchanged (AC11) > routes push events to merge_check byte-identically 0ms
+ ✓ src/connectors/github/__tests__/mention-routing.test.ts > routeGitHubEvent — existing routing unchanged (AC11) > routes failed check_suite completions to checks_ready byte-identically 0ms
+ ✓ src/connectors/github/__tests__/mention-routing.test.ts > routeGitHubEvent — existing routing unchanged (AC11) > formats an Archie PR comment byte-identically 0ms
+ ✓ src/connectors/github/__tests__/mention-routing.test.ts > routeGitHubEvent — existing routing unchanged (AC11) > formats a plain-issue comment with the issue #N destination 0ms
+
+ Test Files  1 passed (1)
+      Tests  21 passed (21)
+   Start at  04:08:27
+   Duration  170ms (transform 45ms, setup 0ms, import 60ms, tests 9ms, environment 0ms)
+

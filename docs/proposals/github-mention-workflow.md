@@ -1,6 +1,6 @@
 # Proposal: GitHub @mention Workflow
 
-> **Status:** Not implemented — design only
+> **Status:** Superseded — implemented (with a broader design: issue + PR mentions, repo-write authorization, readonly v1) by the `github-mention-trigger` change (`openspec/changes/github-mention-trigger/`). Current behavior is documented in `docs/architecture/github-integration.md` → "Mention Trigger (GitHub-born tasks)". Kept for historical context only.
 
 ## Summary
 

@@ -619,6 +619,39 @@ export async function findTaskByPRNumber(
 }
 
 /**
+ * Find the GitHub-born task that owns a given issue/PR thread via its linked
+ * github channel. Checks in-memory active tasks first (instant), then scans
+ * disk. A substring hit only narrows candidates — matches are verified
+ * structurally against the channel entry (type, repo, number).
+ */
+export async function findTaskByIssueChannel(
+  githubRepo: string,
+  issueNumber: number
+): Promise<string | null> {
+  const matchesChannel = (channels: TaskMetadata['channels'] | undefined): boolean =>
+    Object.values(channels ?? {}).some(
+      (ch) => ch.type === 'github' && ch.repo === githubRepo && ch.issue_number === issueNumber,
+    );
+
+  for (const [taskId, runtime] of activeTasks.entries()) {
+    if (matchesChannel(runtime.metadata.channels)) return taskId;
+  }
+
+  await ensureSessionsDir();
+  try {
+    for (const taskId of await scanMetadataFiles(`"issue_number": ${issueNumber}`)) {
+      const metadata = await loadMetadata(taskId);
+      if (!metadata) continue;
+      if (matchesChannel(metadata.channels)) return taskId;
+    }
+  } catch {
+    // Fallback silently if the scan or metadata walk fails
+  }
+
+  return null;
+}
+
+/**
  * Find the task that owns a given head branch in a repo. Branch names key the
  * per-branch state, so this resolves a task from a CI/webhook event even when
  * the branch isn't the `archie/{taskId}` pattern and no PR number is in the

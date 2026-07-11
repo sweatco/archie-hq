@@ -6,7 +6,7 @@
  */
 
 import { mkdir, writeFile } from 'fs/promises';
-import type { AgentName, SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, BranchState } from '../types/task.js';
+import type { AgentName, GitHubChannel, SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, BranchState } from '../types/task.js';
 import { CLI_CHANNEL_KEY } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
 import { isPmAgent, isRepoAgent } from '../types/agent.js';
@@ -415,6 +415,33 @@ export class Task {
   }
 
   /**
+   * Link a GitHub issue/PR thread to this task and promote it to the default
+   * channel. The channel entry doubles as the task's GitHub-origin record (see
+   * isGitHubBorn), so creation-path callers must flush it synchronously via
+   * save(true) right after linking. Idempotent — re-linking keeps the existing
+   * entry (and its comment watermark); default_channel is only promoted the
+   * first time via ??=. Returns the channel key.
+   */
+  linkGitHubChannel(repo: string, issueNumber: number, isPr: boolean): string {
+    const key = `github:${repo}#${issueNumber}`;
+    this.metadata.channels[key] ??= { type: 'github', repo, issue_number: issueNumber, is_pr: isPr };
+    this.metadata.default_channel ??= key;
+    this.debouncedSave();
+    return key;
+  }
+
+  /**
+   * Whether this task was born from GitHub — exactly "has a github channel" in
+   * v1, since only the mention handler constructs them. The single predicate
+   * behind the readonly guards and the PM's GitHub-born spawn context; if a
+   * future feature links github channels to tasks born elsewhere, an explicit
+   * origin field must replace this body.
+   */
+  isGitHubBorn(): boolean {
+    return Object.values(this.metadata.channels).some((ch) => ch.type === 'github');
+  }
+
+  /**
    * Post a message to the user.
    *
    * Targeting modes:
@@ -439,6 +466,8 @@ export class Task {
       if (ch?.type === 'slack') {
         await postSlackMessage({ channel: ch.channel_id, threadTs: ch.thread_id, text: message, footer });
         this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch, footer);
+      } else if (ch?.type === 'github') {
+        await this.postToGitHubChannel(ch, message, sender, footer);
       }
       return null;
     }
@@ -456,8 +485,32 @@ export class Task {
       this.logOutgoingMessage(sender, message, Task.formatSlackDest(defaultCh).display, defaultCh, footer);
     } else if (defaultCh.type === 'cli') {
       this.logOutgoingMessage(sender, message, 'cli', undefined, footer);
+    } else if (defaultCh.type === 'github') {
+      await this.postToGitHubChannel(defaultCh, message, sender, footer);
     }
     return null;
+  }
+
+  /**
+   * Deliver a message to a GitHub channel as an issue/PR comment. GitHub has no
+   * context blocks, so the footer trails as an italicized line. Failures
+   * (locked/closed/transferred issue, rate limit, unconfigured client) warn and
+   * continue — they must never propagate into the calling agent's tool call.
+   */
+  private async postToGitHubChannel(ch: GitHubChannel, message: string, sender: string, footer: string): Promise<void> {
+    const dest = `github:${ch.repo}#${ch.issue_number}`;
+    const client = getGitHubClient();
+    if (!client) {
+      logger.warn('task', `postToUser on task ${this.taskId}: GitHub client not configured — message to ${dest} dropped`);
+      return;
+    }
+    try {
+      await client.addPRComment(ch.repo, ch.issue_number, `${message}\n\n_${footer}_`);
+    } catch (error) {
+      logger.warn('task', `postToUser on task ${this.taskId}: failed to comment on ${dest}`, error);
+      return;
+    }
+    this.logOutgoingMessage(sender, message, dest, undefined, footer);
   }
 
   /**
@@ -490,6 +543,8 @@ export class Task {
     } else if (target.type === 'cli') {
       // CLI channel can't render Slack uploads — log the file list so it surfaces.
       this.logFilesUpload(sender, filePaths, 'cli');
+    } else if (target.type === 'github') {
+      logger.warn('task', `postFilesToUser on task ${this.taskId}: file upload to GitHub channels is not supported — files dropped`);
     }
   }
 
@@ -1196,7 +1251,18 @@ export class Task {
 
   // ---- Approval handlers ----
 
-  async handleEditModeApproval(approver?: { id: string; name: string; email?: string }): Promise<void> {
+  async handleEditModeApproval(approver?: { id: string; name: string; email?: string }): Promise<'approved' | 'rejected_readonly'> {
+    // GitHub-born tasks are read-only by construction (v1): refuse the flip
+    // from every surface — Slack action, API route, debug MCP — so the
+    // unauthenticated approve API cannot make one writable. Disposition-return
+    // pattern per handleMergeApproval; edit_allowed/edit_approved_by stay
+    // untouched and no agent restarts.
+    if (this.isGitHubBorn()) {
+      logger.warn('task', `Edit mode approval rejected for task ${this.taskId} — GitHub-born tasks are read-only in v1`);
+      await appendAgentFinding(this.taskId, 'system', 'Edit mode approval rejected — GitHub-born tasks are read-only in v1', 'decision');
+      return 'rejected_readonly';
+    }
+
     // Cancel any park armed by request_edit_mode on the PM this turn. The tool
     // defers task.stop() to the PM's turn-end so it doesn't close the input
     // stream under an in-flight hook. If the user approves *before* that turn
@@ -1240,6 +1306,7 @@ export class Task {
     const approvedBy = this.metadata.edit_approved_by?.name || 'user';
     await appendAgentFinding(this.taskId, 'system', `Edit mode approved by ${approvedBy}`, 'decision');
     await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+    return 'approved';
   }
 
   async handleEditModeDenial(): Promise<void> {

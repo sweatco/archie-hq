@@ -1,0 +1,73 @@
+run: github-mention-trigger
+source: { type: issue, ref: "200" }
+repo: sweatco/archie-hq
+branch: forge/github-mention-trigger
+stage: ship
+stage_rounds: { plan: 3, implement: 1, qa: 2 }
+acceptance_criteria:
+  - id: AC1
+    text: "WHEN an issue_comment.created webhook arrives whose body mentions @{GITHUB_APP_SLUG} and no existing task resolves (branch pattern, PR lookup, issue mapping) THEN the router returns a new new_task action carrying repo, issue/PR number, comment id, and author. WHEN the body contains no mention THEN the event is discarded exactly as today."
+    method: unit
+    status: verified
+    evidence: "qa-evidence/AC1/evidence.md — 8 named cases in src/connectors/github/__tests__/mention-routing.test.ts (21/21 @ 05fcf1a)"
+  - id: AC2
+    text: "WHEN a new_task event's author has write/maintain/admin on the repo THEN a task is created; knowledge.log is seeded with repo, issue/PR number, title, body, the mentioning comment text, author, and a link back; the PM receives the new-task prompt; task metadata records the GitHub origin (repo + issue number → taskId)."
+    method: integration
+    status: verified
+    evidence: "qa-evidence/AC2/evidence.md — 5 per-claim named cases in mention-handler.test.ts (26/26 @ 05fcf1a), clause-for-clause mapping"
+  - id: AC3
+    text: "WHEN the author's permission is read/none THEN no task is created, the event is discarded with a logged reason, and no reply is posted."
+    method: unit
+    status: verified
+    evidence: "qa-evidence/AC3/evidence.md — read/none/fail-closed/creation-throw cases in mention-handler.test.ts"
+  - id: AC4
+    text: "WHEN an issues.opened webhook arrives with the mention in the issue body THEN behavior matches AC2 (the issues event is newly routed; today it falls to noop)."
+    method: integration
+    status: verified
+    evidence: "qa-evidence/AC4/evidence.md — issues.opened route + handler + redelivery-noop cases; seed parity via the named AC2 cases"
+  - id: AC5
+    text: "WHEN a task is created from a mention THEN Archie acknowledges in-thread: eyes reaction on the triggering comment (or the issue for issues.opened) plus a short comment naming the task."
+    method: integration
+    status: verified
+    evidence: "qa-evidence/AC5/evidence.md — ack cases (comment-born + issue-born) + ack-failure-doesn't-abort companion; GitHub API mocked, real-thread proof owned by AC12/AC13"
+  - id: AC6
+    text: "WHEN the PM posts to the user on a GitHub-born task THEN the message lands as a comment on the originating issue/PR thread — never the 'no default channel — message dropped' path."
+    method: integration
+    status: verified
+    evidence: "qa-evidence/AC6/evidence.md — 4 named postToUser github cases in src/tasks/__tests__/github-channel.test.ts (12/12)"
+  - id: AC7
+    text: "WHEN a subsequent non-bot comment by an author with write/maintain/admin permission lands on the same issue/PR THEN it routes to the existing task via the issue→task mapping, deduplicated by comment id, and the PM is pinged with the existing-task prompt; comments from read/none authors are silently ignored. (Amended at plan stage per red-team B1.)"
+    method: integration
+    status: verified
+    evidence: "qa-evidence/AC7/evidence.md — all 9 scenarios named incl. silent-drop-no-watermark, [bot] pre-GET short-circuit, TTL cache, both dedup shapes"
+  - id: AC8
+    text: "WHEN the comment author is {GITHUB_APP_SLUG}[bot] — including Archie's own acknowledgments — THEN nothing is routed and no task is created (loop safety)."
+    method: unit
+    status: verified
+    evidence: "qa-evidence/AC8/evidence.md — own-bot ack-shaped discard + other-[bot] skip in mention-routing.test.ts"
+  - id: AC9
+    text: "WHEN an authorized mention arrives in a repo no plugin declares THEN a polite decline comment is posted and no task is created."
+    method: unit
+    status: verified
+    evidence: "qa-evidence/AC9/evidence.md — decline-once + window-expiry/eviction + authorization-first cases"
+  - id: AC10
+    text: "WHEN an agent calls request_edit_mode on a GitHub-born task THEN the request is declined immediately with a message stating GitHub-born tasks are readonly in v1; edit_allowed is never set; no silent hang."
+    method: unit
+    status: verified
+    evidence: "qa-evidence/AC10/evidence.md — src/agents/__tests__/readonly-github.test.ts (11/11): both request tools, approval rejection, route 403, Slack-born controls"
+  - id: AC11
+    text: "Regression: comments on Archie-managed PR branches still route existing_task exactly as today; merge_check / checks_ready paths byte-for-byte unaffected."
+    method: unit
+    status: verified
+    evidence: "qa-evidence/AC11/evidence.md — pins incl. push→merge_check, review→merge_check, failing check_suite→checks_ready, byte-identical formatGitHubEvent, no-permission-lookup dedup on Archie-PR path"
+  - id: AC12
+    text: "Against a running dockerized instance: POST a correctly signed issue_comment webhook mentioning the slug for a plugin-covered test repo THEN a task appears via the archie-debug MCP with the seeded knowledge log, and the acknowledgment is visible on the real GitHub issue."
+    method: manual
+    status: pending
+    evidence: "qa-evidence/AC12/evidence.md — degraded live-e2e→manual at the QA gate (user choice, per brief's QA limitations): Igor boots locally with dev creds (npm run docker:dev), posts a real mention on a plugin-covered repo issue, reports observations; to be recorded here before merge"
+  - id: AC13
+    text: "The production GitHub App subscribes to issues (and keeps issue_comment). Post-merge step: update webhook subscriptions in the GitHub App settings, then verify one real mention creates a task."
+    method: deploy-only
+    status: waived
+    evidence: "qa-evidence/AC13/evidence.md — named post-merge operator step (Igor): App settings → subscribe issues webhook, confirm Issues read & write permission, then one real mention → task + eyes reaction + ack comment + PM reply lands in-thread"
+pr: 208

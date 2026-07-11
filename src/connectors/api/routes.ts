@@ -273,7 +273,13 @@ export function mountApiRoutes(app: Application): void {
 
       if (type === 'edit_mode') {
         if (approve) {
-          await task.handleEditModeApproval(cleanApprover);
+          const disposition = await task.handleEditModeApproval(cleanApprover);
+          // GitHub-born tasks are read-only in v1 — the Task method refused the
+          // flip; relay that as an error and emit no approval:resolved.
+          if (disposition === 'rejected_readonly') {
+            res.status(403).json({ error: 'GitHub-born tasks are read-only in v1' });
+            return;
+          }
         } else {
           await task.handleEditModeDenial();
         }

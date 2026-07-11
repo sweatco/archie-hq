@@ -375,11 +375,8 @@ function buildLinksBlock(metadata: TaskMetadata): LinksBlock {
         thread_id: channel.thread_id,
       });
     } else if (channel.type === 'github') {
-      const repo = (channel as { repo?: string }).repo;
-      const prNum = (channel as { pr_number?: number }).pr_number;
-      if (repo && prNum) {
-        block.github.push({ url: `https://github.com/${repo}/pull/${prNum}` });
-      }
+      const kind = channel.is_pr ? 'pull' : 'issues';
+      block.github.push({ url: `https://github.com/${channel.repo}/${kind}/${channel.issue_number}` });
     } else if (channel.type === 'cli') {
       block.cli.push({ session_id: metadata.task_id });
     }

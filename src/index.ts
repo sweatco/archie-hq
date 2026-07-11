@@ -230,6 +230,12 @@ async function main(): Promise<void> {
     // Mount GitHub webhook (if configured)
     if (config.githubWebhookSecret) {
       mountGitHubWebhook(app, config.githubWebhookSecret);
+      if (!process.env.GITHUB_APP_SLUG) {
+        logger.warn(
+          'system',
+          'GITHUB_APP_SLUG is not set — self-event filter, mention trigger, and GitHub-born task routing disabled',
+        );
+      }
     } else {
       logger.plain('GitHub App not configured — PR tools disabled');
     }

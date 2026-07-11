@@ -1,0 +1,38 @@
+{
+  "action": "created",
+  "issue": {
+    "number": 88,
+    "title": "Add rate limiting",
+    "body": "Adds a token bucket limiter.",
+    "state": "open",
+    "html_url": "https://github.com/acme/backend/pull/88",
+    "pull_request": {
+      "url": "https://api.github.com/repos/acme/backend/pulls/88",
+      "html_url": "https://github.com/acme/backend/pull/88"
+    },
+    "user": {
+      "login": "issue-author",
+      "type": "User"
+    }
+  },
+  "comment": {
+    "id": 9100,
+    "body": "Ship it once CI is green.",
+    "html_url": "https://github.com/acme/backend/pull/88#issuecomment-9100",
+    "user": {
+      "login": "dana",
+      "type": "User"
+    }
+  },
+  "repository": {
+    "full_name": "acme/backend",
+    "name": "backend",
+    "owner": {
+      "login": "acme"
+    }
+  },
+  "sender": {
+    "login": "dana",
+    "type": "User"
+  }
+}

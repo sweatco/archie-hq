@@ -604,6 +604,12 @@ function createRequestEditModeTool(agent: Agent, task: Task) {
     async (args) => {
       const agentName = agent.def.id as AgentName;
 
+      // GitHub-born tasks are read-only by construction in v1: fail fast with
+      // an explanation — no approval prompt, no pause, edit_allowed never set.
+      if (task.isGitHubBorn()) {
+        return ok('GitHub-born tasks are read-only in v1 — edit mode cannot be requested or granted. Tell the user that code changes require starting the request from Slack.');
+      }
+
       // Idempotency: edit mode is a task-lifetime grant. If it is already active,
       // don't post another approval prompt or pause the task — just tell the
       // caller it's already granted so it proceeds instead of waiting on a user
@@ -686,6 +692,12 @@ function createRequestMaxModeTool(agent: Agent, task: Task) {
     },
     async (args) => {
       const agentName = agent.def.id as AgentName;
+
+      // Same fail-fast as request_edit_mode: a GitHub-born task has no approval
+      // surface, so pausing on an undeliverable prompt would hang the task.
+      if (task.isGitHubBorn()) {
+        return ok('Max mode has no approval surface on a GitHub-born task in v1 — continue in standard mode.');
+      }
 
       // Idempotency: max mode is a task-lifetime grant. If it is already active,
       // don't post another approval prompt or pause the task — just tell the

@@ -1,0 +1,20 @@
+
+ RUN  v4.1.10 /Users/igorsova/Projects/archie-hq.forge-github-mention-trigger
+
+ ✓ src/agents/__tests__/readonly-github.test.ts > request_edit_mode on a GitHub-born task (AC10) > declines fast: explanation, no prompt, no pause, edit_allowed never set 6ms
+ ✓ src/agents/__tests__/readonly-github.test.ts > request_max_mode on a GitHub-born task (AC10) > declines fast: explanation, no prompt, no pause, edit_allowed never set 1ms
+ ✓ src/agents/__tests__/readonly-github.test.ts > request_edit_mode on a Slack-born task > behaves exactly as before: posts the approval prompt and pauses 2ms
+ ✓ src/agents/__tests__/readonly-github.test.ts > request_max_mode on a Slack-born task > behaves exactly as before: posts the approval prompt and pauses 3ms
+ ✓ src/agents/__tests__/readonly-github.test.ts > buildGitHubBornContextLine > names the origin thread, the delivery surface, and the readonly rule 0ms
+ ✓ src/agents/__tests__/readonly-github.test.ts > buildGitHubBornContextLine > builds a /pull/ URL for PR-born threads 0ms
+ ✓ src/agents/__tests__/readonly-github.test.ts > buildGitHubBornContextLine > is null for tasks without a github channel 0ms
+ ✓ src/agents/__tests__/readonly-github.test.ts > handleEditModeApproval on a GitHub-born task > rejects: edit_allowed never set, no approver recorded, decision finding appended 0ms
+ ✓ src/agents/__tests__/readonly-github.test.ts > handleEditModeApproval on a GitHub-born task > approves a Slack-born task exactly as before 1ms
+ ✓ src/agents/__tests__/readonly-github.test.ts > POST /tasks/:id/approve edit_mode on a GitHub-born task > returns 403, leaves edit_allowed unset, and emits no approval:resolved 2ms
+ ✓ src/agents/__tests__/readonly-github.test.ts > POST /tasks/:id/approve edit_mode on a GitHub-born task > still resolves edit_mode approval for a Slack-born task with ok + approval:resolved 1ms
+
+ Test Files  1 passed (1)
+      Tests  11 passed (11)
+   Start at  04:08:52
+   Duration  862ms (transform 307ms, setup 0ms, import 745ms, tests 17ms, environment 0ms)
+

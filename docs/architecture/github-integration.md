@@ -39,7 +39,7 @@ Before routing, the system checks if the event was triggered by its own bot user
 
 ## Webhook Router
 
-The webhook router (`src/connectors/github/webhooks.ts`) uses purely deterministic routing -- every event type maps to one of: `merge_check`, `existing_task`, or `noop` (discard). There is no triage step.
+The webhook router (`src/connectors/github/webhooks.ts`) uses purely deterministic routing -- events resolve to `merge_check`, `existing_task`, `checks_ready`, or `noop` (discard), plus the `new_task` route produced by mention detection (see [Mention Trigger](#mention-trigger-github-born-tasks)). There is no triage step.
 
 ### Task Identification
 
@@ -47,13 +47,14 @@ The router identifies which task an event belongs to by:
 
 1. **Branch name extraction** -- For events with a `pull_request` object, extracts `head.ref`. For `push` events, extracts from `refs/heads/...`. For `workflow_run`, uses `head_branch`.
 2. **Task ID extraction** -- Matches the branch name against the pattern `archie/task-{taskId}` via `extractTaskIdFromBranch()`. The legacy `feature/task-{taskId}` prefix is also accepted so pull requests opened before the branch-naming migration keep attributing to their task.
-3. **PR number fallback** -- For `issue_comment` events (which lack branch info), looks up the task by PR number using `findTaskByPRNumber()`.
+3. **PR number fallback** -- For `issue_comment` and `check_suite` events (which lack a usable branch), looks up the task by PR number using `findTaskByPRNumber()`.
+4. **Issue→task mapping** -- For `issue_comment` and `issues` events, resolves GitHub-born tasks by their linked GitHub channel via `findTaskByIssueChannel()`. Slug-gated: skipped entirely when `GITHUB_APP_SLUG` is unset.
 
-If no task ID is found, the event is discarded as "Not our branch pattern."
+If no task ID is found, a mention-eligible event is checked for a summoning mention (routing `new_task`); otherwise the event is discarded as "Not our branch pattern."
 
 ### Deterministic Routing
 
-All GitHub events follow deterministic paths based on event type and action. The `determineRouteAction()` function maps events to one of three internal actions (`merge_check`, `existing_task`, `noop`):
+All GitHub events follow deterministic paths based on event type and action. The `determineRouteAction()` function maps events to one of four internal actions (`merge_check`, `existing_task`, `checks_ready`, `noop`):
 
 | Event Type | Action/State | Route |
 |---|---|---|
@@ -67,15 +68,20 @@ All GitHub events follow deterministic paths based on event type and action. The
 | `workflow_run` | `completed` + `failure` | `existing_task` |
 | `workflow_run` | `completed` + success | `merge_check` |
 | `issue_comment` | `created` | `existing_task` |
+| `check_suite` | `completed` + failure-like conclusion (`failure`/`cancelled`/`timed_out`/`action_required`) | `checks_ready` |
+| `check_suite` | `completed` + success-like conclusion | `noop` (merge triggers already cover success) |
+| `status` | any | `noop` (feeds PR-card refresh only) |
+| `issues` | any | `noop` (a mapped issue resolves and discards here; unmapped `opened` bodies feed mention detection) |
 
 Route actions map to handler types:
 
 - **`merge_check`** -- Handled directly by the merge orchestrator (see below). Debounced.
 - **`existing_task`** -- Formatted as a structured event entry, appended to the task's knowledge log, and the PM agent is reactivated.
+- **`checks_ready`** -- Per-PR debounced (20s) ping: appends one structured event telling the PM to inspect checks and reactivates it.
 
 ### `issue_comment` Handling
 
-`issue_comment` events lack branch info, so the router resolves the task by PR number via `findTaskByPRNumber()`. Once routed as `existing_task`, `handleExistingTaskDirect()` deduplicates by `last_processed_comment_id` (tracked per-branch in `BranchState` with a legacy fallback on `RepositoryInfo`) before logging and waking the PM. There is no separate triage step -- every new comment reactivates the task.
+`issue_comment` events lack branch info, so the router resolves the task by PR number via `findTaskByPRNumber()`, then by the issue→task mapping for GitHub-born threads. Once routed as `existing_task`, `handleExistingTaskDirect()` deduplicates by `last_processed_comment_id` -- tracked per-branch in `BranchState` (legacy fallback on `RepositoryInfo`) and, for GitHub-born threads, on the task's GitHub channel entry, all folded into one max/skip/advance computation -- before logging and waking the PM. GitHub-born threads additionally permission-gate the comment author (see [Mention Trigger](#mention-trigger-github-born-tasks)). There is no separate triage step -- every new comment reactivates the task.
 
 ### Event Message Formatting
 
@@ -86,7 +92,27 @@ Route actions map to handler types:
 - `from=ci, destination=branch:archie/task-abc123, message=workflow failure`
 - `from=alice, destination=branch:archie/task-abc123, message=pushed`
 
-These entries are written to the task's knowledge log so the PM agent can understand what happened.
+These entries are written to the task's knowledge log so the PM agent can understand what happened. Plain-issue comments (no PR) render with an `issue #N` destination; PR comments render `PR #N` exactly as before.
+
+## Mention Trigger (GitHub-born tasks)
+
+Mentioning `@{GITHUB_APP_SLUG}` in an issue/PR comment (`issue_comment.created`) or a newly opened issue's body (`issues.opened`) creates a task when no existing task resolves for the thread. Detection (`matchesMention` in `src/connectors/github/webhooks.ts`) uses a case-insensitive word-boundary regex on the app slug, reads bodies only (titles never trigger), applies only to `created`/`opened` actions (edited-in mentions never trigger), skips `[bot]` authors, and runs strictly after the self-event filter and every task-resolution attempt. The router returns a `new_task` route (a `GitHubRouteResult` variant carrying a `GitHubMentionEvent`) exactly where the no-task discard used to be, so all existing routing decisions are untouched.
+
+`handleGitHubMentionDirect()` (`src/connectors/github/events.ts`) owns the side-effectful gates, in order:
+
+1. **Authorization** -- the author's repo permission is resolved via `GitHubClient.getCollaboratorPermission()` (legacy values: maintain→write, triage→read); only `admin`/`write` proceed. `read`/`none` authors, lookup failures, and an unconfigured client discard silently with a logged reason (fail closed -- no probing surface).
+2. **Repo coverage** -- repos no plugin declares (`findAgentDefsContainingRepo()`) get a polite, mention-free decline comment and no task. Declines are deduplicated per thread in memory (~10-minute window, lazily evicted), and only authorized authors ever see one (authorization runs first).
+3. **Race re-check** -- `findTaskByIssueChannel()` runs once more; if a concurrent mention already mapped the thread, delivery falls through to the existing-task path instead of minting a duplicate.
+
+Creation mirrors the Slack sequence: `Task.create()` → `linkGitHubChannel(repo, issueNumber, isPr)` → synchronous `save(true)` (the channel entry is the GitHub-born marker the readonly guards read, so it must never sit in the debounced-save window) → knowledge-log seeding (issue title/body/link as a context entry; comment-born adds the verbatim mentioning comment with its `[comment_id=…]` tag and sets the channel's `last_processed_comment_id` watermark so a redelivery dedups) → the issue title becomes the task title → in-thread acknowledgment (an `eyes` reaction on the triggering comment, or on the issue for `issues.opened`, plus a short mention-free comment naming the task id; ack failures warn and never abort) → the PM receives the standard new-task prompt.
+
+**The GitHub thread is the conversation surface.** The linked GitHub channel is promoted to the task's default channel: `postToUser` delivers PM messages as comments on the originating thread (standard footer as a trailing italicized line), post failures and an unconfigured client warn and continue rather than crashing the calling tool, and file uploads warn that files are dropped. The PM's context lists the channel as `GitHub {repo}#{n} (PR|issue)` plus a GitHub-born context line naming the origin thread and the readonly rule (`buildGitHubBornContextLine` in `src/agents/spawn.ts`; prompt rules in `prompts/pm-agent.md` → "GitHub-born tasks").
+
+**Follow-up comments** on a mapped thread route to the existing task with no mention needed: `findTaskByIssueChannel()` (`src/tasks/persistence.ts`) resolves the thread (in-memory active tasks first, then a structurally verified metadata scan), and `handleExistingTaskDirect()` re-checks the author's repo permission before anything else -- `[bot]` authors drop before any API call, and lookups go through a ~5-minute per-(repo, author) in-memory cache (negative results cached too, protecting the shared installation token budget; thrown lookups are never cached). `read`/`none` or failed-lookup authors drop silently: no knowledge-log append, no PM wake, no watermark advance. Authorized comments dedup by comment id against the channel watermark. Comments on Archie-managed PR branches (tasks without a matching GitHub channel) keep their pre-existing ungated path and never incur a permission lookup.
+
+**Loop safety.** The whole GitHub-born surface is keyed on `GITHUB_APP_SLUG`: with the slug unset, mention detection never matches AND the issue→task mapping is never consulted, so detection and follow-up routing go inert together (a boot warning in `src/index.ts` calls this out -- the self-event filter is also disabled without the slug). Archie's own comments discard at the self-event filter, and no Archie-authored ack/decline/PM text ever contains the mention string.
+
+**Readonly v1.** GitHub-born tasks -- `Task.isGitHubBorn()`, true when any linked channel is a GitHub channel -- are read-only for their entire lifetime: `request_edit_mode` and `request_max_mode` fail fast with an explanation (no approval prompt, no task pause), and `Task.handleEditModeApproval()` refuses with a `'rejected_readonly'` disposition from every surface -- the approve API route maps it to `403` and emits no `approval:resolved` -- so `edit_allowed` can never be set on such a task.
 
 ## GitHub MCP Tools
 
@@ -238,9 +264,10 @@ GitHub webhook
      -> maybeRefreshPrCards(): on CI-completed / PR-closed, update PR cards in place
   -> connectors/github/webhooks.ts: routeGitHubEvent()
     -> Discard own-bot events (sender === `${GITHUB_APP_SLUG}[bot]`)
-    -> Extract branch -> extract task ID (or look up by PR number for issue_comment)
+    -> Extract branch -> extract task ID (or look up by PR number / issue→task mapping)
+    -> No task + mention-eligible body -> 'new_task' (see Mention Trigger)
     -> Verify task exists via loadMetadata()
-    -> determineRouteAction() -> 'merge_check' | 'existing_task' | 'noop'
+    -> determineRouteAction() -> 'merge_check' | 'existing_task' | 'checks_ready' | 'noop'
 
   merge_check:
     -> webhooks.ts: handleMergeCheckDirect() [5s debounce per task]
@@ -266,10 +293,10 @@ The system is designed so that the PM agent is only reactivated for GitHub event
 
 ## Relevant Source Files
 
-- `src/connectors/github/client.ts` -- `GitHubClient` class wrapping `@octokit/app`, `configureGitIdentity()`, `fetchOrigin()`, `getGitHubClient()` singleton; PR ops (`listPRs`, `getPRDetails`, `getPRStatus`, `getPRCardData`, `getPRReviews`, `getReviewThreads`, `getPRComments`, `createPullRequest`, `updatePR`, `addPRComment`, `addReviewComment`, `replyToReviewComment`, `resolveReviewThread` (GraphQL), `requestReReview`, `mergePullRequest`, `closePullRequest`)
-- `src/connectors/github/events.ts` -- `mountGitHubWebhook()` Express handler, `handleGitHubWebhook()`, `maybeRefreshPrCards()` (in-place PR-card updates), `handleExistingTaskDirect()` (with comment dedup)
+- `src/connectors/github/client.ts` -- `GitHubClient` class wrapping `@octokit/app`, `configureGitIdentity()`, `fetchOrigin()`, `getGitHubClient()` singleton; PR ops (`listPRs`, `getPRDetails`, `getPRStatus`, `getPRCardData`, `getPRReviews`, `getReviewThreads`, `getPRComments`, `createPullRequest`, `updatePR`, `addPRComment`, `addReviewComment`, `replyToReviewComment`, `resolveReviewThread` (GraphQL), `requestReReview`, `mergePullRequest`, `closePullRequest`); mention-trigger helpers (`getCollaboratorPermission`, `addCommentReaction`, `addIssueReaction`)
+- `src/connectors/github/events.ts` -- `mountGitHubWebhook()` Express handler, `handleGitHubWebhook()`, `maybeRefreshPrCards()` (in-place PR-card updates), `handleExistingTaskDirect()` (comment dedup + GitHub-born author gate), `handleGitHubMentionDirect()` (mention gates + task creation)
 - `src/system/pr-card-format.ts` -- pure PR-card formatting shared by Slack + CLI: `summarizeCi`, `prCardFingerprint`, `prCardSubtitle`, `prCardTitlePlain`, `SLACK_PR_CARD_EMOJI`/`CLI_PR_CARD_EMOJI`
-- `src/connectors/github/webhooks.ts` -- HMAC-SHA256 signature verification, context extraction, deterministic routing (`routeGitHubEvent`, `determineRouteAction`), structured event formatting (`formatGitHubEvent`), merge check debouncing (`handleMergeCheckDirect`)
+- `src/connectors/github/webhooks.ts` -- HMAC-SHA256 signature verification, context extraction, deterministic routing (`routeGitHubEvent`, `determineRouteAction`), mention detection (`matchesMention`, the `new_task` route + `GitHubMentionEvent`), structured event formatting (`formatGitHubEvent`), merge check debouncing (`handleMergeCheckDirect`)
 - `src/connectors/github/merge.ts` -- Policy-gated auto-merge logic (`checkAndMergeLinkedPRs`, `triggerMergeCheck`), the auto-merge and `merge_armed` armed buckets, linked PR collection from `branch_states`, PM notification on conflicts/merges/ready PRs, `merge_ready_notified` bookkeeping
 - `src/connectors/github/mergeability.ts` -- `isMergeReadyPerGithub()`, the GitHub-mergeability predicate shared by the orchestrator and `merge_pull_request`
 - `src/agents/registry.ts` -- `isAutoMergeRepo()` policy lookup (AND semantics across declaring agents)
