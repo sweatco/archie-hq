@@ -94,6 +94,27 @@ An explicit merge request in a repo without `autoMerge: true` trips the `merge` 
 8. Continue the `wait_for_task` loop; assert the task settles (`STATE=completed`) and **no merge occurred**: the knowledge log contains the denial finding `Merge denied by user — PR not merged`, and neither the log nor the events contain a merged completion (`PR … merged on user approval`) for this PR.
 9. Excerpts for evidence: events must show `approval:requested` (`data.approvalType: "merge"`) followed by `approval:resolved` (`data.approve: false`) with no merge in between; knowledge-log lines for the merge-approval request and the denial finding.
 
+### Recipe: `github-mention`
+
+A correctly signed synthetic `issue_comment.created` webhook mentioning the dev App slug creates a GitHub-born task seeded from the thread, and the acknowledgment (👀 reaction + task-naming comment) is visible on the real GitHub issue (github-mention-trigger brief AC12).
+
+**Prerequisites:** dev GitHub App credentials in `.env` (`GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_PRIVATE_KEY_PATH`, `GITHUB_INSTALLATION_ID`, `GITHUB_WEBHOOK_SECRET`); a test repo that is covered by a configured plugin AND reachable by the dev installation; and a GitHub account with **write** permission on that repo to author the triggering comment (`gh` authenticated as it). If any prerequisite is missing, do NOT fake a pass — report the scenario as `BLOCKED`, stating what is missing, what was attempted, and the remedy; per the brief's QA limitation the degradation paths (`manual` run with a hand-posted comment, or an explicit waiver naming AC13's post-merge verification as fallback) may be taken **only with the user's say-so** — stop and return to the user first. A BLOCKED scenario produces no evidence file; it appears in the run report only.
+
+1. Boot as in §1. Confirm the boot log does NOT carry the `GITHUB_APP_SLUG is not set` warning (slug present → self-filter, mention trigger, and GitHub-born routing live).
+2. Create a real issue in the test repo: `gh api repos/<o>/<r>/issues -f title="archie-e2e mention probe" -f body="Probe issue for the github-mention recipe."` — note `number` and the issue JSON (the payload needs `issue.number/title/body/html_url/user`).
+3. Mint `NONCE=E2E-$(openssl rand -hex 4)`. Post the real triggering comment as the write-permission account: `gh api repos/<o>/<r>/issues/<n>/comments -f body="@<dev-slug> [${NONCE}] please investigate"` — capture the returned comment `id`, `body`, `html_url`, `user.login`. The comment must be real so the 👀 reaction (which targets this comment id) can land.
+4. Build the synthetic `issue_comment.created` payload from the REAL issue + comment JSON (`action`, `issue`, `comment`, `repository.full_name`, `sender` = the comment author) — the dev App's webhook URL points elsewhere, so this POST is how the event reaches the instance under test. Sign the exact bytes and POST:
+
+   ```bash
+   SIG=$(node -e 'const c=require("crypto"),f=require("fs");process.stdout.write("sha256="+c.createHmac("sha256",process.env.GITHUB_WEBHOOK_SECRET).update(f.readFileSync(process.argv[1])).digest("hex"))' payload.json)
+   curl -sS -X POST "$ARCHIE_URL/webhooks/github" -H 'x-github-event: issue_comment' -H "x-hub-signature-256: $SIG" -H 'content-type: application/json' --data-binary @payload.json
+   ```
+
+   Expect `{"received":true}`.
+5. Observe via the archie-debug MCP: `wait_for_task(nonce: NONCE)` correlates the task (the mentioning comment is seeded verbatim into knowledge.log, so the nonce scan finds it). `get_log(task_id, tail: 40)` must contain the issue title, the issue body, the mentioning comment with its `[comment_id=…]` tag, and the thread link. Resume `wait_for_task(task_id, cursor)` until the task settles; a `PM_REPLY` on a GitHub-born task lands as an issue comment, not Slack.
+6. Assert the real-GitHub ack: `gh api repos/<o>/<r>/issues/comments/<comment_id>/reactions` contains an `eyes` reaction by `<dev-slug>[bot]`, and `gh api repos/<o>/<r>/issues/<n>/comments` contains a comment authored `<dev-slug>[bot]` naming the created task id (and, once the PM replies, its reply as another comment).
+7. Excerpts for evidence: the seeded knowledge-log lines (title/body/comment/link), the `task:created` event, and the fetched reaction + ack-comment JSON. Clean up: close the probe issue (`gh api -X PATCH repos/<o>/<r>/issues/<n> -f state=closed`).
+
 ## 3. Capture evidence
 
 Each scenario produces a `<scenario>.json` (canonical) + `<scenario>.md` (rendered for reviewers) pair, written by the validated writer:
@@ -113,7 +134,7 @@ cat payload.json | npx tsx tools/e2e/evidence.ts --out-dir <dir>
 | Field | Type | Meaning |
 |---|---|---|
 | `schema` | `"archie-e2e-evidence/v1"` | Schema tag, exact string. |
-| `scenario` | string, kebab-case | Canonical recipe name (`basic-nonce`, `edit-mode-approval`, `merge-approval-deny`); names the output files. |
+| `scenario` | string, kebab-case | Canonical recipe name (`basic-nonce`, `edit-mode-approval`, `merge-approval-deny`, `github-mention`); names the output files. |
 | `ac_ids` | string[], non-empty | Brief AC ids this scenario verifies, e.g. `["AC2"]`. |
 | `started_at` / `finished_at` | ISO 8601 strings | Scenario wall-clock bounds. |
 | `environment.base_url` | string | Resolved base URL the scenario ran against. |
