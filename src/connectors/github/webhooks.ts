@@ -46,6 +46,8 @@ export interface GitHubEventContext {
   action: string;
   githubRepo: string;
   prNumber?: number;
+  /** Issue (or PR) number — set for all issue_comment and issues events. */
+  issueNumber?: number;
   branch?: string;
   user: string;
   body?: string;
@@ -97,11 +99,18 @@ export function formatGitHubContext(
   } else if (eventType === 'issue_comment') {
     const issue = payload.issue as Record<string, unknown> | undefined;
     const comment = payload.comment as Record<string, unknown> | undefined;
+    context.issueNumber = issue?.number as number | undefined;
+    context.body = comment?.body as string | undefined;
+    context.commentId = comment?.id as number | undefined;
+    // prNumber stays gated on issue.pull_request — a PR is an issue, not vice versa.
     if (issue?.pull_request) {
       context.prNumber = issue?.number as number | undefined;
-      context.body = comment?.body as string | undefined;
-      context.commentId = comment?.id as number | undefined;
     }
+  } else if (eventType === 'issues') {
+    const issue = payload.issue as Record<string, unknown> | undefined;
+    context.issueNumber = issue?.number as number | undefined;
+    context.body = issue?.body as string | undefined;
+    context.state = issue?.state as string | undefined;
   } else if (eventType === 'push') {
     const ref = payload.ref as string | undefined;
     context.branch = ref?.replace('refs/heads/', '');
@@ -205,7 +214,7 @@ export interface FormattedGitHubEvent {
  * Format a GitHub event into the structured Slack/CLI-compatible shape.
  */
 export function formatGitHubEvent(context: GitHubEventContext): FormattedGitHubEvent {
-  const { eventType, action, user, prNumber, body, state, commentId } = context;
+  const { eventType, action, user, prNumber, issueNumber, body, state, commentId } = context;
   const prDest = prNumber ? `PR #${prNumber}` : 'PR';
   const branchDest = `branch:${context.branch || 'unknown'}`;
   const cidTag = commentId ? ` [comment_id=${commentId}]` : '';
@@ -224,7 +233,13 @@ export function formatGitHubEvent(context: GitHubEventContext): FormattedGitHubE
       return { from: user, destination: prDest, message: body ? `commented on code${cidTag}: ${body}` : `commented on code${cidTag}` };
 
     case 'issue_comment':
-      return { from: user, destination: prDest, message: body ? `${body}${cidTag}` : `(empty)${cidTag}` };
+      // PR comments render exactly as before; only plain-issue comments (no
+      // prNumber) pick up the issue #N destination.
+      return {
+        from: user,
+        destination: !prNumber && issueNumber ? `issue #${issueNumber}` : prDest,
+        message: body ? `${body}${cidTag}` : `(empty)${cidTag}`,
+      };
 
     case 'pull_request':
       if (action === 'closed') {
