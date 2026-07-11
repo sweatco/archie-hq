@@ -800,6 +800,27 @@ Shared folder: ${sharedPath} [READ-ONLY]
             // tool calls. Best-effort and debounced inside the task.
             task.noteActivityFromEvent(def.id, event);
 
+            // [cache] TEMPORARY debug: log per-turn token usage to verify prompt caching is landing.
+            // Cache reads bill at ~0.1x, cache writes at ~1.25x, uncached input at full price.
+            // Healthy caching shows a large `read` share from turn 2 of a session onward; if `read` stays 0, caching isn't engaging.
+            // `uncached` (input_tokens) is the uncached remainder only — the whole prompt is uncached + read + write.
+            if (event.type === 'result') {
+              const u = (event as any).usage ?? {};
+              const read = u.cache_read_input_tokens ?? 0;
+              const write = u.cache_creation_input_tokens ?? 0;
+              const uncached = u.input_tokens ?? 0;
+              const output = u.output_tokens ?? 0;
+              const prompt = read + write + uncached;
+              const cachedPct = prompt > 0 ? Math.round((read / prompt) * 100) : 0;
+              const cost = (event as any).total_cost_usd;
+              logger.agent(
+                def.id,
+                `[cache] prompt=${prompt} tok (read=${read} write=${write} uncached=${uncached}) ` +
+                  `output=${output} cached=${cachedPct}%` +
+                  (cost != null ? ` cost=$${Number(cost).toFixed(4)}` : ''),
+              );
+            }
+
             // Deferred teardown (report_completion / request_edit_mode / research
             // budget): now that the turn has fully ended (the SDK `result` event),
             // run it. The teardown stops this agent's queue, which closes the input
