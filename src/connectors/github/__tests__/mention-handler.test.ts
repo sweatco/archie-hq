@@ -135,14 +135,43 @@ afterAll(async () => {
 });
 
 describe('handleGitHubMentionDirect — creation path (AC2, AC4, AC5)', () => {
-  it('creates a seeded task from an authorized comment mention', async () => {
+  // AC2's seed contract is split into per-claim cases below so each clause is
+  // visible by name in a black-box audit; they share this end-to-end setup.
+  async function runAuthorizedMention(): Promise<string> {
     const mention = await mentionFromPayload('issue_comment', commentMentionPayload());
     await handleGitHubMentionDirect(mention);
+    return createdTaskId();
+  }
 
-    const taskId = createdTaskId();
+  it('seeds knowledge.log with the repo and issue number via the destination prefix (AC2)', async () => {
+    const taskId = await runAuthorizedMention();
+    const log = await readFile(getKnowledgeLogPath(taskId), 'utf-8');
+    expect(log).toContain('github:acme/backend/issue #55');
+  });
 
-    // Sync-save assertion: the channel entry (readonly marker) is on disk
-    // immediately after the handler returns — no debounce window.
+  it('seeds knowledge.log with the issue title, body, and thread link (AC2)', async () => {
+    const taskId = await runAuthorizedMention();
+    const log = await readFile(getKnowledgeLogPath(taskId), 'utf-8');
+    expect(log).toContain('opened "Login button broken"');
+    expect(log).toContain('The login button 500s on tap.');
+    // Newline-terminated: the bare thread link, not a substring of the
+    // comment permalink (…/issues/55#issuecomment-9001).
+    expect(log).toContain('https://github.com/acme/backend/issues/55\n');
+  });
+
+  it('seeds the verbatim mentioning comment with its [comment_id] tag, author, and link back (AC2)', async () => {
+    const taskId = await runAuthorizedMention();
+    const log = await readFile(getKnowledgeLogPath(taskId), 'utf-8');
+    expect(log).toContain(`@${SLUG} please investigate [comment_id=9001]`);
+    expect(log).toContain('@<dana>');
+    expect(log).toContain('https://github.com/acme/backend/issues/55#issuecomment-9001');
+  });
+
+  it('records the GitHub origin as a github channel entry with repo + issue number, on disk immediately (sync-save, AC2)', async () => {
+    const taskId = await runAuthorizedMention();
+
+    // Read straight from disk: the channel entry (readonly marker) must be
+    // durable the moment the handler returns — no debounce window.
     const onDisk = await loadMetadata(taskId);
     expect(onDisk?.channels['github:acme/backend#55']).toMatchObject({
       type: 'github',
@@ -153,16 +182,19 @@ describe('handleGitHubMentionDirect — creation path (AC2, AC4, AC5)', () => {
     });
     expect(onDisk?.default_channel).toBe('github:acme/backend#55');
     expect(onDisk?.title).toBe('Login button broken');
+  });
 
-    const log = await readFile(getKnowledgeLogPath(taskId), 'utf-8');
-    expect(log).toContain('github:acme/backend/issue #55');           // repo + number
-    expect(log).toContain('opened "Login button broken"');            // title
-    expect(log).toContain('The login button 500s on tap.');           // issue body
-    expect(log).toContain(`@${SLUG} please investigate [comment_id=9001]`); // mentioning comment
-    expect(log).toContain('@<dana>');                                  // author
-    expect(log).toContain('https://github.com/acme/backend/issues/55#issuecomment-9001'); // link back
+  it('pings the PM with the newTask prompt after seeding (AC2)', async () => {
+    let logAtPing = '';
+    sendMessageSpy.mockImplementation(async function (this: Task) {
+      logAtPing = await readFile(getKnowledgeLogPath(this.taskId), 'utf-8');
+    } as never);
 
+    await runAuthorizedMention();
+
+    expect(sendMessageSpy).toHaveBeenCalledTimes(1);
     expect(sendMessageSpy).toHaveBeenCalledWith(AGENT_PROMPTS.newTask, 'pm-agent');
+    expect(logAtPing).toContain('[comment_id=9001]'); // seed already on disk at ping time
   });
 
   it('acknowledges a comment mention with a comment reaction plus a task-naming comment (AC5)', async () => {
