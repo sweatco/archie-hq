@@ -25,7 +25,7 @@ An agent caught in a loop (or manipulated into one) could spawn unlimited resear
 Slack and GitHub events are authenticated at the receiver layer before they reach any agent:
 
 - **Slack:** Bolt verifies request signatures via the configured signing secret (`mountSlackApp` in `src/connectors/slack/events.ts`). On top of signature verification, the event handler classifies the event author with `isExternalUser` (`src/connectors/slack/client.ts`) and bails out for users on a different `team_id` (Slack Connect / shared channels) or guests (`is_restricted` / `is_ultra_restricted`). External-authored content is also redacted from thread history before being shown to the PM.
-- **GitHub:** Webhook payloads are HMAC-SHA256 verified against `GITHUB_WEBHOOK_SECRET` via `verifyWebhookSignature` (`src/connectors/github/webhooks.ts`) before any routing or task lookup happens.
+- **GitHub:** Webhook payloads are HMAC-SHA256 verified against `GITHUB_WEBHOOK_SECRET` via `verifyWebhookSignature` (`src/connectors/github/webhooks.ts`) before any routing or task lookup happens. GitHub mention/follow-up ingress into GitHub-born tasks is additionally gated by repo permission: only write/maintain/admin authors can summon Archie or have follow-up comments routed into a task (`getCollaboratorPermission`, fail closed on lookup errors).
 
 ## Defense Layer 1: Agent Sandbox
 
