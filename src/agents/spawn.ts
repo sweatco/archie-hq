@@ -16,6 +16,7 @@ import { existsSync } from 'fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Agent } from './agent.js';
 import type { Task } from '../tasks/task.js';
+import type { TaskMetadata, GitHubChannel } from '../types/task.js';
 import { isRepoAgent, isPmAgent } from '../types/agent.js';
 import { buildCommitAuthorEnv } from './commit-author.js';
 import { resolveAgentModel, resolveAgentEffort } from './model-label.js';
@@ -52,6 +53,25 @@ import { applyOAuthBindings } from '../system/oauth/inject.js';
 import { enrichPromptWithMemory, isMemoryEnabled, isInjectionEnabled } from '../memory/index.js';
 
 // ---- Prompt generation (per agent kind) ----
+
+/**
+ * PM context line for a GitHub-born task: origin thread, delivery surface, and
+ * the readonly-v1 rule. Null when the task has no github channel. Exported for
+ * tests.
+ */
+export function buildGitHubBornContextLine(metadata: TaskMetadata): string | null {
+  const gh = Object.values(metadata.channels).find(
+    (ch): ch is GitHubChannel => ch.type === 'github',
+  );
+  if (!gh) return null;
+  const url = `https://github.com/${gh.repo}/${gh.is_pr ? 'pull' : 'issues'}/${gh.issue_number}`;
+  return (
+    `GitHub-born task: origin ${gh.repo}#${gh.issue_number} (${url}). ` +
+    'Replies via post_to_user land as comments on that GitHub thread; there is no Slack thread. ' +
+    'This task is read-only for its lifetime (v1): never call request_edit_mode or request_max_mode — ' +
+    'if the user asks for code changes, explain the request must start from Slack.'
+  );
+}
 
 async function generatePMPrompt(task: Task): Promise<string> {
   const pmDef = task.team.find(isPmAgent);
@@ -332,6 +352,10 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     }
     if (metadata.triggered_by) {
       contextLines.push(`Spawned by trigger: ${metadata.triggered_by} (this is a fresh, trigger-initiated task — deliver the result as instructed in the first message)`);
+    }
+    if (task.isGitHubBorn()) {
+      const githubBornLine = buildGitHubBornContextLine(metadata);
+      if (githubBornLine) contextLines.push(githubBornLine);
     }
     // Surface the live plugins-repo version so the PM can tell users when the
     // plugins/agents were last updated. Refreshed on every task start/load.

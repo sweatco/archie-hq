@@ -69,12 +69,14 @@ vi.mock('../registry.js', () => ({
   isAutoMergeRepo: vi.fn().mockReturnValue(false),
   scanAgentDefs: vi.fn().mockReturnValue([]),
   synthesizeDynamicAgentDef: vi.fn(),
+  buildPeerListForSender: vi.fn().mockReturnValue(''),
 }));
 
 import type { Application, Request, Response } from 'express';
 import { appendAgentFinding } from '../../tasks/persistence.js';
 import { emitEvent } from '../../system/event-bus.js';
 import { mountApiRoutes } from '../../connectors/api/routes.js';
+import { buildGitHubBornContextLine } from '../spawn.js';
 
 const GITHUB_CHANNELS = {
   'github:acme/backend#42': { type: 'github', repo: 'acme/backend', issue_number: 42, is_pr: false },
@@ -200,6 +202,32 @@ describe('request_max_mode on a Slack-born task', () => {
     );
     expect(task.suspendStatus).toHaveBeenCalled();
     expect(agent.deferTeardown).toHaveBeenCalled();
+  });
+});
+
+// ---- PM spawn context line (8.2) ----
+
+describe('buildGitHubBornContextLine', () => {
+  it('names the origin thread, the delivery surface, and the readonly rule', () => {
+    const line = buildGitHubBornContextLine({ channels: GITHUB_CHANNELS } as Task['metadata']);
+
+    expect(line).toContain('acme/backend#42');
+    expect(line).toContain('https://github.com/acme/backend/issues/42');
+    expect(line).toContain('post_to_user');
+    expect(line).toContain('read-only for its lifetime (v1)');
+    expect(line).toContain('never call request_edit_mode or request_max_mode');
+    expect(line).toContain('start from Slack');
+  });
+
+  it('builds a /pull/ URL for PR-born threads', () => {
+    const channels = {
+      'github:acme/backend#7': { type: 'github', repo: 'acme/backend', issue_number: 7, is_pr: true },
+    } as unknown as Task['metadata']['channels'];
+    expect(buildGitHubBornContextLine({ channels } as Task['metadata'])).toContain('https://github.com/acme/backend/pull/7');
+  });
+
+  it('is null for tasks without a github channel', () => {
+    expect(buildGitHubBornContextLine({ channels: SLACK_CHANNELS } as Task['metadata'])).toBeNull();
   });
 });
 
