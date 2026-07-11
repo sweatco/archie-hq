@@ -66,6 +66,8 @@ vi.mock('../../connectors/slack/client.js', () => ({
 
 import { Task } from '../task.js';
 import { loadMetadata } from '../persistence.js';
+import { getGitHubClient } from '../../connectors/github/client.js';
+import { logger } from '../../system/logger.js';
 
 afterAll(async () => {
   await rm(WORKDIR_ROOT, { recursive: true, force: true });
@@ -134,6 +136,75 @@ describe('Task.linkGitHubChannel', () => {
       is_pr: true,
     });
     expect(onDisk?.default_channel).toBe('github:acme/backend#42');
+  });
+});
+
+describe('postToUser — github channel', () => {
+  const mockClient = { addPRComment: vi.fn() };
+
+  beforeEach(() => {
+    mockClient.addPRComment.mockReset().mockResolvedValue(undefined);
+    vi.mocked(getGitHubClient).mockReturnValue(mockClient as never);
+  });
+
+  it('posts to the originating thread via the default github channel, never the dropped path (AC6)', async () => {
+    const task = await Task.create();
+    task.linkGitHubChannel('acme/backend', 42, false);
+
+    await task.postToUser('Investigation done.', 'pm-agent');
+
+    expect(mockClient.addPRComment).toHaveBeenCalledTimes(1);
+    const [repo, num, body] = mockClient.addPRComment.mock.calls[0]!;
+    expect(repo).toBe('acme/backend');
+    expect(num).toBe(42);
+    expect(body).toContain('Investigation done.');
+    expect(body).toContain(`_${task.taskId}`);
+    expect(vi.mocked(logger.warn)).not.toHaveBeenCalledWith(
+      'task', expect.stringContaining('message dropped'),
+    );
+  });
+
+  it('delivers to an explicitly targeted github channel', async () => {
+    const task = await Task.create();
+    task.linkCliChannel();
+    const key = task.linkGitHubChannel('acme/backend', 7, true);
+
+    await task.postToUser('Reply on the PR.', 'pm-agent', { channel: key });
+
+    expect(mockClient.addPRComment).toHaveBeenCalledWith('acme/backend', 7, expect.stringContaining('Reply on the PR.'));
+  });
+
+  it('warns and continues when addPRComment throws', async () => {
+    const task = await Task.create();
+    task.linkGitHubChannel('acme/backend', 42, false);
+    mockClient.addPRComment.mockRejectedValue(new Error('Issue is locked'));
+
+    await expect(task.postToUser('hello', 'pm-agent')).resolves.toBeNull();
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+      'task', expect.stringContaining('failed to comment on github:acme/backend#42'), expect.any(Error),
+    );
+  });
+
+  it('warns (not silent null) when the GitHub client is unconfigured', async () => {
+    const task = await Task.create();
+    task.linkGitHubChannel('acme/backend', 42, false);
+    vi.mocked(getGitHubClient).mockReturnValue(null);
+
+    await expect(task.postToUser('hello', 'pm-agent')).resolves.toBeNull();
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+      'task', expect.stringContaining('GitHub client not configured'),
+    );
+  });
+
+  it('postFilesToUser warns that files are dropped on a github channel', async () => {
+    const task = await Task.create();
+    task.linkGitHubChannel('acme/backend', 42, false);
+
+    await task.postFilesToUser(['/tmp/report.pdf'], 'pm-agent');
+
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+      'task', expect.stringContaining('file upload to GitHub channels is not supported — files dropped'),
+    );
   });
 });
 

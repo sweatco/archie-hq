@@ -6,7 +6,7 @@
  */
 
 import { mkdir, writeFile } from 'fs/promises';
-import type { AgentName, SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, BranchState } from '../types/task.js';
+import type { AgentName, GitHubChannel, SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, BranchState } from '../types/task.js';
 import { CLI_CHANNEL_KEY } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
 import { isPmAgent, isRepoAgent } from '../types/agent.js';
@@ -466,6 +466,8 @@ export class Task {
       if (ch?.type === 'slack') {
         await postSlackMessage({ channel: ch.channel_id, threadTs: ch.thread_id, text: message, footer });
         this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch, footer);
+      } else if (ch?.type === 'github') {
+        await this.postToGitHubChannel(ch, message, sender, footer);
       }
       return null;
     }
@@ -483,8 +485,32 @@ export class Task {
       this.logOutgoingMessage(sender, message, Task.formatSlackDest(defaultCh).display, defaultCh, footer);
     } else if (defaultCh.type === 'cli') {
       this.logOutgoingMessage(sender, message, 'cli', undefined, footer);
+    } else if (defaultCh.type === 'github') {
+      await this.postToGitHubChannel(defaultCh, message, sender, footer);
     }
     return null;
+  }
+
+  /**
+   * Deliver a message to a GitHub channel as an issue/PR comment. GitHub has no
+   * context blocks, so the footer trails as an italicized line. Failures
+   * (locked/closed/transferred issue, rate limit, unconfigured client) warn and
+   * continue — they must never propagate into the calling agent's tool call.
+   */
+  private async postToGitHubChannel(ch: GitHubChannel, message: string, sender: string, footer: string): Promise<void> {
+    const dest = `github:${ch.repo}#${ch.issue_number}`;
+    const client = getGitHubClient();
+    if (!client) {
+      logger.warn('task', `postToUser on task ${this.taskId}: GitHub client not configured — message to ${dest} dropped`);
+      return;
+    }
+    try {
+      await client.addPRComment(ch.repo, ch.issue_number, `${message}\n\n_${footer}_`);
+    } catch (error) {
+      logger.warn('task', `postToUser on task ${this.taskId}: failed to comment on ${dest}`, error);
+      return;
+    }
+    this.logOutgoingMessage(sender, message, dest, undefined, footer);
   }
 
   /**
@@ -517,6 +543,8 @@ export class Task {
     } else if (target.type === 'cli') {
       // CLI channel can't render Slack uploads — log the file list so it surfaces.
       this.logFilesUpload(sender, filePaths, 'cli');
+    } else if (target.type === 'github') {
+      logger.warn('task', `postFilesToUser on task ${this.taskId}: file upload to GitHub channels is not supported — files dropped`);
     }
   }
 
