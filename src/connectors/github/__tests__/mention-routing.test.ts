@@ -12,6 +12,7 @@ import { readFileSync } from 'node:fs';
 
 vi.mock('../../../tasks/persistence.js', () => ({
   findTaskByPRNumber: vi.fn(),
+  findTaskByIssueChannel: vi.fn(),
   loadMetadata: vi.fn(),
   appendGitHubEvent: vi.fn(),
 }));
@@ -29,7 +30,7 @@ vi.mock('../../../system/logger.js', () => ({
 }));
 
 import { routeGitHubEvent, matchesMention, formatGitHubContext, formatGitHubEvent } from '../webhooks.js';
-import { findTaskByPRNumber, loadMetadata } from '../../../tasks/persistence.js';
+import { findTaskByPRNumber, findTaskByIssueChannel, loadMetadata } from '../../../tasks/persistence.js';
 
 const SLUG = 'archie-test';
 const TASK_ID = 'task-20260101-1200-abc123';
@@ -51,6 +52,7 @@ function commentPayload(body: string, author?: string): Record<string, unknown> 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(findTaskByPRNumber).mockResolvedValue(null);
+  vi.mocked(findTaskByIssueChannel).mockResolvedValue(null);
   vi.mocked(loadMetadata).mockResolvedValue(null);
   vi.stubEnv('GITHUB_APP_SLUG', SLUG);
 });
@@ -177,6 +179,37 @@ describe('routeGitHubEvent — loop safety (AC8)', () => {
       commentPayload('bot chatter', `${SLUG}[bot]`),
     );
     expect(fromBot).toEqual({ action: 'discard', reason: 'Not our branch pattern' });
+  });
+});
+
+describe('routeGitHubEvent — issue→task mapping', () => {
+  it('resolves a follow-up comment on a mapped issue to existing_task via the mapping', async () => {
+    vi.mocked(findTaskByIssueChannel).mockResolvedValue(TASK_ID);
+    vi.mocked(loadMetadata).mockResolvedValue({ task_id: TASK_ID } as never);
+
+    const route = await routeGitHubEvent('issue_comment', commentPayload('just a follow-up, no mention'));
+    expect(route).toEqual({ action: 'direct', handler: 'existing_task', taskId: TASK_ID });
+    expect(findTaskByIssueChannel).toHaveBeenCalledWith('acme/backend', 55);
+  });
+
+  it('discards a redelivered issues.opened for a mapped issue via noop — no new_task, no duplicate', async () => {
+    vi.mocked(findTaskByIssueChannel).mockResolvedValue(TASK_ID);
+    vi.mocked(loadMetadata).mockResolvedValue({ task_id: TASK_ID } as never);
+
+    const p = loadFixture('issues-opened');
+    (p.issue as Record<string, unknown>).body = `@${SLUG} the app crashes on startup, please investigate`;
+
+    const route = await routeGitHubEvent('issues', p);
+    expect(route).toEqual({ action: 'discard', reason: 'No action needed for issues/opened' });
+  });
+
+  it('never consults the mapping when GITHUB_APP_SLUG is unset — github-born follow-ups stop routing', async () => {
+    vi.stubEnv('GITHUB_APP_SLUG', undefined);
+    vi.mocked(findTaskByIssueChannel).mockResolvedValue(TASK_ID);
+
+    const route = await routeGitHubEvent('issue_comment', commentPayload('follow-up on a mapped thread'));
+    expect(route).toEqual({ action: 'discard', reason: 'Not our branch pattern' });
+    expect(findTaskByIssueChannel).not.toHaveBeenCalled();
   });
 });
 

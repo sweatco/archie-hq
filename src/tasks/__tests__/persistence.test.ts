@@ -46,7 +46,7 @@ vi.mock('./task.js', () => ({
   activeTasks: new Map(),
 }));
 
-import { renderMessageForContext, renderEditForContext, loadMetadata, getMetadataPath } from '../persistence.js';
+import { renderMessageForContext, renderEditForContext, loadMetadata, getMetadataPath, findTaskByIssueChannel } from '../persistence.js';
 import type { TaskMetadata } from '../../types/task.js';
 
 afterAll(async () => {
@@ -238,6 +238,52 @@ describe('metadata round-trip — pending_merge_approval', () => {
 
     const loaded = await loadMetadata(taskId);
     expect(loaded!.pending_merge_approval).toBeUndefined();
+  });
+});
+
+describe('findTaskByIssueChannel', () => {
+  async function writeTask(taskId: string, channels: TaskMetadata['channels']): Promise<void> {
+    const metadata: TaskMetadata = {
+      task_id: taskId,
+      task_owner: null,
+      participants: [],
+      channels,
+      default_channel: Object.keys(channels)[0] ?? null,
+      agent_sessions: {},
+      repositories: {},
+      status: 'in_progress',
+      created_at: '2026-07-11T00:00:00.000Z',
+      updated_at: '2026-07-11T00:00:00.000Z',
+    };
+    const path = getMetadataPath(taskId);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, JSON.stringify(metadata, null, 2));
+  }
+
+  it('finds a task via its github channel entry', async () => {
+    await writeTask('task-github-born-1', {
+      'github:acme/backend#55': { type: 'github', repo: 'acme/backend', issue_number: 55, is_pr: false },
+    });
+
+    await expect(findTaskByIssueChannel('acme/backend', 55)).resolves.toBe('task-github-born-1');
+  });
+
+  it('returns null when the repo does not match', async () => {
+    await writeTask('task-github-born-2', {
+      'github:acme/mobile#61': { type: 'github', repo: 'acme/mobile', issue_number: 61, is_pr: false },
+    });
+
+    await expect(findTaskByIssueChannel('acme/backend', 61)).resolves.toBeNull();
+  });
+
+  it('rejects a substring hit without a structurally matching channel', async () => {
+    // "issue_number": 63 is a substring prefix of "issue_number": 630 — the
+    // scan hits, the structural check must reject it.
+    await writeTask('task-github-born-3', {
+      'github:acme/backend#630': { type: 'github', repo: 'acme/backend', issue_number: 630, is_pr: false },
+    });
+
+    await expect(findTaskByIssueChannel('acme/backend', 63)).resolves.toBeNull();
   });
 });
 

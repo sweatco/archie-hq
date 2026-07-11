@@ -11,7 +11,7 @@
 import crypto from 'crypto';
 import { extractTaskIdFromBranch } from './branch-naming.js';
 import { checkAndMergeLinkedPRs } from './merge.js';
-import { findTaskByPRNumber, loadMetadata, appendGitHubEvent } from '../../tasks/persistence.js';
+import { findTaskByPRNumber, findTaskByIssueChannel, loadMetadata, appendGitHubEvent } from '../../tasks/persistence.js';
 import { Task } from '../../tasks/task.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
@@ -562,6 +562,20 @@ export async function routeGitHubEvent(
   // doesn't match our {prefix}/{taskId} pattern (e.g. suite attached to base).
   if (!taskId && eventType === 'check_suite' && context.prNumber) {
     taskId = await findTaskByPRNumber(context.githubRepo, context.prNumber) ?? undefined;
+  }
+
+  // GitHub-born threads: resolve issue_comment and issues events via the
+  // issue→task mapping. Slug-gated so the whole GitHub-born surface (detection
+  // AND follow-up routing) is inert together when GITHUB_APP_SLUG is unset —
+  // with the self-filter also off, a routed follow-up could otherwise
+  // self-wake its task in an unbounded loop.
+  if (
+    !taskId &&
+    (eventType === 'issue_comment' || eventType === 'issues') &&
+    context.issueNumber !== undefined &&
+    process.env.GITHUB_APP_SLUG
+  ) {
+    taskId = await findTaskByIssueChannel(context.githubRepo, context.issueNumber) ?? undefined;
   }
 
   // No task found — a summoning mention routes to new_task; otherwise discard
