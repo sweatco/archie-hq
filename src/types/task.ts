@@ -117,11 +117,16 @@ export interface SlackChannel extends ChannelBase {
   forwardNotifiedUsers?: string[];
 }
 
-/** GitHub channel — a PR conversation */
+/** GitHub channel — an issue or PR conversation thread */
 export interface GitHubChannel extends ChannelBase {
   type: 'github';
   repo: string;
-  pr_number: number;
+  /** Issue or PR number — GitHub's issues endpoints address both. */
+  issue_number: number;
+  /** Whether the thread is a PR (rendering + link building only). */
+  is_pr: boolean;
+  /** Follow-up comment dedup watermark for this thread. */
+  last_processed_comment_id?: number;
 }
 
 /** CLI channel — the REST/SSE surface the CLI tails. One per task at most. */

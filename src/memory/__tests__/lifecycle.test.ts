@@ -116,7 +116,7 @@ vi.mock('../extractor.js', async (importOriginal) => {
 // Import the module under test and mocked modules (after mocks are set up)
 // ============================================================================
 
-import { handleTaskCompleted, rescheduleTaskCompleted, extractUsernames, selectRelatedTasksByEntity } from '../lifecycle.js';
+import { handleTaskCompleted, rescheduleTaskCompleted, extractUsernames, selectRelatedTasksByEntity, buildSummaryMarkdown } from '../lifecycle.js';
 import { enqueuePending, readPending } from '../pending-queue.js';
 import { runExtraction } from '../extractor.js';
 import { postSlackMessage } from '../../connectors/slack/client.js';
@@ -437,6 +437,39 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
 
     const related = await selectRelatedTasksByEntity(['payment-service'], 'task-B', []);
     expect(related.map((r) => r.taskId)).toEqual(['task-A']);
+  });
+});
+
+// ============================================================================
+// buildSummaryMarkdown — GitHub channel links
+// ============================================================================
+
+describe('buildSummaryMarkdown — github links', () => {
+  const RESULT = {
+    user_updates: {},
+    entity_updates: [],
+    task_summary: 'Handled a GitHub-born task.',
+    activity_summary: 'GitHub work',
+    domain: 'engineering',
+  };
+
+  it('renders /pull/ and /issues/ URLs from is_pr on github channels', () => {
+    const metadata = {
+      ...METADATA,
+      channels: {
+        'github:acme/backend#42': {
+          type: 'github', repo: 'acme/backend', issue_number: 42, is_pr: true,
+        },
+        'github:acme/backend#7': {
+          type: 'github', repo: 'acme/backend', issue_number: 7, is_pr: false,
+        },
+      },
+      default_channel: 'github:acme/backend#7',
+    } as never;
+
+    const content = buildSummaryMarkdown(TASK_ID, metadata, RESULT as never, []);
+    expect(content).toContain('- url: https://github.com/acme/backend/pull/42');
+    expect(content).toContain('- url: https://github.com/acme/backend/issues/7');
   });
 });
 

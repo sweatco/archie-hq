@@ -306,7 +306,7 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
         return name.startsWith('DM with ') ? name : `#${name}`;
       }
       if (ch.type === 'cli') return 'CLI session';
-      if (ch.type === 'github') return `PR ${ch.repo}#${ch.pr_number}`;
+      if (ch.type === 'github') return `GitHub ${ch.repo}#${ch.issue_number} (${ch.is_pr ? 'PR' : 'issue'})`;
       return id;
     };
     const contextLines = [
