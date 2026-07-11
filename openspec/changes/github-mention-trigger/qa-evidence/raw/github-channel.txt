@@ -1,0 +1,21 @@
+
+ RUN  v4.1.10 /Users/igorsova/Projects/archie-hq.forge-github-mention-trigger
+
+ ✓ src/tasks/__tests__/github-channel.test.ts > Task.linkGitHubChannel > writes the channel entry under github:{repo}#{n} with the reshaped fields 4ms
+ ✓ src/tasks/__tests__/github-channel.test.ts > Task.linkGitHubChannel > promotes default_channel only when unset 1ms
+ ✓ src/tasks/__tests__/github-channel.test.ts > Task.linkGitHubChannel > does not steal default_channel from an existing channel 1ms
+ ✓ src/tasks/__tests__/github-channel.test.ts > Task.linkGitHubChannel > is idempotent on re-link, preserving the entry and its watermark 1ms
+ ✓ src/tasks/__tests__/github-channel.test.ts > Task.linkGitHubChannel > persists to on-disk metadata via save(true) 1ms
+ ✓ src/tasks/__tests__/github-channel.test.ts > postToUser — github channel > posts to the originating thread via the default github channel, never the dropped path (AC6) 2ms
+ ✓ src/tasks/__tests__/github-channel.test.ts > postToUser — github channel > delivers to an explicitly targeted github channel 1ms
+ ✓ src/tasks/__tests__/github-channel.test.ts > postToUser — github channel > warns and continues when addPRComment throws 1ms
+ ✓ src/tasks/__tests__/github-channel.test.ts > postToUser — github channel > warns (not silent null) when the GitHub client is unconfigured 1ms
+ ✓ src/tasks/__tests__/github-channel.test.ts > postToUser — github channel > postFilesToUser warns that files are dropped on a github channel 1ms
+ ✓ src/tasks/__tests__/github-channel.test.ts > Task.isGitHubBorn > is true when any channel is a github channel 1ms
+ ✓ src/tasks/__tests__/github-channel.test.ts > Task.isGitHubBorn > is false without a github channel 1ms
+
+ Test Files  1 passed (1)
+      Tests  12 passed (12)
+   Start at  04:08:38
+   Duration  716ms (transform 281ms, setup 0ms, import 605ms, tests 19ms, environment 0ms)
+

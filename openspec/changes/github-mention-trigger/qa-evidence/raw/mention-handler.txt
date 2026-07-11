@@ -1,0 +1,35 @@
+
+ RUN  v4.1.10 /Users/igorsova/Projects/archie-hq.forge-github-mention-trigger
+
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleGitHubMentionDirect — creation path (AC2, AC4, AC5) > seeds knowledge.log with the repo and issue number via the destination prefix (AC2) 6ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleGitHubMentionDirect — creation path (AC2, AC4, AC5) > seeds knowledge.log with the issue title, body, and thread link (AC2) 3ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleGitHubMentionDirect — creation path (AC2, AC4, AC5) > seeds the verbatim mentioning comment with its [comment_id] tag, author, and link back (AC2) 3ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleGitHubMentionDirect — creation path (AC2, AC4, AC5) > records the GitHub origin as a github channel entry with repo + issue number, on disk immediately (sync-save, AC2) 3ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleGitHubMentionDirect — creation path (AC2, AC4, AC5) > pings the PM with the newTask prompt after seeding (AC2) 3ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleGitHubMentionDirect — creation path (AC2, AC4, AC5) > acknowledges a comment mention with a comment reaction plus a task-naming comment (AC5) 3ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleGitHubMentionDirect — creation path (AC2, AC4, AC5) > creates and acks from an issues.opened mention, with the reaction on the issue (AC4) 4ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleGitHubMentionDirect — creation path (AC2, AC4, AC5) > does not abort creation when the ack calls throw — task, seed, and PM ping still land (AC5) 3ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleGitHubMentionDirect — creation path (AC2, AC4, AC5) > delivers to the existing task instead of duplicating when the thread mapped mid-flight 4ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleGitHubMentionDirect — gates (AC3, AC9) > discards a read-permission author: no task, no reply, no reaction, reason logged (AC3) 1ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleGitHubMentionDirect — gates (AC3, AC9) > discards a none-permission author: no task, no reply, no reaction, reason logged (AC3) 1ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleGitHubMentionDirect — gates (AC3, AC9) > fails closed when the permission lookup throws 0ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleGitHubMentionDirect — gates (AC3, AC9) > fails closed when the GitHub client is unconfigured 0ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleGitHubMentionDirect — gates (AC3, AC9) > declines once for two authorized mentions on an uncovered repo within the window (AC9) 1ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleGitHubMentionDirect — gates (AC3, AC9) > posts a fresh decline after the dedup window elapses (expiry + lazy eviction) 1ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleGitHubMentionDirect — gates (AC3, AC9) > stays silent for an unauthorized mention in an uncovered repo (authorization first) 0ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleGitHubMentionDirect — gates (AC3, AC9) > logs and posts no ack when creation throws after the permission gate 1ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleExistingTaskDirect — GitHub-born follow-ups (AC7) and AC11 pins > routes an authorized mention-free follow-up: appends, advances the watermark, pings the PM (AC7) 1ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleExistingTaskDirect — GitHub-born follow-ups (AC7) and AC11 pins > silently drops a read/none follow-up author: no append, no PM wake, watermark unchanged (AC7 gate) 2ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleExistingTaskDirect — GitHub-born follow-ups (AC7) and AC11 pins > fails closed on a thrown lookup and does not cache the failure — a retry re-queries 2ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleExistingTaskDirect — GitHub-born follow-ups (AC7) and AC11 pins > drops [bot] follow-up authors before any permission lookup 2ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleExistingTaskDirect — GitHub-born follow-ups (AC7) and AC11 pins > performs exactly one permission lookup for two follow-ups by the same author within the TTL 2ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleExistingTaskDirect — GitHub-born follow-ups (AC7) and AC11 pins > skips a redelivered follow-up comment id via the channel watermark (AC7 dedup) 2ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleExistingTaskDirect — GitHub-born follow-ups (AC7) and AC11 pins > dedups a redelivered triggering comment via the creation-time watermark (AC7) 3ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleExistingTaskDirect — GitHub-born follow-ups (AC7) and AC11 pins > keeps the Archie-managed PR path ungated with byte-identical advance dedup (AC11) 2ms
+ ✓ src/connectors/github/__tests__/mention-handler.test.ts > handleExistingTaskDirect — GitHub-born follow-ups (AC7) and AC11 pins > keeps the Archie-managed PR skip path byte-identical, still with no permission lookup (AC11) 2ms
+
+ Test Files  1 passed (1)
+      Tests  26 passed (26)
+   Start at  04:08:05
+   Duration  908ms (transform 326ms, setup 0ms, import 757ms, tests 55ms, environment 0ms)
+
