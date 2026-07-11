@@ -8,6 +8,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+// task.js must be the FIRST runtime import: task.ts ↔ persistence.ts are
+// circular, and only when task.js's evaluation triggers the persistence mock
+// factory does task.ts bind the mocked appendAgentFinding (importing
+// persistence first would link task.ts against the real module mid-cycle).
+import { Task as RealTask } from '../../tasks/task.js';
 import { createOrchestrationMcpServer } from '../tools.js';
 import type { Agent } from '../agent.js';
 import type { Task } from '../../tasks/task.js';
@@ -29,10 +34,15 @@ vi.mock('../../connectors/github/repo-clone.js', () => ({
   fetchOrigin: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../../tasks/persistence.js', () => ({
-  appendAgentFinding: vi.fn().mockResolvedValue(undefined),
-  getAgentClonePath: vi.fn(),
-  getReposPath: vi.fn(),
+vi.mock('../../tasks/persistence.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../tasks/persistence.js')>();
+  return { ...actual, appendAgentFinding: vi.fn().mockResolvedValue(undefined) };
+});
+
+vi.mock('../../system/event-bus.js', () => ({
+  emitEvent: vi.fn(),
+  onEvent: vi.fn(),
+  offEvent: vi.fn(),
 }));
 
 vi.mock('../../system/logger.js', () => ({
@@ -40,9 +50,15 @@ vi.mock('../../system/logger.js', () => ({
     agentAction: vi.fn(),
     agentFinding: vi.fn(),
     agentToSlack: vi.fn(),
+    agentMessage: vi.fn(),
     system: vi.fn(),
     error: vi.fn(),
     warn: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    plain: vi.fn(),
+    slack: vi.fn(),
+    server: vi.fn(),
   },
 }));
 
@@ -51,9 +67,14 @@ vi.mock('../registry.js', () => ({
   getVisiblePeerIdsForSender: vi.fn().mockReturnValue([]),
   getAgentDef: vi.fn().mockReturnValue(undefined),
   isAutoMergeRepo: vi.fn().mockReturnValue(false),
+  scanAgentDefs: vi.fn().mockReturnValue([]),
+  synthesizeDynamicAgentDef: vi.fn(),
 }));
 
+import type { Application, Request, Response } from 'express';
 import { appendAgentFinding } from '../../tasks/persistence.js';
+import { emitEvent } from '../../system/event-bus.js';
+import { mountApiRoutes } from '../../connectors/api/routes.js';
 
 const GITHUB_CHANNELS = {
   'github:acme/backend#42': { type: 'github', repo: 'acme/backend', issue_number: 42, is_pr: false },
@@ -179,5 +200,128 @@ describe('request_max_mode on a Slack-born task', () => {
     );
     expect(task.suspendStatus).toHaveBeenCalled();
     expect(agent.deferTeardown).toHaveBeenCalled();
+  });
+});
+
+// ---- handleEditModeApproval guard (7.2) ----
+
+/** Fake task carrying the real handleEditModeApproval (called with this=fake). */
+function makeApprovalTask(channels: Task['metadata']['channels']) {
+  const metadata = {
+    task_id: 'task-123',
+    task_owner: null,
+    participants: [],
+    channels,
+    default_channel: Object.keys(channels)[0] ?? null,
+    agent_sessions: {},
+    repositories: {},
+    status: 'in_progress',
+  } as unknown as Task['metadata'];
+  return {
+    taskId: 'task-123',
+    metadata,
+    agentProcesses: new Map(),
+    save: vi.fn().mockResolvedValue(undefined),
+    debouncedSave: vi.fn(),
+    sendMessage: vi.fn().mockResolvedValue(undefined),
+    isGitHubBorn(): boolean {
+      return Object.values(metadata.channels).some((ch) => (ch as { type: string }).type === 'github');
+    },
+    handleEditModeApproval: RealTask.prototype.handleEditModeApproval,
+    handleEditModeDenial: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+describe('handleEditModeApproval on a GitHub-born task', () => {
+  it('rejects: edit_allowed never set, no approver recorded, decision finding appended', async () => {
+    const task = makeApprovalTask(GITHUB_CHANNELS);
+
+    const disposition = await task.handleEditModeApproval({ id: 'U1', name: 'Dana' });
+
+    expect(disposition).toBe('rejected_readonly');
+    expect(task.metadata.edit_allowed).toBeUndefined();
+    expect(task.metadata.edit_approved_by).toBeUndefined();
+    expect(task.save).not.toHaveBeenCalled();
+    expect(task.sendMessage).not.toHaveBeenCalled();
+    expect(appendAgentFinding).toHaveBeenCalledWith(
+      'task-123', 'system', expect.stringContaining('GitHub-born tasks are read-only in v1'), 'decision',
+    );
+  });
+
+  it('approves a Slack-born task exactly as before', async () => {
+    const task = makeApprovalTask(SLACK_CHANNELS);
+
+    const disposition = await task.handleEditModeApproval({ id: 'U1', name: 'Dana' });
+
+    expect(disposition).toBe('approved');
+    expect(task.metadata.edit_allowed).toBe(true);
+    expect(task.metadata.edit_approved_by).toEqual({ id: 'U1', name: 'Dana' });
+    expect(task.save).toHaveBeenCalledWith(true);
+    expect(appendAgentFinding).toHaveBeenCalledWith(
+      'task-123', 'system', 'Edit mode approved by Dana', 'decision',
+    );
+    expect(task.sendMessage).toHaveBeenCalled();
+  });
+});
+
+// ---- Approve API route (7.2, merge-approval-surfaces style) ----
+
+type RouteHandler = (req: Request, res: Response) => Promise<void>;
+
+function captureApproveRoute(): RouteHandler {
+  const fakeApp = { use: vi.fn() };
+  mountApiRoutes(fakeApp as unknown as Application);
+  const router = fakeApp.use.mock.calls[0]![1] as {
+    stack: Array<{ route?: { path: string; methods: Record<string, boolean>; stack: Array<{ handle: RouteHandler }> } }>;
+  };
+  const layer = router.stack.find((l) => l.route?.path === '/tasks/:id/approve' && l.route.methods['post']);
+  return layer!.route!.stack[0]!.handle;
+}
+
+function makeRes() {
+  const res = { status: vi.fn(), json: vi.fn() };
+  res.status.mockReturnValue(res);
+  return res as unknown as Response & { status: ReturnType<typeof vi.fn>; json: ReturnType<typeof vi.fn> };
+}
+
+describe('POST /tasks/:id/approve edit_mode on a GitHub-born task', () => {
+  it('returns 403, leaves edit_allowed unset, and emits no approval:resolved', async () => {
+    const task = makeApprovalTask(GITHUB_CHANNELS);
+    const getSpy = vi.spyOn(RealTask, 'get').mockResolvedValue(task as unknown as Task);
+
+    const route = captureApproveRoute();
+    const res = makeRes();
+    await route(
+      { params: { id: 'task-123' }, body: { type: 'edit_mode', approve: true } } as unknown as Request,
+      res,
+    );
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith({ error: 'GitHub-born tasks are read-only in v1' });
+    expect(res.json).not.toHaveBeenCalledWith({ ok: true });
+    expect(task.metadata.edit_allowed).toBeUndefined();
+    expect(vi.mocked(emitEvent)).not.toHaveBeenCalledWith(
+      'approval:resolved', expect.anything(), expect.anything(),
+    );
+    getSpy.mockRestore();
+  });
+
+  it('still resolves edit_mode approval for a Slack-born task with ok + approval:resolved', async () => {
+    const task = makeApprovalTask(SLACK_CHANNELS);
+    const getSpy = vi.spyOn(RealTask, 'get').mockResolvedValue(task as unknown as Task);
+
+    const route = captureApproveRoute();
+    const res = makeRes();
+    await route(
+      { params: { id: 'task-123' }, body: { type: 'edit_mode', approve: true } } as unknown as Request,
+      res,
+    );
+
+    expect(res.json).toHaveBeenCalledWith({ ok: true });
+    expect(task.metadata.edit_allowed).toBe(true);
+    expect(vi.mocked(emitEvent)).toHaveBeenCalledWith(
+      'approval:resolved', 'task-123', { type: 'edit_mode', approve: true },
+    );
+    getSpy.mockRestore();
   });
 });

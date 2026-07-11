@@ -1251,7 +1251,18 @@ export class Task {
 
   // ---- Approval handlers ----
 
-  async handleEditModeApproval(approver?: { id: string; name: string; email?: string }): Promise<void> {
+  async handleEditModeApproval(approver?: { id: string; name: string; email?: string }): Promise<'approved' | 'rejected_readonly'> {
+    // GitHub-born tasks are read-only by construction (v1): refuse the flip
+    // from every surface — Slack action, API route, debug MCP — so the
+    // unauthenticated approve API cannot make one writable. Disposition-return
+    // pattern per handleMergeApproval; edit_allowed/edit_approved_by stay
+    // untouched and no agent restarts.
+    if (this.isGitHubBorn()) {
+      logger.warn('task', `Edit mode approval rejected for task ${this.taskId} — GitHub-born tasks are read-only in v1`);
+      await appendAgentFinding(this.taskId, 'system', 'Edit mode approval rejected — GitHub-born tasks are read-only in v1', 'decision');
+      return 'rejected_readonly';
+    }
+
     // Cancel any park armed by request_edit_mode on the PM this turn. The tool
     // defers task.stop() to the PM's turn-end so it doesn't close the input
     // stream under an in-flight hook. If the user approves *before* that turn
@@ -1295,6 +1306,7 @@ export class Task {
     const approvedBy = this.metadata.edit_approved_by?.name || 'user';
     await appendAgentFinding(this.taskId, 'system', `Edit mode approved by ${approvedBy}`, 'decision');
     await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+    return 'approved';
   }
 
   async handleEditModeDenial(): Promise<void> {
