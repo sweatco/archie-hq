@@ -35,7 +35,7 @@
 
 ## 8. Boot warning, PM context, prompts (design D9, D12, D13)
 
-- [ ] 8.1 Add the boot warning in `src/index.ts` (webhook mounted with `GITHUB_WEBHOOK_SECRET` but `GITHUB_APP_SLUG` unset → "self-event filter, mention trigger, and GitHub-born task routing disabled"), and annotate `GITHUB_APP_SLUG` in `.env.example` as load-bearing for all three.
+- [x] 8.1 Add the boot warning in `src/index.ts` (webhook mounted with `GITHUB_WEBHOOK_SECRET` but `GITHUB_APP_SLUG` unset → "self-event filter, mention trigger, and GitHub-born task routing disabled"), and annotate `GITHUB_APP_SLUG` in `.env.example` as load-bearing for all three.
 - [ ] 8.2 Add the GitHub-born PM context line in `src/agents/spawn.ts` keyed off `isGitHubBorn()` (`triggered_by` precedent: origin repo/number/URL from the github channel entry, replies land on the GitHub thread, read-only for the task's lifetime, never request edit/max mode) and the "GitHub-born tasks" subsection in `prompts/pm-agent.md` (same rules + Slack-specific tools do not apply). Typecheck green; context line covered by an assertion in `readonly-github.test.ts` or a small spawn-context test.
 
 ## 9. Docs, e2e recipe, final gate (design D13, D14; verification plan)
