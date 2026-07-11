@@ -21,12 +21,16 @@ import {
   formatGitHubEvent,
   verifyWebhookSignature,
   extractBranchFromPayload,
+  type GitHubMentionEvent,
 } from './webhooks.js';
 import { Task } from '../../tasks/task.js';
-import { appendGitHubEvent, findTaskByPRNumber, findTaskByBranch } from '../../tasks/persistence.js';
+import { appendGitHubEvent, findTaskByPRNumber, findTaskByBranch, findTaskByIssueChannel } from '../../tasks/persistence.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { findBranchStateByPR } from './branch-state.js';
 import { extractTaskIdFromBranch } from './branch-naming.js';
+import { getGitHubClient } from './client.js';
+import { findAgentDefsContainingRepo } from '../../agents/registry.js';
+import type { GitHubChannel } from '../../types/task.js';
 import { logger } from '../../system/logger.js';
 import { getIsShuttingDown } from '../../system/shutdown.js';
 import { WORKDIR } from '../../system/workdir.js';
@@ -135,7 +139,171 @@ async function handleGitHubWebhook(
       await handleExistingTaskDirect(route.taskId, context);
     } else if (route.handler === 'checks_ready') {
       handleChecksReadyDirect(route.taskId, route.githubRepo, route.prNumber);
+    } else if (route.handler === 'new_task') {
+      await handleGitHubMentionDirect(route.mention);
     }
+  }
+}
+
+// ============================================================================
+// Mention → new task
+// ============================================================================
+
+/**
+ * Per-thread decline dedup: `repo#issue` → last-declined timestamp. Caps an
+ * authorized user's mention burst on an uncovered repo at one decline comment
+ * per thread per window. Process-local; lost on restart (worst case: one
+ * duplicate decline).
+ */
+const DECLINE_DEDUP_WINDOW_MS = 10 * 60_000;
+const recentDeclines = new Map<string, number>();
+
+/**
+ * True when a decline was already posted for this thread within the window.
+ * Lazily evicts expired entries on every access so the map cannot grow
+ * unboundedly across threads.
+ */
+function shouldSkipDecline(threadRef: string, now = Date.now()): boolean {
+  for (const [key, at] of recentDeclines) {
+    if (now - at >= DECLINE_DEDUP_WINDOW_MS) recentDeclines.delete(key);
+  }
+  return recentDeclines.has(threadRef);
+}
+
+/** Canonical URL of the issue/PR thread itself (mention.htmlUrl may point at the comment). */
+function threadUrl(mention: GitHubMentionEvent): string {
+  return `https://github.com/${mention.githubRepo}/${mention.isPr ? 'pull' : 'issues'}/${mention.issueNumber}`;
+}
+
+/**
+ * Handle a summoning mention: authorization gate (fail closed), repo-coverage
+ * gate (polite decline, deduped), race re-check, then create → link → flush →
+ * seed → ack → wake PM. Exported for tests.
+ *
+ * All Archie-authored text on this path (decline, ack) is mention-free so the
+ * self-filter is never load-bearing against our own output (loop safety).
+ */
+export async function handleGitHubMentionDirect(mention: GitHubMentionEvent): Promise<void> {
+  const { githubRepo, issueNumber, author } = mention;
+  const threadRef = `${githubRepo}#${issueNumber}`;
+  const destination = `${mention.isPr ? 'PR' : 'issue'} #${issueNumber}`;
+
+  const client = getGitHubClient();
+  if (!client) {
+    logger.warn('Server', `GitHub mention on ${threadRef} by ${author} discarded — GitHub client not configured (fail closed)`);
+    return;
+  }
+
+  // Authorization: write/maintain/admin only (legacy permission values map
+  // maintain→write and triage→read). Unauthorized and lookup failures discard
+  // silently — no task, no reply, no probing surface.
+  let permission: string;
+  try {
+    permission = await client.getCollaboratorPermission(githubRepo, author);
+  } catch (error) {
+    logger.warn('Server', `GitHub mention on ${threadRef} by ${author} discarded — permission lookup failed (fail closed)`, error);
+    return;
+  }
+  if (permission !== 'admin' && permission !== 'write') {
+    logger.system(`GitHub: mention on ${threadRef} by ${author} discarded — permission '${permission}' (write/admin required)`);
+    return;
+  }
+
+  // Coverage: repos no plugin declares get a polite decline (authorized
+  // authors only — this runs after the permission gate), deduped per thread.
+  if (findAgentDefsContainingRepo(githubRepo).length === 0) {
+    if (shouldSkipDecline(threadRef)) {
+      logger.system(`GitHub: decline on ${threadRef} suppressed — already declined within the window`);
+      return;
+    }
+    try {
+      await client.addPRComment(
+        githubRepo,
+        issueNumber,
+        "Thanks for the mention! I don't currently cover this repository — ask an Archie admin to add it to my plugin configuration.",
+      );
+      recentDeclines.set(threadRef, Date.now());
+    } catch (error) {
+      logger.warn('Server', `Failed to post uncovered-repo decline on ${threadRef}`, error);
+    }
+    return;
+  }
+
+  // Race re-check: a near-simultaneous mention may have mapped this thread
+  // while the gates ran (the mapping is a lockless fs scan). Fall through to
+  // existing-task delivery instead of minting a duplicate.
+  const existingTaskId = await findTaskByIssueChannel(githubRepo, issueNumber);
+  if (existingTaskId) {
+    logger.system(`GitHub: mention on ${threadRef} resolved to existing task ${existingTaskId} — delivering there`);
+    await handleExistingTaskDirect(existingTaskId, {
+      eventType: mention.commentId !== undefined ? 'issue_comment' : 'issues',
+      action: mention.commentId !== undefined ? 'created' : 'opened',
+      githubRepo,
+      issueNumber,
+      prNumber: mention.isPr ? issueNumber : undefined,
+      user: author,
+      body: mention.commentBody ?? mention.issueBody,
+      commentId: mention.commentId,
+    });
+    return;
+  }
+
+  try {
+    const task = await Task.create();
+    const channelKey = task.linkGitHubChannel(githubRepo, issueNumber, mention.isPr);
+    if (mention.commentId !== undefined) {
+      // The seed below consumes the triggering comment — set the watermark so a
+      // webhook redelivery (which now resolves via the mapping) dedups to a no-op.
+      (task.metadata.channels[channelKey] as GitHubChannel).last_processed_comment_id = mention.commentId;
+    }
+    task.metadata.title ??= mention.issueTitle || undefined;
+    // Synchronous flush: the channel entry is the GitHub-born readonly marker —
+    // it must never sit in the 500ms debounce window (a crash there would leave
+    // a task the guards don't recognize).
+    await task.save(true);
+
+    const contextEntry = [
+      `opened "${mention.issueTitle}"`,
+      mention.issueBody,
+      threadUrl(mention),
+    ].filter(Boolean).join('\n\n');
+    await appendGitHubEvent(task.taskId, githubRepo, {
+      from: mention.issueAuthor ?? author,
+      destination,
+      message: contextEntry,
+    });
+    if (mention.commentId !== undefined && mention.commentBody !== undefined) {
+      await appendGitHubEvent(task.taskId, githubRepo, {
+        from: author,
+        destination,
+        message: `${mention.commentBody} [comment_id=${mention.commentId}]\n\n${mention.htmlUrl}`,
+      });
+    }
+
+    // Acknowledge in-thread: 👀 on the triggering comment (or the issue for
+    // issue-born mentions) plus a short mention-free comment naming the task.
+    // Ack failures warn and never abort — the task is the product.
+    try {
+      if (mention.commentId !== undefined) {
+        await client.addCommentReaction(githubRepo, mention.commentId);
+      } else {
+        await client.addIssueReaction(githubRepo, issueNumber);
+      }
+    } catch (error) {
+      logger.warn('Server', `Failed to add ack reaction on ${threadRef}`, error);
+    }
+    try {
+      await client.addPRComment(githubRepo, issueNumber, `On it — created \`${task.taskId}\`. I'll follow up here.`);
+    } catch (error) {
+      logger.warn('Server', `Failed to post ack comment on ${threadRef}`, error);
+    }
+
+    logger.system(`GitHub: created ${task.taskId} from mention on ${threadRef} by ${author}`);
+    await task.sendMessage(AGENT_PROMPTS.newTask, 'pm-agent');
+  } catch (error) {
+    // Fire-and-forget webhook semantics: the summoner sees nothing (no ack was
+    // posted), the failure is operator-visible here, re-mentioning is the remedy.
+    logger.error('Server', `Failed to create task from GitHub mention on ${threadRef}`, error);
   }
 }
 
