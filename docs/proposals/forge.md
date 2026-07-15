@@ -1,6 +1,6 @@
 # Proposal: Forge v2 — ephemeral, workflow-orchestrated idea → verified PR loop
 
-> **Status:** Draft — supersedes the staged-skill design previously in this file (accepted June 2026, implemented as `.claude/skills/forge/`). The verification philosophy of v1 — fresh-context adversarial reviewers, progressive blindness, capped loops, structured verdicts, live black-box QA — carries over unchanged. What changes is the execution substrate and the state model.
+> **Status:** Accepted — in execution. Supersedes the staged-skill design previously in this file (accepted June 2026, implemented as `.claude/skills/forge/`). The verification philosophy of v1 — fresh-context adversarial reviewers, progressive blindness, capped loops, structured verdicts, live black-box QA — carries over unchanged. What changes is the execution substrate and the state model.
 
 ## Summary
 
@@ -98,7 +98,15 @@ The impasse → answer → resume round-trip is the hinge of the whole design, s
 - The one-run-at-a-time cross-branch scan — a run is a session; running workflows are visible in the task list and stoppable there.
 - `/forge resume` and `/forge abandon` — session death or TaskStop is abandonment; restart is fresh (branch recreated from base).
 - The "Forge state is not scope creep" rules, `.gitattributes` linguist-collapse, and reviewer exemptions for `openspec/changes/` — nothing is committed, so nothing needs exempting.
-- OpenSpec integration generally — replaced by the docs stage updating real documentation in the PR itself.
+- OpenSpec integration in Forge — replaced by the docs stage updating real documentation in the PR itself (see Relationship to OpenSpec below; the repo's `openspec/` directory itself stays).
+
+## Relationship to OpenSpec
+
+Forge v2 stops **using** OpenSpec, but the repo keeps the `openspec/` directory untouched — the archive and specs library remain valuable history, and the `opsx` skills keep working for anyone who wants them. What happens to each thing OpenSpec provided:
+
+- **Artifact shapes** (`proposal.md` / `design.md` / `tasks.md` decomposition discipline) — kept, relocated: the plan stage's agents emit exactly these structures as **schema-enforced structured output**, validated at generation time with retries. That is stronger enforcement than CLI validation of a markdown file after the fact, and the artifacts flow between stages as data instead of being committed.
+- **AC rigor** — was never OpenSpec's; the numbered-testable-ACs-with-declared-method contract is Forge's own inception discipline, now also schema-enforced at the gate, and — unlike anything OpenSpec did — actually *verified* per-AC by the QA stage with evidence published in the PR manifest.
+- **The living spec library** (`openspec/specs/`, archive-on-merge) — Forge no longer writes to it. The durable, verified requirements corpus accumulates elsewhere: tests are executable specs, the future smoke suite is a verified scenario library, and every merged Forge PR carries its ACs + evidence in the description (a queryable AC history on GitHub for free). **Named re-entry path:** if real runs show the research stage suffering from the lack of a structured requirements corpus, the docs stage grows one agent that also emits the run's ACs as scenarios into a specs folder — a one-agent addition, no architectural change. Decide from observed pain, not anticipated pain.
 
 ## Future phases
 
