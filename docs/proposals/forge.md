@@ -69,6 +69,10 @@ Every stage keeps v1's verification structure, now schema-enforced:
 - **Docs** — a locator/updater agent finds the `docs/` pages describing the touched subsystem (or determines a new page is warranted) and updates them to match what actually shipped; a fresh verifier reads the updated docs against the diff — stale claims, missed sections, and invented behavior are findings. Runs after QA so docs describe verified behavior; merges atomically with the code.
 - **Ship** — assemble the PR in house style (What & why / How it works / Verification), the manifest as the Verification section, push, open the PR ready-for-review. CI-watching and review-feedback handling use the session's existing PR-subscription machinery, outside the workflow.
 
+### Review mode (`/forge review <n>`)
+
+The zero-footprint mode from v1 survives, and it is the purest workflow of all — stateless fan-out, no gates, nothing written. `forge-review` reviews and QAs an existing PR **without taking it over**: an ephemeral worktree isolates the checkout; fact-checked lenses (PR context, diff mapper, base-drift check) ground it; an agent derives the intent and numbered ACs from the PR autonomously with every assumption flagged (the PR's own "couldn't verify" admissions become ACs); the review ring (claims-vs-diff + adversarial bug hunter with mutation-checked tests, skipped in `qa-only`) and the blind QA ring run against the derived contract; the worktree is torn down. Unlike `forge-run` it never impasses — a dead agent or unavailable infra degrades into an explicit `gaps` entry in the report rather than a stop. The conductor renders the report in chat, iterates via relaunches with the operator's corrections, and — only on the explicit go — submits the review to GitHub with honest attribution and line-anchored comments. Follow-up rounds relaunch with the previously reviewed SHA and findings, ruling each fixed / unaddressed / regressed. Review mode is exempt from one-run-per-session (it writes nothing); its only shared resource with an active run is the docker boot during live QA.
+
 ## Split: bounded changes, issues as the queue
 
 A single run cannot safely absorb an arbitrarily large change — the caps, the single QA boot, predictable cost, and the single-session lifetime all assume a bounded diff. Sizing happens **after research, not before**: the codebase decides how big a change is, not the idea's text.
@@ -115,7 +119,7 @@ Forge v2 stops **using** OpenSpec, but the repo keeps the `openspec/` directory 
 - **Gate migration to GitHub.** The clarifying questions and the brief/AC sign-off move from chat to the source issue's conversation; the session waits on (or is re-triggered by) the human's issue reply. Nothing structural changes — the gate is already a seam between workflows; only its transport moves. This completes the issue-driven loop: issue in, questions and brief in the thread, PR out.
 - **Smoke-test suite.** QA scenarios worth keeping get promoted into a smoke suite in the repo, run as a CI check on PRs before merge — the regression flywheel with a durable home in the test surface rather than run-state.
 - **Auto-merge on green.** v2 ends at "PR open, ready for review"; merging stays human. Auto-merge on green CI + clean smoke suite is earned after the loop has produced a track record of clean runs.
-- **PR-mode entry.** "Finish this PR" re-enters the chain at implement with a reverse-inception research pass; zero-footprint review mode becomes a pure review workflow (it is the most natural workflow fit of all — stateless fan-out).
+- **PR-mode entry.** "Finish this PR" — taking over and completing someone's PR — re-enters the chain at implement with a reverse-inception research pass. (Zero-footprint review mode, by contrast, ships in v2 — see Review mode above.)
 
 ## Open questions
 

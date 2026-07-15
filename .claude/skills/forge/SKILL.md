@@ -19,8 +19,9 @@ You are the Forge conductor. You own everything interactive — the clarifying i
 
 - `/forge <idea text>` — full run.
 - `/forge issue <n>` — fetch the issue (GitHub MCP); its body seeds the interview; derive the change name from the issue title.
+- `/forge review <n>` (optionally `qa-only`) — zero-footprint review + QA of an existing PR; see Review mode below. Exempt from the one-run rule: it writes nothing, so it can run alongside an active run.
 
-(PR-finish and zero-footprint review modes are future phases — see the proposal. If asked, say so.)
+(PR-finish mode — taking over and completing someone's PR — is a future phase; see the proposal. If asked, say so.)
 
 ## Procedure
 
@@ -53,3 +54,15 @@ While the run is in flight you may relay `log()` narration if the user asks how 
 ### 6. Report (chat)
 
 On `done`: report the PR link and render the verification manifest (per-AC: criterion, method, status, evidence — waivers stated plainly). Subscribe to the PR's activity per the session's normal PR machinery; CI failures and review comments route back through you. Substantive fixes go through a fresh fix-mode launch: `Workflow({name: 'forge-implement', args: {change, branch, base, brief, acs, plan, fresh: false, fixes: [...]}})` — the `plan` object comes from the `done` result; keep it for the session's lifetime. The merge decision is the user's, on GitHub. If they ask post-merge: file follow-up issues for every waived AC with a real post-merge step.
+
+## Review mode (`/forge review <n>`)
+
+Forge acts as an independent reviewer of an existing PR **without taking it over** — the author keeps ownership. The analysis is one workflow; you own the report, the iteration, and the only outward action (submitting the review), which happens strictly on the user's explicit go.
+
+1. **Launch** `Workflow({name: 'forge-review', args: {pr, qaOnly, scratchDir}})` with `scratchDir` under the session scratchpad. The workflow grounds itself (worktree + fact-checked lenses), derives intent and numbered ACs from the PR autonomously (assumptions flagged, the PR's own "couldn't verify" admissions become ACs), runs the review ring (skipped in `qa-only`) and the blind QA ring, tears down its worktree, and returns `{intent, assumptions, acs, reviewFindings, qaManifest, gaps, recommendation}`. It never impasses — dead agents and unavailable infra surface as `gaps` in the report; it never commits, pushes, or posts.
+2. **Report in chat**, one message: derived intent + ACs with every assumption flagged, the per-AC verdict table with evidence, review findings ranked by severity (CONFIRMED before PLAUSIBLE), the gaps verbatim, and the recommendation (approve / needs-discussion / request-changes). Nothing has touched GitHub yet — say so.
+3. **Iterate**: the user corrects assumptions or ACs → relaunch with `args.corrections` (their words, verbatim); update the report. Repeat until they're satisfied.
+4. **Submit on approval only.** On the explicit go, post the review via the GitHub MCP (pending review → line-anchored comments for findings with `file:line` → submit). Attribute honestly: the review states it is an Archie/Forge review. Then stop — the author handles the outcome.
+5. **Follow-up round** (same session, when the author pushes fixes): relaunch with `args.sinceSha` (the previously reviewed head, from the last result) and `args.previousFindings` (the findings you reported) — the workflow reviews the delta and rules each previous finding fixed / unaddressed / regressed. Submitting again requires a fresh go.
+
+QA in review mode shares one physical resource with an active run: docker. One live boot at a time — if a run's QA stage is executing, hold review QA until it finishes (or accept the suite-only degradation the workflow reports).

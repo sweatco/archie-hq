@@ -11,6 +11,7 @@ Run the Forge v2 development loop on one unit of work.
 
 - `/forge <idea text>` — full run from the clarifying interview
 - `/forge issue <n>` — seed the interview from a GitHub issue
+- `/forge review <n>` — zero-footprint review + QA of an existing PR; findings in chat, review submitted only on approval (add `qa-only` to skip the code-review ring)
 
 **Steps**
 
