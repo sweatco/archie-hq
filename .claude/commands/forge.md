@@ -12,6 +12,9 @@ Run the Forge v2 development loop on one unit of work.
 - `/forge <idea text>` — full run from the clarifying interview
 - `/forge issue <n>` — seed the interview from a GitHub issue
 - `/forge review <n>` — zero-footprint review + QA of an existing PR; findings in chat, review submitted only on approval (add `qa-only` to skip the code-review ring)
+- `/forge review` — same, for the current branch's committed diff against main (nothing touches GitHub)
+- `/forge qa <n>` — QA-only review of PR n (alias for `review <n> qa-only`)
+- `/forge qa ["intended behavior"]` — QA the current branch's committed diff; the quoted intent (optional) becomes the authoritative source for deriving ACs
 
 **Steps**
 
