@@ -115,7 +115,7 @@ let derived = await agent(derivePrompt, { label: 'derive-acs', phase: 'Derive', 
 if (!derived) derived = await agent(derivePrompt, { label: 'derive-acs retry', phase: 'Derive', schema: DERIVED })
 if (!derived) {
   await teardown()
-  return { status: 'error', reason: 'could not derive intent/ACs for ${subject} after a retry — relaunch, or review manually' }
+  return { status: 'error', reason: `could not derive intent/ACs for ${subject} after a retry — relaunch, or review manually` }
 }
 
 const REVIEW = {
@@ -184,7 +184,7 @@ await teardown()
 
 const confirmedBlocking = reviewFindings.filter((f) => f.severity === 'blocking' && f.verdict === 'CONFIRMED').length
 const failedAcs = qaManifest.filter((m) => m.status === 'failed').length
-const unresolvedAcs = qaManifest.filter((m) => m.status === 'unverified' || m.status === 'verified-unaudited').length
+const unresolvedAcs = qaManifest.filter((m) => m.status === 'unverified' || m.status === 'verified-unaudited' || m.status === 'waived').length
 const recommendation = confirmedBlocking > 0 || failedAcs > 0
   ? 'request-changes'
   : (reviewFindings.some((f) => f.severity === 'blocking') || unresolvedAcs > 0 || gaps.length > 0 ? 'needs-discussion' : 'approve')

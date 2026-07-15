@@ -129,7 +129,7 @@ const reviewers = [
   },
   {
     key: 'bugs',
-    prompt: `You hunt for real bugs in a diff. Inputs: the diff (run: ${diffCmd}), read access to the repo, permission to run typecheck/tests. You have NOT seen the implementer's reasoning. Look for: logic errors, unhandled error paths, races/lifecycle issues (spawn/stop/resume/recovery interactions are this codebase's classic failure mode), broken invariants in persisted state, and test theater. For each NEW test in the diff, mutation-check it: revert the fix it guards (actually, in your working copy — restore afterwards) and confirm the test fails; a test that passes either way is a blocking finding. Classify each finding CONFIRMED (you can state the failing input/sequence) or PLAUSIBLE. ${planForReview}`,
+    prompt: `You hunt for real bugs in a diff. Inputs: the diff (run: ${diffCmd}), read access to the repo, permission to run typecheck/tests. You have NOT seen the implementer's reasoning. Look for: logic errors, unhandled error paths, races/lifecycle issues (spawn/stop/resume/recovery interactions are this codebase's classic failure mode), broken invariants in persisted state, and test theater. For each NEW test in the diff, mutation-check it in a SEPARATE disposable copy that is yours alone — git worktree add /tmp/forge-implement-mutation HEAD, revert the guarded change there, confirm the test fails, git worktree remove --force /tmp/forge-implement-mutation when done; NEVER modify the run branch's working tree (another reviewer is reading it concurrently). A test that passes either way is a blocking finding. Classify each finding CONFIRMED (you can state the failing input/sequence) or PLAUSIBLE. ${planForReview}`,
   },
 ]
 
@@ -154,12 +154,12 @@ const runReviewers = async (which, tag) => {
 const fixPrompt = (blocking, extra) => `You fix blocking review findings on branch ${input.branch} (already checked out). Address every finding below, run npm run typecheck / npm run build / npm test until green, and commit. If you believe a finding is wrong, do not silently skip it — note why in your report. Findings tagged AGENT-FAILURE are not code findings — change nothing for them; that reviewer simply re-runs.${extra || ''} ${conventions}\nFindings:\n${JSON.stringify(blocking, null, 2)}\nDesign context:\n${input.plan.design}`
 
 let lastVerdicts = {}
-let pending = reviewers
 let blocking = []
 let rounds = 0
 while (rounds < 3) {
   rounds++
-  blocking = await runReviewers(pending, `r${rounds}`)
+  // Every round re-runs ALL reviewers: a fix changes the artifact, so an earlier PASS is stale.
+  blocking = await runReviewers(reviewers, `r${rounds}`)
   if (blocking.length === 0) {
     log(`Review clean after round ${rounds}`)
     return { status: 'ok', rounds, verdicts: lastVerdicts, gate: gate.summary }
@@ -172,8 +172,6 @@ while (rounds < 3) {
   }
   if (!fixed || !fixed.green) return { status: 'impasse', stage: 'implement', question: `Fixing review findings left the gate red: ${fixed ? fixed.summary : 'fixer agent failed'}. How should we proceed? (Your answer becomes guidance keyed "review".)`, context: { blocking } }
   gate = fixed
-  const blockedReviewers = new Set(blocking.map((b) => b.reviewer))
-  pending = reviewers.filter((rv) => blockedReviewers.has(rv.key))
 }
 
 // Cap hit — one operator-guided fix + full re-review, in prompts the capped rounds never used.

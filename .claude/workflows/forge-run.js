@@ -62,7 +62,7 @@ let qaRes = null
 let cycles = 0
 while (cycles < qaCap) {
   cycles++
-  qaRes = await run('forge-qa', { change: input.change, branch, acs: input.acs, verificationPlan: planRes.plan.verificationPlan, evidenceDir, guidance: answers.qa }, 'qa')
+  qaRes = await run('forge-qa', { acs: input.acs, verificationPlan: planRes.plan.verificationPlan, evidenceDir, guidance: answers.qa }, 'qa')
   if (qaRes.status !== 'ok') return qaRes
   if (qaRes.failures.length === 0) break
   if (cycles === qaCap) {
@@ -87,7 +87,6 @@ if (docsRes.status !== 'ok') return docsRes
 
 phase('Ship')
 const shipRes = await run('forge-ship', {
-  change: input.change,
   branch,
   base,
   brief: input.brief,

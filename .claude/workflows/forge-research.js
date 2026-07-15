@@ -80,24 +80,27 @@ const checked = await pipeline(
   lenses,
   (lens) => agent(lens.prompt, { label: `lens:${lens.key}`, phase: 'Lenses', schema: CLAIMS }),
   (found, lens) => {
-    if (!found || !found.claims || found.claims.length === 0) return { lens: lens.key, verdicts: [], summary: found ? found.summary : null }
+    if (!found || !found.claims || found.claims.length === 0) return { lens: lens.key, verdicts: [], summary: found ? found.summary : null, lensFailed: !found, verifierFailed: false }
     return agent(
       `You are an adversarial fact-checker with read access to this repo and the web. Below is a research dossier fragment. For EACH claim, try to REFUTE it against the actual code or the cited source — open the file, fetch the URL, look yourself. Verdict per claim: CONFIRMED (you saw it yourself) / WRONG (state what is actually there, with citation) / UNVERIFIABLE (no citation, or the citation does not support the claim). Do not evaluate design direction — facts only. Claims:\n${JSON.stringify(found.claims, null, 2)}`,
       { label: `verify:${lens.key}`, phase: 'Verify', schema: CHECKED }
-    ).then((v) => ({ lens: lens.key, summary: found.summary, verdicts: v ? v.verdicts : [] }))
+    ).then((v) => ({ lens: lens.key, summary: found.summary, verdicts: v ? v.verdicts : [], lensFailed: false, verifierFailed: !v }))
   }
 )
 
 const dossier = []
 const rejected = []
+const gaps = []
 for (const lensResult of checked.filter(Boolean)) {
+  if (lensResult.lensFailed) gaps.push(`lens ${lensResult.lens} returned nothing — that angle is uncovered`)
+  if (lensResult.verifierFailed) gaps.push(`fact-checker for lens ${lensResult.lens} returned nothing — that lens's claims were dropped unverified`)
   for (const v of lensResult.verdicts || []) {
     if (v.verdict === 'CONFIRMED') dossier.push({ lens: lensResult.lens, claim: v.claim, citation: v.citation })
     else if (v.verdict === 'WRONG' && v.correction) dossier.push({ lens: lensResult.lens, claim: v.correction, citation: v.citation, note: 'correction of a refuted claim' })
     else rejected.push({ lens: lensResult.lens, claim: v.claim, verdict: v.verdict })
   }
 }
-log(`Dossier: ${dossier.length} confirmed claims kept, ${rejected.length} rejected`)
+log(`Dossier: ${dossier.length} confirmed claims kept, ${rejected.length} rejected, ${gaps.length} gap(s)`)
 
 phase('Sizing')
 const SIZING = {
@@ -126,4 +129,4 @@ const sizing = await agent(
   { label: 'sizing-judge', phase: 'Sizing', schema: SIZING }
 )
 
-return { status: 'ok', dossier, rejected, sizing: sizing || { fits: true, reasons: ['sizing agent failed; defaulting to fits — conductor should sanity-check'] } }
+return { status: 'ok', dossier, rejected, gaps, sizing: sizing || { fits: true, reasons: ['sizing agent failed; defaulting to fits — conductor should sanity-check'] } }

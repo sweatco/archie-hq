@@ -5,7 +5,7 @@ export const meta = {
   phases: [{ title: 'Ship', detail: 'push branch, open PR with manifest' }],
 }
 
-// args: { change, branch, base, brief, planSummary, manifest: [{ac, text, method, status, evidence}],
+// args: { branch, base, brief, planSummary, manifest: [{ac, text, method, status, evidence}],
 //         docsUpdated, guidance?: string }
 const input = typeof args === 'string' ? JSON.parse(args) : (args || {})
 if (!input.branch || !input.base || !Array.isArray(input.manifest)) return { status: 'error', reason: 'missing input.branch/base/manifest' }

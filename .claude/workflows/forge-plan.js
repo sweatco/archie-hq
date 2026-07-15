@@ -125,7 +125,7 @@ let plan = await agent(plannerBase, { label: 'planner', phase: 'Draft', schema: 
 // Guided retry covers null, incomplete, AND exceedsScope results (planComplete is false for all
 // three) — this is what makes the exceeds-scope impasse's "override with guidance" offer real:
 // on resume the cached exceedsScope result replays, then this differently-prompted retry runs live.
-if ((!plan || !planComplete(plan)) && input.guidance) {
+if ((!plan || !planComplete(plan) || plan.exceedsScope) && input.guidance) {
   plan = await agent(`${plannerBase}\nOperator guidance from a previous failed or exceeds-scope attempt (the operator's word overrides the escape hatch): ${input.guidance}`, { label: 'planner (guided)', phase: 'Draft', schema: PLAN })
 }
 if (!plan) return { status: 'impasse', stage: 'plan', question: 'The planner agent failed to produce a plan. How should we proceed? (Your answer becomes guidance for a retry.)', context: null }
@@ -136,12 +136,12 @@ if (!planComplete(plan)) return { status: 'impasse', stage: 'plan', question: 'T
 
 phase('Critique')
 let lastVerdicts = {}
-let pending = critics
 let blocking = []
 let rounds = 0
 while (rounds < 3) {
   rounds++
-  blocking = await critique(pending, `r${rounds}`)
+  // Every round re-runs BOTH critics: a revision changes the plan, so an earlier PASS is stale.
+  blocking = await critique(critics, `r${rounds}`)
   if (blocking.length === 0) {
     log(`Plan accepted after round ${rounds}`)
     return { status: 'ok', plan, rounds, verdicts: lastVerdicts }
@@ -149,9 +149,10 @@ while (rounds < 3) {
   if (rounds === 3) break
   log(`Round ${rounds}: ${blocking.length} blocking finding(s) — revising`)
   const revised = await agent(revisePrompt(blocking), { label: `planner r${rounds + 1}`, phase: 'Draft', schema: PLAN })
-  if (revised) plan = revised
-  const blockedCritics = new Set(blocking.map((b) => b.critic))
-  pending = critics.filter((c) => blockedCritics.has(c.key))
+  // Revisions get the same validation as drafts: an exceedsScope revision surfaces the split
+  // impasse; an incomplete one is discarded (the critics re-flag against the prior plan).
+  if (revised && revised.exceedsScope) return { status: 'impasse', stage: 'plan', reason: 'exceeds-scope', question: 'While revising, the planner concluded this change is too big for one bounded run and proposes a split. Approve the split (conductor: route to the split path), or override with guidance keyed "plan"?', context: { proposedSplit: revised.proposedSplit || [], summary: revised.summary } }
+  if (revised && planComplete(revised)) plan = revised
 }
 
 // Cap hit. The guided escape hatch: an operator answer (via resume args) buys exactly one more
@@ -159,7 +160,7 @@ while (rounds < 3) {
 if (input.guidance) {
   log('Cap hit — running one operator-guided revision round')
   const revised = await agent(revisePrompt(blocking, `\nOperator guidance from the impasse: ${input.guidance}. The operator's word overrides a critic's finding where they conflict.`), { label: 'planner (guided)', phase: 'Draft', schema: PLAN })
-  if (revised) plan = revised
+  if (revised && planComplete(revised)) plan = revised
   blocking = await critique(critics, 'guided')
   if (blocking.length === 0) return { status: 'ok', plan, rounds: rounds + 1, verdicts: lastVerdicts, guided: true }
 }
