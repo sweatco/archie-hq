@@ -70,7 +70,6 @@ const planComplete = (p) => !!(p && p.design && Array.isArray(p.tasks) && p.task
 const VERDICT = {
   type: 'object',
   properties: {
-    pass: { type: 'boolean' },
     findings: {
       type: 'array',
       items: {
@@ -83,7 +82,7 @@ const VERDICT = {
       },
     },
   },
-  required: ['pass', 'findings'],
+  required: ['findings'],
 }
 
 const planContext = `The brief:\n<brief>${input.brief}</brief>\nThe acceptance criteria (the contract every stage verifies against):\n${JSON.stringify(input.acs, null, 2)}\nThe fact-checked research dossier (only confirmed claims):\n${JSON.stringify(input.dossier || [], null, 2)}`

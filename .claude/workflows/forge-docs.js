@@ -29,7 +29,6 @@ const UPDATED = {
 const CHECK = {
   type: 'object',
   properties: {
-    pass: { type: 'boolean' },
     findings: {
       type: 'array',
       items: {
@@ -39,7 +38,7 @@ const CHECK = {
       },
     },
   },
-  required: ['pass', 'findings'],
+  required: ['findings'],
 }
 
 const diffCmd = `git diff origin/${input.base}...HEAD -- . ':!docs'`
@@ -56,10 +55,12 @@ const verify = (tag) => agent(
   `You verify documentation against reality. On the current branch, read the code diff (${diffCmd}) and the doc changes (git diff origin/${input.base}...HEAD -- docs). The updater claims: ${JSON.stringify(updated)}. Judge: do the updated docs accurately describe the shipped behavior? Findings are: stale claims left standing, behavior the diff introduces that the docs miss, and invented behavior the diff does not support. If the updater claimed no docs were needed, verify that too — a behavioral or architectural change with no doc update is a blocking finding.`,
   { label: `doc-verifier ${tag}`, phase: 'Verify', schema: CHECK }
 )
+// The fixer may report only the pages it touched — merge its lists into the running totals so
+// the shipped docsUpdated never under-reports after a fix round.
 const fix = (blocking, extra) => agent(
   `You fix documentation findings on branch ${input.branch}. Address every finding below against the actual code diff (${diffCmd}), commit the fixes. Never hard-wrap prose; never touch CHANGELOG.md.${extra || ''} Findings:\n${JSON.stringify(blocking, null, 2)}`,
   { label: `doc-fixer${extra ? ' (guided)' : ''}`, phase: 'Update', schema: UPDATED }
-)
+).then((revised) => revised ? { ...revised, updated: [...new Set([...(updated.updated || []), ...(revised.updated || [])])], created: [...new Set([...(updated.created || []), ...(revised.created || [])])] } : null)
 
 let blocking = []
 let verifierFailed = false

@@ -30,8 +30,7 @@ const DONE = {
   type: 'object',
   properties: {
     done: { type: 'boolean' },
-    commit: { type: 'string', description: 'Commit SHA, or "skipped" if the branch already contained the change' },
-    notes: { type: 'string' },
+    notes: { type: 'string', description: 'What was done and committed; or "already present, verified" for a resumed task; or what failed' },
   },
   required: ['done', 'notes'],
 }
@@ -48,7 +47,6 @@ const GATE = {
 const REVIEW = {
   type: 'object',
   properties: {
-    pass: { type: 'boolean' },
     findings: {
       type: 'array',
       items: {
@@ -64,14 +62,14 @@ const REVIEW = {
       },
     },
   },
-  required: ['pass', 'findings'],
+  required: ['findings'],
 }
 
 phase('Setup')
-const SETUP = { type: 'object', properties: { ok: { type: 'boolean' }, headSha: { type: 'string' } }, required: ['ok', 'headSha'] }
+const SETUP = { type: 'object', properties: { ok: { type: 'boolean' }, notes: { type: 'string' } }, required: ['ok'] }
 const setupPrompt = input.fresh
-  ? `Set up a fresh feature branch in this repo: git fetch origin ${input.base}, then git checkout -B ${input.branch} origin/${input.base} (this run owns branch ${input.branch}; discarding any stale copy of it is intended). Confirm a clean working tree. Return the head SHA.`
-  : `Continue work on existing branch ${input.branch} in this repo: git fetch origin ${input.base}, git checkout ${input.branch}. Do NOT reset it — it carries this run's prior commits. Confirm a clean working tree. Return the head SHA.`
+  ? `Set up a fresh feature branch in this repo: git fetch origin ${input.base}, then git checkout -B ${input.branch} origin/${input.base} (this run owns branch ${input.branch}; discarding any stale copy of it is intended). Confirm a clean working tree.`
+  : `Continue work on existing branch ${input.branch} in this repo: git fetch origin ${input.base}, git checkout ${input.branch}. Do NOT reset it — it carries this run's prior commits. Confirm a clean working tree.`
 let setup = await agent(setupPrompt, { label: 'branch-setup', phase: 'Setup', effort: 'low', schema: SETUP })
 if ((!setup || !setup.ok) && guideFor('setup')) {
   setup = await agent(setupPrompt + guideFor('setup'), { label: 'branch-setup (guided)', phase: 'Setup', effort: 'low', schema: SETUP })
@@ -106,7 +104,7 @@ if (Array.isArray(input.fixes) && input.fixes.length > 0) {
   for (const task of input.plan.tasks) {
     const r = await attempt(
       task.id,
-      `You execute ONE task from an implementation plan, on branch ${input.branch} (already checked out). First check git log/diff on this branch: if this task's change is already present (a resumed run), verify it and report done with commit "skipped". Otherwise: make the change, run npm run typecheck and the targeted tests for the touched area, and commit. Task ${task.id}: ${task.title}\n${task.detail}\nTests: ${task.tests}\nDesign context:\n${input.plan.design}\n${conventions}`,
+      `You execute ONE task from an implementation plan, on branch ${input.branch} (already checked out). First check git log/diff on this branch: if this task's change is already present (a resumed run), verify it and report done with notes "already present, verified". Otherwise: make the change, run npm run typecheck and the targeted tests for the touched area, and commit. Task ${task.id}: ${task.title}\n${task.detail}\nTests: ${task.tests}\nDesign context:\n${input.plan.design}\n${conventions}`,
       `task:${task.id}`, 'Tasks'
     )
     if (!r || !r.done) return { status: 'impasse', stage: 'implement', question: `Task ${task.id} (${task.title}) could not be completed: ${r ? r.notes : 'agent failed'}. How should we proceed? (Your answer becomes guidance keyed "${task.id}".)`, context: task }
@@ -164,7 +162,7 @@ while (rounds < 3) {
   blocking = await runReviewers(pending, `r${rounds}`)
   if (blocking.length === 0) {
     log(`Review clean after round ${rounds}`)
-    return { status: 'ok', headSha: setup.headSha, rounds, verdicts: lastVerdicts, gate: gate.summary }
+    return { status: 'ok', rounds, verdicts: lastVerdicts, gate: gate.summary }
   }
   if (rounds === 3) break
   log(`Review round ${rounds}: ${blocking.length} blocking finding(s) — fixing`)
@@ -185,7 +183,7 @@ if (guideFor('review')) {
   if (fixed && fixed.green) {
     gate = fixed
     blocking = await runReviewers(reviewers, 'guided')
-    if (blocking.length === 0) return { status: 'ok', headSha: setup.headSha, rounds: rounds + 1, verdicts: lastVerdicts, gate: gate.summary, guided: true }
+    if (blocking.length === 0) return { status: 'ok', rounds: rounds + 1, verdicts: lastVerdicts, gate: gate.summary, guided: true }
   }
 }
 return { status: 'impasse', stage: 'implement', question: `Reviewers still have ${blocking.length} blocking finding(s) after ${guideFor('review') ? 'a guided round' : '3 rounds'}. How should we proceed? (Your answer becomes guidance keyed "review".)`, context: { blocking } }

@@ -31,7 +31,7 @@ const RESULTS = {
         type: 'object',
         properties: {
           ac: { type: 'string' },
-          status: { type: 'string', enum: ['VERIFIED', 'FAILED', 'BLOCKED', 'SUITE'], description: 'SUITE = covered by a named existing/new test case in the suite' },
+          status: { type: 'string', enum: ['VERIFIED', 'FAILED', 'BLOCKED'] },
           evidence: { type: 'string', description: 'Path under the evidence dir, test file + case name, or for BLOCKED: what is missing' },
           repro: { type: 'string', description: 'For FAILED: the exact failing scenario, replayable' },
         },
@@ -51,7 +51,7 @@ const liveAvailable = pre ? pre.liveAvailable : false
 if (!liveAvailable) log(`Live QA unavailable: ${pre ? pre.reasons.join('; ') : 'preflight agent failed'} — live-e2e ACs will be waived with named steps`)
 
 phase('Run')
-const runnerPrompt = `You are a black-box QA engineer. Inputs: the acceptance criteria and the verification plan below. You have NOT seen the implementation and MUST NOT read the implementation diff or non-test source changes — judge the running system and the test suite only (inspecting and running test files is allowed; they are your domain). ${qaContext}\n\nLive infrastructure available: ${liveAvailable} (${pre ? pre.reasons.join('; ') : ''}).\n\nFor each AC with method live-e2e${liveAvailable ? '' : ' — live infra is unavailable, so mark these BLOCKED with the named post-merge or local step from the verification plan'}: load the archie-e2e skill and follow it — boot the system under test from the current branch, wait for health, drive the plan's scenario through the archie-debug MCP (nonce → create_task → wait_for_task → approve when the edit gate fires), read the knowledge log and event JSONL, assert the AC against observed behavior, and tear down when done. For each AC with method unit or integration: run the suite; if a named test case demonstrably covers the AC, record status SUITE with the test file + case name; otherwise execute the plan's check yourself. ACs with method manual or deploy-only: mark BLOCKED with the plan's named step. Record evidence per AC under ${evidenceDir}/<AC-id>/ — the exact assertions checked, event/log excerpts, pass/fail. Report per-AC: VERIFIED (evidence attached) / FAILED (replayable repro attached) / BLOCKED (what is missing) / SUITE (test named). Candor over polish: never report VERIFIED without evidence you recorded yourself.`
+const runnerPrompt = `You are a black-box QA engineer. Inputs: the acceptance criteria and the verification plan below. You have NOT seen the implementation and MUST NOT read the implementation diff or non-test source changes — judge the running system and the test suite only (inspecting and running test files is allowed; they are your domain). ${qaContext}\n\nLive infrastructure available: ${liveAvailable} (${pre ? pre.reasons.join('; ') : ''}).\n\nFor each AC with method live-e2e${liveAvailable ? '' : ' — live infra is unavailable, so mark these BLOCKED with the named post-merge or local step from the verification plan'}: load the archie-e2e skill and follow it — boot the system under test from the current branch, wait for health, drive the plan's scenario through the archie-debug MCP (nonce → create_task → wait_for_task → approve when the edit gate fires), read the knowledge log and event JSONL, assert the AC against observed behavior, and tear down when done. For each AC with method unit or integration: run the suite; if a named test case demonstrably covers the AC, record VERIFIED with the test file + case name as the evidence; otherwise execute the plan's check yourself. ACs with method manual or deploy-only: mark BLOCKED with the plan's named step. Record evidence per AC under ${evidenceDir}/<AC-id>/ — the exact assertions checked, event/log excerpts, pass/fail. Report per-AC: VERIFIED (evidence attached) / FAILED (replayable repro attached) / BLOCKED (what is missing). Candor over polish: never report VERIFIED without evidence you recorded yourself.`
 let runner = await agent(runnerPrompt, { label: 'qa-runner', phase: 'Run', schema: RESULTS })
 if ((!runner || !Array.isArray(runner.results)) && guidance) {
   runner = await agent(runnerPrompt + guidance, { label: 'qa-runner (guided)', phase: 'Run', schema: RESULTS })
@@ -91,7 +91,7 @@ for (const ac of input.acs) {
   const r = runner.results.find((x) => x.ac === ac.id) || { status: 'BLOCKED', evidence: 'runner returned no result for this AC' }
   const ruling = (review.rulings.find((x) => x.ac === ac.id) || {}).ruling || 'UNCONVINCING'
   let status
-  if ((r.status === 'VERIFIED' || r.status === 'SUITE') && ruling === 'VERIFIED') status = 'verified'
+  if (r.status === 'VERIFIED' && ruling === 'VERIFIED') status = 'verified'
   else if (r.status === 'BLOCKED' && ruling === 'WAIVED-OK') status = 'waived'
   else status = 'failed'
   const row = { ac: ac.id, text: ac.text, method: ac.method, status, evidence: r.evidence, note: (review.rulings.find((x) => x.ac === ac.id) || {}).note }

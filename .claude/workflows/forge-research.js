@@ -23,7 +23,6 @@ const CLAIMS = {
         properties: {
           claim: { type: 'string', description: 'One factual claim, stated plainly' },
           citation: { type: 'string', description: 'file:line for code claims, URL for web claims' },
-          uncertain: { type: 'boolean', description: 'true if the lens could not fully confirm this itself' },
         },
         required: ['claim', 'citation'],
       },
@@ -53,7 +52,7 @@ const CHECKED = {
   required: ['verdicts'],
 }
 
-const CONTRACT = 'Return findings as a list of factual claims, each with a file:line citation (code) or source URL (web). Flag uncertainty explicitly via the uncertain field. Do not speculate; a claim you cannot cite is not a finding.'
+const CONTRACT = 'Return findings as a list of factual claims, each with a file:line citation (code) or source URL (web). Do not speculate; a claim you cannot cite is not a finding.'
 
 const lenses = [
   {
