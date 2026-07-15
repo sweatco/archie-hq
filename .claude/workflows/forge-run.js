@@ -1,0 +1,95 @@
+export const meta = {
+  name: 'forge-run',
+  description: 'Forge v2 master chain: plan → implement → QA (with route-back) → docs → ship. Runs autonomously from AC sign-off to an open PR, or returns a structured impasse.',
+  whenToUse: 'Invoked by the /forge conductor after the operator signs off the brief + ACs. Input: change name, brief, ACs, dossier. On impasse: answer in chat, relaunch with resumeFromRunId and the answer under args.answers.',
+  phases: [
+    { title: 'Plan', detail: 'forge-plan: planner + critics' },
+    { title: 'Implement', detail: 'forge-implement: tasks, gate, blind review' },
+    { title: 'QA', detail: 'forge-qa: black-box live verification, route-back cap 2' },
+    { title: 'Docs', detail: 'forge-docs: update + verify documentation' },
+    { title: 'Ship', detail: 'forge-ship: push, open PR with manifest' },
+  ],
+}
+
+// args: {
+//   change: string (kebab-case), base?: string ('main'), branch?: string (`forge/<change>`),
+//   brief: string, acs: [{id, text, method}], dossier: [{claim, citation}],
+//   evidenceDir?: string,
+//   answers?: {            — operator impasse answers, added on resume; NEVER set on first launch
+//     plan?: string, implement?: string | { [taskId]: string, gate?, review? },
+//     qa?: string, qaCycles?: string, docs?: string, ship?: string,
+//   },
+// }
+// Resume contract: relaunch with the SAME args plus answers.<stage>. Answers reach only the
+// stage that impassed (and only its guided-retry prompts), so every completed agent call
+// replays from cache. `args` may arrive as a JSON string — normalize before use.
+const input = typeof args === 'string' ? JSON.parse(args) : (args || {})
+if (!input.change || !input.brief || !Array.isArray(input.acs)) return { status: 'error', reason: 'missing input.change/brief/acs' }
+const base = input.base || 'main'
+const branch = input.branch || `forge/${input.change}`
+const answers = input.answers || {}
+const evidenceDir = input.evidenceDir || `/tmp/forge-${input.change}/qa-evidence`
+
+// Child workflows return { status: 'ok' | 'impasse' | 'error', ... }. Propagate anything
+// non-ok upward unchanged (plus the stage tag) so the conductor can run the answer round-trip.
+const run = async (name, childArgs, stage) => {
+  try {
+    const r = await workflow(name, childArgs)
+    if (!r) return { status: 'impasse', stage, question: `${name} returned nothing. Retry the run?`, context: null }
+    return r
+  } catch (e) {
+    return { status: 'impasse', stage, question: `${name} threw: ${String((e && e.message) || e)}. Retry the run?`, context: null }
+  }
+}
+
+phase('Plan')
+const planRes = await run('forge-plan', { brief: input.brief, acs: input.acs, dossier: input.dossier || [], guidance: answers.plan }, 'plan')
+if (planRes.status !== 'ok') return planRes
+log(`Plan ready: ${planRes.plan.tasks.length} tasks, ${planRes.rounds} critique round(s)`)
+
+phase('Implement')
+let implRes = await run('forge-implement', { change: input.change, branch, base, brief: input.brief, acs: input.acs, plan: planRes.plan, fresh: true, guidance: answers.implement }, 'implement')
+if (implRes.status !== 'ok') return implRes
+log(`Implementation reviewed clean in ${implRes.rounds} round(s)`)
+
+phase('QA')
+const qaCap = answers.qaCycles ? 3 : 2
+let qaRes = null
+let cycles = 0
+while (cycles < qaCap) {
+  cycles++
+  qaRes = await run('forge-qa', { change: input.change, branch, acs: input.acs, verificationPlan: planRes.plan.verificationPlan, evidenceDir, guidance: answers.qa }, 'qa')
+  if (qaRes.status !== 'ok') return qaRes
+  if (qaRes.failures.length === 0) break
+  if (cycles === qaCap) {
+    return { status: 'impasse', stage: 'qa', question: `${qaRes.failures.length} AC(s) still failing after ${cycles} QA cycle(s). Fix differently, waive, or rescope? (Your answer becomes guidance keyed "qaCycles" and unlocks one more cycle.)`, context: qaRes.failures }
+  }
+  log(`QA cycle ${cycles}: ${qaRes.failures.length} failing AC(s) — routing back to implement`)
+  implRes = await run('forge-implement', { change: input.change, branch, base, brief: input.brief, acs: input.acs, plan: planRes.plan, fresh: false, fixes: qaRes.failures, guidance: answers.qaCycles || answers.implement }, 'implement')
+  if (implRes.status !== 'ok') return implRes
+}
+
+phase('Docs')
+const docsRes = await run('forge-docs', { branch, base, brief: input.brief, guidance: answers.docs }, 'docs')
+if (docsRes.status !== 'ok') return docsRes
+
+phase('Ship')
+const shipRes = await run('forge-ship', {
+  change: input.change,
+  branch,
+  base,
+  brief: input.brief,
+  planSummary: planRes.plan.summary,
+  manifest: qaRes.manifest,
+  docsUpdated: [...(docsRes.updated.updated || []), ...(docsRes.updated.created || [])],
+  guidance: answers.ship,
+}, 'ship')
+if (shipRes.status !== 'ok') return shipRes
+
+return {
+  status: 'done',
+  pr: shipRes.pr,
+  manifest: qaRes.manifest,
+  planSummary: planRes.plan.summary,
+  rounds: { plan: planRes.rounds, implement: implRes.rounds, qaCycles: cycles, docs: docsRes.rounds },
+}
