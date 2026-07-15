@@ -125,7 +125,7 @@ const planForReview = `The brief ACs:\n${JSON.stringify(input.acs || [], null, 2
 const reviewers = [
   {
     key: 'spec',
-    prompt: `You check a diff against its plan. Inputs: the plan below and the diff (run: ${diffCmd}). You have NOT seen the implementer's reasoning and must judge only what is in the diff. Verify: every task's change is actually present; every code-level claim implied by the ACs is true in the diff; and — equally important — nothing in the diff goes BEYOND the plan (unrequested refactors, drive-by changes, scope creep are defects; the brief's non-goals are binding). ${planForReview}`,
+    prompt: `You check a diff against its plan. Inputs: the plan below and the diff (run: ${diffCmd}). You have NOT seen the implementer's reasoning and must judge only what is in the diff. Verify: every task's change is actually present; every code-level claim implied by the ACs is true in the diff; and — equally important — nothing in the diff goes BEYOND the plan (unrequested refactors, drive-by changes, scope creep are defects; the brief's non-goals are binding). Attack complexity the same way: code materially more complex than its task requires — unnecessary abstraction, unused generality, fields or options nothing consumes, indirection with a single caller — is a finding; cite the simpler equivalent form, and mark it blocking when the extra complexity carries real cost (new invariants, wider API surface, more state), non-blocking when cosmetic. ${planForReview}`,
   },
   {
     key: 'bugs',

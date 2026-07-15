@@ -132,7 +132,7 @@ if (!qaOnly) {
   phase('Review')
   const ring = await parallel([
     () => agent(
-      `You check a diff against its stated intent. Inputs: the derived intent and ACs below, and the diff (${diffCmd}); work read-only in ${wt} — never modify its files. Verify every stated claim of ${subject} is true in the diff, and flag anything the diff does BEYOND the stated intent (drive-by changes, unrequested refactors). You have not seen the author's reasoning.${deltaFocus}${rulingsAsk}\nIntent: ${derived.intent}\nACs: ${JSON.stringify(derived.acs, null, 2)}`,
+      `You check a diff against its stated intent. Inputs: the derived intent and ACs below, and the diff (${diffCmd}); work read-only in ${wt} — never modify its files. Verify every stated claim of ${subject} is true in the diff, and flag anything the diff does BEYOND the stated intent (drive-by changes, unrequested refactors). Also flag over-engineering relative to the intent — unnecessary abstraction, unused generality, dead options — citing the simpler equivalent form. You have not seen the author's reasoning.${deltaFocus}${rulingsAsk}\nIntent: ${derived.intent}\nACs: ${JSON.stringify(derived.acs, null, 2)}`,
       { label: 'review:claims', phase: 'Review', schema: REVIEW }
     ),
     () => agent(
