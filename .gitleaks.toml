@@ -24,8 +24,13 @@ paths = [
 ]
 
 # ...and, belt-and-suspenders, on the specific dummy values in case they move.
+# The sk-abc123... entry also covers a historical QA-evidence transcript
+# (openspec/changes/github-mention-trigger/qa-evidence/test-run.txt @ 3d3397f)
+# that captured the sanitizer suite's output — the fixture leaked into history
+# via a committed test log, not a real credential.
 regexes = [
   '''ghp_abcdef1234567890ABCDEF12''',
   '''AKIAIOSFODNN7EXAMPLE''',
   '''sk-abcdefghijklmnopqrstuv''',
+  '''sk-abc123def456ghi789jkl012''',
 ]

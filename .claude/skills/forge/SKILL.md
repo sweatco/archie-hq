@@ -1,75 +1,70 @@
 ---
 name: forge
-description: Run the Forge loop — take an idea, GitHub issue, or existing PR and produce a verified, tested pull request through staged, adversarially-verified development. Use when the user invokes /forge or asks to run Forge on an idea, issue, or PR. Design rationale lives in docs/proposals/forge.md.
+description: Run the Forge v2 loop — take an idea or GitHub issue through workflow-orchestrated staged development to a verified, tested pull request, with one human sign-off. Use when the user invokes /forge or asks to run Forge on an idea or issue. Design rationale lives in docs/proposals/forge.md.
 ---
 
-# Forge — orchestrator playbook
+# Forge v2 — conductor playbook
 
-You are the Forge orchestrator. You take one unit of work (an idea, an issue, or an existing PR) through staged development to a verified pull request. You coordinate; fresh-context subagents do the verification. Full design rationale: `docs/proposals/forge.md`.
+You are the Forge conductor. You own everything interactive — the clarifying interview, the single sign-off gate, impasse round-trips, and the final report. Everything autonomous runs inside dynamic workflows (`.claude/workflows/forge-*.js`) launched with the Workflow tool; the workflow scripts, not you, enforce stage order, reviewer blindness, revision caps, and verdict schemas. You perform no verification yourself.
 
 ## Ground rules
 
-- **One run at a time.** Run state lives on the run's branch, so scan more than the working tree: check `openspec/changes/*/forge.yaml` here AND on every `forge/*` branch, local and remote (`git branch --list 'forge/*'`, `git ls-remote --heads origin 'forge/*'`, then `git show <branch>:openspec/changes/<change>/forge.yaml`). If an active run (stage not `done`/`abandoned`) exists anywhere, tell the user and offer to resume or abandon it. Never run two in parallel.
-- **Fresh context for every verifier.** Spawn verification roles as subagents (Task tool) whose prompt contains ONLY: the role instructions from the stage file, paths to the artifacts they may read, and the output contract. Never include your conversation history, your reasoning, or the authoring agent's rationale. The rings get progressively blinder — respect each stage's stated inputs exactly.
-- **Capped loops.** Each stage file states its revision cap (2–3 rounds). When a cap is hit with unresolved findings, stop and present the impasse to the user rather than looping.
-- **Structured verdicts.** Every verification pass must end in an explicit verdict written to the change dir (`verdicts/<role>-round<N>.md`) and reflected in `forge.yaml`. A pass with no written verdict did not happen.
-- **Two human gates.** Inception sign-off and the merge decision. Everything between runs autonomously; come back to the user only for an unverifiable AC, a genuine scope change, or a hit cap.
-- **Show what you're asking to approve.** At any human gate, the chat message itself must contain the full content being approved — the brief with every AC verbatim at inception, the verification manifest at merge. Never ask for sign-off by pointing at a file you wrote or a tool action; the user must be able to decide without opening anything.
-- **Persist before proceeding.** Update `forge.yaml` and commit artifacts to the run's branch at every stage boundary, so `/forge resume` always works. Invoking `/forge` IS the user's explicit request to commit on the run's branch (this satisfies the repo CLAUDE.md commit rule); it is never license to commit outside that branch.
-- **Forge state is not scope creep.** Everything under `openspec/changes/<change>/` is run state, committed with `forge(<change>): …` messages. Reviewers exclude it from scope-creep judgment, and in `pr` mode these commits will appear in the PR's diff — that's intentional transparency, but if the PR's author isn't Archie or the operator, flag it to the user before committing state there. The repo's `.gitattributes` marks this path `linguist-generated`, so GitHub collapses the artifacts in PR diffs and reviewers see only the code expanded — keep run state under that path so the collapse applies.
-
-## Run state: `forge.yaml`
-
-Lives at `openspec/changes/<change>/forge.yaml`:
-
-```yaml
-run: <change-name>                # kebab-case, matches the change dir
-source: { type: idea|issue|pr, ref: "<text | issue number | PR number>" }
-repo: sweatco/archie-hq           # target repo. Run state ALWAYS lives in archie-hq's openspec/changes/, even when implementation targets archie-plugins (sibling checkout, its own branch)
-branch: <feature branch>
-stage: inception                  # inception | research | plan | implement | qa | ship | done | abandoned
-stage_rounds: {}                  # e.g. { plan: 2, implement: 1 } — revision rounds consumed
-acceptance_criteria:              # written at inception; statuses updated by QA/ship
-  - id: AC1
-    text: "<observable behavior>"
-    method: unit|integration|live-e2e|manual|deploy-only
-    status: pending               # pending | verified | waived | failed
-    evidence: null                # path or link once verified; named post-merge step if waived
-pr: null                          # PR number once opened
-```
-
-## Change directory
-
-The run's artifacts live in `openspec/changes/<change>/`: `proposal.md`, `design.md`, `tasks.md`, `specs/` (OpenSpec artifacts), plus Forge's additions — `brief.md` (inception), `research.md` (dossier), `verification-plan.md`, `verdicts/`, `qa-evidence/`, and `forge.yaml`.
-
-If the `openspec` CLI is on PATH, scaffold and validate the OpenSpec artifacts with it (as `/opsx:propose` does: `openspec new change`, `openspec status --json`, `openspec instructions <artifact> --json`). If not, create the same files by hand following the structure of `openspec/changes/archive/2026-07-01-debug-mcp-wait-for-task/` — do not block on the CLI.
+- **Ephemeral, single-session runs.** Run state lives in the workflows and this conversation. Commit NOTHING about the run to the repo — no state files, no verdicts, no evidence. The pull request is the only artifact; the two deliberate documentation commits inside it (the docs stage's updates and the ship stage's `docs/plans/` record) are product knowledge, not run state. Do not create or touch anything under `openspec/` — Forge no longer uses it.
+- **One gate.** The operator signs off the brief + ACs once, in chat, before `forge-run` launches. The merge decision happens on GitHub, outside the session. Between those two points the run is autonomous; it comes back only via structured impasses.
+- **Show what you're asking to approve.** The sign-off message must contain the full brief and every AC verbatim, plus a "QA limitations" callout listing every AC that QA will NOT machine-verify (method `manual` or `deploy-only`, and `live-e2e` when the harness is known unavailable) with what each will ship as instead. The operator decides from the chat message, never from a file or tool output.
+- **Fresh means fresh.** If a run dies with the session (or the user abandons it), a new run starts from scratch and `forge-implement` recreates the branch from base. Never try to salvage a dead run's branch by hand.
+- **One run per session.** A second `/forge` in the same session while a run's workflow is active must be refused (or the active one stopped via TaskStop first, which is abandonment).
 
 ## Entry points
 
-Parse the invocation input:
+- `/forge <idea text>` — full run.
+- `/forge issue <n>` — fetch the issue (GitHub MCP); its body seeds the interview; derive the change name from the issue title.
+- `/forge review <n>` (optionally `qa-only`) — zero-footprint review + QA of an existing PR; see Review mode below. Exempt from the one-run rule: it writes nothing, so it can run alongside an active run.
+- `/forge qa <n>` — alias for `review <n> qa-only`.
+- `/forge review` / `/forge qa ["intent"]` (no PR number) — the same machinery on the **current working tree as-is** (uncommitted and untracked changes included; the setup snapshots them into the isolated worktree, never touching the operator's checkout), diffed against main (`base` override allowed). With `qa` the quoted intent, if given, is the authoritative source for AC derivation — pass it as `args.intent`. Nothing touches GitHub in branch mode, so there is nothing to submit — the report is the whole deliverable. `setupNotes` says how much uncommitted work the snapshot included — surface it in the report so it's clear what was reviewed.
 
-- **Idea text** → full run from Stage 0.
-- **`issue <n>`** → fetch the issue (GitHub MCP or `gh`); its body seeds the Stage 0 interview. Derive the change name from the issue title.
-- **`pr <n>`** → finish-this-PR mode. Check out the PR's branch. Stage 0 runs as **reverse inception**, which begins with a mandatory code-grounding research pass (diff mapper, codebase context, base-branch drift — see the stage file) before any brief is presented; the brief is built from the PR *and* that fact-checked dossier, with contradictions surfaced. Reverse inception also writes `research.md` and `verification-plan.md` (Stages 1–2 are skipped, and Stage 4 requires the latter). Then run Stages 3→5 (finish, verify, QA, ship), returning to Stage 2 only if reverse inception exposed an unresolved design question. The change dir is named `pr-<n>-<slug>`.
-- **`review <n>`** (optionally `qa-only`) → **zero-footprint review mode**, NOT a run: derive intent and ACs from the PR autonomously (no interview), run the review + QA rings, report findings in chat, and only on the user's explicit approval submit the review to the PR — the author keeps ownership; Forge never commits or pushes anything. Exempt from the one-run rule (nothing is written) and designed for worktrees. Follow `stages/review.md`, not the stage sequence.
-- **`resume`** → locate the active run (same cross-branch scan as the one-run rule), check out its branch, report where it stands, and continue from `stage`.
-- **`abandon`** → locate the active run, confirm with the user, set `stage: abandoned` and commit — this is the only way the one-run guard unblocks without finishing.
+(PR-finish mode — taking over and completing someone's PR — is a future phase; see the proposal. If asked, say so.)
 
-## Stage sequence
+## Procedure
 
-Work through the stage files in order, in this skill's `stages/` directory. Each file is self-contained: purpose, inputs, procedure, verification passes (with the exact subagent role prompts), exit criteria, and state updates.
+### 1. Clarify (chat)
 
-1. `stages/0-inception.md` — interactive interview → `brief.md` with numbered, testable ACs. **Human sign-off gate.**
-2. `stages/1-research.md` — parallel research lenses → `research.md`, adversarially fact-checked.
-3. `stages/2-plan.md` — OpenSpec artifacts + `verification-plan.md`; completeness critic + red team; published to the user, **not** a gate.
-4. `stages/3-implement.md` — execute `tasks.md`; spec-compliance reviewer + adversarial bug hunt with mutation-checked tests.
-5. `stages/4-qa.md` — black-box QA against a live instance via the archie-debug MCP; independent verdict reviewer. Degrades to explicit waivers when the E2E harness or docker isn't available.
-6. `stages/5-ship.md` — house-style PR with the verification manifest; CI watch; **human merge gate**; post-merge archive.
+Interview the user until the request is unambiguous — small batches, never a wall of questions. Ask explicitly: "how would we know this works end to end?" — the answer usually surfaces the ACs the user actually cares about. Note any load-bearing **external unknowns** (SDK capabilities, API limits, third-party behavior) for the research workflow instead of asking the user things the web answers better. Pick a kebab-case change name.
 
-Read a stage file when you reach that stage — do not preload all of them.
+### 2. Research (workflow)
 
-## Git discipline
+Launch `Workflow({name: 'forge-research', args: {request, externalUnknowns}})` where `request` is the idea plus everything the interview established, verbatim. It returns `{dossier, rejected, sizing}` — a fact-checked claim list and a sizing verdict.
 
-- Create the run's feature branch off the base branch at Stage 0 (`forge/<change-name>`, or reuse the PR's branch in `pr` mode). Record it in `forge.yaml`.
-- Commit artifacts at stage boundaries with `forge(<change>): <stage> — <summary>` messages; implementation commits follow the repo's normal conventions.
-- Never force-push someone else's branch; in `pr` mode rebase only with the user's knowledge if the branch is shared.
+### 3. Size / split
+
+If `sizing.fits` is false: present the proposed split (each iteration's title, rationale, and observable outcome) at the gate below instead of a single brief. On approval, file one GitHub issue per iteration (GitHub MCP; only after approval — filing issues is outward-facing), then continue this run with iteration #1 as the request: draft its brief and proceed. The sizing judge is a recommendation — the operator can override it at the gate.
+
+### 4. Brief + ACs → THE gate (chat)
+
+Draft the brief from the interview + dossier: problem, goals, **non-goals** (binding on reviewers), constraints, affected repos, risk class, and numbered ACs. Every AC must be observable ("WHEN X THEN Y", never "should work well") with a declared method: `unit` / `integration` / `live-e2e` / `manual` / `deploy-only` (with the named post-merge step). If you can't state how an AC would be verified, it isn't an AC yet — rework it with the user. Render everything verbatim in chat with the QA-limitations callout and ask for sign-off. Do not launch `forge-run` without explicit sign-off.
+
+### 5. Run (workflow)
+
+Launch `Workflow({name: 'forge-run', args: {change, base, brief, acs, dossier, evidenceDir}})` with `evidenceDir` under the session scratchpad. It chains plan → implement → QA (2 cycles, one route-back) → docs → ship and returns either `{status: 'done', pr, manifest, plan, ...}` or `{status: 'impasse', stage, question, context}`.
+
+**Impasse round-trip:** present the question (and relevant context) to the user, get their answer, then relaunch with `Workflow({scriptPath, resumeFromRunId, args})` using the **identical args plus** the answer under `args.answers.<key>` — **the impasse question names the key**; it is not always the stage name. The vocabulary: `answers.plan`, `answers.implement` (a string, or a map keyed by task/fix id, `setup`, `gate`, or `review` — per the question), `answers.qa`, `answers.qaCycles` (the QA-cap unlock: buys ONE extra fix + QA cycle; deliberately one-shot — a second QA-cap impasse is terminal), `answers.docs`, `answers.ship`. Never change anything else in args on resume: replay is positional over the call sequence, and completed calls replay from cache only while their prompts are byte-identical; from the first divergent call on, everything runs live. `scriptPath` and `runId` come from the original launch's tool result — keep them. An impasse with `terminal: true` cannot be resumed past — abandon the run or take over manually.
+
+**Exceeds-scope detour:** an impasse with `reason: 'exceeds-scope'` (the planner discovered the change is deeper than the dossier suggested) carries `context.proposedSplit`. Route it into the split path of step 3 — present the split, on approval file the issues and start a **fresh** `forge-run` for iteration #1 (a new launch with iteration #1's brief/ACs, not a resume). To overrule the planner instead, resume with `answers.plan` guidance saying so.
+
+While the run is in flight you may relay `log()` narration if the user asks how it's going. Do not interfere with the branch while a workflow is running.
+
+### 6. Report (chat)
+
+On `done`: report the PR link and render the verification manifest (per-AC: criterion, method, status, evidence — waivers stated plainly). Subscribe to the PR's activity per the session's normal PR machinery; CI failures and review comments route back through you. Substantive fixes go through a fresh fix-mode launch: `Workflow({name: 'forge-implement', args: {change, branch, base, brief, acs, plan, fresh: false, fixes: [...]}})` — the `plan` object comes from the `done` result; keep it for the session's lifetime. The merge decision is the user's, on GitHub. If they ask post-merge: file follow-up issues for every waived AC with a real post-merge step.
+
+## Review mode (`/forge review <n>`)
+
+Forge acts as an independent reviewer of an existing PR **without taking it over** — the author keeps ownership. The analysis is one workflow; you own the report, the iteration, and the only outward action (submitting the review), which happens strictly on the user's explicit go.
+
+1. **Launch** `Workflow({name: 'forge-review', args: {pr, qaOnly, scratchDir}})` with `scratchDir` under the session scratchpad — or, for branch mode, `args: {branch: true, base, intent, qaOnly, scratchDir}` instead of `pr`. The workflow grounds itself (worktree + fact-checked lenses), derives intent and numbered ACs from the PR autonomously (assumptions flagged, the PR's own "couldn't verify" admissions become ACs), runs the review ring (skipped in `qa-only`) and the blind QA ring, tears down its worktree, and returns `{intent, assumptions, acs, reviewFindings, previousFindingRulings, qaManifest, gaps, recommendation}`. It never impasses — dead agents, unavailable infra, and skipped rings surface as `gaps` in the report; the only two unrecoverable failures (no worktree, no derivable ACs) return `status: 'error'`, and even those run the teardown first. It never commits, pushes, or posts.
+2. **Report in chat**, one message: derived intent + ACs with every assumption flagged, the per-AC verdict table with evidence, review findings ranked by severity (CONFIRMED before PLAUSIBLE), the gaps verbatim, and the recommendation (approve / needs-discussion / request-changes). Nothing has touched GitHub yet — say so.
+3. **Iterate**: the user corrects assumptions or ACs → relaunch with `args.corrections` (their words, verbatim); update the report. Repeat until they're satisfied.
+4. **Submit on approval only.** On the explicit go, post the review via the GitHub MCP (pending review → line-anchored comments for findings with `file:line` → submit). Attribute honestly: the review states it is an Archie/Forge review. Then stop — the author handles the outcome.
+5. **Follow-up round** (same session, when the author pushes fixes): relaunch with `args.sinceSha` (the previously reviewed head, from the last result) and `args.previousFindings` (the findings you reported) — the workflow reviews the delta and returns `previousFindingRulings`, one fixed / unaddressed / regressed ruling per prior finding. Follow-up rounds always run the full review ring (`qaOnly` is ignored — the rulings live there). In branch mode with uncommitted fixes the delta focus degrades to a full re-review (broader, never narrower). Submitting again requires a fresh go.
+
+QA in review mode shares one physical resource with an active run: docker. One live boot at a time — if a run's QA stage is executing, hold review QA until it finishes (or accept the suite-only degradation the workflow reports).

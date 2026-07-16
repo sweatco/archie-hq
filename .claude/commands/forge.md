@@ -1,22 +1,22 @@
 ---
 name: "Forge"
-description: Run the Forge loop — idea, issue, or PR in; verified, tested pull request out
+description: Run the Forge v2 loop — idea or issue in; verified, tested pull request out (one sign-off, workflows do the rest)
 category: Workflow
 tags: [workflow, verification, forge]
 ---
 
-Run the Forge development loop on one unit of work.
+Run the Forge v2 development loop on one unit of work.
 
 **Usage**
 
-- `/forge <idea text>` — full run from inception
-- `/forge issue <n>` — seed inception from a GitHub issue
-- `/forge pr <n>` — finish, verify, and ship an existing PR (takes ownership)
+- `/forge <idea text>` — full run from the clarifying interview
+- `/forge issue <n>` — seed the interview from a GitHub issue
 - `/forge review <n>` — zero-footprint review + QA of an existing PR; findings in chat, review submitted only on approval (add `qa-only` to skip the code-review ring)
-- `/forge resume` — continue the active run from its recorded stage
-- `/forge abandon` — mark the active run abandoned (unblocks the one-run-at-a-time guard)
+- `/forge review` — same, for the current working tree as-is against main (uncommitted changes included; nothing touches GitHub or your checkout)
+- `/forge qa <n>` — QA-only review of PR n (alias for `review <n> qa-only`)
+- `/forge qa ["intended behavior"]` — QA the current working tree as-is; the quoted intent (optional) becomes the authoritative source for deriving ACs
 
 **Steps**
 
-1. Load the `forge` skill and follow it as the orchestrator playbook.
-2. Pass the argument after `/forge` as the invocation input. If no argument was given, ask the user what to forge (an idea, an issue number, or a PR number).
+1. Load the `forge` skill and follow it as the conductor playbook.
+2. Pass the argument after `/forge` as the invocation input. If no argument was given, ask the user what to forge (an idea or an issue number).

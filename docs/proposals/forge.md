@@ -1,131 +1,128 @@
-# Proposal: Forge — idea → verified PR development loop
+# Proposal: Forge v2 — ephemeral, workflow-orchestrated idea → verified PR loop
 
-> **Status:** Accepted — not yet implemented
+> **Status:** Accepted — in execution. Supersedes the staged-skill design previously in this file (accepted June 2026, implemented as `.claude/skills/forge/`). The verification philosophy of v1 — fresh-context adversarial reviewers, progressive blindness, capped loops, structured verdicts, live black-box QA — carries over unchanged. What changes is the execution substrate and the state model.
 
 ## Summary
 
-Forge is a staged development process that takes an idea — described in chat, filed as a GitHub issue, or embodied in an existing PR — and produces a verified, end-to-end-tested pull request. It is a **local Claude Code process**, not an Archie runtime workflow: a harness in this repo (skills + a `/forge` command + persisted per-run state) that the operator launches manually, one run at a time. It reuses three assets that already exist: **OpenSpec** as the plan artifact store, the **archie-debug MCP + REST API** as the headless E2E driver, and the **QA plugin's analyst → independent-reviewer pattern** as the verification model. Forge is the intended basis of a self-improvement loop; whether and how it later moves into Archie itself is an open question deferred until the local process is proven.
+Forge takes one unit of work — an idea described in chat or a GitHub issue — and produces a verified, end-to-end-tested pull request, with exactly **one human intervention** (acceptance-criteria sign-off) between intake and the open PR. v2 rebuilds the loop on Claude Code **dynamic workflows** (the `Workflow` tool): the stage sequence, fan-outs, revision caps, and verdict contracts become deterministic control flow in a script instead of prose rules an orchestrating model must remember to follow. Runs are **ephemeral and single-session**: no run state is committed to the repo, no cross-session resume exists, and the **pull request is the only artifact**. If a session dies mid-run, the run is restarted fresh.
 
-The name: raw idea in, forged into a tested artifact out. Commands read naturally as verbs — `/forge <idea>`, `/forge issue 150`, `/forge pr 112`, `/forge resume`.
+Forge v2 is one step toward a self-improvement loop for Archie: today the single human gate lives in chat; the architecture is built so that gate can later migrate to the GitHub issue conversation, making the loop fully issue-driven and headless.
 
-## Motivation
+## Why v2
 
-Analysis of the 30 most recently merged PRs shows a consistent de-facto verification contract — typecheck + full vitest count + targeted new tests, then a candid "couldn't verify here" section — and five recurring gaps that get deferred to "confirm on deploy": the Slack round-trip, live SDK runtime behavior, GitHub Actions workflows, GitHub platform rendering, and production-only state. PR #132 exists solely to observe in production what #129 could not verify pre-deploy. Meanwhile the best PRs already do informally what Forge systematizes: #125 ran a 2-round design review plus an independent subagent review, #129 had an adversarial review pass, #138 mutation-checked its tests, #158 was verified live against a running instance.
+v1 (see git history of this file) designed the right verification loop but put it on the wrong substrate, in two ways.
 
-The pieces of this process exist but are disconnected: OpenSpec captures plans but nothing drives implementation from them under verification; the QA plugin has a genuine two-pass review loop but it is advisory and never gates engineering work; the debug MCP can drive a live instance but no workflow uses it routinely; idea intake (`sweatcoin-idea-proposal`) dead-ends at a Notion row. Issues #160 (in-sandbox checks), #152 (built-in tool support), #147/#148 (plan mode + artifact UI), #143 (auto-review on Archie PRs), and #139 (merge policy) are all fragments of this same loop.
+**The orchestrator was a conversation.** A long-lived chat context degrades over an hours-long run — it gets summarized, drifts, and can violate its own rules (leaking context to "fresh" reviewers, looping past caps, skipping a verdict). v1 compensated with bold prose: "never include your history", "capped loops", "a pass with no written verdict did not happen". In a workflow script every one of those rules becomes structural: `agent()` calls are context-blind by construction, caps are `while (round < 3)`, verdicts are schema-forced structured output, and stage order is sequential `await`s. The guarantees stop being aspirations and become properties of the control flow.
 
-## Goals
+**The state model served a persona we don't have.** `forge.yaml`, the OpenSpec change directory, cross-branch run scans, `/forge resume`, `/forge abandon`, stage-boundary state commits — all of it existed so a human operator could resume an interrupted run days later on a laptop. The actual target persona is a session (eventually headless) that picks up work, runs to a PR, and dies. For that persona the durable, human-facing state already has a home: the issue thread and the PR. Killing the in-repo state deletes roughly a third of v1's rulebook because the rules' reason-for-being evaporates.
 
-- One repeatable process from idea to verified, tested, mergeable PR — quick and predictable in cost and shape.
-- Every stage produces a persisted artifact, so a run is resumable and the process can be entered at any stage (including "finish and verify this existing PR").
-- Verification is performed by fresh-context subagents with distinct roles, never by the author of the thing being verified, to counter model self-bias.
-- Exactly two human touchpoints in the normal path: inception sign-off and the merge decision. The plan is published for visibility but does not block the run.
+## Design principles
 
-## Non-goals (for the initial version)
+- **Ephemeral, single-session runs.** Run state lives in the workflow script's variables and the session. Nothing about the run is committed to the repo. A dead session means a fresh restart — and a fresh restart **recreates the feature branch from base**, so a half-implemented branch from a dead run never leaks into a new run that may plan differently.
+- **The PR is the only artifact.** Brief, acceptance criteria, and the verification manifest (AC table with evidence and explicit waivers) live in the PR description. Durable documentation lives where documentation already lives (`docs/`), updated by a dedicated stage inside the run, and the final plan is recorded in `docs/plans/` by the ship stage — both are product knowledge riding the PR, not run state. Durable regression value lives as real tests committed in the PR. No OpenSpec, no `forge.yaml`, no verdicts directory.
+- **Human gates are seams between workflows, never pauses inside them.** Workflows run autonomously to completion or to a structured early return. The one in-chat intervention (AC sign-off) sits between the research workflow and the main run workflow. The merge decision already lives on GitHub — the session ends when the PR is open.
+- **Guarantees as control flow.** Fan-outs, blindness, caps, and verdict schemas are encoded in the workflow scripts. A stage cannot be skipped, a loop cannot exceed its cap, and a verification pass cannot fail to produce a verdict.
+- **Bounded changes only.** A sizing judgment after research either confirms the change fits one run or routes into a split that decomposes it into independently shippable iterations filed as GitHub issues (see Split below).
 
-- Automatic launch on PR-opened / issue-opened webhooks (later phase, see Rollout).
-- Moving the inception interview into GitHub issue conversations (depends on issue tools, #150).
-- Automatic rebase-and-resolve of sibling PRs on merge (later phase).
-- Running inside Archie's production agents. Forge stays a local process for now; an Archie port is reconsidered only once the local loop is proven.
+## Architecture
 
-## The stages
+A thin **conductor skill** (`/forge`) owns everything interactive; **workflows** own everything autonomous.
 
-Run state lives in the OpenSpec change directory (`openspec/changes/<change>/`) plus a small `forge.yaml` recording the current stage, verdicts, and evidence links. Every artifact is committed with the change.
+```
+/forge <idea | issue N>
+  1. conductor: clarifying questions in chat
+  2. Workflow forge-research → fact-checked dossier (returned as JSON, committed nowhere)
+       └─ tail: sizing judge — does this fit one run?
+  3a. FITS    → conductor drafts brief + numbered ACs from the dossier
+  3b. TOO BIG → decomposition proposes independently shippable iterations
+  ── THE human intervention: sign-off in chat on the brief+ACs (3a)
+     or on the split (3b → issues filed, run continues with iteration #1) ──
+  4. Workflow forge-run(brief, ACs, dossier)
+       plan       planner → completeness critic ∥ red team, capped revision loop
+       implement  branch created off base; per-task implementer agents commit;
+                  spec-compliance reviewer ∥ adversarial bug hunter (mutation-
+                  checked tests), capped loop
+       qa         boot from branch (archie-e2e harness), drive the debug MCP,
+                  black-box evidence per AC; independent verdict reviewer
+       docs       locate the docs describing the touched subsystem, update them,
+                  adversarially verify doc-vs-diff; rides in the same PR
+       ship       push branch, open PR — verification manifest as the
+                  Verification section
+       returns { status: done, pr, manifest, plan, ... }
+             | { status: impasse, stage, question, context, reason?, terminal? }
+  5. conductor: report PR + manifest summary in chat. Session's job is done.
+     The merge decision happens on GitHub, on the operator's schedule.
+```
 
-### Stage 0 — Inception (interactive)
+The conductor: parses the invocation (idea text or `issue <n>`), runs the interview, launches the workflows, presents gate content **verbatim in chat** (the full brief and every AC — the operator must be able to decide without opening anything), files split issues after approval, handles impasse round-trips, and reports the result. It performs no verification itself.
 
-Input: an idea, an issue number, or a PR number. An interviewer role produces an **inception brief**: problem, goals, non-goals, constraints, affected repos, risk class, and — the load-bearing part — **numbered, testable acceptance criteria**. The ACs written here are the contract every later stage verifies against; final QA checks these, not the implementer's claims. For each AC the interviewer forces the verification method to be declared up front: unit / integration / live-instance E2E / deploy-only-with-named-post-merge-step. The interviewer asks the user questions until requirements are unambiguous, and may perform **web research** where an external fact is load-bearing (SDK capabilities, Slack API limits, third-party service behavior) rather than asking the user something the web answers better. Ends with user sign-off on the brief — the first of the two human gates.
+`forge-run` composes the stages as child workflows (`workflow('forge-plan')` etc. — one level of nesting, which is the platform limit), so each stage is independently testable and independently invocable by the conductor — which is also how PR-mode entry (`/forge pr <n>`-style "finish this PR") slots in later: run the chain starting at implement.
 
-### Stage 1 — Research
+### Stage contracts
 
-Parallel fresh-context subagents, each with a distinct lens:
+Every stage keeps v1's verification structure, now schema-enforced:
 
-- **Codebase mapper** — subsystems touched, existing patterns to follow, `file:line` citations mandatory.
-- **Prior-art scanner** — open PRs, closed PRs, issues, `docs/plans`, `docs/proposals`, the openspec archive. Prevents re-doing in-flight work or colliding with open PRs.
-- **Constraints scanner** — architecture docs, security model, sandbox rules.
-- **Web researcher** (when the brief flags external unknowns) — upstream SDK/API documentation and changelogs, with sources cited. Recent merged PRs repeatedly hinged on exactly this class of fact (SDK version→model mapping in #157, cache TTL semantics in #166).
+- **Research** — parallel lenses (codebase mapper, prior-art scanner, constraints scanner, web researcher when flagged) → merged dossier → one adversarial fact-checking pass that refutes each claim against code or cited source; only CONFIRMED claims survive. Output: structured claim list with `file:line`/URL citations.
+- **Plan** — planner (input: brief + dossier only) → verification plan mapping every AC to its method (unit / integration / live-e2e / manual / deploy-only) → completeness critic and red team run concurrently → capped revision loop (3 rounds).
+- **Implement** — feature branch created from base; tasks executed sequentially by implementer agents that commit per task (a fresh agent per task keeps contexts small; the branch, not a checklist file, is the progress record); full gate (typecheck, build, tests) → spec-compliance reviewer and adversarial bug hunter run concurrently, blind to implementer reasoning; every new test mutation-checked; capped loop (3 rounds). The anti-over-engineering attack runs at both altitudes: the plan red team demands a materially simpler design if one exists (blocking), and the spec reviewer flags code more complex than its task requires, citing the simpler equivalent.
+- **QA** — receives only the ACs and verification plan (deliberate ignorance, per the QA plugin's model: never the implementation diff; the test suite itself is fair game, since naming a covering test case is part of the job); boots the system under test from the branch via the archie-e2e harness; drives real scenarios through the archie-debug MCP; records evidence per AC; a second independent reviewer rules each AC verified / unverified / waived-with-named-post-merge-step. Failures route back to implement with the failing scenario attached.
+- **Docs** — a locator/updater agent finds the `docs/` pages describing the touched subsystem (or determines a new page is warranted) and updates them to match what actually shipped; a fresh verifier reads the updated docs against the diff — stale claims, missed sections, and invented behavior are findings. Runs after QA so docs describe verified behavior; merges atomically with the code.
+- **Ship** — record the final plan as `docs/plans/YYYYMMDD-<change>.md` (the repo's existing historical-plans convention — brief, ACs, design, tasks, verification plan, status header) and add its README row; then assemble the PR in house style (What & why / How it works / Verification), the manifest as the Verification section, push, open the PR ready-for-review. The plan record is product history riding the PR, not run state — and since research's prior-art lens scans `docs/plans/`, every shipped plan informs future runs. CI-watching and review-feedback handling use the session's existing PR-subscription machinery, outside the workflow.
 
-Then one verification pass: an adversarial checker re-reads the dossier and tries to refute each factual claim against the actual code or cited source; unverifiable claims are cut. Research that hallucinates poisons everything downstream — this is the cheapest place to catch it. Output: research dossier in the change dir.
+### Review mode (`/forge review <n>`)
 
-### Stage 2 — Plan
+The zero-footprint mode from v1 survives, and it is the purest workflow of all — stateless fan-out, no gates, nothing written. It also reviews the **local working tree as-is**: `/forge review` / `/forge qa` without a PR number run the same machinery on the current checkout's state — uncommitted and untracked changes included, snapshot-copied into the isolated worktree so the operator's checkout is never touched — diffed against base, with intent derived from commit messages or taken verbatim from the operator (`/forge qa "intended behavior"`). `/forge qa <n>` is the QA-only alias for PRs. `forge-review` reviews and QAs an existing PR **without taking it over**: an ephemeral worktree isolates the checkout; fact-checked lenses (PR context, diff mapper, base-drift check) ground it; an agent derives the intent and numbered ACs from the PR autonomously with every assumption flagged (the PR's own "couldn't verify" admissions become ACs); the review ring (claims-vs-diff + adversarial bug hunter with mutation-checked tests, skipped in `qa-only`) and the blind QA ring run against the derived contract; the worktree is torn down. Unlike `forge-run` it never impasses — a dead agent or unavailable infra degrades into an explicit `gaps` entry in the report rather than a stop. The conductor renders the report in chat, iterates via relaunches with the operator's corrections, and — only on the explicit go — submits the review to GitHub with honest attribution and line-anchored comments. Follow-up rounds relaunch with the previously reviewed SHA and findings, ruling each fixed / unaddressed / regressed. Review mode is exempt from one-run-per-session (it writes nothing); its only shared resource with an active run is the docker boot during live QA.
 
-A planner (fresh context; input = brief + dossier only) produces the OpenSpec artifacts — `proposal.md`, `design.md`, `tasks.md`, spec deltas — plus a **verification plan** mapping every AC to its method and expected evidence. Two verification passes by *different* critics:
+## Split: bounded changes, issues as the queue
 
-- **Pass A — completeness critic**: does the design satisfy every AC? Missing edge cases, migrations, rollback, recovery-path interactions?
-- **Pass B — red team**: fresh context, instructed to refute — blast radius, security, a simpler-alternative challenge to fight overengineering, and "what does this break that no test covers?"
+A single run cannot safely absorb an arbitrarily large change — the caps, the single QA boot, predictable cost, and the single-session lifetime all assume a bounded diff. Sizing happens **after research, not before**: the codebase decides how big a change is, not the idea's text.
 
-The planner revises; the loop is capped at 3 rounds. The finished plan is **published to the user but does not block**: the run proceeds directly into implementation. The user can interrupt and redirect at any time; the artifact also satisfies the plan-visibility ask in #147 and, post-merge, archives into `openspec/specs/` as living system documentation.
+The sizing judge at the tail of `forge-research` returns fits-one-run or too-big with reasons (subsystems touched, migration surface, AC count, cross-repo reach), and on too-big proposes the ordered iterations itself, under one hard rule: **every iteration must be independently shippable and independently QA-able** — its own observable behavior, verifiable against a live instance, safe to merge alone. A split where some iteration's only AC is "code exists" is rejected. The conductor presents the split at the same single gate; on approval it files one GitHub issue per iteration and proceeds with iteration #1 in the current session.
 
-### Stage 3 — Implement
+Sizing will sometimes be wrong late — the plan stage discovers the change is deeper than the dossier suggested. That is not a failure mode but a detour: the planner has an explicit escape hatch (declare `exceedsScope` with a proposed split instead of forcing a plan), which surfaces as `{ status: 'impasse', stage: 'plan', reason: 'exceeds-scope', context: { proposedSplit } }`, and the conductor routes it into the split path — file the issues, start a fresh run for iteration #1.
 
-An implementer works through `tasks.md` sequentially, running typecheck + targeted tests per task and flipping checkboxes (a crashed run resumes at the first unchecked task). Then two verification passes by fresh-context reviewers who see **the diff and the plan, never the implementer's reasoning**:
+Split is what turns Forge from a one-shot tool into a **queue generator whose queue is GitHub issues** — the exact substrate the future issue-driven loop consumes, one bounded run per issue, serially.
 
-- **Pass 1 — spec compliance**: every task done, every AC's code-level claim true, nothing beyond the plan (scope creep is a defect).
-- **Pass 2 — adversarial bug hunt**: correctness review with a confirm/refute verdict per finding, including **mutation-checking new tests** (revert the fix, assert the test fails — codifying what #138 did by hand).
+## Impasse protocol
 
-Findings route back to the implementer; capped at 3 rounds. Exit: clean typecheck, build, full suite, both reviewers pass.
+Workflows never pause for humans; they **return early with a structured impasse**: `{ status: 'impasse', stage, question, context }`. The conductor surfaces the question in chat, collects the answer, and relaunches the same script with `resumeFromRunId` plus the answer in `args`. Completed `agent()` calls with unchanged prompts return cached results instantly, so the run re-enters at the point of the impasse rather than restarting. Legitimate impasse reasons match v1's escalation rules: an unverifiable AC, a genuine scope change (including exceeds-scope), or a revision cap hit with unresolved findings.
 
-### Stage 4 — QA (black-box, live instance)
+### Validated mechanics
 
-The QA runner receives *only* the inception ACs and the verification plan — mirroring the QA plugin's deliberate-ignorance principle — and:
+The impasse → answer → resume round-trip is the hinge of the whole design, so it was probed live with a minimal two-stage workflow before this proposal was finalized: stage A leaves an observable side effect (appends a line to a marker file) and reports the line count; the script then returns a structured impasse unless `args.answer` is present; the run is then resumed from its run ID with the answer supplied. Findings:
 
-1. **Boots the system under test from the branch**: `docker compose up --build`, wait for `/health` healthy, seeded with a reproducible workdir fixture.
-2. **Drives real scenarios** through the archie-debug MCP: plant a nonce, `create_task`, `wait_for_task`, approve edit mode via `POST /api/tasks/:id/approve` when the gate fires, read the knowledge log and event JSONL, assert each AC against observed behavior. This exercises the real SDK, real agent spawns, real persistence — the exact category merged PRs kept deferring.
-3. **Records evidence per AC**: event excerpts, log lines, health output. ACs that genuinely cannot be verified locally (Slack rendering, prod-only state) are declared as waived with a named post-merge step — the existing candor convention, but as structured output.
-4. **Second pass — QA verdict reviewer** (qa-reviewer pattern): independently reads the evidence and rules each AC verified / unverified / waived.
+- **The round-trip works.** The resumed run returned stage A's **cached** result instantly (0 subagent tokens, the marker file never gained a second line — the side effect did not repeat), executed only the post-impasse stage live, and read the human's answer from `args`.
+- **Editing the script between resumes does not invalidate the cache**, as long as the completed `agent()` calls' `(prompt, opts)` pairs are unchanged — the fix below was applied mid-probe and stage A still replayed from cache. This means impasse handling can even ship small script corrections without losing completed work.
+- **`args` can arrive as a JSON string rather than an object** (it did in the probe, silently re-triggering the impasse branch because `args.answer` was undefined on a string). Every Forge script must defensively normalize: `const input = typeof args === 'string' ? JSON.parse(args) : args`.
+- Two rules follow from cached calls being matched on their exact `(prompt, opts)` pair: **pre-impasse agent prompts must never interpolate values that change between launches** (the human's answer is interpolated only into post-impasse prompts), and impasse answers always travel via `args`, never by editing prompts in the script.
+- Replay is **positional**: the longest unchanged prefix of the call sequence replays from cache, and from the first divergent call onward everything runs live. This is what makes repeat-round loops sound — a re-review or re-QA after a live fix executes fresh even when its prompt is byte-identical to an earlier round's, because it sits after the divergence point. It is also why a call that previously returned a *failure* needs a differently-prompted retry path (activated by the operator's answer) to escape: unchanged, it replays its cached failure and re-impasses.
 
-Failures route back to Stage 3 with the failing scenario attached, and the scenario is kept as a regression fixture for future runs — the seed of an accumulating eval suite and the self-improvement flywheel.
+## What v1 machinery is deleted
 
-### Stage 5 — Ship
+- `forge.yaml` and its schema — the script's variables are the run state.
+- The OpenSpec change directory, verdict files, and stage-boundary state commits — verdicts are schema-forced return values; the manifest lands in the PR body.
+- The one-run-at-a-time cross-branch scan — a run is a session; running workflows are visible in the task list and stoppable there.
+- `/forge resume` and `/forge abandon` — session death or TaskStop is abandonment; restart is fresh (branch recreated from base).
+- The "Forge state is not scope creep" rules, `.gitattributes` linguist-collapse, and reviewer exemptions for `openspec/changes/` — nothing is committed, so nothing needs exempting.
+- OpenSpec integration in Forge — replaced by the docs stage updating real documentation in the PR itself (see Relationship to OpenSpec below; the repo's `openspec/` directory itself stays).
 
-Assemble the PR in house style (What & why / How it works / Verification), with the **verification manifest** — the AC table with evidence links and explicit waivers — as the Verification section. Link the plan artifact, push, open the PR, watch CI, address review feedback, and apply per-repo merge policy (never auto-merge by default; #139). The merge decision is the second human gate. Post-merge: archive the OpenSpec change and file follow-ups for waived ACs.
+## Relationship to OpenSpec
 
-## Entry points
+Forge v2 stops **using** OpenSpec, but the repo keeps the `openspec/` directory untouched — the archive and specs library remain valuable history, and the `opsx` skills keep working for anyone who wants them. What happens to each thing OpenSpec provided:
 
-- `/forge <idea>` — full run from Stage 0.
-- `/forge issue <n>` — the issue body seeds the inception interview.
-- `/forge pr <n>` — finish-this-PR mode: a reverse-inception pass reconstructs the brief and ACs from the PR description and linked issue (asking the user to confirm gaps — "what would make you comfortable merging this?"), then runs Stages 3→5: finish, verify, QA live, ship.
-- `/forge resume` — continue the active run from its recorded stage.
+- **Artifact shapes** (`proposal.md` / `design.md` / `tasks.md` decomposition discipline) — kept, relocated: the plan stage's agents emit exactly these structures as **schema-enforced structured output**, validated at generation time with retries. That is stronger enforcement than CLI validation of a markdown file after the fact, and the artifacts flow between stages as data instead of being committed.
+- **AC rigor** — was never OpenSpec's; the numbered-testable-ACs-with-declared-method contract is Forge's own inception discipline, now also schema-enforced at the gate, and — unlike anything OpenSpec did — actually *verified* per-AC by the QA stage with evidence published in the PR manifest.
+- **The living spec library** (`openspec/specs/`, archive-on-merge) — Forge no longer writes to it. The durable, verified requirements corpus accumulates elsewhere: tests are executable specs, the future smoke suite is a verified scenario library, and every merged Forge PR carries its ACs + evidence in the description (a queryable AC history on GitHub for free). **Named re-entry path:** if real runs show the research stage suffering from the lack of a structured requirements corpus, the docs stage grows one agent that also emits the run's ACs as scenarios into a specs folder — a one-agent addition, no architectural change. Decide from observed pain, not anticipated pain.
 
-## Execution model
+## Future phases
 
-Forge is run **manually, one run at a time**, in an interactive Claude Code session on the operator's machine: the operator invokes an entry point, answers inception questions in the chat, and makes the merge decision at the end. Since every stage persists its artifacts and `forge.yaml` records the current stage, a run survives interruption and resumes with `/forge resume` — which is all the machinery scheduled or unattended operation would later need. Headless scheduled runs (with human gates handled asynchronously via issue/PR comments) are a possible later step, not part of the initial design.
+- **Gate migration to GitHub.** The clarifying questions and the brief/AC sign-off move from chat to the source issue's conversation; the session waits on (or is re-triggered by) the human's issue reply. Nothing structural changes — the gate is already a seam between workflows; only its transport moves. This completes the issue-driven loop: issue in, questions and brief in the thread, PR out.
+- **Smoke-test suite.** QA scenarios worth keeping get promoted into a smoke suite in the repo, run as a CI check on PRs before merge — the regression flywheel with a durable home in the test surface rather than run-state.
+- **Auto-merge on green.** v2 ends at "PR open, ready for review"; merging stays human. Auto-merge on green CI + clean smoke suite is earned after the loop has produced a track record of clean runs.
+- **PR-mode entry.** "Finish this PR" — taking over and completing someone's PR — re-enters the chain at implement with a reverse-inception research pass. (Zero-footprint review mode, by contrast, ships in v2 — see Review mode above.)
 
-## Concurrency: one run at a time
+## Open questions
 
-Forge runs **serially — WIP limit 1**. Parallel runs would fight over the shared local docker instance (one port, one workdir) during QA, would generate rebase churn against each other (the open-PR history shows changes repeatedly touching the same surfaces: `spawn.ts`, prompts, memory, task lifecycle), and would make cost and wall-clock unpredictable — the opposite of the goal. Parallelism lives *within* stages instead: research lenses fan out concurrently, review passes run concurrently where independent.
-
-The serial discipline also sets the operating order: first drain the existing open-PR backlog via `/forge pr` (merge or close each), then work the issue backlog one at a time.
-
-## Anti-bias mechanics
-
-Every reviewer/critic/QA role is a fresh-context subagent that receives artifacts, never conversation history. Critics are prompted to refute, not appraise. The rings get progressively blinder: plan critics see brief + dossier + plan; implementation reviewers see plan + diff but not rationale; QA sees neither code nor diff — only ACs and the live instance. All loops are capped (2–3 rounds) and every pass emits a structured verdict, keeping runs predictable in cost and shape.
-
-## Tooling to build (prioritized)
-
-1. **E2E harness skill** (extends the draft archie-e2e work in #71 + the debug MCP): boot-from-branch, health-wait, nonce-task, API-approve, evidence capture, teardown. The single biggest unlock — it converts "live runtime not verifiable" into a routine check.
-2. **Cheap-model E2E mode**: an env preset (e.g. `ARCHIE_E2E=1`) pinning the system-under-test's agents to cheaper models so QA runs don't burn premium tokens on scaffolding-level assertions.
-3. **API/connector integration tests**: a supertest-style suite over the Express app (`src/connectors/api/routes.ts` is untested and the whole QA stage depends on it), plus signed synthetic webhook replay into `/github/webhooks` to test CI/review/merge routing without real GitHub events.
-4. **Fixture seeding**: a reproducible `workdir` fixture set (test plugin, sample tasks, optional memory store); `scripts/pull-tasks.sh` already shows the shape.
-5. **Test Slack workspace + Slack-read verification** (deferable): CLI/API ingress exercises nearly all PM logic without Slack; Slack-side rendering (Block Kit, canvases, status) is verified cheapest via a test workspace and Slack API reads, not browser control. Defer browser/headless tooling until something genuinely visual demands it.
-6. **GitHub Actions dry-run**: for workflow-file changes, `act` or a dispatch-with-dry_run convention — closes the changelog PRs' recurring "re-run after merge" gap.
-
-## Rollout phases
-
-- **Phase 0 — backlog drain.** Build the skeleton (`/forge` command, `forge.yaml` state, Stages 0/2/3 wired to OpenSpec, both review passes) plus tooling items 1–2. Dogfood `/forge pr` on the existing open PRs, one at a time, until the backlog is merged or closed.
-- **Phase 1 — issue-driven runs.** Work the issue backlog serially with full six-stage runs. Accumulate QA regression fixtures.
-- **Phase 2 — rebase-on-merge.** When any PR merges, the active run (and remaining open PRs) rebase; conflict resolution is grounded in two inputs — the PR's own plan artifact (its intent) and the merged diff since the branch point — rather than blind textual resolution.
-- **Phase 3 — automation.** Launch Forge automatically: PR-opened → `/forge pr` with the merge decision deferred to a human; issue-opened → a run whose inception interview happens **in the issue conversation** (requires GitHub issue tools, #150, and relates to `docs/proposals/github-mention-workflow.md`). Review comments on Forge-opened PRs are addressed automatically; when a human instead fixes the PR directly, they note in a PR comment what was changed and why, and Forge treats that as ground truth on its next pass rather than reverting it.
-
-## Human touchpoints
-
-Two in the normal path: inception sign-off and the merge decision. In between, the run proceeds autonomously and surfaces structured verdicts; it comes back to the user only if an AC proves unverifiable or the plan requires a genuine scope change.
-
-## Relationship to existing work
-
-- **OpenSpec / opsx skills** — Forge's Stage 2 is the existing propose flow, wrapped with critics and a verification plan; archive-on-merge is the existing archive flow.
-- **archie-debug MCP (`wait_for_task`, spec `openspec/specs/debug-mcp-task-waiting/`)** — Stage 4's driver.
-- **QA plugin (`archie-plugins/qa/`)** — the analyst → independent-reviewer two-pass model and black-box discipline, applied to engine verification.
-- **PR #71 (archie-e2e skill)** — seed of tooling item 1.
-- **Issues #147/#148** — plan visibility is delivered by the published Stage-2 artifact; a richer web view remains #148.
-- **Issue #143** — an automated review on Archie PRs slots into Stage 5 as an additional reviewer signal.
+- **Model/effort tiering per stage** — implementer and reviewer agents likely inherit the session model, but cheap mechanical stages (evidence collection, doc formatting) could pin lower effort; decide from observed cost of the first real runs.
+- **QA environment cost** — whether the `ARCHIE_E2E=1` cheap-model preset from v1's tooling list is still wanted for the system under test (probably yes; unchanged by this redesign).
+- **Where the conductor's interview ends and the dossier begins** — v1 allowed web research during the interview; v2 leans toward asking only scope questions pre-research and letting the research workflow own all fact-finding, revisiting after the first runs.
