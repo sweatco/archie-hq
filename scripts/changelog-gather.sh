@@ -22,11 +22,13 @@ OUT="${3:?missing out-file}"
 SINCE="$DATE 00:00:00 +0000"
 UNTIL="$DATE 23:59:59 +0000"
 # The automation's own changelog commits are excluded everywhere. They must not
-# count as a day's "changes": on a quiet day the only commit on main is often the
-# previous day's `docs(changelog): add entry for …` push, and if that counted as
-# activity the day would slip past the bail-out below and reach the model with
-# empty context — which then drafts a bogus "_No changes landed_" entry.
-SKIP_OWN='^docs(changelog): add entry for'
+# count as a day's "changes": on a quiet day the only commit on main is often a
+# previous day's `docs(changelog): add entry for …` (or multi-day backfill
+# `add entries for …`) push, and if that counted as activity the day would slip
+# past the bail-out below and reach the model with empty context — which then
+# drafts a bogus "_No changes landed_" entry. Keep this prefix in sync with the
+# commit message in .github/workflows/daily-changelog.yml.
+SKIP_OWN='^docs(changelog): add entr'
 
 # Bail early if nothing worth documenting landed. `commits` uses the SAME
 # `SKIP_OWN` filter as the backstop context below, so this check is exactly

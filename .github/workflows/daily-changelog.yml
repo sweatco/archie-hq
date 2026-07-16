@@ -8,15 +8,21 @@
 #              NO model.
 #
 # How it works:
-#   1. generate: scripts/changelog-gather.sh builds the model's context — each PR
-#      merged that day with its description, linked issues, commit subjects, and
-#      diffstat (so the model grasps intent without reading code), plus a
-#      raw-commit backstop for direct-to-main pushes.
-#   2. If nothing landed — or that day already has an entry — stop (no empty commit).
-#   3. generate: the Claude Code Action writes ONLY the dated entry to new-entry.md;
-#      a step captures it into the `entry` job output.
-#   4. publish: scripts/changelog-insert.mjs splices the entry below [Unreleased],
-#      above the newest dated entry, leaving structure and the bottom snapshot alone.
+#   1. generate: determine the days to document — every undocumented day after the
+#      newest dated entry in CHANGELOG.md up to yesterday (bounded to the last 14
+#      days), or exactly the day given via workflow_dispatch. Backfilling the whole
+#      gap instead of only "yesterday" means a failed or missed run never loses a
+#      day: the next run picks it up and writes one entry per day.
+#   2. generate: for each candidate day, scripts/changelog-gather.sh builds the
+#      model's context — each PR merged that day with its description, linked
+#      issues, commit subjects, and diffstat (so the model grasps intent without
+#      reading code), plus a raw-commit backstop for direct-to-main pushes. Quiet
+#      days drop out; if no day has activity, stop (no empty commit).
+#   3. generate: the Claude Code Action writes ONLY the dated entries (one section
+#      per active day) to new-entry.md; a step captures it into the `entry` job output.
+#   4. publish: scripts/changelog-insert.mjs splices each entry into its
+#      reverse-chronological slot below [Unreleased], leaving structure and the
+#      bottom snapshot alone.
 #   5. publish: commit straight to main with [skip ci] so it doesn't trigger a rebuild.
 #
 # Security:
@@ -47,7 +53,7 @@ on:
   workflow_dispatch:
     inputs:
       date:
-        description: "Day to summarize (YYYY-MM-DD, UTC). Defaults to yesterday."
+        description: "Day to summarize (YYYY-MM-DD, UTC). Defaults to backfilling every undocumented day up to yesterday."
         required: false
         type: string
       dry_run:
@@ -73,7 +79,7 @@ jobs:
       pull-requests: read
     outputs:
       skip: ${{ steps.gather.outputs.skip }}
-      date: ${{ steps.gather.outputs.date }}
+      dates: ${{ steps.gather.outputs.dates }}
       entry: ${{ steps.capture.outputs.entry }}
     steps:
       - name: Check out main (full history)
@@ -82,43 +88,78 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Gather the day's changes (PR context)
+      - name: Gather the undocumented days' changes (PR context)
         id: gather
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TARGET_DATE="${{ inputs.date }}"
-          if [ -z "$TARGET_DATE" ]; then
-            TARGET_DATE="$(date -u -d 'yesterday' +%F)"
-          fi
-          echo "date=$TARGET_DATE" >> "$GITHUB_OUTPUT"
-          echo "Target day: $TARGET_DATE (UTC)"
+          YESTERDAY="$(date -u -d 'yesterday' +%F)"
+          INPUT_DATE="${{ inputs.date }}"
 
-          # Already documented? Then there's nothing to do.
-          if grep -qE "^## ${TARGET_DATE}\b" CHANGELOG.md; then
-            echo "Entry for $TARGET_DATE already exists — skipping."
+          if [ -n "$INPUT_DATE" ]; then
+            # Manual dispatch with an explicit day: summarize exactly that day.
+            if grep -qE "^## ${INPUT_DATE}\b" CHANGELOG.md; then
+              echo "Entry for $INPUT_DATE already exists — skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            CANDIDATES="$INPUT_DATE"
+          else
+            # Backfill: every day after the newest dated entry, up to yesterday.
+            # This is what makes the automation self-healing — a failed or missed
+            # run doesn't lose its day, the next run writes one entry per pending
+            # day. Quiet days between the last entry and yesterday are re-checked
+            # each run (they never get an entry to advance the watermark), so the
+            # scan is bounded to the last 14 days: beyond that a day has had two
+            # weeks of runs to be documented.
+            LAST_ENTRY="$(grep -oEm1 '^## [0-9]{4}-[0-9]{2}-[0-9]{2}' CHANGELOG.md | cut -d' ' -f2 || true)"
+            WINDOW_START="$(date -u -d "$YESTERDAY - 13 days" +%F)"
+            if [ -n "$LAST_ENTRY" ] && [ "$(date -u -d "$LAST_ENTRY + 1 day" +%F)" \> "$WINDOW_START" ]; then
+              START="$(date -u -d "$LAST_ENTRY + 1 day" +%F)"
+            else
+              START="$WINDOW_START"
+            fi
+            CANDIDATES=""
+            d="$START"
+            while [ "$d" \< "$YESTERDAY" ] || [ "$d" = "$YESTERDAY" ]; do
+              # Belt and braces: never re-document a day (gap days inside the
+              # window can't have entries, but a manual dispatch might have).
+              grep -qE "^## ${d}\b" CHANGELOG.md || CANDIDATES="${CANDIDATES:+$CANDIDATES }$d"
+              d="$(date -u -d "$d + 1 day" +%F)"
+            done
+          fi
+          echo "Candidate days: ${CANDIDATES:-none}"
+
+          DATES=""
+          for d in $CANDIDATES; do
+            set +e
+            bash scripts/changelog-gather.sh "$d" "${{ github.repository }}" "context-$d.md"
+            code=$?
+            set -e
+            if [ "$code" = "10" ]; then
+              echo "Nothing landed on $d — skipping that day."
+              continue
+            fi
+            [ "$code" = "0" ] || exit "$code"
+            DATES="${DATES:+$DATES }$d"
+          done
+
+          if [ -z "$DATES" ]; then
+            echo "No undocumented activity — skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          set +e
-          bash scripts/changelog-gather.sh "$TARGET_DATE" "${{ github.repository }}" context.md
-          code=$?
-          set -e
-          if [ "$code" = "10" ]; then
-            echo "Nothing landed on $TARGET_DATE — skipping."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          [ "$code" = "0" ] || exit "$code"
-
+          echo "dates=$DATES" >> "$GITHUB_OUTPUT"
           echo "skip=false" >> "$GITHUB_OUTPUT"
-          echo "::group::Context for the model"
-          cat context.md
-          echo "::endgroup::"
+          for d in $DATES; do
+            echo "::group::Context for $d"
+            cat "context-$d.md"
+            echo "::endgroup::"
+          done
 
-      - name: Write the entry with Claude
+      - name: Write the entries with Claude
         if: steps.gather.outputs.skip == 'false'
         uses: anthropics/claude-code-action@f87768c6d25f92ae6efa7175e223ef77d4cbf97f # v1
         with:
@@ -126,22 +167,27 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_args: |
             --allowedTools Read,Write
-            --max-turns 8
+            --max-turns 30
             --model sonnet
           prompt: |
-            You are updating Archie HQ's CHANGELOG.md. Write the entry for ${{ steps.gather.outputs.date }}.
+            You are updating Archie HQ's CHANGELOG.md. Write one dated entry for EACH of these days: ${{ steps.gather.outputs.dates }}.
 
-            First read two files in the repo:
-            - `context.md` — the changes that landed that day. Merged pull requests are the
-              primary source: each PR's description explains *what and why*, with its linked
-              issues, commit subjects, and diffstat. A raw-commit list at the end is a backstop
-              for anything pushed straight to main. Use the PR descriptions to understand the
-              VALUE and intent of each change — you do not need to read the code.
+            First read the inputs in the repo:
+            - `context-<date>.md` — one file per day listed above, containing the changes that
+              landed that day. Merged pull requests are the primary source: each PR's
+              description explains *what and why*, with its linked issues, commit subjects,
+              and diffstat. A raw-commit list at the end is a backstop for anything pushed
+              straight to main. Use the PR descriptions to understand the VALUE and intent of
+              each change — you do not need to read the code.
             - `CHANGELOG.md` — copy the exact voice, formatting, and density of the existing
               dated entries near the top.
 
             Rules (follow exactly):
-            - The output is ONE section. The first line is the heading `## ${{ steps.gather.outputs.date }}` and nothing comes before it.
+            - The output is one `## <date>` section PER DAY listed above — no more, no fewer —
+              ordered newest day first. Nothing comes before the first heading and nothing
+              follows the sections.
+            - Build each day's section ONLY from that day's `context-<date>.md`. Never move a
+              change to a different day and never merge two days into one section.
             - One logical change = one bullet. A PR is normally one bullet, even when it spans
               several commits. Do not write one bullet per commit, and do not list every commit.
             - Lead each bullet with the VALUE the change delivers for business users — a bold
@@ -153,26 +199,27 @@ jobs:
               CI / tooling / dev-environment fixes) into `_Technical: …_` bullets, grouped by
               theme. Prefer a single combined bullet; split into a separate `_Technical:_`
               bullet only when the changes are genuinely unrelated (e.g. a docs/process change
-              vs. a runtime fix vs. dependency bumps). Never exceed three technical-only bullets:
-              don't give every chore its own, and don't cram unrelated changes into one
+              vs. a runtime fix vs. dependency bumps). Never exceed three technical-only bullets
+              per day: don't give every chore its own, and don't cram unrelated changes into one
               run-on line either.
             - Reserve a standalone bullet for a change with real user value or notable
               engineering significance.
             - Aim for the most important 3–6 bullets on a typical day; group the rest.
             - Write each bullet on a SINGLE line — never hard-wrap prose across multiple lines.
               Only fenced code may span lines.
-            - Be concise and faithful. Never invent a change that is not in `context.md`.
+            - Be concise and faithful. Never invent a change that is not in that day's context file.
 
-            Then self-review your draft before saving: does every bullet either lead with real
-            user value or stand as an explicit `_Technical:_` note? Is the minor plumbing grouped
-            by theme into at most three technical bullets — neither one-per-chore nor a single
-            run-on dump? Is anything invented or mis-summarized versus `context.md`? Are related
-            changes grouped? Revise, then save.
+            Then self-review your draft before saving: is there exactly one section per listed
+            day, ordered newest first? Does every bullet either lead with real user value or
+            stand as an explicit `_Technical:_` note? Is each day's minor plumbing grouped by
+            theme into at most three technical bullets — neither one-per-chore nor a single
+            run-on dump? Is anything invented, mis-summarized, or attributed to the wrong day
+            versus the context files? Are related changes grouped? Revise, then save.
 
-            Write ONLY the finished entry to a new file named `new-entry.md`.
+            Write ONLY the finished entries to a new file named `new-entry.md`.
             Do NOT modify CHANGELOG.md or any other file.
 
-      - name: Capture the drafted entry
+      - name: Capture the drafted entries
         id: capture
         if: steps.gather.outputs.skip == 'false'
         run: |
@@ -181,21 +228,21 @@ jobs:
             echo "Claude produced no new-entry.md — aborting." >&2
             exit 1
           fi
-          # Pass the entry to the publish job as a job output. It is consumed there
-          # via an env var (never interpolated into a shell), so its content — which
-          # is attacker-influenceable — cannot inject commands downstream.
+          # Pass the entries to the publish job as a job output. They are consumed
+          # there via an env var (never interpolated into a shell), so the content —
+          # which is attacker-influenceable — cannot inject commands downstream.
           {
             echo 'entry<<CHANGELOG_ENTRY_EOF'
             cat new-entry.md
             echo 'CHANGELOG_ENTRY_EOF'
           } >> "$GITHUB_OUTPUT"
 
-      - name: Preview the drafted entry (dry run)
+      - name: Preview the drafted entries (dry run)
         if: steps.gather.outputs.skip == 'false' && github.event.inputs.dry_run == 'true'
         run: |
           set -euo pipefail
           {
-            echo "### Drafted changelog entry for ${{ steps.gather.outputs.date }} (dry run — not committed)"
+            echo "### Drafted changelog entries for ${{ steps.gather.outputs.dates }} (dry run — not committed)"
             echo
             echo "This is exactly what would be spliced into CHANGELOG.md. Re-run with dry_run off to publish it."
             echo
@@ -203,7 +250,7 @@ jobs:
             cat new-entry.md
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "----- drafted entry (dry run) -----"
+          echo "----- drafted entries (dry run) -----"
           cat new-entry.md
 
   publish:
@@ -222,16 +269,16 @@ jobs:
           # directly to the protected main branch over SSH.
           ssh-key: ${{ secrets.CHANGELOG_DEPLOY_KEY }}
 
-      - name: Insert the entry and push
+      - name: Insert the entries and push
         env:
-          TARGET_DATE: ${{ needs.generate.outputs.date }}
+          TARGET_DATES: ${{ needs.generate.outputs.dates }}
           ENTRY: ${{ needs.generate.outputs.entry }}
         run: |
           set -euo pipefail
 
-          # Materialize the drafted entry from the env var (safe: no shell
+          # Materialize the drafted entries from the env var (safe: no shell
           # interpolation of untrusted content). The insert script — the trusted
-          # repo version, since no model ran in this job — sanitizes it and only
+          # repo version, since no model ran in this job — sanitizes them and only
           # ever writes CHANGELOG.md.
           printf '%s\n' "$ENTRY" > new-entry.md
 
@@ -239,7 +286,7 @@ jobs:
           node scripts/changelog-insert.mjs CHANGELOG.md new-entry.md
           code=$?
           set -e
-          # 3 == entry already present (race / re-run): treat as a clean no-op.
+          # 3 == every entry already present (race / re-run): treat as a clean no-op.
           if [ "$code" = "3" ]; then
             echo "Already present — nothing to commit."
             exit 0
@@ -256,11 +303,18 @@ jobs:
           git config user.name "archie-changelog[bot]"
           git config user.email "archie-changelog@users.noreply.github.com"
           git add CHANGELOG.md
-          # Keep this message prefix in sync with SKIP_OWN in
-          # scripts/changelog-gather.sh: it excludes the automation's own
-          # changelog commits so a quiet day (whose only commit is the previous
+          # Keep this message prefix ("docs(changelog): add entr…") in sync with
+          # SKIP_OWN in scripts/changelog-gather.sh: it excludes the automation's
+          # own changelog commits so a quiet day (whose only commit is a previous
           # day's entry) isn't mistaken for an active one and summarized empty.
-          git commit -m "docs(changelog): add entry for ${TARGET_DATE} [skip ci]"
+          FIRST_DATE="${TARGET_DATES%% *}"
+          LAST_DATE="${TARGET_DATES##* }"
+          if [ "$FIRST_DATE" = "$LAST_DATE" ]; then
+            MESSAGE="docs(changelog): add entry for ${FIRST_DATE} [skip ci]"
+          else
+            MESSAGE="docs(changelog): add entries for ${FIRST_DATE}..${LAST_DATE} [skip ci]"
+          fi
+          git commit -m "$MESSAGE"
 
           # Retry the push a few times to ride out transient failures.
           n=0
