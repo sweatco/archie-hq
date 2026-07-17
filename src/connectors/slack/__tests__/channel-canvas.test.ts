@@ -17,7 +17,7 @@ let storesByChannel: Record<string, unknown> = {};
 let savedStore: { canvases: unknown[]; announced: Record<string, boolean>; checkedAt: number } | null = null;
 
 vi.mock('../client.js', () => ({
-  getChannelCanvasTabs: async () => tabs,
+  getChannelCanvasTabs: vi.fn(async () => tabs),
   getSlackFileInfo: async (id: string) => fileInfos[id] ?? null,
   getUserInfo: async (id: string) => userInfoImpl(id),
   isExternalUser: (u: { external?: boolean }) => !!u?.external,
@@ -42,7 +42,7 @@ vi.mock('../../../system/logger.js', () => ({
 }));
 
 import { ensureChannelCanvas, collectCanvasFileAllowlist } from '../channel-canvas.js';
-import { postSlackMessage } from '../client.js';
+import { postSlackMessage, getChannelCanvasTabs } from '../client.js';
 import { logger } from '../../../system/logger.js';
 
 const CHANNEL = 'C0123456789';
@@ -148,5 +148,28 @@ describe('collectCanvasFileAllowlist', () => {
     const metadata = { channels: { a: { type: 'slack', channel_id: 'C9' } } } as unknown as TaskMetadata;
 
     expect((await collectCanvasFileAllowlist(metadata)).size).toBe(0);
+  });
+});
+
+describe('ensureChannelCanvas — G… (group DM) is not short-circuited like a D… DM — AC6', () => {
+  beforeEach(() => {
+    tabs = [];
+    fileInfos = {};
+    userInfoImpl = async () => ({ external: false });
+    storesByChannel = {};
+    savedStore = null;
+    vi.mocked(getChannelCanvasTabs).mockClear();
+    vi.mocked(postSlackMessage).mockClear();
+  });
+
+  it('does NOT early-return: it proceeds to getChannelCanvasTabs for the G id and is a canvas no-op when no Archie tab exists', async () => {
+    // Unlike a `D…` id (which returns before touching any tab machinery), a `G…`
+    // mpim flows past the D-only guard into getChannelCanvasTabs — the documented
+    // no-op-canvas path, which completes without throwing.
+    await expect(ensureChannelCanvas('G_mpim')).resolves.toBeUndefined();
+
+    expect(getChannelCanvasTabs).toHaveBeenCalledWith('G_mpim');
+    expect(savedStore?.canvases).toEqual([]);
+    expect(postSlackMessage).not.toHaveBeenCalled();
   });
 });
