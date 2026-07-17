@@ -15,6 +15,9 @@ export const meta = {
 //   change: string (kebab-case), base?: string ('main'), branch?: string (`forge/<change>`),
 //   brief: string, acs: [{id, text, method}], dossier: [{claim, citation}],
 //   evidenceDir?: string,
+//   workflowsDir?: string  — ABSOLUTE path to this repo's .claude/workflows. Always pass it:
+//     named workflow resolution is cwd-scoped, and in multi-repo sessions the cwd is the repos'
+//     parent directory, so child stages invoked by bare name fail to resolve there.
 //   answers?: {            — operator impasse answers, added on resume; NEVER set on first launch
 //     plan?: string, implement?: string | { [taskId]: string, gate?, review? },
 //     qa?: string, qaCycles?: string, docs?: string, ship?: string,
@@ -36,9 +39,11 @@ const evidenceDir = input.evidenceDir || `/tmp/forge-${input.change}/qa-evidence
 
 // Child workflows return { status: 'ok' | 'impasse' | 'error', ... }. Propagate anything
 // non-ok upward unchanged (plus the stage tag) so the conductor can run the answer round-trip.
+// With workflowsDir set, children resolve by script path (robust in multi-repo sessions);
+// bare names remain the fallback for cwd-at-repo-root sessions.
 const run = async (name, childArgs, stage) => {
   try {
-    const r = await workflow(name, childArgs)
+    const r = await workflow(input.workflowsDir ? { scriptPath: `${input.workflowsDir}/${name}.js` } : name, childArgs)
     if (!r) return { status: 'impasse', stage, question: `${name} returned nothing. Retry the run?`, context: null }
     return r
   } catch (e) {
