@@ -1,8 +1,8 @@
 /**
  * Backend resolver (spec §3, §4). Resolves REPO_HOST env into a concrete
- * repo-host factory + capabilities. Phase 0 supports exactly one option
- * (github); the resolver exists so later phases add options (gitlab) without
- * touching call sites. Fails fast with actionable messages at boot.
+ * repo-host factory + capabilities. REPO_HOST resolves to `github` (default)
+ * or `gitlab`; the resolver exists so call sites stay agnostic to which host
+ * is active. Fails fast with actionable messages at boot.
  */
 
 import type { RepoHost } from '../ports/repo-host.js';
@@ -39,10 +39,6 @@ function assertGitLabEnv(): void {
 export function assertBackendConfig(): void {
   const host = resolveRepoHostKind();
   if (!SUPPORTED_REPO_HOSTS.includes(host)) {
-    const known: string[] = ['github', 'gitlab'];
-    if (known.includes(host)) {
-      throw new Error(`REPO_HOST="${host}" is not available in this build yet (Phase 0 supports: ${SUPPORTED_REPO_HOSTS.join(', ')}).`);
-    }
     throw new Error(`REPO_HOST="${host}" is invalid. Supported values: ${SUPPORTED_REPO_HOSTS.join(', ')}.`);
   }
   if (host === 'gitlab') assertGitLabEnv();

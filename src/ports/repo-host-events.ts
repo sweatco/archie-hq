@@ -1,7 +1,7 @@
 /**
  * RepoHostEventSource — inbound webhook seam (spec §3.2). Signature verification
- * and payload parsing stay per-host; the normalized context + routing decision
- * are host-agnostic (see src/connectors/shared/cr-router.ts).
+ * and payload parsing stay per-host; the normalized context produced here is
+ * host-agnostic. Routing decisions are host-local (see each host's webhooks.ts).
  */
 
 /** Host-neutral normalized event, produced by each host's payload parser. */
@@ -20,15 +20,6 @@ export interface NormalizedEventContext {
   state?: string;
   commentId?: number;
 }
-
-/** Internal routing semantic — host-agnostic. */
-export type InternalRouteAction = 'merge_check' | 'existing_task' | 'checks_ready' | 'noop';
-
-/** Routing decision, consumed by the HTTP dispatcher. */
-export type RouteResult =
-  | { action: 'discard'; reason: string }
-  | { action: 'direct'; handler: 'merge_check' | 'existing_task'; taskId: string }
-  | { action: 'direct'; handler: 'checks_ready'; taskId: string; repo: string; prNumber: number };
 
 export interface RepoHostEventSource {
   readonly kind: 'github' | 'gitlab';
