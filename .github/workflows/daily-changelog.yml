@@ -161,7 +161,7 @@ jobs:
 
       - name: Write the entries with Claude
         if: steps.gather.outputs.skip == 'false'
-        uses: anthropics/claude-code-action@f87768c6d25f92ae6efa7175e223ef77d4cbf97f # v1
+        uses: anthropics/claude-code-action@700e7f8316990de46bed556429765647af760efc # v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
