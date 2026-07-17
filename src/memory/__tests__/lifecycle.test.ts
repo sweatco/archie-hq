@@ -480,6 +480,21 @@ describe('extractUsernames(transcript)', () => {
     expect(refs[0].userId).toBe(USER_DANA);
   });
 
+  it('matches the Slack-native <@UID:Name> bracket order (new producer format)', () => {
+    const log = `[<@${USER_DANA}:Dana Lee>] hello\n[<@${USER_ALICE}:Alice Smith> in slack:#<D0X:DM>:1] hi`;
+    const refs = extractUsernames(log);
+    expect(refs).toHaveLength(2);
+    expect(refs[0]).toEqual({ userId: USER_DANA, displayName: 'Dana Lee' });
+    expect(refs[1]).toEqual({ userId: USER_ALICE, displayName: 'Alice Smith' });
+  });
+
+  it('dedupes across both bracket orders (old @< logs + new <@ logs)', () => {
+    const log = `[@<${USER_DANA}:Dana Lee>] old-format\n[<@${USER_DANA}:Dana Lee>] new-format`;
+    const refs = extractUsernames(log);
+    expect(refs).toHaveLength(1);
+    expect(refs[0].userId).toBe(USER_DANA);
+  });
+
   it('ignores malformed mentions', () => {
     const log = '[@<u1:Dana>] short ID\n[@<NOTAVALID:Bob>] non-Slack prefix';
     const refs = extractUsernames(log);

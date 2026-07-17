@@ -258,7 +258,7 @@ export function renderMessageForContext(
       // fold inline so the agent still sees them.
       if (!forwardedBlock) {
         const teamSuffix = att.author.teamId ? `, team ${att.author.teamId}` : '';
-        const label = `[forwarded from @<${att.author.id}:${att.author.realName}> — external${teamSuffix}]`;
+        const label = `[forwarded from <@${att.author.id}:${att.author.realName}> — external${teamSuffix}]`;
         forwardedBlock = `${label}\n${att.text}`;
         continue;
       }
@@ -316,7 +316,7 @@ export async function appendSlackMessage(
   const msgIdSuffix = options?.ts ? ` | msg:${options.ts}` : '';
   const entry: LogEntry = {
     timestamp: new Date().toISOString(),
-    source: `@<${userInfo.id}:${displayName}> in ${formatSlackChannelRef(channelInfo.id, channelInfo.name, threadId)}${msgIdSuffix}`,
+    source: `<@${userInfo.id}:${displayName}> in ${formatSlackChannelRef(channelInfo.id, channelInfo.name, threadId)}${msgIdSuffix}`,
     message: fullMessage,
   };
 
@@ -364,7 +364,7 @@ export async function appendSlackEdit(
   const body = renderEditForContext(newText);
   const entry: LogEntry = {
     timestamp: new Date().toISOString(),
-    source: `@<${userInfo.id}:${userInfo.realName}> in ${formatSlackChannelRef(channelInfo.id, channelInfo.name, threadId)} | msg:${editedTs}`,
+    source: `<@${userInfo.id}:${userInfo.realName}> in ${formatSlackChannelRef(channelInfo.id, channelInfo.name, threadId)} | msg:${editedTs}`,
     message: body,
   };
 

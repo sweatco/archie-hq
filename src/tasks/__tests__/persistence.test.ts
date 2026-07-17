@@ -130,7 +130,7 @@ describe('renderMessageForContext', () => {
       { redacted: false },
     );
     expect(out).toBe(
-      'check this out\n[forwarded from @<UEXT:External Person> — external, team T_OTHER]\nexternal content body',
+      'check this out\n[forwarded from <@UEXT:External Person> — external, team T_OTHER]\nexternal content body',
     );
   });
 
@@ -153,7 +153,7 @@ describe('renderMessageForContext', () => {
     );
     // top, second ext (folded inline), then forwarded block for first
     expect(out).toBe(
-      'top\nsecond ext\n[forwarded from @<U1:A> — external, team T_OTHER]\nfirst ext',
+      'top\nsecond ext\n[forwarded from <@U1:A> — external, team T_OTHER]\nfirst ext',
     );
   });
 
@@ -181,7 +181,7 @@ describe('renderMessageForContext', () => {
       },
       { redacted: false },
     );
-    expect(out).toBe('top\n[forwarded from @<UG:G> — external]\nguest content');
+    expect(out).toBe('top\n[forwarded from <@UG:G> — external]\nguest content');
   });
 });
 

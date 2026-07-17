@@ -211,15 +211,17 @@ async function processExtraction(taskId: string): Promise<void> {
 // User identifier parsing
 // ============================================================================
 
-// Match the `@<UID:Display Name>` mention component wherever it appears.
-// Production log lines often have additional context inside the same outer
-// brackets, e.g.:
-//   `[@<U03RQQTE1EF:Riley Quinn> in slack:#<D0AUZLR6ZJQ:DM with Riley Quinn>:...]`
-// so we anchor on the `@<` prefix and the `>` terminator rather than the
-// surrounding `[...]`. The leading `@` (with no space before the UID) is
-// what distinguishes a user mention from a channel reference like
-// `#<D0AUZLR6ZJQ:DM with Riley Quinn>` which uses the same `<UID:Name>` shape.
-const MENTION_RE = /@<([A-Z][A-Z0-9]{6,}):([^>]+)>/g;
+// Match a `<UID:Display Name>` user-mention component wherever it appears,
+// accepting BOTH bracket orders: the internal `@<UID:Name>` and the Slack-native
+// `<@UID:Name>` the model tends to produce (and that producers now emit — see
+// restoreMentions in the Slack client). Production log lines often carry extra
+// context inside the same outer brackets, e.g.:
+//   `[<@U03RQQTE1EF:Riley Quinn> in slack:#<D0AUZLR6ZJQ:DM with Riley Quinn>:...]`
+// so we anchor on the `@<`/`<@` prefix, not the surrounding `[...]`. The `@`
+// adjacent to the UID is what distinguishes a user mention from a channel
+// reference like `#<D0AUZLR6ZJQ:DM with Riley Quinn>` (same `<UID:Name>` shape,
+// but `#<` prefix). Non-Slack-shaped IDs are filtered later by isSlackUserId.
+const MENTION_RE = /(?:@<|<@)([A-Z][A-Z0-9]{6,}):([^>]+)>/g;
 
 /**
  * Parse all Slack-mention markers from a transcript and return one record

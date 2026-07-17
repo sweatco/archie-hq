@@ -115,7 +115,7 @@ workdir/memory/                                  (runtime, gitignored)
 | Repo | `spawn.ts:381-382` | Every repo agent spawn |
 | Plugin | `spawn.ts:479-480` | Every plugin agent spawn |
 
-The helper `extractTaskUsernames(taskId)` (`spawn.ts:132`) parses the task's `knowledge.log` for Slack mention markers `@<UID:Display Name>` and returns one `UserRef` (raw Slack ID + display name) per unique mentioned user. The Slack ID is the user-memory filename, so the read and write paths key identically. Those users are the only ones for whom `<user_preferences>` blocks are injected.
+The helper `extractTaskUsernames(taskId)` (`spawn.ts:132`) parses the task's `knowledge.log` for Slack mention markers `<@UID:Display Name>` (or the legacy `@<UID:...>`) and returns one `UserRef` (raw Slack ID + display name) per unique mentioned user. The Slack ID is the user-memory filename, so the read and write paths key identically. Those users are the only ones for whom `<user_preferences>` blocks are injected.
 
 `buildMemoryContext(usernames)` (`src/memory/context.ts`) assembles up to three XML-tagged blocks:
 

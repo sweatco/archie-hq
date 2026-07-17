@@ -203,7 +203,7 @@ describe('generateTaskTitle', () => {
     });
     await generateTaskTitle(thread);
     const transcript = state.lastQueryArgs.prompt as string;
-    expect(transcript).toContain('[forwarded from @<UEXT:External> — external, team T_OTHER]');
+    expect(transcript).toContain('[forwarded from <@UEXT:External> — external, team T_OTHER]');
     expect(transcript).toContain('forwarded body');
   });
 

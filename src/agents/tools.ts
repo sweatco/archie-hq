@@ -83,7 +83,7 @@ function formatExploreMessages(messages: SlackThreadMessage[]): string {
       const reactions = m.reactions?.length
         ? `\n  [reactions: ${m.reactions.map((r) => `:${r.name}:×${r.count}`).join(' ')}]`
         : '';
-      return `@<${m.user.id}:${who}> | msg:${m.ts}\n${m.text}${files}${reactions}`;
+      return `<@${m.user.id}:${who}> | msg:${m.ts}\n${m.text}${files}${reactions}`;
     })
     .join('\n\n');
 }

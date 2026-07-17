@@ -500,17 +500,17 @@ async function fetchMentionInfo(
 }
 
 /**
- * Restore the internal `@<ID:Name>` mention format to Slack's `<@ID>` syntax for
+ * Restore the internal `<@ID:Name>` mention marker to Slack's `<@ID>` syntax for
  * outgoing messages, so Slack renders a real mention and notifies the user.
  *
- * Agents see users as `@<U123:John Smith>` in conversation history and are taught
- * to reproduce that. But the model's trained instinct is Slack's native `<@ID>`
- * (bracket first), so it frequently drifts to `<@U123:John Smith>` (bracket first,
- * name kept). That variant is NOT valid Slack syntax (Slack uses `<@ID>` or
- * `<@ID|Name>` with a pipe, never `:Name`), so if it reaches Slack unconverted it
- * renders as raw literal text (observed: task-20260708-1144-wvnrnz). Accept BOTH
- * bracket orders and strip the `:Name` either way. The required `:[^>]+` means an
- * already-valid `<@ID>` (no name) is left untouched.
+ * Agents see users as `<@U123:John Smith>` in conversation history (Slack-native
+ * bracket order, matching the model's instinct) and are taught to reproduce that.
+ * We also accept the legacy `@<U123:John Smith>` order that older logs and the
+ * model's occasional drift still produce. Either way the `:Name` is invalid Slack
+ * syntax (Slack uses `<@ID>` or `<@ID|Name>` with a pipe, never `:Name`) — if it
+ * reached Slack unconverted it renders as raw literal text (observed:
+ * task-20260708-1144-wvnrnz). Strip the `:Name` from both orders. The required
+ * `:[^>]+` means an already-valid `<@ID>` (no name) is left untouched.
  */
 export function restoreMentions(text: string): string {
   return text.replace(/(?:@<|<@)([A-Z0-9]+):[^>]+>/g, '<@$1>');
@@ -527,10 +527,12 @@ function applyMentionReplacements(
 ): string {
   let result = text;
 
-  // Replace user mentions <@U123> with @<U123:Real Name>
+  // Replace user mentions <@U123> with the agent-facing <@U123:Real Name> — the
+  // Slack-native bracket order (matches the model's instinct; restoreMentions
+  // strips the name back to <@U123> on the way out).
   result = result.replace(/<@([A-Z0-9]+)>/g, (match, userId) => {
     const userInfo = userInfoMap.get(userId);
-    return userInfo ? `@<${userId}:${userInfo.realName}>` : match;
+    return userInfo ? `<@${userId}:${userInfo.realName}>` : match;
   });
 
   // Replace group mentions <!subteam^S123|@name> with @<S123:group-name>
@@ -1486,7 +1488,7 @@ export function isBotMention(text: string, botUserId: string): boolean {
 }
 
 /**
- * Clean a single Slack message text by replacing mentions with @<ID:Name> format
+ * Clean a single Slack message text by replacing mentions with <@ID:Name> format
  */
 export async function cleanSlackText(text: string, channelId?: string): Promise<string> {
   const channelIds = channelId ? new Set<string>([channelId]) : new Set<string>();

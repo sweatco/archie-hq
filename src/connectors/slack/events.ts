@@ -890,7 +890,7 @@ async function handleSlackEdit(event: any): Promise<void> {
     return;
   }
 
-  // Resolve <@U…>/<#C…> mentions to the @<ID:Name> form used throughout the
+  // Resolve <@U…>/<#C…> mentions to the <@ID:Name> form used throughout the
   // knowledge log. Only the new text is logged — the pre-edit text already
   // lives in the log under the same `msg:<ts>` id.
   const newText = await cleanSlackText(newRaw, channelId);
