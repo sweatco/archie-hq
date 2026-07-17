@@ -24,9 +24,10 @@ export const GITHUB_CAPABILITIES: RepoHostCapabilities = {
 /**
  * GitLab defaults — least-capable baseline. reviewStates is false (GitLab has
  * approvals + notes, not distinct approved/changes_requested states — synthesized
- * in Plan 2). securityAlerts starts false and is raised only when the boot-time
- * /license probe reports an Ultimate tier (spec R2). nativeAutoMerge exists
- * ("merge when pipeline succeeds") but Archie keeps orchestrating by default.
+ * in Plan 2). securityAlerts is fixed false: there is no boot-time license probe
+ * in this PR, so code-scanning/vulnerability findings are never surfaced for
+ * GitLab. nativeAutoMerge exists ("merge when pipeline succeeds") but Archie
+ * keeps orchestrating by default.
  */
 export const GITLAB_CAPABILITIES_DEFAULT: RepoHostCapabilities = {
   reviewStates: false,

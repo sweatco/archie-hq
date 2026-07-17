@@ -1,7 +1,7 @@
 /**
  * GitLabHost — the GitLab implementation of the RepoHost seam (design decision:
  * GitHub schema is canonical; GitLab responses are mapped into it). REST v4 only.
- * Read methods are implemented in Plan 1; write/review methods arrive in Plan 2.
+ * All read and write/review methods below are implemented.
  */
 
 import type { RepoHost } from '../../ports/repo-host.js';
@@ -64,7 +64,7 @@ export class GitLabHost implements RepoHost {
     return encodeURIComponent(repo);
   }
 
-  // ---- read methods: implemented in Tasks 4–6 (throw until then) ----
+  // ---- read methods ----
   async getPRStatus(repo: string, prNumber: number): Promise<PRStatus> {
     const id = this.projectId(repo);
     const mr = await glRequest<{ state: string; merged?: boolean; detailed_merge_status?: string }>({
@@ -299,7 +299,7 @@ export class GitLabHost implements RepoHost {
     }
   }
 
-  // ---- write/review methods: implemented in Plan 2 (throw for now) ----
+  // ---- write/review methods ----
   async createPullRequest(repo: string, head: string, base: string, title: string, body: string): Promise<CreatePRResult> {
     const mr = await glRequest<{ iid: number; web_url: string }>({
       method: 'POST',
