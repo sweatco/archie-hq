@@ -23,7 +23,10 @@
 #   4. publish: scripts/changelog-insert.mjs splices each entry into its
 #      reverse-chronological slot below the intro header, leaving structure and
 #      the bottom snapshot alone.
-#   5. publish: commit straight to main with [skip ci] so it doesn't trigger a rebuild.
+#   5. publish: commit straight to main. The commit deliberately does NOT carry
+#      [skip ci]: deployments take the latest main commit, so every commit on
+#      main — including a changelog entry — must have its own CI run and
+#      published image.
 #
 # Security:
 #   The gather step feeds attacker-influenceable text (PR/issue/commit bodies) to
@@ -310,9 +313,9 @@ jobs:
           FIRST_DATE="${TARGET_DATES%% *}"
           LAST_DATE="${TARGET_DATES##* }"
           if [ "$FIRST_DATE" = "$LAST_DATE" ]; then
-            MESSAGE="docs(changelog): add entry for ${FIRST_DATE} [skip ci]"
+            MESSAGE="docs(changelog): add entry for ${FIRST_DATE}"
           else
-            MESSAGE="docs(changelog): add entries for ${FIRST_DATE}..${LAST_DATE} [skip ci]"
+            MESSAGE="docs(changelog): add entries for ${FIRST_DATE}..${LAST_DATE}"
           fi
           git commit -m "$MESSAGE"
 
