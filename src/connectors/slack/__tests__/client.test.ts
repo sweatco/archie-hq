@@ -253,3 +253,31 @@ describe('assertPostableChannel — posting is open to channels, closed to DMs',
     await expect(client.assertPostableChannel('C_pub')).resolves.toBeUndefined();
   });
 });
+
+describe('G… (group DM) is not short-circuited like a 1:1 DM — AC6', () => {
+  // The channel-context machinery keys its skip strictly off the `D` prefix, so a
+  // `G…` mpim id flows through to conversations.info exactly like a channel does —
+  // unlike a `D…` id, which returns early without any API call.
+  it('isChannelShared(G…) calls conversations.info and returns a boolean (not the D early-return)', async () => {
+    slackApi.conversations.info.mockResolvedValue({
+      ok: true, channel: { id: 'G_mpim', name: 'mpdm', is_mpim: true, is_ext_shared: false },
+    });
+
+    const shared = await client.isChannelShared('G_mpim');
+
+    expect(slackApi.conversations.info).toHaveBeenCalledWith({ channel: 'G_mpim' });
+    expect(typeof shared).toBe('boolean');
+    expect(shared).toBe(false);
+  });
+
+  it('getChannelCanvasTabs(G…) calls conversations.info and returns [] when properties.tabs is absent (no-op, no throw)', async () => {
+    slackApi.conversations.info.mockResolvedValue({
+      ok: true, channel: { id: 'G_mpim', name: 'mpdm', is_mpim: true },
+    });
+
+    const tabs = await client.getChannelCanvasTabs('G_mpim');
+
+    expect(slackApi.conversations.info).toHaveBeenCalledWith({ channel: 'G_mpim' });
+    expect(tabs).toEqual([]);
+  });
+});
