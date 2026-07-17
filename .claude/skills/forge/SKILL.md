@@ -14,6 +14,7 @@ You are the Forge conductor. You own everything interactive — the clarifying i
 - **Show what you're asking to approve.** The sign-off message must contain the full brief and every AC verbatim, plus a "QA limitations" callout listing every AC that QA will NOT machine-verify (method `manual` or `deploy-only`, and `live-e2e` when the harness is known unavailable) with what each will ship as instead. The operator decides from the chat message, never from a file or tool output.
 - **Fresh means fresh.** If a run dies with the session (or the user abandons it), a new run starts from scratch and `forge-implement` recreates the branch from base. Never try to salvage a dead run's branch by hand.
 - **One run per session.** A second `/forge` in the same session while a run's workflow is active must be refused (or the active one stopped via TaskStop first, which is abandonment).
+- **Launch workflows by script path, never by name.** Named resolution (`Workflow({name: ...})`) is cwd-scoped; in multi-repo remote sessions the cwd is the repos' *parent* directory and the name lookup fails. Always use `Workflow({scriptPath: '<repoRoot>/.claude/workflows/forge-<x>.js', args})` with this repo's absolute root, and always pass that same directory as `args.workflowsDir` to `forge-run` so its child stages resolve the same way.
 
 ## Entry points
 
@@ -33,7 +34,7 @@ Interview the user until the request is unambiguous — small batches, never a w
 
 ### 2. Research (workflow)
 
-Launch `Workflow({name: 'forge-research', args: {request, externalUnknowns}})` where `request` is the idea plus everything the interview established, verbatim. It returns `{dossier, rejected, sizing}` — a fact-checked claim list and a sizing verdict.
+Launch `forge-research.js` (by scriptPath, per the ground rule) with `args: {request, externalUnknowns}` where `request` is the idea plus everything the interview established, verbatim. It returns `{dossier, rejected, gaps, sizing}` — a fact-checked claim list and a sizing verdict.
 
 ### 3. Size / split
 
@@ -45,7 +46,7 @@ Draft the brief from the interview + dossier: problem, goals, **non-goals** (bin
 
 ### 5. Run (workflow)
 
-Launch `Workflow({name: 'forge-run', args: {change, base, brief, acs, dossier, evidenceDir}})` with `evidenceDir` under the session scratchpad. It chains plan → implement → QA (2 cycles, one route-back) → docs → ship and returns either `{status: 'done', pr, manifest, plan, ...}` or `{status: 'impasse', stage, question, context}`.
+Launch `forge-run.js` (by scriptPath) with `args: {change, base, brief, acs, dossier, evidenceDir, workflowsDir}` — `evidenceDir` under the session scratchpad, `workflowsDir` the absolute path to this repo's `.claude/workflows`. It chains plan → implement → QA (2 cycles, one route-back) → docs → ship and returns either `{status: 'done', pr, manifest, plan, ...}` or `{status: 'impasse', stage, question, context}`.
 
 **Impasse round-trip:** present the question (and relevant context) to the user, get their answer, then relaunch with `Workflow({scriptPath, resumeFromRunId, args})` using the **identical args plus** the answer under `args.answers.<key>` — **the impasse question names the key**; it is not always the stage name. The vocabulary: `answers.plan`, `answers.implement` (a string, or a map keyed by task/fix id, `setup`, `gate`, or `review` — per the question), `answers.qa`, `answers.qaCycles` (the QA-cap unlock: buys ONE extra fix + QA cycle; deliberately one-shot — a second QA-cap impasse is terminal), `answers.docs`, `answers.ship`. Never change anything else in args on resume: replay is positional over the call sequence, and completed calls replay from cache only while their prompts are byte-identical; from the first divergent call on, everything runs live. `scriptPath` and `runId` come from the original launch's tool result — keep them. An impasse with `terminal: true` cannot be resumed past — abandon the run or take over manually.
 
@@ -61,7 +62,7 @@ On `done`: report the PR link and render the verification manifest (per-AC: crit
 
 Forge acts as an independent reviewer of an existing PR **without taking it over** — the author keeps ownership. The analysis is one workflow; you own the report, the iteration, and the only outward action (submitting the review), which happens strictly on the user's explicit go.
 
-1. **Launch** `Workflow({name: 'forge-review', args: {pr, qaOnly, scratchDir}})` with `scratchDir` under the session scratchpad — or, for branch mode, `args: {branch: true, base, intent, qaOnly, scratchDir}` instead of `pr`. The workflow grounds itself (worktree + fact-checked lenses), derives intent and numbered ACs from the PR autonomously (assumptions flagged, the PR's own "couldn't verify" admissions become ACs), runs the review ring (skipped in `qa-only`) and the blind QA ring, tears down its worktree, and returns `{intent, assumptions, acs, reviewFindings, previousFindingRulings, qaManifest, gaps, recommendation}`. It never impasses — dead agents, unavailable infra, and skipped rings surface as `gaps` in the report; the only two unrecoverable failures (no worktree, no derivable ACs) return `status: 'error'`, and even those run the teardown first. It never commits, pushes, or posts.
+1. **Launch** `forge-review.js` (by scriptPath, per the ground rule) with `args: {pr, qaOnly, scratchDir}` and `scratchDir` under the session scratchpad — or, for branch mode, `args: {branch: true, base, intent, qaOnly, scratchDir}` instead of `pr`. The workflow grounds itself (worktree + fact-checked lenses), derives intent and numbered ACs from the PR autonomously (assumptions flagged, the PR's own "couldn't verify" admissions become ACs), runs the review ring (skipped in `qa-only`) and the blind QA ring, tears down its worktree, and returns `{intent, assumptions, acs, reviewFindings, previousFindingRulings, qaManifest, gaps, recommendation}`. It never impasses — dead agents, unavailable infra, and skipped rings surface as `gaps` in the report; the only two unrecoverable failures (no worktree, no derivable ACs) return `status: 'error'`, and even those run the teardown first. It never commits, pushes, or posts.
 2. **Report in chat**, one message: derived intent + ACs with every assumption flagged, the per-AC verdict table with evidence, review findings ranked by severity (CONFIRMED before PLAUSIBLE), the gaps verbatim, and the recommendation (approve / needs-discussion / request-changes). Nothing has touched GitHub yet — say so.
 3. **Iterate**: the user corrects assumptions or ACs → relaunch with `args.corrections` (their words, verbatim); update the report. Repeat until they're satisfied.
 4. **Submit on approval only.** On the explicit go, post the review via the GitHub MCP (pending review → line-anchored comments for findings with `file:line` → submit). Attribute honestly: the review states it is an Archie/Forge review. Then stop — the author handles the outcome.
