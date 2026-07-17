@@ -96,6 +96,17 @@ const shipRes = await run('forge-ship', {
 }, 'ship')
 if (shipRes.status !== 'ok') return shipRes
 
+// Non-blocking findings required no fix but the operator should see them in the report —
+// they are the context that turns "no fixer agents appeared" into information.
+const nonBlockingFindings = []
+for (const [stage, verdicts] of [['plan', planRes.verdicts], ['implement', implRes.verdicts]]) {
+  if (verdicts) {
+    for (const [reviewer, v] of Object.entries(verdicts)) {
+      if (v && Array.isArray(v.findings)) for (const f of v.findings) if (!f.blocking) nonBlockingFindings.push({ stage, reviewer, text: f.text, file: f.file })
+    }
+  }
+}
+
 return {
   status: 'done',
   pr: shipRes.pr,
@@ -105,4 +116,5 @@ return {
   // post-run review feedback (it requires plan.design and plan.tasks).
   plan: planRes.plan,
   rounds: { plan: planRes.rounds, implement: implRes.rounds, qaCycles: cycles, docs: docsRes.rounds },
+  nonBlockingFindings,
 }

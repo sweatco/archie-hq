@@ -3,7 +3,7 @@ export const meta = {
   description: 'Forge v2 zero-footprint PR review + QA: derive intent and ACs from the PR itself, run blind review and QA rings in an isolated worktree, return a findings report. Never commits, pushes, or posts to GitHub.',
   whenToUse: 'Invoked by the /forge conductor for `/forge review <n>`. The conductor renders the report in chat and submits a GitHub review only on the operator\'s explicit approval.',
   phases: [
-    { title: 'Ground', detail: 'worktree setup; PR-context / diff-mapper / drift lenses, fact-checked' },
+    { title: 'Ground', detail: 'worktree setup; context / diff-mapper / drift / direction lenses, fact-checked' },
     { title: 'Derive', detail: 'intent + numbered ACs from the PR, assumptions flagged' },
     { title: 'Review', detail: 'claims-vs-diff reviewer ∥ adversarial bug hunter (skipped in qa-only)' },
     { title: 'QA', detail: 'blind per-AC verification, evidence audited' },
@@ -83,6 +83,7 @@ const lenses = [
     : { key: 'change-context', prompt: `You gather the stated intent of the local change in the worktree ${wt}. Read the commit messages on this branch (git -C ${wt} log origin/${setup.base}..HEAD).${input.intent ? ` The operator states the intended behavior — treat it as the primary source: <intent>${input.intent}</intent>` : ''} Report as claims: what the change says it does, per the commits${input.intent ? ' and the stated intent' : ''}, and anything the messages admit is unfinished or unverified. ${CONTRACT}` },
   { key: 'diff-mapper', prompt: `You map what a diff ACTUALLY does, function by function. Work read-only in ${wt}; the diff: ${diffCmd}. Report as claims: each behavioral change the diff makes, where it diverges from or exceeds what ${isPr ? 'a reader of the PR title alone would expect' : 'the commit messages claim'}, new tests and what they assert, and anything unfinished (TODOs, dead code, unreferenced additions). ${CONTRACT}${deltaFocus}` },
   { key: 'drift-check', prompt: `You check base-branch drift for ${subject}. Work read-only in ${wt}: what has landed on ${setup.base} since this branch diverged (git log/diff against the merge-base) that touches the same files or subsystems? Report as claims: likely conflicts, invalidated assumptions, or duplicated work. ${CONTRACT}` },
+  { key: 'direction', prompt: `You map the project's current direction as it bears on ${subject}. Read: open issues and open PRs (GitHub MCP via ToolSearch, or gh CLI — skip gracefully if unavailable), docs/proposals/, and docs/plans/ (newest first; each Forge run files its plan there). ${GH_READONLY} Report as claims: in-flight or planned work that intersects the territory this change touches, stated design directions or principles that bear on its approach, and anything this change may duplicate, pre-empt, or run ahead of. Direction the maintainers have NOT committed to is exactly as important as direction they have — say which is which. ${CONTRACT}` },
 ]
 const checked = await pipeline(
   lenses,
@@ -106,7 +107,8 @@ for (const [i, lr] of checked.entries()) {
     else if (v.verdict === 'WRONG' && v.correction) dossier.push({ lens: lr.lens, claim: v.correction, citation: v.citation, note: 'correction of a refuted claim' })
   }
 }
-log(`Grounding: ${dossier.length} confirmed claims, ${gaps.length} gap(s)`)
+const directionClaims = dossier.filter((c) => c.lens === 'direction')
+log(`Grounding: ${dossier.length} confirmed claims (${directionClaims.length} direction), ${gaps.length} gap(s)`)
 
 phase('Derive')
 const derivePrompt = `You derive the intent and acceptance criteria of ${subject} WITHOUT asking anyone. Inputs: the fact-checked dossier below. Produce: the intent (what the author is trying to achieve), every assumption you had to make (flag each — the operator corrects them later, so honesty beats confidence), and numbered ACs — each observable ("WHEN X THEN Y"), each with method unit / integration / live-e2e / manual / deploy-only. Any "couldn't verify" admissions in the dossier MUST each become an AC. ${input.intent ? `The operator's stated intended behavior is authoritative: <intent>${input.intent}</intent>. ` : ''}${input.corrections ? `Operator corrections from a previous round (these override your inferences): ${input.corrections}` : ''}\nDossier:\n${JSON.stringify(dossier, null, 2)}`
@@ -122,17 +124,19 @@ const REVIEW = {
   type: 'object',
   properties: {
     findings: { type: 'array', items: { type: 'object', properties: { text: { type: 'string' }, file: { type: 'string' }, line: { type: 'number' }, severity: { type: 'string', enum: ['blocking', 'non-blocking'] }, verdict: { type: 'string', enum: ['CONFIRMED', 'PLAUSIBLE'] } }, required: ['text', 'file', 'severity', 'verdict'] } },
+    scopeQuestions: { type: 'array', description: 'Scope calls only the operator can make — competently built but possibly premature or direction-colliding work. Not defects; never double-reported as findings.', items: { type: 'object', properties: { question: { type: 'string', description: 'The scope question, phrased for the operator to answer (e.g. "request descoping X?")' }, evidence: { type: 'string', description: 'Why it is a question: the unused abstraction / uncommitted-future groundwork / direction collision, with citations' } }, required: ['question', 'evidence'] } },
     previousFindingRulings: { type: 'array', description: 'Follow-up rounds only: one ruling per previously reported finding', items: { type: 'object', properties: { finding: { type: 'string' }, ruling: { type: 'string', enum: ['fixed', 'unaddressed', 'regressed'] }, note: { type: 'string' } }, required: ['finding', 'ruling'] } },
   },
   required: ['findings'],
 }
 let reviewFindings = []
+let scopeQuestions = []
 let previousFindingRulings = []
 if (!qaOnly) {
   phase('Review')
   const ring = await parallel([
     () => agent(
-      `You check a diff against its stated intent. Inputs: the derived intent and ACs below, and the diff (${diffCmd}); work read-only in ${wt} — never modify its files. Verify every stated claim of ${subject} is true in the diff, and flag anything the diff does BEYOND the stated intent (drive-by changes, unrequested refactors). Also flag over-engineering relative to the intent — unnecessary abstraction, unused generality, dead options — citing the simpler equivalent form. You have not seen the author's reasoning.${deltaFocus}${rulingsAsk}\nIntent: ${derived.intent}\nACs: ${JSON.stringify(derived.acs, null, 2)}`,
+      `You check a diff against its stated intent. Inputs: the derived intent and ACs below, the fact-checked direction context, and the diff (${diffCmd}); work read-only in ${wt} — never modify its files. Verify every stated claim of ${subject} is true in the diff, and flag anything the diff does BEYOND the stated intent (drive-by changes, unrequested refactors). Also flag over-engineering relative to the intent — unnecessary abstraction, unused generality, dead options — citing the simpler equivalent form. SCOPE QUESTIONS are a separate channel from findings: work that is competently built but possibly premature or misplaced — an abstraction with no second consumer in the tree, groundwork for a future the maintainers have not committed to, territory that collides or overlaps with the direction context — goes into scopeQuestions, each phrased as a question the operator can answer, with its evidence cited. Findings are defects; scope questions are judgment calls reserved for the operator — never double-report one item in both channels. You have not seen the author's reasoning.${deltaFocus}${rulingsAsk}\nIntent: ${derived.intent}\nACs: ${JSON.stringify(derived.acs, null, 2)}\nDirection context (fact-checked claims about in-flight and planned work):\n${JSON.stringify(directionClaims, null, 2)}`,
       { label: 'review:claims', phase: 'Review', schema: REVIEW }
     ),
     () => agent(
@@ -144,6 +148,7 @@ if (!qaOnly) {
   if (!claims) gaps.push('claims reviewer returned nothing — the claims-vs-diff angle is uncovered')
   if (!bugs) gaps.push('bug hunter returned nothing — the bug-hunt angle is uncovered')
   reviewFindings = [...(claims ? claims.findings : []), ...(bugs ? bugs.findings : [])]
+  scopeQuestions = (claims && claims.scopeQuestions) || []
   previousFindingRulings = (claims && claims.previousFindingRulings) || []
 } else {
   gaps.push('code-review ring skipped (qa-only) — no bug hunt or claims-vs-diff check was performed')
@@ -187,5 +192,5 @@ const failedAcs = qaManifest.filter((m) => m.status === 'failed').length
 const unresolvedAcs = qaManifest.filter((m) => m.status === 'unverified' || m.status === 'verified-unaudited' || m.status === 'waived').length
 const recommendation = confirmedBlocking > 0 || failedAcs > 0
   ? 'request-changes'
-  : (reviewFindings.some((f) => f.severity === 'blocking') || unresolvedAcs > 0 || gaps.length > 0 ? 'needs-discussion' : 'approve')
-return { status: 'ok', mode: isPr ? 'pr' : 'branch', pr: input.pr || null, headSha: setup.headSha, setupNotes: setup.notes, intent: derived.intent, assumptions: derived.assumptions, acs: derived.acs, reviewFindings, previousFindingRulings, qaManifest, gaps, recommendation }
+  : (reviewFindings.some((f) => f.severity === 'blocking') || scopeQuestions.length > 0 || unresolvedAcs > 0 || gaps.length > 0 ? 'needs-discussion' : 'approve')
+return { status: 'ok', mode: isPr ? 'pr' : 'branch', pr: input.pr || null, headSha: setup.headSha, setupNotes: setup.notes, intent: derived.intent, assumptions: derived.assumptions, acs: derived.acs, reviewFindings, scopeQuestions, previousFindingRulings, qaManifest, gaps, recommendation }
