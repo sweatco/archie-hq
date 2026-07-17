@@ -500,12 +500,20 @@ async function fetchMentionInfo(
 }
 
 /**
- * Restore @<ID:Name> mention format back to Slack's <@ID> syntax for outgoing messages.
- * Agents see users as @<U123:John Smith> in conversation history and are taught to use
- * this format when mentioning users. This converts them back so Slack sends notifications.
+ * Restore the internal `@<ID:Name>` mention format to Slack's `<@ID>` syntax for
+ * outgoing messages, so Slack renders a real mention and notifies the user.
+ *
+ * Agents see users as `@<U123:John Smith>` in conversation history and are taught
+ * to reproduce that. But the model's trained instinct is Slack's native `<@ID>`
+ * (bracket first), so it frequently drifts to `<@U123:John Smith>` (bracket first,
+ * name kept). That variant is NOT valid Slack syntax (Slack uses `<@ID>` or
+ * `<@ID|Name>` with a pipe, never `:Name`), so if it reaches Slack unconverted it
+ * renders as raw literal text (observed: task-20260708-1144-wvnrnz). Accept BOTH
+ * bracket orders and strip the `:Name` either way. The required `:[^>]+` means an
+ * already-valid `<@ID>` (no name) is left untouched.
  */
-function restoreMentions(text: string): string {
-  return text.replace(/@<([A-Z0-9]+):[^>]+>/g, '<@$1>');
+export function restoreMentions(text: string): string {
+  return text.replace(/(?:@<|<@)([A-Z0-9]+):[^>]+>/g, '<@$1>');
 }
 
 /**
