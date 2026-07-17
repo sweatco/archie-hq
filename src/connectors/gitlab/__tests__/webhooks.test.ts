@@ -1,5 +1,18 @@
-import { describe, it, expect } from 'vitest';
-import { classifyGitLabEvent, formatGitLabContext, verifyGitLabToken, extractBranchFromPayload } from '../webhooks.js';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  classifyGitLabEvent,
+  formatGitLabContext,
+  verifyGitLabToken,
+  extractBranchFromPayload,
+  routeGitLabEvent,
+} from '../webhooks.js';
+
+vi.mock('../../../tasks/persistence.js', () => ({
+  loadMetadata: vi.fn(),
+  findTaskByPRNumber: vi.fn(),
+}));
+
+import { loadMetadata, findTaskByPRNumber } from '../../../tasks/persistence.js';
 
 describe('verifyGitLabToken', () => {
   it('accepts a matching token, rejects a mismatch, rejects wrong length', () => {
@@ -161,5 +174,104 @@ describe('extractBranchFromPayload', () => {
     expect(extractBranchFromPayload('push', { ref: 'refs/heads/feat/b' })).toBe('feat/b');
     expect(extractBranchFromPayload('pipeline', { object_attributes: { ref: 'feat/c' } })).toBe('feat/c');
     expect(extractBranchFromPayload('note', { merge_request: { source_branch: 'feat/d' } })).toBe('feat/d');
+  });
+});
+
+describe('routeGitLabEvent', () => {
+  const project = { path_with_namespace: 'grp/proj' };
+  const TASK_ID = 'task-20260714-1200-abc123';
+  const OUR_BRANCH = `archie/${TASK_ID}`;
+
+  beforeEach(() => {
+    vi.mocked(loadMetadata).mockReset();
+    vi.mocked(findTaskByPRNumber).mockReset();
+    delete process.env.GITLAB_BOT_USERNAME;
+  });
+
+  afterEach(() => {
+    delete process.env.GITLAB_BOT_USERNAME;
+  });
+
+  it('own-bot event (non-machine) → discard, without ever hitting persistence', async () => {
+    process.env.GITLAB_BOT_USERNAME = 'archie-bot';
+    const result = await routeGitLabEvent('note', {
+      object_kind: 'note', project, user: { username: 'archie-bot' },
+      merge_request: { iid: 9, source_branch: OUR_BRANCH },
+      object_attributes: { id: 1, note: 'hi' },
+    });
+    expect(result).toMatchObject({ action: 'discard' });
+    expect(loadMetadata).not.toHaveBeenCalled();
+    expect(findTaskByPRNumber).not.toHaveBeenCalled();
+  });
+
+  it('machine event (pipeline) from the bot username is NOT treated as a loop → still routes normally', async () => {
+    process.env.GITLAB_BOT_USERNAME = 'archie-bot';
+    vi.mocked(loadMetadata).mockResolvedValue({} as never);
+    const result = await routeGitLabEvent('pipeline', {
+      object_kind: 'pipeline', project, user: { username: 'archie-bot' },
+      object_attributes: { ref: OUR_BRANCH, status: 'success' },
+    });
+    expect(result).toEqual({ action: 'direct', handler: 'existing_task', taskId: TASK_ID });
+  });
+
+  it('not-our-branch (no taskId from branch, no PR-number match) → discard', async () => {
+    const result = await routeGitLabEvent('push', {
+      object_kind: 'push', project, user: { username: 'dev1' },
+      ref: 'refs/heads/feature/unrelated-work',
+    });
+    expect(result).toMatchObject({ action: 'discard' });
+    expect(loadMetadata).not.toHaveBeenCalled();
+  });
+
+  it('unknown task (branch resolves a taskId, but metadata lookup misses) → discard', async () => {
+    vi.mocked(loadMetadata).mockResolvedValue(null);
+    const result = await routeGitLabEvent('merge_request', {
+      object_kind: 'merge_request', project, user: { username: 'dev1' },
+      object_attributes: { iid: 5, action: 'open', source_branch: OUR_BRANCH },
+    });
+    expect(result).toMatchObject({ action: 'discard' });
+    expect(loadMetadata).toHaveBeenCalledWith(TASK_ID);
+  });
+
+  it('happy path: MR opened on our branch, task known → existing_task', async () => {
+    vi.mocked(loadMetadata).mockResolvedValue({} as never);
+    const result = await routeGitLabEvent('merge_request', {
+      object_kind: 'merge_request', project, user: { username: 'dev1' },
+      object_attributes: { iid: 5, action: 'open', source_branch: OUR_BRANCH },
+    });
+    expect(result).toEqual({ action: 'direct', handler: 'existing_task', taskId: TASK_ID });
+  });
+
+  it('falls back to findTaskByPRNumber when the branch does not carry a taskId', async () => {
+    vi.mocked(findTaskByPRNumber).mockResolvedValue(TASK_ID);
+    vi.mocked(loadMetadata).mockResolvedValue({} as never);
+    const result = await routeGitLabEvent('note', {
+      object_kind: 'note', project, user: { username: 'dev1' },
+      merge_request: { iid: 42 }, // no source_branch → extractTaskIdFromBranch(undefined) misses
+      object_attributes: { id: 2, noteable_type: 'MergeRequest', note: 'thoughts?' },
+    });
+    expect(findTaskByPRNumber).toHaveBeenCalledWith('grp/proj', 42);
+    expect(result).toEqual({ action: 'direct', handler: 'existing_task', taskId: TASK_ID });
+  });
+
+  it('never returns a merge_check / checks_ready shaped result across all the above scenarios', async () => {
+    process.env.GITLAB_BOT_USERNAME = 'archie-bot';
+    vi.mocked(loadMetadata).mockResolvedValue(null);
+    vi.mocked(findTaskByPRNumber).mockResolvedValue(null);
+
+    const scenarios: Array<[string, Record<string, unknown>]> = [
+      ['own-bot', { object_kind: 'note', project, user: { username: 'archie-bot' }, merge_request: { iid: 1, source_branch: OUR_BRANCH }, object_attributes: { id: 1, note: 'x' } }],
+      ['not-our-branch', { object_kind: 'push', project, user: { username: 'dev1' }, ref: 'refs/heads/feature/nope' }],
+      ['unknown-task', { object_kind: 'merge_request', project, user: { username: 'dev1' }, object_attributes: { iid: 5, action: 'open', source_branch: OUR_BRANCH } }],
+    ];
+
+    for (const [kind, payload] of scenarios) {
+      const result = await routeGitLabEvent(kind, payload);
+      expect(result.action).not.toBe('merge_check');
+      if ('handler' in result) {
+        expect(result.handler).not.toBe('merge_check');
+        expect(result.handler).not.toBe('checks_ready');
+      }
+    }
   });
 });
