@@ -17,7 +17,9 @@ import type { AgentName, FindingType, AttachedRepo, SlackThreadMessage } from '.
 import type { Task } from '../tasks/task.js';
 import type { Agent } from './agent.js';
 import { getVisiblePeerIdsForSender, findAgentDefsContainingRepo, synthesizeDynamicAgentDef, isAutoMergeRepo } from './registry.js';
-import { getGitHubClient, parseCheckRef } from '../connectors/github/client.js';
+import { getRepoHost } from '../system/backends.js';
+import { parseCheckRef } from '../connectors/github/client.js';
+import { parseGitLabCheckRef } from '../connectors/gitlab/status-map.js';
 import { gitExec } from '../connectors/github/repo-clone.js';
 import { hydrateBranchState, findBranchStateByPR, assignPrNumber } from '../connectors/github/branch-state.js';
 import { taskBranchName } from '../connectors/github/branch-naming.js';
@@ -84,7 +86,7 @@ function formatExploreMessages(messages: SlackThreadMessage[]): string {
       const reactions = m.reactions?.length
         ? `\n  [reactions: ${m.reactions.map((r) => `:${r.name}:×${r.count}`).join(' ')}]`
         : '';
-      return `<@${m.user.id}:${who}> | msg:${m.ts}\n${m.text}${files}${reactions}`;
+      return `@<${m.user.id}:${who}> | msg:${m.ts}\n${m.text}${files}${reactions}`;
     })
     .join('\n\n');
 }
@@ -209,81 +211,19 @@ function findStashIndex(stashList: string, stashName: string): number | null {
   return null;
 }
 
-// ---- GitHub Types (moved here, re-exported for backward compat) ----
-
-export type MergeableState = 'clean' | 'dirty' | 'blocked' | 'behind' | 'unstable' | 'unknown';
-
-export interface PRStatus {
-  state: 'open' | 'merged' | 'closed';
-  mergeable: boolean;
-  mergeableState: MergeableState;
-  approved: boolean;
-}
-
-export interface PRReview {
-  id: string;
-  user: string;
-  state: 'approved' | 'changes_requested' | 'commented';
-  body: string;
-  submittedAt: string;
-}
-
-export interface ReviewThreadComment {
-  commentId: number;
-  author: string;
-  body: string;
-  createdAt: string;
-  url: string;
-}
-
-export interface ReviewThread {
-  threadId: string;
-  isResolved: boolean;
-  isOutdated: boolean;
-  path: string;
-  line: number | null;
-  comments: ReviewThreadComment[];
-}
-
-export interface PRComment {
-  id: number;
-  author: string;
-  body: string;
-  createdAt: string;
-  url: string;
-}
-
-export type CheckConclusion =
-  | 'success'
-  | 'failure'
-  | 'cancelled'
-  | 'timed_out'
-  | 'neutral'
-  | 'action_required'
-  | 'skipped'
-  | 'stale'
-  | null;
-
-export interface PRCheckEntry {
-  source: 'check_run' | 'status';
-  name: string;
-  app: string;
-  status: string;
-  conclusion: CheckConclusion;
-  url: string | null;
-  startedAt: string | null;
-  completedAt: string | null;
-  output?: {
-    title?: string;
-    summary?: string;
-    text?: string;
-  };
-}
-
-export interface PRChecksReport {
-  headSha: string;
-  entries: PRCheckEntry[];
-}
+// Host-neutral repo-host domain types live in the ports layer now. Re-exported
+// here so existing importers (`from '../../agents/tools.js'`) keep working.
+export type {
+  MergeableState,
+  PRStatus,
+  PRReview,
+  ReviewThread,
+  ReviewThreadComment,
+  PRComment,
+  CheckConclusion,
+  PRCheckEntry,
+  PRChecksReport,
+} from '../ports/repo-host-types.js';
 
 // ---- Tool creation helpers ----
 
@@ -1111,7 +1051,7 @@ function createPushBranchTool(agent: Agent, task: Task) {
         task.debouncedSave();
 
         const message = `${force ? 'Force-pushed' : 'Pushed'} ${branch} to origin (${resolved.github})`;
-        logger.system(`GitHub: ${message}`);
+        logger.system(`Repo: ${message}`);
         return ok(`Successfully pushed: ${message}`);
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
@@ -1138,7 +1078,7 @@ function createPullRequestTool(agent: Agent, task: Task) {
       const resolved = requireAttached(agent, task, args.github);
       if (!resolved.ok) return err(resolved.error);
 
-      const client = getGitHubClient();
+      const client = getRepoHost();
       if (!client) throw new Error('GitHub client not configured');
 
       const { github, attached } = resolved;
@@ -1171,7 +1111,7 @@ function createGetPRStatusTool(agent: Agent, task: Task) {
     async (args) => {
       const resolved = resolveGithub(agent, args.github);
       if (!resolved.ok) return err(resolved.error);
-      const client = getGitHubClient();
+      const client = getRepoHost();
       if (!client) throw new Error('GitHub client not configured');
       const status = await client.getPRStatus(resolved.github, args.pr_number);
       return {
@@ -1192,7 +1132,7 @@ function createGetPRChecksTool(agent: Agent, task: Task) {
     async (args) => {
       const resolved = resolveGithub(agent, args.github);
       if (!resolved.ok) return err(resolved.error);
-      const client = getGitHubClient();
+      const client = getRepoHost();
       if (!client) throw new Error('GitHub client not configured');
       const report = await client.listPRChecks(resolved.github, args.pr_number);
       if (report.entries.length === 0) {
@@ -1247,14 +1187,20 @@ function createGetCheckRunTool(agent: Agent, task: Task) {
       const resolved = resolveGithub(agent, args.github);
       if (!resolved.ok) return err(resolved.error);
       const githubRepo = resolved.github;
-      const client = getGitHubClient();
+      const client = getRepoHost();
       if (!client) throw new Error('GitHub client not configured');
 
-      let parsed;
-      try {
-        parsed = parseCheckRef(args.ref);
-      } catch (e) {
-        return err(e instanceof Error ? e.message : String(e));
+      let parsed: { kind: 'check_run' | 'workflow_run'; id: number; owner?: string; repo?: string };
+      if (client.kind === 'gitlab') {
+        const gl = parseGitLabCheckRef(args.ref);
+        if (!gl) return err(`Could not parse a GitLab job/pipeline reference from "${args.ref}".`);
+        parsed = { kind: gl.kind === 'pipeline' ? 'workflow_run' : 'check_run', id: gl.id };
+      } else {
+        try {
+          parsed = parseCheckRef(args.ref);
+        } catch (e) {
+          return err(e instanceof Error ? e.message : String(e));
+        }
       }
 
       // Stay within this agent's repo: a URL pointing elsewhere is out of scope.
@@ -1365,8 +1311,11 @@ function createListCodeScanningAlertsTool(agent: Agent, task: Task) {
     async (args) => {
       const resolved = resolveGithub(agent, args.github);
       if (!resolved.ok) return err(resolved.error);
-      const client = getGitHubClient();
+      const client = getRepoHost();
       if (!client) throw new Error('GitHub client not configured');
+      if (!client.capabilities().securityAlerts) {
+        return err(`Code scanning alerts are not available on this repo host (${client.kind}).`);
+      }
 
       let alerts;
       try {
@@ -1417,8 +1366,11 @@ function createGetCodeScanningAlertTool(agent: Agent, task: Task) {
     async (args) => {
       const resolved = resolveGithub(agent, args.github);
       if (!resolved.ok) return err(resolved.error);
-      const client = getGitHubClient();
+      const client = getRepoHost();
       if (!client) throw new Error('GitHub client not configured');
+      if (!client.capabilities().securityAlerts) {
+        return err(`Code scanning alerts are not available on this repo host (${client.kind}).`);
+      }
 
       let alert;
       try {
@@ -1467,7 +1419,7 @@ function createGetPRReviewsTool(agent: Agent, task: Task) {
     async (args) => {
       const resolved = resolveGithub(agent, args.github);
       if (!resolved.ok) return err(resolved.error);
-      const client = getGitHubClient();
+      const client = getRepoHost();
       if (!client) throw new Error('GitHub client not configured');
       const reviews = await client.getPRReviews(resolved.github, args.pr_number);
       if (reviews.length === 0) {
@@ -1489,7 +1441,7 @@ function createGetPRCommentsTool(agent: Agent, task: Task) {
     async (args) => {
       const resolved = resolveGithub(agent, args.github);
       if (!resolved.ok) return err(resolved.error);
-      const client = getGitHubClient();
+      const client = getRepoHost();
       if (!client) throw new Error('GitHub client not configured');
       const comments = await client.getPRComments(resolved.github, args.pr_number);
       if (comments.length === 0) {
@@ -1511,7 +1463,7 @@ function createGetReviewThreadsTool(agent: Agent, task: Task) {
     async (args) => {
       const resolved = resolveGithub(agent, args.github);
       if (!resolved.ok) return err(resolved.error);
-      const client = getGitHubClient();
+      const client = getRepoHost();
       if (!client) throw new Error('GitHub client not configured');
       const threads = await client.getReviewThreads(resolved.github, args.pr_number);
       if (threads.length === 0) {
@@ -1548,7 +1500,7 @@ function createListPRsTool(agent: Agent, task: Task) {
     async (args) => {
       const resolved = resolveGithub(agent, args.github);
       if (!resolved.ok) return err(resolved.error);
-      const client = getGitHubClient();
+      const client = getRepoHost();
       if (!client) throw new Error('GitHub client not configured');
       const prs = await client.listPRs(resolved.github, {
         state: args.state,
@@ -1575,7 +1527,7 @@ function createGetPRTool(agent: Agent, task: Task) {
     async (args) => {
       const resolved = resolveGithub(agent, args.github);
       if (!resolved.ok) return err(resolved.error);
-      const client = getGitHubClient();
+      const client = getRepoHost();
       if (!client) throw new Error('GitHub client not configured');
       const pr = await client.getPRDetails(resolved.github, args.pr_number);
       const text = [
@@ -1608,7 +1560,7 @@ function createUpdatePRTool(agent: Agent, task: Task) {
     async (args) => {
       const resolved = resolveGithub(agent, args.github);
       if (!resolved.ok) return err(resolved.error);
-      const client = getGitHubClient();
+      const client = getRepoHost();
       if (!client) throw new Error('GitHub client not configured');
       await client.updatePR(resolved.github, args.pr_number, {
         title: args.title,
@@ -1632,7 +1584,7 @@ function createAddPRCommentTool(agent: Agent, task: Task) {
     async (args) => {
       const resolved = resolveGithub(agent, args.github);
       if (!resolved.ok) return err(resolved.error);
-      const client = getGitHubClient();
+      const client = getRepoHost();
       if (!client) throw new Error('GitHub client not configured');
       await client.addPRComment(resolved.github, args.pr_number, args.comment);
       return ok(`Added comment to PR #${args.pr_number} (${resolved.github})`);
@@ -1654,7 +1606,7 @@ function createAddReviewCommentTool(agent: Agent, task: Task) {
     async (args) => {
       const resolved = resolveGithub(agent, args.github);
       if (!resolved.ok) return err(resolved.error);
-      const client = getGitHubClient();
+      const client = getRepoHost();
       if (!client) throw new Error('GitHub client not configured');
       await client.addReviewComment(resolved.github, args.pr_number, args.path, args.line, args.comment);
       return ok(`Added review comment to ${args.path}:${args.line} on PR #${args.pr_number} (${resolved.github})`);
@@ -1675,7 +1627,7 @@ function createReplyToReviewCommentTool(agent: Agent, task: Task) {
     async (args) => {
       const resolved = resolveGithub(agent, args.github);
       if (!resolved.ok) return err(resolved.error);
-      const client = getGitHubClient();
+      const client = getRepoHost();
       if (!client) throw new Error('GitHub client not configured');
       await client.replyToReviewComment(resolved.github, args.pr_number, args.comment_id, args.comment);
       return ok(`Replied to review comment ${args.comment_id} on PR #${args.pr_number} (${resolved.github})`);
@@ -1695,7 +1647,7 @@ function createResolveReviewThreadTool(agent: Agent, task: Task) {
     async (args) => {
       const resolved = resolveGithub(agent, args.github);
       if (!resolved.ok) return err(resolved.error);
-      const client = getGitHubClient();
+      const client = getRepoHost();
       if (!client) throw new Error('GitHub client not configured');
       await client.resolveReviewThread(resolved.github, args.pr_number, args.thread_id);
       return ok(`Resolved review thread ${args.thread_id} on PR #${args.pr_number} (${resolved.github})`);
@@ -1711,7 +1663,7 @@ function createRequestReReviewTool(agent: Agent, task: Task) {
     async (args) => {
       const resolved = resolveGithub(agent, args.github);
       if (!resolved.ok) return err(resolved.error);
-      const client = getGitHubClient();
+      const client = getRepoHost();
       if (!client) throw new Error('GitHub client not configured');
       await client.requestReReview(resolved.github, args.pr_number);
       return ok(`Requested re-review for PR #${args.pr_number} (${resolved.github})`);
@@ -1728,7 +1680,7 @@ function createMergePRTool(agent: Agent, task: Task) {
     async (args) => {
       const resolved = resolveGithub(agent, args.github);
       if (!resolved.ok) return err(resolved.error);
-      const client = getGitHubClient();
+      const client = getRepoHost();
       if (!client) throw new Error('GitHub client not configured');
 
       if (isAutoMergeRepo(resolved.github)) {
@@ -1841,7 +1793,7 @@ function createClosePRTool(agent: Agent, task: Task) {
     async (args) => {
       const resolved = resolveGithub(agent, args.github);
       if (!resolved.ok) return err(resolved.error);
-      const client = getGitHubClient();
+      const client = getRepoHost();
       if (!client) throw new Error('GitHub client not configured');
       await client.closePullRequest(resolved.github, args.pr_number);
       return ok(`Closed PR #${args.pr_number} (${resolved.github})`);
@@ -2523,7 +2475,7 @@ function createListAvailableReposTool(_agent: Agent, task: Task) {
     'spawning a generic agent.',
     {},
     async () => {
-      const client = getGitHubClient();
+      const client = getRepoHost();
       if (!client) return err('GitHub client not configured');
 
       // Cache on the Task instance to avoid re-listing within a task.
@@ -2603,7 +2555,7 @@ function createSpawnRepoAgentTool(agent: Agent, task: Task) {
       }
 
       // Validate every requested repo is reachable; fill in default branches.
-      const client = getGitHubClient();
+      const client = getRepoHost();
       if (!client) return err('GitHub client not configured');
       const resolvedRepos: Array<{ github: string; baseBranch: string }> = [];
       for (const r of args.repos) {
