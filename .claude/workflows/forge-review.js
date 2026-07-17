@@ -140,7 +140,7 @@ if (!qaOnly) {
       { label: 'review:claims', phase: 'Review', schema: REVIEW }
     ),
     () => agent(
-      `You hunt for real bugs in a diff. Inputs: the diff (${diffCmd}); treat ${wt} as read-only reference (running typecheck/tests there is allowed; never modify its files, never commit anywhere). Look for logic errors, unhandled error paths, races/lifecycle issues (spawn/stop/resume/recovery interactions are this codebase's classic failure mode), broken invariants in persisted state, and test theater. Mutation-check each NEW test in a SEPARATE disposable copy that is yours alone: ${isPr ? `git worktree add ${mutWt} ${setup.headSha}` : `copy ${wt} to ${mutWt} (excluding .git)`}, revert the guarded change there, confirm the test fails, then remove ${mutWt} when done. CONFIRMED = you can state the failing input/sequence.${deltaFocus}`,
+      `You hunt for real bugs in a diff. Inputs: the diff (${diffCmd}); treat ${wt} as read-only reference (running typecheck/tests there is allowed; never modify its files, never commit anywhere). Look for logic errors, unhandled error paths, races/lifecycle issues (spawn/stop/resume/recovery interactions are this codebase's classic failure mode), broken invariants in persisted state, and test theater. Mutation-check each NEW test in a SEPARATE disposable copy that is yours alone: ${isPr ? `git worktree add ${mutWt} ${setup.headSha}` : `copy ${wt} to ${mutWt} (excluding .git)`}, revert the guarded change there, confirm the test fails, then remove ${mutWt} when done. CONFIRMED = you can state the failing input/sequence. Leave scopeQuestions empty — that channel belongs to the claims reviewer; report bugs only.${deltaFocus}`,
       { label: 'review:bugs', phase: 'Review', schema: REVIEW }
     ),
   ])
