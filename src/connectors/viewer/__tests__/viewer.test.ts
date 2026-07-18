@@ -16,6 +16,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { createRequire } from 'module';
+import { JSDOM } from 'jsdom';
 import http from 'http';
 import type { AddressInfo } from 'net';
 import { mkdtemp, rm, mkdir, writeFile, readFile, readdir, realpath } from 'fs/promises';
@@ -239,6 +240,80 @@ function httpGet(path: string): Promise<HttpResult> {
     });
     req.on('error', reject);
   });
+}
+
+/**
+ * Load a served viewer page into a real (headless) DOM via jsdom and run its
+ * ACTUAL inline hot-reload script (runScripts: 'dangerously' executes the exact
+ * `<script>` bytes emitted by `renderViewerPage` in routes.ts — not a copy).
+ *
+ * The browser primitives the script relies on — `EventSource` and `fetch` — are
+ * the only things jsdom lacks, so we polyfill them to point at the SAME real
+ * Express server the page came from. The result is a genuine end-to-end browser
+ * loop with no chromium: the script opens a real SSE connection to
+ * `/a/<id>/events`, and on each frame really fetches `/a/<id>/body` and performs
+ * the literal `el.innerHTML = html` DOM write — all observable on the live jsdom
+ * DOM. This executes the browser-DOM half of AC8 that a Playwright-less QA boot
+ * could not, closing the manual-check gap.
+ */
+function openBrowserViewer(pageHtml: string, id: string) {
+  const openStreams: Array<{ close(): void }> = [];
+  const bodyFetches: string[] = [];
+
+  const dom = new JSDOM(pageHtml, {
+    runScripts: 'dangerously',
+    url: `http://127.0.0.1:${port}/a/${id}`,
+    beforeParse(window: any) {
+      // Minimal EventSource that connects to the real SSE route and parses
+      // `data:`-carrying frames into onmessage calls (keepalive comments ignored).
+      window.EventSource = class {
+        onmessage: ((ev: { data: string }) => void) | null = null;
+        onerror: ((ev: unknown) => void) | null = null;
+        private req: http.ClientRequest;
+        constructor(path: string) {
+          const url = path.startsWith('http') ? path : `http://127.0.0.1:${port}${path}`;
+          this.req = http.get(url, (res) => {
+            res.setEncoding('utf-8');
+            let buf = '';
+            res.on('data', (c: string) => {
+              buf += c;
+              let idx: number;
+              while ((idx = buf.indexOf('\n\n')) !== -1) {
+                const block = buf.slice(0, idx);
+                buf = buf.slice(idx + 2);
+                const dataLine = block.split('\n').find((l) => l.startsWith('data:'));
+                if (dataLine && this.onmessage) {
+                  this.onmessage({ data: dataLine.slice('data:'.length).trim() });
+                }
+              }
+            });
+          });
+          this.req.on('error', () => {});
+          openStreams.push(this);
+        }
+        close() {
+          this.req.destroy();
+        }
+      };
+      // fetch that delegates to the real routes over HTTP.
+      window.fetch = (path: string) => {
+        const p = path.startsWith('http') ? new URL(path).pathname : path;
+        if (p.endsWith('/body')) bodyFetches.push(p);
+        return httpGet(p).then((r) => ({
+          ok: r.status >= 200 && r.status < 300,
+          status: r.status,
+          text: () => Promise.resolve(r.body),
+        }));
+      };
+    },
+  });
+
+  const content = () => dom.window.document.getElementById('artifact-content');
+  const close = () => {
+    openStreams.forEach((s) => s.close());
+    dom.window.close();
+  };
+  return { dom, content, bodyFetches, openStreams, close };
 }
 
 /**
@@ -517,12 +592,14 @@ describe('narrow SSE projection (AC7)', () => {
 // (see renderViewerPage in routes.ts): open EventSource('/a/<id>/events'), and on
 // each message re-fetch '/a/<id>/body' (cache: no-store) and swap it into the
 // #artifact-content container. Here we exercise that whole loop over real HTTP
-// against the real Express routes + real update tool handler; the only piece a
-// headless run cannot execute is the browser's one-line `el.innerHTML = html`
-// DOM write — the /body fragment it swaps in is asserted to carry the new
-// content, which is what the DOM would then display. (The literal browser-DOM
-// half of AC8 is recorded as a manual check in the T7 evidence per the AC8
-// degrade clause, since this sandbox has no browser runtime.)
+// against the real Express routes + real update tool handler.
+//
+// Two tests cover the AC. The first asserts the HTTP/SSE half: the frame is
+// delivered and the /body fragment carries the new content. The second (via
+// jsdom) closes what a Playwright-less QA boot could not: it runs the page's
+// ACTUAL inline script in a real DOM and asserts the literal `el.innerHTML =
+// html` DOM re-render happens on-screen — no chromium required, no manual check
+// left to waive.
 // =============================================================================
 describe('hot reload end-to-end (AC8)', () => {
   it('an open SSE stream signals an update, and re-fetching /body serves the new content in place', async () => {
@@ -583,5 +660,51 @@ describe('hot reload end-to-end (AC8)', () => {
     const reopened = await httpGet(`/a/${id}`);
     expect(reopened.status).toBe(200);
     expect(reopened.body).toContain('Version Two');
+  });
+
+  it('re-renders the live DOM in place: the page\'s own script performs el.innerHTML = <new body> (no chromium)', async () => {
+    const agent = makeAgent();
+    const task = makeTask('task-ac8-dom');
+    const id = await publish(task, agent, 'live-dom.md', '# Version One\n\nOriginal body.\n');
+
+    // Load the REAL served page into a real DOM and run its REAL inline script.
+    const page = await httpGet(`/a/${id}`);
+    expect(page.status).toBe(200);
+    const viewer = openBrowserViewer(page.body, id);
+
+    try {
+      // Starting DOM state — this is exactly what a viewer sees before any update.
+      expect(viewer.content()).not.toBeNull();
+      expect(viewer.content()!.innerHTML).toContain('Version One');
+      expect(viewer.content()!.innerHTML).toContain('Original body.');
+
+      // The script opened exactly one live SSE connection to this artifact's stream.
+      expect(viewer.openStreams).toHaveLength(1);
+      await new Promise((r) => setTimeout(r, 250)); // let the route register its bus listener
+
+      // Advance in place through the real update tool. This emits artifact:updated,
+      // the SSE route projects a frame to the open connection, the page's onmessage
+      // fires, it fetches /body, and executes `el.innerHTML = html` — all for real.
+      const v2 = await writeSource('live-dom.md', '# Version Two\n\nUpdated body.\n');
+      await commsHandler('update_web_artifact', agent, task)({ external_id_or_url: `/a/${id}`, path: v2 });
+
+      // Poll the LIVE DOM until the in-place re-render lands.
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline && !viewer.content()!.innerHTML.includes('Version Two')) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+
+      // The literal browser DOM re-render executed: #artifact-content now holds the
+      // NEW rendered content and the OLD content is gone — with no manual refresh.
+      expect(viewer.content()!.innerHTML).toContain('Version Two');
+      expect(viewer.content()!.innerHTML).toContain('Updated body.');
+      expect(viewer.content()!.innerHTML).not.toContain('Version One');
+      expect(viewer.content()!.innerHTML).not.toContain('Original body.');
+
+      // The swap went through the /body fragment fetch the script wires up.
+      expect(viewer.bodyFetches).toContain(`/a/${id}/body`);
+    } finally {
+      viewer.close();
+    }
   });
 });
