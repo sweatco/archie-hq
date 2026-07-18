@@ -510,3 +510,78 @@ describe('narrow SSE projection (AC7)', () => {
     expect(raw).not.toContain('message');
   });
 });
+
+// =============================================================================
+// AC8 — hot reload end to end: an open viewer re-renders updated content with no
+// manual refresh. This drives the EXACT contract the viewer's inline script runs
+// (see renderViewerPage in routes.ts): open EventSource('/a/<id>/events'), and on
+// each message re-fetch '/a/<id>/body' (cache: no-store) and swap it into the
+// #artifact-content container. Here we exercise that whole loop over real HTTP
+// against the real Express routes + real update tool handler; the only piece a
+// headless run cannot execute is the browser's one-line `el.innerHTML = html`
+// DOM write — the /body fragment it swaps in is asserted to carry the new
+// content, which is what the DOM would then display. (The literal browser-DOM
+// half of AC8 is recorded as a manual check in the T7 evidence per the AC8
+// degrade clause, since this sandbox has no browser runtime.)
+// =============================================================================
+describe('hot reload end-to-end (AC8)', () => {
+  it('an open SSE stream signals an update, and re-fetching /body serves the new content in place', async () => {
+    const agent = makeAgent();
+    const task = makeTask('task-ac8');
+    const id = await publish(task, agent, 'live.md', '# Version One\n\nOriginal body.\n');
+
+    // The page as first served shows v1 (this is the DOM's starting state).
+    const initial = await httpGet(`/a/${id}`);
+    expect(initial.status).toBe(200);
+    expect(initial.body).toContain('Version One');
+    // The inline hot-reload script is wired in: it binds this artifact's id and
+    // opens an EventSource to /a/<id>/events (the URL is assembled from the id var).
+    expect(initial.body).toContain(`var id = ${JSON.stringify(id)}`);
+    expect(initial.body).toContain("new EventSource('/a/' + id + '/events')");
+
+    // Open the artifact's SSE stream — this is `new EventSource('/a/<id>/events')`.
+    const chunks: string[] = [];
+    const sse = http.get({ host: '127.0.0.1', port, path: `/a/${id}/events` }, (res) => {
+      res.setEncoding('utf-8');
+      res.on('data', (c: string) => chunks.push(c));
+    });
+    sse.on('error', () => {}); // ignore destroy-induced ECONNRESET on teardown
+    await new Promise((r) => setTimeout(r, 250)); // let the route register its bus listener
+
+    // Advance the artifact in place through the real update tool handler — this
+    // emits artifact:updated, which the SSE route projects to the open stream.
+    const v2 = await writeSource('live.md', '# Version Two\n\nUpdated body.\n');
+    await commsHandler('update_web_artifact', agent, task)({ external_id_or_url: `/a/${id}`, path: v2 });
+
+    // Wait for the SSE frame to arrive — this is what fires the script's onmessage.
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline && !chunks.join('').includes('"update"')) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    sse.destroy();
+
+    // The minimal update signal was delivered to the open viewer.
+    const frame = chunks
+      .join('')
+      .split('\n\n')
+      .map((b) => b.split('\n').find((l) => l.startsWith('data:')))
+      .find((l): l is string => !!l);
+    expect(frame).toBeDefined();
+    expect(JSON.parse(frame!.slice('data:'.length).trim())).toEqual({ type: 'update' });
+
+    // onmessage → fetch('/a/<id>/body', { cache: 'no-store' }): the fragment the
+    // script swaps into #artifact-content now carries the NEW content, and the old
+    // content is gone — i.e. the open page re-renders without a manual refresh.
+    const body = await httpGet(`/a/${id}/body`);
+    expect(body.status).toBe(200);
+    expect(body.body).toContain('Version Two');
+    expect(body.body).toContain('Updated body.');
+    expect(body.body).not.toContain('Version One');
+    expect(body.body).not.toContain('Original body.');
+
+    // And the URL never changed across the update — same /a/<id> throughout.
+    const reopened = await httpGet(`/a/${id}`);
+    expect(reopened.status).toBe(200);
+    expect(reopened.body).toContain('Version Two');
+  });
+});
