@@ -2,8 +2,8 @@
  * Host-neutral repo-host domain types.
  *
  * These describe change-requests, reviews, and CI in a vendor-agnostic shape.
- * They were extracted verbatim from src/agents/tools.ts as part of the Phase 0
- * RepoHost seam. GitHub and (later) GitLab hosts both produce these shapes.
+ * They were extracted verbatim from src/agents/tools.ts as part of the RepoHost
+ * seam. GitHub and GitLab hosts both produce these shapes.
  */
 
 export type MergeableState = 'clean' | 'dirty' | 'blocked' | 'behind' | 'unstable' | 'unknown';
@@ -88,8 +88,8 @@ export interface PRChecksReport {
  * internal schema for every repo host: GitHub produces them directly, and a
  * later GitLab host maps its API responses into the same shapes (adapter /
  * anti-corruption pattern, GitHub schema as the lingua franca). Names stay
- * PR/GitHub-oriented in Phase 0; neutral CR renaming is a Phase 4 concern.
- * client.ts re-exports these so its existing importers are unaffected.
+ * PR/GitHub-oriented for now; a host-neutral change-request renaming is left for
+ * later. client.ts re-exports these so its existing importers are unaffected.
  */
 
 export interface CreatePRResult {

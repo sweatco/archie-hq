@@ -1,8 +1,8 @@
 /**
- * RepoHost — the repo-host seam (spec §3.1). One implementation per host:
- * GitHubHost (GitHubClient) today; GitLabHost in Phase 1. Method names keep the
- * current PR-oriented vocabulary (1:1 with GitHubClient); neutral CR renaming is
- * Phase 4. All methods take the host repo identifier `repo` as "owner/name".
+ * RepoHost — the repo-host seam. One implementation per host: GitHubHost
+ * (GitHubClient) and GitLabHost. Method names keep the current PR-oriented
+ * vocabulary (1:1 with GitHubClient); a host-neutral change-request renaming is
+ * left for later. All methods take the host repo identifier `repo` as "owner/name".
  */
 
 import type { RepoHostCapabilities } from './capabilities.js';
@@ -68,11 +68,12 @@ export interface RepoHost {
   // despite its GitHub-oriented name: GitHub fills it with "owner/name", a future
   // GitLab host fills it with "group/project". The name matches the existing
   // plugin-frontmatter repo key (RepoEntry.github); renaming both to a neutral
-  // key is a Phase 4 concern.
+  // key is left for later.
   listAccessibleRepos(): Promise<Array<{ github: string; default_branch: string; description?: string }>>;
   resolveRepo(repo: string): Promise<{ default_branch: string } | null>;
 
-  // security (flat in Phase 0; capability-gated sub-object in Phase 1)
+  // security / code scanning (capability-gated: a host without securityAlerts
+  // surfaces no findings)
   listCodeScanningAlerts(repo: string, filters?: CodeScanningAlertFilters): Promise<CodeScanningAlert[]>;
   getCodeScanningAlert(repo: string, alertNumber: number): Promise<CodeScanningAlert>;
 }

@@ -1,6 +1,6 @@
 /**
- * Pure GitLab → canonical mappers (spec §5 Phase 1, design decision 4). Kept
- * network-free so they are unit-testable in isolation. GitLab's vocabulary is
+ * Pure GitLab → canonical mappers. Kept network-free so they are unit-testable
+ * in isolation. GitLab's vocabulary is
  * translated into the canonical GitHub-shaped types in ports/repo-host-types.ts.
  */
 

@@ -1,6 +1,6 @@
 /**
- * Capability descriptors (spec principle P3): where a backend cannot match a
- * capability, the gap is declared here and degraded gracefully — never silent.
+ * Capability descriptors: where a backend cannot match a capability, the gap is
+ * declared here and degraded gracefully — never silent.
  */
 
 export interface RepoHostCapabilities {
@@ -22,12 +22,14 @@ export const GITHUB_CAPABILITIES: RepoHostCapabilities = {
 };
 
 /**
- * GitLab defaults — least-capable baseline. reviewStates is false (GitLab has
- * approvals + notes, not distinct approved/changes_requested states — synthesized
- * in Plan 2). securityAlerts is fixed false: there is no boot-time license probe
- * in this PR, so code-scanning/vulnerability findings are never surfaced for
- * GitLab. nativeAutoMerge exists ("merge when pipeline succeeds") but Archie
- * keeps orchestrating by default.
+ * GitLab defaults — least-capable baseline. reviewStates is false: GitLab has
+ * approvals + notes rather than distinct approved/changes_requested states, so
+ * Archie synthesizes reviews from approvals and unresolved discussions (see
+ * GitLabHost.getPRReviews). securityAlerts is fixed false: there is no boot-time
+ * license probe in this PR, so code-scanning/vulnerability findings are never
+ * surfaced for GitLab. nativeAutoMerge is declared true (GitLab's "merge when
+ * pipeline succeeds") but this PR ships no webhook merge orchestration for GitLab,
+ * so the flag currently has no consumer.
  */
 export const GITLAB_CAPABILITIES_DEFAULT: RepoHostCapabilities = {
   reviewStates: false,

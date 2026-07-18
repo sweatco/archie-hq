@@ -2,7 +2,7 @@
  * Host-neutral repo URL + label helpers. Reads REPO_HOST / GITLAB_BASE_URL from
  * the environment directly (NOT via system/backends.ts) so low-level modules
  * (repo-clone, workdir, persistence) can use it without an import cycle. Mirrors
- * each host's cloneUrl() logic. `repoCloneUrl` is added in Task 2.
+ * each host's cloneUrl() logic.
  */
 
 export function repoHostKind(): 'github' | 'gitlab' {

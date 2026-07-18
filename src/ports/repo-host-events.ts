@@ -1,5 +1,5 @@
 /**
- * RepoHostEventSource — inbound webhook seam (spec §3.2). Signature verification
+ * RepoHostEventSource — inbound webhook seam. Signature verification
  * and payload parsing stay per-host; the normalized context produced here is
  * host-agnostic. Routing decisions are host-local (see each host's webhooks.ts).
  */

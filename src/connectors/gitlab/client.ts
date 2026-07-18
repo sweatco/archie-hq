@@ -1,7 +1,6 @@
 /**
- * GitLabHost — the GitLab implementation of the RepoHost seam (design decision:
- * GitHub schema is canonical; GitLab responses are mapped into it). REST v4 only.
- * All read and write/review methods below are implemented.
+ * GitLabHost — the GitLab implementation of the RepoHost seam. GitHub schema is
+ * canonical; GitLab responses are mapped into it. REST v4 only.
  */
 
 import type { RepoHost } from '../../ports/repo-host.js';
@@ -37,10 +36,6 @@ export class GitLabHost implements RepoHost {
    * Capability probe hook. GitLab capabilities are used as-is from
    * GITLAB_CAPABILITIES_DEFAULT (securityAlerts: false) — no license-tier probing.
    */
-  async probeCapabilities(): Promise<void> {
-    logger.system(`GitLab: capabilities are fixed at boot (securityAlerts=${this.caps.securityAlerts})`);
-  }
-
   botIdentity(): { name: string; email: string } | null {
     const name = process.env.GITLAB_BOT_NAME;
     const email = process.env.GITLAB_BOT_EMAIL;
@@ -363,7 +358,7 @@ export class GitLabHost implements RepoHost {
     return { success: true, message: `Would push ${branch} to ${repo}` };
   }
 
-  /** MR author username, used to exclude self-authored discussions from D2 synthesis. */
+  /** MR author username, used to exclude self-authored discussions from review synthesis. */
   private async mrAuthor(repo: string, prNumber: number): Promise<string | null> {
     try {
       const mr = await glRequest<{ author?: { username?: string } }>({
@@ -389,7 +384,7 @@ export class GitLabHost implements RepoHost {
       reviews.push({ id: `approval:${a.user?.username ?? 'unknown'}`, user: a.user?.username ?? 'unknown', state: 'approved', body: '', submittedAt: '' });
     }
 
-    // D2: unresolved, resolvable discussions started by a non-author reviewer →
+    // Unresolved, resolvable discussions started by a non-author reviewer →
     // one synthesized changes_requested review per such reviewer.
     const discussions = await glRequestAll<{
       id: string; individual_note?: boolean;
@@ -489,7 +484,7 @@ export class GitLabHost implements RepoHost {
     // E2E-VERIFY: positioned diff note. Endpoint: POST /merge_requests/:iid/discussions
     // with position { position_type:'text', new_path, new_line, base_sha, head_sha, start_sha }.
     // The three shas come from the MR's diff_refs. Verify the field names + a real
-    // line maps correctly against the live instance (Plan 4 E2E).
+    // line maps correctly against the live instance.
     const id = this.projectId(repo);
     const mr = await glRequest<{ diff_refs?: { base_sha?: string; head_sha?: string; start_sha?: string } }>({
       path: `/projects/${id}/merge_requests/${prNumber}`,
@@ -518,7 +513,7 @@ export class GitLabHost implements RepoHost {
 
   async requestReReview(repo: string, prNumber: number): Promise<void> {
     // GitLab has no re-review request primitive; capability reReviewRequest=false.
-    // Degrade gracefully (P3): log and no-op rather than throwing on a normal path.
+    // Degrade gracefully: log and no-op rather than throwing on a normal path.
     logger.system(`GitLab: requestReReview is a no-op on this host (MR !${prNumber}); reReviewRequest capability is false`);
   }
 

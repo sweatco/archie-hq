@@ -91,7 +91,7 @@ describe('GitLabHost.closePullRequest / updatePR / addPRComment', () => {
   });
 });
 
-describe('GitLabHost.getPRReviews (D2 synthesis)', () => {
+describe('GitLabHost.getPRReviews (review synthesis)', () => {
   it('maps approvals to approved and unresolved reviewer discussions to changes_requested', async () => {
     setEnv();
     const fetchMock = vi.fn()

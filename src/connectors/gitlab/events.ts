@@ -2,9 +2,8 @@
  * GitLab webhook HTTP handler. Verifies X-Gitlab-Token, parses the payload into
  * the canonical NormalizedEventContext, routes via the self-contained
  * classifier in webhooks.ts, and dispatches to the existing-task handler, plus
- * a debounced CR-card refresh. There is no merge-on-green orchestrator on this
- * branch (deferred — see the rescope plan), so no merge-check / checks-ready
- * dispatch here.
+ * a debounced CR-card refresh. There is no merge-on-green orchestrator for
+ * GitLab, so no merge-check / checks-ready dispatch here.
  */
 
 import { createRequire } from 'module';

@@ -1,10 +1,9 @@
 /**
  * GitLab webhook utilities. Per-host payload parsing + token verification;
  * GitLab hooks are translated into the canonical GitHub-semantic
- * NormalizedEventContext vocabulary (design decision 1). The routing decision
- * is self-contained here (no shared cr-router / merge-on-green orchestrator on
- * this branch — see the rescope plan): events either wake the existing task or
- * are discarded, with no automatic merge check.
+ * NormalizedEventContext vocabulary. The routing decision is self-contained
+ * here (no shared cr-router / merge-on-green orchestrator): events either wake
+ * the existing task or are discarded, with no automatic merge check.
  */
 
 import crypto from 'crypto';
@@ -68,8 +67,8 @@ export function formatGitLabContext(objectKind: string, payload: Obj): Normalize
       case 'approved':
         return { ...base, eventType: 'pull_request_review', action: 'submitted', state: 'approved' };
       default:
-        // unapproved / unknown MR actions → no routing action (D2 handles
-        // changes-requested via unresolved discussions on note events).
+        // unapproved / unknown MR actions → no routing action (changes-requested
+        // is surfaced via unresolved discussions on note events).
         return { ...base, eventType: 'pull_request', action: action ?? '' };
     }
   }

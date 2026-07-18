@@ -1,7 +1,7 @@
 /**
  * The single seam through which every GitLab REST v4 call flows, so the vendor
  * surface stays confined to src/connectors/gitlab/. Auth is a group/project
- * access token sent as PRIVATE-TOKEN (spec D1). Base URL comes from GITLAB_BASE_URL.
+ * access token sent as PRIVATE-TOKEN. Base URL comes from GITLAB_BASE_URL.
  */
 
 import { logger } from '../../system/logger.js';

@@ -23,14 +23,6 @@ describe('GitLabHost skeleton', () => {
   });
 });
 
-describe('GitLabHost.probeCapabilities', () => {
-  it('is a no-op; capabilities stay at GITLAB_CAPABILITIES_DEFAULT (securityAlerts=false)', async () => {
-    const host = new GitLabHost();
-    await host.probeCapabilities();
-    expect(host.capabilities().securityAlerts).toBe(false);
-  });
-});
-
 function mockFetchOnce(json: unknown, status = 200, headers: Record<string, string> = {}) {
   return vi.fn().mockResolvedValue(new Response(JSON.stringify(json), { status, headers }));
 }

@@ -1,5 +1,5 @@
 /**
- * Backend resolver (spec §3, §4). Resolves REPO_HOST env into a concrete
+ * Backend resolver. Resolves REPO_HOST env into a concrete
  * repo-host factory + capabilities. REPO_HOST resolves to `github` (default)
  * or `gitlab`; the resolver exists so call sites stay agnostic to which host
  * is active. Fails fast with actionable messages at boot.
