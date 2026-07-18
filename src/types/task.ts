@@ -12,6 +12,24 @@ export type AgentName = CoreAgentName | `${string}-agent`;
 
 export type FindingType = 'discovery' | 'decision' | 'completion' | 'blocker' | 'artifact';
 
+/** Format of a published web artifact. Only Markdown is supported this iteration (`.html` is deferred). */
+export type WebArtifactFormat = 'markdown';
+
+/**
+ * A web artifact published from a task — the task-metadata projection of the
+ * global pointer store. Carries the stable, unguessable `external_id` used in
+ * the `/a/<external_id>` viewer URL plus display/provenance metadata. The
+ * immutable snapshot itself lives in the shared substrate; this record only
+ * points at it by id.
+ */
+export interface WebArtifactRecord {
+  external_id: string;
+  source_filename: string;
+  format: WebArtifactFormat;
+  created_at: string;
+  updated_at: string;
+}
+
 /** Tracking record for a Slack thread linked to a task */
 export interface SlackThreadRef {
   thread_id: string;
@@ -328,6 +346,15 @@ export interface TaskMetadata {
     trigger_at: string;              // ISO 8601 datetime when the task should be reactivated
     reason: string;                  // Why — shown to agent when woken
   };
+  /**
+   * Web artifacts published from this task, one record per stable `external_id`.
+   * Optional and backward-compatible: absent on tasks that never published one
+   * (including all pre-feature tasks on disk) and tolerated as `undefined` by
+   * `loadMetadata`'s plain `JSON.parse`. Not set in the `Task.create` literal —
+   * it stays `undefined` at create and is defaulted (`??= []`) by the publish
+   * tool on first push.
+   */
+  web_artifacts?: WebArtifactRecord[];
   triggered_by?: string;             // Trigger ID that spawned this task (set by fireTrigger). Blocks the task from creating triggers.
   pending_trigger_id?: string;       // Trigger ID proposed by this task, awaiting approve/deny (read by handleTriggerApproval/Denial)
   created_at: string;
