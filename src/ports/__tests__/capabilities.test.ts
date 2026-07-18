@@ -9,8 +9,8 @@ describe('capability descriptors', () => {
     expect(GITHUB_CAPABILITIES.nativeAutoMerge).toBe(false);
   });
 
-  it('gitlab defaults are least-capable baseline with native auto-merge', () => {
-    expect(GITLAB_CAPABILITIES_DEFAULT.reviewStates).toBe(false);
+  it('gitlab advertises review states (synthesized) + native auto-merge; no security alerts / re-review', () => {
+    expect(GITLAB_CAPABILITIES_DEFAULT.reviewStates).toBe(true);
     expect(GITLAB_CAPABILITIES_DEFAULT.securityAlerts).toBe(false);
     expect(GITLAB_CAPABILITIES_DEFAULT.reReviewRequest).toBe(false);
     expect(GITLAB_CAPABILITIES_DEFAULT.nativeAutoMerge).toBe(true);

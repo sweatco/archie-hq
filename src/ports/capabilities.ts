@@ -22,17 +22,18 @@ export const GITHUB_CAPABILITIES: RepoHostCapabilities = {
 };
 
 /**
- * GitLab defaults — least-capable baseline. reviewStates is false: GitLab has
- * approvals + notes rather than distinct approved/changes_requested states, so
- * Archie synthesizes reviews from approvals and unresolved discussions (see
- * GitLabHost.getPRReviews). securityAlerts is fixed false: there is no boot-time
- * license probe in this PR, so code-scanning/vulnerability findings are never
- * surfaced for GitLab. nativeAutoMerge is declared true (GitLab's "merge when
- * pipeline succeeds") but this PR ships no webhook merge orchestration for GitLab,
- * so the flag currently has no consumer.
+ * GitLab capability defaults. reviewStates is true: GitLab has no native
+ * approved/changes_requested review objects, but Archie synthesizes those states
+ * from approvals and unresolved discussions (GitLabHost.getPRReviews), so
+ * consumers see the same distinct review states as GitHub. securityAlerts is
+ * false: there is no boot-time license probe in this PR, so
+ * code-scanning/vulnerability findings are never surfaced for GitLab.
+ * nativeAutoMerge is true (GitLab's native "merge when pipeline succeeds"),
+ * though this PR ships no webhook merge orchestration for GitLab. reReviewRequest
+ * is false: GitLab has no re-request-review primitive, so that call no-ops.
  */
 export const GITLAB_CAPABILITIES_DEFAULT: RepoHostCapabilities = {
-  reviewStates: false,
+  reviewStates: true,
   securityAlerts: false,
   nativeAutoMerge: true,
   reReviewRequest: false,
