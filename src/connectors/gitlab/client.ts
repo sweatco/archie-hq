@@ -48,12 +48,6 @@ export class GitLabHost implements RepoHost {
     return `${base}/${repo}.git`;
   }
 
-  async askpassToken(): Promise<string> {
-    const t = process.env.GITLAB_TOKEN;
-    if (!t) throw new Error('GITLAB_TOKEN is not set');
-    return t;
-  }
-
   /** URL-encoded project id for the `:id` path segment. */
   private projectId(repo: string): string {
     return encodeURIComponent(repo);

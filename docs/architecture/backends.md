@@ -66,7 +66,7 @@ Two repo hosts are wired today -- `github` (`GitHubHost`/`GitHubClient`, `src/co
 
 - Any value for `REPO_HOST` other than `github` or `gitlab` is rejected as invalid by `assertBackendConfig()`.
 - `REPO_HOST=gitlab` additionally requires `GITLAB_BASE_URL`, `GITLAB_TOKEN`, and `GITLAB_WEBHOOK_SECRET`; `assertBackendConfig()` throws naming whichever are missing.
-- Git clone/fetch/push authentication (`scripts/git-askpass.sh`, `GIT_ASKPASS`) is GitHub-only. `RepoHost.askpassToken?()` exists as a typed optional accessor on the port and `GitLabHost` implements it (`src/connectors/gitlab/client.ts`), but nothing calls it -- wiring GitLab's git auth path is a future extension.
+- Git clone/fetch/push authentication is host-aware via `scripts/git-askpass.sh` (wired through `GIT_ASKPASS`), so both clone and push work for either host: for GitLab the helper returns `oauth2` / `$GITLAB_TOKEN`, for GitHub `x-access-token` / a generated App installation token. It selects the branch from `REPO_HOST` and reads credentials from the environment, so no host-specific token accessor is needed on the port.
 
 **Vendor isolation gate.** No GitLab REST call (`api/v4` paths, `PRIVATE-TOKEN` header) may appear outside `src/connectors/gitlab/` -- everything routes through `glRequest`/`glRequestAll` in `src/connectors/gitlab/http.ts`. This mirrors the pre-existing `@octokit`-confined-to-`connectors/github/` gate. Both should stay part of any future repo-host-adjacent PR's review.
 
@@ -76,5 +76,4 @@ A few seam details are deliberately left thin, to avoid speculative abstraction:
 
 - **`github → neutral` method/field rename.** `RepoHost` methods and shared types still use GitHub-flavored names (`getPRStatus`, `createPullRequest`, `githubRepo`, ...) even though `GitLabHost` implements the same interface. Renaming to host-neutral vocabulary (`getCrStatus`, `createChangeRequest`, ...) is a larger, mechanical, high-blast-radius change left for later.
 - **`src/connectors/github/merge.ts` is GitHub-specific.** The merge orchestrator (`checkAndMergeLinkedPRs`) imports `createGitHubClient()` directly rather than going through `getRepoHost()`. Making merge orchestration host-agnostic, and adding any shared cross-host webhook router, are possible later changes.
-- **`askpassToken()` is an unused seam.** `GitLabHost.askpassToken()` is implemented but not called anywhere; git authentication for clone/push flows entirely through the GitHub-only `scripts/git-askpass.sh`. Making git auth host-aware is a future extension.
 - **License-tier capability probing is not implemented.** `GITLAB_CAPABILITIES_DEFAULT` is fixed at construction, so `securityAlerts` is `false` and code-scanning alerts are not surfaced for GitLab. Probing the instance's license tier (e.g. Ultimate, which exposes the vulnerability API) to raise `securityAlerts`, and mapping those findings to canonical code-scanning alerts, is a future extension.
