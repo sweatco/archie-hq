@@ -10,6 +10,7 @@ vi.mock('../../system/logger.js', () => ({
   logger: { warn: vi.fn(), system: vi.fn(), debug: vi.fn(), info: vi.fn(), error: vi.fn() },
 }));
 
+import { isAbsolute, resolve, sep } from 'path';
 import {
   isSlackUserId,
   isFallbackUserId,
@@ -18,6 +19,7 @@ import {
   isValidEntitySlug,
   getUserPath,
   getSummaryPath,
+  getTasksDir,
   getTaskTelemetryPath,
   getEntityPath,
   getEntityCap,
@@ -195,6 +197,12 @@ describe('getTaskTelemetryPath', () => {
     expect(() => getTaskTelemetryPath('../escape')).toThrow(/invalid taskId/);
     expect(() => getTaskTelemetryPath('..')).toThrow(/invalid taskId/);
     expect(() => getTaskTelemetryPath('.')).toThrow(/invalid taskId/);
+  });
+
+  it('resolves to an absolute path contained in the tasks root', () => {
+    const p = getTaskTelemetryPath('v1.2.3');
+    expect(isAbsolute(p)).toBe(true);
+    expect(p.startsWith(resolve(getTasksDir()) + sep)).toBe(true);
   });
 });
 
