@@ -5,7 +5,7 @@
  * Uses WORKDIR from core but owns the memory/ subtree.
  */
 
-import { join } from 'path';
+import { join, resolve, sep } from 'path';
 import { WORKDIR } from '../system/workdir.js';
 import { logger } from '../system/logger.js';
 
@@ -106,7 +106,15 @@ export function getTaskDir(taskId: string): string {
   if (!isAllowedTaskId(taskId) || /^\.+$/.test(taskId)) {
     throw new Error(`getTaskDir: invalid taskId ${JSON.stringify(taskId)}`);
   }
-  return join(getTasksDir(), taskId);
+  // Containment check on the resolved path, on top of the regex guard: the
+  // resolve + startsWith shape is the escape-proof boundary static analysis
+  // recognizes (js/path-injection), and it holds even if the regex regresses.
+  const root = resolve(getTasksDir());
+  const dir = resolve(root, taskId);
+  if (!dir.startsWith(root + sep)) {
+    throw new Error(`getTaskDir: taskId escapes the tasks root ${JSON.stringify(taskId)}`);
+  }
+  return dir;
 }
 
 /** Per-task summary file: workdir/memory/tasks/<taskId>/summary.md */
