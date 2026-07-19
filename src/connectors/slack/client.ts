@@ -7,7 +7,7 @@
 
 import { WebClient } from '@slack/web-api';
 import type { SlackThreadRef, SlackFile, SlackThread, SlackThreadMessage, SlackAuthor, SlackAttachment, SlackReaction } from '../../types/index.js';
-import type { PrCardData } from '../../types/task.js';
+import type { PrCardData, ChannelVisibility } from '../../types/task.js';
 import { prCardSubtitle, SLACK_PR_CARD_EMOJI } from '../../system/pr-card-format.js';
 
 /**
@@ -1181,50 +1181,99 @@ export function isExternalUser(user: {
   return false;
 }
 
-// ---- Shared-channel detection (Slack Connect) -----------------------------
-// Cached per-channel with a 1-minute TTL: a channel can flip to shared mid-task
-// when an external org is added, and the warning logic depends on observing
-// the transition promptly. 1 min is well under Slack's tier-3 rate limit
-// (50+/min) even for >50 simultaneously active threads.
+// ---- Channel classification (Slack Connect + visibility) ------------------
+// One conversations.info snapshot per channel, cached with a 1-minute TTL: a
+// channel can flip to shared/private mid-task, and both the warning logic and
+// the memory-layer stamping depend on observing the transition promptly. 1 min
+// is well under Slack's tier-3 rate limit (50+/min) even for >50 simultaneously
+// active threads. Errors are NOT cached — the next call retries.
+//
+// Two consumers with deliberately different failure policies:
+// - isChannelShared (warnings, prompt notes): advisory → fails OPEN (false).
+// - getChannelVisibility (memory authorization stamps): persisted authz state →
+//   fails CLOSED ('private'), so an API error can never durably widen access.
 
-interface ChannelSharedCacheEntry {
-  isShared: boolean;
+interface ConvInfoSnapshot {
+  is_ext_shared?: boolean;
+  is_pending_ext_shared?: boolean;
+  connected_team_ids?: string[];
+  is_private?: boolean;
+  is_im?: boolean;
+  is_mpim?: boolean;
+}
+
+interface ConvInfoCacheEntry {
+  info: ConvInfoSnapshot;
   fetchedAt: number;
 }
-const channelSharedCache = new Map<string, ChannelSharedCacheEntry>();
-const CHANNEL_SHARED_TTL_MS = 60_000;
+const conversationInfoCache = new Map<string, ConvInfoCacheEntry>();
+const CONVERSATION_INFO_TTL_MS = 60_000;
 
-/**
- * Returns whether a channel is shared with one or more external Slack
- * workspaces (Slack Connect). DMs are never shared. Result is cached for
- * 1 minute. On API failure, returns false (fail-open).
- */
-export async function isChannelShared(channelId: string): Promise<boolean> {
-  if (channelId.startsWith('D')) return false;
-
-  const cached = channelSharedCache.get(channelId);
-  if (cached && Date.now() - cached.fetchedAt < CHANNEL_SHARED_TTL_MS) {
-    return cached.isShared;
+async function fetchConversationInfoCached(channelId: string): Promise<ConvInfoSnapshot | null> {
+  const cached = conversationInfoCache.get(channelId);
+  if (cached && Date.now() - cached.fetchedAt < CONVERSATION_INFO_TTL_MS) {
+    return cached.info;
   }
-
   try {
     const client = getSlackClient();
     const result = await client.conversations.info({ channel: channelId });
-    const channel = result.channel as {
-      is_ext_shared?: boolean;
-      is_pending_ext_shared?: boolean;
-      connected_team_ids?: string[];
-    } | undefined;
-    const isShared =
-      !!channel?.is_ext_shared ||
-      !!channel?.is_pending_ext_shared ||
-      ((channel?.connected_team_ids?.length ?? 0) > 1);
-    channelSharedCache.set(channelId, { isShared, fetchedAt: Date.now() });
-    return isShared;
+    const info = (result.channel ?? {}) as ConvInfoSnapshot;
+    conversationInfoCache.set(channelId, { info, fetchedAt: Date.now() });
+    return info;
   } catch (error) {
-    logger.warn('Slack', `Failed to fetch shared-channel status for ${channelId}`, error);
-    return false;
+    logger.warn('Slack', `Failed to fetch conversation info for ${channelId}`, error);
+    return null;
   }
+}
+
+function isSharedFromInfo(info: ConvInfoSnapshot): boolean {
+  return (
+    !!info.is_ext_shared ||
+    !!info.is_pending_ext_shared ||
+    ((info.connected_team_ids?.length ?? 0) > 1)
+  );
+}
+
+/**
+ * Returns whether a channel is shared with one or more external Slack
+ * workspaces (Slack Connect). Consults `conversations.info` for every id —
+ * Slack Connect DMs are D-prefixed and ARE shared. Result is cached for
+ * 1 minute. On API failure, returns false (fail-open — advisory consumers only;
+ * authorization must use getChannelVisibility, which fails closed).
+ */
+export async function isChannelShared(channelId: string): Promise<boolean> {
+  const info = await fetchConversationInfoCached(channelId);
+  if (info === null) return false;
+  return isSharedFromInfo(info);
+}
+
+/**
+ * Pure classification core for getChannelVisibility — exported for tests.
+ * `info === null` means the conversation info could not be fetched: classify
+ * 'unknown' (fail-closed error class — gates extraction AND read-locks, since
+ * the true class may be ext-shared). Ext-shared wins over every other class,
+ * D-prefixed ids included: Slack Connect DMs are `is_ext_shared` im
+ * conversations, so the dm branch runs only after the ext-shared predicate.
+ */
+export function classifyConversationInfo(
+  info: ConvInfoSnapshot | null,
+  channelId: string,
+): ChannelVisibility {
+  if (info === null) return 'unknown';
+  if (isSharedFromInfo(info)) return 'ext-shared';
+  if (info.is_im || info.is_mpim || channelId.startsWith('D')) return 'dm';
+  if (info.is_private || channelId.startsWith('G')) return 'private';
+  return 'public';
+}
+
+/**
+ * Classify a channel's visibility for the memory-layer authorization policy.
+ * Always consults `conversations.info` (no API-free short-circuit for any id
+ * shape — the 60s cache bounds the cost). On API failure returns 'unknown'
+ * (fail-closed) — see the failure-policy note on the cache above.
+ */
+export async function getChannelVisibility(channelId: string): Promise<ChannelVisibility> {
+  return classifyConversationInfo(await fetchConversationInfoCached(channelId), channelId);
 }
 
 /**
@@ -1560,10 +1609,11 @@ export async function fetchSlackThread(
   threadTs: string,
   currentMessageTs: string,
 ): Promise<SlackThread> {
-  const [channelInfo, rawMessages, shared] = await Promise.all([
+  const [channelInfo, rawMessages, shared, visibility] = await Promise.all([
     getChannelInfo(channelId),
     fetchThreadHistory(channelId, threadTs),
     isChannelShared(channelId),
+    getChannelVisibility(channelId),
   ]);
 
   // Detect whether OUR bot authored the thread root, computed BEFORE filtering.
@@ -1600,6 +1650,7 @@ export async function fetchSlackThread(
     threadId: threadTs,
     channel: channelInfo,
     shared,
+    visibility,
     messages,
     currentMessageTs,
     rootAuthorWasBot,

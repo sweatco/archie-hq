@@ -119,8 +119,8 @@ describe('memory context builder', () => {
       expect(result).toContain('<user_preferences user_id="U07DANA001">');
     });
 
-    it('includes <recent_activity> block when recent-activity.md has content', async () => {
-      const activityContent = '# Recent Activity\n\n| Date | Task ID | Summary | Domain | User |\n|------|---------|---------|--------|------|\n| 2026-04-10 | task-001 | Fixed bug | engineering | dana |\n';
+    it('includes <recent_activity> block with org rows when recent-activity.md has content', async () => {
+      const activityContent = '# Recent Activity\n\n| Date | Task ID | Summary | Domain | User | Access |\n|------|---------|---------|--------|------|--------|\n| 2026-04-10 | task-001 | Fixed bug | engineering | dana | org |\n';
       await writeFile(activityPath, activityContent, 'utf-8');
 
       const result = await buildMemoryContext([]);
@@ -128,6 +128,32 @@ describe('memory context builder', () => {
       expect(result).toContain('<recent_activity>');
       expect(result).toContain('</recent_activity>');
       expect(result).toContain('task-001');
+    });
+
+    it('injects only org activity rows (v1 dm rows and legacy rows filtered, own row included)', async () => {
+      const activityContent = [
+        '# Recent Activity',
+        '',
+        '| Date | Task ID | Summary | Domain | User | Access |',
+        '|------|---------|---------|--------|------|--------|',
+        '| 2026-04-10 | task-org-1 | Org visible work | engineering | dana | org |',
+        '| 2026-04-11 | task-dm-1 | Bob private planning | engineering | bob | dm |',
+        '| 2026-04-12 | task-self-1 | My own dm work | engineering | dana | dm |',
+        '| 2026-04-13 | task-legacy-1 | Legacy pre-policy row | engineering | old |',
+        '',
+      ].join('\n');
+      await writeFile(activityPath, activityContent, 'utf-8');
+
+      const result = await buildMemoryContext([], { taskId: 'task-self-1' });
+
+      expect(result).toContain('task-org-1');
+      // The v1 own-row carve-out is retired with the dm class: prefs-only
+      // tasks write no rows, and leftover v1 dm rows never render — not even
+      // the spawning task's own.
+      expect(result).not.toContain('task-self-1');
+      expect(result).not.toContain('task-dm-1');
+      expect(result).not.toContain('Bob private planning');
+      expect(result).not.toContain('task-legacy-1'); // no access class => restricted
     });
 
     it('skips users with no memory file (no user_preferences tag)', async () => {
@@ -148,7 +174,7 @@ describe('memory context builder', () => {
       const userContent = '## Communication\n- Prefers async\n';
       await writeFile(join(usersDir, 'U07DANA001.md'), userContent, 'utf-8');
 
-      const activityContent = '# Recent Activity\n\n| Date | Task ID | Summary | Domain | User |\n|------|---------|---------|--------|------|\n| 2026-04-10 | task-001 | Fixed bug | engineering | dana |\n';
+      const activityContent = '# Recent Activity\n\n| Date | Task ID | Summary | Domain | User | Access |\n|------|---------|---------|--------|------|--------|\n| 2026-04-10 | task-001 | Fixed bug | engineering | dana | org |\n';
       await writeFile(activityPath, activityContent, 'utf-8');
 
       const result = await buildMemoryContext([{ userId: 'U07DANA001', displayName: 'Dana' }]);

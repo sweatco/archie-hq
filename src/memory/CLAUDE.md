@@ -54,6 +54,16 @@ If you're unsure whether a change is big enough to document: it is.
 - **Read tools stay read-only.** `tools.ts` exposes zero mutating tools; every identifier
   passes the `paths.ts` guards before any filesystem access. Don't add a write/forget tool
   here — runtime writes are a separate, gated phase (see the roadmap).
+- **Reads are authorized, writes are gated.** `authz.ts` is the confidentiality boundary:
+  episodic reads require the target summary's `access: org` stamp (the only class extraction
+  writes — v1 `dm` stamps deny like legacy), `search_memory` never ranks user files outside
+  the caller's AUTHOR users, the extraction gate is a whitelist (ext-shared/unknown/private ⇒
+  skip + retract stale artifacts; dm ⇒ prefs-only, user updates only; only all-public ⇒ full),
+  user updates need `msg:<ts>` evidence authored by their target user, and ext-shared or
+  unknown-stamped tasks get no memory surface at all (spawn + per-call deny on all four
+  tools). Everything unknown fails closed (missing stamp, missing ctx ⇒ self-only;
+  classification error ⇒ `unknown` ⇒ locked). Never add an unscoped read surface or widen
+  a default on error.
 
 ## Files that carry those invariants
 

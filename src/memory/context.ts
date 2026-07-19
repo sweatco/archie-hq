@@ -5,15 +5,13 @@
  * for injection into agent system prompts.
  */
 
-import { readFile } from 'fs/promises';
-import { existsSync } from 'fs';
 import { readUser } from './store.js';
 import { listEntities, serializeEntity } from './entities.js';
 import { readIndexMarkdown, renderIndex, selectEntities, type SelectionResult } from './entity-index.js';
+import { readActivity, renderActivityTable } from './activity.js';
 import {
   isMemoryEnabled,
   isInjectionEnabled,
-  getRecentActivityPath,
   getTouchedByInjectMax,
   getOrgInjectMax,
   getEntityInjectMax,
@@ -36,11 +34,14 @@ export interface MemorySelectors {
  * Build an XML-tagged memory context string from available memory artifacts.
  *
  * - per-user files → <user_preferences user_id="..." display_name="..."> blocks
- * - recent-activity.md → <recent_activity> block
+ * - recent-activity.md → <recent_activity> block, filtered to org-derived rows
+ *   ONLY (prefs-only tasks write no rows; v1 dm rows and legacy rows without
+ *   an access class never render — fail-closed)
  *
- * `users` is the set of users involved in the current task; if empty, no
- * per-user blocks are emitted. The legacy string-array shape is also accepted
- * for callers that haven't been migrated yet.
+ * `users` is the set of AUTHOR users of the current task (a user's memory
+ * follows the user — it is injected only where they actively participate); if
+ * empty, no per-user blocks are emitted. The legacy string-array shape is also
+ * accepted for callers that haven't been migrated yet.
  *
  * Blocks are joined with double newlines. Returns '' when nothing is available.
  */
@@ -67,13 +68,14 @@ export async function buildMemoryContext(
     }
   }
 
-  // Recent activity
-  const activityPath = getRecentActivityPath();
-  if (existsSync(activityPath)) {
-    const activityContent = await readFile(activityPath, 'utf-8');
-    if (activityContent.trim()) {
-      blocks.push(renderRecentActivityBlock(activityContent));
-    }
+  // Recent activity — confidentiality-filtered re-render, never the raw file:
+  // org rows ONLY. v1 dm rows and legacy rows without an access class are
+  // restricted, fail-closed (prefs-only tasks write no rows at all, so the
+  // v1 own-row carve-out is gone with them).
+  const activityEntries = await readActivity();
+  const visibleActivity = activityEntries.filter((a) => a.access === 'org');
+  if (visibleActivity.length > 0) {
+    blocks.push(renderRecentActivityBlock(renderActivityTable(visibleActivity)));
   }
 
   // Entity layer: always inject the thin index when any entity exists, then

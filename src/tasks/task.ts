@@ -6,7 +6,7 @@
  */
 
 import { mkdir, writeFile } from 'fs/promises';
-import type { AgentName, SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, BranchState } from '../types/task.js';
+import type { AgentName, ChannelVisibility, SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, BranchState } from '../types/task.js';
 import { CLI_CHANNEL_KEY } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
 import { isPmAgent, isRepoAgent } from '../types/agent.js';
@@ -349,6 +349,7 @@ export class Task {
         channel_name: thread.channel.name,
         last_processed_ts: thread.currentMessageTs,
         url: buildThreadUrl(thread.channel.id, thread.threadId) ?? undefined,
+        ...(thread.visibility ? { visibility: thread.visibility } : {}),
       };
       this.metadata.default_channel ??= channelId;
 
@@ -368,6 +369,7 @@ export class Task {
     }
 
     existing.last_processed_ts = thread.currentMessageTs;
+    if (thread.visibility) existing.visibility = thread.visibility;
     this.debouncedSave();
     return { linkedNewThread: false };
   }

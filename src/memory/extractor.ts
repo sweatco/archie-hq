@@ -23,6 +23,8 @@ export interface ExtractionInput {
   taskOwner: string;
   status: string;
   createdAt: string;
+  /** Task access class ('org' | 'dm') — informational context for the extractor. */
+  access: string;
   transcript: string;
 }
 
@@ -90,6 +92,7 @@ export async function buildExtractionPrompt(input: ExtractionInput): Promise<str
     TASK_OWNER: input.taskOwner,
     STATUS: input.status,
     CREATED_AT: input.createdAt,
+    ACCESS: input.access,
     TRANSCRIPT: transcript,
   };
 
@@ -111,13 +114,19 @@ export async function buildExtractionPrompt(input: ExtractionInput): Promise<str
 // ============================================================================
 
 /**
- * Validate a single update has required fields.
+ * Validate a single update has required fields. `evidence` is normalized to a
+ * string array here; whether the citations actually resolve to lines authored
+ * by the target user is enforced by the lifecycle (own-statements check).
  */
 function isValidUpdate(u: unknown): u is MemoryUpdate {
   if (typeof u !== 'object' || u === null) return false;
   const obj = u as Record<string, unknown>;
   if (obj.action !== 'add' && obj.action !== 'update') return false;
   if (typeof obj.content !== 'string') return false;
+  if (obj.evidence !== undefined) {
+    if (!Array.isArray(obj.evidence)) return false;
+    obj.evidence = obj.evidence.filter((e) => typeof e === 'string');
+  }
   return true;
 }
 
