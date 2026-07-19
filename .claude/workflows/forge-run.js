@@ -2,13 +2,9 @@ export const meta = {
   name: 'forge-run',
   description: 'Forge v2 master chain: plan → implement → QA (with route-back) → docs → ship. Runs autonomously from AC sign-off to an open PR, or returns a structured impasse.',
   whenToUse: 'Invoked by the /forge conductor after the operator signs off the brief + ACs. Input: change name, brief, ACs, dossier. On impasse: answer in chat, relaunch with resumeFromRunId and the answer under args.answers.',
-  phases: [
-    { title: 'Plan', detail: 'forge-plan: planner + critics' },
-    { title: 'Implement', detail: 'forge-implement: tasks, gate, blind review' },
-    { title: 'QA', detail: 'forge-qa: black-box live verification, 2 cycles (one route-back)' },
-    { title: 'Docs', detail: 'forge-docs: update + verify documentation' },
-    { title: 'Ship', detail: 'forge-ship: push, open PR with manifest' },
-  ],
+  // No meta.phases and no phase() calls here on purpose: this workflow spawns no agents of its
+  // own — all work runs in child workflows, whose agents render under their own "▸ forge-<stage>"
+  // groups. Parent-declared phases would only render as permanently empty boxes next to them.
 }
 
 // args: {
@@ -45,23 +41,21 @@ const run = async (name, childArgs, stage) => {
   try {
     const r = await workflow(input.workflowsDir ? { scriptPath: `${input.workflowsDir}/${name}.js` } : name, childArgs)
     if (!r) return { status: 'impasse', stage, question: `${name} returned nothing. Retry the run?`, context: null }
+    if (r.status === 'error' && !r.stage) return { ...r, stage }
     return r
   } catch (e) {
     return { status: 'impasse', stage, question: `${name} threw: ${String((e && e.message) || e)}. Retry the run?`, context: null }
   }
 }
 
-phase('Plan')
 const planRes = await run('forge-plan', { brief: input.brief, acs: input.acs, dossier: input.dossier || [], guidance: answers.plan }, 'plan')
 if (planRes.status !== 'ok') return planRes
 log(`Plan ready: ${planRes.plan.tasks.length} tasks, ${planRes.rounds} critique round(s)`)
 
-phase('Implement')
 let implRes = await run('forge-implement', { change: input.change, branch, base, brief: input.brief, acs: input.acs, plan: planRes.plan, fresh: true, guidance: answers.implement }, 'implement')
 if (implRes.status !== 'ok') return implRes
 log(`Implementation reviewed clean in ${implRes.rounds} round(s)`)
 
-phase('QA')
 const qaCap = answers.qaCycles ? 3 : 2
 let qaRes = null
 let cycles = 0
@@ -86,11 +80,9 @@ while (cycles < qaCap) {
   if (implRes.status !== 'ok') return implRes
 }
 
-phase('Docs')
 const docsRes = await run('forge-docs', { branch, base, brief: input.brief, guidance: answers.docs }, 'docs')
 if (docsRes.status !== 'ok') return docsRes
 
-phase('Ship')
 const shipRes = await run('forge-ship', {
   change: input.change,
   branch,
@@ -105,6 +97,17 @@ const shipRes = await run('forge-ship', {
 }, 'ship')
 if (shipRes.status !== 'ok') return shipRes
 
+// Non-blocking findings required no fix but the operator should see them in the report —
+// they are the context that turns "no fixer agents appeared" into information.
+const nonBlockingFindings = []
+for (const [stage, verdicts] of [['plan', planRes.verdicts], ['implement', implRes.verdicts]]) {
+  if (verdicts) {
+    for (const [reviewer, v] of Object.entries(verdicts)) {
+      if (v && Array.isArray(v.findings)) for (const f of v.findings) if (!f.blocking) nonBlockingFindings.push({ stage, reviewer, text: f.text, file: f.file })
+    }
+  }
+}
+
 return {
   status: 'done',
   pr: shipRes.pr,
@@ -114,4 +117,5 @@ return {
   // post-run review feedback (it requires plan.design and plan.tasks).
   plan: planRes.plan,
   rounds: { plan: planRes.rounds, implement: implRes.rounds, qaCycles: cycles, docs: docsRes.rounds },
+  nonBlockingFindings,
 }

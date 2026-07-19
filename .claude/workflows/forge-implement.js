@@ -11,8 +11,9 @@ export const meta = {
 }
 
 // args: { change, branch, base, brief, acs, plan: {design, tasks}, fresh: boolean,
-//         fixes?: [{ac, problem, scenario}], guidance?: string | { [taskOrFixId]: string, setup?, gate?, review? },
-//         steer?: string }
+//         fixes?: [{ac, problem, scenario}], request?: string  — operator-requested post-ship
+//         revision, applied on the existing branch (requires fresh: false),
+//         guidance?: string | { [taskOrFixId]: string, setup?, gate?, review? }, steer?: string }
 // guidance carries operator answers to previous impasses, keyed by the failing unit. A failed
 // call replays its failure from cache on resume, so each impasse site retries once with a
 // guidance-augmented prompt (a cache miss) while everything that succeeded stays cached.
@@ -20,6 +21,8 @@ export const meta = {
 // the QA-cap unlock, whose calls are new on resume, so cache stability is not at stake there.
 const input = typeof args === 'string' ? JSON.parse(args) : (args || {})
 if (!input.branch || !input.base || !input.plan) return { status: 'error', reason: 'missing input.branch/base/plan' }
+if (input.request && input.fresh) return { status: 'error', reason: 'request mode revises an existing branch — fresh must be false' }
+if (input.request && Array.isArray(input.fixes) && input.fixes.length > 0) return { status: 'error', reason: 'fixes and request are mutually exclusive modes' }
 const guideFor = (key) => {
   const g = input.guidance
   const t = g ? (typeof g === 'string' ? g : g[key]) : null
@@ -100,6 +103,13 @@ if (Array.isArray(input.fixes) && input.fixes.length > 0) {
     )
     if (!r || !r.done) return { status: 'impasse', stage: 'implement', question: `QA fix for ${key} could not be completed: ${r ? r.notes : 'agent failed'}. How should we proceed? (Your answer becomes guidance keyed "${key}".)`, context: fix }
   }
+} else if (input.request) {
+  const r = await attempt(
+    'request',
+    `You apply an operator-requested revision to branch ${input.branch} (already checked out — it carries this run's shipped commits; do NOT reset it). The request, verbatim: <request>${input.request}</request>. Design context:\n${input.plan.design}\nThe brief's ACs still bind: if the request contradicts one, implement the request and say so plainly in notes — never silently violate or silently ignore either side. Implement the change, add or adjust tests alongside it, run npm run typecheck and the targeted tests, and commit. ${conventions}`,
+    'revise', 'Tasks'
+  )
+  if (!r || !r.done) return { status: 'impasse', stage: 'implement', question: `The revision could not be completed: ${r ? r.notes : 'agent failed'}. How should we proceed? (Your answer becomes guidance keyed "request".)`, context: { request: input.request } }
 } else {
   for (const task of input.plan.tasks) {
     const r = await attempt(
@@ -121,7 +131,7 @@ if (!gate || !gate.green) return { status: 'impasse', stage: 'implement', questi
 
 phase('Review')
 const diffCmd = `git diff origin/${input.base}...HEAD`
-const planForReview = `The brief ACs:\n${JSON.stringify(input.acs || [], null, 2)}\nThe design:\n${input.plan.design}\nThe tasks:\n${JSON.stringify(input.plan.tasks.map((t) => ({ id: t.id, title: t.title, detail: t.detail })), null, 2)}`
+const planForReview = `The brief ACs:\n${JSON.stringify(input.acs || [], null, 2)}\nThe design:\n${input.plan.design}\nThe tasks:\n${JSON.stringify(input.plan.tasks.map((t) => ({ id: t.id, title: t.title, detail: t.detail })), null, 2)}${input.request ? `\nOperator-approved revision request — sanctioned scope ON TOP of the plan (do not report it as scope creep; do verify it is implemented correctly, and that nothing beyond plan-plus-request is present): <request>${input.request}</request>` : ''}`
 const reviewers = [
   {
     key: 'spec',
