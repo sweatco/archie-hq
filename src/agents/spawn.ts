@@ -11,6 +11,7 @@
  */
 
 import { join } from 'path';
+import { claudeCredentialEnv } from '../system/claude-credential.js';
 import { mkdir, symlink, readdir, writeFile, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -611,7 +612,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
     // resolving to a literal `~` directory instead of the real home.
     env: {
       NODE_ENV: process.env.NODE_ENV || 'development',
-      ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+      ...claudeCredentialEnv(),
       // CA-trust config for the spawned CLI. The SDK REPLACES env (see note
       // above), so without forwarding these an operator-provided CA (e.g. a
       // TLS-intercepting egress proxy) never reaches the child and its
