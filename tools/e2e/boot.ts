@@ -44,7 +44,11 @@ const DEFAULT_POLL_INTERVAL_MS = 5000;
 
 // ---- Preflight (pure) ----
 
-/** Validate boot preconditions from already-read inputs. Returns human-readable errors, empty when OK. */
+/** Validate boot preconditions from already-read inputs. Returns human-readable errors, empty when OK.
+ *
+ * The E2E harness deliberately requires ANTHROPIC_API_KEY, not the
+ * CLAUDE_CODE_OAUTH_TOKEN subscription path: the harness is automated access, so
+ * it stays on an API key (subscription auth is for CLI-only interactive use). */
 export function preflight(dotenvText: string | undefined): string[] {
   if (dotenvText === undefined) {
     return ['.env not found at the repo root — copy .env.example and set ANTHROPIC_API_KEY'];

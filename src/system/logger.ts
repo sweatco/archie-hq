@@ -302,6 +302,15 @@ export class Logger {
   }
 
   /**
+   * Like `plain`, but to stderr — for the detail lines of an operator-facing
+   * startup error, so they land on the same stream as the headline and are
+   * captured by `2>` redirection.
+   */
+  plainErr(message: string): void {
+    console.error(message);
+  }
+
+  /**
    * Log a debug message with an object (logged as-is for console inspection)
    */
   debug(prefix: string, message: string, data?: any): void {
