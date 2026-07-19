@@ -12,8 +12,7 @@
  *   the confidentiality gate excluded from extraction, so memory loss from the
  *   policy stays measurable
  * - extraction-prefs-only records (`v: 1, kind: "extraction-prefs-only"`) —
- *   one per DM-carrying task completion processed in prefs-only mode
- *   (recorded at gate time, so it exists even when extraction later fails)
+ *   one per DM-carrying task completion, recorded at gate time
  * - user-update-dropped records (`v: 1, kind: "user-update-dropped"`) — one
  *   per user update rejected by evidence validation
  *

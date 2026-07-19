@@ -52,9 +52,7 @@ vi.mock('../paths.js', () => ({
 
 vi.mock('../../tasks/persistence.js', () => ({
   readKnowledgeLog: async (taskId: string) => knowledgeLogs.get(taskId) ?? '',
-  // Per-call live lock re-derivation reads task metadata; tests stamp channel
-  // records here to simulate mid-session visibility flips. Default: no
-  // metadata (no Slack channels — unlocked).
+  // Live lock re-derivation reads metadata; tests stamp channels here.
   loadMetadata: async (taskId: string) => taskMetadataByTask.get(taskId) ?? null,
 }));
 
@@ -321,9 +319,8 @@ describe('memory read tools', () => {
   });
 
   it('a mid-session ext-shared flip locks the next call despite an unlocked spawn snapshot', async () => {
-    const tools = buildMemoryTools(SPAWN); // spawned unlocked (extShared falsy)
-    // The caller task's channel turns ext-shared AFTER spawn (admin converts
-    // it to Slack Connect); the running agent keeps its tool closure.
+    const tools = buildMemoryTools(SPAWN); // spawned unlocked
+    // Channel turns ext-shared after spawn; agent keeps its tool closure.
     taskMetadataByTask.set(SPAWN.taskId, {
       channels: { 'slack:C1:1': { type: 'slack', visibility: 'ext-shared' } },
     });
