@@ -22,6 +22,7 @@ export const meta = {
 const input = typeof args === 'string' ? JSON.parse(args) : (args || {})
 if (!input.branch || !input.base || !input.plan) return { status: 'error', reason: 'missing input.branch/base/plan' }
 if (input.request && input.fresh) return { status: 'error', reason: 'request mode revises an existing branch — fresh must be false' }
+if (input.request && Array.isArray(input.fixes) && input.fixes.length > 0) return { status: 'error', reason: 'fixes and request are mutually exclusive modes' }
 const guideFor = (key) => {
   const g = input.guidance
   const t = g ? (typeof g === 'string' ? g : g[key]) : null

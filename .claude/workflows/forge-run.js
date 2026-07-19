@@ -41,6 +41,7 @@ const run = async (name, childArgs, stage) => {
   try {
     const r = await workflow(input.workflowsDir ? { scriptPath: `${input.workflowsDir}/${name}.js` } : name, childArgs)
     if (!r) return { status: 'impasse', stage, question: `${name} returned nothing. Retry the run?`, context: null }
+    if (r.status === 'error' && !r.stage) return { ...r, stage }
     return r
   } catch (e) {
     return { status: 'impasse', stage, question: `${name} threw: ${String((e && e.message) || e)}. Retry the run?`, context: null }
