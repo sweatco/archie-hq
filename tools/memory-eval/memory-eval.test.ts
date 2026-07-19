@@ -13,7 +13,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { computeStoreHealth, computeDelta, distribution, nearDuplicatePairs } from './store-health.js';
-import { readAllTelemetry, aggregateSelection, aggregatePull } from './telemetry-agg.js';
+import { readAllTelemetry, aggregateSelection, aggregatePull, aggregateExtractionSkips } from './telemetry-agg.js';
 import { harvestGoldens, runRegression } from './golden.js';
 import { computeWorstCaseBound } from './bound.js';
 import { buildReadingList, suspiciousFlags } from './reading-list.js';
@@ -117,6 +117,7 @@ describe('telemetry aggregation', () => {
     await writeFile(join(dir, 'task-1', 'telemetry.jsonl'), [
       JSON.stringify({ v: 1, taskId: 'task-1', selected: [{ slug: 'a', score: 1, scope: 'repo' }], dropped: ['b'], renderedTokensEst: 100 }),
       JSON.stringify({ v: 1, kind: 'pull', taskId: 'task-1', tool: 'search_memory', args: { query: 'quantum' }, returned: [], resultCount: 0, zeroResult: true }),
+      JSON.stringify({ v: 1, kind: 'extraction-skip', taskId: 'task-1', reason: 'private' }),
       JSON.stringify({ v: 1, kind: 'mystery', taskId: 'task-1' }),
       'not json at all',
       '',
@@ -124,6 +125,7 @@ describe('telemetry aggregation', () => {
     const t = await readAllTelemetry(dir);
     expect(t.selection).toHaveLength(1);
     expect(t.pull).toHaveLength(1);
+    expect(t.extractionSkips).toHaveLength(1);
     expect(t.skipped).toBe(2);
 
     const sel = aggregateSelection(t.selection)!;
@@ -134,11 +136,37 @@ describe('telemetry aggregation', () => {
     const pull = aggregatePull(t.pull)!;
     expect(pull.zeroResultRate).toBe(1);
     expect(pull.storeGaps).toEqual(['quantum']);
+    expect(pull.denied).toBe(0);
+  });
+
+  it('aggregates authorization denials without polluting store gaps', () => {
+    const pull = aggregatePull([
+      { v: 1, kind: 'pull', ts: 't', taskId: 'task-1', agent: null, tool: 'search_memory', args: { query: 'roadmap' }, returned: [], resultCount: 0, zeroResult: true, denied: true, denyReason: 'no-overlap' },
+      { v: 1, kind: 'pull', ts: 't', taskId: 'task-1', agent: null, tool: 'grep_task_log', args: { taskId: 'task-dm', pattern: 'x' }, returned: [], resultCount: 0, zeroResult: true, denied: true, denyReason: 'no-access-stamp' },
+      { v: 1, kind: 'pull', ts: 't', taskId: 'task-2', agent: null, tool: 'search_memory', args: { query: 'kubernetes' }, returned: [], resultCount: 0, zeroResult: true },
+    ])!;
+    expect(pull.denied).toBe(2);
+    expect(pull.deniedRate).toBeCloseTo(0.667, 3);
+    expect(pull.denyReasons).toEqual({ 'no-overlap': 1, 'no-access-stamp': 1 });
+    // Denied zero-results are policy outcomes, not store gaps.
+    expect(pull.storeGaps).toEqual(['kubernetes']);
+  });
+
+  it('aggregates extraction skips by reason', () => {
+    const skips = aggregateExtractionSkips([
+      { v: 1, kind: 'extraction-skip', ts: 't', taskId: 'task-1', reason: 'private' },
+      { v: 1, kind: 'extraction-skip', ts: 't', taskId: 'task-2', reason: 'private' },
+      { v: 1, kind: 'extraction-skip', ts: 't', taskId: 'task-3', reason: 'ext-shared' },
+    ])!;
+    expect(skips.records).toBe(3);
+    expect(skips.tasks).toBe(3);
+    expect(skips.byReason).toEqual({ private: 2, 'ext-shared': 1 });
   });
 
   it('absent records report as null, not zero activity', () => {
     expect(aggregateSelection([])).toBeNull();
     expect(aggregatePull([])).toBeNull();
+    expect(aggregateExtractionSkips([])).toBeNull();
   });
 });
 

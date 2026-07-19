@@ -176,7 +176,7 @@ async function main(): Promise<void> {
   const { listUserFiles } = await import('../src/memory/store.js');
   const { getEntityCap, getTasksDir, getRecentActivityPath } = await import('../src/memory/paths.js');
   const { computeStoreHealth, computeDelta } = await import('../tools/memory-eval/store-health.js');
-  const { readAllTelemetry, aggregateSelection, aggregatePull } = await import('../tools/memory-eval/telemetry-agg.js');
+  const { readAllTelemetry, aggregateSelection, aggregatePull, aggregateExtractionSkips, aggregatePrefsOnly, aggregateUserUpdateDrops } = await import('../tools/memory-eval/telemetry-agg.js');
   const { harvestGoldens, runRegression } = await import('../tools/memory-eval/golden.js');
   const { computeWorstCaseBound } = await import('../tools/memory-eval/bound.js');
   const { buildReadingList } = await import('../tools/memory-eval/reading-list.js');
@@ -208,6 +208,9 @@ async function main(): Promise<void> {
   const telemetry = await readAllTelemetry(getTasksDir());
   const selection = aggregateSelection(telemetry.selection);
   const pull = aggregatePull(telemetry.pull);
+  const extractionSkips = aggregateExtractionSkips(telemetry.extractionSkips);
+  const extractionPrefsOnly = aggregatePrefsOnly(telemetry.extractionPrefsOnly);
+  const userUpdateDrops = aggregateUserUpdateDrops(telemetry.userUpdateDrops);
 
   // ---- Golden harvest / regression ----
   // Snapshot identity, not wall clock: goldens pin the STORE they were
@@ -317,6 +320,9 @@ async function main(): Promise<void> {
     delta,
     selection,
     pull,
+    extractionSkips,
+    extractionPrefsOnly,
+    userUpdateDrops,
     telemetrySkipped: telemetry.skipped,
     regression,
     bound,

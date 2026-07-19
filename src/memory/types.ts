@@ -14,6 +14,12 @@ export interface MemoryUpdate {
   content: string;
   /** For 'update': the old line to replace */
   old?: string;
+  /**
+   * `msg:<ts>` source-line ids the update derives from. Lifecycle applies a
+   * Slack user's update only when every cited id resolves to a transcript
+   * line AUTHORED by that user (own-statements enforcement, code-side).
+   */
+  evidence?: string[];
 }
 
 /** Extraction result from the Sonnet side-agent */
@@ -117,7 +123,30 @@ export interface ActivityEntry {
   summary: string;
   domain: string;
   user: string;
+  /**
+   * Access class of the task the row came from. Legacy 5-column rows parse
+   * without it; consumers treat a missing class as restricted (fail-closed).
+   */
+  access?: TaskAccess;
 }
+
+// ============================================================================
+// Authorization (mirrors core's ChannelVisibility without importing it —
+// the memory module stays import-free from core types)
+// ============================================================================
+
+/** Visibility class of a channel, as stamped on task metadata by core. */
+export type ChannelVisibilityClass = 'public' | 'private' | 'dm' | 'ext-shared' | 'unknown';
+
+/**
+ * Access class of a task's derived memory artifacts. `org` — every
+ * contributing channel is org-visible (public Slack / github / cli); readable
+ * by any agent — is the ONLY class extraction writes: DM-carrying tasks run
+ * prefs-only (no episodic artifacts), private/ext-shared/unknown tasks skip
+ * entirely. `dm` remains in the type solely so first-iteration activity rows
+ * still parse; a `dm` summary stamp is denied like a missing stamp.
+ */
+export type TaskAccess = 'org' | 'dm';
 
 /** A user reference parsed from a transcript mention or resolved as a fallback. */
 export interface UserRef {

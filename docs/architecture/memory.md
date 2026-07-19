@@ -120,7 +120,7 @@ workdir/memory/                                  (runtime, gitignored)
 | Repo | `spawn.ts:381-382` | Every repo agent spawn |
 | Plugin | `spawn.ts:479-480` | Every plugin agent spawn |
 
-The helper `extractTaskUsernames(taskId)` (`spawn.ts:132`) parses the task's `knowledge.log` for Slack mention markers `@<UID:Display Name>` and returns one `UserRef` (raw Slack ID + display name) per unique mentioned user. The Slack ID is the user-memory filename, so the read and write paths key identically. Those users are the only ones for whom `<user_preferences>` blocks are injected.
+The helper `extractTaskAuthorUsers(taskId)` (`spawn.ts`) parses the task's `knowledge.log` for message AUTHORS — entry source lines of the form `[ts] [@<UID:Display Name> in …]` — and returns one `UserRef` (raw Slack ID + display name) per unique author; body @-mentions never count, and redacted external authors are excluded (`extractAuthorUsers`, `src/memory/lifecycle.ts`). The Slack ID is the user-memory filename, so the read and write paths key identically. Those author users are the only ones for whom `<user_preferences>` blocks are injected — a user's memory follows the user, it is never surfaced to tasks they merely got mentioned in.
 
 `buildMemoryContext(usernames)` (`src/memory/context.ts`) assembles up to three XML-tagged blocks:
 
@@ -130,7 +130,7 @@ The helper `extractTaskUsernames(taskId)` (`spawn.ts:132`) parses the task's `kn
 </user_preferences>
 
 <recent_activity>
-{contents of recent-activity.md}
+{recent-activity.md rows re-rendered, filtered to access: org + the spawning task's own row}
 </recent_activity>
 
 <entity_index>
@@ -169,9 +169,23 @@ When `ARCHIE_MEMORY_TOOLS=true` (default off; `ARCHIE_MEMORY=false` overrides), 
 
 Every identifier passes the `paths.ts` guards before any filesystem access; the server registers zero mutating tools (writes stay funneled through the extraction side-agent). Search shares `selectEntities`' tokenizer deliberately: a pulled-but-not-injected page then indicts push budgets/signals, never scorer skew. Each call leaves a pull-sensor record (next section).
 
+## Confidentiality & Authorization
+
+The layer enforces a channel-confidentiality policy end to end (`src/memory/authz.ts` holds the pure decision logic):
+
+- **Channel visibility** — every Slack channel is classified `public | private | dm | ext-shared | unknown` (`getChannelVisibility`, `src/connectors/slack/client.ts`; always `conversations.info`-derived — no API-free short-circuit for any id shape, because Slack Connect DMs are D-prefixed `is_ext_shared` conversations and ext-shared wins unconditionally; **fail-closed to `unknown`** on error, which read-locks like ext-shared) and the class is stamped onto `SlackChannel.visibility` at every attach/refresh site: inbound messages, PM-opened threads/DMs (`new_dm` stamps via lookup, never a `'dm'` literal), thread linking. A missing stamp counts as `private` everywhere (write-gated, not read-locked). The advisory `isChannelShared` check keeps its fail-open behavior for warnings; both share one 60s info cache (errors uncached — an `unknown` stamp self-heals on the next successful classification).
+- **Extraction gate (push), whitelist modes** — `classifyTaskChannels` maps the completed task's channels to a mode: any `ext-shared` → **skip**; any `unknown` → **skip** (reason `unknown`); any `private`, unstamped, or out-of-vocabulary value → **skip** (reason `private`); any `dm` → **prefs-only**; else **full** with `access: org` (the only class ever stamped) and per-link `visibility:` values in the frontmatter. Prefs-only applies user-preference updates ONLY — no summary, no activity row, no entity updates, no Related Tasks participation — enforced code-side in `processExtraction` regardless of extractor output. Skip and prefs-only runs also **retract** episodic artifacts a previous completion left (delete `summary.md`, remove the activity row): tasks complete more than once, and a stale `access: org` stamp must not keep granting grep over a log that later absorbed confidential lines. Skips/prefs-only/retractions are logged and recorded as telemetry (`extraction-skip`, `extraction-prefs-only`, `retracted: true`).
+- **Episodic read authorization (pull)** — `read_task_summary`/`grep_task_log` serve a non-self target only when its persisted stamp is exactly `access: org`; everything else — no summary, no stamp, a first-iteration `access: dm` stamp, an unknown value — is denied `no-access-stamp`. DM-derived content is episodically unreachable by construction (prefs-only writes no artifacts). `grep_task_log` authorizes before opening the log. Denials are normal, content-free, policy-worded results recorded with `denied: true` + reason. The caller's scope (author user ids, lock flag) is derived once per spawn (`deriveMemoryToolsCtx`, `spawn.ts`) and frozen into the tool closure; an absent scope fails closed to self-only.
+- **User-memory ownership** — only a task's AUTHOR users are writable by extraction (`allowedUserIds`), injected as `<user_preferences>`, or rankable as `search_memory` user hits. Mentioning someone grants nothing. Own-statements attribution is enforced in code: every `user_update` must cite `msg:<ts>` evidence ids, and the lifecycle applies it only when every cited id resolves to a transcript source line authored by the target user — non-conforming updates are dropped with `user-update-dropped` telemetry. Authorship itself cannot be forged from message bodies: `formatLogEntry` (`src/tasks/persistence.ts`) indents body continuation lines, so no body-originated line matches the line-start-anchored source shape.
+- **Lockdown (ext-shared / unknown)** — a task with any Slack-Connect-shared channel (stamped `ext-shared` or legacy `isShared`) or any `unknown`-stamped channel gets no memory surface at all: tools are not registered, injection is skipped (logged), and a per-call ctx deny at the top of **all four** tool handlers (before guards, corpus reads, and the self rule) backstops snapshot skew — entity content and the caller's own artifacts included. Rationale: anything the agent reads can be pasted where the external org reads it; an unclassified channel may be exactly that.
+
+DM-task callers keep the full org READ surface — injection and all four tools work normally for them; the lockdown above is on what DM tasks *produce*, not what they *see*.
+
+Retroactive cleanup of pre-policy artifacts is deliberately postponed: legacy summaries have no `access:` stamp and first-iteration `access: dm` summaries parse to the same denial; legacy and `dm`-classed activity rows never render (injection filters to `access: org` rows only). Entity pages are covered by the enablement-gate human store review; an optional one-off script may delete v1 dm-stamped artifacts from dev stores.
+
 ## Telemetry
 
-Two sensors, one file: the **selection sensor** — a per-spawn record of what push injected and why — and the **pull sensor** — one record per read-tool call (tool, query/args, returned ids, zero-result flag, `kind: "pull"`). Selection lines carry no `kind` field; readers treat kind-less lines as selection records. Both share the fail-safe appender in `src/memory/telemetry.ts`. The remaining memory-v2 decisions (budget defaults, zero-signal recency floor, ossification, the value eval) are deferred to live data (`docs/proposals/memory-v2-roadmap.md`), and telemetry cannot be backfilled — so the sensor ships before injection is enabled.
+Five record kinds, one file: the **selection sensor** — a per-spawn record of what push injected and why — the **pull sensor** — one record per read-tool call (tool, query/args, returned ids, zero-result flag, `kind: "pull"`; authorization denials add `denied: true` + `denyReason`) — the **extraction-skip sensor** — one record per task the confidentiality gate excluded (`kind: "extraction-skip"`, reason, `retracted` when a re-completion removed stale artifacts) — the **prefs-only sensor** (`kind: "extraction-prefs-only"`, same `retracted` flag) — and the **evidence-drop sensor** (`kind: "user-update-dropped"`, target user + cited ids), so both the policy's memory loss and misattribution drops stay measurable. Selection lines carry no `kind` field; readers treat kind-less lines as selection records. All share the fail-safe appender in `src/memory/telemetry.ts`. The remaining memory-v2 decisions (budget defaults, zero-signal recency floor, ossification, the value eval) are deferred to live data (`docs/proposals/memory-v2-roadmap.md`), and telemetry cannot be backfilled — so the sensor ships before injection is enabled.
 
 `recordSelection()` (`src/memory/context.ts`, end of `buildMemoryContext`) appends one JSON line per enriched spawn to `memory/tasks/<taskId>/telemetry.jsonl`, creating the task dir on first write; `spawn.ts` passes `taskId` + `agent` via `MemorySelectors`. It fires only when injection is enabled and a `taskId` is present — no separate flag; with injection off, nothing is read or written. Each line is a self-contained selection case:
 
@@ -205,16 +219,24 @@ When the event fires, `handleTaskCompleted(taskId)` is invoked. It is fire-and-f
 
 ```
 1. loadMetadata(taskId)                  ──▶ task metadata (participants, channels, status)
-2. readKnowledgeLog(taskId)              ──▶ transcript
-3. extractUsernames(transcript)          ──▶ UserRef[] (Slack IDs + names); cli:<taskId> fallback when none
-4. readUser() for ALL involved users + readIndexMarkdown ──▶ existing user memory + entity index
-5. runExtraction({...}, allowedUserIds)                  ──▶ Sonnet side-agent (maxTurns: 1, no tools)
-6. applyUserUpdatesWithIdentity(userId, name, updates) per user
-7. applyEntityUpdate(update, taskId) per entity (resolve-or-create, auto touched_by) → rebuildIndex()
-8. writeSummary() ──▶ workdir/memory/tasks/<taskId>/summary.md (frontmatter + Memory Updates + Related Tasks)
-9. appendActivity({...}) + trimActivity(50)
+2. classifyTaskChannels(channels)        ──▶ whitelist gate: any ext-shared ⇒ skip; any unknown ⇒ skip;
+                                             any private/unstamped/out-of-vocab ⇒ skip; any dm ⇒ prefs-only;
+                                             else full (access 'org'). Skip: retract stale artifacts +
+                                             extraction-skip telemetry + STOP.
+3. readKnowledgeLog(taskId)              ──▶ transcript
+4. extractAuthorUsers(transcript)        ──▶ UserRef[] AUTHORS only (Slack IDs + names); cli:<taskId> fallback when none
+5. readUser() for ALL author users + readIndexMarkdown ──▶ existing user memory + entity index
+6. runExtraction({...access...}, allowedUserIds=authors) ──▶ Sonnet side-agent (maxTurns: 1, no tools)
+7. evidence validation (buildMsgAuthorMap): every user_update must cite msg:<ts> ids authored by its
+   target user, else dropped + user-update-dropped telemetry; then
+   applyUserUpdatesWithIdentity(userId, name, updates) per author user
+   — prefs-only mode STOPS here: retract stale artifacts + extraction-prefs-only telemetry.
+8. applyEntityUpdate(update, taskId) per entity (resolve-or-create, auto touched_by) → rebuildIndex()
+9. writeSummary() ──▶ workdir/memory/tasks/<taskId>/summary.md (frontmatter incl. access: org stamp +
+   Memory Updates + Related Tasks selected from org activity rows only)
+10. appendActivity({...access: org}) + trimActivity(50)
 
-(If a user file or the entity count overflows its soft cap in steps 6–7, runHousekeeping(target) — including target 'entities' — is enqueued on the same queue. See "Housekeeping".)
+(If a user file or the entity count overflows its soft cap in steps 7–8, runHousekeeping(target) — including target 'entities' — is enqueued on the same queue. See "Housekeeping".)
 ```
 
 ### The Extraction Side-Agent
@@ -286,13 +308,13 @@ aliases: []
 ```markdown
 # Recent Activity
 
-| Date | Task ID | Summary | Domain | User |
-|------|---------|---------|--------|------|
-| 2026-04-10 | task-20260410-1000-abc | Fixed login validation bug | engineering | U07ABC123 |
-| 2026-04-09 | task-20260409-1530-def | Updated blog copy | marketing | U05DEF456 |
+| Date | Task ID | Summary | Domain | User | Access |
+|------|---------|---------|--------|------|--------|
+| 2026-04-10 | task-20260410-1000-abc | Fixed login validation bug | engineering | U07ABC123 | org |
+| 2026-04-09 | task-20260409-1530-def | Planned quarterly roadmap | engineering | U05DEF456 | dm |
 ```
 
-`appendActivity()` inserts new rows immediately after the separator (newest first). `trimActivity(50)` rewrites the file with only the most recent 50 rows when the cap is exceeded.
+`appendActivity()` inserts new rows immediately after the separator (newest first). `trimActivity(50)` rewrites the file with only the most recent 50 rows when the cap is exceeded. The `Access` column carries the task's access class (see "Confidentiality & Authorization"); legacy 5-column rows still parse, with no class — consumers treat that as restricted.
 
 ### `tasks/<taskId>/summary.md`
 
@@ -306,10 +328,12 @@ created_at: 2026-04-10T10:00:00Z
 updated_at: 2026-04-10T10:30:00Z
 domain: engineering
 extraction_at: 2026-04-10T10:31:00Z
+access: org
 links:
   slack:
     - channel_id: C0123
       thread_id: "1700000000.000100"
+      visibility: public
   github:
     - url: https://github.com/acme/api/pull/42
   cli:
@@ -487,14 +511,19 @@ The layer's safety guards close seven gaps found in review; each is enforced in 
 | Lost extraction on crash | `pending-extractions.md` persists in-flight task IDs; `initMemory()` drains on startup. |
 | Prompt injection via transcripts | Extractor prompt marks transcript as untrusted data; sanitizer rejects instruction-shaped lines, role-play directives, and secret-shaped tokens. |
 | "Learned from this task" Slack noise | Slack post removed entirely; the audit trail lives in `tasks/<taskId>/summary.md`. |
-| Only first user's memory loaded | All involved users' memory loaded in parallel; `parseExtractionResponse` drops updates for users outside the allowed set. |
+| Only first user's memory loaded | All author users' memory loaded in parallel; `parseExtractionResponse` drops updates for users outside the allowed set. |
+| Unscoped pull reads (any agent could read any task's transcript / any user's bullets) | Episodic reads authorized against the persisted `access:` stamp; search corpus pre-filtered; denials content-free and recorded. See "Confidentiality & Authorization". |
+| Mention-writable user memory | Ownership keys on transcript AUTHORSHIP — mention-only users are not writable, injectable, or searchable. |
+| Private-channel content entering the store | Extraction confidentiality gate: private/ext-shared tasks produce zero artifacts (skip telemetry keeps the loss measurable). |
+| Memory exfiltration via Slack-Connect channels | Ext-shared tasks get no memory surface: no tools registered, no injection, per-call deny backstop. |
 
 ## Future Enhancements (Not in scope)
 
 The layer stays **keyword-scored** (push selection and pull search share one lexical tokenizer). The sequenced plan for what comes next — write-path rewrite (dedupe + forgetting), buy-vs-build spike, selection embeddings — lives in [`docs/proposals/memory-v2-roadmap.md`](../proposals/memory-v2-roadmap.md). Smaller deferred ideas not on that roadmap:
 
 - **Domain-directory splitting** — promote `domain` from a frontmatter dimension to an `entities/<domain>/` split once entity volume makes a flat directory unwieldy.
-- **Channel visibility / access control** — public-vs-private filtering at retrieval time. Deferred until a concrete leak surface is identified.
+- **Retroactive store cleanup** — a script deleting pre-policy private/DM-derived summaries and activity rows. Postponed: legacy artifacts are read-denied (no `access:` stamp) and dropped from injection; revisit if the enablement store review surfaces violations at scale.
+- **Per-fact entity provenance** — tagging individual observations with source visibility. Deferred until store review or denial telemetry shows confidential facts landing on org-visible pages.
 - **Slack reaction → revert** — let users react ❌ to remove just-applied entries.
 
 ## Related Documentation

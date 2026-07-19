@@ -12,7 +12,7 @@
 import type { WorstCaseBound } from './bound.js';
 import type { ReadingList } from './reading-list.js';
 import type { StoreHealth, StoreHealthDelta, Distribution } from './store-health.js';
-import type { PullAggregate, SelectionAggregate } from './telemetry-agg.js';
+import type { ExtractionSkipAggregate, PrefsOnlyAggregate, PullAggregate, SelectionAggregate, UserUpdateDropAggregate } from './telemetry-agg.js';
 import type { RegressionResult } from './golden.js';
 import type { FunctionalRunResult, JudgeStamp } from './types.js';
 
@@ -23,6 +23,9 @@ export interface ReportInputs {
   delta?: StoreHealthDelta | null;
   selection: SelectionAggregate | null;
   pull: PullAggregate | null;
+  extractionSkips?: ExtractionSkipAggregate | null;
+  extractionPrefsOnly?: PrefsOnlyAggregate | null;
+  userUpdateDrops?: UserUpdateDropAggregate | null;
   telemetrySkipped: number;
   regression?: RegressionResult | null;
   bound: WorstCaseBound;
@@ -79,12 +82,24 @@ export function renderReportMarkdown(r: ReportInputs): string {
   if (r.pull) {
     L.push(`- Pull records: ${r.pull.records} across ${r.pull.tasks} task(s); hit rate ${r.pull.hitRate}, zero-result ${r.pull.zeroResultRate}`);
     L.push(`- By tool: ${Object.entries(r.pull.byTool).map(([t, n]) => `${t} ×${n}`).join(' · ')}`);
+    if (r.pull.denied > 0) {
+      L.push(`- Authorization denials: ${r.pull.denied} (${r.pull.deniedRate} of pull calls) — ${Object.entries(r.pull.denyReasons).map(([reason, n]) => `${reason} ×${n}`).join(' · ')}`);
+    }
     if (r.pull.storeGaps.length) {
       L.push('- Store gaps (zero-result searches):');
       for (const g of r.pull.storeGaps.slice(0, 20)) L.push(`  - ${JSON.stringify(g)}`);
     }
   } else {
     L.push('- Pull records: **absent** (read tools have not run against this snapshot)');
+  }
+  if (r.extractionSkips) {
+    L.push(`- Extraction skips (confidentiality gate): ${r.extractionSkips.records} across ${r.extractionSkips.tasks} task(s) — ${Object.entries(r.extractionSkips.byReason).map(([reason, n]) => `${reason} ×${n}`).join(' · ')}`);
+  }
+  if (r.extractionPrefsOnly) {
+    L.push(`- Prefs-only extractions (DM write lockdown): ${r.extractionPrefsOnly.records} across ${r.extractionPrefsOnly.tasks} task(s)${r.extractionPrefsOnly.retractions > 0 ? ` — ${r.extractionPrefsOnly.retractions} retracted stale artifacts` : ''}`);
+  }
+  if (r.userUpdateDrops) {
+    L.push(`- User updates dropped (evidence validation): ${r.userUpdateDrops.records} across ${r.userUpdateDrops.tasks} task(s) — ${Object.entries(r.userUpdateDrops.byUser).map(([u, n]) => `${u} ×${n}`).join(' · ')}`);
   }
   if (r.telemetrySkipped > 0) L.push(`- Skipped ${r.telemetrySkipped} unparseable/unknown-kind telemetry line(s)`);
   L.push('');

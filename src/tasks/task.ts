@@ -6,7 +6,7 @@
  */
 
 import { mkdir, writeFile } from 'fs/promises';
-import type { AgentName, SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, BranchState } from '../types/task.js';
+import type { AgentName, ChannelVisibility, SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, BranchState } from '../types/task.js';
 import { CLI_CHANNEL_KEY } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
 import { isPmAgent, isRepoAgent } from '../types/agent.js';
@@ -61,7 +61,7 @@ import { scheduleIdleCheck } from './recovery.js';
 import { scanAgentDefs, getAgentDef, getVisiblePeerIdsForSender, synthesizeDynamicAgentDef } from '../agents/registry.js';
 import type { AttachedRepo } from '../types/task.js';
 import { syncPlugins } from '../system/plugin-sync.js';
-import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, openDMChannel, getChannelInfo, getUserInfo, isExternalUser, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, openDMChannel, getChannelInfo, getChannelVisibility, getUserInfo, isExternalUser, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
 import { basename } from 'path';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
@@ -353,6 +353,7 @@ export class Task {
         channel_name: thread.channel.name,
         last_processed_ts: thread.currentMessageTs,
         url: buildThreadUrl(thread.channel.id, thread.threadId) ?? undefined,
+        ...(thread.visibility ? { visibility: thread.visibility } : {}),
       };
       this.metadata.default_channel ??= channelId;
 
@@ -372,6 +373,7 @@ export class Task {
     }
 
     existing.last_processed_ts = thread.currentMessageTs;
+    if (thread.visibility) existing.visibility = thread.visibility;
     this.debouncedSave();
     return { linkedNewThread: false };
   }
@@ -450,11 +452,16 @@ export class Task {
         this.logOutgoingMessage(sender, message, Task.formatSlackDest(existing.channel).display, existing.channel, footer);
         return existing.key;
       } else {
-        const userInfo = await getUserInfo(target.new_dm);
+        const [userInfo, visibility] = await Promise.all([
+          getUserInfo(target.new_dm),
+          // Never a static 'dm' literal: Slack Connect DMs are D-prefixed but
+          // ext-shared — classification must consult the API (memory authz).
+          getChannelVisibility(dmChannelId),
+        ]);
         const channelName = `DM with ${userInfo.realName}`;
         const ts = await postSlackMessage({ channel: dmChannelId, text: message, footer });
         if (!ts) return null; // dry-run
-        const key = this.registerSlackChannel(dmChannelId, ts, channelName);
+        const key = this.registerSlackChannel(dmChannelId, ts, channelName, visibility);
         const ch = this.metadata.channels[key] as SlackChannel;
         this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch, footer);
         return key;
@@ -463,10 +470,13 @@ export class Task {
 
     // New thread in a channel
     if (target?.new_thread) {
-      const channelInfo = await getChannelInfo(target.new_thread);
+      const [channelInfo, visibility] = await Promise.all([
+        getChannelInfo(target.new_thread),
+        getChannelVisibility(target.new_thread),
+      ]);
       const ts = await postSlackMessage({ channel: target.new_thread, text: message, footer });
       if (!ts) return null; // dry-run
-      const key = this.registerSlackChannel(target.new_thread, ts, channelInfo.name);
+      const key = this.registerSlackChannel(target.new_thread, ts, channelInfo.name, visibility);
       const ch = this.metadata.channels[key] as SlackChannel;
       this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch, footer);
       return key;
@@ -919,7 +929,12 @@ export class Task {
    * interactive approval prompts like edit-mode requests — reach Slack instead of
    * being dropped to the CLI log.
    */
-  private registerSlackChannel(channelId: string, threadTs: string, channelName: string): string {
+  private registerSlackChannel(
+    channelId: string,
+    threadTs: string,
+    channelName: string,
+    visibility?: ChannelVisibility,
+  ): string {
     const key = `slack:${channelId}:${threadTs}`;
     this.metadata.channels[key] = {
       type: 'slack',
@@ -928,6 +943,7 @@ export class Task {
       channel_name: channelName,
       last_processed_ts: threadTs,
       url: buildThreadUrl(channelId, threadTs) ?? undefined,
+      ...(visibility ? { visibility } : {}),
     };
     this.metadata.default_channel ??= key;
     this.debouncedSave();

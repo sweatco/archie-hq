@@ -56,7 +56,59 @@ vi.mock('../../tasks/persistence.js', () => ({
 import { buildMemoryTools, rankSearchHits, createMemoryToolsMcpServer, GREP_MAX_MATCHES, RESULT_MAX_CHARS } from '../tools.js';
 import { appendTelemetry, recordPull } from '../telemetry.js';
 
-const SPAWN = { taskId: 'task-spawn-1', agent: 'pm-agent' };
+// Caller ctx: Dana (U07ABC123) authors in the spawning task. Bob (U07BOB999)
+// is NOT on this task.
+const SPAWN = {
+  taskId: 'task-spawn-1',
+  agent: 'pm-agent',
+  authorUserIds: ['U07ABC123'],
+};
+
+/** Org-stamped summary frontmatter as buildSummaryMarkdown writes it. */
+function orgSummary(taskId: string, body: string): string {
+  return [
+    '---',
+    `task_id: ${taskId}`,
+    'access: org',
+    'links:',
+    '  slack:',
+    '    - channel_id: C0PUBLIC',
+    '      thread_id: "1"',
+    '      visibility: public',
+    'users:',
+    '  - id: U07ABC123',
+    '    display_name: "Dana"',
+    '---',
+    '',
+    '# Summary',
+    '',
+    body,
+    '',
+  ].join('\n');
+}
+
+/** v1 dm-stamped summary owned by Bob — denied like legacy under the revised policy. */
+function dmSummary(taskId: string, body: string): string {
+  return [
+    '---',
+    `task_id: ${taskId}`,
+    'access: dm',
+    'links:',
+    '  slack:',
+    '    - channel_id: D0BOBDM',
+    '      thread_id: "2"',
+    '      visibility: dm',
+    'users:',
+    '  - id: U07BOB999',
+    '    display_name: "Bob"',
+    '---',
+    '',
+    '# Summary',
+    '',
+    body,
+    '',
+  ].join('\n');
+}
 
 function entityMd(slug: string, opts: { scope?: string; status?: string; aliases?: string; facts?: string[]; relations?: string[]; summary?: string } = {}): string {
   return [
@@ -122,23 +174,45 @@ describe('memory read tools', () => {
       '- Prefers concise Slack updates about payments  <!-- touched: 2026-05-14 -->',
       '',
     ].join('\n'));
-    await mkdir(join(tasksDir, 'task-old-1'), { recursive: true });
-    await writeFile(join(tasksDir, 'task-old-1', 'summary.md'), [
+    await writeFile(join(usersDir, 'U07BOB999.md'), [
       '---',
-      'task_id: task-old-1',
+      'slack_user_id: U07BOB999',
+      'display_name: "Bob"',
+      'aliases: []',
+      '---',
+      '## Communication',
+      '- Loves detailed stripe payments postmortems  <!-- touched: 2026-05-14 -->',
+      '',
+    ].join('\n'));
+    await mkdir(join(tasksDir, 'task-old-1'), { recursive: true });
+    await writeFile(
+      join(tasksDir, 'task-old-1', 'summary.md'),
+      orgSummary('task-old-1', 'Fixed stripe webhook retries in the payment flow.'),
+    );
+    await mkdir(join(tasksDir, 'task-dm-bob'), { recursive: true });
+    await writeFile(
+      join(tasksDir, 'task-dm-bob', 'summary.md'),
+      dmSummary('task-dm-bob', 'Bob planned the quarterly payments roadmap privately.'),
+    );
+    await mkdir(join(tasksDir, 'task-legacy-1'), { recursive: true });
+    await writeFile(join(tasksDir, 'task-legacy-1', 'summary.md'), [
+      '---',
+      'task_id: task-legacy-1',
       '---',
       '',
       '# Summary',
       '',
-      'Fixed stripe webhook retries in the payment flow.',
+      'Legacy pre-policy summary about stripe payments.',
       '',
     ].join('\n'));
+    // Activity: legacy 5-column row (parse tolerance) + a 6-column dm row.
     await writeFile(activityPath, [
       '# Recent Activity',
       '',
-      '| Date | Task ID | Summary | Domain | User |',
-      '|------|---------|---------|--------|------|',
+      '| Date | Task ID | Summary | Domain | User | Access |',
+      '|------|---------|---------|--------|------|--------|',
       '| 2026-06-02 | task-old-1 | Fixed stripe webhook retries | engineering | U07ABC123 |',
+      '| 2026-06-03 | task-dm-bob | Payments roadmap planning | engineering | U07BOB999 | dm |',
       '',
     ].join('\n'));
   });
@@ -200,6 +274,44 @@ describe('memory read tools', () => {
     expect(records[0].returned).toContain('payment-service');
     expect(records[0].zeroResult).toBe(false);
     expect(records[0].agent).toBe('pm-agent');
+  });
+
+  it('search_memory never surfaces non-author users or restricted tasks', async () => {
+    const tools = buildMemoryTools(SPAWN);
+    // 'stripe payments' also matches Bob's preference bullet, Bob's dm-task
+    // summary, and the legacy (unstamped) summary — none may appear.
+    const res: any = await tools.searchMemory.handler({ query: 'stripe payments roadmap' } as never, {});
+    const text = res.content[0].text as string;
+    expect(text).not.toContain('U07BOB999');
+    expect(text).not.toContain('postmortems'); // Bob's bullet content
+    expect(text).not.toContain('task-dm-bob');
+    expect(text).not.toContain('roadmap planning'); // dm activity row
+    expect(text).not.toContain('task-legacy-1');
+  });
+
+  it('search_memory surfaces an authoring user\'s preferences but never a v1 dm-stamped summary', async () => {
+    const tools = buildMemoryTools({
+      taskId: 'task-with-bob',
+      agent: 'pm-agent',
+      authorUserIds: ['U07BOB999'],
+    });
+    const res: any = await tools.searchMemory.handler({ query: 'payments roadmap postmortems' } as never, {});
+    const text = res.content[0].text as string;
+    expect(text).toContain('[user] U07BOB999');
+    // v1 dm grant is retired: even Bob's own presence unlocks nothing episodic.
+    expect(text).not.toContain('task-dm-bob');
+  });
+
+  it('search_memory for a locked (ext-shared) caller is denied entirely — entity hits included', async () => {
+    const tools = buildMemoryTools({ ...SPAWN, extShared: true });
+    const res: any = await tools.searchMemory.handler({ query: 'stripe payments retries' } as never, {});
+    const text = res.content[0].text as string;
+    expect(res.isError).toBeUndefined(); // policy outcome, not an error
+    expect(text).toContain('Memory tools are unavailable');
+    expect(text).not.toContain('payment-service');
+    const records = await readTelemetry(SPAWN.taskId);
+    expect(records[0].denied).toBe(true);
+    expect(records[0].denyReason).toBe('ext-shared');
   });
 
   it('zero-result search is a normal response and a recorded store gap', async () => {
@@ -288,6 +400,55 @@ describe('memory read tools', () => {
     expect(res.content[0].text).toContain('No summary found');
   });
 
+  it('read_task_summary denies a foreign dm task with no content and a denied record', async () => {
+    const tools = buildMemoryTools(SPAWN);
+    const res: any = await tools.readTaskSummary.handler({ taskId: 'task-dm-bob' } as never, {});
+    expect(res.isError).toBeUndefined(); // policy outcome, not a retryable error
+    const text = res.content[0].text as string;
+    expect(text).toContain('not available to this task');
+    expect(text).not.toContain('roadmap'); // zero target content
+    const records = await readTelemetry(SPAWN.taskId);
+    expect(records[0].denied).toBe(true);
+    expect(records[0].denyReason).toBe('no-access-stamp');
+  });
+
+  it('read_task_summary denies legacy summaries without an access stamp (fail-closed)', async () => {
+    const tools = buildMemoryTools(SPAWN);
+    const res: any = await tools.readTaskSummary.handler({ taskId: 'task-legacy-1' } as never, {});
+    expect(res.content[0].text).not.toContain('Legacy pre-policy');
+    const records = await readTelemetry(SPAWN.taskId);
+    expect(records[0].denyReason).toBe('no-access-stamp');
+  });
+
+  it('read_task_summary denies a v1 dm-stamped task even when its owner authors in the calling task', async () => {
+    const viaAuthor = buildMemoryTools({ taskId: 'task-y', agent: 'pm-agent', authorUserIds: ['U07BOB999'] });
+    const res: any = await viaAuthor.readTaskSummary.handler({ taskId: 'task-dm-bob' } as never, {});
+    expect(res.content[0].text).not.toContain('quarterly payments roadmap');
+    expect(res.content[0].text).toContain('not available to this task');
+  });
+
+  it('old-shape ctx (taskId+agent only) still reads org tasks but never dm tasks', async () => {
+    const tools = buildMemoryTools({ taskId: 'task-spawn-1', agent: 'pm-agent' });
+    const org: any = await tools.readTaskSummary.handler({ taskId: 'task-old-1' } as never, {});
+    expect(org.content[0].text).toContain('Fixed stripe webhook retries');
+    const dm: any = await tools.readTaskSummary.handler({ taskId: 'task-dm-bob' } as never, {});
+    expect(dm.content[0].text).not.toContain('roadmap');
+  });
+
+  it('locked callers are denied every tool — org targets, entities, and self reads included', async () => {
+    const tools = buildMemoryTools({ ...SPAWN, extShared: true });
+    const org: any = await tools.readTaskSummary.handler({ taskId: 'task-old-1' } as never, {});
+    expect(org.content[0].text).not.toContain('stripe webhook');
+    const entity: any = await tools.readEntity.handler({ slug: 'payment-service' } as never, {});
+    expect(entity.content[0].text).not.toContain('idempotency');
+    knowledgeLogs.set(SPAWN.taskId, 'my own line\n');
+    const self: any = await tools.grepTaskLog.handler({ taskId: SPAWN.taskId, pattern: 'own' } as never, {});
+    expect(self.content[0].text).not.toContain('my own line');
+    const records = await readTelemetry(SPAWN.taskId);
+    expect(records).toHaveLength(3);
+    for (const r of records) expect(r.denyReason).toBe('ext-shared');
+  });
+
   // ---- grep_task_log ----
 
   it('grep_task_log returns line-numbered case-insensitive matches in an untrusted-data wrapper', async () => {
@@ -310,19 +471,45 @@ describe('memory read tools', () => {
     expect(text.split('\n').filter((l) => /^\d+: /.test(l))).toHaveLength(GREP_MAX_MATCHES);
   });
 
-  it('grep_task_log handles a missing log and an invalid id', async () => {
+  it('grep_task_log denies non-self tasks without a summary (fail-closed) and rejects invalid ids', async () => {
     const tools = buildMemoryTools(SPAWN);
-    const miss: any = await tools.grepTaskLog.handler({ taskId: 'task-none', pattern: 'x' } as never, {});
-    expect(miss.content[0].text).toContain('No knowledge log');
+    // task-none has no summary → no grant → denied before the log is read.
+    knowledgeLogs.set('task-none', 'should never be served');
+    const miss: any = await tools.grepTaskLog.handler({ taskId: 'task-none', pattern: 'served' } as never, {});
+    expect(miss.content[0].text).toContain('not available to this task');
+    expect(miss.content[0].text).not.toContain('should never be served');
     const bad: any = await tools.grepTaskLog.handler({ taskId: 'a/b', pattern: 'x' } as never, {});
     expect(bad.isError).toBe(true);
+  });
+
+  it('grep_task_log always serves the caller its own log, even with no summary', async () => {
+    knowledgeLogs.set(SPAWN.taskId, 'my own investigation line\n');
+    const tools = buildMemoryTools(SPAWN);
+    const res: any = await tools.grepTaskLog.handler({ taskId: SPAWN.taskId, pattern: 'investigation' } as never, {});
+    expect(res.content[0].text).toContain('1: my own investigation line');
+    // And a self-task with no log at all is a plain miss, not a denial.
+    knowledgeLogs.delete(SPAWN.taskId);
+    const miss: any = await tools.grepTaskLog.handler({ taskId: SPAWN.taskId, pattern: 'x' } as never, {});
+    expect(miss.content[0].text).toContain('No knowledge log');
+  });
+
+  it('grep_task_log denies a foreign dm task before the raw log is touched', async () => {
+    knowledgeLogs.set('task-dm-bob', 'secret quarterly numbers: 42\n');
+    const tools = buildMemoryTools(SPAWN);
+    const res: any = await tools.grepTaskLog.handler({ taskId: 'task-dm-bob', pattern: 'secret' } as never, {});
+    const text = res.content[0].text as string;
+    expect(text).toContain('not available to this task');
+    expect(text).not.toContain('42');
+    const records = await readTelemetry(SPAWN.taskId);
+    expect(records[0].denied).toBe(true);
+    expect(records[0].denyReason).toBe('no-access-stamp');
   });
 
   // ---- bounds / fail-safety / surface ----
 
   it('clamps oversized results with an explicit marker', async () => {
     await mkdir(join(tasksDir, 'task-big'), { recursive: true });
-    await writeFile(join(tasksDir, 'task-big', 'summary.md'), `# Summary\n\n${'x'.repeat(RESULT_MAX_CHARS + 500)}`);
+    await writeFile(join(tasksDir, 'task-big', 'summary.md'), orgSummary('task-big', 'x'.repeat(RESULT_MAX_CHARS + 500)));
     const tools = buildMemoryTools(SPAWN);
     const res: any = await tools.readTaskSummary.handler({ taskId: 'task-big' } as never, {});
     expect(res.content[0].text).toContain('[result truncated');

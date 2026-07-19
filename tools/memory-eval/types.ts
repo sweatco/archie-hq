@@ -43,11 +43,48 @@ export interface PullRecord {
   returned: string[];
   resultCount: number;
   zeroResult: boolean;
+  /** Present when the call was refused by the authorization policy. */
+  denied?: boolean;
+  denyReason?: string;
+}
+
+/** A parsed extraction-skip record (`kind: "extraction-skip"`, confidentiality gate). */
+export interface ExtractionSkipRecord {
+  v: number;
+  kind: 'extraction-skip';
+  ts: string;
+  taskId: string;
+  reason: string;
+  /** True when the (re-)completion retracted a prior completion's artifacts. */
+  retracted?: boolean;
+}
+
+/** A parsed prefs-only record (`kind: "extraction-prefs-only"`, DM write lockdown). */
+export interface ExtractionPrefsOnlyRecord {
+  v: number;
+  kind: 'extraction-prefs-only';
+  ts: string;
+  taskId: string;
+  /** True when the (re-)completion retracted a prior completion's artifacts. */
+  retracted?: boolean;
+}
+
+/** A parsed drop record (`kind: "user-update-dropped"`, evidence validation). */
+export interface UserUpdateDroppedRecord {
+  v: number;
+  kind: 'user-update-dropped';
+  ts: string;
+  taskId: string;
+  targetUser: string;
+  citedIds: string[];
 }
 
 export interface TelemetryReadResult {
   selection: SelectionRecord[];
   pull: PullRecord[];
+  extractionSkips: ExtractionSkipRecord[];
+  extractionPrefsOnly: ExtractionPrefsOnlyRecord[];
+  userUpdateDrops: UserUpdateDroppedRecord[];
   /** Lines that failed to parse or carried an unknown kind — counted, skipped. */
   skipped: number;
 }

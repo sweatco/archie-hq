@@ -204,11 +204,18 @@ export async function loadMetadata(taskId: string): Promise<TaskMetadata | null>
 }
 
 /**
- * Format a log entry for the shared knowledge log
+ * Format a log entry for the shared knowledge log.
+ *
+ * Multi-line message bodies are FRAMED: continuation lines are indented two
+ * spaces so no line originating from a body can start at column 0 with `[…]`
+ * and match the source-line shape (`AUTHOR_LINE_RE` in memory/lifecycle.ts is
+ * line-start-anchored). Without this, a crafted message body could mint a fake
+ * author line and forge its way into the memory ownership set.
  */
 function formatLogEntry(entry: LogEntry): string {
   const typeStr = entry.type ? ` [${entry.type}]` : '';
-  return `[${entry.timestamp}] [${entry.source}]${typeStr} ${entry.message}\n`;
+  const framedMessage = entry.message.replace(/\n/g, '\n  ');
+  return `[${entry.timestamp}] [${entry.source}]${typeStr} ${framedMessage}\n`;
 }
 
 /**

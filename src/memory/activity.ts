@@ -14,15 +14,24 @@ import type { ActivityEntry } from './types.js';
 
 const HEADER = `# Recent Activity
 
-| Date | Task ID | Summary | Domain | User |
-|------|---------|---------|--------|------|`;
+| Date | Task ID | Summary | Domain | User | Access |
+|------|---------|---------|--------|------|--------|`;
 
-const ROW_REGEX = /^\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|$/;
+// Current 6-column shape; legacy 5-column rows (pre access-column) still parse,
+// with `access` undefined — consumers treat that as restricted (fail-closed).
+const ROW_REGEX_6 = /^\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]*)\s*\|$/;
+const ROW_REGEX_5 = /^\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|$/;
 const SEPARATOR_REGEX = /^\|[-\s|]+\|$/;
 
 function parseRow(line: string): ActivityEntry | null {
-  const match = ROW_REGEX.exec(line);
-  if (!match) return null;
+  let access: string | undefined;
+  let match = ROW_REGEX_6.exec(line);
+  if (match) {
+    access = match[6].trim();
+  } else {
+    match = ROW_REGEX_5.exec(line);
+    if (!match) return null;
+  }
 
   const date = match[1].trim();
   // Skip header row and separator row
@@ -34,16 +43,26 @@ function parseRow(line: string): ActivityEntry | null {
     summary: match[3].trim(),
     domain: match[4].trim(),
     user: match[5].trim(),
+    ...(access === 'org' || access === 'dm' ? { access } : {}),
   };
 }
 
 function entryToRow(entry: ActivityEntry): string {
-  return `| ${entry.date} | ${entry.taskId} | ${entry.summary} | ${entry.domain} | ${entry.user} |`;
+  return `| ${entry.date} | ${entry.taskId} | ${entry.summary} | ${entry.domain} | ${entry.user} | ${entry.access ?? ''} |`;
 }
 
 function buildFile(entries: ActivityEntry[]): string {
   const rows = entries.map(entryToRow).join('\n');
   return rows.length > 0 ? `${HEADER}\n${rows}\n` : `${HEADER}\n`;
+}
+
+/**
+ * Render entries as the activity markdown table (header + rows). Injection
+ * uses this to re-render a confidentiality-filtered view instead of injecting
+ * the raw file.
+ */
+export function renderActivityTable(entries: ActivityEntry[]): string {
+  return buildFile(entries);
 }
 
 /** Parse the markdown table and return all data entries. */
@@ -111,6 +130,32 @@ export async function appendActivity(entry: ActivityEntry): Promise<void> {
   const newSep = filtered.findIndex((line) => SEPARATOR_REGEX.test(line.trimEnd()));
   filtered.splice(newSep + 1, 0, entryToRow(clean));
   await writeFile(path, filtered.join('\n'), 'utf-8');
+}
+
+/**
+ * Remove the row for one task, if present. Returns true when a row was
+ * removed. Used by the extraction gate's retraction path: a downgraded
+ * re-completion (org task gained a DM/private/ext-shared channel) must not
+ * leave its earlier activity row advertising the task. Callers run inside the
+ * lifecycle's serialized write queue.
+ */
+export async function removeActivity(taskId: string): Promise<boolean> {
+  const path = getRecentActivityPath();
+  let content: string;
+  try {
+    content = await readFile(path, 'utf-8');
+  } catch {
+    return false;
+  }
+
+  const lines = content.split('\n');
+  const kept = lines.filter((line) => {
+    const parsed = parseRow(line.trimEnd());
+    return !parsed || parsed.taskId !== taskId;
+  });
+  if (kept.length === lines.length) return false;
+  await writeFile(path, kept.join('\n'), 'utf-8');
+  return true;
 }
 
 /** Keep only the newest maxEntries entries. Rewrites the file if trimming is needed. */

@@ -653,8 +653,11 @@ async function sendSharedChannelWarnings(
   const ch = task.metadata.channels[channelKey];
   if (!ch || ch.type !== 'slack') return;
 
-  // Snapshot isShared for observability. Runtime decisions still use isChannelShared cache.
+  // Snapshot isShared (observability) + visibility (memory-layer authz stamp;
+  // missing stamp = 'private', fail-closed). Runtime warning decisions still
+  // use the isChannelShared cache.
   ch.isShared = shared;
+  if (thread.visibility) ch.visibility = thread.visibility;
 
   if (!shared) {
     task.debouncedSave();

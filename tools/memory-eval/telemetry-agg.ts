@@ -11,10 +11,24 @@
 import { readFile, readdir } from 'fs/promises';
 import { join } from 'path';
 import { distribution, type Distribution } from './store-health.js';
-import type { PullRecord, SelectionRecord, TelemetryReadResult } from './types.js';
+import type {
+  ExtractionPrefsOnlyRecord,
+  ExtractionSkipRecord,
+  PullRecord,
+  SelectionRecord,
+  TelemetryReadResult,
+  UserUpdateDroppedRecord,
+} from './types.js';
 
 export async function readAllTelemetry(tasksDir: string): Promise<TelemetryReadResult> {
-  const result: TelemetryReadResult = { selection: [], pull: [], skipped: 0 };
+  const result: TelemetryReadResult = {
+    selection: [],
+    pull: [],
+    extractionSkips: [],
+    extractionPrefsOnly: [],
+    userUpdateDrops: [],
+    skipped: 0,
+  };
   let taskDirs: string[];
   try {
     taskDirs = await readdir(tasksDir);
@@ -39,6 +53,9 @@ export async function readAllTelemetry(tasksDir: string): Promise<TelemetryReadR
       }
       if (rec.kind === undefined) result.selection.push(rec as SelectionRecord);
       else if (rec.kind === 'pull') result.pull.push(rec as PullRecord);
+      else if (rec.kind === 'extraction-skip') result.extractionSkips.push(rec as ExtractionSkipRecord);
+      else if (rec.kind === 'extraction-prefs-only') result.extractionPrefsOnly.push(rec as ExtractionPrefsOnlyRecord);
+      else if (rec.kind === 'user-update-dropped') result.userUpdateDrops.push(rec as UserUpdateDroppedRecord);
       else result.skipped++;
     }
   }
@@ -64,6 +81,16 @@ export interface PullAggregate {
   zeroResultRate: number;
   /** Zero-result search queries — the store-gap list. */
   storeGaps: string[];
+  /** Authorization denials (subset of records). */
+  denied: number;
+  deniedRate: number;
+  denyReasons: Record<string, number>;
+}
+
+export interface ExtractionSkipAggregate {
+  records: number;
+  tasks: number;
+  byReason: Record<string, number>;
 }
 
 export function aggregateSelection(records: SelectionRecord[]): SelectionAggregate | null {
@@ -95,13 +122,21 @@ export function aggregateSelection(records: SelectionRecord[]): SelectionAggrega
 export function aggregatePull(records: PullRecord[]): PullAggregate | null {
   if (records.length === 0) return null;
   const byTool: Record<string, number> = {};
+  const denyReasons: Record<string, number> = {};
   const gaps: string[] = [];
   let zero = 0;
+  let denied = 0;
   for (const r of records) {
     byTool[r.tool] = (byTool[r.tool] ?? 0) + 1;
+    if (r.denied) {
+      denied++;
+      const reason = r.denyReason ?? 'unknown';
+      denyReasons[reason] = (denyReasons[reason] ?? 0) + 1;
+    }
     if (r.zeroResult) {
       zero++;
-      if (r.tool === 'search_memory' && typeof r.args?.query === 'string') gaps.push(r.args.query);
+      // Denied calls are policy outcomes, not store gaps.
+      if (!r.denied && r.tool === 'search_memory' && typeof r.args?.query === 'string') gaps.push(r.args.query);
     }
   }
   return {
@@ -111,5 +146,52 @@ export function aggregatePull(records: PullRecord[]): PullAggregate | null {
     hitRate: Math.round(((records.length - zero) / records.length) * 1000) / 1000,
     zeroResultRate: Math.round((zero / records.length) * 1000) / 1000,
     storeGaps: [...new Set(gaps)],
+    denied,
+    deniedRate: Math.round((denied / records.length) * 1000) / 1000,
+    denyReasons,
+  };
+}
+
+export function aggregateExtractionSkips(records: ExtractionSkipRecord[]): ExtractionSkipAggregate | null {
+  if (records.length === 0) return null;
+  const byReason: Record<string, number> = {};
+  for (const r of records) byReason[r.reason] = (byReason[r.reason] ?? 0) + 1;
+  return {
+    records: records.length,
+    tasks: new Set(records.map((r) => r.taskId)).size,
+    byReason,
+  };
+}
+
+export interface PrefsOnlyAggregate {
+  records: number;
+  tasks: number;
+  /** Re-completions that retracted a prior completion's artifacts. */
+  retractions: number;
+}
+
+export function aggregatePrefsOnly(records: ExtractionPrefsOnlyRecord[]): PrefsOnlyAggregate | null {
+  if (records.length === 0) return null;
+  return {
+    records: records.length,
+    tasks: new Set(records.map((r) => r.taskId)).size,
+    retractions: records.filter((r) => r.retracted).length,
+  };
+}
+
+export interface UserUpdateDropAggregate {
+  records: number;
+  tasks: number;
+  byUser: Record<string, number>;
+}
+
+export function aggregateUserUpdateDrops(records: UserUpdateDroppedRecord[]): UserUpdateDropAggregate | null {
+  if (records.length === 0) return null;
+  const byUser: Record<string, number> = {};
+  for (const r of records) byUser[r.targetUser] = (byUser[r.targetUser] ?? 0) + 1;
+  return {
+    records: records.length,
+    tasks: new Set(records.map((r) => r.taskId)).size,
+    byUser,
   };
 }
