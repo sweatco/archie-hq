@@ -183,7 +183,7 @@ DM-task callers keep the full org READ surface — injection and all four tools 
 
 Authorization keys on stamped channel visibility, stable DM channel ids, and transcript authorship — never on Slack membership rosters (`conversations.members` is not consulted).
 
-Retroactive cleanup of pre-policy artifacts is deliberately postponed: legacy summaries have no `access:` stamp and first-iteration `access: dm` summaries parse to the same denial; legacy and `dm`-classed activity rows never render (injection filters to `access: org` rows only). Entity pages are covered by the enablement-gate human store review; an optional one-off script may delete v1 dm-stamped artifacts from dev stores.
+Retroactive cleanup of pre-policy artifacts is deliberately postponed: legacy summaries have no `access:` stamp and first-iteration `access: dm` summaries parse to the same denial; legacy and `dm`-classed activity rows never render (injection filters to `access: org` rows only). Entity pages are covered by the enablement-gate human store review; an optional one-off script may delete v1 dm-stamped artifacts from dev stores. A known, accepted residue of retraction: entity facts distilled by a pre-downgrade completion stay on their pages (per-fact provenance is a non-goal), including the `touched_by [[taskId]]` edges — so a retracted task's id and its entity associations remain visible via injected pages and `read_entity`, while its content stays unreachable (summary deleted, grep denied; task ids themselves are not treated as secret).
 
 ## Telemetry
 
@@ -358,7 +358,7 @@ Investigated and fixed the login bug. Root cause was missing input validation in
 
 ## Related Tasks
 
-- [task-20260409-1530-def](./task-20260409-1530-def.md) — Hardened session token rotation (engineering)
+- [task-20260409-1530-def](../task-20260409-1530-def/summary.md) — Hardened session token rotation (engineering)
 ```
 
 Related tasks (up to 5) are selected **by shared entity first**: `selectRelatedTasksByEntity()` reads the entities this task touched and links other tasks that the same entities are `touched_by`. When there is no entity overlap it falls back to the lexical token-overlap over the activity index (org rows only — prefs-only tasks write no rows, so DM tasks never appear).

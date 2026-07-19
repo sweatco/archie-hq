@@ -587,6 +587,32 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     expect(prefsOnly[0].retracted).toBe(true);
   });
 
+  it('a downgraded re-completion retracts even when the extractor fails', async () => {
+    // First completion: all-public → full extraction with access: org.
+    handleTaskCompleted(TASK_ID);
+    await drain();
+    expect(existsSync(join(memoryDir, 'tasks', TASK_ID, 'summary.md'))).toBe(true);
+
+    // Task reopens with a DM attached; this time extraction returns null
+    // (routine LLM failure). Retraction must not depend on extraction success
+    // — the stale org grant would otherwise survive permanently (no retry).
+    await writeMetadata({
+      'slack:C1:1234': { type: 'slack', thread_id: '1234', channel_id: 'C1', channel_name: 'general', last_processed_ts: '1', visibility: 'public' },
+      'slack:D7:2': { type: 'slack', thread_id: '2', channel_id: 'D7', channel_name: 'DM with Dana', last_processed_ts: '2', visibility: 'dm' },
+    });
+    vi.mocked(runExtraction).mockResolvedValueOnce(null);
+    handleTaskCompleted(TASK_ID);
+    await drain();
+
+    expect(existsSync(join(memoryDir, 'tasks', TASK_ID, 'summary.md'))).toBe(false);
+    expect(await readFile(activityPath, 'utf-8')).not.toContain(TASK_ID);
+    const records = (await readFile(join(memoryDir, 'tasks', TASK_ID, 'telemetry.jsonl'), 'utf-8'))
+      .trim().split('\n').map((l) => JSON.parse(l));
+    const prefsOnly = records.filter((r) => r.kind === 'extraction-prefs-only');
+    expect(prefsOnly).toHaveLength(1);
+    expect(prefsOnly[0].retracted).toBe(true);
+  });
+
   it('unknown-stamped channels skip extraction with reason unknown', async () => {
     await writeMetadata({
       'slack:C1:1234': { type: 'slack', thread_id: '1234', channel_id: 'C1', channel_name: 'general', last_processed_ts: '1', visibility: 'unknown' },

@@ -124,6 +124,19 @@ async function processExtraction(taskId: string): Promise<void> {
   const prefsOnly = classification.mode === 'prefs-only';
   const access: TaskAccess = classification.mode === 'full' ? classification.access : 'dm';
 
+  // Prefs-only retraction happens HERE, at classification time — exactly like
+  // the skip branch — not after extraction succeeds. The early returns below
+  // (empty transcript, extractor failure) never retry (the completion is
+  // dequeued), so retracting late would leave a downgraded re-completion's
+  // stale `access: org` stamp granting reads over a log that has since
+  // absorbed DM lines. The sensor records at the same point: a prefs-only
+  // completion is measurable even when its extraction later fails.
+  let prefsOnlyRetracted = false;
+  if (prefsOnly) {
+    prefsOnlyRetracted = await retractEpisodicArtifacts(taskId);
+    await recordExtractionPrefsOnly(taskId, prefsOnlyRetracted);
+  }
+
   const transcript = await readKnowledgeLog(taskId);
   if (!transcript.trim()) {
     logger.warn('memory', `processExtraction: empty transcript for ${taskId}`);
@@ -205,13 +218,11 @@ async function processExtraction(taskId: string): Promise<void> {
   // DM write lockdown (prefs-only): user-preference updates are the ONLY
   // output applied — no summary, no activity row, no entity updates, no
   // Related Tasks participation, regardless of what the extractor returned.
-  // A previous full completion's artifacts are retracted (see gate comment).
+  // Retraction + telemetry already happened at classification time above.
   if (prefsOnly) {
-    const retracted = await retractEpisodicArtifacts(taskId);
-    await recordExtractionPrefsOnly(taskId, retracted);
     scheduleHousekeeping(housekeepingTargets);
     logger.system(
-      `[memory] Prefs-only extraction complete for ${taskId} (DM write lockdown${retracted ? '; stale artifacts retracted' : ''})`,
+      `[memory] Prefs-only extraction complete for ${taskId} (DM write lockdown${prefsOnlyRetracted ? '; stale artifacts retracted' : ''})`,
     );
     return;
   }
@@ -749,7 +760,9 @@ export async function selectRelatedTasksByEntity(
 
 function renderRelatedTasks(related: ActivityEntry[]): string {
   if (related.length === 0) return '_no related tasks found_';
+  // Summaries live at memory/tasks/<taskId>/summary.md; relative to this
+  // summary's own directory the sibling task is one level up.
   return related
-    .map((e) => `- [${e.taskId}](./${e.taskId}.md) — ${e.summary}${e.domain ? ` (${e.domain})` : ''}`)
+    .map((e) => `- [${e.taskId}](../${e.taskId}/summary.md) — ${e.summary}${e.domain ? ` (${e.domain})` : ''}`)
     .join('\n');
 }
