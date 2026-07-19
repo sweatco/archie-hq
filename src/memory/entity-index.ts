@@ -8,8 +8,11 @@
  *
  * Selection is PUSH: given the spawn context (repo/plugin + participating
  * users + task title) we deterministically pick which full entity pages to
- * inject — always including `scope: org` entities, expanding one hop along the
- * wikilink graph, and bounding the result. No agent-callable query tool.
+ * inject — relevance-gated candidates only (a page of any scope needs a
+ * signal), one hop of wikilink expansion, then per-class budgets (`orgMax`
+ * for `scope: org`, `max` for the rest) as ceilings with recency tiebreaks.
+ * The pull path complements this: `search_memory` (tools.ts) shares this
+ * module's `tokenize`, so pull-vs-push deltas indict budgets, not the scorer.
  */
 
 import { readFile, writeFile, mkdir } from 'fs/promises';
