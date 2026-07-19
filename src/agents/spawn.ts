@@ -205,10 +205,6 @@ export function deriveMemoryToolsCtx(
     taskId,
     agent: agentId,
     authorUserIds: users.map((u) => u.userId),
-    // Any positive signal locks down: the stamped visibility is the
-    // fail-closed authority ('unknown' = error, true class may be ext-shared);
-    // the isShared snapshot is a legacy fail-open positive trigger. Tool
-    // handlers re-derive this per call from fresh metadata (see authz.ts).
     extShared: hasLockedSlackChannel(channels),
   };
 }

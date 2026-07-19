@@ -253,16 +253,10 @@ function renderHits(hits: SearchHit[]): string {
 export function buildMemoryTools(ctx: MemoryToolsCtx) {
   const { taskId, agent } = ctx;
 
-  // Per-call lockdown backstop ("ANY tool invocation from a locked caller
-  // context SHALL be denied") — evaluated at the top of every handler, before
-  // any guard, corpus read, or the self rule. Primary control is that spawn
-  // never registers the tools for locked tasks; this covers skew. The lock is
-  // re-derived from FRESH task metadata on every call: a running agent keeps
+  // Per-call lockdown, re-derived from fresh metadata: a running agent keeps
   // consuming queued messages without re-spawning, so a channel that turns
-  // ext-shared (or classifies `unknown`) mid-session must lock the very next
-  // call — the spawn snapshot (`ctx.extShared`) is a positive trigger that
-  // never un-locks. Missing metadata means no Slack channels (nothing to be
-  // ext-shared); an unexpected loadMetadata throw locks (fail closed).
+  // ext-shared mid-session must lock the next call. The spawn snapshot never
+  // un-locks; missing metadata = no Slack channels; a throw locks (fail closed).
   const isLockedNow = async (): Promise<boolean> => {
     if (ctx.extShared) return true;
     if (!taskId) return false;
@@ -379,10 +373,8 @@ export function buildMemoryTools(ctx: MemoryToolsCtx) {
       try {
         text = await readFile(getSummaryPath(id), 'utf-8');
       } catch {
-        // Non-self miss reads exactly like a restricted target: "no summary"
-        // and "summary you may not read" MUST be indistinguishable, or the
-        // miss text becomes an existence oracle for gated/DM tasks (whose
-        // summaries are never written or were retracted).
+        // Non-self miss must be indistinguishable from a denial — distinct
+        // text is an existence oracle for gated/DM tasks.
         if (taskId !== id) {
           await recordPull(taskId, agent, 'read_task_summary', { taskId: id }, {
             returned: [], count: 0, zeroResult: true, denied: 'no-access-stamp',

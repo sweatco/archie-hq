@@ -593,9 +593,8 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     await drain();
     expect(existsSync(join(memoryDir, 'tasks', TASK_ID, 'summary.md'))).toBe(true);
 
-    // Task reopens with a DM attached; this time extraction returns null
-    // (routine LLM failure). Retraction must not depend on extraction success
-    // — the stale org grant would otherwise survive permanently (no retry).
+    // Reopen with a DM attached; extractor fails — retraction must not
+    // depend on extraction success (completions never retry).
     await writeMetadata({
       'slack:C1:1234': { type: 'slack', thread_id: '1234', channel_id: 'C1', channel_name: 'general', last_processed_ts: '1', visibility: 'public' },
       'slack:D7:2': { type: 'slack', thread_id: '2', channel_id: 'D7', channel_name: 'DM with Dana', last_processed_ts: '2', visibility: 'dm' },

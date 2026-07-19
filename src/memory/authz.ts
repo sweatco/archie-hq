@@ -32,18 +32,15 @@ export interface MemoryToolsCtx {
    * Memory lockdown flag: any calling-task Slack channel observed ext-shared
    * (stamped visibility or legacy `isShared`) or stamped `unknown`
    * (classification failure — the true class may be ext-shared). Spawn-time
-   * snapshot; a positive value never un-locks. Tool handlers additionally
-   * re-derive the lock from fresh task metadata per call (`hasLockedSlackChannel`),
-   * because a running agent keeps consuming queued messages without re-spawning.
+   * snapshot; never un-locks. Handlers re-derive per call via
+   * `hasLockedSlackChannel` — a running agent is not re-spawned per message.
    */
   extShared?: boolean;
 }
 
 /**
- * True when any Slack channel record carries a positive lock signal: stamped
- * `ext-shared`, stamped `unknown` (classification failure — the true class may
- * be ext-shared), or the legacy fail-open `isShared` snapshot. Structural
- * parameter type on purpose — this module stays pure and imports no core types.
+ * Positive lock signal on any Slack channel: `ext-shared`, `unknown`, or
+ * legacy `isShared`. Structural param type — this module imports no core types.
  */
 export function hasLockedSlackChannel(
   channels: Record<string, { type?: string; visibility?: string; isShared?: boolean }> | null | undefined,

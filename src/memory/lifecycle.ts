@@ -124,13 +124,8 @@ async function processExtraction(taskId: string): Promise<void> {
   const prefsOnly = classification.mode === 'prefs-only';
   const access: TaskAccess = classification.mode === 'full' ? classification.access : 'dm';
 
-  // Prefs-only retraction happens HERE, at classification time — exactly like
-  // the skip branch — not after extraction succeeds. The early returns below
-  // (empty transcript, extractor failure) never retry (the completion is
-  // dequeued), so retracting late would leave a downgraded re-completion's
-  // stale `access: org` stamp granting reads over a log that has since
-  // absorbed DM lines. The sensor records at the same point: a prefs-only
-  // completion is measurable even when its extraction later fails.
+  // Retract + record at gate time, like skip: the early returns below never
+  // retry, so a failed extraction must not leave the stale org grant standing.
   let prefsOnlyRetracted = false;
   if (prefsOnly) {
     prefsOnlyRetracted = await retractEpisodicArtifacts(taskId);
@@ -215,10 +210,8 @@ async function processExtraction(taskId: string): Promise<void> {
     }
   }
 
-  // DM write lockdown (prefs-only): user-preference updates are the ONLY
-  // output applied — no summary, no activity row, no entity updates, no
-  // Related Tasks participation, regardless of what the extractor returned.
-  // Retraction + telemetry already happened at classification time above.
+  // DM write lockdown: user-preference updates are the ONLY output applied,
+  // regardless of what the extractor returned.
   if (prefsOnly) {
     scheduleHousekeeping(housekeepingTargets);
     logger.system(
@@ -760,8 +753,6 @@ export async function selectRelatedTasksByEntity(
 
 function renderRelatedTasks(related: ActivityEntry[]): string {
   if (related.length === 0) return '_no related tasks found_';
-  // Summaries live at memory/tasks/<taskId>/summary.md; relative to this
-  // summary's own directory the sibling task is one level up.
   return related
     .map((e) => `- [${e.taskId}](../${e.taskId}/summary.md) — ${e.summary}${e.domain ? ` (${e.domain})` : ''}`)
     .join('\n');

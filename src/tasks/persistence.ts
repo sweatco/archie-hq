@@ -214,12 +214,8 @@ export async function loadMetadata(taskId: string): Promise<TaskMetadata | null>
  */
 function formatLogEntry(entry: LogEntry): string {
   const typeStr = entry.type ? ` [${entry.type}]` : '';
-  // The source slot interpolates Slack-provided strings (display name,
-  // channel name). Slack disallows line breaks in those today, but the
-  // framing guarantee must not depend on that upstream invariant: strip
-  // breaks so no source value can terminate the line early and start a
-  // forgeable column-0 line. CRs in bodies are normalized before framing for
-  // the same reason.
+  // Source interpolates Slack-provided names; strip line breaks so no value
+  // can start a forgeable column-0 line, independent of Slack's own rules.
   const safeSource = entry.source.replace(/[\r\n]+/g, ' ');
   const framedMessage = entry.message.replace(/\r\n?/g, '\n').replace(/\n/g, '\n  ');
   return `[${entry.timestamp}] [${safeSource}]${typeStr} ${framedMessage}\n`;
