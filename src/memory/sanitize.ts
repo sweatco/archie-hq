@@ -173,6 +173,9 @@ export function sanitizeActivityEntry(entry: ActivityEntry): ActivityEntry | nul
     summary,
     domain: entry.domain,
     user: entry.user,
+    // Closed vocabulary — anything else (or absent) stays absent, which
+    // consumers treat as restricted.
+    ...(entry.access === 'org' || entry.access === 'dm' ? { access: entry.access } : {}),
   };
 }
 

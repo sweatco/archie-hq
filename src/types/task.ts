@@ -74,6 +74,8 @@ export interface SlackThread {
   threadId: string;
   channel: { id: string; name: string };
   shared: boolean;
+  /** Channel visibility class observed at fetch time (fail-closed to 'private' on API error). */
+  visibility?: ChannelVisibility;
   messages: SlackThreadMessage[];  // bot messages excluded, EXCEPT the root when our bot started the thread
   currentMessageTs: string;
   /**
@@ -87,6 +89,17 @@ export interface SlackThread {
 // ---- Channel types (replace slack_threads) ----
 
 export type ChannelType = 'slack' | 'github' | 'cli';
+
+/**
+ * Visibility class of a Slack conversation, used by the memory layer's
+ * authorization policy. Classification is fail-closed: an API error stamps
+ * 'unknown' — a distinct class that gates extraction AND read-locks the task's
+ * memory surface (the true class may be ext-shared); a never-stamped channel
+ * is treated as 'private' (write-gated only). DMs are their own class —
+ * deliberately NOT 'private': memory policy gives them their own rules
+ * (owner-scoped user memory via prefs-only extraction).
+ */
+export type ChannelVisibility = 'public' | 'private' | 'dm' | 'ext-shared' | 'unknown';
 
 export interface ChannelBase {
   type: ChannelType;
@@ -111,6 +124,13 @@ export interface SlackChannel extends ChannelBase {
   ack_ts?: string;
   /** Snapshot of last observed Slack-Connect / shared-channel state for this channel. */
   isShared?: boolean;
+  /**
+   * Snapshot of the last observed visibility class for this channel. Stamped
+   * on inbound messages and at channel registration; refreshed alongside
+   * `isShared`. Missing means "never classified" and is treated as 'private'
+   * (fail-closed) by the memory layer.
+   */
+  visibility?: ChannelVisibility;
   /** User IDs already shown the shared-channel ephemeral warning in this thread. */
   warnedUsers?: string[];
   /** User IDs already shown the forward-from-external ephemeral notice in this thread. */

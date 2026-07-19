@@ -16,6 +16,7 @@ const baseInput: ExtractionInput = {
   taskOwner: 'alice',
   status: 'completed',
   createdAt: '2026-04-01T10:00:00Z',
+  access: 'org',
   transcript: 'Some task transcript here.',
 };
 
