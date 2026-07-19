@@ -7,9 +7,11 @@ and per-task summaries. Gated entirely by the `ARCHIE_MEMORY` flag.
 ## Read these before changing anything here
 
 - **`docs/architecture/memory.md`** — the as-built design (source of truth): two-path
-  read/write flow, component map, storage formats, flags, and the 5-step ejection recipe.
-- **`openspec/specs/memory-layer/spec.md`** — the capability spec with numbered
-  requirements. The code must satisfy it.
+  read/write flow, confidentiality policy, storage formats, flags, eval harness, and the
+  ejection recipe. The code must match it.
+- **`docs/plans/20260719-memory-v2.md`** — how the layer got this shape (the five
+  memory-v2 stages and their key decisions); **`docs/proposals/memory-v2-roadmap.md`** —
+  what comes next and what gates it.
 
 The root `CLAUDE.md` rules (logging, git workflow, dev setup) apply here too — this file
 only adds what's specific to the memory layer.
@@ -21,7 +23,6 @@ When you change behavior in `src/memory/`, update the docs in the **same commit*
 - Flow / storage / behavior changed → update `docs/architecture/memory.md`.
   **Delete the stale prose; don't bolt on a "now it also…" note.** A doc that contradicts
   the code is worse than no doc.
-- What the layer *must* do changed → update `openspec/specs/memory-layer/spec.md`.
 - Added / renamed / removed a flag → update the flags table in `memory.md` **and**
   `.env.example`.
 - Any logic change → add or update a test under `src/memory/__tests__/`.

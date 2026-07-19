@@ -2,7 +2,7 @@
 
 The memory layer gives Archie persistent cross-task knowledge — user preferences, a rolling activity index, per-task summaries, and a graph of **entity pages** (the durable subjects the work keeps touching: services, systems, integrations, concepts, repos). Organization-wide facts are themselves entity pages, scoped `org`. Memory reaches agents two ways: **push** (selected content injected at spawn) and **pull** (read-only agent tools, flag-gated). It is a self-contained subsystem under `src/memory/`, gated by the `ARCHIE_MEMORY` feature flag, and designed to be removable as a single unit.
 
-This document describes the implementation as-built. The capability spec lives at `openspec/specs/memory-layer/spec.md` and is fully reflected in the code (the `harden-memory-layer` change is now archived).
+This document describes the implementation as-built and is the layer's behavior contract — the code must match it, and behavior changes update it in the same commit (see `src/memory/CLAUDE.md`). How the layer got this shape is recorded in [`docs/plans/20260719-memory-v2.md`](../plans/20260719-memory-v2.md); the forward plan and its gates live in [`docs/proposals/memory-v2-roadmap.md`](../proposals/memory-v2-roadmap.md).
 
 ## Goals
 
@@ -180,6 +180,8 @@ The layer enforces a channel-confidentiality policy end to end (`src/memory/auth
 - **Lockdown (ext-shared / unknown)** — a task with any Slack-Connect-shared channel (stamped `ext-shared` or legacy `isShared`) or any `unknown`-stamped channel gets no memory surface at all: tools are not registered, injection is skipped (logged), and a per-call ctx deny at the top of **all four** tool handlers (before guards, corpus reads, and the self rule) backstops snapshot skew — entity content and the caller's own artifacts included. Rationale: anything the agent reads can be pasted where the external org reads it; an unclassified channel may be exactly that.
 
 DM-task callers keep the full org READ surface — injection and all four tools work normally for them; the lockdown above is on what DM tasks *produce*, not what they *see*.
+
+Authorization keys on stamped channel visibility, stable DM channel ids, and transcript authorship — never on Slack membership rosters (`conversations.members` is not consulted).
 
 Retroactive cleanup of pre-policy artifacts is deliberately postponed: legacy summaries have no `access:` stamp and first-iteration `access: dm` summaries parse to the same denial; legacy and `dm`-classed activity rows never render (injection filters to `access: org` rows only). Entity pages are covered by the enablement-gate human store review; an optional one-off script may delete v1 dm-stamped artifacts from dev stores.
 
@@ -359,7 +361,7 @@ Investigated and fixed the login bug. Root cause was missing input validation in
 - [task-20260409-1530-def](./task-20260409-1530-def.md) — Hardened session token rotation (engineering)
 ```
 
-Related tasks are selected **by shared entity first**: `selectRelatedTasksByEntity()` reads the entities this task touched and links other tasks that the same entities are `touched_by`. When there is no entity overlap it falls back to the lexical token-overlap over the activity index.
+Related tasks (up to 5) are selected **by shared entity first**: `selectRelatedTasksByEntity()` reads the entities this task touched and links other tasks that the same entities are `touched_by`. When there is no entity overlap it falls back to the lexical token-overlap over the activity index (org rows only — prefs-only tasks write no rows, so DM tasks never appear).
 
 ### `entities/<slug>.md`
 
@@ -448,7 +450,7 @@ Disabled by `ARCHIE_MEMORY_HOUSEKEEPING=false` — overflow is still logged but 
 | `ARCHIE_MEMORY_ENTITY_CAP` | `300` | Soft cap on total entity pages; entity housekeeping (merge/archive) auto-triggers when exceeded. |
 | `ARCHIE_MEMORY_ENTITY_INJECT_MAX` | `8` | Ceiling on full **non-`org`** entity pages pushed into a single agent prompt (the index is always injected in full). `0` → index-only. |
 | `ARCHIE_MEMORY_ORG_INJECT_MAX` | `8` | Ceiling on full `scope: org` entity pages injected into a single prompt — only relevance-matched pages consume slots; zero-signal pages stay index-only. `0` → index-only. |
-| `ARCHIE_MEMORY_ENTITY_OBS_CAP` | `30` | Soft cap on observations kept per entity page; on write the newest-touched are retained and the oldest surplus dropped. |
+| `ARCHIE_MEMORY_ENTITY_OBS_CAP` | `30` | Soft cap on observations kept per entity page, enforced at the persistence boundary (housekeeping merges included); on write the newest-touched are retained and the oldest surplus dropped (same-date ties keep the most-recently-applied, so a fresh update is never dropped in favor of an equally-dated older bullet). Re-affirmed observations refresh their `touched:` date instead of duplicating. |
 | `ARCHIE_MEMORY_TOUCHED_BY_INJECT_MAX` | `10` | Max `touched_by` relations rendered into an injected `<entity>` block (newest kept; `0` → none). Render-time only — the stored page keeps the full history. |
 
 All variables are documented in `.env.example`.
@@ -466,6 +468,21 @@ All variables are documented in `.env.example`.
 **Rollout:** deploy with injection unset (collect-only), evaluate the stored facts, then set `ARCHIE_MEMORY_INJECT=true` to enable injection. Rollback is unsetting the flag — the store is untouched.
 
 The "Learned from this task" Slack post does **not** exist — visibility into what was learned comes from structured logs (`logger.system('[memory] Extraction complete for ...')`) and the per-task summary file in `workdir/memory/tasks/<taskId>/`.
+
+## Eval Harness (`npm run memory:eval`)
+
+Offline QA over pulled store snapshots — the measurement half of memory-v2 (`tools/memory-eval/`, entry `scripts/memory-eval.ts`). The eval addresses a snapshot via `ARCHIE_WORKDIR` and **refuses to run unless that workdir contains `memory/`**, so it can never silently read the developer's live store; it is strictly read-only over the snapshot (verified by a before/after tree-hash test) and writes its dated report outside it (default `~/archie-snapshots/reports/`). Two tiers:
+
+**Mechanical tier** — no model calls, run on every snapshot:
+
+- **Store health** — entity count vs `ARCHIE_MEMORY_ENTITY_CAP`, observation/page-size and staleness distributions, archived count, and a **versioned near-duplicate rate** (normalized lexical similarity over names/aliases/L0 summaries — the trend metric the write-path phase's dedupe will be judged by); growth/turnover deltas when `--prev` is supplied.
+- **Telemetry aggregation** — over all `memory/tasks/*/telemetry.jsonl`: selection records (spawn counts, injection and zero-injection rates, budget-drop frequency, rendered-token distribution), pull records (calls per task, hit and zero-result rates, the zero-result **store-gap list**), and the policy sensors (denial rates + reasons, extraction-skip / prefs-only / user-update-dropped counts). Absent record kinds are reported as absent, not zero activity; unparseable lines are counted and skipped.
+- **Selection regression** — golden cases (`{v, harvested_at, snapshot_date, ctx, expected}`, harvested from live selection records once injection is on) replayed through the **production `selectEntities`** with the recorded budgets, never a reimplementation; per-case selected/dropped diffs, and same-code-same-store goldens must diff zero.
+- **Enablement-gate outputs** — a worst-case injected-token bound computed through the exported production render path (rendered index + org/non-org largest pages × their ceilings after `touched_by` truncation + summed `<user_preferences>` blocks + recent-activity, each term tagged with the budget values read through the flag accessors), and the `--report` store-review reading list covering every block injection would enable (entities ordered by connectedness/observations/bytes with staleness, plus every `users/*.md`, `recent-activity.md`, `entities/index.md`), each with size and suspicious-content flags (URLs, imperative override phrasing, base64-like blobs) for the ~1–2h human review.
+
+**Functional tier** — on demand, before any selection/injection/pull change ships: runs the **real implementation as system-under-test** (ingest = extraction over source transcripts into a throwaway store; query = production `selectEntities` + injection render, optionally the pull tools) and scores two units per question: surfaced-context recall/precision against labeled evidence entities (no model), and answer correctness by a **fixed reader** over three arms — no-memory (floor), memory, Oracle (evidence-only ceiling) — so Oracle−memory separates retrieval loss from reader loss; an over-injection sweep re-scores at tighter token budgets. Question sets are a public-benchmark adapter (portable regression anchor) plus prod-transcript synthesis where a human-validated label sample, not the generating model, is the trust anchor. Any LLM judge is **governed**: validated by Cohen's κ (not raw agreement) and position bias < 0.10 against a human-labeled sample, from a different model family than the extractor, stamped in the report header — unvalidated or same-family judges run NON-GATING. Functional numbers gate selection/injection/pull changes only, never model comparisons.
+
+Snapshots come from `scripts/snapshot-memory.sh`, which wraps `pull-remote-data.sh -m` into dated `~/archie-snapshots/archie-memory-YYYYMMDD.tgz` tarballs on a laptop `launchd` schedule (`StartCalendarInterval`, container name passed explicitly — macOS `/bin/bash` 3.2 lacks `mapfile` — outcomes appended to `snapshot.log`). Goldens, question sets, and reports embed prod task titles and Slack IDs, so they live outside the repo and outside `workdir/memory/`. The **enablement gate** for `ARCHIE_MEMORY_INJECT` is these outputs: acceptable worst-case bound + clean human store review + functional sanity pass, carried by the flip PR. First prod run: worst-case bound 360,630 tokens at default budgets → no flip before store cleanup; pull recovered 2/3 evidence pages that push selection missed.
 
 ## Ejection
 
@@ -494,8 +511,12 @@ No type changes propagate to other modules, no database migrations, no external 
 | `housekeeping.test.ts` | Annotation parsing, `extractBullets`, trace-back validator, soft-cap thresholds, entity merge-plan / staleness / merge+archive integration |
 | `entities.test.ts` | parse/serialize round-trip, alias resolution, `applyEntityUpdate` (resolve-or-create, auto touched_by, closed-vocab drops, traversal-slug rejection, cap) |
 | `entity-index.test.ts` | `rebuildIndex` derive/drop, `selectEntities` (org-always, repo match, 1-hop expansion, bound + dropped, archived excluded, title scoring, telemetry fields) |
-| `tools.test.ts` | Read tools: search ranking + zero-result, guard rejections, result bounds, archived marking, pull-record shape/fail-safety, no-write surface |
-| `lifecycle.test.ts` | End-to-end: org / user / entity / summary / activity writes; entity-based related tasks; restart-resilience; multi-user allowed set; no Slack post |
+| `tools.test.ts` | Read tools: search ranking + zero-result, guard rejections, result bounds, archived marking, pull-record shape/fail-safety, no-write surface, per-call authz denials |
+| `authz.test.ts` | Pure authz decisions: channel classification → extraction mode, episodic-read grants/denials, ext-shared/unknown lockdown, access-stamp parsing |
+| `lifecycle.test.ts` | End-to-end: org / user / entity / summary / activity writes; entity-based related tasks; restart-resilience; multi-user allowed set; confidentiality gate modes + retraction; evidence-validated user updates; no Slack post |
+| `../../connectors/slack/__tests__/channel-visibility.test.ts` | `conversations.info` → visibility mapping (ext-shared precedence, Connect DMs, fail-closed `unknown`) |
+| `../../agents/__tests__/memory-tools-ctx.test.ts` | Spawn-side tools ctx derivation (author scan, lock flag, fail-closed empty scope) |
+| `../../../tools/memory-eval/memory-eval.test.ts` | Eval harness: metric math, aggregation over mixed record kinds, golden replay, token bound, functional arms + judge gating, snapshot read-only check |
 
 Run with `npx vitest run src/memory/__tests__/` or `npm test`.
 
@@ -528,8 +549,8 @@ The layer stays **keyword-scored** (push selection and pull search share one lex
 
 ## Related Documentation
 
-- [Spec](../../openspec/specs/memory-layer/spec.md) — target capability spec with numbered requirements
-- [Hardening change (archived)](../../openspec/changes/archive/2026-05-29-harden-memory-layer/proposal.md) — the bundled improvements that closed the gaps above
+- [Memory v2 plan](../plans/20260719-memory-v2.md) — how the layer got this shape (the five shipped stages and their decisions)
+- [Roadmap](../proposals/memory-v2-roadmap.md) — what comes next (rollout gates, write-path rewrite, embeddings trigger, value eval)
 - [Agents](agents.md) — agent prompt composition (memory is appended last)
 - [Orchestration](orchestration.md) — task lifecycle and event emission
 - [Persistence](persistence.md) — `knowledge.log` and metadata storage that extraction reads from

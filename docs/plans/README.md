@@ -23,6 +23,7 @@ Historical record of Archie's incremental development. Each plan represents a mi
 | [v10](v10-agent-recovery-impl.md) | Agent recovery implementation | Partially implemented |
 | … | (v11–v31 — see files in this directory) | — |
 | [20260626](20260626-response-formatting.md) | Message footer + self-updating PR cards | Implemented |
+| [20260719](20260719-memory-v2.md) | Memory v2: bounded injection, pull tools + eval harness, confidentiality layer | Implemented (rollout gates open) |
 
 ## Evolution Arc
 
