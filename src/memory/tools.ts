@@ -41,9 +41,9 @@ import {
 } from './paths.js';
 import { listUserFiles } from './store.js';
 import { recordPull } from './telemetry.js';
-import { authorizeEpisodicRead, parseSummaryAccess } from './authz.js';
+import { authorizeEpisodicRead, hasLockedSlackChannel, parseSummaryAccess } from './authz.js';
 import type { MemoryToolsCtx, SummaryAccess } from './authz.js';
-import { readKnowledgeLog } from '../tasks/persistence.js';
+import { loadMetadata, readKnowledgeLog } from '../tasks/persistence.js';
 import type { EntityRecord } from './types.js';
 
 export type { MemoryToolsCtx } from './authz.js';
@@ -253,10 +253,27 @@ function renderHits(hits: SearchHit[]): string {
 export function buildMemoryTools(ctx: MemoryToolsCtx) {
   const { taskId, agent } = ctx;
 
-  // Per-call lockdown backstop (spec: "ANY tool invocation from a locked
-  // caller context SHALL be denied") — evaluated at the top of every handler,
-  // before any guard, corpus read, or the self rule. Primary control is that
-  // spawn never registers the tools for locked tasks; this covers skew.
+  // Per-call lockdown backstop ("ANY tool invocation from a locked caller
+  // context SHALL be denied") — evaluated at the top of every handler, before
+  // any guard, corpus read, or the self rule. Primary control is that spawn
+  // never registers the tools for locked tasks; this covers skew. The lock is
+  // re-derived from FRESH task metadata on every call: a running agent keeps
+  // consuming queued messages without re-spawning, so a channel that turns
+  // ext-shared (or classifies `unknown`) mid-session must lock the very next
+  // call — the spawn snapshot (`ctx.extShared`) is a positive trigger that
+  // never un-locks. Missing metadata means no Slack channels (nothing to be
+  // ext-shared); an unexpected loadMetadata throw locks (fail closed).
+  const isLockedNow = async (): Promise<boolean> => {
+    if (ctx.extShared) return true;
+    if (!taskId) return false;
+    try {
+      const meta = await loadMetadata(taskId);
+      return meta ? hasLockedSlackChannel(meta.channels) : false;
+    } catch {
+      return true;
+    }
+  };
+
   const lockedDenial = async (toolName: string, args: Record<string, unknown>) => {
     await recordPull(taskId, agent, toolName, args, {
       returned: [], count: 0, zeroResult: true, denied: 'ext-shared',
@@ -273,7 +290,7 @@ export function buildMemoryTools(ctx: MemoryToolsCtx) {
         .describe(`Maximum hits to return (default ${SEARCH_MAX_HITS})`),
     },
     async (args) => {
-      if (ctx.extShared) return lockedDenial('search_memory', { query: args.query });
+      if (await isLockedNow()) return lockedDenial('search_memory', { query: args.query });
       const [entities, users, summaries, activity] = await Promise.all([
         listEntities(),
         listUserFiles(),
@@ -318,7 +335,7 @@ export function buildMemoryTools(ctx: MemoryToolsCtx) {
       slug: z.string().describe('Entity slug (lowercase-kebab) or a known alias'),
     },
     async (args) => {
-      if (ctx.extShared) return lockedDenial('read_entity', { slug: args.slug });
+      if (await isLockedNow()) return lockedDenial('read_entity', { slug: args.slug });
       const raw = args.slug?.trim() ?? '';
       // Guard BEFORE any filesystem access (spec: a failing guard returns a
       // tool error without touching the filesystem). Alias resolution is
@@ -352,7 +369,7 @@ export function buildMemoryTools(ctx: MemoryToolsCtx) {
       taskId: z.string().describe('Task ID, e.g. task-20260601-1000-abc123'),
     },
     async (args) => {
-      if (ctx.extShared) return lockedDenial('read_task_summary', { taskId: args.taskId });
+      if (await isLockedNow()) return lockedDenial('read_task_summary', { taskId: args.taskId });
       const id = args.taskId?.trim() ?? '';
       if (!isAllowedTaskId(id) || /^\.+$/.test(id)) {
         await recordPull(taskId, agent, 'read_task_summary', { taskId: id }, { returned: [], count: 0, zeroResult: true });
@@ -362,6 +379,16 @@ export function buildMemoryTools(ctx: MemoryToolsCtx) {
       try {
         text = await readFile(getSummaryPath(id), 'utf-8');
       } catch {
+        // Non-self miss reads exactly like a restricted target: "no summary"
+        // and "summary you may not read" MUST be indistinguishable, or the
+        // miss text becomes an existence oracle for gated/DM tasks (whose
+        // summaries are never written or were retracted).
+        if (taskId !== id) {
+          await recordPull(taskId, agent, 'read_task_summary', { taskId: id }, {
+            returned: [], count: 0, zeroResult: true, denied: 'no-access-stamp',
+          });
+          return ok(denialText(id));
+        }
         await recordPull(taskId, agent, 'read_task_summary', { taskId: id }, { returned: [], count: 0, zeroResult: true });
         return ok(`No summary found for task ${id}.`);
       }
@@ -385,7 +412,7 @@ export function buildMemoryTools(ctx: MemoryToolsCtx) {
       pattern: z.string().describe('Literal substring to match (case-insensitive)'),
     },
     async (args) => {
-      if (ctx.extShared) return lockedDenial('grep_task_log', { taskId: args.taskId, pattern: args.pattern });
+      if (await isLockedNow()) return lockedDenial('grep_task_log', { taskId: args.taskId, pattern: args.pattern });
       const id = args.taskId?.trim() ?? '';
       if (!isAllowedTaskId(id) || /^\.+$/.test(id)) {
         await recordPull(taskId, agent, 'grep_task_log', { taskId: id, pattern: args.pattern }, { returned: [], count: 0, zeroResult: true });

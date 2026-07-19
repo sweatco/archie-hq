@@ -50,7 +50,7 @@ import { emitEvent } from '../system/event-bus.js';
 import { getProbeBaseUrl } from '../system/context-probe.js';
 import { buildSandboxConfig, createFilesystemGuardHooks, TRUSTED_PACKAGE_REGISTRY_DOMAINS, type SandboxOptions } from './sandbox.js';
 import { applyOAuthBindings } from '../system/oauth/inject.js';
-import { enrichPromptWithMemory, isMemoryEnabled, isInjectionEnabled, isMemoryToolsEnabled, createMemoryToolsMcpServer, type MemoryToolsCtx } from '../memory/index.js';
+import { enrichPromptWithMemory, isMemoryEnabled, isInjectionEnabled, isMemoryToolsEnabled, createMemoryToolsMcpServer, hasLockedSlackChannel, type MemoryToolsCtx } from '../memory/index.js';
 
 // ---- Prompt generation (per agent kind) ----
 
@@ -201,21 +201,15 @@ export function deriveMemoryToolsCtx(
   channels: TaskMetadata['channels'],
   users: ReadonlyArray<{ userId: string }>,
 ): MemoryToolsCtx {
-  let extShared = false;
-  for (const ch of Object.values(channels)) {
-    if (ch.type !== 'slack') continue;
-    // Any positive signal locks down: the stamped visibility is the
-    // fail-closed authority ('unknown' = error, true class may be ext-shared);
-    // the isShared snapshot is a legacy fail-open positive trigger.
-    if (ch.visibility === 'ext-shared' || ch.visibility === 'unknown' || ch.isShared === true) {
-      extShared = true;
-    }
-  }
   return {
     taskId,
     agent: agentId,
     authorUserIds: users.map((u) => u.userId),
-    extShared,
+    // Any positive signal locks down: the stamped visibility is the
+    // fail-closed authority ('unknown' = error, true class may be ext-shared);
+    // the isShared snapshot is a legacy fail-open positive trigger. Tool
+    // handlers re-derive this per call from fresh metadata (see authz.ts).
+    extShared: hasLockedSlackChannel(channels),
   };
 }
 

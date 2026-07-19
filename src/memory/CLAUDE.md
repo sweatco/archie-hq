@@ -62,9 +62,10 @@ If you're unsure whether a change is big enough to document: it is.
   skip + retract stale artifacts; dm ⇒ prefs-only, user updates only; only all-public ⇒ full),
   user updates need `msg:<ts>` evidence authored by their target user, and ext-shared or
   unknown-stamped tasks get no memory surface at all (spawn + per-call deny on all four
-  tools). Everything unknown fails closed (missing stamp, missing ctx ⇒ self-only;
-  classification error ⇒ `unknown` ⇒ locked). Never add an unscoped read surface or widen
-  a default on error.
+  tools; the per-call lock re-derives from fresh task metadata, so a mid-session
+  ext-shared flip locks the next call). Everything unknown fails closed (missing stamp,
+  missing ctx ⇒ self-only; classification error ⇒ `unknown` ⇒ locked). Never add an
+  unscoped read surface or widen a default on error.
 
 ## Files that carry those invariants
 
