@@ -11,6 +11,7 @@ Run the Forge v2 development loop on one unit of work.
 
 - `/forge <idea text>` — full run from the clarifying interview
 - `/forge issue <n>` — seed the interview from a GitHub issue
+- `/forge revise <request>` — apply a requested change to a shipped Forge PR through the full machinery (request-mode implement + blind review + QA + docs + PR refresh); works cross-session via the run's `docs/plans/` record
 - `/forge review <n>` — zero-footprint review + QA of an existing PR; findings in chat, review submitted only on approval (add `qa-only` to skip the code-review ring)
 - `/forge review` — same, for the current working tree as-is against main (uncommitted changes included; nothing touches GitHub or your checkout)
 - `/forge qa <n>` — QA-only review of PR n (alias for `review <n> qa-only`)
