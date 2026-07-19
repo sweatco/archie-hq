@@ -93,4 +93,5 @@ async function warnLegacyUserFiles(): Promise<void> {
 export { enrichPromptWithMemory } from './context.js';
 export { isMemoryEnabled, isInjectionEnabled, isMemoryToolsEnabled } from './paths.js';
 export { createMemoryToolsMcpServer } from './tools.js';
+export { hasLockedSlackChannel } from './authz.js';
 export type { MemoryToolsCtx } from './authz.js';

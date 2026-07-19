@@ -21,6 +21,7 @@ let activityPath: string;
 let telemetryBase: () => string;
 
 const knowledgeLogs = new Map<string, string>();
+const taskMetadataByTask = new Map<string, { channels: Record<string, { type: string; visibility?: string; isShared?: boolean }> }>();
 
 vi.mock('../paths.js', () => ({
   isMemoryEnabled: () => true,
@@ -51,6 +52,10 @@ vi.mock('../paths.js', () => ({
 
 vi.mock('../../tasks/persistence.js', () => ({
   readKnowledgeLog: async (taskId: string) => knowledgeLogs.get(taskId) ?? '',
+  // Per-call live lock re-derivation reads task metadata; tests stamp channel
+  // records here to simulate mid-session visibility flips. Default: no
+  // metadata (no Slack channels — unlocked).
+  loadMetadata: async (taskId: string) => taskMetadataByTask.get(taskId) ?? null,
 }));
 
 import { buildMemoryTools, rankSearchHits, createMemoryToolsMcpServer, GREP_MAX_MATCHES, RESULT_MAX_CHARS } from '../tools.js';
@@ -149,6 +154,7 @@ describe('memory read tools', () => {
     activityPath = join(tempDir, 'recent-activity.md');
     telemetryBase = () => tasksDir;
     knowledgeLogs.clear();
+    taskMetadataByTask.clear();
 
     await mkdir(usersDir, { recursive: true });
     await mkdir(entitiesDir, { recursive: true });
@@ -314,6 +320,34 @@ describe('memory read tools', () => {
     expect(records[0].denyReason).toBe('ext-shared');
   });
 
+  it('a mid-session ext-shared flip locks the next call despite an unlocked spawn snapshot', async () => {
+    const tools = buildMemoryTools(SPAWN); // spawned unlocked (extShared falsy)
+    // The caller task's channel turns ext-shared AFTER spawn (admin converts
+    // it to Slack Connect); the running agent keeps its tool closure.
+    taskMetadataByTask.set(SPAWN.taskId, {
+      channels: { 'slack:C1:1': { type: 'slack', visibility: 'ext-shared' } },
+    });
+    for (const [name, call] of [
+      ['search_memory', () => tools.searchMemory.handler({ query: 'stripe' } as never, {})],
+      ['read_entity', () => tools.readEntity.handler({ slug: 'payment-service' } as never, {})],
+      ['read_task_summary', () => tools.readTaskSummary.handler({ taskId: SPAWN.taskId } as never, {})],
+      ['grep_task_log', () => tools.grepTaskLog.handler({ taskId: SPAWN.taskId, pattern: 'x' } as never, {})],
+    ] as const) {
+      const res: any = await call();
+      expect(res.isError, name).toBeUndefined();
+      expect(res.content[0].text, name).toContain('Memory tools are unavailable');
+    }
+    const records = await readTelemetry(SPAWN.taskId);
+    expect(records).toHaveLength(4);
+    for (const r of records) expect(r.denyReason).toBe('ext-shared');
+    // An `unknown` stamp (classification failure) locks identically.
+    taskMetadataByTask.set(SPAWN.taskId, {
+      channels: { 'slack:C1:1': { type: 'slack', visibility: 'unknown' } },
+    });
+    const res: any = await tools.searchMemory.handler({ query: 'stripe' } as never, {});
+    expect(res.content[0].text).toContain('Memory tools are unavailable');
+  });
+
   it('zero-result search is a normal response and a recorded store gap', async () => {
     const tools = buildMemoryTools(SPAWN);
     const res: any = await tools.searchMemory.handler({ query: 'kubernetes federation quantum' } as never, {});
@@ -393,11 +427,24 @@ describe('memory read tools', () => {
     expect(res2.isError).toBe(true);
   });
 
-  it('read_task_summary miss is a normal response', async () => {
+  it('read_task_summary self-miss is a normal miss response', async () => {
+    const tools = buildMemoryTools(SPAWN);
+    const res: any = await tools.readTaskSummary.handler({ taskId: SPAWN.taskId } as never, {});
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0].text).toContain('No summary found');
+  });
+
+  it('read_task_summary non-self miss is indistinguishable from a denial (no existence oracle)', async () => {
     const tools = buildMemoryTools(SPAWN);
     const res: any = await tools.readTaskSummary.handler({ taskId: 'task-unknown' } as never, {});
     expect(res.isError).toBeUndefined();
-    expect(res.content[0].text).toContain('No summary found');
+    const text = res.content[0].text as string;
+    expect(text).not.toContain('No summary found');
+    expect(text).toContain('not available to this task');
+    const records = await readTelemetry(SPAWN.taskId);
+    const denied = records.filter((r: any) => r.tool === 'read_task_summary' && r.denied === true);
+    expect(denied.length).toBeGreaterThan(0);
+    expect(denied[denied.length - 1].denyReason).toBe('no-access-stamp');
   });
 
   it('read_task_summary denies a foreign dm task with no content and a denied record', async () => {
