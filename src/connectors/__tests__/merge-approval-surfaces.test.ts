@@ -189,6 +189,32 @@ describe('merge approval — Slack button and API route resolve identically (AC8
     expect(task.handleMergeApproval).not.toHaveBeenCalled();
   });
 
+  it('ignores approve and deny actions from external users', async () => {
+    const task = makeFakeTask();
+    vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
+    vi.mocked(isExternalUser).mockReturnValue(true);
+    const { approve, deny } = captureSlackHandlers();
+
+    await approve(slackPayload() as never);
+    await deny(slackPayload() as never);
+
+    expect(task.handleMergeApproval).not.toHaveBeenCalled();
+    expect(task.handleMergeDenial).not.toHaveBeenCalled();
+    expect(vi.mocked(updateMessage)).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when an action actor cannot be classified', async () => {
+    const task = makeFakeTask();
+    vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
+    vi.mocked(getUserInfo).mockRejectedValue(new Error('Slack unavailable'));
+    const { approve } = captureSlackHandlers();
+
+    await approve(slackPayload() as never);
+
+    expect(task.handleMergeApproval).not.toHaveBeenCalled();
+    expect(vi.mocked(updateMessage)).not.toHaveBeenCalled();
+  });
+
   it('mismatched button value: stale disposition, no merge, message updated with the stale notice', async () => {
     const task = makeFakeTask();
     // The Task method rejects the mismatched identity (its atomic gate) — the
@@ -245,17 +271,6 @@ describe('merge approval — Slack button and API route resolve identically (AC8
     expect(vi.mocked(emitEvent)).toHaveBeenCalledWith(
       'approval:resolved', 'task-123', { type: 'merge', approve: true },
     );
-  });
-
-  it('external approver still resolves the approval with identity omitted', async () => {
-    const task = makeFakeTask();
-    vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
-    vi.mocked(isExternalUser).mockReturnValue(true);
-
-    const { approve } = captureSlackHandlers();
-    await approve(slackPayload() as never);
-
-    expect(task.handleMergeApproval).toHaveBeenCalledWith(undefined, EXPECTED);
   });
 
   it('API merge request without github/pr_number is a 400 with no resolution call', async () => {

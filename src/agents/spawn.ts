@@ -16,7 +16,6 @@ import { existsSync } from 'fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Agent } from './agent.js';
 import type { Task } from '../tasks/task.js';
-import type { TaskMetadata } from '../types/task.js';
 import { isRepoAgent, isPmAgent } from '../types/agent.js';
 import { buildCommitAuthorEnv } from './commit-author.js';
 import { resolveAgentModel, resolveAgentEffort } from './model-label.js';
@@ -50,7 +49,7 @@ import { emitEvent } from '../system/event-bus.js';
 import { getProbeBaseUrl } from '../system/context-probe.js';
 import { buildSandboxConfig, createFilesystemGuardHooks, TRUSTED_PACKAGE_REGISTRY_DOMAINS, type SandboxOptions } from './sandbox.js';
 import { applyOAuthBindings } from '../system/oauth/inject.js';
-import { enrichPromptWithMemory, isMemoryEnabled, isInjectionEnabled, isMemoryToolsEnabled, createMemoryToolsMcpServer, hasLockedSlackChannel, type MemoryToolsCtx } from '../memory/index.js';
+import { enrichPromptWithMemory, isMemoryEnabled, isInjectionEnabled, isMemoryToolsEnabled, createMemoryToolsMcpServer, type MemoryToolsCtx } from '../memory/index.js';
 
 // ---- Prompt generation (per agent kind) ----
 
@@ -189,23 +188,18 @@ async function extractTaskAuthorUsers(taskId: string): Promise<import('../memory
 }
 
 /**
- * Derive the memory tools' caller scope from spawn primitives (see authz.ts):
- * author user ids feed user-hit scoping; `extShared` locks memory down
- * entirely for tasks visible to an external org — or possibly visible
- * (`unknown` stamp = classification failure, fail-closed). Exported for
- * tests — production calls it once per spawn.
+ * Derive the memory tools' caller scope from spawn primitives. Author user ids
+ * keep user-memory hits scoped to people participating in the task.
  */
 export function deriveMemoryToolsCtx(
   taskId: string,
   agentId: string,
-  channels: TaskMetadata['channels'],
   users: ReadonlyArray<{ userId: string }>,
 ): MemoryToolsCtx {
   return {
     taskId,
     agent: agentId,
     authorUserIds: users.map((u) => u.userId),
-    extShared: hasLockedSlackChannel(channels),
   };
 }
 
@@ -321,15 +315,10 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   // Memory read tools (pull path) — every track, read-only, gated by
   // ARCHIE_MEMORY_TOOLS (default off; ARCHIE_MEMORY=false overrides). Rides
   // the existing spawn.ts memory seam, so ejection still removes the same files.
-  // The ctx carries the task's involvement scope (channels, author users) for
-  // authorization; tasks with an ext-shared channel get NO memory surface at
-  // all — anything an agent reads there can end up visible to an external org.
+  // User ids in the ctx scope user-memory search hits to task participants.
   const memoryUsers = await extractTaskAuthorUsers(taskId);
-  const memoryToolsCtx = deriveMemoryToolsCtx(taskId, def.id, metadata.channels, memoryUsers);
-  if (memoryToolsCtx.extShared && (isMemoryToolsEnabled() || isInjectionEnabled())) {
-    logger.agent(def.id, 'memory locked down for this task (ext-shared or unclassified channel): no tools, no injection');
-  }
-  if (isMemoryToolsEnabled() && !memoryToolsCtx.extShared) {
+  const memoryToolsCtx = deriveMemoryToolsCtx(taskId, def.id, memoryUsers);
+  if (isMemoryToolsEnabled()) {
     mcpServers['memory-tools'] = createMemoryToolsMcpServer(memoryToolsCtx);
   }
 
@@ -586,20 +575,16 @@ Shared folder: ${sharedPath} [READ-ONLY]
   }
 
   // ---- Organizational memory injection (read path; gated by ARCHIE_MEMORY_INJECT, default off) ----
-  // Skipped entirely for ext-shared tasks (same lockdown as the pull tools —
-  // injected preferences/activity leak through model output exactly like pull
-  // results). Users are the task's AUTHORS, computed once above.
-  if (!memoryToolsCtx.extShared) {
-    const taskTitle = metadata.title ?? undefined;
-    // taskId + agent feed the selection sensor (memory/tasks/<taskId>/telemetry.jsonl).
-    const memoryBase = { taskId, agent: def.id, taskTitle };
-    const memorySelectors = isPmAgent(def)
-      ? memoryBase
-      : isRepoAgent(def)
-        ? { ...memoryBase, repo: def.repo!.primary }
-        : { ...memoryBase, plugin: def.pluginName };
-    systemPrompt = await enrichPromptWithMemory(systemPrompt, memoryUsers, memorySelectors);
-  }
+  // Users are the task's authors, computed once above.
+  const taskTitle = metadata.title ?? undefined;
+  // taskId + agent feed the selection sensor (memory/tasks/<taskId>/telemetry.jsonl).
+  const memoryBase = { taskId, agent: def.id, taskTitle };
+  const memorySelectors = isPmAgent(def)
+    ? memoryBase
+    : isRepoAgent(def)
+      ? { ...memoryBase, repo: def.repo!.primary }
+      : { ...memoryBase, plugin: def.pluginName };
+  systemPrompt = await enrichPromptWithMemory(systemPrompt, memoryUsers, memorySelectors);
 
   // Expose the sandbox config on the agent so in-process tools (e.g.
   // `share_artifact`, `post_to_user` artifact_paths) can validate paths against

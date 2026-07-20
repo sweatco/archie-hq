@@ -46,6 +46,7 @@ const TASK_ID = 'task-20260708-bootrace-test';
 function metadata(): TaskMetadata {
   return {
     task_id: TASK_ID,
+    visibility: 'public',
     task_owner: 'backend-agent',
     participants: [],
     channels: {},

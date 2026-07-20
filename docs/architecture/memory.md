@@ -1,558 +1,216 @@
 # Memory Layer
 
-The memory layer gives Archie persistent cross-task knowledge — user preferences, a rolling activity index, per-task summaries, and a graph of **entity pages** (the durable subjects the work keeps touching: services, systems, integrations, concepts, repos). Organization-wide facts are themselves entity pages, scoped `org`. Memory reaches agents two ways: **push** (selected content injected at spawn) and **pull** (read-only agent tools, flag-gated). It is a self-contained subsystem under `src/memory/`, gated by the `ARCHIE_MEMORY` feature flag, and designed to be removable as a single unit.
+The memory layer gives Archie persistent cross-task knowledge: user preferences, recent activity, task summaries, and entity pages for durable subjects such as services, systems, integrations, concepts, and repositories. Memory reaches agents through prompt injection and three read-only tools. The subsystem lives under `src/memory/`, uses Markdown files only, and is gated by `ARCHIE_MEMORY`.
 
-This document describes the implementation as-built and is the layer's behavior contract — the code must match it, and behavior changes update it in the same commit (see `src/memory/CLAUDE.md`). How the layer got this shape is recorded in [`docs/plans/20260719-memory-v2.md`](../plans/20260719-memory-v2.md); the forward plan and its gates live in [`docs/proposals/memory-v2-roadmap.md`](../proposals/memory-v2-roadmap.md).
+This document describes the implementation as built. Historical decisions live in [`docs/plans/20260719-memory-v2.md`](../plans/20260719-memory-v2.md); future work lives in [`docs/proposals/memory-v2-roadmap.md`](../proposals/memory-v2-roadmap.md).
 
-## Goals
+## Confidentiality Model
 
-- Eliminate "new hire every task" behavior — agents should arrive informed.
-- Stay simple and ejectable — Markdown files, no database, one feature flag.
-- Keep a one-way dependency: `src/memory/` imports from core; core never imports from `src/memory/`.
+Authorization is a property of the task, not of individual memory artifacts.
 
-## Two-Path Architecture
+Every task has one immutable `visibility` value:
 
+- `public`: public Slack channels, including Slack Connect channels; CLI tasks; scheduled and message-triggered tasks.
+- `private`: Slack DMs and private Slack conversations. A Slack channel-info lookup failure also creates a private task.
+- Legacy task metadata without `visibility` fails closed to `private`; `Task.get()` persists that migration.
+
+The task keeps the visibility assigned at creation. A follow-up in the same Slack thread continues the same task. A task cannot attach a second Slack thread, so it cannot bridge a public thread and a DM or private conversation.
+
+Only public tasks write memory. `processExtraction()` checks `metadata.visibility === 'public'` before it reads `knowledge.log` or invokes the extractor. Private tasks write no user preferences, entities, summaries, or activity rows. Private tasks can still consume organizational memory through the normal injection and read-tool paths.
+
+The store is therefore public by construction. Summaries and activity rows carry no access stamps, reads need no per-artifact authorization checks, and raw task logs are not part of the cross-task memory corpus. `grep_task_log` does not exist.
+
+Slack Connect public channels use the same public-memory behavior as ordinary public channels. External and guest messages are filtered at Slack ingress, but internal users' questions and Archie's responses are visible to every channel member. Interactive authorization actions are separately restricted to internal Slack actors and fail closed when actor classification fails.
+
+### One-time deployment cleanup
+
+This model removes provenance stamps from stored artifacts, so an existing store created under the former channel-level policy must not be reused as-is. Before deploying this change, snapshot the existing `workdir/memory/` directory, clear it, and let Archie recreate an empty store. This removes private/DM-derived user preferences and entities whose provenance cannot be reconstructed reliably. Rollback restores the snapshot together with the previous binary.
+
+## Architecture
+
+```text
+task spawn
+  ├─ extract author users from knowledge.log
+  ├─ inject their user preferences
+  ├─ inject recent public activity and the entity index
+  └─ select and inject relevant entity pages
+
+agent pull tools
+  ├─ search_memory
+  ├─ read_entity
+  └─ read_task_summary
+
+task completion
+  ├─ load metadata
+  ├─ private or legacy-unknown visibility ──▶ stop
+  └─ public
+       ├─ read transcript and current memory
+       ├─ run one-turn extraction side-agent
+       ├─ validate author evidence and sanitize output
+       ├─ update user and entity files
+       ├─ write task summary and recent activity
+       └─ enqueue housekeeping when soft caps are exceeded
 ```
-                ┌──────────────── READ PATH (push) ────────────────┐
-                │                                                  │
-  spawnAgent ──▶│  extractTaskUsernames(taskId)                    │
-  (PM / repo /  │      └─ scans knowledge.log for Slack mentions   │
-   plugin track)│                                                  │
-                │  enrichPromptWithMemory(prompt, users, selectors)│
-                │      ├─ readUser(u)    ─▶ <user_preferences …>   │
-                │      ├─ readActivity() ─▶ <recent_activity>      │
-                │      ├─ index.md       ─▶ <entity_index> (always)│
-                │      └─ selectEntities(repo/users/title, +1 hop) │
-                │                        ─▶ <entity …> pages       │
-                │                                                  │
-                │  appended under "## Organizational Memory"       │
-                │  header in the agent's system prompt             │
-                └──────────────────────────────────────────────────┘
-                                       │
-                                       ▼
-                ┌────────── workdir/memory/ (Markdown store) ──────┐
-                │   users/<U…>.md           ── frontmatter + bullets│
-                │   recent-activity.md      ── markdown table (≤50)│
-                │   tasks/<taskId>/         ── summary + telemetry │
-                │   entities/<slug>.md      ── frontmatter + facts │
-                │   entities/index.md       ── derived thin index  │
-                │   pending-extractions.md  ── durable queue       │
-                └──────────────────────────────────────────────────┘
-                                       ▲
-                                       │
-                ┌─────────────── WRITE PATH (extraction) ──────────┐
-                │                                                  │
-  task:completed│  initMemory() subscribes:                        │
-  event ──────▶ │      onEvent('task:completed') →                 │
-                │      handleTaskCompleted(taskId)                 │
-                │                                                  │
-                │  Sequential queue (durable via pending-          │
-                │  extractions.md; resumes on restart)             │
-                │      ↓                                           │
-                │  processExtraction(taskId):                      │
-                │   1. loadMetadata, readKnowledgeLog              │
-                │   2. extract Slack mentions → UserRef[]          │
-                │   3. read ALL involved users' memory + index     │
-                │   4. runExtraction(input, allowedUserIds)        │
-                │       Sonnet side-agent, maxTurns: 1, no tools   │
-                │       prompts/memory-extractor.md                │
-                │       sanitizer drops malformed/hostile updates  │
-                │   5. applyUserUpdatesWithIdentity per user       │
-                │       (writes touched: annotations)              │
-                │   6. applyEntityUpdate per entity (resolve-or-   │
-                │       create, auto touched_by) → rebuildIndex    │
-                │   7. write memory/tasks/<taskId>/summary.md      │
-                │       (memory-diff + entity-based related-tasks) │
-                │   8. appendActivity + trimActivity(50)           │
-                │   9. if soft cap exceeded → runHousekeeping()    │
-                └──────────────────────────────────────────────────┘
-```
+
+Core imports the subsystem in exactly two seam files: `src/index.ts` initializes it, and `src/agents/spawn.ts` registers the read paths. The memory subsystem may import core persistence and task types internally.
 
 ## Components
 
-```
+```text
 src/memory/
-├── index.ts          — initMemory(): bootstrap, dir creation, queue drain, event subscription
-├── types.ts          — MemoryUpdate, ExtractionResult, ActivityEntry, UserRef, Entity* types
-├── paths.ts          — all path resolution + identifier/slug guards + env-flag accessors
-├── store.ts          — readUser, writeUser, applyUserUpdatesWithIdentity, applyUserUpdates, softCapExceeded
-├── sanitize.ts       — sanitizeUpdate/Activity + entity slug/observation/relation guards, injection/secret heuristics
-├── annotations.ts    — parseLastTouched, stripLastTouched, appendLastTouched (touched: bullets)
-├── pending-queue.ts  — durable extraction queue (enqueue/dequeue/read)
-├── housekeeping.ts   — runHousekeeping (org/user side-agent + entity merge/archive), trace-back validator
-├── entities.ts       — parse/serialize/read/write entity pages, resolveEntity, applyEntityUpdate
-├── entity-index.ts   — rebuildIndex (derived), selectEntities (push selection + 1-hop expansion)
-├── context.ts        — buildMemoryContext, enrichPromptWithMemory (push read path; exported render helpers)
-├── tools.ts          — read tools (search/read/summary/grep) + memory-tools MCP server (pull read path)
-├── telemetry.ts      — shared fail-safe telemetry appender (selection + pull sensors)
-├── activity.ts       — readActivity, appendActivity, trimActivity
-├── extractor.ts      — buildExtractionPrompt, parseExtractionResponse, runExtraction (Sonnet)
-├── lifecycle.ts      — handleTaskCompleted, processExtraction, buildSummaryMarkdown, related-by-entity
-└── __tests__/        — sanitize, paths, store, context, extractor, activity, pending-queue,
-                        housekeeping, entities, entity-index, lifecycle (integration)
-
-prompts/
-├── memory-extractor.md   — extraction prompt template (Sonnet side-agent)
-└── memory-housekeeper.md — consolidation prompt template (Sonnet side-agent)
-
-scripts/
-├── memory-housekeeping.ts — manual `npm run memory:housekeeping -- --target <all|entities|U…>`
-├── memory-eval.ts    — `npm run memory:eval` (two-tier eval over a pulled snapshot; see tools/memory-eval/)
-└── snapshot-memory.sh — dated memory-only prod snapshots (launchd; feeds the eval trend metrics)
-
-workdir/memory/                                  (runtime, gitignored)
-├── users/<id>.md
-├── recent-activity.md
-├── tasks/<taskId>/summary.md
-├── tasks/<taskId>/telemetry.jsonl
-├── entities/<slug>.md
-├── entities/index.md
-└── pending-extractions.md
+├── index.ts          bootstrap, directory creation, queue recovery, event subscription
+├── paths.ts          paths, identifier guards, and feature-flag accessors
+├── types.ts          memory, activity, user, and entity types
+├── lifecycle.ts      public-task gate and serialized extraction pipeline
+├── extractor.ts      one-turn extraction side-agent and response parser
+├── sanitize.ts       untrusted-model-output validation
+├── store.ts          user-memory reads and serialized update semantics
+├── activity.ts       five-column recent-activity table
+├── entities.ts       entity parsing, resolution, and persistence
+├── entity-index.ts   derived index and push selection
+├── context.ts        prompt-injection assembly
+├── tools.ts          three read-only pull tools
+├── telemetry.ts      selection, pull, and evidence-drop telemetry
+├── pending-queue.ts  durable extraction queue
+├── housekeeping.ts   user consolidation and entity merge/archive
+└── annotations.ts    touched-date parsing and rendering
 ```
 
-## Read Path — Memory Injection at Spawn
+Runtime data lives under `workdir/memory/`:
 
-`src/agents/spawn.ts` calls `enrichPromptWithMemory()` after assembling the track-specific system prompt for every agent it spawns. Three call sites, one per track:
-
-| Track | Location | Trigger |
-|-------|----------|---------|
-| PM | `spawn.ts:252-253` | Every PM agent spawn |
-| Repo | `spawn.ts:381-382` | Every repo agent spawn |
-| Plugin | `spawn.ts:479-480` | Every plugin agent spawn |
-
-The helper `extractTaskAuthorUsers(taskId)` (`spawn.ts`) parses the task's `knowledge.log` for message AUTHORS — entry source lines of the form `[ts] [<@UID:Display Name> in …]` (legacy logs use the `[@<UID:...>]` bracket order) — and returns one `UserRef` (raw Slack ID + display name) per unique author; body @-mentions never count, and redacted external authors are excluded (`extractAuthorUsers`, `src/memory/lifecycle.ts`). The Slack ID is the user-memory filename, so the read and write paths key identically. Those author users are the only ones for whom `<user_preferences>` blocks are injected — a user's memory follows the user, it is never surfaced to tasks they merely got mentioned in.
-
-`buildMemoryContext(usernames)` (`src/memory/context.ts`) assembles up to three XML-tagged blocks:
-
-```
-<user_preferences user_id="U07ABC123" display_name="Dana">
-{contents of users/U07ABC123.md}
-</user_preferences>
-
-<recent_activity>
-{recent-activity.md rows re-rendered, filtered to access: org + the spawning task's own row}
-</recent_activity>
-
-<entity_index>
-{contents of entities/index.md — always injected when any entity exists}
-</entity_index>
-
-<entity slug="payment-service" type="service" scope="repo">
-{full contents of entities/payment-service.md}
-</entity>
+```text
+users/<id>.md
+recent-activity.md
+tasks/<taskId>/summary.md
+tasks/<taskId>/telemetry.jsonl
+entities/<slug>.md
+entities/index.md
+pending-extractions.md
 ```
 
-**Entity selection is push** — the system decides which entity pages to inject at spawn. The complementary **pull path** (below) lets agents read the rest of the store mid-task; selection itself takes no agent input. `enrichPromptWithMemory(prompt, users, selectors)` receives spawn-context selectors (`{ repo?, plugin?, taskTitle?, taskId?, agent? }`): every track passes `taskId` and `agent` (they feed the selection sensor below); PM adds `taskTitle`, repo agents pass `repo: def.repo.repoKey`, plugin agents pass `plugin: def.pluginName`. `selectEntities()` (`entity-index.ts`) then:
+## Read Path
 
-1. Scores every active entity against the spawn context. An entity of **any scope** becomes an injection candidate only when it carries a relevance signal: a repo match, an `owned_by` relation to a participating user, or token overlap of the task title / users against its name, aliases, and summary.
-2. **Expands one hop** along `[[wikilink]]` relations from the signal-bearing set (so selecting `payment-service` pulls `postgres-prod` even if it wasn't directly matched).
-3. Applies **two independent budgets** to the score-ranked candidates (last-touched recency breaks ties): `scope: org` pages are bounded by `ARCHIE_MEMORY_ORG_INJECT_MAX`, all other pages by `ARCHIE_MEMORY_ENTITY_INJECT_MAX`. Each budget is a **ceiling, not a target** — a zero-signal page is never injected to fill spare capacity. Candidates over a budget are dropped and their slugs logged; zero-signal pages are not candidates and are not logged as drops.
+`src/agents/spawn.ts` extracts the current task's message authors from `knowledge.log`. Source-line authorship counts; a body mention does not. Redacted external authors are excluded. The resulting Slack IDs scope user memory for both injection and search.
 
-The thin `<entity_index>` is never subject to a page bound — the agent always sees the full catalogue of what exists, so a page not selected for full injection stays discoverable via its `L0` summary (the recall path until pull/embeddings land in a later phase).
+When `ARCHIE_MEMORY_INJECT=true`, `enrichPromptWithMemory()` can append:
 
-When a selected page is rendered into its `<entity>` block, the auto-appended `touched_by` relations are truncated to the newest `ARCHIE_MEMORY_TOUCHED_BY_INJECT_MAX` (they grow by one per touching task and would otherwise re-inflate the prompt without bound). Truncation is render-time only: the file on disk keeps the full `touched_by` history for provenance and related-task selection, and all other relation types render in full.
-
-**Selection sensor.** Every enriched spawn also leaves a one-line JSON record of the selection decision it just received, written under `memory/tasks/<taskId>/` — see [Telemetry](#telemetry) for where, how, and why.
-
-`enrichPromptWithMemory()` appends the block to the prompt under a fixed `## Organizational Memory` header with a short instruction line. It returns the prompt unchanged — and performs no store reads — if the layer is disabled (`ARCHIE_MEMORY=false`), if **injection is disabled** (`ARCHIE_MEMORY_INJECT` ≠ `true`, the default — see [Feature Flags](#feature-flags)), or if no memory exists.
-
-## Read Path — Pull Tools (agent-callable)
-
-When `ARCHIE_MEMORY_TOOLS=true` (default off; `ARCHIE_MEMORY=false` overrides), every agent track gets the in-process `memory-tools` MCP server (`createMemoryToolsMcpServer`, `src/memory/tools.ts`), registered in `spawn.ts`'s base server map — the same seam file as push injection, so ejection still removes the same files. Four read-only tools:
-
-| Tool | Reads | Bounds |
-|------|-------|--------|
-| `search_memory(query[, max_results])` | active entity pages (name/aliases/L0/facts), user files, task summaries, recent activity — lexical, the selection scorer's own tokenizer | ranked thin hits (id + one-liner), max 10 by default |
-| `read_entity(slug)` | one full entity page, `touched_by` render-truncated exactly like injection; aliases resolve; archived pages marked | ~8K chars/result |
-| `read_task_summary(taskId)` | `memory/tasks/<id>/summary.md` | ~8K chars/result |
-| `grep_task_log(taskId, pattern)` | the task's `knowledge.log` (literal, case-insensitive) | 50 line-numbered matches, untrusted-data framing wrapper |
-
-Every identifier passes the `paths.ts` guards before any filesystem access; the server registers zero mutating tools (writes stay funneled through the extraction side-agent). Search shares `selectEntities`' tokenizer deliberately: a pulled-but-not-injected page then indicts push budgets/signals, never scorer skew. Each call leaves a pull-sensor record (next section).
-
-## Confidentiality & Authorization
-
-The layer enforces a channel-confidentiality policy end to end (`src/memory/authz.ts` holds the pure decision logic):
-
-- **Channel visibility** — every Slack channel is classified `public | private | dm | ext-shared | unknown` (`getChannelVisibility`, `src/connectors/slack/client.ts`; always `conversations.info`-derived — no API-free short-circuit for any id shape, because Slack Connect DMs are D-prefixed `is_ext_shared` conversations and ext-shared wins unconditionally; **fail-closed to `unknown`** on error, which read-locks like ext-shared) and the class is stamped onto `SlackChannel.visibility` at every attach/refresh site: inbound messages, PM-opened threads/DMs (`new_dm` stamps via lookup, never a `'dm'` literal), thread linking. A missing stamp counts as `private` everywhere (write-gated, not read-locked). The advisory `isChannelShared` check keeps its fail-open behavior for warnings; both share one 60s info cache (errors uncached — an `unknown` stamp self-heals on the next successful classification).
-- **Extraction gate (push), whitelist modes** — `classifyTaskChannels` maps the completed task's channels to a mode: any `ext-shared` → **skip**; any `unknown` → **skip** (reason `unknown`); any `private`, unstamped, or out-of-vocabulary value → **skip** (reason `private`); any `dm` → **prefs-only**; else **full** with `access: org` (the only class ever stamped) and per-link `visibility:` values in the frontmatter. Prefs-only applies user-preference updates ONLY — no summary, no activity row, no entity updates, no Related Tasks participation — enforced code-side in `processExtraction` regardless of extractor output. Skip and prefs-only runs also **retract** episodic artifacts a previous completion left (delete `summary.md`, remove the activity row): tasks complete more than once, and a stale `access: org` stamp must not keep granting grep over a log that later absorbed confidential lines. Skips/prefs-only/retractions are logged and recorded as telemetry (`extraction-skip`, `extraction-prefs-only`, `retracted: true`).
-- **Episodic read authorization (pull)** — `read_task_summary`/`grep_task_log` serve a non-self target only when its persisted stamp is exactly `access: org`; everything else — no summary, no stamp, a first-iteration `access: dm` stamp, an unknown value — is denied `no-access-stamp`. DM-derived content is episodically unreachable by construction (prefs-only writes no artifacts). `grep_task_log` authorizes before opening the log. Denials are normal, content-free, policy-worded results recorded with `denied: true` + reason. The caller's scope (author user ids, lock flag) is derived once per spawn (`deriveMemoryToolsCtx`, `spawn.ts`) and frozen into the tool closure; an absent scope fails closed to self-only.
-- **User-memory ownership** — only a task's AUTHOR users are writable by extraction (`allowedUserIds`), injected as `<user_preferences>`, or rankable as `search_memory` user hits. Mentioning someone grants nothing. Own-statements attribution is enforced in code: every `user_update` must cite `msg:<ts>` evidence ids, and the lifecycle applies it only when every cited id resolves to a transcript source line authored by the target user — non-conforming updates are dropped with `user-update-dropped` telemetry. Authorship itself cannot be forged from message bodies: `formatLogEntry` (`src/tasks/persistence.ts`) indents body continuation lines, so no body-originated line matches the line-start-anchored source shape.
-- **Lockdown (ext-shared / unknown)** — a task with any Slack-Connect-shared channel (stamped `ext-shared` or legacy `isShared`) or any `unknown`-stamped channel gets no memory surface at all: tools are not registered, injection is skipped (logged), and a per-call deny at the top of **all four** tool handlers (before guards, corpus reads, and the self rule) — entity content and the caller's own artifacts included. The per-call check is **live**, not a snapshot replay: it re-derives the lock from fresh task metadata on every call (`hasLockedSlackChannel`), because a running agent keeps consuming queued messages without re-spawning — a channel converted to Slack Connect mid-session locks the very next tool call, one message-processing cycle after the restamp. The spawn-time ctx flag remains a positive trigger that never un-locks. Rationale: anything the agent reads can be pasted where the external org reads it; an unclassified channel may be exactly that.
-
-DM-task callers keep the full org READ surface — injection and all four tools work normally for them; the lockdown above is on what DM tasks *produce*, not what they *see*.
-
-Authorization keys on stamped channel visibility, stable DM channel ids, and transcript authorship — never on Slack membership rosters (`conversations.members` is not consulted).
-
-Two accepted, bounded limits of the model: (1) evidence validation proves each cited message's *authorship*, not that its content supports the update — a prompt-injected extractor could fabricate a preference citing its target's own unrelated line; the sanitizer's instruction-shaped heuristics, the extractor prompt rules, and `user-update-dropped` + store-review monitoring bound this, and semantic content-binding belongs to the write-path phase. (2) The `access: org` stamp is re-evaluated only at completion: a completed task that reopens and absorbs confidential lines keeps its stale grant until the next completion retracts or restamps it (`grep_task_log` serves the live log) — the window closes at the next completion, and the policy's designed failure direction everywhere else is under-grant.
-
-Retroactive cleanup of pre-policy artifacts is deliberately postponed: legacy summaries have no `access:` stamp and first-iteration `access: dm` summaries parse to the same denial; legacy and `dm`-classed activity rows never render (injection filters to `access: org` rows only). Entity pages are covered by the enablement-gate human store review; an optional one-off script may delete v1 dm-stamped artifacts from dev stores. A known, accepted residue of retraction: entity facts distilled by a pre-downgrade completion stay on their pages (per-fact provenance is a non-goal), including the `touched_by [[taskId]]` edges — so a retracted task's id and its entity associations remain visible via injected pages and `read_entity`, while its content stays unreachable (summary deleted, grep denied; task ids themselves are not treated as secret).
-
-## Telemetry
-
-Five record kinds, one file: the **selection sensor** — a per-spawn record of what push injected and why — the **pull sensor** — one record per read-tool call (tool, query/args, returned ids, zero-result flag, `kind: "pull"`; authorization denials add `denied: true` + `denyReason`) — the **extraction-skip sensor** — one record per task the confidentiality gate excluded (`kind: "extraction-skip"`, reason, `retracted` when a re-completion removed stale artifacts) — the **prefs-only sensor** (`kind: "extraction-prefs-only"`, same `retracted` flag) — and the **evidence-drop sensor** (`kind: "user-update-dropped"`, target user + cited ids), so both the policy's memory loss and misattribution drops stay measurable. Selection lines carry no `kind` field; readers treat kind-less lines as selection records. All share the fail-safe appender in `src/memory/telemetry.ts`. The remaining memory-v2 decisions (budget defaults, zero-signal recency floor, ossification, the value eval) are deferred to live data (`docs/proposals/memory-v2-roadmap.md`), and telemetry cannot be backfilled — so the sensor ships before injection is enabled.
-
-`recordSelection()` (`src/memory/context.ts`, end of `buildMemoryContext`) appends one JSON line per enriched spawn to `memory/tasks/<taskId>/telemetry.jsonl`, creating the task dir on first write; `spawn.ts` passes `taskId` + `agent` via `MemorySelectors`. It fires only when injection is enabled and a `taskId` is present — no separate flag; with injection off, nothing is read or written. Each line is a self-contained selection case:
-
-```json
-{"v":1,"ts":"2026-07-02T19:08:26.034Z","taskId":"task-20260702-1908-jgjfb6","agent":"pm-agent","ctx":{"repo":null,"plugin":null,"taskTitle":null,"userIds":[]},"selected":[],"dropped":[],"zeroSignalExcluded":138,"candidates":0,"budgets":{"org":8,"nonOrg":8},"renderedTokensEst":8207}
+```xml
+<user_preferences user_id="U07ABC123" display_name="Dana">…</user_preferences>
+<recent_activity>…</recent_activity>
+<entity_index>…</entity_index>
+<entity slug="payment-service" type="service" scope="repo">…</entity>
 ```
 
-`selected` is the injected set in ranked order; `dropped` lost to a budget; `candidates` vs. `zeroSignalExcluded` splits signal-bearing from no-signal pages; `renderedTokensEst` is chars/4 of the injected block (relative, not exact). A zero-injection spawn still records — that rate is itself a tuning signal (the example is real: a CLI spawn with no title/users; the ~8.2K tokens are the always-injected index). Fail-safe: any error logs one warning and the prompt is returned as if the sensor did not exist; lines are single appends, and readers skip unparseable ones.
+Recent activity contains only public-task output, so every row is injected. The entity index is always included when entities exist. Full entity pages are selected by repo, author relations, and lexical overlap with the task title, then expanded one relation hop and bounded separately for `org` and non-`org` scopes. `touched_by` relations are truncated only while rendering; disk retains the full provenance list.
 
-Records live in `memory/tasks/<taskId>/` — the per-task (episodic) side of the store, next to the task's `summary.md` — so `scripts/pull-remote-data.sh` harvests them even with `-m/--memory-only`, and ejection stays a single `rm -rf workdir/memory/`. Lines are versioned (`v: 1`) and self-contained (the `taskId` is embedded) so they survive aggregation and double as replay cases. Consumers, in order: post-enablement budget tuning, spawn debugging ("what did memory tell this agent?"), and the roadmap's Phase 5 value eval.
+When `ARCHIE_MEMORY_TOOLS=true`, every agent receives three read-only tools:
 
-## Write Path — Extraction on Task Completion
+| Tool | Reads | Bound |
+|---|---|---|
+| `search_memory(query[, max_results])` | active entities, current authors' user files, all task summaries, recent activity | 10 thin hits by default |
+| `read_entity(slug)` | one entity page; aliases resolve and archived pages are marked | about 8K characters |
+| `read_task_summary(taskId)` | one public task summary | about 8K characters |
 
-### Trigger
+Identifiers pass `paths.ts` guards before filesystem access. No tool mutates memory or opens a task's raw `knowledge.log`.
 
-`initMemory()` (`src/memory/index.ts`) runs once at startup, after `initEventPersistence()` in `src/index.ts:98`. It:
+## Write Path
 
-1. Returns immediately if `ARCHIE_MEMORY=false`.
-2. Creates `workdir/memory/` and `workdir/memory/users/`.
-3. Subscribes a listener via `onEvent()` to the `task:completed` event emitted by `Task.complete()` (`src/tasks/task.ts:546`).
+`initMemory()` subscribes to `task:completed`. `handleTaskCompleted()` first records the task ID in `pending-extractions.md`, then runs it through a process-wide sequential queue. Successful processing removes the pending entry; startup replays entries left by a crash.
 
-When the event fires, `handleTaskCompleted(taskId)` is invoked. It is fire-and-forget — no caller awaits the result.
+The public-task pipeline is:
 
-### Sequential Queue
+1. Load task metadata and stop immediately unless visibility is exactly `public`.
+2. Read the transcript and identify message authors, falling back to `cli:<taskId>` when no Slack author exists.
+3. Load every author's existing memory plus the entity index.
+4. Run the Sonnet extraction side-agent with `maxTurns: 1`, no tools, and a minimal environment.
+5. Sanitize every update. User updates are accepted only for author IDs and must cite `msg:<ts>` source lines authored by that same user.
+6. Apply user updates and entity updates. Entity writes resolve aliases, enforce closed vocabularies, add `touched_by [[taskId]]`, and rebuild the index after changes.
+7. Write `tasks/<taskId>/summary.md`, append a recent-activity row, trim activity to 50 rows, and schedule housekeeping for exceeded soft caps.
 
-`lifecycle.ts` maintains a module-level `extractionQueue: Promise<void>` that chains every new extraction onto the previous one. This serializes writes to `users/*.md`, `recent-activity.md`, and entity files across concurrent task completions.
-
-**Durable across restarts.** `handleTaskCompleted` writes the task ID to `pending-extractions.md` via `enqueuePending()` *before* extraction and removes it with `dequeuePending()` only after success. If the process exits mid-extraction, `initMemory()` reads the leftover IDs on the next startup and replays each through `rescheduleTaskCompleted()`. Queue-file writes are atomic (tmp-file + `rename`).
-
-### Extraction Pipeline (`processExtraction`)
-
-```
-1. loadMetadata(taskId)                  ──▶ task metadata (participants, channels, status)
-2. classifyTaskChannels(channels)        ──▶ whitelist gate: any ext-shared ⇒ skip; any unknown ⇒ skip;
-                                             any private/unstamped/out-of-vocab ⇒ skip; any dm ⇒ prefs-only;
-                                             else full (access 'org'). Skip: retract stale artifacts +
-                                             extraction-skip telemetry + STOP.
-3. readKnowledgeLog(taskId)              ──▶ transcript
-4. extractAuthorUsers(transcript)        ──▶ UserRef[] AUTHORS only (Slack IDs + names); cli:<taskId> fallback when none
-5. readUser() for ALL author users + readIndexMarkdown ──▶ existing user memory + entity index
-6. runExtraction({...access...}, allowedUserIds=authors) ──▶ Sonnet side-agent (maxTurns: 1, no tools)
-7. evidence validation (buildMsgAuthorMap): every user_update must cite msg:<ts> ids authored by its
-   target user, else dropped + user-update-dropped telemetry; then
-   applyUserUpdatesWithIdentity(userId, name, updates) per author user
-   — prefs-only mode STOPS here: retract stale artifacts + extraction-prefs-only telemetry.
-8. applyEntityUpdate(update, taskId) per entity (resolve-or-create, auto touched_by) → rebuildIndex()
-9. writeSummary() ──▶ workdir/memory/tasks/<taskId>/summary.md (frontmatter incl. access: org stamp +
-   Memory Updates + Related Tasks selected from org activity rows only)
-10. appendActivity({...access: org}) + trimActivity(50)
-
-(If a user file or the entity count overflows its soft cap in steps 7–8, runHousekeeping(target) — including target 'entities' — is enqueued on the same queue. See "Housekeeping".)
-```
-
-### The Extraction Side-Agent
-
-`runExtraction()` (`extractor.ts:187`) invokes the Claude Agent SDK's `query()` with:
-
-- `model: 'sonnet'`
-- `maxTurns: 1` — no multi-turn behavior; one prompt, one response.
-- `allowedTools: []` — no tool calls.
-- `executable: 'node'`, `pathToClaudeCodeExecutable: process.env.CLAUDE_PATH || 'claude'`.
-- A fresh subprocess env limited to `NODE_ENV`, `ANTHROPIC_API_KEY`, `PATH`.
-
-The agent's prompt comes from `prompts/memory-extractor.md` (substituted via `loadPrompt()`). The expected response is a JSON object matching `ExtractionResult`:
-
-```ts
-interface ExtractionResult {
-  user_updates: Record<string, MemoryUpdate[]>;
-  entity_updates: EntityUpdate[];
-  task_summary: string;
-  activity_summary: string;
-  domain: string;
-}
-
-interface MemoryUpdate {
-  action: 'add' | 'update';
-  section?: string;
-  content: string;
-  old?: string;   // 'update' only
-}
-
-interface EntityUpdate {
-  slug: string;                 // resolved against the entity index (by slug or alias)
-  type?: string;                // service|system|integration|concept|repo (required on create)
-  scope?: string;               // org|domain|repo
-  repos?: string[];
-  summary?: string;             // L0 one-liner
-  observations?: { category: string; text: string }[];   // category ∈ fact|config|decision|caveat
-  relations?: { type: string; target: string }[];        // type ∈ depends_on|integrates|owned_by|part_of|related_to
-}
-```
-
-`parseExtractionResponse()` strips Markdown code fences, parses JSON, validates the top-level shape and every `MemoryUpdate`, and returns `null` on any failure. `entity_updates` is parsed **leniently** — entity writes are additive and fully sanitized downstream (`entities.ts` + `sanitize.ts`), so a malformed individual entity item is dropped with a warning rather than failing the whole extraction. Failure of the core result is logged and skipped — extraction is best-effort.
-
-The transcript is truncated to 100,000 characters before being substituted; longer transcripts get a `[truncated]` sentinel.
+Model output and transcript content are untrusted. Instruction-shaped content, secret-like values, malformed Markdown fields, invalid IDs, and invalid entity fields are rejected before persistence.
 
 ## Storage Formats
 
-### `users/<id>.md`
+### User memory
+
+User files are keyed by raw Slack ID or a documented `cli:`/`local:` fallback. Display names are labels, never identifiers.
 
 ```markdown
 ---
 slack_user_id: U07ABC123
-display_name: "Dana"
+display_name: "Dana Lee"
 aliases: []
 ---
+
 ## Communication
 - Prefers concise Slack updates  <!-- touched: 2026-05-14 -->
 ```
 
-`## Section` / `- bullet` structure, preceded by YAML frontmatter (`slack_user_id`, `display_name`, `aliases`) written on first touch by `applyUserUpdatesWithIdentity`. The filename is the raw Slack ID (`U…`/`W…`/`B…`/`T…`) or a `cli:`/`local:` fallback — never a display name. `getUserPath()` in `paths.ts` enforces this and normalises the `:` in fallback IDs to `__` for case-insensitive filesystems.
-
-`applyUpdate()` (`store.ts`) handles two actions:
-
-- **`add`** — Find `## {section}` header. If found, append `- {content}` at the section's last non-empty line. If missing, append a new `## {section}` block at file end. If no section is given, append at file end.
-- **`update`** — Find the first line containing `old`. If found, replace it with `- {content}`. If not found, the update is skipped with a warning — no silent append (see the "Unmatched update actions SHALL NOT silently append" requirement).
-
-### `recent-activity.md`
+### Recent activity
 
 ```markdown
 # Recent Activity
 
-| Date | Task ID | Summary | Domain | User | Access |
-|------|---------|---------|--------|------|--------|
-| 2026-04-10 | task-20260410-1000-abc | Fixed login validation bug | engineering | U07ABC123 | org |
-| 2026-04-09 | task-20260409-1530-def | Planned quarterly roadmap | engineering | U05DEF456 | dm |
+| Date | Task ID | Summary | Domain | User |
+|------|---------|---------|--------|------|
+| 2026-06-01 | task-20260601-1000-abc | Fixed webhook retries | engineering | U07ABC123 |
 ```
 
-`appendActivity()` inserts new rows immediately after the separator (newest first). `trimActivity(50)` rewrites the file with only the most recent 50 rows when the cap is exceeded. The `Access` column carries the task's access class (see "Confidentiality & Authorization"); legacy 5-column rows still parse, with no class — consumers treat that as restricted.
+Rows are newest first, keyed by task ID, and capped at 50.
 
-### `tasks/<taskId>/summary.md`
+### Task summary
 
-Written by `writeSummary()` into the task's directory under `workdir/memory/tasks/` — the per-task (episodic) side of the store, shared with the task's `telemetry.jsonl`. Legacy `memory/summaries/<taskId>.md` files are relocated here once at startup (`migrateLegacySummaries`).
+Task summaries contain ordinary metadata, channel links, participating users, a sanitized summary, applied memory updates, and related public tasks. There is no `access:` field and Slack links have no per-link visibility field.
 
-```markdown
----
-task_id: task-20260410-1000-abc123
-status: completed
-created_at: 2026-04-10T10:00:00Z
-updated_at: 2026-04-10T10:30:00Z
-domain: engineering
-extraction_at: 2026-04-10T10:31:00Z
-access: org
-links:
-  slack:
-    - channel_id: C0123
-      thread_id: "1700000000.000100"
-      visibility: public
-  github:
-    - url: https://github.com/acme/api/pull/42
-  cli:
-users:
-  - id: U07ABC123
-    display_name: "Dana"
----
+### Entity pages
 
-# Summary
+Entity frontmatter carries type, scope, repos, domain, status, aliases, and an L0 summary. Facts use the closed categories `fact | config | decision | caveat`; relations use `depends_on | integrates | owned_by | part_of | touched_by | related_to`. Unknown values are dropped. `entities/index.md` is derived and never authoritative.
 
-Investigated and fixed the login bug. Root cause was missing input validation in the auth handler. Backend agent added the validation, opened PR, and merged after review.
+## Telemetry
 
-## Memory Updates
+`tasks/<taskId>/telemetry.jsonl` is not runtime memory. It contains three record shapes:
 
-### entities/auth-service.md
-- **[decision]** validate input length before hashing
+- Selection records, one per enriched spawn, with selected and dropped entities plus token estimates.
+- Pull records, one per read-tool call, with arguments, returned identifiers, result count, and zero-result status.
+- `user-update-dropped` records for evidence-validation failures.
 
-### users/U07ABC123.md
-- **added** `## Communication` › Prefers concise Slack updates
-
-## Related Tasks
-
-- [task-20260409-1530-def](../task-20260409-1530-def/summary.md) — Hardened session token rotation (engineering)
-```
-
-Related tasks (up to 5) are selected **by shared entity first**: `selectRelatedTasksByEntity()` reads the entities this task touched and links other tasks that the same entities are `touched_by`. When there is no entity overlap it falls back to the lexical token-overlap over the activity index (org rows only — prefs-only tasks write no rows, so DM tasks never appear).
-
-### `entities/<slug>.md`
-
-One file per durable subject, written by `applyEntityUpdate()` (`entities.ts`). The slug is validated as a filename by `isValidEntitySlug()` / `sanitizeEntitySlug()` — lowercase-kebab only, no separators, no `..`, `index` reserved. People are **not** entities; they stay in `users/<id>.md` and are referenced by `[[<slackId>]]`.
-
-```markdown
----
-entity: payment-service
-type: service                 # service | system | integration | concept | repo
-display_name: "Payment Service"
-aliases: [payments-api]
-scope: repo                   # org | domain | repo  (org pages are injected only when relevance-matched, up to ARCHIE_MEMORY_ORG_INJECT_MAX; the index always lists them)
-repos: [backend]
-domain: engineering
-status: active                # active | archived
----
-<!-- L0: NestJS payments API, Stripe + postgres-prod -->
-
-## Facts
-- [decision] chose idempotency keys over a dedup table  <!-- touched: 2026-06-01 -->
-
-## Relations
-- depends_on [[postgres-prod]]
-- owned_by [[U07ABC123]]
-- touched_by [[task-20260601-1000-abc]]
-```
-
-Observations carry a **closed** category (`fact | config | decision | caveat`); relations a **closed** type (`depends_on | integrates | owned_by | part_of | touched_by | related_to`). Unknown categories/types are dropped by `sanitize.ts`. Every applied update auto-adds a `touched_by [[taskId]]` edge — this is what powers entity-based related-task selection. On disk the `touched_by` list is unbounded (it is the provenance record); prompt rendering truncates it to the newest `ARCHIE_MEMORY_TOUCHED_BY_INJECT_MAX`.
-
-### `entities/index.md`
-
-A **derived** thin table — one row per entity (`[[slug]]`, type, scope, L0 summary, last-touched). Regenerated from the entity files by `rebuildIndex()` after every extraction and during entity housekeeping; **never authoritative** (the files win on conflict). It is always injected at spawn so agents know the full catalogue.
-
-```markdown
-# Entity Index
-<!-- generated by housekeeping; derived from the entity files — do not edit -->
-
-| Entity | Type | Scope | Summary | Last |
-|--------|------|-------|---------|------|
-| [[payment-service]] | service | repo:backend | NestJS payments API | 2026-06-01 |
-```
-
-### `tasks/<taskId>/telemetry.jsonl`
-
-Per-spawn selection records — telemetry rather than memory: nothing reads it at runtime. Format, fire conditions, and design rationale live in [Telemetry](#telemetry).
+All telemetry appends are fail-safe and never alter agent results or extraction outcomes.
 
 ## Housekeeping
 
-`users/*.md` files are bounded by two coupled mechanisms (organizational knowledge lives in entities, which have their own housekeeping below):
-
-**Per-bullet last-touched annotation.** Every bullet carries an inline HTML comment with the date it was added or last refreshed:
-
-```
-- Backend uses NestJS with PostgreSQL  <!-- touched: 2026-05-14 -->
-```
-
-Hidden in rendered Markdown, parsable via `parseLastTouched()` from `annotations.ts`. Refresh happens automatically when a matching `update` action runs.
-
-**Soft caps with auto-trigger.** When a write exceeds `ARCHIE_MEMORY_USER_CAP` (default 100 total bullets) or `ARCHIE_MEMORY_SECTION_CAP` (default 30 per section), `runHousekeeping(target)` is enqueued on the same sequential queue used for extraction. The consolidation Sonnet side-agent (`prompts/memory-housekeeper.md`):
-
-- **MERGE** semantically-duplicate bullets, keeping the most recent touched date.
-- **DROP** bullets older than `ARCHIE_MEMORY_STALENESS_DAYS` (default 180) that are redundant with newer entries.
-- **REORDER** within each section so newest-touched comes first.
-
-A **trace-back validator** drops any output bullet whose normalised edit distance to every input bullet exceeds 40% — preventing the side-agent from smuggling in new facts under the cover of consolidation.
-
-Consequences of a consolidation pass are queued and emitted in the next completed task's summary under `## Memory Updates › ### Housekeeping`, e.g. `**housekeeping** users/U07ABC123.md: dropped 3 entries, merged 2 duplicate(s)`.
-
-**Entity consolidation** (`runHousekeeping('entities')`, triggered when entity count exceeds `ARCHIE_MEMORY_ENTITY_CAP`, default 300) is done **in code**, not by the side-agent — merging structured pages and repointing graph edges is deterministic and trivially satisfies the no-new-facts guarantee (only existing observations/relations are moved). It: merges entities that another entity lists as an alias (folding observations/relations/aliases into the canonical slug, deleting the duplicate, repointing inbound edges), archives entities whose observations are all stale beyond the window (`status: archived` — never deleted), and rebuilds `entities/index.md`.
-
-Manual trigger: `npm run memory:housekeeping -- --target <all|entities|U07ABC123>` (entry point at `scripts/memory-housekeeping.ts`).
-
-Disabled by `ARCHIE_MEMORY_HOUSEKEEPING=false` — overflow is still logged but no pass runs.
+User bullets carry touched dates. Soft caps enqueue a consolidation side-agent on the same sequential queue; a trace-back validator prevents it from inventing facts. Entity housekeeping is deterministic code: it merges alias-linked duplicates, archives stale entities, repoints relations, and rebuilds the index. Manual entry point: `npm run memory:housekeeping -- --target <all|entities|U…>`.
 
 ## Feature Flags
 
 | Flag | Default | Purpose |
-|------|---------|---------|
-| `ARCHIE_MEMORY` | `true` | Master switch. `false` → `initMemory`/`enrichPromptWithMemory`/`handleTaskCompleted` all no-op. Enabling the layer does **not** by itself enable injection — see `ARCHIE_MEMORY_INJECT`. |
-| `ARCHIE_MEMORY_INJECT` | `false` | **Read-path gate, default OFF (inverts the convention).** `true` → stored memory is injected into agent prompts. Unset / anything else → injection off and `enrichPromptWithMemory` does no store reads; extraction still stores facts. `ARCHIE_MEMORY=false` overrides. |
-| `ARCHIE_MEMORY_TOOLS` | `false` | **Pull-path gate, default OFF.** `true` → the read tools (`search_memory`, `read_entity`, `read_task_summary`, `grep_task_log`) are registered for every agent track. Independent of `ARCHIE_MEMORY_INJECT`; `ARCHIE_MEMORY=false` overrides. |
-| `ARCHIE_MEMORY_HOUSEKEEPING` | `true` | Auto + manual housekeeping. `false` → no consolidation runs. |
-| `ARCHIE_MEMORY_USER_CAP` | `100` | Soft cap on total bullets in each user file. |
-| `ARCHIE_MEMORY_SECTION_CAP` | `30` | Soft cap on bullets per `## Section` (org or user). |
-| `ARCHIE_MEMORY_STALENESS_DAYS` | `180` | Days after which an unrefreshed bullet / entity observation is eligible for drop. |
-| `ARCHIE_MEMORY_ENTITY_CAP` | `300` | Soft cap on total entity pages; entity housekeeping (merge/archive) auto-triggers when exceeded. |
-| `ARCHIE_MEMORY_ENTITY_INJECT_MAX` | `8` | Ceiling on full **non-`org`** entity pages pushed into a single agent prompt (the index is always injected in full). `0` → index-only. |
-| `ARCHIE_MEMORY_ORG_INJECT_MAX` | `8` | Ceiling on full `scope: org` entity pages injected into a single prompt — only relevance-matched pages consume slots; zero-signal pages stay index-only. `0` → index-only. |
-| `ARCHIE_MEMORY_ENTITY_OBS_CAP` | `30` | Soft cap on observations kept per entity page, enforced at the persistence boundary (housekeeping merges included); on write the newest-touched are retained and the oldest surplus dropped (same-date ties keep the most-recently-applied, so a fresh update is never dropped in favor of an equally-dated older bullet). Re-affirmed observations refresh their `touched:` date instead of duplicating. |
-| `ARCHIE_MEMORY_TOUCHED_BY_INJECT_MAX` | `10` | Max `touched_by` relations rendered into an injected `<entity>` block (newest kept; `0` → none). Render-time only — the stored page keeps the full history. |
+|---|---|---|
+| `ARCHIE_MEMORY` | `true` | Master switch for initialization, extraction, injection, and tools. |
+| `ARCHIE_MEMORY_INJECT` | `false` | Enables prompt injection. Extraction remains active when off. |
+| `ARCHIE_MEMORY_TOOLS` | `false` | Enables the three read-only tools independently of injection. |
+| `ARCHIE_MEMORY_HOUSEKEEPING` | `true` | Enables automatic and manual housekeeping. |
+| `ARCHIE_MEMORY_USER_CAP` | `100` | Soft cap on bullets per user file. |
+| `ARCHIE_MEMORY_SECTION_CAP` | `30` | Soft cap on bullets per section. |
+| `ARCHIE_MEMORY_STALENESS_DAYS` | `180` | Age threshold for consolidation and entity archival. |
+| `ARCHIE_MEMORY_ENTITY_CAP` | `300` | Soft cap on entity pages. |
+| `ARCHIE_MEMORY_ENTITY_INJECT_MAX` | `8` | Full non-org entity pages per prompt. |
+| `ARCHIE_MEMORY_ORG_INJECT_MAX` | `8` | Full org entity pages per prompt. |
+| `ARCHIE_MEMORY_ENTITY_OBS_CAP` | `30` | Persisted observations per entity. |
+| `ARCHIE_MEMORY_TOUCHED_BY_INJECT_MAX` | `10` | Rendered `touched_by` relations per entity block. |
 
-All variables are documented in `.env.example`.
+## Eval Harness
 
-### Injection vs extraction
-
-`ARCHIE_MEMORY_INJECT` gates only the **read** path (memory → prompt); extraction, storage, and housekeeping are unaffected. This lets the layer run in **collect-only** mode: facts accumulate and can be evaluated (read the files under `workdir/memory/`, or via the `archie-debug` MCP) before they ever steer an agent.
-
-| `ARCHIE_MEMORY` | `ARCHIE_MEMORY_INJECT` | Extraction (write) | Injection (read) |
-|---|---|---|---|
-| `false` | (ignored) | off | off |
-| `true` (default) | unset / not `true` | **on** | **off** (default) |
-| `true` | `true` | on | on |
-
-**Rollout:** deploy with injection unset (collect-only), evaluate the stored facts, then set `ARCHIE_MEMORY_INJECT=true` to enable injection. Rollback is unsetting the flag — the store is untouched.
-
-The "Learned from this task" Slack post does **not** exist — visibility into what was learned comes from structured logs (`logger.system('[memory] Extraction complete for ...')`) and the per-task summary file in `workdir/memory/tasks/<taskId>/`.
-
-## Eval Harness (`npm run memory:eval`)
-
-Offline QA over pulled store snapshots — the measurement half of memory-v2 (`tools/memory-eval/`, entry `scripts/memory-eval.ts`). The eval addresses a snapshot via `ARCHIE_WORKDIR` and **refuses to run unless that workdir contains `memory/`**, so it can never silently read the developer's live store; it is strictly read-only over the snapshot (verified by a before/after tree-hash test) and writes its dated report outside it (default `~/archie-snapshots/reports/`). Two tiers:
-
-**Mechanical tier** — no model calls, run on every snapshot:
-
-- **Store health** — entity count vs `ARCHIE_MEMORY_ENTITY_CAP`, observation/page-size and staleness distributions, archived count, and a **versioned near-duplicate rate** (normalized lexical similarity over names/aliases/L0 summaries — the trend metric the write-path phase's dedupe will be judged by); growth/turnover deltas when `--prev` is supplied.
-- **Telemetry aggregation** — over all `memory/tasks/*/telemetry.jsonl`: selection records (spawn counts, injection and zero-injection rates, budget-drop frequency, rendered-token distribution), pull records (calls per task, hit and zero-result rates, the zero-result **store-gap list**), and the policy sensors (denial rates + reasons, extraction-skip / prefs-only / user-update-dropped counts). Absent record kinds are reported as absent, not zero activity; unparseable lines are counted and skipped.
-- **Selection regression** — golden cases (`{v, harvested_at, snapshot_date, ctx, expected}`, harvested from live selection records once injection is on) replayed through the **production `selectEntities`** with the recorded budgets, never a reimplementation; per-case selected/dropped diffs, and same-code-same-store goldens must diff zero.
-- **Enablement-gate outputs** — a worst-case injected-token bound computed through the exported production render path (rendered index + org/non-org largest pages × their ceilings after `touched_by` truncation + summed `<user_preferences>` blocks + recent-activity, each term tagged with the budget values read through the flag accessors), and the `--report` store-review reading list covering every block injection would enable (entities ordered by connectedness/observations/bytes with staleness, plus every `users/*.md`, `recent-activity.md`, `entities/index.md`), each with size and suspicious-content flags (URLs, imperative override phrasing, base64-like blobs) for the ~1–2h human review.
-
-**Functional tier** — on demand, before any selection/injection/pull change ships: runs the **real implementation as system-under-test** (ingest = extraction over source transcripts into a throwaway store; query = production `selectEntities` + injection render, optionally the pull tools) and scores two units per question: surfaced-context recall/precision against labeled evidence entities (no model), and answer correctness by a **fixed reader** over three arms — no-memory (floor), memory, Oracle (evidence-only ceiling) — so Oracle−memory separates retrieval loss from reader loss; an over-injection sweep re-scores at tighter token budgets. Question sets are a public-benchmark adapter (portable regression anchor) plus prod-transcript synthesis where a human-validated label sample, not the generating model, is the trust anchor. Any LLM judge is **governed**: validated by Cohen's κ (not raw agreement) and position bias < 0.10 against a human-labeled sample, from a different model family than the extractor, stamped in the report header — unvalidated or same-family judges run NON-GATING. Functional numbers gate selection/injection/pull changes only, never model comparisons.
-
-Snapshots come from `scripts/snapshot-memory.sh`, which wraps `pull-remote-data.sh -m` into dated `~/archie-snapshots/archie-memory-YYYYMMDD.tgz` tarballs on a laptop `launchd` schedule (`StartCalendarInterval`, container name passed explicitly — macOS `/bin/bash` 3.2 lacks `mapfile` — outcomes appended to `snapshot.log`). Goldens, question sets, and reports embed prod task titles and Slack IDs, so they live outside the repo and outside `workdir/memory/`. The **enablement gate** for `ARCHIE_MEMORY_INJECT` is these outputs: acceptable worst-case bound + clean human store review + functional sanity pass, carried by the flip PR. First prod run: worst-case bound 360,630 tokens at default budgets → no flip before store cleanup; pull recovered 2/3 evidence pages that push selection missed.
+`npm run memory:eval` reads a snapshot selected by `ARCHIE_WORKDIR`, refuses to use a path without a `memory/` subtree, and writes reports outside the snapshot. The mechanical tier measures store health, selection and pull telemetry, regression goldens, and prompt-size bounds. The functional tier exercises production selection/rendering with reader and judge controls. The harness is read-only over the snapshot.
 
 ## Ejection
 
-The plan was built to support clean removal in five steps:
+1. Delete `src/memory/` and the two memory prompts.
+2. Remove `initMemory()` from `src/index.ts`.
+3. Remove memory imports, author extraction, injection, and tool registration from `src/agents/spawn.ts`.
+4. Delete `workdir/memory/`.
+5. Optionally delete `tools/memory-eval/`, the memory scripts, and their package scripts.
 
-1. `rm -rf src/memory/`
-2. `rm prompts/memory-extractor.md`
-3. Remove `import { initMemory } from './memory/index.js'` and the `await initMemory();` call from `src/index.ts`.
-4. Remove the memory imports (`enrichPromptWithMemory`, `isMemoryEnabled`, `isMemoryToolsEnabled`, `createMemoryToolsMcpServer`), the `extractTaskUsernames()` helper, the three memory-injection call sites, and the `memory-tools` server registration from `src/agents/spawn.ts` (one seam file — the pull path rides the same import).
-5. `rm -rf workdir/memory/`
-6. (Tooling, optional) `rm -rf tools/memory-eval/ scripts/memory-eval.ts scripts/snapshot-memory.sh` and drop the `memory:eval` npm script.
-
-No type changes propagate to other modules, no database migrations, no external service cleanup. Core never imports from `src/memory/`. Everything the layer writes — including per-task summaries and telemetry under `tasks/` — lives inside `workdir/memory/` and is removed by step 5.
+No database or external service cleanup is required.
 
 ## Testing
 
-| File | Surface tested |
-|------|----------------|
-| `sanitize.test.ts` | Every validator rule + injection / secret heuristics, positive + negative cases |
-| `paths.test.ts` | Slack-ID acceptance, fallback-ID acceptance, malformed-ID rejection, filename construction |
-| `store.test.ts` | `readUser`/`writeUser`, `applyUpdate` (add / update / skip-unmatched on user files), `applyUserUpdates*`, `softCapExceeded` |
-| `context.test.ts` | `buildMemoryContext` user-tag attributes, `enrichPromptWithMemory` disabled-flag passthrough, selection-sensor record shape / fail-safe / gating |
-| `extractor.test.ts` | `buildExtractionPrompt` substitution, `parseExtractionResponse` happy/sad/fenced cases |
-| `activity.test.ts` | `readActivity`, `appendActivity`, `trimActivity` (newest-first, cap behaviour) |
-| `pending-queue.test.ts` | Round-trip enqueue/dequeue/read, idempotent enqueue, malformed-file resilience |
-| `housekeeping.test.ts` | Annotation parsing, `extractBullets`, trace-back validator, soft-cap thresholds, entity merge-plan / staleness / merge+archive integration |
-| `entities.test.ts` | parse/serialize round-trip, alias resolution, `applyEntityUpdate` (resolve-or-create, auto touched_by, closed-vocab drops, traversal-slug rejection, cap) |
-| `entity-index.test.ts` | `rebuildIndex` derive/drop, `selectEntities` (org-always, repo match, 1-hop expansion, bound + dropped, archived excluded, title scoring, telemetry fields) |
-| `tools.test.ts` | Read tools: search ranking + zero-result, guard rejections, result bounds, archived marking, pull-record shape/fail-safety, no-write surface, per-call authz denials |
-| `authz.test.ts` | Pure authz decisions: channel classification → extraction mode, episodic-read grants/denials, ext-shared/unknown lockdown, access-stamp parsing |
-| `lifecycle.test.ts` | End-to-end: org / user / entity / summary / activity writes; entity-based related tasks; restart-resilience; multi-user allowed set; confidentiality gate modes + retraction; evidence-validated user updates; no Slack post |
-| `../../connectors/slack/__tests__/channel-visibility.test.ts` | `conversations.info` → visibility mapping (ext-shared precedence, Connect DMs, fail-closed `unknown`) |
-| `../../agents/__tests__/memory-tools-ctx.test.ts` | Spawn-side tools ctx derivation (author scan, lock flag, fail-closed empty scope) |
-| `../../../tools/memory-eval/memory-eval.test.ts` | Eval harness: metric math, aggregation over mixed record kinds, golden replay, token bound, functional arms + judge gating, snapshot read-only check |
-
-Run with `npx vitest run src/memory/__tests__/` or `npm test`.
-
-## Hardening & Guarantees
-
-The layer's safety guards close seven gaps found in review; each is enforced in code today (the "Housekeeping" section above is the largest addition):
-
-| Concern | Resolution |
-|---------|------------|
-| Identity collisions on shared first names | User-memory filename is the raw Slack ID (`U…`/`W…`/`B…`/`T…`) or a `cli:` / `local:` fallback. Display name lives in YAML frontmatter inside the file. |
-| Model output corrupting Markdown | `src/memory/sanitize.ts` validates every update before write — section regex, domain enum, single-line bullets, table-cell escaping. |
-| Unmatched `update` actions becoming orphan bullets | `applyUpdate` now skips + warns when `old` is not found. No silent fallback. |
-| Lost extraction on crash | `pending-extractions.md` persists in-flight task IDs; `initMemory()` drains on startup. |
-| Prompt injection via transcripts | Extractor prompt marks transcript as untrusted data; sanitizer rejects instruction-shaped lines, role-play directives, and secret-shaped tokens. |
-| "Learned from this task" Slack noise | Slack post removed entirely; the audit trail lives in `tasks/<taskId>/summary.md`. |
-| Only first user's memory loaded | All author users' memory loaded in parallel; `parseExtractionResponse` drops updates for users outside the allowed set. |
-| Unscoped pull reads (any agent could read any task's transcript / any user's bullets) | Episodic reads authorized against the persisted `access:` stamp; search corpus pre-filtered; denials content-free and recorded. See "Confidentiality & Authorization". |
-| Mention-writable user memory | Ownership keys on transcript AUTHORSHIP — mention-only users are not writable, injectable, or searchable. |
-| Private-channel content entering the store | Extraction confidentiality gate: private/ext-shared tasks produce zero artifacts (skip telemetry keeps the loss measurable). |
-| Memory exfiltration via Slack-Connect channels | Ext-shared tasks get no memory surface: no tools registered, no injection, per-call deny backstop. |
-
-## Future Enhancements (Not in scope)
-
-The layer stays **keyword-scored** (push selection and pull search share one lexical tokenizer). The sequenced plan for what comes next — write-path rewrite (dedupe + forgetting), buy-vs-build spike, selection embeddings — lives in [`docs/proposals/memory-v2-roadmap.md`](../proposals/memory-v2-roadmap.md). Smaller deferred ideas not on that roadmap:
-
-- **Domain-directory splitting** — promote `domain` from a frontmatter dimension to an `entities/<domain>/` split once entity volume makes a flat directory unwieldy.
-- **Retroactive store cleanup** — a script deleting pre-policy private/DM-derived summaries and activity rows. Postponed: legacy artifacts are read-denied (no `access:` stamp) and dropped from injection; revisit if the enablement store review surfaces violations at scale.
-- **Per-fact entity provenance** — tagging individual observations with source visibility. Deferred until store review or denial telemetry shows confidential facts landing on org-visible pages.
-- **Slack reaction → revert** — let users react ❌ to remove just-applied entries.
-
-## Related Documentation
-
-- [Memory v2 plan](../plans/20260719-memory-v2.md) — how the layer got this shape (the five shipped stages and their decisions)
-- [Roadmap](../proposals/memory-v2-roadmap.md) — what comes next (rollout gates, write-path rewrite, embeddings trigger, value eval)
-- [Agents](agents.md) — agent prompt composition (memory is appended last)
-- [Orchestration](orchestration.md) — task lifecycle and event emission
-- [Persistence](persistence.md) — `knowledge.log` and metadata storage that extraction reads from
+Run `npx vitest run src/memory/__tests__/` or the whole suite with `npm test`. The lifecycle integration tests cover the public/private task boundary, Slack Connect public behavior, author-only user updates, entity writes, summaries, activity, and crash recovery. Tool tests cover the three-tool surface, public-store reads, author-scoped user search, identifier guards, result bounds, and telemetry. Slack client and action tests cover task visibility assignment and internal-only interactive mutations.

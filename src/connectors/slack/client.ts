@@ -7,7 +7,7 @@
 
 import { WebClient } from '@slack/web-api';
 import type { SlackThreadRef, SlackFile, SlackThread, SlackThreadMessage, SlackAuthor, SlackAttachment, SlackReaction } from '../../types/index.js';
-import type { PrCardData, ChannelVisibility } from '../../types/task.js';
+import type { PrCardData } from '../../types/task.js';
 import { prCardSubtitle, SLACK_PR_CARD_EMOJI } from '../../system/pr-card-format.js';
 
 /**
@@ -1181,25 +1181,17 @@ export function isExternalUser(user: {
   return false;
 }
 
-// ---- Channel classification (Slack Connect + visibility) ------------------
+// ---- Slack Connect channel classification ---------------------------------
 // One conversations.info snapshot per channel, cached with a 1-minute TTL: a
-// channel can flip to shared/private mid-task, and both the warning logic and
-// the memory-layer stamping depend on observing the transition promptly. 1 min
+// channel can flip to shared mid-task, and warning logic should observe the
+// transition promptly. 1 min
 // is well under Slack's tier-3 rate limit (50+/min) even for >50 simultaneously
 // active threads. Errors are NOT cached — the next call retries.
-//
-// Two consumers with deliberately different failure policies:
-// - isChannelShared (warnings, prompt notes): advisory → fails OPEN (false).
-// - getChannelVisibility (memory authorization stamps): persisted authz state →
-//   fails CLOSED ('private'), so an API error can never durably widen access.
 
 interface ConvInfoSnapshot {
   is_ext_shared?: boolean;
   is_pending_ext_shared?: boolean;
   connected_team_ids?: string[];
-  is_private?: boolean;
-  is_im?: boolean;
-  is_mpim?: boolean;
 }
 
 interface ConvInfoCacheEntry {
@@ -1238,42 +1230,12 @@ function isSharedFromInfo(info: ConvInfoSnapshot): boolean {
  * Returns whether a channel is shared with one or more external Slack
  * workspaces (Slack Connect). Consults `conversations.info` for every id —
  * Slack Connect DMs are D-prefixed and ARE shared. Result is cached for
- * 1 minute. On API failure, returns false (fail-open — advisory consumers only;
- * authorization must use getChannelVisibility, which fails closed).
+ * 1 minute. On API failure, returns false (fail-open — this is advisory only).
  */
 export async function isChannelShared(channelId: string): Promise<boolean> {
   const info = await fetchConversationInfoCached(channelId);
   if (info === null) return false;
   return isSharedFromInfo(info);
-}
-
-/**
- * Pure classification core for getChannelVisibility — exported for tests.
- * `info === null` means the conversation info could not be fetched: classify
- * 'unknown' (fail-closed error class — gates extraction AND read-locks, since
- * the true class may be ext-shared). Ext-shared wins over every other class,
- * D-prefixed ids included: Slack Connect DMs are `is_ext_shared` im
- * conversations, so the dm branch runs only after the ext-shared predicate.
- */
-export function classifyConversationInfo(
-  info: ConvInfoSnapshot | null,
-  channelId: string,
-): ChannelVisibility {
-  if (info === null) return 'unknown';
-  if (isSharedFromInfo(info)) return 'ext-shared';
-  if (info.is_im || info.is_mpim || channelId.startsWith('D')) return 'dm';
-  if (info.is_private || channelId.startsWith('G')) return 'private';
-  return 'public';
-}
-
-/**
- * Classify a channel's visibility for the memory-layer authorization policy.
- * Always consults `conversations.info` (no API-free short-circuit for any id
- * shape — the 60s cache bounds the cost). On API failure returns 'unknown'
- * (fail-closed) — see the failure-policy note on the cache above.
- */
-export async function getChannelVisibility(channelId: string): Promise<ChannelVisibility> {
-  return classifyConversationInfo(await fetchConversationInfoCached(channelId), channelId);
 }
 
 /**
@@ -1338,16 +1300,15 @@ export async function getChannelInfo(
     };
   } catch (error) {
     logger.warn('Slack', `Failed to get channel info for ${channelId}`);
-    return { id: channelId, name: channelId, isPrivate: false, isIm: false };
+    return { id: channelId, name: channelId, isPrivate: true, isIm: channelId.startsWith('D') };
   }
 }
 
 /**
  * Resolve a channel's current privacy, **throwing** on any API error rather than
- * swallowing it. Unlike `getChannelInfo` (which returns `isPrivate:false` on
- * failure), this lets callers that must fail *closed* — e.g. trigger visibility,
- * where an unresolvable channel must be treated as private, never public —
- * distinguish a genuine public channel from an unreachable one. A DM is private.
+ * swallowing it. Callers that need to distinguish a genuine private result
+ * from an unreachable channel use this rather than getChannelInfo's fail-closed
+ * fallback. A DM is private.
  */
 export async function fetchChannelIsPrivate(channelId: string): Promise<boolean> {
   const client = getSlackClient();
@@ -1609,11 +1570,10 @@ export async function fetchSlackThread(
   threadTs: string,
   currentMessageTs: string,
 ): Promise<SlackThread> {
-  const [channelInfo, rawMessages, shared, visibility] = await Promise.all([
+  const [channelInfo, rawMessages, shared] = await Promise.all([
     getChannelInfo(channelId),
     fetchThreadHistory(channelId, threadTs),
     isChannelShared(channelId),
-    getChannelVisibility(channelId),
   ]);
 
   // Detect whether OUR bot authored the thread root, computed BEFORE filtering.
@@ -1650,7 +1610,7 @@ export async function fetchSlackThread(
     threadId: threadTs,
     channel: channelInfo,
     shared,
-    visibility,
+    taskVisibility: channelInfo.isPrivate || channelInfo.isIm ? 'private' : 'public',
     messages,
     currentMessageTs,
     rootAuthorWasBot,
@@ -1884,4 +1844,3 @@ export async function findSlackChannels(query: string): Promise<SlackChannelInfo
     c.purpose.toLowerCase().includes(q)
   );
 }
-

@@ -92,6 +92,7 @@ base-36) provides uniqueness.
 ```typescript
 interface TaskMetadata {
   task_id: string;                              // e.g. "task-20251223-1712-a3f9k2"
+  visibility: 'public' | 'private';             // immutable; legacy missing values migrate to private
   task_owner: AgentName | null;                 // agent leading the task, or null
   participants: AgentName[];                    // all agents that have participated
   channels: Record<string, Channel>;            // active message delivery targets, keyed by channel ID
@@ -129,7 +130,7 @@ interface GitHubChannel {
 }
 ```
 
-The `channels` field is keyed by a unique channel ID (e.g., `"{channel_id}:{thread_id}"` for Slack). The `default_channel` field identifies the originating channel. Legacy `slack_threads` arrays are migrated on first load.
+The `channels` field is keyed by a unique channel ID (for Slack, `slack:<channelId>:<threadId>`). The `default_channel` field identifies the originating channel. A task can contain at most one Slack thread; attaching a different thread is rejected. Legacy `slack_threads` arrays are migrated on first load, and legacy metadata without `visibility` is persisted as private when loaded through `Task.get()`.
 
 ### SlackThreadRef (legacy)
 

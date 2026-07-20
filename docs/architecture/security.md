@@ -24,7 +24,7 @@ An agent caught in a loop (or manipulated into one) could spawn unlimited resear
 
 Slack and GitHub events are authenticated at the receiver layer before they reach any agent:
 
-- **Slack:** Bolt verifies request signatures via the configured signing secret (`mountSlackApp` in `src/connectors/slack/events.ts`). On top of signature verification, the event handler classifies the event author with `isExternalUser` (`src/connectors/slack/client.ts`) and bails out for users on a different `team_id` (Slack Connect / shared channels) or guests (`is_restricted` / `is_ultra_restricted`). External-authored content is also redacted from thread history before being shown to the PM.
+- **Slack:** Bolt verifies request signatures via the configured signing secret (`mountSlackApp` in `src/connectors/slack/events.ts`). On top of signature verification, the event handler classifies the event author with `isExternalUser` (`src/connectors/slack/client.ts`) and bails out for users on a different `team_id` (Slack Connect / shared channels) or guests (`is_restricted` / `is_ultra_restricted`). External-authored content is also redacted from thread history before being shown to the PM. Interactive authorization actions independently require an internal, successfully classified actor; external users, guests, missing actors, and lookup failures cannot approve or deny edit mode, max mode, research budgets, merges, or triggers.
 - **GitHub:** Webhook payloads are HMAC-SHA256 verified against `GITHUB_WEBHOOK_SECRET` via `verifyWebhookSignature` (`src/connectors/github/webhooks.ts`) before any routing or task lookup happens.
 
 ## Defense Layer 1: Agent Sandbox
@@ -172,7 +172,7 @@ Repo agents start in **read-only mode**. To make code changes, the PM agent must
 1. PM calls `request_edit_mode` tool with a reason
 2. System posts Slack message with Approve/Deny buttons
 3. Task pauses (all agents stop)
-4. User clicks Approve → task resumes with `edit_allowed: true`
+4. An internal user clicks Approve → task resumes with `edit_allowed: true`
 5. Repo agents gain Write, Edit tools, write MCP operations, and Bash write access via sandbox
 
 In edit mode, repo agents manage their own PRs directly via the `repo-tools` MCP server.
