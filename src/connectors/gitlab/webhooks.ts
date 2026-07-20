@@ -199,6 +199,12 @@ export async function routeGitLabEvent(objectKind: string, payload: Obj): Promis
     taskId = (await findTaskByPRNumber(context.repo, context.prNumber)) ?? undefined;
   }
   if (!taskId) return { action: 'discard', reason: 'Not our branch pattern' };
+  // Defense-in-depth: taskId is derived from an externally-controlled webhook
+  // branch name and flows into filesystem paths + git operations downstream.
+  // Reject anything outside the known task-id shape before it is used.
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(taskId)) {
+    return { action: 'discard', reason: 'Malformed task id' };
+  }
 
   const metadata = await loadMetadata(taskId);
   if (!metadata) return { action: 'discard', reason: `Task ${taskId} not found` };
