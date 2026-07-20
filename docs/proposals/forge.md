@@ -1,6 +1,6 @@
 # Proposal: Forge v2 — ephemeral, workflow-orchestrated idea → verified PR loop
 
-> **Status:** Accepted — in execution. Supersedes the staged-skill design previously in this file (accepted June 2026, implemented as `.claude/skills/forge/`). The verification philosophy of v1 — fresh-context adversarial reviewers, progressive blindness, capped loops, structured verdicts, live black-box QA — carries over unchanged. What changes is the execution substrate and the state model.
+> **Status:** Implemented — the implementation now lives in the `forge` plugin in [`sweatco/sweatco-claude-marketplace`](https://github.com/sweatco/sweatco-claude-marketplace); the local `.claude/` copy in this repo has been removed. Supersedes the staged-skill design previously in this file (accepted June 2026, implemented as `.claude/skills/forge/`). The verification philosophy of v1 — fresh-context adversarial reviewers, progressive blindness, capped loops, structured verdicts, live black-box QA — carries over unchanged. What changes is the execution substrate and the state model.
 
 ## Summary
 
