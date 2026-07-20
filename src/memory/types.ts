@@ -14,11 +14,7 @@ export interface MemoryUpdate {
   content: string;
   /** For 'update': the old line to replace */
   old?: string;
-  /**
-   * `msg:<ts>` source-line ids the update derives from. Lifecycle applies a
-   * Slack user's update only when every cited id resolves to a transcript
-   * line AUTHORED by that user (own-statements enforcement, code-side).
-   */
+  /** Author-owned source message IDs (`msg:<ts>`) supporting this update. */
   evidence?: string[];
 }
 
