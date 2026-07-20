@@ -203,19 +203,9 @@ export async function loadMetadata(taskId: string): Promise<TaskMetadata | null>
   }
 }
 
-/**
- * Format a log entry for the shared knowledge log.
- *
- * Multi-line message bodies are FRAMED: continuation lines are indented two
- * spaces so no line originating from a body can start at column 0 with `[…]`
- * and match the source-line shape (`AUTHOR_LINE_RE` in memory/lifecycle.ts is
- * line-start-anchored). Without this, a crafted message body could mint a fake
- * author line and forge its way into the memory ownership set.
- */
+/** Format a log entry so body continuations cannot mimic source lines. */
 function formatLogEntry(entry: LogEntry): string {
   const typeStr = entry.type ? ` [${entry.type}]` : '';
-  // Source interpolates Slack-provided names; strip line breaks so no value
-  // can start a forgeable column-0 line, independent of Slack's own rules.
   const safeSource = entry.source.replace(/[\r\n]+/g, ' ');
   const framedMessage = entry.message.replace(/\r\n?/g, '\n').replace(/\n/g, '\n  ');
   return `[${entry.timestamp}] [${safeSource}]${typeStr} ${framedMessage}\n`;
