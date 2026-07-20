@@ -11,8 +11,6 @@ build/
 *.js.map
 *.d.ts
 !*.config.js
-# Workflow scripts are source, not build output
-!.claude/workflows/*.js
 
 # IDE
 .vscode/
