@@ -4,6 +4,9 @@
 
 export type TaskStatus = 'in_progress' | 'stopped' | 'completed';
 
+/** Immutable confidentiality class assigned when a task is created. */
+export type TaskVisibility = 'public' | 'private';
+
 /** Core agent names - repo agents can be any string ending in '-agent' */
 export type CoreAgentName = 'pm-agent' | 'triage-agent';
 
@@ -74,8 +77,8 @@ export interface SlackThread {
   threadId: string;
   channel: { id: string; name: string };
   shared: boolean;
-  /** Channel visibility class observed at fetch time (fail-closed to 'private' on API error). */
-  visibility?: ChannelVisibility;
+  /** Visibility to assign if this thread creates a task. */
+  taskVisibility: TaskVisibility;
   messages: SlackThreadMessage[];  // bot messages excluded, EXCEPT the root when our bot started the thread
   currentMessageTs: string;
   /**
@@ -89,17 +92,6 @@ export interface SlackThread {
 // ---- Channel types (replace slack_threads) ----
 
 export type ChannelType = 'slack' | 'github' | 'cli';
-
-/**
- * Visibility class of a Slack conversation, used by the memory layer's
- * authorization policy. Classification is fail-closed: an API error stamps
- * 'unknown' — a distinct class that gates extraction AND read-locks the task's
- * memory surface (the true class may be ext-shared); a never-stamped channel
- * is treated as 'private' (write-gated only). DMs are their own class —
- * deliberately NOT 'private': memory policy gives them their own rules
- * (owner-scoped user memory via prefs-only extraction).
- */
-export type ChannelVisibility = 'public' | 'private' | 'dm' | 'ext-shared' | 'unknown';
 
 export interface ChannelBase {
   type: ChannelType;
@@ -122,15 +114,8 @@ export interface SlackChannel extends ChannelBase {
    * indicator. Cleared when the ack is removed.
    */
   ack_ts?: string;
-  /** Snapshot of last observed Slack-Connect / shared-channel state for this channel. */
+  /** Snapshot of last observed Slack-Connect / shared-channel state for warnings. */
   isShared?: boolean;
-  /**
-   * Snapshot of the last observed visibility class for this channel. Stamped
-   * on inbound messages and at channel registration; refreshed alongside
-   * `isShared`. Missing means "never classified" and is treated as 'private'
-   * (fail-closed) by the memory layer.
-   */
-  visibility?: ChannelVisibility;
   /** User IDs already shown the shared-channel ephemeral warning in this thread. */
   warnedUsers?: string[];
   /** User IDs already shown the forward-from-external ephemeral notice in this thread. */
@@ -296,6 +281,8 @@ export interface AgentSessionState {
 
 export interface TaskMetadata {
   task_id: string;
+  /** Immutable task-level confidentiality class. Legacy tasks default to private. */
+  visibility: TaskVisibility;
   task_owner: AgentName | null;
   participants: AgentName[];
   channels: Record<string, Channel>;   // Active message delivery targets, keyed by channel ID
@@ -395,4 +382,3 @@ export interface SlackAttachment {
   /** Text content of the attachment (forwarded message body, unfurled preview, etc.). */
   text: string;
 }
-

@@ -111,6 +111,43 @@ describe('fetchSlackThread — rootAuthorWasBot', () => {
   });
 });
 
+describe('fetchSlackThread — task visibility', () => {
+  it('treats public Slack Connect channels as public tasks', async () => {
+    slackApi.conversations.info.mockResolvedValue({
+      ok: true,
+      channel: { id: 'C_shared', name: 'partner', is_private: false, is_im: false, is_ext_shared: true },
+    });
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [rawMsg({ ts: '400.0', user: 'UHUMAN', text: 'internal request' })],
+    });
+
+    const thread = await client.fetchSlackThread('C_shared', '400.0', '400.0');
+
+    expect(thread.shared).toBe(true);
+    expect(thread.taskVisibility).toBe('public');
+  });
+
+  it('treats private channels and DMs as private tasks', async () => {
+    slackApi.conversations.info.mockResolvedValue({
+      ok: true,
+      channel: { id: 'G_private', name: 'secret', is_private: true, is_im: false },
+    });
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [rawMsg({ ts: '500.0', user: 'UHUMAN', text: 'private request' })],
+    });
+    expect((await client.fetchSlackThread('G_private', '500.0', '500.0')).taskVisibility).toBe('private');
+
+    slackApi.conversations.info.mockResolvedValue({
+      ok: true,
+      channel: { id: 'D_private', is_private: true, is_im: true },
+    });
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [rawMsg({ ts: '600.0', user: 'UHUMAN', text: 'dm request' })],
+    });
+    expect((await client.fetchSlackThread('D_private', '600.0', '600.0')).taskVisibility).toBe('private');
+  });
+});
+
 describe('fetchChannelHistory — public only, chronological', () => {
   it('refuses a private channel before reading any history', async () => {
     slackApi.conversations.info.mockResolvedValue({

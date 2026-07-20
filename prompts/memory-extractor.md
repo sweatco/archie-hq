@@ -45,7 +45,6 @@ Rules:
 - Identify users by their raw Slack ID from the mention markers (format: `[<@UID:FirstName LastName>]`, or the older `[@<UID:FirstName LastName>]` in historical logs — either bracket order; the `UID` is the canonical user identifier, e.g., `U07ABC123`).
 - OWNERSHIP: a `user_updates` entry for a user must derive ONLY from that user's OWN messages (transcript lines they authored). Never record a preference or fact about a user from what someone else said about them — second-hand claims are not memory. Users who merely appear @-mentioned in other people's messages are not writable, and updates keyed to them are dropped by validation.
 - EVIDENCE (required): every `user_updates` entry MUST carry an `evidence` array citing the `msg:<ts>` ids of the transcript source lines it derives from (the `| msg:...]` suffix in the line's bracketed source). Every cited line must be authored by that same user — validation resolves each id to its author and DROPS the update if any citation is missing, unresolvable, or authored by someone else.
-- DM MODE: when Access below is `dm`, this task is DM-derived and runs under a write lockdown — return `user_updates` ONLY. Leave `entity_updates` empty and keep `task_summary`/`activity_summary` to one short line each; they will not be persisted.
 
 Current user knowledge:
 <user_memory>
@@ -64,7 +63,6 @@ Participants: {{PARTICIPANTS}}
 Task Owner: {{TASK_OWNER}}
 Status: {{STATUS}}
 Created: {{CREATED_AT}}
-Access: {{ACCESS}} (org = derived from org-visible channels; dm = a direct-message conversation contributed)
 </task_metadata>
 
 Task transcript (knowledge.log):

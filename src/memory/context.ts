@@ -34,9 +34,7 @@ export interface MemorySelectors {
  * Build an XML-tagged memory context string from available memory artifacts.
  *
  * - per-user files → <user_preferences user_id="..." display_name="..."> blocks
- * - recent-activity.md → <recent_activity> block, filtered to org-derived rows
- *   ONLY (prefs-only tasks write no rows; v1 dm rows and legacy rows without
- *   an access class never render — fail-closed)
+ * - recent-activity.md → <recent_activity> block
  *
  * `users` is the set of AUTHOR users of the current task (a user's memory
  * follows the user — it is injected only where they actively participate); if
@@ -68,14 +66,10 @@ export async function buildMemoryContext(
     }
   }
 
-  // Recent activity — confidentiality-filtered re-render, never the raw file:
-  // org rows ONLY. v1 dm rows and legacy rows without an access class are
-  // restricted, fail-closed (prefs-only tasks write no rows at all, so the
-  // v1 own-row carve-out is gone with them).
+  // Recent activity contains only public-task output.
   const activityEntries = await readActivity();
-  const visibleActivity = activityEntries.filter((a) => a.access === 'org');
-  if (visibleActivity.length > 0) {
-    blocks.push(renderRecentActivityBlock(renderActivityTable(visibleActivity)));
+  if (activityEntries.length > 0) {
+    blocks.push(renderRecentActivityBlock(renderActivityTable(activityEntries)));
   }
 
   // Entity layer: always inject the thin index when any entity exists, then
