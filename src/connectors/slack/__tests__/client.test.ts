@@ -146,6 +146,17 @@ describe('fetchSlackThread — task visibility', () => {
     });
     expect((await client.fetchSlackThread('D_private', '600.0', '600.0')).taskVisibility).toBe('private');
   });
+
+  it('fails closed to a private task when channel info is unavailable', async () => {
+    slackApi.conversations.info.mockRejectedValue(new Error('Slack unavailable'));
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [rawMsg({ ts: '700.0', user: 'UHUMAN', text: 'request during outage' })],
+    });
+
+    const thread = await client.fetchSlackThread('C_unknown', '700.0', '700.0');
+
+    expect(thread.taskVisibility).toBe('private');
+  });
 });
 
 describe('fetchChannelHistory — public only, chronological', () => {
