@@ -196,6 +196,7 @@ describe('metadata round-trip — pending_merge_approval', () => {
     };
     const metadata: TaskMetadata = {
       task_id: taskId,
+      visibility: 'public',
       task_owner: null,
       participants: [],
       channels: {},
@@ -221,6 +222,7 @@ describe('metadata round-trip — pending_merge_approval', () => {
     const taskId = 'task-no-merge-approval';
     const metadata: TaskMetadata = {
       task_id: taskId,
+      visibility: 'public',
       task_owner: null,
       participants: [],
       channels: {},

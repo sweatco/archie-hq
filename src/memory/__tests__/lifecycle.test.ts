@@ -138,6 +138,7 @@ const USER_BOB = 'U07BOB0003';
 
 const METADATA = {
   task_id: TASK_ID,
+  visibility: 'public',
   task_owner: 'backend-agent',
   participants: ['pm-agent', 'backend-agent'],
   channels: {
@@ -147,7 +148,6 @@ const METADATA = {
       channel_id: 'C1',
       channel_name: 'general',
       last_processed_ts: '1234.5678',
-      visibility: 'public',
     },
   },
   default_channel: 'slack:C1:1234',
@@ -163,11 +163,6 @@ const KNOWLEDGE_LOG = [
   '[2026-04-10T10:01:00Z] [pm-agent] [decision] Assigned backend-agent',
   '[2026-04-10T10:05:00Z] [backend-agent] [discovery] Missing validation in auth handler',
 ].join('\n');
-
-/** Clone METADATA with different channels (deep enough for the tests). */
-function metadataWithChannels(channels: Record<string, unknown>) {
-  return { ...METADATA, channels };
-}
 
 // Helper: wait for the in-process sequential extraction queue to drain.
 const drain = () => new Promise((resolve) => setTimeout(resolve, 200));
@@ -321,18 +316,18 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     expect(content).toContain('_no related tasks found_');
   });
 
-  it('summary includes Slack thread link, per-link visibility, and the access stamp in frontmatter', async () => {
+  it('summary includes the Slack thread link without authorization stamps', async () => {
     handleTaskCompleted(TASK_ID);
     await drain();
     const content = await readFile(join(memoryDir, 'tasks', TASK_ID, 'summary.md'), 'utf-8');
     expect(content).toContain('links:');
     expect(content).toContain('channel_id: C1');
     expect(content).toContain('thread_id: "1234"');
-    expect(content).toContain('visibility: public');
-    expect(content).toMatch(/^access: org$/m);
+    expect(content).not.toMatch(/^access:/m);
+    expect(content).not.toMatch(/^\s+visibility:/m);
   });
 
-  it('creates recent-activity.md with the activity summary and access column', async () => {
+  it('creates recent-activity.md with the five-column public activity schema', async () => {
     handleTaskCompleted(TASK_ID);
     await drain();
 
@@ -340,7 +335,8 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     const content = await readFile(activityPath, 'utf-8');
     expect(content).toContain('Fixed login validation bug');
     expect(content).toContain(USER_DANA); // user column is the raw Slack ID
-    expect(content).toMatch(/\|\s*org\s*\|$/m); // access column stamped
+    expect(content).toContain('| Date | Task ID | Summary | Domain | User |');
+    expect(content).not.toContain('| Access |');
   });
 
   it('does NOT post any "Learned from this task" Slack message (post was removed)', async () => {
@@ -472,23 +468,22 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     );
 
     const orgIndex = [
-      { date: '2026-05-01', taskId: 'task-A', summary: 'Payments work', domain: 'engineering', user: 'U07DANA001', access: 'org' as const },
+      { date: '2026-05-01', taskId: 'task-A', summary: 'Payments work', domain: 'engineering', user: 'U07DANA001' },
     ];
     const related = await selectRelatedTasksByEntity(['payment-service'], 'task-B', orgIndex);
     expect(related.map((r) => r.taskId)).toEqual(['task-A']);
 
-    // A co-touching task NOT in the (authorized) index is dropped entirely —
-    // no placeholder row may reference it in an org-readable summary.
+    // A co-touching task not present in the activity index is dropped.
     const none = await selectRelatedTasksByEntity(['payment-service'], 'task-B', []);
     expect(none).toEqual([]);
   });
 
-  // ---- Confidentiality gate (extraction) ----
+  // ---- Task visibility boundary ----
 
-  const writeMetadata = async (channels: Record<string, unknown>) => {
+  const writeMetadata = async (metadata: Record<string, unknown>) => {
     await writeFile(
       join(sessionsDir, TASK_ID, 'shared', 'metadata.json'),
-      JSON.stringify(metadataWithChannels(channels), null, 2),
+      JSON.stringify(metadata, null, 2),
       'utf-8'
     );
   };
@@ -498,131 +493,36 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     expect(existsSync(join(memoryDir, 'tasks', TASK_ID, 'summary.md'))).toBe(false);
     expect(existsSync(join(usersDir, `${USER_DANA}.md`))).toBe(false);
     expect(existsSync(activityPath)).toBe(false);
+    expect(await readPending()).toEqual([]);
   };
 
-  it('skips extraction entirely for private-channel tasks and records a skip', async () => {
-    await writeMetadata({
-      'slack:G9:1': { type: 'slack', thread_id: '1', channel_id: 'G9', channel_name: 'secret', last_processed_ts: '1', visibility: 'private' },
-    });
-
+  it('private tasks contribute no memory at all', async () => {
+    await writeMetadata({ ...METADATA, visibility: 'private' });
     handleTaskCompleted(TASK_ID);
     await drain();
-
     await expectNoArtifacts();
-    const telemetry = await readFile(join(memoryDir, 'tasks', TASK_ID, 'telemetry.jsonl'), 'utf-8');
-    const record = JSON.parse(telemetry.trim());
-    expect(record.kind).toBe('extraction-skip');
-    expect(record.reason).toBe('private');
-    // Pending-queue entry is still drained — the skip is terminal, not a retry.
-    expect(await readPending()).toEqual([]);
   });
 
-  it('unstamped slack channels gate as private (fail-closed)', async () => {
-    await writeMetadata({
-      'slack:C1:1234': { type: 'slack', thread_id: '1234', channel_id: 'C1', channel_name: 'general', last_processed_ts: '1' },
-    });
-
+  it('legacy tasks without visibility fail closed as private', async () => {
+    const { visibility: _visibility, ...legacy } = METADATA;
+    await writeMetadata(legacy);
     handleTaskCompleted(TASK_ID);
     await drain();
-
     await expectNoArtifacts();
-    const telemetry = await readFile(join(memoryDir, 'tasks', TASK_ID, 'telemetry.jsonl'), 'utf-8');
-    expect(JSON.parse(telemetry.trim()).reason).toBe('private');
   });
 
-  it('skips extraction for ext-shared tasks with its own reason', async () => {
+  it('public Slack Connect tasks contribute ordinary public memory', async () => {
     await writeMetadata({
-      'slack:C1:1234': { type: 'slack', thread_id: '1234', channel_id: 'C1', channel_name: 'general', last_processed_ts: '1', visibility: 'public' },
-      'slack:C2:9': { type: 'slack', thread_id: '9', channel_id: 'C2', channel_name: 'partner', last_processed_ts: '9', visibility: 'ext-shared' },
+      ...METADATA,
+      channels: {
+        'slack:C2:9': { type: 'slack', thread_id: '9', channel_id: 'C2', channel_name: 'partner', last_processed_ts: '9', isShared: true },
+      },
     });
-
     handleTaskCompleted(TASK_ID);
     await drain();
-
-    await expectNoArtifacts();
-    const telemetry = await readFile(join(memoryDir, 'tasks', TASK_ID, 'telemetry.jsonl'), 'utf-8');
-    expect(JSON.parse(telemetry.trim()).reason).toBe('ext-shared');
-  });
-
-  it('DM tasks (mixed public+dm included) run prefs-only: user memory only, no episodic artifacts', async () => {
-    await writeMetadata({
-      'slack:C1:1234': { type: 'slack', thread_id: '1234', channel_id: 'C1', channel_name: 'general', last_processed_ts: '1', visibility: 'public' },
-      'slack:D7:2': { type: 'slack', thread_id: '2', channel_id: 'D7', channel_name: 'DM with Dana', last_processed_ts: '2', visibility: 'dm' },
-    });
-
-    handleTaskCompleted(TASK_ID);
-    await drain();
-
-    // User preference updates ARE applied (DMs are the richest prefs source)…
+    expect(vi.mocked(runExtraction)).toHaveBeenCalledOnce();
+    expect(existsSync(join(memoryDir, 'tasks', TASK_ID, 'summary.md'))).toBe(true);
     expect(existsSync(join(usersDir, `${USER_DANA}.md`))).toBe(true);
-    // …but nothing episodic exists: no summary, no activity row, no entities.
-    expect(existsSync(join(memoryDir, 'tasks', TASK_ID, 'summary.md'))).toBe(false);
-    expect(existsSync(activityPath)).toBe(false);
-    expect(existsSync(join(memoryDir, 'entities', 'backend.md'))).toBe(false);
-    const telemetry = await readFile(join(memoryDir, 'tasks', TASK_ID, 'telemetry.jsonl'), 'utf-8');
-    expect(JSON.parse(telemetry.trim()).kind).toBe('extraction-prefs-only');
-  });
-
-  it('a downgraded re-completion retracts the stale org summary and activity row', async () => {
-    // First completion: all-public → full extraction with access: org.
-    handleTaskCompleted(TASK_ID);
-    await drain();
-    expect(existsSync(join(memoryDir, 'tasks', TASK_ID, 'summary.md'))).toBe(true);
-    expect(await readFile(activityPath, 'utf-8')).toContain(TASK_ID);
-
-    // Task reopens, a DM attaches, task completes again → prefs-only + retraction.
-    await writeMetadata({
-      'slack:C1:1234': { type: 'slack', thread_id: '1234', channel_id: 'C1', channel_name: 'general', last_processed_ts: '1', visibility: 'public' },
-      'slack:D7:2': { type: 'slack', thread_id: '2', channel_id: 'D7', channel_name: 'DM with Dana', last_processed_ts: '2', visibility: 'dm' },
-    });
-    handleTaskCompleted(TASK_ID);
-    await drain();
-
-    expect(existsSync(join(memoryDir, 'tasks', TASK_ID, 'summary.md'))).toBe(false);
-    expect(await readFile(activityPath, 'utf-8')).not.toContain(TASK_ID);
-    const records = (await readFile(join(memoryDir, 'tasks', TASK_ID, 'telemetry.jsonl'), 'utf-8'))
-      .trim().split('\n').map((l) => JSON.parse(l));
-    const prefsOnly = records.filter((r) => r.kind === 'extraction-prefs-only');
-    expect(prefsOnly).toHaveLength(1);
-    expect(prefsOnly[0].retracted).toBe(true);
-  });
-
-  it('a downgraded re-completion retracts even when the extractor fails', async () => {
-    // First completion: all-public → full extraction with access: org.
-    handleTaskCompleted(TASK_ID);
-    await drain();
-    expect(existsSync(join(memoryDir, 'tasks', TASK_ID, 'summary.md'))).toBe(true);
-
-    // Reopen with a DM attached; extractor fails — retraction must not
-    // depend on extraction success (completions never retry).
-    await writeMetadata({
-      'slack:C1:1234': { type: 'slack', thread_id: '1234', channel_id: 'C1', channel_name: 'general', last_processed_ts: '1', visibility: 'public' },
-      'slack:D7:2': { type: 'slack', thread_id: '2', channel_id: 'D7', channel_name: 'DM with Dana', last_processed_ts: '2', visibility: 'dm' },
-    });
-    vi.mocked(runExtraction).mockResolvedValueOnce(null);
-    handleTaskCompleted(TASK_ID);
-    await drain();
-
-    expect(existsSync(join(memoryDir, 'tasks', TASK_ID, 'summary.md'))).toBe(false);
-    expect(await readFile(activityPath, 'utf-8')).not.toContain(TASK_ID);
-    const records = (await readFile(join(memoryDir, 'tasks', TASK_ID, 'telemetry.jsonl'), 'utf-8'))
-      .trim().split('\n').map((l) => JSON.parse(l));
-    const prefsOnly = records.filter((r) => r.kind === 'extraction-prefs-only');
-    expect(prefsOnly).toHaveLength(1);
-    expect(prefsOnly[0].retracted).toBe(true);
-  });
-
-  it('unknown-stamped channels skip extraction with reason unknown', async () => {
-    await writeMetadata({
-      'slack:C1:1234': { type: 'slack', thread_id: '1234', channel_id: 'C1', channel_name: 'general', last_processed_ts: '1', visibility: 'unknown' },
-    });
-
-    handleTaskCompleted(TASK_ID);
-    await drain();
-
-    await expectNoArtifacts();
-    const telemetry = await readFile(join(memoryDir, 'tasks', TASK_ID, 'telemetry.jsonl'), 'utf-8');
-    expect(JSON.parse(telemetry.trim()).reason).toBe('unknown');
   });
 
   it('drops a user update whose evidence cites another author (second-hand claim) with telemetry', async () => {

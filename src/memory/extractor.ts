@@ -23,8 +23,6 @@ export interface ExtractionInput {
   taskOwner: string;
   status: string;
   createdAt: string;
-  /** Task access class ('org' | 'dm') — informational context for the extractor. */
-  access: string;
   transcript: string;
 }
 
@@ -92,7 +90,6 @@ export async function buildExtractionPrompt(input: ExtractionInput): Promise<str
     TASK_OWNER: input.taskOwner,
     STATUS: input.status,
     CREATED_AT: input.createdAt,
-    ACCESS: input.access,
     TRANSCRIPT: transcript,
   };
 

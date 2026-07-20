@@ -112,7 +112,7 @@ Slack webhook
   -> findTaskByThread(threadId):
        found    -> Task.get() -> task.append(thread)
                    -> task.sendMessage(AGENT_PROMPTS.existingTask)
-       not found, app_mention OR DM OR rootAuthorWasBot -> Task.create() -> task.append(thread)
+       not found, app_mention OR DM OR rootAuthorWasBot -> Task.create(thread.taskVisibility) -> task.append(thread)
                    (a reply to a bot-started thread is acked here, post-fetch)
                    -> task.sendMessage(AGENT_PROMPTS.newTask)
        not found, reply in a thread the bot didn't start -> ignore
@@ -134,9 +134,11 @@ Group DMs get the same **channel extras** as real channels wherever Slack suppor
 
 Because a group DM is channel-like, every branch that keys strictly off the `D` prefix stays **D-only** and does *not* fire for group DMs: the eyes-reaction acknowledgment applies only via the `app_mention` arm (a non-mention ambient group-DM message is not acked), there is no DM-as-unmute backstop, and no 1:1-DM assistant-pane title is pushed. Group DMs are also **not** a valid target for the PM's task-decoupled `post_to_channel` explore tool — `assertPostableChannel` refuses both 1:1 DMs and group DMs, so Archie only ever speaks into a group DM through the task-reply path of a thread it was engaged in, never by proactively posting into a small private audience.
 
-## Multi-Channel Support
+## Task Visibility and Channel Binding
 
-A single task can be linked to multiple destinations — Slack threads (channel or DM) and the CLI. The `TaskMetadata` type (`src/types/task.ts`) holds a `channels` record keyed by `slack:<channelId>:<threadTs>` (or `cli` for the CLI channel). The relevant Slack entry shape is:
+Every task has one immutable `public | private` visibility assigned at creation. Public Slack channels, including Slack Connect channels, create public tasks. Private channels and DMs create private tasks; a channel-info lookup failure also fails closed to private. CLI and automated tasks are public. Legacy tasks without the field load as private.
+
+A task can bind at most one Slack thread. `Task.append()` and `linkSlackThread()` reject a different Slack thread once one is linked, so a public thread cannot be continued in a DM or private conversation. The `TaskMetadata` type (`src/types/task.ts`) holds the bound channel in a `channels` record keyed by `slack:<channelId>:<threadTs>`; CLI-originated or operator-followed tasks may also carry the idempotent `cli:local` entry. The Slack entry shape is:
 
 ```typescript
 interface SlackChannel {
@@ -153,7 +155,7 @@ interface SlackChannel {
 }
 ```
 
-A task's Slack channels are linked by `task.append(thread)` as inbound events arrive (the originating @mention/DM/bot-started thread, plus any thread the bot is later drawn into). The first linked channel is recorded as `default_channel`, the implicit destination when `post_to_user` is called without a target. The PM cannot open new DMs or new task-linked threads; to reach a channel that is NOT part of the task it uses the task-decoupled explore/post tools (`read_channel_history`, `read_thread`, `post_to_channel`), which never register a channel on `metadata.channels`.
+The originating @mention, DM, or bot-started thread is linked by `task.append(thread)` and recorded as `default_channel`, the implicit destination when `post_to_user` is called without a target. Follow-ups are found by exact thread ID and return to that task. The PM cannot open new DMs or new task-linked threads; to reach another channel it uses the task-decoupled explore/post tools (`read_channel_history`, `read_thread`, `post_to_channel`), which never register a channel on `metadata.channels`.
 
 ## Message Deduplication
 
@@ -214,7 +216,7 @@ Some system events require user decisions via Slack buttons. The PM calls `task.
 - **Edit mode approval**: "Approve" / "Deny" buttons (action IDs: `approve_edit_mode`, `deny_edit_mode`). See [Edit Mode](./edit-mode.md).
 - **Research budget approval**: "Approve (+5)" / "Deny" buttons (action IDs: `approve_research_budget`, `deny_research_budget`).
 
-Button clicks are handled by Bolt action handlers in `src/connectors/slack/events.ts`. When clicked, the handler acknowledges the interaction, updates the original message (removing buttons and showing the outcome), and calls the corresponding `Task` method (`handleEditModeApproval` / `handleEditModeDenial` / `handleResearchBudgetApproval` / `handleResearchBudgetDenial`), which modifies task metadata and reactivates the PM agent.
+Button clicks are handled by Bolt action handlers in `src/connectors/slack/events.ts`. Every authorization action resolves the actor before changing state; external users, guests, missing actors, and lookup failures are acknowledged and ignored. For an internal actor, the handler updates the original message and calls the corresponding `Task` method. The same guard covers approvals and denials for edit mode, max mode, research budget, merges, and triggers.
 
 ## Natural Language Guidelines for PM Responses
 

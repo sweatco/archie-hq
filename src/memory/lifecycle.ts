@@ -5,7 +5,7 @@
  * prevent concurrent writes from corrupting shared memory files.
  */
 
-import { writeFile, mkdir, readdir, rename, rmdir, rm } from 'fs/promises';
+import { writeFile, mkdir, readdir, rename, rmdir } from 'fs/promises';
 import { dirname, join } from 'path';
 import {
   isMemoryEnabled,
@@ -19,18 +19,13 @@ import { readUser, applyUserUpdatesWithIdentity } from './store.js';
 import { runExtraction } from './extractor.js';
 import { applyEntityUpdate, listEntities, readEntity } from './entities.js';
 import { rebuildIndex, readIndexMarkdown } from './entity-index.js';
-import { appendActivity, trimActivity, readActivity, removeActivity } from './activity.js';
+import { appendActivity, trimActivity, readActivity } from './activity.js';
 import { sanitizeTaskSummary } from './sanitize.js';
 import { enqueuePending, dequeuePending } from './pending-queue.js';
-import { classifyTaskChannels } from './authz.js';
-import {
-  recordExtractionSkip,
-  recordExtractionPrefsOnly,
-  recordUserUpdateDropped,
-} from './telemetry.js';
+import { recordUserUpdateDropped } from './telemetry.js';
 import { loadMetadata, readKnowledgeLog } from '../tasks/persistence.js';
 import { logger } from '../system/logger.js';
-import type { ExtractionResult, UserRef, ActivityEntry, MemoryUpdate, TaskAccess } from './types.js';
+import type { ExtractionResult, UserRef, ActivityEntry, MemoryUpdate } from './types.js';
 import type { TaskMetadata } from '../types/task.js';
 
 // ============================================================================
@@ -105,31 +100,12 @@ async function processExtraction(taskId: string): Promise<void> {
     return;
   }
 
-  // Confidentiality gate, whitelist modes (see authz.ts): any ext-shared →
-  // skip; any unknown (classification failure) → skip; any private / unstamped
-  // / out-of-vocab value → skip; any dm → prefs-only (user preference updates
-  // only); else full with `access: org`. Skip and prefs-only runs also RETRACT
-  // artifacts a previous completion left behind — tasks complete more than
-  // once, and a stale `access: org` stamp must not keep granting grep over a
-  // log that has since absorbed confidential lines.
-  const classification = classifyTaskChannels(metadata.channels);
-  if (classification.mode === 'skip') {
-    const retracted = await retractEpisodicArtifacts(taskId);
-    logger.system(
-      `[memory] Extraction skipped for ${taskId}: ${classification.reason} channel (confidentiality gate${retracted ? '; stale artifacts retracted' : ''})`,
-    );
-    await recordExtractionSkip(taskId, classification.reason, retracted);
+  // The task boundary is the confidentiality boundary. Private tasks do not
+  // contribute user preferences, summaries, activity, or entities. Missing
+  // visibility belongs to legacy metadata and therefore fails closed.
+  if (metadata.visibility !== 'public') {
+    logger.system(`[memory] Extraction skipped for private task ${taskId}`);
     return;
-  }
-  const prefsOnly = classification.mode === 'prefs-only';
-  const access: TaskAccess = classification.mode === 'full' ? classification.access : 'dm';
-
-  // Retract + record at gate time, like skip: the early returns below never
-  // retry, so a failed extraction must not leave the stale org grant standing.
-  let prefsOnlyRetracted = false;
-  if (prefsOnly) {
-    prefsOnlyRetracted = await retractEpisodicArtifacts(taskId);
-    await recordExtractionPrefsOnly(taskId, prefsOnlyRetracted);
   }
 
   const transcript = await readKnowledgeLog(taskId);
@@ -171,7 +147,6 @@ async function processExtraction(taskId: string): Promise<void> {
       taskOwner: metadata.task_owner ?? '',
       status: metadata.status,
       createdAt: metadata.created_at,
-      access,
       transcript,
     },
     allowedUserIds
@@ -210,16 +185,6 @@ async function processExtraction(taskId: string): Promise<void> {
     }
   }
 
-  // DM write lockdown: user-preference updates are the ONLY output applied,
-  // regardless of what the extractor returned.
-  if (prefsOnly) {
-    scheduleHousekeeping(housekeepingTargets);
-    logger.system(
-      `[memory] Prefs-only extraction complete for ${taskId} (DM write lockdown${prefsOnlyRetracted ? '; stale artifacts retracted' : ''})`,
-    );
-    return;
-  }
-
   // Apply entity updates (resolve-or-create; sanitizer runs inside entities.ts).
   // Each applied update auto-adds a `touched_by [[taskId]]` edge.
   const touchedEntities: string[] = [];
@@ -240,19 +205,15 @@ async function processExtraction(taskId: string): Promise<void> {
 
   scheduleHousekeeping(housekeepingTargets);
 
-  // Write task summary (rich format) to the new memory-dir path. Related
-  // Tasks selection reads org rows ONLY — prefs-only tasks write no rows, but
-  // v1 dm rows and legacy access-less rows may still exist on disk and must
-  // never surface in an org-readable summary.
+  // Write task summary (rich format) to the public memory store.
   const activityIndex = await readActivity();
-  const orgActivity = activityIndex.filter((a) => a.access === 'org');
   // Related tasks: prefer tasks that share an entity with this one; fall back
   // to lexical similarity over the activity index when there's no entity overlap.
-  let related = await selectRelatedTasksByEntity(touchedEntities, taskId, orgActivity);
+  let related = await selectRelatedTasksByEntity(touchedEntities, taskId, activityIndex);
   if (related.length === 0) {
-    related = selectRelatedTasks(result.activity_summary, result.domain, orgActivity, taskId);
+    related = selectRelatedTasks(result.activity_summary, result.domain, activityIndex, taskId);
   }
-  await writeSummary(taskId, metadata, result, users, access, orgActivity, related);
+  await writeSummary(taskId, metadata, result, users, activityIndex, related);
 
   // Append to recent activity, then trim.
   const requestingUser = users[0]?.userId ?? 'cli';
@@ -262,7 +223,6 @@ async function processExtraction(taskId: string): Promise<void> {
     summary: result.activity_summary,
     domain: result.domain,
     user: requestingUser,
-    access,
   });
   await trimActivity(50);
 
@@ -283,23 +243,6 @@ function scheduleHousekeeping(targets: ReadonlySet<string>): void {
       );
     });
   }
-}
-
-/**
- * Retraction for downgraded re-completions: delete the task's summary and
- * remove its activity row, when present. Idempotent — returns true only when
- * something was actually removed. Runs inside the serialized extraction queue.
- */
-async function retractEpisodicArtifacts(taskId: string): Promise<boolean> {
-  let retracted = false;
-  try {
-    await rm(getSummaryPath(taskId));
-    retracted = true;
-  } catch {
-    // ENOENT — no summary to retract (the common case for first completions)
-  }
-  if (await removeActivity(taskId)) retracted = true;
-  return retracted;
 }
 
 // ============================================================================
@@ -482,14 +425,13 @@ async function writeSummary(
   metadata: TaskMetadata,
   result: ExtractionResult,
   users: UserRef[],
-  access: TaskAccess,
   activityIndex: ActivityEntry[],
   related?: ActivityEntry[]
 ): Promise<void> {
   const path = getSummaryPath(taskId);
   await mkdir(dirname(path), { recursive: true });
   const housekeepingNotes = drainHousekeepingNotes();
-  const content = buildSummaryMarkdown(taskId, metadata, result, users, access, activityIndex, housekeepingNotes, related);
+  const content = buildSummaryMarkdown(taskId, metadata, result, users, activityIndex, housekeepingNotes, related);
   await writeFile(path, content, 'utf-8');
 }
 
@@ -498,10 +440,7 @@ async function writeSummary(
  *
  * Schema:
  *   - YAML frontmatter (task_id, status, created_at, updated_at, domain,
- *     extraction_at, access, links, users) — `access` is the read-authorization
- *     stamp consumed by authz.ts; `org` is the only class extraction writes
- *     (prefs-only tasks write no summary at all), and summaries without it —
- *     legacy, or v1 `dm`-stamped — are denied to non-self readers
+ *     extraction_at, links, users)
  *   - `# Summary` — sanitized prose from the extractor
  *   - `## Memory Updates` — applied user + entity updates, plus any housekeeping
  *     notes; `_no durable learnings_` when all empty
@@ -512,7 +451,6 @@ export function buildSummaryMarkdown(
   metadata: TaskMetadata,
   result: ExtractionResult,
   users: UserRef[],
-  access: TaskAccess,
   activityIndex: ActivityEntry[] = [],
   housekeepingNotes: string[] = [],
   related?: ActivityEntry[]
@@ -525,7 +463,6 @@ export function buildSummaryMarkdown(
   lines.push(`updated_at: ${metadata.updated_at}`);
   lines.push(`domain: ${result.domain}`);
   lines.push(`extraction_at: ${new Date().toISOString()}`);
-  lines.push(`access: ${access}`);
 
   // links block
   const links = buildLinksBlock(metadata);
@@ -534,7 +471,6 @@ export function buildSummaryMarkdown(
   for (const l of links.slack) {
     lines.push(`    - channel_id: ${l.channel_id}`);
     lines.push(`      thread_id: "${l.thread_id}"`);
-    lines.push(`      visibility: ${l.visibility}`);
     if (l.url) lines.push(`      url: ${l.url}`);
   }
   lines.push('  github:');
@@ -573,7 +509,7 @@ export function buildSummaryMarkdown(
 // ---- Links block ----
 
 interface LinksBlock {
-  slack: Array<{ channel_id: string; thread_id: string; visibility: string; url?: string }>;
+  slack: Array<{ channel_id: string; thread_id: string; url?: string }>;
   github: Array<{ url: string }>;
   cli: Array<{ session_id: string }>;
 }
@@ -585,9 +521,7 @@ function buildLinksBlock(metadata: TaskMetadata): LinksBlock {
       block.slack.push({
         channel_id: channel.channel_id,
         thread_id: channel.thread_id,
-        // Unstamped channels record 'private' — cannot occur post-gate, but the
-        // written value must never be more permissive than what was verified.
-        visibility: channel.visibility ?? 'private',
+        ...(channel.url ? { url: channel.url } : {}),
       });
     } else if (channel.type === 'github') {
       const repo = (channel as { repo?: string }).repo;

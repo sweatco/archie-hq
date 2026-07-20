@@ -180,7 +180,7 @@ export function mountApiRoutes(app: Application): void {
         return;
       }
 
-      const task = await Task.create();
+      const task = await Task.create('public');
       task.linkCliChannel();
       await appendCliMessage(task.taskId, message);
       await task.sendMessage(AGENT_PROMPTS.newTask);
