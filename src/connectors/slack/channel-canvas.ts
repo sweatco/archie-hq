@@ -31,6 +31,49 @@ const ARCHIE_TITLE = /^archie/i;
 const CANVAS_TTL_MS = 60_000;
 
 /**
+ * Collapse a dynamic value to a single, bounded token for a one-line log record.
+ * Control chars (incl. newlines/tabs) are replaced with spaces — canvas titles
+ * legitimately contain them, and a raw newline would split the record into
+ * separate ES docs — and the result is capped so a long title can't push the
+ * leading ids past rsyslog's line-truncation point.
+ */
+function sanitizeLogValue(value: string, max = 200): string {
+  const oneLine = value.replace(/[\u0000-\u001F\u007F]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine;
+}
+
+/**
+ * Emit one physical, ES-greppable line describing what a single scan step saw
+ * and decided. Purely diagnostic — it never influences matching. The channel
+ * and file ids come first (bare, so they tokenize cleanly) and the unbounded
+ * title/label fields come last, so if the line is ever truncated the ids and
+ * the decision survive. `evt=canvas_scan` is a stable marker for pulling every
+ * scan in one query. The whole engine logs to stdout, which ships verbatim to
+ * the `system-rollup` ES index, so a plain logger call is queryable by id.
+ */
+function logCanvasScan(fields: {
+  channel: string;
+  file?: string;
+  decision: 'adopt' | 'keep' | 'reject' | 'skip';
+  reason: string;
+  creator?: string;
+  creatorClass?: 'internal' | 'external' | 'unclassifiable' | 'none';
+  title?: string;
+  tabLabel?: string;
+  updated?: number;
+}): void {
+  const parts: string[] = ['evt=canvas_scan', `channel=${fields.channel}`];
+  if (fields.file) parts.push(`file=${fields.file}`);
+  parts.push(`decision=${fields.decision}`, `reason=${fields.reason}`);
+  if (fields.creator) parts.push(`creator=${fields.creator}`);
+  if (fields.creatorClass) parts.push(`creator_class=${fields.creatorClass}`);
+  if (fields.updated !== undefined) parts.push(`updated=${fields.updated}`);
+  if (fields.title !== undefined) parts.push(`title=${JSON.stringify(sanitizeLogValue(fields.title))}`);
+  if (fields.tabLabel !== undefined) parts.push(`tab_label=${JSON.stringify(sanitizeLogValue(fields.tabLabel))}`);
+  logger.debug('channel-canvas', parts.join(' '));
+}
+
+/**
  * Discover the channel's `Archie…` canvas tab(s), refresh the channel store if
  * anything changed, and announce adoption / ignore exactly once. Cheap to call
  * on every inbound channel event — a short TTL short-circuits repeat scans.
@@ -44,9 +87,17 @@ export async function ensureChannelCanvas(channelId: string): Promise<void> {
 
   try {
     const pre = await loadChannelStore(channelId);
-    if (pre && Date.now() - pre.checkedAt < CANVAS_TTL_MS) return;
+    if (pre && Date.now() - pre.checkedAt < CANVAS_TTL_MS) {
+      logCanvasScan({ channel: channelId, decision: 'skip', reason: 'ttl' });
+      return;
+    }
 
     const tabs = await getChannelCanvasTabs(channelId);
+    if (tabs.length === 0) {
+      // Either the channel has no canvas tab, or conversations.info failed
+      // (that failure is logged separately by the Slack client).
+      logCanvasScan({ channel: channelId, decision: 'skip', reason: 'no_tabs' });
+    }
 
     type Resolved = { fileId: string; title: string; external: boolean; entry?: ChannelCanvasEntry };
     const resolved: Resolved[] = [];
@@ -54,7 +105,17 @@ export async function ensureChannelCanvas(channelId: string): Promise<void> {
     for (const tab of tabs) {
       const info = await getSlackFileInfo(tab.file_id);
       const title = (info?.title ?? '').trim();
-      if (!info || !ARCHIE_TITLE.test(title)) continue;
+      // NOTE: matching logic unchanged — both branches below `continue` exactly
+      // as the original single guard did; they are split only to log a distinct
+      // reason. The gate still tests `/^archie/i` against `files.info.title`.
+      if (!info) {
+        logCanvasScan({ channel: channelId, file: tab.file_id, decision: 'reject', reason: 'file_info_failed', tabLabel: tab.title ?? '' });
+        continue;
+      }
+      if (!ARCHIE_TITLE.test(title)) {
+        logCanvasScan({ channel: channelId, file: tab.file_id, decision: 'reject', reason: 'title_mismatch', title, tabLabel: tab.title ?? '', updated: info.updated ?? 0 });
+        continue;
+      }
 
       const creator = info.user ?? '';
       // Fail closed on unknown classification: a missing creator or a failed
@@ -74,13 +135,16 @@ export async function ensureChannelCanvas(channelId: string): Promise<void> {
         const prev = pre?.canvases.find((c) => c.file_id === tab.file_id);
         if (prev) {
           resolved.push({ fileId: tab.file_id, title, external: false, entry: prev });
+          logCanvasScan({ channel: channelId, file: tab.file_id, decision: 'keep', reason: creator ? 'creator_unclassifiable_kept_prev' : 'creator_missing_kept_prev', creator, creatorClass: 'unclassifiable', title, tabLabel: tab.title ?? '', updated: info.updated ?? 0 });
         } else {
           logger.warn('channel-canvas', `creator classification unavailable for canvas ${tab.file_id} in ${channelId} — not adopting yet`);
+          logCanvasScan({ channel: channelId, file: tab.file_id, decision: 'reject', reason: creator ? 'creator_unclassifiable' : 'creator_missing', creator, creatorClass: creator ? 'unclassifiable' : 'none', title, tabLabel: tab.title ?? '', updated: info.updated ?? 0 });
         }
         continue;
       }
       if (external) {
         resolved.push({ fileId: tab.file_id, title, external: true });
+        logCanvasScan({ channel: channelId, file: tab.file_id, decision: 'reject', reason: 'external_creator', creator, creatorClass: 'external', title, tabLabel: tab.title ?? '', updated: info.updated ?? 0 });
         continue;
       }
 
@@ -88,6 +152,7 @@ export async function ensureChannelCanvas(channelId: string): Promise<void> {
       const prev = pre?.canvases.find((c) => c.file_id === tab.file_id);
       if (prev && prev.updatedTs === updatedTs && prev.markdown) {
         resolved.push({ fileId: tab.file_id, title, external: false, entry: prev });
+        logCanvasScan({ channel: channelId, file: tab.file_id, decision: 'adopt', reason: 'unchanged', creator, creatorClass: 'internal', title, tabLabel: tab.title ?? '', updated: updatedTs });
         continue;
       }
 
@@ -102,6 +167,7 @@ export async function ensureChannelCanvas(channelId: string): Promise<void> {
         fileIds: read?.fileIds ?? prev?.fileIds ?? [],
       };
       resolved.push({ fileId: tab.file_id, title: entry.title, external: false, entry });
+      logCanvasScan({ channel: channelId, file: tab.file_id, decision: 'adopt', reason: entry.markdown ? 'read_ok' : 'read_empty', creator, creatorClass: 'internal', title: entry.title, tabLabel: tab.title ?? '', updated: updatedTs });
     }
 
     const announcements: Array<{ kind: 'adopted' | 'ignored'; title: string }> = [];
