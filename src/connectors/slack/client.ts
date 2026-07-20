@@ -1610,7 +1610,7 @@ export async function fetchSlackThread(
     threadId: threadTs,
     channel: channelInfo,
     shared,
-    taskVisibility: channelInfo.isPrivate || channelInfo.isIm ? 'private' : 'public',
+    taskVisibility: channelInfo.isPrivate ? 'private' : 'public',
     messages,
     currentMessageTs,
     rootAuthorWasBot,
