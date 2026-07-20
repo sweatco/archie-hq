@@ -268,10 +268,7 @@ export function buildMemoryTools(ctx: MemoryToolsCtx) {
     },
     async (args) => {
       const raw = args.slug?.trim() ?? '';
-      // Guard BEFORE any filesystem access (spec: a failing guard returns a
-      // tool error without touching the filesystem). Alias resolution is
-      // allowed only for benign-charset inputs (e.g. "Payments-API"); anything
-      // with separators, dots, or other path-capable characters errors here.
+      // Reject path-capable aliases before any filesystem access.
       const safeAliasShape = /^[A-Za-z0-9 _-]{1,64}$/.test(raw);
       if (!isValidEntitySlug(raw) && !safeAliasShape) {
         await recordPull(taskId, agent, 'read_entity', { slug: raw }, { returned: [], count: 0, zeroResult: true });
