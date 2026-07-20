@@ -1,0 +1,86 @@
+[
+  {
+    "question_id": "mini-1",
+    "question": "Which database does the checkout service use for payment idempotency keys?",
+    "answer": "PostgreSQL (the checkout service stores idempotency keys in postgres)",
+    "haystack_session_ids": ["s-checkout-db", "s-holiday-plans", "s-css-help"],
+    "haystack_sessions": [
+      [
+        { "role": "user", "content": "The checkout service keeps rejecting duplicate payment idempotency keys, where are they stored?" },
+        { "role": "assistant", "content": "The checkout service stores payment idempotency keys in PostgreSQL, table payment_idempotency, with a unique constraint on the key column." }
+      ],
+      [
+        { "role": "user", "content": "I want to plan a holiday to Portugal in September." },
+        { "role": "assistant", "content": "September is great for Lisbon and the Algarve; book flights early." }
+      ],
+      [
+        { "role": "user", "content": "How do I center a div with flexbox?" },
+        { "role": "assistant", "content": "Use display flex with justify-content center and align-items center on the parent." }
+      ]
+    ],
+    "answer_session_ids": ["s-checkout-db"]
+  },
+  {
+    "question_id": "mini-2",
+    "question": "What rate limit did we agree for the webhooks ingestion endpoint?",
+    "answer": "100 requests per second per tenant, with burst to 200",
+    "haystack_session_ids": ["s-webhook-rate", "s-css-help", "s-lunch-order"],
+    "haystack_sessions": [
+      [
+        { "role": "user", "content": "We need to settle the rate limit for the webhooks ingestion endpoint before launch." },
+        { "role": "assistant", "content": "Agreed: the webhooks ingestion endpoint gets 100 requests per second per tenant, with burst capacity to 200." }
+      ],
+      [
+        { "role": "user", "content": "How do I center a div with flexbox?" },
+        { "role": "assistant", "content": "Use display flex with justify-content center and align-items center on the parent." }
+      ],
+      [
+        { "role": "user", "content": "What should we order for the team lunch on Friday?" },
+        { "role": "assistant", "content": "Thai food won the vote last time; there is a good place nearby." }
+      ]
+    ],
+    "answer_session_ids": ["s-webhook-rate"]
+  },
+  {
+    "question_id": "mini-3",
+    "question": "Who owns the feature flag rollout process and what tool manages the flags?",
+    "answer": "The platform team owns rollouts; flags are managed in LaunchDarkly",
+    "haystack_session_ids": ["s-feature-flags", "s-holiday-plans", "s-webhook-rate"],
+    "haystack_sessions": [
+      [
+        { "role": "user", "content": "Who owns the feature flag rollout process now?" },
+        { "role": "assistant", "content": "The platform team owns feature flag rollouts, and the flags themselves are managed in LaunchDarkly." }
+      ],
+      [
+        { "role": "user", "content": "I want to plan a holiday to Portugal in September." },
+        { "role": "assistant", "content": "September is great for Lisbon and the Algarve; book flights early." }
+      ],
+      [
+        { "role": "user", "content": "We need to settle the rate limit for the webhooks ingestion endpoint before launch." },
+        { "role": "assistant", "content": "Agreed: the webhooks ingestion endpoint gets 100 requests per second per tenant, with burst capacity to 200." }
+      ]
+    ],
+    "answer_session_ids": ["s-feature-flags"]
+  },
+  {
+    "question_id": "mini-4",
+    "question": "What did we decide about retrying failed Stripe webhook deliveries?",
+    "answer": "Exponential backoff with 5 attempts, then dead-letter queue",
+    "haystack_session_ids": ["s-stripe-retries", "s-lunch-order", "s-checkout-db"],
+    "haystack_sessions": [
+      [
+        { "role": "user", "content": "Failed Stripe webhook deliveries keep piling up, what is our retry decision?" },
+        { "role": "assistant", "content": "Decision: retry failed Stripe webhook deliveries with exponential backoff, 5 attempts, then move them to the dead-letter queue." }
+      ],
+      [
+        { "role": "user", "content": "What should we order for the team lunch on Friday?" },
+        { "role": "assistant", "content": "Thai food won the vote last time; there is a good place nearby." }
+      ],
+      [
+        { "role": "user", "content": "The checkout service keeps rejecting duplicate payment idempotency keys, where are they stored?" },
+        { "role": "assistant", "content": "The checkout service stores payment idempotency keys in PostgreSQL, table payment_idempotency, with a unique constraint on the key column." }
+      ]
+    ],
+    "answer_session_ids": ["s-stripe-retries"]
+  }
+]
