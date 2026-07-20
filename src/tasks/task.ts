@@ -170,9 +170,9 @@ export class Task {
     // Ensure channels/default_channel exist on metadata
     metadata.channels ??= {};
     metadata.default_channel ??= null;
-    // Legacy metadata has no visibility. Fail closed and keep the value
-    // immutable for the rest of the task's lifetime.
-    metadata.visibility ??= 'private';
+    // Fail closed for legacy or malformed runtime metadata. Task.get persists
+    // the migration; this keeps direct construction defensive as well.
+    migrateTaskVisibility(metadata);
 
     this.metadata = metadata;
   }
@@ -250,8 +250,7 @@ export class Task {
     // Record<agentId, AttachedRepo[]> (per-agent list of attached repos).
     // Detect by structural check: any value that's NOT an array is old shape.
     const didMigrateRepositories = migrateRepositoriesShape(metadata);
-    const didMigrateVisibility = !metadata.visibility;
-    if (didMigrateVisibility) metadata.visibility = 'private';
+    const didMigrateVisibility = migrateTaskVisibility(metadata);
 
     // Persist the upgrade once. The migration is otherwise in-memory, so a
     // terminal task that's only ever *read* (webhook resolution, comment-dedup
@@ -1712,7 +1711,20 @@ export function getTask(taskId: string): Task | undefined {
   return activeTasks.get(taskId);
 }
 
-// ---- v30 migration ----
+// ---- Metadata migrations ----
+
+/**
+ * Normalize persisted task visibility. JSON-loaded metadata is not runtime
+ * type-checked, so both missing and unrecognized values fail closed to private.
+ * Returns whether metadata was changed so Task.get can persist the migration.
+ */
+export function migrateTaskVisibility(metadata: TaskMetadata): boolean {
+  if (metadata.visibility === 'public' || metadata.visibility === 'private') return false;
+  metadata.visibility = 'private';
+  return true;
+}
+
+// ---- v30 repository migration ----
 
 /**
  * Migrate `metadata.repositories` from the legacy `Record<repoKey, RepositoryInfo>`
