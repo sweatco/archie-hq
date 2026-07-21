@@ -15,6 +15,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { logger } from '../../system/logger.js';
 import { fetchOrigin } from './client.js';
+import { repoCloneUrl } from '../shared/repo-url.js';
 
 const execAsync = promisify(exec);
 
@@ -103,7 +104,7 @@ async function ensureBaseCache(
     );
   }
 
-  const url = githubRepoToUrl(githubRepo);
+  const url = repoCloneUrl(githubRepo);
   await fs.mkdir(path.dirname(baseRepoPath), { recursive: true });
   const branchFlag = baseBranch ? ` -b "${baseBranch}"` : '';
   logger.system(`Base cache missing for ${githubRepo} — cloning from ${url}`);
@@ -136,7 +137,7 @@ export async function setupSharedClone(
   await ensureBaseCache(baseRepoPath, githubRepo, baseBranch);
 
   const defaultBranch = baseBranch || await getDefaultBranch(baseRepoPath);
-  const githubUrl = githubRepo ? githubRepoToUrl(githubRepo) : undefined;
+  const githubUrl = githubRepo ? repoCloneUrl(githubRepo) : undefined;
   const label = githubRepo || clonePath;
 
   await fetchOrigin(baseRepoPath);

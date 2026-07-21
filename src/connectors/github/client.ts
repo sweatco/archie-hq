@@ -18,10 +18,26 @@ import type {
   MergeableState,
   PRChecksReport,
   PRCheckEntry,
-} from '../../agents/tools.js';
+  CreatePRResult,
+  PRListItem,
+  PRListFilters,
+  PRDetails,
+  CheckRunAnnotation,
+  CheckRunReport,
+  WorkflowJobEntry,
+  WorkflowRunReport,
+  CodeScanningAlertInstance,
+  CodeScanningAlert,
+  CodeScanningAlertFilters,
+} from '../../ports/repo-host-types.js';
 import type { PrCardData } from '../../types/task.js';
 import { summarizeCi } from '../../system/pr-card-format.js';
 import { logger } from '../../system/logger.js';
+import type { RepoHost } from '../../ports/repo-host.js';
+import type { RepoHostCapabilities } from '../../ports/capabilities.js';
+import { GITHUB_CAPABILITIES } from '../../ports/capabilities.js';
+import { githubRepoToUrl } from './repo-clone.js';
+import { repoBotIdentity } from '../shared/repo-url.js';
 
 const execAsync = promisify(exec);
 
@@ -45,127 +61,26 @@ export interface GitHubClientConfig {
   installationId: number;
 }
 
-export interface CreatePRResult {
-  pr_number: number;
-  pr_url: string;
-}
-
-export interface PRListItem {
-  number: number;
-  title: string;
-  state: 'open' | 'closed';
-  head: string;
-  base: string;
-  author: string;
-  updated_at: string;
-  url: string;
-}
-
-export interface PRListFilters {
-  state?: 'open' | 'closed' | 'all';
-  base?: string;
-  sort?: 'created' | 'updated' | 'popularity' | 'long-running';
-  direction?: 'asc' | 'desc';
-  per_page?: number;
-}
-
-export interface PRDetails {
-  number: number;
-  title: string;
-  body: string;
-  state: 'open' | 'merged' | 'closed';
-  head: string;
-  base: string;
-  diff: string;
-  url: string;
-}
-
-export interface CheckRunAnnotation {
-  path: string;
-  startLine: number | null;
-  level: string;
-  message: string;
-  title?: string;
-}
-
-export interface CheckRunReport {
-  id: number;
-  name: string;
-  app: string;
-  status: string;
-  conclusion: PRCheckEntry['conclusion'];
-  url: string | null;
-  headSha: string | null;
-  startedAt: string | null;
-  completedAt: string | null;
-  output?: { title?: string; summary?: string; text?: string };
-  annotations?: CheckRunAnnotation[];
-  logTail?: string;
-}
-
-export interface WorkflowJobEntry {
-  id: number;
-  name: string;
-  status: string;
-  conclusion: PRCheckEntry['conclusion'];
-  url: string | null;
-  logTail?: string;
-}
-
-export interface WorkflowRunReport {
-  id: number;
-  name: string;
-  status: string;
-  conclusion: PRCheckEntry['conclusion'];
-  headSha: string | null;
-  headBranch: string | null;
-  url: string | null;
-  jobs: WorkflowJobEntry[];
-}
-
-export interface CodeScanningAlertInstance {
-  /** Git ref the instance was seen on, e.g. `refs/heads/main`. */
-  ref: string | null;
-  state: string | null;
-  path: string | null;
-  startLine: number | null;
-  endLine: number | null;
-  /** The alert message text for this instance. */
-  message: string | null;
-}
-
-export interface CodeScanningAlert {
-  number: number;
-  /** open / dismissed / fixed (GitHub may add others). */
-  state: string;
-  /** Analysis tool that produced the alert, e.g. `CodeQL`. */
-  tool: string;
-  ruleId: string | null;
-  ruleName: string | null;
-  ruleDescription: string | null;
-  /** Rule severity: none / note / warning / error. */
-  severity: string | null;
-  /** Security severity: low / medium / high / critical (when classified). */
-  securitySeverity: string | null;
-  url: string | null;
-  createdAt: string | null;
-  updatedAt: string | null;
-  dismissedReason: string | null;
-  dismissedComment: string | null;
-  mostRecentInstance: CodeScanningAlertInstance | null;
-}
-
-export interface CodeScanningAlertFilters {
-  /** Alert state filter. Defaults to `open` at the call site. */
-  state?: 'open' | 'dismissed' | 'fixed';
-  /** Git ref filter, e.g. `refs/heads/main` or a branch name. */
-  ref?: string;
-  /** Limit to a single tool, e.g. `CodeQL`. */
-  toolName?: string;
-  /** Severity filter (critical/high/medium/low or note/warning/error). */
-  severity?: string;
-  per_page?: number;
-}
+/*
+ * The canonical result/report shapes for the repo-host seam now live in the
+ * ports layer (src/ports/repo-host-types.ts) so the RepoHost port no longer
+ * depends on this connector, and a future GitLab host imports them from ports
+ * rather than from a sibling vendor connector. Re-exported here so this file's
+ * existing importers (`from './client.js'`) keep working unchanged.
+ */
+export type {
+  CreatePRResult,
+  PRListItem,
+  PRListFilters,
+  PRDetails,
+  CheckRunAnnotation,
+  CheckRunReport,
+  WorkflowJobEntry,
+  WorkflowRunReport,
+  CodeScanningAlertInstance,
+  CodeScanningAlert,
+  CodeScanningAlertFilters,
+};
 
 export interface ParsedCheckRef {
   /** `check_run` covers check-run permalinks and Actions job links (job id == check-run id). */
@@ -243,10 +158,12 @@ function extractFailureTail(text: string, maxChars = 15000): string {
     : '…(truncated)\n' + slice.slice(slice.length - maxChars);
 }
 
-export class GitHubClient {
+export class GitHubClient implements RepoHost {
   private app: App;
   private installationId: number;
   private octokit: Octokit | null = null;
+
+  readonly kind = 'github' as const;
 
   constructor(config: GitHubClientConfig) {
     this.app = new App({
@@ -254,6 +171,18 @@ export class GitHubClient {
       privateKey: config.privateKey,
     });
     this.installationId = config.installationId;
+  }
+
+  capabilities(): RepoHostCapabilities {
+    return GITHUB_CAPABILITIES;
+  }
+
+  botIdentity(): { name: string; email: string } | null {
+    return getGitHubAppIdentity();
+  }
+
+  cloneUrl(repo: string): string {
+    return githubRepoToUrl(repo);
   }
 
   /**
@@ -1220,13 +1149,19 @@ export function getGitHubAppIdentity(): { name: string; email: string } | null {
 }
 
 /**
- * Configure git identity for a repository using GitHub App bot credentials.
- * Should be called once on server startup for each base repo.
- * Worktrees inherit this config from the base repo.
+ * Configure git identity (the committer) for a repository using the active repo
+ * host's bot credentials. Host-aware: defaults to `repoBotIdentity()` so that
+ * under REPO_HOST=gitlab the committer is the GitLab bot's verified email
+ * (GITLAB_BOT_EMAIL) — GitLab push rules reject commits whose committer email
+ * isn't a verified email of the token account. Should be called once on server
+ * startup for each base repo (and per shared clone); worktrees inherit it.
+ * Callers may pass an explicit identity; `null` means "leave git's default".
  */
-export async function configureGitIdentity(repoPath: string): Promise<string | null> {
-  const identity = getGitHubAppIdentity();
-  if (identity) {
+export async function configureGitIdentity(
+  repoPath: string,
+  identity: { name: string; email: string } | null = repoBotIdentity(),
+): Promise<string | null> {
+  if (identity && identity.email) {
     await execAsync(`git config user.name "${identity.name}"`, { cwd: repoPath });
     await execAsync(`git config user.email "${identity.email}"`, { cwd: repoPath });
     return identity.name;
