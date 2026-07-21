@@ -23,6 +23,7 @@ import { hydrateBranchState, findBranchStateByPR, assignPrNumber } from '../conn
 import { taskBranchName } from '../connectors/github/branch-naming.js';
 import { appendAgentFinding, appendArtifactShared } from '../tasks/persistence.js';
 import { copyArtifactToShared, assertReadable } from './artifacts.js';
+import { aggregateTaskUsage, formatTaskUsageReport } from './task-usage.js';
 import { logger } from '../system/logger.js';
 import {
   findSlackUsers,
@@ -1055,6 +1056,21 @@ function createGetAgentsStatusTool(agent: Agent, task: Task) {
         return `- ${s.agent}: ${state}${activity}`;
       });
       return { content: [{ type: 'text' as const, text: `Agent statuses:\n${lines.join('\n')}` }] };
+    },
+  );
+}
+
+function createGetTaskUsageTool(agent: Agent, task: Task) {
+  return tool(
+    'get_task_usage',
+    "Report this task's total token usage (always) and SDK-reported cost when available, with a per-agent breakdown. Current task only.",
+    {},
+    async () => {
+      try {
+        return ok(formatTaskUsageReport(await aggregateTaskUsage(task.taskId)));
+      } catch (e) {
+        return err(e instanceof Error ? e.message : 'usage aggregation failed');
+      }
     },
   );
 }
@@ -2644,6 +2660,7 @@ export function createOrchestrationMcpServer(agent: Agent, task: Task) {
       createRequestEditModeTool(agent, task),
       createRequestMaxModeTool(agent, task),
       createGetAgentsStatusTool(agent, task),
+      createGetTaskUsageTool(agent, task),
       createListAvailableReposTool(agent, task),
       createSpawnRepoAgentTool(agent, task),
       createProposeTriggerTool(agent, task),
