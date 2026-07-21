@@ -32,17 +32,48 @@ vi.mock('../../system/logger.js', () => ({
 import {
   readUser,
   writeUser,
+  parseUserDisplayName,
+  readUserFiles,
   applyUserUpdates,
 } from '../store.js';
+import { logger } from '../../system/logger.js';
 
 describe('memory store', () => {
   beforeEach(async () => {
+    vi.clearAllMocks();
     tempDir = await mkdtemp(join(tmpdir(), 'archie-memory-test-'));
     usersDir = join(tempDir, 'users');
   });
 
   afterEach(async () => {
     await rm(tempDir, { recursive: true, force: true });
+  });
+
+  describe('readUserFiles', () => {
+    it('reads only requested users and deduplicates ids', async () => {
+      await mkdir(usersDir, { recursive: true });
+      await writeFile(join(usersDir, 'U07ABC123.md'), 'display_name: "Dana"\n- Prefers concise updates\n');
+      await writeFile(join(usersDir, 'U07BOB999.md'), 'display_name: "Bob"\n- Prefers detailed updates\n');
+
+      const files = await readUserFiles(['U07ABC123', 'U07ABC123']);
+
+      expect(files).toEqual([{ id: 'U07ABC123', displayName: 'Dana', text: 'display_name: "Dana"\n- Prefers concise updates\n' }]);
+    });
+
+    it('parses escaped quotes in generated display_name frontmatter', () => {
+      expect(parseUserDisplayName('display_name: "Sam \\"S\\""\n')).toBe('Sam "S"');
+    });
+
+    it('skips and warns about malformed requested files', async () => {
+      await mkdir(usersDir, { recursive: true });
+      await writeFile(join(usersDir, 'U07ABC123.md'), '## Communication\n- Prefers concise updates\n');
+
+      await expect(readUserFiles(['U07ABC123'])).resolves.toEqual([]);
+      expect(logger.warn).toHaveBeenCalledWith(
+        'memory',
+        expect.stringContaining('missing or malformed display_name'),
+      );
+    });
   });
 
   // ---- readUser ----
