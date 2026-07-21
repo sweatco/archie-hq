@@ -728,6 +728,60 @@ export async function appendEvent(event: SystemEvent): Promise<void> {
   writeQueues.set(event.taskId, next);
 }
 
+// ---- Usage JSONL persistence ----
+
+/**
+ * Get the path to a task's usage log (JSONL)
+ */
+export function getUsageLogPath(taskId: string): string {
+  return join(getSharedPath(taskId), 'usage.jsonl');
+}
+
+/**
+ * One append-only usage record, written on each SDK `result` event.
+ *
+ * `query_nonce` is the per-query()-call identity used for cost aggregation;
+ * `session_id` is retained for traceability/debugging only and is NOT used in
+ * cost math (a single session_id resumes across many query() calls).
+ */
+export interface TaskUsageRecord {
+  ts: string;
+  taskId: string;
+  agentId: string;
+  agentKey: string;
+  query_nonce: string;
+  session_id?: string;
+  subtype: string;
+  num_turns: number;
+  total_cost_usd: number;
+  modelUsage: Record<string, unknown>;
+  usage: unknown;
+}
+
+/**
+ * Serialized write queues per task for usage records — dedicated so usage
+ * writes never contend with the events queue.
+ */
+const usageWriteQueues = new Map<string, Promise<void>>();
+
+/**
+ * Append a usage record to the task's usage.jsonl (fire-and-forget).
+ * No-ops if the shared/ dir is missing; never throws.
+ */
+export async function appendUsageRecord(record: TaskUsageRecord): Promise<void> {
+  const prev = usageWriteQueues.get(record.taskId) ?? Promise.resolve();
+  const next = prev.then(async () => {
+    try {
+      const dir = getSharedPath(record.taskId);
+      if (!existsSync(dir)) return;
+      await appendFile(getUsageLogPath(record.taskId), JSON.stringify(record) + '\n');
+    } catch (err) {
+      logger.warn('usage', `Failed to persist usage record for ${record.taskId}: ${err}`);
+    }
+  });
+  usageWriteQueues.set(record.taskId, next);
+}
+
 /**
  * Read events from a task's events.jsonl, streaming line-by-line.
  * Skips `after` lines so the caller only gets new events.
