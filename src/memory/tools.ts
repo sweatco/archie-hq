@@ -33,7 +33,7 @@ import {
   isAllowedTaskId,
   isValidEntitySlug,
 } from './paths.js';
-import { listUserFiles } from './store.js';
+import { readUserFiles } from './store.js';
 import { recordPull } from './telemetry.js';
 import type { EntityRecord } from './types.js';
 
@@ -237,17 +237,15 @@ export function buildMemoryTools(ctx: MemoryToolsCtx) {
     async (args) => {
       const [entities, users, summaries, activity] = await Promise.all([
         listEntities(),
-        listUserFiles(),
+        readUserFiles(ctx.authorUserIds ?? []),
         readAllSummaries(),
         readActivity(),
       ]);
-      // User hits are limited to this task's authors. Organizational summaries
-      // and activity are already public because only public tasks write them.
-      const authorIds = new Set(ctx.authorUserIds ?? []);
-      const visibleUsers = users.filter((u) => authorIds.has(u.id));
+      // Organizational summaries and activity are public because only public
+      // tasks write them; user files were scoped before being read above.
       const rows = activity
         .map((a) => ({ taskId: a.taskId, summary: a.summary, date: a.date }));
-      const hits = rankSearchHits(args.query, entities, visibleUsers, summaries, rows, args.max_results ?? SEARCH_MAX_HITS);
+      const hits = rankSearchHits(args.query, entities, users, summaries, rows, args.max_results ?? SEARCH_MAX_HITS);
       await recordPull(taskId, agent, 'search_memory', { query: args.query }, {
         returned: hits.map((h) => h.id),
         count: hits.length,

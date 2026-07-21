@@ -5,13 +5,12 @@
  * All path resolution is delegated to paths.ts.
  */
 
-import { readFile, writeFile, mkdir, readdir } from 'fs/promises';
+import { readFile, writeFile, mkdir } from 'fs/promises';
 import {
   getUserPath,
   getUsersDir,
   getUserCap,
   getSectionCap,
-  isAllowedUserId,
   isHousekeepingEnabled,
 } from './paths.js';
 import { sanitizeUpdate } from './sanitize.js';
@@ -44,40 +43,30 @@ export interface UserFile {
   text: string;
 }
 
-/** Parse the display_name frontmatter value, or '' when absent/unparseable. */
+/** Parse the quoted display_name frontmatter written by this store. */
 export function parseUserDisplayName(text: string): string {
-  return text.match(/^display_name:\s*"?([^"\n]+)"?\s*$/m)?.[1]?.trim() ?? '';
+  const match = text.match(/^display_name:\s*"((?:\\"|[^"\n])*)"\s*$/m);
+  return match?.[1]?.replace(/\\"/g, '"').trim() ?? '';
 }
 
-/**
- * Read every user memory file. The single shared reader for the pull tools
- * and the eval — filenames decode through the inverse of getUserPath's
- * normalization (the first `__` is the encoded `:` of a fallback id), ids
- * failing `isAllowedUserId` are skipped with a warning (never ingested), and
- * reads go through getUserPath, not hand-built paths.
- */
-export async function listUserFiles(): Promise<UserFile[]> {
-  let names: string[];
-  try {
-    names = await readdir(getUsersDir());
-  } catch {
-    return [];
-  }
+/** Read only the requested user files, skipping missing or malformed entries. */
+export async function readUserFiles(userIds: readonly string[]): Promise<UserFile[]> {
   const out: UserFile[] = [];
-  for (const name of names) {
-    if (!name.endsWith('.md')) continue;
-    const id = name.slice(0, -3).replace('__', ':');
-    if (!isAllowedUserId(id)) {
-      logger.warn('memory', `listUserFiles: skipping non-user file users/${name}`);
-      continue;
-    }
+  for (const id of new Set(userIds)) {
     let text: string;
     try {
-      text = await readFile(getUserPath(id), 'utf-8');
-    } catch {
+      text = await readUser(id);
+    } catch (error) {
+      logger.warn('memory', `readUserFiles: skipping invalid or unreadable user ${JSON.stringify(id)}: ${error}`);
       continue;
     }
-    out.push({ id, displayName: parseUserDisplayName(text) || id, text });
+    if (!text) continue;
+    const displayName = parseUserDisplayName(text);
+    if (!displayName) {
+      logger.warn('memory', `readUserFiles: skipping ${id} with missing or malformed display_name`);
+      continue;
+    }
+    out.push({ id, displayName, text });
   }
   return out;
 }
