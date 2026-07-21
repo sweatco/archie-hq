@@ -65,6 +65,7 @@ One PM agent instance is spawned per task. It is the orchestrator: it receives a
 | `report_completion` | Optionally post a final message, then stop the task |
 | `request_edit_mode` | Post an interactive Approve/Deny prompt to the default channel and pause the task |
 | `get_agents_status` | Check which agents are spawned and active |
+| `get_task_usage` | Report the current task's token usage (always) and SDK-reported cost when available, broken down per agent |
 | `mute_channel` | Disengage from one Slack channel/thread (the one named via `channel`, or the task's default channel) until the bot is @mentioned there again. DM channels cannot be muted |
 | `parse_datetime` / `set_reminder` / `cancel_reminder` | Schedule a reminder that wakes the task at an ISO datetime |
 | `list_available_repos` | List repos the GitHub App installation can reach (paginates `GET /installation/repositories`); tags repos a plugin specialist already covers. Cached per task. |
