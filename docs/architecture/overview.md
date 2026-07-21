@@ -195,6 +195,7 @@ src/
 │   ├── tools.ts                 # MCP tool definitions (PM + repo agent tools)
 │   ├── sandbox.ts               # Filesystem-guard hook + sandbox config builder
 │   ├── artifacts.ts             # Per-task artifact capture
+│   ├── task-usage.ts            # Token/cost aggregation + report formatting for get_task_usage
 │   ├── message-queue.ts         # Async message queue with recovery
 │   └── prompts.ts               # Shared prompt constants (new task, recovery, etc.)
 ├── tasks/
