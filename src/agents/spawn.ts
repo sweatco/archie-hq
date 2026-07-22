@@ -13,6 +13,7 @@
 import { join } from 'path';
 import { mkdir, symlink, readdir, writeFile, stat } from 'fs/promises';
 import { existsSync } from 'fs';
+import { randomUUID } from 'node:crypto';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Agent } from './agent.js';
 import type { Task } from '../tasks/task.js';
@@ -35,6 +36,7 @@ import {
   getSharedPath,
   getTaskPath,
   getAgentClonePath,
+  appendUsageRecord,
 } from '../tasks/persistence.js';
 import { WORKDIR, getBaseCachePath, getPluginsHeadInfo } from '../system/workdir.js';
 import {
@@ -709,6 +711,10 @@ Shared folder: ${sharedPath} [READ-ONLY]
     try {
       while (true) {
         try {
+          // One nonce per query() call, in scope for the whole for-await event
+          // loop below — so every `result` event from this call shares an
+          // identity that cleanly delimits its (cumulative) cost window.
+          const queryNonce = randomUUID();
           const agentQuery = query({
             prompt: recoverable.generator() as any,
             options: buildQueryOptions(sessionId),
@@ -799,6 +805,26 @@ Shared folder: ${sharedPath} [READ-ONLY]
             // Derive the Slack "Archie is …" loading status from this agent's
             // tool calls. Best-effort and debounced inside the task.
             task.noteActivityFromEvent(def.id, event);
+
+            // Persist SDK-reported usage/cost on every `result` event, stamped
+            // with this query() call's nonce so read-time cost aggregation can
+            // delimit its cumulative window. Fire-and-forget — never await, the
+            // writer never rejects, so this can't block or break the loop.
+            if (event.type === 'result') {
+              void appendUsageRecord({
+                ts: new Date().toISOString(),
+                taskId,
+                agentId: def.id,
+                agentKey: def.key,
+                query_nonce: queryNonce,
+                session_id: event.session_id,
+                subtype: event.subtype,
+                num_turns: event.num_turns,
+                total_cost_usd: event.total_cost_usd,
+                modelUsage: (event as any).modelUsage,
+                usage: (event as any).usage,
+              });
+            }
 
             // Deferred teardown (report_completion / request_edit_mode / research
             // budget): now that the turn has fully ended (the SDK `result` event),

@@ -137,6 +137,7 @@ const PM_ORCHESTRATION_TOOLS = [
   'mcp__orchestration-tools__request_edit_mode',
   'mcp__orchestration-tools__request_max_mode',
   'mcp__orchestration-tools__get_agents_status',
+  'mcp__orchestration-tools__get_task_usage',
   'mcp__orchestration-tools__list_available_repos',
   'mcp__orchestration-tools__spawn_repo_agent',
   'mcp__orchestration-tools__propose_trigger',

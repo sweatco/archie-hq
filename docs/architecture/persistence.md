@@ -32,6 +32,7 @@ ${ARCHIE_WORKDIR}/sessions/
       metadata.json                        # task metadata (canonical state)
       knowledge.log                        # append-only shared knowledge log
       events.jsonl                         # append-only system events (one JSON per line)
+      usage.jsonl                          # append-only SDK usage/cost records (one JSON per line)
       memory/                              # agent memory (created at task init)
       attachments/                         # downloaded Slack file attachments
         {file_id}-{filename}               # e.g. F08ABC123-screenshot.png
@@ -65,6 +66,7 @@ All paths below are rooted at `SESSIONS_DIR` (`${ARCHIE_WORKDIR}/sessions`).
 | `getAttachmentsPath(taskId)` | `{SESSIONS_DIR}/{taskId}/shared/attachments` |
 | `getArtifactsPath(taskId)` | `{SESSIONS_DIR}/{taskId}/shared/artifacts` |
 | `getEventsLogPath(taskId)` | `{SESSIONS_DIR}/{taskId}/shared/events.jsonl` |
+| `getUsageLogPath(taskId)` | `{SESSIONS_DIR}/{taskId}/shared/usage.jsonl` |
 
 Per-agent workspaces (`{taskId}/agents/{agentKey}/`) and SDK runtime dirs
 (`{taskId}/claude/{agentKey}/{session,tmp}`) are created in `src/agents/spawn.ts`,
@@ -244,6 +246,41 @@ Slack messages include user info in a structured format and optionally list atta
 When Slack messages include files, `downloadMessageFiles()` downloads them to the
 `attachments/` directory. Files are named `{fileId}-{originalName}` for uniqueness.
 The `url_private_download` URL is preferred over `url_private` for API-based downloads.
+
+---
+
+## Usage & cost accounting
+
+**Source**: `src/tasks/persistence.ts` (writer), `src/agents/spawn.ts` (hook), `src/agents/task-usage.ts` (aggregator), `src/agents/tools.ts` (`get_task_usage`).
+
+Archie tracks how much each task has consumed from two independent data sources, joined only at report time. Tokens are the source of truth and are always available; cost is SDK-reported and is present only when the SDK emitted a result event.
+
+### The `shared/usage.jsonl` writer
+
+`spawn.ts` installs a fire-and-forget hook in the per-agent event loop: on every SDK `result` event it calls `appendUsageRecord()` (never awaited, so it can never block or break the loop). Each record is a `TaskUsageRecord` — `{ ts, taskId, agentId, agentKey, query_nonce, session_id?, subtype, num_turns, total_cost_usd, modelUsage, usage }` — serialized one-per-line to `shared/usage.jsonl`. Writes are serialized per task via a dedicated `usageWriteQueues` map (kept separate from the `events.jsonl` queue), guarded by an `existsSync` check on `shared/`, and wrapped in try/catch so the writer never throws. If a turn crashes before its result event, nothing is appended for that turn — which is the desired "cost unavailable for that turn" behavior, disclosed later as a transcript-vs-cost gap rather than papered over.
+
+Because a taskId can arrive untrusted from the HTTP API, both the writer (`appendUsageRecord`) and the reader (`aggregateTaskUsage`) reject anything but the canonical `generateTaskId` shape (a single path segment with no `..`) before any path is built from it, so a taskId can never traverse outside the sessions/ root; an unsafe id is a silent no-op on write and an empty report on read. The guard is written twice, inline in each sink-reaching function — an anchored allowlist regexp at entry plus a `resolve()`+`relative()` containment check immediately before the filesystem sink — because CodeQL's `js/path-injection` analysis only recognises a sanitizer when the literal test sits in the function that reaches the sink, not when it is wrapped in a shared boolean helper (`isSafeTaskId` is retained for readability but is not the barrier CodeQL sees).
+
+### The `query_nonce` cost model
+
+The central design decision is that cost is aggregated by `query_nonce`, not by `session_id`. Archie makes exactly one `query()` call per spawn inside a `while (true)` retry loop, and an agent RESUMES the same `session_id` across many spawns — so one `session_id` accumulates many independent query()-call cost windows. Any read-time attempt to reconstruct query()-call boundaries by grouping on `session_id` (e.g. segmenting a session's records into runs on a `total_cost_usd` drop) is both over-engineered and silently wrong: a cheap query() call that precedes a more expensive one under a shared `session_id` shows no drop and is absorbed into the later run, omitting its cost.
+
+The nonce sidesteps this at write time. `spawn.ts` generates one `randomUUID()` per query() call, in scope for that call's entire event loop, so every result event it emits carries the same nonce. A nonce therefore delimits exactly one query() call's cost window and belongs to exactly one agent (each spawn is per-agent). Read-time cost is then a two-level reduce with no ordering assumptions, no drop detection, and no dependency on `session_id` semantics:
+
+- **Within a nonce** (all records sharing one `query_nonce`): reduce to a single figure via `reduceNonceCost`. `total_cost_usd` is cumulative across the steps of a single query() call, so the reducer takes the maximum (equivalently the final cumulative value; `max` is robust to line ordering and monotonic under the cumulative model).
+- **Across nonces**: always sum — each query() call reports only its own cost. Grand cost is the sum over nonces of `reduceNonceCost(nonce)`; per-agent cost is the same sum bucketed by the nonce's `agentKey`, and since every record in a nonce shares one `agentKey`, per-agent costs sum to the grand total by construction.
+
+`session_id` is retained on each record for traceability and debugging only; it is never used in the cost math.
+
+### The `get_task_usage` PM tool
+
+`get_task_usage` is a PM-only, zero-argument MCP tool (registered in the orchestration MCP server, which is wired only in the PM branch, so it never reaches repo or plugin agents). It answers "how much has the current task used/cost so far?". Its aggregator (`aggregateTaskUsage`) computes tokens the source-of-truth way: it recursively reads every SDK transcript under `claude/<agentKey>/session/projects/` (including nested subagent transcripts, excluding `journal.jsonl`), dedups assistant lines by `message.id`, skips `<synthetic>` turns, and sums the token buckets — bucketing per top-level `agentKey` so subagent tokens roll up to the parent. Cost is read exclusively from `shared/usage.jsonl` via the nonce model above. Tokens come straight from the transcripts; cost is the SDK's own `total_cost_usd` reported verbatim — there is no price table and no estimation. When no usage records exist, cost renders as `unavailable` while tokens still report. When fewer turns carry cost than the transcript recorded, the report appends a disclosed gap line.
+
+### Caveats (documented, not corrected)
+
+- SDK cost is a client-side estimate from the SDK's bundled price table, not actual Anthropic billing — under subscription auth, where spend is flat, it diverges. This is disclosed in the tool's output rather than corrected.
+- Cache-write tokens are reported as a single bucket. The 1h-vs-5m ephemeral split (`ephemeral_1h/5m_input_tokens`) and `inference_geo` multipliers are NOT modeled because Archie sets neither `ENABLE_PROMPT_CACHING_1H` nor `inference_geo` (confirmed: `inference_geo:"global"`, `ephemeral_1h:0` in observed records).
+- Every `query_nonce` carries exactly one result-event record in practice — confirmed on a live boot (attested `32dd7f6`, PR #232) under both sequential turns and three messages queued mid-turn (the whole batch was handled inside one `query()` call and produced a single record with `num_turns=5`). Because a nonce therefore reduces over a singleton, `max == sum` unconditionally and the reducer is correct regardless of whether within-nonce `total_cost_usd` would be cumulative or per-turn deltas — the cumulative-vs-delta question is moot in practice, and no multi-record nonce (hence no monotonicity) was ever observed. The `max`-vs-`sum` reducer stays injectable purely as defensive headroom: if some hypothetical future SDK ever emitted multiple result events within a single `query()` call, flipping `max` to `sum` is a one-line change confined to `reduceNonceCost`.
 
 ---
 

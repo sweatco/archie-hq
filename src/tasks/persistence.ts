@@ -8,7 +8,7 @@
 import { mkdir, readdir, readFile, writeFile, appendFile } from 'fs/promises';
 import { createReadStream, existsSync } from 'fs';
 import { createInterface } from 'readline';
-import { join } from 'path';
+import { join, resolve, relative, isAbsolute, sep } from 'path';
 import type { TaskMetadata, LogEntry, FindingType, SlackFile, SlackAttachment, SlackAuthor, SlackReaction } from '../types/index.js';
 import { isExternalUser } from '../connectors/slack/client.js';
 import type { SystemEvent } from '../system/event-bus.js';
@@ -41,6 +41,20 @@ export function generateTaskId(): string {
   const random = Math.random().toString(36).substring(2, 8);
 
   return `task-${date}-${time}-${random}`;
+}
+
+/**
+ * Validate a taskId against the canonical shape produced by `generateTaskId`
+ * (`task-YYYYMMDD-HHMM-<base36 suffix>`). A safe taskId is exactly one path
+ * segment — no slashes, no `..` — so callers may build filesystem paths from it
+ * without a traversal escaping the sessions/ root.
+ *
+ * taskId can arrive from the HTTP API (`/api/tasks/:id/...`) and is therefore
+ * untrusted; any value used to construct a path must pass this guard before it
+ * reaches a filesystem sink.
+ */
+export function isSafeTaskId(id: string): boolean {
+  return /^task-\d{8}-\d{4}-[a-z0-9]+$/.test(id);
 }
 
 /**
@@ -726,6 +740,82 @@ export async function appendEvent(event: SystemEvent): Promise<void> {
     }
   });
   writeQueues.set(event.taskId, next);
+}
+
+// ---- Usage JSONL persistence ----
+
+/**
+ * Get the path to a task's usage log (JSONL)
+ */
+export function getUsageLogPath(taskId: string): string {
+  return join(getSharedPath(taskId), 'usage.jsonl');
+}
+
+/**
+ * One append-only usage record, written on each SDK `result` event.
+ *
+ * `query_nonce` is the per-query()-call identity used for cost aggregation;
+ * `session_id` is retained for traceability/debugging only and is NOT used in
+ * cost math (a single session_id resumes across many query() calls).
+ */
+export interface TaskUsageRecord {
+  ts: string;
+  taskId: string;
+  agentId: string;
+  agentKey: string;
+  query_nonce: string;
+  session_id?: string;
+  subtype: string;
+  num_turns: number;
+  total_cost_usd: number;
+  modelUsage: Record<string, unknown>;
+  usage: unknown;
+}
+
+/**
+ * Serialized write queues per task for usage records — dedicated so usage
+ * writes never contend with the events queue.
+ */
+const usageWriteQueues = new Map<string, Promise<void>>();
+
+/**
+ * Append a usage record to the task's usage.jsonl (fire-and-forget).
+ * No-ops if the shared/ dir is missing; never throws.
+ */
+export async function appendUsageRecord(record: TaskUsageRecord): Promise<void> {
+  // taskId flows into filesystem path construction below (getSharedPath /
+  // getUsageLogPath → appendFile), and it can arrive from the HTTP API, so it
+  // is untrusted. Two barriers, both written INLINE here rather than behind the
+  // `isSafeTaskId` helper — CodeQL's path-injection analysis does not treat a
+  // regexp test hidden in a boolean-returning helper as a sanitizer, so the
+  // literal guards must sit in the function that reaches the sink. No-op on any
+  // rejection so the fire-and-forget / never-throw contract is preserved.
+
+  // (a) INLINE allowlist barrier at entry — the canonical single-segment id.
+  if (!/^task-\d{8}-\d{4}-[a-z0-9]+$/.test(record.taskId)) return;
+  const prev = usageWriteQueues.get(record.taskId) ?? Promise.resolve();
+  const next = prev.then(async () => {
+    try {
+      // (b) INLINE containment barrier before the existsSync / appendFile
+      // sinks: resolve the taskId-derived paths and confirm they stay under
+      // SESSIONS_DIR, then hand the sinks the resolved absolute paths.
+      const root = resolve(SESSIONS_DIR);
+      const dir = resolve(getSharedPath(record.taskId));
+      const abs = resolve(getUsageLogPath(record.taskId));
+      const rel = relative(root, abs);
+      const relDir = relative(root, dir);
+      if (
+        rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel) ||
+        relDir === '..' || relDir.startsWith('..' + sep) || isAbsolute(relDir)
+      )
+        return;
+      if (!existsSync(dir)) return;
+      await appendFile(abs, JSON.stringify(record) + '\n');
+    } catch (err) {
+      logger.warn('usage', `Failed to persist usage record for ${record.taskId}: ${err}`);
+    }
+  });
+  usageWriteQueues.set(record.taskId, next);
 }
 
 /**
