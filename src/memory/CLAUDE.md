@@ -22,7 +22,7 @@ Any behavior, flow, storage, or flag change must update `docs/architecture/memor
 - **Collaboration profiles follow Slack authorship.** Files remain under `users/<id>.md`, but only actual Slack message authors are writable. `cli:`/`local:` fallback files may remain as legacy data but are never loaded for extraction or updated. Body mentions grant nothing. Every candidate needs at least one resolvable `msg:<ts>` evidence ID, all authored by the target user; summaries show only updates the store confirmed it wrote.
 - **Profile sections are closed.** New adds and updates may target only `Communication`, `Deliverables`, `Workflow`, `Decision Making`, or `Constraints`. Updates replace bullets only inside their declared section. Existing legacy sections remain readable and housekeepable.
 - **Model output is untrusted.** Every extractor and housekeeper result passes through `sanitize.ts`. Side-agents remain one turn, tool-free, and minimally provisioned.
-- **Writes are serialized.** Extraction and housekeeping share the sequential queue in `lifecycle.ts`. Telemetry's single-line fail-safe appends are the only exception.
+- **Runtime writes are serialized.** Extraction and automatic housekeeping share the sequential queue in `lifecycle.ts`. Telemetry's single-line fail-safe appends are the only runtime exception. Manual housekeeping runs out of process and requires the server to be stopped.
 - **Read tools are store-only and read-only.** Every identifier passes `paths.ts` guards. Do not add mutation tools or a tool that opens task transcripts.
 - **Flag-safe.** With `ARCHIE_MEMORY=false`, initialization, injection, tools, and completion extraction no-op.
 
@@ -42,4 +42,4 @@ npm run typecheck
 npx vitest run src/memory/__tests__/
 ```
 
-Manual consolidation: `npm run memory:housekeeping -- --target <all|entities|U…>`.
+Manual consolidation, with the Archie service stopped: `npm run memory:housekeeping -- --target <all|entities|U…>`.

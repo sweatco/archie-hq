@@ -1,6 +1,6 @@
 # Memory Layer
 
-The memory layer gives Archie persistent cross-task knowledge: user collaboration profiles, recent activity, task summaries, and entity pages for durable subjects such as services, systems, integrations, concepts, and repositories. Memory reaches agents through prompt injection and three read-only tools. The subsystem lives under `src/memory/`, uses Markdown files only, and is gated by `ARCHIE_MEMORY`.
+The memory layer gives Archie persistent cross-task knowledge: user collaboration profiles, recent activity, task summaries, and entity pages for durable subjects such as services, systems, integrations, concepts, and repositories. Memory reaches agents through prompt injection and three read-only tools. The subsystem lives under `src/memory/` and uses Markdown files only. Its runtime lifecycle and agent read paths are gated by `ARCHIE_MEMORY`; manual housekeeping has its own flag.
 
 This document describes the implementation as built. Historical decisions live in [`docs/plans/20260719-memory-v2.md`](../plans/20260719-memory-v2.md); future work lives in [`docs/proposals/memory-v2-roadmap.md`](../proposals/memory-v2-roadmap.md).
 
@@ -180,7 +180,9 @@ All telemetry appends are fail-safe and never alter agent results or extraction 
 
 ## Housekeeping
 
-User bullets carry touched dates. Soft caps enqueue a consolidation side-agent on the same sequential queue; a trace-back validator prevents it from inventing facts. Entity housekeeping is deterministic code: it merges alias-linked duplicates, archives stale entities, repoints relations, and rebuilds the index. Manual entry point: `npm run memory:housekeeping -- --target <all|entities|U…>`.
+User bullets carry touched dates. Soft caps enqueue a consolidation side-agent on the same runtime queue as extraction; a trace-back validator prevents it from inventing facts. Entity housekeeping is deterministic code: it merges alias-linked duplicates, archives stale entities, repoints relations, and rebuilds the index.
+
+The manual entry point is `npm run memory:housekeeping -- --target <all|entities|U…>`. It runs in a separate process, does not share the server's in-memory queue, and must only run while the Archie service is stopped.
 
 ## Feature Flags
 
@@ -189,7 +191,7 @@ User bullets carry touched dates. Soft caps enqueue a consolidation side-agent o
 | `ARCHIE_MEMORY` | `true` | Master switch for initialization, extraction, injection, and tools. |
 | `ARCHIE_MEMORY_INJECT` | `false` | Enables prompt injection. Extraction remains active when off. |
 | `ARCHIE_MEMORY_TOOLS` | `false` | Enables the three read-only tools independently of injection. |
-| `ARCHIE_MEMORY_HOUSEKEEPING` | `true` | Enables automatic and manual housekeeping. |
+| `ARCHIE_MEMORY_HOUSEKEEPING` | `true` | Enables automatic and manual housekeeping; the manual command does not consult `ARCHIE_MEMORY`. |
 | `ARCHIE_MEMORY_USER_CAP` | `100` | Soft cap on bullets per collaboration-profile file. |
 | `ARCHIE_MEMORY_SECTION_CAP` | `30` | Soft cap on bullets per section. |
 | `ARCHIE_MEMORY_STALENESS_DAYS` | `180` | Age threshold for consolidation and entity archival. |
