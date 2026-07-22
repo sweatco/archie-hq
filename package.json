@@ -20,6 +20,7 @@
     "oauth:revoke": "tsx src/cli/oauth.ts revoke",
     "oauth:refresh": "tsx src/cli/oauth.ts refresh",
     "memory:housekeeping": "tsx scripts/memory-housekeeping.ts",
+    "memory:eval": "tsx scripts/memory-eval.ts",
     "docker:dev": "docker compose up --build",
     "docker:stop": "docker compose down",
     "test": "vitest run --reporter=verbose",
