@@ -44,6 +44,20 @@ export function generateTaskId(): string {
 }
 
 /**
+ * Validate a taskId against the canonical shape produced by `generateTaskId`
+ * (`task-YYYYMMDD-HHMM-<base36 suffix>`). A safe taskId is exactly one path
+ * segment — no slashes, no `..` — so callers may build filesystem paths from it
+ * without a traversal escaping the sessions/ root.
+ *
+ * taskId can arrive from the HTTP API (`/api/tasks/:id/...`) and is therefore
+ * untrusted; any value used to construct a path must pass this guard before it
+ * reaches a filesystem sink.
+ */
+export function isSafeTaskId(id: string): boolean {
+  return /^task-\d{8}-\d{4}-[a-z0-9]+$/.test(id);
+}
+
+/**
  * Get the path to a task's directory
  */
 export function getTaskPath(taskId: string): string {
@@ -769,6 +783,12 @@ const usageWriteQueues = new Map<string, Promise<void>>();
  * No-ops if the shared/ dir is missing; never throws.
  */
 export async function appendUsageRecord(record: TaskUsageRecord): Promise<void> {
+  // Path-injection guard: taskId flows into filesystem path construction below
+  // (getSharedPath / getUsageLogPath). Reject anything but the canonical
+  // single-segment task id BEFORE any path is built, cutting the taint at the
+  // boundary. No-op on invalid input so the fire-and-forget / never-throw
+  // contract is preserved.
+  if (!isSafeTaskId(record.taskId)) return;
   const prev = usageWriteQueues.get(record.taskId) ?? Promise.resolve();
   const next = prev.then(async () => {
     try {
