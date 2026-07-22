@@ -23,6 +23,7 @@ Historical record of Archie's incremental development. Each plan represents a mi
 | [v10](v10-agent-recovery-impl.md) | Agent recovery implementation | Partially implemented |
 | … | (v11–v31 — see files in this directory) | — |
 | [20260626](20260626-response-formatting.md) | Message footer + self-updating PR cards | Implemented |
+| [20260717](20260717-slack-group-dm-support.md) | Slack group DM (mpim) support | Implemented |
 
 ## Evolution Arc
 
