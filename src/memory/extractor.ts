@@ -15,7 +15,7 @@ import type { ExtractionResult, MemoryUpdate, EntityUpdate } from './types.js';
 // ============================================================================
 
 export interface ExtractionInput {
-  userMemory: string;
+  collaborationProfiles: string;
   /** Current entity index (thin table) so the extractor resolves to existing entities. */
   entityIndex: string;
   taskId: string;
@@ -32,12 +32,14 @@ export interface ExtractionInput {
 
 const TRANSCRIPT_LIMIT = 100_000;
 
-const FALLBACK_TEMPLATE = `You are reviewing a completed task session. Extract learnings.
+const FALLBACK_TEMPLATE = `You are reviewing a completed task session. Extract durable collaboration-profile and entity learnings.
 
-Current user knowledge:
-<user_memory>
-{{USER_MEMORY}}
-</user_memory>
+COLLABORATION PROFILES: emit user_updates only for durable ways a user explicitly says, in their own first-person message, that others should collaborate with them. The only valid sections are Communication, Deliverables, Workflow, Decision Making, and Constraints. Reject general facts, skills, personality judgments, inferred behavior, and task-specific requests. Every update must cite one or more msg:<ts> evidence ids authored by that target user. Never emit user_updates for cli: or local: identities.
+
+Current collaboration profiles:
+<collaboration_profiles>
+{{COLLABORATION_PROFILES}}
+</collaboration_profiles>
 
 Known entities (resolve against these — do not duplicate):
 <entity_index>
@@ -83,7 +85,7 @@ export async function buildExtractionPrompt(input: ExtractionInput): Promise<str
   }
 
   const variables: Record<string, string> = {
-    USER_MEMORY: input.userMemory,
+    COLLABORATION_PROFILES: input.collaborationProfiles,
     ENTITY_INDEX: input.entityIndex,
     TASK_ID: input.taskId,
     PARTICIPANTS: input.participants,

@@ -9,7 +9,7 @@ import { buildExtractionPrompt, parseExtractionResponse } from '../extractor.js'
 import type { ExtractionInput } from '../extractor.js';
 
 const baseInput: ExtractionInput = {
-  userMemory: '## alice\n- Prefers async\n',
+  collaborationProfiles: '## Communication\n- Prefers async updates\n',
   entityIndex: '| [[payment-service]] | service | repo | payments API | 2026-05-01 |',
   taskId: 'task-abc-123',
   participants: 'alice, bob',
@@ -30,10 +30,22 @@ describe('buildExtractionPrompt(input)', () => {
     expect(prompt).not.toContain('<org_memory>');
   });
 
-  it('substitutes USER_MEMORY placeholder', async () => {
+  it('substitutes COLLABORATION_PROFILES placeholder', async () => {
     const prompt = await buildExtractionPrompt(baseInput);
-    expect(prompt).toContain('## alice\n- Prefers async');
-    expect(prompt).not.toContain('{{USER_MEMORY}}');
+    expect(prompt).toContain('## Communication\n- Prefers async updates');
+    expect(prompt).not.toContain('{{COLLABORATION_PROFILES}}');
+  });
+
+  it('defines durable first-person collaboration profiles and their closed section set', async () => {
+    const prompt = await buildExtractionPrompt(baseInput);
+    expect(prompt).toContain('explicit first-person collaboration statement');
+    for (const section of ['Communication', 'Deliverables', 'Workflow', 'Decision Making', 'Constraints']) {
+      expect(prompt).toContain(`\`${section}\``);
+    }
+    for (const rejected of ['General facts', 'Skills', 'Personality', 'Behavior inferred', 'Task-specific requests']) {
+      expect(prompt).toContain(rejected);
+    }
+    expect(prompt).toContain('Never emit `user_updates` for `cli:` or `local:`');
   });
 
   it('substitutes TASK_ID placeholder', async () => {
@@ -257,6 +269,23 @@ describe('parseExtractionResponse(json)', () => {
     const result = parseExtractionResponse(minimal);
     expect(result).not.toBeNull();
     expect(Object.keys(result!.user_updates)).toHaveLength(0);
+  });
+
+  it('drops profile candidates outside the writable Slack-author set, including fallbacks', () => {
+    const response = JSON.stringify({
+      user_updates: {
+        U07ALICE01: [{ action: 'add', section: 'Communication', content: 'Prefers concise updates' }],
+        'cli:task-123': [{ action: 'add', section: 'Workflow', content: 'Fallback candidate' }],
+      },
+      task_summary: 'x',
+      activity_summary: 'y',
+      domain: 'engineering',
+    });
+
+    const result = parseExtractionResponse(response, new Set(['U07ALICE01']));
+    expect(result?.user_updates).toEqual({
+      U07ALICE01: [{ action: 'add', section: 'Communication', content: 'Prefers concise updates' }],
+    });
   });
 
   it('validates user updates also have action and content', () => {
