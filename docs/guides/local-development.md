@@ -2,7 +2,9 @@
 
 ## Quick Start
 
-The only required env var is `ANTHROPIC_API_KEY`. Slack and GitHub App credentials are optional.
+Archie needs a Claude credential, auto-detected in priority order: `ANTHROPIC_API_KEY`, then `CLAUDE_CODE_OAUTH_TOKEN`. At least one must be set or startup fails. Slack and GitHub App credentials are optional.
+
+To use a Claude subscription instead of a metered API key, run `claude setup-token` and set the printed token as `CLAUDE_CODE_OAUTH_TOKEN`. This is intended for an individual running Archie **locally and interactively** on their own subscription — the same posture in which Claude Code supports a Pro/Max plan. On a plain reading of Anthropic's [Consumer Terms](https://www.anthropic.com/legal/consumer-terms), any bot- or server-driven use of a subscription token is automated access reserved for an API key (*"Except when you are accessing our Services via an Anthropic API Key … to access the Services through automated or non-human means, whether through a bot, script, or otherwise"*) — and because a Slack deployment has the server initiate the access, that reading covers **even a single-user DM**. Use an `ANTHROPIC_API_KEY` under the Commercial Terms for any Slack-connected deployment, and confirm directly with Anthropic before relying on a subscription token for an automated path.
 
 ```bash
 # 1. Setup environment

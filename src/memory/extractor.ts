@@ -6,6 +6,7 @@
  */
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { claudeCredentialEnv } from '../system/claude-credential.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { logger } from '../system/logger.js';
 import type { ExtractionResult, MemoryUpdate, EntityUpdate } from './types.js';
@@ -240,7 +241,7 @@ export async function runExtraction(
         executable: 'node',
         env: {
           NODE_ENV: process.env.NODE_ENV || 'development',
-          ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+          ...claudeCredentialEnv(),
           // Forward CA-trust to the spawned CLI (TLS-intercepting proxy); no-op when unset.
           // Adds TLS trust only — not tools/permissions — so the minimal-env invariant holds.
           ...(process.env.NODE_USE_SYSTEM_CA ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA } : {}),

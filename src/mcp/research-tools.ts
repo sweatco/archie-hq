@@ -12,6 +12,7 @@
  */
 
 import crypto from 'node:crypto';
+import { claudeCredentialEnv } from '../system/claude-credential.js';
 import { mkdir, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { query, tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
@@ -81,7 +82,7 @@ Respond with JSON only.`;
         executable: 'node',
         env: {
           NODE_ENV: process.env.NODE_ENV || 'development',
-          ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+          ...claudeCredentialEnv(),
           // Forward CA-trust to the spawned CLI (TLS-intercepting proxy); no-op when unset.
           ...(process.env.NODE_USE_SYSTEM_CA ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA } : {}),
           ...(process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS } : {}),

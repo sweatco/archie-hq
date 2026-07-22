@@ -43,6 +43,8 @@ import { initEventPersistence } from './tasks/persistence.js';
 import { initReminderScheduler } from './system/reminder-scheduler.js';
 import { initTriggerScheduler } from './system/trigger-scheduler.js';
 import { initMemory } from './memory/index.js';
+import { assertClaudeCredentialAvailable } from './system/claude-credential.js';
+import { StartupError } from './system/startup-error.js';
 
 /**
  * Application configuration
@@ -65,9 +67,7 @@ function loadConfig(): AppConfig {
   const port = parseInt(process.env.PORT || '3000', 10);
   const githubWebhookSecret = process.env.GITHUB_WEBHOOK_SECRET;
 
-  if (!process.env.ANTHROPIC_API_KEY) {
-    throw new Error('ANTHROPIC_API_KEY environment variable is required');
-  }
+  assertClaudeCredentialAvailable();
 
   return {
     slackBotToken,
@@ -287,6 +287,16 @@ async function main(): Promise<void> {
     process.on('SIGINT', () => shutdown('SIGINT'));
     process.on('SIGTERM', () => shutdown('SIGTERM'));
   } catch (error) {
+    if (error instanceof StartupError) {
+      // Known, operator-fixable misconfiguration — show a clean, actionable
+      // message with no JS stack trace (the stack is noise here).
+      logger.error('startup', error.message);
+      for (const line of error.details) {
+        logger.plain(`  ${line}`);
+      }
+      logger.plain('');
+      process.exit(1);
+    }
     logger.error('index', 'Failed to start server', error);
     process.exit(1);
   }
