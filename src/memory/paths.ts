@@ -47,13 +47,7 @@ export function isMemoryToolsEnabled(): boolean {
 
 // ---- Configurable caps ----
 
-/**
- * Read an integer flag. An unset/empty value silently uses `fallback`. A value
- * that is *set* but invalid — not an integer (`parseInt` would leniently accept
- * "8x"), or below `min` — is rejected with a warning rather than silently
- * swallowed. `min` defaults to 1; pass `min: 0` for flags where "none" is a
- * meaningful setting (e.g. ARCHIE_MEMORY_ORG_INJECT_MAX=0 → index-only).
- */
+/** Parse an integer env flag, warning and falling back when invalid. */
 function envInt(name: string, fallback: number, min = 1): number {
   const raw = process.env[name]?.trim();
   if (!raw) return fallback;
