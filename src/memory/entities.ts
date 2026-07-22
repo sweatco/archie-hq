@@ -221,6 +221,11 @@ export interface AppliedEntity {
   capExceeded: boolean;
 }
 
+export interface ApplyEntityUpdateOptions {
+  today?: string;
+  records?: EntityRecord[];
+}
+
 /**
  * Apply one extraction-emitted entity update: resolve against existing
  * entities (by slug or alias) or create a new one, merge sanitized
@@ -231,15 +236,14 @@ export interface AppliedEntity {
 export async function applyEntityUpdate(
   update: EntityUpdate,
   taskId: string,
-  today?: string,
-  records?: EntityRecord[],
+  options: ApplyEntityUpdateOptions = {},
 ): Promise<AppliedEntity | null> {
   if (!update || typeof update.slug !== 'string') return null;
-  const date = today ?? new Date().toISOString().slice(0, 10);
+  const date = options.today ?? new Date().toISOString().slice(0, 10);
 
   // Reuse the caller's in-memory record set when provided (one listEntities()
   // per task instead of one re-read per update); otherwise read the store here.
-  const all = records ?? (await listEntities());
+  const all = options.records ?? (await listEntities());
   const proposedSlug = sanitizeEntitySlug(update.slug);
   let record = (proposedSlug && resolveEntity(proposedSlug, all)) || resolveEntity(update.slug, all);
   let created = false;
@@ -331,7 +335,7 @@ export async function applyEntityUpdate(
   // Keep a caller-provided record set coherent: a later update to a just-created
   // entity in the same task must resolve it, not create a duplicate. (Existing
   // entities are already references into `all`, so their mutations are visible.)
-  if (created && records) records.push(record);
+  if (created && options.records) options.records.push(record);
   return { slug: record.entity, created, capExceeded: count > getEntityCap() };
 }
 

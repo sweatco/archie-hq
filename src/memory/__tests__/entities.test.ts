@@ -129,7 +129,7 @@ describe('entity store', () => {
           relations: [{ type: 'depends_on', target: 'postgres-prod' }],
         },
         'task-42',
-        '2026-06-01',
+        { today: '2026-06-01' },
       );
       expect(applied).toMatchObject({ slug: 'payment-service', created: true });
       const rec = (await readEntity('payment-service'))!;
@@ -143,7 +143,7 @@ describe('entity store', () => {
       const applied = await applyEntityUpdate(
         { slug: 'payments-api', observations: [{ category: 'fact', text: 'handles refunds' }] },
         'task-2',
-        '2026-06-02',
+        { today: '2026-06-02' },
       );
       expect(applied).toMatchObject({ slug: 'payment-service', created: false });
       expect(existsSync(join(entitiesDir, 'payments-api.md'))).toBe(false);
@@ -166,7 +166,7 @@ describe('entity store', () => {
           ],
         },
         'task-3',
-        '2026-06-03',
+        { today: '2026-06-03' },
       );
       const rec = (await readEntity('auth'))!;
       expect(rec.observations.map((o) => o.text)).toEqual(['kept fact']);
@@ -193,12 +193,12 @@ describe('entity store', () => {
       entityObsCap = 3;
       await applyEntityUpdate(
         { slug: 'svc', type: 'service', observations: [{ category: 'fact', text: 'f1' }], relations: [{ type: 'depends_on', target: 'db' }] },
-        'task-1', '2026-01-01',
+        'task-1', { today: '2026-01-01' },
       );
-      await applyEntityUpdate({ slug: 'svc', observations: [{ category: 'fact', text: 'f2' }] }, 'task-2', '2026-01-02');
-      await applyEntityUpdate({ slug: 'svc', observations: [{ category: 'fact', text: 'f3' }] }, 'task-3', '2026-01-03');
-      await applyEntityUpdate({ slug: 'svc', observations: [{ category: 'fact', text: 'f4' }] }, 'task-4', '2026-01-04');
-      await applyEntityUpdate({ slug: 'svc', observations: [{ category: 'fact', text: 'f5' }] }, 'task-5', '2026-01-05');
+      await applyEntityUpdate({ slug: 'svc', observations: [{ category: 'fact', text: 'f2' }] }, 'task-2', { today: '2026-01-02' });
+      await applyEntityUpdate({ slug: 'svc', observations: [{ category: 'fact', text: 'f3' }] }, 'task-3', { today: '2026-01-03' });
+      await applyEntityUpdate({ slug: 'svc', observations: [{ category: 'fact', text: 'f4' }] }, 'task-4', { today: '2026-01-04' });
+      await applyEntityUpdate({ slug: 'svc', observations: [{ category: 'fact', text: 'f5' }] }, 'task-5', { today: '2026-01-05' });
 
       const rec = (await readEntity('svc'))!;
       const texts = rec.observations.map((o) => o.text);
@@ -217,14 +217,14 @@ describe('entity store', () => {
         { slug: 'svc', type: 'service', observations: [
           { category: 'fact', text: 'old1' }, { category: 'fact', text: 'old2' }, { category: 'fact', text: 'old3' },
         ] },
-        'task-1', '2026-01-01',
+        'task-1', { today: '2026-01-01' },
       );
       // One update adds three newer, distinct observations at once → 6 > cap 3.
       await applyEntityUpdate(
         { slug: 'svc', observations: [
           { category: 'fact', text: 'new1' }, { category: 'fact', text: 'new2' }, { category: 'fact', text: 'new3' },
         ] },
-        'task-2', '2026-01-02',
+        'task-2', { today: '2026-01-02' },
       );
       const texts = (await readEntity('svc'))!.observations.map((o) => o.text);
       expect(texts).toHaveLength(3);
@@ -237,12 +237,12 @@ describe('entity store', () => {
         { slug: 'svc', type: 'service', observations: [
           { category: 'fact', text: 'a' }, { category: 'fact', text: 'b' }, { category: 'fact', text: 'c' },
         ] },
-        'task-1', '2026-06-30',
+        'task-1', { today: '2026-06-30' },
       );
       // A fourth, same-dated, distinct observation tips it over the cap.
       await applyEntityUpdate(
         { slug: 'svc', observations: [{ category: 'fact', text: 'd' }] },
-        'task-2', '2026-06-30',
+        'task-2', { today: '2026-06-30' },
       );
       const texts = (await readEntity('svc'))!.observations.map((o) => o.text);
       expect(texts).toHaveLength(3);
@@ -271,12 +271,12 @@ describe('entity store', () => {
     it('re-affirming an existing observation refreshes its touched date, does not duplicate, and survives the cap', async () => {
       await applyEntityUpdate(
         { slug: 'svc', type: 'service', observations: [{ category: 'fact', text: 'stable fact' }] },
-        'task-1', '2026-01-01',
+        'task-1', { today: '2026-01-01' },
       );
       // Re-emit the same observation in a later task → re-stamped, not duplicated.
       await applyEntityUpdate(
         { slug: 'svc', observations: [{ category: 'fact', text: 'stable fact' }] },
-        'task-2', '2026-06-30',
+        'task-2', { today: '2026-06-30' },
       );
       const obs = (await readEntity('svc'))!.observations.filter((o) => o.text === 'stable fact');
       expect(obs).toHaveLength(1);
@@ -286,7 +286,7 @@ describe('entity store', () => {
       entityObsCap = 1;
       await applyEntityUpdate(
         { slug: 'svc', observations: [{ category: 'fact', text: 'older noise' }] },
-        'task-3', '2026-03-01',
+        'task-3', { today: '2026-03-01' },
       );
       expect((await readEntity('svc'))!.observations.map((o) => o.text)).toEqual(['stable fact']);
     });
@@ -295,11 +295,11 @@ describe('entity store', () => {
       const records = await listEntities();
       await applyEntityUpdate(
         { slug: 'newsvc', type: 'service', observations: [{ category: 'fact', text: 'first' }] },
-        'task-1', '2026-01-01', records,
+        'task-1', { today: '2026-01-01', records },
       );
       await applyEntityUpdate(
         { slug: 'newsvc', observations: [{ category: 'fact', text: 'second' }] },
-        'task-1', '2026-01-01', records,
+        'task-1', { today: '2026-01-01', records },
       );
       expect((await listEntities()).filter((r) => r.entity === 'newsvc')).toHaveLength(1);
       const texts = (await readEntity('newsvc'))!.observations.map((o) => o.text);
@@ -307,9 +307,9 @@ describe('entity store', () => {
     });
 
     it('pickScope: repo-bearing → repo, explicit scope honored, org only as no-signal fallback', async () => {
-      await applyEntityUpdate({ slug: 'svc-repo', type: 'service', repos: ['backend'] }, 'task-1', '2026-01-01');
-      await applyEntityUpdate({ slug: 'svc-domain', type: 'service', scope: 'domain' }, 'task-1', '2026-01-01');
-      await applyEntityUpdate({ slug: 'svc-bare', type: 'service' }, 'task-1', '2026-01-01');
+      await applyEntityUpdate({ slug: 'svc-repo', type: 'service', repos: ['backend'] }, 'task-1', { today: '2026-01-01' });
+      await applyEntityUpdate({ slug: 'svc-domain', type: 'service', scope: 'domain' }, 'task-1', { today: '2026-01-01' });
+      await applyEntityUpdate({ slug: 'svc-bare', type: 'service' }, 'task-1', { today: '2026-01-01' });
       expect((await readEntity('svc-repo'))!.scope).toBe('repo');
       expect((await readEntity('svc-domain'))!.scope).toBe('domain');
       expect((await readEntity('svc-bare'))!.scope).toBe('org');

@@ -192,7 +192,7 @@ async function processExtraction(taskId: string): Promise<void> {
   // re-read + re-parse on every update).
   const entityRecords = await listEntities();
   for (const update of result.entity_updates) {
-    const applied = await applyEntityUpdate(update, taskId, undefined, entityRecords);
+    const applied = await applyEntityUpdate(update, taskId, { records: entityRecords });
     if (!applied) continue;
     touchedEntities.push(applied.slug);
     if (applied.capExceeded) housekeepingTargets.add('entities');
