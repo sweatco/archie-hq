@@ -74,10 +74,6 @@ services:
       # can persist refreshed tokens.
       - ./secrets:/app/secrets
 
-      # Claude Code config - stores API keys, sessions, settings
-      - ./claude-data:/home/archie/.claude
-      - ./claude-data/.claude.json:/home/archie/.claude.json
-
       # Exclude node_modules (use container's version)
       - /app/node_modules
 
