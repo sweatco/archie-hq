@@ -199,9 +199,9 @@ User bullets carry touched dates. Soft caps enqueue a consolidation side-agent o
 | `ARCHIE_MEMORY_ENTITY_OBS_CAP` | `30` | Persisted observations per entity. |
 | `ARCHIE_MEMORY_TOUCHED_BY_INJECT_MAX` | `10` | Rendered `touched_by` relations per entity block. |
 
-## Eval Harness
+## Evaluation
 
-`npm run memory:eval` reads a snapshot selected by `ARCHIE_WORKDIR`, refuses to use a path without a `memory/` subtree, and writes reports outside the snapshot. The mechanical tier measures store health, selection and pull telemetry, regression goldens, and prompt-size bounds. The functional tier exercises production selection/rendering with reader and judge controls. The harness is read-only over the snapshot.
+The evaluation harness is not part of this branch. It lives in the stacked [`feature/memory-v2-eval` change](https://github.com/sweatco/archie-hq/pull/228) and consumes snapshots of this store without modifying them.
 
 ## Ejection
 
@@ -209,7 +209,7 @@ User bullets carry touched dates. Soft caps enqueue a consolidation side-agent o
 2. Remove `initMemory()` from `src/index.ts`.
 3. Remove memory imports, author extraction, injection, and tool registration from `src/agents/spawn.ts`.
 4. Delete `workdir/memory/`.
-5. Optionally delete `tools/memory-eval/`, the memory scripts, and their package scripts.
+5. Delete `scripts/memory-housekeeping.ts` and remove the `memory:housekeeping` package script.
 
 No database or external service cleanup is required.
 
