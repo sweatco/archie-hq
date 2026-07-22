@@ -122,10 +122,20 @@ vi.mock('../extractor.js', async (importOriginal) => {
 // Import the module under test and mocked modules (after mocks are set up)
 // ============================================================================
 
-import { handleTaskCompleted, rescheduleTaskCompleted, extractUsernames, extractAuthorUsers, selectRelatedTasksByEntity, migrateLegacySummaries } from '../lifecycle.js';
+import {
+  handleTaskCompleted,
+  rescheduleTaskCompleted,
+  extractUsernames,
+  extractAuthorUsers,
+  selectRelatedTasksByEntity,
+  migrateLegacySummaries,
+  isEvidenceValid,
+  buildSummaryMarkdown,
+} from '../lifecycle.js';
 import { enqueuePending, readPending } from '../pending-queue.js';
 import { runExtraction } from '../extractor.js';
 import { postSlackMessage } from '../../connectors/slack/client.js';
+import type { TaskMetadata } from '../../types/task.js';
 
 // ============================================================================
 // Test data
@@ -156,7 +166,7 @@ const METADATA = {
   status: 'completed',
   created_at: '2026-04-10T10:00:00Z',
   updated_at: '2026-04-10T10:30:00Z',
-};
+} satisfies TaskMetadata;
 
 const KNOWLEDGE_LOG = [
   `[2026-04-10T10:00:00Z] [@<${USER_DANA}:Dana Lee> in slack:#<C1:general>:1234 | msg:1234.001] Fix the login bug`,
@@ -200,7 +210,7 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     vi.mocked(runExtraction).mockResolvedValue({
       user_updates: {
         [USER_DANA]: [
-          { action: 'add', section: 'Work Style', content: 'Prefers direct communication', evidence: ['msg:1234.001'] },
+          { action: 'add', section: 'Communication', content: 'Prefers direct communication', evidence: ['msg:1234.001'] },
         ],
       },
       entity_updates: [
@@ -290,7 +300,7 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     expect(content).toContain('### entities/backend.md');
     expect(content).toContain('Uses NestJS with PostgreSQL');
     expect(content).toContain(`### users/${USER_DANA}.md`);
-    expect(content).toContain('**added** `## Work Style` › Prefers direct communication');
+    expect(content).toContain('**added** `## Communication` › Prefers direct communication');
   });
 
   it('summary marks empty extraction as _no durable learnings_', async () => {
@@ -306,6 +316,27 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     const content = await readFile(join(memoryDir, 'tasks', TASK_ID, 'summary.md'), 'utf-8');
     expect(content).toContain('## Memory Updates');
     expect(content).toContain('_no durable learnings_');
+  });
+
+  it('summary still renders housekeeping when no profile or entity update applied', () => {
+    const content = buildSummaryMarkdown(
+      TASK_ID,
+      METADATA,
+      {
+        user_updates: {},
+        entity_updates: [],
+        task_summary: 'Nothing else changed.',
+        activity_summary: 'Routine task',
+        domain: 'engineering',
+      },
+      [{ userId: USER_DANA, displayName: 'Dana Lee' }],
+      [],
+      ['merged 2 duplicate profile entries'],
+    );
+
+    expect(content).toContain('### Housekeeping');
+    expect(content).toContain('merged 2 duplicate profile entries');
+    expect(content).not.toContain('_no durable learnings_');
   });
 
   it('summary contains Related Tasks section with placeholder when activity index is empty', async () => {
@@ -377,8 +408,8 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
 
     vi.mocked(runExtraction).mockResolvedValue({
       user_updates: {
-        [USER_ALICE]: [{ action: 'add', section: 'Work Style', content: 'Likes lists', evidence: ['msg:1234.010'] }],
-        [USER_BOB]: [{ action: 'add', section: 'Work Style', content: 'Prefers concise', evidence: ['msg:1234.011'] }],
+        [USER_ALICE]: [{ action: 'add', section: 'Deliverables', content: 'Likes lists', evidence: ['msg:1234.010'] }],
+        [USER_BOB]: [{ action: 'add', section: 'Communication', content: 'Prefers concise', evidence: ['msg:1234.011'] }],
         // The extractor mock returns updates for the allowed set — the *parser*
         // (not mocked here) is what drops unknown users at runtime. This test
         // confirms the lifecycle passes the right allowedUserIds set.
@@ -525,7 +556,7 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     expect(existsSync(join(usersDir, `${USER_DANA}.md`))).toBe(true);
   });
 
-  it('drops a user update whose evidence cites another author (second-hand claim) with telemetry', async () => {
+  it('drops missing, unknown, mixed-author, and other-author evidence without leaking it to the summary', async () => {
     const log = [
       `[2026-04-10T10:00:00Z] [@<${USER_ALICE}:Alice Smith> in slack:#<C1:general>:1234 | msg:1234.020] Bob loves spreadsheets`,
       `[2026-04-10T10:01:00Z] [@<${USER_BOB}:Bob Jones> in slack:#<C1:general>:1234 | msg:1234.021] hi`,
@@ -535,9 +566,12 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     vi.mocked(runExtraction).mockResolvedValue({
       user_updates: {
         // Bob is in the author set, but the claim derives from ALICE's line.
-        [USER_BOB]: [{ action: 'add', section: 'Work Style', content: 'Loves spreadsheets', evidence: ['msg:1234.020'] }],
-        // And an update with no citations at all is equally invalid.
-        [USER_ALICE]: [{ action: 'add', section: 'Work Style', content: 'Uncited claim' }],
+        [USER_BOB]: [{ action: 'add', section: 'Deliverables', content: 'Loves spreadsheets', evidence: ['msg:1234.020'] }],
+        [USER_ALICE]: [
+          { action: 'add', section: 'Communication', content: 'Uncited claim' },
+          { action: 'add', section: 'Workflow', content: 'Unknown citation claim', evidence: ['msg:9999.999'] },
+          { action: 'add', section: 'Decision Making', content: 'Mixed citation claim', evidence: ['msg:1234.020', 'msg:1234.021'] },
+        ],
       },
       entity_updates: [],
       task_summary: 'Chat.',
@@ -550,11 +584,97 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
 
     expect(existsSync(join(usersDir, `${USER_BOB}.md`))).toBe(false);
     expect(existsSync(join(usersDir, `${USER_ALICE}.md`))).toBe(false);
+    const summary = await readFile(join(memoryDir, 'tasks', TASK_ID, 'summary.md'), 'utf-8');
+    expect(summary).toContain('_no durable learnings_');
+    expect(summary).not.toContain(`### users/${USER_ALICE}.md`);
+    expect(summary).not.toContain(`### users/${USER_BOB}.md`);
+    for (const rejected of ['Loves spreadsheets', 'Uncited claim', 'Unknown citation claim', 'Mixed citation claim']) {
+      expect(summary).not.toContain(rejected);
+    }
     const records = (await readFile(join(memoryDir, 'tasks', TASK_ID, 'telemetry.jsonl'), 'utf-8'))
       .trim().split('\n').map((l) => JSON.parse(l));
     const drops = records.filter((r) => r.kind === 'user-update-dropped');
-    expect(drops).toHaveLength(2);
-    expect(drops.map((d) => d.targetUser).sort()).toEqual([USER_ALICE, USER_BOB].sort());
+    expect(drops).toHaveLength(4);
+    expect(drops.filter((d) => d.targetUser === USER_ALICE)).toHaveLength(3);
+    expect(drops.filter((d) => d.targetUser === USER_BOB)).toHaveLength(1);
+  });
+
+  it('does not persist or summarize sanitizer-rejected and unmatched profile updates', async () => {
+    const original = [
+      '## Communication',
+      '- Prefers concise updates',
+      '',
+      '## Workflow',
+      '- Wants weekly checkpoints',
+      '',
+    ].join('\n');
+    await writeFile(join(usersDir, `${USER_DANA}.md`), original, 'utf-8');
+    vi.mocked(runExtraction).mockResolvedValue({
+      user_updates: {
+        [USER_DANA]: [
+          { action: 'add', section: 'Skills', content: 'Knows TypeScript', evidence: ['msg:1234.001'] },
+          {
+            action: 'update',
+            section: 'Workflow',
+            old: 'Prefers concise updates',
+            content: 'Prefers detailed updates',
+            evidence: ['msg:1234.001'],
+          },
+        ],
+      },
+      entity_updates: [],
+      task_summary: 'Discussed collaboration.',
+      activity_summary: 'Discussed collaboration',
+      domain: 'engineering',
+    });
+
+    handleTaskCompleted(TASK_ID);
+    await drain();
+
+    expect(await readFile(join(usersDir, `${USER_DANA}.md`), 'utf-8')).toBe(original);
+    const summary = await readFile(join(memoryDir, 'tasks', TASK_ID, 'summary.md'), 'utf-8');
+    expect(summary).toContain('_no durable learnings_');
+    expect(summary).not.toContain('Knows TypeScript');
+    expect(summary).not.toContain('Prefers detailed updates');
+    expect(summary).not.toContain(`### users/${USER_DANA}.md`);
+  });
+
+  it('does not load or permit collaboration-profile updates for a fallback identity', async () => {
+    const fallbackId = `cli:${TASK_ID}`;
+    const fallbackPath = join(usersDir, `cli__${TASK_ID}.md`);
+    const existing = '## Communication\n- Legacy fallback profile marker\n';
+    await writeFile(fallbackPath, existing, 'utf-8');
+    await writeFile(
+      join(sessionsDir, TASK_ID, 'shared', 'knowledge.log'),
+      '[2026-04-10T10:00:00Z] [pm-agent] [decision] Started from the CLI',
+      'utf-8',
+    );
+    vi.mocked(runExtraction).mockResolvedValue({
+      user_updates: {
+        [fallbackId]: [{
+          action: 'add',
+          section: 'Communication',
+          content: 'Fallback candidate must not persist',
+          evidence: ['msg:1.1'],
+        }],
+      },
+      entity_updates: [],
+      task_summary: 'CLI task.',
+      activity_summary: 'CLI task',
+      domain: 'engineering',
+    });
+
+    handleTaskCompleted(TASK_ID);
+    await drain();
+
+    const [input, allowed] = vi.mocked(runExtraction).mock.calls[0];
+    expect(input.collaborationProfiles).toBe('');
+    expect(Array.from(allowed as Set<string>)).toEqual([]);
+    expect(await readFile(fallbackPath, 'utf-8')).toBe(existing);
+    const summary = await readFile(join(memoryDir, 'tasks', TASK_ID, 'summary.md'), 'utf-8');
+    expect(summary).toContain('_no durable learnings_');
+    expect(summary).not.toContain('Fallback candidate must not persist');
+    expect(summary).not.toContain(`### users/${fallbackId}.md`);
   });
 
   it('mention-only users are NOT writable — allowedUserIds covers authors only', async () => {
@@ -566,7 +686,7 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
 
     vi.mocked(runExtraction).mockResolvedValue({
       user_updates: {
-        [USER_ALICE]: [{ action: 'add', section: 'Work Style', content: 'Likes lists', evidence: ['msg:1.1'] }],
+        [USER_ALICE]: [{ action: 'add', section: 'Deliverables', content: 'Likes lists', evidence: ['msg:1.1'] }],
       },
       entity_updates: [],
       task_summary: 'Deploy discussion.',
@@ -580,6 +700,44 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     const allowedSet = vi.mocked(runExtraction).mock.calls[0][1] as Set<string>;
     expect(Array.from(allowedSet)).toEqual([USER_ALICE]);
     expect(existsSync(join(usersDir, `${USER_BOB}.md`))).toBe(false);
+  });
+});
+
+// ============================================================================
+// isEvidenceValid unit tests
+// ============================================================================
+
+describe('isEvidenceValid(userId, update, msgAuthors)', () => {
+  const authors = new Map([
+    ['1.1', USER_ALICE],
+    ['1.2', USER_BOB],
+  ]);
+  const update = (evidence?: string[]) => ({
+    action: 'add' as const,
+    section: 'Communication',
+    content: 'Prefers concise updates',
+    ...(evidence !== undefined ? { evidence } : {}),
+  });
+
+  it('accepts one or more resolvable same-user evidence IDs', () => {
+    expect(isEvidenceValid(USER_ALICE, update(['msg:1.1']), authors)).toBe(true);
+    expect(isEvidenceValid(USER_ALICE, update(['msg:1.1', 'msg:1.1']), authors)).toBe(true);
+  });
+
+  it.each([
+    ['missing evidence', update()],
+    ['empty evidence', update([])],
+    ['unknown evidence', update(['msg:9.9'])],
+    ['other-author evidence', update(['msg:1.2'])],
+    ['mixed-author evidence', update(['msg:1.1', 'msg:1.2'])],
+    ['malformed evidence', update(['1.1'])],
+  ])('rejects %s', (_name, candidate) => {
+    expect(isEvidenceValid(USER_ALICE, candidate, authors)).toBe(false);
+  });
+
+  it('rejects fallback and non-author targets', () => {
+    expect(isEvidenceValid('cli:task-123', update(['msg:1.1']), authors)).toBe(false);
+    expect(isEvidenceValid(USER_DANA, update(['msg:1.1']), authors)).toBe(false);
   });
 });
 

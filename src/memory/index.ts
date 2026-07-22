@@ -66,8 +66,8 @@ async function drainPendingExtractions(): Promise<void> {
 }
 
 /**
- * Scan workdir/memory/users/ for filenames that are NOT raw Slack IDs and
- * NOT documented fallback identifiers. Log a warning per file. No file is
+ * Scan workdir/memory/users/ for profile filenames that are NOT raw Slack IDs
+ * or documented fallback identifiers. Log a warning per file. No file is
  * renamed or deleted — operators decide what to do with legacy data.
  */
 async function warnLegacyUserFiles(): Promise<void> {
@@ -85,7 +85,7 @@ async function warnLegacyUserFiles(): Promise<void> {
     // Reverse the colon-to-double-underscore normalisation for fallback IDs.
     const candidate = stem.replace(/^(cli|local)__/, '$1:');
     if (!isAllowedUserId(candidate)) {
-      logger.warn('memory', `legacy user file (non-Slack-ID name): users/${name} — read at extraction time, never written to by this version`);
+      logger.warn('memory', `legacy profile file (non-Slack-ID name): users/${name} — retained unchanged and ignored by profile extraction`);
     }
   }
 }

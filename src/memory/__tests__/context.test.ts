@@ -86,16 +86,17 @@ describe('memory context builder', () => {
       expect(result).not.toContain('<organizational_knowledge>');
     });
 
-    it('includes <user_preferences user_id="..."> block when user file exists', async () => {
+    it('includes <collaboration_profile user_id="..."> block when user file exists', async () => {
       await mkdir(usersDir, { recursive: true });
       const userContent = '## Communication\n- Prefers async\n';
       await writeFile(join(usersDir, 'U07DANA001.md'), userContent, 'utf-8');
 
       const result = await buildMemoryContext([{ userId: 'U07DANA001', displayName: 'Dana L' }]);
 
-      expect(result).toContain('<user_preferences user_id="U07DANA001"');
+      expect(result).toContain('<collaboration_profile user_id="U07DANA001"');
       expect(result).toContain('display_name="Dana L"');
-      expect(result).toContain('</user_preferences>');
+      expect(result).toContain('</collaboration_profile>');
+      expect(result).not.toContain('<user_preferences');
       expect(result).toContain('## Communication');
       expect(result).toContain('- Prefers async');
     });
@@ -106,7 +107,7 @@ describe('memory context builder', () => {
 
       const result = await buildMemoryContext([{ userId: 'U07DANA001', displayName: 'U07DANA001' }]);
 
-      expect(result).toContain('<user_preferences user_id="U07DANA001">');
+      expect(result).toContain('<collaboration_profile user_id="U07DANA001">');
       expect(result).not.toContain('display_name=');
     });
 
@@ -116,7 +117,7 @@ describe('memory context builder', () => {
 
       const result = await buildMemoryContext(['U07DANA001']);
 
-      expect(result).toContain('<user_preferences user_id="U07DANA001">');
+      expect(result).toContain('<collaboration_profile user_id="U07DANA001">');
     });
 
     it('includes <recent_activity> when the public activity index has content', async () => {
@@ -148,11 +149,11 @@ describe('memory context builder', () => {
       expect(result).toContain('task-two');
     });
 
-    it('skips users with no memory file (no user_preferences tag)', async () => {
+    it('skips users with no profile file (no collaboration_profile tag)', async () => {
       // Do not create any user file for U07UNKNOWN
       const result = await buildMemoryContext([{ userId: 'U07UNKNOWN', displayName: 'Unknown' }]);
 
-      expect(result).not.toContain('<user_preferences');
+      expect(result).not.toContain('<collaboration_profile');
     });
 
     it('returns empty string when all files are empty/missing', async () => {
@@ -171,9 +172,9 @@ describe('memory context builder', () => {
 
       const result = await buildMemoryContext([{ userId: 'U07DANA001', displayName: 'Dana' }]);
 
-      expect(result).toContain('<user_preferences user_id="U07DANA001"');
+      expect(result).toContain('<collaboration_profile user_id="U07DANA001"');
       expect(result).toContain('<recent_activity>');
-      expect(result).toContain('</user_preferences>\n\n<recent_activity>');
+      expect(result).toContain('</collaboration_profile>\n\n<recent_activity>');
     });
   });
 
@@ -190,7 +191,7 @@ describe('memory context builder', () => {
       expect(result).toContain('base prompt');
       expect(result).toContain('## Organizational Memory');
       expect(result).toContain('The following is what you know from previous tasks');
-      expect(result).toContain('<user_preferences user_id="U07DANA001"');
+      expect(result).toContain('<collaboration_profile user_id="U07DANA001"');
     });
 
     it('returns systemPrompt unchanged when memory is disabled', async () => {

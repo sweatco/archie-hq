@@ -63,7 +63,7 @@ function envInt(name: string, fallback: number, min = 1): number {
   return fallback;
 }
 
-/** Soft cap on total bullets in each user file before housekeeping triggers. */
+/** Soft cap on total bullets in each collaboration-profile file before housekeeping triggers. */
 export function getUserCap(): number { return envInt('ARCHIE_MEMORY_USER_CAP', 100); }
 /** Soft cap on bullets per section in any memory file. */
 export function getSectionCap(): number { return envInt('ARCHIE_MEMORY_SECTION_CAP', 30); }
@@ -177,7 +177,7 @@ export function isFallbackUserId(id: string): boolean {
   return FALLBACK_ID_RE.test(id);
 }
 
-/** True if `id` is either a Slack ID or a fallback identifier — accepted as a user-memory filename. */
+/** True if `id` is either a Slack ID or a legacy fallback identifier accepted as a profile filename. */
 export function isAllowedUserId(id: string): boolean {
   return isSlackUserId(id) || isFallbackUserId(id);
 }
@@ -204,7 +204,7 @@ export function isValidEntitySlug(slug: string): boolean {
 }
 
 /**
- * Per-user file: workdir/memory/users/<id>.md.
+ * Per-user collaboration-profile file: workdir/memory/users/<id>.md.
  *
  * `id` MUST be either a raw Slack user identifier (`U…`/`W…`/`B…`/`T…`)
  * or a fallback identifier (`cli:<sessionId>`, `local:<osUser>`).

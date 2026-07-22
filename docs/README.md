@@ -19,7 +19,7 @@ How the system works today. Each doc describes the actual implementation, verifi
 | [Web Research](architecture/web-research.md) | Research pipeline, multi-agent research tool |
 | [Security](architecture/security.md) | Threat model, defense layers, prompt injection defense |
 | [Secrets](architecture/secrets.md) | OAuth vault, encryption, secret handling |
-| [Memory Layer](architecture/memory.md) | Cross-task persistent knowledge: org facts, user preferences, recent activity |
+| [Memory Layer](architecture/memory.md) | Cross-task persistent knowledge: org facts, collaboration profiles, recent activity |
 
 ## Guides
 
