@@ -1,6 +1,6 @@
 # Memory Layer
 
-The memory layer gives Archie persistent cross-task knowledge: user preferences, recent activity, task summaries, and entity pages for durable subjects such as services, systems, integrations, concepts, and repositories. Memory reaches agents through prompt injection and three read-only tools. The subsystem lives under `src/memory/`, uses Markdown files only, and is gated by `ARCHIE_MEMORY`.
+The memory layer gives Archie persistent cross-task knowledge: user collaboration profiles, recent activity, task summaries, and entity pages for durable subjects such as services, systems, integrations, concepts, and repositories. Memory reaches agents through prompt injection and three read-only tools. The subsystem lives under `src/memory/`, uses Markdown files only, and is gated by `ARCHIE_MEMORY`.
 
 This document describes the implementation as built. Historical decisions live in [`docs/plans/20260719-memory-v2.md`](../plans/20260719-memory-v2.md); future work lives in [`docs/proposals/memory-v2-roadmap.md`](../proposals/memory-v2-roadmap.md).
 
@@ -16,7 +16,7 @@ Every task has one immutable `visibility` value:
 
 The task keeps the visibility assigned at creation. A follow-up in the same Slack thread continues the same task. A task cannot attach a second Slack thread, so it cannot bridge a public thread and a DM or private conversation.
 
-Only public tasks write memory. `processExtraction()` checks `metadata.visibility === 'public'` before it reads `knowledge.log` or invokes the extractor. Private tasks write no user preferences, entities, summaries, or activity rows. Private tasks can still consume organizational memory through the normal injection and read-tool paths.
+Only public tasks write memory. `processExtraction()` checks `metadata.visibility === 'public'` before it reads `knowledge.log` or invokes the extractor. Private tasks write no collaboration profiles, entities, summaries, or activity rows. Private tasks can still consume organizational memory through the normal injection and read-tool paths.
 
 The store is therefore public by construction. Summaries and activity rows carry no access stamps, reads need no per-artifact authorization checks, and raw task logs are not part of the cross-task memory corpus. `grep_task_log` does not exist.
 
@@ -24,14 +24,14 @@ Slack Connect public channels use the same public-memory behavior as ordinary pu
 
 ### One-time deployment cleanup
 
-This model removes provenance stamps from stored artifacts, so an existing store created under the former channel-level policy must not be reused as-is. Before deploying this change, snapshot the existing `workdir/memory/` directory, clear it, and let Archie recreate an empty store. This removes private/DM-derived user preferences and entities whose provenance cannot be reconstructed reliably. Rollback restores the snapshot together with the previous binary.
+This model removes provenance stamps from stored artifacts, so an existing store created under the former channel-level policy must not be reused as-is. Before deploying this change, snapshot the existing `workdir/memory/` directory, clear it, and let Archie recreate an empty store. This removes private/DM-derived collaboration profiles and entities whose provenance cannot be reconstructed reliably. Rollback restores the snapshot together with the previous binary.
 
 ## Architecture
 
 ```text
 task spawn
   ├─ extract author users from knowledge.log
-  ├─ inject their user preferences
+  ├─ inject their collaboration profiles
   ├─ inject recent public activity and the entity index
   └─ select and inject relevant entity pages
 
@@ -64,7 +64,7 @@ src/memory/
 ├── lifecycle.ts      public-task gate and serialized extraction pipeline
 ├── extractor.ts      one-turn extraction side-agent and response parser
 ├── sanitize.ts       untrusted-model-output validation
-├── store.ts          user-memory reads and serialized update semantics
+├── store.ts          collaboration-profile reads and serialized update semantics
 ├── activity.ts       five-column recent-activity table
 ├── entities.ts       entity parsing, resolution, and persistence
 ├── entity-index.ts   derived index and push selection
@@ -90,12 +90,12 @@ pending-extractions.md
 
 ## Read Path
 
-`src/agents/spawn.ts` extracts the current task's message authors from `knowledge.log`. Source-line authorship counts; a body mention does not. Redacted external authors are excluded. The resulting Slack IDs scope user memory for both injection and search.
+`src/agents/spawn.ts` extracts the current task's message authors from `knowledge.log`. Source-line authorship counts; a body mention does not. Redacted external authors are excluded. The resulting Slack IDs scope collaboration profiles for both injection and search.
 
 When `ARCHIE_MEMORY_INJECT=true`, `enrichPromptWithMemory()` can append:
 
 ```xml
-<user_preferences user_id="U07ABC123" display_name="Dana">…</user_preferences>
+<collaboration_profile user_id="U07ABC123" display_name="Dana">…</collaboration_profile>
 <recent_activity>…</recent_activity>
 <entity_index>…</entity_index>
 <entity slug="payment-service" type="service" scope="repo">…</entity>
@@ -107,7 +107,7 @@ When `ARCHIE_MEMORY_TOOLS=true`, every agent receives three read-only tools:
 
 | Tool | Reads | Bound |
 |---|---|---|
-| `search_memory(query[, max_results])` | active entities, current authors' user files, all task summaries, recent activity | 10 thin hits by default |
+| `search_memory(query[, max_results])` | active entities, current authors' collaboration-profile files, all task summaries, recent activity | 10 thin hits by default |
 | `read_entity(slug)` | one entity page; aliases resolve and archived pages are marked | about 8K characters |
 | `read_task_summary(taskId)` | one public task summary | about 8K characters |
 
@@ -120,20 +120,20 @@ Identifiers pass `paths.ts` guards before filesystem access. No tool mutates mem
 The public-task pipeline is:
 
 1. Load task metadata and stop immediately unless visibility is exactly `public`.
-2. Read the transcript and identify message authors, falling back to `cli:<taskId>` when no Slack author exists.
-3. Load every author's existing memory plus the entity index.
+2. Read the transcript and identify actual Slack message authors. When none exist, use `cli:<taskId>` only to label the task summary and activity row; the writable profile set remains empty.
+3. Load every writable Slack author's existing collaboration profile plus the entity index. Never load a `cli:`/`local:` fallback profile into the extractor.
 4. Run the Sonnet extraction side-agent with `maxTurns: 1`, no tools, and a minimal environment.
-5. Sanitize every update. User updates are accepted only for author IDs and must cite `msg:<ts>` source lines authored by that same user.
-6. Apply user updates and entity updates. Entity writes resolve aliases, enforce closed vocabularies, add `touched_by [[taskId]]`, and rebuild the index after changes.
-7. Write `tasks/<taskId>/summary.md`, append a recent-activity row, trim activity to 50 rows, and schedule housekeeping for exceeded soft caps.
+5. Sanitize every update. Profile updates are accepted only for Slack author IDs, require one or more resolvable `msg:<ts>` source lines all authored by that same user, and must declare one of the five allowed profile sections.
+6. Apply profile and entity updates. The profile store reports only sanitized candidates that actually changed the file; unmatched replacements are no-ops. Entity writes resolve aliases, enforce closed vocabularies, add `touched_by [[taskId]]`, and rebuild the index after changes.
+7. Replace raw profile candidates with the store-confirmed applied set before writing `tasks/<taskId>/summary.md`, then append a recent-activity row, trim activity to 50 rows, and schedule housekeeping for exceeded soft caps.
 
 Model output and transcript content are untrusted. Instruction-shaped content, secret-like values, malformed Markdown fields, invalid IDs, and invalid entity fields are rejected before persistence.
 
 ## Storage Formats
 
-### User memory
+### Collaboration profiles
 
-User files are keyed by raw Slack ID or a documented `cli:`/`local:` fallback. Display names are labels, never identifiers.
+Profile files remain at `users/<id>.md`; existing files are preserved. New profile writes are keyed only by raw Slack author ID. Existing `cli:`/`local:` fallback files remain valid legacy files for maintenance, but extraction neither loads nor updates them. Display names are labels, never identifiers.
 
 ```markdown
 ---
@@ -145,6 +145,8 @@ aliases: []
 ## Communication
 - Prefers concise Slack updates  <!-- touched: 2026-05-14 -->
 ```
+
+New adds and updates are limited to `Communication`, `Deliverables`, `Workflow`, `Decision Making`, and `Constraints`. They capture only durable collaboration context explicitly stated by the target user in a first-person message; general facts, skills, personality judgments, inferred behavior, and task-specific requests are excluded. Every update declares its section, and replacements search only inside that section. Legacy sections remain readable and can still be consolidated by housekeeping.
 
 ### Recent activity
 
@@ -160,7 +162,7 @@ Rows are newest first, keyed by task ID, and capped at 50.
 
 ### Task summary
 
-Task summaries contain ordinary metadata, channel links, participating users, a sanitized summary, applied memory updates, and related public tasks. There is no `access:` field and Slack links have no per-link visibility field.
+Task summaries contain ordinary metadata, channel links, participating users, a sanitized summary, successfully applied memory updates, and related public tasks. Evidence failures, sanitizer rejections, and unmatched profile replacements never appear in `## Memory Updates`; when no profile update was written and there are no entity or housekeeping updates, that section renders `_no durable learnings_`. There is no `access:` field and Slack links have no per-link visibility field.
 
 ### Entity pages
 
@@ -188,7 +190,7 @@ User bullets carry touched dates. Soft caps enqueue a consolidation side-agent o
 | `ARCHIE_MEMORY_INJECT` | `false` | Enables prompt injection. Extraction remains active when off. |
 | `ARCHIE_MEMORY_TOOLS` | `false` | Enables the three read-only tools independently of injection. |
 | `ARCHIE_MEMORY_HOUSEKEEPING` | `true` | Enables automatic and manual housekeeping. |
-| `ARCHIE_MEMORY_USER_CAP` | `100` | Soft cap on bullets per user file. |
+| `ARCHIE_MEMORY_USER_CAP` | `100` | Soft cap on bullets per collaboration-profile file. |
 | `ARCHIE_MEMORY_SECTION_CAP` | `30` | Soft cap on bullets per section. |
 | `ARCHIE_MEMORY_STALENESS_DAYS` | `180` | Age threshold for consolidation and entity archival. |
 | `ARCHIE_MEMORY_ENTITY_CAP` | `300` | Soft cap on entity pages. |
@@ -213,4 +215,4 @@ No database or external service cleanup is required.
 
 ## Testing
 
-Run `npx vitest run src/memory/__tests__/` or the whole suite with `npm test`. The lifecycle integration tests cover the public/private task boundary, Slack Connect public behavior, author-only user updates, entity writes, summaries, activity, and crash recovery. Tool tests cover the three-tool surface, public-store reads, author-scoped user search, identifier guards, result bounds, and telemetry. Slack client and action tests cover task visibility assignment and internal-only interactive mutations.
+Run `npx vitest run src/memory/__tests__/` or the whole suite with `npm test`. The lifecycle integration tests cover the public/private task boundary, Slack Connect public behavior, evidence-bound collaboration-profile updates, entity writes, applied-only summaries, activity, and crash recovery. Tool tests cover the three-tool surface, public-store reads, author-scoped profile search, identifier guards, result bounds, and telemetry. Slack client and action tests cover task visibility assignment and internal-only interactive mutations.

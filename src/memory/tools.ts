@@ -13,7 +13,7 @@
  * - Every identifier passes the existing `paths.ts` guards before any
  *   filesystem access; no hand-built paths.
  * - The store is public by construction: private tasks never write it. User
- *   files remain scoped to the calling task's message authors.
+ *   collaboration-profile files remain scoped to the calling task's message authors.
  * - Results are size-bounded: search returns thin ranked hits (identifier +
  *   one-liner), full pages only via explicit `read_entity`.
  * - Every invocation with a known task leaves a pull-sensor record
@@ -153,7 +153,7 @@ export function rankSearchHits(
   for (const u of users) {
     const score = overlap(q, tokenize(`${u.displayName} ${u.text}`));
     if (score > 0) {
-      // No pull tool reads user pages (push injection carries them), so the
+      // No pull tool reads collaboration-profile pages (push injection carries them), so the
       // hit itself must surface the matching content: best-matching bullet
       // line as the snippet, not just the display name.
       hits.push({ id: u.id, kind: 'user', summary: `${u.displayName}: ${bestMatchingLine(q, u.text)}`, score });
@@ -206,9 +206,9 @@ function renderHits(hits: SearchHit[]): string {
     (h, i) => `${i + 1}. [${h.kind}] ${h.id} — ${h.summary || '(no summary)'} (score ${h.score})`,
   );
   // Per-kind follow-up guidance: user hits have NO read tool (their content is
-  // in the snippet above; full preferences arrive via push injection), so
+  // in the snippet above; full collaboration profiles arrive via push injection), so
   // never point agents at read_entity for them — that's a guaranteed miss.
-  const followUps = ['Follow up: [entity] → read_entity(slug); [task-summary]/[activity] → read_task_summary(taskId); [user] → snippet above is the content (no read tool for user pages).'];
+  const followUps = ['Follow up: [entity] → read_entity(slug); [task-summary]/[activity] → read_task_summary(taskId); [user] → snippet above is the profile content (no read tool for profile pages).'];
   return [`${hits.length} result(s). ${followUps[0]}`, ...lines].join('\n');
 }
 
@@ -219,7 +219,7 @@ function renderHits(hits: SearchHit[]): string {
 /**
  * Build the three read tools for one spawn. Takes primitives, not Agent/Task,
  * so the memory module stays decoupled from core types; the caller passes the
- * spawn's taskId + agent id (pull sensor) and author user ids for user-memory
+ * spawn's taskId + agent id (pull sensor) and author user ids for profile
  * scoping. Exported for tests — the server
  * wrapper below is what production registers.
  */
@@ -228,7 +228,7 @@ export function buildMemoryTools(ctx: MemoryToolsCtx) {
 
   const searchMemory = tool(
     'search_memory',
-    'Search organizational memory (entity pages, your task\'s users\' preferences, task summaries, recent activity) by keywords. Results are scoped to what this task may read (org-derived content and this task\'s own artifacts). Returns ranked thin hits — follow up with read_entity / read_task_summary for full content.',
+    'Search organizational memory (entity pages, the current task authors\' collaboration profiles, task summaries, recent activity) by keywords. Results are scoped to what this task may read (org-derived content and author-scoped profiles for this task). Returns ranked thin hits — follow up with read_entity / read_task_summary for full content.',
     {
       query: z.string().describe('Keywords to search for (lexical match, not semantic)'),
       max_results: z.number().int().min(1).max(25).optional()

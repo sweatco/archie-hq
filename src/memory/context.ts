@@ -33,10 +33,10 @@ export interface MemorySelectors {
 /**
  * Build an XML-tagged memory context string from available memory artifacts.
  *
- * - per-user files → <user_preferences user_id="..." display_name="..."> blocks
+ * - per-user files → <collaboration_profile user_id="..." display_name="..."> blocks
  * - recent-activity.md → <recent_activity> block
  *
- * `users` is the set of AUTHOR users of the current task (a user's memory
+ * `users` is the set of AUTHOR users of the current task (a collaboration profile
  * follows the user — it is injected only where they actively participate); if
  * empty, no per-user blocks are emitted. The legacy string-array shape is also
  * accepted for callers that haven't been migrated yet.
@@ -49,7 +49,7 @@ export async function buildMemoryContext(
 ): Promise<string> {
   const blocks: string[] = [];
 
-  // Per-user preferences
+  // Per-user collaboration profiles
   const refs: UserRef[] = users.map((u) =>
     typeof u === 'string' ? { userId: u, displayName: u } : u
   );
@@ -62,7 +62,7 @@ export async function buildMemoryContext(
       continue;
     }
     if (userContent.trim()) {
-      blocks.push(renderUserPreferencesBlock(ref, userContent));
+      blocks.push(renderCollaborationProfileBlock(ref, userContent));
     }
   }
 
@@ -160,13 +160,13 @@ export function renderEntityBlock(rec: EntityRecord): string {
 }
 
 /**
- * Wrap a user memory file in its `<user_preferences ...>` block — the exact
+ * Wrap a user profile file in its `<collaboration_profile ...>` block — the exact
  * bytes injection produces. Exported for the same offline-tooling reason as
  * `renderEntityBlock`.
  */
-export function renderUserPreferencesBlock(ref: UserRef, content: string): string {
+export function renderCollaborationProfileBlock(ref: UserRef, content: string): string {
   const display = ref.displayName !== ref.userId ? ` display_name="${escapeAttr(ref.displayName)}"` : '';
-  return `<user_preferences user_id="${escapeAttr(ref.userId)}"${display}>\n${content.trimEnd()}\n</user_preferences>`;
+  return `<collaboration_profile user_id="${escapeAttr(ref.userId)}"${display}>\n${content.trimEnd()}\n</collaboration_profile>`;
 }
 
 /** Wrap recent-activity content in its `<recent_activity>` block (production bytes). */

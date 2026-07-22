@@ -11,9 +11,7 @@ import {
   isMemoryEnabled,
   getMemoryDir,
   getSummaryPath,
-  isAllowedUserId,
   isSlackUserId,
-  isFallbackUserId,
 } from './paths.js';
 import { readUser, applyUserUpdatesWithIdentity } from './store.js';
 import { runExtraction } from './extractor.js';
@@ -101,7 +99,7 @@ async function processExtraction(taskId: string): Promise<void> {
   }
 
   // The task boundary is the confidentiality boundary. Private tasks do not
-  // contribute user preferences, summaries, activity, or entities. Missing
+  // contribute collaboration profiles, summaries, activity, or entities. Missing
   // visibility belongs to legacy metadata and therefore fails closed.
   if (metadata.visibility !== 'public') {
     logger.system(`[memory] Extraction skipped for private task ${taskId}`);
@@ -114,33 +112,31 @@ async function processExtraction(taskId: string): Promise<void> {
     return;
   }
 
-  // Identify involved users — message AUTHORS only (source-line scan), never
-  // body @-mentions: being mentioned must not make a user's memory writable or
-  // link their identity to this task's artifacts. Deterministic fallback when
-  // no human authored anything (CLI / self-launched tasks).
-  let users = extractAuthorUsers(transcript);
-  if (users.length === 0) {
-    users = [resolveFallbackId(metadata)];
-  }
+  // Profile writability comes only from actual Slack message authors. A
+  // deterministic fallback still labels CLI/self-launched task artifacts, but
+  // fallback identities never load or write collaboration profiles.
+  const writableUsers = extractAuthorUsers(transcript);
+  const users = writableUsers.length > 0 ? writableUsers : [resolveFallbackId(metadata)];
 
-  // Load existing memory for ALL involved users in parallel.
+  // Load existing profiles only for writable Slack authors.
   const entityIndex = await readIndexMarkdown();
-  const userMemoryBlocks = await Promise.all(
-    users.map(async (u) => {
+  const collaborationProfileBlocks = await Promise.all(
+    writableUsers.map(async (u) => {
       const mem = await readUser(u.userId);
       return { user: u, memory: mem };
     })
   );
-  const userMemory = userMemoryBlocks
+  const collaborationProfiles = collaborationProfileBlocks
     .filter((b) => b.memory.trim())
     .map((b) => `## ${b.user.userId} (${b.user.displayName})\n${b.memory.trim()}`)
     .join('\n\n');
 
-  // Run extraction; constrain user_updates to the involved set.
-  const allowedUserIds = new Set(users.map((u) => u.userId));
+  // Run extraction; constrain user_updates to actual Slack authors. Passing an
+  // empty set is intentional for tasks without a Slack author.
+  const allowedUserIds = new Set(writableUsers.map((u) => u.userId));
   const result = await runExtraction(
     {
-      userMemory,
+      collaborationProfiles,
       entityIndex,
       taskId,
       participants: metadata.participants.join(', '),
@@ -157,15 +153,15 @@ async function processExtraction(taskId: string): Promise<void> {
     return;
   }
 
-  // Apply per-user updates. Use the identity-aware writer so first-touch
-  // user files get YAML frontmatter (slack_user_id + display_name + aliases).
-  // Own-statements enforcement is code-side: a Slack user's update is applied
-  // only when every cited `msg:<ts>` evidence id resolves to a transcript
-  // source line AUTHORED by that user (≥1 citation required); non-conforming
-  // updates are dropped with a telemetry record. Fallback ids (cli:/local:)
-  // are exempt — their transcripts carry no per-message authorship.
+  // Apply profile updates. Use the identity-aware writer so first-touch files
+  // get YAML frontmatter (slack_user_id + display_name + aliases).
+  // Own-statements enforcement is code-side: an update is applied only when
+  // every cited `msg:<ts>` evidence id resolves to a transcript source line
+  // authored by that Slack user (at least one citation is required). Fallback
+  // and other non-Slack identities fail closed.
   const housekeepingTargets = new Set<string>();
-  const displayNameById = new Map(users.map((u) => [u.userId, u.displayName]));
+  const appliedUserUpdates: Record<string, MemoryUpdate[]> = {};
+  const displayNameById = new Map(writableUsers.map((u) => [u.userId, u.displayName]));
   const msgAuthors = buildMsgAuthorMap(transcript);
   for (const [userId, updates] of Object.entries(result.user_updates)) {
     if (updates.length === 0) continue;
@@ -180,8 +176,11 @@ async function processExtraction(taskId: string): Promise<void> {
     }
     if (valid.length > 0) {
       const displayName = displayNameById.get(userId) ?? userId;
-      const userCapExceeded = await applyUserUpdatesWithIdentity(userId, displayName, valid);
-      if (userCapExceeded) housekeepingTargets.add(userId);
+      const applied = await applyUserUpdatesWithIdentity(userId, displayName, valid);
+      if (applied.appliedUpdates.length > 0) {
+        appliedUserUpdates[userId] = applied.appliedUpdates;
+      }
+      if (applied.capExceeded) housekeepingTargets.add(userId);
     }
   }
 
@@ -213,7 +212,11 @@ async function processExtraction(taskId: string): Promise<void> {
   if (related.length === 0) {
     related = selectRelatedTasks(result.activity_summary, result.domain, activityIndex, taskId);
   }
-  await writeSummary(taskId, metadata, result, users, activityIndex, related);
+  // Summaries expose only profile changes the store confirmed it wrote. Raw
+  // extractor candidates, sanitizer drops, and unmatched replacements never
+  // enter the public task-summary corpus.
+  const summaryResult: ExtractionResult = { ...result, user_updates: appliedUserUpdates };
+  await writeSummary(taskId, metadata, summaryResult, users, activityIndex, related);
 
   // Append to recent activity, then trim.
   const requestingUser = users[0]?.userId ?? 'cli';
@@ -271,19 +274,23 @@ export function buildMsgAuthorMap(transcript: string): Map<string, string> {
 }
 
 /**
- * Own-statements check for one user update: Slack users need ≥1 cited
- * `msg:<ts>` id, and every cited id must resolve to a line THEY authored.
- * Fallback ids (cli:/local:) are exempt (no per-message authorship exists).
+ * Own-statements check for one profile update: the target must be a Slack user,
+ * at least one `msg:<ts>` id is required, and every id must resolve to a line
+ * that target authored. Missing, malformed, unknown, mixed-author, and fallback
+ * evidence all fail closed.
  */
 export function isEvidenceValid(
   userId: string,
   update: MemoryUpdate,
   msgAuthors: ReadonlyMap<string, string>,
 ): boolean {
-  if (!isSlackUserId(userId)) return true;
-  const cited = (update.evidence ?? []).map((e) => e.replace(/^msg:/, '').trim()).filter(Boolean);
-  if (cited.length === 0) return false;
-  return cited.every((id) => msgAuthors.get(id) === userId);
+  if (!isSlackUserId(userId)) return false;
+  if (!Array.isArray(update.evidence) || update.evidence.length === 0) return false;
+  return update.evidence.every((e) => {
+    if (typeof e !== 'string') return false;
+    const match = /^msg:([^\s]+)$/.exec(e.trim());
+    return match !== null && msgAuthors.get(match[1]) === userId;
+  });
 }
 
 // ============================================================================
