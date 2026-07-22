@@ -41,6 +41,15 @@ Secrets are injected via the container's environment file plus the mounted
 - `ARCHIE_PUBLIC_URL` — public HTTPS URL for OAuth provider redirects (`${url}/oauth/callback`)
 - `CLAUDE_PATH` — absolute path to the Claude Code `cli.js` (set to `/usr/local/bin/claude` in container)
 - `PORT` — HTTP port (defaults to `3000`)
+- `ARCHIE_RUNNERS_CONFIG` — optional mounted Tart runner profile configuration; absence disables runners
+- `ORCHARD_SERVICE_ACCOUNT_NAME` / `ORCHARD_SERVICE_ACCOUNT_TOKEN` — required when runners are enabled
+- Profile-specific guest password variables named by each runner profile’s `passwordEnv`
+
+### Tart Runners
+
+Runner deployments require outbound HTTPS and WebSocket access from Archie to the Orchard controller and Apple Silicon workers registered with Orchard. Mount the operator-owned JSON file read-only into the container, set `ARCHIE_RUNNERS_CONFIG` to its container path, and keep Orchard and guest credentials only in the environment file. See [Tart Runners](../architecture/runners.md) for the schema and lifecycle.
+
+Start with one digest-pinned iOS profile, one allowed mobile agent, and `maxConcurrent: 1`. Verify provisioning, repository sync, `xcodebuild`, Simulator boot/install/launch, artifact collection, reconnectable long-running exec, VNC, task completion, and VM deletion before increasing capacity.
 
 ### Repository Access
 
@@ -133,8 +142,8 @@ On restart, the application automatically recovers in-progress tasks via `recove
 ### Health Check
 
 ```
-GET /health → 200 { status: "ok", activeTasks: N }
-GET /health → 503 { status: "shutting_down", activeTasks: N }   # while draining on SIGTERM/SIGINT
+GET /health → 200 { status: "ok", activeTasks: N, runners: { enabled, degraded, activeLeases } }
+GET /health → 503 { status: "shutting_down", activeTasks: N, runners: { enabled, degraded, activeLeases } }
 ```
 
 The handler is mounted directly in `src/index.ts`. External uptime monitoring should poll

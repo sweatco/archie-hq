@@ -17,6 +17,7 @@ import {
 import type { Agent } from '../agent.js';
 import type { Task } from '../../tasks/task.js';
 import type { AgentDef } from '../../types/agent.js';
+import { createRunnerToolsMcpServer, RUNNER_TOOL_NAMES } from '../../runners/tools.js';
 
 // ---- Mocks (same as pr-tools.test.ts) ----
 
@@ -190,6 +191,15 @@ describe('repo-tools MCP server contract', () => {
     const registered = getRegisteredToolNames(server).map((n) => `mcp__repo-tools__${n}`);
 
     expect(registered.sort()).toEqual(SPAWN_REPO_TOOLS.sort());
+  });
+});
+
+describe('runner-tools MCP server contract', () => {
+  it('registers exactly the generic runner tools', () => {
+    const server = createRunnerToolsMcpServer(makeAgent(), makeTask());
+    const registered = getRegisteredToolNames(server as ReturnType<typeof createRepoToolsMcpServer>)
+      .map((name) => `mcp__runner-tools__${name}`);
+    expect(registered.sort()).toEqual([...RUNNER_TOOL_NAMES].sort());
   });
 });
 

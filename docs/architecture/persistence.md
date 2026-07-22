@@ -37,6 +37,9 @@ ${ARCHIE_WORKDIR}/sessions/
         {file_id}-{filename}               # e.g. F08ABC123-screenshot.png
       artifacts/                           # cross-agent shared files (versioned)
         {basename}.{8hex}.{ext}            # content-hash-deduped per basename+ext
+        runners/{lease}/{collection}/      # validated artifacts collected from Tart VMs
+      runners.json                         # atomic task runner lease/session state
+      runners/{lease}/exec/{exec}.jsonl    # append-only remote command output
     agents/
       {agentKey}/                          # Per-agent workspace (PM and plugin agents)
         .claude/
