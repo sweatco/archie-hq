@@ -9,6 +9,7 @@ Archie (Autonomous Responsive and Collaborative Hyper Intelligent Employee) is a
 - **Direct agent communication**: Agents communicate peer-to-peer via `send_message_to_agent`, with messages delivered through simple in-memory queues in the task runtime.
 - **Mostly reactive, with triggers**: Archie acts in response to external events (Slack messages, GitHub webhooks). It can also act on **triggers** — persistent, user-approved "do Y when X happens" rules (a schedule, or a new channel message) that spawn a fresh task when they fire. Triggers are the one sanctioned form of self-initiated work; every trigger is created via an explicit Approve/Deny gate. See [triggers.md](./triggers.md).
 - **Interruptible**: Tasks can be stopped, resumed, and recovered. Edit mode requires explicit user approval via Slack buttons.
+- **Optional remote execution**: Allowed repository agents can run generic commands in task-scoped Tart VMs through Orchard while the agent process and canonical repository remain on Archie.
 
 ## System Architecture
 
@@ -203,6 +204,11 @@ src/
 │   ├── persistence.ts           # Disk I/O: metadata, knowledge log, debounced writes, lookups
 │   ├── recovery.ts              # Startup recovery, idle detection, progressive recovery
 │   └── title-generator.ts       # Haiku-authored task title pipeline
+├── runners/
+│   ├── manager.ts               # Lease policy, recovery, execution, transfers, cleanup
+│   ├── orchard-provider.ts      # Orchard REST and reconnectable WebSocket client
+│   ├── tools.ts                 # Generic repository-agent runner MCP tools
+│   └── store.ts                 # Atomic runner state and exec logs
 ├── system/
 │   ├── shutdown.ts              # Shutdown state (getIsShuttingDown / setShuttingDown)
 │   ├── logger.ts                # Unified color-coded logger

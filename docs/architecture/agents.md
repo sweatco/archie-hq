@@ -127,6 +127,8 @@ The pre-v30 singular shape (`metadata.archie.repo: {github, baseBranch}`) is sti
 | `create_branch` | `repo-tools` | Edit mode | Create and switch to a new branch |
 | `list_branches` | `repo-tools` | Always | List branches visited by this agent in the current task |
 
+When Tart runners are enabled, only repository agents present in an operator-defined profile’s `allowedAgents` receive `runner-tools`. These generic tools provision, sync, execute, poll, cancel, collect, open bounded VNC debugging, and release a task-scoped VM. PM, plugin, and unlisted dynamic agents never receive them. See [Tart Runners](runners.md).
+
 `WebSearch` and `WebFetch` are explicitly disallowed for repo agents. In read-only mode the write-side `repo-tools` entries above are added to `disallowedTools` in `spawn.ts`, and the OS-level sandbox + `createFilesystemGuardHooks` together block `Write`/`Edit` to the clone.
 
 **Multi-repo `github` arg**: every `repo-tools` entry that targets a specific repo accepts an optional `github: "org/repo"` argument. Omitted, the tool acts on the agent's primary repo. The handler validates the github is in the agent's declared `repos` list (via `resolveGithub`); local-clone tools additionally require the repo to have a local clone present (via `requireAttached`), which it always does post-spawn.

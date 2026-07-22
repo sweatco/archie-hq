@@ -43,6 +43,7 @@ import { initEventPersistence } from './tasks/persistence.js';
 import { initReminderScheduler } from './system/reminder-scheduler.js';
 import { initTriggerScheduler } from './system/trigger-scheduler.js';
 import { initMemory } from './memory/index.js';
+import { getRunnerHealth, initRunners, shutdownRunners } from './runners/index.js';
 
 /**
  * Application configuration
@@ -109,6 +110,7 @@ async function main(): Promise<void> {
     initRegistry();
     initEventPersistence();
     await initMemory();
+    await initRunners();
 
     // DEBUG: start the context-probe logging proxy (no-op when disabled). Must
     // be before any agent spawns so getProbeBaseUrl() is live at spawn time.
@@ -215,6 +217,7 @@ async function main(): Promise<void> {
       res.status(shutting ? 503 : 200).json({
         status: shutting ? 'shutting_down' : 'ok',
         activeTasks: getActiveTaskIds().length,
+        runners: getRunnerHealth(),
         // Checkout attestation for the e2e harness (docker-compose passes the
         // composing shell's GIT_SHA); null when not composed with one.
         git_sha: process.env.GIT_SHA || null,
@@ -279,6 +282,7 @@ async function main(): Promise<void> {
           logger.error('index', 'Error stopping Slack receiver', err);
         }
       }
+      shutdownRunners();
       server.close();
       logger.plain('Server closed');
       process.exit(0);

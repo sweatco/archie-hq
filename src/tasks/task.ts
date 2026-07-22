@@ -988,6 +988,11 @@ export class Task {
     this.metadata.status = 'completed';
     await this.save(true);
 
+    const { completeTaskRunners } = await import('../runners/index.js');
+    await completeTaskRunners(this.taskId).catch((error) => {
+      logger.warn('task', `Failed to release runners for ${this.taskId}: ${error}`);
+    });
+
     logger.system(`Task ${this.taskId} completed`);
     emitEvent('task:completed', this.taskId);
   }
