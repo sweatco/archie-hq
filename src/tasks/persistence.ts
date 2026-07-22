@@ -803,7 +803,12 @@ export async function appendUsageRecord(record: TaskUsageRecord): Promise<void> 
       const dir = resolve(getSharedPath(record.taskId));
       const abs = resolve(getUsageLogPath(record.taskId));
       const rel = relative(root, abs);
-      if (rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)) return;
+      const relDir = relative(root, dir);
+      if (
+        rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel) ||
+        relDir === '..' || relDir.startsWith('..' + sep) || isAbsolute(relDir)
+      )
+        return;
       if (!existsSync(dir)) return;
       await appendFile(abs, JSON.stringify(record) + '\n');
     } catch (err) {
