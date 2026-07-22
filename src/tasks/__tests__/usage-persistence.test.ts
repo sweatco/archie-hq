@@ -9,7 +9,7 @@
  * Tests therefore await the observable effect (vi.waitFor) rather than the call.
  */
 
-import { describe, it, expect, vi, afterAll } from 'vitest';
+import { describe, it, expect, vi, afterAll, beforeEach } from 'vitest';
 import { mkdir, readFile, rm } from 'fs/promises';
 import { existsSync } from 'fs';
 
@@ -50,9 +50,19 @@ import {
   getSharedPath,
   type TaskUsageRecord,
 } from '../persistence.js';
+// The mocked logger (see vi.mock above): logger.warn fires ONLY from the
+// writer's catch block, so it is the observable signal that distinguishes the
+// existsSync guard (no warn) from a swallowed write failure (warn).
+import { logger } from '../../system/logger.js';
 
 afterAll(async () => {
   await rm(SESSIONS_ROOT, { recursive: true, force: true });
+});
+
+// Reset call history between tests so one test's warn does not leak into
+// another's assertion (the logger mock is module-level and shared).
+beforeEach(() => {
+  vi.clearAllMocks();
 });
 
 function makeRecord(taskId: string): TaskUsageRecord {
@@ -93,7 +103,7 @@ describe('appendUsageRecord', () => {
     expect(parsed.query_nonce).toBe('nonce-abc-123');
   });
 
-  it('no-ops (no file, no throw) when shared/ is missing', async () => {
+  it('no-ops via the existsSync guard (no file, no failed-write log) when shared/ is missing', async () => {
     const taskId = 'task-usage-missing-shared';
     const sharedPath = getSharedPath(taskId);
     expect(existsSync(sharedPath)).toBe(false);
@@ -104,5 +114,33 @@ describe('appendUsageRecord', () => {
     await delay(100);
     expect(existsSync(getUsageLogPath(taskId))).toBe(false);
     expect(existsSync(sharedPath)).toBe(false);
+
+    // Pins the `if (!existsSync(dir)) return;` guard specifically. Without it,
+    // appendFile would be attempted against a path whose parent is missing,
+    // fail with ENOENT, and be caught+logged — so a warn here proves the guard
+    // was skipped. File-absence alone cannot distinguish these two paths (a
+    // failed write also leaves no file), which is why this assertion is needed.
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('swallows write failures (logs, resolves, never rejects) when shared/ exists but the target is unwritable', async () => {
+    const taskId = 'task-usage-write-fails';
+    await mkdir(getSharedPath(taskId), { recursive: true });
+    // Occupy the usage-log path with a directory so appendFile fails with
+    // EISDIR. shared/ exists, so the existsSync guard does NOT short-circuit —
+    // this drives the try/catch on a genuine write failure, the exact path
+    // spawn.ts reaches via the fire-and-forget `void appendUsageRecord(...)`.
+    await mkdir(getUsageLogPath(taskId), { recursive: true });
+
+    // Fire-and-forget: the returned promise resolves immediately regardless.
+    await expect(appendUsageRecord(makeRecord(taskId))).resolves.toBeUndefined();
+
+    // The queued write must be caught and logged rather than rethrown. Without
+    // the try/catch the queued promise would reject; because it is void-called
+    // at spawn.ts, that surfaces as an unhandled rejection under Node's default
+    // policy and crashes the process. logger.warn firing is the deterministic
+    // proof the catch ran (and that the promise settled instead of rejecting).
+    await vi.waitFor(() => expect(logger.warn).toHaveBeenCalledTimes(1));
+    expect(logger.warn).toHaveBeenCalledWith('usage', expect.stringContaining(taskId));
   });
 });
