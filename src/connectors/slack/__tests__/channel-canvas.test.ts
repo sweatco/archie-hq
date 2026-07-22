@@ -122,6 +122,74 @@ describe('ensureChannelCanvas — creator classification fails closed', () => {
   });
 });
 
+describe('ensureChannelCanvas — per-scan diagnostic logging', () => {
+  const scanLines = (): string[] =>
+    vi
+      .mocked(logger.debug)
+      .mock.calls.filter((c) => c[0] === 'channel-canvas' && String(c[1]).includes('evt=canvas_scan'))
+      .map((c) => String(c[1]));
+
+  beforeEach(() => {
+    tabs = [{ file_id: 'F_CANVAS' }];
+    fileInfos = { F_CANVAS: { title: 'Archie Context', user: 'U_X', updated: 5 } };
+    userInfoImpl = async () => ({ external: false });
+    storesByChannel = {};
+    savedStore = null;
+    vi.mocked(logger.debug).mockClear();
+  });
+
+  it('logs an adopt line carrying the channel id, file id and reason', async () => {
+    await ensureChannelCanvas(CHANNEL);
+
+    const line = scanLines().find((l) => l.includes('decision=adopt'));
+    expect(line).toBeDefined();
+    expect(line).toContain(`channel=${CHANNEL}`);
+    expect(line).toContain('file=F_CANVAS');
+    expect(line).toContain('reason=read_ok');
+    expect(line).toContain('creator_class=internal');
+  });
+
+  it('logs a title_mismatch reject with the raw title the gate actually saw', async () => {
+    fileInfos.F_CANVAS = { title: 'Weekly Notes', user: 'U_X', updated: 5 };
+
+    await ensureChannelCanvas(CHANNEL);
+
+    const line = scanLines().find((l) => l.includes('decision=reject'));
+    expect(line).toContain('reason=title_mismatch');
+    expect(line).toContain('file=F_CANVAS');
+    expect(line).toContain('title="Weekly Notes"');
+  });
+
+  it('logs an external_creator reject classification', async () => {
+    userInfoImpl = async () => ({ external: true });
+
+    await ensureChannelCanvas(CHANNEL);
+
+    const line = scanLines().find((l) => l.includes('decision=reject'));
+    expect(line).toContain('reason=external_creator');
+    expect(line).toContain('creator_class=external');
+  });
+
+  it('collapses newlines so the record stays a single physical line', async () => {
+    fileInfos.F_CANVAS = { title: 'Not Archie\nsecond line', user: 'U_X', updated: 5 };
+
+    await ensureChannelCanvas(CHANNEL);
+
+    const line = scanLines().find((l) => l.includes('title_mismatch'));
+    expect(line).toBeDefined();
+    expect(line).not.toContain('\n');
+    expect(line).toContain('title="Not Archie second line"');
+  });
+
+  it('logs a ttl skip when the store was checked within the TTL window', async () => {
+    storesByChannel[CHANNEL] = { canvases: [], announced: {}, checkedAt: Date.now() };
+
+    await ensureChannelCanvas(CHANNEL);
+
+    expect(scanLines().some((l) => l.includes('decision=skip') && l.includes('reason=ttl'))).toBe(true);
+  });
+});
+
 describe('collectCanvasFileAllowlist', () => {
   beforeEach(() => {
     storesByChannel = {};
