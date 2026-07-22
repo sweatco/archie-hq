@@ -1228,8 +1228,8 @@ function isSharedFromInfo(info: ConvInfoSnapshot): boolean {
 
 /**
  * Returns whether a channel is shared with one or more external Slack
- * workspaces (Slack Connect). Consults `conversations.info` for every id —
- * Slack Connect DMs are D-prefixed and ARE shared. Result is cached for
+ * workspaces (Slack Connect). D-prefixed ids are still checked because Slack
+ * Connect DMs may be externally shared. Result is cached for
  * 1 minute. On API failure, returns false (fail-open — this is advisory only).
  */
 export async function isChannelShared(channelId: string): Promise<boolean> {
