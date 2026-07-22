@@ -21,7 +21,7 @@
 import { createReadStream, existsSync } from 'fs';
 import { readdir } from 'fs/promises';
 import { createInterface } from 'readline';
-import { join, relative, sep } from 'path';
+import { join, relative, resolve, isAbsolute, sep } from 'path';
 import type { Dirent } from 'fs';
 import { SESSIONS_DIR } from '../system/workdir.js';
 
@@ -29,16 +29,21 @@ import { SESSIONS_DIR } from '../system/workdir.js';
 const SYNTHETIC_MODEL = '<synthetic>';
 
 /**
- * Validate a taskId against the canonical shape produced by `generateTaskId`
- * (`task-YYYYMMDD-HHMM-<base36 suffix>`): exactly one path segment, no slashes,
- * no `..`. taskId can arrive from the HTTP API (`/api/tasks/:id/...`), so it is
- * treated as untrusted; this guard cuts the taint before any path is built from
- * it. Kept local rather than imported from `persistence.ts` so this module's
- * test graph stays a single mock — it still imports only `SESSIONS_DIR`.
+ * taskId is untrusted — it can arrive from the HTTP API (`/api/tasks/:id/...`)
+ * and both data paths build a filesystem path from it, so an unchecked `../`
+ * id could escape `sessions/`. Every sink-building function below therefore
+ * carries TWO barriers written INLINE (deliberately not extracted to a helper —
+ * CodeQL's path-injection analysis does not recognise a regexp test hidden
+ * behind a boolean-returning helper as a sanitizer, so the literal guard must
+ * appear in the function that reaches the sink):
+ *
+ *   (a) an anchored allowlist matching the canonical `generateTaskId` shape
+ *       (`task-YYYYMMDD-HHMM-<base36 suffix>`, exactly one segment, no `/`, no
+ *       `..`) at entry — CodeQL's RegExpSanitizer barrier; and
+ *   (b) a resolve()+relative() containment check immediately before the sink —
+ *       the canonical CodeQL js/path-injection path-containment sanitizer —
+ *       after which the RESOLVED absolute path is what is handed to the sink.
  */
-function isSafeTaskId(id: string): boolean {
-  return /^task-\d{8}-\d{4}-[a-z0-9]+$/.test(id);
-}
 
 /** Token totals, keyed by the same field names the SDK reports. */
 export interface TokenTotals {
@@ -183,13 +188,23 @@ async function collectTokens(taskId: string): Promise<{
   const grand = zeroTokens();
   const agents = new Map<string, AgentTokens>();
 
-  // Path-injection guard: taskId is untrusted (can arrive from the HTTP API).
-  // Reject anything but the canonical single-segment id BEFORE building a path
-  // or touching the filesystem — an unsafe id yields empty totals and performs
-  // no join / existsSync / readdir / createReadStream below.
-  if (!isSafeTaskId(taskId)) return { grand, agents, transcriptTurns: 0 };
+  // (a) INLINE allowlist barrier: reject anything but the canonical single-
+  // segment id before a path is built — an unsafe id yields empty totals and
+  // performs no join / existsSync / readdir / createReadStream below.
+  if (!/^task-\d{8}-\d{4}-[a-z0-9]+$/.test(taskId)) {
+    return { grand, agents, transcriptTurns: 0 };
+  }
 
-  const claudeDir = join(SESSIONS_DIR, taskId, 'claude');
+  // (b) INLINE containment barrier: resolve the taskId-derived path and confirm
+  // it stays under SESSIONS_DIR before the readdir sink; hand the sink the
+  // resolved absolute path (`claudeDir`).
+  const root = resolve(SESSIONS_DIR);
+  const claudeDir = resolve(join(SESSIONS_DIR, taskId, 'claude'));
+  const claudeRel = relative(root, claudeDir);
+  if (claudeRel === '..' || claudeRel.startsWith('..' + sep) || isAbsolute(claudeRel)) {
+    return { grand, agents, transcriptTurns: 0 };
+  }
+
   const seenIds = new Set<string>();
   const turnIds = new Set<string>();
 
@@ -241,11 +256,19 @@ async function collectCost(
   taskId: string,
   reduce: NonceReducer,
 ): Promise<{ grand: number; perAgent: Map<string, number>; costRecordedTurns: number } | undefined> {
-  // Path-injection guard: reject an unsafe taskId before building a path or
-  // reading — an unsafe id reports no cost (undefined), like a missing file.
-  if (!isSafeTaskId(taskId)) return undefined;
+  // (a) INLINE allowlist barrier: reject an unsafe taskId before a path is
+  // built — an unsafe id reports no cost (undefined), like a missing file.
+  if (!/^task-\d{8}-\d{4}-[a-z0-9]+$/.test(taskId)) return undefined;
 
-  const usagePath = join(SESSIONS_DIR, taskId, 'shared', 'usage.jsonl');
+  // (b) INLINE containment barrier: resolve the taskId-derived path and confirm
+  // it stays under SESSIONS_DIR before the createReadStream sink; the resolved
+  // absolute path (`usagePath`) is what is streamed below.
+  const root = resolve(SESSIONS_DIR);
+  const usagePath = resolve(join(SESSIONS_DIR, taskId, 'shared', 'usage.jsonl'));
+  const usageRel = relative(root, usagePath);
+  if (usageRel === '..' || usageRel.startsWith('..' + sep) || isAbsolute(usageRel)) {
+    return undefined;
+  }
   if (!existsSync(usagePath)) return undefined;
 
   const records: UsageRecordLite[] = [];
