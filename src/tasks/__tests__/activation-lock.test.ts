@@ -42,6 +42,7 @@ const TaskCtor = Task as unknown as new (
 function metadata(taskId: string): TaskMetadata {
   return {
     task_id: taskId,
+    visibility: 'public',
     task_owner: 'pm-agent',
     participants: [],
     channels: {},

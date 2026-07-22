@@ -1,70 +1,45 @@
 # Memory Layer — CLAUDE.md
 
-`src/memory/` is a self-contained, ejectable subsystem that gives agents persistent
-cross-task knowledge: organizational facts, user preferences, a rolling activity index,
-and per-task summaries. Gated entirely by the `ARCHIE_MEMORY` flag.
+`src/memory/` is a self-contained, ejectable subsystem for persistent cross-task knowledge. It stores organizational entities, public task summaries and activity, and author-scoped collaboration profiles. The whole subsystem is gated by `ARCHIE_MEMORY`.
 
-## Read these before changing anything here
+## Read before changing this directory
 
-- **`docs/architecture/memory.md`** — the as-built design (source of truth): two-path
-  read/write flow, component map, storage formats, flags, and the 5-step ejection recipe.
-- **`openspec/specs/memory-layer/spec.md`** — the capability spec with numbered
-  requirements. The code must satisfy it.
+- `docs/architecture/memory.md` is the as-built source of truth.
+- `docs/plans/20260719-memory-v2.md` records how the layer reached its current shape.
+- `docs/proposals/memory-v2-roadmap.md` records future work and rollout gates.
 
-The root `CLAUDE.md` rules (logging, git workflow, dev setup) apply here too — this file
-only adds what's specific to the memory layer.
+The root `CLAUDE.md` rules also apply.
 
-## Keep the docs in sync — in the same change, not "later"
+## Keep docs and tests synchronized
 
-When you change behavior in `src/memory/`, update the docs in the **same commit**:
+Any behavior, flow, storage, or flag change must update `docs/architecture/memory.md` in the same change. Flag changes also update `.env.example`. Any logic change needs a corresponding test under `src/memory/__tests__/` or the relevant Slack/task test directory.
 
-- Flow / storage / behavior changed → update `docs/architecture/memory.md`.
-  **Delete the stale prose; don't bolt on a "now it also…" note.** A doc that contradicts
-  the code is worse than no doc.
-- What the layer *must* do changed → update `openspec/specs/memory-layer/spec.md`.
-- Added / renamed / removed a flag → update the flags table in `memory.md` **and**
-  `.env.example`.
-- Any logic change → add or update a test under `src/memory/__tests__/`.
+## Invariants
 
-If you're unsure whether a change is big enough to document: it is.
+- **Two core seams.** Core imports memory only in `src/index.ts` and `src/agents/spawn.ts`. Keep one-step ejection possible.
+- **Task visibility is the write boundary.** `processExtraction` must stop before reading a transcript unless `metadata.visibility === 'public'`. Missing or unrecognized visibility is private. Private tasks write no collaboration profiles, entities, summaries, or activity.
+- **The store is public by construction.** Store-backed summaries, entities, and activity need no per-artifact access stamps. Do not add cross-task raw-log reads; `knowledge.log` is extraction input, not public memory.
+- **Collaboration profiles follow Slack authorship.** Files remain under `users/<id>.md`, but only actual Slack message authors are writable. `cli:`/`local:` fallback files may remain as legacy data but are never loaded for extraction or updated. Body mentions grant nothing. Every candidate needs at least one resolvable `msg:<ts>` evidence ID, all authored by the target user; summaries show only updates the store confirmed it wrote.
+- **Profile sections are closed.** New adds and updates may target only `Communication`, `Deliverables`, `Workflow`, `Decision Making`, or `Constraints`. Updates replace bullets only inside their declared section. Existing legacy sections remain readable and housekeepable.
+- **Model output is untrusted.** Every extractor and housekeeper result passes through `sanitize.ts`. Side-agents remain one turn, tool-free, and minimally provisioned.
+- **Runtime writes are serialized.** Extraction and automatic housekeeping share the sequential queue in `lifecycle.ts`. Telemetry's single-line fail-safe appends are the only runtime exception. Manual housekeeping runs out of process and requires the server to be stopped.
+- **Read tools are store-only and read-only.** Every identifier passes `paths.ts` guards. Do not add mutation tools or a tool that opens task transcripts.
+- **Flag-safe.** With `ARCHIE_MEMORY=false`, initialization, injection, tools, and completion extraction no-op.
 
-## Invariants — don't break these
+## Load-bearing files
 
-- **One coupling, two seams.** `src/memory/` imports freely from core. Core imports *from*
-  memory in exactly two places — `initMemory()` in `src/index.ts` and
-  `enrichPromptWithMemory()` / `isMemoryEnabled()` in `src/agents/spawn.ts`. Keep it that
-  way; a third seam breaks one-step ejection.
-- **Stays ejectable.** No database, no migrations, no new external service, no memory types
-  leaking into core. If a change adds coupling or a new persistence backend, fix the
-  "Ejection" section of `memory.md` to match — or reconsider the change.
-- **Flag-safe.** With `ARCHIE_MEMORY=false`, `initMemory` / `enrichPromptWithMemory` /
-  `handleTaskCompleted` must all no-op. Never add a path that runs when the flag is off.
-- **Model output is untrusted.** Everything the extraction/housekeeping side-agents emit
-  passes through `sanitize.ts` before it touches a file; transcripts are a prompt-injection
-  surface. Don't persist extracted content unsanitized. The side-agents run `maxTurns: 1`,
-  `allowedTools: []`, minimal env — don't loosen that.
-- **User files are keyed by Slack ID** (`U…/W…/B…/T…`) or a `cli:` / `local:` fallback,
-  never by display name. Always go through the `paths.ts` guards (`getUserPath`,
-  `isAllowedUserId`); never hand-build a memory path.
-- **Writes are serialized.** Extraction and housekeeping share one sequential queue in
-  `lifecycle.ts`. Don't write `org.md` / `users/*.md` / `recent-activity.md` outside it —
-  concurrent task completions will corrupt the files.
-
-## Files that carry those invariants
-
-The full annotated map is in `memory.md` → "Components". The load-bearing ones:
-
-- `paths.ts` — path resolution, ID guards, flag accessors. Change flags/IDs here.
-- `sanitize.ts` — the trust boundary for all model output.
-- `lifecycle.ts` — the sequential write queue + extraction pipeline.
-- `store.ts` — `applyUpdate` add / update / skip-unmatched semantics.
-- Prompts live in `prompts/memory-extractor.md` and `prompts/memory-housekeeper.md`.
+- `paths.ts`: paths, ID guards, and flags.
+- `sanitize.ts`: trust boundary for model output.
+- `lifecycle.ts`: public-task gate, durable queue, and extraction pipeline.
+- `tools.ts`: three read-only public-store tools.
+- `store.ts`: collaboration-profile update semantics and applied-update reporting.
+- `prompts/memory-extractor.md` and `prompts/memory-housekeeper.md`: side-agent prompts.
 
 ## Verify
 
 ```bash
 npm run typecheck
-npx vitest run src/memory/__tests__/      # or: npm test  (whole suite)
+npx vitest run src/memory/__tests__/
 ```
 
-Manual consolidation pass: `npm run memory:housekeeping -- --target <org|all|U…>`.
+Manual consolidation, with the Archie service stopped: `npm run memory:housekeeping -- --target <all|entities|U…>`.

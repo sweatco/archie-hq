@@ -5,22 +5,22 @@
  * prevent concurrent writes from corrupting shared memory files.
  */
 
-import { writeFile, mkdir } from 'fs/promises';
-import { dirname } from 'path';
+import { writeFile, mkdir, readdir, rename, rmdir } from 'fs/promises';
+import { dirname, join } from 'path';
 import {
   isMemoryEnabled,
+  getMemoryDir,
   getSummaryPath,
-  isAllowedUserId,
   isSlackUserId,
-  isFallbackUserId,
 } from './paths.js';
 import { readUser, applyUserUpdatesWithIdentity } from './store.js';
 import { runExtraction } from './extractor.js';
-import { applyEntityUpdate, readEntity } from './entities.js';
+import { applyEntityUpdate, listEntities, readEntity } from './entities.js';
 import { rebuildIndex, readIndexMarkdown } from './entity-index.js';
 import { appendActivity, trimActivity, readActivity } from './activity.js';
 import { sanitizeTaskSummary } from './sanitize.js';
 import { enqueuePending, dequeuePending } from './pending-queue.js';
+import { recordUserUpdateDropped } from './telemetry.js';
 import { loadMetadata, readKnowledgeLog } from '../tasks/persistence.js';
 import { logger } from '../system/logger.js';
 import type { ExtractionResult, UserRef, ActivityEntry, MemoryUpdate } from './types.js';
@@ -98,36 +98,45 @@ async function processExtraction(taskId: string): Promise<void> {
     return;
   }
 
+  // The task boundary is the confidentiality boundary. Private tasks do not
+  // contribute collaboration profiles, summaries, activity, or entities. Missing
+  // visibility belongs to legacy metadata and therefore fails closed.
+  if (metadata.visibility !== 'public') {
+    logger.system(`[memory] Extraction skipped for private task ${taskId}`);
+    return;
+  }
+
   const transcript = await readKnowledgeLog(taskId);
   if (!transcript.trim()) {
     logger.warn('memory', `processExtraction: empty transcript for ${taskId}`);
     return;
   }
 
-  // Identify involved users — Slack mentions if present, else a deterministic fallback.
-  let users = extractUsernames(transcript);
-  if (users.length === 0) {
-    users = [resolveFallbackId(metadata)];
-  }
+  // Profile writability comes only from actual Slack message authors. A
+  // deterministic fallback still labels CLI/self-launched task artifacts, but
+  // fallback identities never load or write collaboration profiles.
+  const writableUsers = extractAuthorUsers(transcript);
+  const users = writableUsers.length > 0 ? writableUsers : [resolveFallbackId(metadata)];
 
-  // Load existing memory for ALL involved users in parallel.
+  // Load existing profiles only for writable Slack authors.
   const entityIndex = await readIndexMarkdown();
-  const userMemoryBlocks = await Promise.all(
-    users.map(async (u) => {
+  const collaborationProfileBlocks = await Promise.all(
+    writableUsers.map(async (u) => {
       const mem = await readUser(u.userId);
       return { user: u, memory: mem };
     })
   );
-  const userMemory = userMemoryBlocks
+  const collaborationProfiles = collaborationProfileBlocks
     .filter((b) => b.memory.trim())
     .map((b) => `## ${b.user.userId} (${b.user.displayName})\n${b.memory.trim()}`)
     .join('\n\n');
 
-  // Run extraction; constrain user_updates to the involved set.
-  const allowedUserIds = new Set(users.map((u) => u.userId));
+  // Run extraction; constrain user_updates to actual Slack authors. Passing an
+  // empty set is intentional for tasks without a Slack author.
+  const allowedUserIds = new Set(writableUsers.map((u) => u.userId));
   const result = await runExtraction(
     {
-      userMemory,
+      collaborationProfiles,
       entityIndex,
       taskId,
       participants: metadata.participants.join(', '),
@@ -144,23 +153,46 @@ async function processExtraction(taskId: string): Promise<void> {
     return;
   }
 
-  // Apply per-user updates. Use the identity-aware writer so first-touch
-  // user files get YAML frontmatter (slack_user_id + display_name + aliases).
+  // Apply profile updates. Use the identity-aware writer so first-touch files
+  // get YAML frontmatter (slack_user_id + display_name + aliases).
+  // Own-statements enforcement is code-side: an update is applied only when
+  // every cited `msg:<ts>` evidence id resolves to a transcript source line
+  // authored by that Slack user (at least one citation is required). Fallback
+  // and other non-Slack identities fail closed.
   const housekeepingTargets = new Set<string>();
-  const displayNameById = new Map(users.map((u) => [u.userId, u.displayName]));
+  const appliedUserUpdates: Record<string, MemoryUpdate[]> = {};
+  const displayNameById = new Map(writableUsers.map((u) => [u.userId, u.displayName]));
+  const msgAuthors = buildMsgAuthorMap(transcript);
   for (const [userId, updates] of Object.entries(result.user_updates)) {
-    if (updates.length > 0) {
+    if (updates.length === 0) continue;
+    const valid: MemoryUpdate[] = [];
+    for (const update of updates) {
+      if (isEvidenceValid(userId, update, msgAuthors)) {
+        valid.push(update);
+      } else {
+        logger.warn('memory', `dropped user update for ${userId} (evidence validation): ${JSON.stringify(update.evidence ?? [])}`);
+        await recordUserUpdateDropped(taskId, userId, update.evidence ?? []);
+      }
+    }
+    if (valid.length > 0) {
       const displayName = displayNameById.get(userId) ?? userId;
-      const userCapExceeded = await applyUserUpdatesWithIdentity(userId, displayName, updates);
-      if (userCapExceeded) housekeepingTargets.add(userId);
+      const applied = await applyUserUpdatesWithIdentity(userId, displayName, valid);
+      if (applied.appliedUpdates.length > 0) {
+        appliedUserUpdates[userId] = applied.appliedUpdates;
+      }
+      if (applied.capExceeded) housekeepingTargets.add(userId);
     }
   }
 
   // Apply entity updates (resolve-or-create; sanitizer runs inside entities.ts).
   // Each applied update auto-adds a `touched_by [[taskId]]` edge.
   const touchedEntities: string[] = [];
+  // Read the entity store once for the whole batch; applyEntityUpdate keeps this
+  // array coherent as it creates/updates entities (avoids an O(updates×files)
+  // re-read + re-parse on every update).
+  const entityRecords = await listEntities();
   for (const update of result.entity_updates) {
-    const applied = await applyEntityUpdate(update, taskId);
+    const applied = await applyEntityUpdate(update, taskId, { records: entityRecords });
     if (!applied) continue;
     touchedEntities.push(applied.slug);
     if (applied.capExceeded) housekeepingTargets.add('entities');
@@ -170,20 +202,9 @@ async function processExtraction(taskId: string): Promise<void> {
     await rebuildIndex();
   }
 
-  // Schedule housekeeping for any target that exceeded its soft cap. The pass
-  // is enqueued on the same extractionQueue so it serializes with extraction.
-  if (housekeepingTargets.size > 0) {
-    const { runHousekeeping } = await import('./housekeeping.js');
-    for (const target of housekeepingTargets) {
-      extractionQueue = extractionQueue.then(() =>
-        runHousekeeping(target).catch((err) =>
-          logger.warn('memory', `housekeeping for ${target} failed: ${err}`)
-        )
-      );
-    }
-  }
+  scheduleHousekeeping(housekeepingTargets);
 
-  // Write task summary (rich format) to the new memory-dir path.
+  // Write task summary (rich format) to the public memory store.
   const activityIndex = await readActivity();
   // Related tasks: prefer tasks that share an entity with this one; fall back
   // to lexical similarity over the activity index when there's no entity overlap.
@@ -191,7 +212,11 @@ async function processExtraction(taskId: string): Promise<void> {
   if (related.length === 0) {
     related = selectRelatedTasks(result.activity_summary, result.domain, activityIndex, taskId);
   }
-  await writeSummary(taskId, metadata, result, users, activityIndex, related);
+  // Summaries expose only profile changes the store confirmed it wrote. Raw
+  // extractor candidates, sanitizer drops, and unmatched replacements never
+  // enter the public task-summary corpus.
+  const summaryResult: ExtractionResult = { ...result, user_updates: appliedUserUpdates };
+  await writeSummary(taskId, metadata, summaryResult, users, activityIndex, related);
 
   // Append to recent activity, then trim.
   const requestingUser = users[0]?.userId ?? 'cli';
@@ -205,6 +230,67 @@ async function processExtraction(taskId: string): Promise<void> {
   await trimActivity(50);
 
   logger.system(`[memory] Extraction complete for ${taskId}`);
+}
+
+/**
+ * Schedule housekeeping for any target that exceeded its soft cap. The pass
+ * is enqueued on the same extractionQueue so it serializes with extraction.
+ */
+function scheduleHousekeeping(targets: ReadonlySet<string>): void {
+  if (targets.size === 0) return;
+  for (const target of targets) {
+    extractionQueue = extractionQueue.then(async () => {
+      const { runHousekeeping } = await import('./housekeeping.js');
+      await runHousekeeping(target).catch((err) =>
+        logger.warn('memory', `housekeeping for ${target} failed: ${err}`)
+      );
+    });
+  }
+}
+
+// ============================================================================
+// Evidence validation (own-statements enforcement)
+// ============================================================================
+
+// Source lines carry `… | msg:<ts>]` inside the bracketed source slot (see
+// appendSlackMessage / appendSlackEdit). Capture the author UID and msg id.
+// Both bracket orders: producers now emit `<@UID:Name>`, older logs carry
+// `@<UID:Name>` (see MENTION_RE below).
+const MSG_ID_LINE_RE = /^\[[^\]]*\] \[(?:@<|<@)([A-Z][A-Z0-9]{6,}):[^>]*>[^\]]*\bmsg:([^\s\]]+)\]/;
+
+/**
+ * Map `msg:<ts>` ids to their author user id, from transcript SOURCE lines
+ * only. Body framing (persistence.ts formatLogEntry) guarantees body-originated
+ * lines are indented and can never match a line-start-anchored source shape.
+ * An edit re-logs the same msg id — same author, so last-write is equivalent.
+ */
+export function buildMsgAuthorMap(transcript: string): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const line of transcript.split('\n')) {
+    const m = MSG_ID_LINE_RE.exec(line);
+    if (m) map.set(m[2], m[1]);
+  }
+  return map;
+}
+
+/**
+ * Own-statements check for one profile update: the target must be a Slack user,
+ * at least one `msg:<ts>` id is required, and every id must resolve to a line
+ * that target authored. Missing, malformed, unknown, mixed-author, and fallback
+ * evidence all fail closed.
+ */
+export function isEvidenceValid(
+  userId: string,
+  update: MemoryUpdate,
+  msgAuthors: ReadonlyMap<string, string>,
+): boolean {
+  if (!isSlackUserId(userId)) return false;
+  if (!Array.isArray(update.evidence) || update.evidence.length === 0) return false;
+  return update.evidence.every((e) => {
+    if (typeof e !== 'string') return false;
+    const match = /^msg:([^\s]+)$/.exec(e.trim());
+    return match !== null && msgAuthors.get(match[1]) === userId;
+  });
 }
 
 // ============================================================================
@@ -254,6 +340,35 @@ export function extractRequestingUser(transcript: string): UserRef | null {
   return refs[0] ?? null;
 }
 
+// Author lines in knowledge.log start with `[timestamp] [<@UID:Name> in …]`
+// (appendSlackMessage / appendSlackEdit source format; legacy logs use the
+// `[@<UID:Name> …]` bracket order, and the ` in <channel>` suffix is optional
+// to tolerate older logs). Only the source position counts — a body @-mention
+// never matches because it does not sit in the bracketed source slot at the
+// start of an entry line.
+const AUTHOR_LINE_RE = /^\[[^\]]*\] \[(?:@<|<@)([A-Z][A-Z0-9]{6,}):([^>]*)>(?: in [^\]]*)?\] /;
+
+/**
+ * Parse the users who actually AUTHORED messages in a transcript — the memory
+ * ownership set. Unlike `extractUsernames` (any mention anywhere), this scans
+ * only entry source lines, so merely being mentioned never makes a user's
+ * memory writable or links them to the task's artifacts. Redacted external
+ * authors (display name masked to `external` at ingest) are excluded.
+ */
+export function extractAuthorUsers(transcript: string): UserRef[] {
+  const seen = new Map<string, string>();
+  for (const line of transcript.split('\n')) {
+    const match = AUTHOR_LINE_RE.exec(line);
+    if (!match) continue;
+    const userId = match[1];
+    const displayName = match[2].trim();
+    if (!isSlackUserId(userId)) continue;
+    if (displayName === 'external') continue; // redacted external author
+    if (!seen.has(userId)) seen.set(userId, displayName || userId);
+  }
+  return Array.from(seen, ([userId, displayName]) => ({ userId, displayName }));
+}
+
 /**
  * Resolve a non-Slack fallback identifier for a task whose transcript has
  * no Slack mentions. Examples: `cli:<sessionId>`, `cli:<taskId>`. The
@@ -271,7 +386,44 @@ export function resolveFallbackId(metadata: TaskMetadata): UserRef {
 // ============================================================================
 
 /**
- * Write the per-task summary to workdir/memory/summaries/<taskId>.md.
+ * One-time layout migration: memory/summaries/<taskId>.md →
+ * memory/tasks/<taskId>/summary.md. Idempotent — a missing legacy dir is a
+ * no-op, non-matching files are left in place, and the legacy dir is removed
+ * only once emptied.
+ */
+export async function migrateLegacySummaries(): Promise<void> {
+  const legacyDir = join(getMemoryDir(), 'summaries');
+  let entries: string[];
+  try {
+    entries = await readdir(legacyDir);
+  } catch {
+    return;
+  }
+  let moved = 0;
+  for (const name of entries) {
+    if (!name.endsWith('.md')) continue;
+    let dest: string;
+    try {
+      dest = getSummaryPath(name.slice(0, -3)); // the real path guard decides validity
+    } catch {
+      continue;
+    }
+    await mkdir(dirname(dest), { recursive: true });
+    await rename(join(legacyDir, name), dest);
+    moved++;
+  }
+  if (moved > 0) {
+    logger.system(`[memory] migrated ${moved} task summaries to memory/tasks/<taskId>/summary.md`);
+  }
+  try {
+    await rmdir(legacyDir);
+  } catch {
+    // leftover non-summary files — leave the dir for the operator
+  }
+}
+
+/**
+ * Write the per-task summary to workdir/memory/tasks/<taskId>/summary.md.
  * Content schema is the minimum viable shape — the richer "Memory Updates"
  * and "Related Tasks" sections are added by a later pass (§8).
  */
@@ -294,7 +446,8 @@ async function writeSummary(
  * Build the content of summary.md.
  *
  * Schema:
- *   - YAML frontmatter (task_id, status, created_at, updated_at, domain, extraction_at, links, users)
+ *   - YAML frontmatter (task_id, status, created_at, updated_at, domain,
+ *     extraction_at, links, users)
  *   - `# Summary` — sanitized prose from the extractor
  *   - `## Memory Updates` — applied user + entity updates, plus any housekeeping
  *     notes; `_no durable learnings_` when all empty
@@ -375,6 +528,7 @@ function buildLinksBlock(metadata: TaskMetadata): LinksBlock {
       block.slack.push({
         channel_id: channel.channel_id,
         thread_id: channel.thread_id,
+        ...(channel.url ? { url: channel.url } : {}),
       });
     } else if (channel.type === 'github') {
       const repo = (channel as { repo?: string }).repo;
@@ -503,6 +657,11 @@ export function selectRelatedTasks(
  * highest first. Returns up to `limit` (default 5). Async — reads the touched
  * entity files. Returns [] when there is no entity overlap, so the caller can
  * fall back to lexical similarity.
+ *
+ * Only tasks present in the provided activity index are returned — callers
+ * pass the org-filtered view, so a co-touching DM/legacy task (row filtered
+ * or never written) is dropped entirely: its id and title must not surface in
+ * an org-readable summary.
  */
 export async function selectRelatedTasksByEntity(
   touchedSlugs: string[],
@@ -523,17 +682,19 @@ export async function selectRelatedTasksByEntity(
   if (byTask.size === 0) return [];
 
   const indexByTask = new Map(activityIndex.map((e) => [e.taskId, e]));
-  return Array.from(byTask.entries())
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, limit)
-    .map(([taskId]) =>
-      indexByTask.get(taskId) ?? { date: '', taskId, summary: 'related via shared entity', domain: '', user: '' }
-    );
+  const out: ActivityEntry[] = [];
+  for (const [taskId] of Array.from(byTask.entries()).sort((a, b) => b[1] - a[1])) {
+    const entry = indexByTask.get(taskId);
+    if (!entry) continue; // not in the authorized index — never reference it
+    out.push(entry);
+    if (out.length >= limit) break;
+  }
+  return out;
 }
 
 function renderRelatedTasks(related: ActivityEntry[]): string {
   if (related.length === 0) return '_no related tasks found_';
   return related
-    .map((e) => `- [${e.taskId}](./${e.taskId}.md) — ${e.summary}${e.domain ? ` (${e.domain})` : ''}`)
+    .map((e) => `- [${e.taskId}](../${e.taskId}/summary.md) — ${e.summary}${e.domain ? ` (${e.domain})` : ''}`)
     .join('\n');
 }

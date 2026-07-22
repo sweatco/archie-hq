@@ -360,7 +360,7 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
     return;
   }
 
-  const task = await Task.create();
+  const task = await Task.create('public');
   task.metadata.triggered_by = trigger.id;
 
   // Wire delivery. message context → reply in the triggering thread (linked as

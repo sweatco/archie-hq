@@ -5,7 +5,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, mkdir, writeFile } from 'fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, readFile } from 'fs/promises';
+import { existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -17,6 +18,8 @@ let memoryEnabled = true;
 let injectionEnabled = false;
 
 let entitiesDir: string;
+let tasksDir: string;
+let touchedByMax = 10;
 
 vi.mock('../paths.js', () => ({
   isMemoryEnabled: () => memoryEnabled,
@@ -33,6 +36,10 @@ vi.mock('../paths.js', () => ({
   getEntityPath: (slug: string) => join(entitiesDir, `${slug}.md`),
   getEntityCap: () => 300,
   getEntityInjectMax: () => 8,
+  getOrgInjectMax: () => 8,
+  getEntityObsCap: () => 30,
+  getTouchedByInjectMax: () => touchedByMax,
+  getTaskTelemetryPath: (taskId: string) => join(tasksDir, taskId, 'telemetry.jsonl'),
   isValidEntitySlug: (s: string) => /^[a-z0-9][a-z0-9-]{0,63}$/.test(s) && s !== 'index',
 }));
 
@@ -48,6 +55,8 @@ describe('memory context builder', () => {
     entitiesDir = join(tempDir, 'entities');
     memoryEnabled = true;
     injectionEnabled = false; // production default; positive tests opt in explicitly
+    touchedByMax = 10;
+    tasksDir = join(tempDir, 'tasks');
   });
 
   // Helper: write an entity file into the temp entities dir.
@@ -77,16 +86,17 @@ describe('memory context builder', () => {
       expect(result).not.toContain('<organizational_knowledge>');
     });
 
-    it('includes <user_preferences user_id="..."> block when user file exists', async () => {
+    it('includes <collaboration_profile user_id="..."> block when user file exists', async () => {
       await mkdir(usersDir, { recursive: true });
       const userContent = '## Communication\n- Prefers async\n';
       await writeFile(join(usersDir, 'U07DANA001.md'), userContent, 'utf-8');
 
       const result = await buildMemoryContext([{ userId: 'U07DANA001', displayName: 'Dana L' }]);
 
-      expect(result).toContain('<user_preferences user_id="U07DANA001"');
+      expect(result).toContain('<collaboration_profile user_id="U07DANA001"');
       expect(result).toContain('display_name="Dana L"');
-      expect(result).toContain('</user_preferences>');
+      expect(result).toContain('</collaboration_profile>');
+      expect(result).not.toContain('<user_preferences');
       expect(result).toContain('## Communication');
       expect(result).toContain('- Prefers async');
     });
@@ -97,7 +107,7 @@ describe('memory context builder', () => {
 
       const result = await buildMemoryContext([{ userId: 'U07DANA001', displayName: 'U07DANA001' }]);
 
-      expect(result).toContain('<user_preferences user_id="U07DANA001">');
+      expect(result).toContain('<collaboration_profile user_id="U07DANA001">');
       expect(result).not.toContain('display_name=');
     });
 
@@ -107,10 +117,10 @@ describe('memory context builder', () => {
 
       const result = await buildMemoryContext(['U07DANA001']);
 
-      expect(result).toContain('<user_preferences user_id="U07DANA001">');
+      expect(result).toContain('<collaboration_profile user_id="U07DANA001">');
     });
 
-    it('includes <recent_activity> block when recent-activity.md has content', async () => {
+    it('includes <recent_activity> when the public activity index has content', async () => {
       const activityContent = '# Recent Activity\n\n| Date | Task ID | Summary | Domain | User |\n|------|---------|---------|--------|------|\n| 2026-04-10 | task-001 | Fixed bug | engineering | dana |\n';
       await writeFile(activityPath, activityContent, 'utf-8');
 
@@ -121,11 +131,29 @@ describe('memory context builder', () => {
       expect(result).toContain('task-001');
     });
 
-    it('skips users with no memory file (no user_preferences tag)', async () => {
+    it('injects every row in the public activity index', async () => {
+      const activityContent = [
+        '# Recent Activity',
+        '',
+        '| Date | Task ID | Summary | Domain | User |',
+        '|------|---------|---------|--------|------|',
+        '| 2026-04-10 | task-one | First public task | engineering | dana |',
+        '| 2026-04-11 | task-two | Second public task | engineering | bob |',
+        '',
+      ].join('\n');
+      await writeFile(activityPath, activityContent, 'utf-8');
+
+      const result = await buildMemoryContext([], { taskId: 'task-two' });
+
+      expect(result).toContain('task-one');
+      expect(result).toContain('task-two');
+    });
+
+    it('skips users with no profile file (no collaboration_profile tag)', async () => {
       // Do not create any user file for U07UNKNOWN
       const result = await buildMemoryContext([{ userId: 'U07UNKNOWN', displayName: 'Unknown' }]);
 
-      expect(result).not.toContain('<user_preferences');
+      expect(result).not.toContain('<collaboration_profile');
     });
 
     it('returns empty string when all files are empty/missing', async () => {
@@ -144,9 +172,9 @@ describe('memory context builder', () => {
 
       const result = await buildMemoryContext([{ userId: 'U07DANA001', displayName: 'Dana' }]);
 
-      expect(result).toContain('<user_preferences user_id="U07DANA001"');
+      expect(result).toContain('<collaboration_profile user_id="U07DANA001"');
       expect(result).toContain('<recent_activity>');
-      expect(result).toContain('</user_preferences>\n\n<recent_activity>');
+      expect(result).toContain('</collaboration_profile>\n\n<recent_activity>');
     });
   });
 
@@ -163,7 +191,7 @@ describe('memory context builder', () => {
       expect(result).toContain('base prompt');
       expect(result).toContain('## Organizational Memory');
       expect(result).toContain('The following is what you know from previous tasks');
-      expect(result).toContain('<user_preferences user_id="U07DANA001"');
+      expect(result).toContain('<collaboration_profile user_id="U07DANA001"');
     });
 
     it('returns systemPrompt unchanged when memory is disabled', async () => {
@@ -234,15 +262,24 @@ describe('memory context builder', () => {
       expect(result).toContain('[[payment-service]]');
     });
 
-    it('selects repo-scoped and org-scoped entities for a repo agent', async () => {
+    it('selects repo-scoped and signal-bearing org-scoped entities for a repo agent', async () => {
       await writeEntity('payment-service', FM({ display_name: '"Payment Service"', scope: 'repo', repos: '[backend]' }));
       await writeEntity('stripe', FM({ display_name: '"Stripe"', type: 'integration', scope: 'org' }));
       await writeEntity('mobile-app', FM({ display_name: '"Mobile App"', scope: 'repo', repos: '[mobile]' }));
 
-      const result = await buildMemoryContext([], { repo: 'backend' });
-      expect(result).toContain('<entity slug="payment-service"');
-      expect(result).toContain('<entity slug="stripe"'); // scope:org always selected
+      const result = await buildMemoryContext([], { repo: 'backend', taskTitle: 'stripe webhooks failing' });
+      expect(result).toContain('<entity slug="payment-service"'); // repo match
+      expect(result).toContain('<entity slug="stripe"'); // scope:org with a title-token signal
       expect(result).not.toContain('<entity slug="mobile-app"'); // other repo, no signal
+    });
+
+    it('keeps a zero-signal org entity index-only (org budget is a ceiling)', async () => {
+      await writeEntity('launchdarkly', FM({ display_name: '"LaunchDarkly"', type: 'integration', scope: 'org' }));
+
+      const result = await buildMemoryContext([], { repo: 'backend', taskTitle: 'fix login flow' });
+      expect(result).toContain('<entity_index>');
+      expect(result).toContain('[[launchdarkly]]'); // discoverable via its index row
+      expect(result).not.toContain('<entity slug="launchdarkly"'); // no full page despite spare budget
     });
 
     it('pulls a one-hop linked entity even when not directly matched', async () => {
@@ -263,6 +300,149 @@ describe('memory context builder', () => {
       const result = await buildMemoryContext([], { repo: 'backend' });
       expect(result).not.toContain('<entity_index>');
       expect(result).not.toContain('<entity slug=');
+    });
+
+    it('renders only the newest touched_by edges, leaves other relations and the file intact', async () => {
+      touchedByMax = 2;
+      await writeEntity(
+        'payment-service',
+        FM({ display_name: '"Payment Service"', scope: 'repo', repos: '[backend]' }),
+        [],
+        [
+          '- depends_on [[postgres-prod]]',
+          '- touched_by [[task-001]]',
+          '- touched_by [[task-002]]',
+          '- touched_by [[task-003]]',
+          '- touched_by [[task-004]]',
+        ],
+      );
+
+      const result = await buildMemoryContext([], { repo: 'backend' });
+      const block = result.slice(result.indexOf('<entity slug="payment-service"'), result.indexOf('</entity>'));
+      expect(block).toContain('depends_on [[postgres-prod]]'); // other types uncapped
+      expect(block).not.toContain('touched_by [[task-001]]');
+      expect(block).not.toContain('touched_by [[task-002]]');
+      expect(block).toContain('touched_by [[task-003]]'); // newest two kept
+      expect(block).toContain('touched_by [[task-004]]');
+
+      // Render-time only: the stored page keeps the full history.
+      const onDisk = await readFile(join(entitiesDir, 'payment-service.md'), 'utf-8');
+      for (const t of ['task-001', 'task-002', 'task-003', 'task-004']) {
+        expect(onDisk).toContain(`touched_by [[${t}]]`);
+      }
+    });
+
+    it('renders no touched_by edges when the render cap is 0', async () => {
+      touchedByMax = 0;
+      await writeEntity(
+        'payment-service',
+        FM({ display_name: '"Payment Service"', scope: 'repo', repos: '[backend]' }),
+        [],
+        ['- depends_on [[postgres-prod]]', '- touched_by [[task-001]]'],
+      );
+
+      const result = await buildMemoryContext([], { repo: 'backend' });
+      expect(result).toContain('depends_on [[postgres-prod]]');
+      expect(result).not.toContain('touched_by');
+    });
+  });
+
+  describe('selection sensor (memory/tasks/<taskId>/telemetry.jsonl)', () => {
+    const TASK = 'task-20260702-0001-sensor';
+    const FM = (over: Record<string, string>) => ({
+      type: 'service',
+      display_name: '"Entity"',
+      aliases: '[]',
+      scope: 'org',
+      repos: '[]',
+      domain: 'engineering',
+      status: 'active',
+      ...over,
+    });
+    const sensorFile = () => join(tasksDir, TASK, 'telemetry.jsonl');
+
+    it('appends one parseable record per enriched spawn, with context, outcome, and cost', async () => {
+      injectionEnabled = true;
+      await writeEntity('payment-service', FM({ display_name: '"Payment Service"', scope: 'repo', repos: '[backend]' }));
+      await writeEntity('launchdarkly', FM({ display_name: '"LaunchDarkly"', type: 'integration' })); // zero-signal org
+      await mkdir(usersDir, { recursive: true });
+      await writeFile(join(usersDir, 'U07DANA001.md'), '- prefers async\n', 'utf-8');
+
+      await buildMemoryContext([{ userId: 'U07DANA001', displayName: 'Dana' }], {
+        repo: 'backend',
+        taskTitle: 'payment bug',
+        taskId: TASK,
+        agent: 'backend-agent',
+      });
+
+      const lines = (await readFile(sensorFile(), 'utf-8')).trim().split('\n');
+      expect(lines).toHaveLength(1);
+      const record = JSON.parse(lines[0]);
+      expect(record.v).toBe(1);
+      expect(record.ts).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect(record.taskId).toBe(TASK);
+      expect(record.agent).toBe('backend-agent');
+      expect(record.ctx).toEqual({
+        repo: 'backend',
+        plugin: null,
+        taskTitle: 'payment bug',
+        userIds: ['U07DANA001'],
+        // Display names ride along so harvested goldens replay the exact
+        // token-overlap signal the spawn scored with.
+        users: [{ id: 'U07DANA001', name: 'Dana' }],
+      });
+      expect(record.selected).toEqual([{ slug: 'payment-service', score: expect.any(Number), scope: 'repo' }]);
+      expect(record.dropped).toEqual([]);
+      expect(record.zeroSignalExcluded).toBe(1);
+      expect(record.candidates).toBe(1);
+      expect(record.budgets).toEqual({ org: 8, nonOrg: 8 });
+      expect(record.renderedTokensEst).toBeGreaterThan(0);
+    });
+
+    it('appends one line per enrichment — a zero-injection spawn still leaves a record', async () => {
+      injectionEnabled = true;
+      await buildMemoryContext([], { taskId: TASK, agent: 'pm' });
+      await buildMemoryContext([], { taskId: TASK, agent: 'backend-agent' });
+
+      const lines = (await readFile(sensorFile(), 'utf-8')).trim().split('\n');
+      expect(lines).toHaveLength(2);
+      const record = JSON.parse(lines[1]);
+      expect(record.agent).toBe('backend-agent');
+      expect(record.selected).toEqual([]);
+      expect(record.renderedTokensEst).toBe(0);
+    });
+
+    it('sensor failure never affects enrichment: unwritable telemetry path → warning, identical context', async () => {
+      injectionEnabled = true;
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      await writeFile(tasksDir, 'blocks mkdir', 'utf-8'); // a file where the tasks dir should be
+      await writeEntity('payment-service', FM({ display_name: '"Payment Service"', scope: 'repo', repos: '[backend]' }));
+
+      const withSensor = await buildMemoryContext([], { repo: 'backend', taskId: TASK });
+      const withoutSensor = await buildMemoryContext([], { repo: 'backend' });
+
+      expect(withSensor).toBe(withoutSensor);
+      expect(warn).toHaveBeenCalledWith('memory', expect.stringContaining('telemetry write failed'));
+      expect(existsSync(sensorFile())).toBe(false);
+      warn.mockRestore();
+    });
+
+    it('disabled injection writes nothing even when a taskId is supplied', async () => {
+      await writeEntity('payment-service', FM({ display_name: '"Payment Service"', scope: 'repo', repos: '[backend]' }));
+
+      await buildMemoryContext([], { repo: 'backend', taskId: TASK });
+
+      expect(existsSync(sensorFile())).toBe(false);
+    });
+
+    it('missing taskId: context still built, no record written', async () => {
+      injectionEnabled = true;
+      await writeEntity('payment-service', FM({ display_name: '"Payment Service"', scope: 'repo', repos: '[backend]' }));
+
+      const result = await buildMemoryContext([], { repo: 'backend', agent: 'backend-agent' });
+
+      expect(result).toContain('<entity slug="payment-service"');
+      expect(existsSync(tasksDir)).toBe(false);
     });
   });
 });

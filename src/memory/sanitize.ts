@@ -27,7 +27,6 @@ const TASK_SUMMARY_MAX = 2000;
 const ENTITY_SUMMARY_MAX = 200;
 const RELATION_TARGET_MAX = 80;
 
-const SECTION_RE = /^[A-Za-z0-9][A-Za-z0-9 \-]{0,40}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TASK_ID_RE = /^[A-Za-z0-9._\-:]+$/;
 const ACTIVITY_USER_RE = /^[A-Za-z0-9._\-:]+$/;
@@ -36,6 +35,17 @@ const ACTIVITY_USER_RE = /^[A-Za-z0-9._\-:]+$/;
 const RELATION_TARGET_RE = /^[A-Za-z0-9._:\-]+$/;
 
 const ALLOWED_DOMAINS = new Set(['engineering', 'marketing', 'operations', 'product', 'other']);
+
+/** Sections that may receive new collaboration-profile updates. */
+export const COLLABORATION_PROFILE_SECTIONS = [
+  'Communication',
+  'Deliverables',
+  'Workflow',
+  'Decision Making',
+  'Constraints',
+] as const;
+
+const ALLOWED_COLLABORATION_PROFILE_SECTIONS = new Set<string>(COLLABORATION_PROFILE_SECTIONS);
 
 // Closed entity vocabularies — see types.ts. Kept as string sets so model
 // output can be membership-tested before it becomes a type.
@@ -53,9 +63,9 @@ const ALLOWED_RELATION_TYPES = new Set([
 
 // ---- Field-level helpers ----
 
-/** Section header must be alphanumeric/spaces/hyphens. Strip leading `##` if present. */
+/** New profile updates may target only the closed collaboration-profile section set. */
 export function isAllowedSection(section: string): boolean {
-  return SECTION_RE.test(section);
+  return ALLOWED_COLLABORATION_PROFILE_SECTIONS.has(section);
 }
 
 /** Domain must be one of the spec-defined enum values. */
@@ -133,12 +143,9 @@ export function sanitizeUpdate(update: MemoryUpdate): MemoryUpdate | null {
   if (content === null) return null;
   if (looksLikeInstruction(content) || looksLikeSecret(content)) return null;
 
-  let section: string | undefined = undefined;
-  if (update.section !== undefined) {
-    const s = update.section.replace(/^#+\s*/, '').trim();
-    if (!isAllowedSection(s)) return null;
-    section = s;
-  }
+  if (typeof update.section !== 'string') return null;
+  const section = update.section.replace(/^#+\s*/, '').trim();
+  if (!isAllowedSection(section)) return null;
 
   let old: string | undefined = undefined;
   if (update.action === 'update') {
@@ -148,7 +155,7 @@ export function sanitizeUpdate(update: MemoryUpdate): MemoryUpdate | null {
     old = o;
   }
 
-  return { action: update.action, content, ...(section !== undefined && { section }), ...(old !== undefined && { old }) };
+  return { action: update.action, section, content, ...(old !== undefined && { old }) };
 }
 
 /**

@@ -41,6 +41,7 @@ const TASK_ID = 'task-20260625-1122-30wkzk-test';
 function metadata(): TaskMetadata {
   return {
     task_id: TASK_ID,
+    visibility: 'public',
     task_owner: 'backend-agent',
     participants: [],
     channels: {},

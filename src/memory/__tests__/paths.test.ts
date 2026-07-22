@@ -4,7 +4,13 @@
  * Validates user-identifier acceptance rules and filename construction.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+
+vi.mock('../../system/logger.js', () => ({
+  logger: { warn: vi.fn(), system: vi.fn(), debug: vi.fn(), info: vi.fn(), error: vi.fn() },
+}));
+
+import { isAbsolute, resolve, sep } from 'path';
 import {
   isSlackUserId,
   isFallbackUserId,
@@ -13,11 +19,79 @@ import {
   isValidEntitySlug,
   getUserPath,
   getSummaryPath,
+  getTasksDir,
+  getTaskTelemetryPath,
   getEntityPath,
   getEntityCap,
   getEntityInjectMax,
+  getOrgInjectMax,
+  getEntityObsCap,
+  getTouchedByInjectMax,
   isInjectionEnabled,
+  isMemoryToolsEnabled,
 } from '../paths.js';
+import { logger } from '../../system/logger.js';
+
+describe('envInt flag parsing (inject maxes / obs cap / touched_by render max)', () => {
+  const ORG = 'ARCHIE_MEMORY_ORG_INJECT_MAX';
+  const OBS = 'ARCHIE_MEMORY_ENTITY_OBS_CAP';
+  const NONORG = 'ARCHIE_MEMORY_ENTITY_INJECT_MAX';
+  const TOUCHED = 'ARCHIE_MEMORY_TOUCHED_BY_INJECT_MAX';
+  afterEach(() => {
+    delete process.env[ORG];
+    delete process.env[OBS];
+    delete process.env[NONORG];
+    delete process.env[TOUCHED];
+    vi.clearAllMocks();
+  });
+
+  it('uses defaults when unset (no warning)', () => {
+    expect(getOrgInjectMax()).toBe(8);
+    expect(getEntityObsCap()).toBe(30);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('honors ARCHIE_MEMORY_ORG_INJECT_MAX=0 (index-only), without warning', () => {
+    process.env[ORG] = '0';
+    expect(getOrgInjectMax()).toBe(0);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('honors ARCHIE_MEMORY_ENTITY_INJECT_MAX=0 (index-only for non-org pages), without warning', () => {
+    process.env[NONORG] = '0';
+    expect(getEntityInjectMax()).toBe(0);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('touched_by render max defaults to 10 and honors 0', () => {
+    expect(getTouchedByInjectMax()).toBe(10);
+    process.env[TOUCHED] = '0';
+    expect(getTouchedByInjectMax()).toBe(0);
+    expect(logger.warn).not.toHaveBeenCalled();
+    process.env[TOUCHED] = '-3';
+    expect(getTouchedByInjectMax()).toBe(10);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts a valid positive value', () => {
+    process.env[ORG] = '12';
+    expect(getOrgInjectMax()).toBe(12);
+  });
+
+  it('warns and falls back on a non-integer value like "8x"', () => {
+    process.env[ORG] = '8x';
+    expect(getOrgInjectMax()).toBe(8);
+    expect(logger.warn).toHaveBeenCalled();
+  });
+
+  it('warns and falls back when below the per-flag minimum', () => {
+    process.env[OBS] = '0'; // obs cap min is 1 → falls back to default 30
+    expect(getEntityObsCap()).toBe(30);
+    process.env[ORG] = '-1'; // org min is 0 → -1 still invalid
+    expect(getOrgInjectMax()).toBe(8);
+    expect(logger.warn).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe('isSlackUserId', () => {
   it.each([
@@ -105,12 +179,30 @@ describe('getUserPath', () => {
 });
 
 describe('getSummaryPath', () => {
-  it('places summaries under memory/summaries/', () => {
-    expect(getSummaryPath('task-20260410-1000-abc')).toMatch(/memory\/summaries\/task-20260410-1000-abc\.md$/);
+  it('places summaries under memory/tasks/<taskId>/', () => {
+    expect(getSummaryPath('task-20260410-1000-abc')).toMatch(/memory\/tasks\/task-20260410-1000-abc\/summary\.md$/);
   });
 
   it('throws on malformed taskId', () => {
     expect(() => getSummaryPath('has space')).toThrow(/invalid taskId/);
+  });
+});
+
+describe('getTaskTelemetryPath', () => {
+  it('places telemetry next to the task summary', () => {
+    expect(getTaskTelemetryPath('task-20260410-1000-abc')).toMatch(/memory\/tasks\/task-20260410-1000-abc\/telemetry\.jsonl$/);
+  });
+
+  it('throws on malformed or traversal taskIds', () => {
+    expect(() => getTaskTelemetryPath('../escape')).toThrow(/invalid taskId/);
+    expect(() => getTaskTelemetryPath('..')).toThrow(/invalid taskId/);
+    expect(() => getTaskTelemetryPath('.')).toThrow(/invalid taskId/);
+  });
+
+  it('resolves to an absolute path contained in the tasks root', () => {
+    const p = getTaskTelemetryPath('v1.2.3');
+    expect(isAbsolute(p)).toBe(true);
+    expect(p.startsWith(resolve(getTasksDir()) + sep)).toBe(true);
   });
 });
 
@@ -172,5 +264,40 @@ describe('isInjectionEnabled', () => {
   it.each(['false', '1', 'TRUE', 'True', 'yes', ''])('stays off for %j', (v) => {
     process.env[KEY] = v;
     expect(isInjectionEnabled()).toBe(false);
+  });
+});
+
+describe('isMemoryToolsEnabled', () => {
+  const KEY = 'ARCHIE_MEMORY_TOOLS';
+  const MASTER = 'ARCHIE_MEMORY';
+  const originalKey = process.env[KEY];
+  const originalMaster = process.env[MASTER];
+
+  afterEach(() => {
+    if (originalKey === undefined) delete process.env[KEY];
+    else process.env[KEY] = originalKey;
+    if (originalMaster === undefined) delete process.env[MASTER];
+    else process.env[MASTER] = originalMaster;
+  });
+
+  it('defaults to off when unset', () => {
+    delete process.env[KEY];
+    expect(isMemoryToolsEnabled()).toBe(false);
+  });
+
+  it('is on only for the exact string "true"', () => {
+    process.env[KEY] = 'true';
+    expect(isMemoryToolsEnabled()).toBe(true);
+  });
+
+  it.each(['false', '1', 'TRUE', 'yes', ''])('stays off for %j', (v) => {
+    process.env[KEY] = v;
+    expect(isMemoryToolsEnabled()).toBe(false);
+  });
+
+  it('master flag overrides: ARCHIE_MEMORY=false wins over ARCHIE_MEMORY_TOOLS=true', () => {
+    process.env[MASTER] = 'false';
+    process.env[KEY] = 'true';
+    expect(isMemoryToolsEnabled()).toBe(false);
   });
 });

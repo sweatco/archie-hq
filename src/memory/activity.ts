@@ -17,11 +17,11 @@ const HEADER = `# Recent Activity
 | Date | Task ID | Summary | Domain | User |
 |------|---------|---------|--------|------|`;
 
-const ROW_REGEX = /^\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|$/;
+const ROW_REGEX_5 = /^\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|$/;
 const SEPARATOR_REGEX = /^\|[-\s|]+\|$/;
 
 function parseRow(line: string): ActivityEntry | null {
-  const match = ROW_REGEX.exec(line);
+  const match = ROW_REGEX_5.exec(line);
   if (!match) return null;
 
   const date = match[1].trim();
@@ -44,6 +44,13 @@ function entryToRow(entry: ActivityEntry): string {
 function buildFile(entries: ActivityEntry[]): string {
   const rows = entries.map(entryToRow).join('\n');
   return rows.length > 0 ? `${HEADER}\n${rows}\n` : `${HEADER}\n`;
+}
+
+/**
+ * Render entries as the activity markdown table (header + rows).
+ */
+export function renderActivityTable(entries: ActivityEntry[]): string {
+  return buildFile(entries);
 }
 
 /** Parse the markdown table and return all data entries. */

@@ -6,7 +6,7 @@
  */
 
 import { mkdir, writeFile } from 'fs/promises';
-import type { AgentName, SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, BranchState } from '../types/task.js';
+import type { AgentName, SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, TaskVisibility, BranchState } from '../types/task.js';
 import { CLI_CHANNEL_KEY } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
 import { isPmAgent, isRepoAgent } from '../types/agent.js';
@@ -170,6 +170,9 @@ export class Task {
     // Ensure channels/default_channel exist on metadata
     metadata.channels ??= {};
     metadata.default_channel ??= null;
+    // Fail closed for legacy or malformed runtime metadata. Task.get persists
+    // the migration; this keeps direct construction defensive as well.
+    migrateTaskVisibility(metadata);
 
     this.metadata = metadata;
   }
@@ -181,7 +184,7 @@ export class Task {
    * Sets up disk structure (folders, metadata, skills).
    * Task is inert until sendMessage() is called, which activates it.
    */
-  static async create(): Promise<Task> {
+  static async create(visibility: TaskVisibility): Promise<Task> {
     await syncPlugins();
     await ensureSessionsDir();
 
@@ -199,6 +202,7 @@ export class Task {
     // It maps agentId → list of currently-attached repos.
     const metadata: TaskMetadata = {
       task_id: taskId,
+      visibility,
       task_owner: null,
       participants: [],
       channels: {},
@@ -245,7 +249,8 @@ export class Task {
     // (one object per repo agent, keyed by short name). Now it's
     // Record<agentId, AttachedRepo[]> (per-agent list of attached repos).
     // Detect by structural check: any value that's NOT an array is old shape.
-    const didMigrate = migrateRepositoriesShape(metadata);
+    const didMigrateRepositories = migrateRepositoriesShape(metadata);
+    const didMigrateVisibility = migrateTaskVisibility(metadata);
 
     // Persist the upgrade once. The migration is otherwise in-memory, so a
     // terminal task that's only ever *read* (webhook resolution, comment-dedup
@@ -253,12 +258,16 @@ export class Task {
     // next load hits the fast path — and it locks in the shape now, while every
     // repo agent still resolves (a later plugin removal would otherwise make the
     // migration drop those entries). Only an active task ever re-saves on its own.
-    if (didMigrate) {
+    if (didMigrateRepositories || didMigrateVisibility) {
       await writeFile(getMetadataPath(taskId), JSON.stringify(metadata, null, 2));
       // Log once, here — the migration persisted, so it won't run again. (The
       // migrate fn stays silent: it runs on every load, incl. read-only
       // findTaskByPRNumber, so logging there would spam.)
-      logger.system(`[migrate] task ${taskId}: upgraded repositories to v30 (${Object.keys(metadata.repositories).join(', ')})`);
+      const migrations = [
+        didMigrateRepositories ? `repositories to v30 (${Object.keys(metadata.repositories).join(', ')})` : null,
+        didMigrateVisibility ? 'visibility to private' : null,
+      ].filter(Boolean).join('; ');
+      logger.system(`[migrate] task ${taskId}: upgraded ${migrations}`);
     }
 
     const team = scanAgentDefs();
@@ -315,9 +324,8 @@ export class Task {
    * Append a Slack thread's messages to this task.
    * If the thread is new, links it as a channel and appends all messages.
    * If already linked, appends only messages newer than last_processed_ts.
-   * Returns whether a new thread was linked.
    */
-  async append(thread: SlackThread): Promise<{ linkedNewThread: boolean }> {
+  async append(thread: SlackThread): Promise<void> {
     const channelId = `slack:${thread.channel.id}:${thread.threadId}`;
     const existing = this.metadata.channels[channelId] as SlackChannel | undefined;
 
@@ -341,6 +349,10 @@ export class Task {
     };
 
     if (!existing) {
+      const linkedSlackThread = Object.values(this.metadata.channels).find((ch) => ch.type === 'slack');
+      if (linkedSlackThread) {
+        throw new Error(`Task ${this.taskId} is already bound to another Slack thread`);
+      }
       // New thread — link it as a channel and append all messages
       this.metadata.channels[channelId] = {
         type: 'slack',
@@ -357,7 +369,7 @@ export class Task {
       }
 
       this.debouncedSave();
-      return { linkedNewThread: true };
+      return;
     }
 
     // Existing thread — only append messages newer than last_processed_ts
@@ -369,7 +381,6 @@ export class Task {
 
     existing.last_processed_ts = thread.currentMessageTs;
     this.debouncedSave();
-    return { linkedNewThread: false };
   }
 
   /**
@@ -887,6 +898,10 @@ export class Task {
   linkSlackThread(channelId: string, threadTs: string, channelName: string): string {
     const key = `slack:${channelId}:${threadTs}`;
     if (!this.metadata.channels[key]) {
+      const linkedSlackThread = Object.values(this.metadata.channels).find((ch) => ch.type === 'slack');
+      if (linkedSlackThread) {
+        throw new Error(`Task ${this.taskId} is already bound to another Slack thread`);
+      }
       this.metadata.channels[key] = {
         type: 'slack',
         thread_id: threadTs,
@@ -1696,7 +1711,20 @@ export function getTask(taskId: string): Task | undefined {
   return activeTasks.get(taskId);
 }
 
-// ---- v30 migration ----
+// ---- Metadata migrations ----
+
+/**
+ * Normalize persisted task visibility. JSON-loaded metadata is not runtime
+ * type-checked, so both missing and unrecognized values fail closed to private.
+ * Returns whether metadata was changed so Task.get can persist the migration.
+ */
+export function migrateTaskVisibility(metadata: TaskMetadata): boolean {
+  if (metadata.visibility === 'public' || metadata.visibility === 'private') return false;
+  metadata.visibility = 'private';
+  return true;
+}
+
+// ---- v30 repository migration ----
 
 /**
  * Migrate `metadata.repositories` from the legacy `Record<repoKey, RepositoryInfo>`

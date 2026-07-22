@@ -4,6 +4,9 @@
 
 export type TaskStatus = 'in_progress' | 'stopped' | 'completed';
 
+/** Immutable confidentiality class assigned when a task is created. */
+export type TaskVisibility = 'public' | 'private';
+
 /** Core agent names - repo agents can be any string ending in '-agent' */
 export type CoreAgentName = 'pm-agent' | 'triage-agent';
 
@@ -74,6 +77,8 @@ export interface SlackThread {
   threadId: string;
   channel: { id: string; name: string };
   shared: boolean;
+  /** Visibility to assign if this thread creates a task. */
+  taskVisibility: TaskVisibility;
   messages: SlackThreadMessage[];  // bot messages excluded, EXCEPT the root when our bot started the thread
   currentMessageTs: string;
   /**
@@ -109,7 +114,7 @@ export interface SlackChannel extends ChannelBase {
    * indicator. Cleared when the ack is removed.
    */
   ack_ts?: string;
-  /** Snapshot of last observed Slack-Connect / shared-channel state for this channel. */
+  /** Snapshot of last observed Slack-Connect / shared-channel state for warnings. */
   isShared?: boolean;
   /** User IDs already shown the shared-channel ephemeral warning in this thread. */
   warnedUsers?: string[];
@@ -276,6 +281,8 @@ export interface AgentSessionState {
 
 export interface TaskMetadata {
   task_id: string;
+  /** Immutable task-level confidentiality class. Legacy tasks default to private. */
+  visibility: TaskVisibility;
   task_owner: AgentName | null;
   participants: AgentName[];
   channels: Record<string, Channel>;   // Active message delivery targets, keyed by channel ID
@@ -375,4 +382,3 @@ export interface SlackAttachment {
   /** Text content of the attachment (forwarded message body, unfurled preview, etc.). */
   text: string;
 }
-

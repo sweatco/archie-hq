@@ -8,8 +8,8 @@
  *   npm run memory:housekeeping -- --target entities
  *
  * Runs a one-shot Sonnet consolidation pass over the chosen target memory
- * file(s). Safe to invoke while the server is running — the pass serializes
- * via the same in-process extraction queue.
+ * file(s). Run only while the Archie service is stopped: this command is a
+ * separate process and cannot share the server's in-memory extraction queue.
  */
 
 import { runHousekeeping } from '../src/memory/housekeeping.js';

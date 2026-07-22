@@ -15,7 +15,7 @@ import type { ExtractionResult, MemoryUpdate, EntityUpdate } from './types.js';
 // ============================================================================
 
 export interface ExtractionInput {
-  userMemory: string;
+  collaborationProfiles: string;
   /** Current entity index (thin table) so the extractor resolves to existing entities. */
   entityIndex: string;
   taskId: string;
@@ -32,12 +32,14 @@ export interface ExtractionInput {
 
 const TRANSCRIPT_LIMIT = 100_000;
 
-const FALLBACK_TEMPLATE = `You are reviewing a completed task session. Extract learnings.
+const FALLBACK_TEMPLATE = `You are reviewing a completed task session. Extract durable collaboration-profile and entity learnings.
 
-Current user knowledge:
-<user_memory>
-{{USER_MEMORY}}
-</user_memory>
+COLLABORATION PROFILES: emit user_updates only for durable ways a user explicitly says, in their own first-person message, that others should collaborate with them. The only valid sections are Communication, Deliverables, Workflow, Decision Making, and Constraints. Reject general facts, skills, personality judgments, inferred behavior, and task-specific requests. Every update must cite one or more msg:<ts> evidence ids authored by that target user. Never emit user_updates for cli: or local: identities.
+
+Current collaboration profiles:
+<collaboration_profiles>
+{{COLLABORATION_PROFILES}}
+</collaboration_profiles>
 
 Known entities (resolve against these — do not duplicate):
 <entity_index>
@@ -83,7 +85,7 @@ export async function buildExtractionPrompt(input: ExtractionInput): Promise<str
   }
 
   const variables: Record<string, string> = {
-    USER_MEMORY: input.userMemory,
+    COLLABORATION_PROFILES: input.collaborationProfiles,
     ENTITY_INDEX: input.entityIndex,
     TASK_ID: input.taskId,
     PARTICIPANTS: input.participants,
@@ -111,13 +113,19 @@ export async function buildExtractionPrompt(input: ExtractionInput): Promise<str
 // ============================================================================
 
 /**
- * Validate a single update has required fields.
+ * Validate a single update has required fields. `evidence` is normalized to a
+ * string array here; whether the citations actually resolve to lines authored
+ * by the target user is enforced by the lifecycle (own-statements check).
  */
 function isValidUpdate(u: unknown): u is MemoryUpdate {
   if (typeof u !== 'object' || u === null) return false;
   const obj = u as Record<string, unknown>;
   if (obj.action !== 'add' && obj.action !== 'update') return false;
   if (typeof obj.content !== 'string') return false;
+  if (obj.evidence !== undefined) {
+    if (!Array.isArray(obj.evidence)) return false;
+    obj.evidence = obj.evidence.filter((e) => typeof e === 'string');
+  }
   return true;
 }
 

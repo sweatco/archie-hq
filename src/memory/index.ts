@@ -11,12 +11,12 @@
 import { mkdir, readdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { onEvent } from '../system/event-bus.js';
-import { handleTaskCompleted, rescheduleTaskCompleted } from './lifecycle.js';
+import { handleTaskCompleted, rescheduleTaskCompleted, migrateLegacySummaries } from './lifecycle.js';
 import { readPending } from './pending-queue.js';
 import {
   getMemoryDir,
   getUsersDir,
-  getSummariesDir,
+  getTasksDir,
   getEntitiesDir,
   isMemoryEnabled,
   isAllowedUserId,
@@ -35,9 +35,10 @@ export async function initMemory(): Promise<void> {
 
   await mkdir(getMemoryDir(), { recursive: true });
   await mkdir(getUsersDir(), { recursive: true });
-  await mkdir(getSummariesDir(), { recursive: true });
+  await mkdir(getTasksDir(), { recursive: true });
   await mkdir(getEntitiesDir(), { recursive: true });
 
+  await migrateLegacySummaries();
   await warnLegacyUserFiles();
   await drainPendingExtractions();
 
@@ -65,8 +66,8 @@ async function drainPendingExtractions(): Promise<void> {
 }
 
 /**
- * Scan workdir/memory/users/ for filenames that are NOT raw Slack IDs and
- * NOT documented fallback identifiers. Log a warning per file. No file is
+ * Scan workdir/memory/users/ for profile filenames that are NOT raw Slack IDs
+ * or documented fallback identifiers. Log a warning per file. No file is
  * renamed or deleted — operators decide what to do with legacy data.
  */
 async function warnLegacyUserFiles(): Promise<void> {
@@ -84,10 +85,12 @@ async function warnLegacyUserFiles(): Promise<void> {
     // Reverse the colon-to-double-underscore normalisation for fallback IDs.
     const candidate = stem.replace(/^(cli|local)__/, '$1:');
     if (!isAllowedUserId(candidate)) {
-      logger.warn('memory', `legacy user file (non-Slack-ID name): users/${name} — read at extraction time, never written to by this version`);
+      logger.warn('memory', `legacy profile file (non-Slack-ID name): users/${name} — retained unchanged and ignored by profile extraction`);
     }
   }
 }
 
 export { enrichPromptWithMemory } from './context.js';
-export { isMemoryEnabled, isInjectionEnabled } from './paths.js';
+export { isMemoryEnabled, isInjectionEnabled, isMemoryToolsEnabled } from './paths.js';
+export { createMemoryToolsMcpServer } from './tools.js';
+export type { MemoryToolsCtx } from './tools.js';

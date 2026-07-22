@@ -203,12 +203,12 @@ export async function loadMetadata(taskId: string): Promise<TaskMetadata | null>
   }
 }
 
-/**
- * Format a log entry for the shared knowledge log
- */
+/** Format a log entry so body continuations cannot mimic source lines. */
 function formatLogEntry(entry: LogEntry): string {
   const typeStr = entry.type ? ` [${entry.type}]` : '';
-  return `[${entry.timestamp}] [${entry.source}]${typeStr} ${entry.message}\n`;
+  const safeSource = entry.source.replace(/[\r\n]+/g, ' ');
+  const framedMessage = entry.message.replace(/\r\n?/g, '\n').replace(/\n/g, '\n  ');
+  return `[${entry.timestamp}] [${safeSource}]${typeStr} ${framedMessage}\n`;
 }
 
 /**

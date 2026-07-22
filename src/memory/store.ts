@@ -1,7 +1,7 @@
 /**
  * Memory Store
  *
- * Read/write operations for per-user memory files.
+ * Read/write operations for per-user collaboration-profile files.
  * All path resolution is delegated to paths.ts.
  */
 
@@ -20,7 +20,7 @@ import type { MemoryUpdate } from './types.js';
 
 // ---- Users ----
 
-/** Read a user's memory file — returns '' if it does not exist */
+/** Read a user's collaboration-profile file — returns '' if it does not exist. */
 export async function readUser(username: string): Promise<string> {
   try {
     return await readFile(getUserPath(username), 'utf-8');
@@ -30,36 +30,81 @@ export async function readUser(username: string): Promise<string> {
   }
 }
 
-/** Write a user's memory file, creating users/ directory if needed. */
+/** Write a user's collaboration-profile file, creating users/ if needed. */
 export async function writeUser(username: string, content: string): Promise<void> {
   await mkdir(getUsersDir(), { recursive: true });
   await writeFile(getUserPath(username), content, 'utf-8');
 }
 
+/** A loaded collaboration-profile file: guarded id, display name, raw content. */
+export interface UserFile {
+  id: string;
+  displayName: string;
+  text: string;
+}
+
+/** Outcome of applying a batch to an identity-aware collaboration profile. */
+export interface UserUpdatesApplyResult {
+  /** Sanitized updates whose application changed the file bytes. */
+  appliedUpdates: MemoryUpdate[];
+  /** Whether the resulting file exceeds a housekeeping soft cap. */
+  capExceeded: boolean;
+}
+
+/** Parse the quoted display_name frontmatter written by this store. */
+export function parseUserDisplayName(text: string): string {
+  const match = text.match(/^display_name:\s*"((?:\\"|[^"\n])*)"\s*$/m);
+  return match?.[1]?.replace(/\\"/g, '"').trim() ?? '';
+}
+
+/** Read only the requested user files, skipping missing or malformed entries. */
+export async function readUserFiles(userIds: readonly string[]): Promise<UserFile[]> {
+  const out: UserFile[] = [];
+  for (const id of new Set(userIds)) {
+    let text: string;
+    try {
+      text = await readUser(id);
+    } catch (error) {
+      logger.warn('memory', `readUserFiles: skipping invalid or unreadable user ${JSON.stringify(id)}: ${error}`);
+      continue;
+    }
+    if (!text) continue;
+    const displayName = parseUserDisplayName(text);
+    if (!displayName) {
+      logger.warn('memory', `readUserFiles: skipping ${id} with missing or malformed display_name`);
+      continue;
+    }
+    out.push({ id, displayName, text });
+  }
+  return out;
+}
+
 /**
- * Apply a list of updates to a user's memory file. If the file does not exist,
+ * Apply a list of updates to a user's profile file. If the file does not exist,
  * create it with YAML frontmatter (`slack_user_id`, `display_name`, `aliases`).
- * Returns true if a soft cap was exceeded after the write.
+ * Sanitizer rejections and unmatched updates are not written and are omitted
+ * from `appliedUpdates`. When nothing applies, the filesystem is left alone.
  */
 export async function applyUserUpdatesWithIdentity(
   userId: string,
   displayName: string,
   updates: MemoryUpdate[]
-): Promise<boolean> {
+): Promise<UserUpdatesApplyResult> {
   let content = await readUser(userId);
   if (!content) {
     content = buildUserFrontmatter(userId, displayName);
   }
-  for (const update of updates) {
-    const clean = sanitizeUpdate(update);
-    if (!clean) {
-      logger.warn('memory', `dropped user update for ${userId} (sanitizer rejected): ${JSON.stringify(update).slice(0, 120)}`);
-      continue;
-    }
-    content = applyUpdate(content, clean);
+  const applied = applySanitizedUpdates(content, userId, updates);
+  const capExceeded = softCapExceeded(applied.content, getUserCap(), getSectionCap());
+  if (applied.appliedUpdates.length === 0) {
+    return { appliedUpdates: [], capExceeded };
   }
+  content = applied.content;
   await writeUser(userId, content);
-  return softCapExceeded(content, getUserCap(), getSectionCap());
+  return {
+    appliedUpdates: applied.appliedUpdates,
+    capExceeded,
+  };
 }
 
 /**
@@ -104,18 +149,44 @@ function buildUserFrontmatter(userId: string, displayName: string): string {
 /**
  * Apply a single MemoryUpdate to a markdown string.
  *
- * - 'update' with old: find first line containing old text, replace with `- {content}`
+ * - 'update' with old: find the first matching bullet within the declared
+ *   section and replace it with `- {content}`
  * - 'add': find `## {section}` header and insert `- {content}` at end of that section
  *           If section missing, append it at end of file
  */
 export function applyUpdate(content: string, update: MemoryUpdate): string {
+  const section = update.section;
+  if (!section) {
+    logger.warn('memory', 'applyUpdate: action without `section` field — skipped');
+    return content;
+  }
+
   if (update.action === 'update') {
     if (update.old === undefined) {
       logger.warn('memory', 'applyUpdate: update action without `old` field — skipped');
       return content;
     }
     const lines = content.split('\n');
-    const idx = lines.findIndex((line) => stripLastTouched(line).includes(update.old!));
+    const headerPattern = `## ${section}`;
+    const headerIdx = lines.findIndex((line) => line.trim() === headerPattern);
+    if (headerIdx === -1) {
+      logger.warn('memory', `applyUpdate: section not found, skipped: ${section}`);
+      return content;
+    }
+    let sectionEnd = lines.length;
+    for (let i = headerIdx + 1; i < lines.length; i++) {
+      if (lines[i].startsWith('## ')) {
+        sectionEnd = i;
+        break;
+      }
+    }
+    const idx = lines.findIndex(
+      (line, i) =>
+        i > headerIdx &&
+        i < sectionEnd &&
+        /^-\s+/.test(line) &&
+        stripLastTouched(line).includes(update.old!),
+    );
     if (idx !== -1) {
       // Refresh the touched annotation on update
       lines[idx] = appendLastTouched(`- ${update.content}`);
@@ -127,14 +198,7 @@ export function applyUpdate(content: string, update: MemoryUpdate): string {
   }
 
   // 'add' action only — annotate with today's date
-  const section = update.section;
   const newItem = appendLastTouched(`- ${update.content}`);
-
-  if (!section) {
-    // No section — append to end
-    const trimmed = content.trimEnd();
-    return trimmed ? `${trimmed}\n${newItem}\n` : `${newItem}\n`;
-  }
 
   const lines = content.split('\n');
   const headerPattern = `## ${section}`;
@@ -167,16 +231,31 @@ export function applyUpdate(content: string, update: MemoryUpdate): string {
   return lines.join('\n');
 }
 
-/** Apply a list of updates to a user's memory file, sanitizing each before write. */
-export async function applyUserUpdates(username: string, updates: MemoryUpdate[]): Promise<void> {
-  let content = await readUser(username);
+function applySanitizedUpdates(
+  initialContent: string,
+  userId: string,
+  updates: MemoryUpdate[],
+): { content: string; appliedUpdates: MemoryUpdate[] } {
+  let content = initialContent;
+  const appliedUpdates: MemoryUpdate[] = [];
   for (const update of updates) {
     const clean = sanitizeUpdate(update);
     if (!clean) {
-      logger.warn('memory', `dropped user update for ${username} (sanitizer rejected): ${JSON.stringify(update).slice(0, 120)}`);
+      logger.warn('memory', `dropped user update for ${userId} (sanitizer rejected): ${JSON.stringify(update).slice(0, 120)}`);
       continue;
     }
-    content = applyUpdate(content, clean);
+    const next = applyUpdate(content, clean);
+    if (next === content) continue;
+    content = next;
+    appliedUpdates.push(clean);
   }
-  await writeUser(username, content);
+  return { content, appliedUpdates };
+}
+
+/** Apply a list of profile updates, sanitizing each before write. */
+export async function applyUserUpdates(username: string, updates: MemoryUpdate[]): Promise<void> {
+  const content = await readUser(username);
+  const applied = applySanitizedUpdates(content, username, updates);
+  if (applied.appliedUpdates.length === 0) return;
+  await writeUser(username, applied.content);
 }
