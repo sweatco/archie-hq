@@ -12,6 +12,7 @@
 import { describe, it, expect, vi, afterAll, beforeEach } from 'vitest';
 import { mkdir, readFile, rm } from 'fs/promises';
 import { existsSync } from 'fs';
+import { basename } from 'node:path';
 
 const SESSIONS_ROOT = await vi.hoisted(async () => {
   const { mkdtempSync } = await import('node:fs');
@@ -48,6 +49,8 @@ import {
   appendUsageRecord,
   getUsageLogPath,
   getSharedPath,
+  isSafeTaskId,
+  generateTaskId,
   type TaskUsageRecord,
 } from '../persistence.js';
 // The mocked logger (see vi.mock above): logger.warn fires ONLY from the
@@ -85,7 +88,7 @@ const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 describe('appendUsageRecord', () => {
   it('appends one JSON line (including query_nonce) to shared/usage.jsonl and round-trips', async () => {
-    const taskId = 'task-usage-write';
+    const taskId = 'task-20260101-1200-write';
     await mkdir(getSharedPath(taskId), { recursive: true });
 
     const record = makeRecord(taskId);
@@ -104,7 +107,7 @@ describe('appendUsageRecord', () => {
   });
 
   it('no-ops via the existsSync guard (no file, no failed-write log) when shared/ is missing', async () => {
-    const taskId = 'task-usage-missing-shared';
+    const taskId = 'task-20260101-1200-missing';
     const sharedPath = getSharedPath(taskId);
     expect(existsSync(sharedPath)).toBe(false);
 
@@ -124,7 +127,7 @@ describe('appendUsageRecord', () => {
   });
 
   it('swallows write failures (logs, resolves, never rejects) when shared/ exists but the target is unwritable', async () => {
-    const taskId = 'task-usage-write-fails';
+    const taskId = 'task-20260101-1200-wfails';
     await mkdir(getSharedPath(taskId), { recursive: true });
     // Occupy the usage-log path with a directory so appendFile fails with
     // EISDIR. shared/ exists, so the existsSync guard does NOT short-circuit —
@@ -142,5 +145,50 @@ describe('appendUsageRecord', () => {
     // proof the catch ran (and that the promise settled instead of rejecting).
     await vi.waitFor(() => expect(logger.warn).toHaveBeenCalledTimes(1));
     expect(logger.warn).toHaveBeenCalledWith('usage', expect.stringContaining(taskId));
+  });
+
+  // Path-injection guard: an unsafe taskId must be rejected before any path is
+  // built, so the writer never runs and nothing is written (CodeQL sink at
+  // getSharedPath/getUsageLogPath + appendFile).
+  it('no-ops on an unsafe (traversal) taskId: no write, no throw, no failed-write log', async () => {
+    // A real task whose shared/ EXISTS — so the existsSync guard alone would
+    // NOT stop the write; only the isSafeTaskId guard does.
+    const realTaskId = 'task-20260101-1200-real01';
+    await mkdir(getSharedPath(realTaskId), { recursive: true });
+
+    // Unsafe id that, unguarded, normalizes back to the real task's shared/ dir
+    // under SESSIONS_ROOT and would therefore pass existsSync and append there.
+    const unsafe = `../${basename(SESSIONS_ROOT)}/${realTaskId}`;
+
+    await expect(appendUsageRecord(makeRecord(unsafe))).resolves.toBeUndefined();
+
+    // Give the queued write ample time to (incorrectly) run, then assert nothing
+    // landed at the real task's usage log and no failed-write warn fired — the
+    // guard returned before the try/catch, so the writer never ran.
+    await delay(100);
+    expect(existsSync(getUsageLogPath(realTaskId))).toBe(false);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('isSafeTaskId', () => {
+  it('accepts the canonical generateTaskId shape, including a freshly generated id', () => {
+    expect(isSafeTaskId('task-20260101-1200-a3f9k2')).toBe(true);
+    expect(isSafeTaskId(generateTaskId())).toBe(true);
+  });
+
+  it('rejects empty, traversal, and non-canonical ids', () => {
+    for (const bad of [
+      '',
+      '../../etc',
+      'task-..%2f',
+      '../secret',
+      'task-20260101-1200-a3f9k2/../x',
+      'TASK-20260101-1200-abc',
+      'task-2026-1200-abc',
+      'foo',
+    ]) {
+      expect(isSafeTaskId(bad)).toBe(false);
+    }
   });
 });

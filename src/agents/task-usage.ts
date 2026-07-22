@@ -28,6 +28,18 @@ import { SESSIONS_DIR } from '../system/workdir.js';
 /** The SDK marks internal, non-billed assistant turns with this model. */
 const SYNTHETIC_MODEL = '<synthetic>';
 
+/**
+ * Validate a taskId against the canonical shape produced by `generateTaskId`
+ * (`task-YYYYMMDD-HHMM-<base36 suffix>`): exactly one path segment, no slashes,
+ * no `..`. taskId can arrive from the HTTP API (`/api/tasks/:id/...`), so it is
+ * treated as untrusted; this guard cuts the taint before any path is built from
+ * it. Kept local rather than imported from `persistence.ts` so this module's
+ * test graph stays a single mock — it still imports only `SESSIONS_DIR`.
+ */
+function isSafeTaskId(id: string): boolean {
+  return /^task-\d{8}-\d{4}-[a-z0-9]+$/.test(id);
+}
+
 /** Token totals, keyed by the same field names the SDK reports. */
 export interface TokenTotals {
   input_tokens: number;
@@ -168,9 +180,16 @@ async function collectTokens(taskId: string): Promise<{
   agents: Map<string, AgentTokens>;
   transcriptTurns: number;
 }> {
-  const claudeDir = join(SESSIONS_DIR, taskId, 'claude');
   const grand = zeroTokens();
   const agents = new Map<string, AgentTokens>();
+
+  // Path-injection guard: taskId is untrusted (can arrive from the HTTP API).
+  // Reject anything but the canonical single-segment id BEFORE building a path
+  // or touching the filesystem — an unsafe id yields empty totals and performs
+  // no join / existsSync / readdir / createReadStream below.
+  if (!isSafeTaskId(taskId)) return { grand, agents, transcriptTurns: 0 };
+
+  const claudeDir = join(SESSIONS_DIR, taskId, 'claude');
   const seenIds = new Set<string>();
   const turnIds = new Set<string>();
 
@@ -222,6 +241,10 @@ async function collectCost(
   taskId: string,
   reduce: NonceReducer,
 ): Promise<{ grand: number; perAgent: Map<string, number>; costRecordedTurns: number } | undefined> {
+  // Path-injection guard: reject an unsafe taskId before building a path or
+  // reading — an unsafe id reports no cost (undefined), like a missing file.
+  if (!isSafeTaskId(taskId)) return undefined;
+
   const usagePath = join(SESSIONS_DIR, taskId, 'shared', 'usage.jsonl');
   if (!existsSync(usagePath)) return undefined;
 
@@ -270,7 +293,9 @@ async function collectCost(
 /**
  * Aggregate token usage (always) and SDK-reported cost (when usage.jsonl
  * exists) for one task. Pure over the filesystem; never throws for missing
- * dirs/files (they yield an empty / cost-less report).
+ * dirs/files (they yield an empty / cost-less report). An unsafe taskId (not
+ * the canonical `generateTaskId` shape) is rejected before any filesystem
+ * access and yields the same empty report — no path is ever built from it.
  *
  * @param reduce - per-nonce cost reducer; the default is documented-cumulative
  *   (`reduceNonceCost`). Injectable so the delta-fork fallback is unit-testable.
