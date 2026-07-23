@@ -88,9 +88,6 @@ function formatExploreMessages(messages: SlackThreadMessage[]): string {
     .join('\n\n');
 }
 import { scheduleReminder, cancelReminder } from '../system/reminder-scheduler.js';
-import { readMcpServerUrl } from '../system/oauth/connect.js';
-import { classifyServerAuth } from '../system/oauth/discovery.js';
-import { AGENT_PROMPTS } from './prompts.js';
 import * as chrono from 'chrono-node';
 import { writeFile } from 'fs/promises';
 import { join } from 'path';
@@ -680,13 +677,10 @@ function createRequestEditModeTool(agent: Agent, task: Task) {
 function createRequestMcpAuthTool(agent: Agent, task: Task) {
   return tool(
     'request_mcp_auth',
-    'Request user authorization for an MCP server that needs per-user OAuth — one listed in your prompt as awaiting authorization, or one whose tools fail with authorization/permission errors (401, 403, insufficient scope). ' +
-    'Posts an "Authorize" button to the user; whoever clicks connects their own account and the task acts with that person\'s permissions. The task pauses until authorization completes, then resumes with access. ' +
-    'Without `channel`, the request posts to the task\'s default channel.',
+    'Escalate an OAuth MCP server from shared credentials to the 1:1 DM participant after an authorization or permission failure. Reuses existing personal credentials or sends an authorization link, then restarts with personal access.',
     {
       server: z.string().describe('MCP server name from the configuration (e.g. "notion")'),
       reason: z.string().optional().describe('One line on why access is needed — shown to the user on the authorization message'),
-      channel: z.string().optional().describe('Channel key of an existing linked thread to post the request to (e.g., "slack:C123:456.789"). Omit to use the task\'s default channel.'),
     },
     async (args) => {
       const agentName = agent.def.id as AgentName;
@@ -696,62 +690,37 @@ function createRequestMcpAuthTool(agent: Agent, task: Task) {
         return ok('Authorization request already sent — task is pausing until a user authorizes.');
       }
 
-      // Validate the server before posting so a typo surfaces as actionable
-      // feedback instead of a dead wall.
-      let serverUrl: string;
-      try {
-        serverUrl = readMcpServerUrl(args.server);
-      } catch (e) {
-        return err(e instanceof Error ? e.message : String(e));
-      }
-
-      if (args.channel) {
-        const ch = task.metadata.channels[args.channel];
-        if (!ch) {
-          return ok(`Channel ${args.channel} is not linked to this task. Open one with post_to_user(target.new_thread/new_dm), or omit channel to use the default.`);
-        }
-        if (ch.type !== 'slack') {
-          return ok(`Channel ${args.channel} is not a Slack channel (type: ${ch.type}).`);
-        }
-      }
-
-      // Fail fast on servers that don't advertise OAuth at all.
-      if ((await classifyServerAuth(serverUrl)) === 'open') {
-        return ok(
-          `Server "${args.server}" does not advertise OAuth (no 401 challenge with resource metadata) — ` +
-          `its tools should work without user authorization. If calls fail, the problem is elsewhere.`,
-        );
+      if (!task.getMcpOAuthUser()) {
+        return err('Per-user MCP OAuth is available only in a 1:1 Slack DM.');
       }
 
       logger.agentAction(agentName, 'Requesting MCP authorization', args.server);
       task.touch();
 
-      const outcome = await task.requestMcpAuth({
-        serverName: args.server,
-        agentId: agent.def.id,
-        reason: args.reason,
-        channelKey: args.channel,
-      });
+      let outcome: 'ready' | 'authorization_started';
+      try {
+        outcome = await task.requestMcpAuth(args.server, args.reason);
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e));
+      }
 
-      if (outcome.kind === 'already_bound' || outcome.kind === 'auto_bound') {
-        // Credentials are already available — no human in the loop needed. The
-        // agent's live MCP map can't change mid-turn, so pause and self-wake:
-        // the respawn picks the token up at injection time.
+      if (outcome === 'ready') {
         agent.deferTeardown(async () => {
           await task.stop();
-          await task.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+          await task.sendMessage(
+            `Use the DM user's personal credentials for MCP server "${args.server}" and continue the task.`,
+            'pm-agent',
+          );
         });
         return ok(
-          `"${args.server}" is authorized with <@${outcome.user}>'s credentials. ` +
-          `Pausing so the task can restart with access — do not start new work this turn.`,
+          `Existing personal authorization selected for "${args.server}". ` +
+          'The task will restart with the DM user\'s access.',
         );
       }
 
-      // Wall posted — same pause pattern as request_edit_mode; the OAuth
-      // callback wakes the task when a user completes authorization.
       agent.deferTeardown(() => task.stop());
       return ok(
-        `Authorization request posted for "${args.server}". Task paused until a user authorizes — ` +
+        `Authorization link sent for "${args.server}". Task paused until the DM user authorizes — ` +
         `you will be re-activated with access afterwards.`,
       );
     },

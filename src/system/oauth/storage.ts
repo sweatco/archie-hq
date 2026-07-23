@@ -141,10 +141,6 @@ export async function readOAuthClientSealed(record: OAuthClientRecord): Promise<
   return decryptJson<OAuthClientSealed>(record.envelope);
 }
 
-export async function hasOAuthClientRecord(serverName: string): Promise<boolean> {
-  return fileExists(clientPathFor(serverName));
-}
-
 // ---- Per-user token records -------------------------------------------------
 
 export async function writeUserOAuthRecord(
@@ -207,16 +203,6 @@ export async function listOAuthUserIds(): Promise<string[]> {
     throw err;
   }
   return entries.filter((name) => SLACK_USER_ID_PATTERN.test(name)).sort();
-}
-
-/** Slack user ids that hold a token record for one server. */
-export async function listServerUsers(serverName: string): Promise<string[]> {
-  assertSafeServerName(serverName);
-  const users: string[] = [];
-  for (const uid of await listOAuthUserIds()) {
-    if (await hasUserOAuthRecord(uid, serverName)) users.push(uid);
-  }
-  return users;
 }
 
 /**

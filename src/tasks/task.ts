@@ -51,24 +51,15 @@ import {
   getSharedPath,
   getMemoryPath,
   getKnowledgeLogPath,
-  readKnowledgeLog,
 } from './persistence.js';
-import { randomUUID } from 'crypto';
-import {
-  registerMcpAuthRequest,
-  completeMcpAuth,
-  pruneExpiredMcpAuthRequests,
-} from './mcp-auth.js';
-import { hasUserOAuthRecord } from '../system/oauth/storage.js';
+import { beginUserConnect, readMcpServerUrl } from '../system/oauth/connect.js';
 import { ensureFreshUserToken } from '../system/oauth/refresh.js';
-import { beginUserConnect } from '../system/oauth/connect.js';
-import { withKeyMutex } from '../system/secrets-vault.js';
 import { getIsShuttingDown } from '../system/shutdown.js';
 import { scheduleIdleCheck } from './recovery.js';
 import { scanAgentDefs, getAgentDef, getVisiblePeerIdsForSender, synthesizeDynamicAgentDef } from '../agents/registry.js';
 import type { AttachedRepo } from '../types/task.js';
 import { syncPlugins } from '../system/plugin-sync.js';
-import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, openDMChannel, getChannelInfo, getUserInfo, isExternalUser, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, isExternalUser, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
 import { basename } from 'path';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
@@ -358,6 +349,7 @@ export class Task {
         thread_id: thread.threadId,
         channel_id: thread.channel.id,
         channel_name: thread.channel.name,
+        dm_user_id: thread.channel.dmUserId,
         last_processed_ts: thread.currentMessageTs,
         url: buildThreadUrl(thread.channel.id, thread.threadId) ?? undefined,
       };
@@ -370,6 +362,8 @@ export class Task {
       this.debouncedSave();
       return { linkedNewThread: true };
     }
+
+    existing.dm_user_id ??= thread.channel.dmUserId;
 
     // Existing thread — only append messages newer than last_processed_ts
     const lastProcessedTs = existing.last_processed_ts;
@@ -557,7 +551,7 @@ export class Task {
   async postInteractiveToUser(
     text: string,
     blocks: unknown[],
-    approvalType: 'edit_mode' | 'research_budget' | 'merge' | 'trigger' | 'max_mode' | 'mcp_auth',
+    approvalType: 'edit_mode' | 'research_budget' | 'merge' | 'trigger' | 'max_mode',
     channelKey?: string,
     context?: { github: string; pr_number: number },
     ref?: string,
@@ -1526,237 +1520,65 @@ export class Task {
     await appendAgentFinding(this.taskId, 'system', `Trigger ${id} denied by user`, 'decision');
   }
 
-  // ---- Per-user MCP OAuth (authorization wall + acting-user bindings) ----
+  // ---- Per-user MCP OAuth --------------------------------------------------
 
-  /**
-   * Acting-user context for spawn-time OAuth injection: completed bindings
-   * plus the auto-bind candidate — the task's single human, whose stored token
-   * (if any) is bound without a wall so returning users never re-authorize.
-   */
-  async getMcpAuthInjectContext(): Promise<{
-    bindings: Record<string, string>;
-    autoBindUser: string | null;
-    onAutoBind: (serverName: string, slackUserId: string) => Promise<void>;
-  }> {
-    if (pruneExpiredMcpAuthRequests(this.metadata, Math.floor(Date.now() / 1000)).length > 0) {
-      this.debouncedSave();
-    }
-    return {
-      bindings: { ...(this.metadata.mcp_auth_bindings ?? {}) },
-      autoBindUser: await this.resolveSingleHumanParticipant(),
-      onAutoBind: async (serverName, slackUserId) => {
-        await this.recordMcpAuthAutoBind(serverName, slackUserId);
-      },
+  /** Per-user OAuth is available only to the task's default 1:1 Slack DM. */
+  getMcpOAuthUser(): string | null {
+    const key = this.metadata.default_channel;
+    const channel = key ? this.metadata.channels[key] : null;
+    if (channel?.type !== 'slack' || !channel.channel_id.startsWith('D')) return null;
+    return channel.dm_user_id ?? null;
+  }
+
+  /** Escalate one server to the DM participant, authorizing only when needed. */
+  async requestMcpAuth(serverName: string, reason?: string): Promise<'ready' | 'authorization_started'> {
+    const slackUserId = this.getMcpOAuthUser();
+    if (!slackUserId) throw new Error('Per-user MCP OAuth is available only in a 1:1 Slack DM.');
+    readMcpServerUrl(serverName);
+
+    const selectPersonalCredentials = async (): Promise<void> => {
+      const personalServers = new Set(this.metadata.mcp_personal_oauth ?? []);
+      personalServers.add(serverName);
+      this.metadata.mcp_personal_oauth = [...personalServers];
+      await this.save(true);
     };
-  }
 
-  /**
-   * The single human in this task, or null when there are several or none.
-   * Conservative on purpose: every distinct Slack user id in the knowledge log
-   * counts (authors and mentions alike), so any ambiguity yields null and the
-   * wall decides who the acting user is.
-   */
-  async resolveSingleHumanParticipant(): Promise<string | null> {
+    let personalCredentialsReady = true;
     try {
-      const log = await readKnowledgeLog(this.taskId);
-      const { extractUsernames } = await import('../memory/lifecycle.js');
-      const ids = [...new Set(
-        extractUsernames(log)
-          .map((ref) => ref.userId)
-          .filter((id) => /^[UW][A-Z0-9]+$/.test(id)),
-      )];
-      return ids.length === 1 ? ids[0] : null;
+      await ensureFreshUserToken(slackUserId, serverName);
     } catch {
-      return null;
-    }
-  }
-
-  private async recordMcpAuthAutoBind(serverName: string, slackUserId: string): Promise<void> {
-    this.metadata.mcp_auth_bindings = { ...(this.metadata.mcp_auth_bindings ?? {}), [serverName]: slackUserId };
-    this.debouncedSave();
-    const label = await this.mentionLabel(slackUserId);
-    await appendAgentFinding(
-      this.taskId, 'system',
-      `MCP server "${serverName}" auto-bound to ${label}'s existing credentials`,
-      'decision',
-    );
-  }
-
-  private async mentionLabel(slackUserId: string): Promise<string> {
-    const info = await getUserInfo(slackUserId).catch(() => null);
-    return `@<${slackUserId}:${info?.realName ?? slackUserId}>`;
-  }
-
-  /**
-   * An agent needs an OAuth MCP server it has no usable credentials for.
-   * Resolution order mirrors injection: existing usable binding → auto-bind a
-   * single human's stored token → post the authorization wall. The caller
-   * (the `request_mcp_auth` tool) parks the task; `completeMcpAuthRequest`
-   * wakes it when a user finishes authorizing.
-   */
-  async requestMcpAuth(input: {
-    serverName: string;
-    agentId: string;
-    reason?: string;
-    channelKey?: string;
-  }): Promise<{ kind: 'wall_posted' } | { kind: 'auto_bound' | 'already_bound'; user: string }> {
-    const { serverName, agentId, reason, channelKey } = input;
-    pruneExpiredMcpAuthRequests(this.metadata, Math.floor(Date.now() / 1000));
-
-    const bound = this.metadata.mcp_auth_bindings?.[serverName];
-    if (bound && (await hasUserOAuthRecord(bound, serverName))) {
-      return { kind: 'already_bound', user: bound };
+      personalCredentialsReady = false;
     }
 
-    if (!bound) {
-      const candidate = await this.resolveSingleHumanParticipant();
-      if (candidate && (await hasUserOAuthRecord(candidate, serverName))) {
-        try {
-          await ensureFreshUserToken(candidate, serverName);
-          await this.recordMcpAuthAutoBind(serverName, candidate);
-          return { kind: 'auto_bound', user: candidate };
-        } catch {
-          // Stored token unusable — fall through to the wall.
-        }
-      }
+    if (personalCredentialsReady) {
+      await selectPersonalCredentials();
+      await appendAgentFinding(
+        this.taskId,
+        'system',
+        `MCP server "${serverName}" escalated to the DM user's existing credentials`,
+        'decision',
+      );
+      return 'ready';
     }
 
-    const authRequestId = randomUUID();
-    registerMcpAuthRequest(this.metadata, authRequestId, {
-      server: serverName,
-      agent_id: agentId,
-      channel_key: channelKey ?? this.metadata.default_channel ?? undefined,
-      created_at: Math.floor(Date.now() / 1000),
+    const { authorizeUrl } = await beginUserConnect({
+      serverName,
+      slackUserId,
+      taskId: this.taskId,
     });
-    this.debouncedSave();
+    await selectPersonalCredentials();
     await appendAgentFinding(
-      this.taskId, 'system',
+      this.taskId,
+      'system',
       `MCP authorization requested for "${serverName}"${reason ? ` — ${reason}` : ''}`,
       'decision',
     );
-
-    const blocks = [
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text:
-            `:closed_lock_with_key: *${serverName}* access needed${reason ? ` — ${reason}` : ''}\n` +
-            `Whoever clicks authorizes with *their own* ${serverName} account; the task then acts with that person's permissions.`,
-        },
-      },
-      {
-        type: 'actions',
-        elements: [
-          {
-            type: 'button',
-            text: { type: 'plain_text', text: `Authorize ${serverName}` },
-            action_id: 'authorize_mcp',
-            value: JSON.stringify({ taskId: this.taskId, authRequestId, server: serverName }),
-            style: 'primary',
-          },
-        ],
-      },
-    ];
-    await this.postInteractiveToUser(
-      `Authorization needed for MCP server "${serverName}"`,
-      blocks,
-      'mcp_auth',
-      channelKey,
+    await this.postToUser(
+      `Authorize *${serverName}* for this DM${reason ? ` — ${reason}` : ''}:\n${authorizeUrl}\n\n` +
+      'This link is single-use and expires in 1 hour.',
+      'system',
     );
-    return { kind: 'wall_posted' };
-  }
-
-  /**
-   * Handle a click on the wall's Authorize button. Serialized per
-   * (task, server) so simultaneous clicks can't double-bind — the first to
-   * complete wins, later clicks observe the binding. A clicker who already
-   * holds a usable stored token completes immediately (no browser round-trip);
-   * otherwise a fresh pending authorize is minted for that user and the URL
-   * returned for ephemeral delivery to them only.
-   */
-  async handleMcpAuthClick(input: {
-    authRequestId: string;
-    server: string;
-    slackUserId: string;
-    channelId?: string;
-    messageTs?: string;
-  }): Promise<
-    | { kind: 'stale' }
-    | { kind: 'already_bound'; user: string }
-    | { kind: 'connected_existing' }
-    | { kind: 'url'; url: string }
-  > {
-    return withKeyMutex(`mcp-auth:${this.taskId}:${input.server}`, async () => {
-      const request = this.metadata.mcp_auth_requests?.[input.authRequestId];
-      if (!request || request.server !== input.server) return { kind: 'stale' as const };
-
-      // Capture the wall message ref so completion can edit it in place.
-      if (input.channelId && input.messageTs
-          && (request.channel_id !== input.channelId || request.message_ts !== input.messageTs)) {
-        request.channel_id = input.channelId;
-        request.message_ts = input.messageTs;
-        this.debouncedSave();
-      }
-
-      const bound = this.metadata.mcp_auth_bindings?.[input.server];
-      if (bound) return { kind: 'already_bound' as const, user: bound };
-
-      if (await hasUserOAuthRecord(input.slackUserId, input.server)) {
-        try {
-          await ensureFreshUserToken(input.slackUserId, input.server);
-          await this.completeMcpAuthRequest(input.authRequestId, input.server, input.slackUserId);
-          return { kind: 'connected_existing' as const };
-        } catch {
-          // Stored token unusable — mint a fresh authorize for this user.
-        }
-      }
-
-      const { state, authorizeUrl } = await beginUserConnect({
-        serverName: input.server,
-        slackUserId: input.slackUserId,
-        taskId: this.taskId,
-        authRequestId: input.authRequestId,
-        agentId: request.agent_id,
-        channelKey: request.channel_key,
-      });
-      request.state = state;
-      this.debouncedSave();
-      return { kind: 'url' as const, url: authorizeUrl };
-    });
-  }
-
-  /**
-   * Complete an outstanding authorization: bind the acting user, clear the
-   * request, edit the wall message, wake the task. Idempotent — a replayed
-   * callback for a consumed request is a no-op returning false. Callers
-   * serialize per (task, server); this method must NOT take that mutex itself
-   * (the click path already holds it).
-   */
-  async completeMcpAuthRequest(authRequestId: string, serverName: string, slackUserId: string): Promise<boolean> {
-    const completion = completeMcpAuth(this.metadata, authRequestId, serverName, slackUserId);
-    if (!completion.consumed) return false;
-    this.debouncedSave();
-
-    const label = await this.mentionLabel(slackUserId);
-    await appendAgentFinding(
-      this.taskId, 'system',
-      `MCP authorization completed: "${serverName}" connected for ${label}`,
-      'decision',
-    );
-
-    const request = completion.request;
-    if (request?.channel_id && request.message_ts) {
-      await updateMessage(
-        request.channel_id,
-        request.message_ts,
-        `:white_check_mark: *${serverName} connected* — authorized by <@${slackUserId}>`,
-        [],
-      ).catch((err: unknown) => logger.error('oauth', `Failed to update wall message for "${serverName}"`, err));
-    }
-
-    await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
-    return true;
+    return 'authorization_started';
   }
 
   // ---- Internal methods ----

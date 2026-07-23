@@ -3,10 +3,8 @@
  *
  * Mounted at `/oauth/callback` on the existing Express app. Pending records
  * are written by either the operator CLI (legacy shared connect) or the
- * daemon's wall-click handler (per-user connect); this handler finishes the
- * exchange when the provider redirects back here. Per-user pendings carry a
- * durable (task, request, user) correlation — the callback stores the token
- * under that user and wakes exactly the parked task the request came from.
+ * daemon's DM flow (per-user connect); this handler finishes the exchange when
+ * the provider redirects back here, stores the token, and wakes the DM task.
  */
 
 import type { Application, Request, Response } from 'express';
@@ -154,8 +152,8 @@ async function completeFlow(state: string, code: string): Promise<CallbackOutcom
   const nowSec = Math.floor(Date.now() / 1000);
   const expiresAt = typeof tokens.expires_in === 'number' ? nowSec + tokens.expires_in : nowSec + 3600;
 
-  // Per-user (Slack-initiated) flow: the token belongs to the clicking user;
-  // client credentials stay in the shared client record written at click time.
+  // Per-user DM flow: the token belongs to the DM participant; client
+  // credentials stay in the shared client record written when the flow began.
   if (pending.slack_user_id) {
     await writeUserOAuthRecord(
       {
@@ -179,16 +177,13 @@ async function completeFlow(state: string, code: string): Promise<CallbackOutcom
     await deletePendingRecord(state);
     logger.system(`OAuth: user ${pending.slack_user_id} connected MCP server "${pending.server_name}"`);
 
-    const wake = await completeTaskAuthRequest(pending);
+    const resumed = await wakeDmTask(pending);
     return {
       ok: true,
       title: 'Connected',
-      message:
-        wake === 'resumed'
-          ? `"${pending.server_name}" is now authorized with your account. The task resumes automatically — you can close this tab.`
-          : wake === 'consumed'
-            ? `Your account is connected to "${pending.server_name}", but the task request had already been completed. Your credentials are stored for future use.`
-            : `Your account is connected to "${pending.server_name}". The originating task could not be woken automatically — it may have finished or been removed.`,
+      message: resumed
+        ? `"${pending.server_name}" is now authorized with your account. The task resumes automatically — you can close this tab.`
+        : `Your account is connected to "${pending.server_name}". The originating task could not be woken automatically.`,
       serverName: pending.server_name,
     };
   }
@@ -225,28 +220,15 @@ async function completeFlow(state: string, code: string): Promise<CallbackOutcom
   };
 }
 
-type WakeOutcome = 'resumed' | 'consumed' | 'unavailable';
-
-/**
- * Resolve the parked (task, server) request this authorization completes and
- * wake the task. Serialized per (task, server) — the same key the wall click
- * handler holds — so duplicate or racing callbacks can't double-bind: the
- * loser finds the request already consumed and no-ops. `Task.get` loads from
- * persistence, so completion survives a daemon restart between click and
- * callback.
- */
-async function completeTaskAuthRequest(pending: OAuthPendingRecord): Promise<WakeOutcome> {
-  const { task_id: taskId, auth_request_id: authRequestId, slack_user_id: slackUserId, server_name: serverName } = pending;
-  if (!taskId || !authRequestId || !slackUserId) return 'unavailable';
+async function wakeDmTask(pending: OAuthPendingRecord): Promise<boolean> {
+  if (!pending.task_id) return false;
   try {
-    const woke = await withKeyMutex(`mcp-auth:${taskId}:${serverName}`, async () => {
-      const task = await Task.get(taskId);
-      return task.completeMcpAuthRequest(authRequestId, serverName, slackUserId);
-    });
-    return woke ? 'resumed' : 'consumed';
+    const task = await Task.get(pending.task_id);
+    await task.sendMessage(`OAuth authorization for "${pending.server_name}" completed. Continue the task with the newly available MCP tools.`, 'pm-agent');
+    return true;
   } catch (err) {
-    logger.error('oauth', `Authorized "${serverName}" for ${slackUserId} but failed to wake task ${taskId}`, err);
-    return 'unavailable';
+    logger.error('oauth', `Failed to wake DM task ${pending.task_id} after authorizing "${pending.server_name}"`, err);
+    return false;
   }
 }
 

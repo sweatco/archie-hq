@@ -562,13 +562,12 @@ Shared folder: ${sharedPath} [READ-ONLY]
   // the same boundaries the OS sandbox + filesystem-guard hooks enforce.
   agent.sandbox = sandboxOpts;
 
-  // Inject OAuth credentials into any HTTP/SSE MCP servers. The task's
-  // acting-user bindings drive precedence: bound (task, server) pairs are
-  // user-scoped (that user's token or re-wall — never the shared fallback);
-  // unbound servers may auto-bind a single human's stored token or use the
-  // shared operator token. Servers requiring auth with no usable credential
-  // are held back and advertised to the agent as requestable.
-  const oauthBindings = await applyOAuthBindings(mcpServers, await task.getMcpAuthInjectContext());
+  const dmOAuthUser = task.getMcpOAuthUser();
+  const oauthBindings = await applyOAuthBindings(
+    mcpServers,
+    dmOAuthUser,
+    task.metadata.mcp_personal_oauth,
+  );
   if (oauthBindings.injected.length > 0) {
     logger.agent(def.id, `OAuth tokens bound: ${oauthBindings.injected.join(', ')}`);
   }
@@ -580,15 +579,15 @@ Shared folder: ${sharedPath} [READ-ONLY]
     systemPrompt +=
       `\n\n## MCP servers awaiting authorization\n` +
       `These configured MCP servers require user authorization and are not connected yet: ${list}. ` +
-      `Their tools are unavailable until someone authorizes them. If you need one to complete this task, ` +
-      `call request_mcp_auth with the server name — a user will authorize it in Slack and the task resumes with access.`;
+      `Their tools are unavailable until the DM participant authorizes them. If you need one to complete this task, ` +
+      `call request_mcp_auth with the server name. The task will resume after authorization.`;
   }
-  if (oauthBindings.sharedInjected.length > 0) {
+  if (dmOAuthUser && oauthBindings.sharedInjected.length > 0) {
     const list = oauthBindings.sharedInjected.map((s) => `"${s}"`).join(', ');
     systemPrompt +=
-      `\n\nNote: MCP server(s) ${list} are using shared workspace credentials. If a call fails with an ` +
-      `authorization or permission error (401, 403, insufficient scope), call request_mcp_auth with the ` +
-      `server name to connect the requesting user's own account instead.`;
+      `\n\nMCP server(s) ${list} are using shared credentials. Continue with them normally. ` +
+      `Only if a call fails with an authorization or permission error (401, 403, insufficient scope), ` +
+      `call request_mcp_auth to switch that server to the DM user's credentials.`;
   }
 
   // ---- Build query options (session ID may change on retry) ----

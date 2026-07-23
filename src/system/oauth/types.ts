@@ -106,18 +106,9 @@ export interface OAuthPendingMeta {
   resource?: string;
   redirect_uri: string;
   created_at: number;
-  /**
-   * Per-user, Slack-initiated flows only (absent on operator/CLI connects).
-   * The durable correlation from wall click → callback → task wake: the
-   * callback resolves the exact parked (task, server) request from these —
-   * never from `slack_user_id` alone (ambiguous across concurrent tasks) and
-   * never from in-memory state (lost on daemon restart).
-   */
+  /** DM-only per-user flows. Absent on operator/CLI connects. */
   slack_user_id?: string;
-  auth_request_id?: string;
   task_id?: string;
-  agent_id?: string;
-  channel_key?: string;
 }
 
 /** Encrypted half of a pending file (verifier + client creds). */
@@ -135,4 +126,3 @@ export interface OAuthPendingRecord extends OAuthPendingMeta {
   /** Set by the callback handler on success — CLI uses it to detect completion. */
   completed_at?: number;
 }
-
