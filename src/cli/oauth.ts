@@ -35,7 +35,7 @@ Usage:
 
 Revoking with --user deletes only that user's token for the server; other
 users' tokens and the shared client registration are untouched. Per-user
-tokens are created from Slack (the authorization wall), not from this CLI.
+tokens are created from a 1:1 Slack DM, not from this CLI.
 
 Environment:
   ARCHIE_SECRETS_KEY   32-byte master key (base64)            (required)

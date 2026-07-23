@@ -9,12 +9,10 @@ agents at spawn time. Static API keys (`MCP_*` env vars substituted into
 There are two credential models, and they coexist:
 
 - **Shared (operator) connections** — one token per server, provisioned by
-  an operator via `npm run oauth:connect`. Every agent and every Slack user
-  shares it.
-- **Per-user connections** — one token per (Slack user, server), created
-  lazily from Slack itself: an agent hits an authorization wall, a user
-  clicks the wall's button, authorizes with their own account, and the task
-  proceeds with *that person's* permissions. See
+  an operator via `npm run oauth:connect`. Used by tasks outside 1:1 DMs.
+- **Per-user connections** — one token per (Slack user, server), available
+  only in 1:1 Slack DMs. The DM participant authorizes through a link sent
+  to that DM, and the task proceeds with their permissions. See
   [Per-user, Slack-initiated OAuth](#per-user-slack-initiated-oauth).
 
 ## Goals
@@ -23,11 +21,10 @@ The vault and connect flow are deliberately **provider-agnostic**:
 
 - `.mcp.json` stays exactly as the MCP server's docs describe — server
   name + transport + URL, no Archie-specific syntax. The per-user-vs-shared
-  distinction is inferred at runtime (record presence + the spec probe),
-  never declared in `.mcp.json`.
+  distinction comes from whether the task's default channel is a 1:1 DM.
 - The codebase contains zero per-service configuration. Connecting a new
-  OAuth server is `npm run oauth:connect <name>` (shared) or one button
-  click in Slack (per-user) — nothing else.
+  OAuth server is `npm run oauth:connect <name>` (shared) or one link from a
+  Slack DM (per-user) — nothing else.
 - Discovery follows the MCP authorization spec: RFC 9728 protected-resource
   metadata + RFC 8414 authorization-server metadata + RFC 7591 Dynamic
   Client Registration + OAuth 2.1 / PKCE. We use
@@ -130,10 +127,10 @@ credentials live in the shared client record instead:
 ### Shared client record (`oauth/_clients/<server>.json`)
 
 Plaintext `server_name` / `issuer` / timestamps; sealed `client_id` /
-`client_secret`. Written once by the first per-user authorization of a
-server (mutexed, so concurrent first clicks share one DCR round-trip) and
-reused by every later user. If `ARCHIE_PUBLIC_URL` ever changes, delete the
-client record — providers pin the registered redirect URI.
+`client_secret`. Written once by the first per-user authorization and reused
+by every later user. An existing shared record's client is reused when
+available; otherwise the daemon uses DCR. If `ARCHIE_PUBLIC_URL` ever changes,
+delete the client record — providers pin the registered redirect URI.
 
 ## Connect flow
 
@@ -205,166 +202,90 @@ sweep at startup) deletes pending files older than the TTL.
 | Variable             | Required                  | Purpose                                                            |
 |----------------------|---------------------------|--------------------------------------------------------------------|
 | `ARCHIE_SECRETS_KEY` | Yes (when OAuth is used)  | 32-byte base64 master key for the vault.                           |
-| `ARCHIE_PUBLIC_URL`  | Yes (for `oauth:connect`) | Public HTTPS URL of the daemon — used as the `redirect_uri` base.  |
+| `ARCHIE_PUBLIC_URL`  | Yes (for OAuth connects) | Public HTTPS URL of the daemon — used as the `redirect_uri` base.  |
 | `ARCHIE_SECRETS_DIR` | No                        | Override storage location. Defaults to `/app/secrets`.             |
 
 ## Per-user, Slack-initiated OAuth
 
-Per-user OAuth ties MCP credentials to the specific human who authorized
-them, so an agent acts with *that person's* provider permissions instead of
-a broad service account. Nothing is provisioned ahead of time — the flow is
-lazy and starts inside a task.
+Per-user OAuth is deliberately limited to tasks whose default channel is a
+1:1 Slack DM. The DM channel supplies the user identity directly; channel
+threads, multi-party conversations, GitHub tasks, and CLI tasks never use
+per-user credentials. Shared credentials remain the default everywhere,
+including DMs.
 
-### The acting user and the binding boundary
-
-The **acting user** for a `(task, server)` pair is *whoever clicks the
-authorization wall's button* — Slack authenticates the clicker
-(`body.user.id`), so identity is never inferred from task authorship or
-message order. The completed binding is persisted on the task
-(`TaskMetadata.mcp_auth_bindings`, server → Slack user id).
-
-The binding is the **policy boundary** for credential resolution:
+### DM flow
 
 ```
-resolve (task, server) at spawn:
-  BOUND to a user       → that user's token only; if it is missing, revoked,
-                          or fails refresh → re-wall. NEVER the shared token.
-  UNBOUND, single human
-    with a stored token → auto-bind it, skip the wall (returning users
-                          never re-authorize)
-  UNBOUND + shared record → inject the shared operator token (cold default)
-  UNBOUND + nothing     → spec-probe the URL; OAuth-requiring servers are
-                          held out of the SDK map and advertised to the
-                          agent as requestable
-```
-
-The bound-pair rule closes the silent-downgrade hole: once a task runs as a
-user, losing that user's token re-walls rather than quietly regaining broad
-shared access. A cold server with a shared token is used optimistically; if
-a call then fails with 401/403/insufficient-scope, the agent escalates via
-`request_mcp_auth` — shared is the convenient default *until it is
-insufficient*.
-
-### The wall flow
-
-```
-agent needs "notion", no usable credential
-  │ request_mcp_auth("notion")            in-process tool (agent-tools server,
-  ▼                                        every agent has it)
-Task parks (deferTeardown → task.stop()), records the request in
-metadata.mcp_auth_requests[authRequestId], posts the wall:
-  "🔐 notion access needed — <reason>   [ Authorize notion ]"
-  │
-  │ a user clicks (Bolt action `authorize_mcp`) — Slack gives body.user.id
+DM spawn → inject shared oauth/<server>.json when usable
+  │ missing, or an MCP call returns an auth/permission error
   ▼
-daemon: external/guest users rejected; then per (task, server) mutex:
-  clicker already has a stored usable token → complete immediately, no browser
-  else beginUserConnect(): discovery → shared client (read-or-DCR) → PKCE
-       → pending record {state, auth_request_id, task_id, slack_user_id, …}
-       → authorize URL delivered EPHEMERALLY to the clicker only
-  │
-  │ user authorizes at the provider
+agent calls request_mcp_auth("server")
+  │ mark this server as personal for the task
+  │ reuse users/<dm-user>/<server>.json when usable; otherwise send OAuth URL
+  │ task restarts immediately or parks until authorization completes
   ▼
-GET /oauth/callback?state=…: exchange code → write users/<uid>/<server>.json
-  → delete pending → resolve the exact parked request by auth_request_id
-  (Task.get() loads from disk — restart-survivable), bind, edit the wall to
-  "✅ connected — authorized by @user", wake the task
+OAuth callback → store user token → delete pending record → wake task
   │
   ▼
-task resumes; the next spawn injects the acting user's token
+next spawn injects the DM user's token for that server
 ```
 
-Correlation is durable by construction: the pending record carries
-`auth_request_id` + `task_id` + `slack_user_id`, so the public callback —
-a cold HTTP request that only knows `state` — resolves the exact parked
-request. Two concurrent tasks authorizing the same user+server can't
-cross-bind, a daemon restart between click and callback loses nothing, and
-completion is idempotent (a replayed callback finds the request consumed
-and no-ops). Simultaneous clicks serialize on a per-`(task, server)` mutex;
-the first completion wins, and a second user who finishes authorizing
-anyway simply gets their own token stored for future use.
-
-The wall message keeps its button after a click (only the ephemeral URL is
-personal), so someone else can still volunteer if the clicker abandons.
-Abandoned requests expire with the pending TTL (1 hour) and the agent can
-simply request again.
-
-Pieces: `request_mcp_auth` tool (`src/agents/tools.ts`), wall + click +
-completion methods (`src/tasks/task.ts`), pure metadata transitions
-(`src/tasks/mcp-auth.ts`), daemon connect (`beginUserConnect` in
-`src/system/oauth/connect.ts`), button handler
-(`src/connectors/slack/events.ts`), callback completion
-(`src/connectors/oauth/routes.ts`).
-
-### Security notes
-
-- The authorize URL is a bearer capability tied to a Slack identity: it is
-  delivered only ephemerally to the clicking user, `state` is single-use,
-  and the pending attempt expires after 1 hour.
-- External / guest Slack users (Slack Connect, restricted accounts) cannot
-  authorize — the click handler rejects them before any connect work.
-- Agents never see tokens; injection happens in the daemon at spawn time,
-  same as the shared model.
+The pending record persists only `state`, `task_id`, and `slack_user_id` for
+the callback. Task metadata stores only the names of servers explicitly
+escalated to personal credentials; there are no acting-user bindings or
+outstanding authorization requests there. The authorization state is
+single-use and expires after one hour. Agents never see tokens; the daemon
+sends the URL to the existing DM and injects tokens at spawn.
 
 ## Spawn-time injection
 
 `src/system/oauth/inject.ts` is called once per agent spawn, just before
-the SDK options are built (`src/agents/spawn.ts`). The task supplies the
-acting-user context (`task.getMcpAuthInjectContext()`): completed bindings
-plus the auto-bind candidate — the task's single human participant, when
-one is unambiguously resolvable from the knowledge log.
+the SDK options are built (`src/agents/spawn.ts`). For each `http` or `sse`
+entry:
 
-For each `mcpServers` entry whose transport is `http` or `sse`, resolution
-follows the precedence above. Mechanics shared by both models:
-
-- Tokens are refreshed when within 60s of expiry (`ensureFreshToken()` for
-  shared records, `ensureFreshUserToken()` for per-user ones — the latter
-  reads client credentials from the shared client record and mutexes per
-  `oauth:user:<uid>:<server>`, so one user's dead refresh token never
-  affects another's).
-- `headers.Authorization = "<scheme> <token>"`; the scheme is normalized —
-  `bearer` becomes `Bearer` — because some providers (Notion, etc.)
-  strict-match it.
+- A DM task uses the shared operator token by default. If no shared token is
+  available, an existing personal token is used or the server is requestable.
+- After `request_mcp_auth` explicitly escalates a server, that task uses only
+  the DM participant's token for it. Missing, revoked, or unrefreshable
+  personal tokens make the server requestable; the task does not silently
+  return to shared access.
+- Every other task uses the shared operator token; `request_mcp_auth` rejects
+  calls outside a 1:1 DM.
+- Tokens refresh within 60 seconds of expiry. Per-user refreshes are isolated
+  by `(user, server)` and use the shared client registration.
 - If the operator already supplied an `Authorization` (or lowercase
   `authorization`) header in `.mcp.json`, the entry is left alone —
   explicit operator intent wins.
-- Entries with no usable credential are removed from the map (the SDK
-  would only spew 401s) and returned as `requestable`; spawn appends a
-  prompt section telling the agent which servers it can `request_mcp_auth`.
-  Agents whose servers run on shared credentials also get a hint to
-  escalate on 401/403/insufficient-scope errors.
 - Non-http/sse MCP entries (stdio, in-process SDK servers like
   `createBaseAgentMcpServer`) are untouched — stdio entries keep their
   existing `${MCP_*}` env-var substitution path.
 
 ## Reconnect / revoke
 
-Reconnect (shared): just run `npm run oauth:connect <name>` again. The new
-vault record overwrites the old one atomically. Per-user reconnects happen
-organically — the next wall click mints a fresh authorization.
+Reconnect (shared): run `npm run oauth:connect <name>` again. Per-user
+reconnects happen when a DM task next calls `request_mcp_auth`.
 
 Revoke: `npm run oauth:revoke <name>` deletes the shared record;
 `npm run oauth:revoke <name> --user <slackUserId>` deletes exactly one
-user's token, leaving other users and the shared client intact. A bound
-task whose user was revoked re-walls on its next need — it does not fall
-back to the shared token. (Neither form calls a provider revocation
+user's token, leaving other users and the shared client intact. That user's
+DM tasks already escalated to personal access request authorization again on
+the next need and do not fall back to the shared token. (Neither form calls a provider revocation
 endpoint — operators wanting that should revoke at the provider's admin
 console.) `npm run oauth:list` shows both shared and per-user records.
 
 ## Failure modes worth knowing
 
 - **No DCR support.** Some servers (older / enterprise) don't expose
-  `registration_endpoint`. The CLI fails with a clear message before
-  writing any pending file, and the operator can rerun with
-  `--client-id` / `--client-secret` referencing a manually-registered
-  client.
+  `registration_endpoint`. Connect once with the CLI using `--client-id` /
+  `--client-secret`; the first DM authorization copies that shared client into
+  `_clients/`.
 - **Server isn't spec-compliant.** No 401 with `WWW-Authenticate`, or
   metadata missing required endpoints — the CLI errors out and points
   at the offending URL.
 - **Inactivity timeouts** (Atlassian, MS, ~90 days). Without a keep-warm
   scheduler, the next spawn after a long idle period will hit a refresh
   failure and that one MCP gets dropped. Reconnect with the CLI to fix.
-- **Missing `ARCHIE_PUBLIC_URL`.** `oauth:connect` fails fast — the
+- **Missing `ARCHIE_PUBLIC_URL`.** Shared and DM connect flows fail fast — the
   daemon must be reachable at a stable HTTPS URL because the OAuth
   provider redirects browsers there.
 
@@ -375,6 +296,5 @@ console.) `npm run oauth:list` shows both shared and per-user records.
 - Audit logs.
 - Automatic offboarding purge of a departed user's tokens (the per-user
   revoke primitive exists; wiring it to an offboarding signal does not).
-- Per-message / per-tool-call identity switching — the SDK bakes one
-  `Authorization` header per server per spawn, so the acting identity is a
-  task-level property by construction.
+- Per-user OAuth in channel threads or multi-party conversations.
+- Per-message / per-tool-call identity switching.

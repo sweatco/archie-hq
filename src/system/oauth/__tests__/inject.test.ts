@@ -66,7 +66,7 @@ describe('applyOAuthBindings', () => {
     const mcp = {
       no_creds: { type: 'http', url: 'https://open.example.com/mcp' },
     };
-    const result = await inject.applyOAuthBindings(mcp);
+    const result = await inject.applyOAuthBindings(mcp, 'U1');
     expect(result.injected).toEqual([]);
     expect(result.requestable).toEqual([]);
     expect((mcp.no_creds as any).headers).toBeUndefined();
@@ -83,7 +83,7 @@ describe('applyOAuthBindings', () => {
     const mcp: Record<string, any> = {
       needs_auth: { type: 'http', url: 'https://oauth.example.com/mcp' },
     };
-    const result = await inject.applyOAuthBindings(mcp);
+    const result = await inject.applyOAuthBindings(mcp, 'U1');
     expect(result.requestable).toEqual(['needs_auth']);
     expect(mcp.needs_auth).toBeUndefined();
   });
@@ -138,7 +138,7 @@ describe('applyOAuthBindings', () => {
     expect(mcp.keep).toBeDefined();
   });
 
-  // ---- Per-user precedence (the binding is the policy boundary) ----
+  // ---- DM-only per-user tokens ----
 
   const nowSec = () => Math.floor(Date.now() / 1000);
 
@@ -171,33 +171,44 @@ describe('applyOAuthBindings', () => {
     );
   }
 
-  it('a bound pair uses the acting user\'s token even when a shared token exists', async () => {
+  it('a DM prefers usable shared credentials even when a personal token exists', async () => {
     const { inject, storage } = await load();
     await seedShared(storage, 'notion', 'SHARED');
     await seedUser(storage, 'U1', 'notion', 'USER-TOKEN');
 
     const mcp: Record<string, any> = { notion: { type: 'http', url: 'https://mcp.example.com/mcp' } };
-    const result = await inject.applyOAuthBindings(mcp, { bindings: { notion: 'U1' } });
+    const result = await inject.applyOAuthBindings(mcp, 'U1');
+
+    expect(result.injected).toEqual(['notion']);
+    expect(result.sharedInjected).toEqual(['notion']);
+    expect(mcp.notion.headers.Authorization).toBe('Bearer SHARED');
+  });
+
+  it('a DM uses the personal token after that server is explicitly escalated', async () => {
+    const { inject, storage } = await load();
+    await seedShared(storage, 'notion', 'SHARED');
+    await seedUser(storage, 'U1', 'notion', 'USER-TOKEN');
+
+    const mcp: Record<string, any> = { notion: { type: 'http', url: 'https://mcp.example.com/mcp' } };
+    const result = await inject.applyOAuthBindings(mcp, 'U1', ['notion']);
 
     expect(result.injected).toEqual(['notion']);
     expect(result.sharedInjected).toEqual([]);
     expect(mcp.notion.headers.Authorization).toBe('Bearer USER-TOKEN');
   });
 
-  it('a bound pair with a revoked token re-walls — no silent shared fallback', async () => {
+  it('a DM without a user token continues with usable shared credentials', async () => {
     const { inject, storage } = await load();
     await seedShared(storage, 'notion', 'SHARED');
-    // U1 is bound but has NO stored record (revoked).
-
     const mcp: Record<string, any> = { notion: { type: 'http', url: 'https://mcp.example.com/mcp' } };
-    const result = await inject.applyOAuthBindings(mcp, { bindings: { notion: 'U1' } });
+    const result = await inject.applyOAuthBindings(mcp, 'U1');
 
-    expect(result.requestable).toEqual(['notion']);
-    expect(result.injected).toEqual([]);
-    expect(mcp.notion).toBeUndefined(); // NOT injected with the shared token
+    expect(result.requestable).toEqual([]);
+    expect(result.injected).toEqual(['notion']);
+    expect(mcp.notion.headers.Authorization).toBe('Bearer SHARED');
   });
 
-  it('a bound pair whose refresh fails re-walls — no silent shared fallback', async () => {
+  it('a DM whose user-token refresh fails requests authorization again', async () => {
     const { inject, storage } = await load();
     await seedShared(storage, 'notion', 'SHARED');
     const nsec = Math.floor(Date.now() / 1000);
@@ -212,38 +223,71 @@ describe('applyOAuthBindings', () => {
     )) as any;
 
     const mcp: Record<string, any> = { notion: { type: 'http', url: 'https://mcp.example.com/mcp' } };
-    const result = await inject.applyOAuthBindings(mcp, { bindings: { notion: 'U1' } });
+    const result = await inject.applyOAuthBindings(mcp, 'U1', ['notion']);
 
     expect(result.requestable).toEqual(['notion']);
     expect(result.dropped.map((d) => d.serverName)).toEqual(['notion']);
     expect(mcp.notion).toBeUndefined();
   });
 
-  it('auto-binds a single human\'s stored token on an unbound server and reports the bind', async () => {
+  it('uses the DM participant\'s stored token when no shared record exists', async () => {
     const { inject, storage } = await load();
     await seedUser(storage, 'U1', 'notion', 'USER-TOKEN');
 
-    const autoBinds: Array<[string, string]> = [];
     const mcp: Record<string, any> = { notion: { type: 'http', url: 'https://mcp.example.com/mcp' } };
-    const result = await inject.applyOAuthBindings(mcp, {
-      autoBindUser: 'U1',
-      onAutoBind: (server, uid) => { autoBinds.push([server, uid]); },
-    });
+    const result = await inject.applyOAuthBindings(mcp, 'U1');
 
     expect(result.injected).toEqual(['notion']);
-    expect(autoBinds).toEqual([['notion', 'U1']]);
     expect(mcp.notion.headers.Authorization).toBe('Bearer USER-TOKEN');
   });
 
-  it('unbound servers use the shared token cold and are reported as sharedInjected', async () => {
+  it('falls back to a DM personal token when shared credentials cannot refresh', async () => {
+    const { inject, storage } = await load();
+    const nsec = Math.floor(Date.now() / 1000);
+    await storage.writeOAuthRecord(
+      {
+        server_name: 'notion',
+        expires_at: nsec + 5,
+        created_at: nsec, updated_at: nsec,
+        issuer: 'https://auth.example.com',
+        token_endpoint: 'https://auth.example.com/token',
+        scopes: [],
+      },
+      { access_token: 'STALE', refresh_token: 'BAD', client_id: 'cli', token_type: 'Bearer' },
+    );
+    await seedUser(storage, 'U1', 'notion', 'USER-TOKEN');
+    globalThis.fetch = vi.fn(async () => new Response(
+      JSON.stringify({ error: 'invalid_grant' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } },
+    )) as any;
+
+    const mcp: Record<string, any> = { notion: { type: 'http', url: 'https://mcp.example.com/mcp' } };
+    const result = await inject.applyOAuthBindings(mcp, 'U1');
+
+    expect(result.sharedInjected).toEqual([]);
+    expect(result.injected).toEqual(['notion']);
+    expect(mcp.notion.headers.Authorization).toBe('Bearer USER-TOKEN');
+  });
+
+  it('non-DM tasks continue to use the shared token', async () => {
     const { inject, storage } = await load();
     await seedShared(storage, 'notion', 'SHARED');
 
     const mcp: Record<string, any> = { notion: { type: 'http', url: 'https://mcp.example.com/mcp' } };
-    const result = await inject.applyOAuthBindings(mcp, { autoBindUser: 'U-no-token' });
+    const result = await inject.applyOAuthBindings(mcp);
 
     expect(result.injected).toEqual(['notion']);
-    expect(result.sharedInjected).toEqual(['notion']);
     expect(mcp.notion.headers.Authorization).toBe('Bearer SHARED');
+  });
+
+  it('non-DM tasks ignore per-user token records', async () => {
+    const { inject, storage } = await load();
+    await seedUser(storage, 'U1', 'notion', 'USER-TOKEN');
+
+    const mcp: Record<string, any> = { notion: { type: 'http', url: 'https://mcp.example.com/mcp' } };
+    const result = await inject.applyOAuthBindings(mcp);
+
+    expect(result.injected).toEqual([]);
+    expect(mcp.notion.headers).toBeUndefined();
   });
 });

@@ -6,10 +6,9 @@
  *   - `beginConnect` — operator CLI: discover → register (or manual client) →
  *     write pending → return authorize URL. Produces a legacy shared record
  *     via the callback handler.
- *   - `beginUserConnect` — daemon-side, Slack-initiated: discover → shared
- *     DCR client (read-or-register `oauth/_clients/<server>.json`) → write a
- *     pending record carrying the (task, request, user) correlation → return
- *     the authorize URL for ephemeral delivery to the clicking user only.
+ *   - `beginUserConnect` — daemon-side, DM-only: discover → shared DCR client
+ *     → write a pending record carrying the task and DM user → return the
+ *     authorize URL for delivery to the DM.
  *
  * The HTTP callback handler in `src/connectors/oauth/routes.ts` picks up the
  * pending record and finishes the exchange for both.
@@ -33,6 +32,8 @@ import {
   readOAuthClientRecord,
   readOAuthClientSealed,
   writeOAuthClientRecord,
+  readOAuthRecord,
+  readOAuthSealed,
 } from './storage.js';
 import { withKeyMutex } from '../secrets-vault.js';
 import type { OAuthClientSealed } from './types.js';
@@ -231,9 +232,9 @@ export async function beginConnect(input: ConnectInput): Promise<ConnectResult> 
 
 /**
  * Read-or-register the shared DCR client for a server. Registered once on the
- * first-ever per-user authorization, then reused by every user (one client,
- * N authorization-code flows). Mutexed so concurrent first clicks share a
- * single registration round-trip.
+ * first per-user authorization, then reused by every user. An existing shared
+ * record supplies its client before DCR is attempted. Mutexed so concurrent
+ * first authorizations share one setup round-trip.
  */
 async function ensureSharedClient(
   serverName: string,
@@ -245,10 +246,22 @@ async function ensureSharedClient(
     const existing = await readOAuthClientRecord(serverName);
     if (existing) return readOAuthClientSealed(existing);
 
+    const shared = await readOAuthRecord(serverName);
+    if (shared) {
+      const sealed = await readOAuthSealed(shared);
+      const client = { client_id: sealed.client_id, client_secret: sealed.client_secret };
+      const nowSec = Math.floor(Date.now() / 1000);
+      await writeOAuthClientRecord(
+        { server_name: serverName, issuer: shared.issuer, created_at: nowSec, updated_at: nowSec },
+        client,
+      );
+      return client;
+    }
+
     if (!authServer.registration_endpoint) {
       throw new Error(
         `Server "${serverName}" does not expose a registration_endpoint (Dynamic Client Registration). ` +
-        `An operator must connect it once via the CLI with --client-id/--client-secret.`,
+        `Connect it once via the CLI with --client-id/--client-secret before using it in DMs.`,
       );
     }
     logger.system(`OAuth: registering shared dynamic client for "${serverName}"`);
@@ -268,28 +281,16 @@ async function ensureSharedClient(
 
 export interface UserConnectInput {
   serverName: string;
-  /** The Slack user who clicked the wall button — the future token owner. */
+  /** The other participant in the task's 1:1 Slack DM. */
   slackUserId: string;
-  /** Correlation back to the parked (task, server) request — see D5a. */
+  /** Task to wake after the callback stores the token. */
   taskId: string;
-  authRequestId: string;
-  agentId?: string;
-  channelKey?: string;
-}
-
-export interface UserConnectResult {
-  authorizeUrl: string;
-  state: string;
 }
 
 /**
- * Daemon-side, Slack-initiated connect for one user, triggered by the wall
- * button click. Runs discovery + shared-client resolution + PKCE/state in the
- * daemon (no operator CLI), and writes a pending record carrying the durable
- * correlation tuple so the callback can bind the token to this user and wake
- * exactly this task.
+ * Start a daemon-side authorization for the participant in a 1:1 Slack DM.
  */
-export async function beginUserConnect(input: UserConnectInput): Promise<UserConnectResult> {
+export async function beginUserConnect(input: UserConnectInput): Promise<{ authorizeUrl: string }> {
   const redirectUri = resolveRedirectUri();
   const discovered = await discoverServer(input.serverName);
   const client = await ensureSharedClient(
@@ -324,10 +325,7 @@ export async function beginUserConnect(input: UserConnectInput): Promise<UserCon
       redirect_uri: redirectUri,
       created_at: Math.floor(Date.now() / 1000),
       slack_user_id: input.slackUserId,
-      auth_request_id: input.authRequestId,
       task_id: input.taskId,
-      agent_id: input.agentId,
-      channel_key: input.channelKey,
     },
     {
       code_verifier: pkce.verifier,
@@ -336,6 +334,6 @@ export async function beginUserConnect(input: UserConnectInput): Promise<UserCon
     },
   );
 
-  logger.system(`OAuth: pending authorize for "${input.serverName}" minted for user ${input.slackUserId} (task ${input.taskId})`);
-  return { authorizeUrl, state };
+  logger.system(`OAuth: pending authorize for "${input.serverName}" in DM task ${input.taskId}`);
+  return { authorizeUrl };
 }

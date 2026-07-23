@@ -72,8 +72,7 @@ describe('per-user + shared-client OAuth storage', () => {
     const record = await storage.readOAuthClientRecord('notion');
     expect(record).not.toBeNull();
     expect(await storage.readOAuthClientSealed(record!)).toEqual({ client_id: 'client-1', client_secret: 'shh' });
-    expect(await storage.hasOAuthClientRecord('notion')).toBe(true);
-    expect(await storage.hasOAuthClientRecord('linear')).toBe(false);
+    expect(await storage.readOAuthClientRecord('linear')).toBeNull();
   });
 
   it('rejects path-unsafe user ids and server names', async () => {
@@ -100,9 +99,8 @@ describe('per-user + shared-client OAuth storage', () => {
 
     expect(await storage.hasUserOAuthRecord('U1', 'notion')).toBe(false);
     expect(await storage.hasUserOAuthRecord('U2', 'notion')).toBe(true);
-    expect(await storage.hasOAuthClientRecord('notion')).toBe(true);
+    expect(await storage.readOAuthClientRecord('notion')).not.toBeNull();
     expect(await storage.listUserServers('U2')).toEqual(['linear', 'notion']);
-    expect(await storage.listServerUsers('notion')).toEqual(['U2']);
   });
 
   it('anyOAuthRecordExists sees legacy, per-user, and client records', async () => {
