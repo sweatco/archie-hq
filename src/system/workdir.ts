@@ -42,6 +42,13 @@ export const TRIGGERS_DIR = join(WORKDIR, 'triggers');
 export const PLUGINS_DATA_DIR = join(WORKDIR, 'plugins-data');
 
 /**
+ * Web-artifact pointer store — one JSON file per `externalId`, resolvable
+ * globally (the viewer has no taskId). Lazily created on first publish, so it
+ * is intentionally not part of the startup `bootstrapWorkdir` mkdir set.
+ */
+export const WEB_ARTIFACTS_DIR = join(WORKDIR, 'web-artifacts');
+
+/**
  * Directory holding encrypted runtime secrets (e.g. OAuth tokens).
  * Defaults to `/app/secrets` (the docker-mounted volume) when present,
  * otherwise `<repo>/secrets` for local development. Override with

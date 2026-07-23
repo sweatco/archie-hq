@@ -104,6 +104,7 @@ interface TaskMetadata {
   research_budget_extra?: number;               // additional budget granted (+5 per approval)
   research_request_count?: number;              // persisted research call count
   failure_counter?: number;                     // consecutive recovery attempts
+  web_artifacts?: WebArtifactRecord[];          // web artifacts published from this task (see web-artifacts.md); optional, backward-compatible
   created_at: string;                           // ISO timestamp
   updated_at: string;                           // ISO timestamp, set on every write
 }

@@ -13,7 +13,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import type { AgentName, FindingType, AttachedRepo, SlackThreadMessage } from '../types/task.js';
+import type { AgentName, FindingType, AttachedRepo, SlackThreadMessage, WebArtifactRecord } from '../types/task.js';
 import type { Task } from '../tasks/task.js';
 import type { Agent } from './agent.js';
 import { getVisiblePeerIdsForSender, findAgentDefsContainingRepo, synthesizeDynamicAgentDef, isAutoMergeRepo } from './registry.js';
@@ -23,6 +23,12 @@ import { hydrateBranchState, findBranchStateByPR, assignPrNumber } from '../conn
 import { taskBranchName } from '../connectors/github/branch-naming.js';
 import { appendAgentFinding, appendArtifactShared } from '../tasks/persistence.js';
 import { copyArtifactToShared, assertReadable } from './artifacts.js';
+import {
+  publishWebArtifact,
+  updateWebArtifact,
+  parseExternalId,
+  webArtifactFormatError,
+} from './web-artifacts.js';
 import { logger } from '../system/logger.js';
 import {
   findSlackUsers,
@@ -90,7 +96,7 @@ function formatExploreMessages(messages: SlackThreadMessage[]): string {
 import { scheduleReminder, cancelReminder } from '../system/reminder-scheduler.js';
 import * as chrono from 'chrono-node';
 import { writeFile } from 'fs/promises';
-import { join } from 'path';
+import { basename, join } from 'path';
 import type { Trigger, TriggerBinding, TriggerCondition } from '../types/trigger.js';
 import {
   generateTriggerId,
@@ -466,6 +472,115 @@ function createPostFilesToUserTool(agent: Agent, task: Task) {
         return ok(formatSlackSendError(e));
       }
       return ok(`${validatedPaths.length} file(s) uploaded.`);
+    },
+  );
+}
+
+/**
+ * Build the viewer URL for a published web artifact. Path form (`/a/<id>`) by
+ * default; prefixed with `ARCHIE_PUBLIC_BASE_URL` (trailing slash trimmed) when
+ * that env var is set, so a deployment can hand the user an absolute link.
+ */
+function webArtifactUrl(externalId: string): string {
+  const path = `/a/${externalId}`;
+  const base = process.env.ARCHIE_PUBLIC_BASE_URL;
+  if (base && base.trim()) {
+    return `${base.trim().replace(/\/+$/, '')}${path}`;
+  }
+  return path;
+}
+
+function createPublishWebArtifactTool(agent: Agent, task: Task) {
+  return tool(
+    'publish_web_artifact',
+    'Publish a Markdown file as a web page the user can open in a browser at a stable, unguessable URL. ' +
+    'Pass an absolute path to a Markdown (.md/.markdown) file inside your readable sandbox (e.g. shared/artifacts/...). ' +
+    'The tool snapshots the file immutably and returns a `/a/<id>` link — share that link with the user. ' +
+    'HTML is not supported yet (deferred to a follow-up). To revise a published artifact in place, keeping the same link, use `update_web_artifact`.',
+    {
+      path: z.string().describe('Absolute path to the Markdown file to publish'),
+      title: z.string().optional().describe('Optional display title for the web page'),
+    },
+    async (args) => {
+      let resolvedSource: string;
+      try {
+        resolvedSource = await assertReadable(args.path, requireSandbox(agent));
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e));
+      }
+      const sourceFilename = basename(args.path);
+      const formatError = webArtifactFormatError(sourceFilename);
+      if (formatError) return err(formatError);
+
+      let published: { externalId: string; snapshotPath: string };
+      try {
+        published = await publishWebArtifact({
+          taskId: task.taskId,
+          resolvedSourcePath: resolvedSource,
+          sourceFilename,
+        });
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e));
+      }
+
+      const now = new Date().toISOString();
+      const record: WebArtifactRecord = {
+        external_id: published.externalId,
+        source_filename: sourceFilename,
+        format: 'markdown',
+        created_at: now,
+        updated_at: now,
+      };
+      task.metadata.web_artifacts ??= [];
+      task.metadata.web_artifacts.push(record);
+      await task.save(true);
+      emitEvent('artifact:published', task.taskId, { externalId: published.externalId });
+
+      const url = webArtifactUrl(published.externalId);
+      return ok(`Published web artifact at ${url}. Share this link with the user. To revise it later while keeping the same link, call update_web_artifact with this URL.`);
+    },
+  );
+}
+
+function createUpdateWebArtifactTool(agent: Agent, task: Task) {
+  return tool(
+    'update_web_artifact',
+    'Revise an already-published web artifact in place, keeping its existing `/a/<id>` link. ' +
+    'Pass the artifact\'s id or its `/a/<id>` URL, plus an absolute path to the new Markdown content inside your readable sandbox. ' +
+    'An artifact can only be updated from within the task that published it.',
+    {
+      external_id_or_url: z.string().describe('The published artifact id, or its /a/<id> URL'),
+      path: z.string().describe('Absolute path to the new Markdown content'),
+    },
+    async (args) => {
+      const externalId = parseExternalId(args.external_id_or_url);
+      if (!externalId) {
+        return err(`Not a valid web-artifact id or URL: ${JSON.stringify(args.external_id_or_url)}`);
+      }
+      let resolvedSource: string;
+      try {
+        resolvedSource = await assertReadable(args.path, requireSandbox(agent));
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e));
+      }
+      try {
+        await updateWebArtifact({
+          externalId,
+          taskId: task.taskId,
+          resolvedSourcePath: resolvedSource,
+        });
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e));
+      }
+
+      const now = new Date().toISOString();
+      const record = task.metadata.web_artifacts?.find((r) => r.external_id === externalId);
+      if (record) record.updated_at = now;
+      await task.save(true);
+      emitEvent('artifact:updated', task.taskId, { externalId });
+
+      const url = webArtifactUrl(externalId);
+      return ok(`Updated web artifact at ${url}. The link is unchanged — any open viewer will hot-reload.`);
     },
   );
 }
@@ -2478,6 +2593,8 @@ export function createCommsMcpServer(agent: Agent, task: Task) {
     tools: [
       createPostToUserTool(agent, task),
       createPostFilesToUserTool(agent, task),
+      createPublishWebArtifactTool(agent, task),
+      createUpdateWebArtifactTool(agent, task),
       createFindSlackUserTool(agent, task),
       createFindSlackChannelTool(agent, task),
       createListChannelsTool(agent, task),
