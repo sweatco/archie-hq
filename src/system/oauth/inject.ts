@@ -111,5 +111,9 @@ function setAuthHeader(config: { headers?: Record<string, string> }, token: Fres
 }
 
 function toError(err: unknown): Error {
-  return err instanceof Error ? err : new Error(String(err));
+  if (err instanceof Error) {
+    const code = (err as { code?: unknown }).code;
+    return new Error(typeof code === 'string' || typeof code === 'number' ? `${err.name} (${code})` : err.name);
+  }
+  return new Error('UnknownError');
 }
