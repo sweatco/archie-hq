@@ -1,10 +1,10 @@
 /**
  * Public OAuth callback endpoint.
  *
- * Mounted at `/oauth/callback` on the existing Express app. The CLI
- * runs the discovery + DCR + state setup itself and writes a pending
- * file to disk; this handler only finishes the exchange when the
- * provider redirects back here.
+ * Mounted at `/oauth/callback` on the existing Express app. Pending records
+ * are written by either the operator CLI (legacy shared connect) or the
+ * daemon's DM flow (per-user connect); this handler finishes the exchange when
+ * the provider redirects back here, stores the token, and wakes the DM task.
  */
 
 import type { Application, Request, Response } from 'express';
@@ -17,8 +17,12 @@ import {
   deletePendingRecord,
   markPendingError,
   writeOAuthRecord,
+  writeUserOAuthRecord,
   reapStalePending,
 } from '../../system/oauth/storage.js';
+import type { OAuthPendingRecord } from '../../system/oauth/types.js';
+import { offEvent, onEvent, type SystemEvent } from '../../system/event-bus.js';
+import { Task } from '../../tasks/task.js';
 
 const PENDING_TTL_MS = 60 * 60 * 1000; // 1 hour
 const REAPER_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
@@ -149,6 +153,42 @@ async function completeFlow(state: string, code: string): Promise<CallbackOutcom
   const nowSec = Math.floor(Date.now() / 1000);
   const expiresAt = typeof tokens.expires_in === 'number' ? nowSec + tokens.expires_in : nowSec + 3600;
 
+  // Per-user DM flow: the token belongs to the DM participant; client
+  // credentials stay in the shared client record written when the flow began.
+  if (pending.slack_user_id) {
+    await writeUserOAuthRecord(
+      {
+        server_name: pending.server_name,
+        slack_user_id: pending.slack_user_id,
+        label: pending.label,
+        expires_at: expiresAt,
+        created_at: nowSec,
+        updated_at: nowSec,
+        issuer: pending.issuer,
+        token_endpoint: pending.token_endpoint,
+        scopes: pending.scopes,
+        resource: pending.resource,
+      },
+      {
+        access_token: tokens.access_token,
+        refresh_token: typeof tokens.refresh_token === 'string' ? tokens.refresh_token : undefined,
+        token_type: tokens.token_type,
+      },
+    );
+    await deletePendingRecord(state);
+    logger.system(`OAuth: user ${pending.slack_user_id} connected MCP server "${pending.server_name}"`);
+
+    const resumed = await wakeDmTask(pending);
+    return {
+      ok: true,
+      title: 'Connected',
+      message: resumed
+        ? `"${pending.server_name}" is now authorized with your account. The task resumes automatically — you can close this tab.`
+        : `Your account is connected to "${pending.server_name}". The originating task could not be woken automatically.`,
+      serverName: pending.server_name,
+    };
+  }
+
   await writeOAuthRecord(
     {
       server_name: pending.server_name,
@@ -179,6 +219,44 @@ async function completeFlow(state: string, code: string): Promise<CallbackOutcom
     message: `Archie now has credentials for "${pending.server_name}". You can close this tab.`,
     serverName: pending.server_name,
   };
+}
+
+export async function wakeDmTask(pending: OAuthPendingRecord): Promise<boolean> {
+  if (!pending.task_id) return false;
+  const taskId = pending.task_id;
+  const resume = async (): Promise<void> => {
+    const resumedTask = await Task.get(taskId);
+    await resumedTask.sendMessage(`OAuth authorization for "${pending.server_name}" completed. Continue the task with the newly available MCP tools.`, 'pm-agent');
+  };
+  const logFailure = (err: unknown): void => {
+    logger.error('oauth', `Failed to wake DM task ${taskId} after authorizing "${pending.server_name}"`, err);
+  };
+  let wakeStarted = false;
+  const startResume = async (): Promise<void> => {
+    if (wakeStarted) return;
+    wakeStarted = true;
+    await resume();
+  };
+  const listener = (event: SystemEvent): void => {
+    if (event.type !== 'task:stopped' || event.taskId !== taskId) return;
+    offEvent(listener);
+    void startResume().catch(logFailure);
+  };
+
+  onEvent(listener);
+  try {
+    const task = await Task.get(taskId);
+    // The auth request is flushed as in_progress; an inactive copy with that status is mid-stop.
+    if (!task.isActive && task.metadata.status !== 'in_progress') {
+      offEvent(listener);
+      await startResume();
+    }
+    return true;
+  } catch (err) {
+    offEvent(listener);
+    logFailure(err);
+    return false;
+  }
 }
 
 function renderResultPage(outcome: CallbackOutcome): string {

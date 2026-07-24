@@ -52,6 +52,8 @@ import {
   getMemoryPath,
   getKnowledgeLogPath,
 } from './persistence.js';
+import { beginUserConnect, readMcpServerUrl } from '../system/oauth/connect.js';
+import { ensureFreshUserToken } from '../system/oauth/refresh.js';
 import { getIsShuttingDown } from '../system/shutdown.js';
 import { scheduleIdleCheck } from './recovery.js';
 import { scanAgentDefs, getAgentDef, getVisiblePeerIdsForSender, synthesizeDynamicAgentDef } from '../agents/registry.js';
@@ -347,6 +349,7 @@ export class Task {
         thread_id: thread.threadId,
         channel_id: thread.channel.id,
         channel_name: thread.channel.name,
+        dm_user_id: thread.channel.dmUserId,
         last_processed_ts: thread.currentMessageTs,
         url: buildThreadUrl(thread.channel.id, thread.threadId) ?? undefined,
       };
@@ -359,6 +362,8 @@ export class Task {
       this.debouncedSave();
       return { linkedNewThread: true };
     }
+
+    existing.dm_user_id ??= thread.channel.dmUserId;
 
     // Existing thread — only append messages newer than last_processed_ts
     const lastProcessedTs = existing.last_processed_ts;
@@ -1513,6 +1518,67 @@ export class Task {
     const { deleteTrigger } = await import('../system/trigger-store.js');
     await deleteTrigger(id);
     await appendAgentFinding(this.taskId, 'system', `Trigger ${id} denied by user`, 'decision');
+  }
+
+  // ---- Per-user MCP OAuth --------------------------------------------------
+
+  /** Per-user OAuth is available only to the task's default 1:1 Slack DM. */
+  getMcpOAuthUser(): string | null {
+    const key = this.metadata.default_channel;
+    const channel = key ? this.metadata.channels[key] : null;
+    if (channel?.type !== 'slack' || !channel.channel_id.startsWith('D')) return null;
+    return channel.dm_user_id ?? null;
+  }
+
+  /** Escalate one server to the DM participant, authorizing only when needed. */
+  async requestMcpAuth(serverName: string, reason?: string): Promise<'ready' | 'authorization_started'> {
+    const slackUserId = this.getMcpOAuthUser();
+    if (!slackUserId) throw new Error('Per-user MCP OAuth is available only in a 1:1 Slack DM.');
+    readMcpServerUrl(serverName);
+
+    const selectPersonalCredentials = async (): Promise<void> => {
+      const personalServers = new Set(this.metadata.mcp_personal_oauth ?? []);
+      personalServers.add(serverName);
+      this.metadata.mcp_personal_oauth = [...personalServers];
+      await this.save(true);
+    };
+
+    let personalCredentialsReady = true;
+    try {
+      await ensureFreshUserToken(slackUserId, serverName);
+    } catch {
+      personalCredentialsReady = false;
+    }
+
+    if (personalCredentialsReady) {
+      await selectPersonalCredentials();
+      await appendAgentFinding(
+        this.taskId,
+        'system',
+        `MCP server "${serverName}" escalated to the DM user's existing credentials`,
+        'decision',
+      );
+      return 'ready';
+    }
+
+    const { authorizeUrl } = await beginUserConnect({
+      serverName,
+      slackUserId,
+      taskId: this.taskId,
+    });
+    await selectPersonalCredentials();
+    await appendAgentFinding(
+      this.taskId,
+      'system',
+      `MCP authorization requested for "${serverName}"${reason ? ` — ${reason}` : ''}`,
+      'decision',
+    );
+    await this.postToUser(
+      `Authorize *${serverName}* for this DM${reason ? ` — ${reason}` : ''}:\n${authorizeUrl}\n\n` +
+      'This link is single-use and expires in 1 hour.',
+      'system',
+    );
+    return 'authorization_started';
   }
 
   // ---- Internal methods ----

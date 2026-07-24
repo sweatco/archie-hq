@@ -72,7 +72,7 @@ export interface SlackThreadMessage {
  */
 export interface SlackThread {
   threadId: string;
-  channel: { id: string; name: string };
+  channel: { id: string; name: string; dmUserId?: string };
   shared: boolean;
   messages: SlackThreadMessage[];  // bot messages excluded, EXCEPT the root when our bot started the thread
   currentMessageTs: string;
@@ -98,6 +98,8 @@ export interface SlackChannel extends ChannelBase {
   thread_id: string;
   channel_id: string;
   channel_name: string;
+  /** The other participant for a 1:1 DM. Absent for public/private channels. */
+  dm_user_id?: string;
   last_processed_ts: string;
   url?: string;     // Full Slack URL to the thread (e.g. https://workspace.slack.com/archives/C.../p...)
   muted?: boolean;  // When true, messages are not routed to task until next @mention
@@ -321,6 +323,8 @@ export interface TaskMetadata {
     requested_by: string; // agent id — to clear its parked teardown on resolution
     requested_at: string; // ISO 8601, for the audit finding
   };
+  /** MCP servers explicitly escalated from shared to the default DM user's credentials. */
+  mcp_personal_oauth?: string[];
   research_budget_extra?: number;    // Additional research budget granted via Slack approval (+5 per approval)
   research_request_count?: number;   // Persisted research request count (survives stop/reactivate)
   failure_counter?: number;          // Consecutive recovery attempts (Stage 3 idle detection)
@@ -375,4 +379,3 @@ export interface SlackAttachment {
   /** Text content of the attachment (forwarded message body, unfurled preview, etc.). */
   text: string;
 }
-

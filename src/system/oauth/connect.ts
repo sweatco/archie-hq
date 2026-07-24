@@ -1,10 +1,17 @@
 /**
  * High-level orchestration for connecting an MCP server.
  *
- * Used by the CLI: discover → register → write pending → return
- * authorize URL. The HTTP callback handler in
- * `src/connectors/oauth/routes.ts` picks up the pending record and
- * finishes the exchange.
+ * Two entry points share the discovery pipeline:
+ *
+ *   - `beginConnect` — operator CLI: discover → register (or manual client) →
+ *     write pending → return authorize URL. Produces a legacy shared record
+ *     via the callback handler.
+ *   - `beginUserConnect` — daemon-side, DM-only: discover → shared DCR client
+ *     → write a pending record carrying the task and DM user → return the
+ *     authorize URL for delivery to the DM.
+ *
+ * The HTTP callback handler in `src/connectors/oauth/routes.ts` picks up the
+ * pending record and finishes the exchange for both.
  */
 
 import { join } from 'path';
@@ -16,10 +23,20 @@ import {
   probeResourceMetadataUrl,
   fetchProtectedResourceMetadata,
   fetchAuthServerMetadata,
+  type ResourceServer,
 } from './discovery.js';
 import { registerClient } from './dcr.js';
 import { generatePkcePair, generateState, buildAuthorizeUrl } from './flow.js';
-import { writePendingRecord } from './storage.js';
+import {
+  writePendingRecord,
+  readOAuthClientRecord,
+  readOAuthClientSealed,
+  writeOAuthClientRecord,
+  readOAuthRecord,
+  readOAuthSealed,
+} from './storage.js';
+import { withKeyMutex } from '../secrets-vault.js';
+import type { OAuthClientSealed } from './types.js';
 
 export interface ConnectInput {
   serverName: string;
@@ -67,8 +84,38 @@ export function readMcpServerUrl(serverName: string): string {
   return entry.url;
 }
 
-export async function beginConnect(input: ConnectInput): Promise<ConnectResult> {
-  const { serverName, redirectUri } = input;
+/**
+ * Public redirect URI for this deployment — where providers send the browser
+ * back. Shared by the CLI and daemon flows so both register/authorize against
+ * the same callback.
+ */
+export function resolveRedirectUri(): string {
+  const publicUrl = process.env.ARCHIE_PUBLIC_URL;
+  if (!publicUrl) {
+    throw new Error(
+      'ARCHIE_PUBLIC_URL is not set. Set it to the public HTTPS URL where the daemon is reachable, ' +
+      'e.g. https://archie.example.com',
+    );
+  }
+  return new URL(`${publicUrl.replace(/\/+$/, '')}/oauth/callback`).toString();
+}
+
+export interface DiscoveredServer {
+  serverUrl: string;
+  resource: ResourceServer;
+  authServer: oauth.AuthorizationServer;
+  scopes: string[];
+  /** RFC 8707 resource indicator — the audience the resource server enforces. */
+  resourceIndicator: string;
+}
+
+/**
+ * The MCP authorization discovery pipeline for a configured server:
+ * probe → protected-resource metadata → auth-server metadata → sanity checks
+ * (S256 PKCE, required endpoints). Shared by the operator CLI connect and the
+ * daemon-side per-user connect.
+ */
+export async function discoverServer(serverName: string): Promise<DiscoveredServer> {
   const serverUrl = readMcpServerUrl(serverName);
   logger.system(`OAuth connect "${serverName}": probing ${serverUrl}`);
 
@@ -91,7 +138,41 @@ export async function beginConnect(input: ConnectInput): Promise<ConnectResult> 
   logger.system(`OAuth connect "${serverName}": fetching auth-server metadata from ${authServerUrl}`);
   const authServer = await fetchAuthServerMetadata(authServerUrl);
 
+  // The MCP spec mandates S256 PKCE. If the server advertises supported
+  // methods at all, refuse to proceed unless S256 is in the list.
+  if (
+    authServer.code_challenge_methods_supported &&
+    !authServer.code_challenge_methods_supported.includes('S256')
+  ) {
+    throw new Error(
+      `Authorization server at ${authServer.issuer} does not advertise S256 PKCE — refusing to use plaintext`,
+    );
+  }
+  if (!authServer.authorization_endpoint || !authServer.token_endpoint) {
+    throw new Error(
+      `Authorization server at ${authServer.issuer} is missing required endpoints`,
+    );
+  }
+
+  return {
+    serverUrl,
+    resource,
+    authServer,
+    scopes: resource.scopes_supported ?? [],
+    // Persisted so it can be replayed on every token-endpoint request (initial
+    // exchange + refresh), not just the authorize step.
+    resourceIndicator: resource.resource || serverUrl,
+  };
+}
+
+export async function beginConnect(input: ConnectInput): Promise<ConnectResult> {
+  const { serverName, redirectUri } = input;
+  const discovered = await discoverServer(serverName);
+  const { authServer, resource, scopes, resourceIndicator } = discovered;
+
   // Acquire client credentials: prefer caller-supplied, otherwise DCR.
+  // The operator path deliberately does NOT touch the shared client record —
+  // legacy shared connects keep their client bundled in the vault record.
   let clientId = input.clientId;
   let clientSecret = input.clientSecret;
   if (!clientId) {
@@ -111,33 +192,11 @@ export async function beginConnect(input: ConnectInput): Promise<ConnectResult> 
     clientSecret = registered.client_secret;
   }
 
-  // The MCP spec mandates S256 PKCE. If the server advertises supported
-  // methods at all, refuse to proceed unless S256 is in the list.
-  if (
-    authServer.code_challenge_methods_supported &&
-    !authServer.code_challenge_methods_supported.includes('S256')
-  ) {
-    throw new Error(
-      `Authorization server at ${authServer.issuer} does not advertise S256 PKCE — refusing to use plaintext`,
-    );
-  }
-  if (!authServer.authorization_endpoint || !authServer.token_endpoint) {
-    throw new Error(
-      `Authorization server at ${authServer.issuer} is missing required endpoints`,
-    );
-  }
-
   const pkce = await generatePkcePair();
   const state = generateState();
-  const scopes = resource.scopes_supported ?? [];
-
-  // RFC 8707 resource indicator — the audience the resource server enforces.
-  // Persisted so it can be replayed on every token-endpoint request (initial
-  // exchange + refresh), not just the authorize step.
-  const resourceIndicator = resource.resource || serverUrl;
 
   const authorizeUrl = buildAuthorizeUrl({
-    authorizationEndpoint: authServer.authorization_endpoint,
+    authorizationEndpoint: authServer.authorization_endpoint!,
     clientId,
     redirectUri,
     scope: scopes.length ? scopes.join(' ') : undefined,
@@ -152,8 +211,8 @@ export async function beginConnect(input: ConnectInput): Promise<ConnectResult> 
       server_name: serverName,
       label: input.label,
       issuer: authServer.issuer,
-      token_endpoint: authServer.token_endpoint,
-      authorization_endpoint: authServer.authorization_endpoint,
+      token_endpoint: authServer.token_endpoint!,
+      authorization_endpoint: authServer.authorization_endpoint!,
       scopes,
       resource: resourceIndicator,
       redirect_uri: redirectUri,
@@ -167,4 +226,114 @@ export async function beginConnect(input: ConnectInput): Promise<ConnectResult> 
   );
 
   return { authorizeUrl, state, scopes, authServer };
+}
+
+// ---- Daemon-side per-user connect --------------------------------------------
+
+/**
+ * Read-or-register the shared DCR client for a server. Registered once on the
+ * first per-user authorization, then reused by every user. An existing shared
+ * record supplies its client before DCR is attempted. Mutexed so concurrent
+ * first authorizations share one setup round-trip.
+ */
+async function ensureSharedClient(
+  serverName: string,
+  authServer: oauth.AuthorizationServer,
+  resource: ResourceServer,
+  redirectUri: string,
+): Promise<OAuthClientSealed> {
+  return withKeyMutex(`oauth:client:${serverName}`, async () => {
+    const existing = await readOAuthClientRecord(serverName);
+    if (existing) return readOAuthClientSealed(existing);
+
+    const shared = await readOAuthRecord(serverName);
+    if (shared) {
+      const sealed = await readOAuthSealed(shared);
+      const client = { client_id: sealed.client_id, client_secret: sealed.client_secret };
+      const nowSec = Math.floor(Date.now() / 1000);
+      await writeOAuthClientRecord(
+        { server_name: serverName, issuer: shared.issuer, created_at: nowSec, updated_at: nowSec },
+        client,
+      );
+      return client;
+    }
+
+    if (!authServer.registration_endpoint) {
+      throw new Error(
+        `Server "${serverName}" does not expose a registration_endpoint (Dynamic Client Registration). ` +
+        `Connect it once via the CLI with --client-id/--client-secret before using it in DMs.`,
+      );
+    }
+    logger.system(`OAuth: registering shared dynamic client for "${serverName}"`);
+    const registered = await registerClient(authServer, {
+      redirectUri,
+      clientName: `archie-hq (${serverName})`,
+      scope: resource.scopes_supported?.join(' '),
+    });
+    const nowSec = Math.floor(Date.now() / 1000);
+    await writeOAuthClientRecord(
+      { server_name: serverName, issuer: authServer.issuer, created_at: nowSec, updated_at: nowSec },
+      { client_id: registered.client_id, client_secret: registered.client_secret },
+    );
+    return { client_id: registered.client_id, client_secret: registered.client_secret };
+  });
+}
+
+export interface UserConnectInput {
+  serverName: string;
+  /** The other participant in the task's 1:1 Slack DM. */
+  slackUserId: string;
+  /** Task to wake after the callback stores the token. */
+  taskId: string;
+}
+
+/**
+ * Start a daemon-side authorization for the participant in a 1:1 Slack DM.
+ */
+export async function beginUserConnect(input: UserConnectInput): Promise<{ authorizeUrl: string }> {
+  const redirectUri = resolveRedirectUri();
+  const discovered = await discoverServer(input.serverName);
+  const client = await ensureSharedClient(
+    input.serverName,
+    discovered.authServer,
+    discovered.resource,
+    redirectUri,
+  );
+
+  const pkce = await generatePkcePair();
+  const state = generateState();
+
+  const authorizeUrl = buildAuthorizeUrl({
+    authorizationEndpoint: discovered.authServer.authorization_endpoint!,
+    clientId: client.client_id,
+    redirectUri,
+    scope: discovered.scopes.length ? discovered.scopes.join(' ') : undefined,
+    state,
+    codeChallenge: pkce.challenge,
+    resource: discovered.resourceIndicator,
+  });
+
+  await writePendingRecord(
+    {
+      state,
+      server_name: input.serverName,
+      issuer: discovered.authServer.issuer,
+      token_endpoint: discovered.authServer.token_endpoint!,
+      authorization_endpoint: discovered.authServer.authorization_endpoint!,
+      scopes: discovered.scopes,
+      resource: discovered.resourceIndicator,
+      redirect_uri: redirectUri,
+      created_at: Math.floor(Date.now() / 1000),
+      slack_user_id: input.slackUserId,
+      task_id: input.taskId,
+    },
+    {
+      code_verifier: pkce.verifier,
+      client_id: client.client_id,
+      client_secret: client.client_secret,
+    },
+  );
+
+  logger.system(`OAuth: pending authorize for "${input.serverName}" in DM task ${input.taskId}`);
+  return { authorizeUrl };
 }

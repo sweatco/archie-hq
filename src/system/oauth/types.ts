@@ -45,6 +45,53 @@ export interface OAuthRecord extends OAuthRecordMeta {
   envelope: EncryptedEnvelope;
 }
 
+/**
+ * Plaintext metadata for a per-user token record
+ * (`oauth/users/<slackUserId>/<server>.json`).
+ */
+export interface OAuthUserRecordMeta extends OAuthRecordMeta {
+  slack_user_id: string;
+}
+
+/**
+ * What we encrypt inside a per-user token record. Unlike the legacy shared
+ * `OAuthSealed`, client credentials are NOT bundled here — they live in the
+ * shared client record so one DCR registration serves every user.
+ */
+export interface OAuthUserSealed {
+  access_token: string;
+  refresh_token?: string;
+  token_type: string;
+}
+
+/** On-disk representation of one user's connection to an MCP server. */
+export interface OAuthUserRecord extends OAuthUserRecordMeta {
+  envelope: EncryptedEnvelope;
+}
+
+/**
+ * Plaintext metadata for a server's shared DCR client registration
+ * (`oauth/_clients/<server>.json`). Registered once on the first per-user
+ * authorization, then reused by every user of that server.
+ */
+export interface OAuthClientMeta {
+  server_name: string;
+  issuer: string;
+  created_at: number;
+  updated_at: number;
+}
+
+/** What we encrypt inside a shared client record. */
+export interface OAuthClientSealed {
+  client_id: string;
+  client_secret?: string;
+}
+
+/** On-disk representation of a shared DCR client registration. */
+export interface OAuthClientRecord extends OAuthClientMeta {
+  envelope: EncryptedEnvelope;
+}
+
 /** What the CLI persists for the daemon's callback handler to pick up. */
 export interface OAuthPendingMeta {
   state: string;
@@ -59,6 +106,9 @@ export interface OAuthPendingMeta {
   resource?: string;
   redirect_uri: string;
   created_at: number;
+  /** DM-only per-user flows. Absent on operator/CLI connects. */
+  slack_user_id?: string;
+  task_id?: string;
 }
 
 /** Encrypted half of a pending file (verifier + client creds). */
@@ -76,4 +126,3 @@ export interface OAuthPendingRecord extends OAuthPendingMeta {
   /** Set by the callback handler on success — CLI uses it to detect completion. */
   completed_at?: number;
 }
-
