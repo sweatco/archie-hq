@@ -717,6 +717,17 @@ Shared folder: ${sharedPath} [READ-ONLY]
           for await (const event of agentQuery) {
             if (event.type === 'system' && event.subtype === 'init') {
               task.updateAgentState(def.id, true, event.session_id);
+              // Record the concrete model this session resolved the alias to
+              // (e.g. opus → claude-opus-5) so the footer shows the real version
+              // without the app hard-coding the alias→model mapping. The model
+              // is fixed for the session; a max-mode swap starts a fresh session,
+              // so this fires again with the new model. `.model` is read via an
+              // `any` cast, so warn if it's ever absent (an SDK type-surface
+              // change) — otherwise the footer silently falls back to the alias.
+              if (!(event as any).model) {
+                logger.warn(def.id, 'SDK init event missing .model — footer will use alias fallback');
+              }
+              task.recordResolvedModel(def.id, (event as any).model);
               logger.agent(def.id, `Model: ${(event as any).model || 'unknown'}`);
               if (Array.isArray(event.mcp_servers)) {
                 // The init snapshot only carries { name, status }. Pull the
