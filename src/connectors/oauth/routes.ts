@@ -21,6 +21,7 @@ import {
   reapStalePending,
 } from '../../system/oauth/storage.js';
 import type { OAuthPendingRecord } from '../../system/oauth/types.js';
+import { offEvent, onEvent, type SystemEvent } from '../../system/event-bus.js';
 import { Task } from '../../tasks/task.js';
 
 const PENDING_TTL_MS = 60 * 60 * 1000; // 1 hour
@@ -220,14 +221,40 @@ async function completeFlow(state: string, code: string): Promise<CallbackOutcom
   };
 }
 
-async function wakeDmTask(pending: OAuthPendingRecord): Promise<boolean> {
+export async function wakeDmTask(pending: OAuthPendingRecord): Promise<boolean> {
   if (!pending.task_id) return false;
+  const taskId = pending.task_id;
+  const resume = async (): Promise<void> => {
+    const resumedTask = await Task.get(taskId);
+    await resumedTask.sendMessage(`OAuth authorization for "${pending.server_name}" completed. Continue the task with the newly available MCP tools.`, 'pm-agent');
+  };
+  const logFailure = (err: unknown): void => {
+    logger.error('oauth', `Failed to wake DM task ${taskId} after authorizing "${pending.server_name}"`, err);
+  };
+  let wakeStarted = false;
+  const startResume = async (): Promise<void> => {
+    if (wakeStarted) return;
+    wakeStarted = true;
+    await resume();
+  };
+  const listener = (event: SystemEvent): void => {
+    if (event.type !== 'task:stopped' || event.taskId !== taskId) return;
+    offEvent(listener);
+    void startResume().catch(logFailure);
+  };
+
+  onEvent(listener);
   try {
-    const task = await Task.get(pending.task_id);
-    await task.sendMessage(`OAuth authorization for "${pending.server_name}" completed. Continue the task with the newly available MCP tools.`, 'pm-agent');
+    const task = await Task.get(taskId);
+    // The auth request is flushed as in_progress; an inactive copy with that status is mid-stop.
+    if (!task.isActive && task.metadata.status !== 'in_progress') {
+      offEvent(listener);
+      await startResume();
+    }
     return true;
   } catch (err) {
-    logger.error('oauth', `Failed to wake DM task ${pending.task_id} after authorizing "${pending.server_name}"`, err);
+    offEvent(listener);
+    logFailure(err);
     return false;
   }
 }

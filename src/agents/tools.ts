@@ -14,7 +14,7 @@ import { promisify } from 'util';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { AgentName, FindingType, AttachedRepo, SlackThreadMessage } from '../types/task.js';
-import type { Task } from '../tasks/task.js';
+import { Task } from '../tasks/task.js';
 import type { Agent } from './agent.js';
 import { getVisiblePeerIdsForSender, findAgentDefsContainingRepo, synthesizeDynamicAgentDef, isAutoMergeRepo } from './registry.js';
 import { getGitHubClient, parseCheckRef } from '../connectors/github/client.js';
@@ -707,7 +707,9 @@ function createRequestMcpAuthTool(agent: Agent, task: Task) {
       if (outcome === 'ready') {
         agent.deferTeardown(async () => {
           await task.stop();
-          await task.sendMessage(
+          // OAuth headers are fixed at agent spawn, so resume through a fresh task instance.
+          const resumedTask = await Task.get(task.taskId);
+          await resumedTask.sendMessage(
             `Use the DM user's personal credentials for MCP server "${args.server}" and continue the task.`,
             'pm-agent',
           );
