@@ -3,26 +3,51 @@ name: commit
 description: Review the complete working tree, verify the repository, and create logically grouped Git commits without pushing. Use when the user explicitly asks to commit changes, make a commit, split work into commits, or prepare local commits for review.
 ---
 
-# Commit changes
+You are preparing git commits for this repository.
 
-Create intentional, verified commits from the current working tree.
+## Instructions:
 
-## Workflow
+1. **Analyze changes** - Run `git status` and `git diff` (staged + unstaged) to understand ALL changes
+2. **Read the diffs carefully** - Don't guess what changed. Read the actual diff output to understand:
+   - What functionality was added/changed/removed
+   - Why these changes were made (infer from context)
+   - How changes relate to each other
+3. **Group logically** - Identify logical change groups. Examples:
+   - "Add coin tap haptic feedback" (might touch multiple files: scene, view, etc.)
+   - "Fix missed rewards using range.upperBound" (might be a single file change)
+   - "Refactor TopBlockView to isolate re-renders" (could span several files)
 
-1. Confirm that the user explicitly requested commits. If not, do not commit.
-2. Run `git status --short --branch`, inspect staged and unstaged diffs, and include untracked files in the review. Do not infer changes from filenames alone.
-3. Read `git log --oneline -10` to match the repository's commit style.
-4. Separate changes into logical groups by purpose. Keep tightly coupled files together; do not default to one commit per file or one catch-all commit.
-5. Preserve unrelated user changes. If a clean logical group cannot be staged without capturing unrelated edits, stop and explain the overlap.
-6. Run the narrowest relevant tests, then the build command required by the repository guidance. Resolve failures caused by the intended changes before committing. Report unrelated pre-existing failures instead of hiding them.
-7. For each logical group, stage only its files, review the staged diff with `git diff --cached`, and create a concise commit whose subject explains the purpose in the repository's existing style.
-8. After all commits, show `git status --short --branch` and summarize each created commit.
-9. Do not push. Wait for a separate explicit push request.
+   **Do NOT:**
+   - Create one commit per file (too granular)
+   - Commit everything in one commit (too broad)
+   - Guess at changes without reading the diff
 
-## Guardrails
+4. **Verify build** - Run the build command before committing
+5. **Create commits** - For each logical group:
+   - Stage only the relevant files for that group
+   - Write a concise commit message (1-2 sentences) focusing on "why" not "what"
+   - Match the repo's commit message style (check recent commits with `git log --oneline -10`)
+6. **Show summary** - After committing, show what was committed
+7. **Wait for push approval** - Do NOT push automatically. Wait for user to explicitly request push.
 
-- Never use destructive commands to manufacture a clean tree.
-- Never amend, rebase, reset, or rewrite existing commits unless the user explicitly requests it.
-- Never bypass hooks or verification with `--no-verify` unless the user explicitly authorizes it after seeing the failure.
-- Do not add an AI co-author trailer unless the user asks for one.
-- Do not stage secrets, credentials, generated scratch output, or unrelated files.
+## Commit Message Format:
+
+Use this style (check recent commits for reference):
+```
+Short summary of the change
+
+Co-Authored-By: <agent name> <agent email>
+```
+
+Use the identity of the agent creating the commit:
+
+- Claude: `Co-Authored-By: Claude <noreply@anthropic.com>`
+- Codex: `Co-Authored-By: Codex <noreply@openai.com>`
+
+## Important:
+
+- NEVER push without explicit user approval
+- NEVER skip the build verification
+- NEVER guess at changes - always read the actual diff
+- If changes are unrelated, split into separate commits
+- If changes are tightly coupled, keep in one commit
