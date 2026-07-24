@@ -10,7 +10,7 @@ import type { AgentName, SlackAuthor, SlackChannel, SlackThread, SlackReaction, 
 import { CLI_CHANNEL_KEY } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
 import { isPmAgent, isRepoAgent } from '../types/agent.js';
-import { modelDisplayLabel, resolveAgentModel, modelChangingAgentIds } from '../agents/model-label.js';
+import { modelDisplayLabel, footerModel, modelChangingAgentIds } from '../agents/model-label.js';
 import { prCardFingerprint, prCardTitlePlain } from '../system/pr-card-format.js';
 import { getGitHubClient } from '../connectors/github/client.js';
 import { createKeyedLock } from '../system/keyed-lock.js';
@@ -123,11 +123,15 @@ export class Task {
   metadata: TaskMetadata;
   readonly agentProcesses: Map<AgentName, Agent> = new Map();
   /**
-   * The concrete model each agent's alias resolved to, keyed by agent id, as
-   * reported by the SDK at the agent's `init` event (e.g. `opus → claude-opus-5`).
-   * The footer labels this (via `collectModelsUsed`) so it shows the real
-   * version without the app knowing the alias→model mapping — that lives in the
-   * SDK. Empty until an agent's first init; the footer falls back to the alias.
+   * The concrete model each agent most recently ran on, keyed by agent id — the
+   * model that served the agent's latest turn (e.g. `opus → claude-opus-5`, or a
+   * max-mode turn → `claude-fable-5`). Updated per assistant message and seeded
+   * at init (see `recordResolvedModel`, populated from `spawn.ts`). Because the
+   * footer is built after a turn completes, this holds the model that actually
+   * served that turn. The footer labels it (via `collectModelsUsed`) so it shows
+   * the real version without the app knowing the alias→model mapping — that
+   * lives in the SDK. Empty only before an agent's first turn; until then the
+   * footer falls back to the configured alias (family-only label).
    */
   private readonly resolvedModels: Map<string, string> = new Map();
   team: AgentDef[];
@@ -650,9 +654,10 @@ export class Task {
   }
 
   /**
-   * Record the concrete model an agent's alias resolved to, as reported by the
-   * SDK at its `init` event. Lets the footer show the real version (`Opus 5`)
-   * without the app hard-coding the alias→model mapping. No-op for a falsy model.
+   * Record the concrete model an agent ran on, as reported by the SDK — per
+   * assistant message (the turn's actual model) and seeded at init. Lets the
+   * footer show the real version (`Opus 5`) that served the turn, without the
+   * app hard-coding the alias→model mapping. No-op for a falsy model.
    */
   recordResolvedModel(agentId: string, model?: string): void {
     if (model && typeof model === 'string') this.resolvedModels.set(agentId, model);
@@ -667,15 +672,8 @@ export class Task {
    */
   private collectModelsUsed(): string[] {
     const maxMode = this.metadata.max_mode === true;
-    const modelFor = (def: AgentDef): string => {
-      const alias = resolveAgentModel(def, maxMode);
-      const resolved = this.resolvedModels.get(def.id);
-      if (!resolved) return alias;
-      // The SDK's concrete id carries no `[1m]` suffix; re-attach it when the
-      // configured alias asked for the 1M window so the `(1M)` marker survives.
-      const wants1m = /\[1m\]$/i.test(alias);
-      return wants1m && !/\[1m\]$/i.test(resolved) ? `${resolved}[1m]` : resolved;
-    };
+    const modelFor = (def: AgentDef): string =>
+      footerModel(def, this.resolvedModels.get(def.id), maxMode);
     const raw: string[] = [];
     const pmDef = this.team.find((d) => isPmAgent(d));
     if (pmDef) raw.push(modelFor(pmDef));
