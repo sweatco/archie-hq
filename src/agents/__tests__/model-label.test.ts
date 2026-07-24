@@ -6,7 +6,7 @@
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import type { AgentDef } from '../../types/agent.js';
-import { modelDisplayLabel, footerModel, resolveAgentModel, resolveAgentEffort, modelChangingAgentIds } from '../model-label.js';
+import { modelDisplayLabel, resolveAgentModel, resolveAgentEffort, modelChangingAgentIds } from '../model-label.js';
 
 // The ARCHIE_MAX_MODE_* env overrides are read at call time; unstub after each test.
 afterEach(() => {
@@ -58,42 +58,6 @@ describe('modelDisplayLabel', () => {
     expect(modelDisplayLabel('claude-sonnet-5[1M]')).toBe('Sonnet 5 (1M)');
     expect(modelDisplayLabel('  opus  ')).toBe('Opus');
     expect(modelDisplayLabel('  claude-opus-5  ')).toBe('Opus 5');
-  });
-});
-
-describe('footerModel', () => {
-  const repo = { repos: [{ github: 'o/r', baseBranch: 'main', autoMerge: false }], primary: 'o/r' };
-  const def = (over: Partial<AgentDef>): AgentDef => ({
-    id: 'x-agent', key: 'x', role: '', expertise: '', pluginName: 'p', ...over,
-  } as AgentDef);
-
-  it('prefers the resolved per-turn model over the configured alias, and renders its version', () => {
-    // PM configured as the `opus` alias; the turn actually ran on claude-opus-5.
-    expect(footerModel(def({ isPm: true }), 'claude-opus-5')).toBe('claude-opus-5');
-    expect(modelDisplayLabel(footerModel(def({ isPm: true }), 'claude-opus-5'))).toBe('Opus 5');
-  });
-
-  it('reflects a turn whose model differs from the configured default (e.g. a max-mode swap to Fable)', () => {
-    // Configured default is `opus`, but the max-mode turn ran on claude-fable-5.
-    const d = def({ model: 'opus', repo, maxMode: { model: 'claude-fable-5' } });
-    expect(footerModel(d, 'claude-fable-5', true)).toBe('claude-fable-5');
-    expect(modelDisplayLabel(footerModel(d, 'claude-fable-5', true))).toBe('Fable 5');
-    // The resolved turn model wins even when it contradicts the config entirely.
-    expect(footerModel(def({ model: 'opus' }), 'claude-fable-5')).toBe('claude-fable-5');
-  });
-
-  it('re-attaches the [1m] marker when the alias asked for 1M but the resolved id lacks it', () => {
-    expect(footerModel(def({ model: 'sonnet[1m]' }), 'claude-sonnet-5')).toBe('claude-sonnet-5[1m]');
-    expect(modelDisplayLabel(footerModel(def({ model: 'sonnet[1m]' }), 'claude-sonnet-5'))).toBe('Sonnet 5 (1M)');
-    // No double-attach when the resolved id already carries the marker.
-    expect(footerModel(def({ model: 'sonnet[1m]' }), 'claude-sonnet-5[1m]')).toBe('claude-sonnet-5[1m]');
-  });
-
-  it('falls back to the configured alias only before the first turn (no resolved model yet)', () => {
-    expect(footerModel(def({ isPm: true }), undefined)).toBe('opus');
-    expect(modelDisplayLabel(footerModel(def({ isPm: true }), undefined))).toBe('Opus'); // family-only last resort
-    expect(footerModel(def({ isPm: false }), undefined)).toBe('sonnet[1m]');
-    expect(modelDisplayLabel(footerModel(def({ isPm: false }), undefined))).toBe('Sonnet (1M)');
   });
 });
 

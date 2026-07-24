@@ -51,27 +51,6 @@ export function resolveAgentModel(def: AgentDef, maxMode = false): string {
 }
 
 /**
- * The model string to LABEL for an agent in the footer. Prefers `resolvedModel`
- * — the concrete model the SDK reported the agent actually ran on for its latest
- * turn (e.g. `claude-opus-5`, or a max-mode turn's `claude-fable-5`) — so the
- * footer reflects the real per-turn model, not just the configured alias. When
- * the configured alias asked for the 1M window (`…[1m]`) but the resolved id
- * lacks the marker, re-attach it so `(1M)` survives. Falls back to the alias
- * (`resolveAgentModel`) only before the agent's first turn, when no resolved
- * model exists yet — the family-only label is a genuine last resort.
- */
-export function footerModel(
-  def: AgentDef,
-  resolvedModel: string | undefined,
-  maxMode = false,
-): string {
-  const alias = resolveAgentModel(def, maxMode);
-  if (!resolvedModel) return alias;
-  const wants1m = /\[1m\]$/i.test(alias);
-  return wants1m && !/\[1m\]$/i.test(resolvedModel) ? `${resolvedModel}[1m]` : resolvedModel;
-}
-
-/**
  * Resolve the reasoning effort an agent runs at. In max mode an explicit
  * `maxMode.effort` wins; otherwise repo/dynamic agents default to `'max'` (the
  * "increase accuracy" default) while generic agents and the PM keep their

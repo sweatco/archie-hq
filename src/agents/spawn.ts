@@ -717,10 +717,11 @@ Shared folder: ${sharedPath} [READ-ONLY]
           for await (const event of agentQuery) {
             if (event.type === 'system' && event.subtype === 'init') {
               task.updateAgentState(def.id, true, event.session_id);
-              // Seed the resolved model from the session snapshot (e.g.
-              // opus → claude-opus-5). This is refined per turn by the
-              // `assistant` branch below, which reports the model that actually
-              // served each turn — the authoritative source for the footer.
+              // Record the concrete model this session resolved the alias to
+              // (e.g. opus → claude-opus-5) so the footer shows the real version
+              // without the app hard-coding the alias→model mapping. The model
+              // is fixed for the session; a max-mode swap starts a fresh session,
+              // so this fires again with the new model.
               task.recordResolvedModel(def.id, (event as any).model);
               logger.agent(def.id, `Model: ${(event as any).model || 'unknown'}`);
               if (Array.isArray(event.mcp_servers)) {
@@ -762,17 +763,6 @@ Shared folder: ${sharedPath} [READ-ONLY]
                   else logger.warn(def.id, line);
                 }
               }
-            }
-
-            // The concrete model that served THIS turn. Captured per assistant
-            // message (not just once at init) so the footer — posted after the
-            // turn completes — reflects the model actually used, including a
-            // max-mode swap (e.g. → claude-fable-5) or any per-turn override.
-            // The turn's last assistant message wins, so by footer-render time
-            // the recorded model is the one that produced the turn's output.
-            if (event.type === 'assistant') {
-              const turnModel = (event as any).message?.model;
-              if (turnModel) task.recordResolvedModel(def.id, turnModel);
             }
 
             // Background tasks: the SDK runs a backgrounded Bash wait / subagent

@@ -10,7 +10,7 @@ import type { AgentName, SlackAuthor, SlackChannel, SlackThread, SlackReaction, 
 import { CLI_CHANNEL_KEY } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
 import { isPmAgent, isRepoAgent } from '../types/agent.js';
-import { modelDisplayLabel, footerModel, modelChangingAgentIds } from '../agents/model-label.js';
+import { modelDisplayLabel, resolveAgentModel, modelChangingAgentIds } from '../agents/model-label.js';
 import { prCardFingerprint, prCardTitlePlain } from '../system/pr-card-format.js';
 import { getGitHubClient } from '../connectors/github/client.js';
 import { createKeyedLock } from '../system/keyed-lock.js';
@@ -123,15 +123,13 @@ export class Task {
   metadata: TaskMetadata;
   readonly agentProcesses: Map<AgentName, Agent> = new Map();
   /**
-   * The concrete model each agent most recently ran on, keyed by agent id — the
-   * model that served the agent's latest turn (e.g. `opus → claude-opus-5`, or a
-   * max-mode turn → `claude-fable-5`). Updated per assistant message and seeded
-   * at init (see `recordResolvedModel`, populated from `spawn.ts`). Because the
-   * footer is built after a turn completes, this holds the model that actually
-   * served that turn. The footer labels it (via `collectModelsUsed`) so it shows
+   * The concrete model each agent's alias resolved to, keyed by agent id, as
+   * reported by the SDK at the agent's session `init` (e.g. `opus →
+   * claude-opus-5`; a max-mode swap starts a fresh session, so this updates to
+   * the new model). The footer labels it (via `collectModelsUsed`) so it shows
    * the real version without the app knowing the alias→model mapping — that
-   * lives in the SDK. Empty only before an agent's first turn; until then the
-   * footer falls back to the configured alias (family-only label).
+   * lives in the SDK. Empty until an agent's first init; until then the footer
+   * falls back to the configured alias (family-only label).
    */
   private readonly resolvedModels: Map<string, string> = new Map();
   team: AgentDef[];
@@ -639,41 +637,36 @@ export class Task {
    * PM agent's configured model, mirroring spawn's `def.model || 'opus'` default.
    */
   private buildUserFooter(): string {
-    // Dedupe on the rendered label (not the raw model string) so an agent still
-    // on its bare alias and one already resolved to the same family don't show
-    // as two entries during the brief window before every init event lands.
-    const seen = new Set<string>();
-    const labels: string[] = [];
-    for (const m of this.collectModelsUsed()) {
-      const label = modelDisplayLabel(m);
-      if (seen.has(label)) continue;
-      seen.add(label);
-      labels.push(label);
-    }
+    const labels = this.collectModelsUsed().map(modelDisplayLabel);
     return `${this.taskId} · ${labels.join(' + ')}`;
   }
 
   /**
-   * Record the concrete model an agent ran on, as reported by the SDK — per
-   * assistant message (the turn's actual model) and seeded at init. Lets the
-   * footer show the real version (`Opus 5`) that served the turn, without the
-   * app hard-coding the alias→model mapping. No-op for a falsy model.
+   * Record the concrete model an agent resolved to, as reported by the SDK at
+   * its session `init`. Lets the footer show the real version (`Opus 5`) without
+   * the app hard-coding the alias→model mapping. No-op for a falsy model.
    */
   recordResolvedModel(agentId: string, model?: string): void {
     if (model && typeof model === 'string') this.resolvedModels.set(agentId, model);
   }
 
   /**
-   * The models the task has used, PM first — preferring the concrete model the
-   * SDK resolved each alias to (so the footer shows the version), and falling
-   * back to the configured alias until that arrives. Reads the PM from the team
-   * roster (always present, so the footer is right even before the PM process
-   * spawns). As specialists join, the set grows (e.g. `Opus 5 + Sonnet 5 (1M)`).
+   * The distinct models the task has used, PM first — preferring the concrete
+   * model the SDK resolved each alias to (so the footer shows the version), and
+   * falling back to the configured alias until that arrives. Reads the PM from
+   * the team roster (always present, so the footer is right even before the PM
+   * process spawns). As specialists join, the set grows (e.g. `Opus 5 + Sonnet 5 (1M)`).
    */
   private collectModelsUsed(): string[] {
     const maxMode = this.metadata.max_mode === true;
-    const modelFor = (def: AgentDef): string =>
-      footerModel(def, this.resolvedModels.get(def.id), maxMode);
+    const modelFor = (def: AgentDef): string => {
+      const resolved = this.resolvedModels.get(def.id);
+      const alias = resolveAgentModel(def, maxMode);
+      if (!resolved) return alias;
+      // The SDK's concrete id carries no `[1m]` suffix; re-attach it when the
+      // configured alias asked for the 1M window so the `(1M)` marker survives.
+      return /\[1m\]$/i.test(alias) && !/\[1m\]$/i.test(resolved) ? `${resolved}[1m]` : resolved;
+    };
     const raw: string[] = [];
     const pmDef = this.team.find((d) => isPmAgent(d));
     if (pmDef) raw.push(modelFor(pmDef));
