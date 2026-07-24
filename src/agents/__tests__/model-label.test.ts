@@ -14,31 +14,50 @@ afterEach(() => {
 });
 
 describe('modelDisplayLabel', () => {
-  it('beautifies the short aliases', () => {
-    expect(modelDisplayLabel('opus')).toBe('Opus 5');
-    expect(modelDisplayLabel('sonnet')).toBe('Sonnet 5');
-    expect(modelDisplayLabel('haiku')).toBe('Haiku 4.5');
-  });
-
-  it('renders the [1m] marker as (1M)', () => {
-    expect(modelDisplayLabel('sonnet[1m]')).toBe('Sonnet 5 (1M)');
-    expect(modelDisplayLabel('opus[1m]')).toBe('Opus 5 (1M)');
-  });
-
-  it('beautifies full claude ids: drops the prefix, dots the version, drops the date', () => {
+  it('derives family + version from a concrete claude id (no per-version table)', () => {
+    expect(modelDisplayLabel('claude-opus-5')).toBe('Opus 5');
     expect(modelDisplayLabel('claude-opus-4-8')).toBe('Opus 4.8');
+    expect(modelDisplayLabel('claude-sonnet-5')).toBe('Sonnet 5');
+    expect(modelDisplayLabel('claude-fable-5')).toBe('Fable 5');
+    expect(modelDisplayLabel('claude-haiku-4-5')).toBe('Haiku 4.5');
+  });
+
+  it('parses versions generically — a model we have never seen still renders (proves nothing is hard-coded)', () => {
+    expect(modelDisplayLabel('claude-opus-6')).toBe('Opus 6');
+    expect(modelDisplayLabel('claude-sonnet-7-2')).toBe('Sonnet 7.2');
+    expect(modelDisplayLabel('claude-quasar-10-3-20281231')).toBe('Quasar 10.3');
+  });
+
+  it('drops the provider prefix, dots the version, and drops the date/suffix', () => {
     expect(modelDisplayLabel('claude-sonnet-4-6-20250929')).toBe('Sonnet 4.6');
-    expect(modelDisplayLabel('claude-sonnet-4-6[1m]')).toBe('Sonnet 4.6 (1M)');
     expect(modelDisplayLabel('anthropic/claude-haiku-4-5')).toBe('Haiku 4.5');
+  });
+
+  it('renders a bare family alias as the family only (the version is not in the string)', () => {
+    // A bare alias has no version — that lives in the SDK's alias table. The
+    // footer prefers the resolved concrete id for the versioned label; this is
+    // only the pre-resolution fallback.
+    expect(modelDisplayLabel('opus')).toBe('Opus');
+    expect(modelDisplayLabel('sonnet')).toBe('Sonnet');
+    expect(modelDisplayLabel('haiku')).toBe('Haiku');
+  });
+
+  it('renders the [1m] marker as (1M) for both concrete ids and aliases', () => {
+    expect(modelDisplayLabel('claude-sonnet-5[1m]')).toBe('Sonnet 5 (1M)');
+    expect(modelDisplayLabel('claude-sonnet-4-6[1m]')).toBe('Sonnet 4.6 (1M)');
+    expect(modelDisplayLabel('sonnet[1m]')).toBe('Sonnet (1M)');
+    expect(modelDisplayLabel('opus[1m]')).toBe('Opus (1M)');
   });
 
   it('passes through unknown non-Claude ids unchanged', () => {
     expect(modelDisplayLabel('some-future-model')).toBe('some-future-model');
+    expect(modelDisplayLabel('gpt-5')).toBe('gpt-5');
   });
 
   it('is case-insensitive on the [1m] marker and tolerates whitespace', () => {
-    expect(modelDisplayLabel('sonnet[1M]')).toBe('Sonnet 5 (1M)');
-    expect(modelDisplayLabel('  opus  ')).toBe('Opus 5');
+    expect(modelDisplayLabel('claude-sonnet-5[1M]')).toBe('Sonnet 5 (1M)');
+    expect(modelDisplayLabel('  opus  ')).toBe('Opus');
+    expect(modelDisplayLabel('  claude-opus-5  ')).toBe('Opus 5');
   });
 });
 

@@ -122,6 +122,14 @@ export class Task {
   readonly taskId: string;
   metadata: TaskMetadata;
   readonly agentProcesses: Map<AgentName, Agent> = new Map();
+  /**
+   * The concrete model each agent's alias resolved to, keyed by agent id, as
+   * reported by the SDK at the agent's `init` event (e.g. `opus → claude-opus-5`).
+   * The footer labels this (via `collectModelsUsed`) so it shows the real
+   * version without the app knowing the alias→model mapping — that lives in the
+   * SDK. Empty until an agent's first init; the footer falls back to the alias.
+   */
+  private readonly resolvedModels: Map<string, string> = new Map();
   team: AgentDef[];
   budgets: TaskBudgets;
   isActive: boolean = false;
@@ -627,22 +635,51 @@ export class Task {
    * PM agent's configured model, mirroring spawn's `def.model || 'opus'` default.
    */
   private buildUserFooter(): string {
-    const labels = this.collectModelsUsed().map(modelDisplayLabel);
+    // Dedupe on the rendered label (not the raw model string) so an agent still
+    // on its bare alias and one already resolved to the same family don't show
+    // as two entries during the brief window before every init event lands.
+    const seen = new Set<string>();
+    const labels: string[] = [];
+    for (const m of this.collectModelsUsed()) {
+      const label = modelDisplayLabel(m);
+      if (seen.has(label)) continue;
+      seen.add(label);
+      labels.push(label);
+    }
     return `${this.taskId} · ${labels.join(' + ')}`;
   }
 
   /**
-   * The distinct models the task has actually used, PM first. Reads the PM from
-   * the team roster (always present, so the footer is right even before the PM
-   * process spawns) and every spawned agent's resolved model, deduped in order.
-   * As specialists join, the footer grows (e.g. `Opus 4.8 + Sonnet 4.6 (1M)`).
+   * Record the concrete model an agent's alias resolved to, as reported by the
+   * SDK at its `init` event. Lets the footer show the real version (`Opus 5`)
+   * without the app hard-coding the alias→model mapping. No-op for a falsy model.
+   */
+  recordResolvedModel(agentId: string, model?: string): void {
+    if (model && typeof model === 'string') this.resolvedModels.set(agentId, model);
+  }
+
+  /**
+   * The models the task has used, PM first — preferring the concrete model the
+   * SDK resolved each alias to (so the footer shows the version), and falling
+   * back to the configured alias until that arrives. Reads the PM from the team
+   * roster (always present, so the footer is right even before the PM process
+   * spawns). As specialists join, the set grows (e.g. `Opus 5 + Sonnet 5 (1M)`).
    */
   private collectModelsUsed(): string[] {
     const maxMode = this.metadata.max_mode === true;
+    const modelFor = (def: AgentDef): string => {
+      const alias = resolveAgentModel(def, maxMode);
+      const resolved = this.resolvedModels.get(def.id);
+      if (!resolved) return alias;
+      // The SDK's concrete id carries no `[1m]` suffix; re-attach it when the
+      // configured alias asked for the 1M window so the `(1M)` marker survives.
+      const wants1m = /\[1m\]$/i.test(alias);
+      return wants1m && !/\[1m\]$/i.test(resolved) ? `${resolved}[1m]` : resolved;
+    };
     const raw: string[] = [];
     const pmDef = this.team.find((d) => isPmAgent(d));
-    if (pmDef) raw.push(resolveAgentModel(pmDef, maxMode));
-    for (const a of this.agentProcesses.values()) raw.push(resolveAgentModel(a.def, maxMode));
+    if (pmDef) raw.push(modelFor(pmDef));
+    for (const a of this.agentProcesses.values()) raw.push(modelFor(a.def));
     if (raw.length === 0) raw.push('opus');
     const seen = new Set<string>();
     const out: string[] = [];

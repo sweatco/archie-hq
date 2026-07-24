@@ -717,6 +717,10 @@ Shared folder: ${sharedPath} [READ-ONLY]
           for await (const event of agentQuery) {
             if (event.type === 'system' && event.subtype === 'init') {
               task.updateAgentState(def.id, true, event.session_id);
+              // Capture the concrete model the alias resolved to (e.g.
+              // opus → claude-opus-5) so the user-facing footer shows the real
+              // version without the app hard-coding the alias→model mapping.
+              task.recordResolvedModel(def.id, (event as any).model);
               logger.agent(def.id, `Model: ${(event as any).model || 'unknown'}`);
               if (Array.isArray(event.mcp_servers)) {
                 // The init snapshot only carries { name, status }. Pull the
