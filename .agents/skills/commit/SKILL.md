@@ -1,5 +1,6 @@
 ---
-description: Commit changes with logical grouping
+name: commit
+description: Review the complete working tree, verify the repository, and create logically grouped Git commits without pushing. Use when the user explicitly asks to commit changes, make a commit, split work into commits, or prepare local commits for review.
 ---
 
 You are preparing git commits for this repository.
@@ -35,8 +36,13 @@ Use this style (check recent commits for reference):
 ```
 Short summary of the change
 
-Co-Authored-By: Claude <noreply@anthropic.com>
+Co-Authored-By: <agent name> <agent email>
 ```
+
+Use the identity of the agent creating the commit:
+
+- Claude: `Co-Authored-By: Claude <noreply@anthropic.com>`
+- Codex: `Co-Authored-By: Codex <noreply@openai.com>`
 
 ## Important:
 
@@ -45,5 +51,3 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 - NEVER guess at changes - always read the actual diff
 - If changes are unrelated, split into separate commits
 - If changes are tightly coupled, keep in one commit
-
-$ARGUMENTS
