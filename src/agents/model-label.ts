@@ -115,6 +115,9 @@ function beautify(model: string): string {
   }
   const parts = stripped.split('-');
   const family = parts[0];
+  // Malformed id with no family (e.g. a bare `claude-`) → an empty label would
+  // render a dangling ` + ` separator in the footer. Fall back to the raw id.
+  if (!family) return model;
   const version: string[] = [];
   for (let i = 1; i < parts.length && version.length < 2; i++) {
     if (/^\d+$/.test(parts[i])) version.push(parts[i]);

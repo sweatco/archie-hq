@@ -54,6 +54,14 @@ describe('modelDisplayLabel', () => {
     expect(modelDisplayLabel('gpt-5')).toBe('gpt-5');
   });
 
+  it('falls back to the raw id on a malformed id with no family (no empty label)', () => {
+    // A bare prefix yields an empty family; returning the raw id keeps the
+    // footer from rendering a dangling ` + ` separator.
+    expect(modelDisplayLabel('claude-')).toBe('claude-');
+    expect(modelDisplayLabel('anthropic/claude-')).toBe('anthropic/claude-');
+    expect(modelDisplayLabel('claude-[1m]')).toBe('claude- (1M)');
+  });
+
   it('is case-insensitive on the [1m] marker and tolerates whitespace', () => {
     expect(modelDisplayLabel('claude-sonnet-5[1M]')).toBe('Sonnet 5 (1M)');
     expect(modelDisplayLabel('  opus  ')).toBe('Opus');
