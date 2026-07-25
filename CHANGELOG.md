@@ -4,6 +4,10 @@
 
 <!-- This file is generated automatically — do NOT edit it by hand. The `.github/workflows/daily-changelog.yml` workflow summarizes each day's merged PRs into a dated entry and commits it to `main` on its own. To shape how a change reads here, write a clear PR description — that is the source the automation reads. Quiet days with nothing merged are intentionally skipped (no entry), so gaps between dates are expected. Hand edits drift from the automation and may be overwritten; the only reason to touch this file directly is to repair a mistake the automation made. -->
 
+## 2026-07-24
+
+- **Archie's Opus-tier agents — PM plus `archie`, `data-analyst`, `backend`, `infrastructure`, `mobile`, and `release-manager` — move to Claude Opus 5 on the next deploy.** The `opus` alias resolves through the Claude Agent SDK rather than a pinned model id, so the upgrade is a version bump, not a config change; the Slack footer's model label also now derives generically from whatever model id the SDK resolves, so a future model launch renders correctly with no code change. _Technical: bumped `@anthropic-ai/claude-agent-sdk` to 0.3.219, confirmed against published tarballs as the first release mapping `opus` → `claude-opus-5`; `modelDisplayLabel` rewritten to parse family + version out of any Claude id instead of a hard-coded table; the resolved model is captured once at session `init` (`Task.recordResolvedModel`) since it's fixed for a session; `sonnet[1m]` agents (`growth-ops`, `ops`, generic default) are unaffected. PR #236._
+
 ## 2026-07-20
 
 - _Technical: the local copy of Forge (`.claude/workflows/forge-*.js`, `.claude/skills/forge/`, `.claude/commands/forge.md`) is removed now that it's distributed as the `forge` plugin in the `sweatco-claude-marketplace` repo, a functional superset of what lived here — keeping both invited `/forge` command-palette collisions and silent drift between the copies; `.gitignore`'s now-dead workflow re-include is dropped and `docs/proposals/forge.md` points at the plugin as the implementation home. PR #227._
