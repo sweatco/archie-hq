@@ -118,6 +118,8 @@ const AGENT_TOOLS = [
 const PM_COMMS_TOOLS = [
   'mcp__comms-tools__post_to_user',
   'mcp__comms-tools__post_files_to_user',
+  'mcp__comms-tools__publish_web_artifact',
+  'mcp__comms-tools__update_web_artifact',
   'mcp__comms-tools__find_slack_user',
   'mcp__comms-tools__find_slack_channel',
   'mcp__comms-tools__list_channels',

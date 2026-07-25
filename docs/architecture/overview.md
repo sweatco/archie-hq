@@ -240,5 +240,6 @@ prompts/                         # Repo-root: layered system prompts
 - [Edit Mode](edit-mode.md) -- approval flow, shared clones, and git workflow
 - [Max Mode](max-mode.md) -- per-task, human-approved model/effort upgrade for coding agents
 - [Plugin System](plugin-system.md) -- plugin structure, loading, and agent registration
+- [Web Artifacts](web-artifacts.md) -- publishing a task's Markdown to a stable, hot-reloading `/a/<id>` web page
 - [Web Research](web-research.md) -- multi-agent research pipeline and defense layers
 - [Security](security.md) -- research budget, sandwich defense, prompt injection mitigations

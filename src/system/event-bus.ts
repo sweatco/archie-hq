@@ -14,6 +14,7 @@ export type EventType =
   | 'status'
   | 'approval:requested' | 'approval:resolved'
   | 'pr_card'
+  | 'artifact:published' | 'artifact:updated'
   | 'reminder:set' | 'reminder:cancelled' | 'reminder:fired'
   | 'trigger:created' | 'trigger:fired' | 'trigger:paused' | 'trigger:resumed' | 'trigger:deleted';
 
