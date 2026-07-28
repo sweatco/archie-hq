@@ -31,7 +31,7 @@ Archie HQ is early-stage software. Security fixes target the **latest `main`**. 
 Archie runs autonomous AI agents that read code, reason, and — once approved — make changes. The engine is built around defense-in-depth so that an agent (or a prompt-injected one) is constrained even if it behaves unexpectedly. Reporters should understand these boundaries when assessing impact:
 
 - **Per-agent filesystem isolation** — each agent runs in a sandbox (bubblewrap on Linux) that restricts which paths it can read and write.
-- **Network deny-all from agent Bash** — agents cannot make arbitrary outbound network calls from their shell. Web access is available only through a controlled research pipeline.
+- **Network deny-all from agent Bash** — agents cannot make arbitrary outbound network calls from their shell. Web access is available only through a controlled research pipeline. Two narrow exceptions: repo agents in edit mode may reach the trusted package registries (for `npm`/`yarn`), and a plugin agent may declare specific hosts it needs. This boundary is enforced by the Claude CLI and is version-coupled — it regressed once across a CLI update with our configuration unchanged, so `tools/e2e/egress-check.ts` asserts it against a live instance.
 - **Tool denylists** — agents are restricted to an allowed set of tools; dangerous operations are blocked.
 - **Human approval gate for edit mode** — agents are read-only by default. Making code changes (edit mode) requires explicit human approval.
 - **Git safety** — force pushes are disallowed, and pushing is blocked from agent Bash.
