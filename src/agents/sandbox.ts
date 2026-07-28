@@ -4,9 +4,13 @@
  * Builds OS-level sandbox config (Bash tool) and PreToolUse hooks
  * (in-process tools) to enforce filesystem and network boundaries.
  *
- * Two enforcement layers from the same SandboxOptions:
+ * Three enforcement layers from the same SandboxOptions:
  * 1. buildSandboxConfig()         → SDK sandbox (bubblewrap/sandbox-exec for Bash)
- * 2. createFilesystemGuardHooks() → PreToolUse hooks (Read, Write, Edit, Glob, Grep)
+ * 2. buildManagedNetworkPolicy()  → policy tier that actually enforces the egress allowlist
+ * 3. createFilesystemGuardHooks() → PreToolUse hooks (Read, Write, Edit, Glob, Grep)
+ *
+ * Layers 1 and 2 both carry the network allowlist, and BOTH are required — see
+ * buildManagedNetworkPolicy for why the sandbox config alone does not enforce it.
  */
 
 import { resolve, normalize } from 'path';
@@ -67,6 +71,11 @@ export const TRUSTED_PACKAGE_REGISTRY_DOMAINS = [
 export function buildSandboxConfig(opts: SandboxOptions) {
   return {
     enabled: true,
+    // Refuse to run rather than degrade: without this the SDK falls back to
+    // running commands UNSANDBOXED (with only a warning) when bwrap/sandbox-exec
+    // is missing. A silent downgrade of every boundary is not an acceptable
+    // failure mode for a deployment that documents these guarantees.
+    failIfUnavailable: true,
     allowUnsandboxedCommands: false,
     autoAllowBashIfSandboxed: true,
     filesystem: {
@@ -81,6 +90,78 @@ export function buildSandboxConfig(opts: SandboxOptions) {
     network: {
       allowedDomains: opts.allowedNetworkDomains ?? [],
     },
+  };
+}
+
+// ---- Managed policy tier (what actually enforces the egress allowlist) ----
+
+/**
+ * Build the policy-tier settings that enforce the outbound-network allowlist.
+ *
+ * Why this exists as a second layer: `sandbox.network.allowedDomains` passed via
+ * the SDK's `sandbox` option is NOT enforced under `permissionMode:
+ * 'bypassPermissions'` — which every agent runs under (see spawn.ts). From CLI
+ * 2.1.157 onward the domain filter is resolved through permission evaluation,
+ * and bypass mode short-circuits that to allow-all, so the allowlist is ignored
+ * and Bash reaches any host. CLI 2.1.156 and earlier did enforce it; the change
+ * arrived here transitively via a lockfile refresh, silently, which is why
+ * tools/e2e/egress-check.ts asserts the boundary on a live instance.
+ *
+ * The `managedSettings` tier is the SDK's documented channel for an embedding
+ * application to impose lockdown on the spawned CLI, and it is honored
+ * regardless of permission mode. `allowManagedDomainsOnly` is load-bearing:
+ * without it the policy tier has no effect at all (verified empirically). It
+ * also narrows the surface — domain rules from user, project, local, and flag
+ * settings are ignored, so a `.claude/settings.json` inside a task folder or a
+ * repo checkout cannot widen egress. Denied domains are still honored from
+ * every tier.
+ *
+ * IMPORTANT: because `allowManagedDomainsOnly` makes this tier authoritative,
+ * every domain an agent may legitimately reach must appear HERE. Feed it the
+ * same array as buildSandboxConfig (both derive from one SandboxOptions) or
+ * plugin-declared domains will be silently dropped.
+ *
+ * Deployment caveat: if the host has an IT-controlled managed-settings tier
+ * (e.g. /etc/claude-code/managed-settings.json), the SDK DROPS these parent
+ * settings unless that admin opts in with `parentSettingsBehavior: 'merge'` —
+ * and egress would reopen with no error. The live egress check is what catches
+ * that.
+ */
+export function buildManagedNetworkPolicy(opts: SandboxOptions) {
+  return {
+    sandbox: {
+      network: {
+        allowedDomains: opts.allowedNetworkDomains ?? [],
+        allowManagedDomainsOnly: true,
+      },
+    },
+  };
+}
+
+// ---- Package manager caches ----
+
+/**
+ * Environment that lets package managers actually run inside the sandbox.
+ *
+ * npm and yarn default their caches to `$HOME` (`~/.npm`, `~/.cache/yarn`), and
+ * `$HOME` is NOT in allowWrite — so `npm install` dies with
+ * `EROFS: read-only file system, open '/home/archie/.npm/_cacache/tmp/...'`
+ * *while fetching*, before the network allowlist is ever consulted. That EROFS
+ * is what actually blocked `npm install` in edit mode; the failure reads like a
+ * network problem (it names the registry URL) but is purely filesystem.
+ *
+ * Pointed at the agent's own workspace rather than a shared `/tmp`: a shared
+ * cache would let one agent stage content that another agent later installs
+ * from, which is a cross-task integrity problem we get to avoid for free.
+ *
+ * `npm_config_cache` is npm's env form of the `cache` config; yarn 1 reads
+ * `YARN_CACHE_FOLDER`. Neither needs a writable `$HOME` once its cache moves.
+ */
+export function buildPackageManagerCacheEnv(workspace: string): Record<string, string> {
+  const cacheRoot = resolve(workspace, '.cache');
+  return {
+    npm_config_cache: resolve(cacheRoot, 'npm'),
+    YARN_CACHE_FOLDER: resolve(cacheRoot, 'yarn'),
   };
 }
 
