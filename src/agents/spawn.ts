@@ -624,6 +624,10 @@ Shared folder: ${sharedPath} [READ-ONLY]
       // Redirect npm/yarn caches off the read-only $HOME, or installs fail with
       // EROFS before the network allowlist matters. See buildPackageManagerCacheEnv.
       ...buildPackageManagerCacheEnv(workspace),
+      // Sourced by every non-interactive bash the agent runs; maps the sandbox's
+      // per-session proxy onto tools that ignore the standard *_PROXY vars (Yarn
+      // Berry). Set by the Dockerfiles — forwarded because the SDK replaces env.
+      ...(process.env.BASH_ENV ? { BASH_ENV: process.env.BASH_ENV } : {}),
       // DEBUG: when the context-probe is enabled, route this agent's API traffic
       // through the in-process logging proxy so we can measure its real context
       // breakdown. No-op (key absent) when the probe is disabled or not listening.
