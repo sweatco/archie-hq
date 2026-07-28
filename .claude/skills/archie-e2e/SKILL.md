@@ -129,6 +129,18 @@ cat payload.json | npx tsx tools/e2e/evidence.ts --out-dir <dir>
 
 The markdown companion is rendered mechanically from the JSON in the same invocation (metadata header, assertion table, fenced excerpts, verdict); the JSON is canonical if they ever seem to diverge.
 
+## 3b. Egress check (run on any branch that touches the sandbox or bumps the SDK)
+
+```bash
+npx tsx tools/e2e/egress-check.ts        # requires a booted instance
+```
+
+Asserts the documented network boundary on the live instance: it copies `tools/e2e/egress-probe.mts` into the container, spawns one throwaway sandboxed agent (Haiku, two Bash calls) using the real `src/agents/sandbox.ts`, and requires **both** directions — a host off the allowlist must be blocked, and a host on it must be reachable. Exits non-zero naming which direction failed, with the probe transcript.
+
+Why it exists: the allowlist is enforced by the Claude CLI, not by our code, and it silently stopped being enforced between CLI 2.1.156 and 2.1.157 while our configuration was unchanged. Archie picked that up transitively in a lockfile refresh and ran with unrestricted agent egress for six weeks. No unit test can catch that class of regression — only a live assertion can. Run this after any SDK bump, any `src/agents/sandbox.ts` or `spawn.ts` change, and before shipping anything that relies on the isolation claims in `SECURITY.md`.
+
+A failure here is a release blocker, not a flake. If the non-allowlisted host is reachable, agent egress is open.
+
 ## 4. Teardown
 
 ```bash

@@ -61,7 +61,11 @@ PreToolUse hooks (Read, Write, Edit, Glob, Grep):
 
 **Writes:** Deny-all by default. Workspace paths added to `allowWrite` per track. `/tmp` is always writable (tools need scratch space). Protected files (`.claude/settings.json`, `.claude/skills`, `.claude/hooks`, `CLAUDE.md`) are in `denyWrite` — agents cannot modify their own configuration at runtime.
 
-**Network:** All outbound network access from Bash is denied by default (`allowedDomains: []`). Agents cannot `curl`, `wget`, or otherwise reach the internet from shell commands. Web access is only available through the controlled research pipeline (MCP tools).
+**Network:** Outbound access from Bash is deny-all by default. Agents cannot `curl`, `wget`, or otherwise reach the internet from shell commands; web access is only available through the controlled research pipeline (MCP tools). Two narrow exceptions widen the allowlist: repo agents in **edit mode** may reach the trusted package registries (`registry.npmjs.org`, `registry.yarnpkg.com`) so `npm`/`yarn` installs and lockfile regeneration work, and a plugin agent may declare `allowedNetworkDomains` in its frontmatter (e.g. the `ops` plugin reaching `sheets.googleapis.com`). Read-only repo agents and the PM stay fully denied.
+
+The allowlist is enforced from the **policy tier** (`managedSettings`), not from the `sandbox` option — see `buildManagedNetworkPolicy` in `src/agents/sandbox.ts`. This matters: `sandbox.network.allowedDomains` is silently ignored under `permissionMode: 'bypassPermissions'`, which every agent runs under, so the policy tier is what actually holds the boundary. Because that enforcement lives in the Claude CLI rather than in our code, it is version-coupled and has regressed before (CLI 2.1.156 → 2.1.157) with our config unchanged. `tools/e2e/egress-check.ts` asserts the boundary against a live instance for exactly this reason — treat an SDK bump as a security-relevant change and re-run it.
+
+Two deployment caveats. A host-level IT managed-settings tier (e.g. `/etc/claude-code/managed-settings.json`) causes the SDK to **drop** our policy tier unless that admin sets `parentSettingsBehavior: 'merge'`, which would reopen egress with no error. And DNS inside the sandbox namespace is unavailable by design — all egress is forced through the sandbox's local proxy, so tools that ignore proxy environment variables fail to resolve hosts even when those hosts are allowlisted.
 
 ### Repo Isolation: Shared Clones
 
@@ -235,7 +239,14 @@ Every task maintains a `knowledge.log` file (`sessions/{task-id}/shared/knowledg
 Layer 1: OS-level sandbox (Bash only)
   ├── denyRead [/app, ~/.claude] + allowRead [shared, base .git/objects, plugin dirs]
   ├── allowWrite [/tmp, workspace] + denyWrite [.claude/settings.json, .claude/skills, .claude/hooks, CLAUDE.md]
-  └── network: allowedDomains [] (deny all)
+  ├── failIfUnavailable: true (refuse to start rather than run unsandboxed)
+  └── network namespace: no DNS, no direct route — all egress via the sandbox proxy
+
+Layer 1b: Policy tier (managedSettings) — enforces the egress allowlist
+  ├── allowedDomains [] for PM + read-only repo agents (deny all)
+  ├── + trusted package registries for repo agents in edit mode
+  ├── + plugin-declared allowedNetworkDomains
+  └── allowManagedDomainsOnly: true — user/project/local/flag domain rules ignored
 
 Layer 2: PreToolUse hooks (Read, Write, Edit, Glob, Grep)
   ├── Resolves paths to absolute before checking
@@ -302,8 +313,8 @@ Production requires these persistent mounts:
 |-----------|-----------|-----------|------|----------------|-------|-----------|-------------|
 | PM Agent | Workspace + shared | Yes (workspace) | Yes (sandboxed) | No | Yes | No | Yes |
 | Repo Agent (readonly) | Clone + shared | No | Yes (RO sandbox) | No | No | Read only | Yes |
-| Repo Agent (edit mode) | Clone + shared | Yes (clone) | Yes (RW sandbox) | No | No | Full | Yes |
-| Plugin Agent | Workspace + shared + plugin dirs | Yes (workspace) | Yes (sandboxed) | No | No | No | Yes |
+| Repo Agent (edit mode) | Clone + shared | Yes (clone) | Yes (RW sandbox) | Package registries only | No | Full | Yes |
+| Plugin Agent | Workspace + shared + plugin dirs | Yes (workspace) | Yes (sandboxed) | Declared domains only | No | No | Yes |
 | Preset Classifier (inner) | No | No | No | N/A | No | No | No (no tools at all; Haiku JSON output only) |
 
 Web research is performed by the host process via Perplexity Agent API — there is no Claude-driven researcher or report-writer subagent inside the pipeline.
@@ -316,7 +327,7 @@ These are tracked issues with workarounds in place. Remove workarounds when upst
 
 **Issue:** bwrap's mount ordering emits `allowWrite --bind` before `denyRead --tmpfs`. The tmpfs on the parent destroys the child's writable bind mount. `allowRead` then restores read-only access but write access is permanently lost.
 
-**Workaround:** Don't `denyRead` any directory that contains writable child paths. Currently `/workdir/sessions` is left open to Bash (not denied). PreToolUse hooks enforce read boundaries on in-process tools (Read/Glob/Grep). This means Bash can technically browse other tasks' session directories, but cannot exfiltrate data (network is blocked).
+**Workaround:** Don't `denyRead` any directory that contains writable child paths. Currently `/workdir/sessions` is left open to Bash (not denied). PreToolUse hooks enforce read boundaries on in-process tools (Read/Glob/Grep). This means Bash can technically browse other tasks' session directories. Exfiltrating what it finds is bounded by the egress allowlist rather than impossible — a read-only agent is denied all egress, but an edit-mode agent can reach the package registries, so this control depends on the network boundary actually holding (see **Network** above).
 
 **When to remove:** When `sandbox-runtime` fixes mount ordering (tmpfs before bind) or provides a `denyRead` mode that doesn't use tmpfs. Track: `anthropic-experimental/sandbox-runtime` issues.
 

@@ -51,6 +51,14 @@ RUN chmod +x /app/scripts/git-askpass.sh && \
     npx tsc -p tsconfig.scripts.json
 ENV GIT_ASKPASS=/app/scripts/git-askpass.sh
 
+# Sourced by every non-interactive bash an agent runs. Bridges the sandbox's
+# per-session proxy to tools that ignore the standard *_PROXY vars (Yarn Berry).
+# Lives OUTSIDE /app on purpose: the sandbox denyRead includes /app, so a script
+# there is unreadable from agent Bash and silently never sourced.
+# spawn.ts must forward BASH_ENV explicitly — the SDK replaces the child env.
+RUN mkdir -p /etc/archie && cp /app/scripts/sandbox-shell-env.sh /etc/archie/sandbox-shell-env.sh && chmod 0444 /etc/archie/sandbox-shell-env.sh
+ENV BASH_ENV=/etc/archie/sandbox-shell-env.sh
+
 # Create non-root user (required: bypassPermissions refuses to run as root)
 RUN groupadd -g 1001 archie && \
     useradd -u 1001 -g archie -m archie
