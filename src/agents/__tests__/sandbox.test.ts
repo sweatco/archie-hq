@@ -66,6 +66,16 @@ describe('buildPackageManagerCacheEnv', () => {
     expect(env.YARN_CACHE_FOLDER).toBe(`${WORKSPACE}/.cache/yarn`);
   });
 
+  it('redirects yarn 4 global folder and Corepack home, not just the cache', () => {
+    // Yarn Berry creates $HOME/.yarn at startup before touching the project, so a
+    // redirected cache alone leaves it dying on ENOENT (observed with the mobile
+    // repo's pinned yarn 4.12.0). Corepack fetches pinned releases into
+    // COREPACK_HOME, which is unwritable for the same reason.
+    const env = buildPackageManagerCacheEnv(WORKSPACE);
+    expect(env.YARN_GLOBAL_FOLDER).toBe(`${WORKSPACE}/.cache/yarn-global`);
+    expect(env.COREPACK_HOME).toBe(`${WORKSPACE}/.cache/corepack`);
+  });
+
   it('scopes caches per workspace so agents cannot share a cache', () => {
     // A shared cache (e.g. under /tmp) would let one agent stage content another
     // agent later installs from.

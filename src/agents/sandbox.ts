@@ -155,13 +155,24 @@ export function buildManagedNetworkPolicy(opts: SandboxOptions) {
  * from, which is a cross-task integrity problem we get to avoid for free.
  *
  * `npm_config_cache` is npm's env form of the `cache` config; yarn 1 reads
- * `YARN_CACHE_FOLDER`. Neither needs a writable `$HOME` once its cache moves.
+ * `YARN_CACHE_FOLDER`. Yarn 4 (Berry) needs more: it creates its *global folder*
+ * (`$HOME/.yarn`) at startup, before parsing the project, and dies with
+ * `Internal Error: ENOENT: no such file or directory, mkdir '/home/archie/.yarn'`
+ * regardless of where its cache points — so `YARN_GLOBAL_FOLDER` is required too.
+ * Repos that pin `packageManager` also let Corepack fetch the pinned release into
+ * `COREPACK_HOME` (`~/.cache/node/corepack`), which is likewise unwritable.
+ *
+ * Observed live: the mobile repo pins yarn 4.12.0, and `yarn install` failed
+ * instantly on the global-folder ENOENT while yarn 1 in the same sandbox worked
+ * fine — which is why this covers both generations rather than just the cache.
  */
 export function buildPackageManagerCacheEnv(workspace: string): Record<string, string> {
   const cacheRoot = resolve(workspace, '.cache');
   return {
     npm_config_cache: resolve(cacheRoot, 'npm'),
     YARN_CACHE_FOLDER: resolve(cacheRoot, 'yarn'),
+    YARN_GLOBAL_FOLDER: resolve(cacheRoot, 'yarn-global'),
+    COREPACK_HOME: resolve(cacheRoot, 'corepack'),
   };
 }
 
