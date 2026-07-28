@@ -28,7 +28,7 @@ import {
   cleanSlackText,
 } from './client.js';
 import { ensureChannelCanvas } from './channel-canvas.js';
-import { shouldCreateNewTask } from './task-routing.js';
+import { shouldCreateNewTask, shouldForwardMessageEvent, isAckableEvent } from './task-routing.js';
 import { Task } from '../../tasks/task.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
@@ -164,47 +164,43 @@ export async function mountSlackApp(
       return;
     }
 
-    const isDm = event.channel?.startsWith('D');
-    const isThreadReply = event.thread_ts && event.thread_ts !== event.ts;
-    // A top-level channel post is normally ignored (ambient chatter). We only
-    // forward it when an enabled channel-message trigger is watching this exact
-    // channel — kept cheap via the in-memory index, so unwatched channels stay
-    // a no-op. handleSlackEvent then runs the same own-bot/external/@mention
-    // filtering before firing any trigger.
-    const isTopLevelChannelMsg = !isDm && !isThreadReply && !event.thread_ts;
-    const watchedByTrigger = isTopLevelChannelMsg && getChannelMessageTriggers(event.channel).length > 0;
-    if (
-      event.type === 'message' &&
-      (!event.subtype || ['file_share', 'thread_broadcast'].includes(event.subtype)) &&
-      (isThreadReply || isDm || watchedByTrigger)
-    ) {
-      // In channels, @mentions are handled by app_mention handler, so skip them here
-      // to avoid double-processing. But in DMs, app_mention doesn't fire, so we must
-      // process mention-containing DMs here.
-      const botUserId = getBotUserId();
-      if (!isDm && botUserId && event.text?.includes(`<@${botUserId}>`)) {
-        return;
-      }
-
-      if (getIsShuttingDown()) {
-        logger.system('Ignoring Slack event during shutdown');
-        return;
-      }
-
-      const route = routeSlackEvent(event);
-      if (route.action === 'discard') {
-        return;
-      }
-
-      handleSlackEvent({
-        type: event.type,
-        channel: event.channel,
-        user: event.user || '',
-        text: event.text || '',
-        ts: event.ts,
-        thread_ts: event.thread_ts,
-      }).catch((err: unknown) => logger.error('Server', 'Error processing Slack event', err));
+    // Decide whether this message should flow into task routing at all. A
+    // top-level channel post is only forwarded when an enabled channel-message
+    // trigger is watching this exact channel — kept cheap via the in-memory
+    // index (consulted lazily, so unwatched channels and DMs/thread-replies
+    // stay a no-op). handleSlackEvent then runs the same own-bot/external/
+    // @mention filtering before firing any trigger.
+    if (!shouldForwardMessageEvent(event, (ch) => getChannelMessageTriggers(ch).length > 0)) {
+      return;
     }
+
+    // In channels, @mentions are handled by app_mention handler, so skip them here
+    // to avoid double-processing. But in DMs, app_mention doesn't fire, so we must
+    // process mention-containing DMs here.
+    const isDm = event.channel?.startsWith('D');
+    const botUserId = getBotUserId();
+    if (!isDm && botUserId && event.text?.includes(`<@${botUserId}>`)) {
+      return;
+    }
+
+    if (getIsShuttingDown()) {
+      logger.system('Ignoring Slack event during shutdown');
+      return;
+    }
+
+    const route = routeSlackEvent(event);
+    if (route.action === 'discard') {
+      return;
+    }
+
+    handleSlackEvent({
+      type: event.type,
+      channel: event.channel,
+      user: event.user || '',
+      text: event.text || '',
+      ts: event.ts,
+      thread_ts: event.thread_ts,
+    }).catch((err: unknown) => logger.error('Server', 'Error processing Slack event', err));
   });
 
   // Handle the bot itself being added to a channel — scan for an existing
@@ -651,7 +647,7 @@ function routeSlackEvent(event: {
 // Slack Event Handler
 // ============================================================================
 
-async function handleSlackEvent(event: {
+export async function handleSlackEvent(event: {
   type: string;
   channel: string;
   user: string;
@@ -687,7 +683,7 @@ async function handleSlackEvent(event: {
   // and recording which message holds it is done via `task.ackMessage` once we
   // have a task in hand — see below — so the bookkeeping survives follow-up
   // messages.
-  const isAckable = event.type === 'app_mention' || event.channel.startsWith('D');
+  const isAckable = isAckableEvent(event.type, event.channel);
   if (isAckable) {
     addReaction(event.channel, event.ts, 'eyes');
   }

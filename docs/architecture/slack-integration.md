@@ -21,6 +21,7 @@ settings:
       - message.channels
       - message.groups
       - message.im
+      - message.mpim
   interactivity:
     is_enabled: true
     request_url: https://<host>/webhooks/slack
@@ -41,7 +42,9 @@ To enable Socket Mode end-to-end, also flip `socket_mode_enabled: true` in `slac
 
 ### Bot Scopes
 
-The manifest declares these bot scopes: `app_mentions:read`, `chat:write`, `channels:history`, `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`, `im:write`, `users:read`, `usergroups:read`, `files:read`, `files:write`, `reactions:read`, `reactions:write`, `assistant:write`. The `channels:*` and `groups:*` scopes cover public and private channels respectively (`groups:history` is required to read messages and thread context in private channels); the `im:*` scopes enable DM-originated tasks; `reactions:write` powers the eyes-emoji acknowledgment pattern and the PM's `react_to_message` tool; `reactions:read` backs `get_message_reactions`; `assistant:write` is required to push generated titles to DM-rooted assistant threads via `assistant.threads.setTitle`, and (together with `chat:write`) backs the live "Archie is …" status indicator via `assistant.threads.setStatus` — see [Live Status Indicator](#live-status-indicator).
+The manifest declares these bot scopes: `app_mentions:read`, `chat:write`, `channels:history`, `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`, `im:write`, `mpim:history`, `mpim:read`, `users:read`, `usergroups:read`, `files:read`, `files:write`, `reactions:read`, `reactions:write`, `assistant:write`. The `channels:*` and `groups:*` scopes cover public and private channels respectively (`groups:history` is required to read messages and thread context in private channels); the `im:*` scopes enable DM-originated tasks; the `mpim:*` scopes cover group DMs (multi-party DMs) — `mpim:history` lets `conversations.replies`/`conversations.history` read a group DM's thread and enables the `message.mpim` event, and `mpim:read` lets `conversations.info` resolve a group DM's channel name, shared status, and canvas tabs; `reactions:write` powers the eyes-emoji acknowledgment pattern and the PM's `react_to_message` tool; `reactions:read` backs `get_message_reactions`; `assistant:write` is required to push generated titles to DM-rooted assistant threads via `assistant.threads.setTitle`, and (together with `chat:write`) backs the live "Archie is …" status indicator via `assistant.threads.setStatus` — see [Live Status Indicator](#live-status-indicator).
+
+**Adding a scope to the manifest does not grant it to an existing installation.** Saving the manifest updates what the app *requests*; the bot token keeps its old scope set until the app is **reinstalled to the workspace**. Until then the affected calls fail with `missing_scope` while everything else keeps working, which reads as a code bug but is not one — e.g. before the reinstall that granted `mpim:*`, a group DM produced `[Slack] Failed to fetch shared-channel status … needed: 'mpim:read'` followed by `[Server] Error processing Slack event … needed: 'mpim:history'`, and the message was dropped with no reply in Slack. To check what the live token actually holds, read the `x-oauth-scopes` response header from any Web API call (e.g. `auth.test`) rather than trusting the manifest.
 
 ## Bot Identity Detection
 
@@ -54,9 +57,9 @@ On startup, `initSlackClient()` in `src/connectors/slack/client.ts` calls `auth.
 
 The server registers two Bolt event handlers:
 
-1. **`app_mention`** -- Fires when a user mentions `@Archie` in any channel Archie is a member of (public or private). This is the primary way users start new tasks in channels.
+1. **`app_mention`** -- Fires when a user mentions `@Archie` in any channel Archie is a member of — public, private, or a group DM. This is the primary way users start new tasks in channels and group DMs.
 
-2. **`message`** -- Fires for thread replies and DM messages. Slack delivers these via three subscribed event types — `message.channels` (public channels), `message.groups` (private channels), and `message.im` (DMs) — all of which Bolt surfaces as a single `message` event. The handler accepts an event when it is either a thread reply (`event.thread_ts && event.thread_ts !== event.ts`) or a DM (channel ID starting with `D`), and the subtype is empty / `file_share` / `thread_broadcast`. In channels, messages containing a bot mention are skipped here because `app_mention` already handles them; in DMs, mention-containing messages are processed here because `app_mention` does not fire for DMs. Note that Archie only receives private-channel events for channels it has been invited to.
+2. **`message`** -- Fires for thread replies and DM messages. Slack delivers these via four subscribed event types — `message.channels` (public channels), `message.groups` (private channels), `message.im` (1:1 DMs), and `message.mpim` (group DMs) — all of which Bolt surfaces as a single `message` event. The forward decision is a pure helper, `shouldForwardMessageEvent` (in `task-routing.ts`): given the event and a lazy "is a channel-message trigger watching this channel?" predicate, it accepts an event when the subtype is empty / `file_share` / `thread_broadcast` **and** it is a thread reply (`event.thread_ts && event.thread_ts !== event.ts`), a 1:1 DM (channel ID starting with `D`), or a watched top-level channel post. In channels and group DMs, messages containing a bot mention are skipped here because `app_mention` already handles them; in 1:1 DMs, mention-containing messages are processed here because `app_mention` does not fire for DMs. Note that Archie only receives private-channel and group-DM events for conversations it has been invited to.
 
    The `message` handler also branches on the **`message_changed`** subtype (a user editing a message) and routes it to `handleSlackEdit` — see [Message Edits](#message-edits) below.
 
@@ -118,6 +121,18 @@ Slack webhook
 `rootAuthorWasBot` (computed by `fetchSlackThread` from the raw root message, before bot-message filtering) is true when the thread's root was posted by Archie itself — i.e. a top-level message it made via the task-decoupled `post_to_channel` explore tool. A human reply to such a thread seeds a new task (and the bot's root message is kept in the thread so the task has context); a reply in a thread Archie merely posted into, or never touched, has a non-bot root and is ignored.
 
 A muted thread (`SlackChannel.muted = true`, set by the PM's `mute_channel` tool) is unmuted by an `@mention` and otherwise skipped. In DM channels, any inbound message also unmutes — there is no `@mention` path in a DM, so a DM message is treated as the equivalent. `mute_channel` mutes a single channel — the one the PM names, or the task's `default_channel` if omitted; it refuses to mute DM channels (channel IDs starting with `D`) up front, but the DM-as-unmute rule above is the backstop that recovers any legacy task whose DM channel was muted before this restriction existed. Title generation runs as a fire-and-forget Haiku call after the first append; for DM-rooted tasks the resulting title is pushed to Slack via `assistant.threads.setTitle` (see `src/connectors/slack/title.ts`). External users (different `team_id`, or `is_restricted` / `is_ultra_restricted` guests) are filtered out before any work is spawned; their messages are still re-read on later events because `fetchSlackThread` refreshes full history each time.
+
+## Group DMs (channel-like)
+
+Group DMs (multi-party DMs, or "mpims" — `is_mpim: true`) are treated as **channel-like, not DM-like**. Their channel ids are **not reliably `G…`**: Slack also issues `C…` ids for mpims (a live group DM in the Sweatcoin workspace resolves as `C…` with `is_mpim: true` and the `mpdm-…` name), so the `is_mpim` API flag — never the id prefix — is the marker to key off, as `assertPostableChannel` does. Only the `D…` prefix is meaningful, and only as "this is a 1:1 DM". A group DM has several people in it and not every message is meant for Archie, so it engages exactly the way a channel does rather than the way a 1:1 DM does:
+
+- An **@mention** creates a task and Archie replies in that thread — the mention flows through `app_mention` → `handleSlackEvent` → `fetchSlackThread` → `shouldCreateNewTask` (true because the event is an `app_mention`) → `Task.create`, then replies via the normal task-reply path.
+- Once a thread is engaged, **member replies route to that task with no re-mention** — a `message.mpim` thread reply is forwarded (it is a thread reply) and `findTaskByThread` attaches it to the engaged task.
+- **Ambient, non-mention top-level messages are ignored.** A top-level group-DM post is not a thread reply, is not a 1:1 DM (a group-DM id is never `D…`), and has no watching trigger, so `shouldForwardMessageEvent` does not forward it. Mention-bearing top-level posts are skipped in the `message` handler and handled by `app_mention` instead, so nothing is double-processed.
+
+Group DMs get the same **channel extras** as real channels wherever Slack supports them: the canvas scan (`getChannelCanvasTabs`), shared-channel detection (`isChannelShared` via `conversations.info`), and the ambient live status indicator. The external/guest-author bail-out (`isExternalUser`) runs on the group-DM path just as it does elsewhere — an external author never triggers a task — and redaction of external authors in shared conversations is no worse than in a private channel.
+
+Because a group DM is channel-like, every branch that keys strictly off the `D` prefix stays **D-only** and does *not* fire for group DMs: the eyes-reaction acknowledgment applies only via the `app_mention` arm (a non-mention ambient group-DM message is not acked), there is no DM-as-unmute backstop, and no 1:1-DM assistant-pane title is pushed. Group DMs are also **not** a valid target for the PM's task-decoupled `post_to_channel` explore tool — `assertPostableChannel` refuses both 1:1 DMs and group DMs, so Archie only ever speaks into a group DM through the task-reply path of a thread it was engaged in, never by proactively posting into a small private audience.
 
 ## Multi-Channel Support
 
@@ -241,6 +256,7 @@ The Slack client extracts file metadata from messages, including files shared di
 
 - `src/connectors/slack/client.ts` — Slack WebClient wrapper: `postSlackMessage`, `postSlackFiles`, `postInteractiveToThread(s)`, thread history, mention resolution, file downloads, shared-channel detection, user/channel lookup caches
 - `src/connectors/slack/events.ts` — Bolt app setup (`mountSlackApp`), `app_mention` / `message` handlers, `routeSlackEvent` + `handleSlackEvent`, button action handlers, title pipeline, shared-channel warnings
+- `src/connectors/slack/task-routing.ts` — pure inbound-routing decisions: `shouldForwardMessageEvent` (does a `message` event flow into task routing), `isAckableEvent` (does it earn an eyes reaction), `shouldCreateNewTask` (does it seed a task) — the channel-vs-DM predicates that keep group DMs channel-like
 - `src/connectors/slack/title.ts` — `assistant.threads.setTitle` wrapper for DM-rooted tasks
 - `src/connectors/slack/status.ts` — Slack renderer for the status indicator: best-effort `assistant.threads.setStatus` wrapper
 - `src/tasks/status.ts` — `TaskStatusController` (composes the single first-person status line: PM precedence → single specialist → aggregated domains, debounced) + `isStatusEnabled` (the `ARCHIE_LIVE_STATUS` master gate, all surfaces)

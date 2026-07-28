@@ -232,6 +232,17 @@ describe('assertPostableChannel — posting is open to channels, closed to DMs',
     await expect(client.assertPostableChannel('G_mpim')).rejects.toBeInstanceOf(client.DmPostError);
   });
 
+  // Slack does NOT restrict mpims to `G…`. A live group DM in the Sweatcoin
+  // workspace resolves as a `C…` id with is_mpim: true — indistinguishable from a
+  // channel by prefix alone. The refusal must key off the flag, not the shape, or
+  // task content leaks into a small private audience.
+  it('refuses a C…-prefixed group DM (real mpims are not always G…)', async () => {
+    slackApi.conversations.info.mockResolvedValue({
+      ok: true, channel: { id: 'C0BM7QRSVS4', name: 'mpdm-egor--ivan--archie-1', is_private: true, is_mpim: true },
+    });
+    await expect(client.assertPostableChannel('C0BM7QRSVS4')).rejects.toBeInstanceOf(client.DmPostError);
+  });
+
   it('refuses a 1:1 DM', async () => {
     slackApi.conversations.info.mockResolvedValue({
       ok: true, channel: { id: 'D_dm', name: 'dm', is_im: true },
@@ -251,5 +262,33 @@ describe('assertPostableChannel — posting is open to channels, closed to DMs',
       ok: true, channel: { id: 'C_pub', name: 'general', is_private: false, is_im: false, is_mpim: false },
     });
     await expect(client.assertPostableChannel('C_pub')).resolves.toBeUndefined();
+  });
+});
+
+describe('G… (group DM) is not short-circuited like a 1:1 DM — AC6', () => {
+  // The channel-context machinery keys its skip strictly off the `D` prefix, so a
+  // `G…` mpim id flows through to conversations.info exactly like a channel does —
+  // unlike a `D…` id, which returns early without any API call.
+  it('isChannelShared(G…) calls conversations.info and returns a boolean (not the D early-return)', async () => {
+    slackApi.conversations.info.mockResolvedValue({
+      ok: true, channel: { id: 'G_mpim', name: 'mpdm', is_mpim: true, is_ext_shared: false },
+    });
+
+    const shared = await client.isChannelShared('G_mpim');
+
+    expect(slackApi.conversations.info).toHaveBeenCalledWith({ channel: 'G_mpim' });
+    expect(typeof shared).toBe('boolean');
+    expect(shared).toBe(false);
+  });
+
+  it('getChannelCanvasTabs(G…) calls conversations.info and returns [] when properties.tabs is absent (no-op, no throw)', async () => {
+    slackApi.conversations.info.mockResolvedValue({
+      ok: true, channel: { id: 'G_mpim', name: 'mpdm', is_mpim: true },
+    });
+
+    const tabs = await client.getChannelCanvasTabs('G_mpim');
+
+    expect(slackApi.conversations.info).toHaveBeenCalledWith({ channel: 'G_mpim' });
+    expect(tabs).toEqual([]);
   });
 });
