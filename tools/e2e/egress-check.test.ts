@@ -13,6 +13,7 @@ const PROBE_PASS = [
   'EGRESS_DENIED_HOST=blocked',
   'EGRESS_ALLOWED_HOST=reachable',
   'EGRESS_PKG_INSTALL=ok',
+  'EGRESS_YARN_PROXY=mapped',
 ].join('\n');
 
 function makeIo() {
@@ -38,6 +39,7 @@ describe('parseProbeOutput', () => {
       deniedHost: 'blocked',
       allowedHost: 'reachable',
       packageInstall: 'ok',
+      yarnProxy: 'mapped',
     });
   });
 
@@ -56,29 +58,37 @@ describe('parseProbeOutput', () => {
 
 describe('decideEgress', () => {
   it('passes only when the filter discriminates in both directions', () => {
-    expect(decideEgress({ cliVersion: 'x', deniedHost: 'blocked', allowedHost: 'reachable', packageInstall: 'ok' }).pass).toBe(true);
+    expect(decideEgress({ cliVersion: 'x', deniedHost: 'blocked', allowedHost: 'reachable', packageInstall: 'ok', yarnProxy: 'mapped' }).pass).toBe(true);
   });
 
   it('fails when a non-allowlisted host is reachable — the regression this guards', () => {
-    const d = decideEgress({ cliVersion: 'x', deniedHost: 'reachable', allowedHost: 'reachable', packageInstall: 'ok' });
+    const d = decideEgress({ cliVersion: 'x', deniedHost: 'reachable', allowedHost: 'reachable', packageInstall: 'ok', yarnProxy: 'mapped' });
     expect(d.pass).toBe(false);
     expect(d.reasons.join(' ')).toMatch(/NOT on the allowlist was reachable/);
   });
 
   it('fails when all egress is broken instead of filtered', () => {
-    const d = decideEgress({ cliVersion: 'x', deniedHost: 'blocked', allowedHost: 'blocked', packageInstall: 'failed' });
+    const d = decideEgress({ cliVersion: 'x', deniedHost: 'blocked', allowedHost: 'blocked', packageInstall: 'failed', yarnProxy: 'mapped' });
     expect(d.pass).toBe(false);
     expect(d.reasons.join(' ')).toMatch(/egress is broken rather than filtered/);
   });
 
   it('treats unknown as failure, never as a pass', () => {
-    expect(decideEgress({ cliVersion: 'x', deniedHost: 'unknown', allowedHost: 'unknown', packageInstall: 'unknown' }).pass).toBe(false);
+    expect(decideEgress({ cliVersion: 'x', deniedHost: 'unknown', allowedHost: 'unknown', packageInstall: 'unknown', yarnProxy: 'unset' }).pass).toBe(false);
+  });
+
+  it('fails when Yarn Berry never receives the sandbox proxy', () => {
+    // yarn 2+ ignores HTTPS_PROXY, so an unmapped YARN_HTTPS_PROXY means every
+    // Berry install dies on DNS even though the registry is allowlisted.
+    const d = decideEgress({ cliVersion: 'x', deniedHost: 'blocked', allowedHost: 'reachable', packageInstall: 'ok', yarnProxy: 'unset' });
+    expect(d.pass).toBe(false);
+    expect(d.reasons.join(' ')).toMatch(/Yarn Berry/);
   });
 
   it('fails when the boundary holds but npm install is broken', () => {
     // A correct allowlist that no package manager can use is not a pass — this is
     // the EROFS-on-read-only-$HOME failure the cache redirection fixes.
-    const d = decideEgress({ cliVersion: 'x', deniedHost: 'blocked', allowedHost: 'reachable', packageInstall: 'failed' });
+    const d = decideEgress({ cliVersion: 'x', deniedHost: 'blocked', allowedHost: 'reachable', packageInstall: 'failed', yarnProxy: 'mapped' });
     expect(d.pass).toBe(false);
     expect(d.reasons.join(' ')).toMatch(/npm install` failed inside the sandbox/);
   });
@@ -93,7 +103,7 @@ describe('runEgressCheck', () => {
 
   it('exits 1 and prints the probe output when egress is open', async () => {
     const { io, errors } = makeIo();
-    const open = 'CLI_VERSION=2.1.220\nEGRESS_DENIED_HOST=reachable\nEGRESS_ALLOWED_HOST=reachable\nEGRESS_PKG_INSTALL=ok';
+    const open = 'CLI_VERSION=2.1.220\nEGRESS_DENIED_HOST=reachable\nEGRESS_ALLOWED_HOST=reachable\nEGRESS_PKG_INSTALL=ok\nEGRESS_YARN_PROXY=mapped';
     expect(await runEgressCheck(fakeExec(open), io)).toBe(1);
     expect(errors.join('\n')).toMatch(/EGRESS CHECK FAILED/);
     expect(errors.join('\n')).toMatch(/EGRESS_DENIED_HOST=reachable/);

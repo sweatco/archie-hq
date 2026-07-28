@@ -42,7 +42,8 @@ const sandboxOpts = {
 const prompt = `Run these commands with the Bash tool, one call each, and report their raw output verbatim. Run ALL of them even if an earlier one fails.
 1. curl -sS -m 10 -o /dev/null -w 'DENIED=%{http_code}\\n' ${DENIED_HOST} || echo 'DENIED=blocked'
 2. curl -sS -m 10 -o /dev/null -w 'ALLOWED=%{http_code}\\n' ${ALLOWED_HOST} || echo 'ALLOWED=blocked'
-3. rm -rf ${WORKSPACE}/pkg && mkdir -p ${WORKSPACE}/pkg && cd ${WORKSPACE}/pkg && npm init -y >/dev/null && (npm install left-pad --no-audit --no-fund >/dev/null 2>&1 && test -f node_modules/left-pad/package.json && echo 'PKG=ok' || echo 'PKG=failed')`;
+3. rm -rf ${WORKSPACE}/pkg && mkdir -p ${WORKSPACE}/pkg && cd ${WORKSPACE}/pkg && npm init -y >/dev/null && (npm install left-pad --no-audit --no-fund >/dev/null 2>&1 && test -f node_modules/left-pad/package.json && echo 'PKG=ok' || echo 'PKG=failed')
+4. test -n "$YARN_HTTPS_PROXY" && echo 'YARNPROXY=mapped' || echo 'YARNPROXY=unset'`;
 
 // Mirrors src/agents/spawn.ts buildQueryOptions for everything that bears on the
 // sandbox boundary: permissionMode, sandbox, managedSettings, settingSources.
@@ -62,6 +63,8 @@ const it = query({
       // Same cache redirection spawn.ts applies — without it npm dies on the
       // read-only $HOME and step 3 fails for a reason unrelated to the network.
       ...buildPackageManagerCacheEnv(WORKSPACE),
+      // Same as spawn.ts: maps the sandbox proxy onto Yarn Berry's own config keys.
+      ...(process.env.BASH_ENV ? { BASH_ENV: process.env.BASH_ENV } : {}),
       ...(process.env.NODE_USE_SYSTEM_CA ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA } : {}),
       ...(process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS } : {}),
     },
@@ -116,5 +119,6 @@ console.log(`CLI_VERSION=${cliVersion}`);
 console.log(`EGRESS_DENIED_HOST=${classify(transcript, 'DENIED')}`);
 console.log(`EGRESS_ALLOWED_HOST=${classify(transcript, 'ALLOWED')}`);
 console.log(`EGRESS_PKG_INSTALL=${packageInstall(transcript)}`);
+console.log(`EGRESS_YARN_PROXY=${/YARNPROXY=mapped/.test(transcript) ? 'mapped' : 'unset'}`);
 console.log('---- agent transcript ----');
 console.log(transcript.trim());

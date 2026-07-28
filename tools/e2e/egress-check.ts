@@ -38,6 +38,8 @@ export interface ProbeVerdicts {
   allowedHost: Reachability;
   /** Whether `npm install` actually completes — the allowlist is useless if it doesn't. */
   packageInstall: 'ok' | 'failed' | 'unknown';
+  /** Whether the sandbox proxy reached Yarn Berry's own config keys (BASH_ENV wiring). */
+  yarnProxy: 'mapped' | 'unset';
 }
 
 function readReachability(output: string, key: string): Reachability {
@@ -57,6 +59,7 @@ export function parseProbeOutput(output: string): ProbeVerdicts {
     deniedHost: readReachability(output, 'EGRESS_DENIED_HOST'),
     allowedHost: readReachability(output, 'EGRESS_ALLOWED_HOST'),
     packageInstall: pkg ? (pkg[1] as ProbeVerdicts['packageInstall']) : 'unknown',
+    yarnProxy: /^EGRESS_YARN_PROXY=mapped$/m.test(output) ? 'mapped' : 'unset',
   };
 }
 
@@ -80,6 +83,11 @@ export function decideEgress(v: ProbeVerdicts): EgressDecision {
       v.allowedHost === 'blocked'
         ? 'a host ON the allowlist was blocked — egress is broken rather than filtered (this breaks npm/yarn in edit mode)'
         : 'could not determine whether an allowlisted host was reachable (probe output unreadable)',
+    );
+  }
+  if (v.yarnProxy !== 'mapped') {
+    reasons.push(
+      'the sandbox proxy did not reach Yarn Berry\'s config keys (YARN_HTTPS_PROXY unset) — check BASH_ENV and scripts/sandbox-shell-env.sh; yarn 2+ ignores HTTPS_PROXY and will fail DNS resolution',
     );
   }
   if (v.packageInstall !== 'ok') {
@@ -142,6 +150,7 @@ export async function runEgressCheck(exec: ExecFn, io: EgressCheckIo): Promise<n
   io.log(`  non-allowlisted host: ${verdicts.deniedHost} (expected blocked)`);
   io.log(`  allowlisted host:     ${verdicts.allowedHost} (expected reachable)`);
   io.log(`  npm install:          ${verdicts.packageInstall} (expected ok)`);
+  io.log(`  yarn berry proxy:     ${verdicts.yarnProxy} (expected mapped)`);
 
   if (!decision.pass) {
     io.error('EGRESS CHECK FAILED — the documented network boundary does not hold:');
