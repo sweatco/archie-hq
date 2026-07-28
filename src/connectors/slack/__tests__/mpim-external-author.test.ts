@@ -1,14 +1,15 @@
 /**
- * AC4 integration test: the external-author bail-out fires on the group-DM
- * (`G…`) path exactly as it does for every other channel type.
+ * AC4 integration test: the external-author bail-out fires on the group-DM path
+ * exactly as it does for every other channel type.
  *
  * `handleSlackEvent` is the single processor for both the `app_mention` and the
- * `message.mpim` events a `G…` conversation produces. Its external-author guard
+ * `message.mpim` events a group DM produces. Its external-author guard
  * (events.ts, the `isExternalUser(authorInfo)` check) keys only off `event.user`
  * and sits ahead of the ack, the thread fetch, and task creation — so an event
- * from an external/guest author in a `G…` conversation must be dropped with no
- * reaction, no thread fetch, and no task, regardless of whether it arrived as an
- * `app_mention` or a `message`.
+ * from an external/guest author in a group DM must be dropped with no reaction,
+ * no thread fetch, and no task, regardless of whether it arrived as an
+ * `app_mention` or a `message`, and regardless of whether Slack issued the
+ * conversation a `G…` or a `C…` id.
  *
  * This mirrors merge-approval-surfaces.test.ts: it drives the exported
  * `handleSlackEvent` against mocked module boundaries (Slack client + Task).
@@ -78,7 +79,12 @@ import { Task } from '../../../tasks/task.js';
 import { getUserInfo, isExternalUser, addReaction, fetchSlackThread } from '../client.js';
 import { findTaskByThread } from '../../../tasks/persistence.js';
 
-const GROUP_DM = 'G0GROUPDM1'; // is_mpim: true — group DM, not a `D…` 1:1 DM
+// Both id shapes Slack issues for an mpim. `G…` is the documented classic shape;
+// `C…` is what a live group DM in the Sweatcoin workspace actually resolves to
+// (is_mpim: true, name `mpdm-…`), which is indistinguishable from a channel by
+// prefix. The guard keys off `event.user`, so neither shape may change the
+// outcome — parametrizing here keeps a future prefix-based shortcut from passing.
+const GROUP_DM_IDS = ['G0GROUPDM1', 'C0BM7QRSVS4'];
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -97,28 +103,30 @@ describe('mpim external-author bail-out (AC4)', () => {
 
   for (const type of eventTypes) {
     for (const { label, info } of externalAuthors) {
-      it(`${type} from an external author (${label}) on a G… channel → no task, no reaction, no fetch`, async () => {
-        vi.mocked(getUserInfo).mockResolvedValue(info as never);
+      for (const groupDm of GROUP_DM_IDS) {
+        it(`${type} from an external author (${label}) on a group DM (${groupDm}) → no task, no reaction, no fetch`, async () => {
+          vi.mocked(getUserInfo).mockResolvedValue(info as never);
 
-        await handleSlackEvent({
-          type,
-          channel: GROUP_DM,
-          user: 'U_EXTERNAL',
-          text: 'hey archie',
-          ts: '1700000000.000100',
+          await handleSlackEvent({
+            type,
+            channel: groupDm,
+            user: 'U_EXTERNAL',
+            text: 'hey archie',
+            ts: '1700000000.000100',
+          });
+
+          // The author was resolved and classified as external...
+          expect(vi.mocked(getUserInfo)).toHaveBeenCalledWith('U_EXTERNAL');
+          expect(vi.mocked(isExternalUser)).toHaveReturnedWith(true);
+
+          // ...so the handler bailed before any side effect: no ack reaction,
+          // no thread fetch, no task lookup, no task creation.
+          expect(vi.mocked(addReaction)).not.toHaveBeenCalled();
+          expect(vi.mocked(fetchSlackThread)).not.toHaveBeenCalled();
+          expect(vi.mocked(findTaskByThread)).not.toHaveBeenCalled();
+          expect(vi.mocked(Task.create)).not.toHaveBeenCalled();
         });
-
-        // The author was resolved and classified as external...
-        expect(vi.mocked(getUserInfo)).toHaveBeenCalledWith('U_EXTERNAL');
-        expect(vi.mocked(isExternalUser)).toHaveReturnedWith(true);
-
-        // ...so the handler bailed before any side effect: no ack reaction,
-        // no thread fetch, no task lookup, no task creation.
-        expect(vi.mocked(addReaction)).not.toHaveBeenCalled();
-        expect(vi.mocked(fetchSlackThread)).not.toHaveBeenCalled();
-        expect(vi.mocked(findTaskByThread)).not.toHaveBeenCalled();
-        expect(vi.mocked(Task.create)).not.toHaveBeenCalled();
-      });
+      }
     }
   }
 });

@@ -12,7 +12,7 @@ describe('isDmOrUserId', () => {
   });
 
   it('allows public/private channel ids (those are gated at the API layer)', () => {
-    expect(isDmOrUserId('C0123ABCD')).toBe(false); // public/private channel
+    expect(isDmOrUserId('C0123ABCD')).toBe(false); // public/private channel — or an mpim
     expect(isDmOrUserId('G0123ABCD')).toBe(false); // legacy private channel / mpim
   });
 });

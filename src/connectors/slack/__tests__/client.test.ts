@@ -232,6 +232,17 @@ describe('assertPostableChannel — posting is open to channels, closed to DMs',
     await expect(client.assertPostableChannel('G_mpim')).rejects.toBeInstanceOf(client.DmPostError);
   });
 
+  // Slack does NOT restrict mpims to `G…`. A live group DM in the Sweatcoin
+  // workspace resolves as a `C…` id with is_mpim: true — indistinguishable from a
+  // channel by prefix alone. The refusal must key off the flag, not the shape, or
+  // task content leaks into a small private audience.
+  it('refuses a C…-prefixed group DM (real mpims are not always G…)', async () => {
+    slackApi.conversations.info.mockResolvedValue({
+      ok: true, channel: { id: 'C0BM7QRSVS4', name: 'mpdm-egor--ivan--archie-1', is_private: true, is_mpim: true },
+    });
+    await expect(client.assertPostableChannel('C0BM7QRSVS4')).rejects.toBeInstanceOf(client.DmPostError);
+  });
+
   it('refuses a 1:1 DM', async () => {
     slackApi.conversations.info.mockResolvedValue({
       ok: true, channel: { id: 'D_dm', name: 'dm', is_im: true },
