@@ -59,7 +59,11 @@ export interface AgentUsage {
   tokens: TokenTotals;
   /** Distinct main `<sessionId>.jsonl` transcripts under this agent. */
   sessionCount: number;
-  /** SDK-reported cost; `undefined` when usage.jsonl is absent. */
+  /**
+   * SDK-reported cost; `undefined` when this agent has no usage.jsonl record —
+   * whether because the file is absent entirely or because only other agents
+   * logged one. Never 0-filled: absent means unmeasured, not free.
+   */
   cost?: number;
 }
 
@@ -339,7 +343,11 @@ export async function aggregateTaskUsage(
       agentKey,
       tokens: bucket?.tokens ?? zeroTokens(),
       sessionCount: bucket?.sessionCount ?? 0,
-      cost: cost ? (cost.perAgent.get(agentKey) ?? 0) : undefined,
+      // Left `undefined` (rendered `unavailable`) — not 0 — when this agent has
+      // no usage.jsonl record, even though other agents do. A missing record
+      // means "not measured" (turn predates the hook, or crashed before its
+      // result event), never "cost nothing"; $0.00 would assert the latter.
+      cost: cost?.perAgent.get(agentKey),
     };
   });
 
@@ -356,8 +364,15 @@ function fmtNum(n: number): string {
   return n.toLocaleString('en-US');
 }
 
+/**
+ * Costs run well below a cent per agent-turn (a live turn measured
+ * $0.0694935), so 2 decimals would round real spend to `$0.00` and read as
+ * free. 4 decimals keeps sub-cent figures legible; anything nonzero that would
+ * still round away is shown as a bound rather than as zero.
+ */
 function fmtCost(n: number): string {
-  return `$${n.toFixed(2)}`;
+  if (n > 0 && n < 0.0001) return '<$0.0001';
+  return `$${n.toFixed(4)}`;
 }
 
 /** Disclosure attached to every SDK-reported cost figure. */

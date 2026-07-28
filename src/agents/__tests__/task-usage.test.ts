@@ -315,6 +315,63 @@ describe('AC7: cost unavailable / gap disclosure', () => {
 });
 
 // =============================================================================
+// Cost rendering — never present unmeasured or sub-cent spend as $0.00.
+// =============================================================================
+
+describe('cost rendering: no false zeros', () => {
+  it('an agent with transcripts but no usage record reads unavailable, not $0.00', async () => {
+    const taskId = 'task-20260101-1200-nilcost';
+    const tokens = { input_tokens: 5, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+    await writeTranscript(projectsDir(taskId, 'pm'), 'sess-1.jsonl', [
+      assistantLine({ id: 'pm-1', usage: tokens }),
+    ]);
+    // backend ran (tokens on disk) but never logged a result event.
+    await writeTranscript(projectsDir(taskId, 'backend'), 'sess-1.jsonl', [
+      assistantLine({ id: 'be-1', usage: tokens }),
+    ]);
+    await writeUsage(taskId, [{ query_nonce: 'N1', agentKey: 'pm', total_cost_usd: 0.3 }]);
+
+    const report = await aggregateTaskUsage(taskId);
+    const backend = report.agents.find((a) => a.agentKey === 'backend');
+    const pm = report.agents.find((a) => a.agentKey === 'pm');
+    expect(backend?.cost).toBeUndefined();
+    expect(pm?.cost).toBeCloseTo(0.3, 10);
+    // backend still reports its tokens — only cost is unknown.
+    expect(backend?.tokens.input_tokens).toBe(5);
+
+    const text = formatTaskUsageReport(report);
+    expect(text).toContain('backend');
+    expect(text).toMatch(/backend .*· cost: unavailable/);
+    expect(text).not.toContain('$0.0000');
+  });
+
+  it('renders sub-cent cost at 4 decimals instead of rounding to $0.00', async () => {
+    const taskId = 'task-20260101-1200-subcent';
+    await writeTranscript(projectsDir(taskId, 'pm'), 'sess-1.jsonl', [
+      assistantLine({ id: 'a', usage: { input_tokens: 1, output_tokens: 1 } }),
+    ]);
+    // The real figure observed on a live PM turn.
+    await writeUsage(taskId, [{ query_nonce: 'N1', agentKey: 'pm', total_cost_usd: 0.0694935 }]);
+
+    const text = formatTaskUsageReport(await aggregateTaskUsage(taskId));
+    expect(text).toContain('Cost (SDK-reported): $0.0695');
+    expect(text).not.toContain('$0.00 ');
+  });
+
+  it('shows a bound, never $0.0000, for a nonzero cost below the display floor', async () => {
+    const taskId = 'task-20260101-1200-tinycost';
+    await writeTranscript(projectsDir(taskId, 'pm'), 'sess-1.jsonl', [
+      assistantLine({ id: 'a', usage: { input_tokens: 1, output_tokens: 1 } }),
+    ]);
+    await writeUsage(taskId, [{ query_nonce: 'N1', agentKey: 'pm', total_cost_usd: 0.000004 }]);
+
+    const text = formatTaskUsageReport(await aggregateTaskUsage(taskId));
+    expect(text).toContain('<$0.0001');
+    expect(text).not.toContain('$0.0000');
+  });
+});
+
+// =============================================================================
 // AC8 — output contains the SDK-reported label + subscription-auth divergence.
 // =============================================================================
 
@@ -327,7 +384,7 @@ describe('AC8: SDK-reported / subscription-auth divergence disclosure', () => {
     await writeUsage(taskId, [{ query_nonce: 'N1', agentKey: 'pm', total_cost_usd: 0.42 }]);
 
     const text = formatTaskUsageReport(await aggregateTaskUsage(taskId));
-    expect(text).toContain('Cost (SDK-reported): $0.42');
+    expect(text).toContain('Cost (SDK-reported): $0.4200');
     expect(text).toContain('SDK-reported');
     expect(text).toContain('not actual Anthropic billing');
     expect(text).toContain('subscription auth');
