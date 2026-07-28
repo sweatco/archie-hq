@@ -63,6 +63,8 @@ PreToolUse hooks (Read, Write, Edit, Glob, Grep):
 
 **Network:** All outbound network access from Bash is denied by default (`allowedDomains: []`). Agents cannot `curl`, `wget`, or otherwise reach the internet from shell commands. Web access is only available through the controlled research pipeline (MCP tools).
 
+> ⚠️ **This is the intended design, not current behaviour.** Measured 2026-07-28 on both the repo and plugin tracks: agents reached arbitrary non-allowlisted hosts from Bash. Filesystem isolation enforces correctly; the network allowlist does not appear to be enforced, and it fails *open*. Treat `allowedNetworkDomains` as declared intent rather than an enforced boundary until this is fixed. See [`docs/proposals/network-egress-enforcement-gap.md`](../proposals/network-egress-enforcement-gap.md) for measurements, impact, and one dependent workflow to coordinate with before closing it.
+
 ### Repo Isolation: Shared Clones
 
 Repo agents work in `git clone --shared` repositories instead of git worktrees. Each agent gets a fully independent `.git/` directory — its own HEAD, index, refs, and config. The only connection to the base repository is a read-only alternates link to `.git/objects/` (immutable, content-addressed blobs).
@@ -130,6 +132,8 @@ The research pipeline is the single channel through which untrusted web content 
 Every spawned agent (PM, repo, plugin) is launched with `WebSearch` and `WebFetch` in `disallowedTools`. The only web pathway is the `web_research` MCP tool, which is implemented inside `src/mcp/research-tools.ts` and runs server-side in the host Node process — it does not spawn a Claude subagent that can be prompt-injected to call other tools. The tool returns a structured JSON payload (`research_id`, `content`, `source_urls`) to the calling agent.
 
 **Source:** `src/agents/spawn.ts` (`disallowedTools`), `src/mcp/research-tools.ts` (`createWebResearchTool`)
+
+> ⚠️ The tool-level denial holds, but the *intent* — that all web content arrives through the guardrail-scanned, budget-capped research pipeline — is currently bypassable via Bash, because network egress is not enforced. Content fetched that way carries no `<research_result>` tagging and no guardrail scanning. See [`docs/proposals/network-egress-enforcement-gap.md`](../proposals/network-egress-enforcement-gap.md).
 
 ### Bedrock Guardrails (Input + Output Scanning)
 
