@@ -68,6 +68,17 @@ export function TaskList({ onSelect, onCreate, refreshTrigger, active }: TaskLis
   // newer generation — otherwise a stale, in-flight response can repopulate a
   // freshly-reset list out of order.
   const generation = useRef(0);
+  // Only the very first load starts from a blank slate; every later refresh
+  // revalidates in place so the viewport survives (see the refresh effect).
+  const firstLoad = useRef(true);
+  // Set when a refresh is awaiting page 0, whose `total` reveals how many
+  // tasks were prepended since the last load.
+  const pendingShift = useRef(false);
+  const prevTotal = useRef(0);
+  // Mirrors scrollTop for reads inside async fetch handlers, where the state
+  // captured by the closure is stale.
+  const scrollTopRef = useRef(0);
+  useEffect(() => { scrollTopRef.current = scrollTop; }, [scrollTop]);
 
   // Schedule a single debounced retry. Failed pages are left unmarked so the
   // prefetch effect re-attempts them when this fires.
@@ -87,6 +98,28 @@ export function TaskList({ onSelect, onCreate, refreshTrigger, active }: TaskLis
       const { tasks, total: t } = await fetchTasks({ limit: PAGE_SIZE, offset: page * PAGE_SIZE });
       if (gen !== generation.current) return; // superseded by a refresh — discard
       fetchedPages.current.add(page);
+
+      // Tasks are served newest-first (the API sorts session dirs descending),
+      // so anything created since the last load is *prepended* and every
+      // existing row shifts down by the growth in `total`. Slide the array and
+      // the viewport by that delta together, before the page merge below writes
+      // the fresh rows, so indices stay aligned throughout and the selection
+      // keeps pointing at the same task instead of silently drifting.
+      if (page === 0 && pendingShift.current) {
+        pendingShift.current = false;
+        const shift = t - prevTotal.current;
+        if (shift > 0) {
+          setAllTasks((prev) => [...new Array<TaskSummary>(shift), ...prev]);
+          // Pinned to the top: let new tasks appear rather than scrolling away
+          // from them. Scrolled anywhere else: hold the viewport still.
+          if (scrollTopRef.current > 0) {
+            setScrollTop((s) => s + shift);
+            setCursor((c) => c + shift);
+          }
+        }
+      }
+      prevTotal.current = t;
+
       setTotal(t);
       setAllTasks((prev) => {
         const next = [...prev];
@@ -117,7 +150,14 @@ export function TaskList({ onSelect, onCreate, refreshTrigger, active }: TaskLis
     }
   }, [scheduleRetry]);
 
-  // Initial load + reset on refresh
+  // Initial load, then revalidate-in-place on every refresh.
+  //
+  // A refresh fires on every task:* SSE event and on returning from the detail
+  // view. It used to blank the array and reset cursor/scrollTop, which yanked
+  // the user to the top of the list mid-scroll each time anything happened —
+  // and made the list unnavigable on a busy instance. Now only the page cache
+  // is invalidated: rows, total and the viewport survive, pages are refetched
+  // underneath, and the fresh data replaces the old in place.
   useEffect(() => {
     generation.current += 1;
     fetchedPages.current.clear();
@@ -126,12 +166,19 @@ export function TaskList({ onSelect, onCreate, refreshTrigger, active }: TaskLis
       clearTimeout(retryTimer.current);
       retryTimer.current = null;
     }
-    setAllTasks([]);
-    setTotal(0);
-    setCursor(0);
-    setScrollTop(0);
     setError(null);
-    setLoading(true);
+
+    if (firstLoad.current) {
+      firstLoad.current = false;
+      setAllTasks([]);
+      setTotal(0);
+      setCursor(0);
+      setScrollTop(0);
+      setLoading(true);
+    } else {
+      // Keep everything on screen; page 0's `total` drives the index shift.
+      pendingShift.current = true;
+    }
     loadPage(0);
   }, [refreshTrigger, loadPage]);
 

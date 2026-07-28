@@ -44,11 +44,42 @@ function page(offset: number, count: number, total: number) {
   return { tasks: Array.from({ length: count }, (_, i) => task(offset + i)), total };
 }
 
-function renderList(refreshTrigger = 0) {
+function renderList(refreshTrigger = 0, active = false) {
   return render(
-    <TaskList onSelect={() => {}} onCreate={() => {}} refreshTrigger={refreshTrigger} active={false} />,
+    <TaskList onSelect={() => {}} onCreate={() => {}} refreshTrigger={refreshTrigger} active={active} />,
   );
 }
+
+/**
+ * The invariant the bug violated: a counted header must never appear without
+ * at least one task row beneath it. Independent of *why* the rows are there
+ * (freshly fetched or retained from before a failed refresh).
+ */
+function assertNoBareHeader(frame: string) {
+  if (/Tasks \(\d+\)/.test(frame)) {
+    expect(frame).toMatch(/\[[+\-?\S]\]\s+task-\d+/);
+  }
+}
+
+/** Serves pages out of a live array, so tests can prepend and refresh. */
+function serveFrom(list: ReturnType<typeof task>[]) {
+  return async ({ offset }: { offset: number }) => ({
+    tasks: list.slice(offset, offset + PAGE_SIZE),
+    total: list.length,
+  });
+}
+
+/** Which task the cursor (`>`) currently sits on. */
+function selectedTask(frame: string): string | null {
+  return frame.split('\n').find((l) => l.trimStart().startsWith('>'))?.match(/task-\d+/)?.[0] ?? null;
+}
+
+/** The task rows currently rendered, top to bottom. */
+function visibleTasks(frame: string): string[] {
+  return frame.split('\n').flatMap((l) => l.match(/task-\d+/) ?? []);
+}
+
+const DOWN = '\u001B[B'; // arrow-down key sequence
 
 /**
  * Flush pending fetches, React effects and Ink's throttled frame write.
@@ -98,10 +129,11 @@ describe('TaskList', () => {
   });
 
   it('never renders a header with no rows when page 0 fails after a refresh', async () => {
-    // The wedge from the bug report. A refresh (any task:* SSE event) resets
-    // the array; if page 0 then fails while `total` still says 40, the visible
-    // window is all placeholders and the list renders as `Tasks (40)` with
-    // nothing beneath it. Resetting `total` plus retrying page 0 prevents that.
+    // The wedge from the bug report. A refresh (any task:* SSE event) used to
+    // blank the array; if page 0 then failed while `total` still said 40, the
+    // visible window was all placeholders and the list rendered as `Tasks (40)`
+    // with nothing beneath it. Refreshing in place keeps the previous rows on
+    // screen while page 0 retries, so the window is never empty.
     let pageZeroFails = false;
     fetchTasksMock.mockImplementation(async ({ offset }: { offset: number }) => {
       if (offset === 0 && pageZeroFails) throw new Error('page 0 unavailable');
@@ -121,8 +153,9 @@ describe('TaskList', () => {
     await runRetry();
 
     // A header with a count but no task rows is the exact broken state.
-    expect(lastFrame()).not.toMatch(/Tasks \(\d+\)/);
-    expect(lastFrame()).toContain('Error: page 0 unavailable');
+    assertNoBareHeader(lastFrame()!);
+    // Rows from before the failed refresh are retained rather than blanked.
+    expect(lastFrame()).toContain('task-0');
 
     pageZeroFails = false;
     await runRetry();
@@ -163,6 +196,82 @@ describe('TaskList', () => {
     expect(lastFrame()).toContain('task-1');
     expect(lastFrame()).not.toContain('task-900');
     unmount();
+  });
+
+  describe('scroll position across refreshes', () => {
+    /** Render, scroll `steps` rows down, and return the harness. */
+    async function renderScrolledDown(list: ReturnType<typeof task>[], steps: number) {
+      fetchTasksMock.mockImplementation(serveFrom(list));
+      const h = renderList(0, true);
+      await settle();
+      for (let i = 0; i < steps; i++) h.stdin.write(DOWN);
+      await settle();
+      return h;
+    }
+
+    it('keeps the same task selected and on screen when a task is prepended', async () => {
+      const list = Array.from({ length: 60 }, (_, i) => task(i));
+      const { lastFrame, rerender, stdin, unmount } = await renderScrolledDown(list, 25);
+
+      const anchored = selectedTask(lastFrame()!);
+      const windowBefore = visibleTasks(lastFrame()!);
+      expect(anchored).not.toBe('task-0'); // genuinely scrolled away from the top
+
+      // A task:* SSE event: the API prepends the new task (newest-first) and
+      // App bumps refreshTrigger.
+      list.unshift(task(999));
+      rerender(
+        <TaskList onSelect={() => {}} onCreate={() => {}} refreshTrigger={1} active={true} />,
+      );
+      await settle();
+
+      // The list grew and the data refreshed...
+      expect(lastFrame()).toContain('Tasks (61)');
+      // ...but the viewport did not move: same selection, same rows on screen.
+      expect(selectedTask(lastFrame()!)).toBe(anchored);
+      expect(visibleTasks(lastFrame()!)).toEqual(windowBefore);
+      expect(lastFrame()).not.toContain('task-999'); // the new task is above, off screen
+
+      void stdin;
+      unmount();
+    });
+
+    it('holds position across a refresh that adds nothing (returning from detail)', async () => {
+      // App.handleBack() bumps refreshTrigger on every return from the detail
+      // view, which used to snap the list back to the top.
+      const list = Array.from({ length: 60 }, (_, i) => task(i));
+      const { lastFrame, rerender, unmount } = await renderScrolledDown(list, 25);
+
+      const anchored = selectedTask(lastFrame()!);
+      const windowBefore = visibleTasks(lastFrame()!);
+
+      rerender(
+        <TaskList onSelect={() => {}} onCreate={() => {}} refreshTrigger={1} active={true} />,
+      );
+      await settle();
+
+      expect(selectedTask(lastFrame()!)).toBe(anchored);
+      expect(visibleTasks(lastFrame()!)).toEqual(windowBefore);
+      unmount();
+    });
+
+    it('stays pinned to the top so new tasks are visible when not scrolled', async () => {
+      const list = Array.from({ length: 60 }, (_, i) => task(i));
+      fetchTasksMock.mockImplementation(serveFrom(list));
+      const { lastFrame, rerender, unmount } = renderList(0, true);
+      await settle();
+      expect(visibleTasks(lastFrame()!)[0]).toBe('task-0');
+
+      list.unshift(task(999));
+      rerender(
+        <TaskList onSelect={() => {}} onCreate={() => {}} refreshTrigger={1} active={true} />,
+      );
+      await settle();
+
+      // At the top the newest task should appear rather than be scrolled past.
+      expect(visibleTasks(lastFrame()!)[0]).toBe('task-999');
+      unmount();
+    });
   });
 
   it('still reports a genuinely empty list as "No tasks found"', async () => {
