@@ -14,15 +14,15 @@ Verify acceptance criteria against a live Archie instance booted from the branch
 
 ## Prerequisites
 
-> Running in a cloud sandbox / CI behind a TLS-intercepting proxy (e.g. Claude Code on the web)? See `docs/guides/e2e-in-cloud-sandbox.md` for the cold-start setup (CA trust, key mapping, bind-mount ownership, `setsid` for long-running processes). The steps below assume direct internet egress.
+> Running in a cloud sandbox / CI behind a TLS-intercepting proxy (e.g. Claude Code on the web or Codex Cloud)? See `docs/guides/e2e-in-cloud-sandbox.md` for the cold-start setup (CA trust, key mapping, bind-mount ownership, `setsid` for long-running processes). The steps below assume direct internet egress.
 
 - Docker (Desktop or daemon) running locally; `docker compose version` works.
 - `.env` at the repo root with a non-empty `ANTHROPIC_API_KEY`. **No Slack tokens are needed** — scenarios enter through the CLI/API channel.
-- The `archie-debug` MCP available (registered in `.mcp.json` as `npx tsx tools/debug-mcp/server.ts`). The harness consumes it as-is and never modifies `tools/debug-mcp/`.
+- The `archie-debug` MCP available as `npx tsx tools/debug-mcp/server.ts`. This repository registers it in `.mcp.json` and `.codex/config.toml`; the harness consumes it as-is and never modifies `tools/debug-mcp/`.
 - For the edit-mode and merge-approval scenarios: at least one configured engineering repo in the workdir (see the recipes' prerequisite notes).
 - macOS Docker Desktop caveat: a wedged `docker-credential-desktop` helper can stall `docker compose up --build` during registry auth — upstream of the harness's bounded wait, so boot appears to hang before any diagnostics. Verify with `docker-credential-desktop list </dev/null`; if it hangs, point `DOCKER_CONFIG` at a scratch dir without `credsStore` for the run (leave your real `~/.docker/config.json` untouched). The scratch config also drops the `desktop-linux` context, so additionally set `DOCKER_HOST=unix://$HOME/.docker/run/docker.sock` or every docker command will fail to reach the daemon (observed in the 2026-07-05 QA run).
 
-**Rollback:** delete `.claude/skills/archie-e2e/` and `tools/e2e/` — the harness has no side effects and nothing else references them (plus one `e2e-evidence/` line in `.gitignore`).
+**Rollback:** delete `.agents/skills/archie-e2e/`, its client discovery links, and `tools/e2e/` — the harness has no side effects and nothing else references them (plus one `e2e-evidence/` line in `.gitignore`).
 
 ## 1. Boot
 
