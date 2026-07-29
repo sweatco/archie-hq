@@ -38,6 +38,7 @@ vi.mock('../../system/trigger-store.js', async (importOriginal) => {
 });
 
 import { Task } from '../task.js';
+import { appendAgentFinding } from '../persistence.js';
 import type { Trigger, TriggerStatus } from '../../types/trigger.js';
 
 const TRIGGER_ID = 'trg-20260729-1056-6nd69p';
@@ -81,7 +82,7 @@ describe('handleTriggerDenial', () => {
     loadTrigger.mockResolvedValue(trigger('pending'));
     const task = makeFakeTask(TRIGGER_ID);
 
-    await expect(deny(task, TRIGGER_ID)).resolves.toBe('withdrawn');
+    await expect(deny(task, TRIGGER_ID)).resolves.toEqual({ outcome: 'withdrawn' });
 
     expect(deleteTrigger).toHaveBeenCalledWith(TRIGGER_ID);
     expect(task.metadata.pending_trigger_id).toBeUndefined();
@@ -91,23 +92,45 @@ describe('handleTriggerDenial', () => {
     loadTrigger.mockResolvedValue(trigger('enabled'));
     const task = makeFakeTask();
 
-    await expect(deny(task, TRIGGER_ID)).resolves.toBe('already_live');
+    await expect(deny(task, TRIGGER_ID)).resolves.toEqual({ outcome: 'already_live', status: 'enabled' });
 
     expect(deleteTrigger).not.toHaveBeenCalled();
   });
 
-  it('leaves a paused trigger alone too — pausing is not the same as never approved', async () => {
+  it('reports a paused trigger as paused, so the card can avoid telling the user to pause it', async () => {
     loadTrigger.mockResolvedValue(trigger('paused'));
 
-    await expect(deny(makeFakeTask(), TRIGGER_ID)).resolves.toBe('already_live');
+    await expect(deny(makeFakeTask(), TRIGGER_ID)).resolves.toEqual({ outcome: 'already_live', status: 'paused' });
 
     expect(deleteTrigger).not.toHaveBeenCalled();
+  });
+
+  it('records a refused stale Deny in the task log — a blocked teardown attempt is auditable', async () => {
+    loadTrigger.mockResolvedValue(trigger('enabled'));
+
+    await deny(makeFakeTask(), TRIGGER_ID);
+
+    expect(appendAgentFinding).toHaveBeenCalledOnce();
+    const [, , text] = (appendAgentFinding as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(String(text)).toMatch(/refused/i);
+    expect(String(text)).toContain(TRIGGER_ID);
+  });
+
+  it('does NOT clear pending_trigger_id when the Deny was refused', async () => {
+    // The click resolved to nothing, so the fallback target a later no-id Deny
+    // relies on must survive it.
+    loadTrigger.mockResolvedValue(trigger('enabled'));
+    const task = makeFakeTask(TRIGGER_ID);
+
+    await deny(task, TRIGGER_ID);
+
+    expect(task.metadata.pending_trigger_id).toBe(TRIGGER_ID);
   });
 
   it('reports a trigger that is already gone rather than calling delete again', async () => {
     loadTrigger.mockResolvedValue(null);
 
-    await expect(deny(makeFakeTask(), TRIGGER_ID)).resolves.toBe('not_found');
+    await expect(deny(makeFakeTask(), TRIGGER_ID)).resolves.toEqual({ outcome: 'not_found' });
 
     expect(deleteTrigger).not.toHaveBeenCalled();
   });
@@ -116,21 +139,21 @@ describe('handleTriggerDenial', () => {
     loadTrigger.mockResolvedValue(trigger('pending'));
     const task = makeFakeTask(TRIGGER_ID);
 
-    await expect(deny(task)).resolves.toBe('withdrawn');
+    await expect(deny(task)).resolves.toEqual({ outcome: 'withdrawn' });
 
     expect(loadTrigger).toHaveBeenCalledWith(TRIGGER_ID);
     expect(deleteTrigger).toHaveBeenCalledWith(TRIGGER_ID);
   });
 
   it('is a no-op when there is no id at all', async () => {
-    await expect(deny(makeFakeTask())).resolves.toBe('not_found');
+    await expect(deny(makeFakeTask())).resolves.toEqual({ outcome: 'not_found' });
 
     expect(loadTrigger).not.toHaveBeenCalled();
     expect(deleteTrigger).not.toHaveBeenCalled();
   });
 
-  it('clears pending_trigger_id only when it matches the denied id', async () => {
-    loadTrigger.mockResolvedValue(trigger('enabled'));
+  it('clears pending_trigger_id only when it matches the withdrawn id', async () => {
+    loadTrigger.mockResolvedValue(trigger('pending'));
     const task = makeFakeTask('trg-20260729-1057-other');
 
     await deny(task, TRIGGER_ID);

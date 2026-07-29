@@ -117,7 +117,12 @@ import {
   MAX_TRIGGERS_PER_CHANNEL,
 } from '../system/trigger-scheduler.js';
 import { emitEvent } from '../system/event-bus.js';
-import { triggerVisibleFrom, type TriggerOrigin } from '../system/trigger-visibility.js';
+import {
+  triggerVisibleFrom,
+  pendingTriggerOwnedBy,
+  pendingTriggerIsLegacy,
+  type TriggerOrigin,
+} from '../system/trigger-visibility.js';
 
 // Re-export branch state helpers for consumers that import from tools.ts
 export { hydrateBranchState, findBranchStateByPR };
@@ -2341,6 +2346,9 @@ function createProposeTriggerTool(agent: Agent, task: Task) {
         status: 'pending',
         created_by: createdBy || 'unknown',
         created_at: new Date().toISOString(),
+        // Ownership of the proposal, so it stays manageable from here while
+        // pending without becoming editable from other conversations.
+        proposed_in_task: task.taskId,
         binding,
         conditions: built.conditions,
         action: { prompt: args.action_prompt },
@@ -2367,11 +2375,20 @@ function createListTriggersTool(_agent: Agent, task: Task) {
       // left a dead zone: a proposal the user hadn't answered yet was invisible
       // and therefore unmanageable, so the only way to revise it was to propose a
       // second one and abandon the first. Label them unmistakably instead.
+      //
+      // A pending proposal is scoped to the task that made it (see
+      // pendingTriggerOwnedBy) rather than to its binding — otherwise a
+      // private-channel proposal made from a DM is hidden from that DM, and a
+      // public-channel one leaks into every other conversation.
       const all = await listTriggers();
       const origin = await resolveTriggerOrigin(task);
       const resolvePrivacy = makePrivacyResolver();
       const visible: Trigger[] = [];
       for (const t of all) {
+        if (t.status === 'pending' && !pendingTriggerIsLegacy(t)) {
+          if (pendingTriggerOwnedBy(t, task.taskId) || origin.kind === 'operator') visible.push(t);
+          continue;
+        }
         if (await triggerVisibleFrom(t, origin, resolvePrivacy)) visible.push(t);
       }
       if (visible.length === 0) return ok('There are no triggers set up that are visible from here.');
@@ -2401,8 +2418,17 @@ function createUpdateTriggerTool(_agent: Agent, task: Task) {
       const trigger = await loadTrigger(args.id);
       if (!trigger) return ok(`No trigger ${args.id} found.`);
       const origin = await resolveTriggerOrigin(task);
-      if (!(await triggerVisibleFrom(trigger, origin, makePrivacyResolver()))) {
-        return ok(`Trigger ${args.id} isn't visible from here, so it can't be managed from this conversation.`);
+      // A pending proposal answers to the task that made it, not to its binding
+      // (see pendingTriggerOwnedBy); everything else answers to binding visibility.
+      const manageable = trigger.status === 'pending' && !pendingTriggerIsLegacy(trigger)
+        ? pendingTriggerOwnedBy(trigger, task.taskId) || origin.kind === 'operator'
+        : await triggerVisibleFrom(trigger, origin, makePrivacyResolver());
+      if (!manageable) {
+        return ok(
+          trigger.status === 'pending'
+            ? `Trigger ${args.id} is a proposal awaiting approval in another conversation, so it can't be managed from here.`
+            : `Trigger ${args.id} isn't visible from here, so it can't be managed from this conversation.`,
+        );
       }
       // A proposal the user hasn't answered yet is editable — that's the whole
       // point of listing it — but approval is the ONLY path from pending to
@@ -2429,6 +2455,28 @@ function createUpdateTriggerTool(_agent: Agent, task: Task) {
         // details rather than the superseded ones. Nothing is announced to the
         // bound channel — the automation isn't running yet.
         if (!editedContent) return ok('Nothing to update — pass action_prompt, summary, or conditions.');
+
+        // Re-assert `pending` immediately before writing. This is a
+        // read-modify-write with no CAS, and the window spans the Slack lookups
+        // above — long enough for the user's Approve to land. Without this check
+        // that Approve would be undone: `enableProposedTrigger` writes
+        // `status: 'enabled'` and indexes the PRE-edit object, then this save
+        // stamps the file back to `pending` with the new content, leaving a
+        // trigger that fires from memory on stale content while every listing
+        // calls it "awaiting approval".
+        const current = await loadTrigger(args.id);
+        if (!current || current.status !== 'pending') {
+          return ok(
+            current
+              ? `The user acted on proposal ${args.id} while this edit was in flight — it is now ${current.status}, so the edit was not applied. Re-read it with list_triggers and change the live trigger instead.`
+              : `Proposal ${args.id} was withdrawn while this edit was in flight, so the edit was not applied.`,
+          );
+        }
+
+        // An edit is an act of renewal: the boot-scan GC reaps pending proposals
+        // older than PENDING_TTL_MS, and it measures from `updated_at` when set,
+        // so a proposal revised late in its life isn't reaped mid-conversation.
+        trigger.updated_at = new Date().toISOString();
         await saveTrigger(trigger);
         await postTriggerApprovalCard(task, trigger);
         return ok(`Proposal ${trigger.id} updated and re-posted for approval — it now reads "${triggerWhat(trigger)}" · ${triggerWhen(trigger)}. Still not running until the user approves.`);
@@ -2492,7 +2540,7 @@ function createUpdateTriggerTool(_agent: Agent, task: Task) {
 function createDeleteTriggerTool(_agent: Agent, task: Task) {
   return tool(
     'delete_trigger',
-    'Delete a trigger permanently, or withdraw a proposal the user has not approved yet (same call — pass its id). You can only delete triggers visible from this conversation. Posts a one-line notice to the bound channel, except for an unapproved proposal (nothing was running, so there is nothing to announce). Withdrawing also disables the Approve button on its card.',
+    'Delete a trigger permanently, or withdraw a proposal the user has not approved yet (same call — pass its id). You can only delete triggers visible from this conversation, and only withdraw a proposal this conversation made. Posts a one-line notice to the bound channel, except for an unapproved proposal (nothing was running, so there is nothing to announce). An already-posted Approve/Deny card stays on screen after a withdrawal — its buttons no longer do anything, so tell the user the proposal is gone rather than letting them click it.',
     {
       id: z.string().describe('Trigger ID (from list_triggers).'),
     },
@@ -2500,14 +2548,25 @@ function createDeleteTriggerTool(_agent: Agent, task: Task) {
       const trigger = await loadTrigger(args.id);
       if (!trigger) return ok(`No trigger ${args.id} found.`);
       const origin = await resolveTriggerOrigin(task);
-      if (trigger.status !== 'pending' && !(await triggerVisibleFrom(trigger, origin, makePrivacyResolver()))) {
-        return ok(`Trigger ${args.id} isn't visible from here, so it can't be deleted from this conversation.`);
+      const deletable = trigger.status === 'pending' && !pendingTriggerIsLegacy(trigger)
+        ? pendingTriggerOwnedBy(trigger, task.taskId) || origin.kind === 'operator'
+        : await triggerVisibleFrom(trigger, origin, makePrivacyResolver());
+      if (!deletable) {
+        return ok(
+          trigger.status === 'pending'
+            ? `Trigger ${args.id} is a proposal awaiting approval in another conversation, so it can't be withdrawn from here.`
+            : `Trigger ${args.id} isn't visible from here, so it can't be deleted from this conversation.`,
+        );
       }
       deindexTrigger(trigger.id);
       await deleteTrigger(trigger.id);
       emitEvent('trigger:deleted', task.taskId, { trigger_id: trigger.id });
       if (trigger.status !== 'pending') await announceTriggerChange(trigger, 'deleted');
-      return ok(`Trigger ${trigger.id} deleted.`);
+      return ok(
+        trigger.status === 'pending'
+          ? `Proposal ${trigger.id} withdrawn. Its Approve/Deny card is still in the thread but its buttons are now inert — say so, so the user doesn't try to approve it.`
+          : `Trigger ${trigger.id} deleted.`,
+      );
     },
   );
 }

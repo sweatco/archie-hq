@@ -446,9 +446,27 @@ export async function mountSlackApp(
         if (trigger) { indexTrigger(trigger); await announceTriggerChange(trigger, 'enabled'); }
       }
       if (body.channel?.id && body.message?.ts) {
-        const text = trigger
-          ? `✅ Approved by <@${userId}> — *${triggerWhat(trigger)}* is now on.`
-          : `⚠️ Approved by <@${userId}>, but the automation couldn't be enabled (it may already be active or a limit was reached).`;
+        // `enableProposedTrigger` returns null for anything not `pending`, which
+        // now happens routinely: editing a proposal re-posts a card and cards are
+        // never retracted, so an older card gets clicked after the trigger is
+        // already on. Read the trigger's real state instead of guessing, so that
+        // ordinary case doesn't render as a scary failure with two speculative causes.
+        let text: string;
+        if (trigger) {
+          text = `✅ Approved by <@${userId}> — *${triggerWhat(trigger)}* is now on.`;
+        } else {
+          const { loadTrigger } = await import('../../system/trigger-store.js');
+          const existing = await loadTrigger(triggerId);
+          if (existing?.status === 'enabled') {
+            text = `✅ *${triggerWhat(existing)}* is already on — this was an earlier prompt for the same automation, so nothing changed.`;
+          } else if (existing?.status === 'paused') {
+            text = `ℹ️ *${triggerWhat(existing)}* was already approved and is currently paused — this was an earlier prompt for it, so nothing changed. Ask me to resume it if you want it running.`;
+          } else if (!existing) {
+            text = `ℹ️ This proposal is no longer around — it was withdrawn or replaced, so nothing was set up.`;
+          } else {
+            text = `⚠️ Approved by <@${userId}>, but the automation couldn't be enabled — the active-trigger limit was reached.`;
+          }
+        }
         await updateMessage(body.channel.id, body.message.ts, text, []);
       }
     } catch (error) {
@@ -465,7 +483,10 @@ export async function mountSlackApp(
     const userId = body.user?.id || 'unknown';
     const threadId = body.message?.thread_ts || body.message?.ts;
 
-    logger.server(`Trigger ${triggerId} denied by ${userId}`);
+    // Log the CLICK, not a verdict — the denial may be refused below (a stale
+    // card for an already-approved trigger), and the old wording asserted a
+    // denial that never happened.
+    logger.server(`Deny clicked on trigger ${triggerId} by ${userId}`);
 
     try {
       // Resolve the denial FIRST, then render what actually happened. A card is
@@ -473,25 +494,33 @@ export async function mountSlackApp(
       // that has since been approved — which must not be torn down. Only report
       // "declined" when something was really withdrawn.
       const taskId = threadId ? await findTaskByThread(threadId) : null;
-      let outcome: 'withdrawn' | 'already_live' | 'not_found';
+      let result: { outcome: 'withdrawn' | 'not_found' } | { outcome: 'already_live'; status: import('../../types/trigger.js').TriggerStatus };
       if (taskId) {
         const task = await Task.get(taskId);
-        outcome = await task.handleTriggerDenial(triggerId);
+        result = await task.handleTriggerDenial(triggerId);
       } else {
         const { loadTrigger, deleteTrigger } = await import('../../system/trigger-store.js');
         const trigger = await loadTrigger(triggerId);
-        if (!trigger) outcome = 'not_found';
-        else if (trigger.status !== 'pending') outcome = 'already_live';
-        else { await deleteTrigger(triggerId); outcome = 'withdrawn'; }
+        if (!trigger) result = { outcome: 'not_found' };
+        else if (trigger.status !== 'pending') result = { outcome: 'already_live', status: trigger.status };
+        else { await deleteTrigger(triggerId); result = { outcome: 'withdrawn' }; }
       }
       if (body.channel?.id && body.message?.ts) {
-        const text = outcome === 'withdrawn'
-          ? `❌ Declined by <@${userId}> — no automation was set up.`
-          : outcome === 'already_live'
-            ? `ℹ️ This proposal was already approved and is running, so nothing was declined. Ask me to pause or remove it instead.`
-            : `ℹ️ This proposal is no longer around — nothing to decline.`;
+        let text: string;
+        if (result.outcome === 'withdrawn') {
+          text = `❌ Declined by <@${userId}> — no automation was set up.`;
+        } else if (result.outcome === 'already_live') {
+          // Distinguish paused from running: telling someone to pause a trigger
+          // that is already paused is worse than saying nothing.
+          text = result.status === 'paused'
+            ? `ℹ️ This proposal was already approved and is currently paused, so nothing was declined. Ask me to remove it if you want it gone.`
+            : `ℹ️ This proposal was already approved and is running, so nothing was declined. Ask me to pause or remove it instead.`;
+        } else {
+          text = `ℹ️ This proposal is no longer around — nothing to decline.`;
+        }
         await updateMessage(body.channel.id, body.message.ts, text, []);
       }
+      logger.server(`Trigger ${triggerId} deny resolved: ${result.outcome}`);
     } catch (error) {
       logger.error('Server', 'Error handling trigger denial', error);
     }

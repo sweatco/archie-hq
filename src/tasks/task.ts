@@ -1543,21 +1543,42 @@ export class Task {
    * `pending`), so this makes denial match it. The outcome is returned so callers
    * can report what actually happened instead of always claiming "declined".
    */
-  async handleTriggerDenial(triggerId?: string): Promise<'withdrawn' | 'already_live' | 'not_found'> {
+  async handleTriggerDenial(
+    triggerId?: string,
+  ): Promise<{ outcome: 'withdrawn' | 'not_found' } | { outcome: 'already_live'; status: import('../types/trigger.js').TriggerStatus }> {
     const id = triggerId ?? this.metadata.pending_trigger_id;
-    if (this.metadata.pending_trigger_id === id) this.metadata.pending_trigger_id = undefined;
-    this.debouncedSave();
-    if (!id) return 'not_found';
+    if (!id) return { outcome: 'not_found' };
     const { loadTrigger, deleteTrigger } = await import('../system/trigger-store.js');
     const trigger = await loadTrigger(id);
-    if (!trigger) return 'not_found';
+    if (!trigger) {
+      if (this.metadata.pending_trigger_id === id) {
+        this.metadata.pending_trigger_id = undefined;
+        this.debouncedSave();
+      }
+      return { outcome: 'not_found' };
+    }
     if (trigger.status !== 'pending') {
+      // Refused, so nothing about the proposal changed — in particular do NOT
+      // clear `pending_trigger_id`. Clearing it here would strip the fallback
+      // target a later no-id Deny relies on, off the back of a click that was
+      // rejected. Record it: a click that tried to tear down a live automation
+      // belongs in the task's log even though it was blocked.
       logger.warn('task', `Deny on trigger ${id} ignored — it is ${trigger.status}, not pending (stale approval card)`);
-      return 'already_live';
+      await appendAgentFinding(
+        this.taskId,
+        'system',
+        `Deny on trigger ${id} refused — already ${trigger.status}, not withdrawn (stale approval card)`,
+        'decision',
+      );
+      return { outcome: 'already_live', status: trigger.status };
     }
     await deleteTrigger(id);
+    if (this.metadata.pending_trigger_id === id) {
+      this.metadata.pending_trigger_id = undefined;
+      this.debouncedSave();
+    }
     await appendAgentFinding(this.taskId, 'system', `Trigger ${id} denied by user`, 'decision');
-    return 'withdrawn';
+    return { outcome: 'withdrawn' };
   }
 
   // ---- Internal methods ----

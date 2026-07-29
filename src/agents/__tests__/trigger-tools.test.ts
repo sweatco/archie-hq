@@ -120,6 +120,7 @@ function pendingTrigger(over: Partial<Trigger> = {}): Trigger {
     status: 'pending',
     created_by: 'U1',
     created_at: '2026-07-29T10:56:00.000Z',
+    proposed_in_task: 'task-1',
     binding: { type: 'channel', channel_id: 'C1', channel_name: 'growth-operations' },
     conditions: [{ type: 'schedule', tz: 'Europe/London', next_run_at: '2026-07-30T08:00:00.000Z', cron: '0 9 * * *' }],
     action: { prompt: 'original instruction' },
@@ -205,6 +206,11 @@ describe('update_trigger — a pending proposal is editable', () => {
 
     await getHandler('update_trigger')({ id: 'trg-20260729-1056-pending', summary: 'Revised watch' });
 
+    // Positive assertion first: without it this test passes on ANY path that
+    // rejects the update outright (it did — under the pre-fix "No trigger found"
+    // bail, and in the DM+private-channel case), so the negative proved nothing.
+    expect(saveTrigger).toHaveBeenCalledOnce();
+    expect((saveTrigger.mock.calls[0][0] as Trigger).summary).toBe('Revised watch');
     expect(announceTriggerChange).not.toHaveBeenCalled();
   });
 
@@ -249,14 +255,17 @@ describe('update_trigger — a pending proposal is editable', () => {
 });
 
 describe('delete_trigger — withdrawing an unapproved proposal', () => {
-  it('deletes the pending file (which also makes its Approve button a no-op) without announcing', async () => {
+  it('withdraws the pending file without announcing, and says the card is now inert', async () => {
     loadTrigger.mockResolvedValue(pendingTrigger());
 
     const out = text(await getHandler('delete_trigger')({ id: 'trg-20260729-1056-pending' }));
 
     expect(deleteTrigger).toHaveBeenCalledWith('trg-20260729-1056-pending');
     expect(announceTriggerChange).not.toHaveBeenCalled();
-    expect(out).toMatch(/deleted/i);
+    expect(out).toMatch(/withdrawn/i);
+    // The card is NOT retracted, so the reply must not claim the button is gone.
+    expect(out).toMatch(/inert/i);
+    expect(out).not.toMatch(/disables the Approve button/i);
   });
 
   it('announces when deleting a live trigger', async () => {
@@ -266,5 +275,121 @@ describe('delete_trigger — withdrawing an unapproved proposal', () => {
 
     expect(deleteTrigger).toHaveBeenCalledWith('trg-20260723-1401-live');
     expect(announceTriggerChange).toHaveBeenCalledOnce();
+  });
+});
+
+describe('pending proposals are scoped to the task that proposed them', () => {
+  it('a proposal from another task is neither listed nor editable', async () => {
+    const foreign = pendingTrigger({ id: 'trg-20260729-1100-foreign', proposed_in_task: 'task-999' });
+    listTriggers.mockResolvedValue([foreign]);
+    loadTrigger.mockResolvedValue(foreign);
+
+    const listed = text(await getHandler('list_triggers')({}));
+    const edited = text(await getHandler('update_trigger')({ id: 'trg-20260729-1100-foreign', summary: 'hijacked' }));
+
+    // Before ownership scoping a PUBLIC-bound pending proposal was visible from
+    // every origin, so another conversation could rewrite its action prompt and
+    // approve it while created_by still named the original requester.
+    expect(listed).not.toContain('trg-20260729-1100-foreign');
+    expect(edited).toMatch(/another conversation/i);
+    expect(saveTrigger).not.toHaveBeenCalled();
+  });
+
+  it('a proposal bound to a PRIVATE channel is still manageable from the DM that made it', async () => {
+    // The dead zone's likeliest case: propose_trigger applies no visibility check,
+    // so a DM can bind a proposal to a private channel — which binding visibility
+    // then hides from that same DM, leaving the agent unable to revise it.
+    const priv = pendingTrigger({
+      binding: { type: 'channel', channel_id: 'C-PRIVATE', channel_name: 'secret-ops' },
+    });
+    listTriggers.mockResolvedValue([priv]);
+    loadTrigger.mockResolvedValue(priv);
+
+    const listed = text(await getHandler('list_triggers')({}));
+    const edited = text(await getHandler('update_trigger')({ id: 'trg-20260729-1056-pending', summary: 'Revised' }));
+
+    expect(listed).toContain('trg-20260729-1056-pending');
+    expect(edited).toMatch(/updated and re-posted/i);
+    expect(saveTrigger).toHaveBeenCalledOnce();
+  });
+
+  it('withdrawal is scoped the same way', async () => {
+    const foreign = pendingTrigger({ id: 'trg-20260729-1100-foreign', proposed_in_task: 'task-999' });
+    loadTrigger.mockResolvedValue(foreign);
+
+    const out = text(await getHandler('delete_trigger')({ id: 'trg-20260729-1100-foreign' }));
+
+    expect(out).toMatch(/another conversation/i);
+    expect(deleteTrigger).not.toHaveBeenCalled();
+  });
+
+  it('a legacy proposal with no recorded owner falls back to binding visibility', async () => {
+    // Proposals created before proposed_in_task existed must not become
+    // unmanageable; their public binding is visible from this origin.
+    const legacy = pendingTrigger({ id: 'trg-20260701-0900-legacy', proposed_in_task: undefined });
+    listTriggers.mockResolvedValue([legacy]);
+    loadTrigger.mockResolvedValue(legacy);
+
+    const listed = text(await getHandler('list_triggers')({}));
+    const edited = text(await getHandler('update_trigger')({ id: 'trg-20260701-0900-legacy', summary: 'Revised' }));
+
+    expect(listed).toContain('trg-20260701-0900-legacy');
+    expect(edited).toMatch(/updated and re-posted/i);
+  });
+});
+
+describe('editing a pending proposal is safe against a concurrent approval', () => {
+  it('abandons the edit when the user approves mid-flight, rather than reverting the trigger to pending', async () => {
+    // loadTrigger is called twice: once up front, once as the pre-write re-check.
+    // Between them the user's Approve lands and flips the file to enabled.
+    loadTrigger
+      .mockResolvedValueOnce(pendingTrigger())
+      .mockResolvedValueOnce(pendingTrigger({ status: 'enabled' }));
+
+    const out = text(await getHandler('update_trigger')({ id: 'trg-20260729-1056-pending', summary: 'Revised watch' }));
+
+    expect(saveTrigger).not.toHaveBeenCalled(); // must not stamp status back to pending
+    expect(out).toMatch(/while this edit was in flight/i);
+    expect(out).toMatch(/enabled/);
+  });
+
+  it('reports a withdrawal that lands mid-flight', async () => {
+    loadTrigger
+      .mockResolvedValueOnce(pendingTrigger())
+      .mockResolvedValueOnce(null);
+
+    const out = text(await getHandler('update_trigger')({ id: 'trg-20260729-1056-pending', summary: 'Revised watch' }));
+
+    expect(saveTrigger).not.toHaveBeenCalled();
+    expect(out).toMatch(/withdrawn while this edit was in flight/i);
+  });
+
+  it('stamps updated_at so the 24h pending reaper measures from the edit', async () => {
+    loadTrigger.mockResolvedValue(pendingTrigger());
+
+    await getHandler('update_trigger')({ id: 'trg-20260729-1056-pending', summary: 'Revised watch' });
+
+    const saved = saveTrigger.mock.calls[0][0] as Trigger;
+    expect(saved.updated_at).toBeDefined();
+    expect(new Date(saved.updated_at!).getTime()).toBeGreaterThan(new Date(saved.created_at).getTime());
+  });
+});
+
+describe('propose_trigger records the proposing task', () => {
+  it('stamps proposed_in_task so the proposal stays manageable from here', async () => {
+    listTriggers.mockResolvedValue([]);
+    countActiveTriggers.mockResolvedValue(0);
+
+    await getHandler('propose_trigger')({
+      binding: { type: 'channel', channel_id: 'C1', channel_name: 'growth-operations' },
+      conditions: [{ type: 'schedule', cron: '0 9 * * *', tz: 'Europe/London' }],
+      action_prompt: 'do the thing',
+      summary: 'Daily thing',
+    });
+
+    expect(saveTrigger).toHaveBeenCalledOnce();
+    const saved = saveTrigger.mock.calls[0][0] as Trigger;
+    expect(saved.proposed_in_task).toBe('task-1');
+    expect(saved.status).toBe('pending');
   });
 });
