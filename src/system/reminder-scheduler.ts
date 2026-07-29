@@ -12,6 +12,7 @@ import { SESSIONS_DIR } from './workdir.js';
 import { loadMetadata, getMetadataPath } from '../tasks/persistence.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { emitEvent } from './event-bus.js';
+import { computeNextRun } from './trigger-scheduler.js';
 import { logger } from './logger.js';
 
 // ---- In-memory index ----
@@ -19,6 +20,10 @@ import { logger } from './logger.js';
 interface PendingReminder {
   trigger_at: Date;
   reason: string;
+  /** Set for a recurring reminder — the scheduler re-arms from it instead of clearing. */
+  cron?: string;
+  /** IANA timezone the cron is evaluated in. */
+  tz?: string;
 }
 
 const pendingReminders = new Map<string, PendingReminder>();
@@ -54,12 +59,25 @@ export async function initReminderScheduler(): Promise<void> {
 /**
  * Register a reminder for a task. Replaces any existing reminder.
  * Updates both in-memory map and task metadata.
+ *
+ * Pass `recurrence` to make it recurring: the scheduler then re-arms from the
+ * cron after each fire instead of clearing it, so the cadence is owned by the
+ * runtime rather than re-decided by the agent on every wake.
  */
-export function scheduleReminder(task: Task, triggerAt: Date, reason: string): void {
-  pendingReminders.set(task.taskId, { trigger_at: triggerAt, reason });
-  task.metadata.reminder = { trigger_at: triggerAt.toISOString(), reason };
+export function scheduleReminder(
+  task: Task,
+  triggerAt: Date,
+  reason: string,
+  recurrence?: { cron: string; tz: string },
+): void {
+  pendingReminders.set(task.taskId, { trigger_at: triggerAt, reason, ...recurrence });
+  task.metadata.reminder = { trigger_at: triggerAt.toISOString(), reason, ...recurrence };
   task.debouncedSave();
-  emitEvent('reminder:set', task.taskId, { trigger_at: triggerAt.toISOString(), reason });
+  emitEvent('reminder:set', task.taskId, {
+    trigger_at: triggerAt.toISOString(),
+    reason,
+    ...(recurrence ? { cron: recurrence.cron, tz: recurrence.tz } : {}),
+  });
 }
 
 /**
@@ -104,12 +122,41 @@ async function rebuildFromDisk(): Promise<void> {
         pendingReminders.set(metadata.task_id, {
           trigger_at: new Date(metadata.reminder.trigger_at),
           reason: metadata.reminder.reason,
+          ...(metadata.reminder.cron ? { cron: metadata.reminder.cron, tz: metadata.reminder.tz } : {}),
         });
       }
     }
   } catch (err) {
     logger.error('reminder-scheduler', 'Failed to rebuild reminders from disk', err);
   }
+}
+
+/**
+ * What replaces a reminder that just fired. Pure so the re-arm rule is testable
+ * without a clock or the filesystem.
+ *
+ * A one-shot (no cron) clears. A recurring one re-arms at the next cron instant
+ * strictly after `firedAt`. An overdue recurring reminder — the process was down
+ * across one or more windows — therefore fires ONCE on catch-up and then skips
+ * straight to the next future instant rather than replaying every missed window,
+ * matching how the trigger scheduler handles the same situation.
+ *
+ * A cron that no longer computes (invalid expression, or a timezone that stopped
+ * resolving) degrades to a one-shot instead of re-arming forever on a broken
+ * value — the same "drop it rather than re-fire forever" call the trigger tick makes.
+ */
+export function planReminderRearm(
+  reminder: { cron?: string; tz?: string },
+  firedAt: Date,
+): { trigger_at: Date; cron: string; tz: string } | null {
+  if (!reminder.cron) return null;
+  const tz = reminder.tz || 'UTC';
+  const next = computeNextRun(reminder.cron, tz, firedAt);
+  if (!next) {
+    logger.warn('reminder-scheduler', `Recurring reminder cron "${reminder.cron}" (${tz}) no longer computes — dropping the recurrence`);
+    return null;
+  }
+  return { trigger_at: next, cron: reminder.cron, tz };
 }
 
 /**
@@ -125,14 +172,38 @@ async function checkDueReminders(): Promise<void> {
     pendingReminders.delete(taskId);
 
     try {
-      // 2. Clear metadata.reminder + flush save (agent sees clean state)
+      // 2. Re-arm a recurring reminder, or clear a one-shot, then flush the save
+      //    BEFORE reactivating so the agent wakes seeing the correct next state
+      //    (the next occurrence, or nothing) rather than the fire it is handling.
       const metadata = await loadMetadata(taskId);
       if (!metadata) {
         logger.warn('reminder-scheduler', `Task ${taskId} not found on disk, skipping reminder`);
         continue;
       }
 
-      metadata.reminder = undefined;
+      const rearm = planReminderRearm(reminder, now);
+      if (rearm) {
+        metadata.reminder = {
+          trigger_at: rearm.trigger_at.toISOString(),
+          reason: reminder.reason,
+          cron: rearm.cron,
+          tz: rearm.tz,
+        };
+        pendingReminders.set(taskId, {
+          trigger_at: rearm.trigger_at,
+          reason: reminder.reason,
+          cron: rearm.cron,
+          tz: rearm.tz,
+        });
+        emitEvent('reminder:set', taskId, {
+          trigger_at: rearm.trigger_at.toISOString(),
+          reason: reminder.reason,
+          cron: rearm.cron,
+          tz: rearm.tz,
+        });
+      } else {
+        metadata.reminder = undefined;
+      }
       await writeFile(getMetadataPath(taskId), JSON.stringify(metadata, null, 2));
 
       // 3. Reactivate task

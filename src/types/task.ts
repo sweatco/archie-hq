@@ -327,6 +327,8 @@ export interface TaskMetadata {
   reminder?: {                       // Pending self-scheduled reminder (set by agent via set_reminder tool)
     trigger_at: string;              // ISO 8601 datetime when the task should be reactivated
     reason: string;                  // Why — shown to agent when woken
+    cron?: string;                   // Set for a recurring reminder: the runtime re-arms from this instead of clearing it
+    tz?: string;                     // IANA timezone the cron is evaluated in (required alongside cron)
   };
   triggered_by?: string;             // Trigger ID that spawned this task (set by fireTrigger). Blocks the task from creating triggers.
   pending_trigger_id?: string;       // Trigger ID proposed by this task, awaiting approve/deny (read by handleTriggerApproval/Denial)

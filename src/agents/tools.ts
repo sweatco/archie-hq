@@ -2021,12 +2021,43 @@ function createParseDatetimeTool(agent: Agent, task: Task) {
 function createSetReminderTool(agent: Agent, task: Task) {
   return tool(
     'set_reminder',
-    'Set a reminder to be woken up at a future time (within 30 days). THIS task is reactivated and you receive a prompt with the reason, with everything you already know intact — that continuity is the point. Use it when the next step depends on what you have already seen: waiting on CI, a rollout, or a human reply; or a monitor whose alerts must not repeat ("only tell them if it changed since last time"). It survives restarts. You are not confined to this thread while doing so — post_to_channel can broadcast anywhere Archie is, so delivering elsewhere is NOT a reason to reach for a trigger instead. For recurring monitoring, re-arm on each wake by calling set_reminder again (a self-rescheduling one-shot). If instead the automation should outlive this conversation and be something the channel can see, list and switch off, propose_trigger is the right tool — a trigger spawns a FRESH task each time with no memory of previous runs. Only one reminder can be pending — calling this replaces any existing one. Use parse_datetime first to get the correct ISO 8601 value.',
+    'Wake THIS task up later — either once (`datetime`, within 30 days) or on a repeating schedule (`cron` + `tz`). The task is reactivated and you receive a prompt with the reason, with everything you already know intact — that continuity is the point. Use it when the next step depends on what you have already seen: waiting on CI, a rollout, or a human reply; or a monitor whose alerts must not repeat ("only tell them if it changed since last time"). It survives restarts. You are not confined to this thread while doing so — post_to_channel can broadcast anywhere Archie is, so delivering elsewhere is NOT a reason to reach for a trigger instead. For anything repeating, pass `cron` rather than re-arming by hand on each wake: the runtime then owns the cadence, so it cannot drift or be skipped. Recurring reminders fire at most once per hour. If instead the automation should outlive this conversation and be something the channel can see, list and switch off, propose_trigger is the right tool — a trigger spawns a FRESH task each time with no memory of previous runs. Only one reminder can be pending — calling this replaces any existing one; cancel_reminder stops a recurring one. Use parse_datetime first to get a correct ISO 8601 `datetime`.',
     {
-      datetime: z.string().describe('ISO 8601 datetime, e.g. "2026-04-15T10:00:00Z"'),
-      reason: z.string().describe('What to do when woken — this will be shown to you'),
+      datetime: z.string().optional().describe('One-shot: ISO 8601 datetime, e.g. "2026-04-15T10:00:00Z". Mutually exclusive with cron.'),
+      cron: z.string().optional().describe('Recurring: 5-field cron, e.g. "0 5,17 * * *" for 05:00 and 17:00 daily. Must not fire more than once per hour. Requires tz.'),
+      tz: z.string().optional().describe('IANA timezone the cron runs in, e.g. "Europe/London". Required with cron.'),
+      reason: z.string().describe('What to do when woken — this will be shown to you. For a recurring reminder this is shown on every wake, so write it to be re-read.'),
     },
     async (args) => {
+      const agentName = agent.def.id as AgentName;
+
+      if (args.cron && args.datetime) {
+        return { content: [{ type: 'text' as const, text: 'Pass either datetime (one-shot) or cron + tz (recurring), not both.' }] };
+      }
+
+      if (args.cron) {
+        if (!args.tz) {
+          return { content: [{ type: 'text' as const, text: 'A recurring reminder needs tz — an IANA timezone like "Europe/London". "9am" is meaningless without one.' }] };
+        }
+        // Same once-per-hour floor triggers enforce: each wake is a full task
+        // activation, so a tighter cadence burns real budget. One-shots are free-form.
+        const valid = validateRecurringInterval(args.cron, args.tz);
+        if (!valid.ok) {
+          return { content: [{ type: 'text' as const, text: `${valid.error} (Reminders use the same once-per-hour floor as triggers.)` }] };
+        }
+        const first = computeNextRun(args.cron, args.tz);
+        if (!first) {
+          return { content: [{ type: 'text' as const, text: `Could not compute a next run for cron "${args.cron}" in ${args.tz}.` }] };
+        }
+
+        scheduleReminder(task, first, args.reason, { cron: args.cron, tz: args.tz });
+        logger.agentAction(agentName, 'Setting recurring reminder', `${args.cron} (${args.tz}), next ${first.toISOString()}: ${args.reason}`);
+        return { content: [{ type: 'text' as const, text: `Recurring reminder set: ${args.cron} (${args.tz}). Next wake ${first.toISOString()}. It re-arms automatically after each wake — use cancel_reminder to stop it. Reason: ${args.reason}` }] };
+      }
+
+      if (!args.datetime) {
+        return { content: [{ type: 'text' as const, text: 'Pass datetime for a one-shot reminder, or cron + tz for a recurring one.' }] };
+      }
       const triggerAt = new Date(args.datetime);
       if (isNaN(triggerAt.getTime())) {
         return { content: [{ type: 'text' as const, text: 'Invalid datetime. Use parse_datetime to get a valid ISO 8601 value.' }] };
@@ -2036,10 +2067,9 @@ function createSetReminderTool(agent: Agent, task: Task) {
       }
       const maxFuture = new Date(Date.now() + 30 * 24 * 60 * 60_000);
       if (triggerAt > maxFuture) {
-        return { content: [{ type: 'text' as const, text: 'Datetime must be within 30 days.' }] };
+        return { content: [{ type: 'text' as const, text: 'Datetime must be within 30 days. For an open-ended schedule use cron + tz instead.' }] };
       }
 
-      const agentName = agent.def.id as AgentName;
       scheduleReminder(task, triggerAt, args.reason);
       logger.agentAction(agentName, 'Setting reminder', `${triggerAt.toISOString()}: ${args.reason}`);
 
@@ -2051,7 +2081,7 @@ function createSetReminderTool(agent: Agent, task: Task) {
 function createCancelReminderTool(agent: Agent, task: Task) {
   return tool(
     'cancel_reminder',
-    'Cancel the pending reminder for this task. Use when the reason for the reminder is no longer relevant.',
+    'Cancel the pending reminder for this task — this is also how you stop a recurring one, since it clears the repeat as well as the next wake. Use when the reason for the reminder is no longer relevant.',
     {},
     async () => {
       if (!task.metadata.reminder) {
