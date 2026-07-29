@@ -6,10 +6,9 @@
  */
 
 import { execSync } from 'child_process';
-import { writeFile } from 'fs/promises';
 import { Task } from '../tasks/task.js';
 import { SESSIONS_DIR } from './workdir.js';
-import { loadMetadata, getMetadataPath } from '../tasks/persistence.js';
+import { loadMetadata } from '../tasks/persistence.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { emitEvent } from './event-bus.js';
 import { computeNextRun } from './trigger-scheduler.js';
@@ -160,9 +159,11 @@ export function planReminderRearm(
 }
 
 /**
- * Check for due reminders and fire them.
+ * Check for due reminders and fire them. Exported for tests — the ordering here
+ * (resolve the live task, then re-arm, then flush, then reactivate) is the part
+ * that matters and it is not expressible as a pure function.
  */
-async function checkDueReminders(): Promise<void> {
+export async function checkDueReminders(): Promise<void> {
   const now = new Date();
 
   for (const [taskId, reminder] of pendingReminders) {
@@ -172,18 +173,29 @@ async function checkDueReminders(): Promise<void> {
     pendingReminders.delete(taskId);
 
     try {
-      // 2. Re-arm a recurring reminder, or clear a one-shot, then flush the save
-      //    BEFORE reactivating so the agent wakes seeing the correct next state
-      //    (the next occurrence, or nothing) rather than the fire it is handling.
-      const metadata = await loadMetadata(taskId);
-      if (!metadata) {
+      // 2. Resolve the task BEFORE touching its reminder state. Task.get returns
+      //    the LIVE instance when the task is already active, and that instance
+      //    owns the whole metadata object — so writing a loadMetadata() copy
+      //    straight to disk would be silently clobbered by its next
+      //    debouncedSave, resurrecting the reminder being fired right now. For a
+      //    recurring reminder that resurrected value is a trigger_at in the past,
+      //    which fires again the moment the process restarts.
+      let task: Task;
+      try {
+        task = await Task.get(taskId);
+      } catch {
         logger.warn('reminder-scheduler', `Task ${taskId} not found on disk, skipping reminder`);
         continue;
       }
 
+      // 3. Re-arm a recurring reminder, or clear a one-shot, and flush BEFORE
+      //    reactivating so the agent wakes seeing its next occurrence (or a clean
+      //    slate) rather than the fire it is handling. `cancel_reminder` then
+      //    operates on that next occurrence, which is how an agent stops a
+      //    recurring reminder for good.
       const rearm = planReminderRearm(reminder, now);
       if (rearm) {
-        metadata.reminder = {
+        task.metadata.reminder = {
           trigger_at: rearm.trigger_at.toISOString(),
           reason: reminder.reason,
           cron: rearm.cron,
@@ -202,14 +214,13 @@ async function checkDueReminders(): Promise<void> {
           tz: rearm.tz,
         });
       } else {
-        metadata.reminder = undefined;
+        task.metadata.reminder = undefined;
       }
-      await writeFile(getMetadataPath(taskId), JSON.stringify(metadata, null, 2));
+      await task.save(true);
 
-      // 3. Reactivate task
+      // 4. Reactivate task
       emitEvent('reminder:fired', taskId, { reason: reminder.reason });
       logger.system(`Reminder fired for ${taskId}: ${reminder.reason}`);
-      const task = await Task.get(taskId);
       await task.sendMessage(
         AGENT_PROMPTS.reminder(reminder.reason),
       );
