@@ -1532,15 +1532,32 @@ export class Task {
   /**
    * Deny the trigger this task proposed — delete the pending file. Shared by the
    * Slack `deny_trigger` button and the CLI `/approve` endpoint.
+   *
+   * Only a still-`pending` proposal is deleted. Approve/Deny cards are not
+   * retracted when they are superseded (an edited proposal re-posts a card, and
+   * a task can propose more than once), so an older card for a trigger that has
+   * since been approved stays clickable. Deleting unconditionally there would let
+   * a stale Deny destroy a live automation — and worse, remove its file while the
+   * scheduler kept firing it from the in-memory index until the next restart.
+   * Approval is idempotent for the same reason (`enableProposedTrigger` requires
+   * `pending`), so this makes denial match it. The outcome is returned so callers
+   * can report what actually happened instead of always claiming "declined".
    */
-  async handleTriggerDenial(triggerId?: string): Promise<void> {
+  async handleTriggerDenial(triggerId?: string): Promise<'withdrawn' | 'already_live' | 'not_found'> {
     const id = triggerId ?? this.metadata.pending_trigger_id;
     if (this.metadata.pending_trigger_id === id) this.metadata.pending_trigger_id = undefined;
     this.debouncedSave();
-    if (!id) return;
-    const { deleteTrigger } = await import('../system/trigger-store.js');
+    if (!id) return 'not_found';
+    const { loadTrigger, deleteTrigger } = await import('../system/trigger-store.js');
+    const trigger = await loadTrigger(id);
+    if (!trigger) return 'not_found';
+    if (trigger.status !== 'pending') {
+      logger.warn('task', `Deny on trigger ${id} ignored — it is ${trigger.status}, not pending (stale approval card)`);
+      return 'already_live';
+    }
     await deleteTrigger(id);
     await appendAgentFinding(this.taskId, 'system', `Trigger ${id} denied by user`, 'decision');
+    return 'withdrawn';
   }
 
   // ---- Internal methods ----

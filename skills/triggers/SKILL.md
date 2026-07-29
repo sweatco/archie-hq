@@ -36,7 +36,9 @@ When you have the details, propose the trigger. This posts an **Approve / Deny**
 
 Never describe a trigger as "set up" or "running" until it has actually been approved.
 
-**A proposal awaiting approval is still yours to manage.** It shows up in `list_triggers` marked *awaiting approval — not running*, and if the user asks for a change before they've clicked anything, **edit that proposal** (`update_trigger`) rather than proposing a second one — editing re-posts a fresh Approve/Deny card with the new details. If they've changed their mind entirely, `delete_trigger` withdraws it, which also retires its card. Never leave a superseded proposal sitting unapproved: only `status` is off-limits while pending, because approval is the user's call alone.
+**A proposal awaiting approval is still yours to manage.** It shows up in `list_triggers` marked *awaiting approval — not running*, and if the user asks for a change before they've clicked anything, **edit that proposal** (`update_trigger`) rather than proposing a second one. Editing re-posts a fresh Approve/Deny card with the new details. If they've changed their mind entirely, `delete_trigger` withdraws it. Only `status` is off-limits while pending, because approval is the user's call alone.
+
+Editing leaves the **earlier card in the thread** — Slack cards aren't retracted, so say which one is current ("ignore the card above — here's the updated one"). Both cards point at the same trigger, so the outcome is the same whichever they click, and neither can create a duplicate or revive the old details: approving twice is a no-op the second time, and a Deny that lands after approval is refused rather than tearing down a running automation. Withdrawing a proposal likewise leaves its buttons inert.
 
 ### Visibility & privacy — what you can see and manage
 

@@ -468,16 +468,29 @@ export async function mountSlackApp(
     logger.server(`Trigger ${triggerId} denied by ${userId}`);
 
     try {
-      if (body.channel?.id && body.message?.ts) {
-        await updateMessage(body.channel.id, body.message.ts, `❌ Declined by <@${userId}> — no automation was set up.`, []);
-      }
+      // Resolve the denial FIRST, then render what actually happened. A card is
+      // not retracted when it's superseded, so this click may land on a proposal
+      // that has since been approved — which must not be torn down. Only report
+      // "declined" when something was really withdrawn.
       const taskId = threadId ? await findTaskByThread(threadId) : null;
+      let outcome: 'withdrawn' | 'already_live' | 'not_found';
       if (taskId) {
         const task = await Task.get(taskId);
-        await task.handleTriggerDenial(triggerId);
+        outcome = await task.handleTriggerDenial(triggerId);
       } else {
-        const { deleteTrigger } = await import('../../system/trigger-store.js');
-        await deleteTrigger(triggerId);
+        const { loadTrigger, deleteTrigger } = await import('../../system/trigger-store.js');
+        const trigger = await loadTrigger(triggerId);
+        if (!trigger) outcome = 'not_found';
+        else if (trigger.status !== 'pending') outcome = 'already_live';
+        else { await deleteTrigger(triggerId); outcome = 'withdrawn'; }
+      }
+      if (body.channel?.id && body.message?.ts) {
+        const text = outcome === 'withdrawn'
+          ? `❌ Declined by <@${userId}> — no automation was set up.`
+          : outcome === 'already_live'
+            ? `ℹ️ This proposal was already approved and is running, so nothing was declined. Ask me to pause or remove it instead.`
+            : `ℹ️ This proposal is no longer around — nothing to decline.`;
+        await updateMessage(body.channel.id, body.message.ts, text, []);
       }
     } catch (error) {
       logger.error('Server', 'Error handling trigger denial', error);
