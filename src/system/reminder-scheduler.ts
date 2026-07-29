@@ -8,7 +8,7 @@
 import { execSync } from 'child_process';
 import { Task } from '../tasks/task.js';
 import { SESSIONS_DIR } from './workdir.js';
-import { loadMetadata } from '../tasks/persistence.js';
+import { loadMetadata, taskExistsOnDisk } from '../tasks/persistence.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { emitEvent } from './event-bus.js';
 import { computeNextRun } from './trigger-scheduler.js';
@@ -23,6 +23,8 @@ interface PendingReminder {
   cron?: string;
   /** IANA timezone the cron is evaluated in. */
   tz?: string;
+  /** ISO 8601 end for a recurring reminder; the re-arm stops past it. */
+  until?: string;
 }
 
 const pendingReminders = new Map<string, PendingReminder>();
@@ -67,7 +69,7 @@ export function scheduleReminder(
   task: Task,
   triggerAt: Date,
   reason: string,
-  recurrence?: { cron: string; tz: string },
+  recurrence?: { cron: string; tz: string; until?: string },
 ): void {
   pendingReminders.set(task.taskId, { trigger_at: triggerAt, reason, ...recurrence });
   task.metadata.reminder = { trigger_at: triggerAt.toISOString(), reason, ...recurrence };
@@ -75,7 +77,7 @@ export function scheduleReminder(
   emitEvent('reminder:set', task.taskId, {
     trigger_at: triggerAt.toISOString(),
     reason,
-    ...(recurrence ? { cron: recurrence.cron, tz: recurrence.tz } : {}),
+    ...(recurrence ?? {}),
   });
 }
 
@@ -121,7 +123,9 @@ async function rebuildFromDisk(): Promise<void> {
         pendingReminders.set(metadata.task_id, {
           trigger_at: new Date(metadata.reminder.trigger_at),
           reason: metadata.reminder.reason,
-          ...(metadata.reminder.cron ? { cron: metadata.reminder.cron, tz: metadata.reminder.tz } : {}),
+          cron: metadata.reminder.cron,
+          tz: metadata.reminder.tz,
+          until: metadata.reminder.until,
         });
       }
     }
@@ -145,9 +149,9 @@ async function rebuildFromDisk(): Promise<void> {
  * value — the same "drop it rather than re-fire forever" call the trigger tick makes.
  */
 export function planReminderRearm(
-  reminder: { cron?: string; tz?: string },
+  reminder: { cron?: string; tz?: string; until?: string },
   firedAt: Date,
-): { trigger_at: Date; cron: string; tz: string } | null {
+): { trigger_at: Date; cron: string; tz: string; until?: string } | null {
   if (!reminder.cron) return null;
   const tz = reminder.tz || 'UTC';
   const next = computeNextRun(reminder.cron, tz, firedAt);
@@ -155,7 +159,20 @@ export function planReminderRearm(
     logger.warn('reminder-scheduler', `Recurring reminder cron "${reminder.cron}" (${tz}) no longer computes — dropping the recurrence`);
     return null;
   }
-  return { trigger_at: next, cron: reminder.cron, tz };
+  // A bounded recurrence expires by itself once the next slot falls past `until`,
+  // which is what keeps "every morning this week" from waking the task forever.
+  if (reminder.until) {
+    const until = new Date(reminder.until);
+    if (isNaN(until.getTime())) {
+      logger.warn('reminder-scheduler', `Recurring reminder has an unparseable until "${reminder.until}" — dropping the recurrence rather than running unbounded`);
+      return null;
+    }
+    if (next > until) {
+      logger.system(`Recurring reminder reached its end (${reminder.until}) — not re-arming`);
+      return null;
+    }
+  }
+  return { trigger_at: next, cron: reminder.cron, tz, until: reminder.until };
 }
 
 /**
@@ -166,9 +183,14 @@ export function planReminderRearm(
 export async function checkDueReminders(): Promise<void> {
   const now = new Date();
 
-  for (const [taskId, reminder] of pendingReminders) {
-    if (reminder.trigger_at > now) continue;
+  // Snapshot the due set before touching the map. Re-inserting a key mid-iteration
+  // appends it, and a JS Map iterator DOES revisit it — so a re-arm that is itself
+  // already due (a bounded catch-up, or the retry path below re-arming an overdue
+  // reminder) would be processed again in the same tick, forever. Iterating a copy
+  // makes each tick handle each task exactly once.
+  const due = [...pendingReminders].filter(([, reminder]) => reminder.trigger_at <= now);
 
+  for (const [taskId, reminder] of due) {
     // 1. Remove from in-memory map
     pendingReminders.delete(taskId);
 
@@ -183,8 +205,22 @@ export async function checkDueReminders(): Promise<void> {
       let task: Task;
       try {
         task = await Task.get(taskId);
-      } catch {
-        logger.warn('reminder-scheduler', `Task ${taskId} not found on disk, skipping reminder`);
+      } catch (err) {
+        // The entry was popped above but nothing has been written yet, so the
+        // reminder is still armed on disk. `Task.get` throws for more than a
+        // missing task — a torn metadata read (writes are non-atomic), a failed
+        // v30 migration write, a bad plugins commit — and dropping the entry on
+        // one of those would silently kill a recurring cadence for the rest of
+        // the process lifetime while leaving it armed on disk to fire again after
+        // a restart. So distinguish: if the task's metadata file is gone the task
+        // is really gone and the reminder goes with it; otherwise re-arm and let
+        // the next tick retry.
+        if (taskExistsOnDisk(taskId)) {
+          pendingReminders.set(taskId, reminder);
+          logger.warn('reminder-scheduler', `Could not load task ${taskId} to fire its reminder — left armed for the next tick`, err);
+        } else {
+          logger.warn('reminder-scheduler', `Task ${taskId} no longer exists on disk — dropping its reminder`);
+        }
         continue;
       }
 
@@ -200,26 +236,38 @@ export async function checkDueReminders(): Promise<void> {
           reason: reminder.reason,
           cron: rearm.cron,
           tz: rearm.tz,
+          until: rearm.until,
         };
         pendingReminders.set(taskId, {
           trigger_at: rearm.trigger_at,
           reason: reminder.reason,
           cron: rearm.cron,
           tz: rearm.tz,
-        });
-        emitEvent('reminder:set', taskId, {
-          trigger_at: rearm.trigger_at.toISOString(),
-          reason: reminder.reason,
-          cron: rearm.cron,
-          tz: rearm.tz,
+          until: rearm.until,
         });
       } else {
         task.metadata.reminder = undefined;
       }
       await task.save(true);
 
-      // 4. Reactivate task
+      // 4. Announce the fire, THEN the re-arm. Consumers fold this stream in
+      //    order and read `reminder:fired` as "nothing pending now"
+      //    (cli/components/TaskDetail.tsx), so emitting the re-arm first left the
+      //    ⏰ indicator blank for the whole interval on a reminder that was in fact
+      //    armed — and made the log read backwards ("set for <next>" above
+      //    "fired"). Order here is a UI contract, not cosmetics.
       emitEvent('reminder:fired', taskId, { reason: reminder.reason });
+      if (rearm) {
+        emitEvent('reminder:set', taskId, {
+          trigger_at: rearm.trigger_at.toISOString(),
+          reason: reminder.reason,
+          cron: rearm.cron,
+          tz: rearm.tz,
+          until: rearm.until,
+        });
+      }
+
+      // 5. Reactivate task
       logger.system(`Reminder fired for ${taskId}: ${reminder.reason}`);
       await task.sendMessage(
         AGENT_PROMPTS.reminder(reminder.reason),

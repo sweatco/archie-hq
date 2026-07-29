@@ -2026,13 +2026,23 @@ function createSetReminderTool(agent: Agent, task: Task) {
       datetime: z.string().optional().describe('One-shot: ISO 8601 datetime, e.g. "2026-04-15T10:00:00Z". Mutually exclusive with cron.'),
       cron: z.string().optional().describe('Recurring: 5-field cron, e.g. "0 5,17 * * *" for 05:00 and 17:00 daily. Must not fire more than once per hour. Requires tz.'),
       tz: z.string().optional().describe('IANA timezone the cron runs in, e.g. "Europe/London". Required with cron.'),
+      until: z.string().optional().describe('Recurring only: ISO 8601 end date/time. The schedule stops on its own once the next wake would fall past it. Set this whenever the need has a known end ("this week", "until the launch") so the task is not woken forever.'),
       reason: z.string().describe('What to do when woken — this will be shown to you. For a recurring reminder this is shown on every wake, so write it to be re-read.'),
     },
     async (args) => {
       const agentName = agent.def.id as AgentName;
+      // A recurrence is replaced wholesale by any new call, so warn when this call
+      // is silently ending one — the agent gets a fresh subprocess per wake and
+      // would otherwise have no idea it just cancelled a schedule.
+      const replacing = task.metadata.reminder?.cron
+        ? ` NOTE: this replaced the recurring schedule that was armed (${task.metadata.reminder.cron} ${task.metadata.reminder.tz ?? 'UTC'}); it will no longer repeat.`
+        : '';
 
       if (args.cron && args.datetime) {
         return { content: [{ type: 'text' as const, text: 'Pass either datetime (one-shot) or cron + tz (recurring), not both.' }] };
+      }
+      if (args.until && !args.cron) {
+        return { content: [{ type: 'text' as const, text: 'until only applies to a recurring reminder (cron + tz). A one-shot already happens exactly once.' }] };
       }
 
       if (args.cron) {
@@ -2041,18 +2051,38 @@ function createSetReminderTool(agent: Agent, task: Task) {
         }
         // Same once-per-hour floor triggers enforce: each wake is a full task
         // activation, so a tighter cadence burns real budget. One-shots are free-form.
+        // Only the floor error gets the floor note — appending it to a parse error
+        // would point the agent at the wrong problem.
         const valid = validateRecurringInterval(args.cron, args.tz);
         if (!valid.ok) {
-          return { content: [{ type: 'text' as const, text: `${valid.error} (Reminders use the same once-per-hour floor as triggers.)` }] };
+          const isFloor = /once per hour/i.test(valid.error);
+          return { content: [{ type: 'text' as const, text: isFloor ? `${valid.error} (Reminders use the same once-per-hour floor as triggers.)` : valid.error }] };
+        }
+        let until: string | undefined;
+        if (args.until) {
+          const end = new Date(args.until);
+          if (isNaN(end.getTime())) {
+            return { content: [{ type: 'text' as const, text: `Could not read until "${args.until}". Use parse_datetime to get a valid ISO 8601 value.` }] };
+          }
+          if (end <= new Date()) {
+            return { content: [{ type: 'text' as const, text: 'until must be in the future — otherwise the schedule would end before it ever ran.' }] };
+          }
+          until = end.toISOString();
         }
         const first = computeNextRun(args.cron, args.tz);
         if (!first) {
           return { content: [{ type: 'text' as const, text: `Could not compute a next run for cron "${args.cron}" in ${args.tz}.` }] };
         }
+        if (until && first > new Date(until)) {
+          return { content: [{ type: 'text' as const, text: `That schedule never fires before until (${until}) — its first wake would be ${first.toISOString()}. Widen the window or change the cadence.` }] };
+        }
 
-        scheduleReminder(task, first, args.reason, { cron: args.cron, tz: args.tz });
-        logger.agentAction(agentName, 'Setting recurring reminder', `${args.cron} (${args.tz}), next ${first.toISOString()}: ${args.reason}`);
-        return { content: [{ type: 'text' as const, text: `Recurring reminder set: ${args.cron} (${args.tz}). Next wake ${first.toISOString()}. It re-arms automatically after each wake — use cancel_reminder to stop it. Reason: ${args.reason}` }] };
+        scheduleReminder(task, first, args.reason, { cron: args.cron, tz: args.tz, until });
+        logger.agentAction(agentName, 'Setting recurring reminder', `${args.cron} (${args.tz})${until ? ` until ${until}` : ''}, next ${first.toISOString()}: ${args.reason}`);
+        const bound = until
+          ? `It re-arms automatically and stops after ${until}.`
+          : `It re-arms automatically and has NO end date — it will keep waking this task until cancelled, so set until if this need has a known end.`;
+        return { content: [{ type: 'text' as const, text: `Recurring reminder set: ${args.cron} (${args.tz}). Next wake ${first.toISOString()}. ${bound} Use cancel_reminder to stop it. Reason: ${args.reason}${replacing}` }] };
       }
 
       if (!args.datetime) {
@@ -2073,7 +2103,7 @@ function createSetReminderTool(agent: Agent, task: Task) {
       scheduleReminder(task, triggerAt, args.reason);
       logger.agentAction(agentName, 'Setting reminder', `${triggerAt.toISOString()}: ${args.reason}`);
 
-      return { content: [{ type: 'text' as const, text: `Reminder set for ${args.datetime}. Reason: ${args.reason}` }] };
+      return { content: [{ type: 'text' as const, text: `Reminder set for ${args.datetime}. Reason: ${args.reason}${replacing}` }] };
     },
   );
 }

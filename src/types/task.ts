@@ -329,6 +329,12 @@ export interface TaskMetadata {
     reason: string;                  // Why — shown to agent when woken
     cron?: string;                   // Set for a recurring reminder: the runtime re-arms from this instead of clearing it
     tz?: string;                     // IANA timezone the cron is evaluated in (required alongside cron)
+    /**
+     * Optional ISO 8601 end for a recurring reminder. The re-arm stops once the
+     * next occurrence would fall past it, so a bounded watch ("every morning this
+     * week") expires on its own instead of waking the task forever.
+     */
+    until?: string;
   };
   triggered_by?: string;             // Trigger ID that spawned this task (set by fireTrigger). Blocks the task from creating triggers.
   pending_trigger_id?: string;       // Trigger ID proposed by this task, awaiting approve/deny (read by handleTriggerApproval/Denial)

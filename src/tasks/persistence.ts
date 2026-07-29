@@ -118,6 +118,18 @@ export function getMetadataPath(taskId: string): string {
 }
 
 /**
+ * Does this task still exist on disk?
+ *
+ * Distinct from `loadMetadata() !== null`, which also returns null for a file
+ * that exists but failed to parse — a torn read is possible because metadata
+ * writes are non-atomic. Callers that must tell "gone for good" from "temporarily
+ * unreadable" need this, not that.
+ */
+export function taskExistsOnDisk(taskId: string): boolean {
+  return existsSync(getMetadataPath(taskId));
+}
+
+/**
  * Get the path to a task's knowledge log
  */
 export function getKnowledgeLogPath(taskId: string): string {

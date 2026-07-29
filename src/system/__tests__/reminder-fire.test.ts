@@ -14,12 +14,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../logger.js', () => ({
   logger: { warn: vi.fn(), system: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
-vi.mock('../event-bus.js', () => ({ emitEvent: vi.fn() }));
+const { emitEvent } = vi.hoisted(() => ({ emitEvent: vi.fn() }));
+vi.mock('../event-bus.js', () => ({ emitEvent }));
 vi.mock('../workdir.js', () => ({ SESSIONS_DIR: '/sessions' }));
 vi.mock('../../agents/prompts.js', () => ({
   AGENT_PROMPTS: { reminder: (r: string) => `[reminder] ${r}` },
 }));
-vi.mock('../../tasks/persistence.js', () => ({ loadMetadata: vi.fn() }));
+const { metadataExists } = vi.hoisted(() => ({ metadataExists: { value: true } }));
+vi.mock('../../tasks/persistence.js', () => ({
+  loadMetadata: vi.fn(),
+  taskExistsOnDisk: () => metadataExists.value,
+}));
 
 const { taskGet } = vi.hoisted(() => ({ taskGet: vi.fn() }));
 vi.mock('../../tasks/task.js', () => ({ Task: { get: taskGet } }));
@@ -153,9 +158,128 @@ describe('checkDueReminders — missing task', () => {
   it('drops the reminder and keeps going when the task is gone', async () => {
     const task = makeTask();
     scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', { cron: '0 * * * *', tz: 'UTC' });
+    metadataExists.value = false; // the task really is gone, not just unreadable
     taskGet.mockRejectedValue(new Error('Task task-1 not found'));
 
     await expect(checkDueReminders()).resolves.toBeUndefined();
     expect(getReminder('task-1')).toBeUndefined();
+    metadataExists.value = true;
+  });
+});
+
+describe('event order is a UI contract', () => {
+  it('emits reminder:fired BEFORE the re-armed reminder:set', async () => {
+    // Consumers fold this stream in order and read `reminder:fired` as "nothing
+    // pending now" (cli/components/TaskDetail.tsx), so emitting the re-arm first
+    // left the ⏰ indicator blank for the whole interval on an armed reminder.
+    const task = makeTask();
+    taskGet.mockResolvedValue(task as unknown as Task);
+
+    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', { cron: '0 * * * *', tz: 'UTC' });
+    emitEvent.mockClear();
+    await checkDueReminders();
+
+    const order = emitEvent.mock.calls.map((c) => c[0]);
+    expect(order).toEqual(['reminder:fired', 'reminder:set']);
+  });
+
+  it('a one-shot emits only reminder:fired', async () => {
+    const task = makeTask();
+    taskGet.mockResolvedValue(task as unknown as Task);
+
+    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r');
+    emitEvent.mockClear();
+    await checkDueReminders();
+
+    expect(emitEvent.mock.calls.map((c) => c[0])).toEqual(['reminder:fired']);
+  });
+});
+
+describe('a failure loading the task must not silently kill the cadence', () => {
+  it('leaves the reminder armed when the task metadata still exists (transient failure)', async () => {
+    // Task.get throws for more than a missing task — a torn metadata read, a
+    // failed migration write, a bad plugins commit. Dropping the entry on one of
+    // those would kill a recurring cadence for the process lifetime while the
+    // reminder stayed armed on disk to re-fire after a restart.
+    const task = makeTask();
+    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', { cron: '0 * * * *', tz: 'UTC' });
+    metadataExists.value = true;
+    taskGet.mockRejectedValue(new Error('Unexpected token } in JSON'));
+
+    await expect(checkDueReminders()).resolves.toBeUndefined();
+
+    expect(getReminder('task-1')).toBeDefined(); // still armed, retried next tick
+    metadataExists.value = true;
+  });
+
+  it('drops the reminder when the task is genuinely gone', async () => {
+    const task = makeTask();
+    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', { cron: '0 * * * *', tz: 'UTC' });
+    metadataExists.value = false;
+    taskGet.mockRejectedValue(new Error('Task task-1 not found'));
+
+    await checkDueReminders();
+
+    expect(getReminder('task-1')).toBeUndefined(); // no infinite retry loop
+    metadataExists.value = true;
+  });
+});
+
+describe('a bounded recurrence expires on its own', () => {
+  it('stops re-arming once the next wake would fall past until', async () => {
+    const task = makeTask();
+    taskGet.mockResolvedValue(task as unknown as Task);
+    // Hourly, but the window closes 30 minutes from now — so the next slot is out.
+    const until = new Date(Date.now() + 30 * 60_000).toISOString();
+
+    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', { cron: '0 * * * *', tz: 'UTC', until });
+    await checkDueReminders();
+
+    expect(task.metadata.reminder).toBeUndefined();
+    expect(getReminder('task-1')).toBeUndefined();
+    expect(task.sendMessage).toHaveBeenCalledOnce(); // the due wake still happened
+  });
+
+  it('keeps re-arming while the window is still open, carrying until forward', async () => {
+    const task = makeTask();
+    taskGet.mockResolvedValue(task as unknown as Task);
+    const until = new Date(Date.now() + 7 * 24 * 3_600_000).toISOString();
+
+    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', { cron: '0 * * * *', tz: 'UTC', until });
+    await checkDueReminders();
+
+    const next = task.metadata.reminder as { until: string; cron: string };
+    expect(next).toBeDefined();
+    expect(next.until).toBe(until);
+    expect(getReminder('task-1')?.until).toBe(until);
+  });
+});
+
+describe('one tick handles each task exactly once', () => {
+  it('does not re-process a retry re-armed inside the same tick', async () => {
+    // Regression: the retry path re-inserts a STILL-DUE entry, and a JS Map
+    // iterator revisits keys re-added during iteration — so iterating the live map
+    // spun forever on a transient Task.get failure. The tick iterates a snapshot.
+    const task = makeTask();
+    scheduleReminder(task as unknown as Task, new Date(Date.now() - 1000), 'r', { cron: '0 * * * *', tz: 'UTC' });
+    metadataExists.value = true;
+    taskGet.mockRejectedValue(new Error('torn read'));
+
+    await expect(checkDueReminders()).resolves.toBeUndefined();
+
+    expect(taskGet).toHaveBeenCalledTimes(1); // one attempt, not an endless retry
+    expect(getReminder('task-1')).toBeDefined();
+  });
+
+  it('does not re-process a recurring reminder whose catch-up slot is also overdue', async () => {
+    const task = makeTask();
+    taskGet.mockResolvedValue(task as unknown as Task);
+    // Armed 3 days back on an hourly cron: the re-arm is computed from `now`, so
+    // it lands in the future — but the guard must not depend on that.
+    scheduleReminder(task as unknown as Task, new Date(Date.now() - 3 * 24 * 3_600_000), 'r', { cron: '0 * * * *', tz: 'UTC' });
+
+    await checkDueReminders();
+
+    expect(task.sendMessage).toHaveBeenCalledTimes(1);
   });
 });

@@ -176,3 +176,108 @@ describe('set_reminder — mode selection', () => {
     expect(scheduleReminder).not.toHaveBeenCalled();
   });
 });
+
+describe('set_reminder — bounding a recurrence with until', () => {
+  it('passes until through to the scheduler', async () => {
+    const until = new Date(Date.now() + 7 * 24 * 3_600_000).toISOString();
+
+    const out = text(await getHandler('set_reminder')({
+      cron: '0 9 * * *', tz: 'UTC', until, reason: 'restock watch',
+    }));
+
+    expect(scheduleReminder.mock.calls[0][3]).toEqual({ cron: '0 9 * * *', tz: 'UTC', until });
+    expect(out).toContain(until);
+    expect(out).toMatch(/stops after/i);
+  });
+
+  it('warns loudly when a recurrence is armed with NO end date', async () => {
+    // The blocking review finding: an unbounded recurrence wakes a completed task
+    // forever, and the agent is the only thing that can stop it. Say so.
+    const out = text(await getHandler('set_reminder')({ cron: '0 9 * * *', tz: 'UTC', reason: 'x' }));
+
+    expect(out).toMatch(/no end date/i);
+    expect(out).toMatch(/set until/i);
+  });
+
+  it('rejects until on a one-shot — it already happens once', async () => {
+    const out = text(await getHandler('set_reminder')({
+      datetime: new Date(Date.now() + 3_600_000).toISOString(),
+      until: new Date(Date.now() + 7_200_000).toISOString(),
+      reason: 'x',
+    }));
+
+    expect(out).toMatch(/only applies to a recurring reminder/i);
+    expect(scheduleReminder).not.toHaveBeenCalled();
+  });
+
+  it('rejects an until in the past', async () => {
+    const out = text(await getHandler('set_reminder')({
+      cron: '0 9 * * *', tz: 'UTC', until: new Date(Date.now() - 1000).toISOString(), reason: 'x',
+    }));
+
+    expect(out).toMatch(/must be in the future/i);
+    expect(scheduleReminder).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unparseable until', async () => {
+    const out = text(await getHandler('set_reminder')({
+      cron: '0 9 * * *', tz: 'UTC', until: 'next-ish week', reason: 'x',
+    }));
+
+    expect(out).toMatch(/could not read until/i);
+    expect(scheduleReminder).not.toHaveBeenCalled();
+  });
+
+  it('rejects a window that closes before the first wake', async () => {
+    // Yearly cron with a one-hour window: it would never fire at all.
+    const out = text(await getHandler('set_reminder')({
+      cron: '0 9 1 1 *', tz: 'UTC', until: new Date(Date.now() + 3_600_000).toISOString(), reason: 'x',
+    }));
+
+    expect(out).toMatch(/never fires before until/i);
+    expect(scheduleReminder).not.toHaveBeenCalled();
+  });
+});
+
+describe('set_reminder — error wording points at the real problem', () => {
+  // Match the APPENDED NOTE's own wording ("once-per-hour", hyphenated), not the
+  // validator's floor error ("at most once per hour", spaced). An earlier version
+  // of this test asserted the spaced form, which the note never contains — so it
+  // passed even with the note bolted onto every error, proving nothing.
+  const FLOOR_NOTE = /same once-per-hour floor as triggers/i;
+
+  it('does NOT append the floor note to a cron that simply will not parse', async () => {
+    const out = text(await getHandler('set_reminder')({ cron: 'not-a-cron', tz: 'UTC', reason: 'x' }));
+
+    expect(out).toMatch(/invalid cron/i);
+    expect(out).not.toMatch(FLOOR_NOTE);
+  });
+
+  it('appends the floor note when the floor is what was violated', async () => {
+    const out = text(await getHandler('set_reminder')({ cron: '*/5 * * * *', tz: 'UTC', reason: 'x' }));
+
+    expect(out).toMatch(/at most once per hour/i); // the validator's own error
+    expect(out).toMatch(FLOOR_NOTE);               // plus our note
+  });
+});
+
+describe('set_reminder — replacing an armed recurrence is called out', () => {
+  it('warns that a one-shot just cancelled the repeating schedule', async () => {
+    // A fresh subprocess spawns per wake, so without this the agent silently
+    // destroys a schedule it could not see.
+    const t = makeTask();
+    (t as unknown as { metadata: { reminder: unknown } }).metadata.reminder = {
+      trigger_at: new Date(Date.now() + 3_600_000).toISOString(), reason: 'old', cron: '0 9 * * *', tz: 'UTC',
+    };
+    const server = createSchedulingMcpServer(makeAgent(), t);
+    const inst = server.instance as unknown as { _registeredTools?: Record<string, unknown>; _tools?: Iterable<[string, unknown]> };
+    const raw = inst._registeredTools ?? Object.fromEntries(inst._tools ?? []);
+    const entry = raw['set_reminder'] as { callback?: unknown; handler?: unknown; cb?: unknown };
+    const fn = (entry.callback ?? entry.handler ?? entry.cb) as (a: unknown, b: unknown) => Promise<{ content: { text: string }[] }>;
+
+    const out = text(await fn({ datetime: new Date(Date.now() + 60_000).toISOString(), reason: 'one off' }, {}));
+
+    expect(out).toMatch(/replaced the recurring schedule/i);
+    expect(out).toContain('0 9 * * *');
+  });
+});
