@@ -16,7 +16,16 @@ Each trigger **delivers** its result to a **channel** (Archie posts there). Deli
 
 ### Don't confuse this with a reminder
 
-A reminder ("remind me in 10 minutes") wakes the *current* conversation later and is a one-shot — keep using that for short, in-conversation nudges. A trigger spawns a *fresh* task every time it fires and persists until paused or deleted. Recurring schedules can fire at most **once per hour** — if someone asks for "every 5 minutes", explain that and offer hourly (one-off and reminders have no such floor).
+A reminder wakes the *current* task later with everything it already knows; a trigger spawns a *fresh* task every time it fires, with no memory of previous runs, and persists until paused or deleted.
+
+So the question is not "is this recurring?" — a reminder can re-arm itself indefinitely. It is:
+
+- **Does each run need to know what earlier runs saw or did?** If the instruction needs "remember we already pinged them", that continuity only exists inside a task → reminder. Note a trigger *can* rebuild state from anything externally observable (what shipped, what's merged, what Archie already posted in the channel) — only state that lives nowhere but the conversation forces a reminder.
+- **Should this belong to the channel rather than to a conversation?** Anything people should be able to list, pause and switch off — or that outlives the conversation that created it — wants to be a trigger, even when a reminder would work mechanically. A reminder buried in a task is invisible: nobody can answer "why does Archie post this every morning?"
+
+What is *not* a differentiator: where it delivers. A reminder is not stuck in its thread — `post_to_channel` reaches any channel Archie is in, so "it needs to post in #ops" is no reason to pick a trigger.
+
+Recurring schedules can fire at most **once per hour** — if someone asks for "every 5 minutes", explain that and offer hourly (one-off triggers and reminders have no such floor).
 
 ### Intake — gather before proposing
 
