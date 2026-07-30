@@ -330,7 +330,16 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
       `Participants: ${metadata.participants.join(', ') || 'None yet'}`,
     );
     if (metadata.reminder) {
-      contextLines.push(`Reminder: ${metadata.reminder.trigger_at} — ${metadata.reminder.reason}`);
+      // Spell out a recurrence. A fresh subprocess spawns on every wake, so this
+      // line is the only place the agent learns a cron is armed — without it, a
+      // recurring reminder is indistinguishable from a one-shot, and calling
+      // set_reminder with a plain datetime silently replaces the whole schedule.
+      const r = metadata.reminder;
+      contextLines.push(
+        r.cron
+          ? `Reminder (recurring: ${r.cron} ${r.tz ?? 'UTC'}${r.until ? `, until ${r.until}` : ''}) — next ${r.trigger_at} — ${r.reason}. It re-arms itself; cancel_reminder stops it, and set_reminder with a plain datetime would replace the whole schedule.`
+          : `Reminder: ${r.trigger_at} — ${r.reason}`,
+      );
     }
     if (metadata.triggered_by) {
       contextLines.push(`Spawned by trigger: ${metadata.triggered_by} (this is a fresh, trigger-initiated task — deliver the result as instructed in the first message)`);

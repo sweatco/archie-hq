@@ -17,11 +17,16 @@ These are separate features that share only a pattern:
 
 | | Reminder (`set_reminder`) | Trigger |
 | --- | --- | --- |
-| Effect | Re-wakes the **current** task later | Spawns a **new** task on a saved rule |
-| Lifetime | One-shot, lives on the task | Persistent, lives in the trigger store |
-| Floor | none ("remind me in 5 min" works) | ≥1h, **recurring schedules only** |
+| Effect | Re-wakes the **current** task later, context intact | Spawns a **new** task on a saved rule, no memory of prior runs |
+| Lifetime | One-shot (`datetime`) or recurring (`cron` + `tz`, optionally bounded by `until`); lives on the task | Persistent, lives in the trigger store |
+| Floor | none for a one-shot; ≥1h for a recurring cron | ≥1h, **recurring schedules only** |
+| Governance | No approval step. Agent-facing `cancel_reminder`, plus an operator off switch (`DELETE /api/tasks/:id/reminder`) | Propose-then-confirm, listable/pausable, announced, capped, global kill switch |
 
-The two schedulers (`reminder-scheduler.ts`, `trigger-scheduler.ts`) run side by side and never interfere.
+So the deciding question is **not** "is this recurring?" — both can be. It is whether each run needs to know what earlier runs saw (only a reminder carries that), and whether the automation should belong to the channel rather than to one conversation (only a trigger is discoverable and pausable by anyone there). Note a trigger *can* rebuild state from anything externally observable; only state that exists nowhere but the conversation forces a reminder. Where it *delivers* is not a differentiator — a reminder can post anywhere via `post_to_channel`.
+
+The two schedulers (`reminder-scheduler.ts`, `trigger-scheduler.ts`) run side by side and never interfere, though the reminder scheduler reuses the trigger cron helpers (`computeNextRun`, `validateRecurringInterval`) rather than carrying a second recurrence engine.
+
+**Recurring reminders have no approval gate, so bound them.** An unbounded cron reminder re-activates its task indefinitely — `complete()` is *park*, not terminate, and nothing in the task lifecycle clears `metadata.reminder`. `until` is the intended bound for anything with a known end; without it the only stops are the agent calling `cancel_reminder` or an operator hitting the DELETE route.
 
 ## Data model
 

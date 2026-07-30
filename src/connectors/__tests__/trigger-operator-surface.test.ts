@@ -38,12 +38,14 @@ vi.mock('../../system/shutdown.js', () => ({ getIsShuttingDown: vi.fn().mockRetu
 vi.mock('../../system/event-bus.js', () => ({ onEvent: vi.fn(), offEvent: vi.fn(), emitEvent: vi.fn() }));
 vi.mock('../../system/workdir.js', () => ({ SESSIONS_DIR: '/tmp/sessions' }));
 vi.mock('../../tasks/task.js', () => ({ Task: { get: vi.fn() }, activeTasks: new Map() }));
+const { taskExistsOnDisk } = vi.hoisted(() => ({ taskExistsOnDisk: vi.fn().mockReturnValue(true) }));
 vi.mock('../../tasks/persistence.js', () => ({
   findTaskByThread: vi.fn(),
   readKnowledgeLog: vi.fn(),
   loadMetadata: vi.fn(),
   appendCliMessage: vi.fn(),
   readEvents: vi.fn(),
+  taskExistsOnDisk,
 }));
 vi.mock('../../system/logger.js', () => ({
   logger: {
@@ -51,7 +53,8 @@ vi.mock('../../system/logger.js', () => ({
     plain: vi.fn(), server: vi.fn(), slack: vi.fn(),
   },
 }));
-vi.mock('../../system/reminder-scheduler.js', () => ({ cancelReminder: vi.fn() }));
+const { cancelReminder } = vi.hoisted(() => ({ cancelReminder: vi.fn() }));
+vi.mock('../../system/reminder-scheduler.js', () => ({ cancelReminder }));
 
 const { loadTrigger, saveTrigger, listTriggers, deleteTrigger, countActiveTriggers } = vi.hoisted(() => ({
   loadTrigger: vi.fn(),
@@ -221,5 +224,47 @@ describe('GET /triggers — operator visibility', () => {
     const body = res.json.mock.calls[0][0] as { triggers: Array<{ id: string; status: string }>; total: number };
     expect(body.triggers.map((t) => t.status)).toContain('pending');
     expect(body.total).toBe(2);
+  });
+});
+
+describe('DELETE /tasks/:id/reminder — the operator off switch', () => {
+  it('answers 404 for an unknown task, like GET /tasks/:id — not a 500', async () => {
+    // Task.get throws for a missing task, which surfaced as
+    // 500 "Failed to cancel reminder" and read as a server fault rather than a bad id.
+    taskExistsOnDisk.mockReturnValue(false);
+    const route = captureRoute('/tasks/:id/reminder', 'delete');
+    const res = makeRes();
+
+    await route({ params: { id: 'task-does-not-exist' } } as unknown as Request, res);
+
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(cancelReminder).not.toHaveBeenCalled();
+    taskExistsOnDisk.mockReturnValue(true);
+  });
+
+  it('cancels an armed reminder and reports what it cancelled', async () => {
+    const reminder = { trigger_at: '2026-08-01T05:00:00.000Z', reason: 'r', cron: '0 5,17 * * *', tz: 'UTC' };
+    const task = { metadata: { reminder }, save: vi.fn().mockResolvedValue(undefined) };
+    vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
+    const route = captureRoute('/tasks/:id/reminder', 'delete');
+    const res = makeRes();
+
+    await route({ params: { id: 'task-1' } } as unknown as Request, res);
+
+    expect(cancelReminder).toHaveBeenCalledOnce();
+    expect(task.save).toHaveBeenCalledWith(true); // flushed, so a restart cannot resurrect it
+    expect(res.json).toHaveBeenCalledWith({ ok: true, cancelled: true, reminder });
+  });
+
+  it('is idempotent — cancelling nothing is not an error', async () => {
+    const task = { metadata: {}, save: vi.fn() };
+    vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
+    const route = captureRoute('/tasks/:id/reminder', 'delete');
+    const res = makeRes();
+
+    await route({ params: { id: 'task-1' } } as unknown as Request, res);
+
+    expect(res.json).toHaveBeenCalledWith({ ok: true, cancelled: false });
+    expect(cancelReminder).not.toHaveBeenCalled();
   });
 });
