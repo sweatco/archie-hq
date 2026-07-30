@@ -1510,10 +1510,15 @@ export class Task {
       const overUser = pending.created_by && pending.created_by !== 'unknown'
         && (await countActiveTriggers((t) => t.created_by === pending.created_by)) >= MAX_TRIGGERS_PER_USER;
       if (overChannel || overUser) {
-        await deleteTrigger(id);
-        if (this.metadata.pending_trigger_id === id) this.metadata.pending_trigger_id = undefined;
-        this.debouncedSave();
-        await appendAgentFinding(this.taskId, 'system', `Trigger ${id} not enabled — active-trigger cap reached`, 'decision');
+        // Leave the proposal PENDING rather than deleting it. Deleting made the
+        // refusal indistinguishable from a withdrawal — the caller re-reads, finds
+        // nothing, and tells the user the proposal "is no longer around", never that
+        // a cap was the reason. Keeping it also lets the user free a slot and approve
+        // the same proposal instead of asking for it again; the 24h GC still reaps it
+        // if they don't. `pending_trigger_id` stays for the same reason: nothing was
+        // resolved.
+        logger.warn('task', `Trigger ${id} not enabled — active-trigger cap reached (left pending)`);
+        await appendAgentFinding(this.taskId, 'system', `Trigger ${id} not enabled — active-trigger cap reached; proposal left awaiting approval`, 'decision');
         return null;
       }
     }

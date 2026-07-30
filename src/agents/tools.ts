@@ -2456,14 +2456,18 @@ function createUpdateTriggerTool(_agent: Agent, task: Task) {
         // bound channel — the automation isn't running yet.
         if (!editedContent) return ok('Nothing to update — pass action_prompt, summary, or conditions.');
 
-        // Re-assert `pending` immediately before writing. This is a
-        // read-modify-write with no CAS, and the window spans the Slack lookups
-        // above — long enough for the user's Approve to land. Without this check
-        // that Approve would be undone: `enableProposedTrigger` writes
-        // `status: 'enabled'` and indexes the PRE-edit object, then this save
-        // stamps the file back to `pending` with the new content, leaving a
-        // trigger that fires from memory on stale content while every listing
-        // calls it "awaiting approval".
+        // Re-READ, then re-apply, then write with no awaits in between.
+        //
+        // Two hazards, one root cause: this is a read-modify-write with no CAS and
+        // the window spans the Slack lookups above. (1) The user's Approve can land
+        // inside it — `enableProposedTrigger` writes `status:'enabled'` and indexes
+        // the PRE-edit object, and writing our stale copy back would stamp the file
+        // to `pending` with new content, leaving a trigger that fires from memory on
+        // stale content while every listing calls it "awaiting approval". (2) Another
+        // edit can land inside it — and re-checking only the STATUS would still lose
+        // that edit, because we would save the copy read before it. So the edits are
+        // applied to the fresh object, not the stale one; the surviving window is
+        // load→write with nothing awaited in it.
         const current = await loadTrigger(args.id);
         if (!current || current.status !== 'pending') {
           return ok(
@@ -2472,14 +2476,16 @@ function createUpdateTriggerTool(_agent: Agent, task: Task) {
               : `Proposal ${args.id} was withdrawn while this edit was in flight, so the edit was not applied.`,
           );
         }
-
+        if (args.action_prompt) current.action.prompt = args.action_prompt;
+        if (args.summary) current.summary = args.summary;
+        if (args.conditions) current.conditions = trigger.conditions; // already validated above
         // An edit is an act of renewal: the boot-scan GC reaps pending proposals
         // older than PENDING_TTL_MS, and it measures from `updated_at` when set,
         // so a proposal revised late in its life isn't reaped mid-conversation.
-        trigger.updated_at = new Date().toISOString();
-        await saveTrigger(trigger);
-        await postTriggerApprovalCard(task, trigger);
-        return ok(`Proposal ${trigger.id} updated and re-posted for approval — it now reads "${triggerWhat(trigger)}" · ${triggerWhen(trigger)}. Still not running until the user approves.`);
+        current.updated_at = new Date().toISOString();
+        await saveTrigger(current);
+        await postTriggerApprovalCard(task, current);
+        return ok(`Proposal ${current.id} updated and re-posted for approval — it now reads "${triggerWhat(current)}" · ${triggerWhen(current)}. Still not running until the user approves.`);
       }
 
       // Decide the target state (auto-resume a rescheduled paused trigger, etc.)

@@ -339,6 +339,21 @@ describe('pending proposals are scoped to the task that proposed them', () => {
 });
 
 describe('editing a pending proposal is safe against a concurrent approval', () => {
+  it('applies the edit to the RE-READ object, so a concurrent content change is not lost', async () => {
+    // Re-checking only the status still loses data: the handler would save the copy
+    // it read BEFORE the concurrent write. Load #2 carries someone else's prompt
+    // change; our summary edit must land on top of it, not erase it.
+    loadTrigger
+      .mockResolvedValueOnce(pendingTrigger({ action: { prompt: 'FIRST-LOAD' } }))
+      .mockResolvedValueOnce(pendingTrigger({ action: { prompt: 'CONCURRENT-WRITE' } }));
+
+    await getHandler('update_trigger')({ id: 'trg-20260729-1056-pending', summary: 'Revised watch' });
+
+    const saved = saveTrigger.mock.calls[0][0] as Trigger;
+    expect(saved.action.prompt).toBe('CONCURRENT-WRITE'); // not clobbered back to FIRST-LOAD
+    expect(saved.summary).toBe('Revised watch');          // our edit still applied
+  });
+
   it('abandons the edit when the user approves mid-flight, rather than reverting the trigger to pending', async () => {
     // loadTrigger is called twice: once up front, once as the pre-write re-check.
     // Between them the user's Approve lands and flips the file to enabled.

@@ -451,9 +451,31 @@ export function mountApiRoutes(app: Application): void {
         return;
       }
 
-      // Editing a pending proposal renews its GC clock, exactly as the agent path
-      // does, so a revision doesn't get reaped on the original proposal's timer.
-      if (trigger.status === 'pending') trigger.updated_at = new Date().toISOString();
+      // Same guard the agent path carries: editing a pending proposal is a
+      // read-modify-write with no CAS, so a user Approve landing mid-flight would
+      // otherwise be undone by stamping the file back to `pending` with the
+      // operator's prompt. Re-read, bail if it moved, then apply to the fresh object.
+      if (trigger.status === 'pending') {
+        const current = await loadTrigger(id);
+        if (!current || current.status !== 'pending') {
+          res.status(409).json({
+            ok: false,
+            stale: true,
+            error: current
+              ? `Proposal was resolved while this edit was in flight — it is now ${current.status}, so nothing was changed.`
+              : 'Proposal was withdrawn while this edit was in flight, so nothing was changed.',
+          });
+          return;
+        }
+        if (editedContent) current.action.prompt = action_prompt as string;
+        // Editing renews the GC clock, exactly as the agent path does, so a revision
+        // isn't reaped on the original proposal's timer.
+        current.updated_at = new Date().toISOString();
+        await saveTrigger(current);
+        deindexTrigger(current.id);
+        res.json({ ok: true, trigger: shapeTrigger(current) });
+        return;
+      }
 
       await saveTrigger(trigger);
       if (trigger.status === 'enabled') indexTrigger(trigger);
@@ -461,10 +483,7 @@ export function mountApiRoutes(app: Application): void {
 
       if (statusChange === 'paused') emitEvent('trigger:paused', trigger.id, { trigger_id: trigger.id });
       else if (statusChange === 'resumed') emitEvent('trigger:resumed', trigger.id, { trigger_id: trigger.id });
-      // Nothing is announced for a proposal that isn't running yet.
-      if (trigger.status !== 'pending') {
-        await announceTriggerChange(trigger, editedContent ? 'edited' : statusChange!);
-      }
+      await announceTriggerChange(trigger, editedContent ? 'edited' : statusChange!);
 
       res.json({ ok: true, trigger: shapeTrigger(trigger) });
     } catch (error) {
