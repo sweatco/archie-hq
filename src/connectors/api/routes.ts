@@ -19,6 +19,7 @@ import {
   loadMetadata,
   appendCliMessage,
   readEvents,
+  taskExistsOnDisk,
 } from '../../tasks/persistence.js';
 import { SESSIONS_DIR } from '../../system/workdir.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
@@ -231,6 +232,13 @@ export function mountApiRoutes(app: Application): void {
   router.delete('/tasks/:id/reminder', async (req: Request, res: Response) => {
     try {
       const taskId = req.params.id as string;
+      // Answer 404 for an unknown task, like GET /tasks/:id — `Task.get` throws for
+      // a missing task, which would otherwise surface as a 500 "Failed to cancel
+      // reminder" and read as a server fault rather than a bad id.
+      if (!taskExistsOnDisk(taskId)) {
+        res.status(404).json({ error: 'Task not found' });
+        return;
+      }
       const task = await Task.get(taskId);
       const existing = task.metadata.reminder;
       if (!existing) {

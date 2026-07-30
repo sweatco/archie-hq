@@ -2034,9 +2034,13 @@ function createSetReminderTool(agent: Agent, task: Task) {
       // A recurrence is replaced wholesale by any new call, so warn when this call
       // is silently ending one — the agent gets a fresh subprocess per wake and
       // would otherwise have no idea it just cancelled a schedule.
-      const replacing = task.metadata.reminder?.cron
-        ? ` NOTE: this replaced the recurring schedule that was armed (${task.metadata.reminder.cron} ${task.metadata.reminder.tz ?? 'UTC'}); it will no longer repeat.`
-        : '';
+      // Worded per outcome: a one-shot ENDS the recurrence, a new cron REPLACES it.
+      // One shared sentence contradicted itself on the cron→cron path ("it re-arms
+      // automatically" followed by "it will no longer repeat").
+      const priorCron = task.metadata.reminder?.cron;
+      const priorLabel = priorCron ? `${priorCron} ${task.metadata.reminder?.tz ?? 'UTC'}` : '';
+      const endedRecurrence = priorCron ? ` NOTE: this replaced the recurring schedule that was armed (${priorLabel}); it will no longer repeat.` : '';
+      const supersededRecurrence = priorCron ? ` NOTE: this replaced the previous recurring schedule (${priorLabel}) — only the cadence above is now in effect.` : '';
 
       if (args.cron && args.datetime) {
         return { content: [{ type: 'text' as const, text: 'Pass either datetime (one-shot) or cron + tz (recurring), not both.' }] };
@@ -2069,6 +2073,9 @@ function createSetReminderTool(agent: Agent, task: Task) {
           }
           until = end.toISOString();
         }
+        // Defensive: unreachable through this path, because validateRecurringInterval
+        // above already rejects anything croner cannot turn into two future runs. Kept
+        // for the null type, and because the same guard IS reachable on the re-arm path.
         const first = computeNextRun(args.cron, args.tz);
         if (!first) {
           return { content: [{ type: 'text' as const, text: `Could not compute a next run for cron "${args.cron}" in ${args.tz}.` }] };
@@ -2082,7 +2089,7 @@ function createSetReminderTool(agent: Agent, task: Task) {
         const bound = until
           ? `It re-arms automatically and stops after ${until}.`
           : `It re-arms automatically and has NO end date — it will keep waking this task until cancelled, so set until if this need has a known end.`;
-        return { content: [{ type: 'text' as const, text: `Recurring reminder set: ${args.cron} (${args.tz}). Next wake ${first.toISOString()}. ${bound} Use cancel_reminder to stop it. Reason: ${args.reason}${replacing}` }] };
+        return { content: [{ type: 'text' as const, text: `Recurring reminder set: ${args.cron} (${args.tz}). Next wake ${first.toISOString()}. ${bound} Use cancel_reminder to stop it. Reason: ${args.reason}${supersededRecurrence}` }] };
       }
 
       if (!args.datetime) {
@@ -2103,7 +2110,7 @@ function createSetReminderTool(agent: Agent, task: Task) {
       scheduleReminder(task, triggerAt, args.reason);
       logger.agentAction(agentName, 'Setting reminder', `${triggerAt.toISOString()}: ${args.reason}`);
 
-      return { content: [{ type: 'text' as const, text: `Reminder set for ${args.datetime}. Reason: ${args.reason}${replacing}` }] };
+      return { content: [{ type: 'text' as const, text: `Reminder set for ${args.datetime}. Reason: ${args.reason}${endedRecurrence}` }] };
     },
   );
 }

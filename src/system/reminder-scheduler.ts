@@ -44,7 +44,8 @@ export async function initReminderScheduler(): Promise<void> {
     logger.system(`Reminder scheduler: loaded ${count} pending reminder(s)`);
   }
 
-  // Check every 5 minutes
+  // Tick every minute. A schedule slot is therefore honoured within a minute of
+  // its cron instant, and an overdue reminder is caught up on the first tick.
   schedulerTimer = setInterval(() => {
     checkDueReminders().catch((err) =>
       logger.error('reminder-scheduler', 'Error checking due reminders', err),

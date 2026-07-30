@@ -281,3 +281,38 @@ describe('set_reminder — replacing an armed recurrence is called out', () => {
     expect(out).toContain('0 9 * * *');
   });
 });
+
+describe('set_reminder — the replacement note never contradicts the new schedule', () => {
+  function handlerForTaskWithCron() {
+    const t = makeTask();
+    (t as unknown as { metadata: { reminder: unknown } }).metadata.reminder = {
+      trigger_at: new Date(Date.now() + 3_600_000).toISOString(), reason: 'old', cron: '0 9 * * *', tz: 'UTC',
+    };
+    const server = createSchedulingMcpServer(makeAgent(), t);
+    const inst = server.instance as unknown as { _registeredTools?: Record<string, unknown>; _tools?: Iterable<[string, unknown]> };
+    const raw = inst._registeredTools ?? Object.fromEntries(inst._tools ?? []);
+    const entry = raw['set_reminder'] as { callback?: unknown; handler?: unknown; cb?: unknown };
+    const fn = (entry.callback ?? entry.handler ?? entry.cb) as (a: unknown, b: unknown) => Promise<{ content: { text: string }[] }>;
+    return (args: Record<string, unknown>) => fn(args, {});
+  }
+
+  it('a NEW cron replacing an armed cron does not claim the schedule stopped repeating', async () => {
+    // One shared sentence used to be appended to both replies, so this path read
+    // "It re-arms automatically …" immediately followed by "… it will no longer repeat."
+    const out = text(await handlerForTaskWithCron()({ cron: '0 6 * * *', tz: 'UTC', reason: 'new cadence' }));
+
+    expect(out).toMatch(/re-arms automatically/i);
+    expect(out).not.toMatch(/no longer repeat/i);
+    expect(out).toMatch(/replaced the previous recurring schedule/i);
+    expect(out).toContain('0 9 * * *'); // names what it superseded
+  });
+
+  it('a one-shot replacing an armed cron still says the repeat has ended', async () => {
+    const out = text(await handlerForTaskWithCron()({
+      datetime: new Date(Date.now() + 60_000).toISOString(), reason: 'one off',
+    }));
+
+    expect(out).toMatch(/no longer repeat/i);
+    expect(out).not.toMatch(/re-arms automatically/i);
+  });
+});

@@ -125,10 +125,13 @@ describe('cancel_reminder is a complete off switch', () => {
     scheduleReminder(task as unknown as Task, new Date(Date.now() + 3_600_000), 'r', { cron: '0 * * * *', tz: 'UTC' });
     expect(getReminder('task-1')?.cron).toBe('0 * * * *');
 
+    emitEvent.mockClear();
     cancelReminder(task as unknown as Task);
 
     expect(getReminder('task-1')).toBeUndefined();
     expect(task.metadata.reminder).toBeUndefined();
+    // The off switch is observable — consumers clear their indicator on this event.
+    expect(emitEvent).toHaveBeenCalledWith('reminder:cancelled', 'task-1');
     // Nothing left to fire.
     await checkDueReminders();
     expect(task.sendMessage).not.toHaveBeenCalled();
