@@ -37,7 +37,7 @@
     "@octokit/app": "^16.1.2",
     "@octokit/webhooks": "^14.2.0",
     "@slack/bolt": "^4.6.0",
-    "@slack/web-api": "^7.19.0",
+    "@slack/web-api": "^8.0.0",
     "chrono-node": "^2.10.1",
     "croner": "^10.0.1",
     "dotenv": "^17.4.2",
