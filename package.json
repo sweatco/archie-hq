@@ -32,7 +32,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.220",
     "@anthropic-ai/sdk": "^0.115.0",
-    "@aws-sdk/client-bedrock-runtime": "^3.1096.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.1101.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@octokit/app": "^16.1.2",
     "@octokit/webhooks": "^14.2.0",
@@ -56,7 +56,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.1.2",
-    "@types/react": "^19.2.17",
+    "@types/react": "^19.2.18",
     "@types/turndown": "^5.0.6",
     "ink-testing-library": "^4.0.0",
     "tsx": "^4.23.1",
