@@ -6,6 +6,7 @@
  */
 
 import fs from 'fs';
+import path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { App } from '@octokit/app';
@@ -1223,10 +1224,17 @@ export function getGitHubAppIdentity(): { name: string; email: string } | null {
  * Configure git identity for a repository using GitHub App bot credentials.
  * Should be called once on server startup for each base repo.
  * Worktrees inherit this config from the base repo.
+ *
+ * Drops a leftover `config.lock` first. `git config` takes that lock for every
+ * write, and a hard kill mid-write orphans it — after which every `git config`
+ * here fails ("could not lock config file"), including on the next boot, since
+ * nothing else cleans it up. That cost task-20260804-1050-iat4s8 two agents
+ * during startup recovery.
  */
 export async function configureGitIdentity(repoPath: string): Promise<string | null> {
   const identity = getGitHubAppIdentity();
   if (identity) {
+    await fs.promises.rm(path.join(repoPath, '.git', 'config.lock'), { force: true });
     await execAsync(`git config user.name "${identity.name}"`, { cwd: repoPath });
     await execAsync(`git config user.email "${identity.email}"`, { cwd: repoPath });
     return identity.name;
