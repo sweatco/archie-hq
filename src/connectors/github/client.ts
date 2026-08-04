@@ -1221,20 +1221,47 @@ export function getGitHubAppIdentity(): { name: string; email: string } | null {
 }
 
 /**
+ * Root every repo path must live under. Read per call rather than imported from
+ * `system/workdir.ts` (which imports this module transitively) — keep the two
+ * in step if the default ever changes.
+ */
+function workdirRoot(): string {
+  return path.resolve(process.env.ARCHIE_WORKDIR || path.join(process.cwd(), 'workdir'));
+}
+
+/**
+ * Delete an orphaned `config.lock` from a repo, if it has one.
+ *
+ * `git config` takes that lock for every write, and a hard kill mid-write
+ * orphans it — after which every `git config` in the repo fails ("could not
+ * lock config file"), including on the next boot, since nothing else cleans it
+ * up. That cost task-20260804-1050-iat4s8 two agents during startup recovery.
+ *
+ * Repo paths originate in task and plugin input, so the resolved lock path is
+ * confined to the workdir before anything is unlinked; a path pointing outside
+ * it is left alone. Removing a lock a live `git` still holds makes that
+ * writer's rename fail rather than corrupting the config, and every writer here
+ * sets the same bot identity, so no staleness check is needed.
+ */
+async function dropOrphanedConfigLock(repoPath: string): Promise<void> {
+  const root = workdirRoot();
+  const lockPath = path.resolve(repoPath, '.git', 'config.lock');
+  if (!lockPath.startsWith(root + path.sep)) {
+    logger.warn('github', `Skipped config lock cleanup outside the workdir: ${lockPath}`);
+    return;
+  }
+  await fs.promises.rm(lockPath, { force: true });
+}
+
+/**
  * Configure git identity for a repository using GitHub App bot credentials.
  * Should be called once on server startup for each base repo.
  * Worktrees inherit this config from the base repo.
- *
- * Drops a leftover `config.lock` first. `git config` takes that lock for every
- * write, and a hard kill mid-write orphans it — after which every `git config`
- * here fails ("could not lock config file"), including on the next boot, since
- * nothing else cleans it up. That cost task-20260804-1050-iat4s8 two agents
- * during startup recovery.
  */
 export async function configureGitIdentity(repoPath: string): Promise<string | null> {
   const identity = getGitHubAppIdentity();
   if (identity) {
-    await fs.promises.rm(path.join(repoPath, '.git', 'config.lock'), { force: true });
+    await dropOrphanedConfigLock(repoPath);
     await execAsync(`git config user.name "${identity.name}"`, { cwd: repoPath });
     await execAsync(`git config user.email "${identity.email}"`, { cwd: repoPath });
     return identity.name;

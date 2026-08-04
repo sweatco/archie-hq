@@ -24,7 +24,7 @@ const BOT_EMAIL = `${APP_ID}+${APP_SLUG}[bot]@users.noreply.github.com`;
 
 let tmpDir: string;
 let repoPath: string;
-let savedEnv: { id?: string; slug?: string };
+let savedEnv: { id?: string; slug?: string; workdir?: string };
 
 /**
  * Read a key from the repo's own config, or null when unset. Scoped to
@@ -40,11 +40,18 @@ async function readConfig(cwd: string, key: string): Promise<string | null> {
 }
 
 beforeEach(async () => {
-  savedEnv = { id: process.env.GITHUB_APP_ID, slug: process.env.GITHUB_APP_SLUG };
+  savedEnv = {
+    id: process.env.GITHUB_APP_ID,
+    slug: process.env.GITHUB_APP_SLUG,
+    workdir: process.env.ARCHIE_WORKDIR,
+  };
   process.env.GITHUB_APP_ID = APP_ID;
   process.env.GITHUB_APP_SLUG = APP_SLUG;
 
+  // Lock cleanup is confined to the workdir, so the fixture repo lives inside
+  // one — `tmpDir` stands in for ARCHIE_WORKDIR.
   tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'archie-git-identity-'));
+  process.env.ARCHIE_WORKDIR = tmpDir;
   repoPath = path.join(tmpDir, 'repo');
   await fs.promises.mkdir(repoPath);
   await execFileAsync('git', ['init', '-q'], { cwd: repoPath });
@@ -55,6 +62,8 @@ afterEach(async () => {
   else process.env.GITHUB_APP_ID = savedEnv.id;
   if (savedEnv.slug === undefined) delete process.env.GITHUB_APP_SLUG;
   else process.env.GITHUB_APP_SLUG = savedEnv.slug;
+  if (savedEnv.workdir === undefined) delete process.env.ARCHIE_WORKDIR;
+  else process.env.ARCHIE_WORKDIR = savedEnv.workdir;
 
   await fs.promises.rm(tmpDir, { recursive: true, force: true });
 });
@@ -76,6 +85,18 @@ describe('configureGitIdentity', () => {
 
     expect(fs.existsSync(lockPath)).toBe(false);
     expect(await readConfig(repoPath, 'user.name')).toBe(BOT_NAME);
+  });
+
+  it('leaves a lock outside the workdir alone', async () => {
+    const lockPath = path.join(repoPath, '.git', 'config.lock');
+    await fs.promises.writeFile(lockPath, '', 'utf-8');
+    // Repo paths originate in task/plugin input; one pointing out of the
+    // workdir must not get a delete aimed at it.
+    process.env.ARCHIE_WORKDIR = path.join(tmpDir, 'elsewhere');
+
+    await expect(configureGitIdentity(repoPath)).rejects.toThrow(/could not lock config file/);
+
+    expect(fs.existsSync(lockPath)).toBe(true);
   });
 
   it('returns null and writes nothing when the app env is absent', async () => {
