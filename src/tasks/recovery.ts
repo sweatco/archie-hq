@@ -49,17 +49,27 @@ export async function recoverActiveTasks(): Promise<void> {
 /**
  * Re-spawn previously active agents for a task, or fall back to PM.
  * Shared by startup recovery and nuclear recovery.
+ *
+ * Each agent is recovered independently. One failing spawn used to abort the
+ * loop, so the agents listed after it were silently never messaged — and since
+ * earlier ones had already incremented `spawned`, the PM fallback didn't fire
+ * either, leaving the task in_progress with a hole in it.
  */
 async function recoverTaskAgents(task: Task): Promise<void> {
   let spawned = 0;
   for (const [agentName, session] of Object.entries(task.metadata.agent_sessions)) {
     const sessionState = typeof session === 'string' ? { active: false } : session;
     if (!sessionState.active) continue;
-    await task.sendMessage(AGENT_PROMPTS.recovery, agentName as AgentName);
-    spawned++;
+    try {
+      await task.sendMessage(AGENT_PROMPTS.recovery, agentName as AgentName);
+      spawned++;
+    } catch (error) {
+      logger.error('recovery', `Failed to recover ${agentName} for task ${task.taskId}`, error);
+    }
   }
 
-  // Fallback: if no agents were active (stale metadata), spawn PM
+  // Fallback: nothing came back live — no agent was active (stale metadata), or
+  // every spawn failed. Either way the PM re-arms the task's lifecycle.
   if (spawned === 0) {
     await task.sendMessage(AGENT_PROMPTS.recovery, 'pm-agent' as AgentName);
   }
