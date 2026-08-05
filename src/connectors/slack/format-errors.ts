@@ -40,6 +40,37 @@ export function formatSlackPostError(err: unknown, channel: string): string {
   return formatSlackSendError(err);
 }
 
+/**
+ * Outbound post blocked by a mute → guidance.
+ *
+ * The mute exists because someone in that channel asked Archie to step back, so
+ * this has to shut the door on the workarounds too, not just the direct post:
+ * a fresh thread in the same channel, the same content relayed into a different
+ * channel, or a teammate asked to post it instead. It also has to void any
+ * promise to report back, because that promise is exactly what pulls an agent
+ * into posting again once a teammate returns with new information.
+ */
+export function formatMutedTargetRefusal(channelName: string, what: 'message' | 'files' = 'message'): string {
+  const subject = what === 'files' ? 'Those files were not uploaded' : 'Nothing was posted';
+  return (
+    `Blocked: ${formatChannelLabel(channelName)} is muted — someone there asked you to step back. ${subject}. Only an @mention there lifts this.\n\n` +
+    `Do not route around it: not a new thread in that channel, not the same content in another channel, not a teammate posting it for you, not "one last message" or a correction. New information does not reopen it, and any promise to report back there is void — being asked to stop supersedes it. Send it to your requester in this task's own thread instead, or not at all.`
+  );
+}
+
+/** Reply blocked because a DIFFERENT task was told to leave that thread. */
+export function formatCrossTaskMuteRefusal(channelName: string): string {
+  return (
+    `Blocked: someone in ${formatChannelLabel(channelName)} asked Archie to step out of that thread. Nothing was posted.\n\n` +
+    `The request came in on another task, but the people reading that thread are the same people. Send what you have to your requester in this task's own thread instead. Only an @mention in that thread reopens it.`
+  );
+}
+
+/** `#name` when a channel name is known, else the raw id. */
+function formatChannelLabel(channelName: string): string {
+  return channelName.startsWith('#') || /^[CGD][A-Z0-9]+$/.test(channelName) ? channelName : `#${channelName}`;
+}
+
 /** Explore-read failure → guidance (private refused / not a member). */
 export function formatSlackReadError(err: unknown, channel: string): string {
   if (err instanceof PrivateChannelError) {

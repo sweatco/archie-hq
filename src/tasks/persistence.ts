@@ -734,6 +734,35 @@ export async function findTaskByBranch(
 }
 
 /**
+ * Has any task muted this exact Slack thread? A mute is stored on the task that
+ * took it, so a per-task check can't see one taken elsewhere: on 2026-08-05 one
+ * task was told to leave a #backend-dev thread while a second task went on
+ * posting into it.
+ *
+ * Matched on the thread, not the channel. Muting is routine — ~100 of 2575 prod
+ * tasks have muted something, across 29 channels, #bugs 16 times — so treating
+ * a mute as closing its whole channel would lock Archie out of the channels bug
+ * reports arrive in.
+ */
+export async function isThreadMuted(channelId: string, threadTs: string): Promise<boolean> {
+  try {
+    // A Slack thread belongs to at most one task — that's the routing model, and
+    // findTaskByThread is how the Slack router already resolves it. No second
+    // scan of its own.
+    const taskId = await findTaskByThread(threadTs);
+    if (!taskId) return false;
+
+    // Prefer the live instance: a mute taken this turn may not be flushed yet.
+    const metadata = activeTasks.get(taskId)?.metadata ?? (await loadMetadata(taskId));
+    const channel = metadata?.channels[`slack:${channelId}:${threadTs}`];
+    return channel?.type === 'slack' && !!channel.muted;
+  } catch {
+    // Best-effort: a failed lookup must not block posting outright.
+    return false;
+  }
+}
+
+/**
  * Find all tasks with a given status.
  * Substring scan narrows candidates without parsing every metadata.json.
  */

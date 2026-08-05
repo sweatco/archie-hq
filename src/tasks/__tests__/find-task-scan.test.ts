@@ -39,7 +39,7 @@ vi.mock('../task.js', () => ({
   migrateRepositoriesShape: (m: unknown) => m,
 }));
 
-import { findTaskByBranch, findTaskByPRNumber, findTaskByThread, findTasksByStatus } from '../persistence.js';
+import { findTaskByBranch, findTaskByPRNumber, findTaskByThread, findTasksByStatus, isThreadMuted } from '../persistence.js';
 import { SESSIONS_DIR } from '../../system/workdir.js';
 
 async function writeTask(taskId: string, metadata: Record<string, unknown>): Promise<void> {
@@ -172,5 +172,49 @@ describe('findTaskBy* scanners', () => {
     await writeTask('task-20260703-0010-real', repoTask('feature/z'));
 
     expect(await findTaskByBranch('sweatco/api', 'feature/z')).toBe('task-20260703-0010-real');
+  });
+
+  // Reads a mute out of a task that is NOT the one about to post — the case a
+  // per-task check structurally cannot see.
+  describe('isThreadMuted', () => {
+    const threadTask = (channelId: string, threadId: string, muted: boolean) => ({
+      status: 'completed',
+      channels: {
+        [`slack:${channelId}:${threadId}`]: {
+          type: 'slack', channel_id: channelId, thread_id: threadId,
+          channel_name: 'backend-dev', ...(muted ? { muted: true } : {}),
+        },
+      },
+    });
+
+    it('finds a mute recorded on another task', async () => {
+      await writeTask('task-20260703-0100-muted', threadTask('C_BD', '999.0', true));
+
+      expect(await isThreadMuted('C_BD', '999.0')).toBe(true);
+    });
+
+    it('is false for an unmuted thread, another thread, and an unknown channel', async () => {
+      await writeTask('task-20260703-0101-open', threadTask('C_OPEN', '1.0', false));
+      await writeTask('task-20260703-0102-other', threadTask('C_OTHER', '2.0', true));
+
+      expect(await isThreadMuted('C_OPEN', '1.0')).toBe(false);
+      expect(await isThreadMuted('C_OTHER', '3.0')).toBe(false);
+      expect(await isThreadMuted('C_NONE', '1.0')).toBe(false);
+    });
+
+    // Muting is routine — ~100 of 2575 prod tasks have muted something, #bugs 16
+    // times — so one muted thread must not close its whole channel.
+    it('leaves other threads in the same channel open', async () => {
+      await writeTask('task-20260703-0103-mixed', {
+        status: 'completed',
+        channels: {
+          'slack:C_BUGS:1.0': { type: 'slack', channel_id: 'C_BUGS', thread_id: '1.0', channel_name: 'bugs', muted: true },
+          'slack:C_BUGS:2.0': { type: 'slack', channel_id: 'C_BUGS', thread_id: '2.0', channel_name: 'bugs' },
+        },
+      });
+
+      expect(await isThreadMuted('C_BUGS', '1.0')).toBe(true);
+      expect(await isThreadMuted('C_BUGS', '2.0')).toBe(false);
+    });
   });
 });
