@@ -21,7 +21,7 @@ import { getGitHubClient, parseCheckRef } from '../connectors/github/client.js';
 import { gitExec } from '../connectors/github/repo-clone.js';
 import { hydrateBranchState, findBranchStateByPR, assignPrNumber } from '../connectors/github/branch-state.js';
 import { taskBranchName } from '../connectors/github/branch-naming.js';
-import { appendAgentFinding, appendArtifactShared } from '../tasks/persistence.js';
+import { appendAgentFinding, appendArtifactShared, isThreadMuted } from '../tasks/persistence.js';
 import { copyArtifactToShared, assertReadable } from './artifacts.js';
 import { aggregateTaskUsage, formatTaskUsageReport } from './task-usage.js';
 import { logger } from '../system/logger.js';
@@ -42,11 +42,13 @@ import {
 } from '../connectors/slack/client.js';
 import { readCanvas } from '../connectors/slack/canvas-read.js';
 import { collectCanvasFileAllowlist } from '../connectors/slack/channel-canvas.js';
-import { isDmOrUserId } from '../connectors/slack/channel-ids.js';
+import { isDmOrUserId, findMutedTarget } from '../connectors/slack/channel-ids.js';
 import {
   formatSlackSendError,
   formatSlackPostError,
   formatSlackReadError,
+  formatMutedTargetRefusal,
+  formatCrossTaskMuteRefusal,
 } from '../connectors/slack/format-errors.js';
 
 /**
@@ -404,6 +406,7 @@ function createPostToUserTool(agent: Agent, task: Task) {
     'Use target.channel only to reach another thread ALREADY linked to this task. ' +
     'If this task lives in a channel thread, bring someone in by @mentioning them in that thread. ' +
     'To say something in a channel that is NOT part of this task (exploration/outreach), use `post_to_channel` — it deliberately does not link to this task. ' +
+    'A muted channel is refused. ' +
     'To attach files, send the message first, then call `post_files_to_user` with the same target.',
     {
       message: z.string().describe('The message to send'),
@@ -420,6 +423,9 @@ function createPostToUserTool(agent: Agent, task: Task) {
           'Call report_completion() without a message to finish silently.'
         );
       }
+      const mutedKey = args.target?.channel ?? task.metadata.default_channel;
+      const muted = mutedKey ? findMutedTarget(task.metadata.channels, mutedKey) : null;
+      if (muted) return ok(formatMutedTargetRefusal(muted.channel_name));
       task.touch();
       let newChannelKey: string | null;
       try {
@@ -453,6 +459,9 @@ function createPostFilesToUserTool(agent: Agent, task: Task) {
           'No channel is linked to this task, so there is nowhere to attach files.'
         );
       }
+      const mutedKey = args.channel ?? task.metadata.default_channel;
+      const muted = mutedKey ? findMutedTarget(task.metadata.channels, mutedKey) : null;
+      if (muted) return ok(formatMutedTargetRefusal(muted.channel_name, 'files'));
       let validatedPaths: string[];
       try {
         const sandbox = requireSandbox(agent);
@@ -780,7 +789,13 @@ function createReportCompletionTool(agent: Agent, task: Task) {
       if (task.completionIntent) {
         return ok('Completion already recorded. End your turn.');
       }
-      if (args.message) {
+      // A muted default channel drops the message but still completes: the turn
+      // has to be allowed to end, and refusing outright would just push the
+      // agent to find another way to say it.
+      const mutedDefault = task.metadata.default_channel
+        ? findMutedTarget(task.metadata.channels, task.metadata.default_channel)
+        : null;
+      if (args.message && !mutedDefault) {
         if (Object.keys(task.metadata.channels).length === 0) {
           return ok(
             'Cannot post a completion message — no channel linked to this task. ' +
@@ -813,6 +828,12 @@ function createReportCompletionTool(agent: Agent, task: Task) {
       // no synchronous peer-gate races the Stop-hook boundary. The agent must end
       // its turn now: that's what lets the system reach quiescence and park.
       task.setCompletionIntent();
+      if (args.message && mutedDefault) {
+        return ok(
+          `${formatMutedTargetRefusal(mutedDefault.channel_name)}\n\n` +
+          'Completion is recorded either way — end your turn now, silently.'
+        );
+      }
       return ok(
         args.message
           ? 'Message posted. Nothing left to do — end your turn.'
@@ -825,7 +846,8 @@ function createReportCompletionTool(agent: Agent, task: Task) {
 function createMuteChannelTool(agent: Agent, task: Task) {
   return tool(
     'mute_channel',
-    'Unsubscribe from a Slack channel/thread. Once muted, messages in it are ignored until someone @mentions the bot there again. Posts a notification to the thread it muted. ' +
+    'Step out of a Slack channel/thread, in both directions: messages there stop reaching you, AND your own posts there are refused (post_to_user, post_files_to_user, post_to_channel) — until someone @mentions the bot there again. ' +
+    'Posts a notification to the thread it muted, so add no farewell message of your own. Call it before saying anything else when asked to stop, step back, or go away. ' +
     'Pass `channel` (a channel key like "slack:C123:456.789") to mute that specific thread. ' +
     'Omit `channel` to mute the task\'s default channel only (never all linked channels). ' +
     'DM channels cannot be muted — DMs have no @mention to unmute by, so muting one would lock the user out permanently.',
@@ -1006,28 +1028,75 @@ function createReadThreadTool(_agent: Agent, task: Task) {
   );
 }
 
+/**
+ * Values that answer the `mandate` field without answering the question — the
+ * shapes a model reaches for when it wants past the gate rather than having a
+ * request to quote.
+ */
+const NON_MANDATES = new Set([
+  'n/a', 'na', 'none', 'no mandate', 'not applicable', 'nobody', 'no one',
+  'self', 'my own judgement', 'my own judgment', 'implied', 'implicit',
+  'urgent', 'high severity', 'proactive', 'unknown', 'tbd', '-',
+]);
+
 function createPostToChannelTool(_agent: Agent, task: Task) {
   return tool(
     'post_to_channel',
     'Post a message into any channel Archie is a member of, WITHOUT linking it to this task — for chiming in while exploring, or escalating somewhere (e.g. a private management channel). ' +
-    "Works in PUBLIC and PRIVATE channels Archie has been invited to (DMs are not allowed). Unlike reading, posting is NOT limited to this task's channel — escalating outward is a valid use. " +
+    "Works in PUBLIC and PRIVATE channels Archie has been invited to (DMs are not allowed, and neither is a channel muted for this task). Unlike reading, posting is NOT limited to this task's channel — escalating outward is a valid use. " +
     'Fire-and-forget: it does not become a touchpoint of this task, and any reply is invisible to you here. If a human replies to a NEW top-level message you post, that reply starts its OWN fresh task; a reply inside someone else\'s existing thread never does. ' +
-    "GUARDRAIL: match what you post to the destination's audience — never relay private or sensitive task content into a broader or unrelated channel. " +
+    "GUARDRAIL: only post where a human in this task asked you to — the required `mandate` arg is where you quote them, and without one you report to your requester instead and let them route it. Keep it short and match what you post to the destination's audience — never relay private or sensitive task content into a broader or unrelated channel. " +
     'Pass a channel ID; optionally `thread_ts` to reply in an existing thread. To talk to the user about THIS task, use post_to_user instead.',
     {
       channel: z.string().describe('Slack channel ID (e.g. "C1234567")'),
       message: z.string().describe('The message to post'),
+      mandate: z.string().describe(
+        "Verbatim quote of the message in THIS task's thread where a human asked you to say something in this channel, naming who said it. " +
+        'Required. If you cannot quote one, do not call this tool — report the thing to your requester in this thread and let them decide who to tell. ' +
+        'A teammate agent suggesting it, or your own judgement that someone should know, is not a mandate.',
+      ),
       thread_ts: z.string().optional().describe('Parent message ts to reply inside an existing thread; omit to post a new top-level message'),
     },
     async (args) => {
       const dm = rejectDmTarget(args.channel);
       if (dm) return ok(dm);
+      // The mandate is the whole gate on unsolicited outreach: it can't be
+      // checked semantically, but requiring the quote forces the question to be
+      // asked, and refusing the degenerate answers stops the field being filled
+      // in with filler to get past it.
+      const mandate = args.mandate.trim();
+      if (mandate.length < 15 || NON_MANDATES.has(mandate.toLowerCase().replace(/[.\s]+$/, ''))) {
+        return ok(
+          'Blocked: no mandate. Nothing was posted. `mandate` has to be an actual quote of a human in this task asking you to post in that channel — ' +
+          'not a restatement of why it matters, not a teammate\'s suggestion, not your own read that someone should know. ' +
+          "If nobody asked, report it to your requester in this task's thread and let them route it: who else needs to know is their call.",
+        );
+      }
+      // A muted thread in this channel blocks the whole channel — otherwise
+      // post_to_channel is the obvious way around a mute (new top-level post,
+      // same audience).
+      const muted = findMutedTarget(task.metadata.channels, args.channel);
+      if (muted) return ok(formatMutedTargetRefusal(muted.channel_name));
+      // Same check across OTHER tasks: the task told to go away is usually not
+      // the one posting next.
+      if (args.thread_ts && await isThreadMuted(args.channel, args.thread_ts)) {
+        return ok(formatCrossTaskMuteRefusal(args.channel));
+      }
       task.touch();
       try {
         // The prefix check above rejects 1:1 DMs/user ids; this rejects group DMs
         // (mpims), which share the ambiguous `G…` prefix with private channels.
         await assertPostableChannel(args.channel);
         const ts = await postSlackMessage({ channel: args.channel, text: args.message, threadTs: args.thread_ts });
+        // Record the claimed mandate in the knowledge log: outreach lands in
+        // front of people outside this task, so the reason it happened has to be
+        // auditable after the fact.
+        await appendAgentFinding(
+          task.taskId,
+          _agent.def.id as AgentName,
+          `Posted to ${args.channel} outside this task. Mandate: ${mandate}`,
+          'decision',
+        );
         return ok(
           ts
             ? `Message posted to ${args.channel}${args.thread_ts ? ` (in thread ${args.thread_ts})` : ` (new thread ts: ${ts})`}. Not linked to this task.`

@@ -18,9 +18,11 @@ vi.mock('../../connectors/github/repo-clone.js', () => ({
   isWorktree: vi.fn().mockResolvedValue(false),
   fetchOrigin: vi.fn().mockResolvedValue(undefined),
 }));
+const { isThreadMuted } = vi.hoisted(() => ({ isThreadMuted: vi.fn() }));
 vi.mock('../../tasks/persistence.js', () => ({
   appendAgentFinding: vi.fn().mockResolvedValue(undefined),
   getReposPath: vi.fn().mockReturnValue('/sessions/task-123/repos'),
+  isThreadMuted,
 }));
 vi.mock('../../system/logger.js', () => ({
   logger: { agentAction: vi.fn(), agentFinding: vi.fn(), agentToSlack: vi.fn(), system: vi.fn(), error: vi.fn(), warn: vi.fn() },
@@ -52,15 +54,26 @@ import type { Task } from '../../tasks/task.js';
 function makeAgent(): Agent {
   return { def: { id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'pm', isPm: true }, queue: {} as any, session: { active: false } } as unknown as Agent;
 }
-function makeTask(originChannelId?: string): Task {
+function makeTask(originChannelId?: string, opts: { muted?: boolean } = {}): Task {
   const channels: Record<string, unknown> = {};
   let default_channel: string | undefined;
   if (originChannelId) {
     const key = `slack:${originChannelId}:1.0`;
-    channels[key] = { type: 'slack', channel_id: originChannelId, thread_id: '1.0', channel_name: 'origin' };
+    channels[key] = {
+      type: 'slack', channel_id: originChannelId, thread_id: '1.0', channel_name: 'origin',
+      ...(opts.muted ? { muted: true } : {}),
+    };
     default_channel = key;
   }
-  return { taskId: 'task-1', metadata: { channels, default_channel }, touch: vi.fn(), debouncedSave: vi.fn() } as unknown as Task;
+  return {
+    taskId: 'task-1', metadata: { channels, default_channel },
+    touch: vi.fn(), debouncedSave: vi.fn(),
+    // post_to_user / post_files_to_user route through the Task, not the Slack
+    // client directly — stub them so the mute guard can be observed as "the
+    // delivery call never happened".
+    postToUser: vi.fn().mockResolvedValue(null),
+    postFilesToUser: vi.fn().mockResolvedValue(undefined),
+  } as unknown as Task;
 }
 
 /** Build the comms server and pull a tool's invokable handler out of the MCP registry. */
@@ -81,13 +94,15 @@ describe('post_to_channel handler', () => {
     postSlackMessage.mockReset();
     assertPostableChannel.mockReset();
     assertPostableChannel.mockResolvedValue(undefined); // default: target is a postable channel
+    isThreadMuted.mockReset();
+    isThreadMuted.mockResolvedValue(false); // default: no other task has muted the target thread
   });
 
   it('posts a new top-level message and reports the ts, not linked to the task', async () => {
     postSlackMessage.mockResolvedValue('1716998400.123456');
     const post = getHandler('post_to_channel');
 
-    const out = await textOf(await post({ channel: 'C123', message: 'heads up' }));
+    const out = await textOf(await post({ channel: 'C123', message: 'heads up', mandate: 'Sergei: "can you flag this in that channel"' }));
 
     expect(postSlackMessage).toHaveBeenCalledWith({ channel: 'C123', text: 'heads up', threadTs: undefined });
     expect(out).toContain('1716998400.123456');
@@ -97,8 +112,8 @@ describe('post_to_channel handler', () => {
   it('rejects a DM / user-id target without calling Slack', async () => {
     const post = getHandler('post_to_channel');
 
-    const dm = await textOf(await post({ channel: 'D999', message: 'hi' }));
-    const user = await textOf(await post({ channel: 'U999', message: 'hi' }));
+    const dm = await textOf(await post({ channel: 'D999', message: 'hi', mandate: 'Sergei: "can you flag this in that channel"' }));
+    const user = await textOf(await post({ channel: 'U999', message: 'hi', mandate: 'Sergei: "can you flag this in that channel"' }));
 
     expect(dm).toMatch(/channel-only|never touches DMs/i);
     expect(user).toMatch(/channel-only|never touches DMs/i);
@@ -110,7 +125,7 @@ describe('post_to_channel handler', () => {
     assertPostableChannel.mockRejectedValue(new DmPostError('G777'));
     const post = getHandler('post_to_channel');
 
-    const out = await textOf(await post({ channel: 'G777', message: 'sensitive' }));
+    const out = await textOf(await post({ channel: 'G777', message: 'sensitive', mandate: 'Sergei: "can you flag this in that channel"' }));
 
     expect(assertPostableChannel).toHaveBeenCalledWith('G777');
     expect(postSlackMessage).not.toHaveBeenCalled();
@@ -121,9 +136,126 @@ describe('post_to_channel handler', () => {
     postSlackMessage.mockRejectedValue({ data: { error: 'not_in_channel' } });
     const post = getHandler('post_to_channel');
 
-    const out = await textOf(await post({ channel: 'C123', message: 'hi' }));
+    const out = await textOf(await post({ channel: 'C123', message: 'hi', mandate: 'Sergei: "can you flag this in that channel"' }));
 
     expect(out).toContain('/invite @Archie');
+  });
+
+  // A muted thread means someone in that channel asked Archie to step back.
+  // post_to_channel is the obvious way around that — a brand-new top-level post
+  // reaches the same people — so the whole channel has to be closed, not just
+  // the muted thread's key.
+  it('refuses a NEW top-level post in a channel whose thread is muted', async () => {
+    const post = getHandler('post_to_channel', makeTask('C123', { muted: true }));
+
+    const out = await textOf(await post({ channel: 'C123', message: 'one more thing', mandate: 'Sergei: "can you flag this in that channel"' }));
+
+    expect(postSlackMessage).not.toHaveBeenCalled();
+    expect(out).toMatch(/muted/i);
+    expect(out).toMatch(/do not route around it/i);
+  });
+
+  // The mandate can't be verified semantically, but requiring the quote forces
+  // the question to be asked, and refusing the filler answers stops the field
+  // being padded to get past the gate.
+  it.each([
+    ['empty', ''],
+    ['whitespace', '   '],
+    ['n/a', 'N/A'],
+    ['none', 'none'],
+    ['own judgement', 'my own judgement'],
+    ['severity as a mandate', 'urgent'],
+    ['too short to be a quote', 'Sergei'],
+  ])('refuses a non-mandate (%s)', async (_label, mandate) => {
+    const post = getHandler('post_to_channel');
+
+    const out = await textOf(await post({ channel: 'C123', message: 'heads up', mandate }));
+
+    expect(postSlackMessage).not.toHaveBeenCalled();
+    expect(out).toMatch(/no mandate/i);
+    expect(out).toMatch(/their call/i);
+  });
+
+  // The task that gets told to go away is usually not the task posting next —
+  // that's exactly how #backend-dev kept being posted to on 2026-08-05.
+  describe('a thread another task was told to leave', () => {
+    const MANDATE = 'Sergei: "can you flag this in that channel"';
+
+    it('refuses a reply into it', async () => {
+      isThreadMuted.mockResolvedValue(true);
+      const post = getHandler('post_to_channel');
+
+      const out = await textOf(await post({ channel: 'C123', message: 'hi', thread_ts: '999.0', mandate: MANDATE }));
+
+      expect(isThreadMuted).toHaveBeenCalledWith('C123', '999.0');
+      expect(postSlackMessage).not.toHaveBeenCalled();
+      expect(out).toMatch(/step out of that thread/i);
+    });
+
+    it('allows a reply into a thread nobody muted', async () => {
+      isThreadMuted.mockResolvedValue(false);
+      postSlackMessage.mockResolvedValue('1.5');
+      const post = getHandler('post_to_channel');
+
+      await post({ channel: 'C123', message: 'hi', thread_ts: '111.0', mandate: MANDATE });
+
+      expect(postSlackMessage).toHaveBeenCalled();
+    });
+  });
+
+  it('still posts to a different channel when only one channel is muted', async () => {
+    postSlackMessage.mockResolvedValue('1.5');
+    const post = getHandler('post_to_channel', makeTask('C123', { muted: true }));
+
+    const out = await textOf(await post({ channel: 'C999', message: 'unrelated', mandate: 'Sergei: "can you flag this in that channel"' }));
+
+    expect(postSlackMessage).toHaveBeenCalled();
+    expect(out).not.toMatch(/muted/i);
+  });
+});
+
+describe('mute blocks outbound posts, not just inbound routing', () => {
+  beforeEach(() => {
+    postSlackMessage.mockReset();
+    postSlackMessage.mockResolvedValue('1.5');
+  });
+
+  it('post_to_user refuses the muted default channel', async () => {
+    const task = makeTask('C123', { muted: true });
+    const out = await textOf(await getHandler('post_to_user', task)({ message: 'correcting myself' }));
+
+    expect(task.postToUser).not.toHaveBeenCalled();
+    expect(out).toMatch(/muted/i);
+    // The refusal has to void the promise that pulls an agent back in.
+    expect(out).toMatch(/promise to report back there is void/i);
+  });
+
+  it('post_to_user refuses an explicitly targeted muted thread', async () => {
+    const task = makeTask('C123', { muted: true });
+    const out = await textOf(
+      await getHandler('post_to_user', task)({ message: 'hi', target: { channel: 'slack:C123:1.0' } }),
+    );
+
+    expect(task.postToUser).not.toHaveBeenCalled();
+    expect(out).toMatch(/muted/i);
+  });
+
+  it('post_to_user still works when the channel is not muted', async () => {
+    const task = makeTask('C123');
+    const out = await textOf(await getHandler('post_to_user', task)({ message: 'hi' }));
+
+    expect(task.postToUser).toHaveBeenCalled();
+    expect(out).toMatch(/posted/i);
+  });
+
+  it('post_files_to_user refuses a muted channel before touching the filesystem', async () => {
+    const out = await textOf(
+      await getHandler('post_files_to_user', makeTask('C123', { muted: true }))({ paths: ['/nope.png'] }),
+    );
+
+    // No sandbox error — the mute is checked first, so the path is never read.
+    expect(out).toMatch(/muted/i);
+    expect(out).toMatch(/files were not uploaded/i);
   });
 });
 
