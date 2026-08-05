@@ -1341,8 +1341,13 @@ export interface SlackFileInfo {
 /**
  * List canvas tabs pinned in a channel (returns their file ids). Cached for
  * 1 minute, mirroring `isChannelShared`. DMs never have canvas tabs.
+ *
+ * Returns `null` when the lookup FAILED, as distinct from `[]` meaning the channel
+ * genuinely has no canvas tabs. Callers reconcile persisted state against this
+ * list, so conflating the two would let one transient API error look like "every
+ * canvas was removed" and discard standing channel context.
  */
-export async function getChannelCanvasTabs(channelId: string): Promise<CanvasTab[]> {
+export async function getChannelCanvasTabs(channelId: string): Promise<CanvasTab[] | null> {
   if (channelId.startsWith('D')) return [];
 
   const cached = canvasTabsCache.get(channelId);
@@ -1369,7 +1374,7 @@ export async function getChannelCanvasTabs(channelId: string): Promise<CanvasTab
     return tabs;
   } catch (error) {
     logger.warn('Slack', `Failed to fetch canvas tabs for ${channelId}`, error);
-    return [];
+    return null;
   }
 }
 
