@@ -8,6 +8,8 @@
 import { mkdir, readdir, readFile, writeFile, appendFile } from 'fs/promises';
 import { createReadStream, existsSync } from 'fs';
 import { createInterface } from 'readline';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { join, resolve, relative, isAbsolute, sep } from 'path';
 import type { TaskMetadata, LogEntry, FindingType, SlackFile, SlackAttachment, SlackAuthor, SlackReaction } from '../types/index.js';
 import { isExternalUser } from '../connectors/slack/client.js';
@@ -17,6 +19,15 @@ import { SESSIONS_DIR } from '../system/workdir.js';
 import { emitEvent, onEvent } from '../system/event-bus.js';
 import { logger } from '../system/logger.js';
 import { formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Ceiling on a scan's stdout. Only matching paths are printed, so this is ~150
+ * bytes per hit — far more headroom than a needle broad enough to match the
+ * whole fleet would need, while still bounding a runaway.
+ */
+const MAX_SCAN_OUTPUT_BYTES = 32 * 1024 * 1024;
 
 /**
  * Generate a unique task ID with human-readable date format
@@ -541,29 +552,77 @@ export async function readKnowledgeLog(taskId: string): Promise<string> {
 
 /**
  * Candidate scan: task IDs whose shared/metadata.json contains `needle` as a
- * plain substring, in directory order. Pure fs — the needles carry external
- * input (webhook branch names, Slack thread ids), which previously reached a
- * shell via grep interpolation. A substring hit only narrows candidates;
+ * plain substring, in directory order. A substring hit only narrows candidates;
  * callers verify matches structurally against the parsed metadata.
+ *
+ * grep does the reading — one process over the fleet rather than one sequential
+ * readFile per task, which is a cost that grows with every task ever created.
+ * The shell expands the glob (the shape rebuildFromDisk in reminder-scheduler.ts
+ * already uses), which also keeps the file list out of argv and away from
+ * ARG_MAX. Recursion is deliberately avoided: a session directory also holds
+ * repo clones and SDK transcripts, so `grep -r` would walk gigabytes to answer a
+ * question about one small file per task.
+ *
+ * The needle is safe on two independent grounds: its form is checked first (see
+ * assertNeedleForm), and it is passed as a POSITIONAL ARGUMENT rather than
+ * interpolated into the script, so `sh` expands the glob but never parses the
+ * data. That is the whole reason the previous grep was removed in 3190d00 —
+ * needles carry external input, git ref rules allow quotes, semicolons and
+ * `$()`, and a crafted branch name reaching an execSync string could execute
+ * shell commands. `-F` keeps the needle a fixed string rather than a regex, and
+ * `--` stops one starting with `-` being read as a flag.
+ *
+ * `|| [ $? -le 2 ]` absorbs grep's "no match" (1) and "a file was unreadable"
+ * (2, which is what an empty sessions dir looks like once the glob fails to
+ * expand) while still failing on anything else. A failed scan must not read as
+ * "no task matches": that would route a webhook to a new task instead of the one
+ * that owns the branch.
  */
 async function scanMetadataFiles(needle: string): Promise<string[]> {
-  let dirs: string[];
-  try {
-    dirs = await readdir(SESSIONS_DIR);
-  } catch {
-    return [];
-  }
+  assertNeedleForm(needle);
+
+  const { stdout } = await execFileAsync(
+    'sh',
+    [
+      '-c',
+      'grep -lF -- "$1" "$2"/task-*/shared/metadata.json 2>/dev/null || [ $? -le 2 ]',
+      'sh',
+      needle,
+      SESSIONS_DIR,
+    ],
+    { encoding: 'utf-8', maxBuffer: MAX_SCAN_OUTPUT_BYTES },
+  );
+
   const hits: string[] = [];
-  for (const dir of dirs) {
-    if (!dir.startsWith('task-')) continue;
-    try {
-      const text = await readFile(join(SESSIONS_DIR, dir, 'shared', 'metadata.json'), 'utf-8');
-      if (text.includes(needle)) hits.push(dir);
-    } catch {
-      // No readable metadata.json — not a task session.
-    }
+  for (const line of stdout.split('\n')) {
+    // …/sessions/<taskId>/shared/metadata.json
+    const taskId = line.trim().split(sep).at(-3);
+    if (taskId?.startsWith('task-')) hits.push(taskId);
   }
   return hits;
+}
+
+/**
+ * Every needle is a JSON-encoded fragment of the serialized metadata — a quoted
+ * string, or a `"key": value` pair — so its form is known before it is built:
+ * one line, no control characters, because JSON.stringify escapes them all.
+ *
+ * Checking that form is the first of the two guarantees that make the pattern
+ * safe to hand to grep, and the one that survives a future refactor of how the
+ * command gets assembled. Anything malformed is a construction bug at the call
+ * site, so it throws rather than being trimmed into something plausible.
+ */
+function assertNeedleForm(needle: string): void {
+  if (needle.length === 0) throw new Error('scanMetadataFiles: needle must not be empty');
+  const control = /[\u0000-\u001f\u007f]/.exec(needle);
+  if (control) {
+    const at = control.index;
+    throw new Error(
+      `scanMetadataFiles: needle must be a single line of printable text — ` +
+      `found control character 0x${needle.charCodeAt(at).toString(16).padStart(2, '0')} at index ${at}. ` +
+      `Needles are JSON-encoded fragments; encode the value before scanning.`,
+    );
+  }
 }
 
 /**

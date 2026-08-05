@@ -1,7 +1,7 @@
 /**
- * findTaskBy* scanners — fs-based candidate scan.
+ * findTaskBy* scanners — grep-based candidate scan.
  *
- * Regression tests for the execSync-grep replacement: webhook-controlled
+ * Regression tests for the needle trust boundary: webhook-controlled
  * inputs (branch names with quotes, semicolons, `$()`) must resolve correctly
  * and never reach a shell; JSON-encoded needles must also match values the
  * old fixed-string grep could not (escaped quotes).
@@ -9,6 +9,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mkdir, rm, writeFile } from 'fs/promises';
+import { existsSync } from 'fs';
 import { join } from 'path';
 
 vi.mock('../../system/workdir.js', async () => {
@@ -62,7 +63,7 @@ function repoTask(branch: string, prNumber?: number): Record<string, unknown> {
   };
 }
 
-describe('findTaskBy* fs scanners', () => {
+describe('findTaskBy* scanners', () => {
   beforeEach(async () => {
     await rm(SESSIONS_DIR, { recursive: true, force: true });
     await mkdir(SESSIONS_DIR, { recursive: true });
@@ -74,6 +75,21 @@ describe('findTaskBy* fs scanners', () => {
     await writeTask('task-20260703-0002-other', repoTask('feature/normal'));
 
     expect(await findTaskByBranch('sweatco/api', evil)).toBe('task-20260703-0001-evil');
+  });
+
+  // The scan runs grep under `sh`, so the property that matters is not just
+  // "the lookup still works" but "the shell never evaluated the needle". A
+  // branch name is webhook-controlled and git ref rules permit $(), backticks
+  // and semicolons — 3190d00 removed the previous grep because those reached an
+  // execSync string. Passing the needle as $1 is what makes a shell safe here,
+  // and this fails loudly if anyone inlines it again.
+  it('findTaskByBranch never lets a branch name execute (needle is data, not script)', async () => {
+    const sentinel = join(SESSIONS_DIR, 'pwned');
+    const evil = `qa/$(touch ${sentinel})\`touch ${sentinel}\`; touch ${sentinel}`;
+    await writeTask('task-20260703-0011-inject', repoTask(evil));
+
+    expect(await findTaskByBranch('sweatco/api', evil)).toBe('task-20260703-0011-inject');
+    expect(existsSync(sentinel)).toBe(false);
   });
 
   it('findTaskByBranch resolves branches containing double quotes (old grep false-negative)', async () => {
@@ -114,6 +130,41 @@ describe('findTaskBy* fs scanners', () => {
 
     const inProgress = await findTasksByStatus('in_progress');
     expect(inProgress.map((t) => t.task_id)).toEqual(['task-20260703-0007-a']);
+  });
+
+  // Needles are JSON-encoded fragments of the serialized metadata, so their form
+  // is known: one line, no control characters. The pattern reaches grep on stdin
+  // as a `-f -` pattern file where one line is one pattern, so a needle carrying
+  // a newline would quietly become an OR of two patterns instead of the
+  // substring test callers rely on — and a caller reading that would route a
+  // webhook to the wrong task.
+  it('a newline in the input cannot split the pattern — encoding keeps the needle one line', async () => {
+    await writeTask('task-20260703-0012-form', {
+      status: 'completed',
+      channels: { C1: { type: 'slack', channel_id: 'C1', thread_id: '111.0' } },
+    });
+
+    // JSON.stringify turns the newline into the two characters \ and n, so the
+    // needle stays one pattern and matches neither half. A call site that
+    // stopped encoding would find the task via the first line instead — and
+    // assertNeedleForm throws before it gets that far.
+    expect(await findTaskByThread('111.0\n222.0')).toBeNull();
+    expect(await findTaskByBranch('sweatco/api', 'feature/a\nfeature/b')).toBeNull();
+
+    // The encoded form still resolves normally.
+    expect(await findTaskByThread('111.0')).toBe('task-20260703-0012-form');
+  });
+
+  // The glob has to cover the whole fleet, not just whatever the first few
+  // entries happen to be — a match at either end must resolve.
+  it('resolves tasks anywhere in a multi-task fleet', async () => {
+    for (let i = 0; i < 40; i++) {
+      await writeTask(`task-20260703-1${String(i).padStart(3, '0')}-bulk`, repoTask(`feature/bulk-${i}`));
+    }
+    await writeTask('task-20260703-0013-last', repoTask('feature/needle-at-the-end'));
+
+    expect(await findTaskByBranch('sweatco/api', 'feature/needle-at-the-end')).toBe('task-20260703-0013-last');
+    expect(await findTaskByBranch('sweatco/api', 'feature/bulk-0')).toBe('task-20260703-1000-bulk');
   });
 
   it('tolerates session dirs without metadata.json', async () => {
