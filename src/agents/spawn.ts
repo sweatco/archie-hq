@@ -361,15 +361,6 @@ Shared folder: ${sharedPath} [READ-ONLY]
       systemPrompt = `${systemPrompt}\n\nNOTE: This task is active in a Slack channel shared with an external organisation. Messages from external participants are filtered before they reach you. Be mindful that anything you post will be visible to the external org. Do not share repository contents, credentials, internal URLs, or task history with external parties.`;
     }
 
-    // Inject per-channel "Archie" canvas as standing project context (XML-wrapped
-    // so it stays contained). Rebuilt every spawn, so canvas edits propagate on
-    // the next wake. Only the PM sees it; specialists get relevant slices via
-    // delegation.
-    const channelCanvasSection = await buildChannelCanvasPromptSection(metadata);
-    if (channelCanvasSection) {
-      systemPrompt = `${systemPrompt}\n\n${channelCanvasSection}`;
-    }
-
     // Append PM overlay prompt from the pm plugin (business context, etc.)
     if (def.pmOverlayPrompt) {
       systemPrompt = `${systemPrompt}\n\n${def.pmOverlayPrompt}`;
@@ -547,6 +538,28 @@ Shared folder: ${sharedPath} [READ-ONLY]
     // The bridge resolves targets from this same live map at call time, so it
     // sees OAuth-bound headers and never reaches servers dropped below.
     mcpServers['file-bridge'] = createFileBridgeMcpServer(agent, task, mcpServers);
+  }
+
+  // ---- Channel project context (every agent, one rule) ----
+  //
+  // The per-channel "Archie" canvas is standing project context for the channel, so
+  // every agent working in that channel gets it — PM, repo agents, plugin agents
+  // alike. No slicing, no per-role subsets: whoever is doing the work needs the
+  // brief, and a specialist cannot ask for what it doesn't know exists. This used to
+  // be PM-only with the PM expected to relay the relevant parts, which fails exactly
+  // when it matters — the specialist is the one who discovers the thing that needs
+  // escalating, and the PM cannot predict that in advance.
+  //
+  // Deliberately placed after all three agent branches so there is one injection
+  // point and no way for a branch to miss it. XML-wrapped and rebuilt every spawn, so
+  // canvas edits propagate on the next wake.
+  //
+  // Note `fetch_slack_reference` stays PM-only: specialists see a canvas's file
+  // references but cannot open them, so material a teammate needs still travels via
+  // the PM's `share_artifact`.
+  const channelCanvasSection = await buildChannelCanvasPromptSection(metadata);
+  if (channelCanvasSection) {
+    systemPrompt = `${systemPrompt}\n\n${channelCanvasSection}`;
   }
 
   // ---- Organizational memory injection (read path; gated by ARCHIE_MEMORY_INJECT, default off) ----
