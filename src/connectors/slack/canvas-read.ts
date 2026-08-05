@@ -8,7 +8,7 @@
  * announce/refresh orchestration.
  */
 import { logger } from '../../system/logger.js';
-import { getSlackFileInfo, fetchSlackFileBody, type SlackFileInfo } from './client.js';
+import { cleanSlackText, getSlackFileInfo, fetchSlackFileBody, type SlackFileInfo } from './client.js';
 import { canvasHtmlToMarkdown } from './canvas-markdown.js';
 
 export interface CanvasRead {
@@ -31,7 +31,19 @@ export async function readCanvas(fileId: string, info?: SlackFileInfo | null): P
   try {
     const html = await fetchSlackFileBody(url);
     const { markdown, fileIds } = canvasHtmlToMarkdown(html);
-    return { markdown, fileIds, title: fi.title ?? '', creator: fi.user ?? '', updatedTs: fi.updated ?? 0 };
+    // The converter emits mentions in native Slack syntax; resolve them to the
+    // `<@ID:Real Name>` / `#<ID:name>` form the rest of the system uses, so a
+    // canvas that tags a person or a channel reads as that person or channel
+    // rather than as an opaque id. Best-effort: a resolver failure (uninitialised
+    // client, rate limit, missing scope) must degrade to raw ids, never lose the
+    // whole canvas body.
+    let resolved = markdown;
+    try {
+      resolved = await cleanSlackText(markdown);
+    } catch (err) {
+      logger.warn('canvas-read', `Mention resolution failed for canvas ${fileId}, keeping raw ids: ${err}`);
+    }
+    return { markdown: resolved, fileIds, title: fi.title ?? '', creator: fi.user ?? '', updatedTs: fi.updated ?? 0 };
   } catch (err) {
     logger.warn('canvas-read', `Failed to read canvas ${fileId}: ${err}`);
     return null;
