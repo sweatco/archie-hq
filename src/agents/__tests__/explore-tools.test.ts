@@ -46,6 +46,16 @@ vi.mock('../../connectors/slack/client.js', async (importActual) => {
   return { ...actual, postSlackMessage, listBotChannels, assertPostableChannel };
 });
 
+const { ensureChannelCanvas, buildOtherChannelContextSection } = vi.hoisted(() => ({
+  ensureChannelCanvas: vi.fn(),
+  buildOtherChannelContextSection: vi.fn(),
+}));
+vi.mock('../../connectors/slack/channel-canvas.js', () => ({
+  ensureChannelCanvas,
+  buildOtherChannelContextSection,
+  collectCanvasFileAllowlist: vi.fn().mockResolvedValue(new Set()),
+}));
+
 import { createCommsMcpServer } from '../tools.js';
 import { DmPostError } from '../../connectors/slack/client.js';
 import type { Agent } from '../agent.js';
@@ -96,6 +106,10 @@ describe('post_to_channel handler', () => {
     assertPostableChannel.mockResolvedValue(undefined); // default: target is a postable channel
     isThreadMuted.mockReset();
     isThreadMuted.mockResolvedValue(false); // default: no other task has muted the target thread
+    ensureChannelCanvas.mockReset();
+    ensureChannelCanvas.mockResolvedValue(undefined);
+    buildOtherChannelContextSection.mockReset();
+    buildOtherChannelContextSection.mockResolvedValue(''); // default: destination has no canvas
   });
 
   it('posts a new top-level message and reports the ts, not linked to the task', async () => {
@@ -295,5 +309,81 @@ describe('list_channels handler — public channels + this task\'s own channel',
     listBotChannels.mockResolvedValue([]);
     const out = await textOf(await getHandler('list_channels', makeTask())({}));
     expect(out).toMatch(/invite/i);
+  });
+});
+
+// The destination channel's standing brief governs what gets said there, and the
+// agent arrives carrying only its own channel's context.
+describe('post_to_channel — destination brief preflight', () => {
+  const MANDATE = 'Sergei: "can you flag this in that channel"';
+  const BRIEF = '<other_channel_context channel="#incidents" id="C123">rules</other_channel_context>';
+
+  beforeEach(() => {
+    postSlackMessage.mockReset();
+    assertPostableChannel.mockReset();
+    assertPostableChannel.mockResolvedValue(undefined);
+    isThreadMuted.mockReset();
+    isThreadMuted.mockResolvedValue(false);
+    ensureChannelCanvas.mockReset();
+    ensureChannelCanvas.mockResolvedValue(undefined);
+    buildOtherChannelContextSection.mockReset();
+    buildOtherChannelContextSection.mockResolvedValue('');
+  });
+
+  it('returns the brief instead of posting on the first attempt, then posts on the retry', async () => {
+    buildOtherChannelContextSection.mockResolvedValue(BRIEF);
+    postSlackMessage.mockResolvedValue('1716998400.123456');
+    const post = getHandler('post_to_channel');
+
+    const first = await textOf(await post({ channel: 'C123', message: 'heads up', mandate: MANDATE }));
+    expect(postSlackMessage).not.toHaveBeenCalled();
+    expect(first).toContain(BRIEF);
+    expect(first).toMatch(/not posted yet/i);
+
+    const second = await textOf(await post({ channel: 'C123', message: 'heads up', mandate: MANDATE }));
+    expect(postSlackMessage).toHaveBeenCalledWith({ channel: 'C123', text: 'heads up', threadTs: undefined });
+    expect(second).toContain('1716998400.123456');
+  });
+
+  // The common case must stay a single round-trip.
+  it('posts immediately when the destination has no canvas', async () => {
+    postSlackMessage.mockResolvedValue('1716998400.123456');
+    const post = getHandler('post_to_channel');
+
+    const out = await textOf(await post({ channel: 'C123', message: 'heads up', mandate: MANDATE }));
+
+    expect(postSlackMessage).toHaveBeenCalledTimes(1);
+    expect(out).toContain('1716998400.123456');
+  });
+
+  // A reply is still speaking into that channel, so the brief applies.
+  it('applies to thread replies', async () => {
+    buildOtherChannelContextSection.mockResolvedValue(BRIEF);
+    const post = getHandler('post_to_channel');
+
+    const out = await textOf(await post({ channel: 'C123', message: 'hi', mandate: MANDATE, thread_ts: '1.0' }));
+
+    expect(postSlackMessage).not.toHaveBeenCalled();
+    expect(out).toContain(BRIEF);
+  });
+
+  // A refused post must not scan: the scan announces canvas adoption in the
+  // destination, and nothing is being posted there.
+  it('does not scan the destination when the mandate is rejected', async () => {
+    const post = getHandler('post_to_channel');
+
+    await post({ channel: 'C123', message: 'hi', mandate: 'yes' });
+
+    expect(ensureChannelCanvas).not.toHaveBeenCalled();
+    expect(postSlackMessage).not.toHaveBeenCalled();
+  });
+
+  it('does not scan a muted destination', async () => {
+    const post = getHandler('post_to_channel', makeTask('C123', { muted: true }));
+
+    await post({ channel: 'C123', message: 'hi', mandate: MANDATE });
+
+    expect(ensureChannelCanvas).not.toHaveBeenCalled();
+    expect(postSlackMessage).not.toHaveBeenCalled();
   });
 });
