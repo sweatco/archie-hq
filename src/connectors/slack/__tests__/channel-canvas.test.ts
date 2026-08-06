@@ -187,6 +187,38 @@ describe('buildChannelCanvasPromptSection — containment', () => {
     expect(section.trimEnd().endsWith('</canvas>\n</channel_project_context>')).toBe(true);
   });
 
+  // A single canvas pinned as a tab in several channels is the intended way to keep
+  // one team-wide brief. Each channel's store adopts it independently, so a task
+  // linked to threads in both would otherwise get the same brief twice.
+  it('injects a canvas shared across channels only once', async () => {
+    const shared = { ...adoptedEntry('F_SHARED'), title: 'Archie — team' };
+    storesByChannel['C1'] = { canvases: [shared], announced: {}, checkedAt: 0 };
+    storesByChannel['C2'] = { canvases: [shared], announced: {}, checkedAt: 0 };
+
+    const section = await buildChannelCanvasPromptSection({
+      channels: {
+        a: { type: 'slack', channel_id: 'C1' },
+        b: { type: 'slack', channel_id: 'C2' },
+      },
+    } as unknown as TaskMetadata);
+
+    expect(section.match(/<canvas /g)).toHaveLength(1);
+  });
+
+  it('still injects distinct canvases from different channels', async () => {
+    storesByChannel['C1'] = { canvases: [{ ...adoptedEntry('F1'), title: 'Archie — one' }], announced: {}, checkedAt: 0 };
+    storesByChannel['C2'] = { canvases: [{ ...adoptedEntry('F2'), title: 'Archie — two' }], announced: {}, checkedAt: 0 };
+
+    const section = await buildChannelCanvasPromptSection({
+      channels: {
+        a: { type: 'slack', channel_id: 'C1' },
+        b: { type: 'slack', channel_id: 'C2' },
+      },
+    } as unknown as TaskMetadata);
+
+    expect(section.match(/<canvas /g)).toHaveLength(2);
+  });
+
   it('keeps the canvas title quoted and escaped in the attribute', async () => {
     const entry = { ...adoptedEntry('F1'), title: 'Archie "quoted" > brief' };
     storesByChannel['C1'] = { canvases: [entry], announced: {}, checkedAt: 0 };

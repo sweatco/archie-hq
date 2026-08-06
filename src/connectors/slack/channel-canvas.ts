@@ -258,11 +258,17 @@ export async function buildChannelCanvasPromptSection(metadata: TaskMetadata): P
   if (channelIds.size === 0) return '';
 
   const blocks: string[] = [];
+  // One canvas can be pinned as a tab in several channels — the intended way to
+  // keep a single team-wide brief — and a task can be linked to threads in more
+  // than one of them. Each channel's store adopts it independently, so dedupe by
+  // file id or the same brief is injected twice.
+  const seen = new Set<string>();
   for (const channelId of channelIds) {
     const store = await loadChannelStore(channelId);
     if (!store) continue;
     for (const c of store.canvases) {
-      if (c.external || !c.markdown) continue;
+      if (c.external || !c.markdown || seen.has(c.file_id)) continue;
+      seen.add(c.file_id);
       // JSON.stringify gives a safely-quoted/escaped attribute value.
       blocks.push(`<canvas title=${JSON.stringify(c.title)}>\n${stripContainerTags(c.markdown)}\n</canvas>`);
     }
