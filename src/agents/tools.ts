@@ -41,7 +41,11 @@ import {
   fetchChannelIsPrivate,
 } from '../connectors/slack/client.js';
 import { readCanvas } from '../connectors/slack/canvas-read.js';
-import { collectCanvasFileAllowlist } from '../connectors/slack/channel-canvas.js';
+import {
+  collectCanvasFileAllowlist,
+  ensureChannelCanvas,
+  buildOtherChannelContextSection,
+} from '../connectors/slack/channel-canvas.js';
 import { isDmOrUserId, findMutedTarget } from '../connectors/slack/channel-ids.js';
 import {
   formatSlackSendError,
@@ -1087,6 +1091,29 @@ function createPostToChannelTool(_agent: Agent, task: Task) {
         // The prefix check above rejects 1:1 DMs/user ids; this rejects group DMs
         // (mpims), which share the ambiguous `G…` prefix with private channels.
         await assertPostableChannel(args.channel);
+
+        // Preflight: a channel's standing brief governs what gets said in it, and
+        // this agent has never seen the destination's — its own context is for the
+        // channel this task lives in. So the first post into a channel that has an
+        // `Archie…` canvas returns that brief instead of posting, and the retry goes
+        // through. Runs AFTER the mandate/mute/postable checks so a refused post
+        // never triggers a scan (which would announce canvas adoption in a channel
+        // nothing is then posted to), and applies to thread replies too — a reply is
+        // still speaking into that channel.
+        //
+        // No canvas there means no extra round-trip: the common case is untouched.
+        if (!_agent.briefedChannels?.has(args.channel)) {
+          await ensureChannelCanvas(args.channel);
+          const name = await getChannelInfo(args.channel).then((c) => c.name).catch(() => undefined);
+          const brief = await buildOtherChannelContextSection(args.channel, name);
+          (_agent.briefedChannels ??= new Set()).add(args.channel);
+          if (brief) {
+            return ok(
+              `Not posted yet — that channel has a standing brief you have not read. It is below; ` +
+              `check your message against it, then call post_to_channel again to send (same mandate).\n\n${brief}`,
+            );
+          }
+        }
         const ts = await postSlackMessage({ channel: args.channel, text: args.message, threadTs: args.thread_ts });
         // Record the claimed mandate in the knowledge log: outreach lands in
         // front of people outside this task, so the reason it happened has to be
