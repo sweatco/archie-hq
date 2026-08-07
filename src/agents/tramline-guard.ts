@@ -472,38 +472,6 @@ export function mergeTargets(
   return merged;
 }
 
-// ---- Approver authorization --------------------------------------------------
-
-/**
- * Slack user ids allowed to approve a Tramline action, from
- * `ARCHIE_RELEASE_APPROVERS` (comma-separated).
- *
- * Unset means nobody can approve, and in that case the guard refuses a gated
- * call outright rather than posting a prompt — see `createTramlineGuardHooks`.
- * Posting an unresolvable button *and* parking the task would leave a dead
- * thread and be strictly worse than the read-only status quo, which is the
- * opposite of what an unconfigured deployment should do.
- *
- * Note the existing edit-mode and merge gates do *not* check the clicker at all
- * — this one does, because these buttons move a live release.
- */
-export function releaseApprovers(env: NodeJS.ProcessEnv = process.env): Set<string> {
-  return new Set(
-    (env.ARCHIE_RELEASE_APPROVERS ?? '')
-      .split(',')
-      .map((id) => id.trim())
-      .filter(Boolean),
-  );
-}
-
-export function canApproveReleaseAction(
-  userId: string | undefined,
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  if (!userId) return false;
-  return releaseApprovers(env).has(userId);
-}
-
 // ---- Hook wiring -------------------------------------------------------------
 
 function deny(reason: string): HookJSONOutput {
@@ -609,18 +577,6 @@ async function decideTramlineCall(
   if (port.consumeApproval(digest)) {
     logger.system(`Tramline action ${action} approved (${digest}) — proceeding`);
     return proceed();
-  }
-
-  // No approver configured: refuse instead of posting a button nobody can
-  // press and parking the task on it. An unconfigured deployment must be no
-  // worse than the read-only status quo, not worse than it.
-  const approvers = releaseApprovers();
-  if (approvers.size === 0) {
-    return deny(
-      `\`${action}\` needs human approval, but no release approvers are configured on this Archie deployment ` +
-      `(ARCHIE_RELEASE_APPROVERS is unset), so nobody could resolve the request. Nothing was posted. ` +
-      `Report what you would have done and let a human act in Tramline (https://tramline.sweatco.team).`,
-    );
   }
 
   const targets = port.getTargets();

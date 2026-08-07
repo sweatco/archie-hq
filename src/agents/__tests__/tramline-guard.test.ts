@@ -9,8 +9,6 @@ import {
   isRenderFailure,
   indexTargets,
   mergeTargets,
-  canApproveReleaseAction,
-  releaseApprovers,
   extractPayload,
   targetRefsIn,
   createTramlineGuardHooks,
@@ -75,8 +73,6 @@ function rendered(toolName: string, input: unknown, targets = INDEX): RenderedAc
   if (isRenderFailure(result)) throw new Error(`expected a rendered action, got ${result}`);
   return result;
 }
-
-const APPROVERS = { ARCHIE_RELEASE_APPROVERS: 'U1,U2' };
 
 describe('classifyTramlineTool', () => {
   it('ignores tools from other MCP servers', () => {
@@ -318,24 +314,6 @@ describe('renderAction', () => {
   });
 });
 
-describe('releaseApprovers / canApproveReleaseAction', () => {
-  it('parses and trims the allowlist', () => {
-    expect([...releaseApprovers({ ARCHIE_RELEASE_APPROVERS: 'U1, U2 ,U3' })]).toEqual(['U1', 'U2', 'U3']);
-  });
-
-  it('authorizes nobody when the allowlist is unset or empty', () => {
-    expect(canApproveReleaseAction('U1', {})).toBe(false);
-    expect(canApproveReleaseAction('U1', { ARCHIE_RELEASE_APPROVERS: '' })).toBe(false);
-    expect(canApproveReleaseAction('U1', { ARCHIE_RELEASE_APPROVERS: '  ,  ' })).toBe(false);
-  });
-
-  it('authorizes only listed users', () => {
-    expect(canApproveReleaseAction('U1', APPROVERS)).toBe(true);
-    expect(canApproveReleaseAction('U9', APPROVERS)).toBe(false);
-    expect(canApproveReleaseAction(undefined, APPROVERS)).toBe(false);
-  });
-});
-
 describe('extractPayload', () => {
   const body = JSON.stringify({ release: { id: 'x' } });
 
@@ -383,56 +361,31 @@ describe('createTramlineGuardHooks', () => {
     const requestApproval = vi.fn(
       async (_r: { digest: string; tool: string; summary: string; target?: string }) => 'posted' as const,
     );
-    vi.stubEnv('ARCHIE_RELEASE_APPROVERS', 'U1');
-    try {
-      const result = await runGuard(fakePort({ requestApproval }), tool('fully_release_rollout'), { id: ANDROID_ROLLOUT });
-      expect(isDeny(result)).toBe(true);
-      expect(denialReason(result)).toContain('needs human approval');
-      expect(requestApproval).toHaveBeenCalledTimes(1);
-      // The consequence, not the method name, is what the human reads — and the
-      // label carries the state (stage, percentages) they decide from.
-      expect(requestApproval.mock.calls[0][0].summary).toContain('100% of users');
-      expect(requestApproval.mock.calls[0][0].summary).toContain('irreversible');
-      expect(requestApproval.mock.calls[0][0].target).toContain('stage 1/7');
-    } finally {
-      vi.unstubAllEnvs();
-    }
+    const result = await runGuard(fakePort({ requestApproval }), tool('fully_release_rollout'), { id: ANDROID_ROLLOUT });
+    expect(isDeny(result)).toBe(true);
+    expect(denialReason(result)).toContain('needs human approval');
+    expect(requestApproval).toHaveBeenCalledTimes(1);
+    // The consequence, not the method name, is what the human reads — and the
+    // label carries the state (stage, percentages) they decide from.
+    expect(requestApproval.mock.calls[0][0].summary).toContain('100% of users');
+    expect(requestApproval.mock.calls[0][0].summary).toContain('irreversible');
+    expect(requestApproval.mock.calls[0][0].target).toContain('stage 1/7');
   });
 
   it('requests approval for a gated action and denies this attempt', async () => {
     const requestApproval = vi.fn(
       async (_r: { digest: string; tool: string; summary: string; target?: string }) => 'posted' as const,
     );
-    vi.stubEnv('ARCHIE_RELEASE_APPROVERS', 'U1');
-    try {
-      const result = await runGuard(fakePort({ requestApproval }), tool('retry_workflow_run'), { id: IOS_WORKFLOW_RUN });
+    const result = await runGuard(fakePort({ requestApproval }), tool('retry_workflow_run'), { id: IOS_WORKFLOW_RUN });
 
-      expect(isDeny(result)).toBe(true);
-      expect(denialReason(result)).toContain('needs human approval');
-      expect(requestApproval).toHaveBeenCalledTimes(1);
-      const request = requestApproval.mock.calls[0][0];
-      expect(request.tool).toBe('retry_workflow_run');
-      expect(request.digest).toBe(actionDigest(tool('retry_workflow_run'), { id: IOS_WORKFLOW_RUN }));
-      // The approver must be able to see WHICH platform they are re-running.
-      expect(request.target).toContain('IOS');
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
-
-  // Posting a button nobody can press AND parking the task would be worse than
-  // the read-only status quo, not equal to it.
-  it('refuses without posting or parking when no approvers are configured', async () => {
-    const requestApproval = vi.fn(async () => 'posted' as const);
-    vi.stubEnv('ARCHIE_RELEASE_APPROVERS', '');
-    try {
-      const result = await runGuard(fakePort({ requestApproval }), tool('retry_workflow_run'), { id: IOS_WORKFLOW_RUN });
-      expect(isDeny(result)).toBe(true);
-      expect(denialReason(result)).toContain('no release approvers are configured');
-      expect(requestApproval).not.toHaveBeenCalled();
-    } finally {
-      vi.unstubAllEnvs();
-    }
+    expect(isDeny(result)).toBe(true);
+    expect(denialReason(result)).toContain('needs human approval');
+    expect(requestApproval).toHaveBeenCalledTimes(1);
+    const request = requestApproval.mock.calls[0][0];
+    expect(request.tool).toBe('retry_workflow_run');
+    expect(request.digest).toBe(actionDigest(tool('retry_workflow_run'), { id: IOS_WORKFLOW_RUN }));
+    // The approver must be able to see WHICH platform they are re-running.
+    expect(request.target).toContain('IOS');
   });
 
   it('proceeds once an approval for that exact call is spendable', async () => {
@@ -451,35 +404,25 @@ describe('createTramlineGuardHooks', () => {
 
   it('denies with an actionable message when the target was never read', async () => {
     const requestApproval = vi.fn(async () => 'posted' as const);
-    vi.stubEnv('ARCHIE_RELEASE_APPROVERS', 'U1'); // the unconfigured check fires first, deliberately
-    try {
-      const result = await runGuard(
-        fakePort({ requestApproval, getTargets: () => ({}) }),
-        tool('retry_submission'),
-        { id: ANDROID_SUBMISSION },
-      );
+    const result = await runGuard(
+      fakePort({ requestApproval, getTargets: () => ({}) }),
+      tool('retry_submission'),
+      { id: ANDROID_SUBMISSION },
+    );
 
-      expect(isDeny(result)).toBe(true);
-      expect(denialReason(result)).toContain('get_release');
-      expect(requestApproval).not.toHaveBeenCalled();
-    } finally {
-      vi.unstubAllEnvs();
-    }
+    expect(isDeny(result)).toBe(true);
+    expect(denialReason(result)).toContain('get_release');
+    expect(requestApproval).not.toHaveBeenCalled();
   });
 
   it('refuses a second gated action while one is pending', async () => {
-    vi.stubEnv('ARCHIE_RELEASE_APPROVERS', 'U1');
-    try {
-      const result = await runGuard(
-        fakePort({ requestApproval: async () => 'already-pending' }),
-        tool('retry_submission'),
-        { id: ANDROID_SUBMISSION },
-      );
-      expect(isDeny(result)).toBe(true);
-      expect(denialReason(result)).toContain('already waiting for approval');
-    } finally {
-      vi.unstubAllEnvs();
-    }
+    const result = await runGuard(
+      fakePort({ requestApproval: async () => 'already-pending' }),
+      tool('retry_submission'),
+      { id: ANDROID_SUBMISSION },
+    );
+    expect(isDeny(result)).toBe(true);
+    expect(denialReason(result)).toContain('already waiting for approval');
   });
 });
 
@@ -567,29 +510,19 @@ describe('the guard fails closed', () => {
   it('denies instead of throwing when an argument overflows the canonicalizer', async () => {
     let deep: unknown = 'leaf';
     for (let i = 0; i < 60_000; i++) deep = [deep];
-    vi.stubEnv('ARCHIE_RELEASE_APPROVERS', 'U1');
-    try {
-      const result = await runGuard(fakePort(), tool('retry_submission'), { id: ANDROID_SUBMISSION, junk: deep });
-      expect(isDeny(result)).toBe(true);
-      expect(denialReason(result)).toContain('errored while evaluating');
-    } finally {
-      vi.unstubAllEnvs();
-    }
+    const result = await runGuard(fakePort(), tool('retry_submission'), { id: ANDROID_SUBMISSION, junk: deep });
+    expect(isDeny(result)).toBe(true);
+    expect(denialReason(result)).toContain('errored while evaluating');
   });
 
   it('denies when the port throws', async () => {
-    vi.stubEnv('ARCHIE_RELEASE_APPROVERS', 'U1');
-    try {
-      const result = await runGuard(
-        fakePort({ requestApproval: async () => { throw new Error('slack down'); } }),
-        tool('retry_submission'),
-        { id: ANDROID_SUBMISSION },
-      );
-      expect(isDeny(result)).toBe(true);
-      expect(denialReason(result)).toContain('slack down');
-    } finally {
-      vi.unstubAllEnvs();
-    }
+    const result = await runGuard(
+      fakePort({ requestApproval: async () => { throw new Error('slack down'); } }),
+      tool('retry_submission'),
+      { id: ANDROID_SUBMISSION },
+    );
+    expect(isDeny(result)).toBe(true);
+    expect(denialReason(result)).toContain('slack down');
   });
 
   it('still lets a non-tramline tool through', async () => {

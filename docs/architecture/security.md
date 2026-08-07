@@ -192,7 +192,7 @@ Tramline's API scopes are binary (`read`/`write`), so a key that can retry a sto
 3. The task pauses; on approval a single-use permission bound to `sha256(action + arguments)` is stored
 4. The agent's retry of that exact call spends the permission once
 
-There are no tiers and no exempt writes: reads pass, every mutation is gated, and a mutation with no registered consequence description (or an unlabelled target) is refused rather than rendered. Unlike the other gates, the *clicker* is authorized against `ARCHIE_RELEASE_APPROVERS`, and an empty allowlist refuses gated calls outright instead of posting an unresolvable prompt.
+There are no tiers and no exempt writes: reads pass, every mutation is gated, and a mutation with no registered consequence description (or an unlabelled target) is refused rather than rendered. Resolution follows the same trust model as the other gates — any workspace member may click, identity is recorded for the audit trail — and the button is kept meaningful by what it says (rendered consequence + live target state) and by single-use digest binding.
 
 **Source:** `src/agents/tramline-guard.ts`, `src/tasks/task.ts`, `src/connectors/slack/events.ts` (`registerTramlineActionHandlers`) — see [Tramline Actions](tramline-actions.md)
 

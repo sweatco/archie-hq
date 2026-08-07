@@ -45,8 +45,8 @@ agent calls mcp__tramline__retry_submission { id: "4f3a…" }
   │    ├─ post Approve/Deny to Slack, write pending_tramline_action, park the task
   │    └─ deny this attempt: "needs human approval, you'll be reactivated"
   │
-  ├─ a release approver clicks Approve
-  │    ├─ clicker checked against ARCHIE_RELEASE_APPROVERS
+  ├─ a human clicks Approve
+  │    ├─ any workspace member clicks (same trust model as edit mode / merge)
   │    ├─ digest verified against the pending slot (mismatch → stale no-op)
   │    ├─ approval stored in approved_tramline_actions (one-shot, 10 min TTL)
   │    └─ PM reactivated
@@ -89,13 +89,7 @@ There is no supersede path for a *live* request — superseding would let an age
 
 ## Who may approve
 
-`ARCHIE_RELEASE_APPROVERS` — comma-separated Slack user ids.
-
-**Unset means nobody can approve — and the guard refuses a gated call outright rather than posting one.** Posting a button nobody can press *and* parking the task on it would leave a dead thread and be strictly worse than the read-only status quo. With the variable unset the agent reads, reports what it would have done, and humans act, which is what it did before this feature.
-
-This gate is the only one that authorizes the clicker. `approve_edit_mode` and `approve_merge` accept a click from anyone who can see the message (they resolve the user's identity only for attribution, and skip external users solely to keep their name out of git history). These buttons move a live release, so the click itself is checked. An unauthorized click leaves the prompt live and explains itself ephemerally — a misdirected click is not an incident worth broadcasting.
-
-External/guest users are refused outright.
+Anyone in the workspace — deliberately the same trust model as the edit-mode and merge gates, which also accept a click from any member who can see the prompt. The clicker's identity is resolved for the audit trail (the Slack message updates to "approved by @user" and the finding records the name); an external/guest clicker still resolves the prompt with their identity omitted, mirroring the other gates. What keeps the button meaningful is not who may press it but what it says: the rendered consequence and the target's live state, plus single-use digest binding so one click is one action.
 
 ## Attribution
 
@@ -109,18 +103,18 @@ Two records, deliberately in different places.
 
 | Variable | Purpose |
 | --- | --- |
-| `ARCHIE_RELEASE_APPROVERS` | Slack user ids allowed to resolve these prompts. Unset → nobody. |
 | `MCP_TRAMLINE_API_KEY` | Must carry Tramline's **`write`** scope, or every approved retry 403s. Was read-only before this feature. |
 | `MCP_TRAMLINE_API_URL` | Unchanged. |
 
 ## Slack is the only approver surface
 
-Deliberately, there is **no CLI/HTTP resolution path** for these approvals — `POST /tasks/:id/approve` rejects `type: 'tramline_action'` as unknown. The engine's `/api` router is unauthenticated and its SSE stream publishes each approval's digest, so an HTTP path would have let anyone who can reach the port resolve a release action, bypassing the approver allowlist. Every other gate accepts that trade for dev convenience; this one moves a live release, so it does not. In a CLI-only dev session a gated action therefore parks until someone resolves it from Slack.
+Deliberately, there is **no CLI/HTTP resolution path** for these approvals — `POST /tasks/:id/approve` rejects `type: 'tramline_action'` as unknown. The engine's `/api` router is unauthenticated and its SSE stream publishes each approval's digest; a Slack click at least carries a workspace identity for the audit trail, an anonymous HTTP call does not. Every other gate accepts that trade for dev convenience; this one moves a live release, so it does not. In a CLI-only dev session a gated action therefore parks until someone resolves it from Slack.
 
 ## Drift to watch
 
 - **Classification vs. tool descriptions.** `tramline-mcp`'s action tools carry a `[Mutation — human approval required for agents]` marker so a caller sees the rule without knowing this gate exists. The correspondence to watch is simpler than it used to be (one rule, not a tier mapping), but it still spans two repositories: a new tool added to the MCP must be a GET or carry the marker (its smoke test enforces that), and must land in this guard's `READ_ACTIONS` *only* if it is genuinely a read — everything else is gated automatically, and refused until `ACTION_DESCRIPTIONS` gains its consequence sentence.
 - **`PreToolUse` firing for MCP tools.** The whole gate rests on the SDK delivering `mcp__*` calls to `PreToolUse` hooks, and on the *shape* of `tool_input`/`tool_response` for those calls. This is version-coupled to the Claude CLI, exactly like the egress allowlist (see [Security → Sandbox Bypass Prevention](security.md)), and the repo's answer to that class of risk is a live tripwire (`tools/e2e/egress-check.ts`), not unit tests. This gate does not have one yet — that is the largest outstanding gap. Treat an SDK bump as security-relevant and re-verify that a gated call is actually intercepted. Note the repo disagrees with itself about the response shape (`createResearchPostToolHook` assumes a bare array, this module assumed an envelope), so `extractPayload` now accepts every plausible shape rather than betting on one.
+- **The `/api` router is unauthenticated**, which is why `POST /tasks/:id/approve` rejects `type: 'tramline_action'`: a Slack click at least carries a workspace identity for the audit trail, an anonymous HTTP call does not. Other approval types accept that trade for dev convenience; this one moves a live release.
 - **The server key is a hardcoded guess.** `TOOL_PREFIX` is `mcp__tramline__`, but the server name lives in `archie-plugins/.mcp.json` — a different repo, which hot-reloads. Rename it there and the gate silently no-ops.
 - **Plugins hot-reload; the engine does not.** `Task.get` → `syncPlugins()` does `git reset --hard origin/main` on every task load, so a plugins change goes live within minutes, while this gate ships in a deployed image. The safe order is therefore: **(0) merge and deploy `sweatco/tramline#139` to the Tramline instance** (without it, `end_soak`/`extend_soak` 422 on the API path and every approved action stamps as "Tramline" instead of the key's name), **(1) deploy this engine, (2) verify live that a gated call produces a button and no HTTP reaches Tramline, (3) merge the plugins change, (4) switch the key to `write` scope last.** Merging the engine PR first is not the load-bearing step — deploying it is.
 - **The two `sync_*` traps.** `sync_release_commits` and `sync_release_pull_requests` read like refreshes. The first fans out into Tramline's `ProcessCommits`, which pushes a version-bump commit, may apply the build queue, and opens backmerge PRs; the second can finalize a release outright. Both are gated, and their MCP descriptions were rewritten to say so. If they ever get reclassified, that is a mistake.

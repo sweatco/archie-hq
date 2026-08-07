@@ -28,7 +28,6 @@ import {
   cleanSlackText,
 } from './client.js';
 import { ensureChannelCanvas } from './channel-canvas.js';
-import { canApproveReleaseAction } from '../../agents/tramline-guard.js';
 import { shouldCreateNewTask, shouldForwardMessageEvent, isAckableEvent } from './task-routing.js';
 import { Task } from '../../tasks/task.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
@@ -529,62 +528,32 @@ function parseTramlineButtonValue(value: string): { taskId: string; digest: stri
 const STALE_TRAMLINE_PROMPT_TEXT =
   '⚠️ This Tramline action prompt is stale — the pending request changed, expired, or was already resolved. ' +
   'Nothing ran, and the task was not resumed — ping the thread if it is still needed.';
-
 /**
  * Register the Tramline release-action approve/deny button handlers.
  *
- * Follows the merge pair's shape (Task method first, message update driven by
- * its disposition) with one addition the other gates don't have: **the clicker
- * is authorized**. Edit mode and merge accept a click from anyone who can see
- * the message; these buttons move a live release, so the click has to come from
- * `ARCHIE_RELEASE_APPROVERS`. An unauthorized click leaves the prompt live and
- * explains itself ephemerally — it is a misdirected click, not an incident, and
- * broadcasting it to the channel adds nothing.
+ * Same shape and same trust model as the merge pair: any workspace member who
+ * can see the prompt may resolve it — identity is resolved for the audit
+ * finding only, and an external/guest clicker still resolves with their
+ * identity omitted, mirroring edit mode and merge. The Task method's atomic
+ * read-compare-clear on the digest is the single verification point.
  *
  * Exported for tests, which pass a fake Bolt app recording `.action`
  * registrations; production registration happens in mountSlackApp.
  */
 export function registerTramlineActionHandlers(boltApp: Pick<AppType, 'action'>): void {
-  /** Shared gate: resolve + authorize the clicker. Returns undefined to abort. */
-  const authorize = async (
-    body: { user?: { id?: string }; channel?: { id?: string }; message?: { ts?: string } },
-    verb: string,
-  ): Promise<{ id: string; name: string } | undefined> => {
-    const userId = body.user?.id;
-    if (!canApproveReleaseAction(userId)) {
-      logger.warn(
-        'Server',
-        `Tramline action ${verb} refused: ${userId ?? 'unknown user'} is not in ARCHIE_RELEASE_APPROVERS`,
-      );
-      if (body.channel?.id && userId) {
-        await postEphemeral(
-          body.channel.id,
-          userId,
-          'Only the release approvers can approve Tramline actions. Ask a release manager to resolve this one.',
-          body.message?.ts,
-        );
-      }
-      return undefined;
-    }
-    // Identity is for the audit finding only — resolution does not depend on it.
+  /** Resolve the clicker for attribution; never blocks resolution. */
+  const resolveApprover = async (userId: string | undefined): Promise<{ id: string; name: string } | undefined> => {
+    if (!userId) return undefined;
     try {
-      const info = await getUserInfo(userId!);
+      const info = await getUserInfo(userId);
       if (isExternalUser(info)) {
-        logger.warn('Server', `Tramline action ${verb} refused: approver ${userId} is external/guest`);
-        if (body.channel?.id) {
-          await postEphemeral(
-            body.channel.id,
-            userId!,
-            'External accounts cannot resolve Tramline actions. A release approver from the workspace has to click this one.',
-            body.message?.ts,
-          );
-        }
+        logger.system(`Tramline action approver ${userId} is external/guest — identity omitted from the finding`);
         return undefined;
       }
-      return { id: userId!, name: info.realName };
+      return { id: userId, name: info.realName };
     } catch (error) {
       logger.warn('Slack', `Failed to resolve Tramline approver ${userId}`, error);
-      return { id: userId!, name: userId! };
+      return { id: userId, name: userId };
     }
   };
 
@@ -593,18 +562,17 @@ export function registerTramlineActionHandlers(boltApp: Pick<AppType, 'action'>)
     await ack();
 
     const { taskId, digest } = parseTramlineButtonValue(String(action.value ?? ''));
-    const approver = await authorize(body, 'approval');
-    if (!approver) return;
-
-    logger.server(`Tramline action approved by ${approver.id} for task ${taskId} (${digest})`);
+    const userId = body.user?.id || 'unknown';
+    logger.server(`Tramline action approved by ${userId} for task ${taskId} (${digest})`);
 
     try {
+      const approver = await resolveApprover(userId !== 'unknown' ? userId : undefined);
       const task = await Task.get(taskId);
       const disposition = await task.handleTramlineActionApproval(approver, digest);
 
       if (body.channel?.id && body.message?.ts) {
         const text = disposition === 'resolved'
-          ? `✅ *Tramline action approved* by <@${approver.id}>`
+          ? `✅ *Tramline action approved* by <@${userId}>`
           : STALE_TRAMLINE_PROMPT_TEXT;
         await updateMessage(body.channel.id, body.message.ts, text, []);
       }
@@ -618,10 +586,8 @@ export function registerTramlineActionHandlers(boltApp: Pick<AppType, 'action'>)
     await ack();
 
     const { taskId, digest } = parseTramlineButtonValue(String(action.value ?? ''));
-    const denier = await authorize(body, 'denial');
-    if (!denier) return;
-
-    logger.server(`Tramline action denied by ${denier.id} for task ${taskId} (${digest})`);
+    const userId = body.user?.id || 'unknown';
+    logger.server(`Tramline action denied by ${userId} for task ${taskId} (${digest})`);
 
     try {
       const task = await Task.get(taskId);
@@ -629,7 +595,7 @@ export function registerTramlineActionHandlers(boltApp: Pick<AppType, 'action'>)
 
       if (body.channel?.id && body.message?.ts) {
         const text = disposition === 'resolved'
-          ? `❌ *Tramline action denied* by <@${denier.id}>`
+          ? `❌ *Tramline action denied* by <@${userId}>`
           : STALE_TRAMLINE_PROMPT_TEXT;
         await updateMessage(body.channel.id, body.message.ts, text, []);
       }

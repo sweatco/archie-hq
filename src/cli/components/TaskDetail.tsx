@@ -194,11 +194,12 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
             });
           } else if (event.data.approvalType === 'tramline_action') {
             // Slack buttons are deliberately the only approver surface for
-            // Tramline release actions (the /api route is unauthenticated and
-            // would bypass the approver allowlist), so render read-only rather
-            // than offer a [y]/[n] that can only 400.
+            // Tramline release actions (the /api route is unauthenticated —
+            // a Slack click at least carries a workspace identity for the
+            // audit trail), so render read-only rather than offer a [y]/[n]
+            // that can only 400.
             logLines.push({
-              node: <Text color="yellow" bold>⏳ {event.data.text as string}  (resolve in Slack — release approvers only)</Text>,
+              node: <Text color="yellow" bold>⏳ {event.data.text as string}  (resolve in Slack)</Text>,
             });
           } else {
             logLines.push({
