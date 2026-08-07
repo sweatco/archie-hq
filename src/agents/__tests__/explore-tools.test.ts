@@ -77,7 +77,7 @@ function makeTask(originChannelId?: string, opts: { muted?: boolean } = {}): Tas
   }
   return {
     taskId: 'task-1', metadata: { channels, default_channel },
-    touch: vi.fn(), debouncedSave: vi.fn(),
+    touch: vi.fn(), debouncedSave: vi.fn(), save: vi.fn().mockResolvedValue(undefined),
     // post_to_user / post_files_to_user route through the Task, not the Slack
     // client directly — stub them so the mute guard can be observed as "the
     // delivery call never happened".
@@ -357,6 +357,39 @@ describe('post_to_channel — destination brief preflight', () => {
   });
 
   // A reply is still speaking into that channel, so the brief applies.
+  // Once per task: after the brief has been shown, later posts to that channel go
+  // straight through. Tracked in task metadata, so it survives the task being
+  // rebuilt from disk between requests.
+  it('briefs a channel once per task, not once per re-activation', async () => {
+    buildOtherChannelContextSection.mockResolvedValue(BRIEF);
+    postSlackMessage.mockResolvedValue('1716998400.123456');
+    const task = makeTask();
+    const post = getHandler('post_to_channel', task);
+
+    await post({ channel: 'C123', message: 'a', mandate: MANDATE });   // briefed
+    await post({ channel: 'C123', message: 'b', mandate: MANDATE });   // posts
+    ensureChannelCanvas.mockClear();
+    buildOtherChannelContextSection.mockClear();
+    const third = await textOf(await post({ channel: 'C123', message: 'c', mandate: MANDATE }));
+
+    expect(third).not.toMatch(/not posted yet/i);
+    expect(ensureChannelCanvas).not.toHaveBeenCalled();
+    expect((task.metadata as { briefed_channels?: string[] }).briefed_channels).toEqual(['C123']);
+  });
+
+  // A different destination is a different brief.
+  it('still briefs a second, different channel', async () => {
+    buildOtherChannelContextSection.mockResolvedValue(BRIEF);
+    const task = makeTask();
+    const post = getHandler('post_to_channel', task);
+
+    await post({ channel: 'C123', message: 'a', mandate: MANDATE });
+    const other = await textOf(await post({ channel: 'C999', message: 'b', mandate: MANDATE }));
+
+    expect(other).toMatch(/not posted yet/i);
+    expect((task.metadata as { briefed_channels?: string[] }).briefed_channels).toEqual(['C123', 'C999']);
+  });
+
   it('applies to thread replies', async () => {
     buildOtherChannelContextSection.mockResolvedValue(BRIEF);
     const post = getHandler('post_to_channel');

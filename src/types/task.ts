@@ -298,6 +298,19 @@ export interface TaskMetadata {
    * `Task.get`. Absent on tasks that never spawned one.
    */
   dynamic_agents?: DynamicAgentSpec[];
+  /**
+   * Channel ids whose standing brief `post_to_channel`'s preflight has already
+   * shown on this task. The first attempt to post into a channel with an `Archie…`
+   * canvas returns that brief instead of posting; the retry goes through, and every
+   * later post to the same channel skips the preflight entirely.
+   *
+   * Lives in metadata, not on the Agent, because the Agent's lifetime is shorter
+   * than the task's: a settled task leaves the active registry, and the next
+   * message rebuilds `Task` from disk with a fresh Agent — which would show the
+   * same brief again on every re-activation (observed live before this was moved).
+   * Once per task means once per task, restarts included.
+   */
+  briefed_channels?: string[];
   status: TaskStatus;
   edit_allowed?: boolean;     // Has user approved edit mode for this task?
   max_mode?: boolean;         // Has user approved "max mode" (per-task model/effort upgrade) for this task?

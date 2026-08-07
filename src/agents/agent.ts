@@ -45,15 +45,6 @@ export class Agent {
    */
   editModeAtSpawn?: boolean;
 
-  /**
-   * Channel ids whose standing brief this agent has already been shown by
-   * `post_to_channel`'s preflight. The first attempt to post into a channel that
-   * has an `Archie…` canvas returns that brief instead of posting; the retry goes
-   * through. Tracked per agent rather than per task so the brief is surfaced once
-   * per agent that actually posts, and re-surfaced after a respawn (a fresh
-   * process has no memory of having read it).
-   */
-  briefedChannels?: Set<string>;
 
   /**
    * In-flight background task ids (SDK `task_started` → `task_notification`): a

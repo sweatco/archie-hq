@@ -1101,12 +1101,21 @@ function createPostToChannelTool(_agent: Agent, task: Task) {
         // nothing is then posted to), and applies to thread replies too — a reply is
         // still speaking into that channel.
         //
-        // No canvas there means no extra round-trip: the common case is untouched.
-        if (!_agent.briefedChannels?.has(args.channel)) {
+        // No canvas there means no extra round-trip: the common case is untouched,
+        // and once a channel has been briefed on this task it is never briefed
+        // again — tracked in task metadata rather than on the Agent, whose lifetime
+        // is shorter than the task's (a settled task is rebuilt from disk with a
+        // fresh Agent, which re-showed the same brief on every re-activation).
+        const briefed = (task.metadata.briefed_channels ??= []);
+        if (!briefed.includes(args.channel)) {
           await ensureChannelCanvas(args.channel);
           const name = await getChannelInfo(args.channel).then((c) => c.name).catch(() => undefined);
           const brief = await buildOtherChannelContextSection(args.channel, name);
-          (_agent.briefedChannels ??= new Set()).add(args.channel);
+          briefed.push(args.channel);
+          // Flushed, not debounced: this is the record that stops the same brief
+          // being shown twice, and the path that would show it again is the task
+          // being rebuilt from disk.
+          await task.save(true);
           if (brief) {
             return ok(
               `Not posted yet — that channel has a standing brief you have not read. It is below; ` +
