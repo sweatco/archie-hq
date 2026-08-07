@@ -45,6 +45,7 @@ export class Agent {
    */
   editModeAtSpawn?: boolean;
 
+
   /**
    * In-flight background task ids (SDK `task_started` → `task_notification`): a
    * backgrounded Bash wait, a subagent, etc. The agent's turn can END while one
