@@ -314,27 +314,6 @@ export function mountApiRoutes(app: Application): void {
         } else {
           await task.handleMaxModeDenial();
         }
-      } else if (type === 'tramline_action') {
-        // `ref` carries the digest of the exact (tool, arguments) call being
-        // resolved — echoed from the approval event, and verified against the
-        // pending slot inside the Task methods. Unlike the Slack buttons there
-        // is no approver allowlist here: reaching this route already means
-        // operator access to the engine's API.
-        if (typeof ref !== 'string' || !ref) {
-          res.status(400).json({ error: 'tramline_action approval requires ref (the action digest)' });
-          return;
-        }
-        const disposition = approve
-          ? await task.handleTramlineActionApproval(cleanApprover, ref)
-          : await task.handleTramlineActionDenial(ref);
-        if (disposition === 'stale') {
-          res.status(409).json({
-            ok: false,
-            stale: true,
-            error: `No pending Tramline action approval for ${ref}`,
-          });
-          return;
-        }
       } else {
         res.status(400).json({ error: `Unknown approval type: ${type}` });
         return;

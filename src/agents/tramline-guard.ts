@@ -75,17 +75,12 @@ const READ_ACTIONS = new Set([
 export type TramlineDisposition = 'not-tramline' | 'read' | 'gated';
 
 /**
- * Classify a tool call. `toolName` is the full MCP name.
- *
- * Deliberately two-valued for Tramline tools: reads pass, everything else is a
- * mutation and needs a human. No auto-allowed tier ("sounds like a read" turned
- * out to be false for every candidate — the sync/fetch tools reach code that
- * starts production releases and schedules rollouts), and no never-list (which
- * turned out not to be closed under effect: permitted tools reached forbidden
- * outcomes through Tramline's own cascades). One uniform rule has nothing to
- * launder: whatever the action does, a human reads the rendered label and
- * decides. Reads are allow-listed rather than derived, so a Tramline tool added
- * later defaults to gated instead of silently open.
+ * Classify a tool call. Deliberately two-valued for Tramline tools: reads pass,
+ * every mutation needs a human — no "safe write" tier (each candidate turned out
+ * to cascade into builds or rollouts) and no "forbidden even with approval" list
+ * (any name-based boundary was reachable through a differently-named tool). One
+ * uniform rule has nothing to launder. Reads are allow-listed, so a tool added
+ * to the MCP later defaults to gated.
  */
 export function classifyTramlineTool(toolName: string): TramlineDisposition {
   if (!toolName.startsWith(TOOL_PREFIX)) return 'not-tramline';
@@ -189,10 +184,6 @@ const ACTION_DESCRIPTIONS: Record<string, string> = {
 
 /** Something that looks like one of Tramline's record ids. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-export function looksLikeRecordId(value: unknown): value is string {
-  return typeof value === 'string' && UUID_RE.test(value);
-}
 
 /**
  * Pull the target references out of a call's arguments.
