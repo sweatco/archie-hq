@@ -1,0 +1,210 @@
+{
+  "release": {
+    "id": "e7500c8a-2c24-47f5-88f9-28219e1494c4",
+    "slug": "2026-08-03-thrumming-brook",
+    "status": "on_track",
+    "release_type": "release",
+    "branch_name": "branch",
+    "tag_name": null,
+    "version": "253.0.0",
+    "original_version": "1.2.0",
+    "is_automatic": false,
+    "release_pilot": {
+      "id": "4b20d36f-f31b-4d78-a6bc-d319364b8ed4",
+      "name": "Duane Gulgowski IV"
+    },
+    "scheduled_at": "2026-08-07 10:29:50 UTC",
+    "completed_at": null,
+    "stopped_at": null,
+    "created_at": "2026-08-07 10:29:50 UTC",
+    "hotfixed_from_release_id": null,
+    "platform_runs": [
+      {
+        "id": "59d65a36-4025-4edd-a30d-559fb8b6902b",
+        "platform": "android",
+        "status": "on_track",
+        "release_version": "253.0.0",
+        "code_name": "Moe Skeeto",
+        "in_store_resubmission": false,
+        "scheduled_at": "2026-08-07 10:29:50 UTC",
+        "completed_at": null,
+        "stopped_at": null,
+        "latest_internal_release": null,
+        "latest_beta_release": {
+          "id": "d4a39749-2c78-4f9a-b257-1f97993552a4",
+          "kind": "beta",
+          "status": "created",
+          "tester_notes": "Nothing new",
+          "created_at": "2026-08-07 10:29:53 UTC",
+          "build": null,
+          "store_submissions": []
+        },
+        "production_releases": [
+          {
+            "id": "d25caf8b-3f1f-4750-aaee-ca1d82cd5842",
+            "status": "active",
+            "tag_name": null,
+            "created_at": "2026-08-07 10:29:51 UTC",
+            "build": {
+              "id": "9ce7d31d-4937-4572-a814-020af244e618",
+              "version_name": "1.2.3",
+              "build_number": "21800",
+              "external_name": null,
+              "external_id": null,
+              "generated_at": "2026-08-07 10:29:51 UTC",
+              "size_in_bytes": null,
+              "commit_hash": "812e91bc8736494fa7bfef8211ebaf4e",
+              "workflow_run": {
+                "id": "226284f5-7cf7-4d1f-9959-5ef99e29fd68",
+                "kind": "release_candidate",
+                "status": "failed",
+                "external_number": 4822,
+                "external_url": null,
+                "artifacts_url": null,
+                "commit_hash": "812e91bc8736494fa7bfef8211ebaf4e",
+                "started_at": null,
+                "finished_at": null
+              }
+            },
+            "store_submission": {
+              "id": "553c41fb-4a7c-4cd8-bf2f-4e5c36ab2d6e",
+              "kind": "PlayStoreSubmission",
+              "status": "failed",
+              "store_status": null,
+              "store_link": null,
+              "failure_reason": null,
+              "sequence_number": 1,
+              "prepared_at": null,
+              "submitted_at": null,
+              "approved_at": null,
+              "rejected_at": null,
+              "created_at": "2026-08-07 10:29:52 UTC",
+              "build": {
+                "id": "fcce4cbe-e4c1-41f1-8324-94ed69452ad8",
+                "version_name": "1.2.3",
+                "build_number": "125"
+              },
+              "store_rollout": {
+                "id": "84c90c2d-2770-462a-8d54-02b1968c2d6f",
+                "kind": "PlayStoreRollout",
+                "status": "started",
+                "is_staged_rollout": true,
+                "automatic_rollout": false,
+                "automatic_rollout_next_update_at": null,
+                "stage": 1,
+                "stage_count": 7,
+                "stages": [
+                  1.0,
+                  2.0,
+                  5.0,
+                  10.0,
+                  20.0,
+                  50.0,
+                  100.0
+                ],
+                "current_percentage": 0.0,
+                "next_percentage": 1.0,
+                "completed_at": null,
+                "created_at": "2026-08-07 10:29:52 UTC"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": "59d65a36-4025-4edd-a30d-559fb8b690ff",
+        "platform": "ios",
+        "status": "on_track",
+        "release_version": "253.0.0",
+        "code_name": "Moe Skeeto",
+        "in_store_resubmission": false,
+        "scheduled_at": "2026-08-07 10:29:50 UTC",
+        "completed_at": null,
+        "stopped_at": null,
+        "latest_internal_release": null,
+        "latest_beta_release": {
+          "id": "d4a39749-2c78-4f9a-b257-1f97993552ff",
+          "kind": "beta",
+          "status": "created",
+          "tester_notes": "Nothing new",
+          "created_at": "2026-08-07 10:29:53 UTC",
+          "build": null,
+          "store_submissions": []
+        },
+        "production_releases": [
+          {
+            "id": "d25caf8b-3f1f-4750-aaee-ca1d82cd58ff",
+            "status": "active",
+            "tag_name": null,
+            "created_at": "2026-08-07 10:29:51 UTC",
+            "build": {
+              "id": "9ce7d31d-4937-4572-a814-020af244e6ff",
+              "version_name": "1.2.3",
+              "build_number": "21799",
+              "external_name": null,
+              "external_id": null,
+              "generated_at": "2026-08-07 10:29:51 UTC",
+              "size_in_bytes": null,
+              "commit_hash": "812e91bc8736494fa7bfef8211ebaf4e",
+              "workflow_run": {
+                "id": "226284f5-7cf7-4d1f-9959-5ef99e29fdff",
+                "kind": "release_candidate",
+                "status": "failed",
+                "external_number": 4821,
+                "external_url": null,
+                "artifacts_url": null,
+                "commit_hash": "812e91bc8736494fa7bfef8211ebaf4e",
+                "started_at": null,
+                "finished_at": null
+              }
+            },
+            "store_submission": {
+              "id": "553c41fb-4a7c-4cd8-bf2f-4e5c36ab2dff",
+              "kind": "AppStoreSubmission",
+              "status": "failed",
+              "store_status": null,
+              "store_link": null,
+              "failure_reason": null,
+              "sequence_number": 1,
+              "prepared_at": null,
+              "submitted_at": null,
+              "approved_at": null,
+              "rejected_at": null,
+              "created_at": "2026-08-07 10:29:52 UTC",
+              "build": {
+                "id": "fcce4cbe-e4c1-41f1-8324-94ed69452aff",
+                "version_name": "1.2.3",
+                "build_number": "125"
+              },
+              "store_rollout": {
+                "id": "84c90c2d-2770-462a-8d54-02b1968c2dff",
+                "kind": "AppStoreRollout",
+                "status": "started",
+                "is_staged_rollout": true,
+                "automatic_rollout": false,
+                "automatic_rollout_next_update_at": null,
+                "stage": 1,
+                "stage_count": 7,
+                "stages": [
+                  1.0,
+                  2.0,
+                  5.0,
+                  10.0,
+                  20.0,
+                  50.0,
+                  100.0
+                ],
+                "current_percentage": 0.0,
+                "next_percentage": 1.0,
+                "completed_at": null,
+                "created_at": "2026-08-07 10:29:52 UTC"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "approval_items": [],
+    "beta_soak": null
+  }
+}

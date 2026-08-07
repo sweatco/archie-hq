@@ -12,7 +12,7 @@ import type { AgentDef } from '../types/agent.js';
 import { isPmAgent, isRepoAgent } from '../types/agent.js';
 import { modelDisplayLabel, resolveAgentModel, modelChangingAgentIds } from '../agents/model-label.js';
 import { prCardFingerprint, prCardTitlePlain } from '../system/pr-card-format.js';
-import { APPROVAL_TTL_MS, mergeTargets } from '../agents/tramline-guard.js';
+import { APPROVAL_TTL_MS, PENDING_APPROVAL_TTL_MS, mergeTargets } from '../agents/tramline-guard.js';
 import { getGitHubClient } from '../connectors/github/client.js';
 import { createKeyedLock } from '../system/keyed-lock.js';
 
@@ -1444,8 +1444,15 @@ export class Task {
    * every gated tool call, so two calls with the same digest in one turn must
    * not both find the approval — the splice has to land before anything can
    * yield. (Same invariant as `handleMergeApproval`'s clear-before-awaits, for
-   * the same reason.) The save is deliberately debounced and *after* the
-   * mutation: a lost write can only ever fail closed, re-asking for approval.
+   * the same reason.)
+   *
+   * The *spend* is then flushed durably rather than debounced. Durability is
+   * inverted for a single-use token: losing the grant write costs an extra
+   * approval prompt, but losing the spend write means a crash in the 500ms
+   * debounce window — after the Tramline action has already run — leaves the
+   * approval on disk, unexpired and spendable a second time. The flush is
+   * fire-and-forget because this runs inside a PreToolUse hook and must not
+   * await, but it is issued before the tool call proceeds.
    */
   consumeTramlineApproval(digest: string): boolean {
     const approvals = this.metadata.approved_tramline_actions;
@@ -1466,7 +1473,22 @@ export class Task {
     }
 
     this.metadata.approved_tramline_actions = live;
-    this.debouncedSave();
+    void this.save(true).catch((error) =>
+      logger.warn('task', `Failed to flush spent Tramline approval ${digest}`, error),
+    );
+
+    // Record that the approval was actually *spent*. Without this the audit
+    // trail stops at "approved" and nobody can tell from the thread whether the
+    // action ever ran. Fire-and-forget: this is called from inside a PreToolUse
+    // hook, and a failed log write must not block the tool call.
+    const spent = approvals[index];
+    void appendAgentFinding(
+      this.taskId,
+      'system',
+      `Tramline action ran on approval ${spent.digest}: ${spent.tool}` +
+        (spent.approved_by ? ` (approved by <@${spent.approved_by}>)` : ''),
+      'completion',
+    ).catch(() => {});
     return true;
   }
 
@@ -1484,11 +1506,25 @@ export class Task {
     agentId: string,
     request: { digest: string; tool: string; summary: string; target?: string },
   ): Promise<'posted' | 'already-pending'> {
+    // A pending request goes stale: nobody clicked, and a prompt raised against
+    // state that is now hours old should not keep blocking every other action
+    // for the rest of the task's life, nor mint a fresh 10-minute grant if
+    // someone finds it days later. Past its window it is discarded and this
+    // request replaces it.
     const pending = this.metadata.pending_tramline_action;
-    if (pending && pending.digest !== request.digest) return 'already-pending';
+    const live = pending && Date.parse(pending.requested_at) > Date.now() - PENDING_APPROVAL_TTL_MS
+      ? pending
+      : undefined;
+    if (live && live.digest !== request.digest) return 'already-pending';
     // Same digest already pending: the agent retried before the human answered.
-    // Don't post a duplicate prompt — the task is already parked on this one.
-    if (pending) return 'posted';
+    // Re-arm the park — the previous teardown has already fired, so returning
+    // without arming would leave the agent running against a prompt nobody has
+    // answered, free to try something else.
+    if (live) {
+      this.suspendStatus();
+      this.agentProcesses.get(agentId as AgentName)?.deferTeardown(() => this.stop());
+      return 'posted';
+    }
 
     this.metadata.pending_tramline_action = {
       digest: request.digest,
@@ -1584,11 +1620,34 @@ export class Task {
       );
       return 'stale';
     }
+    // The Slack message never expires on its own, so a prompt found days later
+    // would otherwise resolve and mint a fresh spendable grant against state the
+    // approver never saw. Bound the render→click interval, not just grant→spend.
+    if (Date.parse(pending.requested_at) <= Date.now() - PENDING_APPROVAL_TTL_MS) {
+      logger.warn(
+        'task',
+        `Expired Tramline action approval for ${expectedDigest} on task ${this.taskId} — ` +
+        `requested ${pending.requested_at}`,
+      );
+      this.metadata.pending_tramline_action = undefined;
+      await this.save(true);
+      await appendAgentFinding(
+        this.taskId,
+        'system',
+        `Tramline action approval expired unspent: ${pending.tool}` +
+          (pending.target ? ` on ${pending.target}` : ''),
+        'decision',
+      );
+      return 'stale';
+    }
     this.metadata.pending_tramline_action = undefined;
 
+    // Dedupe on digest so two prompts for the same call cannot become two
+    // grants: "cannot be spent twice" has to hold per *call*, not per grant, or
+    // an `increase_rollout` approved twice advances two stages.
     const now = new Date();
     this.metadata.approved_tramline_actions = [
-      ...(this.metadata.approved_tramline_actions ?? []),
+      ...(this.metadata.approved_tramline_actions ?? []).filter((a) => a.digest !== pending.digest),
       {
         digest: pending.digest,
         tool: pending.tool,
@@ -1637,7 +1696,9 @@ export class Task {
 
     this.agentProcesses.get(pending.requested_by as AgentName)?.clearPendingTeardown();
 
-    this.debouncedSave();
+    // Durable, matching the approve path: a denial that is lost to a crash in the
+    // debounce window would leave the slot set and block every later action.
+    await this.save(true);
     await appendAgentFinding(
       this.taskId,
       'system',

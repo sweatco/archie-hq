@@ -46,6 +46,11 @@ const TOOL_PREFIX = 'mcp__tramline__';
  *  saw and what eventually runs. */
 export const APPROVAL_TTL_MS = 10 * 60 * 1000;
 
+/** How long an unresolved *request* keeps the single pending slot. Past this it
+ *  is discarded rather than blocking every other action for the task's life, and
+ *  rather than minting a fresh grant if someone finds the prompt days later. */
+export const PENDING_APPROVAL_TTL_MS = 60 * 60 * 1000;
+
 /** Cap on the per-task id→label index. Bounds the metadata file; a release tree
  *  is ~30 ids, so this holds several releases' worth. */
 export const TARGET_INDEX_LIMIT = 120;
@@ -69,29 +74,83 @@ const READ_ACTIONS = new Set([
 ]);
 
 /**
- * Writes that only mirror state Tramline can already observe elsewhere: two CI
- * status polls and a store re-read. They advance a state machine no further
- * than the external system has already moved it, and they are idempotent.
+ * The only write that stays ungated: polling a CI run that is already in flight.
  *
- * They are ungated because gating them would make the gate worthless — a single
- * diagnosis needs several of these, and an approval prompt a human learns to
- * click through without reading is worse than no prompt at all.
+ * Note what this does *not* claim. `poll_workflow_run_status` is not
+ * side-effect-free — on a `triggered` run it calls `workflow_run.found!`, which
+ * enqueues a poll that can attach a build and trigger store submissions. It is
+ * ungated because that is the same progression Tramline's own poller performs
+ * unprompted: the run is live, CI has already decided, and the call only pulls
+ * that decision forward. Contrast `fetch_workflow_run_status`, which resurrects a
+ * run Tramline had already marked **failed** — a state change nothing else would
+ * have made.
+ *
+ * This set was originally three. The other two were removed after reading what
+ * they actually do on the Tramline side, and the deletions are the point of the
+ * comment — "sounds like a read" is not evidence:
+ *
+ * - `fetch_workflow_run_status` calls `workflow_run.found!`, which transitions
+ *   **failed → started** and enqueues a poll; when that poll settles it
+ *   cascades AttachBuildJob → TriggerSubmissionsJob, which calls
+ *   `trigger_submissions!` and, for a hotfix release candidate,
+ *   `Coordinators::StartProductionRelease`. An ungated call could start a
+ *   production release.
+ * - `sync_submission_from_store` drives `approve!` / `submit_for_review!` /
+ *   `reject!` / `sync_rollout!`, and App Store rollouts are created with
+ *   `automatic_rollout: true` — so a "re-read" can put a user-facing rollout on
+ *   an auto-advancing schedule.
+ *
+ * Keeping this set as small as the evidence supports costs the agent an
+ * approval per diagnosis step. That is the right trade: an approval prompt a
+ * human learns to click through without reading is worse than no prompt, but a
+ * tool wrongly labelled safe is worse than both.
  */
 const AUTO_ALLOWED_ACTIONS = new Set([
   'poll_workflow_run_status',
-  'fetch_workflow_run_status',
-  'sync_submission_from_store',
 ]);
 
 /**
  * Actions no approval can unlock.
  *
- * Not "most dangerous" — *wrongly shaped for a chat button*. Each one is
- * irreversible and needs the operator looking at the rollout page, the health
- * metrics, or App Store Connect while they decide. A Slack button invites the
- * decision to be made from a phone, on the strength of a one-line summary. So
- * the agent's job for these is to say what it thinks should happen and let a
- * human go and do it in Tramline.
+ * The list is closed under **effect**, not under name. That distinction is the
+ * whole design: a gate that reasons about tool names is trivially laundered by
+ * a differently-named tool reaching the same Tramline code path, and the first
+ * version of this list was. Each entry below is here because of what it does,
+ * and the ones that read as surprising are the ones that were laundering an
+ * entry above them:
+ *
+ * - `fully_release_rollout` — 100% of users, irreversible.
+ * - `enable_automatic_rollout` — schedules `AutomaticUpdateRolloutJob`, which
+ *   increases the rollout and *re-schedules itself* every 24h until the last
+ *   stage completes. One click reaches the same end state as
+ *   `fully_release_rollout` with no human present for any stage after the
+ *   first, and it then refuses manual control ("cannot manually increase
+ *   rollout when automatic rollout is enabled").
+ * - `halt_rollout` — on App Store this delists the app rather than pausing a
+ *   phase. (Reversible in principle; that was never the reason.)
+ * - `fully_release_previous_rollout` — pushes a *different*, already-shipped
+ *   release to 100%.
+ * - `prepare_submission` — re-preparing force-overwrites the store version's
+ *   metadata, release notes included, destroying edits made in App Store
+ *   Connect. No undo.
+ * - `update_submission_build` — routes into `UpdateBuildOnProduction`, whose
+ *   own comment says it "re-prepares the store version and force-pushes the
+ *   release's stored metadata". Same effect as the entry above it.
+ * - `submit_for_review` — hands the build to Apple. Its only exit,
+ *   `cancel_submission_review`, is also on this list, and an in-progress ASC
+ *   review is what blocks the *next* submission — so allowing submit while
+ *   denying cancel would let the agent manufacture the exact incident class
+ *   this feature was built to triage. Both or neither; neither.
+ * - `cancel_submission_review` — throws away a review slot; re-submitting
+ *   restarts Apple's queue.
+ * - `start_release` / `stop_release` — `start_release` cuts a branch, bumps
+ *   versions, opens kickoff PRs and starts CI; `stop_release` is terminal and
+ *   unwinds none of it. Neither has an inverse in the API.
+ *
+ * `increase_rollout` is deliberately *not* here — advancing 1% → 2% is the
+ * routine operation this feature exists to make possible. It is refused only at
+ * the terminal stage, where it is `fully_release_rollout` by another name; see
+ * `terminalStageRefusal`.
  *
  * These are also absent from the agent's tool list (`disallowedTools` in
  * release-manager.md). This set is the second layer: it holds even if an agent
@@ -99,10 +158,15 @@ const AUTO_ALLOWED_ACTIONS = new Set([
  */
 const NEVER_ALLOWED_ACTIONS = new Set([
   'fully_release_rollout',
+  'enable_automatic_rollout',
   'halt_rollout',
   'fully_release_previous_rollout',
   'prepare_submission',
+  'update_submission_build',
+  'submit_for_review',
   'cancel_submission_review',
+  'start_release',
+  'stop_release',
 ]);
 
 export type TramlineDisposition = 'not-tramline' | 'read' | 'auto' | 'gated' | 'never';
@@ -157,41 +221,47 @@ export function actionDigest(toolName: string, input: unknown): string {
  * What each gated action does, in the words a release manager would use. This
  * is the text a human reads before clicking Approve, so it says the
  * consequence, not the method name.
+ *
+ * **This map is the gate's allowlist**, not decoration: an action with no entry
+ * is refused rather than rendered as a bare method name. That is what makes
+ * "defaults to gated" mean "defaults to *refused*" — otherwise a future
+ * Tramline action arrives as a one-click button labelled `Run the Tramline
+ * action \`x\``, with no statement of consequence for the approver to weigh.
+ * Adding an action here is therefore a deliberate review step: whoever writes
+ * the sentence has to know what the action does, which is exactly the moment to
+ * notice it belongs on the never-list instead.
  */
 const ACTION_DESCRIPTIONS: Record<string, string> = {
   // Release lifecycle
-  start_release: 'Start a new release — cuts the release branch, bumps versions and starts CI',
-  stop_release: 'Stop this release entirely (terminal)',
   retry_pre_release: 'Retry the failed pre-release phase (branch creation, version bump)',
   retry_preparation: 'Retry the failed preparation workflow',
   trigger_preparation: 'Trigger the preparation workflow now',
-  sync_release_commits: 'Re-process the release branch commits — this can push a version-bump commit, apply the build queue and open backmerge PRs',
+  sync_release_commits: 'Re-process the release branch commits — this can push a version-bump commit that auto-merges to the working branch, start a build, and open backmerge PRs',
   sync_release_pull_requests: 'Re-check the release PRs — on a failed post-release this finalizes the release (tag + backmerge)',
   complete_release: 'Finalize the release: tag it and run the end-of-release backmerge',
   finish_release: 'Finish a partially-finished release, stopping the platforms still pending',
   apply_build_queue: 'Flush the queued commits into the release — changes what is being shipped',
   end_soak: 'End the beta soak early, skipping the rest of the observation window',
-  extend_soak: 'Extend the beta soak period',
+  extend_soak: 'Extend the beta soak period (delays the release; does not ship anything)',
   // Platform runs
   start_internal_release: 'Create an internal build for the team',
-  start_beta_release: 'Create a release-candidate build for testers',
+  start_beta_release: 'Create a release-candidate build for testers — built from the latest applicable commit, so it may contain commits the previous RC did not',
   start_production_release: 'Start the production release with a specific build — decides which binary goes to the store',
   conclude_platform_run: 'Conclude this platform, closing it out of the release',
   // Workflow runs
   trigger_workflow_run: 'Trigger this CI workflow run',
   retry_workflow_run: 'Re-run this failed CI build',
+  fetch_workflow_run_status: 'Re-check a workflow run that could not be found on the CI provider — this moves it out of `failed`, and if CI reports success it attaches the build and triggers store submissions (on a hotfix RC it starts the production release)',
   // Store submissions
-  trigger_submission: 'Send this submission to the store',
-  retry_submission: 'Retry this failed store submission',
-  submit_for_review: 'Submit to Apple for review',
-  update_submission_build: 'Swap the build attached to this production submission',
+  trigger_submission: 'Send this submission to the store — on a production App Store submission this prepares the store version, which overwrites its metadata',
+  retry_submission: 'Retry this failed store submission — if it failed before it was ever prepared, this re-prepares the store version and overwrites its metadata',
+  sync_submission_from_store: 'Pull this submission\'s state from the store — this can advance it (approve/reject/submit) and can put an App Store rollout on an automatic schedule',
   // Store rollouts
-  start_rollout: 'Start the staged rollout',
+  start_rollout: 'Start the staged rollout — the first stage goes out to real users',
   increase_rollout: 'Advance the staged rollout to its next stage — more real users get this build',
-  pause_rollout: 'Pause the staged rollout',
-  resume_rollout: 'Resume the staged rollout',
-  enable_automatic_rollout: 'Hand stage advances to the scheduler — the next stage goes out automatically, 24h from now',
-  disable_automatic_rollout: 'Stop automatic stage progression',
+  pause_rollout: 'Pause the staged rollout (Play Store: only has an effect on an automatic rollout — on a manual one Tramline reports success and changes nothing)',
+  resume_rollout: 'Resume a paused or halted rollout — if a human halted it, this undoes that',
+  disable_automatic_rollout: 'Stop automatic stage progression, returning the rollout to manual control',
 };
 
 /** Something that looks like one of Tramline's record ids. */
@@ -202,21 +272,52 @@ export function looksLikeRecordId(value: unknown): value is string {
 }
 
 /**
- * Pull the record ids out of a call's arguments. Tools addressing a resource by
- * UUID need a label from the index; tools addressing it by slug (start_release
- * takes app + train slugs) are already readable.
+ * Pull the target references out of a call's arguments.
+ *
+ * Keyed on the argument *name* (`id`, `release_id`, `build_id`), not on the
+ * value's shape. Matching UUIDs alone left a hole: Tramline accepts `release_id`
+ * as "UUID **or slug**", so an agent could address a release as
+ * `2026-08-03-thrumming-brook`, match no UUID, and skip the label requirement
+ * entirely — which is every release-level action. `app_slug` / `train_slug` are
+ * not target references: they are already human-readable and name a
+ * configuration, not a record.
  */
-export function recordIdsIn(input: unknown): string[] {
+export function targetRefsIn(input: unknown): string[] {
   if (!input || typeof input !== 'object') return [];
-  return Object.values(input as Record<string, unknown>).filter(looksLikeRecordId);
+  return Object.entries(input as Record<string, unknown>)
+    .filter(([key]) => key === 'id' || key.endsWith('_id'))
+    .map(([, value]) => (typeof value === 'string' ? value.trim() : ''))
+    .filter(Boolean);
+}
+
+/**
+ * Neutralize a model-supplied argument value for a Slack `mrkdwn` block.
+ *
+ * Argument values are the one part of the prompt the agent controls, and without
+ * this they are the hole in "rendered by us, not by the agent": a string
+ * argument can carry newlines and `*bold*` and append its own lines to the
+ * message — `custom_source_branch: "main\n*Note:* pre-agreed, safe to approve"`
+ * renders as an extra instruction to the approver. Collapse whitespace, strip
+ * the mrkdwn and Block Kit sigils, cap the length, and wrap in a code span so
+ * whatever survives reads as data.
+ */
+function sanitizeArgumentValue(value: unknown): string {
+  const raw = typeof value === 'string' ? value : JSON.stringify(value) ?? String(value);
+  const flat = raw
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/[`*_~<>|]/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  const capped = flat.length > 120 ? `${flat.slice(0, 117)}…` : flat;
+  return `\`${capped}\``;
 }
 
 /** Argument list rendered for the prompt, minus the ids the label covers. */
 function renderArguments(input: unknown): string {
   if (!input || typeof input !== 'object') return '';
   const parts = Object.entries(input as Record<string, unknown>)
-    .filter(([, v]) => v !== undefined && v !== null && !looksLikeRecordId(v))
-    .map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`);
+    .filter(([k, v]) => v !== undefined && v !== null && k !== 'id' && !k.endsWith('_id'))
+    .map(([k, v]) => `${k}=${sanitizeArgumentValue(v)}`);
   return parts.join(', ');
 }
 
@@ -227,48 +328,56 @@ export interface RenderedAction {
   target?: string;
 }
 
+/** Why a gated call could not be turned into an approval prompt. */
+export type RenderFailure = 'no-description' | 'unlabelled-target';
+
 /**
- * Build the approval text for a gated call.
+ * Build the approval text for a gated call, or say why it cannot be built.
  *
- * Returns `undefined` when the call addresses a record by id that this task has
- * not read — the caller denies instead of posting an unlabelled button.
+ * Both failure modes end in a refusal rather than a prompt, and both are
+ * deliberate:
+ *
+ * - `no-description` — the action has no entry in `ACTION_DESCRIPTIONS`, so
+ *   nobody has written down what it does. A button labelled with a method name
+ *   is a button approved without understanding.
+ * - `unlabelled-target` — the call addresses a record this task has not read,
+ *   so the prompt cannot say what it is about. Approving an opaque uuid is
+ *   approving the agent's word for what it points at.
  */
 export function renderAction(
   toolName: string,
   input: unknown,
   targets: Record<string, string> | undefined,
-): RenderedAction | undefined {
+): RenderedAction | RenderFailure {
   const action = tramlineAction(toolName);
   const described = ACTION_DESCRIPTIONS[action];
-  const ids = recordIdsIn(input);
+  if (!described) return 'no-description';
 
   const labels: string[] = [];
-  for (const id of ids) {
-    const label = targets?.[id];
-    // No label — refuse to render. Approving an opaque uuid is approving the
-    // agent's word for what it points at.
-    if (!label) return undefined;
+  for (const ref of targetRefsIn(input)) {
+    const label = targets?.[ref];
+    if (!label) return 'unlabelled-target';
     labels.push(label);
   }
 
   const args = renderArguments(input);
-  const head = described ?? `Run the Tramline action \`${action}\``;
   const target = labels.length > 0 ? labels.join(' · ') : undefined;
 
-  let summary = head;
+  let summary = described;
   if (target) summary += `\n*Target:* ${target}`;
   if (args) summary += `\n*Arguments:* ${args}`;
 
   return { summary, target };
 }
 
+export function isRenderFailure(value: RenderedAction | RenderFailure): value is RenderFailure {
+  return typeof value === 'string';
+}
+
 // ---- Target index (PostToolUse) ----------------------------------------------
 
-interface ReleaseLike {
+interface Node {
   id?: unknown;
-  version_name?: unknown;
-  release_version?: unknown;
-  platform?: unknown;
   status?: unknown;
   [key: string]: unknown;
 }
@@ -277,72 +386,182 @@ function str(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
+function num(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Payload key → what the records under it are.
+ *
+ * These keys are the **actual** `Api::V2::*Serializer` output of
+ * `GET /api/v2/releases/:id`, not Tramline's domain model. The first version of
+ * this map was written from the domain model and shared almost no keys with the
+ * API, which silently produced unlabelled and mislabelled approval prompts — the
+ * failure mode that matters most, because the prompt is the whole safety
+ * property. The fixture in `__tests__/fixtures/tramline-release-payload.json` is
+ * generated from the serializers so that mistake cannot recur quietly.
+ */
+const KIND_BY_KEY: Record<string, string> = {
+  release: 'release',
+  platform_runs: 'platform run',
+  latest_internal_release: 'internal release',
+  latest_beta_release: 'beta release',
+  production_releases: 'production release',
+  build: 'build',
+  workflow_run: 'CI workflow run',
+  store_submissions: 'store submission',
+  store_submission: 'store submission',
+  store_rollout: 'staged rollout',
+};
+
+/**
+ * The detail that distinguishes two records of the same kind, so an approver can
+ * tell *which* one the button is about.
+ *
+ * Without this, a cross-platform release's two failed RC workflow runs render
+ * identically and the prompt is unanswerable on the one flow this feature exists
+ * for. Percentages matter for the same reason: on a rollout action the number
+ * *is* the decision, and it is sitting in the payload.
+ */
+function distinguishingDetail(kind: string, obj: Node): string | undefined {
+  switch (kind) {
+    case 'build':
+      return str(obj.build_number) ? `build ${str(obj.build_number)}` : undefined;
+    case 'CI workflow run': {
+      const workflowKind = str(obj.kind)?.replace(/_/g, ' ');
+      const number = num(obj.external_number) ?? str(obj.external_number);
+      return [workflowKind, number !== undefined ? `#${number}` : undefined].filter(Boolean).join(' ') || undefined;
+    }
+    case 'store submission':
+      // "PlayStoreSubmission" → "Play Store", "AppStoreSubmission" → "App Store"
+      return str(obj.kind)?.replace(/Submission$/, '').replace(/([a-z])([A-Z])/g, '$1 $2') || undefined;
+    case 'staged rollout': {
+      const current = num(obj.current_percentage);
+      const next = num(obj.next_percentage);
+      const stage = num(obj.stage);
+      const stageCount = num(obj.stage_count);
+      const parts: string[] = [];
+      // "not staged" is load-bearing, not colour: starting a non-staged Play
+      // rollout goes to 100% immediately (see stateRefusal).
+      if (obj.is_staged_rollout === false) parts.push('not staged');
+      if (current !== undefined) parts.push(`at ${current}%`);
+      if (next !== undefined) parts.push(`next ${next}%`);
+      if (stage !== undefined && stageCount !== undefined) parts.push(`stage ${stage}/${stageCount}`);
+      if (obj.automatic_rollout === true) parts.push('automatic');
+      return parts.length > 0 ? parts.join(', ') : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
 /**
  * Walk a Tramline read payload and label every record id in it.
  *
- * The labels are deliberately coarse — "253.0.0 iOS · store submission
- * (failed)" is enough for a human to recognise what a button is about, and it
- * carries the state they need to sanity-check the request. The walk is
- * defensive about shape: a payload change should degrade to fewer labels (and
- * so to denied gated calls), never to a thrown hook.
+ * Context (version + platform) is **inherited downward and never replaced**: a
+ * build carries its own `version_name`, and letting that overwrite the
+ * platform run's "253.0.0 ANDROID" was what dropped the platform from every
+ * nested label. A child may only *fill* a context slot its ancestors left empty.
+ *
+ * The walk is defensive about shape: a payload change should degrade to fewer
+ * labels — and therefore to *denied* gated calls — never to a thrown hook.
  */
 export function indexTargets(payload: unknown): Record<string, string> {
   const out: Record<string, string> = {};
 
-  const walk = (node: unknown, context: string, kind: string): void => {
+  const walk = (node: unknown, version: string | undefined, platform: string | undefined, kind: string): void => {
     if (Array.isArray(node)) {
-      for (const item of node) walk(item, context, kind);
+      for (const item of node) walk(item, version, platform, kind);
       return;
     }
     if (!node || typeof node !== 'object') return;
-    const obj = node as ReleaseLike;
+    const obj = node as Node;
 
-    // A release (or platform run) refines the context every id below inherits.
-    const version = str(obj.release_version) ?? str(obj.version_name);
-    const platform = str(obj.platform);
-    let nextContext = context;
-    if (version || platform) {
-      nextContext = [version ?? context, platform ? platform.toUpperCase() : undefined]
-        .filter(Boolean)
-        .join(' ');
-    }
+    // Fill-only, never overwrite. `version` is the release's key; platform runs
+    // use `release_version`; builds use `version_name` and are the reason this
+    // must not clobber.
+    const nextVersion = version ?? str(obj.version) ?? str(obj.release_version) ?? str(obj.version_name);
+    const nextPlatform = platform ?? str(obj.platform)?.toUpperCase();
 
     const id = str(obj.id);
     if (id && UUID_RE.test(id)) {
       const status = str(obj.status);
-      const label = [nextContext || undefined, kind, status ? `(${status})` : undefined]
+      const label = [
+        [nextVersion, nextPlatform].filter(Boolean).join(' ') || undefined,
+        kind,
+        distinguishingDetail(kind, obj),
+        status ? `(${status})` : undefined,
+      ]
         .filter(Boolean)
         .join(' · ');
-      out[id] = label || kind;
+      out[id] = label;
+      // Release-level actions accept `release_id` as a UUID *or* a slug, so index
+      // the slug under the same label — otherwise addressing a release by slug
+      // sidesteps the "must have read it" requirement entirely.
+      const slug = str(obj.slug);
+      if (slug) out[slug] = label;
     }
 
     for (const [key, value] of Object.entries(obj)) {
       if (!value || typeof value !== 'object') continue;
-      walk(value, nextContext, KIND_BY_KEY[key] ?? kind);
+      // An unmapped key keeps the parent's kind rather than inventing one — but
+      // it is also the signal that the payload has grown a shape we don't know.
+      walk(value, nextVersion, nextPlatform, KIND_BY_KEY[key] ?? kind);
     }
   };
 
-  walk(payload, '', 'release');
+  walk(payload, undefined, undefined, 'release');
   return out;
 }
 
-/** Payload key → what the records under it are, for labelling. */
-const KIND_BY_KEY: Record<string, string> = {
-  release: 'release',
-  releases: 'release',
-  platform_runs: 'platform run',
-  release_platform_runs: 'platform run',
-  builds: 'build',
-  workflow_runs: 'CI workflow run',
-  workflow_run: 'CI workflow run',
-  pre_prod_releases: 'internal/beta release',
-  production_releases: 'production release',
-  production_release: 'production release',
-  store_submissions: 'store submission',
-  store_submission: 'store submission',
-  store_rollout: 'staged rollout',
-  store_rollouts: 'staged rollout',
-};
+const IN_TRAMLINE = 'A human has to do this on the release page in Tramline (https://tramline.sweatco.team).';
+
+/**
+ * Refuse an action that is only forbidden *in a particular state*.
+ *
+ * Classification by tool name cannot express these: the same tool is routine in
+ * one state and equivalent to a never-listed action in another. Both cases below
+ * reach 100% of users, which is the one outcome the never-list exists to
+ * prevent, so both are refused rather than made approvable.
+ *
+ * - `increase_rollout` at the final stage: `move_to_next_stage!` rolls out the
+ *   last percentage and calls `complete!` — it *is* `fully_release_rollout`.
+ * - `start_rollout` on a **non-staged** rollout: `start_release!` skips the
+ *   stages entirely and calls `rollout(FULL_ROLLOUT_VALUE)` — 100% immediately.
+ *
+ * State comes from the label index, which is the only state this process has. A
+ * rollout whose relevant field we cannot read is refused too: guessing in the
+ * permissive direction is exactly the mistake this function exists to prevent.
+ */
+export function stateRefusal(action: string, label: string | undefined): string | undefined {
+  if (!label) return undefined; // no label ⇒ the caller already refuses
+
+  if (action === 'start_rollout') {
+    if (/not staged/.test(label)) {
+      return `This rollout is not staged, so starting it releases to 100% of users immediately — the same ` +
+        `irreversible effect as \`fully_release_rollout\`, which is not available to agents. ${IN_TRAMLINE}`;
+    }
+    if (!/stage \d+\/\d+/.test(label)) {
+      return `Cannot start this rollout: the release payload this task has read does not say whether it is staged, ` +
+        `so there is no way to tell if starting it would go straight to 100%. Re-read with \`get_release\` and retry.`;
+    }
+    return undefined;
+  }
+
+  if (action !== 'increase_rollout') return undefined;
+
+  const stage = /stage (\d+)\/(\d+)/.exec(label);
+  if (!stage) {
+    return `Cannot advance this rollout: its stage is not visible in the release payload this task has read, ` +
+      `so there is no way to tell whether the next stage is 100%. Re-read the release with \`get_release\` and retry.`;
+  }
+  const [, currentRaw, totalRaw] = stage;
+  if (Number(currentRaw) >= Number(totalRaw)) {
+    return `Advancing this rollout would take it to its final stage, which completes the rollout at 100% of users — ` +
+      `the same irreversible effect as \`fully_release_rollout\`, which is not available to agents. ${IN_TRAMLINE}`;
+  }
+  return undefined;
+}
 
 /** Merge fresh labels into an existing index, newest-wins, oldest evicted. */
 export function mergeTargets(
@@ -366,11 +585,14 @@ export function mergeTargets(
  * Slack user ids allowed to approve a Tramline action, from
  * `ARCHIE_RELEASE_APPROVERS` (comma-separated).
  *
- * Unset means nobody can approve. That is the intended failure mode: an
- * unconfigured deployment behaves exactly as it does today (Archie reads,
- * humans act), rather than letting anyone who can see the message press the
- * button. Note the existing edit-mode and merge gates do *not* check the
- * clicker at all — this one does, because these buttons move a release.
+ * Unset means nobody can approve, and in that case the guard refuses a gated
+ * call outright rather than posting a prompt — see `createTramlineGuardHooks`.
+ * Posting an unresolvable button *and* parking the task would leave a dead
+ * thread and be strictly worse than the read-only status quo, which is the
+ * opposite of what an unconfigured deployment should do.
+ *
+ * Note the existing edit-mode and merge gates do *not* check the clicker at all
+ * — this one does, because these buttons move a live release.
  */
 export function releaseApprovers(env: NodeJS.ProcessEnv = process.env): Set<string> {
   return new Set(
@@ -401,7 +623,11 @@ function deny(reason: string): HookJSONOutput {
   };
 }
 
-const CONTINUE: HookJSONOutput = { continue: true };
+/** Fresh object per call — the SDK receives these and a shared mutable literal
+ *  handed out on every hook invocation is an accident waiting to happen. */
+function proceed(): HookJSONOutput {
+  return { continue: true };
+}
 
 /**
  * What the guard needs from the task. Kept as a narrow port rather than
@@ -444,61 +670,109 @@ export function createTramlineGuardHooks(port: TramlineGuardPort): HookCallbackM
   return [{
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     hooks: [async (input: any): Promise<HookJSONOutput> => {
-      const { tool_name, tool_input } = input ?? {};
-      if (typeof tool_name !== 'string') return CONTINUE;
-
-      const disposition = classifyTramlineTool(tool_name);
+      const toolName = typeof input?.tool_name === 'string' ? input.tool_name : undefined;
+      // Classify before the try, so a throw can be attributed: a non-Tramline
+      // tool must proceed even if something below would have failed, and a
+      // Tramline write must be denied rather than left to the SDK's handling of
+      // a rejected hook.
+      const disposition = toolName ? classifyTramlineTool(toolName) : 'not-tramline';
       if (disposition === 'not-tramline' || disposition === 'read' || disposition === 'auto') {
-        return CONTINUE;
+        return proceed();
       }
 
-      const action = tramlineAction(tool_name);
-
-      if (disposition === 'never') {
+      try {
+        return await decideTramlineCall(port, toolName!, input.tool_input, disposition);
+      } catch (error) {
+        // Fail closed. The arguments are agent-controlled, so this path is
+        // reachable on purpose as well as by accident (a deeply nested argument
+        // overflows the canonicalizer's recursion), and a security hook must not
+        // depend on how the host treats a rejected hook.
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error('tramline-guard', `Guard failed for ${toolName} — denying`, error);
         return deny(
-          `\`${action}\` is not available to agents — it is irreversible and has to be done by a human ` +
-          `looking at the release page in Tramline (https://tramline.sweatco.team). ` +
-          `Report what you think should happen and who should do it; do not look for another route to the same effect.`,
+          `\`${tramlineAction(toolName!)}\` was refused because the approval gate errored while evaluating it ` +
+          `(${message}). Nothing ran. Report this and let a human act in Tramline (https://tramline.sweatco.team).`,
         );
       }
-
-      const digest = actionDigest(tool_name, tool_input);
-
-      // Already approved? Spend it and let this one call through.
-      if (port.consumeApproval(digest)) {
-        logger.system(`Tramline action ${action} approved (${digest}) — proceeding`);
-        return CONTINUE;
-      }
-
-      const rendered = renderAction(tool_name, tool_input, port.getTargets());
-      if (!rendered) {
-        return deny(
-          `Cannot request approval for \`${action}\`: this task has not read the record it targets, so the ` +
-          `approval prompt cannot say what it is about. Call \`get_release\` for the release this belongs to ` +
-          `first, then retry.`,
-        );
-      }
-
-      const outcome = await port.requestApproval({
-        digest,
-        tool: action,
-        summary: rendered.summary,
-        target: rendered.target,
-      });
-
-      if (outcome === 'already-pending') {
-        return deny(
-          `Another Tramline action is already waiting for approval on this task. One release action is ` +
-          `resolved at a time — wait for the outstanding request to be approved or denied.`,
-        );
-      }
-
-      return deny(
-        `\`${action}\` needs human approval. The request has been posted and the task is pausing. ` +
-        `When it is approved you will be reactivated — re-read the release state, then retry this exact call.`,
-      );
     }],
   }];
+}
+
+/** The gate's decision for one Tramline write. Separated so the wrapper above can
+ *  turn any throw into a denial. */
+async function decideTramlineCall(
+  port: TramlineGuardPort,
+  tool_name: string,
+  tool_input: unknown,
+  disposition: TramlineDisposition,
+): Promise<HookJSONOutput> {
+  const action = tramlineAction(tool_name);
+
+  if (disposition === 'never') {
+    return deny(
+      `\`${action}\` is not available to agents — it is irreversible and has to be done by a human ` +
+      `looking at the release page in Tramline (https://tramline.sweatco.team). ` +
+      `Report what you think should happen and who should do it; do not look for another route to the same effect.`,
+    );
+  }
+
+  const digest = actionDigest(tool_name, tool_input);
+
+  // Already approved? Spend it and let this one call through.
+  if (port.consumeApproval(digest)) {
+    logger.system(`Tramline action ${action} approved (${digest}) — proceeding`);
+    return proceed();
+  }
+
+  const targets = port.getTargets();
+  const rendered = renderAction(tool_name, tool_input, targets);
+  if (isRenderFailure(rendered)) {
+    return deny(
+      rendered === 'no-description'
+        ? `\`${action}\` has no approval description registered in Archie, so there is no way to tell a human ` +
+          `what approving it would do. It is refused until someone adds one. Report that you wanted to run it ` +
+          `and why, and let a human act in Tramline (https://tramline.sweatco.team).`
+        : `Cannot request approval for \`${action}\`: this task has not read the record it targets, so the ` +
+          `approval prompt cannot say what it is about. Call \`get_release\` for the release this belongs to ` +
+          `first, then retry.`,
+    );
+  }
+
+  // Some actions are only forbidden in a particular state — `increase_rollout`
+  // at the final stage is `fully_release_rollout` under another name.
+  const refusal = stateRefusal(action, rendered.target);
+  if (refusal) return deny(refusal);
+
+  // No approver configured: refuse instead of posting a button nobody can
+  // press and parking the task on it. An unconfigured deployment must be no
+  // worse than the read-only status quo, not worse than it.
+  const approvers = releaseApprovers();
+  if (approvers.size === 0) {
+    return deny(
+      `\`${action}\` needs human approval, but no release approvers are configured on this Archie deployment ` +
+      `(ARCHIE_RELEASE_APPROVERS is unset), so nobody could resolve the request. Nothing was posted. ` +
+      `Report what you would have done and let a human act in Tramline (https://tramline.sweatco.team).`,
+    );
+  }
+
+  const outcome = await port.requestApproval({
+    digest,
+    tool: action,
+    summary: rendered.summary,
+    target: rendered.target,
+  });
+
+  if (outcome === 'already-pending') {
+    return deny(
+      `Another Tramline action is already waiting for approval on this task. One release action is ` +
+      `resolved at a time — wait for the outstanding request to be approved or denied.`,
+    );
+  }
+
+  return deny(
+    `\`${action}\` needs human approval. The request has been posted and the task is pausing. ` +
+    `When it is approved you will be reactivated — re-read the release state, then retry this exact call.`,
+  );
 }
 
 /**
@@ -510,7 +784,7 @@ export function createTramlineContextHook(port: Pick<TramlineGuardPort, 'recordT
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     hooks: [async (input: any): Promise<HookJSONOutput> => {
       const { tool_name, tool_response } = input ?? {};
-      if (typeof tool_name !== 'string' || classifyTramlineTool(tool_name) !== 'read') return CONTINUE;
+      if (typeof tool_name !== 'string' || classifyTramlineTool(tool_name) !== 'read') return proceed();
 
       try {
         const payload = extractPayload(tool_response);
@@ -520,32 +794,58 @@ export function createTramlineContextHook(port: Pick<TramlineGuardPort, 'recordT
         // a denied gated call, which is the safe direction.
         logger.warn('tramline-guard', 'Failed to index Tramline read response', error);
       }
-      return CONTINUE;
+      return proceed();
     }],
   };
 }
 
 /**
- * Dig the JSON payload out of an MCP tool response. The Tramline server returns
- * `{ content: [{ type: 'text', text: '<json>' }] }`; be tolerant of the
- * response arriving already-parsed.
+ * Dig the JSON payload out of an MCP tool response.
+ *
+ * Deliberately shape-agnostic, because the repo does not agree with itself about
+ * what a PostToolUse `tool_response` looks like for an MCP tool: this module was
+ * written for `{ content: [{ type: 'text', text: '<json>' }] }` (what the
+ * Tramline server returns), while `createResearchPostToolHook` in
+ * `src/mcp/research-tools.ts` assumes a **bare array of content blocks**. Both
+ * are untested against the live SDK, and getting it wrong here is not a graceful
+ * degradation: zero labels means every gated call is refused with "call
+ * get_release first", and the agent loops on a read that can never satisfy it.
+ *
+ * So handle every plausible shape rather than betting on one.
  */
 export function extractPayload(response: unknown): unknown {
   if (response === null || response === undefined) return undefined;
   if (typeof response === 'string') return safeParse(response);
   if (typeof response !== 'object') return undefined;
 
+  // Bare array of content blocks (research-tools' assumption).
+  if (Array.isArray(response)) return fromContentBlocks(response);
+
+  // `{ content: [...] }` envelope (what the Tramline MCP server returns).
   const content = (response as { content?: unknown }).content;
-  if (Array.isArray(content)) {
-    const texts = content
-      .map((part) => (part && typeof part === 'object' ? (part as { text?: unknown }).text : undefined))
-      .filter((text): text is string => typeof text === 'string');
-    const parsed = texts.map(safeParse).filter((value) => value !== undefined);
-    if (parsed.length === 1) return parsed[0];
-    if (parsed.length > 1) return parsed;
-    return undefined;
-  }
+  if (Array.isArray(content)) return fromContentBlocks(content);
+
+  // Some hosts hand back `{ text: '<json>' }` or the parsed object itself.
+  const text = (response as { text?: unknown }).text;
+  if (typeof text === 'string') return safeParse(text);
+
   return response;
+}
+
+/** Parse the JSON out of a list of MCP content blocks. */
+function fromContentBlocks(blocks: unknown[]): unknown {
+  const parsed = blocks
+    .map((part) => {
+      if (typeof part === 'string') return safeParse(part);
+      if (part && typeof part === 'object') {
+        const text = (part as { text?: unknown }).text;
+        if (typeof text === 'string') return safeParse(text);
+      }
+      return undefined;
+    })
+    .filter((value) => value !== undefined);
+  if (parsed.length === 0) return undefined;
+  return parsed.length === 1 ? parsed[0] : parsed;
 }
 
 function safeParse(text: string): unknown {

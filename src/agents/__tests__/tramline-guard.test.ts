@@ -1,26 +1,54 @@
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import {
   classifyTramlineTool,
   actionDigest,
   renderAction,
+  isRenderFailure,
   indexTargets,
   mergeTargets,
+  stateRefusal,
   canApproveReleaseAction,
   releaseApprovers,
   extractPayload,
-  recordIdsIn,
+  targetRefsIn,
   createTramlineGuardHooks,
   createTramlineContextHook,
   TARGET_INDEX_LIMIT,
+  type RenderedAction,
   type TramlineGuardPort,
 } from '../tramline-guard.js';
 
 const tool = (action: string) => `mcp__tramline__${action}`;
 
-const SUB_ID = '4f3a1c2e-1111-4222-8333-444455556666';
-const ROLLOUT_ID = 'aa11bb22-cc33-4d44-8e55-ff6677889900';
+/**
+ * A real `GET /api/v2/releases/:id` body, generated from Tramline's own
+ * `Api::V2::*Serializer` classes rather than hand-written from the domain model.
+ *
+ * This matters more than it looks: the first version of the label index was
+ * written against the domain model, shared almost no keys with the API, and
+ * produced prompts that could not distinguish the iOS and Android sides of a
+ * release — on the one flow this feature exists for. The unit tests did not
+ * catch it because their fixture was built to match the implementation. Driving
+ * the tests from the API's actual output is the fix for that class of mistake,
+ * so keep this fixture generated, never edited by hand.
+ */
+const FIXTURE = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures/tramline-release-payload.json'), 'utf8'),
+);
 
-/** Run the PreToolUse guard and return its hook output. */
+const RELEASE = FIXTURE.release;
+const ANDROID = RELEASE.platform_runs.find((r: { platform: string }) => r.platform === 'android');
+const IOS = RELEASE.platform_runs.find((r: { platform: string }) => r.platform === 'ios');
+const ANDROID_WORKFLOW_RUN = ANDROID.production_releases[0].build.workflow_run.id;
+const IOS_WORKFLOW_RUN = IOS.production_releases[0].build.workflow_run.id;
+const ANDROID_SUBMISSION = ANDROID.production_releases[0].store_submission.id;
+const IOS_SUBMISSION = IOS.production_releases[0].store_submission.id;
+const ANDROID_ROLLOUT = ANDROID.production_releases[0].store_submission.store_rollout.id;
+const INDEX = indexTargets(FIXTURE);
+
 async function runGuard(port: TramlineGuardPort, tool_name: string, tool_input: unknown) {
   const [matcher] = createTramlineGuardHooks(port);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -29,7 +57,7 @@ async function runGuard(port: TramlineGuardPort, tool_name: string, tool_input: 
 
 function fakePort(overrides: Partial<TramlineGuardPort> = {}): TramlineGuardPort {
   return {
-    getTargets: () => ({}),
+    getTargets: () => INDEX,
     recordTargets: () => {},
     consumeApproval: () => false,
     requestApproval: async () => 'posted',
@@ -37,11 +65,19 @@ function fakePort(overrides: Partial<TramlineGuardPort> = {}): TramlineGuardPort
   };
 }
 
-const denialReason = (result: { hookSpecificOutput?: { permissionDecisionReason?: string } }) =>
-  result.hookSpecificOutput?.permissionDecisionReason ?? '';
+const denialReason = (r: { hookSpecificOutput?: { permissionDecisionReason?: string } }) =>
+  r.hookSpecificOutput?.permissionDecisionReason ?? '';
+const isDeny = (r: { hookSpecificOutput?: { permissionDecision?: string } }) =>
+  r.hookSpecificOutput?.permissionDecision === 'deny';
 
-const isDeny = (result: { hookSpecificOutput?: { permissionDecision?: string } }) =>
-  result.hookSpecificOutput?.permissionDecision === 'deny';
+/** renderAction with the failure case narrowed away, for readability. */
+function rendered(toolName: string, input: unknown, targets = INDEX): RenderedAction {
+  const result = renderAction(toolName, input, targets);
+  if (isRenderFailure(result)) throw new Error(`expected a rendered action, got ${result}`);
+  return result;
+}
+
+const APPROVERS = { ARCHIE_RELEASE_APPROVERS: 'U1,U2' };
 
 describe('classifyTramlineTool', () => {
   it('ignores tools from other MCP servers', () => {
@@ -54,39 +90,44 @@ describe('classifyTramlineTool', () => {
     expect(classifyTramlineTool(tool('get_release_analytics'))).toBe('read');
   });
 
-  it('auto-allows the three state-mirroring writes', () => {
+  // Only polling an in-progress run is genuinely side-effect-free. The other two
+  // that used to live here reach Tramline code that starts production releases
+  // and puts rollouts on automatic schedules.
+  it('auto-allows only the in-progress CI poll', () => {
     expect(classifyTramlineTool(tool('poll_workflow_run_status'))).toBe('auto');
-    expect(classifyTramlineTool(tool('fetch_workflow_run_status'))).toBe('auto');
-    expect(classifyTramlineTool(tool('sync_submission_from_store'))).toBe('auto');
+    expect(classifyTramlineTool(tool('fetch_workflow_run_status'))).toBe('gated');
+    expect(classifyTramlineTool(tool('sync_submission_from_store'))).toBe('gated');
   });
 
-  it('never allows the irreversible rollout and store actions', () => {
+  // The never-list is closed under EFFECT, not name. Each of these reaches an
+  // irreversible outcome; several were laundering another entry on the list.
+  it('never allows the irreversible actions or their aliases', () => {
     for (const action of [
       'fully_release_rollout',
+      'enable_automatic_rollout',      // self-rescheduling walk to 100%
       'halt_rollout',
       'fully_release_previous_rollout',
       'prepare_submission',
+      'update_submission_build',       // re-prepares + force-pushes metadata
+      'submit_for_review',             // its only exit is also never-allowed
       'cancel_submission_review',
+      'start_release',
+      'stop_release',
     ]) {
-      expect(classifyTramlineTool(tool(action))).toBe('never');
+      expect(classifyTramlineTool(tool(action)), action).toBe('never');
     }
   });
 
-  it('gates the retry/trigger actions the agent is meant to use', () => {
-    expect(classifyTramlineTool(tool('retry_submission'))).toBe('gated');
-    expect(classifyTramlineTool(tool('retry_workflow_run'))).toBe('gated');
-    expect(classifyTramlineTool(tool('start_release'))).toBe('gated');
+  it('gates the retry/re-trigger actions the agent is meant to use', () => {
+    for (const action of ['retry_submission', 'retry_workflow_run', 'trigger_workflow_run', 'retry_pre_release']) {
+      expect(classifyTramlineTool(tool(action)), action).toBe('gated');
+    }
   });
 
-  // The safe default: an action added to the MCP server later must not arrive
-  // ungated just because nobody remembered to classify it.
   it('gates an unknown tramline tool', () => {
     expect(classifyTramlineTool(tool('some_action_shipped_next_quarter'))).toBe('gated');
   });
 
-  // The sync tools read like refreshes but fan out into ProcessCommits /
-  // pull_request_closed! — one pushes a version-bump commit, the other can
-  // finalize a release. They must never be classified as reads or auto.
   it('gates the deceptively-named sync actions', () => {
     expect(classifyTramlineTool(tool('sync_release_commits'))).toBe('gated');
     expect(classifyTramlineTool(tool('sync_release_pull_requests'))).toBe('gated');
@@ -95,20 +136,18 @@ describe('classifyTramlineTool', () => {
 
 describe('actionDigest', () => {
   it('is stable across argument order', () => {
-    const a = actionDigest(tool('extend_soak'), { release_id: 'r1', additional_hours: 6 });
-    const b = actionDigest(tool('extend_soak'), { additional_hours: 6, release_id: 'r1' });
-    expect(a).toBe(b);
+    expect(actionDigest(tool('extend_soak'), { release_id: 'r1', additional_hours: 6 }))
+      .toBe(actionDigest(tool('extend_soak'), { additional_hours: 6, release_id: 'r1' }));
   });
 
-  it('binds to the target — a different id is a different digest', () => {
-    const a = actionDigest(tool('retry_submission'), { id: SUB_ID });
-    const b = actionDigest(tool('retry_submission'), { id: ROLLOUT_ID });
-    expect(a).not.toBe(b);
+  it('binds to the target', () => {
+    expect(actionDigest(tool('retry_submission'), { id: ANDROID_SUBMISSION }))
+      .not.toBe(actionDigest(tool('retry_submission'), { id: IOS_SUBMISSION }));
   });
 
-  it('binds to the action — the same target under another tool is a different digest', () => {
-    expect(actionDigest(tool('retry_submission'), { id: SUB_ID }))
-      .not.toBe(actionDigest(tool('trigger_submission'), { id: SUB_ID }));
+  it('binds to the action', () => {
+    expect(actionDigest(tool('retry_submission'), { id: ANDROID_SUBMISSION }))
+      .not.toBe(actionDigest(tool('trigger_submission'), { id: ANDROID_SUBMISSION }));
   });
 
   it('binds to every argument, not just the target', () => {
@@ -117,86 +156,81 @@ describe('actionDigest', () => {
   });
 
   it('ignores undefined arguments the SDK may include', () => {
-    expect(actionDigest(tool('retry_submission'), { id: SUB_ID, extra: undefined }))
-      .toBe(actionDigest(tool('retry_submission'), { id: SUB_ID }));
+    expect(actionDigest(tool('retry_submission'), { id: ANDROID_SUBMISSION, extra: undefined }))
+      .toBe(actionDigest(tool('retry_submission'), { id: ANDROID_SUBMISSION }));
+  });
+
+  it('distinguishes nested argument shapes', () => {
+    expect(actionDigest(tool('x'), { a: { b: 1 } })).not.toBe(actionDigest(tool('x'), { a: { b: 2 } }));
+    expect(actionDigest(tool('x'), { a: [1, 2] })).not.toBe(actionDigest(tool('x'), { a: [2, 1] }));
+    expect(actionDigest(tool('x'), { a: null })).not.toBe(actionDigest(tool('x'), { a: '' }));
+    expect(actionDigest(tool('x'), { a: 1 })).not.toBe(actionDigest(tool('x'), { a: '1' }));
   });
 });
 
-describe('recordIdsIn', () => {
+describe('targetRefsIn', () => {
   it('picks out record ids and ignores slugs', () => {
-    expect(recordIdsIn({ app_slug: 'sweatcoin', train_slug: 'sweatcoin-ios', id: SUB_ID })).toEqual([SUB_ID]);
+    expect(targetRefsIn({ app_slug: 'sweatcoin', train_slug: 'sweatcoin-ios', id: ANDROID_SUBMISSION }))
+      .toEqual([ANDROID_SUBMISSION]);
   });
 });
 
-describe('renderAction', () => {
-  it('describes the consequence and names the target', () => {
-    const rendered = renderAction(tool('retry_submission'), { id: SUB_ID }, {
-      [SUB_ID]: '253.0.0 IOS · store submission · (failed)',
-    });
-    expect(rendered?.summary).toContain('Retry this failed store submission');
-    expect(rendered?.summary).toContain('253.0.0 IOS · store submission · (failed)');
-    expect(rendered?.target).toBe('253.0.0 IOS · store submission · (failed)');
+// The property the whole gate is justified on: the human can tell what they are
+// approving. These run against the API-derived fixture.
+describe('indexTargets against a real API payload', () => {
+  it('carries version and platform on every nested record', () => {
+    expect(INDEX[ANDROID_WORKFLOW_RUN]).toContain('253.0.0');
+    expect(INDEX[ANDROID_WORKFLOW_RUN]).toContain('ANDROID');
+    expect(INDEX[IOS_WORKFLOW_RUN]).toContain('253.0.0');
+    expect(INDEX[IOS_WORKFLOW_RUN]).toContain('IOS');
   });
 
-  // The load-bearing safety property: an unlabelled uuid means the approver
-  // would be trusting the agent's word for what the button points at.
-  it('refuses to render when the target id is not in the index', () => {
-    expect(renderAction(tool('retry_submission'), { id: SUB_ID }, {})).toBeUndefined();
-    expect(renderAction(tool('retry_submission'), { id: SUB_ID }, undefined)).toBeUndefined();
+  // The regression that made the feature unusable: two failed RC runs on a
+  // cross-platform release rendered byte-identically.
+  it('never renders two records of the same kind identically', () => {
+    expect(INDEX[ANDROID_WORKFLOW_RUN]).not.toBe(INDEX[IOS_WORKFLOW_RUN]);
+    expect(INDEX[ANDROID_SUBMISSION]).not.toBe(INDEX[IOS_SUBMISSION]);
+
+    // Keyed on ids only: the release *slug* is a deliberate alias of the release
+    // id and shares its label, so it is not a collision.
+    const isUuid = (k: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(k);
+    const labels = Object.entries(INDEX).filter(([k]) => isUuid(k)).map(([, v]) => v);
+    expect(new Set(labels).size, `duplicate labels: ${JSON.stringify(labels)}`).toBe(labels.length);
   });
 
-  it('renders slug-addressed actions with no index at all', () => {
-    const rendered = renderAction(
-      tool('start_release'),
-      { app_slug: 'sweatcoin', train_slug: 'sweatcoin-ios', release_type: 'hotfix' },
-      undefined,
-    );
-    expect(rendered?.summary).toContain('Start a new release');
-    expect(rendered?.summary).toContain('app_slug=sweatcoin');
-    expect(rendered?.summary).toContain('release_type=hotfix');
-    expect(rendered?.target).toBeUndefined();
+  it('names the kind of each record correctly', () => {
+    expect(INDEX[ANDROID_WORKFLOW_RUN]).toContain('CI workflow run');
+    expect(INDEX[ANDROID_SUBMISSION]).toContain('store submission');
+    expect(INDEX[ANDROID_ROLLOUT]).toContain('staged rollout');
+    expect(INDEX[ANDROID.production_releases[0].build.id]).toContain('build');
+    expect(INDEX[ANDROID.latest_beta_release.id]).toContain('beta release');
+    expect(INDEX[ANDROID.id]).toContain('platform run');
+    expect(INDEX[RELEASE.id]).toContain('release');
   });
 
-  it('spells out the blast radius of the sync actions', () => {
-    const rendered = renderAction(tool('sync_release_commits'), { release_id: 'slug-abc' }, undefined);
-    expect(rendered?.summary).toContain('version-bump commit');
-    expect(rendered?.summary).toContain('backmerge');
+  it('labels the release itself with its version', () => {
+    expect(INDEX[RELEASE.id]).toContain('253.0.0');
   });
 
-  it('falls back to a generic description for an unclassified action', () => {
-    const rendered = renderAction(tool('brand_new_action'), { app_slug: 'sweatcoin' }, undefined);
-    expect(rendered?.summary).toContain('brand_new_action');
-  });
-});
-
-describe('indexTargets', () => {
-  const payload = {
-    release: {
-      id: '11111111-1111-4111-8111-111111111111',
-      release_version: '253.0.0',
-      status: 'on_track',
-      platform_runs: [
-        {
-          id: '22222222-2222-4222-8222-222222222222',
-          platform: 'ios',
-          status: 'on_track',
-          store_submissions: [{ id: SUB_ID, status: 'failed' }],
-          store_rollouts: [{ id: ROLLOUT_ID, status: 'started' }],
-        },
-      ],
-    },
-  };
-
-  it('labels nested ids with version, platform, kind and state', () => {
-    const index = indexTargets(payload);
-    expect(index[SUB_ID]).toBe('253.0.0 IOS · store submission · (failed)');
-    expect(index[ROLLOUT_ID]).toBe('253.0.0 IOS · staged rollout · (started)');
+  // A build's own version_name must not overwrite the platform run's context.
+  it('does not let a child record drop the inherited platform', () => {
+    expect(INDEX[ANDROID.production_releases[0].build.id]).toContain('ANDROID');
+    expect(INDEX[IOS.production_releases[0].build.id]).toContain('IOS');
   });
 
-  it('labels the release and platform run themselves', () => {
-    const index = indexTargets(payload);
-    expect(index['11111111-1111-4111-8111-111111111111']).toContain('253.0.0');
-    expect(index['22222222-2222-4222-8222-222222222222']).toContain('platform run');
+  it('carries the build number so two builds are distinguishable', () => {
+    expect(INDEX[IOS.production_releases[0].build.id]).toContain('21799');
+    expect(INDEX[ANDROID.production_releases[0].build.id]).toContain('21800');
+  });
+
+  it('carries rollout percentages, because on a rollout the number is the decision', () => {
+    expect(INDEX[ANDROID_ROLLOUT]).toMatch(/next 1%/);
+    expect(INDEX[ANDROID_ROLLOUT]).toMatch(/stage 1\/7/);
+  });
+
+  it('carries the store for a submission', () => {
+    expect(INDEX[ANDROID_SUBMISSION]).toContain('Play Store');
+    expect(INDEX[IOS_SUBMISSION]).toContain('App Store');
   });
 
   it('survives an unexpected payload shape without throwing', () => {
@@ -212,7 +246,7 @@ describe('mergeTargets', () => {
   });
 
   it('lets a fresh label win over a stale one', () => {
-    expect(mergeTargets({ [SUB_ID]: 'old' }, { [SUB_ID]: 'new' })).toEqual({ [SUB_ID]: 'new' });
+    expect(mergeTargets({ x: 'old' }, { x: 'new' })).toEqual({ x: 'new' });
   });
 
   it('evicts the oldest entries past the cap', () => {
@@ -225,13 +259,85 @@ describe('mergeTargets', () => {
   });
 });
 
+describe('renderAction', () => {
+  it('describes the consequence and names the target', () => {
+    const r = rendered(tool('retry_submission'), { id: IOS_SUBMISSION });
+    expect(r.summary).toContain('Retry this failed store submission');
+    expect(r.summary).toContain('IOS');
+    expect(r.target).toBe(INDEX[IOS_SUBMISSION]);
+  });
+
+  it('refuses when the target id is not in the index', () => {
+    expect(renderAction(tool('retry_submission'), { id: '11111111-2222-4333-8444-555555555555' }, {}))
+      .toBe('unlabelled-target');
+  });
+
+  // Default-to-refused: an action nobody has written a consequence for must not
+  // become a one-click button labelled with a method name.
+  it('refuses an action with no registered description', () => {
+    expect(renderAction(tool('some_action_shipped_next_quarter'), { id: ANDROID_SUBMISSION }, INDEX))
+      .toBe('no-description');
+  });
+
+  it('spells out the blast radius of the sync actions', () => {
+    const r = rendered(tool('sync_release_commits'), { release_id: RELEASE.slug });
+    expect(r.summary).toContain('version-bump commit');
+    expect(r.summary).toContain('backmerge');
+  });
+
+  it('warns that a submission retry can overwrite store metadata', () => {
+    expect(rendered(tool('retry_submission'), { id: ANDROID_SUBMISSION }).summary).toMatch(/overwrites its metadata/);
+  });
+
+  it('warns that pause is a no-op on a manual Play rollout', () => {
+    expect(rendered(tool('pause_rollout'), { id: ANDROID_ROLLOUT }).summary).toMatch(/changes nothing/);
+  });
+});
+
+describe('stateRefusal', () => {
+  it('allows a routine advance', () => {
+    expect(stateRefusal('increase_rollout', '253.0.0 ANDROID · staged rollout · stage 1/7 · (started)'))
+      .toBeUndefined();
+  });
+
+  // At the last stage this action IS fully_release_rollout, which is never-allowed.
+  it('refuses an advance that would complete the rollout', () => {
+    const refusal = stateRefusal('increase_rollout', '253.0.0 ANDROID · staged rollout · stage 7/7 · (started)');
+    expect(refusal).toContain('100% of users');
+    expect(refusal).toContain('fully_release_rollout');
+  });
+
+  it('refuses when the stage is not visible rather than guessing', () => {
+    expect(stateRefusal('increase_rollout', '253.0.0 ANDROID · staged rollout · (started)'))
+      .toContain('not visible');
+  });
+
+  it('does not apply to other actions', () => {
+    expect(stateRefusal('pause_rollout', 'stage 7/7')).toBeUndefined();
+  });
+
+  // A non-staged Play rollout goes to 100% the moment it starts.
+  it('refuses starting a rollout that is not staged', () => {
+    const refusal = stateRefusal('start_rollout', '253.0.0 ANDROID · staged rollout · not staged, at 0% · (created)');
+    expect(refusal).toContain('not staged');
+    expect(refusal).toContain('100% of users');
+  });
+
+  it('allows starting a genuinely staged rollout', () => {
+    expect(stateRefusal('start_rollout', '253.0.0 ANDROID · staged rollout · next 1%, stage 1/7 · (created)'))
+      .toBeUndefined();
+  });
+
+  it('refuses starting a rollout whose staging is not visible', () => {
+    expect(stateRefusal('start_rollout', '253.0.0 ANDROID · staged rollout · (created)')).toContain('does not say');
+  });
+});
+
 describe('releaseApprovers / canApproveReleaseAction', () => {
   it('parses and trims the allowlist', () => {
     expect([...releaseApprovers({ ARCHIE_RELEASE_APPROVERS: 'U1, U2 ,U3' })]).toEqual(['U1', 'U2', 'U3']);
   });
 
-  // Fail closed: an unconfigured deployment behaves exactly as today (Archie
-  // reads, humans act) rather than letting anyone in the channel click.
   it('authorizes nobody when the allowlist is unset or empty', () => {
     expect(canApproveReleaseAction('U1', {})).toBe(false);
     expect(canApproveReleaseAction('U1', { ARCHIE_RELEASE_APPROVERS: '' })).toBe(false);
@@ -239,77 +345,109 @@ describe('releaseApprovers / canApproveReleaseAction', () => {
   });
 
   it('authorizes only listed users', () => {
-    const env = { ARCHIE_RELEASE_APPROVERS: 'U1,U2' };
-    expect(canApproveReleaseAction('U1', env)).toBe(true);
-    expect(canApproveReleaseAction('U9', env)).toBe(false);
-    expect(canApproveReleaseAction(undefined, env)).toBe(false);
+    expect(canApproveReleaseAction('U1', APPROVERS)).toBe(true);
+    expect(canApproveReleaseAction('U9', APPROVERS)).toBe(false);
+    expect(canApproveReleaseAction(undefined, APPROVERS)).toBe(false);
   });
 });
 
 describe('extractPayload', () => {
-  it('parses the MCP text-content envelope', () => {
-    expect(extractPayload({ content: [{ type: 'text', text: '{"release":{"id":"x"}}' }] }))
-      .toEqual({ release: { id: 'x' } });
+  const body = JSON.stringify({ release: { id: 'x' } });
+
+  // The repo does not agree with itself about this shape (research-tools assumes
+  // a bare array), and guessing wrong deadlocks the gate — so handle all of them.
+  it('parses the { content: [...] } envelope', () => {
+    expect(extractPayload({ content: [{ type: 'text', text: body }] })).toEqual({ release: { id: 'x' } });
+  });
+
+  it('parses a bare array of content blocks', () => {
+    expect(extractPayload([{ type: 'text', text: body }])).toEqual({ release: { id: 'x' } });
+  });
+
+  it('parses a { text } wrapper and a raw string', () => {
+    expect(extractPayload({ text: body })).toEqual({ release: { id: 'x' } });
+    expect(extractPayload(body)).toEqual({ release: { id: 'x' } });
   });
 
   it('tolerates an already-parsed object', () => {
     expect(extractPayload({ release: { id: 'x' } })).toEqual({ release: { id: 'x' } });
   });
 
-  it('returns undefined for non-JSON text rather than throwing', () => {
+  it('returns undefined for non-JSON rather than throwing', () => {
     expect(extractPayload({ content: [{ type: 'text', text: 'not json' }] })).toBeUndefined();
     expect(extractPayload(undefined)).toBeUndefined();
   });
 });
 
 describe('createTramlineGuardHooks', () => {
-  it('lets reads and auto-allowed writes straight through', async () => {
+  it('lets reads and the CI poll straight through', async () => {
     const requestApproval = vi.fn(async () => 'posted' as const);
-    const port = fakePort({ requestApproval });
-
-    for (const action of ['get_release', 'poll_workflow_run_status', 'sync_submission_from_store']) {
-      const result = await runGuard(port, tool(action), { id: SUB_ID });
-      expect(result).toEqual({ continue: true });
+    for (const action of ['get_release', 'list_releases', 'poll_workflow_run_status']) {
+      expect(await runGuard(fakePort({ requestApproval }), tool(action), { id: ANDROID_WORKFLOW_RUN }))
+        .toEqual({ continue: true });
     }
     expect(requestApproval).not.toHaveBeenCalled();
   });
 
   it('ignores tools from other servers', async () => {
-    const result = await runGuard(fakePort(), 'mcp__teamcity__trigger_build', { buildTypeId: 'x' });
-    expect(result).toEqual({ continue: true });
+    expect(await runGuard(fakePort(), 'mcp__teamcity__trigger_build', { buildTypeId: 'x' }))
+      .toEqual({ continue: true });
   });
 
   it('denies a never-allowed action without asking anyone', async () => {
     const requestApproval = vi.fn(async () => 'posted' as const);
-    const result = await runGuard(fakePort({ requestApproval }), tool('fully_release_rollout'), { id: ROLLOUT_ID });
+    const result = await runGuard(fakePort({ requestApproval }), tool('fully_release_rollout'), { id: ANDROID_ROLLOUT });
 
     expect(isDeny(result)).toBe(true);
     expect(denialReason(result)).toContain('not available to agents');
-    expect(denialReason(result)).toContain('tramline.sweatco.team');
+    expect(requestApproval).not.toHaveBeenCalled();
+  });
+
+  it('denies enable_automatic_rollout — the laundering path to 100%', async () => {
+    const requestApproval = vi.fn(async () => 'posted' as const);
+    const result = await runGuard(
+      fakePort({ requestApproval }),
+      tool('enable_automatic_rollout'),
+      { id: ANDROID_ROLLOUT },
+    );
+    expect(isDeny(result)).toBe(true);
     expect(requestApproval).not.toHaveBeenCalled();
   });
 
   it('requests approval for a gated action and denies this attempt', async () => {
-    // Typed argument so `mock.calls[0][0]` is inspectable — the point of this
-    // test is *what* the guard asks approval for, not just that it asked.
     const requestApproval = vi.fn(
-      async (_request: { digest: string; tool: string; summary: string; target?: string }) => 'posted' as const,
+      async (_r: { digest: string; tool: string; summary: string; target?: string }) => 'posted' as const,
     );
-    const port = fakePort({
-      requestApproval,
-      getTargets: () => ({ [SUB_ID]: '253.0.0 IOS · store submission · (failed)' }),
-    });
+    vi.stubEnv('ARCHIE_RELEASE_APPROVERS', 'U1');
+    try {
+      const result = await runGuard(fakePort({ requestApproval }), tool('retry_workflow_run'), { id: IOS_WORKFLOW_RUN });
 
-    const result = await runGuard(port, tool('retry_submission'), { id: SUB_ID });
+      expect(isDeny(result)).toBe(true);
+      expect(denialReason(result)).toContain('needs human approval');
+      expect(requestApproval).toHaveBeenCalledTimes(1);
+      const request = requestApproval.mock.calls[0][0];
+      expect(request.tool).toBe('retry_workflow_run');
+      expect(request.digest).toBe(actionDigest(tool('retry_workflow_run'), { id: IOS_WORKFLOW_RUN }));
+      // The approver must be able to see WHICH platform they are re-running.
+      expect(request.target).toContain('IOS');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 
-    expect(isDeny(result)).toBe(true);
-    expect(denialReason(result)).toContain('needs human approval');
-    expect(requestApproval).toHaveBeenCalledTimes(1);
-    expect(requestApproval.mock.calls[0][0]).toMatchObject({
-      tool: 'retry_submission',
-      digest: actionDigest(tool('retry_submission'), { id: SUB_ID }),
-      target: '253.0.0 IOS · store submission · (failed)',
-    });
+  // Posting a button nobody can press AND parking the task would be worse than
+  // the read-only status quo, not equal to it.
+  it('refuses without posting or parking when no approvers are configured', async () => {
+    const requestApproval = vi.fn(async () => 'posted' as const);
+    vi.stubEnv('ARCHIE_RELEASE_APPROVERS', '');
+    try {
+      const result = await runGuard(fakePort({ requestApproval }), tool('retry_workflow_run'), { id: IOS_WORKFLOW_RUN });
+      expect(isDeny(result)).toBe(true);
+      expect(denialReason(result)).toContain('no release approvers are configured');
+      expect(requestApproval).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('proceeds once an approval for that exact call is spendable', async () => {
@@ -318,11 +456,11 @@ describe('createTramlineGuardHooks', () => {
     const result = await runGuard(
       fakePort({ consumeApproval, requestApproval }),
       tool('retry_submission'),
-      { id: SUB_ID },
+      { id: ANDROID_SUBMISSION },
     );
 
     expect(result).toEqual({ continue: true });
-    expect(consumeApproval).toHaveBeenCalledWith(actionDigest(tool('retry_submission'), { id: SUB_ID }));
+    expect(consumeApproval).toHaveBeenCalledWith(actionDigest(tool('retry_submission'), { id: ANDROID_SUBMISSION }));
     expect(requestApproval).not.toHaveBeenCalled();
   });
 
@@ -331,7 +469,7 @@ describe('createTramlineGuardHooks', () => {
     const result = await runGuard(
       fakePort({ requestApproval, getTargets: () => ({}) }),
       tool('retry_submission'),
-      { id: SUB_ID },
+      { id: ANDROID_SUBMISSION },
     );
 
     expect(isDeny(result)).toBe(true);
@@ -339,15 +477,37 @@ describe('createTramlineGuardHooks', () => {
     expect(requestApproval).not.toHaveBeenCalled();
   });
 
-  it('refuses a second gated action while one is pending', async () => {
-    const port = fakePort({
-      requestApproval: async () => 'already-pending',
-      getTargets: () => ({ [SUB_ID]: '253.0.0 IOS · store submission · (failed)' }),
-    });
+  it('refuses a terminal-stage rollout advance instead of asking for approval', async () => {
+    const requestApproval = vi.fn(async () => 'posted' as const);
+    const terminal = { ...INDEX, [ANDROID_ROLLOUT]: '253.0.0 ANDROID · staged rollout · stage 7/7 · (started)' };
+    vi.stubEnv('ARCHIE_RELEASE_APPROVERS', 'U1');
+    try {
+      const result = await runGuard(
+        fakePort({ requestApproval, getTargets: () => terminal }),
+        tool('increase_rollout'),
+        { id: ANDROID_ROLLOUT },
+      );
+      expect(isDeny(result)).toBe(true);
+      expect(denialReason(result)).toContain('100% of users');
+      expect(requestApproval).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 
-    const result = await runGuard(port, tool('retry_submission'), { id: SUB_ID });
-    expect(isDeny(result)).toBe(true);
-    expect(denialReason(result)).toContain('already waiting for approval');
+  it('refuses a second gated action while one is pending', async () => {
+    vi.stubEnv('ARCHIE_RELEASE_APPROVERS', 'U1');
+    try {
+      const result = await runGuard(
+        fakePort({ requestApproval: async () => 'already-pending' }),
+        tool('retry_submission'),
+        { id: ANDROID_SUBMISSION },
+      );
+      expect(isDeny(result)).toBe(true);
+      expect(denialReason(result)).toContain('already waiting for approval');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 
@@ -359,25 +519,27 @@ describe('createTramlineContextHook', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       {
         tool_name: tool('get_release'),
-        tool_response: {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              release: {
-                id: '11111111-1111-4111-8111-111111111111',
-                release_version: '253.0.0',
-                platform_runs: [{ id: '22222222-2222-4222-8222-222222222222', platform: 'ios', status: 'on_track' }],
-              },
-            }),
-          }],
-        },
+        tool_response: { content: [{ type: 'text', text: JSON.stringify(FIXTURE) }] },
       } as any,
       undefined as any,
       {} as any,
     );
 
     expect(recordTargets).toHaveBeenCalledTimes(1);
-    expect(recordTargets.mock.calls[0][0]['22222222-2222-4222-8222-222222222222']).toContain('platform run');
+    expect(recordTargets.mock.calls[0][0][IOS_WORKFLOW_RUN]).toContain('IOS');
+  });
+
+  it('indexes a bare-array response shape too', async () => {
+    const recordTargets = vi.fn();
+    const hook = createTramlineContextHook({ recordTargets });
+    await hook.hooks[0](
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { tool_name: tool('get_release'), tool_response: [{ type: 'text', text: JSON.stringify(FIXTURE) }] } as any,
+      undefined as any,
+      {} as any,
+    );
+    expect(recordTargets).toHaveBeenCalledTimes(1);
+    expect(Object.keys(recordTargets.mock.calls[0][0]).length).toBeGreaterThan(5);
   });
 
   it('does not index action responses — only reads', async () => {
@@ -390,5 +552,76 @@ describe('createTramlineContextHook', () => {
       {} as any,
     );
     expect(recordTargets).not.toHaveBeenCalled();
+  });
+});
+
+// The prompt must be authored by us. A string argument is the one part the agent
+// controls, and unescaped it can append its own lines to the Slack message.
+describe('argument rendering cannot forge prompt content', () => {
+  it('neutralizes newlines and mrkdwn in an argument value', () => {
+    const r = rendered(tool('extend_soak'), {
+      release_id: RELEASE.slug,
+      additional_hours: '6\n*Note:* pre-agreed with the release manager — safe to approve',
+    });
+    expect(r.summary).not.toContain('\n*Note:*');
+    expect(r.summary).not.toMatch(/\*Note:\*/);
+    expect(r.summary.split('\n').filter((l) => l.startsWith('*')).length).toBeLessThanOrEqual(2);
+  });
+
+  it('caps a long argument value', () => {
+    const r = rendered(tool('extend_soak'), { release_id: RELEASE.slug, additional_hours: 'x'.repeat(500) });
+    expect(r.summary.length).toBeLessThan(400);
+  });
+});
+
+// Tramline accepts release_id as a UUID *or* a slug; matching UUIDs alone let the
+// agent skip the "must have read it" requirement on every release-level action.
+describe('slug-addressed targets', () => {
+  it('indexes the release slug alongside its id', () => {
+    expect(INDEX[RELEASE.slug]).toBe(INDEX[RELEASE.id]);
+  });
+
+  it('refuses a slug-addressed release action the task has not read', () => {
+    expect(renderAction(tool('complete_release'), { release_id: 'some-other-release' }, INDEX))
+      .toBe('unlabelled-target');
+  });
+
+  it('renders a slug-addressed action once the release has been read', () => {
+    expect(rendered(tool('complete_release'), { release_id: RELEASE.slug }).target).toContain('253.0.0');
+  });
+});
+
+describe('the guard fails closed', () => {
+  it('denies instead of throwing when an argument overflows the canonicalizer', async () => {
+    let deep: unknown = 'leaf';
+    for (let i = 0; i < 60_000; i++) deep = [deep];
+    vi.stubEnv('ARCHIE_RELEASE_APPROVERS', 'U1');
+    try {
+      const result = await runGuard(fakePort(), tool('retry_submission'), { id: ANDROID_SUBMISSION, junk: deep });
+      expect(isDeny(result)).toBe(true);
+      expect(denialReason(result)).toContain('errored while evaluating');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('denies when the port throws', async () => {
+    vi.stubEnv('ARCHIE_RELEASE_APPROVERS', 'U1');
+    try {
+      const result = await runGuard(
+        fakePort({ requestApproval: async () => { throw new Error('slack down'); } }),
+        tool('retry_submission'),
+        { id: ANDROID_SUBMISSION },
+      );
+      expect(isDeny(result)).toBe(true);
+      expect(denialReason(result)).toContain('slack down');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('still lets a non-tramline tool through', async () => {
+    expect(await runGuard(fakePort({ getTargets: () => { throw new Error('boom'); } }), 'Read', { file_path: '/x' }))
+      .toEqual({ continue: true });
   });
 });
