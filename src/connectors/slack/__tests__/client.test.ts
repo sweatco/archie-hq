@@ -26,8 +26,10 @@ const slackApi = {
 vi.mock('@slack/web-api', () => ({
   WebClient: vi.fn(function (this: unknown) { return slackApi; }),
 }));
+// Kept on a handle so tests can assert on what the backstop logs.
+const loggerWarn = vi.fn();
 vi.mock('../../../system/logger.js', () => ({
-  logger: { slack: vi.fn(), warn: vi.fn(), system: vi.fn(), error: vi.fn(), plain: vi.fn() },
+  logger: { slack: vi.fn(), warn: loggerWarn, system: vi.fn(), error: vi.fn(), plain: vi.fn() },
 }));
 
 type ClientModule = typeof import('../client.js');
@@ -454,6 +456,112 @@ describe('fetchSlackThread — pagination', () => {
 
     expect(thread.messages.map((m) => m.text)).toEqual(['first page', 'second page']);
     expect(slackApi.conversations.replies).toHaveBeenCalledTimes(2);
+  });
+});
+
+/**
+ * The extractors walk a third-party payload, and they run on the path every
+ * inbound Slack message takes. A shape Slack "can't" send must still not throw:
+ * an exception here propagates out of fetchSlackThread and the message never
+ * reaches an agent at all. Six of these threw before this suite existed.
+ */
+describe('fetchSlackThread — malformed payloads never throw', () => {
+  const deepElements = (depth: number) => {
+    let node: Record<string, unknown> = { type: 'rich_text_section', elements: [{ type: 'text', text: 'deep' }] };
+    for (let i = 0; i < depth; i += 1) node = { type: 'rich_text_section', elements: [node] };
+    return { type: 'rich_text', elements: [node] };
+  };
+
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ['blocks null', { blocks: null }],
+    ['blocks not an array', { blocks: { type: 'rich_text' } }],
+    ['a block is null', { blocks: [null] }],
+    ['a block is a string', { blocks: ['nope'] }],
+    ['block elements null', { blocks: [{ type: 'rich_text', elements: null }] }],
+    ['block elements are primitives', { blocks: [{ type: 'rich_text', elements: [1, 'x', true, null] }] }],
+    ['table rows ragged', { blocks: [{ type: 'table', rows: [null, [null], [{ type: 'rich_text' }]] }] }],
+    ['table rows not an array', { blocks: [{ type: 'table', rows: 'nope' }] }],
+    ['card without title', { blocks: [{ type: 'card' }] }],
+    ['deeply nested sections', { blocks: [deepElements(400)] }],
+    ['attachments not an array', { attachments: 'nope' }],
+    ['an attachment is null', { attachments: [null] }],
+    ['attachment fields not an array', { attachments: [{ fields: 'x' }] }],
+    ['attachment fields are primitives', { attachments: [{ fields: [1, null, 'x'] }] }],
+    ['attachment blocks are primitives', { attachments: [{ blocks: [1, null] }] }],
+    ['attachment actions are primitives', { attachments: [{ actions: [null, 1] }] }],
+    ['message_blocks malformed', { attachments: [{ message_blocks: [{}, { message: null }] }] }],
+    ['files not an array', { files: 'nope' }],
+    ['reactions contain null', { reactions: [null, { name: 1 }] }],
+    ['text is not a string', { text: 12345, blocks: [{ type: 'section', text: { type: 'mrkdwn', text: 'body' } }] }],
+    ['lone surrogate in text', { text: ' \uD800 ​' }],
+  ];
+
+  for (const [name, payload] of cases) {
+    it(`survives ${name}`, async () => {
+      slackApi.conversations.replies.mockResolvedValue({
+        messages: [rawMsg({ ts: '800.0', user: 'UHUMAN', ...payload })],
+      });
+
+      const thread = await client.fetchSlackThread('C_fuzz', '800.0', '800.0');
+
+      expect(typeof thread.messages[0].text).toBe('string');
+    });
+  }
+});
+
+describe('fetchSlackThread — shared-channel redaction is unaffected by richer extraction', () => {
+  it('replaces an external author\'s message with the placeholder, carrying no content', async () => {
+    slackApi.conversations.info.mockResolvedValue({
+      ok: true,
+      channel: { id: 'C_shared', name: 'support', is_private: false, is_im: false, is_mpim: false, is_ext_shared: true },
+    });
+    slackApi.users.info.mockImplementation(async ({ user }: { user: string }) => ({
+      ok: true,
+      user: {
+        id: user, name: user, real_name: `Real ${user}`, profile: {},
+        team_id: user === 'UGUEST' ? 'THOME' : 'THOME',
+        is_restricted: user === 'UGUEST',   // multi-channel guest → external
+      },
+    }));
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [
+        rawMsg({
+          ts: '801.0', user: 'UGUEST', text: '',
+          attachments: [{ title: 'CANARY-TITLE', title_link: 'https://canary.example.com', text: 'CANARY-BODY' }],
+        }),
+      ],
+    });
+    const { renderMessageForContext } = await import('../../../tasks/persistence.js');
+
+    const thread = await client.fetchSlackThread('C_shared', '801.0', '801.0');
+    expect(thread.shared).toBe(true);
+    const msg = thread.messages[0];
+    expect(client.isExternalUser(msg.user)).toBe(true);
+
+    // Mirrors Task.append: an external author in a shared channel is written
+    // with empty content, so nothing the extractors found can escape.
+    const rendered = renderMessageForContext(
+      { text: '', files: undefined, attachments: undefined },
+      { redacted: true },
+    );
+    expect(rendered).toBe('[redacted: external participant in shared channel]');
+    expect(rendered).not.toContain('CANARY');
+  });
+
+  it('logs only JSON paths from the backstop, never the content it found', async () => {
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [rawMsg({
+        ts: '802.0', user: 'UHUMAN', text: 'covered',
+        blocks: [{ type: 'rich_text', elements: [{ type: 'rich_text_section', elements: [{ type: 'text', text: 'covered' }] }] }],
+        some_future_shape: { headline: 'SENSITIVE-CANARY' },
+      })],
+    });
+
+    await client.fetchSlackThread('C_log', '802.0', '802.0');
+
+    const logged = JSON.stringify(loggerWarn.mock.calls);
+    expect(logged).toContain('some_future_shape.headline');
+    expect(logged).not.toContain('SENSITIVE-CANARY');
   });
 });
 

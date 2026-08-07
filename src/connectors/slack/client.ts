@@ -344,7 +344,7 @@ export async function getMessageReactions(channel: string, timestamp: string): P
     // external participants unresolved elsewhere.
     const nameById = new Map((await listWorkspaceUsers()).map((u) => [u.id, u.realName]));
     return raw
-      .filter((r): r is { name: string; count?: number; users?: string[] } => typeof r.name === 'string')
+      .filter((r): r is { name: string; count?: number; users?: string[] } => Boolean(r) && typeof r?.name === 'string')
       .map((r) => {
         const users = (r.users ?? []).map((uid) => nameById.get(uid) ?? uid);
         return { name: r.name, count: r.count ?? 0, ...(users.length > 0 ? { users } : {}) };
@@ -629,7 +629,7 @@ const TEXT_FIELD_URL = /<((?:https?|mailto):[^|>\s]+)(?:\|[^>]*)?>/g;
  * missing, deduped and in order.
  */
 function recoverMissingUrls(extracted: string, textField: string | undefined): string[] {
-  if (!textField) return [];
+  if (!textField || typeof textField !== 'string') return [];
   const missing: string[] = [];
   for (const match of textField.matchAll(TEXT_FIELD_URL)) {
     const url = match[1];
@@ -876,7 +876,7 @@ async function resolveRawMessages(
       const body = ownParts.join('\n');
       const normalizedBody = normalizeForMatch(body);
       const bodyTokens = new Set(contentTokens(body));
-      for (const line of (msg.text ?? '').split('\n')) {
+      for (const line of String(msg.text ?? '').split('\n')) {
         const trimmed = line.trim();
         if (contentTokens(trimmed).length === 0) continue;
         if (isCovered(trimmed, normalizedBody, bodyTokens)) continue;
@@ -921,6 +921,7 @@ async function resolveRawMessages(
     const attachments: RawAttachment[] = [];
     if (rawAttachments && Array.isArray(rawAttachments)) {
       for (const att of rawAttachments) {
+        if (!att || typeof att !== 'object') continue;
         // Prefer structured message_blocks; skip text/fallback when present to
         // avoid duplicating the same content.
         const seg: string[] = [];
@@ -966,7 +967,8 @@ async function resolveRawMessages(
           push(att.pretext);
           push(att.service_name ?? att.author_name);
           push(att.title && att.title_link ? `${att.title} (${att.title_link})` : att.title ?? att.title_link);
-          const fieldLines = (att.fields ?? [])
+          const fieldLines = (Array.isArray(att.fields) ? att.fields : [])
+            .filter((field) => field && typeof field === 'object')
             .map((field) => [field.title, field.value].filter(Boolean).join(': '))
             .filter(Boolean);
           // `fallback` is a flat restatement of the whole card, so when the
@@ -985,11 +987,12 @@ async function resolveRawMessages(
           // `message_blocks` (a forwarded Slack message) and previously unread,
           // which is why a #bugs report's "Ticket" button rendered as the
           // fallback string "[no preview available]".
-          for (const block of att.blocks ?? []) {
+          for (const block of Array.isArray(att.blocks) ? att.blocks : []) {
             push(extractBlockText(block as { type: string; elements?: Array<unknown> }));
           }
           push(att.footer);
-          for (const action of att.actions ?? []) {
+          for (const action of Array.isArray(att.actions) ? att.actions : []) {
+            if (!action || typeof action !== 'object') continue;
             push(action.text ? `[${action.text}]${action.url ? ` ${action.url}` : ''}` : undefined);
           }
           seg.push(...recoverMissingUrls(seg.join('\n'), att.text || att.fallback));
@@ -1063,8 +1066,10 @@ async function resolveRawMessages(
         // `rows` is a cell matrix, each cell its own rich_text block. Archie
         // posts markdown tables and Slack hands them back in this shape, so
         // without this the agent re-reading its own message sees no table at all.
-        const rows = (block as { rows?: Array<Array<unknown>> }).rows ?? [];
+        const rows = (block as { rows?: Array<Array<unknown>> }).rows;
+        if (!Array.isArray(rows)) return '';
         return rows
+          .filter((row): row is Array<unknown> => Array.isArray(row))
           .map((row) => `| ${row.map((cell) => extractBlockText(cell as { type: string })).join(' | ')} |`)
           .join('\n');
       }
@@ -1111,6 +1116,10 @@ async function resolveRawMessages(
     const parts: string[] = [];
 
     for (const element of elements) {
+      // Slack's arrays are typed, but this walks a third-party payload — a
+      // primitive or null where an element belongs must not take the whole
+      // thread fetch down with it.
+      if (!element || typeof element !== 'object') continue;
       const el = element as {
         type: string;
         elements?: Array<unknown>;
@@ -1279,6 +1288,7 @@ async function resolveRawMessages(
 
     if (attachments && Array.isArray(attachments)) {
       for (const att of attachments) {
+        if (!att || typeof att !== 'object') continue;
         // Files nested in attachment
         processFiles(att.files);
 
@@ -1303,7 +1313,7 @@ async function resolveRawMessages(
     const raw = (msg as { reactions?: Array<{ name?: string; count?: number }> }).reactions;
     if (!raw || !Array.isArray(raw)) return [];
     return raw
-      .filter((r): r is { name: string; count?: number } => typeof r.name === 'string')
+      .filter((r): r is { name: string; count?: number } => Boolean(r) && typeof r?.name === 'string')
       .map((r) => ({ name: r.name, count: r.count ?? 0 }));
   };
 
