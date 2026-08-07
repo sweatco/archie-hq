@@ -29,7 +29,7 @@ Plugin agents are lightweight agents for domains that do not need git or GitHub 
 - Each `.md` file becomes an agent (e.g., `agents/copywriter.md` becomes `copywriter-agent`)
 - Agent identity, expertise, and optional model override come from frontmatter
 - Domain-specific instructions come from the markdown body
-- Built-in tools: `Read`, `Glob`, `Grep`, `Skill`, `Write`, `Edit`, `Bash`, `send_message_to_agent` (via `repo-agent-tools`), `log_finding` (via `repo-agent-tools`), `web_research` (via `research-tools`)
+- Built-in tools: `Read`, `Glob`, `Grep`, `Skill`, `Write`, `Edit`, `Bash`, `send_message_to_agent` (via `agent-tools`), `log_finding` (via `agent-tools`), `web_research` (via `research-tools`)
 - The write boundary is enforced by the spawn-time sandbox: the agent workspace is the only writable path, so `Write`/`Edit`/`Bash` reach the agent's own scratch space and nothing else. Plugin agents are NOT issued the `repo-tools` MCP server or any git/GitHub plumbing, so there is no repo for them to modify
 - Network egress is denied unless the agent's frontmatter declares `allowedNetworkDomains`
 - Plugin agents may still opt into MCP servers via frontmatter `mcpServers` (resolved against the root `.mcp.json`), so they are not strictly limited to the built-in tool set

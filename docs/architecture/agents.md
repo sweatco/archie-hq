@@ -95,13 +95,13 @@ The pre-v30 singular shape (`metadata.archie.repo: {github, baseBranch}`) is sti
 
 **Multi-repo mounts**: Each spawn iterates the agent's declared `repos` list, ensures an `AttachedRepo` record exists in `metadata.repositories[agentId]` for each (preserving the clone/branch state of repos already present), runs `setupSharedClone` per repo, and aggregates all clone paths into `additionalDirectories` and the sandbox `allowReadPaths`/`allowWritePaths`/`denyWritePaths`. Each repo gets its own task-local clone at `sessions/{taskId}/repos/{agentId}/{org}/{repo}/` — two agents that declare the same github get two independent clones with independent branch state. Because the loop iterates the *declared* list, adding a repo to an agent's frontmatter makes it mount on the next spawn (so an old task picks it up on recovery), and removing one simply stops mounting it (a stale metadata record is harmless).
 
-**Tools** (via MCP servers `repo-agent-tools`, `repo-tools`, and `research-tools`):
+**Tools** (via MCP servers `agent-tools`, `repo-tools`, and `research-tools`):
 
 | Tool | MCP Server | Availability | Purpose |
 |---|---|---|---|
-| `send_message_to_agent` | `repo-agent-tools` | Always | Report findings or coordinate with peers |
-| `log_finding` | `repo-agent-tools` | Always | Write to shared knowledge log |
-| `share_artifact` | `repo-agent-tools` | Always | Publish an immutable snapshot to `shared/artifacts/` |
+| `send_message_to_agent` | `agent-tools` | Always | Report findings or coordinate with peers |
+| `log_finding` | `agent-tools` | Always | Write to shared knowledge log |
+| `share_artifact` | `agent-tools` | Always | Publish an immutable snapshot to `shared/artifacts/` |
 | `web_research` | `research-tools` | Always | Spawn a research pipeline |
 | `fetch` | `repo-tools` | Always | Fetch latest refs from origin |
 | `switch_branch` | `repo-tools` | Always | Switch branches with auto-stash/pop |
@@ -160,9 +160,9 @@ Plugin agents are lightweight agents for domains that don't need git or GitHub i
 
 | Tool | MCP Server | Purpose |
 |---|---|---|
-| `send_message_to_agent` | `repo-agent-tools` | Report findings or coordinate with peers |
-| `log_finding` | `repo-agent-tools` | Write to shared knowledge log |
-| `share_artifact` | `repo-agent-tools` | Publish an immutable snapshot to `shared/artifacts/` |
+| `send_message_to_agent` | `agent-tools` | Report findings or coordinate with peers |
+| `log_finding` | `agent-tools` | Write to shared knowledge log |
+| `share_artifact` | `agent-tools` | Publish an immutable snapshot to `shared/artifacts/` |
 | `web_research` | `research-tools` | Spawn a research pipeline |
 | `Read`, `Glob`, `Grep` | (built-in) | Explore files in the agent workspace and (read-only) shared folder |
 | `Skill` | (SDK built-in) | Load domain-specific agent skills mounted from the plugin |
