@@ -11,7 +11,7 @@ The `web_research` tool is registered as an MCP server on every agent's `query()
 ```typescript
 // From src/agents/spawn.ts (same pattern for all agent types)
 mcpServers: {
-  "repo-agent-tools": mcpServer,
+  "agent-tools": mcpServer,
   "research-tools": createResearchMcpServer({
     getTaskId: () => metadata.task_id,
     getResearchesDir: () => join(getTaskPath(metadata.task_id), 'researches'),

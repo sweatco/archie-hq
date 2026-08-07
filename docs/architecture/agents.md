@@ -256,7 +256,7 @@ Different for each agent track:
 **Plugin agents** (`prompts/plugin-agent.md`):
 - Available tools summary (including Write/Edit/Bash, scoped to the agent workspace)
 - Workspace description, and that product code belongs to repo agents
-- Simple workflow: receive, research, log, report
+- Simple workflow: receive, do the work the agent's own instructions describe (research, or acting via its plugin's MCP tools), log, report
 
 ### Layer 3: Domain-Specific Instructions
 

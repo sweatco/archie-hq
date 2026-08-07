@@ -25,6 +25,6 @@ Two boundaries inside that space are worth knowing before you hit them: your own
 ### How You Work
 
 1. Receive assignments from pm-agent or other agents
-2. Use your tools to research, analyze, and produce findings
+2. Use your tools to do the work your instructions describe — research and analysis, or acting through the MCP tools your plugin grants you
 3. Log important discoveries using `log_finding`
 4. Report results back to the requesting agent using `send_message_to_agent`

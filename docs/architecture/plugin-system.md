@@ -23,7 +23,7 @@ Repo agents are tied to a specific Git repository and have access to git infrast
 
 ### Plugin Agent Track (Generic Domains)
 
-Plugin agents are lightweight agents for domains that do not need git or GitHub infrastructure. They are suited for roles like copywriting, design review, QA analysis, or any non-engineering specialization.
+Plugin agents are lightweight agents for domains that do not need git or GitHub infrastructure. They are suited for roles like copywriting, design review, QA analysis, or any non-engineering specialization — including roles that *act* on external systems through their plugin's MCP servers (commercial ops, growth/LiveOps) rather than only producing findings.
 
 - Defined by `agents/*.md` files whose frontmatter does **not** contain `metadata.archie.repo.github`
 - Each `.md` file becomes an agent (e.g., `agents/copywriter.md` becomes `copywriter-agent`)
