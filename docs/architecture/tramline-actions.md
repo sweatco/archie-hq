@@ -14,28 +14,25 @@ The obvious alternative — have the agent ask the PM, have the PM call an appro
 
 ## Classification
 
-`src/agents/tramline-guard.ts` sorts every `mcp__tramline__*` call into one of four dispositions.
+`src/agents/tramline-guard.ts` applies one rule, deliberately without tiers:
 
 | Disposition | Count | Behaviour |
 | --- | --- | --- |
 | **read** | 9 | Straight through. Allow-listed by name. |
-| **auto** | 1 | Straight through: `poll_workflow_run_status` only. |
-| **gated** | 25 | Denied until a human approves this exact call — and refused outright if the action has no registered consequence description, if its target is unlabelled, or if its *state* makes it equivalent to a never-listed action. |
-| **never** | 10 | Denied always. No approval unlocks them. |
+| **gated** | 36 | Every mutation. Denied until a human approves this exact call. |
 
-Reads are allow-listed rather than derived, so **a Tramline tool added later defaults to gated** rather than silently arriving open. And because `ACTION_DESCRIPTIONS` is itself an allowlist, a gated action nobody has written a consequence sentence for is *refused*, not rendered as a bare method name — "defaults to gated" therefore means "defaults to refused until someone reviews it".
+Reads are allow-listed rather than derived, so **a Tramline tool added later defaults to gated** rather than silently open. And because `ACTION_DESCRIPTIONS` is itself an allowlist, a mutation nobody has written a consequence sentence for is *refused*, not rendered as a bare method name — "defaults to gated" therefore means "defaults to refused until someone reviews it".
 
-`auto` holds one member, and its docstring deliberately does not claim the tool is side-effect-free: `poll_workflow_run_status` can attach a build and trigger submissions. It is ungated because that is the same progression Tramline's own poller performs unprompted on a run that is already in flight. The two tools that used to sit beside it were moved out after reading the Ruby: `fetch_workflow_run_status` resurrects a run Tramline had marked **failed** and can cascade into starting a production release, and `sync_submission_from_store` can create a rollout with automatic progression enabled.
+### Why no tiers
 
-### Closed under effect, not name
+Two earlier drafts had them, and both collapsed under review against Tramline's actual code:
 
-The never-list is the part most likely to look over-long. Each entry is there because of what it *does*, and several are there because they reached another entry's code path: `enable_automatic_rollout` schedules a job that increases the rollout and re-schedules itself until 100%; `update_submission_build` re-prepares the store version and force-pushes its metadata, exactly like `prepare_submission`; `submit_for_review` is denied because its only exit (`cancel_submission_review`) is denied, and an in-progress Apple review is what blocks the *next* submission. A gate that reasons about tool names is trivially laundered by a differently-named tool, and the first version of this list was.
+- An **auto-allowed** tier ("writes that merely mirror external state") shrank from three members to zero. `fetch_workflow_run_status` resurrects a run Tramline had marked failed and can cascade into starting a production release; `sync_submission_from_store` can create a rollout with automatic progression enabled; even `poll_workflow_run_status` pulls forward a cascade that attaches builds and triggers submissions. "Sounds like a read" was false every time.
+- A **never-allowed** list ("irreversible, no approval unlocks it") was not closed under effect: `enable_automatic_rollout` reached `fully_release_rollout`'s outcome on a self-rescheduling 24h job, `update_submission_build` reached `prepare_submission`'s metadata overwrite, `increase_rollout` at the final stage completed the rollout. Every boundary drawn by tool name invited laundering through a differently-named tool, and each fix grew the list.
 
-Two actions are refused by **state** rather than by name, in `stateRefusal`: `increase_rollout` at the final stage (it completes the rollout at 100%) and `start_rollout` on a non-staged rollout (`start_release!` skips the stages and releases to everyone immediately). Both read their state from the label index, and both refuse when the relevant field is not visible rather than guessing permissively.
+The uniform rule has nothing to launder and nothing to misclassify: whatever a mutation does, a human reads the rendered consequence and the target's live state (stage, percentages, staged-or-not — all carried in the label) and decides. The judgement about *which* mutations deserve extra scrutiny lives where judgement belongs — with the approver, whose prompt states the consequence plainly ("releases to 100% of users immediately — irreversible"), and in the agent's instructions, which tell it to prefer recommending the heavy moves rather than proposing them.
 
-The full list: `fully_release_rollout`, `enable_automatic_rollout`, `halt_rollout`, `fully_release_previous_rollout`, `prepare_submission`, `update_submission_build`, `submit_for_review`, `cancel_submission_review`, `start_release`, `stop_release`.
-
-The agent's job for these is to say what it thinks should happen and let a human do it in Tramline — where the rollout percentages, the health metrics, or App Store Connect are on screen while they decide. They are also absent from the agent's tool list in `archie-plugins`; the set here is the second layer, and holds even if an agent is misconfigured with the tools.
+The cost is accepted knowingly: a diagnosis step that polls CI now also costs one approval. That is the price of "no separation", and it buys a rule that cannot drift.
 
 ## Flow
 
@@ -122,7 +119,7 @@ Two records, deliberately in different places.
 
 ## Drift to watch
 
-- **Classification vs. tool descriptions.** The tiers stated in `tramline-mcp`'s tool descriptions (`[Impact: …]`) exist so a caller can see blast radius without knowing Tramline's internals. They must agree with the sets in `tramline-guard.ts`, but they live in a different repository and nothing enforces the correspondence automatically. The MCP's own smoke test asserts that every action tool declares *some* tier; the mapping itself is reviewed by hand when either side changes.
+- **Classification vs. tool descriptions.** `tramline-mcp`'s action tools carry a `[Mutation — human approval required for agents]` marker so a caller sees the rule without knowing this gate exists. The correspondence to watch is simpler than it used to be (one rule, not a tier mapping), but it still spans two repositories: a new tool added to the MCP must be a GET or carry the marker (its smoke test enforces that), and must land in this guard's `READ_ACTIONS` *only* if it is genuinely a read — everything else is gated automatically, and refused until `ACTION_DESCRIPTIONS` gains its consequence sentence.
 - **`PreToolUse` firing for MCP tools.** The whole gate rests on the SDK delivering `mcp__*` calls to `PreToolUse` hooks, and on the *shape* of `tool_input`/`tool_response` for those calls. This is version-coupled to the Claude CLI, exactly like the egress allowlist (see [Security → Sandbox Bypass Prevention](security.md)), and the repo's answer to that class of risk is a live tripwire (`tools/e2e/egress-check.ts`), not unit tests. This gate does not have one yet — that is the largest outstanding gap. Treat an SDK bump as security-relevant and re-verify that a gated call is actually intercepted. Note the repo disagrees with itself about the response shape (`createResearchPostToolHook` assumes a bare array, this module assumed an envelope), so `extractPayload` now accepts every plausible shape rather than betting on one.
 - **The `/api` approve route has no approver check, and the router has no authentication.** `POST /tasks/:id/approve` with `type: 'tramline_action'` deliberately skips the allowlist on the grounds that reaching the engine's HTTP API means operator access — but `/api/events/stream` publishes the digest in its `approval:requested` event, so anyone who can reach the port can resolve a release action. This is pre-existing for `edit_mode`/`merge` and is now extended to release actions; it needs either a shared secret on this route or an asserted ingress restriction.
 - **The server key is a hardcoded guess.** `TOOL_PREFIX` is `mcp__tramline__`, but the server name lives in `archie-plugins/.mcp.json` — a different repo, which hot-reloads. Rename it there and the gate silently no-ops.

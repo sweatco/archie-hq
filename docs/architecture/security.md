@@ -187,12 +187,12 @@ In edit mode, repo agents manage their own PRs directly via the `repo-tools` MCP
 
 Tramline's API scopes are binary (`read`/`write`), so a key that can retry a store submission can also push a staged rollout to 100%. That distinction is enforced by a `PreToolUse` hook instead:
 
-1. Every `mcp__tramline__*` call is classified — read / mirrors-state / gated / never-allowed
+1. Every `mcp__tramline__*` call is classified — read, or gated (every mutation)
 2. A gated call is denied, and Slack Approve/Deny buttons are posted describing the action *as rendered from its real arguments*, not from the agent's summary
 3. The task pauses; on approval a single-use permission bound to `sha256(action + arguments)` is stored
 4. The agent's retry of that exact call spends the permission once
 
-Five irreversible actions (rollout to 100%, halt, complete-previous-rollout, re-prepare submission, cancel review) are refused with or without approval. Unlike the other gates, the *clicker* is authorized against `ARCHIE_RELEASE_APPROVERS`, which fails closed when unset.
+There are no tiers and no exempt writes: reads pass, every mutation is gated, and a mutation with no registered consequence description (or an unlabelled target) is refused rather than rendered. Unlike the other gates, the *clicker* is authorized against `ARCHIE_RELEASE_APPROVERS`, and an empty allowlist refuses gated calls outright instead of posting an unresolvable prompt.
 
 **Source:** `src/agents/tramline-guard.ts`, `src/tasks/task.ts`, `src/connectors/slack/events.ts` (`registerTramlineActionHandlers`) — see [Tramline Actions](tramline-actions.md)
 

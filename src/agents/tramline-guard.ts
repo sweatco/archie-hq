@@ -9,12 +9,11 @@
  *
  * Two PreToolUse/PostToolUse hooks, both fired for every agent from spawn.ts:
  *
- * 1. `createTramlineGuardHooks()` — PreToolUse. Classifies each
- *    `mcp__tramline__*` call into read / auto-allowed / gated / never-allowed.
- *    A gated call is denied, and a Slack approval carrying the *rendered*
- *    action is posted; the task parks. Once a human approves, the approval is
- *    stored against a digest of `(tool, arguments)` and the agent's retry of
- *    that exact call passes once.
+ * 1. `createTramlineGuardHooks()` — PreToolUse. One rule, no tiers: reads pass,
+ *    and **every mutation requires per-call human approval**. A write is denied,
+ *    a Slack approval carrying the *rendered* action is posted, and the task
+ *    parks. Once a human approves, the approval is stored against a digest of
+ *    `(tool, arguments)` and the agent's retry of that exact call passes once.
  *
  * 2. `createTramlineContextHook()` — PostToolUse. Indexes the human-readable
  *    label of every id that appears in a Tramline read response, so the
@@ -73,112 +72,24 @@ const READ_ACTIONS = new Set([
   'get_release_analytics',
 ]);
 
-/**
- * The only write that stays ungated: polling a CI run that is already in flight.
- *
- * Note what this does *not* claim. `poll_workflow_run_status` is not
- * side-effect-free — on a `triggered` run it calls `workflow_run.found!`, which
- * enqueues a poll that can attach a build and trigger store submissions. It is
- * ungated because that is the same progression Tramline's own poller performs
- * unprompted: the run is live, CI has already decided, and the call only pulls
- * that decision forward. Contrast `fetch_workflow_run_status`, which resurrects a
- * run Tramline had already marked **failed** — a state change nothing else would
- * have made.
- *
- * This set was originally three. The other two were removed after reading what
- * they actually do on the Tramline side, and the deletions are the point of the
- * comment — "sounds like a read" is not evidence:
- *
- * - `fetch_workflow_run_status` calls `workflow_run.found!`, which transitions
- *   **failed → started** and enqueues a poll; when that poll settles it
- *   cascades AttachBuildJob → TriggerSubmissionsJob, which calls
- *   `trigger_submissions!` and, for a hotfix release candidate,
- *   `Coordinators::StartProductionRelease`. An ungated call could start a
- *   production release.
- * - `sync_submission_from_store` drives `approve!` / `submit_for_review!` /
- *   `reject!` / `sync_rollout!`, and App Store rollouts are created with
- *   `automatic_rollout: true` — so a "re-read" can put a user-facing rollout on
- *   an auto-advancing schedule.
- *
- * Keeping this set as small as the evidence supports costs the agent an
- * approval per diagnosis step. That is the right trade: an approval prompt a
- * human learns to click through without reading is worse than no prompt, but a
- * tool wrongly labelled safe is worse than both.
- */
-const AUTO_ALLOWED_ACTIONS = new Set([
-  'poll_workflow_run_status',
-]);
+export type TramlineDisposition = 'not-tramline' | 'read' | 'gated';
 
 /**
- * Actions no approval can unlock.
+ * Classify a tool call. `toolName` is the full MCP name.
  *
- * The list is closed under **effect**, not under name. That distinction is the
- * whole design: a gate that reasons about tool names is trivially laundered by
- * a differently-named tool reaching the same Tramline code path, and the first
- * version of this list was. Each entry below is here because of what it does,
- * and the ones that read as surprising are the ones that were laundering an
- * entry above them:
- *
- * - `fully_release_rollout` — 100% of users, irreversible.
- * - `enable_automatic_rollout` — schedules `AutomaticUpdateRolloutJob`, which
- *   increases the rollout and *re-schedules itself* every 24h until the last
- *   stage completes. One click reaches the same end state as
- *   `fully_release_rollout` with no human present for any stage after the
- *   first, and it then refuses manual control ("cannot manually increase
- *   rollout when automatic rollout is enabled").
- * - `halt_rollout` — on App Store this delists the app rather than pausing a
- *   phase. (Reversible in principle; that was never the reason.)
- * - `fully_release_previous_rollout` — pushes a *different*, already-shipped
- *   release to 100%.
- * - `prepare_submission` — re-preparing force-overwrites the store version's
- *   metadata, release notes included, destroying edits made in App Store
- *   Connect. No undo.
- * - `update_submission_build` — routes into `UpdateBuildOnProduction`, whose
- *   own comment says it "re-prepares the store version and force-pushes the
- *   release's stored metadata". Same effect as the entry above it.
- * - `submit_for_review` — hands the build to Apple. Its only exit,
- *   `cancel_submission_review`, is also on this list, and an in-progress ASC
- *   review is what blocks the *next* submission — so allowing submit while
- *   denying cancel would let the agent manufacture the exact incident class
- *   this feature was built to triage. Both or neither; neither.
- * - `cancel_submission_review` — throws away a review slot; re-submitting
- *   restarts Apple's queue.
- * - `start_release` / `stop_release` — `start_release` cuts a branch, bumps
- *   versions, opens kickoff PRs and starts CI; `stop_release` is terminal and
- *   unwinds none of it. Neither has an inverse in the API.
- *
- * `increase_rollout` is deliberately *not* here — advancing 1% → 2% is the
- * routine operation this feature exists to make possible. It is refused only at
- * the terminal stage, where it is `fully_release_rollout` by another name; see
- * `terminalStageRefusal`.
- *
- * These are also absent from the agent's tool list (`disallowedTools` in
- * release-manager.md). This set is the second layer: it holds even if an agent
- * is configured with the tools by mistake.
+ * Deliberately two-valued for Tramline tools: reads pass, everything else is a
+ * mutation and needs a human. No auto-allowed tier ("sounds like a read" turned
+ * out to be false for every candidate — the sync/fetch tools reach code that
+ * starts production releases and schedules rollouts), and no never-list (which
+ * turned out not to be closed under effect: permitted tools reached forbidden
+ * outcomes through Tramline's own cascades). One uniform rule has nothing to
+ * launder: whatever the action does, a human reads the rendered label and
+ * decides. Reads are allow-listed rather than derived, so a Tramline tool added
+ * later defaults to gated instead of silently open.
  */
-const NEVER_ALLOWED_ACTIONS = new Set([
-  'fully_release_rollout',
-  'enable_automatic_rollout',
-  'halt_rollout',
-  'fully_release_previous_rollout',
-  'prepare_submission',
-  'update_submission_build',
-  'submit_for_review',
-  'cancel_submission_review',
-  'start_release',
-  'stop_release',
-]);
-
-export type TramlineDisposition = 'not-tramline' | 'read' | 'auto' | 'gated' | 'never';
-
-/** Classify a tool call. `toolName` is the full MCP name. */
 export function classifyTramlineTool(toolName: string): TramlineDisposition {
   if (!toolName.startsWith(TOOL_PREFIX)) return 'not-tramline';
-  const action = toolName.slice(TOOL_PREFIX.length);
-  if (READ_ACTIONS.has(action)) return 'read';
-  if (NEVER_ALLOWED_ACTIONS.has(action)) return 'never';
-  if (AUTO_ALLOWED_ACTIONS.has(action)) return 'auto';
-  return 'gated';
+  return READ_ACTIONS.has(toolName.slice(TOOL_PREFIX.length)) ? 'read' : 'gated';
 }
 
 export function tramlineAction(toolName: string): string {
@@ -228,11 +139,14 @@ export function actionDigest(toolName: string, input: unknown): string {
  * Tramline action arrives as a one-click button labelled `Run the Tramline
  * action \`x\``, with no statement of consequence for the approver to weigh.
  * Adding an action here is therefore a deliberate review step: whoever writes
- * the sentence has to know what the action does, which is exactly the moment to
- * notice it belongs on the never-list instead.
+ * the sentence has to read the Tramline code and state the real consequence —
+ * the descriptions for the sync/fetch tools below exist because their names
+ * suggested reads and their code started builds.
  */
 const ACTION_DESCRIPTIONS: Record<string, string> = {
   // Release lifecycle
+  start_release: 'Start a new release — cuts the release branch, bumps versions, opens the kickoff PRs and starts CI. No undo short of stopping the release',
+  stop_release: 'Stop this release entirely — terminal, a stopped release cannot be un-stopped',
   retry_pre_release: 'Retry the failed pre-release phase (branch creation, version bump)',
   retry_preparation: 'Retry the failed preparation workflow',
   trigger_preparation: 'Trigger the preparation workflow now',
@@ -251,14 +165,23 @@ const ACTION_DESCRIPTIONS: Record<string, string> = {
   // Workflow runs
   trigger_workflow_run: 'Trigger this CI workflow run',
   retry_workflow_run: 'Re-run this failed CI build',
+  poll_workflow_run_status: 'Poll the CI provider for this in-progress workflow run — if CI has finished, this attaches the build and triggers store submissions (on a hotfix release candidate it starts the production release)',
   fetch_workflow_run_status: 'Re-check a workflow run that could not be found on the CI provider — this moves it out of `failed`, and if CI reports success it attaches the build and triggers store submissions (on a hotfix RC it starts the production release)',
   // Store submissions
   trigger_submission: 'Send this submission to the store — on a production App Store submission this prepares the store version, which overwrites its metadata',
   retry_submission: 'Retry this failed store submission — if it failed before it was ever prepared, this re-prepares the store version and overwrites its metadata',
   sync_submission_from_store: 'Pull this submission\'s state from the store — this can advance it (approve/reject/submit) and can put an App Store rollout on an automatic schedule',
+  prepare_submission: 'Prepare the store version for this submission — re-preparing force-overwrites the store version\'s metadata, release notes included, destroying edits made directly in App Store Connect. No undo',
+  submit_for_review: 'Submit this build to Apple for review — occupies the review slot, and an in-progress review blocks the next submission until it clears',
+  cancel_submission_review: 'Cancel the Apple review in progress — throws away the review slot; re-submitting starts Apple\'s queue over',
+  update_submission_build: 'Swap the build attached to this production submission — this re-prepares the store version and force-pushes the release\'s stored metadata over it',
+  fully_release_previous_rollout: 'Complete the PREVIOUS release\'s staged rollout to 100% of users so this submission can proceed — irreversible, and it acts on the release already in production',
   // Store rollouts
-  start_rollout: 'Start the staged rollout — the first stage goes out to real users',
-  increase_rollout: 'Advance the staged rollout to its next stage — more real users get this build',
+  start_rollout: 'Start the rollout — the first stage goes out to real users, and on a NON-staged rollout this releases to 100% immediately (the label says which)',
+  fully_release_rollout: 'Release this rollout to 100% of users immediately — irreversible, a rollout cannot be narrowed back down',
+  halt_rollout: 'Halt this rollout (emergency stop; resumable) — on App Store this delists the app from the store rather than pausing a phase',
+  enable_automatic_rollout: 'Hand stage advances to a scheduler that increases the rollout every 24h, unattended, until 100% — and manual increases are refused while it is on',
+  increase_rollout: 'Advance the staged rollout to its next stage — more real users get this build, and advancing the final stage completes the rollout at 100%',
   pause_rollout: 'Pause the staged rollout (Play Store: only has an effect on an automatic rollout — on a manual one Tramline reports success and changes nothing)',
   resume_rollout: 'Resume a paused or halted rollout — if a human halted it, this undoes that',
   disable_automatic_rollout: 'Stop automatic stage progression, returning the rollout to manual control',
@@ -441,8 +364,8 @@ function distinguishingDetail(kind: string, obj: Node): string | undefined {
       const stage = num(obj.stage);
       const stageCount = num(obj.stage_count);
       const parts: string[] = [];
-      // "not staged" is load-bearing, not colour: starting a non-staged Play
-      // rollout goes to 100% immediately (see stateRefusal).
+      // "not staged" is load-bearing: starting a non-staged Play rollout goes to
+      // 100% immediately, and this label is what the approver decides from.
       if (obj.is_staged_rollout === false) parts.push('not staged');
       if (current !== undefined) parts.push(`at ${current}%`);
       if (next !== undefined) parts.push(`next ${next}%`);
@@ -512,55 +435,6 @@ export function indexTargets(payload: unknown): Record<string, string> {
 
   walk(payload, undefined, undefined, 'release');
   return out;
-}
-
-const IN_TRAMLINE = 'A human has to do this on the release page in Tramline (https://tramline.sweatco.team).';
-
-/**
- * Refuse an action that is only forbidden *in a particular state*.
- *
- * Classification by tool name cannot express these: the same tool is routine in
- * one state and equivalent to a never-listed action in another. Both cases below
- * reach 100% of users, which is the one outcome the never-list exists to
- * prevent, so both are refused rather than made approvable.
- *
- * - `increase_rollout` at the final stage: `move_to_next_stage!` rolls out the
- *   last percentage and calls `complete!` — it *is* `fully_release_rollout`.
- * - `start_rollout` on a **non-staged** rollout: `start_release!` skips the
- *   stages entirely and calls `rollout(FULL_ROLLOUT_VALUE)` — 100% immediately.
- *
- * State comes from the label index, which is the only state this process has. A
- * rollout whose relevant field we cannot read is refused too: guessing in the
- * permissive direction is exactly the mistake this function exists to prevent.
- */
-export function stateRefusal(action: string, label: string | undefined): string | undefined {
-  if (!label) return undefined; // no label ⇒ the caller already refuses
-
-  if (action === 'start_rollout') {
-    if (/not staged/.test(label)) {
-      return `This rollout is not staged, so starting it releases to 100% of users immediately — the same ` +
-        `irreversible effect as \`fully_release_rollout\`, which is not available to agents. ${IN_TRAMLINE}`;
-    }
-    if (!/stage \d+\/\d+/.test(label)) {
-      return `Cannot start this rollout: the release payload this task has read does not say whether it is staged, ` +
-        `so there is no way to tell if starting it would go straight to 100%. Re-read with \`get_release\` and retry.`;
-    }
-    return undefined;
-  }
-
-  if (action !== 'increase_rollout') return undefined;
-
-  const stage = /stage (\d+)\/(\d+)/.exec(label);
-  if (!stage) {
-    return `Cannot advance this rollout: its stage is not visible in the release payload this task has read, ` +
-      `so there is no way to tell whether the next stage is 100%. Re-read the release with \`get_release\` and retry.`;
-  }
-  const [, currentRaw, totalRaw] = stage;
-  if (Number(currentRaw) >= Number(totalRaw)) {
-    return `Advancing this rollout would take it to its final stage, which completes the rollout at 100% of users — ` +
-      `the same irreversible effect as \`fully_release_rollout\`, which is not available to agents. ${IN_TRAMLINE}`;
-  }
-  return undefined;
 }
 
 /** Merge fresh labels into an existing index, newest-wins, oldest evicted. */
@@ -676,12 +550,12 @@ export function createTramlineGuardHooks(port: TramlineGuardPort): HookCallbackM
       // Tramline write must be denied rather than left to the SDK's handling of
       // a rejected hook.
       const disposition = toolName ? classifyTramlineTool(toolName) : 'not-tramline';
-      if (disposition === 'not-tramline' || disposition === 'read' || disposition === 'auto') {
+      if (disposition !== 'gated') {
         return proceed();
       }
 
       try {
-        return await decideTramlineCall(port, toolName!, input.tool_input, disposition);
+        return await decideTramlineCall(port, toolName!, input.tool_input);
       } catch (error) {
         // Fail closed. The arguments are agent-controlled, so this path is
         // reachable on purpose as well as by accident (a deeply nested argument
@@ -704,18 +578,8 @@ async function decideTramlineCall(
   port: TramlineGuardPort,
   tool_name: string,
   tool_input: unknown,
-  disposition: TramlineDisposition,
 ): Promise<HookJSONOutput> {
   const action = tramlineAction(tool_name);
-
-  if (disposition === 'never') {
-    return deny(
-      `\`${action}\` is not available to agents — it is irreversible and has to be done by a human ` +
-      `looking at the release page in Tramline (https://tramline.sweatco.team). ` +
-      `Report what you think should happen and who should do it; do not look for another route to the same effect.`,
-    );
-  }
-
   const digest = actionDigest(tool_name, tool_input);
 
   // Already approved? Spend it and let this one call through.
@@ -737,11 +601,6 @@ async function decideTramlineCall(
           `first, then retry.`,
     );
   }
-
-  // Some actions are only forbidden in a particular state — `increase_rollout`
-  // at the final stage is `fully_release_rollout` under another name.
-  const refusal = stateRefusal(action, rendered.target);
-  if (refusal) return deny(refusal);
 
   // No approver configured: refuse instead of posting a button nobody can
   // press and parking the task on it. An unconfigured deployment must be no

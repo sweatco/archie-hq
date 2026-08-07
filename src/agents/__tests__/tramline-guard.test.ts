@@ -9,7 +9,6 @@ import {
   isRenderFailure,
   indexTargets,
   mergeTargets,
-  stateRefusal,
   canApproveReleaseAction,
   releaseApprovers,
   extractPayload,
@@ -90,37 +89,45 @@ describe('classifyTramlineTool', () => {
     expect(classifyTramlineTool(tool('get_release_analytics'))).toBe('read');
   });
 
-  // Only polling an in-progress run is genuinely side-effect-free. The other two
-  // that used to live here reach Tramline code that starts production releases
-  // and puts rollouts on automatic schedules.
-  it('auto-allows only the in-progress CI poll', () => {
-    expect(classifyTramlineTool(tool('poll_workflow_run_status'))).toBe('auto');
-    expect(classifyTramlineTool(tool('fetch_workflow_run_status'))).toBe('gated');
-    expect(classifyTramlineTool(tool('sync_submission_from_store'))).toBe('gated');
-  });
-
-  // The never-list is closed under EFFECT, not name. Each of these reaches an
-  // irreversible outcome; several were laundering another entry on the list.
-  it('never allows the irreversible actions or their aliases', () => {
-    for (const action of [
-      'fully_release_rollout',
-      'enable_automatic_rollout',      // self-rescheduling walk to 100%
-      'halt_rollout',
-      'fully_release_previous_rollout',
-      'prepare_submission',
-      'update_submission_build',       // re-prepares + force-pushes metadata
-      'submit_for_review',             // its only exit is also never-allowed
-      'cancel_submission_review',
-      'start_release',
-      'stop_release',
-    ]) {
-      expect(classifyTramlineTool(tool(action)), action).toBe('never');
+  // One rule, no tiers: every mutation is gated. This list is the FULL action
+  // surface of tramline-mcp 0.3.x — a tool added there fails this test until
+  // someone classifies it here, which is the review step.
+  it('gates every one of the 36 mutations', () => {
+    const mutations = [
+      // release lifecycle
+      'start_release', 'stop_release', 'retry_pre_release', 'retry_preparation',
+      'trigger_preparation', 'sync_release_commits', 'sync_release_pull_requests',
+      'complete_release', 'finish_release', 'apply_build_queue', 'end_soak', 'extend_soak',
+      // platform runs
+      'start_internal_release', 'start_beta_release', 'start_production_release', 'conclude_platform_run',
+      // workflow runs
+      'trigger_workflow_run', 'retry_workflow_run', 'fetch_workflow_run_status', 'poll_workflow_run_status',
+      // store submissions
+      'trigger_submission', 'retry_submission', 'prepare_submission', 'submit_for_review',
+      'cancel_submission_review', 'sync_submission_from_store', 'fully_release_previous_rollout',
+      'update_submission_build',
+      // store rollouts
+      'start_rollout', 'increase_rollout', 'pause_rollout', 'resume_rollout', 'halt_rollout',
+      'fully_release_rollout', 'enable_automatic_rollout', 'disable_automatic_rollout',
+    ];
+    expect(mutations).toHaveLength(36);
+    for (const action of mutations) {
+      expect(classifyTramlineTool(tool(action)), action).toBe('gated');
     }
   });
 
-  it('gates the retry/re-trigger actions the agent is meant to use', () => {
-    for (const action of ['retry_submission', 'retry_workflow_run', 'trigger_workflow_run', 'retry_pre_release']) {
-      expect(classifyTramlineTool(tool(action)), action).toBe('gated');
+  // Uniform gating only works if the human can read what they are approving:
+  // every mutation must carry a consequence sentence, or the gate refuses it
+  // rather than showing a bare method name.
+  it('has an approval description for every mutation', () => {
+    for (const action of [
+      'start_release', 'stop_release', 'fully_release_rollout', 'halt_rollout',
+      'enable_automatic_rollout', 'prepare_submission', 'submit_for_review',
+      'cancel_submission_review', 'update_submission_build', 'fully_release_previous_rollout',
+      'poll_workflow_run_status', 'fetch_workflow_run_status', 'sync_submission_from_store',
+      'retry_workflow_run', 'retry_submission', 'increase_rollout', 'start_rollout',
+    ]) {
+      expect(renderAction(tool(action), {}, {}), action).not.toBe('no-description');
     }
   });
 
@@ -294,45 +301,6 @@ describe('renderAction', () => {
   });
 });
 
-describe('stateRefusal', () => {
-  it('allows a routine advance', () => {
-    expect(stateRefusal('increase_rollout', '253.0.0 ANDROID · staged rollout · stage 1/7 · (started)'))
-      .toBeUndefined();
-  });
-
-  // At the last stage this action IS fully_release_rollout, which is never-allowed.
-  it('refuses an advance that would complete the rollout', () => {
-    const refusal = stateRefusal('increase_rollout', '253.0.0 ANDROID · staged rollout · stage 7/7 · (started)');
-    expect(refusal).toContain('100% of users');
-    expect(refusal).toContain('fully_release_rollout');
-  });
-
-  it('refuses when the stage is not visible rather than guessing', () => {
-    expect(stateRefusal('increase_rollout', '253.0.0 ANDROID · staged rollout · (started)'))
-      .toContain('not visible');
-  });
-
-  it('does not apply to other actions', () => {
-    expect(stateRefusal('pause_rollout', 'stage 7/7')).toBeUndefined();
-  });
-
-  // A non-staged Play rollout goes to 100% the moment it starts.
-  it('refuses starting a rollout that is not staged', () => {
-    const refusal = stateRefusal('start_rollout', '253.0.0 ANDROID · staged rollout · not staged, at 0% · (created)');
-    expect(refusal).toContain('not staged');
-    expect(refusal).toContain('100% of users');
-  });
-
-  it('allows starting a genuinely staged rollout', () => {
-    expect(stateRefusal('start_rollout', '253.0.0 ANDROID · staged rollout · next 1%, stage 1/7 · (created)'))
-      .toBeUndefined();
-  });
-
-  it('refuses starting a rollout whose staging is not visible', () => {
-    expect(stateRefusal('start_rollout', '253.0.0 ANDROID · staged rollout · (created)')).toContain('does not say');
-  });
-});
-
 describe('releaseApprovers / canApproveReleaseAction', () => {
   it('parses and trims the allowlist', () => {
     expect([...releaseApprovers({ ARCHIE_RELEASE_APPROVERS: 'U1, U2 ,U3' })]).toEqual(['U1', 'U2', 'U3']);
@@ -380,10 +348,10 @@ describe('extractPayload', () => {
 });
 
 describe('createTramlineGuardHooks', () => {
-  it('lets reads and the CI poll straight through', async () => {
+  it('lets reads straight through', async () => {
     const requestApproval = vi.fn(async () => 'posted' as const);
-    for (const action of ['get_release', 'list_releases', 'poll_workflow_run_status']) {
-      expect(await runGuard(fakePort({ requestApproval }), tool(action), { id: ANDROID_WORKFLOW_RUN }))
+    for (const action of ['get_release', 'list_releases', 'get_release_analytics']) {
+      expect(await runGuard(fakePort({ requestApproval }), tool(action), { release_id: RELEASE.id }))
         .toEqual({ continue: true });
     }
     expect(requestApproval).not.toHaveBeenCalled();
@@ -394,24 +362,24 @@ describe('createTramlineGuardHooks', () => {
       .toEqual({ continue: true });
   });
 
-  it('denies a never-allowed action without asking anyone', async () => {
-    const requestApproval = vi.fn(async () => 'posted' as const);
-    const result = await runGuard(fakePort({ requestApproval }), tool('fully_release_rollout'), { id: ANDROID_ROLLOUT });
-
-    expect(isDeny(result)).toBe(true);
-    expect(denialReason(result)).toContain('not available to agents');
-    expect(requestApproval).not.toHaveBeenCalled();
-  });
-
-  it('denies enable_automatic_rollout — the laundering path to 100%', async () => {
-    const requestApproval = vi.fn(async () => 'posted' as const);
-    const result = await runGuard(
-      fakePort({ requestApproval }),
-      tool('enable_automatic_rollout'),
-      { id: ANDROID_ROLLOUT },
+  it('requests approval even for the heaviest mutations — nothing is refused outright', async () => {
+    const requestApproval = vi.fn(
+      async (_r: { digest: string; tool: string; summary: string; target?: string }) => 'posted' as const,
     );
-    expect(isDeny(result)).toBe(true);
-    expect(requestApproval).not.toHaveBeenCalled();
+    vi.stubEnv('ARCHIE_RELEASE_APPROVERS', 'U1');
+    try {
+      const result = await runGuard(fakePort({ requestApproval }), tool('fully_release_rollout'), { id: ANDROID_ROLLOUT });
+      expect(isDeny(result)).toBe(true);
+      expect(denialReason(result)).toContain('needs human approval');
+      expect(requestApproval).toHaveBeenCalledTimes(1);
+      // The consequence, not the method name, is what the human reads — and the
+      // label carries the state (stage, percentages) they decide from.
+      expect(requestApproval.mock.calls[0][0].summary).toContain('100% of users');
+      expect(requestApproval.mock.calls[0][0].summary).toContain('irreversible');
+      expect(requestApproval.mock.calls[0][0].target).toContain('stage 1/7');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('requests approval for a gated action and denies this attempt', async () => {
@@ -475,24 +443,6 @@ describe('createTramlineGuardHooks', () => {
     expect(isDeny(result)).toBe(true);
     expect(denialReason(result)).toContain('get_release');
     expect(requestApproval).not.toHaveBeenCalled();
-  });
-
-  it('refuses a terminal-stage rollout advance instead of asking for approval', async () => {
-    const requestApproval = vi.fn(async () => 'posted' as const);
-    const terminal = { ...INDEX, [ANDROID_ROLLOUT]: '253.0.0 ANDROID · staged rollout · stage 7/7 · (started)' };
-    vi.stubEnv('ARCHIE_RELEASE_APPROVERS', 'U1');
-    try {
-      const result = await runGuard(
-        fakePort({ requestApproval, getTargets: () => terminal }),
-        tool('increase_rollout'),
-        { id: ANDROID_ROLLOUT },
-      );
-      expect(isDeny(result)).toBe(true);
-      expect(denialReason(result)).toContain('100% of users');
-      expect(requestApproval).not.toHaveBeenCalled();
-    } finally {
-      vi.unstubAllEnvs();
-    }
   });
 
   it('refuses a second gated action while one is pending', async () => {
