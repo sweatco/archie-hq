@@ -338,7 +338,7 @@ Shared by all agents. Defines:
 Track-specific behavior added on top of Layer 1:
 
 - **Repo agents** use `prompts/repo-agent.md`: repository responsibility, dual mode system (read-only vs edit), git workflow (branch management, PR lifecycle), task lifecycle context, honesty guidelines
-- **Plugin agents** use `prompts/plugin-agent.md`: read-only mode, available tools (Read, Glob, Grep, Skill), workspace description
+- **Plugin agents** use `prompts/plugin-agent.md`: available tools (Read, Glob, Grep, Skill, plus Write/Edit/Bash scoped to the agent workspace), workspace description
 
 ### Layer 3: Plugin Override (Domain-Specific)
 

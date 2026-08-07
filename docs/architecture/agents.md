@@ -252,9 +252,8 @@ Different for each agent track:
 - No template variables — per-repo data (github, clone path, current/base branch, RO/RW mode) is surfaced through the dynamic Current Context block built at spawn, not via static substitution. This keeps the prompt structurally correct for any number of repos.
 
 **Plugin agents** (`prompts/plugin-agent.md`):
-- Read-only mode declaration
-- Available tools summary
-- Workspace description
+- Available tools summary (including Write/Edit/Bash, scoped to the agent workspace)
+- Workspace description, and that product code belongs to repo agents
 - Simple workflow: receive, research, log, report
 
 ### Layer 3: Domain-Specific Instructions
