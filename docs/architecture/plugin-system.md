@@ -1,6 +1,6 @@
 # Plugin System Architecture
 
-Archie uses a plugin-based architecture to define agents and their capabilities. The plugin system supports two tracks of agents -- **repo agents** (engineering, tied to Git repositories) and **plugin agents** (generic domains, read-only) -- unified through a single plugin loader that scans at startup.
+Archie uses a plugin-based architecture to define agents and their capabilities. The plugin system supports two tracks of agents -- **repo agents** (engineering, tied to Git repositories) and **plugin agents** (generic domains, no repo) -- unified through a single plugin loader that scans at startup.
 
 Plugins are not bundled with the source tree. At startup, `bootstrapWorkdir()` clones the git repository pointed to by `ARCHIE_PLUGINS` (optionally pinned by `ARCHIE_PLUGINS_BRANCH`) into `$ARCHIE_WORKDIR/plugins/`. The repo is then kept current on demand rather than on a timer: every task start/load runs `syncPlugins()` (`src/system/plugin-sync.ts`), which calls `refreshPlugins()` (`src/system/workdir.ts`) to do a lightweight `git ls-remote` HEAD check against the configured branch. If the remote tip hasn't moved nothing happens; if it has, Archie fetches, hard-resets onto it, re-scans plugin definitions, and rebuilds the agent registry — so a push to the plugins repo is picked up on the very next request. For local development, `$ARCHIE_WORKDIR/plugins/` may be a symlink to a checkout, in which case Archie skips git management and just re-scans from disk. An in-flight task is never disturbed — it keeps the team it was created with. A task that was stopped/completed picks up the change when it is pinged again (it reloads from disk through `Task.get()`, which syncs and scans a fresh team), as does any task after a process restart.
 
@@ -23,14 +23,15 @@ Repo agents are tied to a specific Git repository and have access to git infrast
 
 ### Plugin Agent Track (Generic Domains)
 
-Plugin agents are lightweight, read-only agents for domains that do not need git or GitHub infrastructure. They are suited for roles like copywriting, design review, QA analysis, or any non-engineering specialization.
+Plugin agents are lightweight agents for domains that do not need git or GitHub infrastructure. They are suited for roles like copywriting, design review, QA analysis, or any non-engineering specialization.
 
 - Defined by `agents/*.md` files whose frontmatter does **not** contain `metadata.archie.repo.github`
 - Each `.md` file becomes an agent (e.g., `agents/copywriter.md` becomes `copywriter-agent`)
 - Agent identity, expertise, and optional model override come from frontmatter
 - Domain-specific instructions come from the markdown body
-- Built-in tools: `Read`, `Glob`, `Grep`, `Skill`, `send_message_to_agent` (via `repo-agent-tools`), `log_finding` (via `repo-agent-tools`), `web_research` (via `research-tools`)
-- Read-only enforcement comes from the spawn-time sandbox (the agent workspace is the only writable path) — plugin agents are NOT issued the `repo-tools` MCP server or any git/GitHub plumbing
+- Built-in tools: `Read`, `Glob`, `Grep`, `Skill`, `Write`, `Edit`, `Bash`, `send_message_to_agent` (via `repo-agent-tools`), `log_finding` (via `repo-agent-tools`), `web_research` (via `research-tools`)
+- The write boundary is enforced by the spawn-time sandbox: the agent workspace is the only writable path, so `Write`/`Edit`/`Bash` reach the agent's own scratch space and nothing else. Plugin agents are NOT issued the `repo-tools` MCP server or any git/GitHub plumbing, so there is no repo for them to modify
+- Network egress is denied unless the agent's frontmatter declares `allowedNetworkDomains`
 - Plugin agents may still opt into MCP servers via frontmatter `mcpServers` (resolved against the root `.mcp.json`), so they are not strictly limited to the built-in tool set
 
 **Source:** `src/agents/spawn.ts`, `src/agents/registry.ts`, `src/types/agent.ts`

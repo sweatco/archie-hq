@@ -11,7 +11,7 @@ Archie uses three active agent types (plus a disabled triage classifier). Each i
 | ~~Triage Agent~~ | Haiku | — | Event classifier (**currently disabled** — see below) |
 | PM Agent | Opus (default) | 1 per task | Task manager, user interface, agent coordinator |
 | Repo Agents | Sonnet (default, configurable) | 1 per plugin-defined repo agent per task | Codebase investigation and modification; declares one or more repos in frontmatter, all mounted at spawn |
-| Plugin Agents | Sonnet (default, configurable) | 1 per plugin agent per task | Lightweight, read-only domain specialists |
+| Plugin Agents | Sonnet (default, configurable) | 1 per plugin agent per task | Lightweight domain specialists; no repo, no git |
 
 Models for repo and plugin agents come from each agent's plugin frontmatter (`model` field, with `effort` and `maxTurns` also supported); `Sonnet` is the fallback when frontmatter is silent. The PM agent defaults to Opus but can be overridden by the `pm` plugin overlay's frontmatter (see `src/agents/registry.ts` `buildPmDef()` and `src/agents/spawn.ts`).
 
@@ -152,7 +152,7 @@ Only the PM-supplied inputs are persisted, as a `DynamicAgentSpec` in `metadata.
 
 **Source**: `src/agents/agent.ts`, `src/agents/spawn.ts`
 
-Plugin agents are lightweight, read-only agents for domains that don't need git or GitHub infrastructure. They are loaded from plugins that lack a `repo-config.json`.
+Plugin agents are lightweight agents for domains that don't need git or GitHub infrastructure. They have no repository and no git plumbing; file writes are confined to their own workspace. They are loaded from plugins that lack a `repo-config.json`.
 
 **Model**: Sonnet by default (`def.model || 'sonnet'` in `spawn.ts`). Configurable via frontmatter `model` (and `effort`, `maxTurns`).
 
@@ -166,8 +166,10 @@ Plugin agents are lightweight, read-only agents for domains that don't need git 
 | `web_research` | `research-tools` | Spawn a research pipeline |
 | `Read`, `Glob`, `Grep` | (built-in) | Explore files in the agent workspace and (read-only) shared folder |
 | `Skill` | (SDK built-in) | Load domain-specific agent skills mounted from the plugin |
+| `Write`, `Edit` | (built-in) | Create and modify files within the agent workspace (`.claude/settings.json`, `.claude/skills`, `.claude/hooks` and `CLAUDE.md` are protected) |
+| `Bash` | (built-in) | Run commands, sandboxed to the same write boundary; no network egress unless frontmatter declares `allowedNetworkDomains` |
 
-`WebSearch` and `WebFetch` are explicitly disallowed. Plugin agents have no access to git or `repo-tools`.
+`WebSearch` and `WebFetch` are explicitly disallowed. Plugin agents have no access to git or `repo-tools`, so there is no repository for `Write`/`Edit`/`Bash` to reach — the write boundary is the sandbox, not the tool list. An agent's frontmatter may narrow this set further via `tools` or `disallowedTools`.
 
 **Workspace**: Each plugin agent gets its own workspace at `sessions/{taskId}/agents/{key}/` (cwd, read-write). Plugin skills are symlinked into `.claude/skills/`, plugin hooks are written to `.claude/settings.json`, and the shared task folder is mounted read-only via `additionalDirectories`.
 

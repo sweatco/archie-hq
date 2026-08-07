@@ -108,7 +108,7 @@ All repo agents work in isolated `git clone --shared` checkouts (`src/connectors
 Agents and capabilities are loaded dynamically from the plugins directory under the runtime workdir (`$ARCHIE_WORKDIR/plugins`, default `./workdir/plugins`). On startup `bootstrapWorkdir()` (`src/system/workdir.ts`) clones the repo specified by `ARCHIE_PLUGINS` into that location (or pulls/resets it on subsequent boots) before `initPlugins()` (`src/system/plugin-loader.ts`) scans it. `initRegistry()` then builds `AgentDef`s from the loaded plugins, and `cloneRepos()` clones every repo declared by repo-track agent frontmatter into `$ARCHIE_WORKDIR/repos/<repo-key>` (or fetches+resets if already cloned). Each plugin can provide:
 
 - **Repo agents**: Via `agents/*.md` with repo metadata in frontmatter (or legacy `repo-config.json`)
-- **Plugin agents**: Via `agents/*.md` without repo metadata (lightweight, read-only)
+- **Plugin agents**: Via `agents/*.md` without repo metadata (lightweight; no repo, no git)
 - **PM overlay**: Via `pm/` plugin (`agents/pm.md` body appended to PM prompt)
 - **Agent skills**: Via `skills/` directories (agent-specific capabilities symlinked at spawn)
 - **Hooks**: Via `hooks/hooks.json` (plugin-defined hooks injected into agent settings)
