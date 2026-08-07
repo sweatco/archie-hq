@@ -112,6 +112,326 @@ describe('fetchSlackThread — rootAuthorWasBot', () => {
   });
 });
 
+/**
+ * Regression: a link pasted into Slack renders as a "smart link" chip whose
+ * rich_text element type we may not recognise (`message_mention`, `canvas`, the
+ * Jira issue chip). The block walk used to drop unknown elements outright, and
+ * because a block DID produce text the legacy `text` field — which always
+ * spells the URL out — was never consulted. Net effect in prod: the user saw a
+ * Jira link in their message and Archie replied that no link had been sent.
+ */
+describe('fetchSlackThread — link chips survive the Block Kit walk', () => {
+  /** rich_text block wrapping a single section's elements. */
+  const richText = (elements: unknown[]) => [{ type: 'rich_text', elements: [{ type: 'rich_text_section', elements }] }];
+
+  it('keeps a Jira issue chip — an attachment_mention — with its ticket title', async () => {
+    // The exact element the reported bug hinged on: a pasted Jira URL that the
+    // Jira Cloud app turns into a chip. Real payload shape, from #bugs.
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [
+        rawMsg({
+          ts: '403.0',
+          user: 'UHUMAN',
+          text: 'Will be fixed with this: <https://acme.atlassian.net/browse/IO-2862|Silent retry for no-fill>',
+          blocks: richText([
+            { type: 'text', text: 'Will be fixed with this: ' },
+            {
+              type: 'attachment_mention',
+              url: 'https://acme.atlassian.net/browse/IO-2862',
+              text: 'Silent retry for no-fill',
+              app_id: 'A2RPP3NFR',
+              product_name: 'Jira Cloud',
+            },
+          ]),
+        }),
+      ],
+    });
+
+    const thread = await client.fetchSlackThread('C_chip', '403.0', '403.0');
+
+    expect(thread.messages[0].text)
+      .toBe('Will be fixed with this: Silent retry for no-fill (https://acme.atlassian.net/browse/IO-2862)');
+  });
+
+  it('renders a table block as rows rather than dropping it', async () => {
+    // Archie posts markdown tables; Slack hands them back in this shape, so
+    // without it the agent re-reading its own message sees no table at all.
+    const cell = (text: string) => ({
+      type: 'rich_text',
+      elements: [{ type: 'rich_text_section', elements: [{ type: 'text', text }] }],
+    });
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [
+        rawMsg({
+          ts: '404.0',
+          user: 'UHUMAN',
+          text: 'Campaign 28 Jul\nMinecraft 3,842',
+          blocks: [{ type: 'table', rows: [[cell('Campaign'), cell('28 Jul')], [cell('Minecraft'), cell('3,842')]] }],
+        }),
+      ],
+    });
+
+    const thread = await client.fetchSlackThread('C_chip', '404.0', '404.0');
+
+    expect(thread.messages[0].text).toContain('| Campaign | 28 Jul |');
+    expect(thread.messages[0].text).toContain('| Minecraft | 3,842 |');
+  });
+
+  it('renders a card block, whose title holds the only copy of the URL', async () => {
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [
+        rawMsg({
+          ts: '405.0',
+          user: 'UHUMAN',
+          text: '#6887 archie/task-20260806',   // flattened: no URL
+          blocks: [{
+            type: 'card',
+            title: { type: 'mrkdwn', text: '<https://github.com/acme/app/pull/6887|#6887> archie/task-20260806' },
+            subtitle: { type: 'mrkdwn', text: 'app · CI checks (5/5)' },
+          }],
+        }),
+      ],
+    });
+
+    const thread = await client.fetchSlackThread('C_chip', '405.0', '405.0');
+
+    expect(thread.messages[0].text).toContain('https://github.com/acme/app/pull/6887');
+    expect(thread.messages[0].text).toContain('CI checks (5/5)');
+  });
+
+  it('keeps a text-field headline the blocks never mention', async () => {
+    // Release bots put the notification headline only in `text`; the blocks
+    // carry the detail. Preferring blocks used to discard the headline.
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [
+        rawMsg({
+          ts: '406.0',
+          user: 'UHUMAN',
+          text: 'Production release was started!',
+          blocks: [{ type: 'section', text: { type: 'mrkdwn', text: 'The rollout for release *253.0.0* has *started*.' } }],
+        }),
+      ],
+    });
+
+    const thread = await client.fetchSlackThread('C_chip', '406.0', '406.0');
+
+    expect(thread.messages[0].text).toContain('The rollout for release');
+    expect(thread.messages[0].text).toContain('Production release was started!');
+    expect(thread.messages[0].text).not.toContain('[unparsed:');
+  });
+
+  it('recovers a URL carried by an unrecognised rich_text element', async () => {
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [
+        rawMsg({
+          ts: '400.0',
+          user: 'UHUMAN',
+          text: 'which feature flag is responsible for that task\n<https://acme.atlassian.net/browse/IO-3120>\n?',
+          blocks: richText([
+            { type: 'text', text: 'which feature flag is responsible for that task\n' },
+            { type: 'jira_issue', issue_key: 'IO-3120' }, // chip type we don't know
+            { type: 'text', text: '\n?' },
+          ]),
+        }),
+      ],
+    });
+
+    const thread = await client.fetchSlackThread('C_chip', '400.0', '400.0');
+
+    expect(thread.messages[0].text).toContain('https://acme.atlassian.net/browse/IO-3120');
+  });
+
+  it('keeps the URL of a message_mention chip inline, without duplicating it', async () => {
+    const permalink = 'https://acme.slack.com/archives/C03SEJYTG9W/p1785251307039969';
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [
+        rawMsg({
+          ts: '401.0',
+          user: 'UHUMAN',
+          text: `see <${permalink}>`,
+          blocks: richText([
+            { type: 'text', text: 'see ' },
+            { type: 'message_mention', message_ts: '1785251307.039969', channel_id: 'C03SEJYTG9W', url: permalink },
+          ]),
+        }),
+      ],
+    });
+
+    const thread = await client.fetchSlackThread('C_chip', '401.0', '401.0');
+
+    expect(thread.messages[0].text).toBe(`see ${permalink}`);
+  });
+
+  it('leaves a plain rich_text link alone', async () => {
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [
+        rawMsg({
+          ts: '402.0',
+          user: 'UHUMAN',
+          text: 'docs at <https://example.com/a|example.com/a>',
+          blocks: richText([
+            { type: 'text', text: 'docs at ' },
+            { type: 'link', url: 'https://example.com/a', text: 'example.com/a' },
+          ]),
+        }),
+      ],
+    });
+
+    const thread = await client.fetchSlackThread('C_chip', '402.0', '402.0');
+
+    expect(thread.messages[0].text).toBe('docs at https://example.com/a');
+  });
+});
+
+/**
+ * Regression: 57 of 60 real #mobile-alerts messages carry NO top-level text —
+ * the whole alert is an attachment card. Reading only `text`/`fallback` left the
+ * agent with "**Firing** / Value: C=1" and no alert name, no dashboard link, and
+ * (for Bugsnag) no file:line, because those live in `title`/`title_link`/
+ * `pretext`/`fields`/`blocks`.
+ */
+describe('fetchSlackThread — attachment cards', () => {
+  it('renders pretext, title + link, body, fields, nested blocks and actions', async () => {
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [
+        rawMsg({
+          ts: '500.0',
+          user: 'UHUMAN',
+          text: '',
+          attachments: [{
+            pretext: '<!subteam^S123>',
+            title: '[FIRING:10] StepsConversionTotalSteps',
+            title_link: 'https://grafana.example.com/alerting/grafana/abc/view?orgId=1',
+            text: '**Firing**\nValue: C=1',
+            fields: [
+              { title: 'Handled error', value: 'API error 423' },
+              { title: 'Location', value: 'packages/monitoring/createErrorReporter.tsx:107' },
+            ],
+            blocks: [{
+              type: 'actions',
+              elements: [{ type: 'button', text: { type: 'plain_text', text: 'Ticket' }, url: 'https://example.com/t/1' }],
+            }],
+            footer: 'Grafana v13.0.3',
+          }],
+        }),
+      ],
+    });
+
+    const thread = await client.fetchSlackThread('C_att', '500.0', '500.0');
+    const att = thread.messages[0].attachments![0].text;
+
+    expect(att).toContain('<!subteam^S123>');
+    expect(att).toContain('[FIRING:10] StepsConversionTotalSteps');
+    expect(att).toContain('https://grafana.example.com/alerting/grafana/abc/view?orgId=1');
+    expect(att).toContain('**Firing**');
+    expect(att).toContain('Location: packages/monitoring/createErrorReporter.tsx:107');
+    expect(att).toContain('[Ticket] https://example.com/t/1');
+    expect(att).toContain('Grafana v13.0.3');
+  });
+
+  it('drops the fallback restatement when fields already carry it', async () => {
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [
+        rawMsg({
+          ts: '501.0',
+          user: 'UHUMAN',
+          text: '',
+          attachments: [{
+            fallback: 'Error: API error 423: Locked',
+            fields: [{ title: 'Handled error', value: 'Error: API error 423: Locked' }],
+          }],
+        }),
+      ],
+    });
+
+    const thread = await client.fetchSlackThread('C_att', '501.0', '501.0');
+
+    expect(thread.messages[0].attachments![0].text).toBe('Handled error: Error: API error 423: Locked');
+  });
+});
+
+/**
+ * The backstop that makes capture reliable rather than merely correct today:
+ * anything the allowlist-shaped extractors miss is appended and logged instead
+ * of silently dropped. Verified to fire zero times across 466 real messages from
+ * six channels, so a hit means a genuinely new Slack shape.
+ */
+describe('fetchSlackThread — unrendered-content backstop', () => {
+  it('appends and logs content no extractor reached', async () => {
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [
+        rawMsg({
+          ts: '600.0',
+          user: 'UHUMAN',
+          text: 'look at this',
+          blocks: [{ type: 'rich_text', elements: [{ type: 'rich_text_section', elements: [{ type: 'text', text: 'look at this' }] }] }],
+          // A shape no extractor knows, carrying real content.
+          some_future_card: { headline: 'Deploy 4.2 rolled back' },
+        }),
+      ],
+    });
+
+    const thread = await client.fetchSlackThread('C_res', '600.0', '600.0');
+
+    expect(thread.messages[0].text).toContain('look at this');
+    expect(thread.messages[0].text).toContain('[unparsed: Deploy 4.2 rolled back]');
+  });
+
+  it('stays quiet when Slack merely restates the body in its legacy dialect', async () => {
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [
+        rawMsg({
+          ts: '601.0',
+          user: 'UHUMAN',
+          // mrkdwn dialect: emphasis, bullets, <url|label>, escaped ampersand.
+          text: '*Recap*\n- see <https://x.example.com/a?b=1&amp;c=2|x.example.com/a…>',
+          blocks: [{
+            type: 'rich_text',
+            elements: [
+              { type: 'rich_text_section', elements: [{ type: 'text', text: 'Recap', style: { bold: true } }] },
+              {
+                type: 'rich_text_list',
+                style: 'bullet',
+                elements: [{
+                  type: 'rich_text_section',
+                  elements: [
+                    { type: 'text', text: 'see ' },
+                    { type: 'link', url: 'https://x.example.com/a?b=1&c=2', text: 'x.example.com/a…' },
+                  ],
+                }],
+              },
+            ],
+          }],
+        }),
+      ],
+    });
+
+    const thread = await client.fetchSlackThread('C_res', '601.0', '601.0');
+
+    expect(thread.messages[0].text).not.toContain('[unparsed:');
+    // Ampersand decoded, so the query string is usable.
+    expect(thread.messages[0].text).toContain('https://x.example.com/a?b=1&c=2');
+  });
+});
+
+describe('fetchSlackThread — pagination', () => {
+  it('follows next_cursor so the newest replies are not dropped', async () => {
+    slackApi.conversations.replies
+      .mockResolvedValueOnce({
+        messages: [rawMsg({ ts: '700.0', user: 'UHUMAN', text: 'first page' })],
+        response_metadata: { next_cursor: 'CURSOR1' },
+      })
+      .mockResolvedValueOnce({
+        messages: [rawMsg({ ts: '701.0', user: 'UHUMAN2', text: 'second page' })],
+      });
+
+    const thread = await client.fetchSlackThread('C_page', '700.0', '701.0');
+
+    expect(thread.messages.map((m) => m.text)).toEqual(['first page', 'second page']);
+    expect(slackApi.conversations.replies).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('fetchChannelHistory — public only, chronological', () => {
   it('refuses a private channel before reading any history', async () => {
     slackApi.conversations.info.mockResolvedValue({
