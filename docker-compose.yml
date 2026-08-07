@@ -65,6 +65,10 @@ services:
       # Mount source code for hot reload
       - ./src:/app/src
       - ./prompts:/app/prompts
+      # Core skills the PM loads by name. registry.ts only sets coreSkillsPath if
+      # /app/skills exists, so without this every core-skill `Skill` call fails
+      # with "Unknown skill" (Dockerfile.dev never copies them either).
+      - ./skills:/app/skills
 
       # SSH agent forwarding (macOS Docker Desktop)
       - /run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock
