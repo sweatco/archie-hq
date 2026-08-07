@@ -273,7 +273,7 @@ outbound path — the connector is invoked synchronously and the resulting
 `message` / `approval:requested` event is then emitted on the bus for observers
 (SSE, JSONL persistence).
 
-### Base Agent Tools (via `createBaseAgentMcpServer`, named `repo-agent-tools`)
+### Base Agent Tools (via `createBaseAgentMcpServer`, named `agent-tools`)
 
 Used by both repo agents and plugin agents:
 

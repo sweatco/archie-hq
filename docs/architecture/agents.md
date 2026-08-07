@@ -11,7 +11,7 @@ Archie uses three active agent types (plus a disabled triage classifier). Each i
 | ~~Triage Agent~~ | Haiku | — | Event classifier (**currently disabled** — see below) |
 | PM Agent | Opus (default) | 1 per task | Task manager, user interface, agent coordinator |
 | Repo Agents | Sonnet (default, configurable) | 1 per plugin-defined repo agent per task | Codebase investigation and modification; declares one or more repos in frontmatter, all mounted at spawn |
-| Plugin Agents | Sonnet (default, configurable) | 1 per plugin agent per task | Lightweight, read-only domain specialists |
+| Plugin Agents | Sonnet (default, configurable) | 1 per plugin agent per task | Lightweight domain specialists; no repo, no git |
 
 Models for repo and plugin agents come from each agent's plugin frontmatter (`model` field, with `effort` and `maxTurns` also supported); `Sonnet` is the fallback when frontmatter is silent. The PM agent defaults to Opus but can be overridden by the `pm` plugin overlay's frontmatter (see `src/agents/registry.ts` `buildPmDef()` and `src/agents/spawn.ts`).
 
@@ -95,13 +95,13 @@ The pre-v30 singular shape (`metadata.archie.repo: {github, baseBranch}`) is sti
 
 **Multi-repo mounts**: Each spawn iterates the agent's declared `repos` list, ensures an `AttachedRepo` record exists in `metadata.repositories[agentId]` for each (preserving the clone/branch state of repos already present), runs `setupSharedClone` per repo, and aggregates all clone paths into `additionalDirectories` and the sandbox `allowReadPaths`/`allowWritePaths`/`denyWritePaths`. Each repo gets its own task-local clone at `sessions/{taskId}/repos/{agentId}/{org}/{repo}/` — two agents that declare the same github get two independent clones with independent branch state. Because the loop iterates the *declared* list, adding a repo to an agent's frontmatter makes it mount on the next spawn (so an old task picks it up on recovery), and removing one simply stops mounting it (a stale metadata record is harmless).
 
-**Tools** (via MCP servers `repo-agent-tools`, `repo-tools`, and `research-tools`):
+**Tools** (via MCP servers `agent-tools`, `repo-tools`, and `research-tools`):
 
 | Tool | MCP Server | Availability | Purpose |
 |---|---|---|---|
-| `send_message_to_agent` | `repo-agent-tools` | Always | Report findings or coordinate with peers |
-| `log_finding` | `repo-agent-tools` | Always | Write to shared knowledge log |
-| `share_artifact` | `repo-agent-tools` | Always | Publish an immutable snapshot to `shared/artifacts/` |
+| `send_message_to_agent` | `agent-tools` | Always | Report findings or coordinate with peers |
+| `log_finding` | `agent-tools` | Always | Write to shared knowledge log |
+| `share_artifact` | `agent-tools` | Always | Publish an immutable snapshot to `shared/artifacts/` |
 | `web_research` | `research-tools` | Always | Spawn a research pipeline |
 | `fetch` | `repo-tools` | Always | Fetch latest refs from origin |
 | `switch_branch` | `repo-tools` | Always | Switch branches with auto-stash/pop |
@@ -152,7 +152,7 @@ Only the PM-supplied inputs are persisted, as a `DynamicAgentSpec` in `metadata.
 
 **Source**: `src/agents/agent.ts`, `src/agents/spawn.ts`
 
-Plugin agents are lightweight, read-only agents for domains that don't need git or GitHub infrastructure. They are loaded from plugins that lack a `repo-config.json`.
+Plugin agents are lightweight agents for domains that don't need git or GitHub infrastructure. They have no repository and no git plumbing; file writes are confined to their own workspace. They are loaded from plugins that lack a `repo-config.json`.
 
 **Model**: Sonnet by default (`def.model || 'sonnet'` in `spawn.ts`). Configurable via frontmatter `model` (and `effort`, `maxTurns`).
 
@@ -160,14 +160,16 @@ Plugin agents are lightweight, read-only agents for domains that don't need git 
 
 | Tool | MCP Server | Purpose |
 |---|---|---|
-| `send_message_to_agent` | `repo-agent-tools` | Report findings or coordinate with peers |
-| `log_finding` | `repo-agent-tools` | Write to shared knowledge log |
-| `share_artifact` | `repo-agent-tools` | Publish an immutable snapshot to `shared/artifacts/` |
+| `send_message_to_agent` | `agent-tools` | Report findings or coordinate with peers |
+| `log_finding` | `agent-tools` | Write to shared knowledge log |
+| `share_artifact` | `agent-tools` | Publish an immutable snapshot to `shared/artifacts/` |
 | `web_research` | `research-tools` | Spawn a research pipeline |
 | `Read`, `Glob`, `Grep` | (built-in) | Explore files in the agent workspace and (read-only) shared folder |
 | `Skill` | (SDK built-in) | Load domain-specific agent skills mounted from the plugin |
+| `Write`, `Edit` | (built-in) | Create and modify files within the agent workspace (`.claude/settings.json`, `.claude/skills`, `.claude/hooks` and `CLAUDE.md` are protected) |
+| `Bash` | (built-in) | Run commands, sandboxed to the same write boundary; no network egress unless frontmatter declares `allowedNetworkDomains` |
 
-`WebSearch` and `WebFetch` are explicitly disallowed. Plugin agents have no access to git or `repo-tools`.
+`WebSearch` and `WebFetch` are explicitly disallowed. Plugin agents have no access to git or `repo-tools`, so there is no repository for `Write`/`Edit`/`Bash` to reach — the write boundary is the sandbox, not the tool list. An agent's frontmatter may narrow this set further via `tools` or `disallowedTools`.
 
 **Workspace**: Each plugin agent gets its own workspace at `sessions/{taskId}/agents/{key}/` (cwd, read-write). Plugin skills are symlinked into `.claude/skills/`, plugin hooks are written to `.claude/settings.json`, and the shared task folder is mounted read-only via `additionalDirectories`.
 
@@ -252,10 +254,9 @@ Different for each agent track:
 - No template variables — per-repo data (github, clone path, current/base branch, RO/RW mode) is surfaced through the dynamic Current Context block built at spawn, not via static substitution. This keeps the prompt structurally correct for any number of repos.
 
 **Plugin agents** (`prompts/plugin-agent.md`):
-- Read-only mode declaration
-- Available tools summary
-- Workspace description
-- Simple workflow: receive, research, log, report
+- Available tools summary (including Write/Edit/Bash, scoped to the agent workspace)
+- Workspace description, and that product code belongs to repo agents
+- Simple workflow: receive, do the work the agent's own instructions describe (research, or acting via its plugin's MCP tools), log, report
 
 ### Layer 3: Domain-Specific Instructions
 

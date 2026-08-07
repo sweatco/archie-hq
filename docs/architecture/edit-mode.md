@@ -172,7 +172,7 @@ The full single allowed-tool list (set as `def.tools` on the repo agent definiti
 ### Always available (RO and RW)
 - `Read`, `Glob`, `Grep` — file inspection (sandbox-bounded reads)
 - `Bash` — read-side git commands work; write-side commands are blocked by the sandbox in RO mode
-- `mcp__repo-agent-tools__send_message_to_agent`, `mcp__repo-agent-tools__log_finding`, `mcp__repo-agent-tools__share_artifact`
+- `mcp__agent-tools__send_message_to_agent`, `mcp__agent-tools__log_finding`, `mcp__agent-tools__share_artifact`
 - `mcp__research-tools__web_research`
 - `mcp__repo-tools__fetch` — fetch latest refs from origin
 - `mcp__repo-tools__switch_branch` — switch branches with auto-stash
