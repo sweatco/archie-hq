@@ -1718,6 +1718,99 @@ export async function findSlackUsers(query: string): Promise<SlackUserInfo[]> {
   );
 }
 
+/** A human in a task: the log's own mention marker, plus their job title. */
+export interface TaskPerson {
+  /** Slack user id — every decision (bot, external, title) is made from this. */
+  id: string;
+  /** The `<@ID:Name>` marker verbatim from the log, passed through untouched. */
+  marker: string;
+  /** `profile.title`, or `''` when we won't vouch for it. Callers must tolerate empty. */
+  title: string;
+}
+
+/**
+ * Maximum characters of a Slack job title we will place in a system prompt.
+ * Real titles are short ("Backend Lead", "Full Stack Engineer | DAU Squad");
+ * anything longer is being used as a payload, not a job title.
+ */
+const MAX_TITLE_LENGTH = 80;
+
+/**
+ * Flatten a job title to one short prompt-safe span.
+ *
+ * Two shapes are removed because this text lands in a system prompt. Newlines,
+ * because a multi-line title could close the line it sits on and forge a new
+ * prompt section. And angle brackets, so a title cannot write a tag at all —
+ * stronger than cutting one known closing tag, and a job title has no legitimate
+ * use for them. With no way to write `</people_in_task>`, the block that carries
+ * these titles holds by construction.
+ */
+function sanitizeJobTitle(title: string): string {
+  return title
+    .replace(/[<>]/g, '')
+    .replace(/[\u0000-\u001F\u007F]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_TITLE_LENGTH);
+}
+
+/**
+ * Job titles for people we are willing to quote one for, keyed by user id.
+ *
+ * A job title is self-authored free text, so carrying one into a system prompt
+ * extends trust to whoever wrote it. Excluded are external (Slack Connect) users
+ * and home-workspace guests, whose profiles belong to people outside the org.
+ * Unlike `isExternalUser`, which fails open to keep the bot usable, this fails
+ * *closed*: with no home team we cannot tell insider from outsider, so the map is
+ * empty and nobody gets a title. Same on any Slack failure — a missing title is
+ * a cosmetic loss, and this feeds prompt context that must never block a spawn.
+ */
+async function loadTrustedJobTitles(): Promise<Map<string, string>> {
+  const titles = new Map<string, string>();
+  if (getHomeTeamId() === null) return titles;
+  let users: SlackUserInfo[];
+  try {
+    users = await listWorkspaceUsers();
+  } catch (error) {
+    logger.warn('Slack', 'Failed to load job titles — omitting them', error);
+    return titles;
+  }
+  for (const user of users) {
+    if (isExternalUser(user) || !user.title) continue;
+    titles.set(user.id, sanitizeJobTitle(user.title));
+  }
+  return titles;
+}
+
+/**
+ * List the humans a task transcript names, as `{ id, name, title }`.
+ *
+ * Every marker (both bracket orders — see `restoreMentions`) is passed through
+ * verbatim; only the id inside it is interpreted. That matters for more than
+ * simplicity — on a shared channel `appendSlackMessage` masks an external
+ * author's display name to "external" on purpose, and reassembling the marker
+ * from user records would undo that.
+ *
+ * The only thing looked up is the job title, and only for people we will vouch
+ * for (see `loadTrustedJobTitles`). Bots are skipped: `B…` ids and Archie's own
+ * user id, so a workflow like "Report a bug" never reads as a colleague.
+ * Order is first-seen.
+ */
+export async function resolvePeopleFromTranscript(transcript: string): Promise<TaskPerson[]> {
+  const seen = new Map<string, string>();
+  const re = /(?:@<|<@)([A-Z0-9]+):[^>]+>/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(transcript)) !== null) {
+    const [marker, id] = match;
+    if (id.startsWith('B') || id === getBotUserId()) continue;
+    if (!seen.has(id)) seen.set(id, marker);
+  }
+  if (seen.size === 0) return [];
+
+  const titles = await loadTrustedJobTitles();
+  return Array.from(seen, ([id, marker]) => ({ id, marker, title: titles.get(id) ?? '' }));
+}
+
 // ============================================================================
 // Channel Lookup
 // ============================================================================
