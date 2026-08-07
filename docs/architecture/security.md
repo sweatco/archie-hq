@@ -183,6 +183,19 @@ In edit mode, repo agents manage their own PRs directly via the `repo-tools` MCP
 
 **Source:** `src/agents/spawn.ts`, `src/agents/tools.ts` (`createRequestEditModeTool`)
 
+### Tramline Release-Action Gate
+
+Tramline's API scopes are binary (`read`/`write`), so a key that can retry a store submission can also push a staged rollout to 100%. That distinction is enforced by a `PreToolUse` hook instead:
+
+1. Every `mcp__tramline__*` call is classified — read / mirrors-state / gated / never-allowed
+2. A gated call is denied, and Slack Approve/Deny buttons are posted describing the action *as rendered from its real arguments*, not from the agent's summary
+3. The task pauses; on approval a single-use permission bound to `sha256(action + arguments)` is stored
+4. The agent's retry of that exact call spends the permission once
+
+Five irreversible actions (rollout to 100%, halt, complete-previous-rollout, re-prepare submission, cancel review) are refused with or without approval. Unlike the other gates, the *clicker* is authorized against `ARCHIE_RELEASE_APPROVERS`, which fails closed when unset.
+
+**Source:** `src/agents/tramline-guard.ts`, `src/tasks/task.ts`, `src/connectors/slack/events.ts` (`registerTramlineActionHandlers`) — see [Tramline Actions](tramline-actions.md)
+
 ### PR Review Enforcement
 
 All code changes go through GitHub pull requests. Repo agents create PRs via the `create_pull_request` tool, and merge is gated on external PR review approval. The `merge_pull_request` tool checks that PRs are approved, CI is passing, and there are no conflicts before merging.

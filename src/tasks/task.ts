@@ -12,6 +12,7 @@ import type { AgentDef } from '../types/agent.js';
 import { isPmAgent, isRepoAgent } from '../types/agent.js';
 import { modelDisplayLabel, resolveAgentModel, modelChangingAgentIds } from '../agents/model-label.js';
 import { prCardFingerprint, prCardTitlePlain } from '../system/pr-card-format.js';
+import { APPROVAL_TTL_MS, mergeTargets } from '../agents/tramline-guard.js';
 import { getGitHubClient } from '../connectors/github/client.js';
 import { createKeyedLock } from '../system/keyed-lock.js';
 
@@ -556,7 +557,7 @@ export class Task {
   async postInteractiveToUser(
     text: string,
     blocks: unknown[],
-    approvalType: 'edit_mode' | 'research_budget' | 'merge' | 'trigger' | 'max_mode',
+    approvalType: 'edit_mode' | 'research_budget' | 'merge' | 'trigger' | 'max_mode' | 'tramline_action',
     channelKey?: string,
     context?: { github: string; pr_number: number },
     ref?: string,
@@ -1416,6 +1417,233 @@ export class Task {
 
     this.debouncedSave();
     await appendAgentFinding(this.taskId, 'system', 'Merge denied by user — PR not merged', 'decision');
+    await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+    return 'resolved';
+  }
+
+  // ---- Tramline release actions -------------------------------------------
+  // The gate itself lives in agents/tramline-guard.ts; this section owns the
+  // metadata invariants it depends on. See docs/architecture/tramline-actions.md.
+
+  /** The task's Tramline id→label index, for rendering approval prompts. */
+  getTramlineTargets(): Record<string, string> | undefined {
+    return this.metadata.tramline_targets;
+  }
+
+  /** Fold labels harvested from a Tramline read response into the index. */
+  recordTramlineTargets(fresh: Record<string, string>): void {
+    if (Object.keys(fresh).length === 0) return;
+    this.metadata.tramline_targets = mergeTargets(this.metadata.tramline_targets, fresh);
+    this.debouncedSave();
+  }
+
+  /**
+   * Spend an approval for `digest`.
+   *
+   * **Synchronous read-compare-remove, no awaits.** The guard hook calls this on
+   * every gated tool call, so two calls with the same digest in one turn must
+   * not both find the approval — the splice has to land before anything can
+   * yield. (Same invariant as `handleMergeApproval`'s clear-before-awaits, for
+   * the same reason.) The save is deliberately debounced and *after* the
+   * mutation: a lost write can only ever fail closed, re-asking for approval.
+   */
+  consumeTramlineApproval(digest: string): boolean {
+    const approvals = this.metadata.approved_tramline_actions;
+    if (!approvals || approvals.length === 0) return false;
+
+    const now = Date.now();
+    const index = approvals.findIndex((a) => a.digest === digest && Date.parse(a.expires_at) > now);
+    // Prune anything stale while we're here — an unspent approval is a standing
+    // permission, so it should not outlive its window on disk.
+    const live = approvals.filter((a, i) => i !== index && Date.parse(a.expires_at) > now);
+
+    if (index === -1) {
+      if (live.length !== approvals.length) {
+        this.metadata.approved_tramline_actions = live;
+        this.debouncedSave();
+      }
+      return false;
+    }
+
+    this.metadata.approved_tramline_actions = live;
+    this.debouncedSave();
+    return true;
+  }
+
+  /**
+   * Post a Tramline action approval request and park the task.
+   *
+   * One outstanding request per task: a second gated call while one is pending
+   * is refused rather than queued, so a human never faces a stack of release
+   * buttons to clear. Unlike the merge slot there is no supersede path — a
+   * pending request that was never resolved is cleared by the resolution
+   * handlers or by the task ending, and superseding it would let an agent
+   * replace the action a human is in the middle of reading.
+   */
+  async requestTramlineApproval(
+    agentId: string,
+    request: { digest: string; tool: string; summary: string; target?: string },
+  ): Promise<'posted' | 'already-pending'> {
+    const pending = this.metadata.pending_tramline_action;
+    if (pending && pending.digest !== request.digest) return 'already-pending';
+    // Same digest already pending: the agent retried before the human answered.
+    // Don't post a duplicate prompt — the task is already parked on this one.
+    if (pending) return 'posted';
+
+    this.metadata.pending_tramline_action = {
+      digest: request.digest,
+      tool: request.tool,
+      summary: request.summary,
+      target: request.target,
+      requested_by: agentId,
+      requested_at: new Date().toISOString(),
+    };
+    // Flush synchronously: the resolution arrives on a *different* instance
+    // (the task is about to stop and be reloaded by the button handler), so the
+    // slot must be on disk before the park, not 500ms later.
+    await this.save(true);
+
+    await appendAgentFinding(
+      this.taskId,
+      'system',
+      `Tramline action approval requested: ${request.tool}${request.target ? ` on ${request.target}` : ''}`,
+      'decision',
+    );
+
+    const buttonValue = `${this.taskId}|${request.digest}`;
+    const blocks = [
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: `*Tramline action:* ${request.summary}` },
+      },
+      {
+        type: 'context',
+        elements: [{
+          type: 'mrkdwn',
+          text: `Requested by \`${agentId}\` · approving runs this one action once · <https://tramline.sweatco.team|Tramline>`,
+        }],
+      },
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Approve' },
+            action_id: 'approve_tramline_action',
+            value: buttonValue,
+            style: 'primary',
+          },
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Deny' },
+            action_id: 'deny_tramline_action',
+            value: buttonValue,
+            style: 'danger',
+          },
+        ],
+      },
+    ];
+
+    await this.postInteractiveToUser(
+      `Approve Tramline action: ${request.tool}${request.target ? ` on ${request.target}` : ''}?`,
+      blocks,
+      'tramline_action',
+      undefined,
+      undefined,
+      request.digest,
+    );
+
+    // Park: freeze the status so the wind-down doesn't resurface "working…",
+    // and defer the stop to turn-end so stopping the queue doesn't close the
+    // input stream under this in-flight hook.
+    this.suspendStatus();
+    this.agentProcesses.get(agentId as AgentName)?.deferTeardown(() => this.stop());
+    return 'posted';
+  }
+
+  /**
+   * Resolve a pending Tramline action (approve side).
+   *
+   * Same synchronous read-compare-clear identity gate as
+   * {@link handleMergeApproval}: a click whose digest doesn't match the slot is
+   * a stale no-op and can never authorize the action currently pending. On
+   * match the approval is *stored*, not executed — the agent spends it by
+   * retrying its own call, which keeps the action running through the same
+   * audited MCP path as everything else.
+   */
+  async handleTramlineActionApproval(
+    approver: { id: string; name: string } | undefined,
+    expectedDigest: string,
+  ): Promise<'resolved' | 'stale'> {
+    const pending = this.metadata.pending_tramline_action;
+    if (!pending || pending.digest !== expectedDigest) {
+      logger.warn(
+        'task',
+        `Stale Tramline action approval for ${expectedDigest} on task ${this.taskId} — ` +
+        `slot ${pending ? `holds ${pending.digest}` : 'is empty'}`,
+      );
+      return 'stale';
+    }
+    this.metadata.pending_tramline_action = undefined;
+
+    const now = new Date();
+    this.metadata.approved_tramline_actions = [
+      ...(this.metadata.approved_tramline_actions ?? []),
+      {
+        digest: pending.digest,
+        tool: pending.tool,
+        summary: pending.summary,
+        approved_by: approver?.id,
+        approved_at: now.toISOString(),
+        expires_at: new Date(now.getTime() + APPROVAL_TTL_MS).toISOString(),
+      },
+    ];
+
+    // Cancel the park armed by the guard hook on the requesting agent —
+    // approval means "continue", so the deferred stop must not fire and tear
+    // down the task we just approved.
+    this.agentProcesses.get(pending.requested_by as AgentName)?.clearPendingTeardown();
+
+    // Durable, not debounced: the agent's retry reads this from a reloaded
+    // instance, so the grant has to be on disk before the reactivation below.
+    await this.save(true);
+
+    const bySuffix = approver?.name ? ` by ${approver.name}` : '';
+    await appendAgentFinding(
+      this.taskId,
+      'system',
+      `Tramline action approved${bySuffix}: ${pending.tool}${pending.target ? ` on ${pending.target}` : ''}`,
+      'decision',
+    );
+    await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+    return 'resolved';
+  }
+
+  /**
+   * Resolve a pending Tramline action (deny side). Same identity gate; clears
+   * the slot and grants nothing. No approval is ever stored on this path.
+   */
+  async handleTramlineActionDenial(expectedDigest: string): Promise<'resolved' | 'stale'> {
+    const pending = this.metadata.pending_tramline_action;
+    if (!pending || pending.digest !== expectedDigest) {
+      logger.warn(
+        'task',
+        `Stale Tramline action denial for ${expectedDigest} on task ${this.taskId} — ` +
+        `slot ${pending ? `holds ${pending.digest}` : 'is empty'}`,
+      );
+      return 'stale';
+    }
+    this.metadata.pending_tramline_action = undefined;
+
+    this.agentProcesses.get(pending.requested_by as AgentName)?.clearPendingTeardown();
+
+    this.debouncedSave();
+    await appendAgentFinding(
+      this.taskId,
+      'system',
+      `Tramline action denied by user: ${pending.tool}${pending.target ? ` on ${pending.target}` : ''}`,
+      'decision',
+    );
     await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
     return 'resolved';
   }

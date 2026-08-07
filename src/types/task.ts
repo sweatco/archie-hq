@@ -321,6 +321,32 @@ export interface TaskMetadata {
     requested_by: string; // agent id — to clear its parked teardown on resolution
     requested_at: string; // ISO 8601, for the audit finding
   };
+  /**
+   * The single pending Tramline release-action approval (written by the
+   * PreToolUse guard in `tramline-guard.ts`, cleared on every resolution).
+   * One at a time by design: a queue of pending release actions invites
+   * approving them in a batch, which is the accident this gate exists to stop.
+   */
+  pending_tramline_action?: {
+    digest: string;       // identity of the exact (tool, arguments) call
+    tool: string;         // Tramline action name, for the audit finding
+    summary: string;      // rendered consequence shown to the approver
+    target?: string;      // human label of the record acted on
+    requested_by: string; // agent id — to clear its parked teardown on resolution
+    requested_at: string; // ISO 8601
+  };
+  /**
+   * Approvals granted but not yet spent. Each is one-shot and bound to a digest
+   * of the exact call, so it cannot be redirected to a different target or
+   * replayed. Expired entries are pruned on read.
+   */
+  approved_tramline_actions?: ApprovedTramlineAction[];
+  /**
+   * id → human label for Tramline records this task has read, used to render
+   * approval prompts. Populated from read responses by the PostToolUse context
+   * hook and capped (see TARGET_INDEX_LIMIT).
+   */
+  tramline_targets?: Record<string, string>;
   research_budget_extra?: number;    // Additional research budget granted via Slack approval (+5 per approval)
   research_request_count?: number;   // Persisted research request count (survives stop/reactivate)
   failure_counter?: number;          // Consecutive recovery attempts (Stage 3 idle detection)
@@ -332,6 +358,20 @@ export interface TaskMetadata {
   pending_trigger_id?: string;       // Trigger ID proposed by this task, awaiting approve/deny (read by handleTriggerApproval/Denial)
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * A human-approved, single-use permission to run one Tramline release action.
+ * Bound to `digest` — a hash of the tool name and every argument — so it is
+ * spendable on that call and no other.
+ */
+export interface ApprovedTramlineAction {
+  digest: string;
+  tool: string;
+  summary: string;
+  approved_by?: string;  // Slack user id of the approver, for the audit finding
+  approved_at: string;   // ISO 8601
+  expires_at: string;    // ISO 8601 — unspent approvals go stale (APPROVAL_TTL_MS)
 }
 
 export interface LogEntry {

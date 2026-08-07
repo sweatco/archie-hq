@@ -28,6 +28,7 @@ import {
   createSchedulingMcpServer,
 } from './tools.js';
 import { createFileBridgeMcpServer, shouldAttachFileBridge } from './mcp-file-bridge.js';
+import { createTramlineGuardHooks, createTramlineContextHook } from './tramline-guard.js';
 import { hydrateBranchState } from '../connectors/github/branch-state.js';
 import { taskBranchName } from '../connectors/github/branch-naming.js';
 import { createResearchMcpServer, createResearchPostToolHook, createResearchDefenseTagHook } from '../mcp/research-tools.js';
@@ -669,8 +670,23 @@ Shared folder: ${sharedPath} [READ-ONLY]
     managedSettings: buildManagedNetworkPolicy(sandboxOpts),
     ...(tools ? { tools } : {}),
     hooks: {
-      PreToolUse: createFilesystemGuardHooks(sandboxOpts),
+      PreToolUse: [
+        ...createFilesystemGuardHooks(sandboxOpts),
+        // Tramline release actions: gated per call on human approval. Wired for
+        // every agent — a Tramline write is equally consequential whichever
+        // agent makes it, and the port reads live task metadata so the grant an
+        // approval writes is visible to the retry without a respawn.
+        ...createTramlineGuardHooks({
+          getTargets: () => task.getTramlineTargets(),
+          recordTargets: (fresh) => task.recordTramlineTargets(fresh),
+          consumeApproval: (digest) => task.consumeTramlineApproval(digest),
+          requestApproval: (request) => task.requestTramlineApproval(def.id, request),
+        }),
+      ],
       PostToolUse: [
+        createTramlineContextHook({
+          recordTargets: (fresh) => task.recordTramlineTargets(fresh),
+        }),
         createResearchPostToolHook({
           getSharedDir: () => getSharedPath(taskId),
           getTaskId: () => taskId,
