@@ -36,8 +36,49 @@
           "status": "created",
           "tester_notes": "Nothing new",
           "created_at": "2026-08-07 10:29:53 UTC",
-          "build": null,
-          "store_submissions": []
+          "build": {
+            "id": "9ce7d31d-4937-4572-a814-020af244be7b",
+            "version_name": "1.2.3",
+            "build_number": "21798",
+            "external_name": null,
+            "external_id": null,
+            "generated_at": "2026-08-07 10:29:51 UTC",
+            "size_in_bytes": null,
+            "commit_hash": "812e91bc8736494fa7bfef8211ebaf4e",
+            "workflow_run": {
+              "id": "226284f5-7cf7-4d1f-9959-5ef99e29be7b",
+              "kind": "release_candidate",
+              "status": "failed",
+              "external_number": 4820,
+              "external_url": null,
+              "artifacts_url": null,
+              "commit_hash": "812e91bc8736494fa7bfef8211ebaf4e",
+              "started_at": null,
+              "finished_at": null
+            }
+          },
+          "store_submissions": [
+            {
+              "id": "553c41fb-4a7c-4cd8-bf2f-4e5c36abbe7a",
+              "kind": "PlayStoreSubmission",
+              "status": "failed",
+              "store_status": null,
+              "store_link": null,
+              "failure_reason": null,
+              "sequence_number": 2,
+              "prepared_at": null,
+              "submitted_at": null,
+              "approved_at": null,
+              "rejected_at": null,
+              "created_at": "2026-08-07 10:29:52 UTC",
+              "build": {
+                "id": "9ce7d31d-4937-4572-a814-020af244be7b",
+                "version_name": "1.2.3",
+                "build_number": "21798"
+              },
+              "store_rollout": null
+            }
+          ]
         },
         "production_releases": [
           {
@@ -128,8 +169,49 @@
           "status": "created",
           "tester_notes": "Nothing new",
           "created_at": "2026-08-07 10:29:53 UTC",
-          "build": null,
-          "store_submissions": []
+          "build": {
+            "id": "9ce7d31d-4937-4572-a814-020af244be7b",
+            "version_name": "1.2.3",
+            "build_number": "21797",
+            "external_name": null,
+            "external_id": null,
+            "generated_at": "2026-08-07 10:29:51 UTC",
+            "size_in_bytes": null,
+            "commit_hash": "812e91bc8736494fa7bfef8211ebaf4e",
+            "workflow_run": {
+              "id": "226284f5-7cf7-4d1f-9959-5ef99e29be7b",
+              "kind": "release_candidate",
+              "status": "failed",
+              "external_number": 4819,
+              "external_url": null,
+              "artifacts_url": null,
+              "commit_hash": "812e91bc8736494fa7bfef8211ebaf4e",
+              "started_at": null,
+              "finished_at": null
+            }
+          },
+          "store_submissions": [
+            {
+              "id": "553c41fb-4a7c-4cd8-bf2f-4e5c36abbe7a",
+              "kind": "AppStoreSubmission",
+              "status": "failed",
+              "store_status": null,
+              "store_link": null,
+              "failure_reason": null,
+              "sequence_number": 2,
+              "prepared_at": null,
+              "submitted_at": null,
+              "approved_at": null,
+              "rejected_at": null,
+              "created_at": "2026-08-07 10:29:52 UTC",
+              "build": {
+                "id": "9ce7d31d-4937-4572-a814-020af244be7b",
+                "version_name": "1.2.3",
+                "build_number": "21797"
+              },
+              "store_rollout": null
+            }
+          ]
         },
         "production_releases": [
           {

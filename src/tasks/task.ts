@@ -1499,8 +1499,9 @@ export class Task {
    * is refused rather than queued, so a human never faces a stack of release
    * buttons to clear. Unlike the merge slot there is no supersede path — a
    * pending request that was never resolved is cleared by the resolution
-   * handlers or by the task ending, and superseding it would let an agent
-   * replace the action a human is in the middle of reading.
+   * handlers, by a failed Slack post, or by ageing out (PENDING_APPROVAL_TTL_MS)
+   * — never superseded, which would let an agent replace the action a human is
+   * in the middle of reading.
    */
   async requestTramlineApproval(
     agentId: string,
@@ -1580,14 +1581,25 @@ export class Task {
       },
     ];
 
-    await this.postInteractiveToUser(
-      `Approve Tramline action: ${request.tool}${request.target ? ` on ${request.target}` : ''}?`,
-      blocks,
-      'tramline_action',
-      undefined,
-      undefined,
-      request.digest,
-    );
+    try {
+      await this.postInteractiveToUser(
+        `Approve Tramline action: ${request.tool}${request.target ? ` on ${request.target}` : ''}?`,
+        blocks,
+        'tramline_action',
+        undefined,
+        undefined,
+        request.digest,
+      );
+    } catch (error) {
+      // The slot's presence means "a prompt exists in Slack" — the same-digest
+      // re-arm branch and the one-at-a-time refusal both key off it. A failed
+      // post must therefore clear it, or the task spends an hour refusing every
+      // action and a retry parks it against a button nobody can see. Rethrow so
+      // the guard's fail-closed wrapper denies this attempt.
+      this.metadata.pending_tramline_action = undefined;
+      await this.save(true);
+      throw error;
+    }
 
     // Park: freeze the status so the wind-down doesn't resurface "working…",
     // and defer the stop to turn-end so stopping the queue doesn't close the
@@ -1674,7 +1686,13 @@ export class Task {
       `Tramline action approved${bySuffix}: ${pending.tool}${pending.target ? ` on ${pending.target}` : ''}`,
       'decision',
     );
-    await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+    // Wake the agent that owns the grant: only a byte-identical retry from the
+    // requester spends it, and routing through the PM alone adds a re-delegation
+    // hop to the TTL clock. The PM is reactivated by the requester's own report
+    // when the action lands, per the normal protocol.
+    const requester = (pending.requested_by || 'pm-agent') as AgentName;
+    emitEvent('approval:resolved', this.taskId, { type: 'tramline_action', approve: true });
+    await this.sendMessage(AGENT_PROMPTS.existingTask, requester);
     return 'resolved';
   }
 
@@ -1705,6 +1723,7 @@ export class Task {
       `Tramline action denied by user: ${pending.tool}${pending.target ? ` on ${pending.target}` : ''}`,
       'decision',
     );
+    emitEvent('approval:resolved', this.taskId, { type: 'tramline_action', approve: false });
     await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
     return 'resolved';
   }

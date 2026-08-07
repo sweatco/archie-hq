@@ -89,11 +89,11 @@ describe('classifyTramlineTool', () => {
     expect(classifyTramlineTool(tool('get_release_analytics'))).toBe('read');
   });
 
-  // One rule, no tiers: every mutation is gated. This list is the FULL action
-  // surface of tramline-mcp 0.3.x — a tool added there fails this test until
-  // someone classifies it here, which is the review step.
-  it('gates every one of the 36 mutations', () => {
-    const mutations = [
+  // One rule, no tiers: every mutation is gated. This list mirrors the action
+  // surface of tramline-mcp 0.3.x by hand — nothing asserts the cross-repo
+  // correspondence automatically (they are different repositories), so when a
+  // tool is added there, add it here AND to ACTION_DESCRIPTIONS.
+  const MUTATIONS = [
       // release lifecycle
       'start_release', 'stop_release', 'retry_pre_release', 'retry_preparation',
       'trigger_preparation', 'sync_release_commits', 'sync_release_pull_requests',
@@ -109,24 +109,21 @@ describe('classifyTramlineTool', () => {
       // store rollouts
       'start_rollout', 'increase_rollout', 'pause_rollout', 'resume_rollout', 'halt_rollout',
       'fully_release_rollout', 'enable_automatic_rollout', 'disable_automatic_rollout',
-    ];
-    expect(mutations).toHaveLength(36);
-    for (const action of mutations) {
+  ];
+
+  it('gates every one of the 36 mutations', () => {
+    expect(MUTATIONS).toHaveLength(36);
+    for (const action of MUTATIONS) {
       expect(classifyTramlineTool(tool(action)), action).toBe('gated');
     }
   });
 
   // Uniform gating only works if the human can read what they are approving:
   // every mutation must carry a consequence sentence, or the gate refuses it
-  // rather than showing a bare method name.
+  // rather than showing a bare method name — a missing entry would make that
+  // action dead even with approval, contradicting "everything is approvable".
   it('has an approval description for every mutation', () => {
-    for (const action of [
-      'start_release', 'stop_release', 'fully_release_rollout', 'halt_rollout',
-      'enable_automatic_rollout', 'prepare_submission', 'submit_for_review',
-      'cancel_submission_review', 'update_submission_build', 'fully_release_previous_rollout',
-      'poll_workflow_run_status', 'fetch_workflow_run_status', 'sync_submission_from_store',
-      'retry_workflow_run', 'retry_submission', 'increase_rollout', 'start_rollout',
-    ]) {
+    for (const action of MUTATIONS) {
       expect(renderAction(tool(action), {}, {}), action).not.toBe('no-description');
     }
   });
@@ -238,6 +235,26 @@ describe('indexTargets against a real API payload', () => {
   it('carries the store for a submission', () => {
     expect(INDEX[ANDROID_SUBMISSION]).toContain('Play Store');
     expect(INDEX[IOS_SUBMISSION]).toContain('App Store');
+  });
+
+  // The same store + status under beta and production mean different things to
+  // the approver (a production retry re-prepares store metadata; a beta one
+  // does not) — they must never render identically.
+  it('distinguishes a beta submission from a production one', () => {
+    const betaSub = ANDROID.latest_beta_release.store_submissions[0].id;
+    expect(INDEX[betaSub]).toContain('beta store submission');
+    expect(INDEX[ANDROID_SUBMISSION]).toContain('production store submission');
+    expect(INDEX[betaSub]).not.toBe(INDEX[ANDROID_SUBMISSION]);
+  });
+
+  // Only records reached through mapped keys are labelled: a commits or PR page
+  // (up to 100 rows) would otherwise flood the capped index and evict the labels
+  // the gate depends on, and a release_pilot (a USER id) would be labelled as a
+  // release and become an approvable target.
+  it('does not index unmapped records — users, commits, PR pages', () => {
+    expect(INDEX[RELEASE.release_pilot.id]).toBeUndefined();
+    expect(indexTargets({ commits: [{ id: '11111111-1111-4111-8111-111111111111', message: 'x' }] })).toEqual({});
+    expect(indexTargets({ pull_requests: [{ id: '22222222-2222-4222-8222-222222222222', state: 'open' }] })).toEqual({});
   });
 
   it('survives an unexpected payload shape without throwing', () => {
@@ -434,15 +451,20 @@ describe('createTramlineGuardHooks', () => {
 
   it('denies with an actionable message when the target was never read', async () => {
     const requestApproval = vi.fn(async () => 'posted' as const);
-    const result = await runGuard(
-      fakePort({ requestApproval, getTargets: () => ({}) }),
-      tool('retry_submission'),
-      { id: ANDROID_SUBMISSION },
-    );
+    vi.stubEnv('ARCHIE_RELEASE_APPROVERS', 'U1'); // the unconfigured check fires first, deliberately
+    try {
+      const result = await runGuard(
+        fakePort({ requestApproval, getTargets: () => ({}) }),
+        tool('retry_submission'),
+        { id: ANDROID_SUBMISSION },
+      );
 
-    expect(isDeny(result)).toBe(true);
-    expect(denialReason(result)).toContain('get_release');
-    expect(requestApproval).not.toHaveBeenCalled();
+      expect(isDeny(result)).toBe(true);
+      expect(denialReason(result)).toContain('get_release');
+      expect(requestApproval).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('refuses a second gated action while one is pending', async () => {

@@ -192,6 +192,14 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
             logLines.push({
               node: <Text dimColor>✅ {event.data.text as string} (resolved)</Text>,
             });
+          } else if (event.data.approvalType === 'tramline_action') {
+            // Slack buttons are deliberately the only approver surface for
+            // Tramline release actions (the /api route is unauthenticated and
+            // would bypass the approver allowlist), so render read-only rather
+            // than offer a [y]/[n] that can only 400.
+            logLines.push({
+              node: <Text color="yellow" bold>⏳ {event.data.text as string}  (resolve in Slack — release approvers only)</Text>,
+            });
           } else {
             logLines.push({
               node: <Text color="yellow" bold>⏳ {event.data.text as string}  [y] approve / [n] deny</Text>,

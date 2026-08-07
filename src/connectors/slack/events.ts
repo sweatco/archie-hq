@@ -527,7 +527,8 @@ function parseTramlineButtonValue(value: string): { taskId: string; digest: stri
 }
 
 const STALE_TRAMLINE_PROMPT_TEXT =
-  '⚠️ This Tramline action prompt is stale — the pending request changed or was already resolved. Nothing ran.';
+  '⚠️ This Tramline action prompt is stale — the pending request changed, expired, or was already resolved. ' +
+  'Nothing ran, and the task was not resumed — ping the thread if it is still needed.';
 
 /**
  * Register the Tramline release-action approve/deny button handlers.
@@ -570,6 +571,14 @@ export function registerTramlineActionHandlers(boltApp: Pick<AppType, 'action'>)
       const info = await getUserInfo(userId!);
       if (isExternalUser(info)) {
         logger.warn('Server', `Tramline action ${verb} refused: approver ${userId} is external/guest`);
+        if (body.channel?.id) {
+          await postEphemeral(
+            body.channel.id,
+            userId!,
+            'External accounts cannot resolve Tramline actions. A release approver from the workspace has to click this one.',
+            body.message?.ts,
+          );
+        }
         return undefined;
       }
       return { id: userId!, name: info.realName };

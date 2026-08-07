@@ -40,10 +40,11 @@ import { logger } from '../system/logger.js';
 
 const TOOL_PREFIX = 'mcp__tramline__';
 
-/** How long an approval stays spendable. The agent retries within seconds of
- *  reactivation; a long window only widens the gap between what the approver
- *  saw and what eventually runs. */
-export const APPROVAL_TTL_MS = 10 * 60 * 1000;
+/** How long an approval stays spendable. Spending it takes a chain — PM wakes,
+ *  re-delegates, the requesting agent respawns, re-reads state, retries — so the
+ *  window has to fit that, while staying small enough that what the approver saw
+ *  is still roughly what runs. */
+export const APPROVAL_TTL_MS = 30 * 60 * 1000;
 
 /** How long an unresolved *request* keeps the single pending slot. Past this it
  *  is discarded rather than blocking every other action for the task's life, and
@@ -174,10 +175,10 @@ const ACTION_DESCRIPTIONS: Record<string, string> = {
   // Store rollouts
   start_rollout: 'Start the rollout — the first stage goes out to real users, and on a NON-staged rollout this releases to 100% immediately (the label says which)',
   fully_release_rollout: 'Release this rollout to 100% of users immediately — irreversible, a rollout cannot be narrowed back down',
-  halt_rollout: 'Halt this rollout (emergency stop; resumable) — on App Store this delists the app from the store rather than pausing a phase',
+  halt_rollout: 'Halt this rollout — Play Store only (App Store rollouts cannot be halted; pause is the App Store path). Emergency stop, resumable',
   enable_automatic_rollout: 'Hand stage advances to a scheduler that increases the rollout every 24h, unattended, until 100% — and manual increases are refused while it is on',
   increase_rollout: 'Advance the staged rollout to its next stage — more real users get this build, and advancing the final stage completes the rollout at 100%',
-  pause_rollout: 'Pause the staged rollout (Play Store: only has an effect on an automatic rollout — on a manual one Tramline reports success and changes nothing)',
+  pause_rollout: 'Pause the staged rollout — the way to stop an App Store phased release. Play Store: only has an effect on an automatic rollout (on a manual one Tramline reports success and changes nothing)',
   resume_rollout: 'Resume a paused or halted rollout — if a human halted it, this undoes that',
   disable_automatic_rollout: 'Stop automatic stage progression, returning the rollout to manual control',
 };
@@ -329,6 +330,23 @@ const KIND_BY_KEY: Record<string, string> = {
 };
 
 /**
+ * Submissions and rollouts exist under beta/internal AND production releases,
+ * and two of the same store + status would otherwise render identically — while
+ * meaning very different things to the approver (retrying a failed *production*
+ * submission re-prepares the store version; a beta one does not). Prefix them
+ * with the release kind they hang off.
+ */
+const ANCESTRY_KINDS = new Set(['internal release', 'beta release', 'production release']);
+function childKind(key: string, parentKind: string | undefined): string | undefined {
+  const kind = KIND_BY_KEY[key];
+  if (!kind) return undefined;
+  if ((kind === 'store submission' || kind === 'staged rollout') && parentKind && ANCESTRY_KINDS.has(parentKind)) {
+    return `${parentKind.replace(/ release$/, '')} ${kind}`;
+  }
+  return kind;
+}
+
+/**
  * The detail that distinguishes two records of the same kind, so an approver can
  * tell *which* one the button is about.
  *
@@ -338,6 +356,9 @@ const KIND_BY_KEY: Record<string, string> = {
  * *is* the decision, and it is sitting in the payload.
  */
 function distinguishingDetail(kind: string, obj: Node): string | undefined {
+  // Ancestry prefixes ("production store submission") share the base kind's detail.
+  if (kind.endsWith('store submission')) kind = 'store submission';
+  if (kind.endsWith('staged rollout')) kind = 'staged rollout';
   switch (kind) {
     case 'build':
       return str(obj.build_number) ? `build ${str(obj.build_number)}` : undefined;
@@ -346,9 +367,12 @@ function distinguishingDetail(kind: string, obj: Node): string | undefined {
       const number = num(obj.external_number) ?? str(obj.external_number);
       return [workflowKind, number !== undefined ? `#${number}` : undefined].filter(Boolean).join(' ') || undefined;
     }
-    case 'store submission':
+    case 'store submission': {
       // "PlayStoreSubmission" → "Play Store", "AppStoreSubmission" → "App Store"
-      return str(obj.kind)?.replace(/Submission$/, '').replace(/([a-z])([A-Z])/g, '$1 $2') || undefined;
+      const store = str(obj.kind)?.replace(/Submission$/, '').replace(/([a-z])([A-Z])/g, '$1 $2');
+      const seq = num(obj.sequence_number);
+      return [store, seq !== undefined ? `#${seq}` : undefined].filter(Boolean).join(' ') || undefined;
+    }
     case 'staged rollout': {
       const current = num(obj.current_percentage);
       const next = num(obj.next_percentage);
@@ -383,7 +407,7 @@ function distinguishingDetail(kind: string, obj: Node): string | undefined {
 export function indexTargets(payload: unknown): Record<string, string> {
   const out: Record<string, string> = {};
 
-  const walk = (node: unknown, version: string | undefined, platform: string | undefined, kind: string): void => {
+  const walk = (node: unknown, version: string | undefined, platform: string | undefined, kind: string | undefined): void => {
     if (Array.isArray(node)) {
       for (const item of node) walk(item, version, platform, kind);
       return;
@@ -398,7 +422,11 @@ export function indexTargets(payload: unknown): Record<string, string> {
     const nextPlatform = platform ?? str(obj.platform)?.toUpperCase();
 
     const id = str(obj.id);
-    if (id && UUID_RE.test(id)) {
+    // Only label records reached through a mapped key. Everything else in a read
+    // payload — release_pilot, approval items, commits, PR pages — either isn't a
+    // release target at all or would flood the capped index and evict the labels
+    // the gate depends on (one 100-row commits page would wipe a release tree).
+    if (kind && id && UUID_RE.test(id)) {
       const status = str(obj.status);
       const label = [
         [nextVersion, nextPlatform].filter(Boolean).join(' ') || undefined,
@@ -418,13 +446,13 @@ export function indexTargets(payload: unknown): Record<string, string> {
 
     for (const [key, value] of Object.entries(obj)) {
       if (!value || typeof value !== 'object') continue;
-      // An unmapped key keeps the parent's kind rather than inventing one — but
-      // it is also the signal that the payload has grown a shape we don't know.
-      walk(value, nextVersion, nextPlatform, KIND_BY_KEY[key] ?? kind);
+      // An unmapped key yields no kind: we still recurse (a mapped shape may sit
+      // deeper), but nothing under it is labelled until a mapped key is crossed.
+      walk(value, nextVersion, nextPlatform, childKind(key, kind));
     }
   };
 
-  walk(payload, undefined, undefined, 'release');
+  walk(payload, undefined, undefined, undefined);
   return out;
 }
 
@@ -533,6 +561,10 @@ export interface TramlineGuardPort {
  */
 export function createTramlineGuardHooks(port: TramlineGuardPort): HookCallbackMatcher[] {
   return [{
+    // Generous explicit budget: the deny path posts to Slack and fsyncs metadata
+    // inside the hook, and what a host does with a TIMED-OUT PreToolUse decision
+    // is its policy, not ours — so never get near the default.
+    timeout: 120,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     hooks: [async (input: any): Promise<HookJSONOutput> => {
       const toolName = typeof input?.tool_name === 'string' ? input.tool_name : undefined;
@@ -579,6 +611,18 @@ async function decideTramlineCall(
     return proceed();
   }
 
+  // No approver configured: refuse instead of posting a button nobody can
+  // press and parking the task on it. An unconfigured deployment must be no
+  // worse than the read-only status quo, not worse than it.
+  const approvers = releaseApprovers();
+  if (approvers.size === 0) {
+    return deny(
+      `\`${action}\` needs human approval, but no release approvers are configured on this Archie deployment ` +
+      `(ARCHIE_RELEASE_APPROVERS is unset), so nobody could resolve the request. Nothing was posted. ` +
+      `Report what you would have done and let a human act in Tramline (https://tramline.sweatco.team).`,
+    );
+  }
+
   const targets = port.getTargets();
   const rendered = renderAction(tool_name, tool_input, targets);
   if (isRenderFailure(rendered)) {
@@ -590,18 +634,6 @@ async function decideTramlineCall(
         : `Cannot request approval for \`${action}\`: this task has not read the record it targets, so the ` +
           `approval prompt cannot say what it is about. Call \`get_release\` for the release this belongs to ` +
           `first, then retry.`,
-    );
-  }
-
-  // No approver configured: refuse instead of posting a button nobody can
-  // press and parking the task on it. An unconfigured deployment must be no
-  // worse than the read-only status quo, not worse than it.
-  const approvers = releaseApprovers();
-  if (approvers.size === 0) {
-    return deny(
-      `\`${action}\` needs human approval, but no release approvers are configured on this Archie deployment ` +
-      `(ARCHIE_RELEASE_APPROVERS is unset), so nobody could resolve the request. Nothing was posted. ` +
-      `Report what you would have done and let a human act in Tramline (https://tramline.sweatco.team).`,
     );
   }
 
