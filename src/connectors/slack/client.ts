@@ -799,7 +799,15 @@ function collectUnrenderedText(
     found.push({ path, text: text.slice(0, MAX_UNRENDERED_FRAGMENT_CHARS) });
   };
 
-  walk(payload, '', '');
+  try {
+    walk(payload, '', '');
+  } catch (error) {
+    // This is a diagnostic over an arbitrary third-party payload. It must never
+    // be the reason a Slack message fails to reach an agent, so a fault here
+    // degrades to "found nothing" rather than propagating out of the fetch.
+    logger.warn('Slack', 'collectUnrenderedText failed; skipping the backstop for this message', error);
+    return [];
+  }
   return found;
 }
 
@@ -857,15 +865,24 @@ async function resolveRawMessages(
     if (consumedTopBlocks) {
       // `text` is a first-class content field, not a lossless mirror of the
       // blocks: an app's notification headline ("Production release was
-      // started!") often lives ONLY there. So keep it whenever the blocks don't
-      // already say it, and fall back to URL-only recovery when they do — that
-      // covers a smart-link chip whose element type we can't read.
+      // started!") often lives ONLY there.
+      //
+      // Reconciled line by line rather than as one blob. Taking the whole field
+      // whenever any part of it was missing duplicated the entire message body
+      // on 47 of 3,778 real messages — one unmatched line, usually a link,
+      // dragged every already-rendered line in with it. Lines with no
+      // substantial word are skipped (they carry nothing `recoverMissingUrls`
+      // won't catch) so stray punctuation isn't echoed back.
       const body = ownParts.join('\n');
-      if (msg.text && !isCovered(msg.text, normalizeForMatch(body), new Set(contentTokens(body)))) {
-        ownParts.push(msg.text);
-      } else {
-        ownParts.push(...recoverMissingUrls(body, msg.text));
+      const normalizedBody = normalizeForMatch(body);
+      const bodyTokens = new Set(contentTokens(body));
+      for (const line of (msg.text ?? '').split('\n')) {
+        const trimmed = line.trim();
+        if (contentTokens(trimmed).length === 0) continue;
+        if (isCovered(trimmed, normalizedBody, bodyTokens)) continue;
+        ownParts.push(trimmed);
       }
+      ownParts.push(...recoverMissingUrls(ownParts.join('\n'), msg.text));
     } else if (msg.text) {
       ownParts.push(msg.text);
     }

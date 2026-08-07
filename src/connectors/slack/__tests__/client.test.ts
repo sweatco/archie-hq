@@ -220,6 +220,31 @@ describe('fetchSlackThread — link chips survive the Block Kit walk', () => {
     expect(thread.messages[0].text).not.toContain('[unparsed:');
   });
 
+  it('appends only the uncovered lines of the text field, not the whole body', async () => {
+    // Taking the whole field whenever any line was missing duplicated entire
+    // message bodies (47 of 3,778 real messages) — one unmatched link line
+    // dragged every already-rendered line in with it.
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [
+        rawMsg({
+          ts: '407.0',
+          user: 'UHUMAN',
+          text: 'I was logged out on ios\nafter update to 206.0.2\n<https://admin.example.com/users/128001|admin>',
+          blocks: richText([{ type: 'text', text: 'I was logged out on ios\nafter update to 206.0.2\n' }]),
+        }),
+      ],
+    });
+
+    const thread = await client.fetchSlackThread('C_chip', '407.0', '407.0');
+    const text = thread.messages[0].text;
+
+    // The missing link line is recovered...
+    expect(text).toContain('https://admin.example.com/users/128001');
+    // ...without restating the two lines the blocks already rendered.
+    expect(text.match(/I was logged out on ios/g)).toHaveLength(1);
+    expect(text.match(/after update to 206\.0\.2/g)).toHaveLength(1);
+  });
+
   it('recovers a URL carried by an unrecognised rich_text element', async () => {
     slackApi.conversations.replies.mockResolvedValue({
       messages: [
