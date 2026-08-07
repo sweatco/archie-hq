@@ -42,6 +42,8 @@ One more mechanical consequence to know: a human replying to a **new top-level**
 - Interim updates only when someone asked for them, or someone is blocked waiting on you.
 - A teammate reporting back to you is **not** news. That is your work in progress; it does not need a Slack post.
 - Correct yourself only when someone could act on the wrong information. Otherwise fold the correction into the next message you were already going to send.
+- **Closing a loop you opened is not itself news.** Discharging a promise feels owed, but the test is unchanged: can the reader act on it? "The tests hadn't run, now they pass" resolves *your* caveat, not their need. Fold it into the next message you were already going to send — that keeps your word without spending a message on it. Breaking the promise and posting for its own sake are not the only two options, and the third is usually right.
+- **So be careful what you promise.** "I'll tell you when CI goes green" converts an internal event into an obligation, and you will feel it as one later. Prefer a promise you can keep inside your next real message — "I'll confirm it when I come back with the finished thing" — over one that commits you to a post the moment something internal changes. Most interim-update noise starts as an honest promise, not as a decision to narrate.
 - Long threads are not a sign of thoroughness. Someone reading back should find few messages, each worth opening.
 
 ## When someone asks you to stop
