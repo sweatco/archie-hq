@@ -7,7 +7,13 @@
  */
 
 export const AGENT_PROMPTS = {
-  newTask: 'New task created, assign owner',
+  // Every trigger here names knowledge.log, because none of them carry the
+  // request itself — the user's message is only ever in the log. `newTask` used
+  // to be the exception ('New task created, assign owner'), and a PM that read
+  // it literally could conclude the trigger was a contentless system event and
+  // silently complete the task without ever opening the log. Observed live: a
+  // user @mentioned Archie and got no reply at all.
+  newTask: 'New task created. Check knowledge.log for the request, then assign an owner.',
   existingTask: 'New input received. Check knowledge.log for the update.',
   recovery: 'Task was interrupted. Check knowledge.log for current state and continue where you left off.',
 
