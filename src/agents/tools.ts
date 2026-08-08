@@ -21,7 +21,7 @@ import { getGitHubClient, parseCheckRef } from '../connectors/github/client.js';
 import { gitExec } from '../connectors/github/repo-clone.js';
 import { hydrateBranchState, findBranchStateByPR, assignPrNumber } from '../connectors/github/branch-state.js';
 import { taskBranchName } from '../connectors/github/branch-naming.js';
-import { appendAgentFinding, appendArtifactShared, isThreadMuted } from '../tasks/persistence.js';
+import { appendAgentFinding, appendArtifactShared, isThreadMuted, renderMessageForContext } from '../tasks/persistence.js';
 import { copyArtifactToShared, assertReadable } from './artifacts.js';
 import { aggregateTaskUsage, formatTaskUsageReport } from './task-usage.js';
 import { logger } from '../system/logger.js';
@@ -82,15 +82,19 @@ function taskSlackChannelIds(task: Task): Set<string> {
 }
 
 /** Render explore messages in the same `@<id:name> | msg:ts` shape the PM sees elsewhere. */
-function formatExploreMessages(messages: SlackThreadMessage[]): string {
+export function formatExploreMessages(messages: SlackThreadMessage[]): string {
   return messages
     .map((m) => {
       const who = m.user.realName || m.user.username;
-      const files = m.files?.length ? `\n  [files: ${m.files.map((f) => f.name).join(', ')}]` : '';
-      const reactions = m.reactions?.length
-        ? `\n  [reactions: ${m.reactions.map((r) => `:${r.name}:×${r.count}`).join(' ')}]`
-        : '';
-      return `<@${m.user.id}:${who}> | msg:${m.ts}\n${m.text}${files}${reactions}`;
+      // Share the knowledge log's renderer rather than re-implementing it: this
+      // used to print `m.text` alone, so an attachment-only message — a Grafana
+      // alert, a Bugsnag error, 57 of 60 messages in #mobile-alerts — reached
+      // the agent completely blank.
+      const body = renderMessageForContext(
+        { text: m.text, files: m.files, attachments: m.attachments, reactions: m.reactions },
+        { redacted: false },
+      );
+      return `<@${m.user.id}:${who}> | msg:${m.ts}\n${body}`;
     })
     .join('\n\n');
 }
