@@ -26,6 +26,7 @@ import {
   postEphemeral,
   getSlackClient,
   cleanSlackText,
+  extractMessageContent,
 } from './client.js';
 import { ensureChannelCanvas } from './channel-canvas.js';
 import { shouldCreateNewTask, shouldForwardMessageEvent, isAckableEvent } from './task-routing.js';
@@ -33,7 +34,7 @@ import { Task } from '../../tasks/task.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
 import { getIsShuttingDown } from '../../system/shutdown.js';
-import { findTaskByThread } from '../../tasks/persistence.js';
+import { findTaskByThread, renderMessageForContext } from '../../tasks/persistence.js';
 import { getChannelMessageTriggers, fireTrigger, triggerWhat } from '../../system/trigger-scheduler.js';
 import type { Trigger } from '../../types/trigger.js';
 import { generateTaskTitle } from '../../tasks/title-generator.js';
@@ -886,10 +887,18 @@ async function handleSlackEdit(event: any): Promise<void> {
     return;
   }
 
-  // Resolve <@U…>/<#C…> mentions to the <@ID:Name> form used throughout the
-  // knowledge log. Only the new text is logged — the pre-edit text already
-  // lives in the log under the same `msg:<ts>` id.
-  const newText = await cleanSlackText(newRaw, channelId);
+  // Run the edited message through the same extraction as any other inbound
+  // message — blocks, attachment cards, link chips, entity decoding — not just
+  // mention resolution. Editing a message to add a Jira link used to log the
+  // raw `<url|label>` mrkdwn while the identical link posted fresh logged as
+  // `label (url)`, and anything carried in `blocks` was lost on the edit path.
+  // Only the new text is logged — the pre-edit text already lives in the log
+  // under the same `msg:<ts>` id.
+  const extracted = await extractMessageContent(msg, channelId);
+  const newText = renderMessageForContext(
+    { text: extracted.text, attachments: extracted.attachments },
+    { redacted: false },
+  );
   const author: SlackAuthor = {
     id: msg.user,
     username: authorInfo?.name ?? msg.user,

@@ -289,6 +289,31 @@ describe('fetchSlackThread — link chips survive the Block Kit walk', () => {
     expect(thread.messages[0].text).toBe(`see ${permalink}`);
   });
 
+  it('does not re-append a query-string URL the blocks already rendered', async () => {
+    // `text` escapes the ampersand and `blocks` do not, so an undecoded
+    // comparison saw the rendered URL as missing and appended it a second time
+    // — hitting every Grafana silence link and Bugsnag error URL.
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [
+        rawMsg({
+          ts: '408.0',
+          user: 'UHUMAN',
+          text: 'see <https://example.com/?a=1&amp;b=2|example.com/?a=1&amp;b=2> please',
+          blocks: richText([
+            { type: 'text', text: 'see ' },
+            { type: 'link', url: 'https://example.com/?a=1&b=2', text: 'example.com/?a=1&b=2' },
+            { type: 'text', text: ' please' },
+          ]),
+        }),
+      ],
+    });
+
+    const thread = await client.fetchSlackThread('C_chip', '408.0', '408.0');
+
+    expect(thread.messages[0].text).toBe('see https://example.com/?a=1&b=2 please');
+    expect(thread.messages[0].text.match(/example\.com/g)).toHaveLength(1);
+  });
+
   it('leaves a plain rich_text link alone', async () => {
     slackApi.conversations.replies.mockResolvedValue({
       messages: [

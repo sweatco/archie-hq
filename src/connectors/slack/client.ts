@@ -632,7 +632,11 @@ function recoverMissingUrls(extracted: string, textField: string | undefined): s
   if (!textField || typeof textField !== 'string') return [];
   const missing: string[] = [];
   for (const match of textField.matchAll(TEXT_FIELD_URL)) {
-    const url = match[1];
+    // Decode before comparing: `text` escapes `&` but `blocks` does not, so a
+    // query-string URL that the block walk DID render still looked absent and
+    // got appended a second time — which is every Grafana silence link and
+    // Bugsnag error URL.
+    const url = decodeSlackEntities(match[1]);
     if (extracted.includes(url) || missing.includes(url)) continue;
     missing.push(url);
   }
@@ -1932,6 +1936,31 @@ export function extractMentionText(text: string, botUserId: string): string {
  */
 export function isBotMention(text: string, botUserId: string): boolean {
   return text.includes(`<@${botUserId}>`);
+}
+
+/**
+ * Run one raw Slack message payload through the full inbound extraction —
+ * blocks, attachment cards, files, mention resolution, entity decoding — the
+ * same path `fetchSlackThread` uses.
+ *
+ * For callers that hold a message payload directly rather than fetching a
+ * thread, notably the `message_changed` edit handler. Resolving mentions alone
+ * (`cleanSlackText`) leaves that caller with Slack's flat `text` fallback, so an
+ * edited message rendered its links as raw `<url|label>` mrkdwn and anything
+ * living in `blocks` or `attachments` did not survive at all.
+ */
+export async function extractMessageContent(
+  message: unknown,
+  channelId: string,
+): Promise<{ text: string; attachments?: SlackAttachment[]; files?: SlackFile[] }> {
+  const [resolved] = await resolveRawMessages([message as SlackHistoryMessage], channelId);
+  if (!resolved) return { text: '' };
+  const authorless = (resolved.attachments ?? []).map((a) => ({ text: a.text }));
+  return {
+    text: resolved.text,
+    ...(authorless.length > 0 ? { attachments: authorless } : {}),
+    ...(resolved.files?.length ? { files: resolved.files } : {}),
+  };
 }
 
 /**
