@@ -47,3 +47,15 @@ describe('slack-manifest.yaml — mpim unlock', () => {
     expect(botEvents).toContain('message.mpim');
   });
 });
+
+/**
+ * Slack manifest — channel pinned-messages scan.
+ *
+ * Reading a channel's pins via `pins.list` needs the `pins:read` bot scope. Event subscriptions are deliberately not part of this: the index is rebuilt on a TTL-bounded scan, not on `pin_added` / `pin_removed`.
+ */
+describe('slack-manifest.yaml — pinned messages', () => {
+  it('grants pins:read in the bot scopes block', () => {
+    const botScopes = section(manifest, 'bot');
+    expect(botScopes).toContain('pins:read');
+  });
+});
