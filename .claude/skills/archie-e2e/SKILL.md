@@ -22,6 +22,24 @@ Verify acceptance criteria against a live Archie instance booted from the branch
 - For the edit-mode and merge-approval scenarios: at least one configured engineering repo in the workdir (see the recipes' prerequisite notes).
 - macOS Docker Desktop caveat: a wedged `docker-credential-desktop` helper can stall `docker compose up --build` during registry auth — upstream of the harness's bounded wait, so boot appears to hang before any diagnostics. Verify with `docker-credential-desktop list </dev/null`; if it hangs, point `DOCKER_CONFIG` at a scratch dir without `credsStore` for the run (leave your real `~/.docker/config.json` untouched). The scratch config also drops the `desktop-linux` context, so additionally set `DOCKER_HOST=unix://$HOME/.docker/run/docker.sock` or every docker command will fail to reach the daemon (observed in the 2026-07-05 QA run).
 
+### Booting from a git worktree
+
+A worktree checkout is a fresh tree, so `workdir/` and `claude-data/` do not exist in it and the boot creates empty ones. An instance booted that way has no history and no per-channel state: the CLI task list has nothing to paginate, and — because the channel store is what makes announce-once work — **the instance re-announces every `Archie…` canvas into its real Slack channel on first contact.** That is a live, user-visible post caused purely by test setup.
+
+Before the first boot in a new worktree:
+
+```bash
+ln -s /path/to/main/checkout/workdir      workdir
+ln -s /path/to/main/checkout/claude-data  claude-data
+cp -R /path/to/main/checkout/secrets      secrets     # a real copy, NOT a symlink
+```
+
+`workdir` is designed for concurrent access by many containers, so sharing it between checkouts is correct rather than risky — and copying it is not an option at ~20G.
+
+**`secrets/` is the exception and must be a real directory.** `Dockerfile.dev` does `COPY secrets/ /tmp/ca-src/`, and Docker's build context does not follow symlinks at the context root: a symlinked `secrets` fails the build with `"/secrets": not found`. Bind mounts *do* follow host symlinks, which is why `workdir` and `claude-data` are fine. The same asymmetry is why `docker-compose.yml` re-mounts `./workdir/plugins` explicitly — a symlink *inside* a mounted tree does not resolve in the container.
+
+Also set a free `PORT` in the worktree's `.env`. Main's 3000 is usually taken by another checkout's container; `boot.ts` will relocate around a squatter on its own, but the `archie-debug` MCP resolves its URL once at spawn, so an explicit port is one less thing to reconcile.
+
 **Rollback:** delete `.claude/skills/archie-e2e/` and `tools/e2e/` — the harness has no side effects and nothing else references them (plus one `e2e-evidence/` line in `.gitignore`).
 
 ## 1. Boot
