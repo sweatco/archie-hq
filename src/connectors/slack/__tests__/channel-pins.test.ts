@@ -38,6 +38,8 @@ vi.mock('../client.js', () => ({
     return { name: id, realName: u.realName ?? id, teamId: u.external ? 'T_OTHER' : 'T_HOME' };
   },
   isExternalUser: (u: { teamId?: string }) => u?.teamId === 'T_OTHER',
+  getBotId: () => 'B_ARCHIE',
+  getBotUserId: () => 'U_ARCHIE',
   // Not imported by channel-pins.ts — mocked purely so "never posts" is assertable
   // rather than assumed.
   postSlackMessage: vi.fn(async () => {}),
@@ -194,6 +196,35 @@ describe('ensureChannelPins', () => {
 
     expect(savedStore?.pins).toEqual([]);
     expect(savedStore?.pinsEligible).toBe(0);
+  });
+
+  // The one exception, and the reason for it: there is no laundering question about
+  // content this system wrote itself, and a human pinning an Archie message is curation.
+  it('adopts a pin Archie itself posted, attributed to its own user', async () => {
+    pins = [messagePin({ botId: 'B_ARCHIE', author: '' })];
+    userInfoImpl = async (id: string) => ({
+      external: false,
+      realName: id === 'U_ARCHIE' ? 'Archie' : `Name ${id}`,
+    });
+
+    await ensureChannelPins(CHANNEL);
+
+    expect(savedStore?.pins).toHaveLength(1);
+    expect((savedStore?.pins[0] as { authorName: string }).authorName).toBe('Archie');
+  });
+
+  // Own-post is not a trust bypass: the bot's own user still goes through the classifier,
+  // so an unresolvable lookup fails closed like anyone else's.
+  it('still fails closed when the bot user cannot be classified', async () => {
+    pins = [messagePin({ botId: 'B_ARCHIE', author: '' })];
+    userInfoImpl = async (id: string) => {
+      if (id === 'U_ARCHIE') throw new Error('rate limited');
+      return { external: false, realName: id };
+    };
+
+    await ensureChannelPins(CHANNEL);
+
+    expect(savedStore?.pins).toEqual([]);
   });
 
   // A shared channel lets an outsider author content that a member then elevates into
