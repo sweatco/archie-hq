@@ -165,6 +165,23 @@ describe('ensureChannelPins', () => {
     expect(savedStore?.pinsCheckedAt).toBeGreaterThanOrEqual(before);
   });
 
+  // Both principals are resolved to classify them, so the pinner's name is already in
+  // hand — storing the raw id instead would put an unreadable `U…` in the index.
+  it('names the pinner, not just their user id', async () => {
+    pins = [messagePin()];
+    userInfoImpl = async (id: string) => ({
+      external: false,
+      realName: id === 'U_PINNER' ? 'Grace Hopper' : 'Ada Lovelace',
+    });
+
+    await ensureChannelPins(CHANNEL);
+
+    expect((savedStore?.pins as Array<{ pinnedByName: string; authorName: string }>)[0]).toMatchObject({
+      pinnedByName: 'Grace Hopper',
+      authorName: 'Ada Lovelace',
+    });
+  });
+
   // A shared channel lets an outsider author content that a member then elevates into
   // standing context — and lets an outsider elevate a member's.
   it('drops an item whose AUTHOR is external', async () => {
@@ -344,6 +361,8 @@ describe('buildChannelPinsPromptSection', () => {
     expect(section).toContain('pinned_age="2d"');
     expect(section).toContain('posted_age="10d"');
     expect(section).toContain('by="Ada"');
+    // These fixtures predate `pinnedByName`, so this also pins the legacy fallback:
+    // an entry stored without a resolved pinner name still renders the raw id.
     expect(section).toContain('pinned_by="U_PINNER"');
     expect(section).toContain('>stored one-liner</pin>');
     // The file pin carries no ts and no permalink.

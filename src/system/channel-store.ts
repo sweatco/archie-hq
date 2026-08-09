@@ -44,6 +44,8 @@ export interface ChannelPinEntry {
   key: string;
   pinnedAt: number;
   pinnedBy: string;
+  /** Display name of the pinner. Optional: entries written before it was resolved fall back to `pinnedBy`. */
+  pinnedByName?: string;
   authorName: string;
   postedAt: number;
   summary: string;

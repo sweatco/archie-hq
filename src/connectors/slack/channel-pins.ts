@@ -117,6 +117,10 @@ export async function ensureChannelPins(channelId: string): Promise<void> {
         key,
         pinnedAt: item.pinnedAt,
         pinnedBy: item.pinnedBy,
+        // Both principals were resolved to classify them, so naming the pinner costs
+        // nothing extra — and a `pinned_by="U0123ABC"` column tells the agent nothing
+        // it can weigh, which is the whole job of this index.
+        pinnedByName: pinner.realName || item.pinnedBy,
         authorName: author.realName || authorId,
         // A Slack message ts is a decimal epoch-seconds string; a file carries its own
         // creation time.
@@ -213,7 +217,7 @@ export async function buildChannelPinsPromptSection(metadata: TaskMetadata): Pro
       `posted=${JSON.stringify(formatDate(entry.postedAt))}`,
       `posted_age=${JSON.stringify(formatAge(entry.postedAt, nowMs))}`,
       `by=${JSON.stringify(entry.authorName)}`,
-      `pinned_by=${JSON.stringify(entry.pinnedBy)}`,
+      `pinned_by=${JSON.stringify(entry.pinnedByName || entry.pinnedBy)}`,
     ];
     if (entry.kind === 'message') {
       attrs.push(`ts=${JSON.stringify(entry.key)}`);
