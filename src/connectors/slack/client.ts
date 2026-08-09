@@ -1824,6 +1824,156 @@ export async function getChannelCanvasTabs(channelId: string): Promise<CanvasTab
   }
 }
 
+// ---- Channel pinned messages (standing channel context) -------------------
+// `pins.list` returns whatever is pinned in a channel — messages and files.
+// Requires the `pins:read` scope, which older installs of the app do not have.
+
+/** One item pinned in a channel — a message or a file, as `pins.list` reports it. */
+export interface PinnedItem {
+  kind: 'message' | 'file';
+  pinnedAt: number;    // epoch seconds, Slack's unit
+  pinnedBy: string;    // Slack user id of whoever pinned it
+  messageTs?: string;
+  author?: string;
+  /** Slack-assigned bot identity when the pinned message was posted by an app. */
+  botId?: string;
+  /** Bot's display name, when posted by an app. */
+  botName?: string;
+  /** Workspace the message originated from — used to drop bots from another workspace. */
+  teamId?: string;
+  text?: string;
+  permalink?: string;
+  fileId?: string;
+  fileName?: string;
+  fileUser?: string;
+  fileCreated?: number;
+}
+
+interface ChannelPinsCacheEntry {
+  items: PinnedItem[];
+  fetchedAt: number;
+}
+const channelPinsCache = new Map<string, ChannelPinsCacheEntry>();
+const CHANNEL_PINS_TTL_MS = 60_000;
+
+/** Latched once `pins.list` reports `missing_scope` — see `listChannelPins`. */
+let pinsScopeMissing = false;
+
+/**
+ * List the items pinned in a channel. Cached for 1 minute, mirroring
+ * `getChannelCanvasTabs`. DMs are never scanned for pins.
+ *
+ * Returns `null` when the lookup FAILED, as distinct from `[]` meaning the channel
+ * genuinely has nothing pinned. Callers reconcile persisted state against this list,
+ * so conflating the two would let one transient API error read as "every pin was
+ * removed" and blank standing channel context — the same contract
+ * `getChannelCanvasTabs` documents above.
+ *
+ * A `missing_scope` failure latches a process-level flag instead of being retried.
+ * The canvas's retry-on-every-call behaviour is the right response to a transient
+ * error and the wrong one to a permanent one: in a workspace installed without
+ * `pins:read`, retrying would issue one `pins.list` per inbound message, forever.
+ * The bot token comes from the environment, so granting the scope means reinstalling
+ * and restarting anyway — there is nothing this process could observe that would
+ * make the next call succeed.
+ */
+export async function listChannelPins(channelId: string): Promise<PinnedItem[] | null> {
+  if (channelId.startsWith('D')) return [];
+  if (pinsScopeMissing) return null;
+
+  const cached = channelPinsCache.get(channelId);
+  if (cached && Date.now() - cached.fetchedAt < CHANNEL_PINS_TTL_MS) {
+    return cached.items;
+  }
+
+  try {
+    const result = await getSlackClient().pins.list({ channel: channelId });
+    // The pinned-item shape isn't in the WebClient types — cast to read it.
+    const raw = result as {
+      items?: Array<{
+        type?: string;
+        created?: number;
+        created_by?: string;
+        message?: { ts?: string; user?: string; text?: string; permalink?: string };
+        file?: { id?: string; title?: string; name?: string; user?: string; created?: number };
+      }>;
+    };
+    // `pins.list` hands back the raw message payload, whose top-level `text` is only
+    // Slack's legacy fallback: anything living in `blocks` or `attachments` is absent
+    // from it, and links and mentions arrive as raw `<url|label>` / `<@U…>` mrkdwn. A
+    // channel's most-pinned things — app posts, workflow output, unfurl cards — are
+    // exactly the messages with an empty `text`, and each one would otherwise index as
+    // a blank line. So run the payloads through the same extraction every other inbound
+    // path uses, in ONE batch: `resolveRawMessages` resolves mentions for the whole set
+    // together, where a call per pin would be a `users.info` round trip per pin.
+    //
+    // The resolver also reports `botId` for an app/bot post, and that is carried through
+    // rather than discarded: a relay app (RSS, email-to-Slack, a Jira or Datadog hook)
+    // posts as an in-workspace user, so classifying its `user` says only that the RELAY
+    // is internal and nothing at all about where the content came from. Without the flag
+    // the caller's trust gate would wave that through. Slack gives no way to tell relayed
+    // outside content from an app's own, so the caller fails closed on it.
+    const messageItems = (raw.items ?? []).filter((i) => i.type === 'message' && i.message?.ts);
+    const resolved = await resolveRawMessages(
+      messageItems.map((i) => i.message as SlackHistoryMessage),
+      channelId,
+    );
+    const byTs = new Map(resolved.map((m) => [m.ts, m]));
+
+    const items: PinnedItem[] = [];
+    for (const item of raw.items ?? []) {
+      if (item.type === 'message' && item.message?.ts) {
+        const full = byTs.get(item.message.ts);
+        // Attachment bodies carry the substance of a forwarded or app-posted message, so
+        // they belong in the index text; the summariser flattens the whole thing anyway.
+        const parts = [full?.text ?? item.message.text ?? '', ...(full?.attachments ?? []).map((a) => a.text)];
+        items.push({
+          kind: 'message',
+          pinnedAt: item.created ?? 0,
+          pinnedBy: item.created_by ?? '',
+          messageTs: item.message.ts,
+          author: full?.user ?? item.message.user ?? '',
+          ...(full?.botId ? { botId: full.botId, botName: full.botName } : {}),
+          ...(full?.teamId ? { teamId: full.teamId } : {}),
+          text: parts.filter((t) => t && t.trim()).join(' — '),
+          permalink: item.message.permalink,
+        });
+      } else if (item.type === 'file' && item.file?.id) {
+        items.push({
+          kind: 'file',
+          pinnedAt: item.created ?? 0,
+          pinnedBy: item.created_by ?? '',
+          fileId: item.file.id,
+          fileName: item.file.title || item.file.name || item.file.id,
+          fileUser: item.file.user ?? '',
+          fileCreated: item.file.created,
+        });
+      }
+    }
+    channelPinsCache.set(channelId, { items, fetchedAt: Date.now() });
+    return items;
+  } catch (error) {
+    const code = (error as { data?: { error?: string } } | undefined)?.data?.error;
+    if (code === 'missing_scope' || String(error).includes('missing_scope')) {
+      pinsScopeMissing = true;
+      logger.warn('Slack', 'pins:read not granted — pinned-message context is dormant until the app is reinstalled with the scope');
+    } else {
+      logger.warn('Slack', `Failed to list pins for ${channelId}`, error);
+    }
+    return null;
+  }
+}
+
+/**
+ * Clear the latched missing-scope flag (and the pins cache) between tests. The
+ * flag is process-scoped by design, so a test that trips it would otherwise
+ * poison every case that runs after it.
+ */
+export function __resetPinsScopeFlagForTests(): void {
+  pinsScopeMissing = false;
+  channelPinsCache.clear();
+}
+
 /** Fetch metadata for a Slack file via `files.info`. Returns null on failure. */
 export async function getSlackFileInfo(fileId: string): Promise<SlackFileInfo | null> {
   try {

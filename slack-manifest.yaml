@@ -40,6 +40,7 @@ oauth_config:
       - usergroups:read
       - files:read
       - files:write
+      - pins:read
       - reactions:read
       - reactions:write
       - assistant:write

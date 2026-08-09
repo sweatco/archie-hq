@@ -19,6 +19,7 @@ const slackApi = {
   conversations: { info: vi.fn(), replies: vi.fn(), history: vi.fn() },
   users: { info: vi.fn(), conversations: vi.fn(), list: vi.fn() },
   usergroups: { list: vi.fn() },
+  pins: { list: vi.fn() },
 };
 
 // WebClient is used with `new`, so the mock implementation must be a regular
@@ -924,5 +925,162 @@ describe('resolvePeopleFromTranscript — titles are untrusted input', () => {
     slackApi.users.list.mockResolvedValue({ members: [member('UINS03', 'Ctrl Carl', ansiTitle)] });
     const [person] = await client.resolvePeopleFromTranscript('<@UINS03:Carl>');
     expect(person.title).toBe('QA [31mLead');
+  });
+});
+
+// ---- listChannelPins -------------------------------------------------------
+
+describe('listChannelPins', () => {
+  beforeEach(() => {
+    client.__resetPinsScopeFlagForTests();
+  });
+
+  // Slack's top-level `text` is only the legacy fallback: an app post, a workflow card
+  // or an unfurl carries its body in `blocks`/`attachments` and arrives here with `text`
+  // empty. Indexing that raw would put a blank line in the agent's prompt.
+  it('extracts pin text from blocks and attachments, not just the raw text field', async () => {
+    slackApi.pins.list.mockResolvedValue({
+      items: [
+        {
+          type: 'message',
+          created: 1700000000,
+          created_by: 'UPINNER',
+          message: {
+            ts: '333.444',
+            user: 'UAUTHOR',
+            text: '',
+            blocks: [
+              {
+                type: 'rich_text',
+                elements: [
+                  { type: 'rich_text_section', elements: [{ type: 'text', text: 'quarterly planning doc' }] },
+                ],
+              },
+            ],
+            attachments: [{ text: 'link preview body' }],
+          },
+        },
+      ],
+    });
+
+    const pins = await client.listChannelPins('C1');
+
+    expect(pins).toHaveLength(1);
+    expect(pins![0].text).toContain('quarterly planning doc');
+    expect(pins![0].text).toContain('link preview body');
+  });
+
+  // An app/bot post has no human author, and `resolveRawMessages` reports that as an
+  // empty user. The caller's trust gate reads that as unclassifiable and refuses to
+  // adopt, so a relay bot cannot launder outside content in as an internal user.
+  it('reports an empty author for an app-posted pin', async () => {
+    slackApi.pins.list.mockResolvedValue({
+      items: [
+        {
+          type: 'message',
+          created: 1700000000,
+          created_by: 'UPINNER',
+          message: { ts: '555.666', bot_id: 'B_RELAY', text: 'relayed from elsewhere' },
+        },
+      ],
+    });
+
+    const pins = await client.listChannelPins('C1');
+
+    expect(pins![0].author).toBe('');
+  });
+
+  it('maps message and file pins and skips items with no identifier', async () => {
+    slackApi.pins.list.mockResolvedValue({
+      items: [
+        {
+          type: 'message',
+          created: 1700000000,
+          created_by: 'UPINNER',
+          message: {
+            ts: '111.222',
+            user: 'UAUTHOR',
+            text: 'read the deploy runbook first',
+            permalink: 'https://acme.slack.com/archives/C1/p111222',
+          },
+        },
+        {
+          type: 'file',
+          created: 1700000100,
+          created_by: 'UPINNER2',
+          file: { id: 'F1', title: 'Runbook', name: 'runbook.pdf', user: 'UUPLOADER', created: 1699999999 },
+        },
+        // No ts / no file id — must be skipped.
+        { type: 'message', created: 1700000200, created_by: 'UX', message: { text: 'no ts' } },
+        { type: 'file', created: 1700000300, created_by: 'UX', file: { title: 'orphan' } },
+      ],
+    });
+
+    const pins = await client.listChannelPins('C1');
+
+    expect(pins).toEqual([
+      {
+        kind: 'message',
+        pinnedAt: 1700000000,
+        pinnedBy: 'UPINNER',
+        messageTs: '111.222',
+        author: 'UAUTHOR',
+        text: 'read the deploy runbook first',
+        permalink: 'https://acme.slack.com/archives/C1/p111222',
+      },
+      {
+        kind: 'file',
+        pinnedAt: 1700000100,
+        pinnedBy: 'UPINNER2',
+        fileId: 'F1',
+        fileName: 'Runbook',
+        fileUser: 'UUPLOADER',
+        fileCreated: 1699999999,
+      },
+    ]);
+  });
+
+  it('serves the second call inside the TTL from cache', async () => {
+    slackApi.pins.list.mockResolvedValue({ items: [] });
+
+    await client.listChannelPins('C_cache');
+    await client.listChannelPins('C_cache');
+
+    expect(slackApi.pins.list).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns [] for a DM without calling the API', async () => {
+    const pins = await client.listChannelPins('D123');
+    expect(pins).toEqual([]);
+    expect(slackApi.pins.list).not.toHaveBeenCalled();
+  });
+
+  it('returns null and warns on a generic API error', async () => {
+    slackApi.pins.list.mockRejectedValue(new Error('channel_not_found'));
+
+    const pins = await client.listChannelPins('C_err');
+
+    expect(pins).toBeNull();
+    expect(loggerWarn).toHaveBeenCalled();
+  });
+
+  it('latches missing_scope so later channels never call pins.list again', async () => {
+    const scopeErr: Error & { data?: { error?: string } } = new Error('An API error occurred');
+    scopeErr.data = { error: 'missing_scope' };
+    slackApi.pins.list.mockRejectedValue(scopeErr);
+
+    const first = await client.listChannelPins('C_scope');
+    expect(first).toBeNull();
+    expect(loggerWarn).toHaveBeenCalledWith(
+      'Slack',
+      'pins:read not granted — pinned-message context is dormant until the app is reinstalled with the scope',
+    );
+    expect(slackApi.pins.list).toHaveBeenCalledTimes(1);
+
+    const second = await client.listChannelPins('C_other');
+    expect(second).toBeNull();
+    expect(slackApi.pins.list).toHaveBeenCalledTimes(1);
+
+    client.__resetPinsScopeFlagForTests();
   });
 });
