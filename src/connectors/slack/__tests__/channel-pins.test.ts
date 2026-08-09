@@ -18,6 +18,8 @@ type PinnedItemLike = {
   messageTs?: string;
   author?: string;
   botId?: string;
+  botName?: string;
+  teamId?: string;
   text?: string;
   permalink?: string;
   fileId?: string;
@@ -38,8 +40,6 @@ vi.mock('../client.js', () => ({
     return { name: id, realName: u.realName ?? id, teamId: u.external ? 'T_OTHER' : 'T_HOME' };
   },
   isExternalUser: (u: { teamId?: string }) => u?.teamId === 'T_OTHER',
-  getBotId: () => 'B_ARCHIE',
-  getBotUserId: () => 'U_ARCHIE',
   // Not imported by channel-pins.ts — mocked purely so "never posts" is assertable
   // rather than assumed.
   postSlackMessage: vi.fn(async () => {}),
@@ -188,39 +188,31 @@ describe('ensureChannelPins', () => {
   // A relay app (RSS, email bridge, Jira hook) posts as an in-workspace user, so
   // classifying its author only establishes that the RELAY is internal — never where the
   // content came from. Nothing distinguishes relayed outside text from the app's own.
-  it('refuses an app-posted pin outright, without even classifying it', async () => {
-    pins = [messagePin({ botId: 'B_RELAY', author: 'U_APP_BOT' })];
-    userInfoImpl = async (id: string) => ({ external: false, realName: id });
-
-    await ensureChannelPins(CHANNEL);
-
-    expect(savedStore?.pins).toEqual([]);
-    expect(savedStore?.pinsEligible).toBe(0);
-  });
-
-  // The one exception, and the reason for it: there is no laundering question about
-  // content this system wrote itself, and a human pinning an Archie message is curation.
-  it('adopts a pin Archie itself posted, attributed to its own user', async () => {
-    pins = [messagePin({ botId: 'B_ARCHIE', author: '' })];
-    userInfoImpl = async (id: string) => ({
-      external: false,
-      realName: id === 'U_ARCHIE' ? 'Archie' : `Name ${id}`,
-    });
+  // Deploy notifications, incident summaries and workflow cards are among the most-pinned
+  // things in a real channel. The pinner is the trust gate for them: a bot has no human
+  // author to vet, but a person chose to put this in front of the agent.
+  it('adopts a pin posted by an internal bot, attributed as an app', async () => {
+    pins = [messagePin({ botId: 'B_DATADOG', botName: 'Datadog', teamId: 'T_HOME', author: '' })];
 
     await ensureChannelPins(CHANNEL);
 
     expect(savedStore?.pins).toHaveLength(1);
-    expect((savedStore?.pins[0] as { authorName: string }).authorName).toBe('Archie');
+    expect((savedStore?.pins[0] as { authorName: string }).authorName).toBe('Datadog (app)');
   });
 
-  // Own-post is not a trust bypass: the bot's own user still goes through the classifier,
-  // so an unresolvable lookup fails closed like anyone else's.
-  it('still fails closed when the bot user cannot be classified', async () => {
-    pins = [messagePin({ botId: 'B_ARCHIE', author: '' })];
-    userInfoImpl = async (id: string) => {
-      if (id === 'U_ARCHIE') throw new Error('rate limited');
-      return { external: false, realName: id };
-    };
+  // The same line thread ingestion already draws: internal bots in, other workspaces out.
+  it('refuses a bot posting from another workspace', async () => {
+    pins = [messagePin({ botId: 'B_FOREIGN', botName: 'Foreign', teamId: 'T_OTHER', author: '' })];
+
+    await ensureChannelPins(CHANNEL);
+
+    expect(savedStore?.pins).toEqual([]);
+  });
+
+  // A bot author does not relax the other principal.
+  it('still drops a bot-posted pin when the PINNER is external', async () => {
+    pins = [messagePin({ botId: 'B_DATADOG', botName: 'Datadog', teamId: 'T_HOME', author: '' })];
+    userInfoImpl = async (id: string) => ({ external: id === 'U_PINNER', realName: id });
 
     await ensureChannelPins(CHANNEL);
 

@@ -1837,6 +1837,10 @@ export interface PinnedItem {
   author?: string;
   /** Slack-assigned bot identity when the pinned message was posted by an app. */
   botId?: string;
+  /** Bot's display name, when posted by an app. */
+  botName?: string;
+  /** Workspace the message originated from — used to drop bots from another workspace. */
+  teamId?: string;
   text?: string;
   permalink?: string;
   fileId?: string;
@@ -1929,7 +1933,8 @@ export async function listChannelPins(channelId: string): Promise<PinnedItem[] |
           pinnedBy: item.created_by ?? '',
           messageTs: item.message.ts,
           author: full?.user ?? item.message.user ?? '',
-          ...(full?.botId ? { botId: full.botId } : {}),
+          ...(full?.botId ? { botId: full.botId, botName: full.botName } : {}),
+          ...(full?.teamId ? { teamId: full.teamId } : {}),
           text: parts.filter((t) => t && t.trim()).join(' — '),
           permalink: item.message.permalink,
         });

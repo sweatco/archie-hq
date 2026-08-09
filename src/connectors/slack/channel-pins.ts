@@ -6,7 +6,7 @@
  * See docs/plans/20260809-channel-pinned-messages-context.md.
  */
 import { logger } from '../../system/logger.js';
-import { getBotId, getBotUserId, getUserInfo, isExternalUser, listChannelPins } from './client.js';
+import { getUserInfo, isExternalUser, listChannelPins } from './client.js';
 import {
   loadChannelStore,
   updateChannelStore,
@@ -90,35 +90,29 @@ export async function ensureChannelPins(channelId: string): Promise<void> {
       const authorId = (item.kind === 'message' ? item.author : item.fileUser) ?? '';
       const prior = pre?.pins?.find((p) => p.key === key);
 
-      // An app-posted pin is refused, before either principal is even resolved. Classifying
-      // its author would only establish that the RELAY is in this workspace — an RSS feed,
-      // an email bridge, a Jira or Datadog hook all post as internal users while carrying
-      // content from anywhere, and Slack offers no way to tell a relayed outside message
-      // from the app's own. Adopting one would hand an unauthenticated writer a line in
-      // every agent's system prompt, so this fails closed and accepts that a legitimately
-      // pinned workflow card goes unindexed.
+      // An app-posted pin is adopted, and only a bot from ANOTHER workspace is refused —
+      // the same line thread ingestion already draws at client.ts:2200 ("drop external
+      // bots … keep real users, and internal bots"). Deploy notifications, incident
+      // summaries and workflow cards are among the most-pinned things in a real channel,
+      // and refusing them gutted the feature for exactly its highest-signal input.
       //
-      // Archie's own posts are the exception, and the only one. There is no laundering
-      // question about content this system wrote itself, and a human pinning an Archie
-      // message is a deliberate act of curation — usually of a summary or a decision the
-      // channel wants kept. Refusing those was the first thing this gate did in the live
-      // workspace, and it was wrong. Identity is `bot_id`, which Slack assigns and a
-      // message cannot claim for itself.
-      const ownPost = !!item.botId && item.botId === getBotId();
-      if (item.botId && !ownPost) {
-        logger.debug('channel-pins', `pin ${key} in ${channelId} was posted by app ${item.botId} — not adoptable`);
+      // What makes that safe is the OTHER principal. A bot has no human author to vet, but
+      // the pinner is always a person and is always classified: an internal human chose to
+      // put this in front of the agent, which is the same trust decision that makes a
+      // canvas trustworthy. The line is also marked `(app)` in `by`, carries `source`, and
+      // the block's note tells the agent to open the real thing before acting.
+      const bot = item.botId
+        ? { external: isExternalUser({ teamId: item.teamId }), realName: `${item.botName || 'app'} (app)` }
+        : null;
+      if (bot?.external) {
+        logger.debug('channel-pins', `pin ${key} in ${channelId} was posted by a bot from another workspace — not adoptable`);
         continue;
       }
 
-      // Two principals, not one: the person who wrote the pinned thing and the person
-      // who pinned it. Either being external is enough to drop the item — a shared
-      // channel lets an outsider both author content and elevate someone else's into
-      // standing context.
-      //
-      // An own-post carries no `user`, so it is attributed to the bot's own user id, which
-      // resolves through the same classifier as anyone else rather than being special-cased
-      // into trust: if that lookup fails, the pin fails closed exactly like any other.
-      const author = ownPost ? await classify(getBotUserId() ?? '') : await classify(authorId);
+      // Two principals, not one: whoever wrote the pinned thing and whoever pinned it.
+      // Either being external is enough to drop the item — a shared channel lets an
+      // outsider both author content and elevate someone else's into standing context.
+      const author = bot ?? await classify(authorId);
       const pinner = await classify(item.pinnedBy);
 
       if (author?.external || pinner?.external) continue;
@@ -163,7 +157,7 @@ export async function ensureChannelPins(channelId: string): Promise<void> {
           // nothing extra — and a `pinned_by="U0123ABC"` column tells the agent nothing
           // it can weigh, which is the whole job of this index.
           pinnedByName: pinner.realName || item.pinnedBy,
-          authorName: author.realName || (ownPost ? 'Archie' : authorId),
+          authorName: author.realName || authorId,
           // A Slack message ts is a decimal epoch-seconds string; a file carries its own
           // creation time.
           postedAt: item.kind === 'message' ? Number(item.messageTs) : (item.fileCreated ?? 0),
