@@ -55,6 +55,9 @@ vi.mock('../../connectors/slack/channel-canvas.js', () => ({
   buildOtherChannelContextSection,
   collectCanvasFileAllowlist: vi.fn().mockResolvedValue(new Set()),
 }));
+vi.mock('../../connectors/slack/channel-pins.js', () => ({
+  collectPinnedFileAllowlist: vi.fn().mockResolvedValue(new Set()),
+}));
 
 import { createCommsMcpServer } from '../tools.js';
 import { DmPostError } from '../../connectors/slack/client.js';

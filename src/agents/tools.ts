@@ -46,6 +46,7 @@ import {
   ensureChannelCanvas,
   buildOtherChannelContextSection,
 } from '../connectors/slack/channel-canvas.js';
+import { collectPinnedFileAllowlist } from '../connectors/slack/channel-pins.js';
 import { isDmOrUserId, findMutedTarget } from '../connectors/slack/channel-ids.js';
 import {
   formatSlackSendError,
@@ -2190,17 +2191,17 @@ function safeReferenceFileName(name: string, forceExt?: string): string {
 
 /**
  * `fetch_slack_reference` (PM-only) — pull a file referenced in the channel's
- * project-context canvas into the PM workspace so it can be read. The agent
- * never has to know whether the reference is a canvas or a plain file: the tool
- * inspects `files.info.filetype` and routes internally (canvas → converted
- * markdown; anything else → native bytes). The file lands in the PM's own
- * workspace, not shared — the PM decides what to do with it next.
+ * project-context canvas, or pinned in the channel, into the PM workspace so it
+ * can be read. The agent never has to know whether the reference is a canvas or
+ * a plain file: the tool inspects `files.info.filetype` and routes internally
+ * (canvas → converted markdown; anything else → native bytes). The file lands in
+ * the PM's own workspace, not shared — the PM decides what to do with it next.
  */
 function createFetchSlackReferenceTool(agent: Agent, task: Task) {
   return tool(
     'fetch_slack_reference',
-    'Fetch a file referenced in the channel\'s project-context canvas and save it into your workspace so you can read it. ' +
-    'Pass the reference exactly as it appears in the canvas — a Slack file link or a file id. ' +
+    'Fetch a file referenced in the channel\'s project-context canvas, or pinned in the channel, and save it into your workspace so you can read it. ' +
+    'Pass the reference exactly as it appears in the canvas or in the pinned-messages index — a Slack file link or a file id. ' +
     'Documents and images are saved in their original form; a referenced canvas is saved as readable markdown.',
     {
       reference: z.string().describe(
@@ -2212,13 +2213,18 @@ function createFetchSlackReferenceTool(agent: Agent, task: Task) {
       if (!fileId) {
         return err(`No Slack file id found in "${args.reference}". Pass a Slack file link or an F… id.`);
       }
-      // Scope to canvas-referenced files only: the bot token can read far more
-      // of the workspace than this task should reach, so an unscoped id would
-      // let prompt-influenced input exfiltrate arbitrary accessible files.
-      const allowed = await collectCanvasFileAllowlist(task.metadata);
+      // Scope to canvas-referenced and pinned files only: the bot token can read
+      // far more of the workspace than this task should reach, so an unscoped id
+      // would let prompt-influenced input exfiltrate arbitrary accessible files.
+      // Both standing context sources are in scope, and nothing else is.
+      const [canvasIds, pinnedIds] = await Promise.all([
+        collectCanvasFileAllowlist(task.metadata),
+        collectPinnedFileAllowlist(task.metadata),
+      ]);
+      const allowed = new Set([...canvasIds, ...pinnedIds]);
       if (!allowed.has(fileId)) {
         return err(
-          `File ${fileId} is not referenced by an adopted channel canvas for this task — only the canvas itself or files it references can be fetched.`,
+          `File ${fileId} is neither referenced by an adopted channel canvas nor pinned in one of this task's channels — only the canvas itself, files it references, and pinned files can be fetched.`,
         );
       }
       const cwd = requireSandbox(agent).cwd;
