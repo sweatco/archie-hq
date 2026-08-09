@@ -39,7 +39,14 @@ Respond with JSON only.`;
  */
 export function normalisePinText(raw: string): string {
   const tag = /<\/\s*(?:pin|channel_pinned_messages)\s*>/gi;
-  let text = raw;
+  // Invisible characters come out first, and they are not a nicety. `\s` covers tab,
+  // newline, CR, VT, FF and NBSP, but NOT zero-width space, soft hyphen, the bidi marks,
+  // word joiner, BOM or the C0 controls — so a closing tag with a zero-width space inside
+  // it survived the strip and closed the container. That is a payload anyone can paste
+  // into Slack and nobody can see in the channel. Exactly the characters `\s` misses are
+  // deleted here; the ones it catches are left to the collapse below, so a newline still
+  // becomes a space instead of vanishing and welding two words together.
+  let text = raw.replace(/[\u0000-\u0008\u000e-\u001f\u007f\u00ad\u200b-\u200f\u2060\ufeff]/g, '');
   for (;;) {
     const next = text.replace(tag, '');
     if (next === text) break;
