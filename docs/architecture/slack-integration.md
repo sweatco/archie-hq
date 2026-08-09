@@ -150,7 +150,7 @@ What a channel pins is standing context about that channel, in the same way the 
 
 **Nothing is filtered by age.** A runbook pinned two years ago is often the most relevant thing in a channel, so both dates and both ages are exposed and the agent judges. Every value in the block — element text and attribute alike — is XML-escaped, which is what keeps pinned content, a display name or a channel name from closing the wrapper or forging a `<pin>` element with someone else's attribution.
 
-Opening a pin needs no new tool: the PM already has `read_thread(channel_id, ts)` for a message, and `fetch_slack_reference` now accepts a pinned file id as well as a canvas-referenced one. Both live in `comms-tools`, which is PM-only, so a specialist that needs a pin asks — exactly as it does for a canvas file reference.
+Opening a pin needs no new tool: the PM already has `read_thread` for a message, whose `channel` and `thread_ts` parameters take the pin's `channel_id` and `ts`, and `fetch_slack_reference` now accepts a pinned file id as well as a canvas-referenced one. Both live in `comms-tools`, which is PM-only, so a specialist that needs a pin asks — exactly as it does for a canvas file reference.
 
 ## Multi-Channel Support
 
