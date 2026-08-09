@@ -29,6 +29,7 @@ import {
   extractMessageContent,
 } from './client.js';
 import { ensureChannelCanvas } from './channel-canvas.js';
+import { ensureChannelPins } from './channel-pins.js';
 import { shouldCreateNewTask, shouldForwardMessageEvent, isAckableEvent } from './task-routing.js';
 import { Task } from '../../tasks/task.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
@@ -215,7 +216,7 @@ export async function mountSlackApp(
     const botUserId = getBotUserId();
     if (!botUserId || event.user !== botUserId) return;
     if (typeof event.channel !== 'string' || event.channel.startsWith('D')) return;
-    ensureChannelCanvas(event.channel).catch((err: unknown) =>
+    Promise.all([ensureChannelCanvas(event.channel), ensureChannelPins(event.channel)]).catch((err: unknown) =>
       logger.error('Server', 'Error scanning canvas on channel join', err));
   });
 
@@ -696,7 +697,9 @@ export async function handleSlackEvent(event: {
   // so the spawn-time injection reads fresh state. No-op for DMs and TTL-bounded.
   // Runs after the external-author bail-out above, so a purely-external trigger
   // never causes a scan. Never throws.
-  await ensureChannelCanvas(event.channel);
+  //
+  // The pinned-messages index is refreshed on exactly the same terms: before the PM wakes, no-op for DMs, TTL-bounded, after the external-author bail-out above so a purely-external trigger never causes a scan, and never throws.
+  await Promise.all([ensureChannelCanvas(event.channel), ensureChannelPins(event.channel)]);
 
   // const triageResult = await triageSlackMessage(thread);
   // switch (triageResult.action) {

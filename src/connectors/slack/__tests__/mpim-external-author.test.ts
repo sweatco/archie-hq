@@ -44,6 +44,7 @@ vi.mock('../client.js', () => ({
 }));
 
 vi.mock('../channel-canvas.js', () => ({ ensureChannelCanvas: vi.fn() }));
+vi.mock('../channel-pins.js', () => ({ ensureChannelPins: vi.fn() }));
 vi.mock('../title.js', () => ({ setAssistantThreadTitle: vi.fn() }));
 vi.mock('../../../tasks/title-generator.js', () => ({ generateTaskTitle: vi.fn() }));
 vi.mock('../../../system/shutdown.js', () => ({ getIsShuttingDown: vi.fn().mockReturnValue(false) }));
