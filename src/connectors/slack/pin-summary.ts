@@ -109,11 +109,15 @@ Respond with JSON only.`;
     }
 
     // An empty summary passes the schema — `z.string()` accepts "" — so it has to be
-    // caught here rather than by validation. A blank index line is worse than a blunt
-    // truncation: it tells the agent a pin exists and nothing about what it is, which
-    // is the one outcome this whole path is meant to avoid.
+    // caught here rather than by validation. This branch also catches a stream that ended
+    // without a result event at all, so it warns for itself: the two `logger.warn` calls
+    // above sit on paths that never reach here, and QA found five distinct failure modes
+    // degrading through this line without leaving a single log entry.
     const summary = result ? normalisePinText(truncateTo(result.summary)) : '';
-    if (!summary) return { summary: truncateTo(text), source: 'verbatim' };
+    if (!summary) {
+      logger.warn('pin-summary', result ? 'model returned an empty summary' : 'no result event from the haiku call');
+      return { summary: truncateTo(text), source: 'verbatim' };
+    }
     return { summary, source: 'model' };
   } catch (err) {
     logger.warn('pin-summary', `unexpected failure: ${err}`);

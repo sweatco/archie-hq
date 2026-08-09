@@ -152,5 +152,16 @@ describe('summarisePinText — empty model output', () => {
     expect(out.source).toBe('verbatim');
     expect(out.summary.length).toBeGreaterThan(0);
     expect(out.summary.endsWith('…')).toBe(true);
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  // A stream that ends with no result event degrades down the same branch. It used to do
+  // so in complete silence, which is how five distinct failure modes stayed invisible.
+  it('warns when the stream yields no result event at all', async () => {
+    state.queryEvents = [];
+    const out = await summarisePinText(LONG);
+    expect(out.source).toBe('verbatim');
+    expect(out.summary.endsWith('…')).toBe(true);
+    expect(warnSpy).toHaveBeenCalled();
   });
 });
