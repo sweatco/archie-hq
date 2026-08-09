@@ -1,6 +1,6 @@
 # Channel pinned messages as agent context
 
-**Date:** 2026-08-09 · **Status: Planned (in progress).**
+**Date:** 2026-08-09 · **Status: Implemented (this PR).**
 
 ## Brief
 
