@@ -31,28 +31,17 @@ Rules:
 Respond with JSON only.`;
 
 /**
- * Flatten a pin's text to a single line and drop the container's own closing tags.
+ * Flatten a pin's text to a single line fit for an index entry.
  *
- * The summary is interpolated verbatim into the pinned-messages block, so a pin that happens to contain `</pin>` or `</channel_pinned_messages>` would close its own container and land the remainder in the agent's system prompt unwrapped — outside the framing that marks it as user-authored standing context rather than system authority. Whitespace inside the tag (`</ pin >`) and any casing are tolerated, because only the literal string matters.
+ * Whitespace collapses to single spaces, and the invisible characters `\s` does not cover — zero-width space, soft hyphen, the bidi and isolate marks, word joiner, BOM, the C0 controls and the Unicode tag block — are deleted outright. None of them render, so none of them carry meaning in a one-line index; what they do carry is the ability to make text look one way in Slack and another way in a prompt.
  *
- * The strip runs to a FIXPOINT, and that is the whole point. A single pass is defeatable by nesting, because removing an inner tag reassembles an outer one: `</channel_pinned_</channel_pinned_messages>messages>` is not a closing tag, contains no closing tag after one substitution has been decided on, and yet leaves `</channel_pinned_messages>` behind once that substitution is applied. Nesting one level deeper defeats any fixed number of passes, so the loop has to run until nothing changes rather than a chosen number of times. Only then does the usual argument hold — with no way to write a closing tag, the containment holds by construction.
+ * This is hygiene, NOT containment. An earlier version tried to make the block safe by stripping `</pin>` and `</channel_pinned_messages>` out of the text, and that approach cannot be made to work: it neutralises closing tags while OPENING tags pass through verbatim, so a pin body could still forge a `<pin by="…">` element with any attribution it liked, and no blocklist of invisible characters is ever complete — a sweep of the Unicode `Cf` category found 189 of 197 codepoints still got through. Containment lives at render time in `channel-pins.ts`, where every value is XML-escaped and therefore cannot produce a tag of any kind.
  */
 export function normalisePinText(raw: string): string {
-  const tag = /<\/\s*(?:pin|channel_pinned_messages)\s*>/gi;
-  // Invisible characters come out first, and they are not a nicety. `\s` covers tab,
-  // newline, CR, VT, FF and NBSP, but NOT zero-width space, soft hyphen, the bidi marks,
-  // word joiner, BOM or the C0 controls — so a closing tag with a zero-width space inside
-  // it survived the strip and closed the container. That is a payload anyone can paste
-  // into Slack and nobody can see in the channel. Exactly the characters `\s` misses are
-  // deleted here; the ones it catches are left to the collapse below, so a newline still
-  // becomes a space instead of vanishing and welding two words together.
-  let text = raw.replace(/[\u0000-\u0008\u000e-\u001f\u007f\u00ad\u200b-\u200f\u2060\ufeff]/g, '');
-  for (;;) {
-    const next = text.replace(tag, '');
-    if (next === text) break;
-    text = next;
-  }
-  return text.replace(/\s+/g, ' ').trim();
+  return raw
+    .replace(/[\u0000-\u0008\u000e-\u001f\u007f\u00ad\u034f\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufe00-\ufe0f\ufeff\ufff9-\ufffb]|[\u{e0000}-\u{e007f}]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /** Short stable hash of the text a summary was derived from — drives re-summarise-on-edit. */

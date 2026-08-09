@@ -239,12 +239,27 @@ function formatDate(epochSeconds: number): string {
 }
 
 /**
- * Render one attribute value: normalised, then JSON-escaped.
+ * XML-escape a text node, and — with `escapeAttr` — an attribute value.
  *
- * `JSON.stringify` alone is not enough, and this is where that first showed. It escapes quotes and backslashes, so an attribute cannot be broken out of — but it passes `</pin>` and `</channel_pinned_messages>` straight through, and three of these values are user-controlled: a Slack display name (author and pinner) and a channel name. A member who renames themselves to `Ada </pin></channel_pinned_messages> …` closes the wrapper from an attribute, with every remaining pin landing outside it. The body was normalised from the start; the attributes were not, which made the containment argument true only of the half nobody could reach without also being pinned.
+ * This is where the block's containment actually lives, and it is the only place it can. The first attempt STRIPPED `</pin>` and `</channel_pinned_messages>` out of the text instead, and adversarial QA took that apart three ways: only closing tags were neutralised, so a pin body could still write a whole `<pin by="someone else">` element and let the genuine closer terminate it; `JSON.stringify` escaped a quote as `\"`, which is a JSON escape and means nothing in tag syntax, so `Ada" pinned_by="…` still closed the attribute and forged another; and the invisible-character list it relied on neutralised 8 of the 197 `Cf` codepoints that reach the same result.
+ *
+ * Escaping ends all three at once, because a value that cannot contain `<`, `>` or `"` cannot produce a tag, an attribute, or an early close — whatever it is made of. Three of these values are user-controlled with no pin required at all: the author's and pinner's Slack display names and the channel name.
  */
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    // Quotes are escaped in element text as well as in attributes. Text has no need of it
+    // for safety, since escaped angle brackets already make a tag impossible — but a body
+    // reading `by="Someone Else"` is still a line of forged attribution sitting inside a
+    // real pin, and one escape rule for both positions is less to get wrong than two.
+    .replace(/"/g, '&quot;');
+}
+
+/** One `name="value"` pair, normalised then escaped. */
 function attr(name: string, value: string): string {
-  return `${name}=${JSON.stringify(normalisePinText(value))}`;
+  return `${name}="${escapeXml(normalisePinText(value))}"`;
 }
 
 /**
@@ -301,7 +316,7 @@ export async function buildChannelPinsPromptSection(metadata: TaskMetadata): Pro
     // The summary is normalised on the way in already; doing it again here is
     // belt-and-braces, because a stored summary must never be able to close its own
     // container and land the remainder in the system prompt unwrapped.
-    elements.push(`<pin ${attrs.join(' ')}>${normalisePinText(entry.summary)}</pin>`);
+    elements.push(`<pin ${attrs.join(' ')}>${escapeXml(normalisePinText(entry.summary))}</pin>`);
   }
   for (const { label, omitted } of omissions) {
     elements.push(`<pins_omitted ${attr('channel', label)} ${attr('count', String(omitted))}/>`);
