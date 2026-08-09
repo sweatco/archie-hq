@@ -2311,8 +2311,9 @@ function makePrivacyResolver(): (channelId: string) => Promise<boolean> {
         // the bot was removed from and so dropped out of the workspace cache.
         // Resolve it live via the STRICT lookup that throws on error, and fail
         // closed on any error (treat as private) so a private channel is never
-        // leaked into a public/DM listing. getChannelInfo can't be used here —
-        // it swallows errors and returns isPrivate:false (i.e. fails open).
+        // leaked into a public/DM listing. Use the strict lookup here rather
+        // than the display-oriented helper so this policy owns its fail-closed
+        // behavior explicitly.
         return fetchChannelIsPrivate(channelId).catch(() => true);
       });
       cache.set(channelId, p);
@@ -2381,6 +2382,9 @@ function createProposeTriggerTool(agent: Agent, task: Task) {
     },
     async (args) => {
       if (!triggersEnabled()) return ok('Triggers are currently disabled on this instance (ARCHIE_TRIGGERS_ENABLED=false).');
+      if (task.metadata.visibility !== 'public') {
+        return ok('Triggers cannot be created from a private task. Start the request in a public channel so the saved prompt cannot carry private conversation content into a later run.');
+      }
 
       const b = args.binding;
       if (!b.channel_id || !b.channel_name) return ok('A trigger needs both channel_id and channel_name for delivery.');
@@ -2416,6 +2420,7 @@ function createProposeTriggerTool(agent: Agent, task: Task) {
         status: 'pending',
         created_by: createdBy || 'unknown',
         created_at: new Date().toISOString(),
+        created_from_visibility: 'public',
         binding,
         conditions: built.conditions,
         action: { prompt: args.action_prompt },

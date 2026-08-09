@@ -17,7 +17,7 @@ vi.mock('../paths.js', () => ({
   getRecentActivityPath: () => activityPath,
 }));
 
-import { readActivity, appendActivity, trimActivity } from '../activity.js';
+import { readActivity, readActivityMarkdown, appendActivity, trimActivity } from '../activity.js';
 import type { ActivityEntry } from '../types.js';
 
 describe('recent activity', () => {
@@ -79,6 +79,15 @@ describe('recent activity', () => {
 
       const result = await readActivity();
       expect(result).toHaveLength(1);
+    });
+  });
+
+  describe('readActivityMarkdown()', () => {
+    it('preserves legacy or hand-edited rows byte-for-byte for injection', async () => {
+      const content = '# Recent Activity\n\n| legacy | row | with | four columns |\n';
+      await writeFile(activityPath, content, 'utf-8');
+
+      expect(await readActivityMarkdown()).toBe(content);
     });
   });
 

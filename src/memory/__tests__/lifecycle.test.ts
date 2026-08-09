@@ -20,7 +20,7 @@ let tempDir: string;
 let memoryDir: string;
 let usersDir: string;
 let activityPath: string;
-let summariesDir: string;
+let telemetryTasksDir: string;
 let sessionsDir: string;
 
 // ============================================================================
@@ -44,10 +44,10 @@ vi.mock('../paths.js', () => ({
     return join(memoryDir, 'tasks', taskId, 'summary.md');
   },
   getPendingPath: () => join(memoryDir, 'pending-extractions.md'),
-  getTaskTelemetryPath: (taskId: string) => join(memoryDir, 'tasks', taskId, 'telemetry.jsonl'),
+  getTaskTelemetryPath: (taskId: string) => join(telemetryTasksDir, taskId, 'telemetry.jsonl'),
   isAllowedUserId: (id: string) =>
-    /^(U|W|B|T)[A-Z0-9]{6,}$/.test(id) || /^(cli|local):[A-Za-z0-9_\-]+$/.test(id),
-  isSlackUserId: (id: string) => /^(U|W|B|T)[A-Z0-9]{6,}$/.test(id),
+    /^(U|W)[A-Z0-9]{6,}$/.test(id) || /^(cli|local):[A-Za-z0-9_\-]+$/.test(id),
+  isSlackUserId: (id: string) => /^(U|W)[A-Z0-9]{6,}$/.test(id),
   isFallbackUserId: (id: string) => /^(cli|local):[A-Za-z0-9_\-]+$/.test(id),
   isAllowedTaskId: (id: string) => /^[A-Za-z0-9._\-]+$/.test(id),
   getUserCap: () => 100,
@@ -125,10 +125,8 @@ vi.mock('../extractor.js', async (importOriginal) => {
 import {
   handleTaskCompleted,
   rescheduleTaskCompleted,
-  extractUsernames,
   extractAuthorUsers,
   selectRelatedTasksByEntity,
-  migrateLegacySummaries,
   isEvidenceValid,
   buildSummaryMarkdown,
 } from '../lifecycle.js';
@@ -187,7 +185,7 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     memoryDir = join(tempDir, 'memory');
     usersDir = join(memoryDir, 'users');
     activityPath = join(memoryDir, 'recent-activity.md');
-    summariesDir = join(memoryDir, 'summaries');
+    telemetryTasksDir = join(memoryDir, 'telemetry', 'tasks');
     sessionsDir = join(tempDir, 'sessions');
 
     await mkdir(join(sessionsDir, TASK_ID, 'shared'), { recursive: true });
@@ -267,28 +265,6 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     expect(content).toContain('task_id: ' + TASK_ID);
     expect(content).toContain('domain: engineering');
     expect(content).toContain('Investigated and fixed the login bug.');
-  });
-
-  it('migrateLegacySummaries moves memory/summaries/*.md into memory/tasks/<id>/summary.md and removes the legacy dir', async () => {
-    await mkdir(summariesDir, { recursive: true });
-    await writeFile(join(summariesDir, 'task-20260101-0001-aaaaaa.md'), 'A', 'utf-8');
-    await writeFile(join(summariesDir, 'task-20260101-0002-bbbbbb.md'), 'B', 'utf-8');
-
-    await migrateLegacySummaries();
-
-    expect(await readFile(join(memoryDir, 'tasks', 'task-20260101-0001-aaaaaa', 'summary.md'), 'utf-8')).toBe('A');
-    expect(await readFile(join(memoryDir, 'tasks', 'task-20260101-0002-bbbbbb', 'summary.md'), 'utf-8')).toBe('B');
-    expect(existsSync(summariesDir)).toBe(false);
-  });
-
-  it('migrateLegacySummaries no-ops without a legacy dir and leaves non-migratable files behind', async () => {
-    await migrateLegacySummaries(); // absent legacy dir → no throw
-
-    await mkdir(summariesDir, { recursive: true });
-    await writeFile(join(summariesDir, 'not a task id.md'), 'X', 'utf-8');
-    await migrateLegacySummaries();
-
-    expect(existsSync(join(summariesDir, 'not a task id.md'))).toBe(true); // skipped, legacy dir kept
   });
 
   it('summary contains Memory Updates section with per-file bullets', async () => {
@@ -591,7 +567,7 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     for (const rejected of ['Loves spreadsheets', 'Uncited claim', 'Unknown citation claim', 'Mixed citation claim']) {
       expect(summary).not.toContain(rejected);
     }
-    const records = (await readFile(join(memoryDir, 'tasks', TASK_ID, 'telemetry.jsonl'), 'utf-8'))
+    const records = (await readFile(join(telemetryTasksDir, TASK_ID, 'telemetry.jsonl'), 'utf-8'))
       .trim().split('\n').map((l) => JSON.parse(l));
     const drops = records.filter((r) => r.kind === 'user-update-dropped');
     expect(drops).toHaveLength(4);
@@ -738,68 +714,6 @@ describe('isEvidenceValid(userId, update, msgAuthors)', () => {
   it('rejects fallback and non-author targets', () => {
     expect(isEvidenceValid('cli:task-123', update(['msg:1.1']), authors)).toBe(false);
     expect(isEvidenceValid(USER_DANA, update(['msg:1.1']), authors)).toBe(false);
-  });
-});
-
-// ============================================================================
-// extractUsernames unit tests
-// ============================================================================
-
-describe('extractUsernames(transcript)', () => {
-  it('returns raw Slack IDs with display names', () => {
-    const log = `[@<${USER_DANA}:Dana Lee>] hello\n[@<${USER_ALICE}:Alice Smith>] hi`;
-    const refs = extractUsernames(log);
-    expect(refs).toHaveLength(2);
-    expect(refs[0]).toEqual({ userId: USER_DANA, displayName: 'Dana Lee' });
-    expect(refs[1]).toEqual({ userId: USER_ALICE, displayName: 'Alice Smith' });
-  });
-
-  it('matches the production log format with channel context after the mention', () => {
-    // Real-world log lines have additional context between the mention's `>`
-    // and the outer bracket's `]`, e.g.:
-    //   `[@<U03RQQTE1EF:Riley Quinn> in slack:#<D0AUZLR6ZJQ:DM with Riley Quinn>:179...]`
-    const log =
-      '[2026-05-28T17:18:38.189Z] [@<U03RQQTE1EF:Riley Quinn> in slack:#<D0AUZLR6ZJQ:DM with Riley Quinn>:1779988687.863119] Hey Archie';
-    const refs = extractUsernames(log);
-    expect(refs).toHaveLength(1);
-    expect(refs[0]).toEqual({ userId: 'U03RQQTE1EF', displayName: 'Riley Quinn' });
-  });
-
-  it('does not treat channel references (#<…:…>) as user mentions', () => {
-    // The `#<D…:…>` channel reference uses the same UID:Name shape but lacks
-    // the `@` prefix, so it must not be picked up as a user mention.
-    const log = '[@<U07ABC123:Alex> in slack:#<D0AUZLR6ZJQ:DM with Riley>:1779988687] msg';
-    const refs = extractUsernames(log);
-    expect(refs).toHaveLength(1);
-    expect(refs[0].userId).toBe('U07ABC123');
-  });
-
-  it('deduplicates by user ID', () => {
-    const log = `[@<${USER_DANA}:Dana Lee>] one\n[@<${USER_DANA}:Dana L.>] two`;
-    const refs = extractUsernames(log);
-    expect(refs).toHaveLength(1);
-    expect(refs[0].userId).toBe(USER_DANA);
-  });
-
-  it('matches the Slack-native <@UID:Name> bracket order (new producer format)', () => {
-    const log = `[<@${USER_DANA}:Dana Lee>] hello\n[<@${USER_ALICE}:Alice Smith> in slack:#<D0X:DM>:1] hi`;
-    const refs = extractUsernames(log);
-    expect(refs).toHaveLength(2);
-    expect(refs[0]).toEqual({ userId: USER_DANA, displayName: 'Dana Lee' });
-    expect(refs[1]).toEqual({ userId: USER_ALICE, displayName: 'Alice Smith' });
-  });
-
-  it('dedupes across both bracket orders (old @< logs + new <@ logs)', () => {
-    const log = `[@<${USER_DANA}:Dana Lee>] old-format\n[<@${USER_DANA}:Dana Lee>] new-format`;
-    const refs = extractUsernames(log);
-    expect(refs).toHaveLength(1);
-    expect(refs[0].userId).toBe(USER_DANA);
-  });
-
-  it('ignores malformed mentions', () => {
-    const log = '[@<u1:Dana>] short ID\n[@<NOTAVALID:Bob>] non-Slack prefix';
-    const refs = extractUsernames(log);
-    expect(refs).toHaveLength(0);
   });
 });
 

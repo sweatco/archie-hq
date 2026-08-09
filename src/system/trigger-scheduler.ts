@@ -13,11 +13,12 @@
 import { Cron } from 'croner';
 import { Task } from '../tasks/task.js';
 import type { Trigger, TriggerBinding, TriggerCondition } from '../types/trigger.js';
+import type { TaskVisibility } from '../types/task.js';
 import { listTriggers, saveTrigger, deleteTrigger } from './trigger-store.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { emitEvent } from './event-bus.js';
 import { logger } from './logger.js';
-import { postSlackMessage, isChannelReachable } from '../connectors/slack/client.js';
+import { postSlackMessage, isChannelReachable, getChannelInfo } from '../connectors/slack/client.js';
 
 // ---- Limits / config ----
 
@@ -135,7 +136,13 @@ async function rebuildFromDisk(): Promise<void> {
     const now = Date.now();
     for (const trigger of await listTriggers()) {
       if (trigger.status === 'enabled') {
-        indexTrigger(trigger);
+        if (trigger.created_from_visibility !== 'public') {
+          trigger.status = 'paused';
+          await saveTrigger(trigger);
+          logger.warn('trigger-scheduler', `Trigger ${trigger.id} paused: legacy record has no verified public creation context`);
+        } else {
+          indexTrigger(trigger);
+        }
       } else if (trigger.status === 'pending' && now - new Date(trigger.created_at).getTime() > PENDING_TTL_MS) {
         await deleteTrigger(trigger.id);
         logger.system(`Trigger ${trigger.id}: GC'd stale pending proposal`);
@@ -187,15 +194,16 @@ export function getChannelMessageTriggers(channelId: string): Trigger[] {
 
 // ---- Schedule firing ----
 
-interface FireContext {
-  kind: 'schedule' | 'message';
-  /** For message context: the triggering message text. */
-  text?: string;
-  /** For message context: the thread to reply in + its channel. */
-  channelId?: string;
-  channelName?: string;
-  threadId?: string;
-}
+type FireContext =
+  | { kind: 'schedule' }
+  | {
+      kind: 'message';
+      text?: string;
+      channelId: string;
+      channelName?: string;
+      threadId: string;
+      visibility: TaskVisibility;
+    };
 
 /**
  * Pure planning step for a single tick: given a trigger and the current instant,
@@ -335,6 +343,13 @@ async function tickTrigger(trigger: Trigger, now: Date): Promise<void> {
  */
 export async function fireTrigger(trigger: Trigger, context: FireContext): Promise<void> {
   if (!triggersEnabled()) return;
+  if (trigger.created_from_visibility !== 'public') {
+    trigger.status = 'paused';
+    await saveTrigger(trigger);
+    deindexTrigger(trigger.id);
+    logger.warn('trigger-scheduler', `Trigger ${trigger.id} paused: creation context is not verified public`);
+    return;
+  }
 
   // Pre-flight for a channel-bound schedule fire: if the bound channel was
   // deleted or archived (or the bot removed and it archived), pause the trigger
@@ -360,13 +375,18 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
     return;
   }
 
-  const task = await Task.create('public');
+  const visibility = context.kind === 'message'
+    ? context.visibility
+    : trigger.binding.type === 'user'
+      ? 'private'
+      : (await getChannelInfo(trigger.binding.channel_id)).isPrivate ? 'private' : 'public';
+  const task = await Task.create(visibility);
   task.metadata.triggered_by = trigger.id;
 
   // Wire delivery. message context → reply in the triggering thread (linked as
   // default, no post). schedule context → the PM opens the destination itself.
   let delivery: string;
-  if (context.kind === 'message' && context.channelId && context.threadId) {
+  if (context.kind === 'message') {
     task.linkSlackThread(context.channelId, context.threadId, context.channelName ?? context.channelId);
     delivery = 'Post your reply in your default channel — the thread where the triggering message was posted.';
   } else if (trigger.binding.type === 'user') {

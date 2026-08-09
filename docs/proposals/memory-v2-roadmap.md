@@ -8,7 +8,7 @@
 - Relevance-gated, separately capped org and non-org entity injection.
 - Always-available thin entity index when injection is enabled.
 - Three read-only pull tools: `search_memory`, `read_entity`, and `read_task_summary`.
-- Selection, pull, and profile-evidence-drop telemetry under `memory/tasks/<taskId>/telemetry.jsonl`.
+- Complete public/private selection, pull, and profile-evidence-drop telemetry under the operator-only `memory/telemetry/tasks/<taskId>/telemetry.jsonl` tree.
 - Immutable public/private task visibility. Only public tasks contribute to the shared store.
 - Author-scoped collaboration profiles with evidence-bound updates.
 - Markdown-only storage and two core integration seams.
@@ -17,7 +17,7 @@ The runtime exposes no raw-task-log reader, per-artifact ACL, denial telemetry, 
 
 ## Measurement — stacked PR #228
 
-The evaluation change consumes snapshots of the runtime store without modifying them. It owns the commands, snapshot tooling, regression sets, and reports needed to measure:
+The evaluation change consumes snapshots of the runtime memory and telemetry trees without modifying them. It owns the commands, snapshot tooling, regression sets, and reports needed to measure:
 
 - worst-case rendered prompt size;
 - entity selection precision and recall;

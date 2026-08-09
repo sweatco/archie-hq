@@ -8,7 +8,7 @@
 import { readUser } from './store.js';
 import { listEntities, serializeEntity } from './entities.js';
 import { readIndexMarkdown, renderIndex, selectEntities, type SelectionResult } from './entity-index.js';
-import { readActivity, renderActivityTable } from './activity.js';
+import { readActivityMarkdown } from './activity.js';
 import {
   isMemoryEnabled,
   isInjectionEnabled,
@@ -19,6 +19,7 @@ import {
 import { appendTelemetry } from './telemetry.js';
 import { logger } from '../system/logger.js';
 import type { UserRef, EntityRecord } from './types.js';
+import type { TaskVisibility } from '../types/task.js';
 
 /** Spawn-context selectors used to push the relevant entity pages. */
 export interface MemorySelectors {
@@ -27,6 +28,8 @@ export interface MemorySelectors {
   taskTitle?: string;
   /** Identify the spawn for the selection sensor; without `taskId` no record is written. */
   taskId?: string;
+  /** Included in operator-only selection telemetry. */
+  visibility?: TaskVisibility;
   agent?: string;
 }
 
@@ -67,9 +70,9 @@ export async function buildMemoryContext(
   }
 
   // Recent activity contains only public-task output.
-  const activityEntries = await readActivity();
-  if (activityEntries.length > 0) {
-    blocks.push(renderRecentActivityBlock(renderActivityTable(activityEntries)));
+  const activityMarkdown = await readActivityMarkdown();
+  if (activityMarkdown.trim()) {
+    blocks.push(renderRecentActivityBlock(activityMarkdown));
   }
 
   // Entity layer: always inject the thin index when any entity exists, then
@@ -97,9 +100,10 @@ export async function buildMemoryContext(
 
 /**
  * Selection sensor: append one JSONL record of this spawn's injection decision
- * to memory/tasks/<taskId>/telemetry.jsonl. Fail-safe — never throws, never
+ * to memory/telemetry/tasks/<taskId>/telemetry.jsonl. Fail-safe — never throws, never
  * alters the prompt; skipped without a `taskId` and when injection is off, so
- * the collect-only posture stays write-free.
+ * the collect-only posture stays write-free. Telemetry is stored in a dedicated
+ * operator-only subtree for both public and private tasks.
  */
 async function recordSelection(
   selectors: MemorySelectors,
@@ -118,6 +122,7 @@ async function recordSelection(
       v: 1,
       ts: new Date().toISOString(),
       taskId: selectors.taskId,
+      visibility: selectors.visibility ?? null,
       agent: selectors.agent ?? null,
       ctx: {
         repo: selectors.repo ?? null,

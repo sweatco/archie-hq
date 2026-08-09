@@ -10,6 +10,8 @@
  * trigger-store.ts) and indexed in-memory by the trigger scheduler.
  */
 
+import type { TaskVisibility } from './task.js';
+
 export type TriggerStatus = 'pending' | 'enabled' | 'paused';
 
 /**
@@ -45,6 +47,8 @@ export interface Trigger {
   /** Slack user ID who requested it */
   created_by: string;
   created_at: string;
+  /** Creation task visibility. Missing on legacy records and treated as private. */
+  created_from_visibility?: TaskVisibility;
   /** Slack user ID who approved it (set when status flips pending → enabled) */
   approved_by?: string;
   binding: TriggerBinding;

@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Agent } from './agent.js';
 import type { Task } from '../tasks/task.js';
+import type { TaskVisibility } from '../types/task.js';
 import { isRepoAgent, isPmAgent } from '../types/agent.js';
 import { buildCommitAuthorEnv } from './commit-author.js';
 import { resolveAgentModel, resolveAgentEffort } from './model-label.js';
@@ -233,11 +234,13 @@ export async function buildTaskPeopleSection(taskId: string): Promise<string> {
  */
 export function deriveMemoryToolsCtx(
   taskId: string,
+  visibility: TaskVisibility,
   agentId: string,
   users: ReadonlyArray<{ userId: string }>,
 ): MemoryToolsCtx {
   return {
     taskId,
+    visibility,
     agent: agentId,
     authorUserIds: users.map((u) => u.userId),
   };
@@ -357,7 +360,7 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   // the existing spawn.ts memory seam, so ejection still removes the same files.
   // User ids in the ctx scope user-memory search hits to task participants.
   const memoryUsers = await extractTaskAuthorUsers(taskId);
-  const memoryToolsCtx = deriveMemoryToolsCtx(taskId, def.id, memoryUsers);
+  const memoryToolsCtx = deriveMemoryToolsCtx(taskId, metadata.visibility, def.id, memoryUsers);
   if (isMemoryToolsEnabled()) {
     mcpServers['memory-tools'] = createMemoryToolsMcpServer(memoryToolsCtx);
   }
@@ -634,8 +637,8 @@ Shared folder: ${sharedPath} [READ-ONLY]
   // ---- Organizational memory injection (read path; gated by ARCHIE_MEMORY_INJECT, default off) ----
   // Users are the task's authors, computed once above.
   const taskTitle = metadata.title ?? undefined;
-  // taskId + agent feed the selection sensor (memory/tasks/<taskId>/telemetry.jsonl).
-  const memoryBase = { taskId, agent: def.id, taskTitle };
+  // taskId + agent feed the operator-only selection sensor under memory/telemetry/.
+  const memoryBase = { taskId, visibility: metadata.visibility, agent: def.id, taskTitle };
   const memorySelectors = isPmAgent(def)
     ? memoryBase
     : isRepoAgent(def)

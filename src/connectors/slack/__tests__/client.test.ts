@@ -638,6 +638,13 @@ describe('fetchSlackThread — task visibility', () => {
   });
 });
 
+describe('isChannelShared', () => {
+  it('short-circuits DMs without a conversations.info call', async () => {
+    await expect(client.isChannelShared('D123')).resolves.toBe(false);
+    expect(slackApi.conversations.info).not.toHaveBeenCalled();
+  });
+});
+
 describe('fetchChannelHistory — public only, chronological', () => {
   it('refuses a private channel before reading any history', async () => {
     slackApi.conversations.info.mockResolvedValue({

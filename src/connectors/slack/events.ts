@@ -75,8 +75,12 @@ let app: AppType | null = null;
 type SlackUserInfo = Awaited<ReturnType<typeof getUserInfo>>;
 
 /** Resolve an interactive-action actor and fail closed unless they are internal. */
-async function resolveInternalActionActor(
-  body: { user?: { id?: string } },
+export async function resolveInternalActionActor(
+  body: {
+    user?: { id?: string };
+    channel?: { id?: string };
+    message?: { ts?: string; thread_ts?: string };
+  },
   actionName: string,
 ): Promise<{ id: string; info: SlackUserInfo } | null> {
   const userId = body.user?.id;
@@ -93,6 +97,15 @@ async function resolveInternalActionActor(
     return { id: userId, info };
   } catch (error) {
     logger.warn('Slack', `Ignoring ${actionName}: failed to classify actor ${userId}`, error);
+    const channelId = body.channel?.id;
+    if (channelId) {
+      await postEphemeral(
+        channelId,
+        userId,
+        `I couldn't verify your Slack account for this ${actionName}. Please try again.`,
+        body.message?.thread_ts ?? body.message?.ts,
+      );
+    }
     return null;
   }
 }
@@ -447,11 +460,7 @@ export async function mountSlackApp(
         const task = await Task.get(taskId);
         trigger = await task.handleTriggerApproval(userId, triggerId);
       } else {
-        logger.warn('Server', `approve_trigger: no task found for thread ${threadId}; enabling trigger directly`);
-        const { enableProposedTrigger } = await import('../../system/trigger-store.js');
-        const { indexTrigger, announceTriggerChange } = await import('../../system/trigger-scheduler.js');
-        trigger = await enableProposedTrigger(triggerId, userId);
-        if (trigger) { indexTrigger(trigger); await announceTriggerChange(trigger, 'enabled'); }
+        logger.warn('Server', `approve_trigger: no task found for thread ${threadId}; refusing approval because task visibility cannot be verified`);
       }
       if (body.channel?.id && body.message?.ts) {
         const text = trigger
@@ -784,7 +793,7 @@ export async function handleSlackEvent(event: {
     // Ambient top-level channel message (no task, not an @mention, not a thread
     // reply) — the only place channel-message triggers fire. @mentions and DMs
     // are excluded above so a message aimed at Archie never also fires a trigger.
-    await dispatchChannelMessageTriggers(event, thread.channel.name);
+    await dispatchChannelMessageTriggers(event, thread.channel.name, thread.taskVisibility);
   }
   // Otherwise: a reply in a human-started thread the bot wasn't part of — ignore
 }
@@ -797,6 +806,7 @@ export async function handleSlackEvent(event: {
 async function dispatchChannelMessageTriggers(
   event: { channel: string; user: string; text: string; ts: string },
   channelName: string,
+  visibility: SlackThread['taskVisibility'],
 ): Promise<void> {
   const triggers = getChannelMessageTriggers(event.channel);
   if (triggers.length === 0) return;
@@ -818,6 +828,7 @@ async function dispatchChannelMessageTriggers(
         threadId: event.ts,
         channelId: event.channel,
         channelName,
+        visibility,
       });
     } catch (err) {
       logger.error('Slack', `Failed to fire channel-message trigger ${trigger.id}`, err);

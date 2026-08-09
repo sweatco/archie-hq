@@ -18,7 +18,7 @@ let memoryEnabled = true;
 let injectionEnabled = false;
 
 let entitiesDir: string;
-let tasksDir: string;
+let telemetryTasksDir: string;
 let touchedByMax = 10;
 
 vi.mock('../paths.js', () => ({
@@ -39,7 +39,7 @@ vi.mock('../paths.js', () => ({
   getOrgInjectMax: () => 8,
   getEntityObsCap: () => 30,
   getTouchedByInjectMax: () => touchedByMax,
-  getTaskTelemetryPath: (taskId: string) => join(tasksDir, taskId, 'telemetry.jsonl'),
+  getTaskTelemetryPath: (taskId: string) => join(telemetryTasksDir, taskId, 'telemetry.jsonl'),
   isValidEntitySlug: (s: string) => /^[a-z0-9][a-z0-9-]{0,63}$/.test(s) && s !== 'index',
 }));
 
@@ -56,7 +56,7 @@ describe('memory context builder', () => {
     memoryEnabled = true;
     injectionEnabled = false; // production default; positive tests opt in explicitly
     touchedByMax = 10;
-    tasksDir = join(tempDir, 'tasks');
+    telemetryTasksDir = join(tempDir, 'telemetry', 'tasks');
   });
 
   // Helper: write an entity file into the temp entities dir.
@@ -347,7 +347,7 @@ describe('memory context builder', () => {
     });
   });
 
-  describe('selection sensor (memory/tasks/<taskId>/telemetry.jsonl)', () => {
+  describe('selection sensor (memory/telemetry/tasks/<taskId>/telemetry.jsonl)', () => {
     const TASK = 'task-20260702-0001-sensor';
     const FM = (over: Record<string, string>) => ({
       type: 'service',
@@ -359,7 +359,7 @@ describe('memory context builder', () => {
       status: 'active',
       ...over,
     });
-    const sensorFile = () => join(tasksDir, TASK, 'telemetry.jsonl');
+    const sensorFile = () => join(telemetryTasksDir, TASK, 'telemetry.jsonl');
 
     it('appends one parseable record per enriched spawn, with context, outcome, and cost', async () => {
       injectionEnabled = true;
@@ -372,6 +372,7 @@ describe('memory context builder', () => {
         repo: 'backend',
         taskTitle: 'payment bug',
         taskId: TASK,
+        visibility: 'public',
         agent: 'backend-agent',
       });
 
@@ -381,6 +382,7 @@ describe('memory context builder', () => {
       expect(record.v).toBe(1);
       expect(record.ts).toMatch(/^\d{4}-\d{2}-\d{2}T/);
       expect(record.taskId).toBe(TASK);
+      expect(record.visibility).toBe('public');
       expect(record.agent).toBe('backend-agent');
       expect(record.ctx).toEqual({
         repo: 'backend',
@@ -401,8 +403,8 @@ describe('memory context builder', () => {
 
     it('appends one line per enrichment — a zero-injection spawn still leaves a record', async () => {
       injectionEnabled = true;
-      await buildMemoryContext([], { taskId: TASK, agent: 'pm' });
-      await buildMemoryContext([], { taskId: TASK, agent: 'backend-agent' });
+      await buildMemoryContext([], { taskId: TASK, visibility: 'public', agent: 'pm' });
+      await buildMemoryContext([], { taskId: TASK, visibility: 'public', agent: 'backend-agent' });
 
       const lines = (await readFile(sensorFile(), 'utf-8')).trim().split('\n');
       expect(lines).toHaveLength(2);
@@ -415,10 +417,11 @@ describe('memory context builder', () => {
     it('sensor failure never affects enrichment: unwritable telemetry path → warning, identical context', async () => {
       injectionEnabled = true;
       const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
-      await writeFile(tasksDir, 'blocks mkdir', 'utf-8'); // a file where the tasks dir should be
+      await mkdir(join(tempDir, 'telemetry'), { recursive: true });
+      await writeFile(telemetryTasksDir, 'blocks mkdir', 'utf-8');
       await writeEntity('payment-service', FM({ display_name: '"Payment Service"', scope: 'repo', repos: '[backend]' }));
 
-      const withSensor = await buildMemoryContext([], { repo: 'backend', taskId: TASK });
+      const withSensor = await buildMemoryContext([], { repo: 'backend', taskId: TASK, visibility: 'public' });
       const withoutSensor = await buildMemoryContext([], { repo: 'backend' });
 
       expect(withSensor).toBe(withoutSensor);
@@ -430,9 +433,26 @@ describe('memory context builder', () => {
     it('disabled injection writes nothing even when a taskId is supplied', async () => {
       await writeEntity('payment-service', FM({ display_name: '"Payment Service"', scope: 'repo', repos: '[backend]' }));
 
-      await buildMemoryContext([], { repo: 'backend', taskId: TASK });
+      await buildMemoryContext([], { repo: 'backend', taskId: TASK, visibility: 'public' });
 
       expect(existsSync(sensorFile())).toBe(false);
+    });
+
+    it('private tasks build the same context and retain operator-only telemetry', async () => {
+      injectionEnabled = true;
+      await writeEntity('payment-service', FM({ display_name: '"Payment Service"', scope: 'repo', repos: '[backend]' }));
+
+      const result = await buildMemoryContext([], {
+        repo: 'backend',
+        taskId: TASK,
+        visibility: 'private',
+        taskTitle: 'private roadmap',
+      });
+
+      expect(result).toContain('<entity slug="payment-service"');
+      const record = JSON.parse((await readFile(sensorFile(), 'utf-8')).trim());
+      expect(record).toMatchObject({ taskId: TASK, visibility: 'private' });
+      expect(record.ctx.taskTitle).toBe('private roadmap');
     });
 
     it('missing taskId: context still built, no record written', async () => {
@@ -442,7 +462,7 @@ describe('memory context builder', () => {
       const result = await buildMemoryContext([], { repo: 'backend', agent: 'backend-agent' });
 
       expect(result).toContain('<entity slug="payment-service"');
-      expect(existsSync(tasksDir)).toBe(false);
+      expect(existsSync(telemetryTasksDir)).toBe(false);
     });
   });
 });

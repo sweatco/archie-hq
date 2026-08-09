@@ -24,7 +24,7 @@ Historical record of Archie's incremental development. Each plan represents a mi
 | … | (v11–v31 — see files in this directory) | — |
 | [20260626](20260626-response-formatting.md) | Message footer + self-updating PR cards | Implemented |
 | [20260717](20260717-slack-group-dm-support.md) | Slack group DM (mpim) support | Implemented |
-| [20260719](20260719-memory-v2.md) | Memory v2: bounded injection, pull tools + eval harness, confidentiality layer | Implemented (rollout gates open) |
+| [20260719](20260719-memory-v2.md) | Memory v2: bounded injection, pull tools, confidentiality layer | Implemented (rollout gates open) |
 
 ## Evolution Arc
 

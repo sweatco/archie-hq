@@ -8,17 +8,20 @@
  * Ejection: delete this file + src/memory/ directory + remove the initMemory() call from src/index.ts.
  */
 
-import { mkdir, readdir } from 'fs/promises';
+import { mkdir, readdir, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
+import { join } from 'path';
 import { onEvent } from '../system/event-bus.js';
-import { handleTaskCompleted, rescheduleTaskCompleted, migrateLegacySummaries } from './lifecycle.js';
+import { handleTaskCompleted, rescheduleTaskCompleted } from './lifecycle.js';
 import { readPending } from './pending-queue.js';
 import {
   getMemoryDir,
+  getPublicStoreMarkerPath,
   getUsersDir,
   getTasksDir,
   getEntitiesDir,
   isMemoryEnabled,
+  disableMemoryRuntime,
   isAllowedUserId,
 } from './paths.js';
 import { logger } from '../system/logger.js';
@@ -33,14 +36,16 @@ export async function initMemory(): Promise<void> {
     return;
   }
 
-  await mkdir(getMemoryDir(), { recursive: true });
-  await mkdir(getUsersDir(), { recursive: true });
-  await mkdir(getTasksDir(), { recursive: true });
-  await mkdir(getEntitiesDir(), { recursive: true });
-
-  await migrateLegacySummaries();
-  await warnLegacyUserFiles();
-  await drainPendingExtractions();
+  try {
+    if (!(await preparePublicStore())) return;
+    await warnLegacyUserFiles();
+    await drainPendingExtractions();
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    disableMemoryRuntime(reason);
+    logger.error('memory', `Memory initialization failed; memory is disabled for this process: ${reason}`);
+    return;
+  }
 
   onEvent((event) => {
     if (event.type === 'task:completed') {
@@ -49,6 +54,34 @@ export async function initMemory(): Promise<void> {
   });
 
   logger.system('Memory layer initialized');
+}
+
+async function preparePublicStore(): Promise<boolean> {
+  const memoryDir = getMemoryDir();
+  const marker = getPublicStoreMarkerPath();
+  if (!existsSync(marker) && await containsAnyFile(memoryDir)) {
+    const reason = `existing store has no public-store marker; snapshot and clear ${memoryDir} before enabling memory`;
+    disableMemoryRuntime(reason);
+    logger.error('memory', `Memory disabled: ${reason}`);
+    return false;
+  }
+
+  await mkdir(memoryDir, { recursive: true });
+  await mkdir(getUsersDir(), { recursive: true });
+  await mkdir(getTasksDir(), { recursive: true });
+  await mkdir(getEntitiesDir(), { recursive: true });
+  if (!existsSync(marker)) await writeFile(marker, 'public-store-v1\n', 'utf-8');
+  return true;
+}
+
+async function containsAnyFile(dir: string): Promise<boolean> {
+  if (!existsSync(dir)) return false;
+  const entries = await readdir(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isFile() || entry.isSymbolicLink()) return true;
+    if (entry.isDirectory() && await containsAnyFile(join(dir, entry.name))) return true;
+  }
+  return false;
 }
 
 /**

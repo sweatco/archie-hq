@@ -1512,14 +1512,24 @@ export class Task {
       logger.warn('task', `handleTriggerApproval on ${this.taskId} with no trigger id`);
       return null;
     }
-    const { loadTrigger, enableProposedTrigger, deleteTrigger, countActiveTriggers } = await import('../system/trigger-store.js');
+    const { loadTrigger, saveTrigger, enableProposedTrigger, deleteTrigger, countActiveTriggers } = await import('../system/trigger-store.js');
     const { indexTrigger, announceTriggerChange, MAX_TRIGGERS_PER_USER, MAX_TRIGGERS_PER_CHANNEL } = await import('../system/trigger-scheduler.js');
+
+    if (this.metadata.visibility !== 'public') {
+      await deleteTrigger(id);
+      if (this.metadata.pending_trigger_id === id) this.metadata.pending_trigger_id = undefined;
+      this.debouncedSave();
+      await appendAgentFinding(this.taskId, 'system', `Trigger ${id} not enabled — private tasks cannot create persistent triggers`, 'decision');
+      return null;
+    }
 
     // Re-check caps at approval: pending proposals don't count toward the caps,
     // so approving several proposed while under the limit could otherwise blow
     // past it. Refuse (delete the pending file) if enabling would exceed a cap.
     const pending = await loadTrigger(id);
     if (pending && pending.status === 'pending') {
+      pending.created_from_visibility = 'public';
+      await saveTrigger(pending);
       const overChannel = pending.binding.type === 'channel'
         && (await countActiveTriggers((t) => t.binding.type === 'channel' && t.binding.channel_id === (pending.binding as { channel_id: string }).channel_id)) >= MAX_TRIGGERS_PER_CHANNEL;
       const overUser = pending.created_by && pending.created_by !== 'unknown'

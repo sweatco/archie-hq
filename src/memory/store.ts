@@ -51,13 +51,22 @@ export interface UserUpdatesApplyResult {
   capExceeded: boolean;
 }
 
-/** Parse the quoted display_name frontmatter written by this store. */
+/** Parse generated or legacy YAML display_name values. */
 export function parseUserDisplayName(text: string): string {
-  const match = text.match(/^display_name:\s*"((?:\\"|[^"\n])*)"\s*$/m);
-  return match?.[1]?.replace(/\\"/g, '"').trim() ?? '';
+  const raw = text.match(/^display_name:\s*(.*?)\s*$/m)?.[1]?.trim();
+  if (!raw) return '';
+  if (raw.startsWith('"')) {
+    const match = /^"((?:\\"|[^"])*)"$/.exec(raw);
+    return match?.[1]?.replace(/\\"/g, '"').trim() ?? '';
+  }
+  if (raw.startsWith("'")) {
+    const match = /^'((?:''|[^'])*)'$/.exec(raw);
+    return match?.[1]?.replace(/''/g, "'").trim() ?? '';
+  }
+  return raw.replace(/\s+#.*$/, '').trim();
 }
 
-/** Read only the requested user files, skipping missing or malformed entries. */
+/** Read only the requested user files, using the stable id for legacy files without a display name. */
 export async function readUserFiles(userIds: readonly string[]): Promise<UserFile[]> {
   const out: UserFile[] = [];
   for (const id of new Set(userIds)) {
@@ -69,11 +78,7 @@ export async function readUserFiles(userIds: readonly string[]): Promise<UserFil
       continue;
     }
     if (!text) continue;
-    const displayName = parseUserDisplayName(text);
-    if (!displayName) {
-      logger.warn('memory', `readUserFiles: skipping ${id} with missing or malformed display_name`);
-      continue;
-    }
+    const displayName = parseUserDisplayName(text) || id;
     out.push({ id, displayName, text });
   }
   return out;

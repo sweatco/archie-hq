@@ -489,7 +489,7 @@ async function fetchMentionInfo(
           const channelResult = await client.conversations.info({ channel: channelId });
           const channelName = channelResult.channel?.name || channelId;
           channelInfoMap.set(channelId, channelName);
-        } catch (error) {
+        } catch {
           logger.warn('Slack', `Failed to get channel info for ${channelId}`);
         }
       })
@@ -1627,61 +1627,44 @@ export function isExternalUser(user: {
   return false;
 }
 
-// ---- Slack Connect channel classification ---------------------------------
-// One conversations.info snapshot per channel, cached with a 1-minute TTL: a
-// channel can flip to shared mid-task, and warning logic should observe the
-// transition promptly. 1 min
-// is well under Slack's tier-3 rate limit (50+/min) even for >50 simultaneously
-// active threads. Errors are NOT cached — the next call retries.
-
-interface ConvInfoSnapshot {
-  is_ext_shared?: boolean;
-  is_pending_ext_shared?: boolean;
-  connected_team_ids?: string[];
-}
-
-interface ConvInfoCacheEntry {
-  info: ConvInfoSnapshot;
+interface ChannelSharedCacheEntry {
+  isShared: boolean;
   fetchedAt: number;
 }
-const conversationInfoCache = new Map<string, ConvInfoCacheEntry>();
-const CONVERSATION_INFO_TTL_MS = 60_000;
-
-async function fetchConversationInfoCached(channelId: string): Promise<ConvInfoSnapshot | null> {
-  const cached = conversationInfoCache.get(channelId);
-  if (cached && Date.now() - cached.fetchedAt < CONVERSATION_INFO_TTL_MS) {
-    return cached.info;
-  }
-  try {
-    const client = getSlackClient();
-    const result = await client.conversations.info({ channel: channelId });
-    const info = (result.channel ?? {}) as ConvInfoSnapshot;
-    conversationInfoCache.set(channelId, { info, fetchedAt: Date.now() });
-    return info;
-  } catch (error) {
-    logger.warn('Slack', `Failed to fetch conversation info for ${channelId}`, error);
-    return null;
-  }
-}
-
-function isSharedFromInfo(info: ConvInfoSnapshot): boolean {
-  return (
-    !!info.is_ext_shared ||
-    !!info.is_pending_ext_shared ||
-    ((info.connected_team_ids?.length ?? 0) > 1)
-  );
-}
+const channelSharedCache = new Map<string, ChannelSharedCacheEntry>();
+const CHANNEL_SHARED_TTL_MS = 60_000;
 
 /**
  * Returns whether a channel is shared with one or more external Slack
- * workspaces (Slack Connect). D-prefixed ids are still checked because Slack
- * Connect DMs may be externally shared. Result is cached for
- * 1 minute. On API failure, returns false (fail-open — this is advisory only).
+ * workspaces (Slack Connect). DMs are never classified as shared. Result is
+ * cached for 1 minute. On API failure, returns false (this is advisory only).
  */
 export async function isChannelShared(channelId: string): Promise<boolean> {
-  const info = await fetchConversationInfoCached(channelId);
-  if (info === null) return false;
-  return isSharedFromInfo(info);
+  if (channelId.startsWith('D')) return false;
+
+  const cached = channelSharedCache.get(channelId);
+  if (cached && Date.now() - cached.fetchedAt < CHANNEL_SHARED_TTL_MS) {
+    return cached.isShared;
+  }
+
+  try {
+    const client = getSlackClient();
+    const result = await client.conversations.info({ channel: channelId });
+    const channel = result.channel as {
+      is_ext_shared?: boolean;
+      is_pending_ext_shared?: boolean;
+      connected_team_ids?: string[];
+    } | undefined;
+    const isShared =
+      !!channel?.is_ext_shared ||
+      !!channel?.is_pending_ext_shared ||
+      ((channel?.connected_team_ids?.length ?? 0) > 1);
+    channelSharedCache.set(channelId, { isShared, fetchedAt: Date.now() });
+    return isShared;
+  } catch (error) {
+    logger.warn('Slack', `Failed to fetch shared-channel status for ${channelId}`, error);
+    return false;
+  }
 }
 
 /**
@@ -1729,10 +1712,7 @@ export async function getChannelInfo(
       | undefined;
 
     const isIm = channel?.is_im === true;
-    // DMs are inherently private; otherwise read the channel's is_private flag.
     const isPrivate = isIm || channel?.is_private === true;
-
-    // For DMs, resolve the other user's name instead of showing a raw ID
     if (isIm && channel?.user) {
       const userInfo = await getUserInfo(channel.user);
       return { id: channelId, name: `DM with ${userInfo.realName}`, isPrivate, isIm, imUserId: channel.user };
@@ -1744,7 +1724,7 @@ export async function getChannelInfo(
       isPrivate,
       isIm,
     };
-  } catch (error) {
+  } catch {
     logger.warn('Slack', `Failed to get channel info for ${channelId}`);
     return { id: channelId, name: channelId, isPrivate: true, isIm: channelId.startsWith('D') };
   }

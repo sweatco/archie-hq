@@ -16,11 +16,11 @@
  *   collaboration-profile files remain scoped to the calling task's message authors.
  * - Results are size-bounded: search returns thin ranked hits (identifier +
  *   one-liner), full pages only via explicit `read_entity`.
- * - Every invocation with a known task leaves a pull-sensor record
- *   (`kind: "pull"`) in the task's telemetry file — see telemetry.ts;
+ * - Every invocation from a known task leaves an operator-only pull-sensor
+ *   record (`kind: "pull"`) outside the agent-readable memory tree.
  */
 
-import { readFile, readdir } from 'fs/promises';
+import { readFile } from 'fs/promises';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { listEntities, readEntity, resolveEntity } from './entities.js';
@@ -29,16 +29,18 @@ import { renderEntityBlock } from './context.js';
 import { readActivity } from './activity.js';
 import {
   getSummaryPath,
-  getTasksDir,
   isAllowedTaskId,
   isValidEntitySlug,
+  isValidEntityLookup,
 } from './paths.js';
 import { readUserFiles } from './store.js';
 import { recordPull } from './telemetry.js';
 import type { EntityRecord } from './types.js';
+import type { TaskVisibility } from '../types/task.js';
 
 export interface MemoryToolsCtx {
   taskId?: string;
+  visibility?: TaskVisibility;
   agent?: string;
   /** Slack user ids of the calling task's message authors. */
   authorUserIds?: string[];
@@ -180,27 +182,6 @@ export function rankSearchHits(
     .slice(0, maxHits);
 }
 
-/** Read every public task summary. */
-async function readAllSummaries(): Promise<Array<{ taskId: string; text: string }>> {
-  let names: string[];
-  try {
-    names = await readdir(getTasksDir());
-  } catch {
-    return [];
-  }
-  const out: Array<{ taskId: string; text: string }> = [];
-  for (const taskId of names) {
-    if (!isAllowedTaskId(taskId) || /^\.+$/.test(taskId)) continue;
-    try {
-      const text = await readFile(getSummaryPath(taskId), 'utf-8');
-      out.push({ taskId, text });
-    } catch {
-      // No summary for this task dir (telemetry-only) — skip.
-    }
-  }
-  return out;
-}
-
 function renderHits(hits: SearchHit[]): string {
   const lines = hits.map(
     (h, i) => `${i + 1}. [${h.kind}] ${h.id} — ${h.summary || '(no summary)'} (score ${h.score})`,
@@ -224,29 +205,28 @@ function renderHits(hits: SearchHit[]): string {
  * wrapper below is what production registers.
  */
 export function buildMemoryTools(ctx: MemoryToolsCtx) {
-  const { taskId, agent } = ctx;
+  const { taskId, visibility, agent } = ctx;
 
   const searchMemory = tool(
     'search_memory',
-    'Search organizational memory (entity pages, the current task authors\' collaboration profiles, task summaries, recent activity) by keywords. Results are scoped to what this task may read (org-derived content and author-scoped profiles for this task). Returns ranked thin hits — follow up with read_entity / read_task_summary for full content.',
+    'Search organizational memory (entity pages, the current task authors\' collaboration profiles, and the bounded recent-activity index) by keywords. Results are scoped to what this task may read (org-derived content and author-scoped profiles for this task). Returns ranked thin hits — follow up with read_entity / read_task_summary for full content.',
     {
       query: z.string().describe('Keywords to search for (lexical match, not semantic)'),
       max_results: z.number().int().min(1).max(25).optional()
         .describe(`Maximum hits to return (default ${SEARCH_MAX_HITS})`),
     },
     async (args) => {
-      const [entities, users, summaries, activity] = await Promise.all([
+      const [entities, users, activity] = await Promise.all([
         listEntities(),
         readUserFiles(ctx.authorUserIds ?? []),
-        readAllSummaries(),
         readActivity(),
       ]);
       // Organizational summaries and activity are public because only public
       // tasks write them; user files were scoped before being read above.
       const rows = activity
         .map((a) => ({ taskId: a.taskId, summary: a.summary, date: a.date }));
-      const hits = rankSearchHits(args.query, entities, users, summaries, rows, args.max_results ?? SEARCH_MAX_HITS);
-      await recordPull(taskId, agent, 'search_memory', { query: args.query }, {
+      const hits = rankSearchHits(args.query, entities, users, [], rows, args.max_results ?? SEARCH_MAX_HITS);
+      await recordPull(taskId, visibility, agent, 'search_memory', { query: args.query }, {
         returned: hits.map((h) => h.id),
         count: hits.length,
         zeroResult: hits.length === 0,
@@ -266,10 +246,8 @@ export function buildMemoryTools(ctx: MemoryToolsCtx) {
     },
     async (args) => {
       const raw = args.slug?.trim() ?? '';
-      // Reject path-capable aliases before any filesystem access.
-      const safeAliasShape = /^[A-Za-z0-9 _-]{1,64}$/.test(raw);
-      if (!isValidEntitySlug(raw) && !safeAliasShape) {
-        await recordPull(taskId, agent, 'read_entity', { slug: raw }, { returned: [], count: 0, zeroResult: true });
+      if (!isValidEntityLookup(raw)) {
+        await recordPull(taskId, visibility, agent, 'read_entity', { slug: raw }, { returned: [], count: 0, zeroResult: true });
         return toolError(`Invalid entity slug: ${JSON.stringify(raw)}. Slugs are lowercase-kebab (see the entity index).`);
       }
       let rec = isValidEntitySlug(raw) ? await readEntity(raw) : null;
@@ -277,7 +255,7 @@ export function buildMemoryTools(ctx: MemoryToolsCtx) {
         // Alias / near-slug resolution — same resolver extraction uses.
         rec = resolveEntity(raw, await listEntities());
       }
-      await recordPull(taskId, agent, 'read_entity', { slug: raw }, {
+      await recordPull(taskId, visibility, agent, 'read_entity', { slug: raw }, {
         returned: rec ? [rec.entity] : [],
         count: rec ? 1 : 0,
         zeroResult: !rec,
@@ -297,17 +275,17 @@ export function buildMemoryTools(ctx: MemoryToolsCtx) {
     async (args) => {
       const id = args.taskId?.trim() ?? '';
       if (!isAllowedTaskId(id) || /^\.+$/.test(id)) {
-        await recordPull(taskId, agent, 'read_task_summary', { taskId: id }, { returned: [], count: 0, zeroResult: true });
+        await recordPull(taskId, visibility, agent, 'read_task_summary', { taskId: id }, { returned: [], count: 0, zeroResult: true });
         return toolError(`Invalid task ID: ${JSON.stringify(id)}`);
       }
       let text: string;
       try {
         text = await readFile(getSummaryPath(id), 'utf-8');
       } catch {
-        await recordPull(taskId, agent, 'read_task_summary', { taskId: id }, { returned: [], count: 0, zeroResult: true });
+        await recordPull(taskId, visibility, agent, 'read_task_summary', { taskId: id }, { returned: [], count: 0, zeroResult: true });
         return ok(`No summary found for task ${id}.`);
       }
-      await recordPull(taskId, agent, 'read_task_summary', { taskId: id }, { returned: [id], count: 1, zeroResult: false });
+      await recordPull(taskId, visibility, agent, 'read_task_summary', { taskId: id }, { returned: [id], count: 1, zeroResult: false });
       return ok(text);
     },
   );

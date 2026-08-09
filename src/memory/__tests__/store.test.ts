@@ -66,15 +66,23 @@ describe('memory store', () => {
       expect(parseUserDisplayName('display_name: "Sam \\"S\\""\n')).toBe('Sam "S"');
     });
 
-    it('skips and warns about malformed requested files', async () => {
+    it.each([
+      ['display_name: Dana Lee\n', 'Dana Lee'],
+      ["display_name: 'Dana O''Neil'\n", "Dana O'Neil"],
+    ])('parses legacy display_name syntax from %j', (content, expected) => {
+      expect(parseUserDisplayName(content)).toBe(expected);
+    });
+
+    it('loads legacy files without frontmatter using the stable id as display name', async () => {
       await mkdir(usersDir, { recursive: true });
       await writeFile(join(usersDir, 'U07ABC123.md'), '## Communication\n- Prefers concise updates\n');
 
-      await expect(readUserFiles(['U07ABC123'])).resolves.toEqual([]);
-      expect(logger.warn).toHaveBeenCalledWith(
-        'memory',
-        expect.stringContaining('missing or malformed display_name'),
-      );
+      await expect(readUserFiles(['U07ABC123'])).resolves.toEqual([{
+        id: 'U07ABC123',
+        displayName: 'U07ABC123',
+        text: '## Communication\n- Prefers concise updates\n',
+      }]);
+      expect(logger.warn).not.toHaveBeenCalled();
     });
   });
 

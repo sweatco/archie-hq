@@ -33,6 +33,7 @@ interface Trigger {
   status: 'pending' | 'enabled' | 'paused';   // pending = proposed, awaiting approval
   created_by: string;                          // Slack user ID who requested it
   created_at: string;
+  created_from_visibility?: 'public';          // absent legacy records are paused
   approved_by?: string;                        // who clicked Approve / typed y
   binding: TriggerBinding;                     // channel thread or user DM
   conditions: TriggerCondition[];              // any match fires
@@ -75,6 +76,10 @@ A one-off schedule auto-pauses after it fires (its condition is consumed). **Res
 2. Wire delivery — for a message-context fire, link the triggering thread as the default channel (no post); for a schedule fire, the spawned PM opens the destination itself.
 3. Seed the PM with `AGENT_PROMPTS.triggered(...)` and let it do the work.
 
+Message fires inherit the triggering Slack thread's public/private visibility. Schedule fires resolve the bound delivery channel live; DMs, private channels, and lookup failures create private tasks. Private tasks cannot create or approve persistent triggers, so private conversation content cannot be saved as a prompt for a later automated run.
+
+Legacy trigger records without a verified public creation context are paused on startup and cannot fire. Recreate them from a public task.
+
 **Firing posts no preamble.** The spawned PM does the work and posts the result itself, so the first thing the channel sees is the actual output — not an "I was triggered" line.
 
 ### Channel-message dispatch
@@ -111,6 +116,7 @@ Every **configuration change** — created/enabled, edited, paused/resumed, dele
 ## Protections & limits
 
 - **Propose-then-confirm** — no agent enables a trigger from a model decision alone.
+- **Public-origin creation** — private tasks cannot propose or approve persistent triggers.
 - **Human approval is the loop guard** — a trigger-spawned task *may* call `propose_trigger`, but that only ever creates a `pending` trigger; nothing enables (or fires) without a human clicking Approve, and a task has no way to self-approve (approval comes only from the Slack button or the CLI `/approve` endpoint). So there is no autonomous amplification loop to gate against — the approval step already breaks it. (Runaway pending-proposal spam is bounded by the daily fire cap.)
 - **Read-only by default** — a fired task is an ordinary task; any write/push still needs in-the-moment edit-mode approval.
 - **Limits** — recurring schedules ≥1h apart; per-user and per-channel active-trigger caps; a per-account daily fired-run cap (in-memory, reset daily).

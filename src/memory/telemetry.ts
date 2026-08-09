@@ -1,7 +1,8 @@
 /**
  * Memory Telemetry
  *
- * Shared append-only sensor writer for `memory/tasks/<taskId>/telemetry.jsonl`.
+ * Shared append-only sensor writer for
+ * `memory/telemetry/tasks/<taskId>/telemetry.jsonl`.
  * Record kinds sharing the file:
  *
  * - selection records (`v: 1`, no `kind` field — the original sensor shape;
@@ -19,6 +20,7 @@ import { appendFile, mkdir } from 'fs/promises';
 import { dirname } from 'path';
 import { getTaskTelemetryPath } from './paths.js';
 import { logger } from '../system/logger.js';
+import type { TaskVisibility } from '../types/task.js';
 
 /** Discriminator for pull records; selection records carry no `kind` field. */
 export const TELEMETRY_KIND_PULL = 'pull';
@@ -53,11 +55,12 @@ export interface PullRecordResult {
 
 /**
  * Pull sensor: record one read-tool invocation. Skips silently without a
- * taskId (the tool result is still served). Args are recorded as passed —
- * they are agent-authored queries, not secrets.
+ * taskId (the tool result is still served). Visibility is retained for
+ * operator-side analysis; it never changes whether the record is written.
  */
 export async function recordPull(
   taskId: string | undefined,
+  visibility: TaskVisibility | undefined,
   agent: string | undefined,
   toolName: string,
   args: Record<string, unknown>,
@@ -69,6 +72,7 @@ export async function recordPull(
     kind: TELEMETRY_KIND_PULL,
     ts: new Date().toISOString(),
     taskId,
+    visibility: visibility ?? null,
     agent: agent ?? null,
     tool: toolName,
     args,

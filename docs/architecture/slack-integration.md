@@ -136,7 +136,7 @@ Because a group DM is channel-like, every branch that keys strictly off the `D` 
 
 ## Task Visibility and Channel Binding
 
-Every task has one immutable `public | private` visibility assigned at creation. Public Slack channels, including Slack Connect channels, create public tasks. Private channels and DMs create private tasks; a channel-info lookup failure also fails closed to private. CLI and automated tasks are public. Legacy tasks without the field load as private.
+Every task has one immutable `public | private` visibility assigned at creation. Public Slack channels, including Slack Connect channels, create public tasks. Private channels and DMs create private tasks; a channel-info lookup failure also fails closed to private. CLI tasks are public. Message triggers inherit the source thread's visibility, while scheduled triggers derive it from the live delivery channel. Legacy tasks without the field load as private.
 
 A task can bind at most one Slack thread. `Task.append()` and `linkSlackThread()` reject a different Slack thread once one is linked, so a public thread cannot be continued in a DM or private conversation. The `TaskMetadata` type (`src/types/task.ts`) holds the bound channel in a `channels` record keyed by `slack:<channelId>:<threadTs>`; CLI-originated or operator-followed tasks may also carry the idempotent `cli:local` entry. The Slack entry shape is:
 
@@ -216,7 +216,7 @@ Some system events require user decisions via Slack buttons. The PM calls `task.
 - **Edit mode approval**: "Approve" / "Deny" buttons (action IDs: `approve_edit_mode`, `deny_edit_mode`). See [Edit Mode](./edit-mode.md).
 - **Research budget approval**: "Approve (+5)" / "Deny" buttons (action IDs: `approve_research_budget`, `deny_research_budget`).
 
-Button clicks are handled by Bolt action handlers in `src/connectors/slack/events.ts`. Every authorization action resolves the actor before changing state; external users, guests, missing actors, and lookup failures are acknowledged and ignored. For an internal actor, the handler updates the original message and calls the corresponding `Task` method. The same guard covers approvals and denials for edit mode, max mode, research budget, merges, and triggers.
+Button clicks are handled by Bolt action handlers in `src/connectors/slack/events.ts`. Every authorization action resolves the actor before changing state; external users, guests, missing actors, and lookup failures are acknowledged and ignored. A lookup failure also posts a private retry message to the clicker. For an internal actor, the handler updates the original message and calls the corresponding `Task` method. The same guard covers approvals and denials for edit mode, max mode, research budget, merges, and triggers.
 
 ## Natural Language Guidelines for PM Responses
 

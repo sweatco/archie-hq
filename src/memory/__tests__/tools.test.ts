@@ -8,6 +8,7 @@ let tempDir: string;
 let usersDir: string;
 let entitiesDir: string;
 let tasksDir: string;
+let telemetryTasksDir: string;
 let activityPath: string;
 
 vi.mock('../paths.js', () => ({
@@ -23,21 +24,25 @@ vi.mock('../paths.js', () => ({
   getEntityPath: (slug: string) => join(entitiesDir, `${slug}.md`),
   getTasksDir: () => tasksDir,
   getSummaryPath: (taskId: string) => join(tasksDir, taskId, 'summary.md'),
-  getTaskTelemetryPath: (taskId: string) => join(tasksDir, taskId, 'telemetry.jsonl'),
+  getTaskTelemetryPath: (taskId: string) => join(telemetryTasksDir, taskId, 'telemetry.jsonl'),
   getEntityCap: () => 300,
   getEntityInjectMax: () => 8,
   getOrgInjectMax: () => 8,
   getEntityObsCap: () => 30,
   getTouchedByInjectMax: () => 10,
   isAllowedTaskId: (id: string) => /^[A-Za-z0-9._\-]+$/.test(id),
-  isAllowedUserId: (id: string) => /^(U|W|B|T)[A-Z0-9]{6,}$/.test(id),
+  isAllowedUserId: (id: string) => /^(U|W)[A-Z0-9]{6,}$/.test(id),
   isValidEntitySlug: (slug: string) => /^[a-z0-9][a-z0-9-]{0,63}$/.test(slug) && slug !== 'index',
+  isValidEntityLookup: (value: string) =>
+    (/^[a-z0-9][a-z0-9-]{0,63}$/.test(value) && value !== 'index')
+    || /^[A-Za-z0-9 _-]{1,64}$/.test(value),
 }));
 
 import { buildMemoryTools, rankSearchHits, createMemoryToolsMcpServer, RESULT_MAX_CHARS } from '../tools.js';
 
 const CTX = {
   taskId: 'task-spawn-1',
+  visibility: 'public' as const,
   agent: 'pm-agent',
   authorUserIds: ['U07ABC123'],
 };
@@ -66,7 +71,7 @@ function entityMarkdown(): string {
 }
 
 async function telemetry(): Promise<any[]> {
-  const path = join(tasksDir, CTX.taskId, 'telemetry.jsonl');
+  const path = join(telemetryTasksDir, CTX.taskId, 'telemetry.jsonl');
   if (!existsSync(path)) return [];
   return (await readFile(path, 'utf-8')).trim().split('\n').map((line) => JSON.parse(line));
 }
@@ -81,6 +86,7 @@ describe('memory read tools', () => {
     usersDir = join(tempDir, 'users');
     entitiesDir = join(tempDir, 'entities');
     tasksDir = join(tempDir, 'tasks');
+    telemetryTasksDir = join(tempDir, 'telemetry', 'tasks');
     activityPath = join(tempDir, 'recent-activity.md');
     await mkdir(usersDir, { recursive: true });
     await mkdir(entitiesDir, { recursive: true });
@@ -134,10 +140,28 @@ describe('memory read tools', () => {
     expect(text).toContain('[entity] payment-service');
     expect(text).toContain('[user] U07ABC123');
     expect(text).not.toContain('U07BOB999');
-    expect(text).toContain('[task-summary] task-public-1');
+    expect(text).toContain('[activity] task-public-1');
     const records = await telemetry();
     expect(records[0]).toMatchObject({ kind: 'pull', tool: 'search_memory', zeroResult: false });
     expect(records[0]).not.toHaveProperty('denied');
+  });
+
+  it('retains private-task pull telemetry outside the searchable memory corpus', async () => {
+    const tools = buildMemoryTools({ ...CTX, visibility: 'private' });
+    const secretQuery = 'private-acquisition-codename';
+    const seededTelemetry = join(telemetryTasksDir, 'task-private-seed', 'telemetry.jsonl');
+    await mkdir(join(telemetryTasksDir, 'task-private-seed'), { recursive: true });
+    await writeFile(seededTelemetry, `${JSON.stringify({ kind: 'pull', args: { query: secretQuery } })}\n`);
+    const result = await tools.searchMemory.handler({ query: secretQuery } as never, {});
+
+    expect(resultText(result)).toContain('No results');
+    expect(await telemetry()).toEqual([
+      expect.objectContaining({
+        kind: 'pull',
+        visibility: 'private',
+        args: { query: secretQuery },
+      }),
+    ]);
   });
 
   it('reads entities by alias and rejects traversal identifiers', async () => {

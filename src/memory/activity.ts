@@ -17,11 +17,11 @@ const HEADER = `# Recent Activity
 | Date | Task ID | Summary | Domain | User |
 |------|---------|---------|--------|------|`;
 
-const ROW_REGEX_5 = /^\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|$/;
+const ROW_REGEX = /^\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|$/;
 const SEPARATOR_REGEX = /^\|[-\s|]+\|$/;
 
 function parseRow(line: string): ActivityEntry | null {
-  const match = ROW_REGEX_5.exec(line);
+  const match = ROW_REGEX.exec(line);
   if (!match) return null;
 
   const date = match[1].trim();
@@ -53,15 +53,19 @@ export function renderActivityTable(entries: ActivityEntry[]): string {
   return buildFile(entries);
 }
 
+/** Read the activity file verbatim for prompt injection. */
+export async function readActivityMarkdown(): Promise<string> {
+  try {
+    return await readFile(getRecentActivityPath(), 'utf-8');
+  } catch {
+    return '';
+  }
+}
+
 /** Parse the markdown table and return all data entries. */
 export async function readActivity(): Promise<ActivityEntry[]> {
-  const path = getRecentActivityPath();
-  let content: string;
-  try {
-    content = await readFile(path, 'utf-8');
-  } catch {
-    return [];
-  }
+  const content = await readActivityMarkdown();
+  if (!content) return [];
 
   const entries: ActivityEntry[] = [];
   for (const line of content.split('\n')) {

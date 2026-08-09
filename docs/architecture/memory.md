@@ -1,6 +1,6 @@
 # Memory Layer
 
-The memory layer gives Archie persistent cross-task knowledge: user collaboration profiles, recent activity, task summaries, and entity pages for durable subjects such as services, systems, integrations, concepts, and repositories. Memory reaches agents through prompt injection and three read-only tools. The subsystem lives under `src/memory/` and uses Markdown files only. Its runtime lifecycle and agent read paths are gated by `ARCHIE_MEMORY`; manual housekeeping has its own flag.
+The memory layer gives Archie persistent cross-task knowledge: user collaboration profiles, recent activity, task summaries, and entity pages for durable subjects such as services, systems, integrations, concepts, and repositories. Memory reaches agents through prompt injection and three read-only tools. The subsystem lives under `src/memory/`; memory artifacts use Markdown and operator telemetry uses JSONL. Its runtime lifecycle and agent read paths are gated by `ARCHIE_MEMORY`; manual housekeeping has its own flag.
 
 This document describes the implementation as built. Historical decisions live in [`docs/plans/20260719-memory-v2.md`](../plans/20260719-memory-v2.md); future work lives in [`docs/proposals/memory-v2-roadmap.md`](../proposals/memory-v2-roadmap.md).
 
@@ -10,7 +10,7 @@ Authorization is a property of the task, not of individual memory artifacts.
 
 Every task has one immutable `visibility` value:
 
-- `public`: public Slack channels, including Slack Connect channels; CLI tasks; scheduled and message-triggered tasks.
+- `public`: public Slack channels, including Slack Connect channels; CLI tasks; triggers firing from public Slack channels.
 - `private`: Slack DMs and private Slack conversations. A Slack channel-info lookup failure also creates a private task.
 - Legacy task metadata without `visibility` fails closed to `private`; `Task.get()` persists that migration.
 
@@ -22,9 +22,11 @@ The store is therefore public by construction. Summaries and activity rows carry
 
 Slack Connect public channels use the same public-memory behavior as ordinary public channels. External and guest messages are filtered at Slack ingress, but internal users' questions and Archie's responses are visible to every channel member. Interactive authorization actions are separately restricted to internal Slack actors and fail closed when actor classification fails.
 
+Message-triggered tasks inherit the triggering thread's visibility. Scheduled triggers resolve their delivery channel live and fail closed to private. Private tasks cannot propose or approve persistent triggers, preventing a private conversation from becoming a saved prompt that later runs elsewhere. Legacy triggers without a verified public creation context are paused.
+
 ### One-time deployment cleanup
 
-This model removes provenance stamps from stored artifacts, so an existing store created under the former channel-level policy must not be reused as-is. Before deploying this change, snapshot the existing `workdir/memory/` directory, clear it, and let Archie recreate an empty store. This removes private/DM-derived collaboration profiles and entities whose provenance cannot be reconstructed reliably. Rollback restores the snapshot together with the previous binary.
+This model removes provenance stamps from stored artifacts, so an existing store created under the former channel-level policy must not be reused as-is. Before deploying this change, snapshot the existing `workdir/memory/` directory, clear it, and let Archie recreate an empty store. On first initialization Archie writes `memory/.public-store-v1`; if an unmarked store already contains data, the memory subsystem disables itself for that process without moving or reading the legacy artifacts. Rollback restores the snapshot together with the previous binary.
 
 ## Architecture
 
@@ -59,7 +61,7 @@ Core imports the subsystem in exactly two seam files: `src/index.ts` initializes
 ```text
 src/memory/
 ├── index.ts          bootstrap, directory creation, queue recovery, event subscription
-├── paths.ts          paths, identifier guards, and feature-flag accessors
+├── paths.ts          memory/telemetry paths, identifier guards, and feature-flag accessors
 ├── types.ts          memory, activity, user, and entity types
 ├── lifecycle.ts      public-task gate and serialized extraction pipeline
 ├── extractor.ts      one-turn extraction side-agent and response parser
@@ -76,17 +78,20 @@ src/memory/
 └── annotations.ts    touched-date parsing and rendering
 ```
 
-Runtime data lives under `workdir/memory/`:
+Agent-loadable runtime memory lives under `workdir/memory/`:
 
 ```text
+.public-store-v1
 users/<id>.md
 recent-activity.md
 tasks/<taskId>/summary.md
-tasks/<taskId>/telemetry.jsonl
+telemetry/tasks/<taskId>/telemetry.jsonl  # operator-only, never loaded into agents
 entities/<slug>.md
 entities/index.md
 pending-extractions.md
 ```
+
+The telemetry subtree is operator-only, so downloading or snapshotting `workdir/memory/` captures the public memory corpus and its full telemetry in one batch without adding telemetry to the agent read surface.
 
 ## Read Path
 
@@ -107,7 +112,7 @@ When `ARCHIE_MEMORY_TOOLS=true`, every agent receives three read-only tools:
 
 | Tool | Reads | Bound |
 |---|---|---|
-| `search_memory(query[, max_results])` | active entities, current authors' collaboration-profile files, all task summaries, recent activity | 10 thin hits by default |
+| `search_memory(query[, max_results])` | active entities, current authors' collaboration-profile files, bounded recent activity | 10 thin hits by default |
 | `read_entity(slug)` | one entity page; aliases resolve and archived pages are marked | about 8K characters |
 | `read_task_summary(taskId)` | one public task summary | about 8K characters |
 
@@ -170,11 +175,15 @@ Entity frontmatter carries type, scope, repos, domain, status, aliases, and an L
 
 ## Telemetry
 
-`tasks/<taskId>/telemetry.jsonl` is not runtime memory. It contains three record shapes:
+`$ARCHIE_WORKDIR/memory/telemetry/tasks/<taskId>/telemetry.jsonl` contains three record shapes:
 
 - Selection records, one per enriched spawn, with selected and dropped entities plus token estimates.
 - Pull records, one per read-tool call, with arguments, returned identifiers, result count, and zero-result status.
 - `user-update-dropped` records for evidence-validation failures.
+
+Public and private tasks both persist every telemetry record their enabled memory paths produce. Records include task visibility so operator-side analysis can separate the two populations. Private-task telemetry is intentionally complete: selection records may include task titles and participant IDs/display names, and pull records include the agent's verbatim query.
+
+Telemetry is not part of the agent-loadable memory corpus. The agent sandbox denies the whole workdir and only re-allows explicitly mounted task workspaces, shared folders, repositories, and plugin paths; it never mounts `workdir/memory/` or its telemetry subtree. The fixed memory MCP surface exposes only `search_memory`, `read_entity`, and `read_task_summary`, all backed by explicit non-telemetry paths, and the prompt-context builder has no telemetry reader. Consequently agents can create telemetry through host-side sensors but cannot read it through filesystem tools, prompt injection, or memory tools. Operators must still protect and retain the telemetry subtree as sensitive runtime data. The `.public-store-v1` marker certifies the loadable corpus, not that operator telemetry contains only public-task data.
 
 All telemetry appends are fail-safe and never alter agent results or extraction outcomes.
 

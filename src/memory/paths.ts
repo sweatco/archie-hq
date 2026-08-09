@@ -1,8 +1,9 @@
 /**
  * Memory Paths
  *
- * All path resolution for memory artifacts.
- * Uses WORKDIR from core but owns the memory/ subtree.
+ * All path resolution for memory artifacts and memory telemetry.
+ * Uses WORKDIR from core and keeps agent-loadable artifacts and operator-only
+ * telemetry in separate subtrees of one downloadable memory bundle.
  */
 
 import { join, resolve, sep } from 'path';
@@ -11,9 +12,16 @@ import { logger } from '../system/logger.js';
 
 // ---- Feature flags ----
 
+let runtimeDisabledReason: string | null = null;
+
 /** Master feature flag: set ARCHIE_MEMORY=false to disable the layer entirely. */
 export function isMemoryEnabled(): boolean {
-  return process.env.ARCHIE_MEMORY !== 'false';
+  return process.env.ARCHIE_MEMORY !== 'false' && runtimeDisabledReason === null;
+}
+
+/** Disable every memory read/write path for this process after an unsafe startup condition. */
+export function disableMemoryRuntime(reason: string): void {
+  runtimeDisabledReason = reason;
 }
 
 /** Housekeeping flag: set ARCHIE_MEMORY_HOUSEKEEPING=false to disable both auto and manual modes. */
@@ -31,7 +39,7 @@ export function isHousekeepingEnabled(): boolean {
  * regardless of this value. Extraction/storage/housekeeping ignore it.
  */
 export function isInjectionEnabled(): boolean {
-  return process.env.ARCHIE_MEMORY_INJECT === 'true';
+  return isMemoryEnabled() && process.env.ARCHIE_MEMORY_INJECT === 'true';
 }
 
 /**
@@ -81,12 +89,17 @@ export function getMemoryDir(): string {
   return join(WORKDIR, 'memory');
 }
 
+/** Marker proving the store was created after the public-task write boundary shipped. */
+export function getPublicStoreMarkerPath(): string {
+  return join(getMemoryDir(), '.public-store-v1');
+}
+
 /** Users directory: workdir/memory/users/ */
 export function getUsersDir(): string {
   return join(getMemoryDir(), 'users');
 }
 
-/** Per-task artifacts root: workdir/memory/tasks/ (episodic memory — summaries + telemetry). */
+/** Per-task summary root: workdir/memory/tasks/ (public episodic memory). */
 export function getTasksDir(): string {
   return join(getMemoryDir(), 'tasks');
 }
@@ -115,9 +128,22 @@ export function getSummaryPath(taskId: string): string {
   return join(getTaskDir(taskId), 'summary.md');
 }
 
-/** Per-task selection-sensor log: workdir/memory/tasks/<taskId>/telemetry.jsonl */
+/** Operator-only telemetry root inside the downloadable memory bundle. */
+export function getMemoryTelemetryTasksDir(): string {
+  return join(getMemoryDir(), 'telemetry', 'tasks');
+}
+
+/** Per-task sensor log, outside every agent-readable memory path. */
 export function getTaskTelemetryPath(taskId: string): string {
-  return join(getTaskDir(taskId), 'telemetry.jsonl');
+  if (!isAllowedTaskId(taskId) || /^\.+$/.test(taskId)) {
+    throw new Error(`getTaskTelemetryPath: invalid taskId ${JSON.stringify(taskId)}`);
+  }
+  const root = resolve(getMemoryTelemetryTasksDir());
+  const dir = resolve(root, taskId);
+  if (!dir.startsWith(root + sep)) {
+    throw new Error(`getTaskTelemetryPath: taskId escapes the telemetry root ${JSON.stringify(taskId)}`);
+  }
+  return join(dir, 'telemetry.jsonl');
 }
 
 /** Pending-extraction queue file: workdir/memory/pending-extractions.md */
@@ -157,11 +183,11 @@ export function getEntityPath(slug: string): string {
 
 // ---- User identifier validation ----
 
-const SLACK_ID_RE = /^(U|W|B|T)[A-Z0-9]{6,}$/;
+const SLACK_ID_RE = /^(U|W)[A-Z0-9]{6,}$/;
 const FALLBACK_ID_RE = /^(cli|local):[A-Za-z0-9_\-]+$/;
 const TASK_ID_RE = /^[A-Za-z0-9._\-]+$/;
 
-/** True if `id` is a raw Slack user identifier (`U…`/`W…`/`B…`/`T…`). */
+/** True if `id` is a human Slack member identifier (`U…`/`W…`). */
 export function isSlackUserId(id: string): boolean {
   return SLACK_ID_RE.test(id);
 }
@@ -197,10 +223,15 @@ export function isValidEntitySlug(slug: string): boolean {
   return typeof slug === 'string' && ENTITY_SLUG_RE.test(slug) && !RESERVED_ENTITY_SLUGS.has(slug);
 }
 
+/** True if an entity read-tool argument is a guarded slug or a path-inert alias. */
+export function isValidEntityLookup(value: string): boolean {
+  return isValidEntitySlug(value) || /^[A-Za-z0-9 _-]{1,64}$/.test(value);
+}
+
 /**
  * Per-user collaboration-profile file: workdir/memory/users/<id>.md.
  *
- * `id` MUST be either a raw Slack user identifier (`U…`/`W…`/`B…`/`T…`)
+ * `id` MUST be either a human Slack member identifier (`U…`/`W…`)
  * or a fallback identifier (`cli:<sessionId>`, `local:<osUser>`).
  * Throws on any other input.
  */

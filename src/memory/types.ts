@@ -123,7 +123,7 @@ export interface ActivityEntry {
 
 /** A user reference parsed from a transcript mention or resolved as a fallback. */
 export interface UserRef {
-  /** Canonical filename identifier (raw Slack ID `U…`/`W…`/`B…`/`T…`, or `cli:<...>` / `local:<...>` fallback). */
+  /** Canonical filename identifier (human Slack ID `U…`/`W…`, or `cli:<...>` / `local:<...>` fallback). */
   userId: string;
   /** Display name for prompt labels. Defaults to userId when not derivable. */
   displayName: string;

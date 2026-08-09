@@ -5,11 +5,10 @@
  * prevent concurrent writes from corrupting shared memory files.
  */
 
-import { writeFile, mkdir, readdir, rename, rmdir } from 'fs/promises';
+import { writeFile, mkdir } from 'fs/promises';
 import { dirname, join } from 'path';
 import {
   isMemoryEnabled,
-  getMemoryDir,
   getSummaryPath,
   isSlackUserId,
 } from './paths.js';
@@ -297,49 +296,6 @@ export function isEvidenceValid(
 // User identifier parsing
 // ============================================================================
 
-// Match a `<UID:Display Name>` user-mention component wherever it appears,
-// accepting BOTH bracket orders: the internal `@<UID:Name>` and the Slack-native
-// `<@UID:Name>` the model tends to produce (and that producers now emit — see
-// restoreMentions in the Slack client). Production log lines often carry extra
-// context inside the same outer brackets, e.g.:
-//   `[<@U03RQQTE1EF:Riley Quinn> in slack:#<D0AUZLR6ZJQ:DM with Riley Quinn>:...]`
-// so we anchor on the `@<`/`<@` prefix, not the surrounding `[...]`. The `@`
-// adjacent to the UID is what distinguishes a user mention from a channel
-// reference like `#<D0AUZLR6ZJQ:DM with Riley Quinn>` (same `<UID:Name>` shape,
-// but `#<` prefix). Non-Slack-shaped IDs are filtered later by isSlackUserId.
-const MENTION_RE = /(?:@<|<@)([A-Z][A-Z0-9]{6,}):([^>]+)>/g;
-
-/**
- * Parse all Slack-mention markers from a transcript and return one record
- * per unique user. The raw Slack ID is the canonical filename identifier;
- * the display name is retained for prompt labels and YAML frontmatter.
- *
- * Channel references like `#<D0AUZLR6ZJQ:DM with Riley Quinn>` do NOT match
- * because they lack the `@` prefix. User IDs whose prefix is not Slack-shaped
- * (`U`/`W`/`B`/`T`) are filtered out by `isSlackUserId`.
- */
-export function extractUsernames(transcript: string): UserRef[] {
-  const seen = new Map<string, string>();
-  let match: RegExpExecArray | null;
-  const re = new RegExp(MENTION_RE.source, 'g');
-  while ((match = re.exec(transcript)) !== null) {
-    const userId = match[1];
-    const displayName = match[2].trim();
-    if (isSlackUserId(userId) && !seen.has(userId)) {
-      seen.set(userId, displayName || userId);
-    }
-  }
-  return Array.from(seen, ([userId, displayName]) => ({ userId, displayName }));
-}
-
-/**
- * Return the first Slack-mention user in the transcript, or null when none.
- */
-export function extractRequestingUser(transcript: string): UserRef | null {
-  const refs = extractUsernames(transcript);
-  return refs[0] ?? null;
-}
-
 // Author lines in knowledge.log start with `[timestamp] [<@UID:Name> in …]`
 // (appendSlackMessage / appendSlackEdit source format; legacy logs use the
 // `[@<UID:Name> …]` bracket order, and the ` in <channel>` suffix is optional
@@ -350,10 +306,10 @@ const AUTHOR_LINE_RE = /^\[[^\]]*\] \[(?:@<|<@)([A-Z][A-Z0-9]{6,}):([^>]*)>(?: i
 
 /**
  * Parse the users who actually AUTHORED messages in a transcript — the memory
- * ownership set. Unlike `extractUsernames` (any mention anywhere), this scans
- * only entry source lines, so merely being mentioned never makes a user's
- * memory writable or links them to the task's artifacts. Redacted external
- * authors (display name masked to `external` at ingest) are excluded.
+ * ownership set. This scans only entry source lines, so merely being mentioned
+ * never makes a user's memory writable or links them to the task's artifacts.
+ * Redacted external authors (display name masked to `external` at ingest) are
+ * excluded.
  */
 export function extractAuthorUsers(transcript: string): UserRef[] {
   const seen = new Map<string, string>();
@@ -384,43 +340,6 @@ export function resolveFallbackId(metadata: TaskMetadata): UserRef {
 // ============================================================================
 // writeSummary
 // ============================================================================
-
-/**
- * One-time layout migration: memory/summaries/<taskId>.md →
- * memory/tasks/<taskId>/summary.md. Idempotent — a missing legacy dir is a
- * no-op, non-matching files are left in place, and the legacy dir is removed
- * only once emptied.
- */
-export async function migrateLegacySummaries(): Promise<void> {
-  const legacyDir = join(getMemoryDir(), 'summaries');
-  let entries: string[];
-  try {
-    entries = await readdir(legacyDir);
-  } catch {
-    return;
-  }
-  let moved = 0;
-  for (const name of entries) {
-    if (!name.endsWith('.md')) continue;
-    let dest: string;
-    try {
-      dest = getSummaryPath(name.slice(0, -3)); // the real path guard decides validity
-    } catch {
-      continue;
-    }
-    await mkdir(dirname(dest), { recursive: true });
-    await rename(join(legacyDir, name), dest);
-    moved++;
-  }
-  if (moved > 0) {
-    logger.system(`[memory] migrated ${moved} task summaries to memory/tasks/<taskId>/summary.md`);
-  }
-  try {
-    await rmdir(legacyDir);
-  } catch {
-    // leftover non-summary files — leave the dir for the operator
-  }
-}
 
 /**
  * Write the per-task summary to workdir/memory/tasks/<taskId>/summary.md.

@@ -17,9 +17,11 @@ import {
   isAllowedUserId,
   isAllowedTaskId,
   isValidEntitySlug,
+  isValidEntityLookup,
   getUserPath,
   getSummaryPath,
   getTasksDir,
+  getMemoryTelemetryTasksDir,
   getTaskTelemetryPath,
   getEntityPath,
   getEntityCap,
@@ -97,8 +99,6 @@ describe('isSlackUserId', () => {
   it.each([
     'U07ABC123',
     'W123456789',
-    'B0X1Y2Z3A4',
-    'T07TEAM01',
     'U0123456',
   ])('accepts %s', (id) => {
     expect(isSlackUserId(id)).toBe(true);
@@ -109,6 +109,8 @@ describe('isSlackUserId', () => {
     'u07abc123',
     'U123',
     'X07ABC123',
+    'B0X1Y2Z3A4',
+    'T07TEAM01',
     'cli:abc',
     'alex',
     'U07ABC 123',
@@ -136,11 +138,11 @@ describe('isFallbackUserId', () => {
 });
 
 describe('isAllowedUserId', () => {
-  it.each(['U07ABC123', 'cli:s-001', 'local:riley', 'B0X1Y2Z3A4'])('accepts %s', (id) => {
+  it.each(['U07ABC123', 'W123456789', 'cli:s-001', 'local:riley'])('accepts %s', (id) => {
     expect(isAllowedUserId(id)).toBe(true);
   });
 
-  it.each(['alex', 'dana', 'admin', '', 'foo:bar'])('rejects %j', (id) => {
+  it.each(['alex', 'dana', 'admin', '', 'foo:bar', 'B0X1Y2Z3A4', 'T07TEAM01'])('rejects %j', (id) => {
     expect(isAllowedUserId(id)).toBe(false);
   });
 });
@@ -189,8 +191,10 @@ describe('getSummaryPath', () => {
 });
 
 describe('getTaskTelemetryPath', () => {
-  it('places telemetry next to the task summary', () => {
-    expect(getTaskTelemetryPath('task-20260410-1000-abc')).toMatch(/memory\/tasks\/task-20260410-1000-abc\/telemetry\.jsonl$/);
+  it('places telemetry in a dedicated non-corpus subtree of the memory bundle', () => {
+    const path = getTaskTelemetryPath('task-20260410-1000-abc');
+    expect(path).toMatch(/memory\/telemetry\/tasks\/task-20260410-1000-abc\/telemetry\.jsonl$/);
+    expect(path.startsWith(resolve(getTasksDir()) + sep)).toBe(false);
   });
 
   it('throws on malformed or traversal taskIds', () => {
@@ -199,10 +203,10 @@ describe('getTaskTelemetryPath', () => {
     expect(() => getTaskTelemetryPath('.')).toThrow(/invalid taskId/);
   });
 
-  it('resolves to an absolute path contained in the tasks root', () => {
+  it('resolves to an absolute path contained in the telemetry tasks root', () => {
     const p = getTaskTelemetryPath('v1.2.3');
     expect(isAbsolute(p)).toBe(true);
-    expect(p.startsWith(resolve(getTasksDir()) + sep)).toBe(true);
+    expect(p.startsWith(resolve(getMemoryTelemetryTasksDir()) + sep)).toBe(true);
   });
 });
 
@@ -223,6 +227,16 @@ describe('isValidEntitySlug', () => {
     'index', // reserved (collides with index.md)
     'x'.repeat(65), // too long
   ])('rejects %s', (slug) => expect(isValidEntitySlug(slug)).toBe(false));
+});
+
+describe('isValidEntityLookup', () => {
+  it.each(['payment-service', 'Payment Service', 'payments_api'])('accepts path-inert lookup %s', (value) => {
+    expect(isValidEntityLookup(value)).toBe(true);
+  });
+
+  it.each(['../secrets', 'a/b', 'x'.repeat(65), ''])('rejects path-capable lookup %j', (value) => {
+    expect(isValidEntityLookup(value)).toBe(false);
+  });
 });
 
 describe('getEntityPath', () => {
