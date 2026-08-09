@@ -17,6 +17,7 @@ type PinnedItemLike = {
   pinnedBy: string;
   messageTs?: string;
   author?: string;
+  botId?: string;
   text?: string;
   permalink?: string;
   fileId?: string;
@@ -180,6 +181,19 @@ describe('ensureChannelPins', () => {
       pinnedByName: 'Grace Hopper',
       authorName: 'Ada Lovelace',
     });
+  });
+
+  // A relay app (RSS, email bridge, Jira hook) posts as an in-workspace user, so
+  // classifying its author only establishes that the RELAY is internal — never where the
+  // content came from. Nothing distinguishes relayed outside text from the app's own.
+  it('refuses an app-posted pin outright, without even classifying it', async () => {
+    pins = [messagePin({ botId: 'B_RELAY', author: 'U_APP_BOT' })];
+    userInfoImpl = async (id: string) => ({ external: false, realName: id });
+
+    await ensureChannelPins(CHANNEL);
+
+    expect(savedStore?.pins).toEqual([]);
+    expect(savedStore?.pinsEligible).toBe(0);
   });
 
   // A shared channel lets an outsider author content that a member then elevates into
@@ -549,5 +563,44 @@ describe('collectPinnedFileAllowlist', () => {
         channels: { a: { type: 'slack', channel_id: 'C9' } },
       } as unknown as TaskMetadata)).size,
     ).toBe(0);
+  });
+});
+
+describe('ensureChannelPins — the model budget counts only what reaches the model', () => {
+  beforeEach(() => {
+    userInfoImpl = async (id: string) => ({ external: false, realName: `Name ${id}` });
+    storesByChannel = {};
+    savedStore = null;
+    vi.mocked(summarisePinText).mockClear();
+  });
+
+  // A short pin is its own index line and costs nothing, so spending budget on it would
+  // defer work that was never expensive — and let short pins starve a genuinely long one.
+  it('settles ten short pins in a single scan, with no deferred digests', async () => {
+    pins = Array.from({ length: 10 }, (_, i) =>
+      messagePin({ messageTs: `169999${String(i).padStart(4, '0')}.000100`, pinnedAt: 1_700_000_000 + i, text: 'short pin' }),
+    );
+
+    await ensureChannelPins(CHANNEL);
+
+    const stored = savedStore?.pins as Array<{ digest: string }>;
+    expect(stored).toHaveLength(10);
+    expect(stored.filter((p) => p.digest === '')).toHaveLength(0);
+  });
+
+  it('spends the budget on the long pins even when short ones come first', async () => {
+    const long = 'a runbook paragraph that comfortably exceeds the verbatim threshold. '.repeat(6);
+    pins = [
+      ...Array.from({ length: 8 }, (_, i) =>
+        messagePin({ messageTs: `170000${String(i).padStart(4, '0')}.000100`, pinnedAt: 1_700_001_000 + i, text: 'short pin' }),
+      ),
+      messagePin({ messageTs: '1699990000.000100', pinnedAt: 1_700_000_000, text: long }),
+    ];
+
+    await ensureChannelPins(CHANNEL);
+
+    const stored = savedStore?.pins as Array<{ key: string; digest: string }>;
+    const longEntry = stored.find((p) => p.key === '1699990000.000100');
+    expect(longEntry?.digest).not.toBe('');
   });
 });

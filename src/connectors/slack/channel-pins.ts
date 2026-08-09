@@ -12,7 +12,7 @@ import {
   updateChannelStore,
   type ChannelPinEntry,
 } from '../../system/channel-store.js';
-import { digestOf, normalisePinText, summarisePinText, truncateTo } from './pin-summary.js';
+import { digestOf, normalisePinText, summarisePinText, truncateTo, VERBATIM_MAX } from './pin-summary.js';
 import type { TaskMetadata } from '../../types/task.js';
 
 /**
@@ -90,6 +90,18 @@ export async function ensureChannelPins(channelId: string): Promise<void> {
       const authorId = (item.kind === 'message' ? item.author : item.fileUser) ?? '';
       const prior = pre?.pins?.find((p) => p.key === key);
 
+      // An app-posted pin is refused outright, before either principal is even resolved.
+      // Classifying its author would only establish that the RELAY is in this workspace —
+      // an RSS feed, an email bridge, a Jira or Datadog hook all post as internal users
+      // while carrying content from anywhere, and Slack offers no way to tell a relayed
+      // outside message from the app's own. Adopting one would hand an unauthenticated
+      // writer a line in every agent's system prompt, so this fails closed and accepts
+      // that a legitimately-pinned workflow card goes unindexed.
+      if (item.botId) {
+        logger.debug('channel-pins', `pin ${key} in ${channelId} was posted by app ${item.botId} — not adoptable`);
+        continue;
+      }
+
       // Two principals, not one: the person who wrote the pinned thing and the person
       // who pinned it. Either being external is enough to drop the item — a shared
       // channel lets an outsider both author content and elevate someone else's into
@@ -161,11 +173,17 @@ export async function ensureChannelPins(channelId: string): Promise<void> {
     const eligibleCount = eligible.length;
     const kept = eligible.slice(0, MAX_INDEXED_PINS);
 
+    // The budget counts only pins that will actually reach the model. A pin at or under
+    // the verbatim threshold is its own index line and costs nothing, so spending budget
+    // on it would both defer work that was never expensive and let a channel of short
+    // pins starve the one long pin that genuinely needs summarising.
     const pending = kept.filter((k) => !k.reused);
-    const funded = pending.slice(0, MAX_MODEL_CALLS_PER_SCAN);
-    const deferred = pending.slice(MAX_MODEL_CALLS_PER_SCAN);
+    const free = pending.filter((k) => normalisePinText(k.sourceText).length <= VERBATIM_MAX);
+    const costly = pending.filter((k) => normalisePinText(k.sourceText).length > VERBATIM_MAX);
+    const funded = costly.slice(0, MAX_MODEL_CALLS_PER_SCAN);
+    const deferred = costly.slice(MAX_MODEL_CALLS_PER_SCAN);
 
-    await Promise.all(funded.map(async (k) => {
+    await Promise.all([...free, ...funded].map(async (k) => {
       const { summary, source } = await summarisePinText(k.sourceText);
       k.entry.summary = summary;
       k.entry.summarySource = source;

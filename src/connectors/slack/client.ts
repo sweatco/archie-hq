@@ -1835,6 +1835,8 @@ export interface PinnedItem {
   pinnedBy: string;    // Slack user id of whoever pinned it
   messageTs?: string;
   author?: string;
+  /** Slack-assigned bot identity when the pinned message was posted by an app. */
+  botId?: string;
   text?: string;
   permalink?: string;
   fileId?: string;
@@ -1901,10 +1903,12 @@ export async function listChannelPins(channelId: string): Promise<PinnedItem[] |
     // path uses, in ONE batch: `resolveRawMessages` resolves mentions for the whole set
     // together, where a call per pin would be a `users.info` round trip per pin.
     //
-    // Taking `user` from the resolved message rather than the raw payload also matters:
-    // it is deliberately empty for an app/bot post, which the caller's trust gate reads
-    // as an unclassifiable principal and refuses to adopt. A relay bot must not be able
-    // to launder outside content into standing context by being an internal user.
+    // The resolver also reports `botId` for an app/bot post, and that is carried through
+    // rather than discarded: a relay app (RSS, email-to-Slack, a Jira or Datadog hook)
+    // posts as an in-workspace user, so classifying its `user` says only that the RELAY
+    // is internal and nothing at all about where the content came from. Without the flag
+    // the caller's trust gate would wave that through. Slack gives no way to tell relayed
+    // outside content from an app's own, so the caller fails closed on it.
     const messageItems = (raw.items ?? []).filter((i) => i.type === 'message' && i.message?.ts);
     const resolved = await resolveRawMessages(
       messageItems.map((i) => i.message as SlackHistoryMessage),
@@ -1924,7 +1928,8 @@ export async function listChannelPins(channelId: string): Promise<PinnedItem[] |
           pinnedAt: item.created ?? 0,
           pinnedBy: item.created_by ?? '',
           messageTs: item.message.ts,
-          author: full ? full.user : (item.message.user ?? ''),
+          author: full?.user ?? item.message.user ?? '',
+          ...(full?.botId ? { botId: full.botId } : {}),
           text: parts.filter((t) => t && t.trim()).join(' — '),
           permalink: item.message.permalink,
         });

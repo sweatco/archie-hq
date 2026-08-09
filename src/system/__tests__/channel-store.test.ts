@@ -108,3 +108,29 @@ describe('loadChannelStore — pins normalisation', () => {
     expect(loggerWarn).toHaveBeenCalled();
   });
 });
+
+describe('loadChannelStore — forward compatibility', () => {
+  // The whole object round-trips through writeChannelStore, so rebuilding it from a fixed
+  // field list would make an older build silently delete a field a newer one had written.
+  it('preserves a field it does not know about, across a load and a write', async () => {
+    const channelId = 'C_FORWARD';
+    await writeRaw(channelId, JSON.stringify({
+      canvases: [],
+      announced: {},
+      checkedAt: 7,
+      somethingNewer: { keep: 'me' },
+    }));
+
+    const loaded = await store.loadChannelStore(channelId);
+    expect((loaded as unknown as Record<string, unknown>).somethingNewer).toEqual({ keep: 'me' });
+
+    await store.updateChannelStore(channelId, (s) => {
+      s.checkedAt = 8;
+      return s;
+    });
+
+    const reloaded = await store.loadChannelStore(channelId);
+    expect((reloaded as unknown as Record<string, unknown>).somethingNewer).toEqual({ keep: 'me' });
+    expect(reloaded?.checkedAt).toBe(8);
+  });
+});
