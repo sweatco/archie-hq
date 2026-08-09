@@ -134,3 +134,15 @@ describe('digestOf', () => {
     expect(digestOf('same text')).not.toBe(digestOf('same texu'));
   });
 });
+
+describe('summarisePinText — empty model output', () => {
+  it('falls back to truncation when the model returns a blank summary', async () => {
+    // `z.string()` accepts "", so this passes schema validation and would otherwise
+    // render as a pin with no index line at all.
+    state.queryEvents = [successEvent('   ')];
+    const out = await summarisePinText(LONG);
+    expect(out.source).toBe('verbatim');
+    expect(out.summary.length).toBeGreaterThan(0);
+    expect(out.summary.endsWith('…')).toBe(true);
+  });
+});
