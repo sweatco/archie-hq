@@ -33,13 +33,19 @@ Respond with JSON only.`;
 /**
  * Flatten a pin's text to a single line and drop the container's own closing tags.
  *
- * The summary is interpolated verbatim into the pinned-messages block, so a pin that happens to contain `</pin>` or `</channel_pinned_messages>` would close its own container and land the remainder in the agent's system prompt unwrapped — outside the framing that marks it as user-authored standing context rather than system authority. This is the same hole `stripContainerTags` closes for canvas bodies, and the same construction: removing the tag text is enough, since with no way to write a closing tag the containment holds by construction. Whitespace inside the tag (`</ pin >`) and any casing are tolerated, because only the literal string matters.
+ * The summary is interpolated verbatim into the pinned-messages block, so a pin that happens to contain `</pin>` or `</channel_pinned_messages>` would close its own container and land the remainder in the agent's system prompt unwrapped — outside the framing that marks it as user-authored standing context rather than system authority. Whitespace inside the tag (`</ pin >`) and any casing are tolerated, because only the literal string matters.
+ *
+ * The strip runs to a FIXPOINT, and that is the whole point. A single pass is defeatable by nesting, because removing an inner tag reassembles an outer one: `</channel_pinned_</channel_pinned_messages>messages>` is not a closing tag, contains no closing tag after one substitution has been decided on, and yet leaves `</channel_pinned_messages>` behind once that substitution is applied. Nesting one level deeper defeats any fixed number of passes, so the loop has to run until nothing changes rather than a chosen number of times. Only then does the usual argument hold — with no way to write a closing tag, the containment holds by construction.
  */
 export function normalisePinText(raw: string): string {
-  return raw
-    .replace(/<\/\s*(?:pin|channel_pinned_messages)\s*>/gi, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const tag = /<\/\s*(?:pin|channel_pinned_messages)\s*>/gi;
+  let text = raw;
+  for (;;) {
+    const next = text.replace(tag, '');
+    if (next === text) break;
+    text = next;
+  }
+  return text.replace(/\s+/g, ' ').trim();
 }
 
 /** Short stable hash of the text a summary was derived from — drives re-summarise-on-edit. */

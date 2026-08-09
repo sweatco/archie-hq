@@ -61,7 +61,7 @@ describe('loadChannelStore — pins normalisation', () => {
     expect(loaded).not.toBeNull();
     expect(loaded!.pins).toEqual([]);
     expect(loaded!.pinsCheckedAt).toBe(0);
-    expect(loaded!.pinsTotal).toBe(0);
+    expect(loaded!.pinsEligible).toBe(0);
     // Existing fields survive untouched.
     expect(loaded!.announced).toEqual({ F1: true });
     expect(loaded!.checkedAt).toBe(42);
@@ -71,14 +71,14 @@ describe('loadChannelStore — pins normalisation', () => {
     const pin = samplePin();
     await writeRaw(
       'C_pins',
-      JSON.stringify({ canvases: [], announced: {}, checkedAt: 0, pins: [pin], pinsCheckedAt: 999, pinsTotal: 7 }),
+      JSON.stringify({ canvases: [], announced: {}, checkedAt: 0, pins: [pin], pinsCheckedAt: 999, pinsEligible: 7 }),
     );
 
     const loaded = await store.loadChannelStore('C_pins');
 
     expect(loaded!.pins).toEqual([pin]);
     expect(loaded!.pinsCheckedAt).toBe(999);
-    expect(loaded!.pinsTotal).toBe(7);
+    expect(loaded!.pinsEligible).toBe(7);
   });
 
   it('reloads pins written through updateChannelStore', async () => {
@@ -87,13 +87,13 @@ describe('loadChannelStore — pins normalisation', () => {
     await store.updateChannelStore('C_write', (s) => {
       s.pins = [pin];
       s.pinsCheckedAt = 1234;
-      s.pinsTotal = 1;
+      s.pinsEligible = 1;
     });
 
     const loaded = await store.loadChannelStore('C_write');
     expect(loaded!.pins).toEqual([pin]);
     expect(loaded!.pinsCheckedAt).toBe(1234);
-    expect(loaded!.pinsTotal).toBe(1);
+    expect(loaded!.pinsEligible).toBe(1);
     // And it really went to disk in that shape.
     const onDisk = JSON.parse(await readFile(join(CHANNELS_DIR, 'C_write.json'), 'utf-8'));
     expect(onDisk.pins).toEqual([pin]);

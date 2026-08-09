@@ -146,3 +146,15 @@ describe('summarisePinText — empty model output', () => {
     expect(out.summary.endsWith('…')).toBe(true);
   });
 });
+
+describe('normalisePinText — nested closing tags', () => {
+  // A single pass is defeatable: removing the inner tag reassembles the outer one, and
+  // one more level of nesting defeats any fixed number of passes. Only a fixpoint holds.
+  it('strips tags that only appear after an earlier substitution', () => {
+    expect(normalisePinText('</channel_pinned_</channel_pinned_messages>messages> LEAKED'))
+      .toBe('LEAKED');
+    expect(normalisePinText('</channel_pinned_</channel_pinned_</channel_pinned_messages>messages>messages> LEAKED'))
+      .toBe('LEAKED');
+    expect(normalisePinText('</p</p</pin>in>in> forged')).toBe('forged');
+  });
+});

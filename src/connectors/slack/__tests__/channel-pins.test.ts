@@ -28,7 +28,7 @@ type PinnedItemLike = {
 let pins: PinnedItemLike[] | null = [];
 let userInfoImpl: (id: string) => Promise<{ external?: boolean; realName?: string }>;
 let storesByChannel: Record<string, unknown> = {};
-let savedStore: { pins: unknown[]; pinsCheckedAt: number; pinsTotal: number } | null = null;
+let savedStore: { pins: unknown[]; pinsCheckedAt: number; pinsEligible: number } | null = null;
 
 vi.mock('../client.js', () => ({
   listChannelPins: vi.fn(async () => pins),
@@ -67,7 +67,7 @@ vi.mock('../../../system/channel-store.js', () => ({
       checkedAt: 0,
       pins: [],
       pinsCheckedAt: 0,
-      pinsTotal: 0,
+      pinsEligible: 0,
     };
     savedStore = updater(JSON.parse(JSON.stringify(base)) as never);
     // Write back, so a second ensureChannelPins in the same test sees the TTL the
@@ -135,7 +135,7 @@ const storeWith = (entries: unknown[], extra: Record<string, unknown> = {}) => (
   checkedAt: 0,
   pins: entries,
   pinsCheckedAt: 0,
-  pinsTotal: entries.length,
+  pinsEligible: entries.length,
   ...extra,
 });
 
@@ -161,7 +161,7 @@ describe('ensureChannelPins', () => {
       '1699990000.000100',
       'F_PINNED',
     ]);
-    expect(savedStore?.pinsTotal).toBe(2);
+    expect(savedStore?.pinsEligible).toBe(2);
     expect(savedStore?.pinsCheckedAt).toBeGreaterThanOrEqual(before);
   });
 
@@ -257,7 +257,68 @@ describe('ensureChannelPins', () => {
     await ensureChannelPins(CHANNEL);
 
     expect(savedStore?.pins).toHaveLength(25);
-    expect(savedStore?.pinsTotal).toBe(30);
+    expect(savedStore?.pinsEligible).toBe(30);
+  });
+
+  // Asserting the length alone would pass just as happily if the sort were deleted and
+  // the index kept the 25 OLDEST pins — the exact opposite of what it promises.
+  it('keeps the NEWEST 25 when it caps, not just any 25', async () => {
+    pins = Array.from({ length: 30 }, (_, i) =>
+      // Deliberately fed oldest-first, so input order cannot stand in for the sort.
+      messagePin({ messageTs: `169999${String(i).padStart(4, '0')}.000100`, pinnedAt: 1_700_000_000 + i }),
+    );
+
+    await ensureChannelPins(CHANNEL);
+
+    const kept = (savedStore?.pins as Array<{ pinnedAt: number }>).map((p) => p.pinnedAt);
+    expect(kept[0]).toBe(1_700_000_029);
+    expect(kept[kept.length - 1]).toBe(1_700_000_005);
+    expect(Math.min(...kept)).toBeGreaterThan(1_700_000_004);
+  });
+
+  // Capping before the gate would let one external participant who pins 25 things push
+  // every internal pin out of the index — a blank index anyone could cause by accident.
+  it('gates before capping, so rejected pins never consume index slots', async () => {
+    pins = [
+      ...Array.from({ length: 25 }, (_, i) =>
+        messagePin({
+          messageTs: `170000${String(i).padStart(4, '0')}.000100`,
+          pinnedAt: 1_700_001_000 + i,
+          author: 'U_OUTSIDER',
+        }),
+      ),
+      messagePin({ messageTs: '1699990000.000100', pinnedAt: 1_700_000_000 }),
+    ];
+    userInfoImpl = async (id: string) => ({ external: id === 'U_OUTSIDER', realName: id });
+
+    await ensureChannelPins(CHANNEL);
+
+    expect(savedStore?.pins).toHaveLength(1);
+    expect((savedStore?.pins[0] as { key: string }).key).toBe('1699990000.000100');
+    // And the disclosure counts only what the CAP hid — never what the gate refused,
+    // which would both mislead the agent and leak the number of external pins.
+    expect(savedStore?.pinsEligible).toBe(1);
+  });
+
+  // The first scan of a long-pinned channel is awaited before the PM wakes, so the model
+  // calls are budgeted; the overflow is indexed from its own text and retried next scan.
+  it('bounds model calls per scan and defers the rest for the next one', async () => {
+    const long = 'a runbook paragraph that comfortably exceeds the verbatim threshold. '.repeat(6);
+    pins = Array.from({ length: 10 }, (_, i) =>
+      messagePin({ messageTs: `169999${String(i).padStart(4, '0')}.000100`, pinnedAt: 1_700_000_000 + i, text: long }),
+    );
+
+    await ensureChannelPins(CHANNEL);
+
+    expect(summarisePinText).toHaveBeenCalledTimes(6);
+    const stored = savedStore?.pins as Array<{ summarySource: string; digest: string; summary: string }>;
+    expect(stored).toHaveLength(10);
+    expect(stored.filter((p) => p.summarySource === 'model')).toHaveLength(6);
+    // A deferred entry still carries a usable line, and its blank digest guarantees the
+    // next scan sees a mismatch and re-attempts exactly it.
+    const deferredEntries = stored.filter((p) => p.digest === '');
+    expect(deferredEntries).toHaveLength(4);
+    for (const d of deferredEntries) expect(d.summary.length).toBeGreaterThan(0);
   });
 
   // The digest is what keeps a steady-state scan at one pins.list and nothing else.
@@ -394,7 +455,7 @@ describe('buildChannelPinsPromptSection', () => {
   it('discloses how many pins were dropped by the cap', async () => {
     storesByChannel['C1'] = storeWith(
       Array.from({ length: 25 }, (_, i) => promptEntry({ key: `ts${i}` })),
-      { pinsTotal: 40 },
+      { pinsEligible: 40 },
     );
 
     const section = await buildChannelPinsPromptSection({

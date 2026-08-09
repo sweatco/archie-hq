@@ -65,12 +65,12 @@ export interface ChannelStore {
   pins?: ChannelPinEntry[];
   /** Epoch ms of the last pins scan — used for a short refresh TTL. */
   pinsCheckedAt?: number;
-  /** How many pins Slack reported before the display cap, so the prompt block can disclose truncation. */
-  pinsTotal?: number;
+  /** How many pins passed the trust gate before the display cap, so the prompt block can disclose what the CAP hid — never what the gate refused. */
+  pinsEligible?: number;
 }
 
 function emptyStore(): ChannelStore {
-  return { canvases: [], announced: {}, checkedAt: 0, pins: [], pinsCheckedAt: 0, pinsTotal: 0 };
+  return { canvases: [], announced: {}, checkedAt: 0, pins: [], pinsCheckedAt: 0, pinsEligible: 0 };
 }
 
 function storePath(channelId: string): string {
@@ -83,13 +83,16 @@ export async function loadChannelStore(channelId: string): Promise<ChannelStore 
   try {
     const parsed = JSON.parse(await readFile(p, 'utf-8')) as Partial<ChannelStore>;
     // Every store written before pins existed lacks the pins fields, and callers index them directly. Normalising on load is what keeps a legacy file from throwing on the first task in a channel Archie has already seen.
+    //
+    // Spread first, defaults second: the whole object round-trips through `writeChannelStore`, so rebuilding it from a fixed field list would make an older build silently delete any field a newer one had written. That costs nothing to avoid and turns a rolling-deploy data-loss bug into a non-event.
     return {
+      ...parsed,
       canvases: parsed.canvases ?? [],
       announced: parsed.announced ?? {},
       checkedAt: parsed.checkedAt ?? 0,
       pins: parsed.pins ?? [],
       pinsCheckedAt: parsed.pinsCheckedAt ?? 0,
-      pinsTotal: parsed.pinsTotal ?? 0,
+      pinsEligible: parsed.pinsEligible ?? 0,
     };
   } catch (err) {
     logger.warn('channel-store', `Failed to parse store for ${channelId}: ${err}`);

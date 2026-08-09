@@ -1892,16 +1892,40 @@ export async function listChannelPins(channelId: string): Promise<PinnedItem[] |
         file?: { id?: string; title?: string; name?: string; user?: string; created?: number };
       }>;
     };
+    // `pins.list` hands back the raw message payload, whose top-level `text` is only
+    // Slack's legacy fallback: anything living in `blocks` or `attachments` is absent
+    // from it, and links and mentions arrive as raw `<url|label>` / `<@U…>` mrkdwn. A
+    // channel's most-pinned things — app posts, workflow output, unfurl cards — are
+    // exactly the messages with an empty `text`, and each one would otherwise index as
+    // a blank line. So run the payloads through the same extraction every other inbound
+    // path uses, in ONE batch: `resolveRawMessages` resolves mentions for the whole set
+    // together, where a call per pin would be a `users.info` round trip per pin.
+    //
+    // Taking `user` from the resolved message rather than the raw payload also matters:
+    // it is deliberately empty for an app/bot post, which the caller's trust gate reads
+    // as an unclassifiable principal and refuses to adopt. A relay bot must not be able
+    // to launder outside content into standing context by being an internal user.
+    const messageItems = (raw.items ?? []).filter((i) => i.type === 'message' && i.message?.ts);
+    const resolved = await resolveRawMessages(
+      messageItems.map((i) => i.message as SlackHistoryMessage),
+      channelId,
+    );
+    const byTs = new Map(resolved.map((m) => [m.ts, m]));
+
     const items: PinnedItem[] = [];
     for (const item of raw.items ?? []) {
       if (item.type === 'message' && item.message?.ts) {
+        const full = byTs.get(item.message.ts);
+        // Attachment bodies carry the substance of a forwarded or app-posted message, so
+        // they belong in the index text; the summariser flattens the whole thing anyway.
+        const parts = [full?.text ?? item.message.text ?? '', ...(full?.attachments ?? []).map((a) => a.text)];
         items.push({
           kind: 'message',
           pinnedAt: item.created ?? 0,
           pinnedBy: item.created_by ?? '',
           messageTs: item.message.ts,
-          author: item.message.user ?? '',
-          text: item.message.text ?? '',
+          author: full ? full.user : (item.message.user ?? ''),
+          text: parts.filter((t) => t && t.trim()).join(' — '),
           permalink: item.message.permalink,
         });
       } else if (item.type === 'file' && item.file?.id) {

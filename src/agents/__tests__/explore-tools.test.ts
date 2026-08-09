@@ -46,17 +46,24 @@ vi.mock('../../connectors/slack/client.js', async (importActual) => {
   return { ...actual, postSlackMessage, listBotChannels, assertPostableChannel };
 });
 
-const { ensureChannelCanvas, buildOtherChannelContextSection } = vi.hoisted(() => ({
+const {
+  ensureChannelCanvas,
+  buildOtherChannelContextSection,
+  collectCanvasFileAllowlist,
+  collectPinnedFileAllowlist,
+} = vi.hoisted(() => ({
   ensureChannelCanvas: vi.fn(),
   buildOtherChannelContextSection: vi.fn(),
+  collectCanvasFileAllowlist: vi.fn(),
+  collectPinnedFileAllowlist: vi.fn(),
 }));
 vi.mock('../../connectors/slack/channel-canvas.js', () => ({
   ensureChannelCanvas,
   buildOtherChannelContextSection,
-  collectCanvasFileAllowlist: vi.fn().mockResolvedValue(new Set()),
+  collectCanvasFileAllowlist,
 }));
 vi.mock('../../connectors/slack/channel-pins.js', () => ({
-  collectPinnedFileAllowlist: vi.fn().mockResolvedValue(new Set()),
+  collectPinnedFileAllowlist,
 }));
 
 import { createCommsMcpServer } from '../tools.js';
@@ -421,5 +428,46 @@ describe('post_to_channel — destination brief preflight', () => {
 
     expect(ensureChannelCanvas).not.toHaveBeenCalled();
     expect(postSlackMessage).not.toHaveBeenCalled();
+  });
+});
+
+// The allowlist is the only thing standing between a prompt-influenced file id and the
+// task workspace, and it now has two independent sources. Nothing exercised the union
+// itself: reverting it to canvas-only left the whole suite green.
+describe('fetch_slack_reference allowlist', () => {
+  beforeEach(() => {
+    collectCanvasFileAllowlist.mockReset();
+    collectPinnedFileAllowlist.mockReset();
+    collectCanvasFileAllowlist.mockResolvedValue(new Set(['FCANVAS']));
+    collectPinnedFileAllowlist.mockResolvedValue(new Set(['FPINNED']));
+  });
+
+  it('refuses a file id that is neither canvas-referenced nor pinned', async () => {
+    const fetchRef = getHandler('fetch_slack_reference');
+
+    const out = await textOf(await fetchRef({ reference: 'FSTRANGER' }));
+
+    expect(out).toContain('FSTRANGER');
+    expect(out).toMatch(/neither referenced .* nor pinned/i);
+  });
+
+  // Past the gate the handler runs on into the fetch, which has neither a sandbox nor a
+  // Slack behind it in this harness — so what it does there is not the point. The point
+  // is only that it was not turned away as out of scope, which is what the union buys.
+  async function outcomeOf(reference: string): Promise<string> {
+    const fetchRef = getHandler('fetch_slack_reference');
+    try {
+      return await textOf(await fetchRef({ reference }));
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  it('lets a PINNED file id past the allowlist', async () => {
+    expect(await outcomeOf('FPINNED')).not.toMatch(/neither referenced .* nor pinned/i);
+  });
+
+  it('still lets a CANVAS-referenced file id past, so the union did not replace it', async () => {
+    expect(await outcomeOf('FCANVAS')).not.toMatch(/neither referenced .* nor pinned/i);
   });
 });

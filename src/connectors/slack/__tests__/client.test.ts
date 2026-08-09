@@ -935,6 +935,61 @@ describe('listChannelPins', () => {
     client.__resetPinsScopeFlagForTests();
   });
 
+  // Slack's top-level `text` is only the legacy fallback: an app post, a workflow card
+  // or an unfurl carries its body in `blocks`/`attachments` and arrives here with `text`
+  // empty. Indexing that raw would put a blank line in the agent's prompt.
+  it('extracts pin text from blocks and attachments, not just the raw text field', async () => {
+    slackApi.pins.list.mockResolvedValue({
+      items: [
+        {
+          type: 'message',
+          created: 1700000000,
+          created_by: 'UPINNER',
+          message: {
+            ts: '333.444',
+            user: 'UAUTHOR',
+            text: '',
+            blocks: [
+              {
+                type: 'rich_text',
+                elements: [
+                  { type: 'rich_text_section', elements: [{ type: 'text', text: 'quarterly planning doc' }] },
+                ],
+              },
+            ],
+            attachments: [{ text: 'link preview body' }],
+          },
+        },
+      ],
+    });
+
+    const pins = await client.listChannelPins('C1');
+
+    expect(pins).toHaveLength(1);
+    expect(pins![0].text).toContain('quarterly planning doc');
+    expect(pins![0].text).toContain('link preview body');
+  });
+
+  // An app/bot post has no human author, and `resolveRawMessages` reports that as an
+  // empty user. The caller's trust gate reads that as unclassifiable and refuses to
+  // adopt, so a relay bot cannot launder outside content in as an internal user.
+  it('reports an empty author for an app-posted pin', async () => {
+    slackApi.pins.list.mockResolvedValue({
+      items: [
+        {
+          type: 'message',
+          created: 1700000000,
+          created_by: 'UPINNER',
+          message: { ts: '555.666', bot_id: 'B_RELAY', text: 'relayed from elsewhere' },
+        },
+      ],
+    });
+
+    const pins = await client.listChannelPins('C1');
+
+    expect(pins![0].author).toBe('');
+  });
+
   it('maps message and file pins and skips items with no identifier', async () => {
     slackApi.pins.list.mockResolvedValue({
       items: [

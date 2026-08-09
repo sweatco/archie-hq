@@ -12,7 +12,7 @@ import {
   updateChannelStore,
   type ChannelPinEntry,
 } from '../../system/channel-store.js';
-import { digestOf, normalisePinText, summarisePinText } from './pin-summary.js';
+import { digestOf, normalisePinText, summarisePinText, truncateTo } from './pin-summary.js';
 import type { TaskMetadata } from '../../types/task.js';
 
 /**
@@ -24,6 +24,18 @@ const PINS_TTL_MS = 60_000;
  * How many pins reach the prompt. Channels that have been pinning for years hold hundreds; the newest 25 is what a reader would actually scan, and the count of what was dropped is disclosed in the block rather than hidden.
  */
 const MAX_INDEXED_PINS = 25;
+
+/**
+ * How many pins may be sent to the summariser in a single scan.
+ *
+ * Every model call spawns a CLI subprocess, and this scan is awaited on the Slack event path before the PM wakes — so the first scan of a channel with a long pin history is the one place this feature could cost a user real waiting time. Bounding it keeps that first scan to one round of concurrent calls; whatever is left over is indexed from its truncated text this time and upgraded on a later scan, which converges within a few messages and never blocks anyone. Steady state does no model work at all, since an unchanged pin reuses its stored summary.
+ */
+const MAX_MODEL_CALLS_PER_SCAN = 6;
+
+/**
+ * Digest recorded for an entry whose summary was deferred by that budget. No real digest can collide with it, so the next scan sees a mismatch and re-attempts exactly this entry.
+ */
+const DEFERRED_DIGEST = '';
 
 /**
  * Rescan the channel's pins and refresh the channel store. Cheap to call on every inbound channel event — a short TTL short-circuits repeat scans, and an unchanged pin reuses its stored summary, so a steady-state scan costs one `pins.list` and nothing else.
@@ -44,8 +56,11 @@ export async function ensureChannelPins(channelId: string): Promise<void> {
     // waiting out the TTL on stale data.
     if (items === null) return;
 
-    const total = items.length;
-    const kept = [...items].sort((a, b) => b.pinnedAt - a.pinnedAt).slice(0, MAX_INDEXED_PINS);
+    // Sort now, gate next, cap LAST. Capping first would let rejected pins consume index
+    // slots: one noisy external participant in a Slack Connect channel who pins twenty-five
+    // things would push every internal pin out of the index and blank it entirely, which is
+    // both wrong and a denial-of-service anyone in the channel could perform by accident.
+    const ordered = [...items].sort((a, b) => b.pinnedAt - a.pinnedAt);
 
     // Memoised per scan: a channel where one person pinned everything costs a single
     // `users.info`, not one per pin. Scoped to this scan rather than the module, so a
@@ -66,8 +81,11 @@ export async function ensureChannelPins(channelId: string): Promise<void> {
       return resolved;
     };
 
-    const entries: ChannelPinEntry[] = [];
-    for (const item of kept) {
+    // ---- Phase 1: gate every pin, cap nothing yet ----
+    type Eligible = { entry: ChannelPinEntry; sourceText: string; reused: boolean };
+    const eligible: Eligible[] = [];
+
+    for (const item of ordered) {
       const key = (item.kind === 'message' ? item.messageTs : item.fileId) ?? '';
       const authorId = (item.kind === 'message' ? item.author : item.fileUser) ?? '';
       const prior = pre?.pins?.find((p) => p.key === key);
@@ -88,9 +106,16 @@ export async function ensureChannelPins(channelId: string): Promise<void> {
       // skipped and retried at the next TTL scan.
       if (author === null || pinner === null) {
         if (prior) {
-          entries.push(prior);
-        } else {
+          eligible.push({ entry: prior, sourceText: '', reused: true });
+        } else if (authorId && item.pinnedBy) {
+          // A lookup that failed is transient and worth surfacing — it means a pin the
+          // channel can see is missing from the index right now.
           logger.warn('channel-pins', `principal classification unavailable for pin ${key} in ${channelId} — not adopting yet`);
+        } else {
+          // A missing user id is permanent, not transient: an app- or workflow-posted
+          // message has no human author, so this pin will never be adoptable and warning
+          // about it once a minute for the life of the channel is pure noise.
+          logger.debug('channel-pins', `pin ${key} in ${channelId} has no human author or pinner — never adoptable`);
         }
         continue;
       }
@@ -101,37 +126,58 @@ export async function ensureChannelPins(channelId: string): Promise<void> {
       // Same text as last scan → same one-liner, and no model call. This is what keeps
       // a steady-state scan free: the digest changes only when the pin itself was
       // edited, so an edited pin is re-summarised exactly once.
-      let summary: string;
-      let summarySource: 'verbatim' | 'model';
-      if (prior && prior.digest === digest) {
-        summary = prior.summary;
-        summarySource = prior.summarySource;
-      } else {
-        const summarised = await summarisePinText(sourceText);
-        summary = summarised.summary;
-        summarySource = summarised.source;
-      }
+      const reuse = !!prior && prior.digest === digest;
 
-      entries.push({
-        kind: item.kind,
-        key,
-        pinnedAt: item.pinnedAt,
-        pinnedBy: item.pinnedBy,
-        // Both principals were resolved to classify them, so naming the pinner costs
-        // nothing extra — and a `pinned_by="U0123ABC"` column tells the agent nothing
-        // it can weigh, which is the whole job of this index.
-        pinnedByName: pinner.realName || item.pinnedBy,
-        authorName: author.realName || authorId,
-        // A Slack message ts is a decimal epoch-seconds string; a file carries its own
-        // creation time.
-        postedAt: item.kind === 'message' ? Number(item.messageTs) : (item.fileCreated ?? 0),
-        summary,
-        summarySource,
-        digest,
-        ...(item.kind === 'file' ? { fileId: item.fileId } : {}),
-        ...(item.permalink ? { permalink: item.permalink } : {}),
+      eligible.push({
+        entry: {
+          kind: item.kind,
+          key,
+          pinnedAt: item.pinnedAt,
+          pinnedBy: item.pinnedBy,
+          // Both principals were resolved to classify them, so naming the pinner costs
+          // nothing extra — and a `pinned_by="U0123ABC"` column tells the agent nothing
+          // it can weigh, which is the whole job of this index.
+          pinnedByName: pinner.realName || item.pinnedBy,
+          authorName: author.realName || authorId,
+          // A Slack message ts is a decimal epoch-seconds string; a file carries its own
+          // creation time.
+          postedAt: item.kind === 'message' ? Number(item.messageTs) : (item.fileCreated ?? 0),
+          summary: reuse ? prior!.summary : '',
+          summarySource: reuse ? prior!.summarySource : 'verbatim',
+          digest,
+          ...(item.kind === 'file' ? { fileId: item.fileId } : {}),
+          ...(item.permalink ? { permalink: item.permalink } : {}),
+        },
+        sourceText,
+        reused: reuse,
       });
     }
+
+    // ---- Phase 2: cap, then summarise only what made the cut ----
+    // `eligible.length` is what the omission count is computed from, so the block discloses
+    // what the CAP hid and never what the trust gate refused. Conflating the two would tell
+    // every agent "there is standing context here you cannot see" about content deliberately
+    // excluded, and leak the count of externally-authored pins along the way.
+    const eligibleCount = eligible.length;
+    const kept = eligible.slice(0, MAX_INDEXED_PINS);
+
+    const pending = kept.filter((k) => !k.reused);
+    const funded = pending.slice(0, MAX_MODEL_CALLS_PER_SCAN);
+    const deferred = pending.slice(MAX_MODEL_CALLS_PER_SCAN);
+
+    await Promise.all(funded.map(async (k) => {
+      const { summary, source } = await summarisePinText(k.sourceText);
+      k.entry.summary = summary;
+      k.entry.summarySource = source;
+    }));
+
+    for (const k of deferred) {
+      k.entry.summary = truncateTo(normalisePinText(k.sourceText));
+      k.entry.summarySource = 'verbatim';
+      k.entry.digest = DEFERRED_DIGEST;
+    }
+
+    const entries = kept.map((k) => k.entry);
 
     // Wholesale replacement, deliberately: `store.pins` is what this scan derived, never
     // a merge with the previous list, so an unpinned item is simply absent and vanishes
@@ -144,7 +190,7 @@ export async function ensureChannelPins(channelId: string): Promise<void> {
     await updateChannelStore(channelId, (store) => {
       store.pins = entries;
       store.pinsCheckedAt = Date.now();
-      store.pinsTotal = total;
+      store.pinsEligible = eligibleCount;
       return store;
     });
   } catch (err) {
@@ -199,7 +245,7 @@ export async function buildChannelPinsPromptSection(metadata: TaskMetadata): Pro
     if (!store) continue;
     const pins = store.pins ?? [];
     for (const entry of pins) pairs.push({ entry, label });
-    const omitted = (store.pinsTotal ?? 0) - pins.length;
+    const omitted = (store.pinsEligible ?? 0) - pins.length;
     if (omitted > 0) omissions.push({ label, omitted });
   }
   if (pairs.length === 0) return '';
