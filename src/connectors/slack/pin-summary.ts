@@ -25,6 +25,7 @@ Rules:
 - One sentence, at most 150 characters
 - Say what the message is ABOUT so a reader can decide whether to open it
 - Do not judge whether it matters
+- Plain prose only — never JSON, key/value pairs, braces or markup inside the sentence
 - No quotes, no trailing punctuation
 - Match the message's language
 
@@ -42,6 +43,35 @@ export function normalisePinText(raw: string): string {
     .replace(/[\u0000-\u0008\u000e-\u001f\u007f\u00ad\u034f\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufe00-\ufe0f\ufeff\ufff9-\ufffb]|[\u{e0000}-\u{e007f}]/gu, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/**
+ * Unwrap a model summary that came back as JSON instead of a sentence.
+ *
+ * Observed live: a pinned message whose own body was JSON produced the index line
+ * `{"entry": "Daily recap covering …"}` — the model mirrored the shape of its input into
+ * the one string field it was asked to fill. The prose inside was a good summary; the
+ * wrapper was noise in every agent's prompt. Schema validation cannot catch this, since a
+ * JSON blob is a perfectly valid string.
+ *
+ * Only the unambiguous case is unwrapped: an object or array that parses and yields
+ * exactly one string. Anything else is left alone for the caller to reject, because
+ * guessing which of several fields was meant to be the summary is how you end up
+ * confidently indexing the wrong one.
+ */
+export function unwrapJsonSummary(text: string): string {
+  const t = text.trim();
+  if (!t.startsWith('{') && !t.startsWith('[')) return text;
+  try {
+    const parsed = JSON.parse(t);
+    if (parsed && typeof parsed === 'object') {
+      const strings = Object.values(parsed).filter((v): v is string => typeof v === 'string' && v.trim() !== '');
+      if (strings.length === 1) return strings[0];
+    }
+  } catch {
+    // Not JSON after all — the text stands as written.
+  }
+  return text;
 }
 
 /** Short stable hash of the text a summary was derived from — drives re-summarise-on-edit. */
@@ -115,7 +145,7 @@ Respond with JSON only.`;
     // without a result event at all, so it warns for itself: the two `logger.warn` calls
     // above sit on paths that never reach here, and QA found five distinct failure modes
     // degrading through this line without leaving a single log entry.
-    const summary = result ? normalisePinText(truncateTo(result.summary)) : '';
+    const summary = result ? normalisePinText(truncateTo(unwrapJsonSummary(result.summary))) : '';
     if (!summary) {
       // Three distinct reasons land here and they are worth telling apart: the model
       // answered with nothing, it answered in a shape the schema rejected (already warned
