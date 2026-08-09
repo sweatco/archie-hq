@@ -697,6 +697,17 @@ describe('buildChannelPinsPromptSection — containment is escaping, not strippi
     }
   });
 
+  // A persisted timestamp is rendered on every spawn, so a value toISOString rejects
+  // would not fail one render — it would fail every spawn for that channel, permanently.
+  it('does not throw on an out-of-range stored timestamp', async () => {
+    storesByChannel['C1'] = storeWith([promptEntry({ pinnedAt: 1e18, postedAt: Number.POSITIVE_INFINITY })]);
+
+    const section = await render();
+
+    expect(section).toContain('pinned="?"');
+    expect(section).toContain('posted="?"');
+  });
+
   it('escapes an ampersand so the escaping cannot itself be forged', async () => {
     storesByChannel['C1'] = storeWith([promptEntry({ summary: 'a &lt;pin&gt; b' })]);
 

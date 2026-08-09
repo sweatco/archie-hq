@@ -232,10 +232,20 @@ export function formatAge(epochSeconds: number, nowMs: number): string {
   return `${Math.round(days / 365)}y`;
 }
 
-/** Calendar date of an epoch-seconds timestamp, or '?' when there isn't one. */
+/**
+ * Calendar date of an epoch-seconds timestamp, or '?' when there isn't a usable one.
+ *
+ * The range check is not defensive padding. `toISOString` throws `RangeError` outside
+ * ±8.64e15 ms, this runs inside the prompt assembly that every agent spawn goes through,
+ * and the timestamp comes from a persisted store — so one bad value would not fail a
+ * single render, it would fail every spawn for that channel until someone edited the
+ * JSON by hand.
+ */
 function formatDate(epochSeconds: number): string {
-  if (!epochSeconds || Number.isNaN(epochSeconds)) return '?';
-  return new Date(epochSeconds * 1000).toISOString().slice(0, 10);
+  if (!epochSeconds || !Number.isFinite(epochSeconds)) return '?';
+  const ms = epochSeconds * 1000;
+  if (Math.abs(ms) > 8.64e15) return '?';
+  return new Date(ms).toISOString().slice(0, 10);
 }
 
 /**
