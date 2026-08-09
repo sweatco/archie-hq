@@ -217,7 +217,7 @@ export async function mountSlackApp(
     if (!botUserId || event.user !== botUserId) return;
     if (typeof event.channel !== 'string' || event.channel.startsWith('D')) return;
     Promise.all([ensureChannelCanvas(event.channel), ensureChannelPins(event.channel)]).catch((err: unknown) =>
-      logger.error('Server', 'Error scanning canvas on channel join', err));
+      logger.error('Server', 'Error scanning channel context on channel join', err));
   });
 
   // Handle edit mode approval button

@@ -2205,7 +2205,7 @@ function createFetchSlackReferenceTool(agent: Agent, task: Task) {
     'Documents and images are saved in their original form; a referenced canvas is saved as readable markdown.',
     {
       reference: z.string().describe(
-        'A Slack file link (e.g. https://….slack.com/files/…/F…/name) or a bare file id (F…) taken from the channel canvas.',
+        'A Slack file link (e.g. https://….slack.com/files/…/F…/name) or a bare file id (F…) taken from the channel canvas or the pinned-messages index.',
       ),
     },
     async (args) => {

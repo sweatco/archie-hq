@@ -585,7 +585,9 @@ Shared folder: ${sharedPath} [READ-ONLY]
 
   // ---- Channel pinned messages (every agent, one rule) ----
   //
-  // A one-line index of what the channel's members pinned — an index, not a brief. Same reach as the canvas block below and for the same reason: a specialist cannot ask for what it does not know exists. Placed above it so the standing brief reads before the index, and rebuilt every spawn so a new pin lands on the next wake.
+  // A one-line index of what the channel's members pinned — an index, not a brief. Same reach as the canvas block below and for the same reason: a specialist cannot ask for what it does not know exists. Rebuilt every spawn, so a new pin lands on the next wake.
+  //
+  // It appends BEFORE the canvas, so the assembled prompt reads index first and standing brief second. That is the wanted order: the brief is the authoritative one and belongs nearest the instructions that follow, while the index is low-weight reference material that only ever points at something to open. The two are separately wrapped and each carries its own `note` fixing its weight, so neither depends on the other's position to be read correctly.
   //
   // Only pm-agent can open a pin — `read_thread` and `fetch_slack_reference` both live in comms-tools, which is PM-only — so a specialist that needs one asks, exactly as it does for a canvas file reference.
   const channelPinsSection = await buildChannelPinsPromptSection(metadata);
