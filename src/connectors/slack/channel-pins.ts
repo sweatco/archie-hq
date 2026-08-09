@@ -224,20 +224,27 @@ export async function ensureChannelPins(channelId: string): Promise<void> {
 }
 
 /**
- * Coarse "how old is this" for a prompt line. Exported for tests only.
+ * How old is this, for a prompt line. Exported for tests only.
  *
- * Deliberately coarse: the point of showing an age at all is to let the agent weigh a
- * three-year-old pin against last week's, and a precise timestamp invites arithmetic
- * nobody needs.
+ * Coarse above a day, because the point of an age is to weigh a three-year-old pin
+ * against last week's and precise timestamps invite arithmetic nobody needs. Precise
+ * BELOW a day, because the first live run showed why: three pins made twenty-two
+ * minutes earlier rendered as `<1d`, and the agent reported them to the person who had
+ * just pinned them as having been pinned "yesterday". Technically true, read wrong, and
+ * wrong in a reply to a human — `<1h` is not something a reader can round into the past.
  */
 export function formatAge(epochSeconds: number, nowMs: number): string {
   if (!epochSeconds || Number.isNaN(epochSeconds)) return '?';
-  const days = Math.floor((nowMs / 1000 - epochSeconds) / 86400);
-  if (days < 1) return '<1d';
+  const seconds = nowMs / 1000 - epochSeconds;
+  if (seconds < 3600) return '<1h';
+  const hours = Math.floor(seconds / 3600);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(seconds / 86400);
   if (days < 90) return `${days}d`;
   if (days < 730) return `${Math.round(days / 30)}mo`;
   return `${Math.round(days / 365)}y`;
 }
+
 
 /**
  * Calendar date of an epoch-seconds timestamp, or '?' when there isn't a usable one.

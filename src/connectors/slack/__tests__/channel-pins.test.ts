@@ -547,9 +547,12 @@ describe('formatAge', () => {
   const now = Date.UTC(2026, 0, 1);
   const ago = (days: number) => now / 1000 - days * 86400;
 
-  it('buckets by day, month and year, and says nothing when there is no timestamp', () => {
-    expect(formatAge(ago(0), now)).toBe('<1d');
-    expect(formatAge(ago(0.5), now)).toBe('<1d');
+  it('buckets by hour, day, month and year, and says nothing when there is no timestamp', () => {
+    // Sub-day precision is load-bearing: a pin made minutes ago that renders as "<1d"
+    // gets read as "yesterday", which the agent then reports to the person who pinned it.
+    expect(formatAge(ago(22 / 1440), now)).toBe('<1h');
+    expect(formatAge(ago(0.5), now)).toBe('12h');
+    expect(formatAge(ago(0.99), now)).toBe('23h');
     expect(formatAge(ago(1), now)).toBe('1d');
     expect(formatAge(ago(89), now)).toBe('89d');
     expect(formatAge(ago(90), now)).toBe('3mo');
