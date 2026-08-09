@@ -66,6 +66,7 @@ export async function summarisePinText(raw: string): Promise<{ summary: string; 
 
   try {
     let result: z.infer<typeof SummarySchema> | null = null;
+    let sawResult = false;
 
     const prompt = `Write a one-line index entry for the following pinned Slack message.
 
@@ -96,6 +97,7 @@ Respond with JSON only.`;
       },
     })) {
       if (event.type !== 'result') continue;
+      sawResult = true;
       if (event.subtype === 'success') {
         const parsed = SummarySchema.safeParse(event.structured_output);
         if (parsed.success) {
@@ -115,7 +117,14 @@ Respond with JSON only.`;
     // degrading through this line without leaving a single log entry.
     const summary = result ? normalisePinText(truncateTo(result.summary)) : '';
     if (!summary) {
-      logger.warn('pin-summary', result ? 'model returned an empty summary' : 'no result event from the haiku call');
+      // Three distinct reasons land here and they are worth telling apart: the model
+      // answered with nothing, it answered in a shape the schema rejected (already warned
+      // above), or the stream ended without a result event at all.
+      logger.warn('pin-summary', result
+        ? 'model returned an empty summary'
+        : sawResult
+          ? 'no usable summary in the result event'
+          : 'no result event from the haiku call');
       return { summary: truncateTo(text), source: 'verbatim' };
     }
     return { summary, source: 'model' };

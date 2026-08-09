@@ -267,9 +267,17 @@ function escapeXml(value: string): string {
     .replace(/"/g, '&quot;');
 }
 
-/** One `name="value"` pair, normalised then escaped. */
-function attr(name: string, value: string): string {
-  return `${name}="${escapeXml(normalisePinText(value))}"`;
+/**
+ * One `name="value"` pair, normalised then escaped.
+ *
+ * `String()` rather than a `string` parameter, because these values come out of a JSON
+ * file on disk. A hand-edited or half-written `channel-store.json` can hold a number,
+ * `null` or an object where a string belongs, and this runs inside the prompt assembly
+ * every spawn goes through — so a `TypeError` here would not spoil one render, it would
+ * fail every spawn for that channel until someone fixed the file.
+ */
+function attr(name: string, value: unknown): string {
+  return `${name}="${escapeXml(normalisePinText(String(value ?? '')))}"`;
 }
 
 /**
@@ -332,7 +340,7 @@ export async function buildChannelPinsPromptSection(metadata: TaskMetadata): Pro
     } else {
       attrs.push(attr('file', entry.fileId ?? entry.key));
     }
-    elements.push(`<pin ${attrs.join(' ')}>${escapeXml(normalisePinText(entry.summary))}</pin>`);
+    elements.push(`<pin ${attrs.join(' ')}>${escapeXml(normalisePinText(String(entry.summary ?? '')))}</pin>`);
   }
   for (const { label, channelId, omitted } of omissions) {
     elements.push(`<pins_omitted ${attr('channel', label)} ${attr('channel_id', channelId)} ${attr('count', String(omitted))}/>`);
