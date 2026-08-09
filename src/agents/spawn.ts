@@ -46,6 +46,7 @@ import {
 import { setupSharedClone, cloneExists, type CloneCheckout } from '../connectors/github/repo-clone.js';
 import { configureGitIdentity, getGitHubAppIdentity } from '../connectors/github/client.js';
 import { buildChannelCanvasPromptSection } from '../connectors/slack/channel-canvas.js';
+import { buildChannelPinsPromptSection } from '../connectors/slack/channel-pins.js';
 import { resolvePeopleFromTranscript } from '../connectors/slack/client.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { processAgentEventForLogging, logger } from '../system/logger.js';
@@ -580,6 +581,16 @@ Shared folder: ${sharedPath} [READ-ONLY]
     // The bridge resolves targets from this same live map at call time, so it
     // sees OAuth-bound headers and never reaches servers dropped below.
     mcpServers['file-bridge'] = createFileBridgeMcpServer(agent, task, mcpServers);
+  }
+
+  // ---- Channel pinned messages (every agent, one rule) ----
+  //
+  // A one-line index of what the channel's members pinned — an index, not a brief. Same reach as the canvas block below and for the same reason: a specialist cannot ask for what it does not know exists. Placed above it so the standing brief reads before the index, and rebuilt every spawn so a new pin lands on the next wake.
+  //
+  // Only pm-agent can open a pin — `read_thread` and `fetch_slack_reference` both live in comms-tools, which is PM-only — so a specialist that needs one asks, exactly as it does for a canvas file reference.
+  const channelPinsSection = await buildChannelPinsPromptSection(metadata);
+  if (channelPinsSection) {
+    systemPrompt = `${systemPrompt}\n\n${channelPinsSection}`;
   }
 
   // ---- Channel project context (every agent, one rule) ----
