@@ -436,6 +436,10 @@ describe('buildChannelPinsPromptSection', () => {
     expect(section).toContain('pinned_age="2d"');
     expect(section).toContain('posted_age="10d"');
     expect(section).toContain('by="Ada"');
+    expect(section).toContain('channel_id="C1"');
+    // `source` is what stops the block's note describing verbatim user input as a
+    // machine paraphrase.
+    expect(section).toMatch(/source="(verbatim|model)"/);
     // These fixtures predate `pinnedByName`, so this also pins the legacy fallback:
     // an entry stored without a resolved pinner name still renders the raw id.
     expect(section).toContain('pinned_by="U_PINNER"');
@@ -476,7 +480,7 @@ describe('buildChannelPinsPromptSection', () => {
       channels: { a: { type: 'slack', channel_id: 'C1', channel_name: 'bot-test' } },
     } as unknown as TaskMetadata);
 
-    expect(section).toContain('<pins_omitted channel="#bot-test" count="15"/>');
+    expect(section).toContain('<pins_omitted channel="#bot-test" channel_id="C1" count="15"/>');
   });
 
   // The summary is interpolated into the block, so without escaping, a pin could close
