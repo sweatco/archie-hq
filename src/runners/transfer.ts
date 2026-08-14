@@ -97,6 +97,7 @@ function safeArchivePath(value: string): string | null {
 }
 
 export async function extractRunnerArchive(archivePath: string, destination: string, maxBytes: number): Promise<void> {
+  const root = resolve(destination);
   let expandedBytes = 0;
   let entries = 0;
   let unsafe: string | undefined;
@@ -107,6 +108,7 @@ export async function extractRunnerArchive(archivePath: string, destination: str
       if (entries > 10000) unsafe ??= 'Collected archive exceeds the 10000-entry limit';
       const path = safeArchivePath(entry.path);
       if (!path) unsafe ??= `Unsafe archive path: ${entry.path}`;
+      else if (resolve(root, path) !== root && !resolve(root, path).startsWith(root + sep)) unsafe ??= `Unsafe archive path: ${entry.path}`;
       if (entry.type === 'Link') unsafe ??= `Hard links are not accepted: ${entry.path}`;
       if (!['File', 'Directory', 'SymbolicLink'].includes(entry.type)) unsafe ??= `Unsupported archive entry type ${entry.type}: ${entry.path}`;
       if (entry.type === 'SymbolicLink') {

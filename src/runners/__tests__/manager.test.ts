@@ -100,6 +100,34 @@ describe('RunnerManager', () => {
     manager.shutdown();
   });
 
+  it('retries the readiness probe while the guest agent boots', async () => {
+    class FlakyReadinessProvider extends FakeProvider {
+      readinessAttempts = 0;
+      async *exec(id: string, request: ExecRequest) {
+        if (request.sessionId.startsWith('readiness-') && this.readinessAttempts++ === 0) {
+          throw new Error('Orchard WebSocket exec failed (503)');
+        }
+        yield* super.exec(id, request);
+      }
+    }
+    const provider = new FlakyReadinessProvider();
+    const loaded = loadedConfig();
+    loaded.config.profiles.ios.readinessCommand = ['/usr/bin/true'];
+    const manager = new RunnerManager(loaded, provider);
+    await manager.initialize();
+    vi.useFakeTimers();
+    try {
+      const pending = manager.ensure('task-1', 'mobile-agent', 'ios');
+      await vi.advanceTimersByTimeAsync(6000);
+      const lease = await pending;
+      expect(lease.state).toBe('ready');
+      expect(provider.readinessAttempts).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+    manager.shutdown();
+  });
+
   it('keeps a bounded debug lease on completion and releases it explicitly', async () => {
     const provider = new FakeProvider();
     const manager = new RunnerManager(loadedConfig(), provider);

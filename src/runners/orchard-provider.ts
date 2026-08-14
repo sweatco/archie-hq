@@ -160,7 +160,15 @@ export class OrchardRunnerProvider implements RunnerProvider {
     const detach = () => {
       if (opened && ws.readyState === WebSocket.OPEN && !terminal) {
         ws.send(JSON.stringify({ type: 'detach' }), () => ws.close());
-      } else if (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN) {
+      } else if (ws.readyState === WebSocket.CONNECTING) {
+        // Closing mid-handshake makes the controller drop the just-created
+        // session (closeIfUnused), so a later reconnect would 404. Wait for
+        // the open, then detach cleanly to keep the session reconnectable.
+        ws.once('open', () => {
+          if (!terminal) ws.send(JSON.stringify({ type: 'detach' }), () => ws.close());
+          else ws.close();
+        });
+      } else if (ws.readyState === WebSocket.OPEN) {
         ws.close();
       }
     };
