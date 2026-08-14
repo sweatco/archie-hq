@@ -35,6 +35,7 @@ import type {
 } from './types.js';
 
 const TOOL_OUTPUT_LIMIT = 128 * 1024;
+const READINESS_RETRY_MS = 5000;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -289,9 +290,27 @@ export class RunnerManager {
     throw new Error(`Timed out waiting for Orchard VM ${lease.backendId}`);
   }
 
+  // Orchard reports "running" as soon as the VM process starts; the guest agent
+  // may need minutes more to boot, so the probe retries until the timeout.
   private async checkReadiness(lease: RunnerLease, profile: RunnerProfile): Promise<void> {
+    const deadline = Date.now() + profile.readinessTimeoutSeconds * 1000;
+    let lastFailure = 'Runner readiness command did not succeed';
+    while (true) {
+      try {
+        await this.probeReadiness(lease, profile, deadline);
+        return;
+      } catch (error) {
+        lastFailure = error instanceof Error ? error.message : String(error);
+      }
+      if (Date.now() + READINESS_RETRY_MS >= deadline) break;
+      await new Promise((resolve) => setTimeout(resolve, READINESS_RETRY_MS));
+    }
+    throw new Error(lastFailure);
+  }
+
+  private async probeReadiness(lease: RunnerLease, profile: RunnerProfile, deadline: number): Promise<void> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), profile.readinessTimeoutSeconds * 1000);
+    const timer = setTimeout(() => controller.abort(), Math.max(1, deadline - Date.now()));
     const sessionId = `readiness-${randomUUID()}`;
     let exitCode: number | undefined;
     let failure: string | undefined;
@@ -558,6 +577,7 @@ export class RunnerManager {
   }
 
   async collect(taskId: string, agentId: string, profileName: string, github: string, paths: string[]): Promise<string> {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(taskId)) throw new Error(`Invalid task id: ${taskId}`);
     if (paths.length === 0 || paths.length > 100) throw new Error('paths must contain between 1 and 100 entries');
     const safePaths = paths.map(assertRelativeRunnerPath);
     await this.ensure(taskId, agentId, profileName);

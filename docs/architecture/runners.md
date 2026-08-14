@@ -33,7 +33,7 @@ Set `ARCHIE_RUNNERS_CONFIG` to an operator-owned JSON file. The service account 
   "orphanGraceMinutes": 30,
   "reaperIntervalSeconds": 60,
   "orchard": {
-    "baseUrl": "https://orchard.example.internal",
+    "baseUrl": "https://orchard.example.internal/v1",
     "context": "production"
   },
   "profiles": {
@@ -48,7 +48,7 @@ Set `ARCHIE_RUNNERS_CONFIG` to an operator-owned JSON file. The service account 
       "allowedAgents": ["mobile-agent"],
       "labels": { "pool": "ios" },
       "resources": { "org.cirruslabs.logical-cores": 8 },
-      "softnetAllow": ["10.0.0.0/8"],
+      "softnetAllow": ["192.168.2.0/24", "10.0.0.0/8"],
       "readinessCommand": ["/usr/bin/xcodebuild", "-version"],
       "leaseTtlMinutes": 120,
       "debugTtlMinutes": 30,
@@ -61,7 +61,7 @@ Set `ARCHIE_RUNNERS_CONFIG` to an operator-owned JSON file. The service account 
 }
 ```
 
-Images must use a `sha256` digest. Profile names and agent allowlists are fixed at startup. Orchard host directories, bridged networking, startup scripts, raw VM specifications, images, and credentials are never accepted from agents. Softnet uses a default-deny IPv4 block; an empty `softnetAllow` denies guest outbound traffic, while more-specific IPv4 CIDRs explicitly reopen required destinations.
+`baseUrl` must include the Orchard API prefix (`/v1`) — the provider appends bare resource paths like `/vms` to it. Images must use a `sha256` digest. Profile names and agent allowlists are fixed at startup. Orchard host directories, bridged networking, startup scripts, raw VM specifications, images, and credentials are never accepted from agents. Softnet uses a default-deny IPv4 block; an empty `softnetAllow` denies guest outbound traffic, while more-specific IPv4 CIDRs explicitly reopen required destinations. `softnetAllow` MUST include the worker host's Softnet subnet (`192.168.2.0/24` by default) — the block-all rule also drops guest replies to the Softnet gateway, which the Orchard worker's SSH-based exec channel depends on; without this entry the worker's dial to guest port 22 times out and every exec, including the readiness probe, fails with a 503 (verified against Orchard 0.55 / Softnet on macOS).
 
 Required environment variables when enabled:
 
