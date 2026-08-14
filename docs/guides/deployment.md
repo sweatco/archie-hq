@@ -27,7 +27,7 @@ Monitoring: container logs + /health endpoint
 Secrets are injected via the container's environment file plus the mounted
 `/app/secrets` volume. See `.env.example` for the full list. Required at runtime:
 
-- `ANTHROPIC_API_KEY` — Claude API access (required; startup fails without it)
+- `ANTHROPIC_API_KEY` — Claude API access. A deployment must use an API key (subscription auth via `CLAUDE_CODE_OAUTH_TOKEN` is CLI-only). Startup fails if no Claude credential is present.
 - `SLACK_BOT_TOKEN` / `SLACK_SIGNING_SECRET` — Slack integration in HTTP webhook mode (optional; CLI-only mode if both omitted)
 - `SLACK_APP_TOKEN` — `xapp-...` app-level token; set this *instead of* `SLACK_SIGNING_SECRET` to use Socket Mode and deploy without an inbound webhook URL
 - `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_INSTALLATION_ID` — GitHub App identifiers

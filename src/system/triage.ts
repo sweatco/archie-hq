@@ -6,6 +6,7 @@
  */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { claudeCredentialEnv } from './claude-credential.js';
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import pc from "picocolors";
@@ -57,7 +58,7 @@ async function runTriage<T extends z.ZodType>(
       // pathToClaudeCodeExecutable: process.env.CLAUDE_PATH || "claude",
       env: {
         NODE_ENV: process.env.NODE_ENV || "development",
-        ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+        ...claudeCredentialEnv(),
         // Forward CA-trust to the spawned CLI (TLS-intercepting proxy); no-op when unset.
         ...(process.env.NODE_USE_SYSTEM_CA ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA } : {}),
         ...(process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS } : {}),

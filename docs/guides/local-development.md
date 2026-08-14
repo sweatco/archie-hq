@@ -2,12 +2,14 @@
 
 ## Quick Start
 
-The only required env var is `ANTHROPIC_API_KEY`. Slack and GitHub App credentials are optional.
+Archie needs a Claude credential, auto-detected in priority order: `ANTHROPIC_API_KEY`, then `CLAUDE_CODE_OAUTH_TOKEN` (a subscription token from `claude setup-token`). At least one must be set or startup fails. Slack and GitHub App credentials are optional.
+
+**Subscription auth is for CLI-only interactive use.** Running Archie in CLI-only mode (no Slack credentials) and driving it from `npm run cli`, you can authenticate with your Claude subscription via `CLAUDE_CODE_OAUTH_TOKEN` instead of a metered API key — turns are human-initiated, the same shape as using Claude Code directly. Slack-connected deployments and the E2E harness are automated access and should use `ANTHROPIC_API_KEY`.
 
 ```bash
 # 1. Setup environment
 cp .env.example .env
-# Set ANTHROPIC_API_KEY in .env
+# Set ANTHROPIC_API_KEY in .env (or CLAUDE_CODE_OAUTH_TOKEN for CLI-only subscription use)
 
 # 2. Ensure your SSH key is loaded (used for git inside Docker)
 ssh-add
@@ -139,8 +141,9 @@ If `ARCHIE_PLUGINS` is set to a git URL, the app auto-clones the plugins repo on
 ## Environment Variables
 
 ```bash
-# Required
-ANTHROPIC_API_KEY=sk-ant-...           # Claude API key
+# Required — a Claude credential (at least one):
+ANTHROPIC_API_KEY=sk-ant-...           # Claude API key (use this for Slack deployments + E2E)
+# CLAUDE_CODE_OAUTH_TOKEN=...          # subscription token, CLI-only interactive use (`claude setup-token`)
 
 # Optional - Slack (omit for CLI-only mode)
 # SLACK_BOT_TOKEN=xoxb-...

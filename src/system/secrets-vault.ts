@@ -44,8 +44,11 @@ export function loadMasterKey(): Buffer {
     throw new Error('ARCHIE_SECRETS_KEY must be base64-encoded');
   }
   if (buf.length !== KEY_BYTES) {
+    // Deliberately no `got ${buf.length}` here: the message can end up in
+    // startup logs, and log text must never derive from the key material —
+    // not even its decoded length (CodeQL js/clear-text-logging).
     throw new Error(
-      `ARCHIE_SECRETS_KEY must decode to ${KEY_BYTES} bytes; got ${buf.length}. ` +
+      `ARCHIE_SECRETS_KEY must decode to exactly ${KEY_BYTES} bytes. ` +
       'Use 32 random bytes encoded as base64.'
     );
   }
