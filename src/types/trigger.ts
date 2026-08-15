@@ -1,3 +1,5 @@
+import type { TaskVisibility } from './task.js';
+
 /**
  * Trigger type definitions
  *
@@ -52,6 +54,8 @@ export interface Trigger {
   conditions: TriggerCondition[];
   /** PM instruction seeded into the spawned task when fired (internal — not shown to users). */
   action: { prompt: string };
+  /** Visibility of the task that supplied the current action prompt. Missing on legacy records means unknown. */
+  prompt_origin_visibility?: TaskVisibility;
   /**
    * Short, user-facing one-liner describing what the trigger does (e.g. "Daily
    * summary of #bot-test"). Shown in approval prompts, announcements, and

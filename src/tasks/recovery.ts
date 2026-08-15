@@ -122,7 +122,12 @@ export function scheduleIdleCheck(task: Task): void {
     if (getIsShuttingDown()) return;
     const action = idleDecision(task);
     if (action === 'complete') {
-      await task.complete();
+      try {
+        await task.complete();
+      } catch (error) {
+        logger.error('recovery', `Failed to complete idle task ${task.taskId}; retrying`, error);
+        if (task.isActive) scheduleIdleCheck(task);
+      }
     } else if (action === 'recover') {
       await triggerRecovery(task);
     }
