@@ -2,7 +2,7 @@
  * memory:eval — worst-case injected-token bound (enablement gate).
  *
  * Every term goes through the EXPORTED production render path (renderEntityBlock,
- * renderUserPreferencesBlock, renderRecentActivityBlock) — never a
+ * renderCollaborationProfileBlock, renderRecentActivityBlock) — never a
  * reimplementation — and uses the sensor's chars/4 rule so the bound stays
  * comparable with post-enablement telemetry. Budget values are read back
  * through the production flag accessors, so a misspelled env var surfaces as
@@ -15,7 +15,7 @@
 
 import {
   renderEntityBlock,
-  renderUserPreferencesBlock,
+  renderCollaborationProfileBlock,
   renderRecentActivityBlock,
   renderEntityIndexBlock,
   estimateTokens,
@@ -72,7 +72,7 @@ export function computeWorstCaseBound(
     .filter((u) => u.text.trim())
     .map((u) => ({
       id: u.id,
-      tokens: tok(renderUserPreferencesBlock({ userId: u.id, displayName: u.displayName }, u.text)),
+      tokens: tok(renderCollaborationProfileBlock({ userId: u.id, displayName: u.displayName }, u.text)),
     }));
 
   const indexMd = indexMarkdown.trim() || renderIndex(records).trim();

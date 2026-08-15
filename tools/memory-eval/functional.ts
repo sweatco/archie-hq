@@ -66,7 +66,10 @@ export async function buildSurfacedContext(question: string): Promise<string> {
 /** Oracle arm: evidence pages only, rendered by the production renderer. */
 export function buildOracleContext(evidence: string[], records: EntityRecord[]): string {
   const bySlug = new Map(records.map((r) => [r.entity, r]));
-  const blocks = evidence.map((slug) => bySlug.get(slug)).filter((r): r is EntityRecord => !!r).map(renderEntityBlock);
+  const blocks = evidence
+    .map((slug) => bySlug.get(slug))
+    .filter((r): r is EntityRecord => !!r)
+    .map((record) => renderEntityBlock(record));
   return blocks.join('\n\n');
 }
 
