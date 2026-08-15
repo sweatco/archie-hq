@@ -22,8 +22,16 @@ Historical record of Archie's incremental development. Each plan represents a mi
 | [v9](v9-prompt-injection-defense.md) | Prompt injection defense | Implemented |
 | [v10](v10-agent-recovery-impl.md) | Agent recovery implementation | Partially implemented |
 | … | (v11–v31 — see files in this directory) | — |
+| [v31 PM spawn](v31-pm-spawn-repo-agents.md) | PM on-demand repo-agent spawning | Implemented |
+| [v31 triggers](v31-triggers.md) | Persistent schedule and channel-message triggers | Implemented |
 | [20260626](20260626-response-formatting.md) | Message footer + self-updating PR cards | Implemented |
+| [20260627 canvas](20260627-channel-canvas-project-context.md) | Per-channel canvas project context | Implemented |
+| [20260627 quiescence](20260627-completion-quiescence.md) | Completion at task quiescence | Implemented |
+| [20260627 PM permissions](20260627-pm-permissions-task-creation.md) | PM permissions and task-creation rework | Implemented (search descoped) |
+| [20260701](20260701-max-mode.md) | Per-task max mode | Implemented |
 | [20260717](20260717-slack-group-dm-support.md) | Slack group DM (mpim) support | Implemented |
+| [20260719](20260719-memory-v2.md) | Memory v2: bounded injection, pull tools, confidentiality layer | Implemented (rollout gates open) |
+| [20260721](20260721-task-usage-tool.md) | Per-task token and cost reporting | Implemented |
 | [20260809](20260809-channel-pinned-messages-context.md) | Channel pinned messages as agent context | Implemented (dormant until `pins:read` is granted) |
 
 ## Evolution Arc

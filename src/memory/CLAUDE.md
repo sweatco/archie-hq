@@ -24,13 +24,15 @@ Any behavior, flow, storage, or flag change must update `docs/architecture/memor
 - **Profile sections are closed.** New adds and updates may target only `Communication`, `Deliverables`, `Workflow`, `Decision Making`, or `Constraints`. Updates replace bullets only inside their declared section. Existing legacy sections remain readable and housekeepable.
 - **Model output is untrusted.** Extractor results pass through `sanitize.ts`; the extractor remains one turn, tool-free, and minimally provisioned. Housekeeping is deterministic code.
 - **Runtime writes are serialized.** Extraction and automatic housekeeping share the sequential queue in `lifecycle.ts`. Telemetry's single-line fail-safe appends are the only runtime exception. Manual housekeeping runs out of process and requires the server to be stopped.
-- **Flag-safe.** With `ARCHIE_MEMORY=false`, initialization, injection, and completion extraction no-op.
+- **Read tools are store-only and read-only.** Every identifier passes `paths.ts` guards. Do not add mutation tools or a tool that opens task transcripts.
+- **Flag-safe.** With `ARCHIE_MEMORY=false`, initialization, injection, tools, and completion extraction no-op.
 
 ## Load-bearing files
 
 - `paths.ts`: paths, ID guards, and flags.
 - `sanitize.ts`: trust boundary for model output.
 - `lifecycle.ts`: public-task gate, durable queue, and extraction pipeline.
+- `tools.ts`: three read-only public-store tools.
 - `store.ts`: collaboration-profile update semantics and applied-update reporting.
 - `housekeeping.ts`: deterministic validation, deduplication, staleness handling, and stable ordering.
 - `prompts/memory-extractor.md`: one-turn extraction prompt.

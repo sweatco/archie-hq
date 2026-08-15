@@ -20,7 +20,7 @@ An agent caught in a loop (or manipulated into one) could spawn unlimited resear
 
 ### Trust Boundary
 
-Authentication establishes origin, not content trust. Web responses, Slack and GitHub text, task transcripts, inter-agent messages, model output, and persisted memory are all data that may contain hostile instructions. The system prompt and operator-controlled configuration define policy. Web content enters only through `mcp__research-tools__web_research`; `WebSearch` and `WebFetch` are removed from every agent's tool list (`disallowedTools` in `src/agents/spawn.ts`). Memory sanitizes persisted content and marks historical data as untrusted; see [Memory Layer](memory.md).
+Authentication establishes origin, not content trust. Web responses, Slack and GitHub text, task transcripts, inter-agent messages, model output, and persisted memory are all data that may contain hostile instructions. The system prompt and operator-controlled configuration define policy. Web content enters only through `mcp__research-tools__web_research`; `WebSearch` and `WebFetch` are removed from every agent's tool list (`disallowedTools` in `src/agents/spawn.ts`). Memory extraction and read tools separately sanitize or mark historical content as untrusted; see [Memory Layer](memory.md).
 
 The `<channel_pinned_messages>` block is a concrete untrusted-data envelope inside the system prompt; see [Channel Pinned Messages](slack-integration.md#channel-pinned-messages). Verbatim pin lines remain user-authored data, every value is XML-escaped, and both the author and pinner must classify as internal. The block is an index without authority: agents must open the referenced message or file before acting on it.
 

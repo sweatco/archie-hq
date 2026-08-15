@@ -179,7 +179,7 @@ Agents run in a sandboxed environment with defense-in-depth:
 - **Filesystem isolation** — each agent can only read/write its own workspace via bubblewrap (Bash) and PreToolUse hooks (Read/Write/Edit)
 - **Network deny-all** — Bash cannot reach the internet; web access only through the controlled research pipeline
 - **Tool denylists** — WebSearch/WebFetch blocked on all agents; Write/Edit blocked in read-only mode
-- **Human gates** — edit mode requires Slack approval; PRs require review before merge
+- **Human gates** — edit mode, max mode, and non-auto-repo merges require explicit approval; GitHub branch protection remains authoritative
 - **Git safety** — branch protection server-side; no force push; git push blocked from Bash (no network)
 
 See [Security Architecture](docs/architecture/security.md) for the full threat model, enforcement layers, and deployment requirements.
@@ -194,15 +194,19 @@ See [Security Architecture](docs/architecture/security.md) for the full threat m
 - [Security](docs/architecture/security.md) — sandbox, threat model, defense layers, deployment
 - [Plugin System](docs/architecture/plugin-system.md) — plugin structure and agent registration
 - [Edit Mode](docs/architecture/edit-mode.md) — approval flow, shared clones, git workflow
+- [Max Mode](docs/architecture/max-mode.md) — approved model and reasoning upgrades
 - [Persistence](docs/architecture/persistence.md) — session storage and recovery
+- [Memory](docs/architecture/memory.md) — bounded cross-task knowledge and retrieval
 - [Slack Integration](docs/architecture/slack-integration.md) — UX layer
 - [GitHub Integration](docs/architecture/github-integration.md) — PR workflow
+- [Triggers](docs/architecture/triggers.md) — persistent scheduled and message-driven work
 - [Web Research](docs/architecture/web-research.md) — multi-agent research pipeline
 
 **Guides:**
 
 - [Local Development](docs/guides/local-development.md) — full setup with Slack, GitHub App, ngrok
 - [GitHub App Setup](docs/guides/github-setup.md) — create the App, required permissions & webhook events, env vars
+- [Cloud E2E Sandbox](docs/guides/e2e-in-cloud-sandbox.md) — run the E2E harness behind a TLS-intercepting proxy
 - [Plugin System](docs/architecture/plugin-system.md) — how plugins are structured and loaded (plus the bundled `writing-plugins` skill under `examples/plugins/.claude/skills/`)
 - [Docker Setup](DOCKER.md) — container configuration and troubleshooting
 - [Deployment](docs/guides/deployment.md) — production deployment and operations
