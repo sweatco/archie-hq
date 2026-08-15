@@ -143,6 +143,7 @@ function messageThread(over: Partial<SlackThread> = {}): SlackThread {
     threadId: TRIGGER_TS,
     channel: { id: CHANNEL, name: CHANNEL_NAME },
     shared: false,
+    taskVisibility: 'public',
     currentMessageTs: TRIGGER_TS,
     rootAuthorWasBot: false,
     messages: [{

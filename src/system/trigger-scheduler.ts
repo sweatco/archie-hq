@@ -15,11 +15,12 @@ import { Task } from '../tasks/task.js';
 import { appendSlackMessage } from '../tasks/persistence.js';
 import type { SlackThread } from '../types/task.js';
 import type { Trigger, TriggerBinding, TriggerCondition } from '../types/trigger.js';
+import type { TaskVisibility } from '../types/task.js';
 import { listTriggers, saveTrigger, deleteTrigger } from './trigger-store.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { emitEvent } from './event-bus.js';
 import { logger } from './logger.js';
-import { postSlackMessage, isChannelReachable } from '../connectors/slack/client.js';
+import { postSlackMessage, isChannelReachable, fetchChannelIsPrivate } from '../connectors/slack/client.js';
 import { ensureChannelCanvas } from '../connectors/slack/channel-canvas.js';
 import { ensureChannelPins } from '../connectors/slack/channel-pins.js';
 
@@ -191,21 +192,17 @@ export function getChannelMessageTriggers(channelId: string): Trigger[] {
 
 // ---- Schedule firing ----
 
-interface FireContext {
-  kind: 'schedule' | 'message';
-  /**
-   * For message context: the thread the triggering message was posted in, exactly as `fetchSlackThread` returned it. This is what the fired task ingests — `Task.append(thread)` is the single path every other Slack task uses, so a triggered task's knowledge log is written by the same renderer, under the same redaction policy, with the same `msg:<ts>` ids.
-   */
-  thread?: SlackThread;
-  /**
-   * For message context: the already-rendered body of the triggering message — the same string the `contains` filter was matched against. It exists here as the ingestion floor's payload: `fetchSlackThread` drops a raw message that has neither a `user` nor a `botId`, so the message that fired the trigger is sometimes absent from `thread.messages` and `append` writes nothing for it. This field is what gets written in that case.
-   */
-  body?: string;
-  /** For message context: the triggering message's author — its user id, else its bot id, and deliberately UNSET when the payload carried neither. That absence is the signal the ingestion floor keys on: it is the one reason `fetchSlackThread` drops a message that the redaction policy has nothing to say about. */
-  authorId?: string;
-  /** Human-readable channel name for the reason line shown to the agent. */
-  channelName?: string;
-}
+type FireContext =
+  | { kind: 'schedule' }
+  | {
+      kind: 'message';
+      thread: SlackThread;
+      body?: string;
+      authorId?: string;
+      channelName?: string;
+    };
+
+export type FireOutcome = 'fired' | 'deferred' | 'cap-dropped' | 'paused';
 
 /**
  * Pure planning step for a single tick: given a trigger and the current instant,
@@ -317,10 +314,13 @@ async function tickTrigger(trigger: Trigger, now: Date): Promise<void> {
 
   // Fire ONCE for the trigger this tick, even when several conditions coincide
   // (M2: "any match fires the trigger" — not one task per condition).
-  await fireTrigger(trigger, { kind: 'schedule' });
+  const outcome = await fireTrigger(trigger, { kind: 'schedule' });
 
-  // fireTrigger may have paused + deindexed the trigger (daily cap, unreachable
-  // channel). If so, leave its conditions alone.
+  // A privacy/provenance check can defer a due run. Keep the exact due
+  // conditions so the scheduler retries after a public prompt update.
+  if (outcome === 'deferred') return;
+
+  // fireTrigger may have paused + deindexed an unreachable destination.
   if (!enabledTriggers.has(trigger.id)) return;
 
   trigger.conditions = plan.nextConditions;
@@ -343,8 +343,8 @@ async function tickTrigger(trigger: Trigger, now: Date): Promise<void> {
  * Firing posts no preamble — the spawned PM does the work and posts the result
  * itself, so the first message the channel sees is the actual output.
  */
-export async function fireTrigger(trigger: Trigger, context: FireContext): Promise<void> {
-  if (!triggersEnabled()) return;
+export async function fireTrigger(trigger: Trigger, context: FireContext): Promise<FireOutcome> {
+  if (!triggersEnabled()) return 'deferred';
 
   // Pre-flight for a channel-bound schedule fire: if the bound channel was
   // deleted or archived (or the bot removed and it archived), pause the trigger
@@ -360,17 +360,32 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
       deindexTrigger(trigger.id);
       emitEvent('trigger:paused', trigger.id, { reason: 'bound channel unreachable' });
       await notifyCreator(trigger, `⚠️ A trigger you set up was paused — its channel (#${trigger.binding.channel_name}) is gone or archived. Recreate it elsewhere if you still need it.`);
-      return;
+      return 'paused';
     }
+  }
+
+  // Resolve the live destination before quota accounting. A stored prompt may
+  // move from a private/unknown source into a private destination, but it may
+  // never cross into a public task without explicit public provenance.
+  const visibility: TaskVisibility = context.kind === 'message'
+    ? context.thread.taskVisibility
+    : trigger.binding.type === 'user'
+      ? 'private'
+      : (await fetchChannelIsPrivate(trigger.binding.channel_id)) ? 'private' : 'public';
+  if (visibility === 'public' && trigger.prompt_origin_visibility !== 'public') {
+    logger.warn(
+      'trigger-scheduler',
+      `Trigger ${trigger.id} deferred: public destination requires a publicly sourced prompt`,
+    );
+    return 'deferred';
   }
 
   if (!withinDailyCap()) {
     logger.warn('trigger-scheduler', `Daily fire cap (${DAILY_FIRE_CAP}) reached — dropping trigger ${trigger.id}`);
     await notifyCreator(trigger, `⚠️ A trigger you set up couldn't run — Archie hit its daily limit of automated runs. It will resume tomorrow.`);
-    return;
+    return 'cap-dropped';
   }
-
-  const task = await Task.create();
+  const task = await Task.create(visibility);
   task.metadata.triggered_by = trigger.id;
 
   // Wire delivery. A message fire ingests the triggering thread, which links it as the default channel and
@@ -381,14 +396,14 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
   // channel's standing context. It doubles as the "this fire homed a task in a channel" flag: a message
   // fire and a DM-bound fire both leave it undefined.
   let homeChannelId: string | undefined;
-  if (context.kind === 'message' && context.thread) {
-    // Ingestion, not announcement. `append` is the one path every other Slack task uses, and it does five things this branch would otherwise have to reinvent (and previously simply skipped): it writes the message to knowledge.log through the single renderer with the author line and the `msg:<ts>` id, applies the redaction policy via `shouldRedact`, skips file downloads for a redacted message while downloading them otherwise so the `[Attachments: …]` suffix carries usable local paths, links `slack:<channel>:<threadId>` as a channel, and promotes it to `default_channel`. That last pair is why `linkSlackThread` is NOT also called here — `append` links the identical key with the same shape, so doing both would double-write the same record.
+  if (context.kind === 'message') {
+    // Ingestion, not announcement. `append` is the one path every other Slack task uses: it classifies authors, renders and persists messages, handles files, links the Slack thread, and promotes it to `default_channel`.
     await task.append(context.thread);
 
     // The ingestion floor, deliberately narrow. `fetchSlackThread` drops any raw message that has neither a `user` nor a `botId`, so the very message that fired this trigger can be missing from the thread it was fetched from — in which case `append` walked an empty (or incomplete) message list and wrote no log entry for it, and a delegated agent, which sees only knowledge.log, would have no idea what was said. Writing it directly from the body dispatch already rendered is what closes that hole.
     //
     // It fires ONLY for that reason, which is what `!context.authorId` tests — no user id and no bot id, so there is no identity for the redaction policy to classify in the first place. The fetch filter also drops a bot post from another workspace, and while the dispatch-side gate that is supposed to catch those first derives the team the same way (`bot_profile.team_id || team`, on both sides), the two read DIFFERENT PAYLOADS — the inbound `message` event on one side, what `conversations.replies` returns for that same ts on the other — so a post the event gate let through can still be dropped by the fetch. Writing on *any* absence would re-admit exactly that content, unredacted, past the one policy every other write to this log goes through. An empty body is refused for the same reason in miniature: an entry with no text claims a message the log does not actually carry. The ts comes from `thread.threadId` rather than being passed in separately — dispatch fires only on TOP-LEVEL messages, so the thread's root IS the message that fired, and the condition reads as what it actually asks: did the fetched thread contain its own root? Nothing else is needed: `append` registers the channel, promotes `default_channel` and advances `last_processed_ts` even when `thread.messages` is empty — only the per-message loop is skipped — so the thread is already owned and a second link would be redundant.
-    if (!context.authorId && context.body && !context.thread.messages.some((m) => m.ts === context.thread!.threadId)) {
+    if (!context.authorId && context.body && !context.thread.messages.some((m) => m.ts === context.thread.threadId)) {
       const author = 'unknown';
       await appendSlackMessage(
         task.taskId,
@@ -451,6 +466,7 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
   trigger.last_fired_at = new Date().toISOString();
   await saveTrigger(trigger);
   emitEvent('trigger:fired', task.taskId, { trigger_id: trigger.id });
+  return 'fired';
 }
 
 // ---- Announcements (config changes only — never firing) ----

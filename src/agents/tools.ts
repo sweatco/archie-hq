@@ -13,7 +13,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import type { AgentName, FindingType, AttachedRepo, SlackThreadMessage } from '../types/task.js';
+import type { AgentName, FindingType, AttachedRepo, SlackThreadMessage, TaskVisibility } from '../types/task.js';
 import type { Task } from '../tasks/task.js';
 import type { Agent } from './agent.js';
 import { getVisiblePeerIdsForSender, findAgentDefsContainingRepo, synthesizeDynamicAgentDef, isAutoMergeRepo } from './registry.js';
@@ -2359,8 +2359,9 @@ function makePrivacyResolver(): (channelId: string) => Promise<boolean> {
         // the bot was removed from and so dropped out of the workspace cache.
         // Resolve it live via the STRICT lookup that throws on error, and fail
         // closed on any error (treat as private) so a private channel is never
-        // leaked into a public/DM listing. getChannelInfo can't be used here —
-        // it swallows errors and returns isPrivate:false (i.e. fails open).
+        // leaked into a public/DM listing. Use the strict lookup here rather
+        // than the display-oriented helper so this policy owns its fail-closed
+        // behavior explicitly.
         return fetchChannelIsPrivate(channelId).catch(() => true);
       });
       cache.set(channelId, p);
@@ -2429,6 +2430,9 @@ function createProposeTriggerTool(agent: Agent, task: Task) {
     },
     async (args) => {
       if (!triggersEnabled()) return ok('Triggers are currently disabled on this instance (ARCHIE_TRIGGERS_ENABLED=false).');
+      if (task.metadata.visibility !== 'public') {
+        return ok('Triggers cannot be created from a private task. Start the request in a public channel so the saved prompt cannot carry private conversation content into a later run.');
+      }
 
       const b = args.binding;
       if (!b.channel_id || !b.channel_name) return ok('A trigger needs both channel_id and channel_name for delivery.');
@@ -2474,6 +2478,7 @@ function createProposeTriggerTool(agent: Agent, task: Task) {
         binding,
         conditions: built.conditions,
         action: { prompt: args.action_prompt },
+        prompt_origin_visibility: task.metadata.visibility,
         summary: args.summary,
       };
       await saveTrigger(trigger);
@@ -2553,10 +2558,16 @@ function createUpdateTriggerTool(_agent: Agent, task: Task) {
         return ok(`Trigger ${args.id} isn't visible from here, so it can't be managed from this conversation.`);
       }
 
-      const editedContent = Boolean(args.action_prompt || args.conditions || args.summary);
+      const editedContent = isTriggerContentEdit(args);
+      if (!triggerContentEditAllowed(task.metadata.visibility, args)) {
+        return ok('Trigger content cannot be changed from a private task. Pause or resume it here, or make prompt, summary, and condition changes from a public task.');
+      }
       let statusChange: 'paused' | 'resumed' | null = null;
 
-      if (args.action_prompt) trigger.action.prompt = args.action_prompt;
+      if (args.action_prompt) {
+        trigger.action.prompt = args.action_prompt;
+        trigger.prompt_origin_visibility = task.metadata.visibility;
+      }
       if (args.summary) trigger.summary = args.summary;
       if (args.conditions) {
         const defaultTz = trigger.conditions.find((c): c is Extract<TriggerCondition, { type: 'schedule' }> => c.type === 'schedule')?.tz || 'UTC';
@@ -2617,6 +2628,20 @@ function createUpdateTriggerTool(_agent: Agent, task: Task) {
       return ok(msg);
     },
   );
+}
+
+type TriggerContentEdit = {
+  action_prompt?: unknown;
+  summary?: unknown;
+  conditions?: unknown;
+};
+
+function isTriggerContentEdit(update: TriggerContentEdit): boolean {
+  return update.action_prompt !== undefined || update.summary !== undefined || update.conditions !== undefined;
+}
+
+export function triggerContentEditAllowed(visibility: TaskVisibility, update: TriggerContentEdit): boolean {
+  return visibility === 'public' || !isTriggerContentEdit(update);
 }
 
 function createDeleteTriggerTool(_agent: Agent, task: Task) {

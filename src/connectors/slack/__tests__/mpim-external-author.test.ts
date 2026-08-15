@@ -28,9 +28,13 @@ vi.mock('../client.js', () => ({
   addReaction: vi.fn(),
   setSlackDryRun: vi.fn(),
   getUserInfo: vi.fn(),
-  // Faithful classification: external iff a guest or a different team_id than
-  // home — the same rule as the real isExternalUser, so "getUserInfo returns a
-  // user isExternalUser classifies as external" is exercised end-to-end.
+  classifySlackIdentity: vi.fn(
+    (u: { teamId?: string; isRestricted?: boolean; isUltraRestricted?: boolean }) => {
+      if (!u?.teamId) return 'unknown';
+      if (u.isRestricted || u.isUltraRestricted || u.teamId !== HOME_TEAM) return 'external';
+      return 'internal';
+    },
+  ),
   isExternalUser: vi.fn(
     (u: { teamId?: string; isRestricted?: boolean; isUltraRestricted?: boolean }) =>
       Boolean(u?.isRestricted) ||
@@ -40,7 +44,9 @@ vi.mock('../client.js', () => ({
   isChannelShared: vi.fn().mockResolvedValue(false),
   postEphemeral: vi.fn(),
   getSlackClient: vi.fn(),
+  getChannelInfo: vi.fn().mockResolvedValue({ id: 'C_EDIT', name: 'private', isPrivate: false, isIm: false }),
   cleanSlackText: vi.fn((s: string) => s),
+  extractMessageContent: vi.fn().mockResolvedValue({ text: 'edited text' }),
 }));
 
 vi.mock('../channel-canvas.js', () => ({ ensureChannelCanvas: vi.fn() }));
@@ -66,6 +72,7 @@ vi.mock('../../../tasks/persistence.js', () => ({
   loadMetadata: vi.fn(),
   appendCliMessage: vi.fn(),
   readEvents: vi.fn(),
+  renderMessageForContext: vi.fn((msg: { text: string }) => msg.text),
 }));
 
 vi.mock('../../../system/logger.js', () => ({
@@ -75,9 +82,9 @@ vi.mock('../../../system/logger.js', () => ({
   },
 }));
 
-import { handleSlackEvent } from '../events.js';
+import { handleSlackEdit, handleSlackEvent } from '../events.js';
 import { Task } from '../../../tasks/task.js';
-import { getUserInfo, isExternalUser, addReaction, fetchSlackThread } from '../client.js';
+import { getUserInfo, classifySlackIdentity, addReaction, fetchSlackThread, getChannelInfo } from '../client.js';
 import { findTaskByThread } from '../../../tasks/persistence.js';
 
 // Both id shapes Slack issues for an mpim. `G…` is the documented classic shape;
@@ -118,7 +125,7 @@ describe('mpim external-author bail-out (AC4)', () => {
 
           // The author was resolved and classified as external...
           expect(vi.mocked(getUserInfo)).toHaveBeenCalledWith('U_EXTERNAL');
-          expect(vi.mocked(isExternalUser)).toHaveReturnedWith(true);
+          expect(vi.mocked(classifySlackIdentity)).toHaveReturnedWith('external');
 
           // ...so the handler bailed before any side effect: no ack reaction,
           // no thread fetch, no task lookup, no task creation.
@@ -130,4 +137,97 @@ describe('mpim external-author bail-out (AC4)', () => {
       }
     }
   }
+
+  it('fails closed when a normal-channel author lookup fails', async () => {
+    vi.mocked(getUserInfo).mockRejectedValue(new Error('rate limited'));
+
+    await handleSlackEvent({
+      type: 'app_mention',
+      channel: 'C_PUBLIC',
+      user: 'U_UNKNOWN',
+      text: '<@UBOT> help',
+      ts: '1700000000.000200',
+    });
+
+    expect(vi.mocked(addReaction)).not.toHaveBeenCalled();
+    expect(vi.mocked(fetchSlackThread)).not.toHaveBeenCalled();
+    expect(vi.mocked(Task.create)).not.toHaveBeenCalled();
+  });
+
+  it('rejects a guest in a normal channel', async () => {
+    vi.mocked(getUserInfo).mockResolvedValue({
+      name: 'guest', realName: 'Guest', teamId: HOME_TEAM, isRestricted: true,
+    } as never);
+
+    await handleSlackEvent({
+      type: 'app_mention',
+      channel: 'C_PUBLIC',
+      user: 'U_GUEST',
+      text: '<@UBOT> help',
+      ts: '1700000000.000300',
+    });
+
+    expect(vi.mocked(classifySlackIdentity)).toHaveReturnedWith('external');
+    expect(vi.mocked(fetchSlackThread)).not.toHaveBeenCalled();
+    expect(vi.mocked(Task.create)).not.toHaveBeenCalled();
+  });
+});
+
+describe('message edit author and visibility policy', () => {
+  const editEvent = {
+    channel: 'C_EDIT',
+    message: { ts: '2.0', thread_ts: '1.0', user: 'U_EDITOR', text: 'edited text' },
+    previous_message: { ts: '2.0', user: 'U_EDITOR', text: 'old text' },
+  };
+
+  beforeEach(() => {
+    vi.mocked(findTaskByThread).mockResolvedValue('task-edit');
+  });
+
+  it('skips an edit when author lookup fails', async () => {
+    vi.mocked(getUserInfo).mockRejectedValue(new Error('rate limited'));
+
+    await handleSlackEdit(editEvent);
+
+    expect(vi.mocked(Task.get)).not.toHaveBeenCalled();
+  });
+
+  it('skips an edit from a normal-channel guest', async () => {
+    vi.mocked(getUserInfo).mockResolvedValue({
+      name: 'guest', realName: 'Guest', teamId: HOME_TEAM, isRestricted: true,
+    } as never);
+
+    await handleSlackEdit(editEvent);
+
+    expect(vi.mocked(Task.get)).not.toHaveBeenCalled();
+  });
+
+  it('passes private source visibility to the task edit boundary', async () => {
+    const task = {
+      metadata: {
+        channels: {
+          'slack:C_EDIT:1.0': { type: 'slack', channel_id: 'C_EDIT', channel_name: 'private', thread_id: '1.0' },
+        },
+      },
+      appendSlackEdit: vi.fn().mockResolvedValue(true),
+      sendMessage: vi.fn().mockResolvedValue(undefined),
+    };
+    vi.mocked(getUserInfo).mockResolvedValue({
+      name: 'editor', realName: 'Editor', teamId: HOME_TEAM,
+    } as never);
+    vi.mocked(getChannelInfo).mockResolvedValue({
+      id: 'C_EDIT', name: 'private', isPrivate: true, isIm: false,
+    });
+    vi.mocked(Task.get).mockResolvedValue(task as never);
+
+    await handleSlackEdit(editEvent);
+
+    expect(task.appendSlackEdit).toHaveBeenCalledWith(
+      'slack:C_EDIT:1.0',
+      expect.objectContaining({ id: 'U_EDITOR', teamId: HOME_TEAM }),
+      '2.0',
+      'edited text',
+      'private',
+    );
+  });
 });

@@ -22,6 +22,7 @@ vi.mock('../slack/client.js', () => ({
   addReaction: vi.fn(),
   setSlackDryRun: vi.fn(),
   getUserInfo: vi.fn(),
+  classifySlackIdentity: vi.fn().mockReturnValue('internal'),
   isExternalUser: vi.fn().mockReturnValue(false),
   isChannelShared: vi.fn(),
   postEphemeral: vi.fn(),
@@ -66,7 +67,7 @@ import type { Application, Request, Response } from 'express';
 import { registerMergeActionHandlers } from '../slack/events.js';
 import { mountApiRoutes } from '../api/routes.js';
 import { Task } from '../../tasks/task.js';
-import { getUserInfo, isExternalUser, updateMessage } from '../slack/client.js';
+import { classifySlackIdentity, getUserInfo, updateMessage } from '../slack/client.js';
 import { emitEvent } from '../../system/event-bus.js';
 
 const EXPECTED = { github: 'org/backend', pr_number: 42 };
@@ -137,7 +138,7 @@ function makeReq(body: Record<string, unknown>): Request {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(isExternalUser).mockReturnValue(false);
+  vi.mocked(classifySlackIdentity).mockReturnValue('internal');
   vi.mocked(getUserInfo).mockResolvedValue({ realName: 'Dana', email: 'dana@example.com' } as never);
 });
 
@@ -188,6 +189,34 @@ describe('merge approval — Slack button and API route resolve identically (AC8
     expect(task.handleMergeDenial).toHaveBeenCalledTimes(2);
     expect(task.handleMergeDenial.mock.calls[1]![0]).toEqual(task.handleMergeDenial.mock.calls[0]![0]);
     expect(task.handleMergeApproval).not.toHaveBeenCalled();
+  });
+
+  it('ignores approve and deny actions from external users', async () => {
+    const task = makeFakeTask();
+    vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
+    vi.mocked(classifySlackIdentity).mockReturnValue('external');
+    const { approve, deny } = captureSlackHandlers();
+
+    await approve(slackPayload() as never);
+    await deny(slackPayload() as never);
+
+    expect(task.handleMergeApproval).not.toHaveBeenCalled();
+    expect(task.handleMergeDenial).not.toHaveBeenCalled();
+    expect(vi.mocked(updateMessage)).toHaveBeenCalledWith(
+      'C1', '111.222', expect.stringContaining('Waiting for a workspace member'), undefined,
+    );
+  });
+
+  it('fails closed when an action actor cannot be classified', async () => {
+    const task = makeFakeTask();
+    vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
+    vi.mocked(getUserInfo).mockRejectedValue(new Error('Slack unavailable'));
+    const { approve } = captureSlackHandlers();
+
+    await approve(slackPayload() as never);
+
+    expect(task.handleMergeApproval).not.toHaveBeenCalled();
+    expect(vi.mocked(updateMessage)).not.toHaveBeenCalled();
   });
 
   it('mismatched button value: stale disposition, no merge, message updated with the stale notice', async () => {
@@ -246,17 +275,6 @@ describe('merge approval — Slack button and API route resolve identically (AC8
     expect(vi.mocked(emitEvent)).toHaveBeenCalledWith(
       'approval:resolved', 'task-123', { type: 'merge', approve: true },
     );
-  });
-
-  it('external approver still resolves the approval with identity omitted', async () => {
-    const task = makeFakeTask();
-    vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
-    vi.mocked(isExternalUser).mockReturnValue(true);
-
-    const { approve } = captureSlackHandlers();
-    await approve(slackPayload() as never);
-
-    expect(task.handleMergeApproval).toHaveBeenCalledWith(undefined, EXPECTED);
   });
 
   it('API merge request without github/pr_number is a 400 with no resolution call', async () => {

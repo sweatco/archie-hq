@@ -59,6 +59,7 @@ function threadWithFile(): SlackThread {
     threadId: '100.000',
     channel: { id: 'C1', name: 'ops' },
     shared: false,
+    taskVisibility: 'public',
     currentMessageTs: '100.000',
     rootAuthorWasBot: false,
     messages: [{

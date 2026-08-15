@@ -1,5 +1,7 @@
 # Archie response formatting: message footer + PR cards
 
+**Status:** Implemented
+
 ## Context
 
 Archie's Slack replies today are a single CommonMark `markdown` block with no metadata — there's no way for a user to see which task/session a message belongs to or which model the PM is running, and when a repo agent opens a PR the user only learns about it if the PM happens to paste the URL. We want every Archie reply to carry a small footer (task id + PM model), and we want pull requests to surface as compact, self-updating "cards" — like the Code section in the Claude desktop app — so it's obvious a PR opened, how big the change is (`+/−`, files), its state, and CI result, with a link.

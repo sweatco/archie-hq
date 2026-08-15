@@ -183,14 +183,16 @@ describe('channel-message trigger dispatch matches the rendered body', () => {
 
     expect(vi.mocked(fireTrigger)).toHaveBeenCalledTimes(1);
     // ...and the rendered body is what the filter was matched against. It is also what `fireTrigger` now reads: the body is passed as `FireContext.body`, and a fire whose fetched thread is missing the triggering message writes exactly this string to the task's knowledge log, so the same render both decides which posts FIRE and reaches the spawned agent.
-    expect(vi.mocked(fireTrigger).mock.calls[0][1]).toMatchObject({
+    const context = vi.mocked(fireTrigger).mock.calls[0][1];
+    expect(context).toMatchObject({
       kind: 'message',
       body: 'deploy failed on prod (build 4711)',
     });
+    if (context.kind !== 'message') throw new Error('expected message fire');
     // The fetched thread travels with the fire — it is what the task ingests, and its root ts is the
     // triggering message's own, since dispatch only ever fires on a top-level post.
-    expect(vi.mocked(fireTrigger).mock.calls[0][1].thread?.channel.id).toBe(CHANNEL);
-    expect(vi.mocked(fireTrigger).mock.calls[0][1].thread?.threadId).toBe('1700000000.000100');
+    expect(context.thread.channel.id).toBe(CHANNEL);
+    expect(context.thread.threadId).toBe('1700000000.000100');
   });
 
   it('still fires on plain top-level text', async () => {

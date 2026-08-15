@@ -251,7 +251,7 @@ If a clone is reused across stop/reactivate cycles (e.g., RW reactivation where 
 - `src/connectors/github/branch-state.ts` — `assignPrNumber()` (resets per-PR merge markers on branch reuse), `hydrateBranchState()`, `findBranchStateByPR()` (per-branch state helpers)
 - `src/agents/spawn.ts` — `spawnAgent()` with repo-track logic, tool gating, clone creation trigger, sandbox config, `GIT_AUTHOR_*` env injection for commit authorship
 - `src/agents/sandbox.ts` — `buildSandboxConfig()`, `createFilesystemGuardHooks()` — the two layers that enforce the read-only clone in RO mode
-- `src/agents/tools.ts` — `createPMAgentMcpServer` / `createRepoToolsMcpServer` / `createBaseAgentMcpServer`, `request_edit_mode` tool definition
+- `src/agents/tools.ts` — `createOrchestrationMcpServer` / `createRepoToolsMcpServer` / `createBaseAgentMcpServer`, `request_edit_mode` tool definition
 - `src/tasks/task.ts` — `handleEditModeApproval()`, `handleEditModeDenial()`, `cleanupClones()`, `postInteractiveToUser()`
 - `src/connectors/slack/events.ts` — `approve_edit_mode` and `deny_edit_mode` Bolt action handlers
 - `src/connectors/api/routes.ts` — non-Slack approval/denial path (CLI/HTTP) that calls the same `handleEditMode*` methods

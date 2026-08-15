@@ -125,7 +125,7 @@ Slack webhook
        found    -> Task.get() -> task.append(thread)
                    -> task.sendMessage(AGENT_PROMPTS.existingTask)
        not found, (app_mention OR DM OR rootAuthorWasBot) AND thread has >=1 visible message
-         -> Task.create() -> task.append(thread)
+         -> Task.create(thread.taskVisibility) -> task.append(thread)
                    (a reply to a bot-started thread is acked here, post-fetch)
                    -> task.sendMessage(AGENT_PROMPTS.newTask)
        not found, reply in a thread the bot didn't start -> ignore
@@ -133,7 +133,7 @@ Slack webhook
 
 `rootAuthorWasBot` (computed by `fetchSlackThread` from the raw root message, before bot-message filtering) is true when the thread's root was posted by Archie itself — i.e. a top-level message it made via the task-decoupled `post_to_channel` explore tool. A human reply to such a thread seeds a new task (and the bot's root message is kept in the thread so the task has context); a reply in a thread Archie merely posted into, or never touched, has a non-bot root and is ignored.
 
-A muted thread (`SlackChannel.muted = true`, set by the PM's `mute_channel` tool) is unmuted by an `@mention` and otherwise skipped. In DM channels, any inbound message also unmutes — there is no `@mention` path in a DM, so a DM message is treated as the equivalent. `mute_channel` mutes a single channel — the one the PM names, or the task's `default_channel` if omitted; it refuses to mute DM channels (channel IDs starting with `D`) up front, but the DM-as-unmute rule above is the backstop that recovers any legacy task whose DM channel was muted before this restriction existed. Title generation runs as a fire-and-forget Haiku call after the first append; for DM-rooted tasks the resulting title is pushed to Slack via `assistant.threads.setTitle` (see `src/connectors/slack/title.ts`). External users (different `team_id`, or `is_restricted` / `is_ultra_restricted` guests) are filtered out before any work is spawned; their messages are still re-read on later events because `fetchSlackThread` refreshes full history each time.
+A muted thread (`SlackChannel.muted = true`, set by the PM's `mute_channel` tool) is unmuted by an `@mention` and otherwise skipped. In DM channels, any inbound message also unmutes — there is no `@mention` path in a DM, so a DM message is treated as the equivalent. `mute_channel` mutes a single channel — the one the PM names, or the task's `default_channel` if omitted; it refuses to mute DM channels (channel IDs starting with `D`) up front, but the DM-as-unmute rule above is the backstop that recovers any legacy task whose DM channel was muted before this restriction existed. Title generation runs as a fire-and-forget Haiku call after the first append; for DM-rooted tasks the resulting title is pushed to Slack via `assistant.threads.setTitle` (see `src/connectors/slack/title.ts`). External event authors cannot start work. In fetched history, verified external authors are redacted. Messages are processed chronologically; ingestion stops before an author whose workspace identity cannot be verified, leaving that message retryable.
 
 ## Group DMs (channel-like)
 
@@ -165,9 +165,11 @@ What a channel pins is standing context about that channel, in the same way the 
 
 Opening a pin needs no new tool: the PM already has `read_thread` for a message, whose `channel` and `thread_ts` parameters take the pin's `channel_id` and `ts`, and `fetch_slack_reference` now accepts a pinned file id as well as a canvas-referenced one. Both live in `comms-tools`, which is PM-only, so a specialist that needs a pin asks — exactly as it does for a canvas file reference.
 
-## Multi-Channel Support
+## Task Visibility and Channel Binding
 
-A single task can be linked to multiple destinations — Slack threads (channel or DM) and the CLI. The `TaskMetadata` type (`src/types/task.ts`) holds a `channels` record keyed by `slack:<channelId>:<threadTs>` (or `cli` for the CLI channel). The relevant Slack entry shape is:
+Every task has a monotonic `public | private` visibility. Public Slack channels, including Slack Connect channels, create public tasks. Private channels and DMs create private tasks; a channel-info lookup failure also fails closed to private. CLI tasks are public. A task can downgrade from public to private but never upgrade. The downgrade is flushed before any content or watermark from that private source is written; a failed flush aborts ingestion. Message triggers inherit the source thread's visibility, while scheduled triggers derive it from the live delivery channel. Legacy tasks without the field load as private.
+
+A task can bind at most one Slack thread. `Task.append()` and `linkSlackThread()` reject a different Slack thread once one is linked, so a public thread cannot be continued in a DM or private conversation. The `TaskMetadata` type (`src/types/task.ts`) holds the bound channel in a `channels` record keyed by `slack:<channelId>:<threadTs>`; CLI-originated or operator-followed tasks may also carry the idempotent `cli:local` entry. The Slack entry shape is:
 
 ```typescript
 interface SlackChannel {
@@ -184,11 +186,13 @@ interface SlackChannel {
 }
 ```
 
-A task's Slack channels are linked by `task.append(thread)` as inbound events arrive (the originating @mention/DM/bot-started thread, plus any thread the bot is later drawn into). The first linked channel is recorded as `default_channel`, the implicit destination when `post_to_user` is called without a target. The PM cannot open new DMs or new task-linked threads; to reach a channel that is NOT part of the task it uses the task-decoupled explore/post tools (`read_channel_history`, `read_thread`, `post_to_channel`), which never register a channel on `metadata.channels`.
+The originating @mention, DM, or bot-started thread is linked by `task.append(thread)` and recorded as `default_channel`, the implicit destination when `post_to_user` is called without a target. Follow-ups are found by exact thread ID and return to that task. The PM cannot open new DMs or new task-linked threads; to reach another channel it uses the task-decoupled explore/post tools (`read_channel_history`, `read_thread`, `post_to_channel`), which never register a channel on `metadata.channels`.
 
 ## Message Deduplication
 
-Each Slack channel entry stores a `last_processed_ts` timestamp. The eyes-reaction acknowledgment in `handleSlackEvent` uses it to remove the previous "eyes" reaction before adding one to the new message, so only the most recent inbound message ever shows the indicator. `task.append(thread)` in `src/tasks/task.ts` is also responsible for advancing `last_processed_ts` and skipping messages it has already absorbed into the knowledge log.
+Each Slack channel entry stores a `last_processed_ts` timestamp. The eyes-reaction acknowledgment in `handleSlackEvent` uses it to remove the previous "eyes" reaction before adding one to the new message, so only the most recent inbound message ever shows the indicator. `task.append(thread)` advances it after each ingested or redacted message and skips messages it has already absorbed. An unknown author stops the chronological pass without advancing past that message.
+
+Automation status is separate from workspace affiliation. Archie's own root message is trusted. Other bot/app messages enter task history only when their bot ID or app user ID is listed in `SLACK_TRUSTED_AUTOMATION_IDS` and Slack verifies the home workspace. Unlisted or transiently unresolved automation stops at the retryable watermark; verified external automation is redacted.
 
 ## How PM Replies Reach Slack
 
@@ -246,7 +250,7 @@ Some system events require user decisions via Slack buttons. The PM calls `task.
 - **Edit mode approval**: "Approve" / "Deny" buttons (action IDs: `approve_edit_mode`, `deny_edit_mode`). See [Edit Mode](./edit-mode.md).
 - **Research budget approval**: "Approve (+5)" / "Deny" buttons (action IDs: `approve_research_budget`, `deny_research_budget`).
 
-Button clicks are handled by Bolt action handlers in `src/connectors/slack/events.ts`. When clicked, the handler acknowledges the interaction, updates the original message (removing buttons and showing the outcome), and calls the corresponding `Task` method (`handleEditModeApproval` / `handleEditModeDenial` / `handleResearchBudgetApproval` / `handleResearchBudgetDenial`), which modifies task metadata and reactivates the PM agent.
+Button clicks are handled by Bolt action handlers in `src/connectors/slack/events.ts`. Every authorization action resolves the actor before changing state; external users, guests, missing actors, and lookup failures are acknowledged and ignored. A lookup failure posts a private retry message to the clicker. An external or guest click posts a private explanation and annotates the original card as waiting for a workspace member while preserving its approval controls. For an internal actor, the handler updates the original message and calls the corresponding `Task` method. The same guard covers approvals and denials for edit mode, max mode, research budget, merges, and triggers.
 
 ## Natural Language Guidelines for PM Responses
 
@@ -282,7 +286,7 @@ The Slack client extracts file metadata from messages, including files shared di
 - **Acknowledgment (eyes reaction)** — `@mention` and DM messages are acknowledged with an `:eyes:` reaction (plain thread replies in an engaged channel are not, to avoid noise during inter-employee conversation). `task.ackMessage` records the acked message on `SlackChannel.ack_ts` and clears the previous one, so only one indicator is live per thread and it survives non-mention follow-ups. Cleaned up on task stop/complete by `clearAcks`.
 - **Agent-driven reactions** — the PM can react to *any* message in a linked thread via the `react_to_message` tool (and `unreact_from_message` / `get_message_reactions`). Messages are addressable because `appendSlackMessage` stamps each knowledge-log source line with a `msg:<ts>` id; the agent passes that `ts` as `message_id`. Reactions present at ingest time are also captured as a `SlackReaction[]` snapshot (from `conversations.replies`) and rendered as a `[Reactions: …]` line in the log; `get_message_reactions` reads the live state via `reactions.get`.
 - **Muting** — the PM's `mute_channel` tool sets `SlackChannel.muted = true` on a single channel (the one named, or the task's `default_channel` if no `channel` arg is given), after which that thread is ignored until a new `@mention` toggles it back on. DM channels cannot be muted because there is no `@mention` re-engagement path in a DM.
-- **Shared channels (Slack Connect)** — `isChannelShared` (60s TTL cache) flags external-shared channels; `sendSharedChannelWarnings` posts ephemeral notices once per (thread × user): a general shared-channel heads-up to internal participants, and a forward-from-external notice to anyone who pastes content originally authored by an external user.
+- **Shared channels (Slack Connect)** — `isChannelShared` (60s TTL cache) flags external-shared channels and preserves a previously observed `shared=true` result across transient API failures. A first lookup failure still fails open to non-shared because no prior evidence exists. `sendSharedChannelWarnings` posts ephemeral notices once per (thread × user): a general shared-channel heads-up to internal participants, and a forward-from-external notice to anyone who pastes content originally authored by an external user.
 
 ## Relevant Source Files
 
