@@ -4,6 +4,9 @@
 
 export type TaskStatus = 'in_progress' | 'stopped' | 'completed';
 
+/** Immutable confidentiality class assigned when a task is created. */
+export type TaskVisibility = 'public' | 'private';
+
 /** Core agent names - repo agents can be any string ending in '-agent' */
 export type CoreAgentName = 'pm-agent' | 'triage-agent';
 
@@ -33,6 +36,10 @@ export interface SlackAuthor {
   teamId?: string;
   isRestricted?: boolean;
   isUltraRestricted?: boolean;
+  isBot?: boolean;
+  isAppUser?: boolean;
+  /** Set only for Archie's own root or an explicitly configured integration. */
+  trustedAutomation?: boolean;
 }
 
 /** An emoji reaction present on a Slack message (snapshot at fetch time). */
@@ -65,16 +72,17 @@ export interface SlackThreadMessage {
 /**
  * Full Slack thread context — all API data resolved, ready for task consumption.
  *
- * `shared` is a thread-level signal: when true, the channel is currently
- * shared with one or more external workspaces (Slack Connect). Consumers use
- * `shared && isExternalUser(msg.user)` to decide whether to redact a message
- * when writing it out — the data layer never strips content itself.
+ * `shared` is a thread-level signal used for Slack Connect warnings. Author
+ * trust is classified independently, so a failed shared-channel lookup cannot
+ * make an unverified author visible to the task.
  */
 export interface SlackThread {
   threadId: string;
   channel: { id: string; name: string };
   shared: boolean;
-  messages: SlackThreadMessage[];  // bot messages excluded, EXCEPT the root when our bot started the thread
+  /** Visibility to assign if this thread creates a task. */
+  taskVisibility: TaskVisibility;
+  messages: SlackThreadMessage[];
   currentMessageTs: string;
   /**
    * True when OUR bot authored the thread's root message. The router uses this
@@ -109,7 +117,7 @@ export interface SlackChannel extends ChannelBase {
    * indicator. Cleared when the ack is removed.
    */
   ack_ts?: string;
-  /** Snapshot of last observed Slack-Connect / shared-channel state for this channel. */
+  /** Snapshot of last observed Slack-Connect / shared-channel state for warnings. */
   isShared?: boolean;
   /** User IDs already shown the shared-channel ephemeral warning in this thread. */
   warnedUsers?: string[];
@@ -276,6 +284,8 @@ export interface AgentSessionState {
 
 export interface TaskMetadata {
   task_id: string;
+  /** Task-level confidentiality class. It may downgrade to private, never upgrade. */
+  visibility: TaskVisibility;
   task_owner: AgentName | null;
   participants: AgentName[];
   channels: Record<string, Channel>;   // Active message delivery targets, keyed by channel ID
@@ -388,4 +398,3 @@ export interface SlackAttachment {
   /** Text content of the attachment (forwarded message body, unfurled preview, etc.). */
   text: string;
 }
-

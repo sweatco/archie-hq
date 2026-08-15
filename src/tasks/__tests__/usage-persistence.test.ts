@@ -1,12 +1,5 @@
 /**
- * Unit tests for appendUsageRecord (the usage.jsonl writer).
- *
- * Reuses persistence.test.ts's mock set so the module graph stays isolated:
- * workdir.js (mkdtempSync SESSIONS_DIR), logger, event-bus, slack client, ./task.js.
- *
- * The writer is fire-and-forget: appendUsageRecord enqueues on a per-task write
- * queue and its own returned promise resolves BEFORE the queued file write runs.
- * Tests therefore await the observable effect (vi.waitFor) rather than the call.
+ * Filesystem-backed tests for the usage JSONL writer.
  */
 
 import { describe, it, expect, vi, afterAll, beforeEach } from 'vitest';
@@ -53,17 +46,12 @@ import {
   generateTaskId,
   type TaskUsageRecord,
 } from '../persistence.js';
-// The mocked logger (see vi.mock above): logger.warn fires ONLY from the
-// writer's catch block, so it is the observable signal that distinguishes the
-// existsSync guard (no warn) from a swallowed write failure (warn).
 import { logger } from '../../system/logger.js';
 
 afterAll(async () => {
   await rm(SESSIONS_ROOT, { recursive: true, force: true });
 });
 
-// Reset call history between tests so one test's warn does not leak into
-// another's assertion (the logger mock is module-level and shared).
 beforeEach(() => {
   vi.clearAllMocks();
 });
@@ -84,8 +72,6 @@ function makeRecord(taskId: string): TaskUsageRecord {
   };
 }
 
-const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
 describe('appendUsageRecord', () => {
   it('appends one JSON line (including query_nonce) to shared/usage.jsonl and round-trips', async () => {
     const taskId = 'task-20260101-1200-write';
@@ -95,7 +81,7 @@ describe('appendUsageRecord', () => {
     await appendUsageRecord(record);
 
     const usagePath = getUsageLogPath(taskId);
-    await vi.waitFor(() => expect(existsSync(usagePath)).toBe(true));
+    expect(existsSync(usagePath)).toBe(true);
 
     const contents = await readFile(usagePath, 'utf-8');
     const lines = contents.split('\n').filter((l) => l.trim());
@@ -106,6 +92,21 @@ describe('appendUsageRecord', () => {
     expect(parsed.query_nonce).toBe('nonce-abc-123');
   });
 
+  it('serializes concurrent appends in call order', async () => {
+    const taskId = 'task-20260101-1200-queue';
+    await mkdir(getSharedPath(taskId), { recursive: true });
+    const first = { ...makeRecord(taskId), query_nonce: 'first' };
+    const second = { ...makeRecord(taskId), query_nonce: 'second' };
+
+    await Promise.all([appendUsageRecord(first), appendUsageRecord(second)]);
+
+    const records = (await readFile(getUsageLogPath(taskId), 'utf-8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as TaskUsageRecord);
+    expect(records.map((record) => record.query_nonce)).toEqual(['first', 'second']);
+  });
+
   it('no-ops via the existsSync guard (no file, no failed-write log) when shared/ is missing', async () => {
     const taskId = 'task-20260101-1200-missing';
     const sharedPath = getSharedPath(taskId);
@@ -113,59 +114,32 @@ describe('appendUsageRecord', () => {
 
     await expect(appendUsageRecord(makeRecord(taskId))).resolves.toBeUndefined();
 
-    // Give the queued write ample time to (incorrectly) run, then assert absence.
-    await delay(100);
     expect(existsSync(getUsageLogPath(taskId))).toBe(false);
     expect(existsSync(sharedPath)).toBe(false);
-
-    // Pins the `if (!existsSync(dir)) return;` guard specifically. Without it,
-    // appendFile would be attempted against a path whose parent is missing,
-    // fail with ENOENT, and be caught+logged — so a warn here proves the guard
-    // was skipped. File-absence alone cannot distinguish these two paths (a
-    // failed write also leaves no file), which is why this assertion is needed.
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
   it('swallows write failures (logs, resolves, never rejects) when shared/ exists but the target is unwritable', async () => {
     const taskId = 'task-20260101-1200-wfails';
     await mkdir(getSharedPath(taskId), { recursive: true });
-    // Occupy the usage-log path with a directory so appendFile fails with
-    // EISDIR. shared/ exists, so the existsSync guard does NOT short-circuit —
-    // this drives the try/catch on a genuine write failure, the exact path
-    // spawn.ts reaches via the fire-and-forget `void appendUsageRecord(...)`.
+    // A directory at the log path makes appendFile fail with EISDIR.
     await mkdir(getUsageLogPath(taskId), { recursive: true });
 
-    // Fire-and-forget: the returned promise resolves immediately regardless.
     await expect(appendUsageRecord(makeRecord(taskId))).resolves.toBeUndefined();
 
-    // The queued write must be caught and logged rather than rethrown. Without
-    // the try/catch the queued promise would reject; because it is void-called
-    // at spawn.ts, that surfaces as an unhandled rejection under Node's default
-    // policy and crashes the process. logger.warn firing is the deterministic
-    // proof the catch ran (and that the promise settled instead of rejecting).
-    await vi.waitFor(() => expect(logger.warn).toHaveBeenCalledTimes(1));
+    expect(logger.warn).toHaveBeenCalledTimes(1);
     expect(logger.warn).toHaveBeenCalledWith('usage', expect.stringContaining(taskId));
   });
 
-  // Path-injection guard: an unsafe taskId must be rejected before any path is
-  // built, so the writer never runs and nothing is written (CodeQL sink at
-  // getSharedPath/getUsageLogPath + appendFile).
   it('no-ops on an unsafe (traversal) taskId: no write, no throw, no failed-write log', async () => {
-    // A real task whose shared/ EXISTS — so the existsSync guard alone would
-    // NOT stop the write; only the isSafeTaskId guard does.
     const realTaskId = 'task-20260101-1200-real01';
     await mkdir(getSharedPath(realTaskId), { recursive: true });
 
-    // Unsafe id that, unguarded, normalizes back to the real task's shared/ dir
-    // under SESSIONS_ROOT and would therefore pass existsSync and append there.
+    // Without validation this traversal normalizes to the real task directory.
     const unsafe = `../${basename(SESSIONS_ROOT)}/${realTaskId}`;
 
     await expect(appendUsageRecord(makeRecord(unsafe))).resolves.toBeUndefined();
 
-    // Give the queued write ample time to (incorrectly) run, then assert nothing
-    // landed at the real task's usage log and no failed-write warn fired — the
-    // guard returned before the try/catch, so the writer never ran.
-    await delay(100);
     expect(existsSync(getUsageLogPath(realTaskId))).toBe(false);
     expect(logger.warn).not.toHaveBeenCalled();
   });
