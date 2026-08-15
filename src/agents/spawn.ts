@@ -54,7 +54,7 @@ import { emitEvent } from '../system/event-bus.js';
 import { getProbeBaseUrl } from '../system/context-probe.js';
 import { buildSandboxConfig, buildManagedNetworkPolicy, buildPackageManagerCacheEnv, createFilesystemGuardHooks, TRUSTED_PACKAGE_REGISTRY_DOMAINS, type SandboxOptions } from './sandbox.js';
 import { applyOAuthBindings } from '../system/oauth/inject.js';
-import { enrichPromptWithMemory, isMemoryEnabled, isInjectionEnabled } from '../memory/index.js';
+import { enrichPromptWithMemory, isMemoryEnabled, isInjectionEnabled, isMemoryToolsEnabled, createMemoryToolsMcpServer, type MemoryToolsCtx } from '../memory/index.js';
 import { parseTranscript } from '../memory/transcript.js';
 
 // ---- Prompt generation (per agent kind) ----
@@ -178,7 +178,7 @@ async function extractTaskMemoryContext(taskId: string): Promise<{
   users: import('../memory/types.js').UserRef[];
   firstUserMessage?: string;
 }> {
-  if (!isMemoryEnabled() || !isInjectionEnabled()) return { users: [] };
+  if (!isMemoryEnabled() || (!isInjectionEnabled() && !isMemoryToolsEnabled())) return { users: [] };
   try {
     const parsed = parseTranscript(await readKnowledgeLog(taskId), getBotUserId() ?? undefined);
     return {
@@ -340,8 +340,21 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     'research-tools': researchServer,
   };
 
+  // Memory read tools (pull path) — every track, read-only, gated by
+  // ARCHIE_MEMORY_TOOLS (default off; ARCHIE_MEMORY=false overrides). Rides
+  // the existing spawn.ts memory seam, so ejection still removes the same files.
+  // User ids in the ctx scope user-memory search hits to task participants.
   const taskMemoryContext = await extractTaskMemoryContext(taskId);
   const memoryUsers = taskMemoryContext.users;
+  const memoryToolsCtx: MemoryToolsCtx = {
+    taskId,
+    visibility: metadata.visibility,
+    agent: def.id,
+    authorUserIds: memoryUsers.map((user) => user.userId),
+  };
+  if (isMemoryToolsEnabled()) {
+    mcpServers['memory-tools'] = createMemoryToolsMcpServer(memoryToolsCtx);
+  }
 
   if (isPmAgent(def)) {
     // ---- PM coordinator ----

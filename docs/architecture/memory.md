@@ -1,8 +1,8 @@
 # Memory Layer
 
-The memory layer gives Archie persistent cross-task knowledge: user collaboration profiles, recent activity, task summaries, and entity pages for durable subjects such as services, systems, integrations, concepts, and repositories. Memory reaches agents through bounded prompt injection. The subsystem lives under `src/memory/`; memory artifacts use Markdown and operator telemetry uses JSONL. Its runtime lifecycle and injection path are gated by `ARCHIE_MEMORY`; manual housekeeping has its own flag.
+The memory layer gives Archie persistent cross-task knowledge: user collaboration profiles, recent activity, task summaries, and entity pages for durable subjects such as services, systems, integrations, concepts, and repositories. Memory reaches agents through prompt injection and three read-only tools. The subsystem lives under `src/memory/`; memory artifacts use Markdown and operator telemetry uses JSONL. Its runtime lifecycle and agent read paths are gated by `ARCHIE_MEMORY`; manual housekeeping has its own flag.
 
-This document is the as-built source of truth for the runtime layer.
+This document describes the implementation as built. Historical decisions live in [`docs/plans/20260719-memory-v2.md`](../plans/20260719-memory-v2.md); future work lives in [`docs/proposals/memory-v2-roadmap.md`](../proposals/memory-v2-roadmap.md).
 
 ## Confidentiality Model
 
@@ -16,7 +16,7 @@ Every task has one immutable `visibility` value:
 
 The task keeps the visibility assigned at creation. A follow-up in the same Slack thread continues the same task. A task cannot attach a second Slack thread, so it cannot bridge a public thread and a DM or private conversation.
 
-Only public tasks write memory. `processExtraction()` checks `metadata.visibility === 'public'` before it reads `knowledge.log` or invokes the extractor. Private tasks write no collaboration profiles, entities, summaries, or activity rows. Private tasks can still consume organizational memory through bounded prompt injection.
+Only public tasks write memory. `processExtraction()` checks `metadata.visibility === 'public'` before it reads `knowledge.log` or invokes the extractor. Private tasks write no collaboration profiles, entities, summaries, or activity rows. Private tasks can still consume organizational memory through the normal injection and read-tool paths.
 
 The store is therefore public by construction. Summaries and activity rows carry no access stamps, reads need no per-artifact authorization checks, and raw task logs are not part of the cross-task memory corpus. `grep_task_log` does not exist.
 
@@ -37,6 +37,11 @@ task spawn
   ├─ inject recent public activity and the entity index
   └─ select and inject relevant entity pages
 
+agent pull tools
+  ├─ search_memory
+  ├─ read_entity
+  └─ read_task_summary
+
 task completion
   ├─ load metadata
   ├─ private or legacy-unknown visibility ──▶ stop
@@ -49,7 +54,7 @@ task completion
        └─ run deterministic housekeeping when soft caps are exceeded
 ```
 
-Core imports the subsystem in exactly two seam files: `src/index.ts` initializes it, and `src/agents/spawn.ts` injects context. The memory subsystem may import core persistence and task types internally.
+Core imports the subsystem in exactly two seam files: `src/index.ts` initializes it, and `src/agents/spawn.ts` registers the read paths. The memory subsystem may import core persistence and task types internally.
 
 ## Components
 
@@ -66,9 +71,11 @@ src/memory/
 ├── entities.ts       entity parsing, resolution, and persistence
 ├── entity-index.ts   derived index and push selection
 ├── context.ts        prompt-injection assembly
-├── telemetry.ts      selection and evidence-drop telemetry
+├── tools.ts          three read-only pull tools
+├── telemetry.ts      selection, pull, and evidence-drop telemetry
 ├── pending-queue.ts  durable extraction queue
 ├── housekeeping.ts   deterministic validation, dedupe, staleness, and ordering
+└── annotations.ts    touched-date parsing and rendering
 ```
 
 Agent-loadable runtime memory lives under `workdir/memory/`:
@@ -88,7 +95,7 @@ The telemetry subtree is operator-only, so downloading or snapshotting `workdir/
 
 ## Read Path
 
-`src/agents/spawn.ts` extracts the current task's message authors from `knowledge.log`. Source-line authorship counts; a body mention does not. Redacted external authors are excluded. The resulting Slack IDs scope collaboration-profile injection.
+`src/agents/spawn.ts` extracts the current task's message authors from `knowledge.log`. Source-line authorship counts; a body mention does not. Redacted external authors are excluded. The resulting Slack IDs scope collaboration profiles for both injection and search.
 
 When `ARCHIE_MEMORY_INJECT=true`, `enrichPromptWithMemory()` can append:
 
@@ -100,6 +107,16 @@ When `ARCHIE_MEMORY_INJECT=true`, `enrichPromptWithMemory()` can append:
 ```
 
 Recent activity contains only public-task output, so every row is injected. The entity index is always included when entities exist. Full entity pages are selected by repo, author relations, and lexical overlap with the task title; while asynchronous title generation is still pending, selection falls back to the first non-redacted user message from `knowledge.log`. Selection then expands one relation hop and is bounded separately for `org` and non-`org` scopes. `touched_by` relations are truncated only while rendering; disk retains the full provenance list.
+
+When `ARCHIE_MEMORY_TOOLS=true`, every agent receives three read-only tools:
+
+| Tool | Reads | Bound |
+|---|---|---|
+| `search_memory(query[, max_results])` | active entities, current authors' collaboration-profile files, bounded recent activity; snippets are escaped historical evidence | 10 thin hits by default |
+| `read_entity(slug)` | one entity page; aliases resolve and the escaped result is marked as historical evidence | about 8K characters |
+| `read_task_summary(taskId)` | one public task summary, explicitly wrapped as untrusted historical data | about 8K characters |
+
+Identifiers pass `paths.ts` guards before filesystem access. No tool mutates memory or opens a task's raw `knowledge.log`.
 
 ## Write Path
 
@@ -159,14 +176,15 @@ Entity frontmatter carries type, scope, repos, domain, status, aliases, and `las
 
 ## Telemetry
 
-`$ARCHIE_WORKDIR/memory/telemetry/tasks/<taskId>/telemetry.jsonl` contains two active record shapes:
+`$ARCHIE_WORKDIR/memory/telemetry/tasks/<taskId>/telemetry.jsonl` contains three record shapes:
 
 - Selection records, one per enriched spawn, with selected and dropped entities plus token estimates.
+- Pull records, one per read-tool call, with arguments, returned identifiers, result count, and zero-result status.
 - `user-update-dropped` records for evidence-validation failures.
 
 Public and private tasks both persist telemetry from enabled memory paths. Records include visibility and may contain the generated task title or up to 500 characters of the first user message used as its fallback, participant identifiers, and verbatim search queries, so operators must treat the subtree as sensitive.
 
-Telemetry is outside the agent-loadable corpus: the sandbox does not mount `workdir/memory/`, and prompt injection has no telemetry reader. The `.public-store-v1` marker certifies only the loadable corpus, not the telemetry subtree.
+Telemetry is outside the agent-loadable corpus: the sandbox does not mount `workdir/memory/`, prompt injection has no telemetry reader, and the three memory tools use explicit non-telemetry paths. The `.public-store-v1` marker certifies only the loadable corpus, not the telemetry subtree.
 
 All telemetry appends are fail-safe and never alter agent results or extraction outcomes.
 
@@ -180,8 +198,9 @@ The manual entry point is `npm run memory:housekeeping -- --target <all|entities
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `ARCHIE_MEMORY` | `true` | Master switch for initialization, extraction, and injection. |
+| `ARCHIE_MEMORY` | `true` | Master switch for initialization, extraction, injection, and tools. |
 | `ARCHIE_MEMORY_INJECT` | `false` | Enables prompt injection. Extraction remains active when off. |
+| `ARCHIE_MEMORY_TOOLS` | `false` | Enables the three read-only tools independently of injection. |
 | `ARCHIE_MEMORY_HOUSEKEEPING` | `true` | Enables automatic and manual housekeeping; the manual command does not consult `ARCHIE_MEMORY`. |
 | `ARCHIE_MEMORY_USER_CAP` | `100` | Soft cap on bullets per collaboration-profile file. |
 | `ARCHIE_MEMORY_SECTION_CAP` | `30` | Soft cap on bullets per section. |
@@ -200,7 +219,7 @@ The evaluation harness is not part of this branch. It lives in the stacked [`fea
 
 1. Delete `src/memory/` and the two memory prompts.
 2. Remove `initMemory()` from `src/index.ts`.
-3. Remove memory imports, author extraction, and injection from `src/agents/spawn.ts`.
+3. Remove memory imports, author extraction, injection, and tool registration from `src/agents/spawn.ts`.
 4. Delete `workdir/memory/`.
 5. Delete `scripts/memory-housekeeping.ts` and remove the `memory:housekeeping` package script.
 
@@ -208,4 +227,4 @@ No database or external service cleanup is required.
 
 ## Testing
 
-Tests under `src/memory/__tests__/` cover extraction, persistence, selection, telemetry, and crash recovery. Slack and task tests cover visibility assignment and authorization boundaries. Developer commands live in [`src/memory/CLAUDE.md`](../../src/memory/CLAUDE.md).
+Tests under `src/memory/__tests__/` cover extraction, persistence, selection, tools, telemetry, and crash recovery. Slack and task tests cover visibility assignment and authorization boundaries. Developer commands live in [`src/memory/CLAUDE.md`](../../src/memory/CLAUDE.md).

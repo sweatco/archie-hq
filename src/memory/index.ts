@@ -120,4 +120,6 @@ async function warnLegacyUserFiles(): Promise<void> {
 }
 
 export { enrichPromptWithMemory } from './context.js';
-export { isMemoryEnabled, isInjectionEnabled } from './paths.js';
+export { isMemoryEnabled, isInjectionEnabled, isMemoryToolsEnabled } from './paths.js';
+export { createMemoryToolsMcpServer, MEMORY_TOOL_DESCRIPTORS } from './tools.js';
+export type { MemoryToolsCtx } from './tools.js';

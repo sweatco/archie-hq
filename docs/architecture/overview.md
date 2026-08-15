@@ -64,9 +64,9 @@ Archie (Autonomous Responsive and Collaborative Hyper Intelligent Employee) is a
 | Component | Technology |
 |---|---|
 | Runtime | Node.js >= 20, TypeScript, ES modules |
-| Agent Framework | `@anthropic-ai/claude-agent-sdk` ^0.2.77 |
+| Agent Framework | `@anthropic-ai/claude-agent-sdk` (pinned; see `package.json`) |
 | Models | Opus (PM), Sonnet (repo agents, plugin agents, research). Haiku (title generation, triage — triage currently disabled) |
-| Slack Integration | `@slack/bolt` ^4.6.0, `@slack/web-api` ^7.0.0 |
+| Slack Integration | `@slack/bolt`, `@slack/web-api` (see `package.json`) |
 | GitHub Integration | `@octokit/app` ^16.1.2, `@octokit/webhooks` ^14.2.0 |
 | Schema Validation | `zod` ^4.3.6, `zod-to-json-schema` ^3.25.0 |
 | Prompt Parsing | `gray-matter` ^4.0.3 (frontmatter extraction) |
@@ -176,6 +176,9 @@ src/
 │   ├── slack/
 │   │   ├── client.ts            # Slack Web API wrapper, posting helpers, mention resolution, file downloads
 │   │   ├── events.ts            # Slack Bolt app, event handlers, deterministic thread→task routing, button actions
+│   │   ├── task-routing.ts       # Pure inbound routing decisions
+│   │   ├── channel-canvas.ts     # Channel project-context discovery and loading
+│   │   ├── status.ts             # Slack live-status renderer
 │   │   └── title.ts             # Assistant-thread title sync (DM list naming)
 │   ├── github/
 │   │   ├── client.ts            # GitHub App / Octokit wrapper, git identity, GIT_ASKPASS
@@ -200,9 +203,9 @@ src/
 │   └── prompts.ts               # Shared prompt constants (new task, recovery, etc.)
 ├── tasks/
 │   ├── task.ts                  # Task class: lifecycle, budgets, agent management, callbacks
-│   ├── launch.ts                # Spawn an independent child task from a running task
 │   ├── persistence.ts           # Disk I/O: metadata, knowledge log, debounced writes, lookups
 │   ├── recovery.ts              # Startup recovery, idle detection, progressive recovery
+│   ├── status.ts                # Task activity status composition and lifecycle
 │   └── title-generator.ts       # Haiku-authored task title pipeline
 ├── system/
 │   ├── shutdown.ts              # Shutdown state (getIsShuttingDown / setShuttingDown)
@@ -212,13 +215,17 @@ src/
 │   ├── workdir.ts               # Bootstrap: path constants (WORKDIR, PLUGINS_DIR, REPOS_DIR, SESSIONS_DIR, SECRETS_DIR), clone/pull/fetch helpers
 │   ├── secrets-vault.ts         # Encrypted vault for OAuth tokens (master-key validated at startup)
 │   ├── reminder-scheduler.ts    # Periodic reminder scheduler
+│   ├── trigger-scheduler.ts     # Persistent schedule/message trigger execution
+│   ├── trigger-store.ts         # Trigger persistence and indexes
 │   ├── event-bus.ts             # Process-local event emitter (for SSE / observers)
 │   └── oauth/                   # OAuth flow helpers (token injection into agent env)
+├── memory/                      # Cross-task extraction, storage, bounded injection, and read tools
 ├── mcp/
 │   └── research-tools.ts        # Web research pipeline (multi-agent, prompts inline)
 ├── types/
 │   ├── task.ts                  # TaskMetadata, SlackThread, RepositoryInfo, etc.
 │   ├── agent.ts                 # AgentDef, AgentHandle, AgentSessionState
+│   ├── trigger.ts               # Trigger bindings, conditions, and persisted state
 │   └── index.ts                 # Type re-exports
 └── utils/
     └── prompt-loader.ts         # Markdown prompt file loader with variable substitution

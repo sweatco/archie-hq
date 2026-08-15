@@ -43,13 +43,13 @@ It had access to `Glob`, `Grep`, and `Read` to search `sessions/` for matching t
 
 ### PM Agent
 
-**Source**: `src/agents/agent.ts`, `src/agents/spawn.ts`, `src/agents/tools.ts` (`createPMAgentMcpServer`)
+**Source**: `src/agents/agent.ts`, `src/agents/spawn.ts`, `src/agents/tools.ts` (`createCommsMcpServer`, `createOrchestrationMcpServer`, `createSchedulingMcpServer`)
 
 One PM agent instance is spawned per task. It is the orchestrator: it receives all external input (from connectors), delegates work to specialist agents, communicates with users (Slack, CLI, GitHub), and manages the task lifecycle.
 
 **Model**: Opus by default (`def.model || 'opus'` in `spawn.ts`). Overridable through the `pm` plugin overlay's frontmatter, which can also set `effort` and `maxTurns`.
 
-**Tools** (registered on the `pm-agent-tools` MCP server):
+**Tools** (combined PM surface from shared `agent-tools` plus the `comms-tools`, `orchestration-tools`, and `scheduling-tools` servers):
 
 | Tool | Purpose |
 |---|---|
@@ -61,17 +61,22 @@ One PM agent instance is spawned per task. It is the orchestrator: it receives a
 | `list_channels` | List the channels readable for this task (`users.conversations`): every public channel Archie's in, **plus this task's own channel** if it's private/a DM (appended from task metadata). Never enumerates other private channels/DMs. |
 | `read_channel_history` / `read_thread` | Read a channel's recent messages, or a specific thread — exploration only, not linked to the task. **Accessible-set gate** (`assertAccessibleChannel`): any public channel, plus this task's own channel (even if private/DM); any *other* private channel/DM is refused. |
 | `post_to_channel` | Post into **any** channel Archie's a member of — public **or** private (e.g. escalate to a private management channel) — WITHOUT linking it to the task. 1:1 DMs and group DMs (mpims) refused via `assertPostableChannel`. NOT accessible-set-gated (posting outward is intentional); a prompt guardrail warns against leaking sensitive content. A human reply to a new top-level post here starts its own fresh task. |
+| `react_to_message` / `unreact_from_message` / `get_message_reactions` | Manage reactions on messages in a linked Slack thread. |
+| `fetch_slack_reference` | Fetch a file referenced by an adopted channel canvas into the PM workspace. |
 | `assign_task_owner` | Designate an agent as task owner |
-| `report_completion` | Optionally post a final message, then stop the task |
+| `report_completion` | Optionally post a final message, record completion intent, and complete once all agents are quiescent |
 | `request_edit_mode` | Post an interactive Approve/Deny prompt to the default channel and pause the task |
+| `request_max_mode` | Request a human-approved model or reasoning upgrade for this task |
 | `get_agents_status` | Check which agents are spawned and active |
 | `get_task_usage` | Report the current task's token usage (always) and SDK-reported cost when available, broken down per agent |
 | `mute_channel` | Disengage from one Slack channel/thread (the one named via `channel`, or the task's default channel) until the bot is @mentioned there again. DM channels cannot be muted |
 | `parse_datetime` / `set_reminder` / `cancel_reminder` | Schedule a reminder that wakes the task at an ISO datetime |
 | `list_available_repos` | List repos the GitHub App installation can reach (paginates `GET /installation/repositories`); tags repos a plugin specialist already covers. Cached per task. |
 | `spawn_repo_agent` | Create an on-demand repo agent bound to a chosen list of available repos (eager-mounted at spawn). Persists a `DynamicAgentSpec` to `metadata.dynamic_agents` and adds it to `task.team`. Rejects a repo already owned as a plugin specialist's primary. |
+| `propose_trigger` / `list_triggers` / `update_trigger` / `delete_trigger` | Manage persistent triggers subject to visibility and approval rules. |
+| `search_memory` / `read_entity` / `read_task_summary` | Read bounded public-store memory when `ARCHIE_MEMORY_TOOLS=true`. |
 
-The `Skill` tool is provided by the Claude Agent SDK itself (not by `pm-agent-tools`); skills are mounted from the `pm` plugin's `skills/` directory and surfaced via `.claude/skills/` symlinks plus `settingSources: ['project']`. Built-in `Read`, `Glob`, and `Grep` tools are available against the PM workspace and the shared task folder (which is mounted read-only via `additionalDirectories`); `WebSearch` and `WebFetch` are explicitly disallowed.
+The `Skill` tool is provided by the Claude Agent SDK itself, not a custom MCP server. Skills are mounted from the `pm` plugin's `skills/` directory and surfaced via `.claude/skills/` symlinks plus `settingSources: ['project']`. Built-in `Read`, `Glob`, and `Grep` tools are available against the PM workspace and the shared task folder (which is mounted read-only via `additionalDirectories`); `WebSearch` and `WebFetch` are explicitly disallowed.
 
 PR lifecycle tools (push, create PR, merge, etc.) live on repo agents via the `repo-tools` MCP server — the PM has no direct git or GitHub access.
 
@@ -415,7 +420,8 @@ Agent spawning is lazy: agents are only instantiated when they first receive a m
    → Reports back via send_message_to_agent
 
 5. Task completes (or stops)
-   → PM calls report_completion (or stop is invoked elsewhere)
+   → PM calls report_completion; the idle check completes once all agents are quiescent
+   → Or stop is invoked directly by a cancellation or approval pause
    → All queues stopped, agent sessions deactivated
    → Read-only clones removed; RW clones preserved (have branches/commits/PRs)
    → Task metadata set to "completed" / "stopped"

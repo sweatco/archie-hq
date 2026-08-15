@@ -11,7 +11,7 @@ How Archie routes messages, manages tasks, spawns agents, and recovers from fail
 
 | Layer | Source | Purpose |
 |---|---|---|
-| **HTTP Server** | `src/index.ts` | Express app, workdir bootstrap, plugin/repo cloning, health check, GitHub webhook mount, Slack Bolt mount, recovery, reminder scheduler |
+| **HTTP Server** | `src/index.ts` | Express app, workdir bootstrap, plugin/repo cloning, health check, connector mounts, recovery, schedulers, and memory initialization |
 | **Workdir Bootstrap** | `src/system/workdir.ts` | Resolves `ARCHIE_WORKDIR`, clones plugins from `ARCHIE_PLUGINS`, clones repos declared by plugins, refreshes plugins via an `ls-remote` HEAD check (`refreshPlugins`, orchestrated by `syncPlugins` in `src/system/plugin-sync.ts`) |
 | **Slack Events** | `src/connectors/slack/events.ts` | Slack Bolt receiver, event handlers (app_mention/message), interactive button actions, direct routing to PM (triage disabled) |
 | **GitHub Events** | `src/connectors/github/events.ts` | GitHub webhook dispatch, direct existing-task handler (with `issue_comment` dedup) |
@@ -19,9 +19,11 @@ How Archie routes messages, manages tasks, spawns agents, and recovers from fail
 | **Task** | `src/tasks/task.ts` | Task class: in-memory state, agent spawning, tool callbacks, lifecycle (create/stop/complete) |
 | **Task Persistence** | `src/tasks/persistence.ts` | Disk I/O: metadata, knowledge log, events JSONL, debounced writes, task lookup by thread/PR |
 | **Task Recovery** | `src/tasks/recovery.ts` | Startup recovery + idle detection + progressive recovery (reinforcement then nuclear restart) |
-| **Task Launch** | `src/tasks/launch.ts` | Launch a new background task from within an existing one |
+| **Task Status** | `src/tasks/status.ts` | Live activity status composition and lifecycle |
 | **Event Bus** | `src/system/event-bus.ts` | Typed in-process EventEmitter for system events (task/agent/message/approval/reminder); SSE clients and JSONL persistence subscribe |
 | **Reminder Scheduler** | `src/system/reminder-scheduler.ts` | In-memory index of pending reminders backed by metadata; 1-minute interval fires due reminders by reactivating tasks |
+| **Trigger Scheduler** | `src/system/trigger-scheduler.ts` | Persistent schedule and channel-message triggers that create fresh tasks |
+| **Memory Layer** | `src/memory/` | Public-task extraction, bounded context injection, and read-only retrieval tools |
 | **Shutdown** | `src/system/shutdown.ts` | Process-wide `isShuttingDown` flag; tasks suppress deactivation writes during shutdown so recovery sees the correct pre-shutdown state |
 | **Message Queue** | `src/agents/message-queue.ts` | Per-agent async producer-consumer queues with replay support |
 | **MCP Tools** | `src/agents/tools.ts` | Custom MCP tool definitions exposed to agents via the Claude Agent SDK |
@@ -87,7 +89,7 @@ Slack webhook (POST /webhooks/slack)
         - fetchSlackThread() — full thread history with redaction
         - findTaskByThread(threadId):
             existing task -> Task.get() + append() new messages + sendMessage(pm-agent, existingTask)
-            no task, and (app_mention OR DM OR rootAuthorWasBot) -> Task.create() + append() + sendMessage(pm-agent, newTask)
+            no task, and (app_mention OR DM OR rootAuthorWasBot) -> Task.create(thread.taskVisibility) + append() + sendMessage(pm-agent, newTask)
             no task, reply in a human-started thread the bot didn't start -> ignore
         - shared-channel ephemeral warnings (per user, per thread)
         - fire-and-forget title generation (Haiku) on first message
@@ -243,9 +245,12 @@ re-spawn those agents.
 
 ## MCP Tool Implementation
 
-Tools are defined in `src/agents/tools.ts` and exposed via MCP servers created per agent type.
+Tools are defined in `src/agents/tools.ts` and exposed through small MCP servers split by concern.
 
-### PM Agent Tools (via `createPMAgentMcpServer`, named `pm-agent-tools`)
+### PM tool surface
+
+The PM receives shared `agent-tools` plus `comms-tools`, `orchestration-tools`, and
+`scheduling-tools`.
 
 | Tool | Description |
 |---|---|
@@ -257,11 +262,16 @@ Tools are defined in `src/agents/tools.ts` and exposed via MCP servers created p
 | `list_channels` | List channels readable for this task: public channels Archie's in (`users.conversations`) + this task's own channel if private/a DM; never other private channels/DMs |
 | `read_channel_history` / `read_thread` | Read a channel's recent messages or a thread — exploration, not linked to the task. Accessible-set gate (`assertAccessibleChannel`): any public channel + this task's own channel (even if private/DM); other private/DMs refused |
 | `post_to_channel` | Post into ANY channel Archie's a member of — public or private (escalation); 1:1 DMs and group DMs (mpims) refused via `assertPostableChannel` — NOT linked to the task and NOT accessible-set-gated (egress is intentional; prompt guardrail against leaking). A human reply to a new top-level post seeds its own fresh task |
+| `react_to_message` / `unreact_from_message` / `get_message_reactions` | Manage reactions on messages in a linked Slack thread |
+| `fetch_slack_reference` | Fetch a file referenced by an adopted channel canvas into the PM workspace |
 | `assign_task_owner` | Assign a repo/plugin agent as task owner |
-| `report_completion` | Optionally post a final message via `post_to_user`, then complete the task |
+| `report_completion` | Optionally post a final message, record completion intent, and let the idle check complete the task once all agents are quiescent |
 | `request_edit_mode` | Post Approve/Deny buttons to the default channel and stop the task until the user responds |
+| `request_max_mode` | Request a human-approved model or reasoning upgrade for this task |
 | `get_agents_status` | Return active/idle status of all spawned agents |
 | `get_task_usage` | Report the current task's total token usage (always) and SDK-reported cost when available, with a per-agent breakdown. See [Persistence › Usage & cost accounting](persistence.md#usage--cost-accounting) |
+| `list_available_repos` / `spawn_repo_agent` | Discover GitHub App repositories and create an on-demand repo agent when no specialist owns one |
+| `propose_trigger` / `list_triggers` / `update_trigger` / `delete_trigger` | Manage persistent triggers subject to visibility and approval rules; see [Triggers](triggers.md) |
 | `mute_channel` | Stop processing a Slack channel/thread until the bot is @mentioned there again. Takes optional `channel` key; defaults to the task's `default_channel`. DM channels cannot be muted |
 | `parse_datetime` / `set_reminder` / `cancel_reminder` | Schedule/cancel reactivation of the task at a future time (via `src/system/reminder-scheduler.ts`) |
 
@@ -283,6 +293,12 @@ Used by both repo agents and plugin agents:
 | `log_finding` | Write an entry to the shared knowledge log (discovery, decision, completion, blocker) |
 | `share_artifact` | Publish an immutable file snapshot to `shared/artifacts/` for inter-agent sharing |
 
+### Memory Tools (`memory-tools`)
+
+When `ARCHIE_MEMORY_TOOLS=true`, every agent also receives `search_memory`,
+`read_entity`, and `read_task_summary`. They are read-only and bounded; see
+[Memory Layer](memory.md#read-paths).
+
 ### Repo Tools (via `createRepoToolsMcpServer`, named `repo-tools`)
 
 Used by repo agents only. Access controlled by `allowedTools` at spawn time:
@@ -294,9 +310,11 @@ Used by repo agents only. Access controlled by `allowedTools` at spawn time:
 | `list_prs` | Always | List PRs with optional filters |
 | `get_pr` | Always | Get full PR details including diff |
 | `get_pr_status` | Always | Get PR state, mergeable status, approval status |
+| `get_pr_checks` / `get_check_run` | Always | Inspect CI checks and one check run in detail |
 | `get_pr_reviews` | Always | Fetch all reviews and line-level comments on a PR |
 | `get_pr_comments` | Always | Fetch general (issue-style) comments on a PR |
 | `get_review_threads` | Always | Fetch review-comment threads with resolution state |
+| `list_code_scanning_alerts` / `get_code_scanning_alert` | Always | Inspect GitHub code-scanning alerts |
 | `push_branch` | Edit mode | Push commits from the local shared clone to origin |
 | `create_pull_request` | Edit mode | Create a GitHub PR and store PR number in branch state |
 | `update_pr` | Edit mode | Update the title and/or description of a PR |
@@ -305,7 +323,7 @@ Used by repo agents only. Access controlled by `allowedTools` at spawn time:
 | `reply_to_review_comment` | Edit mode | Reply inline to an existing review-comment thread |
 | `resolve_review_thread` | Edit mode | Mark a review comment thread as resolved |
 | `request_re_review` | Edit mode | Request reviewers to re-review after changes |
-| `merge_pull_request` | Edit mode | Merge a PR (checks mergeability first) |
+| `merge_pull_request` | Edit mode | Apply the repository merge policy: merge a ready auto-merge PR or request approval in other repositories |
 | `close_pull_request` | Edit mode | Close a PR without merging |
 | `create_branch` | Edit mode | Create a new branch (auto-named) and switch to it |
 | `list_branches` | Edit mode | List branches in the current task |
@@ -349,23 +367,16 @@ resolves), the crash handler wired in `Agent.spawn()` (`src/agents/agent.ts`) ca
 
 ### scheduleIdleCheck
 
-A 3-second delay is applied before checking, to avoid racing with message delivery
-(another agent may be about to send a message that wakes this one).
+A 3-second delay avoids racing a message that is about to wake another agent. The
+pure `idleDecision()` then selects one action:
 
-```typescript
-function scheduleIdleCheck(task: Task): void {
-  setTimeout(async () => {
-    if (!task.isActive || getIsShuttingDown()) return;
-    const allInactive = checkAllAgentsInactive(task);
-    if (allInactive) {
-      await triggerRecovery(task);
-    }
-  }, 3000);
-}
-```
+- **Wait** when the task is inactive, a forced-stop teardown is pending, no agent
+  has spawned, or any agent has an active turn or background task.
+- **Complete** when every agent is idle and the PM called `report_completion`.
+- **Recover** when every agent is idle without completion intent.
 
-`checkAllAgentsInactive()` returns `true` only if `task.agentProcesses.size > 0`
-and every spawned agent's `session.active === false`.
+Message delivery marks its recipient active synchronously, before the SDK begins the
+turn. That invariant prevents the idle check from treating queued work as quiescence.
 
 ### Progressive recovery
 
@@ -376,11 +387,10 @@ and every spawned agent's `session.active === false`.
 
 ### Reinforcement nudge
 
-The system reads `agent.isRunning` (which delegates to `handle.isRunning`) before
-nudging. If the SDK process is alive, it adds either `AGENT_PROMPTS.reinforcePM` or
-`AGENT_PROMPTS.reinforceAgent` to `agent.queue` and calls `agent.updateSession(true)`
-followed by `task.save()` so the active state is persisted. If the process is dead,
-it sets `task.recoveryAttempts = 2` to fast-track to nuclear on the next idle check.
+The system prefers a live task owner, then the PM. It enqueues the appropriate
+reinforcement prompt and marks that agent active through `Task.updateAgentState()`.
+If neither process is live, it immediately runs startup-style agent recovery instead
+of waiting for another idle event.
 
 ---
 
@@ -483,7 +493,7 @@ type TaskStatus = 'in_progress' | 'stopped' | 'completed';
 | `-> in_progress` | New task created and first message sent | `Task.create()` + `task.append(thread)` + `task.sendMessage(...)` (`activate()` sets `metadata.status = 'in_progress'`) |
 | `-> in_progress` | Stopped task reactivated | `Task.get()` followed by `task.sendMessage(...)` — `activate()` flips status back to `in_progress` |
 | `-> stopped` | User cancels, edit mode request, research-budget exceeded, wall-clock timeout | `task.stop()` |
-| `-> completed` | PM calls `report_completion` | `task.complete()` |
+| `-> completed` | All agents become quiescent after the PM records `report_completion` intent | Idle check calls `task.complete()` |
 
 Both `task.stop()` and `task.complete()`:
 1. Set `task.isActive = false` and remove the task from the `activeTasks` map
