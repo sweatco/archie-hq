@@ -20,13 +20,13 @@ Only public tasks write memory. `processExtraction()` checks `metadata.visibilit
 
 The store is therefore public by construction. Summaries and activity rows carry no access stamps, reads need no per-artifact authorization checks, and raw task logs are not part of the cross-task memory corpus. `grep_task_log` does not exist.
 
-Slack Connect public channels use the same public-memory behavior as ordinary public channels. External and guest messages are filtered at Slack ingress, but internal users' questions and Archie's responses are visible to every channel member. Interactive authorization actions are separately restricted to internal Slack actors and fail closed when actor classification fails.
+Slack Connect public channels use the same public-memory behavior as ordinary public channels. Slack filters or redacts external authors before extraction, but a first shared-channel lookup failure can leave external history unredacted. Interactive authorization actions fail closed unless Slack verifies an internal actor. The cache behavior and residual risk are defined in [Slack Integration](slack-integration.md#acknowledgment-muting-and-shared-channel-awareness).
 
-Message-triggered tasks inherit the triggering thread's visibility. Scheduled triggers resolve their delivery channel live and fail closed to private. Private tasks cannot propose or approve persistent triggers, preventing a private conversation from becoming a saved prompt that later runs elsewhere. Legacy triggers without a verified public creation context are paused.
+Trigger-created tasks follow the same public/private write boundary. Trigger creation, update, firing, and legacy-migration rules are defined in [Triggers](triggers.md#visibility--privacy).
 
 ### One-time deployment cleanup
 
-This model removes provenance stamps from stored artifacts, so an existing store created under the former channel-level policy must not be reused as-is. Before deploying this change, snapshot the existing `workdir/memory/` directory, clear it, and let Archie recreate an empty store. On first initialization Archie writes `memory/.public-store-v1`; if an unmarked store already contains data, the memory subsystem disables itself for that process without moving or reading the legacy artifacts. Rollback restores the snapshot together with the previous binary.
+An existing store created under the former channel-level policy must not be reused because its private-derived provenance cannot be reconstructed. Initialization refuses a non-empty store without `.public-store-v1`. Follow the [deployment reset procedure](../guides/deployment.md#memory-v2-store-reset) before upgrading.
 
 ## Architecture
 
@@ -51,7 +51,7 @@ task completion
        ├─ validate author evidence and sanitize output
        ├─ update user and entity files
        ├─ write task summary and recent activity
-       └─ enqueue housekeeping when soft caps are exceeded
+       └─ run deterministic housekeeping when soft caps are exceeded
 ```
 
 Core imports the subsystem in exactly two seam files: `src/index.ts` initializes it, and `src/agents/spawn.ts` registers the read paths. The memory subsystem may import core persistence and task types internally.
@@ -74,7 +74,7 @@ src/memory/
 ├── tools.ts          three read-only pull tools
 ├── telemetry.ts      selection, pull, and evidence-drop telemetry
 ├── pending-queue.ts  durable extraction queue
-├── housekeeping.ts   user consolidation and entity merge/archive
+├── housekeeping.ts   deterministic validation, dedupe, staleness, and ordering
 └── annotations.ts    touched-date parsing and rendering
 ```
 
@@ -106,31 +106,32 @@ When `ARCHIE_MEMORY_INJECT=true`, `enrichPromptWithMemory()` can append:
 <entity slug="payment-service" type="service" scope="repo">…</entity>
 ```
 
-Recent activity contains only public-task output, so every row is injected. The entity index is always included when entities exist. Full entity pages are selected by repo, author relations, and lexical overlap with the task title, then expanded one relation hop and bounded separately for `org` and non-`org` scopes. `touched_by` relations are truncated only while rendering; disk retains the full provenance list.
+Recent activity contains only public-task output, so every row is injected. The entity index is always included when entities exist. Full entity pages are selected by repo, author relations, and lexical overlap with the task title; while asynchronous title generation is still pending, selection falls back to the first non-redacted user message from `knowledge.log`. Selection then expands one relation hop and is bounded separately for `org` and non-`org` scopes. `touched_by` relations are truncated only while rendering; disk retains the full provenance list.
 
 When `ARCHIE_MEMORY_TOOLS=true`, every agent receives three read-only tools:
 
 | Tool | Reads | Bound |
 |---|---|---|
-| `search_memory(query[, max_results])` | active entities, current authors' collaboration-profile files, bounded recent activity | 10 thin hits by default |
-| `read_entity(slug)` | one entity page; aliases resolve and archived pages are marked | about 8K characters |
-| `read_task_summary(taskId)` | one public task summary | about 8K characters |
+| `search_memory(query[, max_results])` | active entities, current authors' collaboration-profile files, bounded recent activity; snippets are escaped historical evidence | 10 thin hits by default |
+| `read_entity(slug)` | one entity page; aliases resolve and the escaped result is marked as historical evidence | about 8K characters |
+| `read_task_summary(taskId)` | one public task summary, explicitly wrapped as untrusted historical data | about 8K characters |
 
 Identifiers pass `paths.ts` guards before filesystem access. No tool mutates memory or opens a task's raw `knowledge.log`.
 
 ## Write Path
 
-`initMemory()` subscribes to `task:completed`. `handleTaskCompleted()` first records the task ID in `pending-extractions.md`, then runs it through a process-wide sequential queue. Successful processing removes the pending entry; startup replays entries left by a crash.
+`initMemory()` subscribes to `task:completed`. `handleTaskCompleted()` first records a generation-keyed task intent in `pending-extractions.md`, then runs it through a process-wide sequential queue. Finalization marks the same generation committed in its journal, removes that pending intent, and only then deletes the journal. Startup can therefore clear a committed intent without rerunning extraction after a crash at that boundary.
 
 The public-task pipeline is:
 
-1. Load task metadata and stop immediately unless visibility is exactly `public`.
-2. Read the transcript and identify actual Slack message authors. When none exist, use `cli:<taskId>` only to label the task summary and activity row; the writable profile set remains empty.
+1. Under the task's ingestion lock, load visibility and take an immutable transcript snapshot; stop without reading the transcript unless visibility is exactly `public`. Release the lock before model work.
+2. Identify actual Slack message authors from the snapshot. When none exist, use `cli:<taskId>` only to label the task summary and activity row; the writable profile set remains empty.
 3. Load every writable Slack author's existing collaboration profile plus the entity index. Never load a `cli:`/`local:` fallback profile into the extractor.
 4. Run the Sonnet extraction side-agent with `maxTurns: 1`, no tools, and a minimal environment.
 5. Sanitize every update. Profile updates are accepted only for Slack author IDs, require one or more resolvable `msg:<ts>` source lines all authored by that same user, and must declare one of the five allowed profile sections.
 6. Apply profile and entity updates. The profile store reports only sanitized candidates that actually changed the file; unmatched replacements are no-ops. Entity writes resolve aliases, enforce closed vocabularies, add `touched_by [[taskId]]`, and rebuild the index after changes.
-7. Replace raw profile candidates with the store-confirmed applied set before writing `tasks/<taskId>/summary.md`, then append a recent-activity row, trim activity to 50 rows, and schedule housekeeping for exceeded soft caps.
+7. Record each sanitized applied delta in `tasks/<taskId>/extraction-journal.json` immediately before its store write. A retry reapplies that small journal idempotently and uses it to rebuild the summary, so a crash after profile or entity writes cannot erase the audit of what changed. The journal is deleted after the summary, activity, and housekeeping complete.
+8. Replace raw profile and entity candidates with the store-confirmed journaled set before writing `tasks/<taskId>/summary.md`. Task-summary prose receives the same instruction and secret checks as other artifacts; rejected prose becomes a fixed placeholder rather than falling back to raw extractor output. Then append a recent-activity row, trim activity to 50 rows, and run housekeeping for exceeded soft caps.
 
 Model output and transcript content are untrusted. Instruction-shaped content, secret-like values, malformed Markdown fields, invalid IDs, and invalid entity fields are rejected before persistence.
 
@@ -167,11 +168,11 @@ Rows are newest first, keyed by task ID, and capped at 50.
 
 ### Task summary
 
-Task summaries contain ordinary metadata, channel links, participating users, a sanitized summary, successfully applied memory updates, and related public tasks. Evidence failures, sanitizer rejections, and unmatched profile replacements never appear in `## Memory Updates`; when no profile update was written and there are no entity or housekeeping updates, that section renders `_no durable learnings_`. There is no `access:` field and Slack links have no per-link visibility field.
+Task summaries contain ordinary metadata, channel links, participating users, a sanitized summary, successfully applied memory updates, and related public tasks. Evidence failures, sanitizer rejections, and unmatched profile replacements never appear in `## Memory Updates`; when no profile or entity update was written, that section renders `_no durable learnings_`. There is no `access:` field and Slack links have no per-link visibility field.
 
 ### Entity pages
 
-Entity frontmatter carries type, scope, repos, domain, status, aliases, and an L0 summary. Facts use the closed categories `fact | config | decision | caveat`; relations use `depends_on | integrates | owned_by | part_of | touched_by | related_to`. Unknown values are dropped. `entities/index.md` is derived and never authoritative.
+Entity frontmatter carries type, scope, repos, domain, status, aliases, and `last_touched`; the body carries an L0 summary. Every accepted update advances `last_touched`, including summary-only and relation-only changes. Legacy pages without it fall back to their newest observation date. Facts use the closed categories `fact | config | decision | caveat`; relations use `depends_on | integrates | owned_by | part_of | touched_by | related_to`. Unknown values are dropped. Housekeeping structurally merges alias-colliding pages into a deterministic canonical slug, repoints inbound relations, and then archives the least-recently-touched active overflow. Archived rows remain on disk but are excluded from the derived `entities/index.md` and prompt selection.
 
 ## Telemetry
 
@@ -181,15 +182,15 @@ Entity frontmatter carries type, scope, repos, domain, status, aliases, and an L
 - Pull records, one per read-tool call, with arguments, returned identifiers, result count, and zero-result status.
 - `user-update-dropped` records for evidence-validation failures.
 
-Public and private tasks both persist every telemetry record their enabled memory paths produce. Records include task visibility so operator-side analysis can separate the two populations. Private-task telemetry is intentionally complete: selection records may include task titles and participant IDs/display names, and pull records include the agent's verbatim query.
+Public and private tasks both persist telemetry from enabled memory paths. Records include visibility and may contain the generated task title or up to 500 characters of the first user message used as its fallback, participant identifiers, and verbatim search queries, so operators must treat the subtree as sensitive.
 
-Telemetry is not part of the agent-loadable memory corpus. The agent sandbox denies the whole workdir and only re-allows explicitly mounted task workspaces, shared folders, repositories, and plugin paths; it never mounts `workdir/memory/` or its telemetry subtree. The fixed memory MCP surface exposes only `search_memory`, `read_entity`, and `read_task_summary`, all backed by explicit non-telemetry paths, and the prompt-context builder has no telemetry reader. Consequently agents can create telemetry through host-side sensors but cannot read it through filesystem tools, prompt injection, or memory tools. Operators must still protect and retain the telemetry subtree as sensitive runtime data. The `.public-store-v1` marker certifies the loadable corpus, not that operator telemetry contains only public-task data.
+Telemetry is outside the agent-loadable corpus: the sandbox does not mount `workdir/memory/`, prompt injection has no telemetry reader, and the three memory tools use explicit non-telemetry paths. The `.public-store-v1` marker certifies only the loadable corpus, not the telemetry subtree.
 
 All telemetry appends are fail-safe and never alter agent results or extraction outcomes.
 
 ## Housekeeping
 
-User bullets carry touched dates. Soft caps enqueue a consolidation side-agent on the same runtime queue as extraction; a trace-back validator prevents it from inventing facts. Entity housekeeping is deterministic code: it merges alias-linked duplicates, archives stale entities, repoints relations, and rebuilds the index.
+Soft caps run deterministic housekeeping on the serialized extraction queue: validation, deduplication, staleness pruning, stable ordering, active-entity cap archival, and entity-index rebuilds. Existing safe legacy profile headings are preserved, but their bullets still pass the current content, secret, staleness, and deduplication checks.
 
 The manual entry point is `npm run memory:housekeeping -- --target <all|entities|U…>`. It runs in a separate process, does not share the server's in-memory queue, and must only run while the Archie service is stopped.
 
@@ -226,4 +227,4 @@ No database or external service cleanup is required.
 
 ## Testing
 
-Run `npx vitest run src/memory/__tests__/` or the whole suite with `npm test`. The lifecycle integration tests cover the public/private task boundary, Slack Connect public behavior, evidence-bound collaboration-profile updates, entity writes, applied-only summaries, activity, and crash recovery. Tool tests cover the three-tool surface, public-store reads, author-scoped profile search, identifier guards, result bounds, and telemetry. Slack client and action tests cover task visibility assignment and internal-only interactive mutations.
+Tests under `src/memory/__tests__/` cover extraction, persistence, selection, tools, telemetry, and crash recovery. Slack and task tests cover visibility assignment and authorization boundaries. Developer commands live in [`src/memory/CLAUDE.md`](../../src/memory/CLAUDE.md).

@@ -84,6 +84,8 @@ export interface EntityRecord {
   /** Domain enum value, or '' when unscoped. */
   domain: string;
   status: EntityStatus;
+  /** Entity-level YYYY-MM-DD recency, persisted on every accepted update. */
+  lastTouched?: string;
   /** L0 one-line summary (from the `<!-- L0: ... -->` comment). */
   summary: string;
   observations: EntityObservation[];

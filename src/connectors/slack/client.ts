@@ -115,7 +115,7 @@ export async function initSlackClient(token: string): Promise<void> {
     homeTeamId = (authResult.team_id as string | undefined) ?? null;
     logger.slack(`Bot user ID: ${botUserId}, bot ID: ${botId}, workspace: ${workspaceUrl}, home team: ${homeTeamId}`);
     if (!homeTeamId) {
-      logger.warn('Slack', 'auth.test did not return team_id — external-user filtering will fail open (no filtering applied)');
+      logger.warn('Slack', 'auth.test did not return team_id — Slack identities cannot be verified as internal');
     }
   } catch (error) {
     logger.warn('Slack', 'Failed to get bot user ID', error);
@@ -139,8 +139,8 @@ export function getBotId(): string | null {
 /**
  * Get the bot's home Slack workspace team ID (from auth.test).
  * Used as the reference point for classifying users as internal vs external.
- * May be null if auth.test() did not return team_id — in that case external
- * filtering fails open (treats everyone as internal).
+ * May be null if auth.test() did not return team_id. Security-sensitive
+ * classification treats every user as unknown in that case.
  */
 export function getHomeTeamId(): string | null {
   return homeTeamId;
@@ -1341,9 +1341,12 @@ async function resolveRawMessages(
           teamId: info.teamId,
           isRestricted: info.isRestricted,
           isUltraRestricted: info.isUltraRestricted,
+          isBot: info.isBot,
+          isAppUser: info.isAppUser,
+          trustedAutomation: (info.isBot || info.isAppUser) && isTrustedSlackAutomationId(uid),
         }];
       } catch {
-        return [uid, null];
+        return [uid, { id: uid, username: uid, realName: uid }];
       }
     })
   );
@@ -1426,6 +1429,9 @@ async function resolveAuthorsAndMap(messages: RawSlackMessage[]): Promise<SlackT
           teamId: info.teamId,
           isRestricted: info.isRestricted,
           isUltraRestricted: info.isUltraRestricted,
+          isBot: info.isBot,
+          isAppUser: info.isAppUser,
+          trustedAutomation: (info.isBot || info.isAppUser) && isTrustedSlackAutomationId(uid),
         }];
       } catch {
         return [uid, { id: uid, username: uid, realName: uid }];
@@ -1437,7 +1443,14 @@ async function resolveAuthorsAndMap(messages: RawSlackMessage[]): Promise<SlackT
   return messages.map((msg) => {
     const author: SlackAuthor = msg.user
       ? userInfoMap.get(msg.user)!
-      : { id: msg.botId!, username: msg.botName || 'bot', realName: msg.botName || 'bot', teamId: msg.teamId };
+      : {
+          id: msg.botId!,
+          username: msg.botName || 'bot',
+          realName: msg.botName || 'bot',
+          teamId: msg.teamId ?? (msg.botId === botId ? homeTeamId ?? undefined : undefined),
+          isBot: true,
+          trustedAutomation: isTrustedSlackAutomationId(msg.botId!),
+        };
     return {
       user: author,
       text: msg.text,
@@ -1571,6 +1584,8 @@ export async function getUserInfo(userId: string): Promise<{
   teamId?: string;
   isRestricted?: boolean;
   isUltraRestricted?: boolean;
+  isBot?: boolean;
+  isAppUser?: boolean;
 }> {
   const client = getSlackClient();
 
@@ -1583,6 +1598,8 @@ export async function getUserInfo(userId: string): Promise<{
     team_id?: string;
     is_restricted?: boolean;
     is_ultra_restricted?: boolean;
+    is_bot?: boolean;
+    is_app_user?: boolean;
   } | undefined;
 
   // External users (Slack Connect) often only populate the name under profile.*
@@ -1604,27 +1621,69 @@ export async function getUserInfo(userId: string): Promise<{
     teamId: user?.team_id,
     isRestricted: user?.is_restricted,
     isUltraRestricted: user?.is_ultra_restricted,
+    isBot: user?.is_bot,
+    isAppUser: user?.is_app_user,
   };
 }
 
-/**
- * Classify a user as external relative to the bot's home Slack team.
- * External = different team_id (Slack Connect / shared channels) OR a guest
- * (`is_restricted` / `is_ultra_restricted`) on the home workspace.
- *
- * Fails open when homeTeamId is unknown (returns false) so the bot remains
- * usable rather than filtering everyone — see startup warning in initSlackClient.
- */
-export function isExternalUser(user: {
+export type SlackIdentity = 'internal' | 'external' | 'unknown';
+export type SlackAffiliation = 'internal' | 'external' | 'unknown';
+export type SlackIngestIdentity = SlackIdentity | 'untrusted';
+
+/** Workspace membership only; automation/guest status is evaluated separately. */
+export function classifySlackAffiliation(user: { teamId?: string }): SlackAffiliation {
+  const home = getHomeTeamId();
+  if (!home || !user.teamId) return 'unknown';
+  return user.teamId === home ? 'internal' : 'external';
+}
+
+/** Classify Slack identity once; only `internal` is trusted. */
+export function classifySlackIdentity(user: {
   teamId?: string;
   isRestricted?: boolean;
   isUltraRestricted?: boolean;
-}): boolean {
-  const home = getHomeTeamId();
-  if (!home) return false;
-  if (user.isRestricted || user.isUltraRestricted) return true;
-  if (user.teamId && user.teamId !== home) return true;
-  return false;
+  isBot?: boolean;
+  isAppUser?: boolean;
+}): SlackIdentity {
+  const affiliation = classifySlackAffiliation(user);
+  if (affiliation === 'unknown') return 'unknown';
+  if (user.isRestricted || user.isUltraRestricted || user.isBot || user.isAppUser) return 'external';
+  return affiliation;
+}
+
+function trustedAutomationIds(): Set<string> {
+  return new Set(
+    (process.env.SLACK_TRUSTED_AUTOMATION_IDS ?? '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean),
+  );
+}
+
+export function isTrustedSlackAutomationId(id: string): boolean {
+  return id === botId || id === botUserId || trustedAutomationIds().has(id);
+}
+
+/** Trust decision for task history ingestion. */
+export function classifySlackIngestAuthor(user: {
+  id: string;
+  teamId?: string;
+  isRestricted?: boolean;
+  isUltraRestricted?: boolean;
+  isBot?: boolean;
+  isAppUser?: boolean;
+  trustedAutomation?: boolean;
+}): SlackIngestIdentity {
+  const affiliation = classifySlackAffiliation(user);
+  if (affiliation === 'unknown') return 'unknown';
+  if (affiliation === 'external' || user.isRestricted || user.isUltraRestricted) return 'external';
+  if (user.isBot || user.isAppUser) return user.trustedAutomation ? 'internal' : 'untrusted';
+  return 'internal';
+}
+
+/** True only for positively identified external/guest/bot users. */
+export function isExternalUser(user: Parameters<typeof classifySlackIdentity>[0]): boolean {
+  return classifySlackIdentity(user) === 'external';
 }
 
 interface ChannelSharedCacheEntry {
@@ -1637,7 +1696,9 @@ const CHANNEL_SHARED_TTL_MS = 60_000;
 /**
  * Returns whether a channel is shared with one or more external Slack
  * workspaces (Slack Connect). DMs are never classified as shared. Result is
- * cached for 1 minute. On API failure, returns false (this is advisory only).
+ * cached for 1 minute. On API failure, preserves a previously observed shared
+ * status; a first lookup still fails open because author trust is classified
+ * independently.
  */
 export async function isChannelShared(channelId: string): Promise<boolean> {
   if (channelId.startsWith('D')) return false;
@@ -1663,6 +1724,7 @@ export async function isChannelShared(channelId: string): Promise<boolean> {
     return isShared;
   } catch (error) {
     logger.warn('Slack', `Failed to fetch shared-channel status for ${channelId}`, error);
+    if (cached?.isShared) return true;
     return false;
   }
 }
@@ -1708,11 +1770,11 @@ export async function getChannelInfo(
   try {
     const result = await client.conversations.info({ channel: channelId });
     const channel = result.channel as
-      | { name?: string; is_im?: boolean; is_private?: boolean; user?: string }
+      | { name?: string; is_im?: boolean; is_mpim?: boolean; is_private?: boolean; user?: string }
       | undefined;
 
     const isIm = channel?.is_im === true;
-    const isPrivate = isIm || channel?.is_private === true;
+    const isPrivate = isIm || channel?.is_mpim === true || channel?.is_private === true;
     if (isIm && channel?.user) {
       const userInfo = await getUserInfo(channel.user);
       return { id: channelId, name: `DM with ${userInfo.realName}`, isPrivate, isIm, imUserId: channel.user };
@@ -1739,8 +1801,8 @@ export async function getChannelInfo(
 export async function fetchChannelIsPrivate(channelId: string): Promise<boolean> {
   const client = getSlackClient();
   const result = await client.conversations.info({ channel: channelId });
-  const channel = result.channel as { is_im?: boolean; is_private?: boolean } | undefined;
-  return channel?.is_im === true || channel?.is_private === true;
+  const channel = result.channel as { is_im?: boolean; is_mpim?: boolean; is_private?: boolean } | undefined;
+  return channel?.is_im === true || channel?.is_mpim === true || channel?.is_private === true;
 }
 
 // ---- Channel canvas tabs + file reads (project-context canvases) ----------
@@ -2039,12 +2101,9 @@ export async function fetchSlackThread(
   const rootAuthorWasBot =
     !!root && ((!!root.user && root.user === botUserId) || (!!root.botId && root.botId === botId));
 
-  // Filter rules:
-  //  - drop our own bot's messages — EXCEPT the thread root, so a task seeded
-  //    from a bot-started thread still carries Archie's originating post.
-  //  - drop external bots (messages from another workspace).
-  // Keep: real users, and internal bots (e.g. bug-tracker integrations) so their
-  // thread starters survive into the knowledge log.
+  // Keep automation messages long enough for Task.append to make the same
+  // chronological trust decision as it does for human authors. Archie's own
+  // chatter is still dropped except for a root that seeded the task.
   const visibleMessages = rawMessages.filter((msg, i) => {
     const isRoot = i === 0;
     if (msg.user) {
@@ -2053,7 +2112,6 @@ export async function fetchSlackThread(
     }
     if (msg.botId) {
       if (msg.botId === botId) return isRoot; // our own bot — keep only at root
-      if (homeTeamId && msg.teamId && msg.teamId !== homeTeamId) return false; // external bot
       return true;
     }
     // No user and no bot id — drop (system message, file_comment, etc.)
@@ -2110,6 +2168,8 @@ export interface SlackUserInfo {
   teamId?: string;             // Slack team_id — used for external-org classification
   isRestricted?: boolean;      // Multi-channel guest
   isUltraRestricted?: boolean; // Single-channel guest
+  isBot?: boolean;
+  isAppUser?: boolean;
 }
 
 let userCache: SlackUserInfo[] = [];
@@ -2146,6 +2206,8 @@ export async function listWorkspaceUsers(): Promise<SlackUserInfo[]> {
         teamId: member.team_id ?? undefined,
         isRestricted: member.is_restricted ?? false,
         isUltraRestricted: member.is_ultra_restricted ?? false,
+        isBot: member.is_bot ?? false,
+        isAppUser: member.is_app_user ?? false,
       });
     }
     cursor = result.response_metadata?.next_cursor || undefined;
@@ -2222,10 +2284,8 @@ function sanitizeJobTitle(title: string): string {
  * A job title is self-authored free text, so carrying one into a system prompt
  * extends trust to whoever wrote it. Excluded are external (Slack Connect) users
  * and home-workspace guests, whose profiles belong to people outside the org.
- * Unlike `isExternalUser`, which fails open to keep the bot usable, this fails
- * *closed*: with no home team we cannot tell insider from outsider, so the map is
- * empty and nobody gets a title. Same on any Slack failure — a missing title is
- * a cosmetic loss, and this feeds prompt context that must never block a spawn.
+ * With no home team we cannot tell insider from outsider, so the map is empty
+ * and nobody gets a title. Same on any Slack failure.
  */
 async function loadTrustedJobTitles(): Promise<Map<string, string>> {
   const titles = new Map<string, string>();
@@ -2238,7 +2298,7 @@ async function loadTrustedJobTitles(): Promise<Map<string, string>> {
     return titles;
   }
   for (const user of users) {
-    if (isExternalUser(user) || !user.title) continue;
+    if (classifySlackIdentity(user) !== 'internal' || !user.title) continue;
     titles.set(user.id, sanitizeJobTitle(user.title));
   }
   return titles;

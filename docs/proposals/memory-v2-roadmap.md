@@ -30,7 +30,7 @@ Until that change lands, `npm run memory:eval` and `scripts/snapshot-memory.sh` 
 ## Rollout gates
 
 1. Merge the runtime architecture with `ARCHIE_MEMORY_INJECT=false` and `ARCHIE_MEMORY_TOOLS=false`.
-2. Before deployment, snapshot and clear the existing `workdir/memory/` store. Its private-derived provenance cannot be reconstructed under the new public-store model.
+2. Follow the [memory store reset runbook](../guides/deployment.md#memory-v2-store-reset); unmarked legacy stores are refused.
 3. Land or otherwise run the evaluation harness from PR #228 against a fresh store snapshot.
 4. Review the worst-case token bound, store contents, and functional selection results.
 5. Enable injection and tools independently in dedicated changes that carry the evidence. Either flag is the rollback switch for its read path.

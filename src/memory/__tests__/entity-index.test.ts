@@ -131,6 +131,24 @@ describe('selectEntities (push selection)', () => {
     expect(selected.map((r) => r.entity).sort()).toEqual(['payment-service', 'postgres-prod']);
   });
 
+  it('resolves aliases during one-hop expansion', () => {
+    const records = [
+      rec({ entity: 'payment-service', repos: ['backend'], relations: [{ type: 'depends_on', target: 'payments-db' }] }),
+      rec({ entity: 'postgres-prod', aliases: ['payments-db'], repos: ['infra'] }),
+    ];
+    const { selected } = selectEntities(records, { repo: 'backend' });
+    expect(selected.map((r) => r.entity).sort()).toEqual(['payment-service', 'postgres-prod']);
+  });
+
+  it('does not expand touched_by provenance relations', () => {
+    const records = [
+      rec({ entity: 'payment-service', repos: ['backend'], relations: [{ type: 'touched_by', target: 'task-123' }] }),
+      rec({ entity: 'task-123' }),
+    ];
+    const { selected } = selectEntities(records, { repo: 'backend' });
+    expect(selected.map((r) => r.entity)).toEqual(['payment-service']);
+  });
+
   it('bounds non-org selection to max and reports dropped slugs', () => {
     const records = [
       rec({ entity: 'a', scope: 'domain', displayName: 'alpha bravo' }),

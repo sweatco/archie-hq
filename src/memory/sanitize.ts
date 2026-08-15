@@ -85,6 +85,7 @@ function normaliseBullet(content: string): string | null {
   if (!s) return null;
   if (/\n|\r/.test(s)) return null;
   if (s.length > CONTENT_MAX) return null;
+  if (hasStructuralDelimiter(s)) return null;
   return s;
 }
 
@@ -98,7 +99,7 @@ function normaliseBullet(content: string): string | null {
  * a state of the world, not commands to the agent.
  */
 export function looksLikeInstruction(content: string): boolean {
-  if (/^(always|never|must|do not|don['']t)\b/i.test(content)) return true;
+  if (/^(?:going forward,?\s*)?(always|never|must|do not|don['']t)\b/i.test(content)) return true;
   const bypassTokens = [
     'system prompt',
     'ignore previous',
@@ -130,6 +131,10 @@ export function looksLikeSecret(content: string): boolean {
   return false;
 }
 
+export function hasStructuralDelimiter(content: string): boolean {
+  return /[<>]/.test(content);
+}
+
 // ---- Per-artifact sanitizers ----
 
 /**
@@ -152,6 +157,7 @@ export function sanitizeUpdate(update: MemoryUpdate): MemoryUpdate | null {
     if (update.old === undefined) return null;
     const o = normaliseBullet(update.old);
     if (o === null) return null;
+    if (looksLikeInstruction(o) || looksLikeSecret(o)) return null;
     old = o;
   }
 
@@ -163,6 +169,9 @@ export function sanitizeUpdate(update: MemoryUpdate): MemoryUpdate | null {
  */
 export function sanitizeActivityEntry(entry: ActivityEntry): ActivityEntry | null {
   if (!entry) return null;
+  if (typeof entry.date !== 'string' || typeof entry.taskId !== 'string'
+    || typeof entry.domain !== 'string' || typeof entry.user !== 'string'
+    || typeof entry.summary !== 'string') return null;
   if (!DATE_RE.test(entry.date)) return null;
   if (!TASK_ID_RE.test(entry.taskId)) return null;
   if (!isAllowedDomain(entry.domain)) return null;
@@ -171,6 +180,7 @@ export function sanitizeActivityEntry(entry: ActivityEntry): ActivityEntry | nul
   let summary = entry.summary.replace(/\s+/g, ' ').trim();
   if (!summary) return null;
   if (/\n|\r/.test(summary)) return null;
+  if (hasStructuralDelimiter(summary) || looksLikeInstruction(summary) || looksLikeSecret(summary)) return null;
   if (summary.length > ACTIVITY_SUMMARY_MAX) summary = summary.slice(0, ACTIVITY_SUMMARY_MAX);
   summary = escapeTableCell(summary);
 
@@ -193,6 +203,8 @@ export function sanitizeTaskSummary(summary: string): string | null {
   if (!s) return null;
   if (/^---$/m.test(s)) return null;
   if (s.length > TASK_SUMMARY_MAX) return null;
+  if (hasStructuralDelimiter(s) || looksLikeSecret(s)) return null;
+  if (s.split(/\r?\n/).some((line) => looksLikeInstruction(line.replace(/^(?:[-*]|\d+[.)])\s+/, '').trim()))) return null;
   return s;
 }
 
@@ -247,7 +259,16 @@ export function sanitizeEntityDisplayName(raw: unknown): string | null {
   const s = raw.replace(/\s+/g, ' ').trim();
   if (!s || /[\n\r]/.test(s)) return null;
   if (s.length > 120) return null;
+  if (hasStructuralDelimiter(s) || looksLikeInstruction(s) || looksLikeSecret(s)) return null;
   return s;
+}
+
+export function sanitizeEntityAlias(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const alias = raw.replace(/\s+/g, ' ').trim();
+  if (!alias || alias.length > 80) return null;
+  if (hasStructuralDelimiter(alias) || looksLikeInstruction(alias) || looksLikeSecret(alias)) return null;
+  return alias;
 }
 
 /** Validate + normalize an entity L0 summary (single line, bounded, no injection). */
@@ -256,7 +277,7 @@ export function sanitizeEntitySummary(raw: unknown): string | null {
   const s = raw.replace(/\s+/g, ' ').trim();
   if (!s || /[\n\r]/.test(s)) return null;
   if (s.length > ENTITY_SUMMARY_MAX) return null;
-  if (looksLikeInstruction(s) || looksLikeSecret(s)) return null;
+  if (hasStructuralDelimiter(s) || looksLikeInstruction(s) || looksLikeSecret(s)) return null;
   return s;
 }
 

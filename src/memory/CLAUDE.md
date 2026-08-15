@@ -22,7 +22,7 @@ Any behavior, flow, storage, or flag change must update `docs/architecture/memor
 - **Telemetry is complete and operator-only.** Public and private tasks both retain enabled-path telemetry under `workdir/memory/telemetry/`. Keep that subtree outside every agent sandbox allowlist, prompt injection, and the memory MCP tool surface.
 - **Collaboration profiles follow Slack authorship.** Files remain under `users/<id>.md`, but only actual Slack message authors are writable. `cli:`/`local:` fallback files may remain as legacy data but are never loaded for extraction or updated. Body mentions grant nothing. Every candidate needs at least one resolvable `msg:<ts>` evidence ID, all authored by the target user; summaries show only updates the store confirmed it wrote.
 - **Profile sections are closed.** New adds and updates may target only `Communication`, `Deliverables`, `Workflow`, `Decision Making`, or `Constraints`. Updates replace bullets only inside their declared section. Existing legacy sections remain readable and housekeepable.
-- **Model output is untrusted.** Every extractor and housekeeper result passes through `sanitize.ts`. Side-agents remain one turn, tool-free, and minimally provisioned.
+- **Model output is untrusted.** Extractor results pass through `sanitize.ts`; the extractor remains one turn, tool-free, and minimally provisioned. Housekeeping is deterministic code.
 - **Runtime writes are serialized.** Extraction and automatic housekeeping share the sequential queue in `lifecycle.ts`. Telemetry's single-line fail-safe appends are the only runtime exception. Manual housekeeping runs out of process and requires the server to be stopped.
 - **Read tools are store-only and read-only.** Every identifier passes `paths.ts` guards. Do not add mutation tools or a tool that opens task transcripts.
 - **Flag-safe.** With `ARCHIE_MEMORY=false`, initialization, injection, tools, and completion extraction no-op.
@@ -34,7 +34,8 @@ Any behavior, flow, storage, or flag change must update `docs/architecture/memor
 - `lifecycle.ts`: public-task gate, durable queue, and extraction pipeline.
 - `tools.ts`: three read-only public-store tools.
 - `store.ts`: collaboration-profile update semantics and applied-update reporting.
-- `prompts/memory-extractor.md` and `prompts/memory-housekeeper.md`: side-agent prompts.
+- `housekeeping.ts`: deterministic validation, deduplication, staleness handling, and stable ordering.
+- `prompts/memory-extractor.md`: one-turn extraction prompt.
 
 ## Verify
 

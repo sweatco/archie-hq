@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { TaskMetadata } from '../../types/task.js';
-import { migrateTaskVisibility } from '../task.js';
+import { migrateTaskVisibility, persistVisibilityRestriction, restrictTaskVisibility } from '../task.js';
 
 function metadata(visibility?: unknown): TaskMetadata {
   return {
@@ -39,5 +39,41 @@ describe('migrateTaskVisibility', () => {
 
     expect(migrateTaskVisibility(value)).toBe(true);
     expect(value.visibility).toBe('private');
+  });
+});
+
+describe('restrictTaskVisibility', () => {
+  it('downgrades a public task for a private Slack source', () => {
+    const value = metadata('public');
+
+    expect(restrictTaskVisibility(value, 'private')).toBe(true);
+    expect(value.visibility).toBe('private');
+  });
+
+  it('never upgrades a private task for a public Slack source', () => {
+    const value = metadata('private');
+
+    expect(restrictTaskVisibility(value, 'public')).toBe(false);
+    expect(value.visibility).toBe('private');
+  });
+});
+
+describe('persistVisibilityRestriction', () => {
+  it('flushes a downgrade before returning to the ingestion path', async () => {
+    const value = metadata('public');
+    const save = vi.fn().mockResolvedValue(undefined);
+
+    await expect(persistVisibilityRestriction(value, 'private', save)).resolves.toBe(true);
+
+    expect(value.visibility).toBe('private');
+    expect(save).toHaveBeenCalledOnce();
+  });
+
+  it('rejects when the durable downgrade fails so ingestion aborts', async () => {
+    const value = metadata('public');
+    const failure = new Error('disk full');
+
+    await expect(persistVisibilityRestriction(value, 'private', async () => { throw failure; }))
+      .rejects.toBe(failure);
   });
 });

@@ -11,9 +11,9 @@
 import { mkdir, readdir, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { onEvent } from '../system/event-bus.js';
+import { onTaskCompleted } from '../system/event-bus.js';
 import { handleTaskCompleted, rescheduleTaskCompleted } from './lifecycle.js';
-import { readPending } from './pending-queue.js';
+import { readPendingEntries } from './pending-queue.js';
 import {
   getMemoryDir,
   getPublicStoreMarkerPath,
@@ -47,11 +47,7 @@ export async function initMemory(): Promise<void> {
     return;
   }
 
-  onEvent((event) => {
-    if (event.type === 'task:completed') {
-      handleTaskCompleted(event.taskId);
-    }
-  });
+  onTaskCompleted((event) => handleTaskCompleted(event.taskId));
 
   logger.system('Memory layer initialized');
 }
@@ -90,11 +86,11 @@ async function containsAnyFile(dir: string): Promise<boolean> {
  * lose the learning.
  */
 async function drainPendingExtractions(): Promise<void> {
-  const pending = await readPending();
+  const pending = await readPendingEntries();
   if (pending.length === 0) return;
   logger.system(`[memory] Draining ${pending.length} pending extraction(s) from prior run`);
-  for (const taskId of pending) {
-    rescheduleTaskCompleted(taskId);
+  for (const { taskId, generation } of pending) {
+    rescheduleTaskCompleted(taskId, generation);
   }
 }
 
@@ -125,5 +121,5 @@ async function warnLegacyUserFiles(): Promise<void> {
 
 export { enrichPromptWithMemory } from './context.js';
 export { isMemoryEnabled, isInjectionEnabled, isMemoryToolsEnabled } from './paths.js';
-export { createMemoryToolsMcpServer } from './tools.js';
+export { createMemoryToolsMcpServer, MEMORY_TOOL_DESCRIPTORS } from './tools.js';
 export type { MemoryToolsCtx } from './tools.js';

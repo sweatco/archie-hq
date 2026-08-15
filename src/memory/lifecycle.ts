@@ -5,8 +5,9 @@
  * prevent concurrent writes from corrupting shared memory files.
  */
 
-import { writeFile, mkdir } from 'fs/promises';
+import { writeFile, readFile, rename, unlink, mkdir } from 'fs/promises';
 import { dirname, join } from 'path';
+import { randomUUID } from 'crypto';
 import {
   isMemoryEnabled,
   getSummaryPath,
@@ -16,85 +17,160 @@ import { readUser, applyUserUpdatesWithIdentity } from './store.js';
 import { runExtraction } from './extractor.js';
 import { applyEntityUpdate, listEntities, readEntity } from './entities.js';
 import { rebuildIndex, readIndexMarkdown } from './entity-index.js';
-import { appendActivity, trimActivity, readActivity } from './activity.js';
+import { appendActivity, readActivity } from './activity.js';
 import { sanitizeTaskSummary } from './sanitize.js';
-import { enqueuePending, dequeuePending } from './pending-queue.js';
+import { enqueuePending, dequeuePending, readPendingEntries } from './pending-queue.js';
 import { recordUserUpdateDropped } from './telemetry.js';
+import { parseTranscript } from './transcript.js';
 import { loadMetadata, readKnowledgeLog } from '../tasks/persistence.js';
+import { withTaskDataLock } from '../tasks/data-lock.js';
+import { getBotUserId } from '../connectors/slack/client.js';
 import { logger } from '../system/logger.js';
-import type { ExtractionResult, UserRef, ActivityEntry, MemoryUpdate } from './types.js';
+import type { ExtractionResult, UserRef, ActivityEntry, MemoryUpdate, EntityUpdate } from './types.js';
 import type { TaskMetadata } from '../types/task.js';
-
-// ============================================================================
-// Housekeeping note queue (consumed by buildSummaryMarkdown)
-// ============================================================================
-//
-// When the housekeeping side-agent consolidates files, it emits a short
-// human-readable line ("dropped 3 stale entries, merged 2 duplicates").
-// That line gets appended to the *next* completed task's summary so the
-// audit trail is in one place. The queue is per-target keyed.
-
-const pendingHousekeepingNotes = new Map<string, string[]>();
-
-/** Record a housekeeping consequence so it shows up in the next summary. */
-export function recordHousekeepingNote(target: string, note: string): void {
-  const existing = pendingHousekeepingNotes.get(target) ?? [];
-  existing.push(note);
-  pendingHousekeepingNotes.set(target, existing);
-}
-
-/** Drain and return all queued housekeeping notes. Used by buildSummaryMarkdown. */
-function drainHousekeepingNotes(): string[] {
-  const all: string[] = [];
-  for (const notes of pendingHousekeepingNotes.values()) all.push(...notes);
-  pendingHousekeepingNotes.clear();
-  return all;
-}
 
 // ============================================================================
 // Sequential extraction queue
 // ============================================================================
 
+let pendingMutationQueue: Promise<void> = Promise.resolve();
 let extractionQueue: Promise<void> = Promise.resolve();
 
-/**
- * Schedule memory extraction for a completed task.
- * Fire-and-forget; errors are logged but never thrown.
- * Extractions are serialized to avoid concurrent writes to shared memory files.
- */
-export function handleTaskCompleted(taskId: string): void {
-  if (!isMemoryEnabled()) return;
-  // Persist the intent to extract before scheduling. If the process exits
-  // before processExtraction completes, the next startup will find the entry
-  // and re-schedule.
+type ExtractionOutcome = 'completed' | 'terminal-skip' | 'retry';
+
+interface ExtractionJournal {
+  v: 2;
+  generation: string;
+  state: 'applying' | 'committed';
+  users: Record<string, { displayName: string; updates: MemoryUpdate[] }>;
+  entities: EntityUpdate[];
+}
+
+function journalPath(taskId: string): string {
+  return join(dirname(getSummaryPath(taskId)), 'extraction-journal.json');
+}
+
+async function readExtractionJournal(taskId: string, generation: string): Promise<ExtractionJournal> {
+  try {
+    const value = JSON.parse(await readFile(journalPath(taskId), 'utf-8')) as ExtractionJournal | {
+      v: 1;
+      users: ExtractionJournal['users'];
+      entities: EntityUpdate[];
+    };
+    if (value?.v === 2 && value.generation === generation && value.users && Array.isArray(value.entities)) return value;
+    if (value?.v === 1 && generation === 'legacy' && value.users && Array.isArray(value.entities)) {
+      return { v: 2, generation, state: 'applying', users: value.users, entities: value.entities };
+    }
+  } catch (error: any) {
+    if (error?.code !== 'ENOENT') logger.warn('memory', `Ignoring invalid extraction journal for ${taskId}: ${error}`);
+  }
+  return { v: 2, generation, state: 'applying', users: {}, entities: [] };
+}
+
+async function writeExtractionJournal(taskId: string, journal: ExtractionJournal): Promise<void> {
+  const path = journalPath(taskId);
+  await mkdir(dirname(path), { recursive: true });
+  const temp = `${path}.${process.pid}.tmp`;
+  await writeFile(temp, JSON.stringify(journal, null, 2), 'utf-8');
+  await rename(temp, path);
+}
+
+async function deleteExtractionJournal(taskId: string, generation: string): Promise<void> {
+  try {
+    const journal = JSON.parse(await readFile(journalPath(taskId), 'utf-8')) as { v?: number; generation?: string };
+    if (journal.v === 2 && journal.generation !== generation) return;
+    if (journal.v === 1 && generation !== 'legacy') return;
+    await unlink(journalPath(taskId));
+  } catch (error: any) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+}
+
+function appendUnique<T>(target: T[], values: readonly T[]): void {
+  const seen = new Set(target.map((value) => JSON.stringify(value)));
+  for (const value of values) {
+    const key = JSON.stringify(value);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    target.push(value);
+  }
+}
+
+function mutatePending<T>(action: () => Promise<T>): Promise<T> {
+  const mutation = pendingMutationQueue.then(action);
+  pendingMutationQueue = mutation.then(() => undefined, () => undefined);
+  return mutation;
+}
+
+function scheduleExtraction(taskId: string, intent: Promise<string>, recovery = false): void {
   extractionQueue = extractionQueue
-    .then(() => enqueuePending(taskId))
-    .then(() => processExtraction(taskId))
-    .then(() => dequeuePending(taskId))
-    .catch((err) => logger.warn('memory', `Extraction failed for ${taskId}: ${err}`));
+    .then(async () => {
+      const generation = await intent;
+      const outcome = await processExtraction(taskId, generation);
+      if (outcome === 'retry') return;
+      await mutatePending(() => dequeuePending(taskId, generation));
+      await deleteExtractionJournal(taskId, generation);
+    })
+    .catch((err) => logger.warn(
+      'memory',
+      `${recovery ? 'Recovery extraction' : 'Extraction'} failed for ${taskId}: ${err}`,
+    ));
+}
+
+/**
+ * Persist a completed task's extraction intent, then schedule serialized work.
+ * The returned promise settles after the durable intent write; extraction stays
+ * in the background and failures are logged without poisoning later jobs.
+ */
+export function handleTaskCompleted(taskId: string): Promise<void> {
+  if (!isMemoryEnabled()) return Promise.resolve();
+  const generation = randomUUID();
+  const intent = mutatePending(() => enqueuePending(taskId, generation));
+  scheduleExtraction(taskId, intent);
+  return intent.then(() => undefined);
 }
 
 /**
  * Schedule extraction without re-enqueuing on disk. Used by startup recovery
  * — the entry is already in pending-extractions.md so we only want to drain.
  */
-export function rescheduleTaskCompleted(taskId: string): void {
+export function rescheduleTaskCompleted(taskId: string, generation?: string): void {
   if (!isMemoryEnabled()) return;
-  extractionQueue = extractionQueue
-    .then(() => processExtraction(taskId))
-    .then(() => dequeuePending(taskId))
-    .catch((err) => logger.warn('memory', `Recovery extraction failed for ${taskId}: ${err}`));
+  const intent = generation
+    ? Promise.resolve(generation)
+    : mutatePending(async () => (
+      (await readPendingEntries()).find((entry) => entry.taskId === taskId)?.generation ?? 'legacy'
+    ));
+  scheduleExtraction(taskId, intent, true);
+}
+
+/** Wait until every currently scheduled queue mutation, extraction, and housekeeping pass has settled. */
+export async function waitForMemoryQueueIdle(): Promise<void> {
+  while (true) {
+    const pending = pendingMutationQueue;
+    const extraction = extractionQueue;
+    await Promise.all([pending, extraction]);
+    if (pending === pendingMutationQueue && extraction === extractionQueue) return;
+  }
 }
 
 // ============================================================================
 // processExtraction
 // ============================================================================
 
-async function processExtraction(taskId: string): Promise<void> {
-  const metadata = await loadMetadata(taskId);
+async function processExtraction(taskId: string, generation: string): Promise<ExtractionOutcome> {
+  const journal = await readExtractionJournal(taskId, generation);
+  if (journal.state === 'committed') return 'completed';
+
+  const snapshot = await withTaskDataLock(taskId, async () => {
+    const metadata = await loadMetadata(taskId);
+    const transcript = metadata?.visibility === 'public' ? await readKnowledgeLog(taskId) : '';
+    return { metadata, transcript };
+  });
+  const metadata = snapshot.metadata;
   if (!metadata) {
     logger.warn('memory', `processExtraction: metadata not found for ${taskId}`);
-    return;
+    return 'terminal-skip';
   }
 
   // The task boundary is the confidentiality boundary. Private tasks do not
@@ -102,20 +178,41 @@ async function processExtraction(taskId: string): Promise<void> {
   // visibility belongs to legacy metadata and therefore fails closed.
   if (metadata.visibility !== 'public') {
     logger.system(`[memory] Extraction skipped for private task ${taskId}`);
-    return;
+    return 'terminal-skip';
   }
 
-  const transcript = await readKnowledgeLog(taskId);
+  const transcript = snapshot.transcript;
   if (!transcript.trim()) {
     logger.warn('memory', `processExtraction: empty transcript for ${taskId}`);
-    return;
+    return 'terminal-skip';
   }
 
   // Profile writability comes only from actual Slack message authors. A
   // deterministic fallback still labels CLI/self-launched task artifacts, but
   // fallback identities never load or write collaboration profiles.
-  const writableUsers = extractAuthorUsers(transcript);
+  const parsedTranscript = parseTranscript(transcript, getBotUserId() ?? undefined);
+  const writableUsers = parsedTranscript.authors;
   const users = writableUsers.length > 0 ? writableUsers : [resolveFallbackId(metadata)];
+  const housekeepingTargets = new Set<string>();
+  const touchedEntities = new Set<string>();
+
+  // Journal entries are sanitized write intents recorded immediately before a
+  // store mutation. Reapplying them closes both crash windows: journal-before-
+  // write and write-before-summary.
+  for (const [userId, entry] of Object.entries(journal.users)) {
+    const replayed = await applyUserUpdatesWithIdentity(userId, entry.displayName, entry.updates);
+    if (replayed.capExceeded) housekeepingTargets.add(userId);
+  }
+  if (journal.entities.length > 0) {
+    const replayRecords = await listEntities();
+    for (const update of journal.entities) {
+      const replayed = await applyEntityUpdate(update, taskId, { records: replayRecords });
+      if (!replayed) continue;
+      touchedEntities.add(replayed.slug);
+      if (replayed.capExceeded) housekeepingTargets.add('entities');
+    }
+    await rebuildIndex();
+  }
 
   // Load existing profiles only for writable Slack authors.
   const entityIndex = await readIndexMarkdown();
@@ -149,7 +246,7 @@ async function processExtraction(taskId: string): Promise<void> {
 
   if (!result) {
     logger.warn('memory', `processExtraction: extraction returned null for ${taskId}`);
-    return;
+    return 'retry';
   }
 
   // Apply profile updates. Use the identity-aware writer so first-touch files
@@ -158,10 +255,11 @@ async function processExtraction(taskId: string): Promise<void> {
   // every cited `msg:<ts>` evidence id resolves to a transcript source line
   // authored by that Slack user (at least one citation is required). Fallback
   // and other non-Slack identities fail closed.
-  const housekeepingTargets = new Set<string>();
-  const appliedUserUpdates: Record<string, MemoryUpdate[]> = {};
+  const appliedUserUpdates: Record<string, MemoryUpdate[]> = Object.fromEntries(
+    Object.entries(journal.users).map(([userId, entry]) => [userId, [...entry.updates]]),
+  );
   const displayNameById = new Map(writableUsers.map((u) => [u.userId, u.displayName]));
-  const msgAuthors = buildMsgAuthorMap(transcript);
+  const msgAuthors = parsedTranscript.msgAuthors;
   for (const [userId, updates] of Object.entries(result.user_updates)) {
     if (updates.length === 0) continue;
     const valid: MemoryUpdate[] = [];
@@ -175,9 +273,17 @@ async function processExtraction(taskId: string): Promise<void> {
     }
     if (valid.length > 0) {
       const displayName = displayNameById.get(userId) ?? userId;
-      const applied = await applyUserUpdatesWithIdentity(userId, displayName, valid);
+      const applied = await applyUserUpdatesWithIdentity(userId, displayName, valid, {
+        beforeWrite: async (updates) => {
+          const entry = journal.users[userId] ?? { displayName, updates: [] };
+          entry.displayName = displayName;
+          appendUnique(entry.updates, updates);
+          journal.users[userId] = entry;
+          await writeExtractionJournal(taskId, journal);
+        },
+      });
       if (applied.appliedUpdates.length > 0) {
-        appliedUserUpdates[userId] = applied.appliedUpdates;
+        appliedUserUpdates[userId] = [...journal.users[userId].updates];
       }
       if (applied.capExceeded) housekeepingTargets.add(userId);
     }
@@ -185,39 +291,48 @@ async function processExtraction(taskId: string): Promise<void> {
 
   // Apply entity updates (resolve-or-create; sanitizer runs inside entities.ts).
   // Each applied update auto-adds a `touched_by [[taskId]]` edge.
-  const touchedEntities: string[] = [];
+  const appliedEntityUpdates: EntityUpdate[] = [...journal.entities];
   // Read the entity store once for the whole batch; applyEntityUpdate keeps this
   // array coherent as it creates/updates entities (avoids an O(updates×files)
   // re-read + re-parse on every update).
   const entityRecords = await listEntities();
   for (const update of result.entity_updates) {
-    const applied = await applyEntityUpdate(update, taskId, { records: entityRecords });
+    const applied = await applyEntityUpdate(update, taskId, {
+      records: entityRecords,
+      beforeWrite: async ({ delta }) => {
+        appendUnique(journal.entities, [delta]);
+        await writeExtractionJournal(taskId, journal);
+      },
+    });
     if (!applied) continue;
-    touchedEntities.push(applied.slug);
+    touchedEntities.add(applied.slug);
+    appendUnique(appliedEntityUpdates, [applied.delta]);
     if (applied.capExceeded) housekeepingTargets.add('entities');
   }
   // Rebuild the derived index whenever entities changed.
-  if (touchedEntities.length > 0) {
+  if (touchedEntities.size > 0) {
     await rebuildIndex();
   }
-
-  scheduleHousekeeping(housekeepingTargets);
 
   // Write task summary (rich format) to the public memory store.
   const activityIndex = await readActivity();
   // Related tasks: prefer tasks that share an entity with this one; fall back
   // to lexical similarity over the activity index when there's no entity overlap.
-  let related = await selectRelatedTasksByEntity(touchedEntities, taskId, activityIndex);
+  let related = await selectRelatedTasksByEntity([...touchedEntities], taskId, activityIndex);
   if (related.length === 0) {
     related = selectRelatedTasks(result.activity_summary, result.domain, activityIndex, taskId);
   }
   // Summaries expose only profile changes the store confirmed it wrote. Raw
   // extractor candidates, sanitizer drops, and unmatched replacements never
   // enter the public task-summary corpus.
-  const summaryResult: ExtractionResult = { ...result, user_updates: appliedUserUpdates };
+  const summaryResult: ExtractionResult = {
+    ...result,
+    user_updates: appliedUserUpdates,
+    entity_updates: appliedEntityUpdates,
+  };
   await writeSummary(taskId, metadata, summaryResult, users, activityIndex, related);
 
-  // Append to recent activity, then trim.
+  // Append to the bounded recent-activity index.
   const requestingUser = users[0]?.userId ?? 'cli';
   await appendActivity({
     date: metadata.created_at.split('T')[0],
@@ -225,51 +340,30 @@ async function processExtraction(taskId: string): Promise<void> {
     summary: result.activity_summary,
     domain: result.domain,
     user: requestingUser,
-  });
-  await trimActivity(50);
+  }, 50);
+
+  await runHousekeepingPasses(housekeepingTargets);
+
+  journal.state = 'committed';
+  await writeExtractionJournal(taskId, journal);
 
   logger.system(`[memory] Extraction complete for ${taskId}`);
+  return 'completed';
 }
 
 /**
- * Schedule housekeeping for any target that exceeded its soft cap. The pass
- * is enqueued on the same extractionQueue so it serializes with extraction.
+ * Run housekeeping before the current serialized extraction job completes.
  */
-function scheduleHousekeeping(targets: ReadonlySet<string>): void {
+async function runHousekeepingPasses(targets: ReadonlySet<string>): Promise<void> {
   if (targets.size === 0) return;
   for (const target of targets) {
-    extractionQueue = extractionQueue.then(async () => {
-      const { runHousekeeping } = await import('./housekeeping.js');
-      await runHousekeeping(target).catch((err) =>
-        logger.warn('memory', `housekeeping for ${target} failed: ${err}`)
-      );
-    });
+    try {
+      const { runHousekeeping: housekeep } = await import('./housekeeping.js');
+      await housekeep(target);
+    } catch (err) {
+      logger.warn('memory', `housekeeping for ${target} failed: ${err}`);
+    }
   }
-}
-
-// ============================================================================
-// Evidence validation (own-statements enforcement)
-// ============================================================================
-
-// Source lines carry `… | msg:<ts>]` inside the bracketed source slot (see
-// appendSlackMessage / appendSlackEdit). Capture the author UID and msg id.
-// Both bracket orders: producers now emit `<@UID:Name>`, older logs carry
-// `@<UID:Name>` (see MENTION_RE below).
-const MSG_ID_LINE_RE = /^\[[^\]]*\] \[(?:@<|<@)([A-Z][A-Z0-9]{6,}):[^>]*>[^\]]*\bmsg:([^\s\]]+)\]/;
-
-/**
- * Map `msg:<ts>` ids to their author user id, from transcript SOURCE lines
- * only. Body framing (persistence.ts formatLogEntry) guarantees body-originated
- * lines are indented and can never match a line-start-anchored source shape.
- * An edit re-logs the same msg id — same author, so last-write is equivalent.
- */
-export function buildMsgAuthorMap(transcript: string): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const line of transcript.split('\n')) {
-    const m = MSG_ID_LINE_RE.exec(line);
-    if (m) map.set(m[2], m[1]);
-  }
-  return map;
 }
 
 /**
@@ -292,39 +386,6 @@ export function isEvidenceValid(
   });
 }
 
-// ============================================================================
-// User identifier parsing
-// ============================================================================
-
-// Author lines in knowledge.log start with `[timestamp] [<@UID:Name> in …]`
-// (appendSlackMessage / appendSlackEdit source format; legacy logs use the
-// `[@<UID:Name> …]` bracket order, and the ` in <channel>` suffix is optional
-// to tolerate older logs). Only the source position counts — a body @-mention
-// never matches because it does not sit in the bracketed source slot at the
-// start of an entry line.
-const AUTHOR_LINE_RE = /^\[[^\]]*\] \[(?:@<|<@)([A-Z][A-Z0-9]{6,}):([^>]*)>(?: in [^\]]*)?\] /;
-
-/**
- * Parse the users who actually AUTHORED messages in a transcript — the memory
- * ownership set. This scans only entry source lines, so merely being mentioned
- * never makes a user's memory writable or links them to the task's artifacts.
- * Redacted external authors (display name masked to `external` at ingest) are
- * excluded.
- */
-export function extractAuthorUsers(transcript: string): UserRef[] {
-  const seen = new Map<string, string>();
-  for (const line of transcript.split('\n')) {
-    const match = AUTHOR_LINE_RE.exec(line);
-    if (!match) continue;
-    const userId = match[1];
-    const displayName = match[2].trim();
-    if (!isSlackUserId(userId)) continue;
-    if (displayName === 'external') continue; // redacted external author
-    if (!seen.has(userId)) seen.set(userId, displayName || userId);
-  }
-  return Array.from(seen, ([userId, displayName]) => ({ userId, displayName }));
-}
-
 /**
  * Resolve a non-Slack fallback identifier for a task whose transcript has
  * no Slack mentions. Examples: `cli:<sessionId>`, `cli:<taskId>`. The
@@ -341,11 +402,6 @@ export function resolveFallbackId(metadata: TaskMetadata): UserRef {
 // writeSummary
 // ============================================================================
 
-/**
- * Write the per-task summary to workdir/memory/tasks/<taskId>/summary.md.
- * Content schema is the minimum viable shape — the richer "Memory Updates"
- * and "Related Tasks" sections are added by a later pass (§8).
- */
 async function writeSummary(
   taskId: string,
   metadata: TaskMetadata,
@@ -356,8 +412,7 @@ async function writeSummary(
 ): Promise<void> {
   const path = getSummaryPath(taskId);
   await mkdir(dirname(path), { recursive: true });
-  const housekeepingNotes = drainHousekeepingNotes();
-  const content = buildSummaryMarkdown(taskId, metadata, result, users, activityIndex, housekeepingNotes, related);
+  const content = buildSummaryMarkdown(taskId, metadata, result, users, activityIndex, related);
   await writeFile(path, content, 'utf-8');
 }
 
@@ -368,8 +423,7 @@ async function writeSummary(
  *   - YAML frontmatter (task_id, status, created_at, updated_at, domain,
  *     extraction_at, links, users)
  *   - `# Summary` — sanitized prose from the extractor
- *   - `## Memory Updates` — applied user + entity updates, plus any housekeeping
- *     notes; `_no durable learnings_` when all empty
+ *   - `## Memory Updates` — applied user + entity updates; `_no durable learnings_` when empty
  *   - `## Related Tasks` — up to 5 lexically-similar prior tasks; `_no related tasks found_` when empty
  */
 export function buildSummaryMarkdown(
@@ -378,10 +432,9 @@ export function buildSummaryMarkdown(
   result: ExtractionResult,
   users: UserRef[],
   activityIndex: ActivityEntry[] = [],
-  housekeepingNotes: string[] = [],
   related?: ActivityEntry[]
 ): string {
-  const safeSummary = sanitizeTaskSummary(result.task_summary) ?? result.task_summary.slice(0, 2000);
+  const safeSummary = sanitizeTaskSummary(result.task_summary) ?? '_summary omitted: extractor output failed safety validation_';
   const lines: string[] = ['---'];
   lines.push(`task_id: ${taskId}`);
   lines.push(`status: ${metadata.status}`);
@@ -420,7 +473,7 @@ export function buildSummaryMarkdown(
 
   // Memory Updates section
   lines.push('## Memory Updates', '');
-  const memBlock = renderMemoryUpdates(result, housekeepingNotes);
+  const memBlock = renderMemoryUpdates(result);
   lines.push(memBlock);
 
   // Related Tasks section. Caller may pass a precomputed list (e.g. entity-based);
@@ -464,12 +517,12 @@ function buildLinksBlock(metadata: TaskMetadata): LinksBlock {
 
 // ---- Memory Updates rendering ----
 
-function renderMemoryUpdates(result: ExtractionResult, housekeepingNotes: string[]): string {
+function renderMemoryUpdates(result: ExtractionResult): string {
   const lines: string[] = [];
   const hasUser = Object.values(result.user_updates).some((u) => u.length > 0);
   const hasEntity = result.entity_updates.length > 0;
 
-  if (!hasUser && !hasEntity && housekeepingNotes.length === 0) {
+  if (!hasUser && !hasEntity) {
     return '_no durable learnings_';
   }
 
@@ -490,13 +543,6 @@ function renderMemoryUpdates(result: ExtractionResult, housekeepingNotes: string
     for (const o of e.observations ?? []) lines.push(`- **[${o.category}]** ${o.text}`);
     for (const r of e.relations ?? []) lines.push(`- **${r.type}** [[${r.target}]]`);
     lines.push('');
-  }
-
-  if (housekeepingNotes.length > 0) {
-    lines.push('### Housekeeping', '');
-    for (const note of housekeepingNotes) {
-      lines.push(`- **housekeeping** ${note}`);
-    }
   }
 
   return lines.join('\n').trimEnd();

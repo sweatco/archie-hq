@@ -93,7 +93,8 @@ export async function readUserFiles(userIds: readonly string[]): Promise<UserFil
 export async function applyUserUpdatesWithIdentity(
   userId: string,
   displayName: string,
-  updates: MemoryUpdate[]
+  updates: MemoryUpdate[],
+  options: { beforeWrite?: (updates: MemoryUpdate[]) => Promise<void> } = {},
 ): Promise<UserUpdatesApplyResult> {
   let content = await readUser(userId);
   if (!content) {
@@ -105,6 +106,7 @@ export async function applyUserUpdatesWithIdentity(
     return { appliedUpdates: [], capExceeded };
   }
   content = applied.content;
+  await options.beforeWrite?.(applied.appliedUpdates);
   await writeUser(userId, content);
   return {
     appliedUpdates: applied.appliedUpdates,
@@ -224,6 +226,11 @@ export function applyUpdate(content: string, update: MemoryUpdate): string {
       break;
     }
   }
+
+  const duplicate = lines.slice(headerIdx + 1, insertIdx).some((line) =>
+    /^-\s+/.test(line) && stripLastTouched(line).replace(/^-\s+/, '').trim() === update.content
+  );
+  if (duplicate) return content;
 
   // Remove trailing empty lines before insert point (within the section)
   // to avoid accumulating blank lines, then insert item before any trailing empties

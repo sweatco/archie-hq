@@ -17,6 +17,7 @@ import {
   getEntityInjectMax,
 } from './paths.js';
 import { appendTelemetry } from './telemetry.js';
+import { renderXmlEnvelope } from './envelope.js';
 import { logger } from '../system/logger.js';
 import type { UserRef, EntityRecord } from './types.js';
 import type { TaskVisibility } from '../types/task.js';
@@ -153,7 +154,7 @@ async function recordSelection(
  * (memory:eval's worst-case token bound) measures the production rendering,
  * never a reimplementation.
  */
-export function renderEntityBlock(rec: EntityRecord): string {
+export function renderEntityBlock(rec: EntityRecord, maxChars?: number, preamble?: string): string {
   const max = getTouchedByInjectMax();
   const touchedBy = rec.relations.filter((r) => r.type === 'touched_by');
   let view = rec;
@@ -161,7 +162,12 @@ export function renderEntityBlock(rec: EntityRecord): string {
     const keep = new Set(touchedBy.slice(touchedBy.length - max));
     view = { ...rec, relations: rec.relations.filter((r) => r.type !== 'touched_by' || keep.has(r)) };
   }
-  return `<entity slug="${escapeAttr(rec.entity)}" type="${escapeAttr(rec.type)}" scope="${escapeAttr(rec.scope)}">\n${serializeEntity(view).trimEnd()}\n</entity>`;
+  return renderXmlEnvelope(
+    `<entity slug="${escapeAttr(rec.entity)}" type="${escapeAttr(rec.type)}" scope="${escapeAttr(rec.scope)}">`,
+    '</entity>',
+    serializeEntity(view),
+    { maxChars, preamble },
+  );
 }
 
 /**
@@ -171,17 +177,21 @@ export function renderEntityBlock(rec: EntityRecord): string {
  */
 export function renderCollaborationProfileBlock(ref: UserRef, content: string): string {
   const display = ref.displayName !== ref.userId ? ` display_name="${escapeAttr(ref.displayName)}"` : '';
-  return `<collaboration_profile user_id="${escapeAttr(ref.userId)}"${display}>\n${content.trimEnd()}\n</collaboration_profile>`;
+  return renderXmlEnvelope(
+    `<collaboration_profile user_id="${escapeAttr(ref.userId)}"${display}>`,
+    '</collaboration_profile>',
+    content,
+  );
 }
 
 /** Wrap recent-activity content in its `<recent_activity>` block (production bytes). */
 export function renderRecentActivityBlock(content: string): string {
-  return `<recent_activity>\n${content.trimEnd()}\n</recent_activity>`;
+  return renderXmlEnvelope('<recent_activity>', '</recent_activity>', content);
 }
 
 /** Wrap the entity-index Markdown in its `<entity_index>` block (production bytes). */
 export function renderEntityIndexBlock(indexMd: string): string {
-  return `<entity_index>\n${indexMd.trim()}\n</entity_index>`;
+  return renderXmlEnvelope('<entity_index>', '</entity_index>', indexMd.trim());
 }
 
 /**

@@ -1,6 +1,6 @@
 # Completion as Quiescence
 
-**Status:** Proposed (design verified — 2 subagent rounds, implementation-ready; under review; not yet implemented)
+**Status:** Implemented
 **Supersedes the coordination half of:** the `activePeers` completion guard in `report_completion`.
 
 ---

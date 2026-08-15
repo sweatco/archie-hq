@@ -17,7 +17,6 @@ import { randomUUID } from 'node:crypto';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Agent } from './agent.js';
 import type { Task } from '../tasks/task.js';
-import type { TaskVisibility } from '../types/task.js';
 import { isRepoAgent, isPmAgent } from '../types/agent.js';
 import { buildCommitAuthorEnv } from './commit-author.js';
 import { resolveAgentModel, resolveAgentEffort } from './model-label.js';
@@ -47,7 +46,7 @@ import {
 import { setupSharedClone, cloneExists, type CloneCheckout } from '../connectors/github/repo-clone.js';
 import { configureGitIdentity, getGitHubAppIdentity } from '../connectors/github/client.js';
 import { buildChannelCanvasPromptSection } from '../connectors/slack/channel-canvas.js';
-import { resolvePeopleFromTranscript } from '../connectors/slack/client.js';
+import { getBotUserId, resolvePeopleFromTranscript } from '../connectors/slack/client.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { processAgentEventForLogging, logger } from '../system/logger.js';
 import { emitEvent } from '../system/event-bus.js';
@@ -55,6 +54,7 @@ import { getProbeBaseUrl } from '../system/context-probe.js';
 import { buildSandboxConfig, buildManagedNetworkPolicy, buildPackageManagerCacheEnv, createFilesystemGuardHooks, TRUSTED_PACKAGE_REGISTRY_DOMAINS, type SandboxOptions } from './sandbox.js';
 import { applyOAuthBindings } from '../system/oauth/inject.js';
 import { enrichPromptWithMemory, isMemoryEnabled, isInjectionEnabled, isMemoryToolsEnabled, createMemoryToolsMcpServer, type MemoryToolsCtx } from '../memory/index.js';
+import { parseTranscript } from '../memory/transcript.js';
 
 // ---- Prompt generation (per agent kind) ----
 
@@ -173,22 +173,19 @@ async function setupAgentWorkspace(taskId: string, agent: Agent): Promise<string
 
 // ---- Memory helpers ----
 
-/**
- * Extract the AUTHOR users of a task's knowledge.log (people who actually
- * posted, never body @-mentions — the memory-ownership boundary keys on
- * authorship). Returns empty array when both memory read paths are disabled
- * (the result feeds prompt injection and the pull tools' authorization scope),
- * or when the log is unavailable.
- */
-async function extractTaskAuthorUsers(taskId: string): Promise<import('../memory/types.js').UserRef[]> {
-  if (!isMemoryEnabled() || (!isInjectionEnabled() && !isMemoryToolsEnabled())) return [];
+async function extractTaskMemoryContext(taskId: string): Promise<{
+  users: import('../memory/types.js').UserRef[];
+  firstUserMessage?: string;
+}> {
+  if (!isMemoryEnabled() || (!isInjectionEnabled() && !isMemoryToolsEnabled())) return { users: [] };
   try {
-    const { readKnowledgeLog } = await import('../tasks/persistence.js');
-    const { extractAuthorUsers } = await import('../memory/lifecycle.js');
-    const log = await readKnowledgeLog(taskId);
-    return extractAuthorUsers(log);
+    const parsed = parseTranscript(await readKnowledgeLog(taskId), getBotUserId() ?? undefined);
+    return {
+      users: parsed.authors,
+      firstUserMessage: parsed.firstUserMessage,
+    };
   } catch {
-    return [];
+    return { users: [] };
   }
 }
 
@@ -228,22 +225,9 @@ export async function buildTaskPeopleSection(taskId: string): Promise<string> {
   );
 }
 
-/**
- * Derive the memory tools' caller scope from spawn primitives. Author user ids
- * keep user-memory hits scoped to people participating in the task.
- */
-export function deriveMemoryToolsCtx(
-  taskId: string,
-  visibility: TaskVisibility,
-  agentId: string,
-  users: ReadonlyArray<{ userId: string }>,
-): MemoryToolsCtx {
-  return {
-    taskId,
-    visibility,
-    agent: agentId,
-    authorUserIds: users.map((u) => u.userId),
-  };
+export function deriveMemoryTaskTitle(title: string | null | undefined, firstUserMessage?: string): string | undefined {
+  const value = title?.trim() || firstUserMessage?.trim();
+  return value ? value.slice(0, 500) : undefined;
 }
 
 // ---- Main spawner ----
@@ -359,8 +343,14 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   // ARCHIE_MEMORY_TOOLS (default off; ARCHIE_MEMORY=false overrides). Rides
   // the existing spawn.ts memory seam, so ejection still removes the same files.
   // User ids in the ctx scope user-memory search hits to task participants.
-  const memoryUsers = await extractTaskAuthorUsers(taskId);
-  const memoryToolsCtx = deriveMemoryToolsCtx(taskId, metadata.visibility, def.id, memoryUsers);
+  const taskMemoryContext = await extractTaskMemoryContext(taskId);
+  const memoryUsers = taskMemoryContext.users;
+  const memoryToolsCtx: MemoryToolsCtx = {
+    taskId,
+    visibility: metadata.visibility,
+    agent: def.id,
+    authorUserIds: memoryUsers.map((user) => user.userId),
+  };
   if (isMemoryToolsEnabled()) {
     mcpServers['memory-tools'] = createMemoryToolsMcpServer(memoryToolsCtx);
   }
@@ -636,7 +626,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
 
   // ---- Organizational memory injection (read path; gated by ARCHIE_MEMORY_INJECT, default off) ----
   // Users are the task's authors, computed once above.
-  const taskTitle = metadata.title ?? undefined;
+  const taskTitle = deriveMemoryTaskTitle(metadata.title, taskMemoryContext.firstUserMessage);
   // taskId + agent feed the operator-only selection sensor under memory/telemetry/.
   const memoryBase = { taskId, visibility: metadata.visibility, agent: def.id, taskTitle };
   const memorySelectors = isPmAgent(def)

@@ -161,6 +161,17 @@ describe('memory store', () => {
       expect(saved).toContain('- Uses Slack');
     });
 
+    it('does not add the same bullet twice within a section', async () => {
+      const update = { action: 'add' as const, section: 'Communication', content: 'Prefers async' };
+      await applyUserUpdates('bob', [update]);
+      const once = await readFile(join(usersDir, 'bob.md'), 'utf-8');
+
+      await applyUserUpdates('bob', [update]);
+
+      expect(await readFile(join(usersDir, 'bob.md'), 'utf-8')).toBe(once);
+      expect(once.match(/Prefers async/g)).toHaveLength(1);
+    });
+
     it('creates new section at end of file when section missing', async () => {
       await mkdir(usersDir, { recursive: true });
       await writeFile(join(usersDir, 'dana.md'), '## Communication\n- Prefers async\n', 'utf-8');
@@ -254,6 +265,16 @@ describe('memory store', () => {
 
       expect(result).toEqual({ appliedUpdates: [], capExceeded: false });
       expect(existsSync(join(usersDir, 'U07DANA001.md'))).toBe(false);
+    });
+
+    it('reports a replayed add as a no-op', async () => {
+      const update = { action: 'add' as const, section: 'Communication', content: 'Prefers concise updates' };
+      await applyUserUpdatesWithIdentity('U07DANA001', 'Dana Lee', [update]);
+
+      await expect(applyUserUpdatesWithIdentity('U07DANA001', 'Dana Lee', [update])).resolves.toEqual({
+        appliedUpdates: [],
+        capExceeded: false,
+      });
     });
   });
 });

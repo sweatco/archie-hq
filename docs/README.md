@@ -15,11 +15,13 @@ How the system works today. Each doc describes the actual implementation, verifi
 | [Slack Integration](architecture/slack-integration.md) | Webhooks, message flow, UX patterns |
 | [GitHub Integration](architecture/github-integration.md) | PR management, webhooks, merge orchestration |
 | [Edit Mode](architecture/edit-mode.md) | Read/write modes, shared clones, approval flow |
+| [Max Mode](architecture/max-mode.md) | Human-approved model and reasoning upgrades |
 | [Plugin System](architecture/plugin-system.md) | Plugin architecture, agent tracks, skill discovery |
 | [Web Research](architecture/web-research.md) | Research pipeline, multi-agent research tool |
 | [Security](architecture/security.md) | Threat model, defense layers, prompt injection defense |
 | [Secrets](architecture/secrets.md) | OAuth vault, encryption, secret handling |
 | [Memory Layer](architecture/memory.md) | Cross-task persistent knowledge: org facts, collaboration profiles, recent activity |
+| [Triggers](architecture/triggers.md) | Persistent scheduled and message-driven work |
 
 ## Guides
 
@@ -29,8 +31,10 @@ How to work with the system. Setup, deployment, and development patterns.
 |----------|-------------|
 | [Local Development](guides/local-development.md) | Prerequisites, setup, running, debugging |
 | [Deployment](guides/deployment.md) | GCP deployment, CI/CD, monitoring, operations |
+| [GitHub App Setup](guides/github-setup.md) | GitHub App permissions, webhooks, and environment variables |
 | [SDK Patterns](guides/sdk-patterns.md) | Agent SDK hooks, turn detection, streaming input |
 | [Bedrock Guardrails Setup](guides/bedrock-guardrails-setup.md) | Configuring AWS Bedrock guardrails for prompt injection defense |
+| [Cloud E2E Sandbox](guides/e2e-in-cloud-sandbox.md) | Run the E2E harness behind a TLS-intercepting proxy |
 
 ## Plans
 
@@ -70,7 +74,7 @@ See [plans/README.md](plans/README.md) for the full evolution arc.
 
 ## Proposals
 
-Future work and unimplemented features. These are ideas that have been designed but not yet built.
+Design and decision documents that do not belong in the current architecture or historical plans. Each document carries its own status.
 
 | Document | Description |
 |----------|-------------|
@@ -79,6 +83,8 @@ Future work and unimplemented features. These are ideas that have been designed 
 | [LLM Guard Integration](proposals/llm-guard-integration.md) | Full DLP scanning service |
 | [Analytics Plugin Gaps](proposals/analytics-plugin-gaps.md) | Roadmap for analytics plugin (MVP shipped) |
 | [Architecture Simplification](proposals/architecture-simplification.md) | Ideas to reduce complexity in core flows |
+| [Forge v2](proposals/forge.md) | Implemented workflow-orchestrated idea-to-PR design |
+| [Memory v2 Roadmap](proposals/memory-v2-roadmap.md) | Rollout gates and later memory work |
 
 ## Quick Reference
 

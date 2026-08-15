@@ -7,8 +7,8 @@ import { join } from 'path';
 let tempDir: string;
 const state = vi.hoisted(() => ({ memoryDir: '', runtimeDisabled: false }));
 
-const { onEvent, disableMemoryRuntime } = vi.hoisted(() => ({
-  onEvent: vi.fn(),
+const { onTaskCompleted, disableMemoryRuntime } = vi.hoisted(() => ({
+  onTaskCompleted: vi.fn(),
   disableMemoryRuntime: vi.fn(),
 }));
 
@@ -23,12 +23,12 @@ vi.mock('../paths.js', () => ({
   isAllowedUserId: () => true,
 }));
 
-vi.mock('../../system/event-bus.js', () => ({ onEvent }));
+vi.mock('../../system/event-bus.js', () => ({ onTaskCompleted }));
 vi.mock('../lifecycle.js', () => ({
   handleTaskCompleted: vi.fn(),
   rescheduleTaskCompleted: vi.fn(),
 }));
-vi.mock('../pending-queue.js', () => ({ readPending: vi.fn().mockResolvedValue([]) }));
+vi.mock('../pending-queue.js', () => ({ readPendingEntries: vi.fn().mockResolvedValue([]) }));
 vi.mock('../../system/logger.js', () => ({
   logger: { system: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
@@ -54,7 +54,7 @@ describe('initMemory public-store compatibility gate', () => {
     await initMemory();
 
     expect(existsSync(join(state.memoryDir, '.public-store-v1'))).toBe(true);
-    expect(onEvent).toHaveBeenCalledOnce();
+    expect(onTaskCompleted).toHaveBeenCalledOnce();
     expect(disableMemoryRuntime).not.toHaveBeenCalled();
   });
 
@@ -68,7 +68,7 @@ describe('initMemory public-store compatibility gate', () => {
     expect(disableMemoryRuntime).toHaveBeenCalledWith(expect.stringContaining('no public-store marker'));
     expect(existsSync(legacy)).toBe(true);
     expect(existsSync(join(state.memoryDir, '.public-store-v1'))).toBe(false);
-    expect(onEvent).not.toHaveBeenCalled();
+    expect(onTaskCompleted).not.toHaveBeenCalled();
   });
 
   it('degrades to disabled when the memory path cannot be initialized', async () => {
@@ -77,6 +77,6 @@ describe('initMemory public-store compatibility gate', () => {
     await expect(initMemory()).resolves.toBeUndefined();
 
     expect(disableMemoryRuntime).toHaveBeenCalled();
-    expect(onEvent).not.toHaveBeenCalled();
+    expect(onTaskCompleted).not.toHaveBeenCalled();
   });
 });

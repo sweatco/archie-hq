@@ -13,7 +13,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import type { AgentName, FindingType, AttachedRepo, SlackThreadMessage } from '../types/task.js';
+import type { AgentName, FindingType, AttachedRepo, SlackThreadMessage, TaskVisibility } from '../types/task.js';
 import type { Task } from '../tasks/task.js';
 import type { Agent } from './agent.js';
 import { getVisiblePeerIdsForSender, findAgentDefsContainingRepo, synthesizeDynamicAgentDef, isAutoMergeRepo } from './registry.js';
@@ -2420,10 +2420,10 @@ function createProposeTriggerTool(agent: Agent, task: Task) {
         status: 'pending',
         created_by: createdBy || 'unknown',
         created_at: new Date().toISOString(),
-        created_from_visibility: 'public',
         binding,
         conditions: built.conditions,
         action: { prompt: args.action_prompt },
+        prompt_origin_visibility: task.metadata.visibility,
         summary: args.summary,
       };
       await saveTrigger(trigger);
@@ -2503,10 +2503,16 @@ function createUpdateTriggerTool(_agent: Agent, task: Task) {
         return ok(`Trigger ${args.id} isn't visible from here, so it can't be managed from this conversation.`);
       }
 
-      const editedContent = Boolean(args.action_prompt || args.conditions || args.summary);
+      const editedContent = isTriggerContentEdit(args);
+      if (!triggerContentEditAllowed(task.metadata.visibility, args)) {
+        return ok('Trigger content cannot be changed from a private task. Pause or resume it here, or make prompt, summary, and condition changes from a public task.');
+      }
       let statusChange: 'paused' | 'resumed' | null = null;
 
-      if (args.action_prompt) trigger.action.prompt = args.action_prompt;
+      if (args.action_prompt) {
+        trigger.action.prompt = args.action_prompt;
+        trigger.prompt_origin_visibility = task.metadata.visibility;
+      }
       if (args.summary) trigger.summary = args.summary;
       if (args.conditions) {
         const defaultTz = trigger.conditions.find((c): c is Extract<TriggerCondition, { type: 'schedule' }> => c.type === 'schedule')?.tz || 'UTC';
@@ -2567,6 +2573,20 @@ function createUpdateTriggerTool(_agent: Agent, task: Task) {
       return ok(msg);
     },
   );
+}
+
+type TriggerContentEdit = {
+  action_prompt?: unknown;
+  summary?: unknown;
+  conditions?: unknown;
+};
+
+function isTriggerContentEdit(update: TriggerContentEdit): boolean {
+  return update.action_prompt !== undefined || update.summary !== undefined || update.conditions !== undefined;
+}
+
+export function triggerContentEditAllowed(visibility: TaskVisibility, update: TriggerContentEdit): boolean {
+  return visibility === 'public' || !isTriggerContentEdit(update);
 }
 
 function createDeleteTriggerTool(_agent: Agent, task: Task) {

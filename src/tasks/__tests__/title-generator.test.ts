@@ -31,11 +31,13 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 }));
 
 vi.mock('../../connectors/slack/client.js', () => ({
-  isExternalUser: (user: { teamId?: string; isRestricted?: boolean; isUltraRestricted?: boolean }) => {
-    if (user.isRestricted || user.isUltraRestricted) return true;
-    if (user.teamId && user.teamId !== 'T_HOME') return true;
-    return false;
+  classifySlackIdentity: (user: { teamId?: string; isRestricted?: boolean; isUltraRestricted?: boolean }) => {
+    if (!user.teamId) return 'unknown';
+    if (user.isRestricted || user.isUltraRestricted || user.teamId !== 'T_HOME') return 'external';
+    return 'internal';
   },
+  isExternalUser: (user: { teamId?: string; isRestricted?: boolean; isUltraRestricted?: boolean }) =>
+    Boolean(user.isRestricted || user.isUltraRestricted || (user.teamId && user.teamId !== 'T_HOME')),
   formatSlackChannelRef: vi.fn(),
   formatSlackChannelDisplay: vi.fn(),
 }));
@@ -182,6 +184,22 @@ describe('generateTaskTitle', () => {
     expect(transcript).toContain('[external]: [redacted: external participant in shared channel]');
     expect(transcript).toContain('[Dana]: internal subject');
     expect(transcript).not.toContain('should be redacted');
+  });
+
+  it('redacts an unverified author even when shared-channel lookup says false', async () => {
+    state.queryEvents = [successEvent('Must not run')];
+    const thread = makeThread({
+      shared: false,
+      taskVisibility: 'public',
+      messages: [{
+        ts: '1.0',
+        text: 'must not enter public memory',
+        user: { id: 'UUNKNOWN', username: 'unknown', realName: 'Unknown' },
+      }],
+    });
+
+    await expect(generateTaskTitle(thread)).resolves.toBeNull();
+    expect(query).not.toHaveBeenCalled();
   });
 
   it('includes forwarded-from label for externally-authored attachment from internal author', async () => {

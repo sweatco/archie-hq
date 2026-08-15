@@ -136,6 +136,16 @@ describe('entity store', () => {
       expect(rec.observations[0]).toEqual({ category: 'decision', text: 'chose idempotency keys', touched: '2026-06-01' });
       expect(rec.relations).toContainEqual({ type: 'touched_by', target: 'task-42' });
       expect(rec.relations).toContainEqual({ type: 'depends_on', target: 'postgres-prod' });
+      expect(rec.lastTouched).toBe('2026-06-01');
+      expect(applied?.delta).toEqual({
+        slug: 'payment-service',
+        type: 'service',
+        scope: 'repo',
+        repos: ['backend'],
+        summary: 'NestJS payments API',
+        observations: [{ category: 'decision', text: 'chose idempotency keys' }],
+        relations: [{ type: 'depends_on', target: 'postgres-prod' }],
+      });
     });
 
     it('folds an update into an existing entity resolved by alias (no duplicate file)', async () => {
@@ -149,6 +159,15 @@ describe('entity store', () => {
       expect(existsSync(join(entitiesDir, 'payments-api.md'))).toBe(false);
       const rec = (await readEntity('payment-service'))!;
       expect(rec.observations.map((o) => o.text)).toContain('handles refunds');
+      expect(rec.lastTouched).toBe('2026-06-02');
+    });
+
+    it('advances entity recency for summary-only and relation-only updates', async () => {
+      await applyEntityUpdate({ slug: 'svc', type: 'service', summary: 'Initial' }, 'task-1', { today: '2026-06-01' });
+      await applyEntityUpdate({ slug: 'svc', summary: 'Updated' }, 'task-2', { today: '2026-06-02' });
+      expect((await readEntity('svc'))!.lastTouched).toBe('2026-06-02');
+      await applyEntityUpdate({ slug: 'svc', relations: [{ type: 'depends_on', target: 'db' }] }, 'task-3', { today: '2026-06-03' });
+      expect((await readEntity('svc'))!.lastTouched).toBe('2026-06-03');
     });
 
     it('drops unknown relation types and observation categories (closed vocab)', async () => {
@@ -172,6 +191,36 @@ describe('entity store', () => {
       expect(rec.observations.map((o) => o.text)).toEqual(['kept fact']);
       expect(rec.relations.filter((r) => r.type === 'depends_on')).toHaveLength(1);
       expect(rec.relations.some((r) => (r.type as string) === 'pwns')).toBe(false);
+    });
+
+    it('returns only the sanitized fields that changed and reached disk', async () => {
+      await writeEntity(REC);
+      const applied = await applyEntityUpdate({
+        slug: 'payments-api',
+        display_name: 'Payments',
+        aliases: ['payments-api', 'Pay', '</entity>'],
+        repos: ['backend', 'billing'],
+        summary: 'Updated payment service',
+        observations: [
+          { category: 'fact', text: 'Handles refunds' },
+          { category: 'fact', text: 'Break </entity>' },
+        ],
+        relations: [
+          { type: 'depends_on', target: 'postgres-prod' },
+          { type: 'integrates', target: 'stripe' },
+        ],
+      }, 'task-2', { today: '2026-06-02' });
+
+      expect(applied?.delta).toEqual({
+        slug: 'payment-service',
+        display_name: 'Payments',
+        aliases: ['Pay'],
+        repos: ['billing'],
+        summary: 'Updated payment service',
+        observations: [{ category: 'fact', text: 'Handles refunds' }],
+        relations: [{ type: 'integrates', target: 'stripe' }],
+      });
+      expect((await readEntity('payment-service'))?.aliases).not.toContain('</entity>');
     });
 
     it('rejects a path-traversal slug — no file is written', async () => {
@@ -248,6 +297,27 @@ describe('entity store', () => {
       expect(texts).toHaveLength(3);
       expect(texts).toContain('d'); // freshly-applied survives the date tie
       expect(texts).not.toContain('a'); // oldest-positioned same-dated dropped
+    });
+
+    it('preserves persisted order while repeatedly capping same-day observations', async () => {
+      entityObsCap = 3;
+      await applyEntityUpdate(
+        { slug: 'svc', type: 'service', observations: [
+          { category: 'fact', text: 'a' }, { category: 'fact', text: 'b' }, { category: 'fact', text: 'c' },
+        ] },
+        'task-1', { today: '2026-06-30' },
+      );
+      await applyEntityUpdate(
+        { slug: 'svc', observations: [{ category: 'fact', text: 'd' }] },
+        'task-2', { today: '2026-06-30' },
+      );
+      expect((await readEntity('svc'))!.observations.map((o) => o.text)).toEqual(['b', 'c', 'd']);
+
+      await applyEntityUpdate(
+        { slug: 'svc', observations: [{ category: 'fact', text: 'e' }] },
+        'task-3', { today: '2026-06-30' },
+      );
+      expect((await readEntity('svc'))!.observations.map((o) => o.text)).toEqual(['c', 'd', 'e']);
     });
 
     it('drops undated observations before dated ones when over cap', async () => {

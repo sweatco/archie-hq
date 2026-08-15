@@ -21,10 +21,11 @@ import {
   addReaction,
   setSlackDryRun,
   getUserInfo,
-  isExternalUser,
+  classifySlackIdentity,
   isChannelShared,
   postEphemeral,
   getSlackClient,
+  getChannelInfo,
   cleanSlackText,
   extractMessageContent,
 } from './client.js';
@@ -74,13 +75,58 @@ let app: AppType | null = null;
 
 type SlackUserInfo = Awaited<ReturnType<typeof getUserInfo>>;
 
-/** Resolve an interactive-action actor and fail closed unless they are internal. */
+type ActionBody = {
+  user?: { id?: string };
+  channel?: { id?: string };
+  message?: { ts?: string; thread_ts?: string; blocks?: unknown[] };
+};
+
+async function rejectActionActor(
+  body: ActionBody,
+  userId: string,
+  actionName: string,
+  reason: 'external' | 'unknown',
+): Promise<void> {
+  const channelId = body.channel?.id;
+  const messageTs = body.message?.ts;
+  if (channelId) {
+    const text = reason === 'external'
+      ? `Only members of this workspace can complete this ${actionName}. Ask a workspace member to use the approval controls.`
+      : `I couldn't verify your Slack account for this ${actionName}. Please try again.`;
+    await postEphemeral(channelId, userId, text, body.message?.thread_ts ?? messageTs);
+  }
+  if (reason !== 'external' || !channelId || !messageTs) return;
+
+  try {
+    const waitingBlock = {
+      type: 'context',
+      block_id: 'external-actor-waiting',
+      elements: [{
+        type: 'mrkdwn',
+        text: `⏳ Waiting for a workspace member — external and guest users can't complete this ${actionName}.`,
+      }],
+    };
+    const blocks = body.message?.blocks
+      ? [
+          ...body.message.blocks.filter((block) =>
+            !(block && typeof block === 'object' && 'block_id' in block && block.block_id === 'external-actor-waiting')),
+          waitingBlock,
+        ]
+      : undefined;
+    await updateMessage(
+      channelId,
+      messageTs,
+      `⏳ *Waiting for a workspace member* — external and guest users can't complete this ${actionName}.`,
+      blocks,
+    );
+  } catch (error) {
+    logger.warn('Slack', `Failed to annotate ${actionName} after rejecting external/guest user ${userId}`, error);
+  }
+}
+
+/** Resolve an interactive-action actor and require verified internal identity. */
 export async function resolveInternalActionActor(
-  body: {
-    user?: { id?: string };
-    channel?: { id?: string };
-    message?: { ts?: string; thread_ts?: string };
-  },
+  body: ActionBody,
   actionName: string,
 ): Promise<{ id: string; info: SlackUserInfo } | null> {
   const userId = body.user?.id;
@@ -90,22 +136,16 @@ export async function resolveInternalActionActor(
   }
   try {
     const info = await getUserInfo(userId);
-    if (isExternalUser(info)) {
-      logger.system(`Ignoring ${actionName} from external/guest user ${userId}`);
+    const identity = classifySlackIdentity(info);
+    if (identity !== 'internal') {
+      logger.system(`Ignoring ${actionName} from ${identity} user ${userId}`);
+      await rejectActionActor(body, userId, actionName, identity);
       return null;
     }
     return { id: userId, info };
   } catch (error) {
     logger.warn('Slack', `Ignoring ${actionName}: failed to classify actor ${userId}`, error);
-    const channelId = body.channel?.id;
-    if (channelId) {
-      await postEphemeral(
-        channelId,
-        userId,
-        `I couldn't verify your Slack account for this ${actionName}. Please try again.`,
-        body.message?.thread_ts ?? body.message?.ts,
-      );
-    }
+    await rejectActionActor(body, userId, actionName, 'unknown');
     return null;
   }
 }
@@ -668,21 +708,24 @@ export async function handleSlackEvent(event: {
   const channelKey = `slack:${event.channel}:${threadId}`;
 
   // ---- External-author bail-out --------------------------------------------
-  // Resolve the event author and bail if external (different team, or guest).
+  // Resolve the event author and continue only for verified internal users.
   // No agent spawn, no task creation, no reactions, no log entries. The
   // redacted history will be appended lazily the next time an internal user
   // triggers the handler (fetchSlackThread re-reads full history and redacts).
-  if (event.user) {
-    try {
-      const authorInfo = await getUserInfo(event.user);
-      if (isExternalUser(authorInfo)) {
-        logger.system(`Skipping event from external/guest user ${event.user}`);
-        return;
-      }
-    } catch (error) {
-      // Fail open — if we can't classify, don't silently drop the event.
-      logger.warn('Slack', `Failed to classify event author ${event.user}`, error);
+  if (!event.user) {
+    logger.warn('Slack', 'Skipping event without an author');
+    return;
+  }
+  try {
+    const authorInfo = await getUserInfo(event.user);
+    const identity = classifySlackIdentity(authorInfo);
+    if (identity !== 'internal') {
+      logger.system(`Skipping event from ${identity} user ${event.user}`);
+      return;
     }
+  } catch (error) {
+    logger.warn('Slack', `Failed to classify event author ${event.user}`, error);
+    return;
   }
 
   // Instant acknowledgment — react before any LLM processing. Only @mentions
@@ -760,7 +803,10 @@ export async function handleSlackEvent(event: {
     }
 
     // Thread reply to an existing task — route to it
-    await task.append(thread);
+    if (!(await task.append(thread))) {
+      logger.warn('Slack', `Stopped ingesting thread ${threadId} at an author whose identity could not be verified`);
+      return;
+    }
     if (isAckable) task.ackMessage(channelKey, event.ts);
     if (!task.metadata.title) {
       generateTitleAndSync(task, thread).catch((err) =>
@@ -777,7 +823,10 @@ export async function handleSlackEvent(event: {
     // post_to_channel explore tool). A reply inside a human-started thread never
     // lands here — its root author isn't the bot — so it stays ignored, as before.
     const task = await Task.create(thread.taskVisibility);
-    await task.append(thread);
+    if (!(await task.append(thread))) {
+      logger.warn('Slack', `Stopped ingesting new thread ${threadId} at an author whose identity could not be verified`);
+      return;
+    }
     // Ack the triggering message. For @mention/DM the :eyes: was already added
     // before the thread fetch; for a reply to a bot-started thread, add it now.
     if (!isAckable && thread.rootAuthorWasBot) addReaction(event.channel, event.ts, 'eyes');
@@ -852,7 +901,7 @@ async function dispatchChannelMessageTriggers(
  * change is material; a cosmetic edit can simply be a no-op on its end.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function handleSlackEdit(event: any): Promise<void> {
+export async function handleSlackEdit(event: any): Promise<void> {
   const msg = event.message;
   const prev = event.previous_message;
   if (!msg || !msg.ts) return;
@@ -873,17 +922,18 @@ async function handleSlackEdit(event: any): Promise<void> {
   const taskId = await findTaskByThread(threadId);
   if (!taskId) return;
 
-  // External-author bail-out + author resolution in one (cached) lookup.
-  let authorInfo: Awaited<ReturnType<typeof getUserInfo>> | undefined;
+  // Author resolution is fail closed: edits require verified internal identity.
+  let authorInfo: Awaited<ReturnType<typeof getUserInfo>>;
   try {
     authorInfo = await getUserInfo(msg.user);
-    if (isExternalUser(authorInfo)) {
-      logger.system(`Skipping edit from external/guest user ${msg.user}`);
+    const identity = classifySlackIdentity(authorInfo);
+    if (identity !== 'internal') {
+      logger.system(`Skipping edit from ${identity} user ${msg.user}`);
       return;
     }
   } catch (error) {
-    // Fail open — if we can't classify, don't silently drop the edit.
     logger.warn('Slack', `Failed to classify edit author ${msg.user}`, error);
+    return;
   }
 
   const task = await Task.get(taskId);
@@ -910,14 +960,18 @@ async function handleSlackEdit(event: any): Promise<void> {
   );
   const author: SlackAuthor = {
     id: msg.user,
-    username: authorInfo?.name ?? msg.user,
-    realName: authorInfo?.realName ?? msg.user,
-    teamId: authorInfo?.teamId,
-    isRestricted: authorInfo?.isRestricted,
-    isUltraRestricted: authorInfo?.isUltraRestricted,
+    username: authorInfo.name,
+    realName: authorInfo.realName,
+    teamId: authorInfo.teamId,
+    isRestricted: authorInfo.isRestricted,
+    isUltraRestricted: authorInfo.isUltraRestricted,
+    isBot: authorInfo.isBot,
+    isAppUser: authorInfo.isAppUser,
   };
 
-  const recorded = await task.appendSlackEdit(channelKey, author, editedTs, newText);
+  const channelInfo = await getChannelInfo(channelId);
+  const sourceVisibility = channelInfo.isPrivate ? 'private' : 'public';
+  const recorded = await task.appendSlackEdit(channelKey, author, editedTs, newText, sourceVisibility);
   if (!recorded) return;
 
   const channelLabel = channel?.type === 'slack' ? channel.channel_name : channelId;
@@ -968,7 +1022,7 @@ async function sendSharedChannelWarnings(
   const botUserId = getBotUserId();
   const internalParticipants = new Set<string>();
   for (const msg of thread.messages) {
-    if (isExternalUser(msg.user)) continue;
+    if (classifySlackIdentity(msg.user) !== 'internal') continue;
     if (!msg.user.id || msg.user.id === botUserId) continue;
     internalParticipants.add(msg.user.id);
   }
@@ -989,7 +1043,7 @@ async function sendSharedChannelWarnings(
   for (const msg of thread.messages) {
     if (!msg.user.id || forwardNotified.has(msg.user.id)) continue;
     const hasExternalAttachment = (msg.attachments ?? []).some(
-      (att) => att.author && isExternalUser(att.author),
+      (att) => att.author && classifySlackIdentity(att.author) !== 'internal',
     );
     if (hasExternalAttachment) {
       forwardersToNotify.add(msg.user.id);

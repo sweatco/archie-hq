@@ -1,3 +1,5 @@
+import type { TaskVisibility } from './task.js';
+
 /**
  * Trigger type definitions
  *
@@ -9,8 +11,6 @@
  * Triggers are stored one JSON file per trigger under TRIGGERS_DIR (see
  * trigger-store.ts) and indexed in-memory by the trigger scheduler.
  */
-
-import type { TaskVisibility } from './task.js';
 
 export type TriggerStatus = 'pending' | 'enabled' | 'paused';
 
@@ -47,8 +47,6 @@ export interface Trigger {
   /** Slack user ID who requested it */
   created_by: string;
   created_at: string;
-  /** Creation task visibility. Missing on legacy records and treated as private. */
-  created_from_visibility?: TaskVisibility;
   /** Slack user ID who approved it (set when status flips pending → enabled) */
   approved_by?: string;
   binding: TriggerBinding;
@@ -56,6 +54,8 @@ export interface Trigger {
   conditions: TriggerCondition[];
   /** PM instruction seeded into the spawned task when fired (internal — not shown to users). */
   action: { prompt: string };
+  /** Visibility of the task that supplied the current action prompt. Missing on legacy records means unknown. */
+  prompt_origin_visibility?: TaskVisibility;
   /**
    * Short, user-facing one-liner describing what the trigger does (e.g. "Daily
    * summary of #bot-test"). Shown in approval prompts, announcements, and

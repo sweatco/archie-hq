@@ -11,7 +11,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { z, toJSONSchema } from 'zod';
 import type { SlackThread } from '../types/index.js';
 import { renderMessageForContext } from './persistence.js';
-import { isExternalUser } from '../connectors/slack/client.js';
+import { classifySlackIdentity } from '../connectors/slack/client.js';
 import { logger } from '../system/logger.js';
 
 const REDACTION_PLACEHOLDER = '[redacted: external participant in shared channel]';
@@ -44,7 +44,7 @@ function buildTranscript(thread: SlackThread): { transcript: string; hasUsableCo
   let hasUsableContent = false;
 
   for (const msg of thread.messages) {
-    const redacted = thread.shared && isExternalUser(msg.user);
+    const redacted = classifySlackIdentity(msg.user) !== 'internal';
     const body = renderMessageForContext(msg, { redacted });
     const author = redacted ? 'external' : msg.user.realName;
     lines.push(`[${author}]: ${body}`);

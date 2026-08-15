@@ -15,7 +15,8 @@
 
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { getEntityIndexPath, getEntitiesDir, getEntityInjectMax, getOrgInjectMax } from './paths.js';
-import { listEntities, resolveEntity } from './entities.js';
+import { listEntities } from './entities.js';
+import { sanitizeEntitySlug } from './sanitize.js';
 import type { EntityRecord, EntityScope } from './types.js';
 
 const INDEX_HEADER = `# Entity Index
@@ -28,8 +29,9 @@ const INDEX_HEADER = `# Entity Index
 // Derived index
 // ============================================================================
 
-/** Most-recent touched date across an entity's observations, or '' when none. */
+/** Entity recency, falling back to observations on legacy pages. */
 export function lastTouched(record: EntityRecord): string {
+  if (record.lastTouched) return record.lastTouched;
   let latest = '';
   for (const o of record.observations) {
     if (o.touched && o.touched > latest) latest = o.touched;
@@ -45,7 +47,7 @@ function indexRow(r: EntityRecord): string {
 
 /** Render the index Markdown for a set of records (newest-touched first). */
 export function renderIndex(records: EntityRecord[]): string {
-  const sorted = [...records].sort((a, b) => {
+  const sorted = records.filter((record) => record.status !== 'archived').sort((a, b) => {
     const t = lastTouched(b).localeCompare(lastTouched(a));
     return t !== 0 ? t : a.entity.localeCompare(b.entity);
   });
@@ -151,7 +153,14 @@ export function selectEntities(
 
   const scores = new Map<string, number>();
   const bySlug = new Map<string, EntityRecord>();
-  for (const r of active) bySlug.set(r.entity, r);
+  const byLookupKey = new Map<string, EntityRecord>();
+  for (const r of active) {
+    bySlug.set(r.entity, r);
+    for (const key of [r.entity, ...r.aliases]) {
+      const normalized = key.trim().toLowerCase();
+      if (normalized && !byLookupKey.has(normalized)) byLookupKey.set(normalized, r);
+    }
+  }
 
   const bump = (slug: string, by: number) => scores.set(slug, (scores.get(slug) ?? 0) + by);
 
@@ -176,7 +185,9 @@ export function selectEntities(
     const r = bySlug.get(slug);
     if (!r) continue;
     for (const rel of r.relations) {
-      const target = resolveEntity(rel.target, active);
+      if (rel.type === 'touched_by') continue;
+      const lookupKey = rel.target.trim().toLowerCase();
+      const target = byLookupKey.get(lookupKey) ?? byLookupKey.get(sanitizeEntitySlug(rel.target) ?? '');
       if (target && !scores.has(target.entity)) bump(target.entity, SCORE_EXPANSION);
     }
   }

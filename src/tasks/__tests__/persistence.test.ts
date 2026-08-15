@@ -55,7 +55,7 @@ import {
   renderEditForContext,
   renderMessageForContext,
 } from '../persistence.js';
-import { extractAuthorUsers } from '../../memory/lifecycle.js';
+import { parseTranscript } from '../../memory/transcript.js';
 import type { TaskMetadata } from '../../types/task.js';
 
 afterAll(async () => {
@@ -213,7 +213,7 @@ describe('Slack knowledge-log framing', () => {
 
     const log = await readKnowledgeLog(taskId);
     expect(log).toContain('\n  [2026-07-28T00:00:00.000Z]');
-    expect(extractAuthorUsers(log)).toEqual([
+    expect(parseTranscript(log).authors).toEqual([
       { userId: 'U07AUTHOR1', displayName: 'Real Author' },
     ]);
   });

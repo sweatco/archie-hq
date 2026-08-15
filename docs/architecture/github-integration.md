@@ -277,5 +277,5 @@ The system is designed so that the PM agent is only reactivated for GitHub event
 - `src/connectors/slack/events.ts` -- `approve_merge` / `deny_merge` Bolt action handlers; `src/connectors/api/routes.ts` -- the equivalent `type: "merge"` approval route
 - `src/connectors/github/repo-clone.ts` -- Shared-clone lifecycle (`setupSharedClone`, `removeClone`, `CloneCheckout`); each agent gets its own `git clone --shared` from the base repo
 - `src/connectors/github/branch-state.ts` -- Per-branch state helpers (`assignPrNumber` — assigns the PR number and resets the per-PR `merge_armed`/`merge_ready_notified` markers on branch reuse, `hydrateBranchState`, `findBranchStateByPR`)
-- `src/agents/tools.ts` -- `createRepoToolsMcpServer` (`repo-tools` MCP: git workflow + PR tools), `createPMAgentMcpServer` (`pm-agent-tools` MCP)
+- `src/agents/tools.ts` -- `createRepoToolsMcpServer` (`repo-tools` MCP: git workflow + PR tools), `createOrchestrationMcpServer` (PM merge requests and approvals)
 - `src/types/task.ts` -- `RepositoryInfo` with `branch_states`, `BranchState` type with per-branch PR tracking
