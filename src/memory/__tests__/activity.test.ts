@@ -17,7 +17,7 @@ vi.mock('../paths.js', () => ({
   getRecentActivityPath: () => activityPath,
 }));
 
-import { readActivity, appendActivity, trimActivity } from '../activity.js';
+import { readActivity, readActivityMarkdown, appendActivity } from '../activity.js';
 import type { ActivityEntry } from '../types.js';
 
 describe('recent activity', () => {
@@ -79,6 +79,15 @@ describe('recent activity', () => {
 
       const result = await readActivity();
       expect(result).toHaveLength(1);
+    });
+  });
+
+  describe('readActivityMarkdown()', () => {
+    it('preserves legacy or hand-edited rows byte-for-byte for injection', async () => {
+      const content = '# Recent Activity\n\n| legacy | row | with | four columns |\n';
+      await writeFile(activityPath, content, 'utf-8');
+
+      expect(await readActivityMarkdown()).toBe(content);
     });
   });
 
@@ -184,27 +193,7 @@ describe('recent activity', () => {
     });
   });
 
-  // ---- trimActivity ----
-
-  describe('trimActivity(maxEntries)', () => {
-    it('does nothing when entries are within the limit', async () => {
-      const content = [
-        '# Recent Activity',
-        '',
-        '| Date | Task ID | Summary | Domain | User |',
-        '|------|---------|---------|--------|------|',
-        '| 2026-04-10 | task-001 | Task one | engineering | dana |',
-        '| 2026-04-09 | task-002 | Task two | product | alice |',
-      ].join('\n');
-      await writeFile(activityPath, content, 'utf-8');
-
-      await trimActivity(5);
-
-      const result = await readActivity();
-      expect(result).toHaveLength(2);
-    });
-
-    it('removes entries beyond the limit, keeping newest', async () => {
+    it('inserts and trims in one write, keeping the new row and newest prior rows', async () => {
       const content = [
         '# Recent Activity',
         '',
@@ -216,19 +205,29 @@ describe('recent activity', () => {
       ].join('\n');
       await writeFile(activityPath, content, 'utf-8');
 
-      await trimActivity(2);
+      await appendActivity({
+        date: '2026-04-11',
+        taskId: 'task-004',
+        summary: 'New row',
+        domain: 'engineering',
+        user: 'dana',
+      }, 2);
 
       const result = await readActivity();
       expect(result).toHaveLength(2);
-      expect(result[0].taskId).toBe('task-001');
-      expect(result[1].taskId).toBe('task-002');
-      // task-003 should be removed
+      expect(result.map((entry) => entry.taskId)).toEqual(['task-004', 'task-001']);
       const fileContent = await readFile(activityPath, 'utf-8');
+      expect(fileContent).not.toContain('task-002');
       expect(fileContent).not.toContain('task-003');
     });
 
-    it('handles file not existing gracefully', async () => {
-      await expect(trimActivity(50)).resolves.not.toThrow();
+    it('round-trips escaped table delimiters across later appends', async () => {
+      await appendActivity({
+        date: '2026-04-10', taskId: 'task-pipe', summary: 'fixed | verified', domain: 'engineering', user: 'dana',
+      });
+      await appendActivity({
+        date: '2026-04-11', taskId: 'task-next', summary: 'next task', domain: 'engineering', user: 'dana',
+      });
+      expect((await readActivity()).find((entry) => entry.taskId === 'task-pipe')?.summary).toBe('fixed | verified');
     });
-  });
 });
