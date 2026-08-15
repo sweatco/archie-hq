@@ -228,12 +228,12 @@ export async function loadMetadata(taskId: string): Promise<TaskMetadata | null>
   }
 }
 
-/**
- * Format a log entry for the shared knowledge log
- */
+/** Format a log entry so body continuations cannot mimic source lines. */
 function formatLogEntry(entry: LogEntry): string {
   const typeStr = entry.type ? ` [${entry.type}]` : '';
-  return `[${entry.timestamp}] [${entry.source}]${typeStr} ${entry.message}\n`;
+  const safeSource = entry.source.replace(/[\r\n]+/g, ' ');
+  const framedMessage = entry.message.replace(/\r\n?/g, '\n').replace(/\n/g, '\n  ');
+  return `[${entry.timestamp}] [${safeSource}]${typeStr} ${framedMessage}\n`;
 }
 
 /**
@@ -867,26 +867,17 @@ export interface TaskUsageRecord {
 const usageWriteQueues = new Map<string, Promise<void>>();
 
 /**
- * Append a usage record to the task's usage.jsonl (fire-and-forget).
- * No-ops if the shared/ dir is missing; never throws.
+ * Queue a usage record append and resolve after it has been handled.
+ * Callers may fire-and-forget it; missing directories and write failures never
+ * reject the returned promise.
  */
 export async function appendUsageRecord(record: TaskUsageRecord): Promise<void> {
-  // taskId flows into filesystem path construction below (getSharedPath /
-  // getUsageLogPath → appendFile), and it can arrive from the HTTP API, so it
-  // is untrusted. Two barriers, both written INLINE here rather than behind the
-  // `isSafeTaskId` helper — CodeQL's path-injection analysis does not treat a
-  // regexp test hidden in a boolean-returning helper as a sanitizer, so the
-  // literal guards must sit in the function that reaches the sink. No-op on any
-  // rejection so the fire-and-forget / never-throw contract is preserved.
-
-  // (a) INLINE allowlist barrier at entry — the canonical single-segment id.
+  // Keep the literal allowlist beside the filesystem sink for static analysis.
   if (!/^task-\d{8}-\d{4}-[a-z0-9]+$/.test(record.taskId)) return;
   const prev = usageWriteQueues.get(record.taskId) ?? Promise.resolve();
   const next = prev.then(async () => {
     try {
-      // (b) INLINE containment barrier before the existsSync / appendFile
-      // sinks: resolve the taskId-derived paths and confirm they stay under
-      // SESSIONS_DIR, then hand the sinks the resolved absolute paths.
+      // Defense in depth if the accepted task-id shape changes later.
       const root = resolve(SESSIONS_DIR);
       const dir = resolve(getSharedPath(record.taskId));
       const abs = resolve(getUsageLogPath(record.taskId));
@@ -904,6 +895,8 @@ export async function appendUsageRecord(record: TaskUsageRecord): Promise<void> 
     }
   });
   usageWriteQueues.set(record.taskId, next);
+  await next;
+  if (usageWriteQueues.get(record.taskId) === next) usageWriteQueues.delete(record.taskId);
 }
 
 /**

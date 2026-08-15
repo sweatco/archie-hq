@@ -6,32 +6,53 @@
 import { describe, it, expect } from 'vitest';
 import { createKeyedLock } from '../keyed-lock.js';
 
-const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
 
 describe('createKeyedLock', () => {
   it('serializes same-key operations in arrival order (no interleaving)', async () => {
     const lock = createKeyedLock();
     const log: string[] = [];
-    const op = (label: string, delay: number) =>
-      lock('k', async () => {
-        log.push(`${label}:start`);
-        await tick(delay);
-        log.push(`${label}:end`);
-      });
+    const firstStarted = deferred();
+    const releaseFirst = deferred();
+    const first = lock('k', async () => {
+      log.push('B:start');
+      firstStarted.resolve();
+      await releaseFirst.promise;
+      log.push('B:end');
+    });
+    await firstStarted.promise;
+    const second = lock('k', async () => {
+      log.push('A:start');
+      log.push('A:end');
+    });
 
-    // Start B with a longer delay first; A must still wait for B to finish.
-    await Promise.all([op('B', 20), op('A', 0)]);
+    expect(log).toEqual(['B:start']);
+    releaseFirst.resolve();
+    await Promise.all([first, second]);
     expect(log).toEqual(['B:start', 'B:end', 'A:start', 'A:end']);
   });
 
   it('runs different keys concurrently', async () => {
     const lock = createKeyedLock();
     const log: string[] = [];
-    await Promise.all([
-      lock('x', async () => { log.push('x:start'); await tick(20); log.push('x:end'); }),
-      lock('y', async () => { log.push('y:start'); await tick(0); log.push('y:end'); }),
-    ]);
-    // y (different key) does not wait for x — it starts and finishes inside x's window.
+    const xStarted = deferred();
+    const releaseX = deferred();
+    const x = lock('x', async () => {
+      log.push('x:start');
+      xStarted.resolve();
+      await releaseX.promise;
+      log.push('x:end');
+    });
+    await xStarted.promise;
+    await lock('y', async () => { log.push('y:start'); log.push('y:end'); });
+
+    expect(log).toEqual(['x:start', 'y:start', 'y:end']);
+    releaseX.resolve();
+    await x;
     expect(log).toEqual(['x:start', 'y:start', 'y:end', 'x:end']);
   });
 

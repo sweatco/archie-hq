@@ -28,8 +28,11 @@ export interface SystemEvent {
 const bus = new EventEmitter();
 bus.setMaxListeners(50); // SSE clients + internal listeners
 
+type TaskCompletedListener = (event: SystemEvent) => void | Promise<void>;
+const taskCompletedListeners = new Set<TaskCompletedListener>();
+
 /**
- * Emit a system event. Fire-and-forget — never throws.
+ * Emit a system event. Fire-and-forget.
  */
 export function emitEvent(
   type: EventType,
@@ -45,6 +48,32 @@ export function emitEvent(
     data,
   };
   bus.emit('event', event);
+}
+
+/** Run durable completion hooks without publishing the completed event yet. */
+export async function prepareTaskCompleted(
+  taskId: string,
+  data: Record<string, unknown> = {},
+  agentName?: string,
+): Promise<void> {
+  const event: SystemEvent = {
+    type: 'task:completed',
+    taskId,
+    timestamp: new Date().toISOString(),
+    agentName,
+    data,
+  };
+  await Promise.all([...taskCompletedListeners].map((listener) => listener(event)));
+}
+
+/** Subscribe to completion work that must finish before Task.complete resolves. */
+export function onTaskCompleted(listener: TaskCompletedListener): void {
+  taskCompletedListeners.add(listener);
+}
+
+/** Unsubscribe a durable task-completion listener. */
+export function offTaskCompleted(listener: TaskCompletedListener): void {
+  taskCompletedListeners.delete(listener);
 }
 
 /**

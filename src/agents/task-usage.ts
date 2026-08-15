@@ -1,21 +1,7 @@
 /**
- * Task usage aggregation (pure, unit-testable).
- *
- * Answers "how much has this task used/cost so far?" from two independent data
- * sources, joined at report time:
- *
- *   TOKENS (source of truth, always available) — recursively read every SDK
- *   transcript under `sessions/<taskId>/claude/<agentKey>/session/projects/`.
- *   Crash-safe: the SDK writes transcripts continuously regardless of whether a
- *   turn produced a result event.
- *
- *   COST (SDK-reported, when available) — aggregated exclusively from the
- *   append-only `sessions/<taskId>/shared/usage.jsonl`, written on each SDK
- *   `result` event. No price table, no estimation — cost is the SDK's own
- *   `total_cost_usd`, shown as `unavailable` when no record exists.
- *
- * This module imports only `SESSIONS_DIR` from the workdir bootstrap so the
- * test module graph stays a single mock; all paths are built locally.
+ * Aggregate tokens from crash-safe SDK transcripts and SDK-reported costs from
+ * the task's append-only usage.jsonl. Missing cost records remain unavailable;
+ * they are never estimated or treated as zero.
  */
 
 import { createReadStream, existsSync } from 'fs';
@@ -28,22 +14,8 @@ import { SESSIONS_DIR } from '../system/workdir.js';
 /** The SDK marks internal, non-billed assistant turns with this model. */
 const SYNTHETIC_MODEL = '<synthetic>';
 
-/**
- * taskId is untrusted — it can arrive from the HTTP API (`/api/tasks/:id/...`)
- * and both data paths build a filesystem path from it, so an unchecked `../`
- * id could escape `sessions/`. Every sink-building function below therefore
- * carries TWO barriers written INLINE (deliberately not extracted to a helper —
- * CodeQL's path-injection analysis does not recognise a regexp test hidden
- * behind a boolean-returning helper as a sanitizer, so the literal guard must
- * appear in the function that reaches the sink):
- *
- *   (a) an anchored allowlist matching the canonical `generateTaskId` shape
- *       (`task-YYYYMMDD-HHMM-<base36 suffix>`, exactly one segment, no `/`, no
- *       `..`) at entry — CodeQL's RegExpSanitizer barrier; and
- *   (b) a resolve()+relative() containment check immediately before the sink —
- *       the canonical CodeQL js/path-injection path-containment sanitizer —
- *       after which the RESOLVED absolute path is what is handed to the sink.
- */
+// Task IDs may come from HTTP. Keep the literal allowlist beside each filesystem
+// sink for static analysis, with a containment check as defense in depth.
 
 /** Token totals, keyed by the same field names the SDK reports. */
 export interface TokenTotals {
@@ -73,41 +45,33 @@ export interface TaskUsageReport {
   /** Distinct main-agent `end_turn` turns (drives the cost gap disclosure). */
   transcriptTurns: number;
   agents: AgentUsage[];
-  /** SDK-reported cost, present only when usage.jsonl exists. */
+  /** SDK-reported cost, present only when usage.jsonl has a valid record. */
   cost?: {
     grand: number;
-    /** Total usage.jsonl record count. */
+    /** Valid usage.jsonl record count. */
     costRecordedTurns: number;
   };
 }
 
-/** Minimal shape of the fields we read from a usage.jsonl record. */
+/** Validated fields read from a usage.jsonl record. */
 interface UsageRecordLite {
   query_nonce?: string;
   agentKey?: string;
-  total_cost_usd?: number;
+  total_cost_usd: number;
 }
 
-/** Reduces all usage records sharing one query_nonce to a single cost. */
-export type NonceReducer = (records: UsageRecordLite[]) => number;
-
-/**
- * Reduce records that share one `query_nonce` to that query() call's cost.
- *
- * DEFAULT: `Math.max` of `total_cost_usd`. Per the SDK cost-tracking docs,
- * `total_cost_usd` is CUMULATIVE across the steps of a single query() call, so
- * the final (== maximum, under the cumulative model) value is that call's cost.
- * `max` is used over "last line" because it is robust to line ordering and
- * monotonic under the cumulative model.
- *
- * FALLBACK (one-line change, gated on the T6 live boot): if a live boot shows
- * successive result events within one query() call are per-turn DELTAS — which
- * would surface as a NON-monotonic within-nonce sequence — flip `max` to a sum.
- * The two hypotheses are self-distinguishing: cumulative implies monotonic
- * non-decreasing within a nonce; any decrease proves deltas.
- */
-export const reduceNonceCost: NonceReducer = (records) =>
-  records.reduce((max, r) => Math.max(max, r.total_cost_usd ?? 0), 0);
+function isUsageRecord(value: unknown): value is UsageRecordLite {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.total_cost_usd !== 'number' ||
+    !Number.isFinite(record.total_cost_usd) ||
+    record.total_cost_usd < 0
+  ) return false;
+  if (record.query_nonce !== undefined && typeof record.query_nonce !== 'string') return false;
+  if (record.agentKey !== undefined && typeof record.agentKey !== 'string') return false;
+  return true;
+}
 
 function zeroTokens(): TokenTotals {
   return {
@@ -192,16 +156,12 @@ async function collectTokens(taskId: string): Promise<{
   const grand = zeroTokens();
   const agents = new Map<string, AgentTokens>();
 
-  // (a) INLINE allowlist barrier: reject anything but the canonical single-
-  // segment id before a path is built — an unsafe id yields empty totals and
-  // performs no join / existsSync / readdir / createReadStream below.
+  // Keep this literal check in the sink-building function for path analysis.
   if (!/^task-\d{8}-\d{4}-[a-z0-9]+$/.test(taskId)) {
     return { grand, agents, transcriptTurns: 0 };
   }
 
-  // (b) INLINE containment barrier: resolve the taskId-derived path and confirm
-  // it stays under SESSIONS_DIR before the readdir sink; hand the sink the
-  // resolved absolute path (`claudeDir`).
+  // Defense in depth if the accepted task-id shape changes later.
   const root = resolve(SESSIONS_DIR);
   const claudeDir = resolve(join(SESSIONS_DIR, taskId, 'claude'));
   const claudeRel = relative(root, claudeDir);
@@ -258,15 +218,11 @@ async function collectTokens(taskId: string): Promise<{
 
 async function collectCost(
   taskId: string,
-  reduce: NonceReducer,
 ): Promise<{ grand: number; perAgent: Map<string, number>; costRecordedTurns: number } | undefined> {
-  // (a) INLINE allowlist barrier: reject an unsafe taskId before a path is
-  // built — an unsafe id reports no cost (undefined), like a missing file.
+  // Keep this literal check in the sink-building function for path analysis.
   if (!/^task-\d{8}-\d{4}-[a-z0-9]+$/.test(taskId)) return undefined;
 
-  // (b) INLINE containment barrier: resolve the taskId-derived path and confirm
-  // it stays under SESSIONS_DIR before the createReadStream sink; the resolved
-  // absolute path (`usagePath`) is what is streamed below.
+  // Defense in depth if the accepted task-id shape changes later.
   const root = resolve(SESSIONS_DIR);
   const usagePath = resolve(join(SESSIONS_DIR, taskId, 'shared', 'usage.jsonl'));
   const usageRel = relative(root, usagePath);
@@ -281,7 +237,8 @@ async function collectCost(
     for await (const line of rl) {
       if (!line.trim()) continue;
       try {
-        records.push(JSON.parse(line));
+        const parsed: unknown = JSON.parse(line);
+        if (isUsageRecord(parsed)) records.push(parsed);
       } catch {
         continue; // skip malformed
       }
@@ -289,6 +246,7 @@ async function collectCost(
   } catch {
     // File vanished/unreadable after the existsSync check — treat as empty.
   }
+  if (records.length === 0) return undefined;
 
   // Group by query_nonce; a record missing one is its own singleton group
   // (defensive only — this greenfield file always carries a nonce).
@@ -306,7 +264,9 @@ async function collectCost(
   let grand = 0;
   const perAgent = new Map<string, number>();
   for (const list of groups.values()) {
-    const cost = reduce(list);
+    // SDK cost is cumulative within one query() call. Max is stable even if
+    // records are reordered.
+    const cost = list.reduce((max, record) => Math.max(max, record.total_cost_usd), 0);
     grand += cost;
     // Every record in a nonce shares one agentKey (each spawn is per-agent), so
     // per-agent sums to grand by construction.
@@ -323,16 +283,12 @@ async function collectCost(
  * dirs/files (they yield an empty / cost-less report). An unsafe taskId (not
  * the canonical `generateTaskId` shape) is rejected before any filesystem
  * access and yields the same empty report — no path is ever built from it.
- *
- * @param reduce - per-nonce cost reducer; the default is documented-cumulative
- *   (`reduceNonceCost`). Injectable so the delta-fork fallback is unit-testable.
  */
 export async function aggregateTaskUsage(
   taskId: string,
-  reduce: NonceReducer = reduceNonceCost,
 ): Promise<TaskUsageReport> {
   const { grand, agents: tokenAgents, transcriptTurns } = await collectTokens(taskId);
-  const cost = await collectCost(taskId, reduce);
+  const cost = await collectCost(taskId);
 
   const agentKeys = new Set<string>(tokenAgents.keys());
   if (cost) for (const k of cost.perAgent.keys()) agentKeys.add(k);

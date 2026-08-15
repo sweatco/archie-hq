@@ -14,7 +14,7 @@ import {
   getChannelCanvasTabs,
   getSlackFileInfo,
   getUserInfo,
-  isExternalUser,
+  classifySlackIdentity,
   postSlackMessage,
 } from './client.js';
 import { readCanvas } from './canvas-read.js';
@@ -125,15 +125,15 @@ export async function ensureChannelCanvas(channelId: string): Promise<void> {
       // into standing PM context — external content in a shared channel would
       // become prompt injection. A previously classified entry is kept as-is;
       // a new canvas is skipped and retried at the next TTL scan.
-      let external: boolean | null = null;
+      let identity: ReturnType<typeof classifySlackIdentity> = 'unknown';
       if (creator) {
         try {
-          external = isExternalUser(await getUserInfo(creator));
+          identity = classifySlackIdentity(await getUserInfo(creator));
         } catch {
-          external = null;
+          identity = 'unknown';
         }
       }
-      if (external === null) {
+      if (identity === 'unknown') {
         if (prevEntry) {
           resolved.push({ fileId: tab.file_id, title, external: false, entry: prevEntry });
         } else {
@@ -141,7 +141,7 @@ export async function ensureChannelCanvas(channelId: string): Promise<void> {
         }
         continue;
       }
-      if (external) {
+      if (identity === 'external') {
         resolved.push({ fileId: tab.file_id, title, external: true });
         continue;
       }
