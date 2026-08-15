@@ -5,20 +5,22 @@
  * No imports from core types — keeps the dependency one-way.
  */
 
-/** A single update to a user memory file */
+/** A single update to a user's collaboration-profile file. */
 export interface MemoryUpdate {
   action: 'add' | 'update';
-  /** Section header to add under (e.g., "Engineering", "Communication") */
+  /** Required collaboration-profile section; validated against the closed allowlist. */
   section?: string;
   /** New content to add */
   content: string;
   /** For 'update': the old line to replace */
   old?: string;
+  /** Author-owned source message IDs (`msg:<ts>`) supporting this update. */
+  evidence?: string[];
 }
 
 /** Extraction result from the Sonnet side-agent */
 export interface ExtractionResult {
-  /** Updates to user files, keyed by username */
+  /** Collaboration-profile updates keyed by canonical Slack user ID. */
   user_updates: Record<string, MemoryUpdate[]>;
   /** Create/update operations for entity pages (resolved against the index) */
   entity_updates: EntityUpdate[];
@@ -82,6 +84,8 @@ export interface EntityRecord {
   /** Domain enum value, or '' when unscoped. */
   domain: string;
   status: EntityStatus;
+  /** Entity-level YYYY-MM-DD recency, persisted on every accepted update. */
+  lastTouched?: string;
   /** L0 one-line summary (from the `<!-- L0: ... -->` comment). */
   summary: string;
   observations: EntityObservation[];
@@ -121,7 +125,7 @@ export interface ActivityEntry {
 
 /** A user reference parsed from a transcript mention or resolved as a fallback. */
 export interface UserRef {
-  /** Canonical filename identifier (raw Slack ID `U…`/`W…`/`B…`/`T…`, or `cli:<...>` / `local:<...>` fallback). */
+  /** Canonical filename identifier (human Slack ID `U…`/`W…`, or `cli:<...>` / `local:<...>` fallback). */
   userId: string;
   /** Display name for prompt labels. Defaults to userId when not derivable. */
   displayName: string;

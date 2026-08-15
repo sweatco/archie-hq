@@ -1,55 +1,30 @@
-/**
- * Memory Housekeeping
- *
- * Periodically consolidates `users/*.md`:
- *   - Merge semantically-duplicate bullets.
- *   - Drop entries whose `<!-- touched: -->` date is past the staleness window.
- *   - Reorder bullets within each section so the most-recently-touched come first.
- *
- * Consolidation is done by a Sonnet side-agent (same `query()` shape as the
- * extractor — `maxTurns: 1`, `allowedTools: []`). A trace-back validator
- * checks that every output bullet is derivable from an input bullet — output
- * bullets that don't trace back are dropped, preventing the side-agent from
- * smuggling in new facts.
- */
-
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import { readFile, writeFile, rm } from 'fs/promises';
+import { readFile, writeFile, unlink } from 'fs/promises';
 import { existsSync } from 'fs';
-import { join } from 'path';
 import {
   isHousekeepingEnabled,
   getUserPath,
-  getEntityPath,
   getUsersDir,
   getStalenessDays,
+  getEntityCap,
+  getEntityPath,
 } from './paths.js';
-import { sanitizeEntitySlug } from './sanitize.js';
-import { listEntities, writeEntity, addRelation } from './entities.js';
+import {
+  sanitizeUpdate,
+  sanitizeEntityDisplayName,
+  sanitizeEntityAlias,
+  sanitizeEntitySummary,
+  sanitizeEntityObservation,
+  sanitizeEntityRelation,
+} from './sanitize.js';
+import { listEntities, serializeEntity, writeEntity } from './entities.js';
 import { rebuildIndex } from './entity-index.js';
-import { loadPrompt } from '../utils/prompt-loader.js';
 import { logger } from '../system/logger.js';
-import { recordHousekeepingNote } from './lifecycle.js';
-import { parseLastTouched as parseLastTouchedFromAnnotations, stripLastTouched as stripLastTouchedFromAnnotations, appendLastTouched as appendLastTouchedFromAnnotations } from './annotations.js';
-import type { EntityRecord } from './types.js';
+import type { EntityObservation, EntityRecord, EntityRelation } from './types.js';
 
 const TOUCHED_RE = /<!--\s*touched:\s*(\d{4}-\d{2}-\d{2})\s*-->/;
-const TRACE_DISTANCE_THRESHOLD = 0.4;
-
-// ============================================================================
-// Public entry point
-// ============================================================================
 
 export type HousekeepingTarget = 'all' | 'entities' | string;
 
-/**
- * Consolidate one or more memory files. No-op when the housekeeping flag is
- * disabled.
- *
- *   - `target = 'all'`      → consolidate every users/<id>.md, and entities
- *   - `target = 'entities'` → dedup/merge + archive-stale + rebuild index (code-level)
- *   - `target = '<id>'`     → consolidate users/<id>.md only (side-agent)
- */
 export async function runHousekeeping(target: HousekeepingTarget): Promise<void> {
   if (!isHousekeepingEnabled()) {
     logger.system('[memory] housekeeping disabled (ARCHIE_MEMORY_HOUSEKEEPING=false)');
@@ -61,7 +36,6 @@ export async function runHousekeeping(target: HousekeepingTarget): Promise<void>
     await consolidateAllUserFiles();
     await runEntityHousekeeping();
   } else {
-    // assume a user ID
     await consolidateFile(`users/${target}.md`, getUserPath(target));
   }
 }
@@ -73,8 +47,7 @@ async function consolidateAllUserFiles(): Promise<void> {
   const entries = await readdir(dir);
   for (const name of entries) {
     if (!name.endsWith('.md')) continue;
-    const stem = name.slice(0, -3);
-    const id = stem.includes('__') ? stem.replace('__', ':') : stem;
+    const id = name.slice(0, -3).replace('__', ':');
     try {
       await consolidateFile(`users/${name}`, getUserPath(id));
     } catch (err) {
@@ -83,45 +56,11 @@ async function consolidateAllUserFiles(): Promise<void> {
   }
 }
 
-// ============================================================================
-// Entity housekeeping (code-level, deterministic)
-// ============================================================================
-//
-// Unlike user consolidation (which uses the side-agent), entity
-// consolidation is done in code: merging structured pages and repointing
-// graph edges is deterministic and safe, and it trivially satisfies the
-// no-new-facts constraint — only existing observations/relations are moved,
-// never authored.
-
-/**
- * Plan alias-based merges: if entity C lists alias A and a separate file with
- * slug A exists, that file (the duplicate) folds into C. Returns a map of
- * duplicate-slug → canonical-slug. Pure.
- */
-export function planEntityMerges(records: EntityRecord[]): Map<string, string> {
-  const bySlug = new Map(records.map((r) => [r.entity, r]));
-  const mergedAway = new Map<string, string>();
-  for (const canonical of records) {
-    if (mergedAway.has(canonical.entity)) continue;
-    for (const alias of canonical.aliases) {
-      const dupSlug = sanitizeEntitySlug(alias);
-      if (!dupSlug || dupSlug === canonical.entity) continue;
-      const dup = bySlug.get(dupSlug);
-      if (!dup || dup.entity === canonical.entity || mergedAway.has(dup.entity)) continue;
-      mergedAway.set(dup.entity, canonical.entity);
-    }
-  }
-  return mergedAway;
-}
-
-/**
- * True when every observation on the record is dated and older than the
- * staleness window. Undated observations are treated as fresh (never archive
- * on missing dates). An observation-less entity is not stale. Pure.
- */
 export function isFullyStale(record: EntityRecord, stalenessDays: number, today: string): boolean {
   if (record.observations.length === 0) return false;
-  return record.observations.every((o) => !!o.touched && daysBetween(o.touched, today) > stalenessDays);
+  return record.observations.every((observation) =>
+    !!observation.touched && daysBetween(observation.touched, today) > stalenessDays
+  );
 }
 
 function daysBetween(from: string, to: string): number {
@@ -131,180 +70,201 @@ function daysBetween(from: string, to: string): number {
   return Math.floor((b - a) / 86_400_000);
 }
 
-function mergeInto(canonical: EntityRecord, dup: EntityRecord): void {
-  for (const o of dup.observations) {
-    const norm = o.text.toLowerCase().replace(/\s+/g, ' ').trim();
-    if (!canonical.observations.some((x) => x.category === o.category && x.text.toLowerCase().replace(/\s+/g, ' ').trim() === norm)) {
-      canonical.observations.push(o);
+function newer<T extends { touched?: string }>(current: T, candidate: T): T {
+  if (!current.touched) return candidate.touched ? candidate : current;
+  if (!candidate.touched) return current;
+  return candidate.touched > current.touched ? candidate : current;
+}
+
+function dedupeObservations(observations: EntityObservation[]): EntityObservation[] {
+  const selected = new Map<string, { value: EntityObservation; index: number }>();
+  observations.forEach((observation, index) => {
+    const key = `${observation.category}\0${normalise(observation.text)}`;
+    const current = selected.get(key);
+    if (!current) {
+      selected.set(key, { value: observation, index });
+      return;
     }
-  }
-  for (const rel of dup.relations) addRelation(canonical.relations, rel);
-  for (const a of [...dup.aliases, dup.entity]) {
-    if (a.toLowerCase() !== canonical.entity && !canonical.aliases.some((x) => x.toLowerCase() === a.toLowerCase())) {
-      canonical.aliases.push(a);
-    }
-  }
-  for (const repo of dup.repos) {
-    if (!canonical.repos.some((x) => x.toLowerCase() === repo.toLowerCase())) canonical.repos.push(repo);
-  }
-  if (!canonical.domain && dup.domain) canonical.domain = dup.domain;
-  if (!canonical.summary && dup.summary) canonical.summary = dup.summary;
+    const value = newer(current.value, observation);
+    if (value === observation) selected.set(key, { value, index });
+  });
+  return [...selected.values()]
+    .sort((a, b) => (b.value.touched ?? '').localeCompare(a.value.touched ?? '') || a.index - b.index)
+    .map(({ value }) => value);
+}
+
+function dedupeRelations(relations: EntityRelation[]): EntityRelation[] {
+  const seen = new Set<string>();
+  return relations.filter((relation) => {
+    const key = `${relation.type}\0${relation.target.toLowerCase()}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function dedupeStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const key = value.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 async function runEntityHousekeeping(today?: string): Promise<void> {
   const date = today ?? new Date().toISOString().slice(0, 10);
-  const records = await listEntities();
-  if (records.length === 0) return;
+  let records = await listEntities();
+  let archived = 0;
+  let deduped = 0;
+  const beforeBySlug = new Map(records.map((record) => [record.entity, serializeEntity(record)]));
 
-  const bySlug = new Map(records.map((r) => [r.entity, r]));
-  const mergedAway = planEntityMerges(records);
-
-  // Fold each duplicate into its canonical entity.
-  for (const [dupSlug, canonicalSlug] of mergedAway) {
-    const dup = bySlug.get(dupSlug);
-    const canonical = bySlug.get(canonicalSlug);
-    if (dup && canonical) mergeInto(canonical, dup);
+  for (const record of records) {
+    record.displayName = sanitizeEntityDisplayName(record.displayName) ?? record.entity;
+    record.aliases = record.aliases
+      .map(sanitizeEntityAlias)
+      .filter((alias): alias is string => alias !== null);
+    record.repos = record.repos.filter((repo) => /^[A-Za-z0-9._-]{1,64}$/.test(repo));
+    record.summary = sanitizeEntitySummary(record.summary) ?? '';
+    record.observations = record.observations.flatMap((observation) => {
+      const clean = sanitizeEntityObservation(observation);
+      return clean ? [{ ...clean, ...(observation.touched ? { touched: observation.touched } : {}) }] : [];
+    });
+    record.relations = record.relations.flatMap((relation) => {
+      const clean = sanitizeEntityRelation(relation);
+      return clean ? [clean] : [];
+    });
+    const before = record.observations.length + record.relations.length;
+    record.observations = dedupeObservations(record.observations);
+    record.relations = dedupeRelations(record.relations);
+    record.aliases = dedupeStrings(record.aliases);
+    record.repos = dedupeStrings(record.repos);
+    deduped += before - record.observations.length - record.relations.length;
   }
 
-  const staleness = getStalenessDays();
-  let archived = 0;
+  const reconciled = reconcileAliasCollisions(records);
+  records = reconciled.records;
 
-  for (const r of records) {
-    if (mergedAway.has(r.entity)) continue; // deleted below
-    // Repoint relation edges that targeted a merged-away entity; dedupe after.
-    const repointed: EntityRecord['relations'] = [];
-    for (const rel of r.relations) {
-      const target = mergedAway.get(rel.target) ?? rel.target;
-      if (!repointed.some((x) => x.type === rel.type && x.target.toLowerCase() === target.toLowerCase())) {
-        repointed.push({ ...rel, target });
-      }
-    }
-    r.relations = repointed;
-    if (r.status === 'active' && isFullyStale(r, staleness, date)) {
-      r.status = 'archived';
+  for (const record of records) {
+    if (record.status === 'active' && isFullyStale(record, getStalenessDays(), date)) {
+      record.status = 'archived';
       archived++;
     }
-    await writeEntity(r);
   }
 
-  // Remove merged-away files.
-  for (const dupSlug of mergedAway.keys()) {
-    await rm(getEntityPath(dupSlug), { force: true });
-  }
-
-  await rebuildIndex();
-
-  const note = `entities: merged ${mergedAway.size} duplicate(s), archived ${archived} stale`;
-  recordHousekeepingNote('entities', note);
-  logger.system(`[memory] entity housekeeping — ${note}`);
-}
-
-// ============================================================================
-// consolidateFile
-// ============================================================================
-
-async function consolidateFile(label: string, path: string): Promise<void> {
-  if (!existsSync(path)) return;
-  const before = await readFile(path, 'utf-8');
-  if (!before.trim()) return;
-
-  const inputBullets = extractBullets(before);
-  if (inputBullets.length === 0) return;
-
-  let proposed: string;
-  try {
-    proposed = await runHousekeeperAgent(before);
-  } catch (err) {
-    logger.warn('memory', `housekeeping: side-agent call failed for ${label}: ${err}`);
-    return;
-  }
-
-  const outputBullets = extractBullets(proposed);
-  const { accepted, rejected } = validateTraceBack(inputBullets, outputBullets);
-
-  if (rejected.length > 0) {
-    logger.warn('memory', `housekeeping: ${label} — dropped ${rejected.length} non-traceable bullet(s) from agent output`);
-  }
-
-  // Rebuild the file using only accepted bullets, grouped under their original sections.
-  const rebuilt = rebuildFile(before, accepted);
-  if (rebuilt === before) return;
-
-  await writeFile(path, rebuilt, 'utf-8');
-
-  const dropped = inputBullets.length - accepted.length;
-  const merged = countMerges(inputBullets, accepted);
-  recordHousekeepingNote(
-    label,
-    `${label}: dropped ${dropped} entr${dropped === 1 ? 'y' : 'ies'}, merged ${merged} duplicate(s)`
+  const active = records.filter((record) => record.status === 'active');
+  const overflow = Math.max(0, active.length - getEntityCap());
+  const observationRecency = (record: EntityRecord): string => record.observations.reduce(
+    (latest, observation) => observation.touched && observation.touched > latest ? observation.touched : latest,
+    '',
   );
-  logger.system(`[memory] housekeeping consolidated ${label}: ${inputBullets.length} → ${accepted.length} bullet(s)`);
-}
+  const recency = (record: EntityRecord): string => record.lastTouched ?? observationRecency(record);
+  active
+    .sort((a, b) => recency(a).localeCompare(recency(b)) || a.entity.localeCompare(b.entity))
+    .slice(0, overflow)
+    .forEach((record) => {
+      record.status = 'archived';
+      archived++;
+    });
 
-// ============================================================================
-// Side-agent invocation
-// ============================================================================
-
-async function runHousekeeperAgent(fileContent: string): Promise<string> {
-  const today = new Date().toISOString().slice(0, 10);
-  const variables = {
-    FILE_CONTENT: fileContent,
-    STALENESS_DAYS: String(getStalenessDays()),
-    TODAY: today,
-  };
-  let prompt: string;
-  try {
-    prompt = await loadPrompt('memory-housekeeper', variables);
-  } catch {
-    // Inline fallback so housekeeping degrades gracefully when the template is missing
-    prompt = `Consolidate this memory file by merging duplicates and dropping stale entries older than ${variables.STALENESS_DAYS} days. Do not introduce new facts.\n\n${fileContent}`;
+  for (const slug of reconciled.canonicalSlugs) {
+    const record = records.find((candidate) => candidate.entity === slug);
+    if (record) await writeEntity(record);
+  }
+  for (const record of records) {
+    if (reconciled.canonicalSlugs.has(record.entity)) continue;
+    if (serializeEntity(record) !== beforeBySlug.get(record.entity)) await writeEntity(record);
+  }
+  for (const slug of reconciled.removedSlugs) {
+    try {
+      await unlink(getEntityPath(slug));
+    } catch (error: any) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
   }
 
-  const agent = query({
-    prompt,
-    options: {
-      model: 'sonnet' as any,
-      maxTurns: 1,
-      tools: [],
-      executable: 'node',
-      env: {
-        NODE_ENV: process.env.NODE_ENV || 'development',
-        ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-        // Forward CA-trust to the spawned CLI (TLS-intercepting proxy); no-op when unset.
-        // Adds TLS trust only — not tools/permissions — so the minimal-env invariant holds.
-        ...(process.env.NODE_USE_SYSTEM_CA ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA } : {}),
-        ...(process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS } : {}),
-        PATH: process.env.PATH,
-      },
-      stderr: (data: string) => {
-        logger.debug('memory', `housekeeping stderr: ${data.trim()}`);
-      },
-    },
-  });
+  if (records.length > 0) await rebuildIndex();
+  logger.system(`[memory] entity housekeeping — removed ${deduped} duplicate(s), archived ${archived} stale`);
+}
 
-  let responseText = '';
-  for await (const event of agent) {
-    if (event.type === 'assistant') {
-      const content = (event as any).message?.content;
-      if (Array.isArray(content)) {
-        for (const block of content) {
-          if (block.type === 'text' && typeof block.text === 'string') {
-            responseText += block.text;
-          }
-        }
+function reconcileAliasCollisions(records: EntityRecord[]): {
+  records: EntityRecord[];
+  canonicalSlugs: Set<string>;
+  removedSlugs: Set<string>;
+} {
+  const sorted = [...records].sort((a, b) => a.entity.localeCompare(b.entity));
+  const parent = new Map(sorted.map((record) => [record.entity, record.entity]));
+  const find = (slug: string): string => {
+    const current = parent.get(slug) ?? slug;
+    if (current === slug) return slug;
+    const root = find(current);
+    parent.set(slug, root);
+    return root;
+  };
+  const union = (a: string, b: string): void => {
+    const left = find(a);
+    const right = find(b);
+    if (left === right) return;
+    parent.set(left < right ? right : left, left < right ? left : right);
+  };
+  const ownerByKey = new Map<string, string>();
+  for (const record of sorted) {
+    for (const key of [record.entity, ...record.aliases].map((value) => value.toLowerCase())) {
+      const owner = ownerByKey.get(key);
+      if (owner) union(record.entity, owner);
+      else ownerByKey.set(key, record.entity);
+    }
+  }
+
+  const groups = new Map<string, EntityRecord[]>();
+  for (const record of sorted) {
+    const root = find(record.entity);
+    const group = groups.get(root) ?? [];
+    group.push(record);
+    groups.set(root, group);
+  }
+
+  const removedSlugs = new Set<string>();
+  const canonicalSlugs = new Set<string>();
+  const replacement = new Map<string, string>();
+  const survivors: EntityRecord[] = [];
+  for (const group of groups.values()) {
+    const canonical = group[0];
+    survivors.push(canonical);
+    if (group.length === 1) continue;
+    canonicalSlugs.add(canonical.entity);
+    for (const member of group) {
+      for (const key of [member.entity, ...member.aliases]) {
+        replacement.set(key.toLowerCase(), canonical.entity);
       }
     }
-    if (event.type === 'result' && event.subtype === 'success') {
-      const r = (event as any).result;
-      if (typeof r === 'string' && r.trim()) responseText = r;
+    for (const duplicate of group.slice(1)) {
+      removedSlugs.add(duplicate.entity);
+      canonical.aliases.push(duplicate.entity, ...duplicate.aliases);
+      canonical.repos.push(...duplicate.repos);
+      canonical.observations.push(...duplicate.observations);
+      canonical.relations.push(...duplicate.relations);
+      canonical.summary ||= duplicate.summary;
+      canonical.domain ||= duplicate.domain;
+      canonical.lastTouched = [canonical.lastTouched, duplicate.lastTouched].filter(Boolean).sort().at(-1);
+      if (duplicate.status === 'active') canonical.status = 'active';
     }
+    canonical.aliases = dedupeStrings(canonical.aliases)
+      .filter((alias) => alias.toLowerCase() !== canonical.entity);
+    canonical.repos = dedupeStrings(canonical.repos);
+    canonical.observations = dedupeObservations(canonical.observations);
+    canonical.relations = dedupeRelations(canonical.relations);
   }
-  return responseText.trim();
-}
 
-// ============================================================================
-// Bullet extraction / rebuilding
-// ============================================================================
+  for (const record of survivors) {
+    record.relations = dedupeRelations(record.relations.map((relation) => ({
+      ...relation,
+      target: replacement.get(relation.target.toLowerCase()) ?? relation.target,
+    })));
+  }
+  return { records: survivors, canonicalSlugs, removedSlugs };
+}
 
 export interface BulletInfo {
   section: string | null;
@@ -312,7 +272,6 @@ export interface BulletInfo {
   touched: string | null;
 }
 
-/** Parse a Markdown file into its bullet records (section + visible text + touched annotation). */
 export function extractBullets(content: string): BulletInfo[] {
   const bullets: BulletInfo[] = [];
   let currentSection: string | null = null;
@@ -324,152 +283,97 @@ export function extractBullets(content: string): BulletInfo[] {
     }
     const bulletMatch = /^-\s+(.+?)\s*$/.exec(raw);
     if (!bulletMatch) continue;
-    const body = bulletMatch[1];
-    const touchedMatch = TOUCHED_RE.exec(body);
-    const text = body.replace(TOUCHED_RE, '').trim();
-    bullets.push({ section: currentSection, text, touched: touchedMatch ? touchedMatch[1] : null });
+    const touchedMatch = TOUCHED_RE.exec(bulletMatch[1]);
+    const text = bulletMatch[1].replace(TOUCHED_RE, '').trim();
+    bullets.push({ section: currentSection, text, touched: touchedMatch?.[1] ?? null });
   }
   return bullets;
 }
 
-function rebuildFile(originalContent: string, accepted: BulletInfo[]): string {
-  // Preserve original non-bullet structure: frontmatter, prose, section headers.
-  // Group accepted bullets by section; replace each section's bullets with the accepted set.
-  const lines = originalContent.split('\n');
-  const sectionOrder: string[] = [];
-  let currentSection: string | null = null;
-  const bySection = new Map<string, BulletInfo[]>();
-  for (const b of accepted) {
-    const key = b.section ?? '';
-    if (!bySection.has(key)) {
-      bySection.set(key, []);
-      if (b.section) sectionOrder.push(b.section);
-    }
-    bySection.get(key)!.push(b);
-  }
+export function consolidateBullets(
+  inputs: BulletInfo[],
+  stalenessDays: number,
+  today: string,
+): BulletInfo[] {
+  const selected = new Map<string, { value: BulletInfo; index: number }>();
+  inputs.forEach((input, index) => {
+    if (!input.section || input.section.length > 80 || /[<>\r\n]/.test(input.section)) return;
+    if (input.touched && daysBetween(input.touched, today) > stalenessDays) return;
+    // New writes use a closed section vocabulary, but housekeeping must not
+    // erase safe data from older headings. Reuse the canonical section only to
+    // run the same content, secret, and instruction checks.
+    const clean = sanitizeUpdate({ action: 'add', section: 'Communication', content: input.text });
+    if (!clean) return;
+    const acceptedInput = input;
 
-  // Sort each section's bullets by touched date desc (untouched go last).
+    const key = `${input.section}\0${normalise(clean.content)}`;
+    const current = selected.get(key);
+    if (!current) {
+      selected.set(key, { value: acceptedInput, index });
+      return;
+    }
+    const currentTouched = current.value.touched ?? '';
+    const candidateTouched = input.touched ?? '';
+    if (candidateTouched > currentTouched) selected.set(key, { value: acceptedInput, index });
+  });
+  return [...selected.values()].sort((a, b) => a.index - b.index).map(({ value }) => value);
+}
+
+async function consolidateFile(label: string, path: string): Promise<void> {
+  if (!existsSync(path)) return;
+  const before = await readFile(path, 'utf-8');
+  if (!before.trim()) return;
+  const inputs = extractBullets(before);
+  if (inputs.length === 0) return;
+
+  const accepted = consolidateBullets(
+    inputs,
+    getStalenessDays(),
+    new Date().toISOString().slice(0, 10),
+  );
+  const rebuilt = rebuildFile(before, accepted);
+  if (rebuilt === before) return;
+  await writeFile(path, rebuilt, 'utf-8');
+  logger.system(`[memory] housekeeping consolidated ${label}: ${inputs.length} → ${accepted.length} bullet(s)`);
+}
+
+function rebuildFile(originalContent: string, accepted: BulletInfo[]): string {
+  const lines = originalContent.split('\n');
+  const bySection = new Map<string, BulletInfo[]>();
+  for (const bullet of accepted) {
+    if (!bullet.section) continue;
+    const list = bySection.get(bullet.section) ?? [];
+    list.push(bullet);
+    bySection.set(bullet.section, list);
+  }
   for (const list of bySection.values()) {
-    list.sort((a, b) => {
-      if (!a.touched && !b.touched) return 0;
-      if (!a.touched) return 1;
-      if (!b.touched) return -1;
-      return b.touched.localeCompare(a.touched);
-    });
+    list.sort((a, b) => (b.touched ?? '').localeCompare(a.touched ?? ''));
   }
 
   const out: string[] = [];
   let inSection = false;
-  let sectionEmitted = new Set<string>();
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const sectionMatch = /^##\s+(.+?)\s*$/.exec(line);
-    if (sectionMatch && !line.startsWith('### ')) {
-      currentSection = sectionMatch[1];
-      out.push(line);
-      // Emit accepted bullets for this section
-      const list = bySection.get(currentSection) ?? [];
-      for (const b of list) out.push(renderBullet(b));
-      sectionEmitted.add(currentSection);
+    const sectionMatch = /^##\s+(.+?)\s*$/.exec(lines[i]);
+    if (sectionMatch && !lines[i].startsWith('### ')) {
       inSection = true;
-      // Skip original bullets in this section until next section header or EOF
+      out.push(lines[i]);
+      for (const bullet of bySection.get(sectionMatch[1]) ?? []) out.push(renderBullet(bullet));
       while (i + 1 < lines.length && !/^##\s+/.test(lines[i + 1])) {
-        if (!/^-\s+/.test(lines[i + 1]) && lines[i + 1].trim() !== '') {
-          // preserve non-bullet content (rare, but possible)
-          out.push(lines[i + 1]);
-        }
+        if (!/^-\s+/.test(lines[i + 1]) && lines[i + 1].trim()) out.push(lines[i + 1]);
         i++;
       }
       continue;
     }
-    if (!inSection) out.push(line);
+    if (!inSection) out.push(lines[i]);
   }
-
-  return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
+  return `${out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd()}\n`;
 }
 
-function renderBullet(b: BulletInfo): string {
-  const annotation = b.touched ? `  <!-- touched: ${b.touched} -->` : '';
-  return `- ${b.text}${annotation}`;
+function renderBullet(bullet: BulletInfo): string {
+  const touched = bullet.touched ? `  <!-- touched: ${bullet.touched} -->` : '';
+  return `- ${bullet.text}${touched}`;
 }
 
-// ============================================================================
-// Trace-back validator
-// ============================================================================
-
-/**
- * Drop any output bullet whose text cannot be matched to an input bullet
- * within `TRACE_DISTANCE_THRESHOLD` normalized edit distance. The validator
- * enforces design.md §D8: the side-agent may merge, drop, or reorder bullets
- * but MUST NOT introduce new facts.
- */
-export function validateTraceBack(
-  inputs: BulletInfo[],
-  outputs: BulletInfo[]
-): { accepted: BulletInfo[]; rejected: BulletInfo[] } {
-  const accepted: BulletInfo[] = [];
-  const rejected: BulletInfo[] = [];
-  for (const out of outputs) {
-    if (traceBackOutput(inputs, out)) {
-      accepted.push(out);
-    } else {
-      rejected.push(out);
-    }
-  }
-  return { accepted, rejected };
+function normalise(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, ' ').trim();
 }
-
-export function traceBackOutput(inputs: BulletInfo[], out: BulletInfo): boolean {
-  const outNorm = normalise(out.text);
-  for (const inp of inputs) {
-    const inpNorm = normalise(inp.text);
-    if (inpNorm === outNorm) return true;
-    if (normalisedEditDistance(inpNorm, outNorm) <= TRACE_DISTANCE_THRESHOLD) return true;
-  }
-  return false;
-}
-
-function normalise(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-function normalisedEditDistance(a: string, b: string): number {
-  const longer = Math.max(a.length, b.length);
-  if (longer === 0) return 0;
-  return levenshtein(a, b) / longer;
-}
-
-function levenshtein(a: string, b: string): number {
-  if (a === b) return 0;
-  if (a.length === 0) return b.length;
-  if (b.length === 0) return a.length;
-  const prev = new Array(b.length + 1);
-  const curr = new Array(b.length + 1);
-  for (let j = 0; j <= b.length; j++) prev[j] = j;
-  for (let i = 1; i <= a.length; i++) {
-    curr[0] = i;
-    for (let j = 1; j <= b.length; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
-    }
-    for (let j = 0; j <= b.length; j++) prev[j] = curr[j];
-  }
-  return prev[b.length];
-}
-
-function countMerges(inputs: BulletInfo[], accepted: BulletInfo[]): number {
-  // A merge is when two or more input bullets map to the same accepted bullet.
-  // Count how many input bullets share a normalised match with an accepted bullet,
-  // minus the accepted count (so 3 inputs → 1 accepted = 2 merges).
-  let merges = 0;
-  for (const out of accepted) {
-    const matches = inputs.filter((i) => normalise(i.text) === normalise(out.text)).length;
-    if (matches > 1) merges += matches - 1;
-  }
-  return merges;
-}
-
-// Re-export the annotation helpers for convenience.
-export const parseLastTouched = parseLastTouchedFromAnnotations;
-export const stripLastTouched = stripLastTouchedFromAnnotations;
-export const appendLastTouched = appendLastTouchedFromAnnotations;
