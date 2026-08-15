@@ -24,7 +24,7 @@ vi.mock('../../system/logger.js', () => ({
   logger: { warn: vi.fn(), system: vi.fn(), debug: vi.fn(), info: vi.fn(), error: vi.fn() },
 }));
 
-import { enqueuePending, dequeuePending, readPending } from '../pending-queue.js';
+import { enqueuePending, dequeuePending, readPending, readPendingEntries } from '../pending-queue.js';
 
 describe('pending-queue', () => {
   beforeEach(async () => {
@@ -50,9 +50,10 @@ describe('pending-queue', () => {
   });
 
   it('enqueue is idempotent', async () => {
-    await enqueuePending('task-001');
-    await enqueuePending('task-001');
+    await enqueuePending('task-001', 'generation-1');
+    await enqueuePending('task-001', 'generation-2');
     expect(await readPending()).toEqual(['task-001']);
+    expect(await readPendingEntries()).toEqual([{ taskId: 'task-001', generation: 'generation-1' }]);
   });
 
   it('preserves order across multiple enqueues', async () => {
@@ -67,6 +68,12 @@ describe('pending-queue', () => {
     await enqueuePending('task-002');
     await dequeuePending('task-001');
     expect(await readPending()).toEqual(['task-002']);
+  });
+
+  it('does not let an old generation remove a newer intent', async () => {
+    await enqueuePending('task-001', 'generation-2');
+    await dequeuePending('task-001', 'generation-1');
+    expect(await readPendingEntries()).toEqual([{ taskId: 'task-001', generation: 'generation-2' }]);
   });
 
   it('dequeue on missing entry is a no-op', async () => {

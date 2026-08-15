@@ -36,11 +36,13 @@ import {
   getEntityPath,
   getEntitiesDir,
   getEntityCap,
+  getEntityObsCap,
   isValidEntitySlug,
 } from './paths.js';
 import {
   sanitizeEntitySlug,
   sanitizeEntityDisplayName,
+  sanitizeEntityAlias,
   sanitizeEntitySummary,
   sanitizeEntityObservation,
   sanitizeEntityRelation,
@@ -84,6 +86,7 @@ export function parseEntity(content: string): EntityRecord | null {
     repos: parseInlineList(fm.rawValues.repos),
     domain: fm.values.domain && isAllowedDomain(fm.values.domain) ? fm.values.domain : '',
     status: fm.values.status === 'archived' ? 'archived' : 'active',
+    ...(isDate(fm.values.last_touched) ? { lastTouched: fm.values.last_touched } : {}),
     summary: parseL0(body),
     observations: parseObservations(body),
     relations: parseRelations(body),
@@ -101,6 +104,7 @@ export function serializeEntity(record: EntityRecord): string {
   lines.push(`repos: ${serializeInlineList(record.repos)}`);
   lines.push(`domain: ${record.domain}`);
   lines.push(`status: ${record.status}`);
+  if (record.lastTouched) lines.push(`last_touched: ${record.lastTouched}`);
   lines.push('---');
   if (record.summary) lines.push(`<!-- L0: ${record.summary} -->`);
   lines.push('');
@@ -135,7 +139,33 @@ export async function readEntity(slug: string): Promise<EntityRecord | null> {
 }
 
 /** Write an entity record to its file, creating entities/ if needed. */
+/**
+ * Bound a page to the per-page observation cap, mutating `record.observations`
+ * in place. Retains the newest-touched observations up to the cap and drops the
+ * oldest surplus. Same-date ties favor observations appended later, while the
+ * survivors retain their original persisted order. Undated observations sort
+ * last (treated as oldest). Returns the count dropped.
+ */
+export function applyObservationCap(record: EntityRecord): number {
+  const cap = getEntityObsCap();
+  const total = record.observations.length;
+  if (total <= cap) return 0;
+  record.observations = record.observations
+    .map((o, i) => ({ o, i }))
+    .sort((a, b) => (b.o.touched ?? '').localeCompare(a.o.touched ?? '') || b.i - a.i)
+    .slice(0, cap)
+    .sort((a, b) => a.i - b.i)
+    .map((x) => x.o);
+  return total - cap;
+}
+
 export async function writeEntity(record: EntityRecord): Promise<void> {
+  // Enforce the per-page observation cap at the single persistence boundary, so
+  // no write path (applyEntityUpdate or the housekeeping merge) can exceed it.
+  const dropped = applyObservationCap(record);
+  if (dropped > 0) {
+    logger.warn('memory', `writeEntity: ${record.entity} exceeded observation cap ${getEntityObsCap()} — dropped ${dropped} oldest`);
+  }
   const path = getEntityPath(record.entity);
   await mkdir(getEntitiesDir(), { recursive: true });
   await writeFile(path, serializeEntity(record), 'utf-8');
@@ -191,6 +221,13 @@ export interface AppliedEntity {
   slug: string;
   created: boolean;
   capExceeded: boolean;
+  delta: EntityUpdate;
+}
+
+export interface ApplyEntityUpdateOptions {
+  today?: string;
+  records?: EntityRecord[];
+  beforeWrite?: (applied: AppliedEntity) => Promise<void>;
 }
 
 /**
@@ -203,15 +240,18 @@ export interface AppliedEntity {
 export async function applyEntityUpdate(
   update: EntityUpdate,
   taskId: string,
-  today?: string,
+  options: ApplyEntityUpdateOptions = {},
 ): Promise<AppliedEntity | null> {
   if (!update || typeof update.slug !== 'string') return null;
-  const date = today ?? new Date().toISOString().slice(0, 10);
+  const date = options.today ?? new Date().toISOString().slice(0, 10);
 
-  const all = await listEntities();
+  // Reuse the caller's in-memory record set when provided (one listEntities()
+  // per task instead of one re-read per update); otherwise read the store here.
+  const all = options.records ?? (await listEntities());
   const proposedSlug = sanitizeEntitySlug(update.slug);
   let record = (proposedSlug && resolveEntity(proposedSlug, all)) || resolveEntity(update.slug, all);
   let created = false;
+  let delta: EntityUpdate;
 
   if (!record) {
     if (!proposedSlug) {
@@ -225,78 +265,146 @@ export async function applyEntityUpdate(
     }
     const cleanRepos = cleanRepoList(update.repos);
     const scope = pickScope(update.scope, cleanRepos);
+    const displayName = sanitizeEntityDisplayName(update.display_name);
+    const domain = pickDomain(update.domain);
     record = {
       entity: proposedSlug,
       type: type as EntityType,
-      displayName: sanitizeEntityDisplayName(update.display_name) ?? proposedSlug,
+      displayName: displayName ?? proposedSlug,
       aliases: [],
       scope,
       repos: cleanRepos,
-      domain: pickDomain(update.domain),
+      domain,
       status: 'active',
+      lastTouched: date,
       summary: '',
       observations: [],
       relations: [],
     };
     created = true;
-  } else {
-    // Merge scalar fields into the existing record when provided + valid.
-    const dn = sanitizeEntityDisplayName(update.display_name);
-    if (dn) record.displayName = dn;
+    delta = { slug: proposedSlug, type };
+    if (displayName) delta.display_name = displayName;
     if (typeof update.scope === 'string' && isAllowedEntityScope(update.scope.toLowerCase().trim())) {
-      record.scope = update.scope.toLowerCase().trim() as EntityScope;
+      delta.scope = scope;
+    }
+    if (cleanRepos.length > 0) delta.repos = [...cleanRepos];
+    if (domain) delta.domain = domain;
+  } else {
+    delta = { slug: record.entity };
+    const dn = sanitizeEntityDisplayName(update.display_name);
+    if (dn && dn !== record.displayName) {
+      record.displayName = dn;
+      delta.display_name = dn;
+    }
+    if (typeof update.scope === 'string' && isAllowedEntityScope(update.scope.toLowerCase().trim())) {
+      const scope = update.scope.toLowerCase().trim() as EntityScope;
+      if (scope !== record.scope) {
+        record.scope = scope;
+        delta.scope = scope;
+      }
     }
     const domain = pickDomain(update.domain);
-    if (domain) record.domain = domain;
-    record.repos = dedupe([...record.repos, ...cleanRepoList(update.repos)]);
+    if (domain && domain !== record.domain) {
+      record.domain = domain;
+      delta.domain = domain;
+    }
+    const knownRepos = new Set(record.repos.map((repo) => repo.toLowerCase()));
+    const addedRepos = cleanRepoList(update.repos).filter((repo) => !knownRepos.has(repo.toLowerCase()));
+    if (addedRepos.length > 0) {
+      record.repos.push(...addedRepos);
+      delta.repos = addedRepos;
+    }
   }
 
   // L0 summary
   const summary = sanitizeEntitySummary(update.summary);
-  if (summary) record.summary = summary;
+  if (summary && summary !== record.summary) {
+    record.summary = summary;
+    delta.summary = summary;
+  }
 
   // Aliases (never equal to the canonical slug)
   if (Array.isArray(update.aliases)) {
+    const addedAliases: string[] = [];
     for (const a of update.aliases) {
-      const alias = typeof a === 'string' ? a.replace(/\s+/g, ' ').trim() : '';
-      if (alias && alias.toLowerCase() !== record.entity && alias.length <= 80) {
-        if (!record.aliases.some((x) => x.toLowerCase() === alias.toLowerCase())) record.aliases.push(alias);
+      const alias = sanitizeEntityAlias(a);
+      if (alias && alias.toLowerCase() !== record.entity) {
+        if (!record.aliases.some((x) => x.toLowerCase() === alias.toLowerCase())) {
+          record.aliases.push(alias);
+          addedAliases.push(alias);
+        }
       }
     }
+    if (addedAliases.length > 0) delta.aliases = addedAliases;
   }
 
-  // Observations — append sanitized, dedupe by (category, normalized text), stamp touched.
+  // Observations — append sanitized, dedupe by (category, normalized text).
+  // A re-emitted (already-present) observation is re-stamped to today rather
+  // than skipped, so a repeatedly re-affirmed fact stays recent and is not aged
+  // out by the per-page cap or the staleness sweep. The cap itself is enforced
+  // at the writeEntity persistence boundary (see applyObservationCap).
+  const acceptedObservations: EntityObservation[] = [];
   if (Array.isArray(update.observations)) {
     for (const o of update.observations) {
       const clean = sanitizeEntityObservation(o);
       if (!clean) continue;
-      if (hasObservation(record.observations, clean)) continue;
-      record.observations.push({ ...clean, touched: date });
+      const existing = findObservation(record.observations, clean);
+      if (existing) {
+        if (existing.touched !== date) {
+          existing.touched = date;
+          acceptedObservations.push(existing);
+        }
+        continue;
+      }
+      const observation = { ...clean, touched: date };
+      record.observations.push(observation);
+      acceptedObservations.push(observation);
     }
   }
 
   // Relations — add sanitized, dedupe by (type, target).
+  const acceptedRelations: EntityRelation[] = [];
   if (Array.isArray(update.relations)) {
     for (const r of update.relations) {
       const clean = sanitizeEntityRelation(r);
       if (!clean) continue;
-      addRelation(record.relations, clean);
+      if (addRelation(record.relations, clean)) acceptedRelations.push(clean);
     }
   }
 
   // Auto touched_by edge for provenance + the related-tasks signal.
   addRelation(record.relations, { type: 'touched_by', target: taskId });
+  record.lastTouched = date;
 
+  const activeCount = all.filter((candidate) => candidate.status === 'active').length + (created ? 1 : 0);
+  applyObservationCap(record);
+  const persistedObservations = acceptedObservations.filter((observation) => record.observations.includes(observation));
+  if (persistedObservations.length > 0) {
+    delta.observations = persistedObservations.map(({ category, text }) => ({ category, text }));
+  }
+  if (acceptedRelations.length > 0) delta.relations = acceptedRelations;
+  const applied = { slug: record.entity, created, capExceeded: activeCount > getEntityCap(), delta };
+  await options.beforeWrite?.(applied);
   await writeEntity(record);
-
-  const count = created ? all.length + 1 : all.length;
-  return { slug: record.entity, created, capExceeded: count > getEntityCap() };
+  // Keep a caller-provided record set coherent: a later update to a just-created
+  // entity in the same task must resolve it, not create a duplicate. (Existing
+  // entities are already references into `all`, so their mutations are visible.)
+  if (created && options.records) options.records.push(record);
+  return applied;
 }
 
 // ============================================================================
 // Helpers
 // ============================================================================
 
+/**
+ * Resolve an entity's scope from the (sanitized) extractor input. An explicit,
+ * valid scope wins; otherwise a repo-bearing entity is `repo`-scoped. `org` is
+ * ONLY the no-signal structural fallback (scope omitted AND no repos) — not an
+ * active default: the extractor prompt steers toward the narrowest applicable
+ * scope, and org injection is now bounded (see selectEntities), so this
+ * fallback no longer drives unbounded context.
+ */
 function pickScope(raw: string | undefined, repos: string[]): EntityScope {
   if (typeof raw === 'string' && isAllowedEntityScope(raw.toLowerCase().trim())) {
     return raw.toLowerCase().trim() as EntityScope;
@@ -330,15 +438,17 @@ function dedupe(items: string[]): string[] {
   return out;
 }
 
-function hasObservation(list: EntityObservation[], o: EntityObservation): boolean {
+/** Find an existing observation matching by (category, normalized text), or undefined. */
+function findObservation(list: EntityObservation[], o: EntityObservation): EntityObservation | undefined {
   const norm = o.text.toLowerCase().replace(/\s+/g, ' ').trim();
-  return list.some((x) => x.category === o.category && x.text.toLowerCase().replace(/\s+/g, ' ').trim() === norm);
+  return list.find((x) => x.category === o.category && x.text.toLowerCase().replace(/\s+/g, ' ').trim() === norm);
 }
 
 /** Add a relation if (type, target) is not already present. */
-export function addRelation(list: EntityRelation[], rel: EntityRelation): void {
-  if (list.some((x) => x.type === rel.type && x.target.toLowerCase() === rel.target.toLowerCase())) return;
+export function addRelation(list: EntityRelation[], rel: EntityRelation): boolean {
+  if (list.some((x) => x.type === rel.type && x.target.toLowerCase() === rel.target.toLowerCase())) return false;
   list.push(rel);
+  return true;
 }
 
 // ---- Frontmatter / body parsing ----
@@ -389,6 +499,10 @@ function parseInlineList(raw: string | undefined): string[] {
 
 function serializeInlineList(items: string[]): string {
   return `[${items.join(', ')}]`;
+}
+
+function isDate(value: string | undefined): value is string {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
 function parseL0(body: string): string {

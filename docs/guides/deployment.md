@@ -61,6 +61,12 @@ Building and publishing the production container image also runs via GitHub Acti
 
 Deployment to the VM remains operator-driven: the operator pulls the published image tag on the host, restarts the service, and verifies health via `GET /health`.
 
+### Memory v2 store reset
+
+Before the first deployment containing the public/private task boundary, stop Archie, snapshot `$ARCHIE_WORKDIR/memory/`, and clear that directory. Older versions extracted memory from every task, so the existing store may contain facts, summaries, activity rows, or collaboration profiles derived from DMs and private channels. Those artifacts do not record enough provenance to identify and remove only the private-derived data safely. The new version therefore starts from an empty store and creates `.public-store-v1`; if it finds data without that marker, it disables memory for the process and logs the required cleanup instead of exposing or migrating the data.
+
+Memory telemetry is stored under `$ARCHIE_WORKDIR/memory/telemetry/`, so one snapshot of `$ARCHIE_WORKDIR/memory/` captures both the loadable corpus and telemetry. Do not mount the memory bundle into agent workspaces or shared folders; treat its telemetry subtree as sensitive operator data when setting backup and retention policy.
+
 ## Docker Configuration
 
 - `Dockerfile.prod` — Production image (Node 24-slim, bubblewrap sandbox, non-root `archie` user)
@@ -117,7 +123,7 @@ echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/9
 
 | Host Path | Container Path | Purpose |
 |-----------|---------------|---------|
-| `/workdir` | `/workdir` | Runtime state: `plugins/`, `repos/`, `sessions/`, `plugins-data/` (set via `ARCHIE_WORKDIR`) |
+| `/workdir` | `/workdir` | Runtime state including `plugins/`, `repos/`, `sessions/`, `memory/`, `triggers/`, and `plugins-data/` (set via `ARCHIE_WORKDIR`) |
 | `/data/claude` | `/home/archie/.claude` | Claude CLI config and session logs |
 | `/data/claude/.claude.json` | `/home/archie/.claude.json` | Claude CLI feature flags |
 | `/app/secrets` | `/app/secrets` | GitHub App private key + encrypted OAuth vault (read-write — daemon persists refreshed tokens) |
@@ -162,18 +168,14 @@ log forwarder (`docker logs`, journald, or a sidecar) for querying and alerting.
 
 ### Session Backup
 
-Sessions persist as files under `$ARCHIE_WORKDIR/sessions`. Snapshot or rsync that
-directory (and `/app/secrets` for the OAuth vault + GitHub App key) to your backup
-target on a daily schedule.
+Persistent task, memory, telemetry, and trigger state lives under `$ARCHIE_WORKDIR`. Snapshot the required subtrees according to their retention policy, and back up `/app/secrets` for the OAuth vault and GitHub App key. Treat `$ARCHIE_WORKDIR/memory/telemetry/` as sensitive because private-task records may contain task titles, participant names, and agent-authored queries.
 
 ### Recovery Procedures
 
 **App crash:** Systemd auto-restarts. On startup, `recoverActiveTasks()` (`src/tasks/recovery.ts`,
 called from `src/index.ts`) replays in-progress tasks from disk state.
 
-**VM failure:** Create new VM, install Docker, restore `/workdir/sessions` and
-`/app/secrets` from backup, deploy latest image. Repos and plugins auto-clone on startup
-via `bootstrapWorkdir()` and `cloneRepos()` in `src/system/workdir.ts`.
+**VM failure:** Create a new VM, install Docker, restore the retained `/workdir` state and `/app/secrets` from backup, then deploy the latest image. Repos and plugins auto-clone on startup via `bootstrapWorkdir()` and `cloneRepos()` in `src/system/workdir.ts`.
 
 ## Scaling
 
