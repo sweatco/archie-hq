@@ -12,16 +12,9 @@ import { type AgentDef, type RepoEntry, isRepoAgent, isPmAgent } from '../types/
 import type { DynamicAgentSpec } from '../types/task.js';
 import { getPlugins, getRootMcpConfig, getPmOverlay, type LoadedMcpConfig, type PluginAgentDef } from '../system/plugin-loader.js';
 import { PLUGINS_DATA_DIR } from '../system/workdir.js';
-import { existsSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { join } from 'path';
 import { logger } from '../system/logger.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-// Built-in PM skills shipped with archie-hq (resolved relative to this file: src/agents -> skills)
-const CORE_SKILLS_DIR = join(__dirname, '..', '..', 'skills');
+import { resolveSkillPaths } from './core-skills.js';
 
 // ---- Module state ----
 
@@ -88,7 +81,7 @@ export function scanAgentDefs(): AgentDef[] {
             primary: agent.repo.primary,
           },
           pluginDataPath: join(PLUGINS_DATA_DIR, plugin.name),
-          skillsPath: plugin.skillsPath || undefined,
+          skillPaths: resolveSkillPaths('repo', plugin.skillsPath || undefined),
           pluginHooks: plugin.hooks || undefined,
           allowedNetworkDomains: agent.allowedNetworkDomains,
           ...resolvedMcp,
@@ -110,7 +103,7 @@ export function scanAgentDefs(): AgentDef[] {
           agentPrompt: agent.prompt,
           pluginPath: plugin.dir,
           pluginDataPath: join(PLUGINS_DATA_DIR, plugin.name),
-          skillsPath: plugin.skillsPath || undefined,
+          skillPaths: resolveSkillPaths('plain', plugin.skillsPath || undefined),
           pluginHooks: plugin.hooks || undefined,
           allowedNetworkDomains: agent.allowedNetworkDomains,
           ...resolvedMcp,
@@ -243,6 +236,8 @@ export function synthesizeDynamicAgentDef(spec: DynamicAgentSpec): AgentDef {
     // reach them without a same-plugin relationship.
     visibility: 'global',
     repo: { repos, primary: repos[0].github },
+    // A dynamic agent is a repo agent by construction and has no plugin of its own.
+    skillPaths: resolveSkillPaths('repo'),
   };
 }
 
@@ -412,8 +407,7 @@ function buildPmDef(teamDefs: AgentDef[], rootMcp: LoadedMcpConfig): AgentDef {
     pluginDataPath: join(PLUGINS_DATA_DIR, 'pm'),
     pmConfig: { teamList, teamExpertise, pmIntegrations },
     pmOverlayPrompt: overlay?.prompt || undefined,
-    skillsPath: pmPlugin?.skillsPath || undefined,
-    coreSkillsPath: existsSync(CORE_SKILLS_DIR) ? CORE_SKILLS_DIR : undefined,
+    skillPaths: resolveSkillPaths('pm', pmPlugin?.skillsPath || undefined),
     pluginHooks: pmPlugin?.hooks || undefined,
     ...resolvedMcp,
   };
