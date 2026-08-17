@@ -3,7 +3,7 @@
  *
  * One place that answers "which of archie-hq's own skills does this agent track mount?", and one resolver that turns that answer plus a plugin's skills directory into the ordered list of skill directories to mount.
  *
- * Imports only from node's fs/path/url on purpose: registry.ts and spawn.ts are both future callers, so importing either here would close an import cycle.
+ * Imports only from node's fs/path/url on purpose. Its callers are `src/agents/registry.ts` (which builds every agent def's `skillPaths`) and `src/index.ts` (the boot banner and the unmounted-core-skill warning); importing back into the registry from here would close an import cycle.
  */
 
 import { existsSync, readdirSync, statSync } from 'fs';
@@ -28,9 +28,9 @@ export type AgentTrack = 'pm' | 'repo' | 'plain';
  *
  * This mapping is intentionally a hardcoded constant rather than configuration: no plugin manifest, no hot-reloaded plugins change and no instruction to the orchestrator can widen the set of skills a track mounts, because there is no code path that reads this from anywhere but here. (It is a plain object, so it is mutable in-process like `TRUSTED_PACKAGE_REGISTRY_DOMAINS` at `src/agents/sandbox.ts:48`; the guarantee is about where the values come from, not about runtime immutability.)
  *
- * Sandbox limit: adding a core skill to another track makes it loadable through the `Skill` and `Read` tools — the PreToolUse guard resolves the raw tool-input path with `resolve(cwd, rawPath)` and never calls `realpath` (`src/agents/sandbox.ts:231`), `READ_TOOLS` is only `{Read, Glob, Grep}` so `Skill` is never seen (`src/agents/sandbox.ts:181`), and the workspace is in `allowReadPaths` on every track (`src/agents/spawn.ts:326`). It does NOT make the files readable from `Bash`: bwrap resolves symlinks and `/app` is hardcoded in `denyRead` (`src/agents/sandbox.ts:83`).
+ * Sandbox limit: adding a core skill to another track makes it loadable through the `Skill` and `Read` tools — the PreToolUse guard resolves the raw tool-input path with `resolve(cwd, rawPath)` and never calls `realpath` (`src/agents/sandbox.ts:231`), `READ_TOOLS` is only `{Read, Glob, Grep}` so `Skill` is never seen (`src/agents/sandbox.ts:181`), and the workspace is in `allowReadPaths` on both the base and repo tracks (`src/agents/spawn.ts:312` and `:541`). It does NOT make the files readable from `Bash`: bwrap resolves symlinks and `/app` is hardcoded in `denyRead` (`src/agents/sandbox.ts:83`).
  *
- * Content limit: all four core skills are written in the PM's voice and instruct PM-only MCP tools (`post_to_channel`, `mute_channel`, `read_thread`, `fetch_slack_reference`, `propose_trigger`) that are attached only inside the `isPmAgent(def)` branch at `src/agents/spawn.ts:412-414`; `skills/self-awareness/SKILL.md:53` even describes itself as a built-in PM skill. So giving one of them a new audience needs prompt and tool work too, not just a line here.
+ * Content limit: all four core skills are written in the PM's voice and instruct tools attached only inside the `isPmAgent(def)` branch that begins at `src/agents/spawn.ts:325` — `comms-tools` and `orchestration-tools` are registered at `:398-400`, giving the PM alone `post_to_channel`, `mute_channel`, `read_thread`, `fetch_slack_reference` and `report_completion`, all of which these skills instruct by name. `skills/self-awareness/SKILL.md:53` even describes itself as a built-in PM skill. So giving one of them a new audience needs prompt and tool work too, not just a line here.
  */
 export const CORE_SKILL_MOUNTS: Record<AgentTrack, string[]> = {
   pm: ['channel-canvas', 'self-awareness', 'thread-conduct', 'triggers'],
@@ -42,10 +42,18 @@ export const CORE_SKILL_MOUNTS: Record<AgentTrack, string[]> = {
  * Mount real skill dirs AND symlinks that resolve to a dir. A skill can be vendored as a git submodule and exposed via a symlink (e.g. the data-analytics data-context); readdir's Dirent.isDirectory() is false for a symlink, so stat-follow to classify it. A dangling link is skipped. The filter also excludes stray files such as the `.DS_Store` that is present in `workdir/plugins/pm/skills`.
  */
 function isSkillDir(parentDir: string, entry: { name: string; isDirectory(): boolean; isSymbolicLink(): boolean }): boolean {
+  // A plain directory needs no syscall; anything else is decided by following the path.
   if (entry.isDirectory()) return true;
   if (!entry.isSymbolicLink()) return false;
+  return isSkillPath(join(parentDir, entry.name));
+}
+
+/**
+ * The same rule as {@link isSkillDir}, applied to a path rather than a directory entry — used for core skills, which the manifest names rather than the filesystem enumerating. `statSync` follows symlinks, so a real directory and a symlink resolving to one both pass, while a regular file fails and a dangling link throws and is skipped.
+ */
+function isSkillPath(path: string): boolean {
   try {
-    return statSync(join(parentDir, entry.name)).isDirectory();
+    return statSync(path).isDirectory();
   } catch {
     return false;
   }
@@ -68,8 +76,8 @@ export function resolveSkillPaths(track: AgentTrack, pluginSkillsPath?: string):
 
   for (const name of CORE_SKILL_MOUNTS[track]) {
     const corePath = join(CORE_SKILLS_DIR, name);
-    // The existence check preserves the guard at `src/agents/registry.ts:416`, which exists because the prod image only has `/app/skills` when `Dockerfile.prod` copied it.
-    if (existsSync(corePath)) paths.push(corePath);
+    // Classified the same way as a plugin entry, not merely existence-checked, so a manifest name that resolves to a regular file is skipped rather than symlinked as a bogus skill. This also subsumes the guard the registry used to carry before this manifest existed: the prod image only has `/app/skills` at all when `Dockerfile.prod` copied it, and in an image built without it every core path simply resolves to nothing.
+    if (isSkillPath(corePath)) paths.push(corePath);
   }
 
   const seen = new Set<string>();
