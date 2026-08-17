@@ -79,7 +79,7 @@ export function buildTriggerDataPromptSection(triggerDataPath: string, entries: 
     : `Contents (${sorted.length} ${sorted.length === 1 ? 'entry' : 'entries'}):\n${shown.map((e) => `- ${e}`).join('\n')}` +
       (sorted.length > shown.length ? `\n- …and ${sorted.length - shown.length} more, not listed` : '');
 
-  return `This task was started by a trigger, and a trigger can fire more than once. Unlike your working directory, which is discarded when this task ends, you have one directory that outlives a single fire:
+  return `This task was started by a trigger, and a trigger can fire more than once. Your working directory belongs to this task alone, and the next fire will be a different task with a different one — but you also have one directory that is shared by every fire of this trigger:
 
 <trigger_directory>
 Path: ${triggerDataPath} [READ-WRITE]

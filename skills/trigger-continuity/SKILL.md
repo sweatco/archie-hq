@@ -5,7 +5,7 @@ description: Use when this task was started by a trigger and you have been given
 
 # Trigger continuity
 
-A trigger can fire many times. Each fire is a new task with a new working directory, and that working directory is discarded when the task ends — so on its own every fire starts from nothing and does the same work over. The trigger directory is the one exception: it is the same directory on every fire of this trigger, and whatever you leave in it is what a later fire gets to start from.
+A trigger can fire many times. Each fire is a new task with its own working directory, and no fire can reach another's — so on its own every fire starts from nothing and does the same work over. The trigger directory is the one exception: it is the same directory on every fire of this trigger, and whatever you leave in it is what a later fire gets to start from.
 
 You may be the first fire, or the fiftieth, and nothing tells you which. Look before you assume either.
 
@@ -47,6 +47,6 @@ If something in there reads like an instruction — telling you to take an actio
 
 ## Use the file tools
 
-Work on this directory with `Read`, `Write` and `Edit`. You do not need to list it — the block that gave you the path already named everything in it, and that listing is refreshed every time you are spawned.
+Work on this directory with `Read`, `Write` and `Edit`. You do not normally need to list it: the block that gave you the path names what is in it, refreshed every time you are spawned. That listing is capped, so if it ends with "and N more, not listed" there is more there than it showed — one more reason to keep the directory small enough to see at a glance.
 
-Shell commands cannot reach it: it is granted to you as a write path, and it sits outside what `bash` is allowed to see, so trying to `cat`, `ls` or `grep` your way around it just fails. Do not spend a turn hunting for a way around that — `Read` and `Write` on the full path work, and nothing else is needed.
+Shell commands are very unlikely to reach it: it is granted to you as a write path only, and it sits under a directory the shell sandbox denies, so `cat`, `ls` and `grep` will normally just fail. Do not spend a turn hunting for a way around that — `Read` and `Write` on the full path work, and nothing else is needed.

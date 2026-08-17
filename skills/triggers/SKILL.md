@@ -44,7 +44,7 @@ You can only see and manage triggers that belong to the space the user is talkin
 - From a **private channel**: that channel's triggers, plus public ones.
 - From a **DM**: that person's own DM triggers, plus public ones.
 
-A private channel's or a DM's triggers are never visible from anywhere else. When someone asks "what's set up here", list everything you can see and narrow it conversationally if they want just one channel or just the schedules. When they ask to pause, resume, edit, or delete one, do it by its id — anything you can see, you can manage.
+A private channel's or a DM's triggers are never visible from anywhere else. When someone asks "what's set up here", list everything you can see and narrow it conversationally if they want just one channel or just the schedules. When they ask to pause, resume, edit, or delete one, do it by its id — anything you can see, you can manage. One warning worth giving before you delete: a trigger keeps a directory that its runs use to carry work forward, and deleting the trigger deletes that too. If the automation has been running a while, say so and offer to pause it instead.
 
 ### Changes are announced; firing is not
 

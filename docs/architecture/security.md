@@ -63,7 +63,7 @@ PreToolUse hooks (Read, Write, Edit, Glob, Grep):
 
 **Writes:** Deny-all by default. Workspace paths added to `allowWrite` per track. `/tmp` is always writable (tools need scratch space). Protected files (`.claude/settings.json`, `.claude/skills`, `.claude/hooks`, `CLAUDE.md`) are in `denyWrite` — agents cannot modify their own configuration at runtime.
 
-**One path is granted write-only.** On a trigger-fired task every agent gets `$ARCHIE_WORKDIR/triggers-data/<trigger-id>/` in `allowWrite` and deliberately **not** in `allowRead` — see [Triggers](triggers.md#persistent-per-trigger-directory). Every other path in the system appears in both lists, so this is the only place the asymmetry matters, and it has two consequences. First, `Bash` cannot reach it at all: limitation 1 below means the `denyRead` tmpfs on `/workdir` lands after the `allowWrite` bind, and with no `allowRead` entry there is nothing to restore even read access — agents use `Read`/`Write`/`Edit`, which the PreToolUse hooks gate instead. Second, `assertReadable` (`src/agents/artifacts.ts`) validates against the union of both lists rather than `allowRead` alone, so the in-process artifact tools are not stricter than the sandbox they mirror; without that, an agent could write a file there and then be refused when sharing it.
+**One path is granted write-only.** On a trigger-fired task every agent gets `$ARCHIE_WORKDIR/triggers-data/<trigger-id>/` in `allowWrite` and deliberately **not** in `allowRead` — see [Triggers](triggers.md#persistent-per-trigger-directory). No other path is granted through `allowWritePaths` *alone* — everything else writable is also in `allowReadPaths` — so this is the only place the asymmetry matters, and it has two consequences. First, `Bash` is not a usable route to it: under bubblewrap, limitation 1 below means the `denyRead` tmpfs on `/workdir` lands after the `allowWrite` bind, and with no `allowRead` entry there is nothing to restore even read access. That mechanism is bwrap-specific and has not been characterised for the macOS `sandbox-exec` backend, so treat it as the deployed-Linux behaviour rather than a proven invariant. Agents are told to use `Read`/`Write`/`Edit`, which the PreToolUse hooks gate instead. Second, `assertReadable` (`src/agents/artifacts.ts`) validates against the union of both lists rather than `allowRead` alone, so the in-process artifact tools are not stricter than the sandbox they mirror; without that, an agent could write a file there and then be refused when sharing it.
 
 **Network:** Outbound access from Bash is deny-all by default. Agents cannot `curl`, `wget`, or otherwise reach the internet from shell commands; web access is only available through the controlled research pipeline (MCP tools). Two narrow exceptions widen the allowlist: repo agents in **edit mode** may reach the trusted package registries (`registry.npmjs.org`, `registry.yarnpkg.com`) so `npm`/`yarn` installs and lockfile regeneration work, and a plugin agent may declare `allowedNetworkDomains` in its frontmatter (e.g. the `ops` plugin reaching `sheets.googleapis.com`). Read-only repo agents and the PM stay fully denied.
 
@@ -92,8 +92,8 @@ Git identity is configured on each clone at spawn time. Bwrap sandbox artifacts 
 **Repo Agent (read-only):**
 - CWD: `sessions/<taskId>/repos/<repoKey>` (shared clone)
 - Read: clone + shared folder + `baseRepo/.git/objects` + plugin dirs
-- Write: none
-- Bash: available — git read commands work, write attempts fail at OS level
+- Write: workspace only — never the clone. On a **trigger-fired** task, also that trigger's data directory (write-only; see the note under Filesystem Isolation), which is the one writable path any track gets outside its own workspace while read-only.
+- Bash: available — git read commands work, write attempts against the clone fail at OS level
 
 **Repo Agent (edit mode):**
 - CWD: `sessions/<taskId>/repos/<repoKey>` (shared clone)
