@@ -75,5 +75,19 @@ describe('persistVisibilityRestriction', () => {
 
     await expect(persistVisibilityRestriction(value, 'private', async () => { throw failure; }))
       .rejects.toBe(failure);
+    expect(value.visibility).toBe('public');
+  });
+
+  it('can retry a downgrade after a failed persistence attempt', async () => {
+    const value = metadata('public');
+    const save = vi.fn()
+      .mockRejectedValueOnce(new Error('disk full'))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(persistVisibilityRestriction(value, 'private', save)).rejects.toThrow('disk full');
+    await expect(persistVisibilityRestriction(value, 'private', save)).resolves.toBe(true);
+
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(value.visibility).toBe('private');
   });
 });

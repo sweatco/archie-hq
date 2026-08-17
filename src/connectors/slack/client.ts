@@ -104,21 +104,33 @@ export function isSlackDryRun(): boolean {
  * Initialize the Slack client and fetch bot user ID
  */
 export async function initSlackClient(token: string): Promise<void> {
+  botUserId = null;
+  botId = null;
+  workspaceUrl = null;
+  homeTeamId = null;
   slackClient = new WebClient(token);
 
   // Fetch bot's user ID and bot ID for filtering bot messages
   try {
     const authResult = await slackClient.auth.test();
-    botUserId = authResult.user_id as string;
-    botId = authResult.bot_id as string | undefined ?? null;
-    workspaceUrl = (authResult.url as string | undefined)?.replace(/\/$/, '') ?? null;
-    homeTeamId = (authResult.team_id as string | undefined) ?? null;
-    logger.slack(`Bot user ID: ${botUserId}, bot ID: ${botId}, workspace: ${workspaceUrl}, home team: ${homeTeamId}`);
-    if (!homeTeamId) {
-      logger.warn('Slack', 'auth.test did not return team_id — Slack identities cannot be verified as internal');
+    const nextBotUserId = authResult.user_id as string | undefined;
+    const nextHomeTeamId = authResult.team_id as string | undefined;
+    if (!nextBotUserId || !nextHomeTeamId) {
+      throw new Error('Slack auth.test did not return required user_id and team_id');
     }
+    botUserId = nextBotUserId;
+    botId = (authResult.bot_id as string | undefined) ?? null;
+    workspaceUrl = (authResult.url as string | undefined)?.replace(/\/$/, '') ?? null;
+    homeTeamId = nextHomeTeamId;
+    logger.slack(`Bot user ID: ${botUserId}, bot ID: ${botId}, workspace: ${workspaceUrl}, home team: ${homeTeamId}`);
   } catch (error) {
-    logger.warn('Slack', 'Failed to get bot user ID', error);
+    slackClient = null;
+    botUserId = null;
+    botId = null;
+    workspaceUrl = null;
+    homeTeamId = null;
+    logger.error('Slack', 'Failed to initialize Slack identity', error);
+    throw error;
   }
 }
 
@@ -139,8 +151,8 @@ export function getBotId(): string | null {
 /**
  * Get the bot's home Slack workspace team ID (from auth.test).
  * Used as the reference point for classifying users as internal vs external.
- * May be null if auth.test() did not return team_id. Security-sensitive
- * classification treats every user as unknown in that case.
+ * Null before initialization or after a failed initialization. A successful
+ * init always establishes both the home team and bot user identities.
  */
 export function getHomeTeamId(): string | null {
   return homeTeamId;
@@ -1675,8 +1687,11 @@ export function classifySlackIngestAuthor(user: {
   trustedAutomation?: boolean;
 }): SlackIngestIdentity {
   const affiliation = classifySlackAffiliation(user);
+  // Slack may omit a guest's team id, but its restriction flag is still a
+  // positive external classification rather than an unresolved identity.
+  if (user.isRestricted || user.isUltraRestricted) return 'external';
   if (affiliation === 'unknown') return 'unknown';
-  if (affiliation === 'external' || user.isRestricted || user.isUltraRestricted) return 'external';
+  if (affiliation === 'external') return 'external';
   if (user.isBot || user.isAppUser) return user.trustedAutomation ? 'internal' : 'untrusted';
   return 'internal';
 }
@@ -1759,35 +1774,51 @@ export async function postEphemeral(
   }
 }
 
-/**
- * Get channel info
- */
-export async function getChannelInfo(
-  channelId: string,
-): Promise<{ id: string; name: string; isPrivate: boolean; isIm: boolean; imUserId?: string }> {
+interface VerifiedSlackChannelInfo {
+  id: string;
+  name: string;
+  isPrivate: boolean;
+  isIm: boolean;
+  imUserId?: string;
+}
+
+async function fetchVerifiedChannelInfo(channelId: string): Promise<VerifiedSlackChannelInfo> {
   const client = getSlackClient();
+  const result = await client.conversations.info({ channel: channelId });
+  const channel = result.channel as
+    | { name?: string; is_im?: boolean; is_mpim?: boolean; is_private?: boolean; user?: string }
+    | undefined;
+  if (!channel) {
+    throw new Error(`Slack conversations.info returned no channel for ${channelId}`);
+  }
 
-  try {
-    const result = await client.conversations.info({ channel: channelId });
-    const channel = result.channel as
-      | { name?: string; is_im?: boolean; is_mpim?: boolean; is_private?: boolean; user?: string }
-      | undefined;
-
-    const isIm = channel?.is_im === true;
-    const isPrivate = isIm || channel?.is_mpim === true || channel?.is_private === true;
-    if (isIm && channel?.user) {
+  const isIm = channel.is_im === true;
+  const isPrivate = isIm || channel.is_mpim === true || channel.is_private === true;
+  let name = channel.name || channelId;
+  if (isIm && channel.user) {
+    try {
       const userInfo = await getUserInfo(channel.user);
-      return { id: channelId, name: `DM with ${userInfo.realName}`, isPrivate, isIm, imUserId: channel.user };
+      name = `DM with ${userInfo.realName}`;
+    } catch (error) {
+      logger.warn('Slack', `Failed to resolve DM participant ${channel.user}`, error);
     }
+  }
 
-    return {
-      id: channelId,
-      name: channel?.name || channelId,
-      isPrivate,
-      isIm,
-    };
-  } catch {
-    logger.warn('Slack', `Failed to get channel info for ${channelId}`);
+  return {
+    id: channelId,
+    name,
+    isPrivate,
+    isIm,
+    ...(isIm && channel.user ? { imUserId: channel.user } : {}),
+  };
+}
+
+/** Best-effort channel metadata for non-security-sensitive display surfaces. */
+export async function getChannelInfo(channelId: string): Promise<VerifiedSlackChannelInfo> {
+  try {
+    return await fetchVerifiedChannelInfo(channelId);
+  } catch (error) {
+    logger.warn('Slack', `Failed to get channel info for ${channelId}`, error);
     return { id: channelId, name: channelId, isPrivate: true, isIm: channelId.startsWith('D') };
   }
 }
@@ -1799,10 +1830,7 @@ export async function getChannelInfo(
  * fallback. A DM is private.
  */
 export async function fetchChannelIsPrivate(channelId: string): Promise<boolean> {
-  const client = getSlackClient();
-  const result = await client.conversations.info({ channel: channelId });
-  const channel = result.channel as { is_im?: boolean; is_mpim?: boolean; is_private?: boolean } | undefined;
-  return channel?.is_im === true || channel?.is_mpim === true || channel?.is_private === true;
+  return (await fetchVerifiedChannelInfo(channelId)).isPrivate;
 }
 
 // ---- Channel canvas tabs + file reads (project-context canvases) ----------
@@ -2239,7 +2267,7 @@ export async function fetchSlackThread(
   currentMessageTs: string,
 ): Promise<SlackThread> {
   const [channelInfo, rawMessages, shared] = await Promise.all([
-    getChannelInfo(channelId),
+    fetchVerifiedChannelInfo(channelId),
     fetchThreadHistory(channelId, threadTs),
     isChannelShared(channelId),
   ]);

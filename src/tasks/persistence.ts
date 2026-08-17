@@ -5,22 +5,24 @@
  * appending to knowledge.log
  */
 
-import { mkdir, readdir, readFile, writeFile, appendFile } from 'fs/promises';
+import { mkdir, readdir, readFile, writeFile, appendFile, rename } from 'fs/promises';
 import { createReadStream, existsSync } from 'fs';
 import { createInterface } from 'readline';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { join, resolve, relative, isAbsolute, sep } from 'path';
 import type { TaskMetadata, LogEntry, FindingType, SlackFile, SlackAttachment, SlackAuthor, SlackReaction } from '../types/index.js';
-import { isExternalUser } from '../connectors/slack/client.js';
+import { classifySlackIngestAuthor } from '../connectors/slack/client.js';
 import type { SystemEvent } from '../system/event-bus.js';
 import { activeTasks } from './task.js';
 import { SESSIONS_DIR } from '../system/workdir.js';
 import { emitEvent, onEvent } from '../system/event-bus.js';
 import { logger } from '../system/logger.js';
 import { formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { createKeyedLock } from '../system/keyed-lock.js';
 
 const execFileAsync = promisify(execFile);
+const metadataWriteLock = createKeyedLock();
 
 /**
  * Ceiling on a scan's stdout. Only matching paths are printed, so this is ~150
@@ -228,6 +230,34 @@ export async function loadMetadata(taskId: string): Promise<TaskMetadata | null>
   }
 }
 
+/**
+ * Replace one task metadata file under a dedicated write lock. Visibility is
+ * merged monotonically against the latest persisted record so a detached,
+ * stale public Task instance cannot overwrite a private downgrade.
+ */
+export async function writeTaskMetadata(
+  taskId: string,
+  metadata: TaskMetadata,
+): Promise<TaskMetadata> {
+  const candidate = JSON.parse(JSON.stringify(metadata)) as TaskMetadata;
+
+  return metadataWriteLock(taskId, async () => {
+    const path = getMetadataPath(taskId);
+    const persistedExists = existsSync(path);
+    const persisted = persistedExists ? await loadMetadata(taskId) : null;
+    const effectiveVisibility: TaskMetadata['visibility'] = persistedExists
+      ? persisted?.visibility === 'public' && candidate.visibility === 'public' ? 'public' : 'private'
+      : candidate.visibility === 'public' ? 'public' : 'private';
+    const effective = { ...candidate, visibility: effectiveVisibility };
+    const temporaryPath = `${path}.${process.pid}.tmp`;
+
+    await writeFile(temporaryPath, JSON.stringify(effective, null, 2));
+    await rename(temporaryPath, path);
+    metadata.visibility = effectiveVisibility;
+    return effective;
+  });
+}
+
 /** Format a log entry so body continuations cannot mimic source lines. */
 function formatLogEntry(entry: LogEntry): string {
   const typeStr = entry.type ? ` [${entry.type}]` : '';
@@ -266,10 +296,12 @@ export function renderAttachmentsSuffix(artifactPaths: readonly string[]): strin
  */
 export function renderMessageForContext(
   msg: { text: string; files?: SlackFile[]; attachments?: SlackAttachment[]; reactions?: SlackReaction[] },
-  options: { redacted: boolean }
+  options: { redacted: boolean; redactionReason?: 'external' | 'unresolved' }
 ): string {
   if (options.redacted) {
-    return '[redacted: external participant in shared channel]';
+    return options.redactionReason === 'unresolved'
+      ? '[redacted: unresolved Slack author]'
+      : '[redacted: external participant in shared channel]';
   }
 
   const inlineParts: string[] = [];
@@ -277,13 +309,14 @@ export function renderMessageForContext(
 
   let forwardedBlock = '';
   for (const att of msg.attachments ?? []) {
-    if (att.author && isExternalUser(att.author)) {
-      // Render the externally-authored attachment under a provenance label.
+    const identity = att.author ? classifySlackIngestAuthor(att.author) : 'internal';
+    if (att.author && identity !== 'internal') {
+      // Render the non-internal attachment under a provenance label.
       // Only the first one gets the label block; subsequent ones (rare)
       // fold inline so the agent still sees them.
       if (!forwardedBlock) {
         const teamSuffix = att.author.teamId ? `, team ${att.author.teamId}` : '';
-        const label = `[forwarded from <@${att.author.id}:${att.author.realName}> — external${teamSuffix}]`;
+        const label = `[forwarded from <@${att.author.id}:${att.author.realName}> — ${identity}${teamSuffix}]`;
         forwardedBlock = `${label}\n${att.text}`;
         continue;
       }
@@ -323,12 +356,12 @@ export async function appendSlackMessage(
   message: string,
   files?: SlackFile[],
   attachments?: SlackAttachment[],
-  options?: { redacted?: boolean; ts?: string; reactions?: SlackReaction[] }
+  options?: { redacted?: boolean; redactionReason?: 'external' | 'unresolved'; ts?: string; reactions?: SlackReaction[] }
 ): Promise<void> {
   const redacted = options?.redacted === true;
   const fullMessage = renderMessageForContext(
     { text: message, files, attachments, reactions: options?.reactions },
-    { redacted },
+    { redacted, redactionReason: options?.redactionReason },
   );
 
   // Mask the author name in the source line when the body is redacted, so the

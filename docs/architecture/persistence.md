@@ -94,7 +94,7 @@ base-36) provides uniqueness.
 ```typescript
 interface TaskMetadata {
   task_id: string;                              // e.g. "task-20251223-1712-a3f9k2"
-  visibility: 'public' | 'private';             // immutable; legacy missing values migrate to private
+  visibility: 'public' | 'private';             // monotonic public → private; legacy missing values migrate to private
   task_owner: AgentName | null;                 // agent leading the task, or null
   participants: AgentName[];                    // all agents that have participated
   channels: Record<string, Channel>;            // active message delivery targets, keyed by channel ID
@@ -299,11 +299,18 @@ debouncedSave(): void
 
 | Mode | Behavior |
 |---|---|
-| `debouncedSave()` (or `save(false)`) | If a save timer is already armed, returns. Otherwise arms a 500 ms timer that syncs sessions and writes `metadata.json` once it fires. |
-| `save(true)` (flush) | Syncs sessions and writes `metadata.json` synchronously via `writeFile`. Does not cancel a pending debounced timer (the next debounced fire is harmless — it just rewrites the same JSON). |
+| `debouncedSave()` (or `save(false)`) | If a save timer is already armed, returns. Otherwise arms a 500 ms timer that syncs sessions and replaces `metadata.json` once it fires. |
+| `save(true)` (flush) | Syncs sessions and replaces `metadata.json` before resolving. Does not cancel a pending debounced timer (the next debounced fire is harmless). |
 
 Flush mode is used during `Task.stop()` and `Task.complete()` to guarantee the final
 status is persisted before the task instance is removed from `activeTasks`.
+
+All metadata replacements, including reminder-scheduler writes, pass through a
+separate per-task metadata lock. Inside that lock the writer re-reads the current
+file, preserves a persisted private visibility against stale public instances,
+writes a temporary file, and atomically renames it over `metadata.json`. This lock
+is deliberately separate from the non-reentrant task-data lock because flushed
+saves already occur inside task-data critical sections.
 
 ### Session state sync
 
@@ -315,7 +322,7 @@ for (const [agentName, agent] of this.agentProcesses) {
   this.metadata.agent_sessions[agentName] = { ...agent.session };
 }
 this.metadata.updated_at = new Date().toISOString();
-await writeFile(getMetadataPath(this.taskId), JSON.stringify(this.metadata, null, 2));
+await writeTaskMetadata(this.taskId, this.metadata);
 ```
 
 This ensures on-disk metadata always reflects the latest agent session state

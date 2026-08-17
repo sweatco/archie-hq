@@ -25,7 +25,7 @@ import {
   isChannelShared,
   postEphemeral,
   getSlackClient,
-  getChannelInfo,
+  fetchChannelIsPrivate,
   cleanSlackText,
   extractMessageContent,
 } from './client.js';
@@ -729,6 +729,11 @@ export async function handleSlackEvent(event: {
     return;
   }
 
+  // Resolve channel confidentiality before any ingress side effect. A failed
+  // lookup must not be converted into a durable private classification for a
+  // channel that may actually be public.
+  const thread = await fetchSlackThread(event.channel, threadId, event.ts);
+
   // Instant acknowledgment — react before any LLM processing. Only @mentions
   // and DM messages are acknowledged; plain thread replies in an engaged channel
   // are not. Moving the ack (clearing it from the previously-acked message)
@@ -740,8 +745,7 @@ export async function handleSlackEvent(event: {
     addReaction(event.channel, event.ts, 'eyes');
   }
 
-  const thread = await fetchSlackThread(event.channel, threadId, event.ts);
-  const shared = await isChannelShared(event.channel);
+  const shared = thread.shared;
 
   // Refresh the channel's "Archie" project-context canvas before the PM wakes,
   // so the spawn-time injection reads fresh state. No-op for DMs and TTL-bounded.
@@ -939,16 +943,6 @@ export async function handleSlackEdit(event: any): Promise<void> {
     return;
   }
 
-  const task = await Task.get(taskId);
-  const channelKey = `slack:${channelId}:${threadId}`;
-  const channel = task.metadata.channels[channelKey];
-
-  // Respect mute — a muted channel isn't woken by edits either.
-  if (channel?.type === 'slack' && channel.muted) {
-    logger.system(`Skipping edit in muted channel ${threadId}`);
-    return;
-  }
-
   // Run the edited message through the same extraction as any other inbound
   // message — blocks, attachment cards, link chips, entity decoding — not just
   // mention resolution. Editing a message to add a Jira link used to log the
@@ -972,8 +966,23 @@ export async function handleSlackEdit(event: any): Promise<void> {
     isAppUser: authorInfo.isAppUser,
   };
 
-  const channelInfo = await getChannelInfo(channelId);
-  const sourceVisibility = channelInfo.isPrivate ? 'private' : 'public';
+  let sourceVisibility: SlackThread['taskVisibility'];
+  try {
+    sourceVisibility = (await fetchChannelIsPrivate(channelId)) ? 'private' : 'public';
+  } catch (error) {
+    logger.warn('Slack', `Skipping edit because channel privacy could not be verified for ${channelId}`, error);
+    return;
+  }
+
+  const task = await Task.get(taskId);
+  const channelKey = `slack:${channelId}:${threadId}`;
+  const channel = task.metadata.channels[channelKey];
+
+  // Respect mute — a muted channel isn't woken by edits either.
+  if (channel?.type === 'slack' && channel.muted) {
+    logger.system(`Skipping edit in muted channel ${threadId}`);
+    return;
+  }
   const recorded = await task.appendSlackEdit(channelKey, author, editedTs, newText, sourceVisibility);
   if (!recorded) return;
 

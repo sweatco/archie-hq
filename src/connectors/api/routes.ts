@@ -383,7 +383,10 @@ export function mountApiRoutes(app: Application): void {
 
       const editedContent = typeof action_prompt === 'string';
       let statusChange: 'paused' | 'resumed' | null = null;
-      if (editedContent) trigger.action.prompt = action_prompt as string;
+      if (editedContent) {
+        trigger.action.prompt = action_prompt as string;
+        trigger.prompt_origin_visibility = 'public';
+      }
       if (status && status !== trigger.status) {
         // Re-check caps on resume so pause→resume can't bypass the limit.
         if (status === 'enabled') {

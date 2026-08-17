@@ -22,6 +22,7 @@ vi.mock('fs/promises', () => ({
   mkdir: vi.fn().mockResolvedValue(undefined),
   appendFile: vi.fn().mockResolvedValue(undefined),
   readFile: vi.fn().mockResolvedValue(''),
+  rename: vi.fn().mockResolvedValue(undefined),
 }));
 const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
 vi.mock('../../agents/spawn.js', () => ({ spawnAgent: spawnMock }));

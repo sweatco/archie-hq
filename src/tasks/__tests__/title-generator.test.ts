@@ -36,6 +36,19 @@ vi.mock('../../connectors/slack/client.js', () => ({
     if (user.isRestricted || user.isUltraRestricted || user.teamId !== 'T_HOME') return 'external';
     return 'internal';
   },
+  classifySlackIngestAuthor: (user: {
+    teamId?: string;
+    isRestricted?: boolean;
+    isUltraRestricted?: boolean;
+    isBot?: boolean;
+    isAppUser?: boolean;
+    trustedAutomation?: boolean;
+  }) => {
+    if (!user.teamId) return 'unknown';
+    if (user.isRestricted || user.isUltraRestricted || user.teamId !== 'T_HOME') return 'external';
+    if (user.isBot || user.isAppUser) return user.trustedAutomation ? 'internal' : 'untrusted';
+    return 'internal';
+  },
   isExternalUser: (user: { teamId?: string; isRestricted?: boolean; isUltraRestricted?: boolean }) =>
     Boolean(user.isRestricted || user.isUltraRestricted || (user.teamId && user.teamId !== 'T_HOME')),
   formatSlackChannelRef: vi.fn(),
@@ -200,6 +213,27 @@ describe('generateTaskTitle', () => {
 
     await expect(generateTaskTitle(thread)).resolves.toBeNull();
     expect(query).not.toHaveBeenCalled();
+  });
+
+  it('uses task-ingestion trust for configured automation', async () => {
+    state.queryEvents = [successEvent('Automation title')];
+    const thread = makeThread({
+      messages: [{
+        ts: '1.0',
+        text: 'deployment completed',
+        user: {
+          id: 'B_DEPLOY',
+          username: 'deploy',
+          realName: 'Deploy Bot',
+          teamId: 'T_HOME',
+          isBot: true,
+          trustedAutomation: true,
+        },
+      }],
+    });
+
+    await expect(generateTaskTitle(thread)).resolves.toBe('Automation title');
+    expect(state.lastQueryArgs.prompt).toContain('[Deploy Bot]: deployment completed');
   });
 
   it('includes forwarded-from label for externally-authored attachment from internal author', async () => {

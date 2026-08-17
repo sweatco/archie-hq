@@ -4,7 +4,7 @@
 
 export type TaskStatus = 'in_progress' | 'stopped' | 'completed';
 
-/** Immutable confidentiality class assigned when a task is created. */
+/** Monotonic confidentiality class: a task may move public → private, never back. */
 export type TaskVisibility = 'public' | 'private';
 
 /** Core agent names - repo agents can be any string ending in '-agent' */
