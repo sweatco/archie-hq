@@ -152,25 +152,22 @@ describe('removeTriggerDataDir', () => {
     await expect(removeTriggerDataDir('trg-20260817-1203-neverwas')).resolves.toBeUndefined();
   });
 
-  it('logs and resolves rather than throwing when the filesystem refuses', async () => {
-    // `force: true` only swallows a missing directory; a real refusal still
-    // rejects. This runs inside deleteTrigger, which the scheduler's boot scan
-    // awaits in the loop that indexes every enabled trigger, so a throw here
-    // would leave every trigger after the failing entry unindexed and silently
-    // not firing. Root ignores directory permissions, so there is nothing to
-    // assert when the suite runs as root.
-    if (process.getuid?.() === 0) return;
-
+  // `force: true` swallows only a missing directory. A real refusal propagates,
+  // deliberately: a caller that reported success while the data was still on disk
+  // would tell a user their automation's notes were deleted when they were not.
+  // Skipped as root, which ignores directory permissions, so the chmod would not
+  // bite and the test would pass vacuously.
+  it.skipIf(process.getuid?.() === 0)('rejects rather than reporting success when the filesystem refuses', async () => {
     const id = 'trg-20260817-1207-eacces';
     await saveTrigger(sampleTrigger(id));
     const path = (await ensureTriggerDataDir(id))!;
     await writeFile(join(path, 'state.json'), '{"seen":1}');
 
-    // Strip write permission from the PARENT, so unlinking inside `path` fails.
+    // Strip write permission from the PARENT, so removing `path` itself fails.
     chmodSync(TRIGGERS_DATA_DIR, 0o500);
     try {
-      await expect(removeTriggerDataDir(id)).resolves.toBeUndefined();
-      expect(existsSync(path)).toBe(true); // it really did fail, so the resolve is meaningful
+      await expect(removeTriggerDataDir(id)).rejects.toThrow();
+      expect(existsSync(path)).toBe(true); // the refusal was real, so the rejection is meaningful
     } finally {
       chmodSync(TRIGGERS_DATA_DIR, 0o700);
     }

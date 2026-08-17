@@ -360,7 +360,8 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
       contextLines.push(`Reminder: ${metadata.reminder.trigger_at} — ${metadata.reminder.reason}`);
     }
     if (metadata.triggered_by) {
-      contextLines.push(`Spawned by trigger: ${metadata.triggered_by} (a trigger-initiated task — there is no prior Slack thread here, but this trigger has a directory that carries work across fires; deliver the result as instructed in the first message)`);
+      // Says nothing about the trigger's directory on purpose: this line is built from `triggered_by` alone, which stays set even after the trigger is deleted, whereas the directory block appended after the per-track branches appears only when the directory actually exists. Claiming a directory here would contradict that block on exactly the runs where they disagree.
+      contextLines.push(`Spawned by trigger: ${metadata.triggered_by} (a trigger-initiated task — there is no prior Slack thread here; deliver the result as instructed in the first message)`);
     }
     // Surface the live plugins-repo version so the PM can tell users when the
     // plugins/agents were last updated. Refreshed on every task start/load.

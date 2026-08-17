@@ -125,9 +125,19 @@ export function getTriggerDataPath(id: string): string {
  * reappears on disk and the directory is orphaned for good: nothing scans
  * TRIGGERS_DATA_DIR for entries whose record is gone, so nothing would ever
  * remove it again.
+ *
+ * The check is deliberately `existsSync` on the record path rather than
+ * {@link loadTrigger}. `loadTrigger` returns null for three different states —
+ * malformed id, missing file, and a `JSON.parse` failure — and only the first
+ * two mean "gone". `saveTrigger` is a plain `writeFile`, so it truncates before
+ * it writes, and it runs on every fire as well as on every PM edit; a spawn that
+ * happened to read the record mid-write would see unparseable JSON and conclude
+ * a perfectly live trigger had been deleted, silently denying that fire its
+ * directory. Existence cannot be torn that way, and it costs no read or parse on
+ * a path that runs once per agent per wake.
  */
 export async function ensureTriggerDataDir(id: string): Promise<string | null> {
-  if ((await loadTrigger(id)) === null) return null;
+  if (!isValidTriggerId(id) || !existsSync(getTriggerPath(id))) return null;
   const path = getTriggerDataPath(id);
   await mkdir(path, { recursive: true });
   return path;
@@ -141,22 +151,24 @@ export async function ensureTriggerDataDir(id: string): Promise<string | null> {
  * refused by a cap, or garbage-collected never fired, so it never got a
  * directory in the first place.
  *
- * Best-effort by design: a failure is logged, never thrown. `force: true` covers
- * only a missing directory, so a real filesystem refusal (EACCES, EPERM, a
- * busy mount) still rejects — and this runs inside `deleteTrigger`, which the
- * scheduler's boot scan awaits in the loop that indexes every enabled trigger.
- * A throw there would abort that loop, leaving every trigger after the failing
- * entry unindexed and silently not firing until the next restart. Leaking one
- * directory is the far cheaper failure, and an unpruned directory is already an
- * accepted limitation of this feature.
+ * A real filesystem refusal (EACCES, EPERM, a busy mount) propagates, on
+ * purpose. Swallowing it was tried and reverted: it made every caller report a
+ * deletion that had not happened — the PM tool answers "deleted" and announces
+ * it to the bound channel, the API route returns ok — while the record was
+ * already unlinked, leaving the retained notes both unreachable (nothing can
+ * resolve a directory whose record is gone) and unremovable (no caller reaches
+ * this function except through {@link deleteTrigger}). Telling a user their
+ * automation's data is gone when it is still on the host is worse than failing
+ * loudly.
+ *
+ * That leaves `deleteTrigger` with two throw sites inside the loop
+ * `rebuildFromDisk` uses to index enabled triggers, so a refusal there still
+ * aborts the scan. That fragility is pre-existing — the `unlink` above throws
+ * the same way — and the fix belongs in the scheduler's GC call, not here.
  */
 export async function removeTriggerDataDir(id: string): Promise<void> {
   if (!isValidTriggerId(id)) return; // malformed id → nothing to delete
-  try {
-    await rm(getTriggerDataPath(id), { recursive: true, force: true });
-  } catch (err) {
-    logger.warn('trigger-store', `Failed to remove data directory for trigger ${id}: ${err}`);
-  }
+  await rm(getTriggerDataPath(id), { recursive: true, force: true });
 }
 
 /** Ensure the triggers directory exists. */
