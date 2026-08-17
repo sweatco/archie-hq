@@ -620,7 +620,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
     : null;
   if (triggerDataPath) {
     sandboxOpts = grantTriggerDataWrite(sandboxOpts, triggerDataPath);
-    // The names are read here rather than left to the agent because it has no way to list this directory itself — `Bash` cannot see the path (write-only grant under a denied parent) and `Glob` is absent from the runtime, so a live fire that asked for it got "No such tool available: Glob" and could only read a file whose exact name it had been handed. Names only; opening them stays the agent's choice.
+    // The names are read here to save the agent a turn, not because it cannot look: `ls` from `Bash` does work on this path (measured under bwrap 0.11.0 with denyRead on the workdir — the write grant's bind mounts on top of the deny tmpfs). What it lacks is `Glob`, which is absent from this runtime, so a fire reaching for the obvious lister gets "No such tool available" and has to recover; one live fire gave up at that point. Names only; opening them stays the agent's choice.
     systemPrompt = `${systemPrompt}\n\n${buildTriggerDataPromptSection(triggerDataPath, await readdir(triggerDataPath))}`;
   }
 
