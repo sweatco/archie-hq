@@ -31,10 +31,7 @@ RUN npm ci
 COPY tsconfig.json tsconfig.scripts.json ./
 COPY src/ ./src/
 COPY prompts/ ./prompts/
-# Core skills the PM loads by name (thread-conduct, triggers, channel-canvas,
-# self-awareness). registry.ts resolves CORE_SKILLS_DIR to /app/skills and sets
-# coreSkillsPath only if it exists — without this COPY it never does, and every
-# `Skill` call for a core skill fails with "Unknown skill".
+# Core skills the PM loads by name (thread-conduct, triggers, channel-canvas, self-awareness). src/agents/core-skills.ts resolves the core skills directory to /app/skills, and its CORE_SKILL_MOUNTS manifest is what mounts these four for the `pm` track — each only if the directory is actually there. Without this COPY it never is, and every `Skill` call for a core skill fails with "Unknown skill".
 COPY skills/ ./skills/
 COPY scripts/ ./scripts/
 
