@@ -40,15 +40,11 @@ export function isAckableEvent(eventType: string, channelId: string): boolean {
 
 /**
  * Whether an inbound `message` event should be forwarded into task routing.
- * Verbatim extraction of the inline filter at events.ts:167-180.
  *
  * Returns false unless `type === 'message'` and the subtype is empty or one of
  * `file_share` / `thread_broadcast` / `bot_message`. Otherwise forwards when the
- * message is a thread reply, a DM, or a watched top-level channel post.
- *
- * `bot_message` is forwarded ONLY as a watched top-level channel post. Bots that
- * post through a legacy webhook (empty `text`, content in attachments) carry that
- * subtype, which is how a watched report never reached trigger dispatch at all.
+ * message is a thread reply, a DM, or a watched top-level channel post — except
+ * `bot_message` (legacy-webhook bots), which forwards only via the watched arm.
  *
  * `hasWatchingTrigger` is a lazy predicate: it is only consulted for top-level
  * channel posts, so the trigger-index lookup still never runs for DMs or thread

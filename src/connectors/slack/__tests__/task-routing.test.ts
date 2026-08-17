@@ -57,10 +57,6 @@ describe('group-DM (G…) routing parity', () => {
 });
 
 describe('bot_message routing (legacy-webhook bot posts)', () => {
-  // Bots posting through a legacy webhook carry `subtype: 'bot_message'`, which the
-  // subtype gate used to drop before trigger dispatch was ever consulted. They are
-  // forwarded only as a watched top-level channel post — the case the pre-existing
-  // "trigger is watching" test above missed, because it used a subtype-less human post.
   const botPost = { type: 'message', subtype: 'bot_message', channel: 'C0XYZ', ts: '1' };
 
   it('forwards a bot post when a trigger is watching the channel', () => {

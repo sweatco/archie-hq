@@ -789,9 +789,7 @@ export async function handleSlackEvent(event: {
     // Ambient top-level channel message (no task, not an @mention, not a thread
     // reply) — the only place channel-message triggers fire. @mentions and DMs
     // are excluded above so a message aimed at Archie never also fires a trigger.
-    // Match on the fetched root, not `event`: attachments are stripped at the Bolt
-    // boundary, so a webhook bot's `event.text` is empty and its content — the part
-    // a filter needs to see — only exists on the re-fetched message.
+    // Bolt strips attachments: `event.text` is empty for a webhook bot, the root isn't.
     const root = thread.messages.find((m) => m.ts === event.ts);
     await dispatchChannelMessageTriggers(
       event,
