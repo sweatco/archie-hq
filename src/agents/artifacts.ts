@@ -24,14 +24,28 @@ import { getArtifactsPath } from '../tasks/persistence.js';
  * Resolve `inputPath` to an absolute, real (symlink-followed) path that lives
  * inside the sandbox's read scope. Throws on any rule violation.
  *
- * Companion to a future `assertWritable` (sandbox.allowWritePaths) — the pair
- * keeps the call sites readable while sharing the same root-validation logic.
+ * The read scope is the union of `allowReadPaths` and `allowWritePaths`, which
+ * mirrors the rule the OS-level PreToolUse guard already applies
+ * (src/agents/sandbox.ts:236-237): writable implies readable. Without the union
+ * these in-process artifact tools would be *stricter* than the sandbox they
+ * exist to mirror, silently refusing to share a file the agent had just
+ * legitimately written.
+ *
+ * It is a behavioural no-op for every path that exists today, because
+ * `allowWritePaths` is a subset of `allowReadPaths` on the base track
+ * (src/agents/spawn.ts:312-313, :271-272) and on both repo-track branches
+ * (:541-544). Only a path granted write-only changes behaviour — the persistent
+ * per-trigger directory is the first of those.
+ *
+ * Companion to a future `assertWritable` (sandbox.allowWritePaths), still
+ * unimplemented — the union here does not add it. The pair would keep the call
+ * sites readable while sharing the same root-validation logic.
  */
 export async function assertReadable(
   inputPath: string,
   sandbox: SandboxOptions,
 ): Promise<string> {
-  return assertInsideRoots(inputPath, sandbox.allowReadPaths, 'readable');
+  return assertInsideRoots(inputPath, [...sandbox.allowReadPaths, ...(sandbox.allowWritePaths ?? [])], 'readable');
 }
 
 async function assertInsideRoots(
