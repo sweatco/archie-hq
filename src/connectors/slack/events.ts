@@ -789,7 +789,15 @@ export async function handleSlackEvent(event: {
     // Ambient top-level channel message (no task, not an @mention, not a thread
     // reply) — the only place channel-message triggers fire. @mentions and DMs
     // are excluded above so a message aimed at Archie never also fires a trigger.
-    await dispatchChannelMessageTriggers(event, thread.channel.name);
+    // Match on the fetched root, not `event`: attachments are stripped at the Bolt
+    // boundary, so a webhook bot's `event.text` is empty and its content — the part
+    // a filter needs to see — only exists on the re-fetched message.
+    const root = thread.messages.find((m) => m.ts === event.ts);
+    await dispatchChannelMessageTriggers(
+      event,
+      thread.channel.name,
+      root ? renderMessageForContext(root, { redacted: false }) : event.text,
+    );
   }
   // Otherwise: a reply in a human-started thread the bot wasn't part of — ignore
 }
@@ -802,6 +810,7 @@ export async function handleSlackEvent(event: {
 async function dispatchChannelMessageTriggers(
   event: { channel: string; user: string; text: string; ts: string },
   channelName: string,
+  matchText: string,
 ): Promise<void> {
   const triggers = getChannelMessageTriggers(event.channel);
   if (triggers.length === 0) return;
@@ -809,7 +818,7 @@ async function dispatchChannelMessageTriggers(
   const matches = (trigger: Trigger): boolean =>
     trigger.conditions.some((c) => {
       if (c.type !== 'channel_message' || c.channel_id !== event.channel) return false;
-      if (c.match?.contains && !event.text.toLowerCase().includes(c.match.contains.toLowerCase())) return false;
+      if (c.match?.contains && !matchText.toLowerCase().includes(c.match.contains.toLowerCase())) return false;
       if (c.match?.from_user && event.user !== c.match.from_user) return false;
       return true;
     });
@@ -819,7 +828,7 @@ async function dispatchChannelMessageTriggers(
     try {
       await fireTrigger(trigger, {
         kind: 'message',
-        text: event.text,
+        text: matchText,
         threadId: event.ts,
         channelId: event.channel,
         channelName,

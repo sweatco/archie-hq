@@ -55,3 +55,37 @@ describe('group-DM (G…) routing parity', () => {
     ).toBe(true);
   });
 });
+
+describe('bot_message routing (legacy-webhook bot posts)', () => {
+  // Bots posting through a legacy webhook carry `subtype: 'bot_message'`, which the
+  // subtype gate used to drop before trigger dispatch was ever consulted. They are
+  // forwarded only as a watched top-level channel post — the case the pre-existing
+  // "trigger is watching" test above missed, because it used a subtype-less human post.
+  const botPost = { type: 'message', subtype: 'bot_message', channel: 'C0XYZ', ts: '1' };
+
+  it('forwards a bot post when a trigger is watching the channel', () => {
+    expect(shouldForwardMessageEvent(botPost, () => true)).toBe(true);
+  });
+
+  it('ignores a bot post when no trigger is watching', () => {
+    expect(shouldForwardMessageEvent(botPost, () => false)).toBe(false);
+  });
+
+  it('ignores a bot thread reply even when a trigger is watching', () => {
+    expect(
+      shouldForwardMessageEvent({ ...botPost, ts: '2', thread_ts: '1' }, () => true),
+    ).toBe(false);
+  });
+
+  it('ignores a bot message in a DM', () => {
+    expect(
+      shouldForwardMessageEvent({ ...botPost, channel: 'D0ABC' }, () => true),
+    ).toBe(false);
+  });
+
+  it('still drops other subtypes, watched or not', () => {
+    expect(
+      shouldForwardMessageEvent({ ...botPost, subtype: 'message_changed' }, () => true),
+    ).toBe(false);
+  });
+});
