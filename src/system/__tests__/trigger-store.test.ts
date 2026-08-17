@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, afterAll } from 'vitest';
-import { mkdtempSync, rmSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync, existsSync, chmodSync } from 'fs';
 import { mkdir, writeFile, readFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -96,21 +96,47 @@ describe('getTriggerDataPath', () => {
 describe('ensureTriggerDataDir', () => {
   it('is idempotent and preserves what an earlier fire wrote', async () => {
     const id = 'trg-20260817-1201-idem01';
+    await saveTrigger(sampleTrigger(id));
 
     const first = await ensureTriggerDataDir(id);
-    await writeFile(join(first, 'notes.md'), 'previous fire wrote this');
+    expect(first).not.toBeNull();
+    await writeFile(join(first!, 'notes.md'), 'previous fire wrote this');
 
     const second = await ensureTriggerDataDir(id);
 
     expect(second).toBe(first);
-    expect(await readFile(join(first, 'notes.md'), 'utf-8')).toBe('previous fire wrote this');
+    expect(await readFile(join(first!, 'notes.md'), 'utf-8')).toBe('previous fire wrote this');
+  });
+
+  it('creates nothing and returns null once the trigger record is gone', async () => {
+    // A task outlives the fire that created it, so spawn re-runs — on a user
+    // reply, a delegation, or a restart — while metadata.triggered_by still names
+    // a trigger the user may have deleted meanwhile. Re-creating the directory
+    // then would resurrect deleted content and orphan it for good, since nothing
+    // scans the data dir for entries whose record has gone.
+    const id = 'trg-20260817-1205-deleted';
+    await saveTrigger(sampleTrigger(id));
+    const path = await ensureTriggerDataDir(id);
+    await writeFile(join(path!, 'notes.md'), 'carry-over');
+
+    await deleteTrigger(id);
+    expect(existsSync(path!)).toBe(false);
+
+    expect(await ensureTriggerDataDir(id)).toBeNull();
+    expect(existsSync(path!)).toBe(false);
+  });
+
+  it('returns null for a trigger that never existed', async () => {
+    expect(await ensureTriggerDataDir('trg-20260817-1206-nosuch')).toBeNull();
+    expect(existsSync(getTriggerDataPath('trg-20260817-1206-nosuch'))).toBe(false);
   });
 });
 
 describe('removeTriggerDataDir', () => {
   it('removes a populated directory, nested subdirectories included', async () => {
     const id = 'trg-20260817-1202-rmtree';
-    const path = await ensureTriggerDataDir(id);
+    await saveTrigger(sampleTrigger(id));
+    const path = (await ensureTriggerDataDir(id))!;
     await writeFile(join(path, 'state.json'), '{"seen":1}');
     await mkdir(join(path, 'nested', 'deeper'), { recursive: true });
     await writeFile(join(path, 'nested', 'deeper', 'log.txt'), 'entry');
@@ -125,13 +151,37 @@ describe('removeTriggerDataDir', () => {
     // never fired, so it never got a directory.
     await expect(removeTriggerDataDir('trg-20260817-1203-neverwas')).resolves.toBeUndefined();
   });
+
+  it('logs and resolves rather than throwing when the filesystem refuses', async () => {
+    // `force: true` only swallows a missing directory; a real refusal still
+    // rejects. This runs inside deleteTrigger, which the scheduler's boot scan
+    // awaits in the loop that indexes every enabled trigger, so a throw here
+    // would leave every trigger after the failing entry unindexed and silently
+    // not firing. Root ignores directory permissions, so there is nothing to
+    // assert when the suite runs as root.
+    if (process.getuid?.() === 0) return;
+
+    const id = 'trg-20260817-1207-eacces';
+    await saveTrigger(sampleTrigger(id));
+    const path = (await ensureTriggerDataDir(id))!;
+    await writeFile(join(path, 'state.json'), '{"seen":1}');
+
+    // Strip write permission from the PARENT, so unlinking inside `path` fails.
+    chmodSync(TRIGGERS_DATA_DIR, 0o500);
+    try {
+      await expect(removeTriggerDataDir(id)).resolves.toBeUndefined();
+      expect(existsSync(path)).toBe(true); // it really did fail, so the resolve is meaningful
+    } finally {
+      chmodSync(TRIGGERS_DATA_DIR, 0o700);
+    }
+  });
 });
 
 describe('deleteTrigger', () => {
   it('removes both the record file and the data directory', async () => {
     const id = 'trg-20260817-1204-both01';
     await saveTrigger(sampleTrigger(id));
-    const dataPath = await ensureTriggerDataDir(id);
+    const dataPath = (await ensureTriggerDataDir(id))!;
     await writeFile(join(dataPath, 'notes.md'), 'carry-over');
 
     await deleteTrigger(id);

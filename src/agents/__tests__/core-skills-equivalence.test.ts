@@ -87,6 +87,8 @@ describe('mounted skill sets match the pre-refactor baseline', () => {
       const track = def.repo != null ? 'repo' : 'plain';
       const fromCore = (def.skillPaths ?? []).filter((p) => isUnder(p, REPO_SKILLS_DIR));
       // Derived from the manifest rather than written out, the same way the pm assertion above derives its count, so mounting another core skill on a non-PM track updates this expectation automatically instead of failing here.
+      //
+      // Be clear about what that costs, because this assertion replaced a flat `toEqual([])` and reads stronger than it is: deriving the expectation from the value under test means editing CORE_SKILL_MOUNTS can never fail THIS line. It pins the wiring — that every def ends up with exactly its own track's manifest entry, in manifest order, and that registry.ts hands each construction site the right track literal — and a track-dispatch bug (a repo def resolved as 'pm') does fail here. What it does not and cannot pin is the manifest's CONTENT, so the guard against a PM-voiced skill reaching a non-PM track is the literal expectation in core-skills.test.ts, not this.
       expect(fromCore.map((p) => basename(p)), `${def.id} does not mount its ${track} track core skills`).toEqual(CORE_SKILL_MOUNTS[track]);
     }
   });

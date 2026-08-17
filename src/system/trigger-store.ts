@@ -104,6 +104,7 @@ export function getTriggerDataPath(id: string): string {
 
 /**
  * Ensure a trigger's persistent data directory exists, and return its path.
+ * Returns null when the trigger no longer exists, having created nothing.
  *
  * The directory is deliberately left empty — no seed file, no subdirectories.
  * Conventions for what belongs in there are taught to the agent by the
@@ -114,8 +115,19 @@ export function getTriggerDataPath(id: string): string {
  * rather than merely nice: agent spawn re-runs this per agent, on every wake of
  * a task, and again after a process restart, so it must be safe to call on a
  * directory that already exists and already holds an earlier fire's notes.
+ *
+ * That same re-entrancy is why the record has to be checked first. A task
+ * outlives the fire that created it — a user can keep replying in its thread,
+ * the PM can delegate to a specialist, and a restart re-spawns it — while
+ * `metadata.triggered_by` keeps naming a trigger the user may have deleted in
+ * the meantime. Without this check the next spawn would `mkdir` the directory
+ * straight back after {@link deleteTrigger} removed it, so deleted content
+ * reappears on disk and the directory is orphaned for good: nothing scans
+ * TRIGGERS_DATA_DIR for entries whose record is gone, so nothing would ever
+ * remove it again.
  */
-export async function ensureTriggerDataDir(id: string): Promise<string> {
+export async function ensureTriggerDataDir(id: string): Promise<string | null> {
+  if ((await loadTrigger(id)) === null) return null;
   const path = getTriggerDataPath(id);
   await mkdir(path, { recursive: true });
   return path;
@@ -128,10 +140,23 @@ export async function ensureTriggerDataDir(id: string): Promise<string> {
  * the common case rather than the exception — a pending trigger that was denied,
  * refused by a cap, or garbage-collected never fired, so it never got a
  * directory in the first place.
+ *
+ * Best-effort by design: a failure is logged, never thrown. `force: true` covers
+ * only a missing directory, so a real filesystem refusal (EACCES, EPERM, a
+ * busy mount) still rejects — and this runs inside `deleteTrigger`, which the
+ * scheduler's boot scan awaits in the loop that indexes every enabled trigger.
+ * A throw there would abort that loop, leaving every trigger after the failing
+ * entry unindexed and silently not firing until the next restart. Leaking one
+ * directory is the far cheaper failure, and an unpruned directory is already an
+ * accepted limitation of this feature.
  */
 export async function removeTriggerDataDir(id: string): Promise<void> {
   if (!isValidTriggerId(id)) return; // malformed id → nothing to delete
-  await rm(getTriggerDataPath(id), { recursive: true, force: true });
+  try {
+    await rm(getTriggerDataPath(id), { recursive: true, force: true });
+  } catch (err) {
+    logger.warn('trigger-store', `Failed to remove data directory for trigger ${id}: ${err}`);
+  }
 }
 
 /** Ensure the triggers directory exists. */

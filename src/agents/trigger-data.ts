@@ -46,9 +46,15 @@ export function grantTriggerDataWrite(opts: SandboxOptions, triggerDataPath: str
  * is already in the directory as data rather than instructions — it was written
  * by an earlier agent run, so it is exactly the kind of content that must not be
  * able to redirect this one.
+ *
+ * The opening deliberately does not claim the trigger has fired before or will
+ * fire again, because neither is reliably true: on a first fire there is no
+ * earlier run, and a one-off schedule condition is flipped to `paused` right
+ * after its single fire (src/system/trigger-scheduler.ts:320-325), so promising
+ * a next fire would have the agent spend a turn on notes nothing will ever read.
  */
 export function buildTriggerDataPromptSection(triggerDataPath: string): string {
-  return `This task was started by a trigger that has fired before and will fire again. Unlike your working directory, which is discarded when this task ends, you have one directory that outlives a single fire:
+  return `This task was started by a trigger, and a trigger can fire more than once. Unlike your working directory, which is discarded when this task ends, you have one directory that outlives a single fire:
 
 <trigger_directory>
 Path: ${triggerDataPath} [READ-WRITE]
