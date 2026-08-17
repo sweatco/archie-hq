@@ -29,7 +29,7 @@ import type { SandboxOptions } from './sandbox.js';
  *
  * That makes the trigger directory the first path in this repository granted
  * through `allowWritePaths` alone — every other path appears in both lists (the
- * agent workspace at src/agents/spawn.ts:312-313, claudeTmpDir at :271-272). The
+ * agent workspace at src/agents/spawn.ts:314-315, claudeTmpDir at :273-274). The
  * asymmetry is correct, not an oversight.
  *
  * Returns a new options object; the input is not mutated.

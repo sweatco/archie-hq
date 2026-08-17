@@ -33,8 +33,8 @@ import { getArtifactsPath } from '../tasks/persistence.js';
  *
  * It is a behavioural no-op for every path that exists today, because
  * `allowWritePaths` is a subset of `allowReadPaths` on the base track
- * (src/agents/spawn.ts:312-313, :271-272) and on both repo-track branches
- * (:541-544). Only a path granted write-only changes behaviour — the persistent
+ * (src/agents/spawn.ts:314-315, :273-274) and on both repo-track branches
+ * (:543-546). Only a path granted write-only changes behaviour — the persistent
  * per-trigger directory is the first of those.
  *
  * Companion to a future `assertWritable` (sandbox.allowWritePaths), still
