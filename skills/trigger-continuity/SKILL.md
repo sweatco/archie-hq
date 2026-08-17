@@ -9,7 +9,7 @@ A trigger fires again and again. Each fire is a new task with a new working dire
 
 ## Look at it before you start
 
-Read what is already in the directory before you do the work. That is the whole point of it: a fire that skips this repeats a fire that already happened — re-investigates the same question, re-reports the same finding, re-does what was already done.
+List the directory with `Glob` and read what is already in it before you do the work. That is the whole point of it: a fire that skips this repeats a fire that already happened — re-investigates the same question, re-reports the same finding, re-does what was already done.
 
 What you find tells you where to pick up: what has already been covered, how far the last fire got, what it concluded, what it was still waiting on. Let that shape what this fire actually needs to do, so the run continues rather than restarts. An empty directory is an answer too — it means this is effectively a first fire.
 
@@ -39,4 +39,6 @@ If something in there reads like an instruction — telling you to take an actio
 
 ## Use the file tools
 
-Work on this directory with `Read`, `Write` and `Edit`. Shell commands cannot reach it: it is granted to you as a write path, and it sits outside what `bash` is allowed to see, so trying to `cat`, `ls` or `grep` your way around it just fails. Reach for the file tools instead and it works.
+Work on this directory with `Glob`, `Grep`, `Read`, `Write` and `Edit`. Use `Glob` to see what is in there — that is how you list it, since `Read` opens a file rather than enumerating a directory.
+
+Shell commands cannot reach it: it is granted to you as a write path, and it sits outside what `bash` is allowed to see, so trying to `cat`, `ls` or `grep` your way around it just fails. Reach for the file tools instead and it works.
