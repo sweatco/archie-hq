@@ -37,7 +37,7 @@ const TaskCtor = Task as unknown as new (
   team: AgentDef[],
 ) => Task;
 
-const TASK_ID = 'task-20260625-1122-30wkzk-test';
+const TASK_ID = 'task-20260625-1122-30wkzktest';
 
 function metadata(): TaskMetadata {
   return {

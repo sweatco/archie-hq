@@ -240,7 +240,7 @@ describe('renderMessageForContext', () => {
 
 describe('writeTaskMetadata', () => {
   it('prevents a concurrent stale public writer from restoring persisted public visibility', async () => {
-    const taskId = 'task-visibility-race';
+    const taskId = 'task-20260817-1200-visrace';
     const path = getMetadataPath(taskId);
     await mkdir(dirname(path), { recursive: true });
     const base: TaskMetadata = {
@@ -268,6 +268,12 @@ describe('writeTaskMetadata', () => {
     const persisted = JSON.parse(await readFile(path, 'utf-8')) as TaskMetadata;
     expect(persisted.visibility).toBe('private');
     expect(stalePublic.visibility).toBe('private');
+  });
+
+  it('rejects malformed task IDs before constructing metadata paths', async () => {
+    await expect(
+      writeTaskMetadata('../escape', { task_id: '../escape', visibility: 'public' } as TaskMetadata),
+    ).rejects.toThrow('Invalid task ID');
   });
 });
 

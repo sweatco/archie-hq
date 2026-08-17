@@ -239,10 +239,19 @@ export async function writeTaskMetadata(
   taskId: string,
   metadata: TaskMetadata,
 ): Promise<TaskMetadata> {
+  // Keep the literal allowlist beside the filesystem sinks for path analysis.
+  if (!/^task-\d{8}-\d{4}-[a-z0-9]+$/.test(taskId)) {
+    throw new Error('Invalid task ID');
+  }
   const candidate = JSON.parse(JSON.stringify(metadata)) as TaskMetadata;
 
   return metadataWriteLock(taskId, async () => {
-    const path = getMetadataPath(taskId);
+    const root = resolve(SESSIONS_DIR);
+    const path = resolve(getMetadataPath(taskId));
+    const rel = relative(root, path);
+    if (rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)) {
+      throw new Error('Task metadata path escapes sessions directory');
+    }
     const persistedExists = existsSync(path);
     const persisted = persistedExists ? await loadMetadata(taskId) : null;
     const effectiveVisibility: TaskMetadata['visibility'] = persistedExists

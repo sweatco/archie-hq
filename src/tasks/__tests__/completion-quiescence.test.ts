@@ -30,7 +30,7 @@ const TaskCtor = Task as unknown as new (
 ) => Task;
 
 beforeAll(async () => {
-  await mkdir(join(SESSIONS_ROOT, 'task-enqueue', 'shared'), { recursive: true });
+  await mkdir(join(SESSIONS_ROOT, 'task-20260817-1201-enqueue', 'shared'), { recursive: true });
 });
 
 afterAll(async () => {
@@ -137,8 +137,8 @@ describe('completion quiescence wiring', () => {
     const durableIntent = new Promise<void>((resolve) => { release = resolve; });
     const listener = vi.fn(() => durableIntent);
     onTaskCompleted(listener);
-    const task = new TaskCtor('task-enqueue', {
-      task_id: 'task-enqueue',
+    const task = new TaskCtor('task-20260817-1201-enqueue', {
+      task_id: 'task-20260817-1201-enqueue',
       visibility: 'public',
       task_owner: null,
       participants: [],
@@ -171,8 +171,8 @@ describe('completion quiescence wiring', () => {
   it('keeps a task active and in progress when durable completion setup fails', async () => {
     const listener = vi.fn(async () => { throw new Error('pending queue unavailable'); });
     onTaskCompleted(listener);
-    const task = new TaskCtor('task-enqueue', {
-      task_id: 'task-enqueue',
+    const task = new TaskCtor('task-20260817-1201-enqueue', {
+      task_id: 'task-20260817-1201-enqueue',
       visibility: 'public',
       task_owner: null,
       participants: [],
@@ -198,7 +198,7 @@ describe('completion quiescence wiring', () => {
   });
 
   it('runs durable preparation, persistence, and completion publication once for concurrent callers', async () => {
-    const taskId = 'task-concurrent-complete';
+    const taskId = 'task-20260817-1202-concurrent';
     await mkdir(join(SESSIONS_ROOT, taskId, 'shared'), { recursive: true });
     const listener = vi.fn().mockResolvedValue(undefined);
     const events = vi.fn();
@@ -314,7 +314,7 @@ describe('completion quiescence wiring', () => {
     const addMessage = vi.fn();
     const updateAgentState = vi.fn();
     const task = Object.assign(Object.create(Task.prototype), {
-      taskId: 'task-enqueue',
+      taskId: 'task-20260817-1201-enqueue',
       isActive: true,
       team: [],
       budgets: { interAgentMessageCount: 0, interAgentMessageLimit: 100 },
