@@ -51,6 +51,8 @@ Runner deployments require outbound HTTPS and WebSocket access from Archie to th
 
 Start with one digest-pinned iOS profile, one allowed mobile agent, and `maxConcurrent: 1`. Verify provisioning, repository sync, `xcodebuild`, Simulator boot/install/launch, artifact collection, reconnectable long-running exec, VNC, task completion, and VM deletion before increasing capacity.
 
+Run only one runner-enabled Archie replica for an `instanceId` and workdir. Capacity accounting and locks are process-local, and duplicate replicas can delete each other's VMs during orphan reconciliation. Keep the runner controller single-replica until distributed leases and leader election exist.
+
 ### Repository Access
 
 GitHub access is via a GitHub App installation token (auto-rotating, through Octokit), scoped to the repositories the App is installed on. Archie's read-only-by-default posture is enforced by its own edit-mode gate, not by changing GitHub permissions at runtime. For the complete App setup — the exact repository permissions, webhook events, and env vars — see the [GitHub App Setup guide](github-setup.md).
@@ -69,6 +71,8 @@ Continuous integration runs via GitHub Actions: on every push and pull request i
 Building and publishing the production container image also runs via GitHub Actions. `.github/workflows/docker-publish.yml` runs on pushes to `main` and via manual `workflow_dispatch`, builds `Dockerfile.prod` with Docker Buildx, and publishes to GitHub Container Registry as `ghcr.io/<owner>/<repo>:main-<commit-sha>`.
 
 Deployment to the VM remains operator-driven: the operator pulls the published image tag on the host, restarts the service, and verifies health via `GET /health`.
+
+Before disabling runners or rolling back to a build without runner support, stop new runner-using work, inventory every `archie-<instanceId>-*` VM in Orchard, release active leases, and confirm the inventory is empty. Removing `ARCHIE_RUNNERS_CONFIG` disables reconciliation, so it must be the final rollback step rather than the first.
 
 ## Docker Configuration
 
@@ -92,6 +96,7 @@ ExecStart=/usr/bin/docker run --name archie-app \
   --security-opt systempaths=unconfined \
   -v /workdir:/workdir \
   -v /app/secrets:/app/secrets \
+  --mount type=bind,src=/etc/archie/runners.json,dst=/app/config/runners.json,readonly \
   -v /data/claude:/home/archie/.claude \
   -v /data/claude/.claude.json:/home/archie/.claude.json \
   <registry>/archie-hq:latest
@@ -130,6 +135,7 @@ echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/9
 | `/data/claude` | `/home/archie/.claude` | Claude CLI config and session logs |
 | `/data/claude/.claude.json` | `/home/archie/.claude.json` | Claude CLI feature flags |
 | `/app/secrets` | `/app/secrets` | GitHub App private key + encrypted OAuth vault (read-write — daemon persists refreshed tokens) |
+| `/etc/archie/runners.json` | `/app/config/runners.json` | Optional runner profiles (read-only; set `ARCHIE_RUNNERS_CONFIG=/app/config/runners.json`) |
 
 ### Non-Root User
 
@@ -144,10 +150,10 @@ On restart, the application automatically recovers in-progress tasks via `recove
 ```
 GET /health → 200 { status: "ok", activeTasks: N, runners: { enabled, degraded, activeLeases } }
 GET /health → 503 { status: "shutting_down", activeTasks: N, runners: { enabled, degraded, activeLeases } }
+GET /health/runners → 200 when disabled or healthy; 503 when enabled and degraded
 ```
 
-The handler is mounted directly in `src/index.ts`. External uptime monitoring should poll
-every minute and alert on sustained failure.
+The handlers are mounted directly in `src/index.ts`. External uptime monitoring should poll `/health` every minute. Runner-enabled deployments should also poll `/health/runners` and alert on sustained failure.
 
 ### Logging
 

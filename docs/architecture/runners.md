@@ -21,6 +21,8 @@ Repository agent -> runner-tools -> RunnerManager -> Orchard -> Tart VM
 - `runner_collect` validates requested paths and downloaded tar entries before extracting them under task artifacts.
 - Mobile-specific build and debugging logic belongs in repository skills. Archie exposes only generic runner operations.
 
+Runner ownership, capacity reservations, and operation locks are process-local. Run exactly one runner-enabled Archie process for each `instanceId` and workdir. Two processes sharing an `instanceId` can classify each other's VMs as orphans, while two processes sharing a workdir cannot coordinate in-memory locks. Horizontal runner scaling requires distinct instance IDs and stable task routing, or a future distributed lease and leader-election layer.
+
 ## Configuration
 
 Set `ARCHIE_RUNNERS_CONFIG` to an operator-owned JSON file. The service account and guest passwords remain in environment variables.
@@ -34,7 +36,8 @@ Set `ARCHIE_RUNNERS_CONFIG` to an operator-owned JSON file. The service account 
   "reaperIntervalSeconds": 60,
   "orchard": {
     "baseUrl": "https://orchard.example.internal/v1",
-    "context": "production"
+    "context": "production",
+    "allowInsecureHttp": false
   },
   "profiles": {
     "ios-xcode-26": {
@@ -54,6 +57,8 @@ Set `ARCHIE_RUNNERS_CONFIG` to an operator-owned JSON file. The service account 
       "debugTtlMinutes": 30,
       "maxDebugTtlMinutes": 120,
       "execTimeoutSeconds": 3600,
+      "maxActiveExecSessions": 4,
+      "maxExecSessionHistory": 50,
       "maxUploadBytes": 2147483648,
       "maxDownloadBytes": 1073741824
     }
@@ -61,7 +66,7 @@ Set `ARCHIE_RUNNERS_CONFIG` to an operator-owned JSON file. The service account 
 }
 ```
 
-`baseUrl` must include the Orchard API prefix (`/v1`) — the provider appends bare resource paths like `/vms` to it. Images must use a `sha256` digest. Profile names and agent allowlists are fixed at startup. Orchard host directories, bridged networking, startup scripts, raw VM specifications, images, and credentials are never accepted from agents. Softnet uses a default-deny IPv4 block; an empty `softnetAllow` denies guest outbound traffic, while more-specific IPv4 CIDRs explicitly reopen required destinations. `softnetAllow` MUST include the worker host's Softnet subnet (`192.168.2.0/24` by default) — the block-all rule also drops guest replies to the Softnet gateway, which the Orchard worker's SSH-based exec channel depends on; without this entry the worker's dial to guest port 22 times out and every exec, including the readiness probe, fails with a 503 (verified against Orchard 0.55 / Softnet on macOS).
+`baseUrl` must include the Orchard API prefix (`/v1`) — the provider appends bare resource paths like `/vms` to it. HTTPS/WSS is required unless an isolated development config explicitly sets `allowInsecureHttp: true`; Basic credentials must not cross an unencrypted network. Images must use a `sha256` digest. Profile names and agent allowlists are fixed at startup. Orchard host directories, bridged networking, startup scripts, raw VM specifications, images, and credentials are never accepted from agents. Softnet uses a default-deny IPv4 block; an empty `softnetAllow` denies guest outbound traffic, while more-specific IPv4 CIDRs explicitly reopen required destinations. `softnetAllow` MUST include the worker host's Softnet subnet (`192.168.2.0/24` by default) — the block-all rule also drops guest replies to the Softnet gateway, which the Orchard worker's SSH-based exec channel depends on; without this entry the worker's dial to guest port 22 times out and every exec, including the readiness probe, fails with a 503 (verified against Orchard 0.55 / Softnet on macOS).
 
 Required environment variables when enabled:
 
@@ -86,13 +91,15 @@ Only repository agents named in a profile’s `allowedAgents` receive `runner-to
 - `runner_open_debug`: extend the lease within the configured cap and return credential-free Orchard context/VNC commands.
 - `runner_release`: delete the lease immediately.
 
-Command environment values are sent to Orchard for that exec only. They are not included in lease state, output logs, audit events, or tool responses.
+Command environment values are sent through the exec WebSocket stdin bootstrap rather than URL query parameters. They are not included in lease state, output logs, audit events, proxy URLs, or tool responses; command output itself is persisted verbatim and must not print secrets.
 
 ## Persistence and Lifecycle
 
 Runner state is stored atomically in `sessions/<task>/shared/runners.json`. Output is appended to `shared/runners/<lease>/exec/<exec>.jsonl`; collected artifacts go to `shared/artifacts/runners/<lease>/<collection>/`.
 
 Startup reconciliation inspects persisted VMs, preserves reconnectable session watermarks, closes expired commands, retries releases, and deletes old instance-prefixed Orchard orphans. The minute reaper applies lease, command, and debug deadlines.
+
+Exec history retains a bounded number of terminal sessions and removes their JSONL logs. Active commands are also bounded per lease. Orchard WebSocket handshakes, buffered frames, command output, repository uploads, and artifact downloads all have explicit limits. Persisted task, lease, exec, session, and backend ownership identifiers are validated before local log access or remote VM operations; one corrupt task state is isolated and reported as degraded without blocking recovery of other tasks.
 
 Task pauses and recovery stops preserve VMs. Terminal task completion deletes all leases except a still-valid debug lease. Graceful Archie shutdown leaves VMs intact for restart recovery. Release failures remain persisted as `releasing` and are retried by the reaper or next startup.
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { loadRunnerConfig } from '../config.js';
 import { RunnerManager } from '../manager.js';
 import { OrchardRunnerProvider } from '../orchard-provider.js';
+import { generateTaskId } from '../../tasks/persistence.js';
 
 const e2e = process.env.ARCHIE_ORCHARD_E2E === 'true' ? it : it.skip;
 
@@ -24,7 +25,7 @@ describe('real Orchard runner', () => {
         ];
     const provider = new OrchardRunnerProvider(loaded.config.orchard.baseUrl, loaded.serviceAccountName, loaded.serviceAccountToken);
     const manager = new RunnerManager(loaded, provider);
-    const taskId = `task-e2e-${Date.now()}`;
+    const taskId = generateTaskId();
     let backendId: string | undefined;
     try {
       const lease = await manager.ensure(taskId, agentId, profile);

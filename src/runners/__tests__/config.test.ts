@@ -30,7 +30,10 @@ describe('runner configuration', () => {
   it('applies bounded defaults and requires digest-pinned images', () => {
     const parsed = runnerConfigSchema.parse(baseConfig());
     expect(parsed.maxConcurrent).toBe(1);
+    expect(parsed.orchard.allowInsecureHttp).toBe(false);
     expect(parsed.profiles.ios.memoryMiB).toBe(8192);
+    expect(parsed.profiles.ios.maxExecSessionHistory).toBe(50);
+    expect(parsed.profiles.ios.maxActiveExecSessions).toBe(4);
     expect(() => runnerConfigSchema.parse({
       ...baseConfig(),
       profiles: { ios: { ...baseConfig().profiles.ios, image: 'ghcr.io/example/xcode:latest' } },
@@ -39,6 +42,18 @@ describe('runner configuration', () => {
       ...baseConfig(),
       profiles: { ios: { ...baseConfig().profiles.ios, softnetAllow: ['::/0'] } },
     })).toThrow(/IPv4 CIDR/);
+    expect(() => runnerConfigSchema.parse({
+      ...baseConfig(),
+      profiles: { ios: { ...baseConfig().profiles.ios, remoteWorkspaceRoot: '/' } },
+    })).toThrow(/non-root absolute guest path/);
+    expect(() => runnerConfigSchema.parse({
+      ...baseConfig(),
+      orchard: { baseUrl: 'http://orchard.example.test/v1', context: 'development' },
+    })).toThrow(/allowInsecureHttp/);
+    expect(runnerConfigSchema.parse({
+      ...baseConfig(),
+      orchard: { baseUrl: 'http://127.0.0.1:6120/v1', context: 'development', allowInsecureHttp: true },
+    }).orchard.allowInsecureHttp).toBe(true);
   });
 
   it('loads secrets from environment without adding them to parsed config', async () => {

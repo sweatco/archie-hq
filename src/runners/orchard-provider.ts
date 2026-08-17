@@ -13,11 +13,27 @@ class AsyncEventQueue<T> {
   private waiters: Array<{ resolve: (result: IteratorResult<T>) => void; reject: (error: unknown) => void }> = [];
   private ended = false;
   private failure?: unknown;
+  private bufferedBytes = 0;
 
-  push(value: T): void {
+  constructor(
+    private readonly maxBufferedBytes: number,
+    private readonly measure: (value: T) => number,
+  ) {}
+
+  push(value: T): boolean {
+    if (this.ended || this.failure) return false;
     const waiter = this.waiters.shift();
     if (waiter) waiter.resolve({ value, done: false });
-    else this.values.push(value);
+    else {
+      const bytes = this.measure(value);
+      if (this.bufferedBytes + bytes > this.maxBufferedBytes) {
+        this.fail(new Error(`Orchard exec buffered more than ${this.maxBufferedBytes} bytes`));
+        return false;
+      }
+      this.values.push(value);
+      this.bufferedBytes += bytes;
+    }
+    return true;
   }
 
   end(): void {
@@ -26,17 +42,31 @@ class AsyncEventQueue<T> {
   }
 
   fail(error: unknown): void {
+    if (this.failure) return;
     this.failure = error;
+    this.values = [];
+    this.bufferedBytes = 0;
     for (const waiter of this.waiters.splice(0)) waiter.reject(error);
   }
 
   next(): Promise<IteratorResult<T>> {
     const value = this.values.shift();
-    if (value !== undefined) return Promise.resolve({ value, done: false });
+    if (value !== undefined) {
+      this.bufferedBytes -= this.measure(value);
+      return Promise.resolve({ value, done: false });
+    }
     if (this.failure) return Promise.reject(this.failure);
     if (this.ended) return Promise.resolve({ value: undefined, done: true });
     return new Promise((resolve, reject) => this.waiters.push({ resolve, reject }));
   }
+}
+
+const MAX_EXEC_QUEUE_BYTES = 8 * 1024 * 1024;
+
+function eventBytes(event: ExecEvent): number {
+  if (event.type === 'stdout' || event.type === 'stderr') return event.data.byteLength;
+  if (event.type === 'error') return Buffer.byteLength(event.error);
+  return 64;
 }
 
 export class OrchardRequestError extends Error {
@@ -53,6 +83,20 @@ function toInstance(vm: OrchardVM): RunnerInstance {
 export function serializeArgv(argv: readonly string[]): string {
   if (argv.length === 0) throw new Error('argv must not be empty');
   return argv.map((part) => `'${part.replaceAll("'", "'\\''")}'`).join(' ');
+}
+
+function withPrivateEnvironment(request: ExecRequest): ExecRequest {
+  const entries = Object.entries(request.env ?? {});
+  if (entries.length === 0) return request;
+  if (!request.argv) throw new Error('Environment variables require a command');
+  if (request.stdin) throw new Error('Environment variables and streaming stdin cannot be combined');
+  const script = `${entries.map(([key, value]) => `export ${key}=${serializeArgv([value])}`).join('\n')}\nexec ${serializeArgv(request.argv)}\n`;
+  return {
+    ...request,
+    argv: ['/bin/sh', '-s'],
+    env: undefined,
+    stdin: (async function* () { yield Buffer.from(script); })(),
+  };
 }
 
 export class OrchardRunnerProvider implements RunnerProvider {
@@ -141,33 +185,32 @@ export class OrchardRunnerProvider implements RunnerProvider {
     if (request.argv) url.searchParams.set('command', serializeArgv(request.argv));
     if (request.stdin) url.searchParams.set('interactive', 'true');
     if (request.cwd) url.searchParams.set('workdir', request.cwd);
-    for (const [key, value] of Object.entries(request.env ?? {})) {
-      url.searchParams.set(`env[${key}]`, value);
-    }
     return url;
   }
 
   async *exec(id: string, request: ExecRequest): AsyncIterable<ExecEvent> {
     if (!request.argv && request.reconnectFrom === undefined) throw new Error('A command or reconnect watermark is required');
-    const queue = new AsyncEventQueue<ExecEvent>();
-    const ws = new WebSocket(this.execUrl(id, request), { headers: { authorization: this.authorization }, maxPayload: 4 * 1024 * 1024 });
+    const hasPrivateEnvironment = Object.keys(request.env ?? {}).length > 0;
+    const wireRequest = withPrivateEnvironment(request);
+    const queue = new AsyncEventQueue<ExecEvent>(MAX_EXEC_QUEUE_BYTES, eventBytes);
+    const ws = new WebSocket(this.execUrl(id, wireRequest), { headers: { authorization: this.authorization }, maxPayload: 4 * 1024 * 1024 });
     let terminal = false;
     let opened = false;
+    let bootstrapComplete = false;
+    let detachRequested = false;
+    const handshakeTimer = setTimeout(() => {
+      queue.fail(new Error(`Timed out opening Orchard exec session ${request.sessionId}`));
+      ws.terminate();
+    }, this.requestTimeoutMs);
 
     const send = (frame: object) => new Promise<void>((resolve, reject) => {
       ws.send(JSON.stringify(frame), (error) => error ? reject(error) : resolve());
     });
     const detach = () => {
-      if (opened && ws.readyState === WebSocket.OPEN && !terminal) {
+      detachRequested = true;
+      if (ws.readyState === WebSocket.CONNECTING || (opened && !bootstrapComplete)) return;
+      if (ws.readyState === WebSocket.OPEN && !terminal) {
         ws.send(JSON.stringify({ type: 'detach' }), () => ws.close());
-      } else if (ws.readyState === WebSocket.CONNECTING) {
-        // Closing mid-handshake makes the controller drop the just-created
-        // session (closeIfUnused), so a later reconnect would 404. Wait for
-        // the open, then detach cleanly to keep the session reconnectable.
-        ws.once('open', () => {
-          if (!terminal) ws.send(JSON.stringify({ type: 'detach' }), () => ws.close());
-          else ws.close();
-        });
       } else if (ws.readyState === WebSocket.OPEN) {
         ws.close();
       }
@@ -176,47 +219,64 @@ export class OrchardRunnerProvider implements RunnerProvider {
     request.signal?.addEventListener('abort', onAbort, { once: true });
 
     ws.once('open', () => {
+      clearTimeout(handshakeTimer);
       opened = true;
       void (async () => {
-        if (request.reconnectFrom !== undefined) {
-          await send({ type: 'history', watermark: request.reconnectFrom });
+        if (wireRequest.reconnectFrom !== undefined) {
+          await send({ type: 'history', watermark: wireRequest.reconnectFrom });
         }
-        if (request.stdin) {
-          for await (const chunk of request.stdin) {
-            if (request.signal?.aborted || ws.readyState !== WebSocket.OPEN) return;
+        if (wireRequest.stdin) {
+          for await (const chunk of wireRequest.stdin) {
+            if (ws.readyState !== WebSocket.OPEN || (request.signal?.aborted && !hasPrivateEnvironment)) return;
             await send({ type: 'stdin', data: Buffer.from(chunk).toString('base64') });
           }
           if (ws.readyState === WebSocket.OPEN) await send({ type: 'stdin', data: '' });
         }
-      })().catch((error) => queue.fail(error));
+      })().catch((error) => queue.fail(error)).finally(() => {
+        bootstrapComplete = true;
+        if (detachRequested) detach();
+      });
     });
+    if (request.signal?.aborted) detach();
 
     ws.on('message', (raw: RawData) => {
       try {
         const frame = JSON.parse(raw.toString()) as Record<string, unknown>;
-        const watermark = typeof frame.watermark === 'number' ? frame.watermark : undefined;
+        const watermark = frame.watermark === undefined
+          ? undefined
+          : typeof frame.watermark === 'number' && Number.isSafeInteger(frame.watermark) && frame.watermark >= 0
+            ? frame.watermark
+            : (() => { throw new Error('Invalid Orchard exec watermark'); })();
         if (frame.type === 'stdout' || frame.type === 'stderr') {
-          queue.push({ type: frame.type, data: Buffer.from(String(frame.data ?? ''), 'base64'), watermark });
+          if (!queue.push({ type: frame.type, data: Buffer.from(String(frame.data ?? ''), 'base64'), watermark })) ws.terminate();
         } else if (frame.type === 'exit') {
           terminal = true;
           const exit = frame.exit as { code?: unknown } | undefined;
-          queue.push({ type: 'exit', code: Number(exit?.code ?? -1), watermark });
+          if (typeof exit?.code !== 'number' || !Number.isSafeInteger(exit.code)) throw new Error('Invalid Orchard exec exit code');
+          if (!queue.push({ type: 'exit', code: exit.code, watermark })) ws.terminate();
         } else if (frame.type === 'error') {
           terminal = true;
-          queue.push({ type: 'error', error: String(frame.error ?? 'Unknown Orchard exec error'), watermark });
+          if (!queue.push({ type: 'error', error: String(frame.error ?? 'Unknown Orchard exec error'), watermark })) ws.terminate();
         } else if (frame.type === 'no_more_history' && watermark !== undefined) {
-          queue.push({ type: 'history_end', watermark });
+          if (!queue.push({ type: 'history_end', watermark })) ws.terminate();
         }
       } catch (error) {
         queue.fail(error);
       }
     });
-    ws.once('error', (error) => queue.fail(error));
+    ws.once('error', (error) => {
+      clearTimeout(handshakeTimer);
+      queue.fail(error);
+    });
     ws.once('unexpected-response', (_request, response) => {
+      clearTimeout(handshakeTimer);
       response.resume();
       queue.fail(new OrchardRequestError(`Orchard WebSocket exec failed (${response.statusCode ?? 0})`, response.statusCode ?? 0));
     });
-    ws.once('close', () => queue.end());
+    ws.once('close', () => {
+      clearTimeout(handshakeTimer);
+      queue.end();
+    });
 
     try {
       while (true) {
@@ -233,6 +293,7 @@ export class OrchardRunnerProvider implements RunnerProvider {
         }
       }
     } finally {
+      clearTimeout(handshakeTimer);
       request.signal?.removeEventListener('abort', onAbort);
       detach();
     }
@@ -258,6 +319,11 @@ export class OrchardRunnerProvider implements RunnerProvider {
       ws.once('unexpected-response', (_request, response) => {
         clearTimeout(timer);
         response.resume();
+        if (response.statusCode === 404) {
+          ws.terminate();
+          resolve();
+          return;
+        }
         reject(new OrchardRequestError(`Orchard WebSocket close failed (${response.statusCode ?? 0})`, response.statusCode ?? 0));
       });
     });

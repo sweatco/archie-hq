@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { RunnerManager } from '../manager.js';
-import type { ExecRequest, LoadedRunnerConfig, RunnerInstance, RunnerLease, RunnerProvider, RunnerSpec } from '../types.js';
-import { listRunnerTaskIds, loadRunnerLeases, readRunnerExecWatermark } from '../store.js';
+import { RunnerManager, runnerRepositoryPath } from '../manager.js';
+import type { ExecEvent, ExecRequest, LoadedRunnerConfig, RunnerInstance, RunnerLease, RunnerProvider, RunnerSpec } from '../types.js';
+import { listRunnerTaskIds, loadRunnerLeases, readRunnerExecWatermark, removeRunnerExecLog } from '../store.js';
 
 const persisted = new Map<string, RunnerLease[]>();
 
@@ -11,6 +11,7 @@ vi.mock('../store.js', () => ({
   readRunnerExecWatermark: vi.fn().mockResolvedValue(0),
   saveRunnerLeases: vi.fn(async (taskId: string, leases: RunnerLease[]) => persisted.set(taskId, leases)),
   appendRunnerExecLog: vi.fn().mockResolvedValue(undefined),
+  removeRunnerExecLog: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../../system/logger.js', () => ({
@@ -32,9 +33,9 @@ class FakeProvider implements RunnerProvider {
   async inspect(id: string) { return this.instances.get(id) ?? null; }
   async list() { return [...this.instances.values()]; }
   async release(id: string) { this.released.push(id); this.instances.delete(id); }
-  async closeExec() {}
+  async closeExec(_id: string, _sessionId: string) {}
 
-  async *exec(_id: string, request: ExecRequest) {
+  async *exec(_id: string, request: ExecRequest): AsyncIterable<ExecEvent> {
     if (request.reconnectFrom !== undefined) yield { type: 'history_end' as const, watermark: request.reconnectFrom };
     else {
       yield { type: 'stdout' as const, data: Buffer.from('ok'), watermark: 1 };
@@ -54,7 +55,7 @@ function loadedConfig(maxConcurrent = 2): LoadedRunnerConfig {
       maxConcurrent,
       orphanGraceMinutes: 30,
       reaperIntervalSeconds: 3600,
-      orchard: { baseUrl: 'https://orchard.test', context: 'test' },
+      orchard: { baseUrl: 'https://orchard.test', context: 'test', allowInsecureHttp: false },
       profiles: {
         ios: {
           image: `ghcr.io/example/xcode@sha256:${'a'.repeat(64)}`,
@@ -63,7 +64,8 @@ function loadedConfig(maxConcurrent = 2): LoadedRunnerConfig {
           labels: {}, resources: {}, softnetAllow: [], leaseTtlMinutes: 120,
           debugTtlMinutes: 30, maxDebugTtlMinutes: 60, execTimeoutSeconds: 3600,
           provisionTimeoutSeconds: 30, readinessTimeoutSeconds: 30, maxExecWaitSeconds: 1,
-          maxExecOutputBytes: 1024, maxUploadBytes: 1024 * 1024, maxDownloadBytes: 1024 * 1024,
+          maxExecOutputBytes: 1024, maxActiveExecSessions: 4, maxExecSessionHistory: 50,
+          maxUploadBytes: 1024 * 1024, maxDownloadBytes: 1024 * 1024,
         },
       },
     },
@@ -76,6 +78,12 @@ describe('RunnerManager', () => {
     vi.mocked(listRunnerTaskIds).mockResolvedValue([]);
     vi.mocked(loadRunnerLeases).mockResolvedValue([]);
     vi.mocked(readRunnerExecWatermark).mockResolvedValue(0);
+    vi.mocked(removeRunnerExecLog).mockClear();
+  });
+
+  it('gives colliding sanitized repository names distinct guest paths', () => {
+    const profile = loadedConfig().config.profiles.ios;
+    expect(runnerRepositoryPath(profile, 'org/foo.bar')).not.toBe(runnerRepositoryPath(profile, 'org/foo-bar'));
   });
 
   it('reuses one lease per task-agent-profile without persisting secrets', async () => {
@@ -97,6 +105,30 @@ describe('RunnerManager', () => {
     await manager.ensure('task-1', 'mobile-agent', 'ios');
     await expect(manager.ensure('task-2', 'second-agent', 'ios')).rejects.toThrow(/capacity/);
     await expect(manager.ensure('task-2', 'backend-agent', 'ios')).rejects.toThrow(/not allowed/);
+    manager.shutdown();
+  });
+
+  it('reserves capacity atomically across concurrent tasks', async () => {
+    let unblock!: () => void;
+    const blocked = new Promise<void>((resolve) => { unblock = resolve; });
+    class SlowProvider extends FakeProvider {
+      override async provision(spec: RunnerSpec) {
+        this.provisioned.push(spec);
+        await blocked;
+        const instance: RunnerInstance = { id: spec.id, status: 'running' };
+        this.instances.set(spec.id, instance);
+        return instance;
+      }
+    }
+    const provider = new SlowProvider();
+    const manager = new RunnerManager(loadedConfig(1), provider);
+    await manager.initialize();
+    const first = manager.ensure('task-1', 'mobile-agent', 'ios');
+    await vi.waitFor(() => expect(provider.provisioned).toHaveLength(1));
+
+    await expect(manager.ensure('task-2', 'second-agent', 'ios')).rejects.toThrow(/capacity/);
+    unblock();
+    await first;
     manager.shutdown();
   });
 
@@ -132,12 +164,62 @@ describe('RunnerManager', () => {
     const provider = new FakeProvider();
     const manager = new RunnerManager(loadedConfig(), provider);
     await manager.initialize();
+    const lease = await manager.ensure('task-1', 'mobile-agent', 'ios');
     const debug = await manager.openDebug('task-1', 'mobile-agent', 'ios', 999);
     expect(Date.parse(debug.expiresAt) - Date.now()).toBeLessThanOrEqual(60 * 60_000);
     await manager.completeTask('task-1');
+    expect(lease.expiresAt).toBe(debug.expiresAt);
     expect(provider.released).toHaveLength(0);
     await manager.release('task-1', 'mobile-agent', 'ios');
     expect(provider.released).toEqual([debug.backendId]);
+    manager.shutdown();
+  });
+
+  it('deletes a backend when readiness fails', async () => {
+    class FailedReadinessProvider extends FakeProvider {
+      async *exec(_id: string, _request: ExecRequest): AsyncIterable<ExecEvent> {
+        throw new Error('guest agent unavailable');
+      }
+    }
+    const provider = new FailedReadinessProvider();
+    const loaded = loadedConfig();
+    loaded.config.profiles.ios.readinessCommand = ['/usr/bin/true'];
+    loaded.config.profiles.ios.readinessTimeoutSeconds = 1;
+    const manager = new RunnerManager(loaded, provider);
+    await manager.initialize();
+
+    await expect(manager.ensure('task-1', 'mobile-agent', 'ios')).rejects.toThrow(/guest agent unavailable/);
+    expect(provider.released).toHaveLength(1);
+    expect(persisted.get('task-1')).toEqual([]);
+    manager.shutdown();
+  });
+
+  it('reruns readiness before promoting a provisioning lease during recovery', async () => {
+    class RecoveryProvider extends FakeProvider {
+      readinessAttempts = 0;
+      async *exec(id: string, request: ExecRequest) {
+        if (request.sessionId.startsWith('readiness-')) this.readinessAttempts += 1;
+        yield* super.exec(id, request);
+      }
+    }
+    const provider = new RecoveryProvider();
+    const loaded = loadedConfig();
+    loaded.config.profiles.ios.readinessCommand = ['/usr/bin/true'];
+    const lease: RunnerLease = {
+      id: 'lease-1', taskId: 'task-1', agentId: 'mobile-agent', profile: 'ios',
+      backendId: 'archie-test-1-lease', state: 'provisioning',
+      createdAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(), syncedRepos: {}, execSessions: {},
+    };
+    provider.instances.set(lease.backendId, { id: lease.backendId, status: 'running' });
+    vi.mocked(listRunnerTaskIds).mockResolvedValue(['task-1']);
+    vi.mocked(loadRunnerLeases).mockResolvedValue([lease]);
+    const manager = new RunnerManager(loaded, provider);
+
+    await manager.initialize();
+
+    expect(provider.readinessAttempts).toBe(1);
+    expect(lease.state).toBe('ready');
     manager.shutdown();
   });
 
@@ -150,6 +232,93 @@ describe('RunnerManager', () => {
     const result = await manager.exec('task-1', 'mobile-agent', 'ios', 'org/app', ['xcodebuild', '-version']);
     expect(result).toMatchObject({ state: 'completed', exitCode: 0, stdout: 'ok' });
     expect(lease.execSessions[result.execId].watermark).toBe(2);
+    manager.shutdown();
+  });
+
+  it('bounds active detached commands', async () => {
+    class DetachedProvider extends FakeProvider {
+      override async *exec(_id: string, request: ExecRequest): AsyncIterable<ExecEvent> {
+        await new Promise<void>((resolve) => request.signal?.addEventListener('abort', () => resolve(), { once: true }));
+      }
+    }
+    const provider = new DetachedProvider();
+    const loaded = loadedConfig();
+    loaded.config.profiles.ios.maxActiveExecSessions = 2;
+    const manager = new RunnerManager(loaded, provider);
+    await manager.initialize();
+    const lease = await manager.ensure('task-1', 'mobile-agent', 'ios');
+    lease.syncedRepos['org/app'] = { github: 'org/app', remotePath: '/workspace/app', syncedAt: new Date().toISOString() };
+
+    await manager.exec('task-1', 'mobile-agent', 'ios', 'org/app', ['/usr/bin/sleep', '60'], '.', {}, 0);
+    await manager.exec('task-1', 'mobile-agent', 'ios', 'org/app', ['/usr/bin/sleep', '60'], '.', {}, 0);
+    await expect(manager.exec('task-1', 'mobile-agent', 'ios', 'org/app', ['/usr/bin/true'], '.', {}, 0)).rejects.toThrow(/active exec limit/);
+    manager.shutdown();
+  });
+
+  it('enforces the command deadline while an exec call is attached', async () => {
+    class DeadlineProvider extends FakeProvider {
+      closed: string[] = [];
+      override async closeExec(_id: string, sessionId: string) { this.closed.push(sessionId); }
+      override async *exec(_id: string, request: ExecRequest): AsyncIterable<ExecEvent> {
+        if (request.signal?.aborted) return;
+        await new Promise<void>((resolve) => request.signal?.addEventListener('abort', () => resolve(), { once: true }));
+      }
+    }
+    vi.useFakeTimers();
+    try {
+      const provider = new DeadlineProvider();
+      const loaded = loadedConfig();
+      loaded.config.profiles.ios.execTimeoutSeconds = 1;
+      loaded.config.profiles.ios.maxExecWaitSeconds = 5;
+      const manager = new RunnerManager(loaded, provider);
+      await manager.initialize();
+      const lease = await manager.ensure('task-1', 'mobile-agent', 'ios');
+      lease.syncedRepos['org/app'] = { github: 'org/app', remotePath: '/workspace/app', syncedAt: new Date().toISOString() };
+
+      const pending = manager.exec('task-1', 'mobile-agent', 'ios', 'org/app', ['/usr/bin/sleep', '60'], '.', {}, 5);
+      await vi.advanceTimersByTimeAsync(1100);
+      const result = await pending;
+
+      expect(result.state).toBe('timed_out');
+      expect(provider.closed).toHaveLength(1);
+      manager.shutdown();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('caps oversized provider error frames', async () => {
+    class ErrorProvider extends FakeProvider {
+      override async *exec(): AsyncIterable<ExecEvent> {
+        yield { type: 'error', error: 'x'.repeat(4096), watermark: 1 };
+      }
+    }
+    const provider = new ErrorProvider();
+    const manager = new RunnerManager(loadedConfig(), provider);
+    await manager.initialize();
+    const lease = await manager.ensure('task-1', 'mobile-agent', 'ios');
+    lease.syncedRepos['org/app'] = { github: 'org/app', remotePath: '/workspace/app', syncedAt: new Date().toISOString() };
+
+    const result = await manager.exec('task-1', 'mobile-agent', 'ios', 'org/app', ['/usr/bin/false']);
+    expect(result).toMatchObject({ state: 'failed', truncated: true });
+    expect(result.stderr).toMatch(/exceeded the 1024-byte output limit/);
+    expect(Buffer.byteLength(result.stderr)).toBeLessThanOrEqual(1024);
+    manager.shutdown();
+  });
+
+  it('prunes old terminal exec sessions and their logs', async () => {
+    const provider = new FakeProvider();
+    const loaded = loadedConfig();
+    loaded.config.profiles.ios.maxExecSessionHistory = 1;
+    const manager = new RunnerManager(loaded, provider);
+    await manager.initialize();
+    const lease = await manager.ensure('task-1', 'mobile-agent', 'ios');
+    lease.syncedRepos['org/app'] = { github: 'org/app', remotePath: '/workspace/app', syncedAt: new Date().toISOString() };
+
+    const first = await manager.exec('task-1', 'mobile-agent', 'ios', 'org/app', ['/usr/bin/true']);
+    const second = await manager.exec('task-1', 'mobile-agent', 'ios', 'org/app', ['/usr/bin/true']);
+    expect(Object.keys(lease.execSessions)).toEqual([second.execId]);
+    expect(removeRunnerExecLog).toHaveBeenCalledWith('task-1', lease.id, first.execId);
     manager.shutdown();
   });
 
@@ -202,5 +371,58 @@ describe('RunnerManager', () => {
     await manager.initialize();
     expect(lease.execSessions.exec.watermark).toBe(7);
     manager.shutdown();
+  });
+
+  it('quarantines one corrupt task state without blocking healthy recovery', async () => {
+    const provider = new FakeProvider();
+    const quarantinedBackend = 'archie-test-1-corrupt';
+    const lease: RunnerLease = {
+      id: 'lease-healthy', taskId: 'task-healthy', agentId: 'mobile-agent', profile: 'ios',
+      backendId: 'archie-test-1-healthy', state: 'ready', createdAt: new Date().toISOString(),
+      lastUsedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      syncedRepos: {}, execSessions: {},
+    };
+    provider.instances.set(lease.backendId, { id: lease.backendId, status: 'running' });
+    provider.instances.set(quarantinedBackend, { id: quarantinedBackend, status: 'running' });
+    vi.mocked(listRunnerTaskIds).mockResolvedValue(['task-corrupt', 'task-healthy']);
+    vi.mocked(loadRunnerLeases).mockImplementation(async (taskId) => {
+      if (taskId === 'task-corrupt') throw new Error('Invalid runner state');
+      return [lease];
+    });
+    const manager = new RunnerManager(loadedConfig(), provider);
+
+    await manager.initialize();
+
+    expect(manager.health()).toMatchObject({ degraded: true, activeLeases: 1 });
+    expect(await manager.ensure('task-healthy', 'mobile-agent', 'ios')).toBe(lease);
+    expect(provider.released).not.toContain(quarantinedBackend);
+    manager.shutdown();
+  });
+
+  it('recovers runner health after a transient startup inventory failure', async () => {
+    class InventoryProvider extends FakeProvider {
+      attempts = 0;
+      override async list() {
+        if (this.attempts++ === 0) throw new Error('inventory unavailable');
+        return [];
+      }
+    }
+    vi.useFakeTimers();
+    try {
+      const provider = new InventoryProvider();
+      const loaded = loadedConfig();
+      loaded.config.reaperIntervalSeconds = 1;
+      const manager = new RunnerManager(loaded, provider);
+      await manager.initialize();
+      expect(manager.health().degraded).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(1100);
+
+      expect(manager.health().degraded).toBe(false);
+      expect(provider.attempts).toBe(2);
+      manager.shutdown();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

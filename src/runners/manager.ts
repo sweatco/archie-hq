@@ -1,19 +1,22 @@
 import { createWriteStream } from 'node:fs';
 import { mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, posix } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
+import { finished } from 'node:stream/promises';
 import { createKeyedLock } from '../system/keyed-lock.js';
 import { emitEvent } from '../system/event-bus.js';
 import { logger } from '../system/logger.js';
-import { getArtifactsPath } from '../tasks/persistence.js';
+import { SESSIONS_DIR } from '../system/workdir.js';
+import { getArtifactsPath, loadMetadata } from '../tasks/persistence.js';
 import { profileWorkspaceRoot } from './config.js';
 import {
   appendRunnerExecLog,
   listRunnerTaskIds,
   loadRunnerLeases,
   readRunnerExecWatermark,
+  removeRunnerExecLog,
   saveRunnerLeases,
 } from './store.js';
 import {
@@ -29,6 +32,7 @@ import type {
   RunnerCommandResult,
   RunnerExecSession,
   RunnerHealth,
+  RunnerInstance,
   RunnerLease,
   RunnerProfile,
   RunnerProvider,
@@ -36,6 +40,8 @@ import type {
 
 const TOOL_OUTPUT_LIMIT = 128 * 1024;
 const READINESS_RETRY_MS = 5000;
+
+class RunnerReadinessError extends Error {}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -47,6 +53,13 @@ function addMinutes(minutes: number): string {
 
 function sanitizeName(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32) || 'runner';
+}
+
+export function runnerRepositoryPath(profile: RunnerProfile, github: string): string {
+  const components = github.split('/').map(sanitizeName);
+  const leaf = components.pop() ?? 'repo';
+  const digest = createHash('sha256').update(github).digest('hex').slice(0, 12);
+  return posix.join(profileWorkspaceRoot(profile), 'workspace', ...components, `${leaf}-${digest}`);
 }
 
 function safeError(error: unknown): string {
@@ -68,6 +81,7 @@ function validateEnvironment(env: Record<string, string>): void {
   let totalBytes = 0;
   for (const [key, value] of entries) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`Invalid environment variable name: ${key}`);
+    if (value.includes('\0')) throw new Error(`Environment variable ${key} contains a null byte`);
     if (Buffer.byteLength(value) > 32 * 1024) throw new Error(`Environment variable ${key} exceeds 32 KiB`);
     totalBytes += Buffer.byteLength(key) + Buffer.byteLength(value);
   }
@@ -77,8 +91,10 @@ function validateEnvironment(env: Record<string, string>): void {
 export class RunnerManager {
   private readonly leases = new Map<string, RunnerLease[]>();
   private readonly lock = createKeyedLock();
+  private readonly capacityLock = createKeyedLock();
   private reaper?: NodeJS.Timeout;
-  private degradedReason?: string;
+  private reaping = false;
+  private readonly degradedReasons = new Map<string, string>();
 
   constructor(
     private readonly loaded: LoadedRunnerConfig,
@@ -91,25 +107,36 @@ export class RunnerManager {
 
   async initialize(): Promise<void> {
     for (const taskId of await listRunnerTaskIds()) {
-      const taskLeases = await loadRunnerLeases(taskId);
-      for (const lease of taskLeases) {
-        if (lease.taskId !== taskId) throw new Error(`Runner lease ${lease.id} is stored under the wrong task`);
-        for (const session of Object.values(lease.execSessions)) {
-          session.watermark = Math.max(session.watermark, await readRunnerExecWatermark(taskId, lease.id, session.id));
+      try {
+        const taskLeases = await loadRunnerLeases(taskId);
+        for (const lease of taskLeases) {
+          if (lease.taskId !== taskId) throw new Error(`Runner lease ${lease.id} is stored under the wrong task`);
+          if (!lease.backendId.startsWith(this.backendPrefix())) throw new Error(`Runner lease ${lease.id} does not belong to instance ${this.config.instanceId}`);
+          for (const session of Object.values(lease.execSessions)) {
+            session.watermark = Math.max(session.watermark, await readRunnerExecWatermark(taskId, lease.id, session.id));
+          }
         }
+        this.leases.set(taskId, taskLeases);
+        this.markHealthy(`state:${taskId}`);
+      } catch (error) {
+        this.markDegraded(error, `state:${taskId}`);
       }
-      this.leases.set(taskId, taskLeases);
     }
 
     try {
       await this.reconcile();
-      this.degradedReason = undefined;
+      this.markHealthy('reconcile');
     } catch (error) {
-      this.markDegraded(error);
+      this.markDegraded(error, 'reconcile');
     }
 
     this.reaper = setInterval(() => {
-      void this.reap().catch((error) => this.markDegraded(error));
+      if (this.reaping) return;
+      this.reaping = true;
+      void this.reap()
+        .then(() => this.markHealthy('reap'))
+        .catch((error) => this.markDegraded(error, 'reap'))
+        .finally(() => { this.reaping = false; });
     }, this.config.reaperIntervalSeconds * 1000);
     this.reaper.unref();
   }
@@ -120,10 +147,11 @@ export class RunnerManager {
   }
 
   health(): RunnerHealth {
+    const reasons = [...this.degradedReasons.values()];
     return {
       enabled: true,
-      degraded: !!this.degradedReason,
-      ...(this.degradedReason ? { reason: this.degradedReason } : {}),
+      degraded: reasons.length > 0,
+      ...(reasons.length > 0 ? { reason: reasons.slice(0, 3).join('; ') } : {}),
       activeLeases: [...this.leases.values()].flat().filter((lease) => lease.state !== 'failed').length,
     };
   }
@@ -159,17 +187,64 @@ export class RunnerManager {
     return this.taskLeases(taskId).find((lease) => lease.agentId === agentId && lease.profile === profile && (lease.state === 'provisioning' || lease.state === 'ready'));
   }
 
+  private activeLease(taskId: string, agentId: string, profile: string): RunnerLease {
+    const lease = this.findLease(taskId, agentId, profile);
+    if (!lease) throw new Error(`No active ${profile} runner lease`);
+    return lease;
+  }
+
   private async persist(taskId: string): Promise<void> {
     await saveRunnerLeases(taskId, this.taskLeases(taskId));
   }
 
-  private markDegraded(error: unknown): void {
-    this.degradedReason = safeError(error);
-    logger.warn('runners', `Runner subsystem degraded: ${this.degradedReason}`);
+  private markDegraded(error: unknown, key = 'controller'): void {
+    const reason = safeError(error);
+    this.degradedReasons.set(key, reason);
+    logger.warn('runners', `Runner subsystem degraded: ${reason}`);
   }
 
-  private markHealthy(): void {
-    this.degradedReason = undefined;
+  private markHealthy(key = 'controller'): void {
+    this.degradedReasons.delete(key);
+  }
+
+  private async failLease(lease: RunnerLease, error: unknown, operation: string): Promise<void> {
+    lease.state = 'failed';
+    lease.failure = safeError(error);
+    await this.persist(lease.taskId);
+    emitEvent('runner:failed', lease.taskId, { leaseId: lease.id, operation }, lease.agentId);
+    await this.releaseLease(lease).catch(() => {});
+  }
+
+  private async pruneExecHistory(lease: RunnerLease, profile: RunnerProfile): Promise<void> {
+    const terminal = Object.values(lease.execSessions)
+      .filter(isTerminal)
+      .sort((left, right) => Date.parse(left.finishedAt ?? left.startedAt) - Date.parse(right.finishedAt ?? right.startedAt));
+    const excess = terminal.slice(0, Math.max(0, terminal.length - profile.maxExecSessionHistory));
+    for (const session of excess) {
+      await removeRunnerExecLog(lease.taskId, lease.id, session.id);
+      delete lease.execSessions[session.id];
+    }
+    if (excess.length > 0) await this.persist(lease.taskId);
+  }
+
+  private assertExecCapacity(lease: RunnerLease, profile: RunnerProfile): void {
+    const active = Object.values(lease.execSessions).filter((session) => session.state === 'running').length;
+    if (active >= profile.maxActiveExecSessions) {
+      throw new Error(`Runner has reached its ${profile.maxActiveExecSessions}-session active exec limit`);
+    }
+  }
+
+  private async closeSession(lease: RunnerLease, session: RunnerExecSession): Promise<boolean> {
+    try {
+      await this.provider.closeExec(lease.backendId, session.sessionId);
+      this.markHealthy(`close:${session.id}`);
+      return true;
+    } catch (error) {
+      session.deadlineAt = nowIso();
+      this.markDegraded(error, `close:${session.id}`);
+      await this.persist(lease.taskId).catch((persistError) => this.markDegraded(persistError, `persist:${lease.id}`));
+      return false;
+    }
   }
 
   private touch(lease: RunnerLease, profile: RunnerProfile): void {
@@ -189,7 +264,11 @@ export class RunnerManager {
   }
 
   private createBackendId(leaseId: string): string {
-    return `archie-${sanitizeName(this.config.instanceId)}-${Date.now()}-${leaseId.slice(0, 8)}`;
+    return `${this.backendPrefix()}${Date.now()}-${leaseId.slice(0, 8)}`;
+  }
+
+  private backendPrefix(): string {
+    return `archie-${sanitizeName(this.config.instanceId)}-`;
   }
 
   async ensure(taskId: string, agentId: string, profileName: string): Promise<RunnerLease> {
@@ -201,6 +280,14 @@ export class RunnerManager {
         try {
           const instance = await this.provider.inspect(current.backendId);
           if (instance?.status === 'running') {
+            if (current.state === 'provisioning' && profile.readinessCommand) {
+              try {
+                await this.checkReadiness(current, profile);
+              } catch (error) {
+                await this.failLease(current, error, 'readiness');
+                throw error;
+              }
+            }
             current.state = 'ready';
             current.failure = undefined;
             this.touch(current, profile);
@@ -208,11 +295,22 @@ export class RunnerManager {
             this.markHealthy();
             return current;
           }
-          if (instance?.status === 'pending') return await this.waitUntilReady(current, profile);
-          current.state = 'failed';
-          current.failure = instance?.statusMessage ? `Runner failed: ${instance.statusMessage.slice(0, 300)}` : 'Runner backend is missing';
-          await this.persist(taskId);
+          if (instance?.status === 'pending') {
+            try {
+              return await this.waitUntilReady(current, profile);
+            } catch (error) {
+              if (error instanceof RunnerReadinessError) await this.failLease(current, error, 'readiness');
+              else this.markDegraded(error);
+              throw error;
+            }
+          }
+          await this.failLease(
+            current,
+            instance?.statusMessage ? `Runner failed: ${instance.statusMessage.slice(0, 300)}` : 'Runner backend is missing',
+            'inspect',
+          );
         } catch (error) {
+          if (current.state === 'failed' || current.state === 'releasing') throw error;
           this.markDegraded(error);
           throw error;
         }
@@ -221,27 +319,30 @@ export class RunnerManager {
       const stale = this.taskLeases(taskId).filter((lease) => lease.agentId === agentId && lease.profile === profileName && (lease.state === 'failed' || lease.state === 'releasing'));
       for (const lease of stale) await this.releaseLease(lease);
 
-      const active = [...this.leases.values()].flat().filter((lease) => lease.state !== 'failed');
-      if (active.length >= this.config.maxConcurrent) throw new Error(`Runner capacity reached (${this.config.maxConcurrent})`);
+      const lease = await this.capacityLock('global', async () => {
+        const active = [...this.leases.values()].flat().filter((candidate) => candidate.state !== 'failed');
+        if (active.length >= this.config.maxConcurrent) throw new Error(`Runner capacity reached (${this.config.maxConcurrent})`);
 
-      const id = randomUUID();
-      const timestamp = nowIso();
-      const lease: RunnerLease = {
-        id,
-        taskId,
-        agentId,
-        profile: profileName,
-        backendId: this.createBackendId(id),
-        state: 'provisioning',
-        createdAt: timestamp,
-        lastUsedAt: timestamp,
-        expiresAt: addMinutes(profile.leaseTtlMinutes),
-        syncedRepos: {},
-        execSessions: {},
-      };
-      this.taskLeases(taskId).push(lease);
-      await this.persist(taskId);
-      emitEvent('runner:provisioning', taskId, { leaseId: id, profile: profileName, backendId: lease.backendId }, agentId);
+        const id = randomUUID();
+        const timestamp = nowIso();
+        const reserved: RunnerLease = {
+          id,
+          taskId,
+          agentId,
+          profile: profileName,
+          backendId: this.createBackendId(id),
+          state: 'provisioning',
+          createdAt: timestamp,
+          lastUsedAt: timestamp,
+          expiresAt: addMinutes(profile.leaseTtlMinutes),
+          syncedRepos: {},
+          execSessions: {},
+        };
+        this.taskLeases(taskId).push(reserved);
+        await this.persist(taskId);
+        emitEvent('runner:provisioning', taskId, { leaseId: id, profile: profileName, backendId: reserved.backendId }, agentId);
+        return reserved;
+      });
 
       try {
         await this.provider.provision({
@@ -259,11 +360,7 @@ export class RunnerManager {
         });
         return await this.waitUntilReady(lease, profile);
       } catch (error) {
-        lease.state = 'failed';
-        lease.failure = 'Runner provisioning failed';
-        await this.persist(taskId);
-        this.markDegraded(error);
-        emitEvent('runner:failed', taskId, { leaseId: id, operation: 'provision' }, agentId);
+        await this.failLease(lease, error, 'provision');
         throw error;
       }
     });
@@ -273,8 +370,8 @@ export class RunnerManager {
     const deadline = Date.now() + profile.provisionTimeoutSeconds * 1000;
     while (Date.now() < deadline) {
       const instance = await this.provider.inspect(lease.backendId);
-      if (!instance) throw new Error(`Orchard VM ${lease.backendId} disappeared during provisioning`);
-      if (instance.status === 'failed') throw new Error(`Orchard VM failed: ${instance.statusMessage ?? 'unknown error'}`);
+      if (!instance) throw new RunnerReadinessError(`Orchard VM ${lease.backendId} disappeared during provisioning`);
+      if (instance.status === 'failed') throw new RunnerReadinessError(`Orchard VM failed: ${instance.statusMessage ?? 'unknown error'}`);
       if (instance.status === 'running') {
         if (profile.readinessCommand) await this.checkReadiness(lease, profile);
         lease.state = 'ready';
@@ -287,7 +384,7 @@ export class RunnerManager {
       }
       await new Promise((resolve) => setTimeout(resolve, 2000));
     }
-    throw new Error(`Timed out waiting for Orchard VM ${lease.backendId}`);
+    throw new RunnerReadinessError(`Timed out waiting for Orchard VM ${lease.backendId}`);
   }
 
   // Orchard reports "running" as soon as the VM process starts; the guest agent
@@ -305,7 +402,7 @@ export class RunnerManager {
       if (Date.now() + READINESS_RETRY_MS >= deadline) break;
       await new Promise((resolve) => setTimeout(resolve, READINESS_RETRY_MS));
     }
-    throw new Error(lastFailure);
+    throw new RunnerReadinessError(lastFailure);
   }
 
   private async probeReadiness(lease: RunnerLease, profile: RunnerProfile, deadline: number): Promise<void> {
@@ -332,17 +429,13 @@ export class RunnerManager {
     }
   }
 
-  private remoteRepoPath(lease: RunnerLease, profile: RunnerProfile, github: string): string {
-    const safeRepo = github.split('/').map(sanitizeName).join('/');
-    return posix.join(profileWorkspaceRoot(profile), 'workspace', safeRepo);
-  }
-
   async sync(taskId: string, agentId: string, profileName: string, github: string, clonePath: string): Promise<{ lease: RunnerLease; remotePath: string; bytes: number; files: number }> {
-    const lease = await this.ensure(taskId, agentId, profileName);
-    const profile = this.profile(agentId, profileName);
+    await this.ensure(taskId, agentId, profileName);
     return this.lock(`${taskId}:${agentId}:${profileName}`, async () => {
+      const lease = this.activeLease(taskId, agentId, profileName);
+      const profile = this.profile(agentId, profileName);
       const archive = await createRepositoryArchive(clonePath, profile.maxUploadBytes);
-      const remotePath = this.remoteRepoPath(lease, profile, github);
+      const remotePath = runnerRepositoryPath(profile, github);
       const staging = `${remotePath}.staging-${randomUUID().slice(0, 8)}`;
       const previous = `${remotePath}.previous`;
       const script = [
@@ -385,8 +478,9 @@ export class RunnerManager {
     const relativeCwd = cwd === '.' ? '.' : assertRelativeRunnerPath(cwd);
     await this.ensure(taskId, agentId, profileName);
     return this.lock(`${taskId}:${agentId}:${profileName}`, async () => {
-      const lease = this.findLease(taskId, agentId, profileName)!;
+      const lease = this.activeLease(taskId, agentId, profileName);
       const profile = this.profile(agentId, profileName);
+      this.assertExecCapacity(lease, profile);
       const synced = lease.syncedRepos[github];
       if (!synced) throw new Error(`Repository ${github} has not been synced to runner profile ${profileName}`);
       const remoteCwd = relativeCwd === '.' ? synced.remotePath : posix.join(synced.remotePath, relativeCwd);
@@ -441,54 +535,77 @@ export class RunnerManager {
   ): Promise<RunnerCommandResult> {
     const waitSeconds = Math.max(0, Math.min(requestedWait ?? profile.maxExecWaitSeconds, profile.maxExecWaitSeconds));
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), waitSeconds * 1000);
+    let deadlineReached = false;
+    const waitTimer = setTimeout(() => controller.abort(), waitSeconds * 1000);
+    const deadlineTimer = setTimeout(() => {
+      deadlineReached = true;
+      controller.abort();
+    }, Math.max(0, Date.parse(session.deadlineAt) - Date.now()));
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let returnedBytes = 0;
     let truncated = false;
+    const appendReturned = (target: Buffer[], value: Uint8Array) => {
+      if (returnedBytes >= TOOL_OUTPUT_LIMIT) {
+        truncated = true;
+        return;
+      }
+      const remaining = TOOL_OUTPUT_LIMIT - returnedBytes;
+      const data = Buffer.from(value).subarray(0, remaining);
+      target.push(data);
+      returnedBytes += data.length;
+      if (data.length < value.byteLength) truncated = true;
+    };
     try {
       for await (const event of this.provider.exec(lease.backendId, { ...request, signal: controller.signal })) {
-        await appendRunnerExecLog(lease.taskId, lease.id, session.id, event);
         if (event.type === 'stdout' || event.type === 'stderr') {
           session.outputBytes += event.data.byteLength;
           if (session.outputBytes > profile.maxExecOutputBytes) {
-            await this.provider.closeExec(lease.backendId, session.sessionId).catch(() => {});
-            session.state = 'failed';
-            session.finishedAt = nowIso();
             throw new Error(`Runner command exceeded the ${profile.maxExecOutputBytes}-byte output limit`);
           }
-          if (returnedBytes < TOOL_OUTPUT_LIMIT) {
-            const remaining = TOOL_OUTPUT_LIMIT - returnedBytes;
-            const data = Buffer.from(event.data).subarray(0, remaining);
-            (event.type === 'stdout' ? stdout : stderr).push(data);
-            returnedBytes += data.length;
-            if (data.length < event.data.byteLength) truncated = true;
-          } else {
-            truncated = true;
-          }
+          await appendRunnerExecLog(lease.taskId, lease.id, session.id, event);
+          appendReturned(event.type === 'stdout' ? stdout : stderr, event.data);
         } else if (event.type === 'exit') {
+          await appendRunnerExecLog(lease.taskId, lease.id, session.id, event);
           session.state = 'completed';
           session.exitCode = event.code;
           session.finishedAt = nowIso();
         } else if (event.type === 'error') {
+          const errorData = Buffer.from(event.error);
+          session.outputBytes += errorData.byteLength;
+          if (session.outputBytes > profile.maxExecOutputBytes) {
+            const bounded = `Runner error exceeded the ${profile.maxExecOutputBytes}-byte output limit`;
+            await appendRunnerExecLog(lease.taskId, lease.id, session.id, { type: 'error', error: bounded, watermark: event.watermark });
+            appendReturned(stderr, Buffer.from(bounded));
+            truncated = true;
+          } else {
+            await appendRunnerExecLog(lease.taskId, lease.id, session.id, event);
+            appendReturned(stderr, errorData);
+          }
           session.state = 'failed';
           session.finishedAt = nowIso();
-          stderr.push(Buffer.from(event.error));
         }
         if ('watermark' in event && event.watermark !== undefined) session.watermark = Math.max(session.watermark, event.watermark);
         await this.persist(lease.taskId);
       }
     } catch (error) {
       if (!controller.signal.aborted) {
-        session.state = 'failed';
-        session.finishedAt = nowIso();
-        await this.persist(lease.taskId);
+        if (await this.closeSession(lease, session)) {
+          session.state = 'failed';
+          session.finishedAt = nowIso();
+          await this.persist(lease.taskId);
+        }
         throw error;
       }
     } finally {
-      clearTimeout(timer);
+      clearTimeout(waitTimer);
+      clearTimeout(deadlineTimer);
+    }
+    if (deadlineReached && session.state === 'running') {
+      await this.timeoutSession(lease, session);
     }
     if (isTerminal(session)) {
+      await this.pruneExecHistory(lease, profile);
       emitEvent('runner:exec', lease.taskId, { action: 'end', leaseId: lease.id, execId: session.id, state: session.state, exitCode: session.exitCode }, lease.agentId);
     }
     return this.commandResult(session, Buffer.concat(stdout).toString('utf8'), Buffer.concat(stderr).toString('utf8'), truncated);
@@ -506,10 +623,11 @@ export class RunnerManager {
       const session = lease.execSessions[execId];
       if (!session) throw new Error(`Unknown runner exec session: ${execId}`);
       if (isTerminal(session)) return;
-      await this.provider.closeExec(lease.backendId, session.sessionId);
+      if (!await this.closeSession(lease, session)) throw new Error(`Failed to close runner command ${execId}; cleanup will retry`);
       session.state = 'cancelled';
       session.finishedAt = nowIso();
       await this.persist(taskId);
+      await this.pruneExecHistory(lease, this.profile(agentId, profileName));
       emitEvent('runner:exec', taskId, { action: 'cancel', leaseId: lease.id, execId }, agentId);
     });
   }
@@ -522,6 +640,7 @@ export class RunnerManager {
     stdin?: AsyncIterable<Uint8Array>,
     onStdout?: (data: Uint8Array) => Promise<void>,
   ): Promise<void> {
+    this.assertExecCapacity(lease, profile);
     const execId = randomUUID();
     const session: RunnerExecSession = {
       id: execId,
@@ -536,16 +655,29 @@ export class RunnerManager {
     await this.persist(lease.taskId);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), profile.execTimeoutSeconds * 1000);
-    let failure = '';
+    const failure: Buffer[] = [];
+    let failureBytes = 0;
+    let diagnosticBytes = 0;
+    const appendFailure = (value: Uint8Array) => {
+      diagnosticBytes += value.byteLength;
+      if (diagnosticBytes > profile.maxExecOutputBytes) {
+        throw new Error(`Runner transfer exceeded the ${profile.maxExecOutputBytes}-byte diagnostic output limit`);
+      }
+      if (failureBytes >= TOOL_OUTPUT_LIMIT) return;
+      const data = Buffer.from(value).subarray(0, TOOL_OUTPUT_LIMIT - failureBytes);
+      failure.push(data);
+      failureBytes += data.length;
+    };
     try {
       for await (const event of this.provider.exec(lease.backendId, { argv, cwd, stdin, sessionId: session.sessionId, signal: controller.signal })) {
         if (event.type === 'stdout') {
           session.outputBytes += event.data.byteLength;
-          await onStdout?.(event.data);
+          if (onStdout) await onStdout(event.data);
+          else appendFailure(event.data);
         } else {
           await appendRunnerExecLog(lease.taskId, lease.id, session.id, event);
         }
-        if (event.type === 'stderr') failure += Buffer.from(event.data).toString('utf8');
+        if (event.type === 'stderr') appendFailure(event.data);
         if (event.type === 'exit') {
           session.state = event.code === 0 ? 'completed' : 'failed';
           session.exitCode = event.code;
@@ -554,7 +686,7 @@ export class RunnerManager {
         if (event.type === 'error') {
           session.state = 'failed';
           session.finishedAt = nowIso();
-          failure += event.error;
+          appendFailure(Buffer.from(event.error));
         }
         if ('watermark' in event && event.watermark !== undefined) session.watermark = Math.max(session.watermark, event.watermark);
         await this.persist(lease.taskId);
@@ -562,33 +694,39 @@ export class RunnerManager {
       if (controller.signal.aborted && session.state === 'running') {
         await this.timeoutSession(lease, session);
       }
-      if (session.state !== 'completed' || session.exitCode !== 0) throw new Error(failure.trim() || `Runner transfer exited with ${session.exitCode ?? 'no status'}`);
+      if (session.state !== 'completed' || session.exitCode !== 0) throw new Error(Buffer.concat(failure).toString('utf8').trim() || `Runner transfer exited with ${session.exitCode ?? 'no status'}`);
     } catch (error) {
       if (session.state === 'running') {
-        await this.provider.closeExec(lease.backendId, session.sessionId).catch(() => {});
-        session.state = controller.signal.aborted ? 'timed_out' : 'failed';
-        session.finishedAt = nowIso();
-        await this.persist(lease.taskId);
+        if (await this.closeSession(lease, session)) {
+          session.state = controller.signal.aborted ? 'timed_out' : 'failed';
+          session.finishedAt = nowIso();
+          await this.persist(lease.taskId);
+        }
       }
       throw error;
     } finally {
       clearTimeout(timer);
+      if (isTerminal(session)) {
+        await this.pruneExecHistory(lease, profile).catch((error) => this.markDegraded(error, `history:${lease.id}`));
+      }
     }
   }
 
   async collect(taskId: string, agentId: string, profileName: string, github: string, paths: string[]): Promise<string> {
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(taskId)) throw new Error(`Invalid task id: ${taskId}`);
+    if (!/^task-\d{8}-\d{4}-[a-z0-9]+$/.test(taskId)) throw new Error(`Invalid task id: ${taskId}`);
     if (paths.length === 0 || paths.length > 100) throw new Error('paths must contain between 1 and 100 entries');
     const safePaths = paths.map(assertRelativeRunnerPath);
     await this.ensure(taskId, agentId, profileName);
     return this.lock(`${taskId}:${agentId}:${profileName}`, async () => {
-      const lease = this.findLease(taskId, agentId, profileName)!;
+      const lease = this.activeLease(taskId, agentId, profileName);
       const profile = this.profile(agentId, profileName);
       const synced = lease.syncedRepos[github];
       if (!synced) throw new Error(`Repository ${github} has not been synced to runner profile ${profileName}`);
       const tempDir = await mkdtemp(join(tmpdir(), 'archie-runner-download-'));
       const archivePath = join(tempDir, 'artifacts.tar');
       const output = createWriteStream(archivePath, { mode: 0o600 });
+      const outputDone = finished(output);
+      void outputDone.catch(() => {});
       let bytes = 0;
       try {
         await this.runTransfer(
@@ -600,17 +738,34 @@ export class RunnerManager {
           async (data) => {
             bytes += data.byteLength;
             if (bytes > profile.maxDownloadBytes) throw new Error(`Collected archive exceeds the ${profile.maxDownloadBytes}-byte download limit`);
-            if (!output.write(data)) await once(output, 'drain');
+            if (!output.write(data)) await Promise.race([once(output, 'drain'), outputDone]);
           },
         );
         output.end();
-        await once(output, 'close');
+        await outputDone;
         if ((await stat(archivePath)).size !== bytes) throw new Error('Collected archive was not written completely');
 
-        const parent = join(getArtifactsPath(taskId), 'runners', lease.id);
+        const sessionsRoot = resolve(SESSIONS_DIR);
+        const artifactsRoot = resolve(getArtifactsPath(taskId));
+        const artifactsRelative = relative(sessionsRoot, artifactsRoot);
+        if (artifactsRelative === '..' || artifactsRelative.startsWith('..' + sep) || isAbsolute(artifactsRelative)) {
+          throw new Error('Runner artifacts path escapes the sessions directory');
+        }
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(lease.id)) {
+          throw new Error(`Invalid runner lease id: ${lease.id}`);
+        }
+        const parent = resolve(artifactsRoot, 'runners', lease.id);
+        const parentRelative = relative(artifactsRoot, parent);
+        if (parentRelative === '..' || parentRelative.startsWith('..' + sep) || isAbsolute(parentRelative)) {
+          throw new Error('Runner lease path escapes the task artifacts directory');
+        }
         await mkdir(parent, { recursive: true });
-        const destination = join(parent, collectionName());
-        await extractRunnerArchive(archivePath, destination, profile.maxDownloadBytes);
+        const destination = resolve(parent, collectionName());
+        const destinationRelative = relative(parent, destination);
+        if (destinationRelative === '..' || destinationRelative.startsWith('..' + sep) || isAbsolute(destinationRelative)) {
+          throw new Error('Runner collection path escapes the lease directory');
+        }
+        await extractRunnerArchive(archivePath, destination, parent, profile.maxDownloadBytes);
         this.touch(lease, profile);
         await this.persist(taskId);
         emitEvent('runner:artifacts', taskId, { leaseId: lease.id, profile: profileName, github, paths: safePaths, bytes, destination }, agentId);
@@ -623,22 +778,26 @@ export class RunnerManager {
   }
 
   async openDebug(taskId: string, agentId: string, profileName: string, ttlMinutes?: number): Promise<{ backendId: string; context: string; expiresAt: string; commands: string[] }> {
-    const lease = await this.ensure(taskId, agentId, profileName);
-    const profile = this.profile(agentId, profileName);
-    const ttl = Math.min(ttlMinutes ?? profile.debugTtlMinutes, profile.maxDebugTtlMinutes);
-    if (ttl < 1) throw new Error('Debug TTL must be at least one minute');
-    lease.debugExpiresAt = addMinutes(ttl);
-    await this.persist(taskId);
-    emitEvent('runner:debug', taskId, { leaseId: lease.id, profile: profileName, expiresAt: lease.debugExpiresAt }, agentId);
-    return {
-      backendId: lease.backendId,
-      context: this.config.orchard.context,
-      expiresAt: lease.debugExpiresAt,
-      commands: [
-        `orchard context default ${shellQuote(this.config.orchard.context)}`,
-        `orchard vnc vm ${shellQuote(lease.backendId)}`,
-      ],
-    };
+    await this.ensure(taskId, agentId, profileName);
+    return this.lock(`${taskId}:${agentId}:${profileName}`, async () => {
+      const lease = this.findLease(taskId, agentId, profileName);
+      if (!lease) throw new Error(`No active ${profileName} runner lease`);
+      const profile = this.profile(agentId, profileName);
+      const ttl = Math.min(ttlMinutes ?? profile.debugTtlMinutes, profile.maxDebugTtlMinutes);
+      if (ttl < 1) throw new Error('Debug TTL must be at least one minute');
+      lease.debugExpiresAt = addMinutes(ttl);
+      await this.persist(taskId);
+      emitEvent('runner:debug', taskId, { leaseId: lease.id, profile: profileName, expiresAt: lease.debugExpiresAt }, agentId);
+      return {
+        backendId: lease.backendId,
+        context: this.config.orchard.context,
+        expiresAt: lease.debugExpiresAt,
+        commands: [
+          `orchard context default ${shellQuote(this.config.orchard.context)}`,
+          `orchard vnc vm ${shellQuote(lease.backendId)}`,
+        ],
+      };
+    });
   }
 
   async release(taskId: string, agentId: string, profileName: string): Promise<void> {
@@ -651,10 +810,23 @@ export class RunnerManager {
   }
 
   async completeTask(taskId: string): Promise<void> {
+    const failures: unknown[] = [];
     for (const lease of [...this.taskLeases(taskId)]) {
-      if (lease.debugExpiresAt && Date.parse(lease.debugExpiresAt) > Date.now()) continue;
-      await this.lock(`${lease.taskId}:${lease.agentId}:${lease.profile}`, () => this.releaseLease(lease));
+      try {
+        await this.lock(`${lease.taskId}:${lease.agentId}:${lease.profile}`, async () => {
+          if (!this.taskLeases(taskId).includes(lease)) return;
+          if (lease.debugExpiresAt && Date.parse(lease.debugExpiresAt) > Date.now()) {
+            lease.expiresAt = lease.debugExpiresAt;
+            await this.persist(taskId);
+            return;
+          }
+          await this.releaseLease(lease);
+        });
+      } catch (error) {
+        failures.push(error);
+      }
     }
+    if (failures.length > 0) throw new AggregateError(failures, `Failed to complete ${failures.length} runner lease(s)`);
   }
 
   private async releaseLease(lease: RunnerLease): Promise<void> {
@@ -666,17 +838,17 @@ export class RunnerManager {
       const index = taskLeases.findIndex((candidate) => candidate.id === lease.id);
       if (index >= 0) taskLeases.splice(index, 1);
       await this.persist(lease.taskId);
-      this.markHealthy();
+      this.markHealthy(`release:${lease.id}`);
       emitEvent('runner:released', lease.taskId, { leaseId: lease.id, profile: lease.profile, backendId: lease.backendId }, lease.agentId);
     } catch (error) {
-      this.markDegraded(error);
+      this.markDegraded(error, `release:${lease.id}`);
       emitEvent('runner:failed', lease.taskId, { leaseId: lease.id, operation: 'release' }, lease.agentId);
       throw error;
     }
   }
 
   private async timeoutSession(lease: RunnerLease, session: RunnerExecSession): Promise<void> {
-    await this.provider.closeExec(lease.backendId, session.sessionId).catch(() => {});
+    if (!await this.closeSession(lease, session)) return;
     session.state = 'timed_out';
     session.finishedAt = nowIso();
     await this.persist(lease.taskId);
@@ -684,23 +856,64 @@ export class RunnerManager {
   }
 
   private async reconcile(): Promise<void> {
-    const known = new Set<string>();
-    for (const taskLeases of this.leases.values()) {
+    for (const [taskId, taskLeases] of this.leases) {
+      let taskCompleted = false;
+      try {
+        taskCompleted = (await loadMetadata(taskId))?.status === 'completed';
+        this.markHealthy(`metadata:${taskId}`);
+      } catch (error) {
+        this.markDegraded(error, `metadata:${taskId}`);
+      }
       for (const lease of [...taskLeases]) {
-        known.add(lease.backendId);
-        if (lease.state === 'releasing' || this.leaseExpired(lease)) {
-          await this.releaseLease(lease);
+        if (taskCompleted && (!lease.debugExpiresAt || Date.parse(lease.debugExpiresAt) <= Date.now())) {
+          await this.releaseLease(lease).catch(() => {});
           continue;
         }
-        const instance = await this.provider.inspect(lease.backendId);
+        if (taskCompleted && lease.debugExpiresAt) {
+          lease.expiresAt = lease.debugExpiresAt;
+          await this.persist(taskId);
+        }
+        if (lease.state === 'failed' || lease.state === 'releasing' || this.leaseExpired(lease)) {
+          await this.releaseLease(lease).catch(() => {});
+          continue;
+        }
+        const profile = this.config.profiles[lease.profile];
+        if (!profile || !profile.allowedAgents.includes(lease.agentId)) {
+          await this.failLease(lease, 'Runner profile or agent allowlist changed', 'reconcile');
+          continue;
+        }
+        let instance: RunnerInstance | null;
+        try {
+          instance = await this.provider.inspect(lease.backendId);
+        } catch (error) {
+          this.markDegraded(error, `inspect:${lease.id}`);
+          continue;
+        }
+        this.markHealthy(`inspect:${lease.id}`);
         if (!instance) {
-          lease.state = 'failed';
-          lease.failure = 'Runner backend is missing';
-          await this.persist(lease.taskId);
+          await this.failLease(lease, 'Runner backend is missing', 'reconcile');
           continue;
         }
-        lease.state = instance.status === 'running' ? 'ready' : instance.status === 'pending' ? 'provisioning' : 'failed';
-        if (instance.status === 'failed') lease.failure = instance.statusMessage?.slice(0, 300) ?? 'Runner backend failed';
+        if (instance.status === 'failed') {
+          await this.failLease(lease, instance.statusMessage ?? 'Runner backend failed', 'reconcile');
+          continue;
+        }
+        if (instance.status === 'pending' && lease.state === 'provisioning'
+          && Date.parse(lease.createdAt) + profile.provisionTimeoutSeconds * 1000 <= Date.now()) {
+          await this.failLease(lease, 'Runner provisioning deadline expired', 'reconcile');
+          continue;
+        }
+        if (instance.status === 'running' && lease.state === 'provisioning') {
+          if (profile.readinessCommand) {
+            try {
+              await this.checkReadiness(lease, profile);
+            } catch (error) {
+              await this.failLease(lease, error, 'readiness');
+              continue;
+            }
+          }
+        }
+        lease.state = instance.status === 'running' ? 'ready' : 'provisioning';
         for (const session of Object.values(lease.execSessions)) {
           if (session.state === 'running' && Date.parse(session.deadlineAt) <= Date.now()) await this.timeoutSession(lease, session);
         }
@@ -708,25 +921,85 @@ export class RunnerManager {
       }
     }
 
-    const prefix = `archie-${sanitizeName(this.config.instanceId)}-`;
+    await this.reconcileOrphans();
+  }
+
+  private async reconcileOrphans(): Promise<void> {
+    if ([...this.degradedReasons.keys()].some((key) => key.startsWith('state:'))) return;
+    const known = new Set([...this.leases.values()].flat().map((lease) => lease.backendId));
+    const prefix = this.backendPrefix();
     const graceMs = this.config.orphanGraceMinutes * 60_000;
     for (const instance of await this.provider.list()) {
       if (!instance.id.startsWith(prefix) || known.has(instance.id)) continue;
       const timestamp = Number(instance.id.slice(prefix.length).split('-')[0]);
-      if (Number.isFinite(timestamp) && Date.now() - timestamp >= graceMs) await this.provider.release(instance.id);
+      if (!Number.isFinite(timestamp) || Date.now() - timestamp < graceMs) continue;
+      try {
+        await this.provider.release(instance.id);
+        this.markHealthy(`orphan:${instance.id}`);
+      } catch (error) {
+        this.markDegraded(error, `orphan:${instance.id}`);
+      }
     }
   }
 
   private async reap(): Promise<void> {
     for (const taskLeases of [...this.leases.values()]) {
       for (const lease of [...taskLeases]) {
-        for (const session of Object.values(lease.execSessions)) {
-          if (session.state === 'running' && Date.parse(session.deadlineAt) <= Date.now()) await this.timeoutSession(lease, session);
-        }
-        if (lease.state === 'releasing' || this.leaseExpired(lease)) {
-          await this.lock(`${lease.taskId}:${lease.agentId}:${lease.profile}`, () => this.releaseLease(lease));
-        }
+        await this.lock(`${lease.taskId}:${lease.agentId}:${lease.profile}`, async () => {
+          if (!this.taskLeases(lease.taskId).includes(lease)) return;
+          if (lease.state === 'releasing') {
+            await this.releaseLease(lease);
+            return;
+          }
+          const profile = this.config.profiles[lease.profile];
+          if (!profile || !profile.allowedAgents.includes(lease.agentId)) {
+            await this.failLease(lease, 'Runner profile or agent allowlist changed', 'reap');
+            return;
+          }
+          let instance: RunnerInstance | null;
+          try {
+            instance = await this.provider.inspect(lease.backendId);
+          } catch (error) {
+            this.markDegraded(error, `inspect:${lease.id}`);
+            return;
+          }
+          this.markHealthy(`inspect:${lease.id}`);
+          if (!instance || instance.status === 'failed') {
+            await this.failLease(lease, instance?.statusMessage ?? 'Runner backend is missing', 'reap');
+            return;
+          }
+          if (lease.state === 'provisioning' && instance.status === 'pending'
+            && Date.parse(lease.createdAt) + profile.provisionTimeoutSeconds * 1000 <= Date.now()) {
+            await this.failLease(lease, 'Runner provisioning deadline expired', 'reap');
+            return;
+          }
+          if (lease.state === 'provisioning' && instance.status === 'running') {
+            if (profile.readinessCommand) {
+              try {
+                await this.checkReadiness(lease, profile);
+              } catch (error) {
+                await this.failLease(lease, error, 'readiness');
+                return;
+              }
+            }
+            lease.state = 'ready';
+            this.touch(lease, profile);
+            await this.persist(lease.taskId);
+          }
+          for (const session of Object.values(lease.execSessions)) {
+            if (session.state === 'running' && Date.parse(session.deadlineAt) <= Date.now()) await this.timeoutSession(lease, session);
+          }
+          await this.pruneExecHistory(lease, profile);
+          if (this.leaseExpired(lease)) await this.releaseLease(lease);
+          this.markHealthy(`reap:${lease.id}`);
+        }).catch((error) => this.markDegraded(error, `reap:${lease.id}`));
       }
+    }
+    try {
+      await this.reconcileOrphans();
+      this.markHealthy('reconcile');
+    } catch (error) {
+      this.markDegraded(error, 'reconcile');
     }
   }
 }
