@@ -63,6 +63,8 @@ PreToolUse hooks (Read, Write, Edit, Glob, Grep):
 
 **Writes:** Deny-all by default. Workspace paths added to `allowWrite` per track. `/tmp` is always writable (tools need scratch space). Protected files (`.claude/settings.json`, `.claude/skills`, `.claude/hooks`, `CLAUDE.md`) are in `denyWrite` — agents cannot modify their own configuration at runtime.
 
+**One path is granted write-only.** On a trigger-fired task every agent gets `$ARCHIE_WORKDIR/triggers-data/<trigger-id>/` in `allowWrite` and deliberately **not** in `allowRead` — see [Triggers](triggers.md#persistent-per-trigger-directory). Every other path in the system appears in both lists, so this is the only place the asymmetry matters, and it has two consequences. First, `Bash` cannot reach it at all: limitation 1 below means the `denyRead` tmpfs on `/workdir` lands after the `allowWrite` bind, and with no `allowRead` entry there is nothing to restore even read access — agents use `Read`/`Write`/`Edit`, which the PreToolUse hooks gate instead. Second, `assertReadable` (`src/agents/artifacts.ts`) validates against the union of both lists rather than `allowRead` alone, so the in-process artifact tools are not stricter than the sandbox they mirror; without that, an agent could write a file there and then be refused when sharing it.
+
 **Network:** Outbound access from Bash is deny-all by default. Agents cannot `curl`, `wget`, or otherwise reach the internet from shell commands; web access is only available through the controlled research pipeline (MCP tools). Two narrow exceptions widen the allowlist: repo agents in **edit mode** may reach the trusted package registries (`registry.npmjs.org`, `registry.yarnpkg.com`) so `npm`/`yarn` installs and lockfile regeneration work, and a plugin agent may declare `allowedNetworkDomains` in its frontmatter (e.g. the `ops` plugin reaching `sheets.googleapis.com`). Read-only repo agents and the PM stay fully denied.
 
 The allowlist is enforced from the **policy tier** (`managedSettings`), not from the `sandbox` option — see `buildManagedNetworkPolicy` in `src/agents/sandbox.ts`. This matters: `sandbox.network.allowedDomains` is silently ignored under `permissionMode: 'bypassPermissions'`, which every agent runs under, so the policy tier is what actually holds the boundary. Because that enforcement lives in the Claude CLI rather than in our code, it is version-coupled and has regressed before (CLI 2.1.156 → 2.1.157) with our config unchanged. `tools/e2e/egress-check.ts` asserts the boundary against a live instance for exactly this reason — treat an SDK bump as a security-relevant change and re-run it.
@@ -305,7 +307,7 @@ Production requires these persistent mounts:
 
 | Path | Purpose |
 |------|---------|
-| `/workdir` | Runtime state: repos, sessions, plugins |
+| `/workdir` | Runtime state: repos, sessions, plugins, trigger records and per-trigger data |
 | `/home/archie/.claude` | Claude CLI config, session logs, shell snapshots |
 | `/home/archie/.claude.json` | Claude CLI feature flags (auto-regenerated if missing) |
 
