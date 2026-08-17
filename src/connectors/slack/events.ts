@@ -790,12 +790,8 @@ export async function handleSlackEvent(event: {
     // reply) — the only place channel-message triggers fire. @mentions and DMs
     // are excluded above so a message aimed at Archie never also fires a trigger.
     // Bolt strips attachments: `event.text` is empty for a webhook bot, the root isn't.
-    const root = thread.messages.find((m) => m.ts === event.ts);
-    await dispatchChannelMessageTriggers(
-      event,
-      thread.channel.name,
-      root ? renderMessageForContext(root, { redacted: false }) : event.text,
-    );
+    const root = thread.messages.find((m) => m.ts === event.ts) ?? { text: event.text };
+    await dispatchChannelMessageTriggers(event, thread.channel.name, renderMessageForContext(root, { redacted: false }));
   }
   // Otherwise: a reply in a human-started thread the bot wasn't part of — ignore
 }
@@ -806,9 +802,9 @@ export async function handleSlackEvent(event: {
  * the triggering thread. External authors are already filtered upstream.
  */
 async function dispatchChannelMessageTriggers(
-  event: { channel: string; user: string; text: string; ts: string },
+  event: { channel: string; user: string; ts: string },
   channelName: string,
-  matchText: string,
+  text: string,
 ): Promise<void> {
   const triggers = getChannelMessageTriggers(event.channel);
   if (triggers.length === 0) return;
@@ -816,7 +812,7 @@ async function dispatchChannelMessageTriggers(
   const matches = (trigger: Trigger): boolean =>
     trigger.conditions.some((c) => {
       if (c.type !== 'channel_message' || c.channel_id !== event.channel) return false;
-      if (c.match?.contains && !matchText.toLowerCase().includes(c.match.contains.toLowerCase())) return false;
+      if (c.match?.contains && !text.toLowerCase().includes(c.match.contains.toLowerCase())) return false;
       if (c.match?.from_user && event.user !== c.match.from_user) return false;
       return true;
     });
@@ -826,7 +822,7 @@ async function dispatchChannelMessageTriggers(
     try {
       await fireTrigger(trigger, {
         kind: 'message',
-        text: matchText,
+        text,
         threadId: event.ts,
         channelId: event.channel,
         channelName,

@@ -57,31 +57,13 @@ describe('group-DM (G…) routing parity', () => {
 });
 
 describe('bot_message routing (legacy-webhook bot posts)', () => {
-  const botPost = { type: 'message', subtype: 'bot_message', channel: 'C0XYZ', ts: '1' };
+  const bot = { type: 'message', subtype: 'bot_message', channel: 'C0XYZ', ts: '1' };
 
-  it('forwards a bot post when a trigger is watching the channel', () => {
-    expect(shouldForwardMessageEvent(botPost, () => true)).toBe(true);
-  });
-
-  it('ignores a bot post when no trigger is watching', () => {
-    expect(shouldForwardMessageEvent(botPost, () => false)).toBe(false);
-  });
-
-  it('ignores a bot thread reply even when a trigger is watching', () => {
-    expect(
-      shouldForwardMessageEvent({ ...botPost, ts: '2', thread_ts: '1' }, () => true),
-    ).toBe(false);
-  });
-
-  it('ignores a bot message in a DM', () => {
-    expect(
-      shouldForwardMessageEvent({ ...botPost, channel: 'D0ABC' }, () => true),
-    ).toBe(false);
-  });
-
-  it('still drops other subtypes, watched or not', () => {
-    expect(
-      shouldForwardMessageEvent({ ...botPost, subtype: 'message_changed' }, () => true),
-    ).toBe(false);
+  it('forwards only via the watched top-level arm', () => {
+    expect(shouldForwardMessageEvent(bot, () => true)).toBe(true);
+    expect(shouldForwardMessageEvent(bot, () => false)).toBe(false);
+    expect(shouldForwardMessageEvent({ ...bot, ts: '2', thread_ts: '1' }, () => true)).toBe(false);
+    expect(shouldForwardMessageEvent({ ...bot, channel: 'D0ABC' }, () => true)).toBe(false);
+    expect(shouldForwardMessageEvent({ ...bot, subtype: 'message_changed' }, () => true)).toBe(false);
   });
 });
