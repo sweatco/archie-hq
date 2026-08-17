@@ -25,6 +25,7 @@ Historical record of Archie's incremental development. Each plan represents a mi
 | [20260626](20260626-response-formatting.md) | Message footer + self-updating PR cards | Implemented |
 | [20260717](20260717-slack-group-dm-support.md) | Slack group DM (mpim) support | Implemented |
 | [20260809](20260809-channel-pinned-messages-context.md) | Channel pinned messages as agent context | Implemented (dormant until `pins:read` is granted) |
+| [20260817](20260817-unify-core-skill-mounting.md) | Core skill mounting unified behind one manifest | Implemented |
 
 ## Evolution Arc
 

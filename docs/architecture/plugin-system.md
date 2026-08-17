@@ -252,14 +252,31 @@ Agent ID collision detection runs at startup. `registry.ts` keeps a single `seen
 Skills intended for agents. Each subdirectory under `skills/` is a Claude Code skill directory (containing `SKILL.md`). At agent spawn time, these are symlinked into the agent's workspace:
 
 ```
-sessions/{task-id}/agents/{agentKey}/.claude/skills/{skillName} -> plugins/{pluginName}/skills/{skillName}
+sessions/{task-id}/agents/{agentKey}/.claude/skills/{skillName} -> plugins/{pluginName}/skills/{skillName}   # a plugin's own skill
+sessions/{task-id}/agents/{agentKey}/.claude/skills/{skillName} -> {repoRoot}/skills/{skillName}             # a core skill (/app/skills in the image)
 ```
 
-The PM agent also gets its own workspace with skills symlinked from its plugin at spawn time.
+The PM agent also gets its own workspace with skills symlinked from its plugin at spawn time, plus the core skills described below.
 
-Skill symlinking is uniform across all tracks: every agent — repo, plugin, and PM — gets its own workspace, and `setupAgentWorkspace` symlinks the owning plugin's `skills/` the same way regardless of track. A repo agent whose plugin ships a `skills/` directory loads those skills via the `Skill` tool exactly like a plugin agent does. (For this to resolve, the agent def carries `pluginPath` so the symlink targets — which live under the plugins dir inside `WORKDIR` — are inside the agent's sandbox read paths; the registry sets `pluginPath`/`skillsPath` on both repo and plugin agents.)
+Skill symlinking is uniform across all tracks: every agent — repo, plugin, and PM — gets its own workspace, and `setupAgentWorkspace` symlinks that agent's `skillPaths` list the same way regardless of track. A repo agent whose plugin ships a `skills/` directory loads those skills via the `Skill` tool exactly like a plugin agent does. (For this to resolve, the agent def carries `pluginPath` so the symlink targets — which live under the plugins dir inside `WORKDIR` — are inside the agent's sandbox read paths; the registry sets `pluginPath` on both repo and plugin agents.)
 
-**Source:** `src/agents/spawn.ts` (`setupAgentWorkspace`), `src/agents/registry.ts`
+### Core skills, and which tracks mount them
+
+Archie-hq ships four skills of its own in the repo's top-level `skills/` directory rather than inside any plugin: `channel-canvas`, `self-awareness`, `thread-conduct` and `triggers`. Which agents receive them is declared in exactly one place — the `CORE_SKILL_MOUNTS` manifest in `src/agents/core-skills.ts` — keyed by agent **track**, one of `pm`, `repo` or `plain`. Today all four sit on the `pm` track and the other two mount nothing, so core skills reach the PM and no one else. Giving one a second audience is a line in that manifest; it does not require a second directory.
+
+The track is not stored on the agent definition. It is the case each construction site already distinguishes, so `scanAgentDefs` passes `'repo'` or `'plain'` according to its existing `if (agent.repo)` fork, `buildPmDef` passes `'pm'`, and `synthesizeDynamicAgentDef` passes `'repo'` because a PM-spawned dynamic agent is a repo agent by construction. This mirrors the two capability predicates `isPmAgent` and `isRepoAgent`, with a plain plugin agent being the negation of both.
+
+`resolveSkillPaths(track, pluginSkillsPath?)` turns a track plus the owning plugin's `skills/` directory into **one ordered list** of absolute skill directories, stored on the def as `skillPaths`. Plugin entries come first and the list is deduplicated by directory name, which is what makes **a plugin skill shadow a core skill of the same name**. An entry counts as a skill if it is a directory or a symlink resolving to one, so a skill vendored as a git submodule behind a symlink still mounts while a dangling link is skipped. `setupAgentWorkspace` then simply symlinks that list, re-checking that each source still exists at mount time — the plugins clone can be reset between the registry scan and the spawn, and `symlink(2)` does not validate its target.
+
+A core skill that ships in `skills/` while no track mounts it is unreachable from every agent, so startup emits a `logger.warn('system', …)` naming it. Forgetting to add a new skill to the manifest is therefore announced rather than silent.
+
+The mirror-image failure is **not** covered by that warning, and it is the one to watch in a deployment: if the `skills/` directory itself is missing — a production image built without the `COPY`, or the dev bind mount dropped — then every core path resolves to nothing, the manifest has nothing to complain about, and the PM boots with **zero core skills and no warning at all**. The symptom appears later, as a `Skill` call failing with `"Unknown skill"`. That is why `Dockerfile.prod` and `docker-compose.yml` both carry a comment on the line that puts the directory in place.
+
+One consequence of building the list at registry-scan time rather than at spawn time: `skillPaths` is a **snapshot**. A skill *removed* from a plugin is handled, because the mount re-checks each source. A skill *added* to a plugin is not mounted until the next scan — which happens at startup, on every `Task.create` and `Task.get`, and on plugin sync, so in practice within one turn. The same move puts one small `readdirSync` per agent def on that scan path, where previously the directory was read once per spawn.
+
+Two limits are worth knowing before giving a core skill a new audience. A mounted skill is loadable through the `Skill` and `Read` tools, but its files are **not** readable from sandboxed `Bash` in the production image, because bubblewrap resolves the symlink and `/app` is in `denyRead`. And all four core skills are written in the PM's voice and instruct PM-only MCP tools, which are attached only on the PM — so a new audience needs prompt and tool work too, not just a manifest entry.
+
+**Source:** `src/agents/core-skills.ts` (`CORE_SKILL_MOUNTS`, `resolveSkillPaths`, `findUnmountedCoreSkills`, `mountedSkillNames`), `src/agents/spawn.ts` (`setupAgentWorkspace`), `src/agents/registry.ts`, `src/index.ts` (the boot banner and the warning)
 
 ## Task Directory Structure
 
