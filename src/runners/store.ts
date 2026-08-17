@@ -1,5 +1,5 @@
 import { createReadStream, existsSync } from 'node:fs';
-import { appendFile, mkdir, readdir } from 'node:fs/promises';
+import { appendFile, mkdir, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { z } from 'zod';
@@ -9,9 +9,20 @@ import { SESSIONS_DIR } from '../system/workdir.js';
 import { getSharedPath } from '../tasks/persistence.js';
 import type { ExecEvent, RunnerLease, RunnerLeaseFile } from './types.js';
 
+const taskIdSchema = z.string().regex(/^task-\d{8}-\d{4}-[a-z0-9]+$/);
+const uuidV4Schema = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+
+function assertTaskId(taskId: string): void {
+  taskIdSchema.parse(taskId);
+}
+
+function assertUuid(value: string): void {
+  uuidV4Schema.parse(value);
+}
+
 const execSessionSchema = z.object({
-  id: z.string(),
-  sessionId: z.string(),
+  id: uuidV4Schema,
+  sessionId: z.string().regex(/^archie-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i),
   state: z.enum(['running', 'completed', 'failed', 'cancelled', 'timed_out']),
   watermark: z.number().int().nonnegative(),
   outputBytes: z.number().int().nonnegative(),
@@ -22,8 +33,8 @@ const execSessionSchema = z.object({
 }).strict();
 
 const leaseSchema = z.object({
-  id: z.string(),
-  taskId: z.string(),
+  id: uuidV4Schema,
+  taskId: taskIdSchema,
   agentId: z.string(),
   profile: z.string(),
   backendId: z.string(),
@@ -38,7 +49,7 @@ const leaseSchema = z.object({
     remotePath: z.string(),
     syncedAt: z.iso.datetime(),
   }).strict()),
-  execSessions: z.record(z.string(), execSessionSchema),
+  execSessions: z.record(uuidV4Schema, execSessionSchema),
 }).strict();
 
 const leaseFileSchema = z.object({
@@ -49,14 +60,18 @@ const leaseFileSchema = z.object({
 const saveLock = createKeyedLock();
 
 export function getRunnerStatePath(taskId: string): string {
+  assertTaskId(taskId);
   return join(getSharedPath(taskId), 'runners.json');
 }
 
 export function getRunnerDataPath(taskId: string, leaseId: string): string {
+  assertTaskId(taskId);
+  assertUuid(leaseId);
   return join(getSharedPath(taskId), 'runners', leaseId);
 }
 
 export function getRunnerExecLogPath(taskId: string, leaseId: string, execId: string): string {
+  assertUuid(execId);
   return join(getRunnerDataPath(taskId, leaseId), 'exec', `${execId}.jsonl`);
 }
 
@@ -67,7 +82,9 @@ export async function loadRunnerLeases(taskId: string): Promise<RunnerLease[]> {
 }
 
 export function saveRunnerLeases(taskId: string, leases: readonly RunnerLease[]): Promise<void> {
-  const file: RunnerLeaseFile = { version: 1, leases: structuredClone([...leases]) };
+  assertTaskId(taskId);
+  const file = leaseFileSchema.parse({ version: 1, leases: structuredClone([...leases]) }) as RunnerLeaseFile;
+  if (file.leases.some((lease) => lease.taskId !== taskId)) throw new Error(`Runner leases are stored under the wrong task: ${taskId}`);
   return saveLock(taskId, async () => {
     await writeJsonAtomic(getRunnerStatePath(taskId), file);
   });
@@ -77,7 +94,7 @@ export async function listRunnerTaskIds(): Promise<string[]> {
   if (!existsSync(SESSIONS_DIR)) return [];
   const entries = await readdir(SESSIONS_DIR, { withFileTypes: true });
   return entries
-    .filter((entry) => entry.isDirectory() && entry.name.startsWith('task-') && existsSync(getRunnerStatePath(entry.name)))
+    .filter((entry) => entry.isDirectory() && taskIdSchema.safeParse(entry.name).success && existsSync(getRunnerStatePath(entry.name)))
     .map((entry) => entry.name);
 }
 
@@ -112,4 +129,8 @@ export async function readRunnerExecWatermark(taskId: string, leaseId: string, e
     }
   }
   return watermark;
+}
+
+export function removeRunnerExecLog(taskId: string, leaseId: string, execId: string): Promise<void> {
+  return rm(getRunnerExecLogPath(taskId, leaseId, execId), { force: true });
 }

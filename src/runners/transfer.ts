@@ -1,7 +1,7 @@
 import { createReadStream } from 'node:fs';
-import { lstat, mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, posix, resolve, sep } from 'node:path';
+import { isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { create, extract, list } from 'tar';
@@ -96,8 +96,13 @@ function safeArchivePath(value: string): string | null {
   return normalized;
 }
 
-export async function extractRunnerArchive(archivePath: string, destination: string, maxBytes: number): Promise<void> {
+export async function extractRunnerArchive(archivePath: string, destination: string, allowedRoot: string, maxBytes: number): Promise<void> {
+  const allowed = resolve(allowedRoot);
   const root = resolve(destination);
+  const relativeDestination = relative(allowed, root);
+  if (!relativeDestination || relativeDestination === '..' || relativeDestination.startsWith('..' + sep) || isAbsolute(relativeDestination)) {
+    throw new Error('Runner archive destination escapes its allowed root');
+  }
   let expandedBytes = 0;
   let entries = 0;
   let unsafe: string | undefined;
@@ -122,8 +127,15 @@ export async function extractRunnerArchive(archivePath: string, destination: str
   });
   if (unsafe) throw new Error(unsafe);
 
-  await mkdir(destination, { recursive: false });
-  await extract({ cwd: destination, file: archivePath, strict: true, preservePaths: false, noMtime: true });
+  await mkdir(root, { recursive: false });
+  const verifiedAllowed = await realpath(allowed);
+  const verifiedRoot = await realpath(root);
+  const verifiedRelative = relative(verifiedAllowed, verifiedRoot);
+  if (!verifiedRelative || verifiedRelative === '..' || verifiedRelative.startsWith('..' + sep) || isAbsolute(verifiedRelative)) {
+    await rm(root, { recursive: true, force: true });
+    throw new Error('Runner archive destination resolves outside its allowed root');
+  }
+  await extract({ cwd: verifiedRoot, file: archivePath, strict: true, preservePaths: false, noMtime: true });
 }
 
 export function collectionName(): string {

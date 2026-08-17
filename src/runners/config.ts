@@ -25,7 +25,10 @@ export const runnerProfileSchema = z.object({
   resources: z.record(z.string(), z.number().int().nonnegative()).default({}),
   softnetAllow: z.array(cidrSchema).default([]),
   readinessCommand: z.array(z.string()).min(1).optional(),
-  remoteWorkspaceRoot: z.string().refine((value) => value.startsWith('/') && !value.includes('\n') && !value.includes('\0'), 'Expected an absolute guest path').optional(),
+  remoteWorkspaceRoot: z.string().refine(
+    (value) => value.startsWith('/') && !/^\/+$/u.test(value) && !/[\0-\x1f\x7f]/.test(value) && !value.split('/').includes('..'),
+    'Expected a non-root absolute guest path without traversal',
+  ).optional(),
   leaseTtlMinutes: z.number().int().min(1).max(10080).default(120),
   debugTtlMinutes: z.number().int().min(1).max(1440).default(30),
   maxDebugTtlMinutes: z.number().int().min(1).max(1440).default(120),
@@ -34,6 +37,8 @@ export const runnerProfileSchema = z.object({
   readinessTimeoutSeconds: z.number().int().min(1).max(1800).default(300),
   maxExecWaitSeconds: z.number().int().min(1).max(120).default(30),
   maxExecOutputBytes: z.number().int().min(1024).max(1073741824).default(10485760),
+  maxActiveExecSessions: z.number().int().min(1).max(64).default(4),
+  maxExecSessionHistory: z.number().int().min(1).max(1000).default(50),
   maxUploadBytes: z.number().int().min(1024).max(10737418240).default(2147483648),
   maxDownloadBytes: z.number().int().min(1024).max(10737418240).default(1073741824),
 }).strict().superRefine((profile, ctx) => {
@@ -45,16 +50,23 @@ export const runnerProfileSchema = z.object({
   }
 });
 
+const orchardConfigSchema = z.object({
+  baseUrl: z.url().refine((value) => value.startsWith('http://') || value.startsWith('https://'), 'Expected an HTTP(S) URL'),
+  context: z.string().min(1),
+  allowInsecureHttp: z.boolean().default(false),
+}).strict().superRefine((orchard, ctx) => {
+  if (orchard.baseUrl.startsWith('http://') && !orchard.allowInsecureHttp) {
+    ctx.addIssue({ code: 'custom', path: ['baseUrl'], message: 'HTTP requires allowInsecureHttp=true and is only suitable for isolated development' });
+  }
+});
+
 export const runnerConfigSchema = z.object({
   version: z.literal(1),
   instanceId: z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/),
   maxConcurrent: z.number().int().min(1).max(100).default(1),
   orphanGraceMinutes: z.number().int().min(1).max(1440).default(30),
   reaperIntervalSeconds: z.number().int().min(10).max(3600).default(60),
-  orchard: z.object({
-    baseUrl: z.url().refine((value) => value.startsWith('http://') || value.startsWith('https://'), 'Expected an HTTP(S) URL'),
-    context: z.string().min(1),
-  }).strict(),
+  orchard: orchardConfigSchema,
   profiles: z.record(z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/), runnerProfileSchema),
 }).strict().refine((config) => Object.keys(config.profiles).length > 0, {
   path: ['profiles'],

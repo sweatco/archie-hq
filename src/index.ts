@@ -219,6 +219,10 @@ async function main(): Promise<void> {
         git_sha: process.env.GIT_SHA || null,
       });
     });
+    app.get('/health/runners', (_req: Request, res: Response) => {
+      const health = getRunnerHealth();
+      res.status(health.enabled && health.degraded ? 503 : 200).json(health);
+    });
 
     // Mount API routes (REST + SSE for CLI)
     mountApiRoutes(app);

@@ -23,6 +23,8 @@ export interface RunnerProfile {
   readinessTimeoutSeconds: number;
   maxExecWaitSeconds: number;
   maxExecOutputBytes: number;
+  maxActiveExecSessions: number;
+  maxExecSessionHistory: number;
   maxUploadBytes: number;
   maxDownloadBytes: number;
 }
@@ -36,6 +38,7 @@ export interface RunnerConfig {
   orchard: {
     baseUrl: string;
     context: string;
+    allowInsecureHttp: boolean;
   };
   profiles: Record<string, RunnerProfile>;
 }

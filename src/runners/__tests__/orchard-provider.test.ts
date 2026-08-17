@@ -1,4 +1,5 @@
 import http from 'node:http';
+import type { Duplex } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocketServer } from 'ws';
 import { OrchardRunnerProvider, serializeArgv } from '../orchard-provider.js';
@@ -31,6 +32,10 @@ describe('OrchardRunnerProvider', () => {
     wss = new WebSocketServer({ noServer: true });
     server.on('upgrade', (request, socket, head) => {
       requests.push({ method: request.method, url: request.url, authorization: request.headers.authorization });
+      if (new URL(request.url ?? '/', baseUrl || 'http://127.0.0.1').searchParams.get('session') === 'missing') {
+        socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
+        return;
+      }
       wss.handleUpgrade(request, socket, head, (ws) => wss.emit('connection', ws, request));
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -79,6 +84,106 @@ describe('OrchardRunnerProvider', () => {
     expect(messages.map((message) => JSON.parse(message))).toContainEqual({ type: 'ack', watermark: 1 });
     expect(requests[0].url).toContain('session=session-1');
     expect(new URL(requests[0].url ?? '', baseUrl).searchParams.get('command')).toBe("'printf' 'it'\\''s safe'");
+  });
+
+  it('sends command environment over stdin without exposing it in the WebSocket URL', async () => {
+    const messages: Array<{ type: string; data?: string }> = [];
+    wss.once('connection', (ws) => {
+      ws.on('message', (data) => {
+        const message = JSON.parse(data.toString()) as { type: string; data?: string };
+        messages.push(message);
+        if (message.type === 'stdin' && message.data === '') {
+          ws.send(JSON.stringify({ type: 'exit', exit: { code: 0 }, watermark: 1 }));
+        }
+      });
+    });
+    const provider = new OrchardRunnerProvider(baseUrl, 'archie', 'token');
+    for await (const _event of provider.exec('vm-1', {
+      argv: ['/usr/bin/printenv', 'RUNNER_SECRET'],
+      env: { RUNNER_SECRET: "it's hidden" },
+      sessionId: 'session-env',
+    })) {}
+
+    const url = requests[0].url ?? '';
+    expect(url).not.toContain('RUNNER_SECRET');
+    expect(url).not.toContain('hidden');
+    expect(new URL(url, baseUrl).searchParams.get('command')).toBe("'/bin/sh' '-s'");
+    const scriptFrame = messages.find((message) => message.type === 'stdin' && message.data);
+    expect(Buffer.from(scriptFrame?.data ?? '', 'base64').toString()).toContain("export RUNNER_SECRET='it'\\''s hidden'");
+  });
+
+  it('finishes the private environment bootstrap before an immediate detach', async () => {
+    const messageTypes: string[] = [];
+    wss.once('connection', (ws) => {
+      ws.on('message', (data) => {
+        const message = JSON.parse(data.toString()) as { type: string; data?: string };
+        messageTypes.push(message.type === 'stdin' && message.data === '' ? 'stdin-eof' : message.type);
+        if (message.type === 'detach') ws.close();
+      });
+    });
+    const controller = new AbortController();
+    const provider = new OrchardRunnerProvider(baseUrl, 'archie', 'token');
+    const consume = async () => {
+      for await (const _event of provider.exec('vm-1', {
+        argv: ['/usr/bin/printenv', 'RUNNER_SECRET'],
+        env: { RUNNER_SECRET: 'hidden' },
+        sessionId: 'session-detach',
+        signal: controller.signal,
+      })) {}
+    };
+
+    const pending = consume();
+    controller.abort();
+    await pending;
+    expect(messageTypes).toEqual(['stdin', 'stdin-eof', 'detach']);
+  });
+
+  it('does not stream ordinary stdin after an immediate detach', async () => {
+    const messageTypes: string[] = [];
+    wss.once('connection', (ws) => {
+      ws.on('message', (data) => {
+        const message = JSON.parse(data.toString()) as { type: string; data?: string };
+        messageTypes.push(message.type === 'stdin' && message.data === '' ? 'stdin-eof' : message.type);
+        if (message.type === 'detach') ws.close();
+      });
+    });
+    const controller = new AbortController();
+    const provider = new OrchardRunnerProvider(baseUrl, 'archie', 'token');
+    const consume = async () => {
+      for await (const _event of provider.exec('vm-1', {
+        argv: ['/bin/sh', '-s'],
+        env: {},
+        stdin: (async function* () { yield Buffer.from('echo should-not-run\n'); })(),
+        sessionId: 'session-stdin-detach',
+        signal: controller.signal,
+      })) {}
+    };
+
+    const pending = consume();
+    controller.abort();
+    await pending;
+    expect(messageTypes).toEqual(['detach']);
+  });
+
+  it('bounds a stalled WebSocket handshake', async () => {
+    let stalledSocket: Duplex | undefined;
+    server.removeAllListeners('upgrade');
+    server.on('upgrade', (_request, socket) => { stalledSocket = socket; });
+    const provider = new OrchardRunnerProvider(baseUrl, 'archie', 'token', 20);
+    const consume = async () => {
+      for await (const _event of provider.exec('vm-1', { argv: ['/usr/bin/true'], sessionId: 'stalled' })) {}
+    };
+
+    try {
+      await expect(consume()).rejects.toThrow(/Timed out opening Orchard exec session/);
+    } finally {
+      stalledSocket?.destroy();
+    }
+  });
+
+  it('treats closing an absent exec session as idempotent', async () => {
+    const provider = new OrchardRunnerProvider(baseUrl, 'archie', 'token');
+    await expect(provider.closeExec('vm-1', 'missing')).resolves.toBeUndefined();
   });
 });
 

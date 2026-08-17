@@ -53,6 +53,18 @@ describe('runner transfers', () => {
     await symlink('../../../outside', join(source, 'nested', 'escape'));
     const archive = join(source, 'bad.tar');
     await create({ cwd: source, file: archive }, ['nested']);
-    await expect(extractRunnerArchive(archive, join(parent, 'output'), 1024 * 1024)).rejects.toThrow(/Unsafe symbolic link/);
+    await expect(extractRunnerArchive(archive, join(parent, 'output'), parent, 1024 * 1024)).rejects.toThrow(/Unsafe symbolic link/);
+  });
+
+  it('rejects a destination outside its allowed root', async () => {
+    const source = await mkdtemp(join(tmpdir(), 'archie-runner-source-'));
+    const allowed = await mkdtemp(join(tmpdir(), 'archie-runner-allowed-'));
+    const outside = await mkdtemp(join(tmpdir(), 'archie-runner-outside-'));
+    tempDirs.push(source, allowed, outside);
+    await writeFile(join(source, 'artifact.txt'), 'artifact');
+    const archive = join(source, 'artifact.tar');
+    await create({ cwd: source, file: archive }, ['artifact.txt']);
+
+    await expect(extractRunnerArchive(archive, join(outside, 'output'), allowed, 1024 * 1024)).rejects.toThrow(/allowed root/);
   });
 });
