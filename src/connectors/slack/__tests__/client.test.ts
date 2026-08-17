@@ -658,6 +658,25 @@ describe('listBotChannels — public memberships only', () => {
   });
 });
 
+describe('getChannelInfo — DM identity', () => {
+  it('keeps the DM participant id when display-name lookup fails', async () => {
+    slackApi.conversations.info.mockResolvedValue({
+      ok: true,
+      channel: { id: 'D1', is_private: true, is_im: true, user: 'UOTHER' },
+    });
+    slackApi.users.info.mockRejectedValue(new Error('users.info unavailable'));
+
+    await expect(client.getChannelInfo('D1')).resolves.toMatchObject({
+      id: 'D1',
+      name: 'DM with UOTHER',
+      isPrivate: true,
+      isIm: true,
+      imUserId: 'UOTHER',
+      dmUserId: 'UOTHER',
+    });
+  });
+});
+
 describe('fetchExploreThread — accessible-set gate, no bot filtering', () => {
   it("allows this task's OWN channel even when it's private (via allowedIds)", async () => {
     slackApi.conversations.info.mockResolvedValue({

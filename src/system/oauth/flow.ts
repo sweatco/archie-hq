@@ -11,6 +11,7 @@
  */
 
 import * as oauth from 'oauth4webapi';
+import { oauthFetch } from './http.js';
 
 export interface PkcePair {
   verifier: string;
@@ -26,6 +27,11 @@ export async function generatePkcePair(): Promise<PkcePair> {
 
 export function generateState(): string {
   return oauth.generateRandomState();
+}
+
+export function parseOAuthScope(scope: unknown, fallback: readonly string[]): string[] {
+  if (typeof scope !== 'string') return [...new Set(fallback)].sort();
+  return [...new Set(scope.split(/\s+/).filter(Boolean))].sort();
 }
 
 export interface AuthorizeUrlInput {
@@ -87,7 +93,10 @@ export async function exchangeCodeForTokens(input: TokenExchangeInput): Promise<
     validated,
     input.redirectUri,
     input.codeVerifier,
-    input.resource ? { additionalParameters: { resource: input.resource } } : undefined,
+    {
+      ...(input.resource ? { additionalParameters: { resource: input.resource } } : {}),
+      [oauth.customFetch]: oauthFetch,
+    },
   );
   return await oauth.processAuthorizationCodeResponse(input.as, input.client, res);
 }
@@ -107,7 +116,10 @@ export async function refreshAccessToken(input: RefreshInput): Promise<oauth.Tok
     input.client,
     input.clientAuth,
     input.refreshToken,
-    input.resource ? { additionalParameters: { resource: input.resource } } : undefined,
+    {
+      ...(input.resource ? { additionalParameters: { resource: input.resource } } : {}),
+      [oauth.customFetch]: oauthFetch,
+    },
   );
   return await oauth.processRefreshTokenResponse(input.as, input.client, res);
 }

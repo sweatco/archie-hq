@@ -1723,10 +1723,15 @@ export async function getChannelInfo(
 
     // For DMs, resolve the other user's name instead of showing a raw ID
     if (isIm && channel?.user) {
-      const userInfo = await getUserInfo(channel.user);
+      let userName = channel.user;
+      try {
+        userName = (await getUserInfo(channel.user)).realName;
+      } catch (error) {
+        logger.warn('Slack', `Failed to resolve display name for DM participant ${channel.user}`, error);
+      }
       return {
         id: channelId,
-        name: `DM with ${userInfo.realName}`,
+        name: `DM with ${userName}`,
         isPrivate,
         isIm,
         imUserId: channel.user,

@@ -28,10 +28,10 @@ import { ensureFreshToken } from '../system/oauth/refresh.js';
 const USAGE = `archie oauth — manage OAuth credentials for HTTP/SSE MCP servers
 
 Usage:
-  npm run oauth:connect <server-name> [--label <text>] [--client-id <id> --client-secret <secret>]
+  npm run oauth:connect -- <server-name> [--label <text>] [--client-id <id> --client-secret <secret>]
   npm run oauth:list
-  npm run oauth:revoke <server-name> [--user <slack-user-id>]
-  npm run oauth:refresh <server-name>
+  npm run oauth:revoke -- <server-name> [--user <slack-user-id>]
+  npm run oauth:refresh -- <server-name>
 
 Revoking with --user deletes only that user's token for the server; other
 users' tokens and the shared client registration are untouched. Per-user
@@ -75,7 +75,9 @@ async function runConnect(args: string[]): Promise<void> {
     flags: ['--label', '--client-id', '--client-secret', '--client-name'],
   });
   const serverName = parsed.positional[0];
-  if (!serverName) fatal('Usage: oauth:connect <server-name> [--label X]');
+  if (!serverName || parsed.positional.length !== 1) {
+    fatal('Usage: npm run oauth:connect -- <server-name> [--label X]');
+  }
 
   const publicUrl = process.env.ARCHIE_PUBLIC_URL;
   if (!publicUrl) {
@@ -154,7 +156,7 @@ async function runList(): Promise<void> {
   const names = await listOAuthServers();
   const userIds = await listOAuthUserIds();
   if (!names.length && !userIds.length) {
-    process.stdout.write('No OAuth records yet. Connect one with `npm run oauth:connect <server-name>`.\n');
+    process.stdout.write('No OAuth records yet. Connect one with `npm run oauth:connect -- <server-name>`.\n');
     return;
   }
   const now = Math.floor(Date.now() / 1000);
@@ -199,7 +201,9 @@ async function runList(): Promise<void> {
 async function runRevoke(args: string[]): Promise<void> {
   const parsed = parseArgs(args, { flags: ['--user'] });
   const serverName = parsed.positional[0];
-  if (!serverName) fatal('Usage: oauth:revoke <server-name> [--user <slack-user-id>]');
+  if (!serverName || parsed.positional.length !== 1) {
+    fatal('Usage: npm run oauth:revoke -- <server-name> [--user <slack-user-id>]');
+  }
 
   const slackUserId = parsed.flags['--user'];
   if (slackUserId) {
@@ -224,7 +228,7 @@ async function runRevoke(args: string[]): Promise<void> {
 
 async function runRefresh(args: string[]): Promise<void> {
   const serverName = args[0];
-  if (!serverName) fatal('Usage: oauth:refresh <server-name>');
+  if (!serverName || args.length !== 1) fatal('Usage: npm run oauth:refresh -- <server-name>');
   // Force a refresh regardless of remaining token lifetime. (Faking "now" would
   // also force it, but that timestamp leaks into the stored updated_at/expires_at.)
   const result = await ensureFreshToken(serverName, { force: true }).catch((err) => {

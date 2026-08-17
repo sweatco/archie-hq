@@ -678,18 +678,22 @@ Shared folder: ${sharedPath} [READ-ONLY]
   }
   if (oauthBindings.requestable.length > 0) {
     const list = oauthBindings.requestable.map((s) => `"${s}"`).join(', ');
+    const nextStep = isPmAgent(def)
+      ? 'If you need one to complete this task, call request_mcp_auth with the server name and any exact scopes from the failed WWW-Authenticate challenge. The task will resume after authorization.'
+      : 'If you need one, send pm-agent the server name plus the exact 401/403, insufficient-scope, and WWW-Authenticate scope context. The PM owns user authorization and will re-delegate after it completes.';
     systemPrompt +=
       `\n\n## MCP servers awaiting authorization\n` +
       `These configured MCP servers require user authorization and are not connected yet: ${list}. ` +
-      `Their tools are unavailable until the DM participant authorizes them. If you need one to complete this task, ` +
-      `call request_mcp_auth with the server name. The task will resume after authorization.`;
+      `Their tools are unavailable until the DM participant authorizes them. ${nextStep}`;
   }
   if (dmOAuthUser && oauthBindings.sharedInjected.length > 0) {
     const list = oauthBindings.sharedInjected.map((s) => `"${s}"`).join(', ');
+    const escalation = isPmAgent(def)
+      ? 'call request_mcp_auth with the challenged scopes to switch that server to the DM user\'s credentials.'
+      : 'send pm-agent the server name and exact authorization challenge so the PM can switch it to the DM user\'s credentials.';
     systemPrompt +=
       `\n\nMCP server(s) ${list} are using shared credentials. Continue with them normally. ` +
-      `Only if a call fails with an authorization or permission error (401, 403, insufficient scope), ` +
-      `call request_mcp_auth to switch that server to the DM user's credentials.`;
+      `Only if a call fails with an authorization or permission error (401, 403, insufficient scope), ${escalation}`;
   }
 
   // ---- Build query options (session ID may change on retry) ----

@@ -29,6 +29,8 @@ export interface OAuthRecordMeta {
    * tracked won't have it — reconnect to populate.
    */
   resource?: string;
+  /** Redirect URI the client registration was created for. */
+  redirect_uri?: string;
 }
 
 /** What we encrypt inside the OAuth vault record. */
@@ -51,6 +53,8 @@ export interface OAuthRecord extends OAuthRecordMeta {
  */
 export interface OAuthUserRecordMeta extends OAuthRecordMeta {
   slack_user_id: string;
+  resource: string;
+  redirect_uri: string;
 }
 
 /**
@@ -77,6 +81,8 @@ export interface OAuthUserRecord extends OAuthUserRecordMeta {
 export interface OAuthClientMeta {
   server_name: string;
   issuer: string;
+  resource: string;
+  redirect_uri: string;
   created_at: number;
   updated_at: number;
 }
@@ -116,6 +122,11 @@ export interface OAuthPendingSealed {
   code_verifier: string;
   client_id: string;
   client_secret?: string;
+  /** Durable DM callback result, installed into the user vault before task wake. */
+  user_grant?: OAuthUserSealed & {
+    expires_at: number;
+    scopes: string[];
+  };
 }
 
 /** On-disk representation of an in-flight OAuth attempt. */

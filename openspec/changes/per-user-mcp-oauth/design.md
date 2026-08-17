@@ -12,7 +12,8 @@ ambiguity.
 - Prefer shared MCP credentials when they satisfy the request.
 - Let a DM task escalate a server to the participant's credentials after an
   authentication or permission failure.
-- Start authorization lazily from the agent.
+- Start authorization lazily from the PM after it receives the failed
+  operation's authorization challenge directly or from a specialist.
 - Preserve shared credentials outside DMs.
 - Keep provider discovery and storage provider-agnostic.
 
@@ -28,8 +29,9 @@ ambiguity.
 
 `SlackChannel.dm_user_id` records the other participant returned by Slack.
 Only the default channel can supply the OAuth user, and it must be a 1:1 DM.
-Task metadata stores only a set of server names explicitly escalated to that
-user; no acting-user or authorization-request binding is needed.
+Task metadata stores a set of server names explicitly escalated to that user
+and a bounded per-server forced-reauthorization count. No acting-user binding
+is stored: the user is derived again from the default DM on every spawn.
 
 At spawn:
 
@@ -42,15 +44,32 @@ At spawn:
 
 ### Authorization links are sent directly to the DM
 
-`request_mcp_auth` rejects non-DM tasks. In a DM it first marks that server as
-personal for the task. It restarts immediately when the user already has a
-usable token. Otherwise it performs discovery, reuses or registers the shared
-DCR client, writes a pending record, sends the URL to the default DM, and
-parks the task.
+Only the PM receives `request_mcp_auth`; specialists send the PM the server name
+and exact 401/403, insufficient-scope, and `WWW-Authenticate` scope context.
+The tool rejects non-DM tasks. In a DM it marks the server as personal for the
+task and restarts immediately only when an existing personal token is fresh and
+covers the challenged scopes. Otherwise it performs discovery, reuses or
+registers the shared DCR client, writes a pending record, sends the URL to the
+default DM, suspends the working indicator, and parks the task.
 
-The pending record carries `state`, `task_id`, and `slack_user_id`. On success,
-the callback stores the user token, deletes the pending record, and wakes the
-task. The next spawn derives the same user from the DM again.
+Authorization requests are serialized by `(task, user, server)`; a duplicate
+call returns the existing pending state and does not post a second link. A
+forced reauthorization requests the union of the record's prior scopes and the
+authoritative challenge scopes. The provider's returned `scope` value replaces
+the requested approximation when supplied. A task allows at most two forced
+reauthorization prompts per server, preventing an insufficient grant from
+looping indefinitely.
+
+The pending record carries the discovery and PKCE exchange data plus `state`,
+`task_id`, and `slack_user_id`. On success, the callback atomically seals the
+exchanged grant into the completed pending record. That record is a durable wake
+outbox: it survives the pending reaper
+and daemon restart, waits while the task is active or terminating, and is
+drained after either `task:stopped` or `task:completed`. Startup recovery also
+replays completed wakes. Draining installs the grant under the same user/server
+lock used by refresh, enqueues the resumed PM message, saves task state, and
+then deletes the outbox. A crash in the final gap may duplicate the continuation
+nudge but cannot lose the grant or wake intent.
 
 ### Storage separates clients from user tokens
 
@@ -61,8 +80,12 @@ oauth/
   .pending/<state>.json
 ```
 
-One DCR client serves all users of a server. Refresh locks are keyed by user
-and server. The legacy `oauth/<server>.json` shared records remain unchanged.
+One current DCR client record serves all users of a server only while issuer,
+canonical resource, and redirect URI exactly match. Per-user token records
+carry the same binding and are rejected at spawn/refresh on mismatch. Callback
+writes and refreshes share a lock keyed by user and server. The legacy
+`oauth/<server>.json` shared records and their injection behavior remain
+unchanged.
 
 ## Risks / Trade-offs
 
@@ -72,7 +95,11 @@ and server. The legacy `oauth/<server>.json` shared records remain unchanged.
 - Existing DM task metadata may lack `dm_user_id`; the next inbound DM message
   backfills it.
 - An MCP server may express insufficient access in provider-specific ways. The
-  agent escalates only after the MCP call reports an authentication or
-  permission failure.
+  PM escalates only after the MCP call reports an authentication or permission
+  failure; a specialist must relay the exact challenge to the PM.
 - Abandoned authorization leaves the task parked until the user sends another
-  message or retries after the pending record expires.
+  message. After the one-hour pending expiry a later request can issue a new
+  link; completed but undelivered wakes do not expire.
+- Revocation may leave an empty `oauth/users/<uid>/` directory. Listings decide
+  user presence from actual token records, so an empty directory is invisible
+  and cannot suppress the "no records" result.

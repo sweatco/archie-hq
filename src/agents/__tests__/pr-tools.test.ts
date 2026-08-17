@@ -663,6 +663,50 @@ describe('request_edit_mode', () => {
   });
 });
 
+describe('request_mcp_auth', () => {
+  function harness(outcome: 'ready' | 'authorization_started' | 'authorization_pending') {
+    const agent = makeAgent({ isPm: true, repo: undefined, id: 'pm-agent' });
+    (agent as any).pendingTeardown = undefined;
+    (agent as any).deferTeardown = vi.fn();
+    const task = makeTask();
+    (task as any).getMcpOAuthUser = vi.fn().mockReturnValue('U1');
+    (task as any).requestMcpAuth = vi.fn().mockResolvedValue(outcome);
+    return {
+      agent,
+      task,
+      handler: getToolFromServer(createOrchestrationMcpServer(agent, task), 'request_mcp_auth'),
+    };
+  }
+
+  it.each(['ready', 'authorization_started', 'authorization_pending'] as const)(
+    'suspends Slack status and defers teardown for %s',
+    async (outcome) => {
+      const { agent, task, handler } = harness(outcome);
+
+      const result = await handler({ server: 'notion', challenge_scopes: ['files:write'] });
+
+      expect(task.requestMcpAuth).toHaveBeenCalledWith('notion', undefined, ['files:write']);
+      expect(task.suspendStatus).toHaveBeenCalledOnce();
+      expect(agent.deferTeardown).toHaveBeenCalledOnce();
+      expect(result.isError).not.toBe(true);
+      if (outcome === 'authorization_pending') {
+        expect(result.content[0].text).toMatch(/already pending/i);
+      }
+    },
+  );
+
+  it('does not claim this call sent a link when the agent is already pausing', async () => {
+    const { agent, task, handler } = harness('authorization_started');
+    (agent as any).pendingTeardown = () => Promise.resolve();
+
+    const result = await handler({ server: 'notion' });
+
+    expect(result.content[0].text).toMatch(/not started by this call/i);
+    expect(task.requestMcpAuth).not.toHaveBeenCalled();
+    expect(task.suspendStatus).not.toHaveBeenCalled();
+  });
+});
+
 // ---- Branch state helper tests ----
 
 describe('hydrateBranchState', () => {

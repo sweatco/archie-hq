@@ -89,11 +89,16 @@ ARCHIE_URL=http://localhost:3000 npm run cli   # override server URL
 For MCP servers that authenticate via OAuth, use the `oauth` subcommands. They run on the same host as the daemon (they share `SECRETS_DIR`) and require `ARCHIE_SECRETS_KEY` (and `ARCHIE_PUBLIC_URL` for `connect`).
 
 ```bash
-npm run oauth:connect <server-name>   # begin authorize flow
-npm run oauth:list                    # show connected servers
-npm run oauth:refresh <server-name>   # force-refresh a token
-npm run oauth:revoke  <server-name>   # delete a record
+npm run oauth:connect -- <server-name>                       # begin shared authorize flow
+npm run oauth:list                                          # show connected servers/users
+npm run oauth:refresh -- <server-name>                       # force-refresh a shared token
+npm run oauth:revoke -- <server-name>                        # delete the shared record
+npm run oauth:revoke -- <server-name> --user <slack-user-id> # delete one user's record
 ```
+
+OAuth endpoints require public HTTPS. For a local provider only, set
+`ARCHIE_OAUTH_ALLOW_INSECURE_LOOPBACK=1`; this exception accepts HTTP on
+`localhost` or a loopback IP and nowhere else.
 
 ### REST API
 

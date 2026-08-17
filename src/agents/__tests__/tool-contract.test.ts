@@ -113,7 +113,6 @@ const AGENT_TOOLS = [
   'mcp__agent-tools__send_message_to_agent',
   'mcp__agent-tools__log_finding',
   'mcp__agent-tools__share_artifact',
-  'mcp__agent-tools__request_mcp_auth',
 ];
 
 const PM_COMMS_TOOLS = [
@@ -137,6 +136,7 @@ const PM_ORCHESTRATION_TOOLS = [
   'mcp__orchestration-tools__report_completion',
   'mcp__orchestration-tools__request_edit_mode',
   'mcp__orchestration-tools__request_max_mode',
+  'mcp__orchestration-tools__request_mcp_auth',
   'mcp__orchestration-tools__get_agents_status',
   'mcp__orchestration-tools__get_task_usage',
   'mcp__orchestration-tools__list_available_repos',

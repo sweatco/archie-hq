@@ -26,7 +26,7 @@ import type { Application, Request, Response } from 'express';
 import { mountSlackApp, type SlackLifecycle } from './connectors/slack/events.js';
 import { mountGitHubWebhook } from './connectors/github/events.js';
 import { mountApiRoutes } from './connectors/api/routes.js';
-import { mountOAuthRoutes } from './connectors/oauth/routes.js';
+import { mountOAuthRoutes, replayCompletedDmWakes } from './connectors/oauth/routes.js';
 import { getIsShuttingDown, setShuttingDown } from './system/shutdown.js';
 import { getActiveTaskIds } from './tasks/task.js';
 import { logger } from './system/logger.js';
@@ -254,6 +254,7 @@ async function main(): Promise<void> {
     const server = http.createServer(app);
 
     await recoverActiveTasks();
+    await replayCompletedDmWakes();
     await initReminderScheduler();
     await initTriggerScheduler();
 

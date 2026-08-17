@@ -8,6 +8,7 @@
  */
 
 import * as oauth from 'oauth4webapi';
+import { oauthFetch } from './http.js';
 
 export interface DcrRequest {
   redirectUri: string;
@@ -42,7 +43,9 @@ export async function registerClient(
   };
   if (req.scope) metadata.scope = req.scope;
 
-  const res = await oauth.dynamicClientRegistrationRequest(as, metadata as any);
+  const res = await oauth.dynamicClientRegistrationRequest(as, metadata as any, {
+    [oauth.customFetch]: oauthFetch,
+  });
   const registered = await oauth.processDynamicClientRegistrationResponse(res);
 
   return {

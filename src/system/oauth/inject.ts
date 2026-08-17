@@ -36,13 +36,11 @@ export async function applyOAuthBindings(
 
   for (const [name, config] of Object.entries(mcpServers)) {
     if (!isHttpLike(config)) continue;
-    // Only act if the .mcp.json author hasn't already supplied a token.
-    // (Hand-managed creds win — operator intent is explicit.)
-    if (hasExplicitAuthHeader(config)) continue;
+    const selectedPersonal = Boolean(dmUserId && personal.has(name));
 
     const injectUser = async (): Promise<void> => {
       try {
-        setAuthHeader(config, await ensureFreshUserToken(dmUserId!, name));
+        setAuthHeader(config, await ensureFreshUserToken(dmUserId!, name, config.url!));
         injected.push(name);
       } catch (err) {
         dropped.push({ serverName: name, error: toError(err) });
@@ -52,10 +50,14 @@ export async function applyOAuthBindings(
       }
     };
 
-    if (dmUserId && personal.has(name)) {
+    if (selectedPersonal) {
       await injectUser();
       continue;
     }
+
+    // A configured header remains authoritative until this task explicitly
+    // selects personal credentials for the server.
+    if (hasExplicitAuthHeader(config)) continue;
 
     if (await hasOAuthRecord(name)) {
       try {
@@ -99,15 +101,17 @@ function isHttpLike(config: unknown): config is { type?: string; url?: string; h
 }
 
 function hasExplicitAuthHeader(config: { headers?: Record<string, string> }): boolean {
-  const headers = config.headers ?? {};
-  return 'Authorization' in headers || 'authorization' in headers;
+  return Object.keys(config.headers ?? {}).some((name) => name.toLowerCase() === 'authorization');
 }
 
 function setAuthHeader(config: { headers?: Record<string, string> }, token: FreshToken): void {
   // RFC 6750 says scheme is case-insensitive, but real-world servers
   // (Notion, etc.) strict-match — normalize "bearer" to "Bearer".
   const scheme = /^bearer$/i.test(token.tokenType) ? 'Bearer' : token.tokenType;
-  config.headers = { ...(config.headers ?? {}), Authorization: `${scheme} ${token.accessToken}` };
+  const headers = Object.fromEntries(
+    Object.entries(config.headers ?? {}).filter(([name]) => name.toLowerCase() !== 'authorization'),
+  );
+  config.headers = { ...headers, Authorization: `${scheme} ${token.accessToken}` };
 }
 
 function toError(err: unknown): Error {

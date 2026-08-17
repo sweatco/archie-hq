@@ -346,6 +346,8 @@ export interface TaskMetadata {
   };
   /** MCP servers explicitly escalated from shared to the default DM user's credentials. */
   mcp_personal_oauth?: string[];
+  /** Successfully delivered forced reauthorization prompts, bounded per server. */
+  mcp_oauth_reauth_attempts?: Record<string, number>;
   research_budget_extra?: number;    // Additional research budget granted via Slack approval (+5 per approval)
   research_request_count?: number;   // Persisted research request count (survives stop/reactivate)
   failure_counter?: number;          // Consecutive recovery attempts (Stage 3 idle detection)

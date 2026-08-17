@@ -8,7 +8,15 @@ import {
   exchangeCodeForTokens,
   refreshAccessToken,
   clientAuthFor,
+  parseOAuthScope,
 } from '../flow.js';
+
+describe('parseOAuthScope', () => {
+  it('uses the provider response when present and normalizes duplicates', () => {
+    expect(parseOAuthScope('write read write', ['fallback'])).toEqual(['read', 'write']);
+    expect(parseOAuthScope(undefined, ['fallback'])).toEqual(['fallback']);
+  });
+});
 
 describe('PKCE primitives', () => {
   it('generates a verifier of the recommended length and a matching S256 challenge', async () => {

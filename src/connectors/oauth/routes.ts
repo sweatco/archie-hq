@@ -16,18 +16,23 @@ import {
   readPendingSealed,
   deletePendingRecord,
   markPendingError,
+  markPendingCompleted,
   writeOAuthRecord,
-  writeUserOAuthRecord,
+  listCompletedDmWakes,
   reapStalePending,
+  OAUTH_PENDING_TTL_MS,
 } from '../../system/oauth/storage.js';
 import type { OAuthPendingRecord } from '../../system/oauth/types.js';
-import { offEvent, onEvent, type SystemEvent } from '../../system/event-bus.js';
-import { Task } from '../../tasks/task.js';
+import { onEvent, type SystemEvent } from '../../system/event-bus.js';
+import { parseOAuthScope } from '../../system/oauth/flow.js';
+import { storeUserOAuthGrant } from '../../system/oauth/refresh.js';
+import { isTaskActive, isTaskTerminating, Task } from '../../tasks/task.js';
 
-const PENDING_TTL_MS = 60 * 60 * 1000; // 1 hour
 const REAPER_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+let wakeDispatcherStarted = false;
 
 export function mountOAuthRoutes(app: Application): void {
+  ensureWakeDispatcher();
   app.get('/oauth/callback', async (req: Request, res: Response) => {
     const state = typeof req.query.state === 'string' ? req.query.state : null;
     const code = typeof req.query.code === 'string' ? req.query.code : null;
@@ -47,7 +52,7 @@ export function mountOAuthRoutes(app: Application): void {
     // exits with a useful message.
     if (errorParam) {
       const message = `${errorParam}${errorDescription ? `: ${errorDescription}` : ''}`;
-      await markPendingError(state, message).catch(() => {});
+      await withKeyMutex(`pending:${state}`, () => markPendingError(state, message)).catch(() => {});
       res.status(400).type('html').send(renderResultPage({
         ok: false,
         title: 'Authorization failed',
@@ -58,7 +63,7 @@ export function mountOAuthRoutes(app: Application): void {
 
     if (!code) {
       const message = 'Missing authorization code';
-      await markPendingError(state, message).catch(() => {});
+      await withKeyMutex(`pending:${state}`, () => markPendingError(state, message)).catch(() => {});
       res.status(400).type('html').send(renderResultPage({
         ok: false,
         title: 'Authorization failed',
@@ -114,9 +119,19 @@ async function completeFlow(state: string, code: string): Promise<CallbackOutcom
     };
   }
 
+  if (pending.slack_user_id && !pending.resource) {
+    await markPendingError(state, 'The pending authorization has no resource binding');
+    return {
+      ok: false,
+      title: 'Authorization failed',
+      message: 'The authorization request is no longer valid. Start a new authorization from the DM.',
+      serverName: pending.server_name,
+    };
+  }
+
   // Hard-stop on stale pendings — defence-in-depth alongside the reaper.
   const ageMs = Date.now() - pending.created_at * 1000;
-  if (ageMs > PENDING_TTL_MS) {
+  if (ageMs > OAUTH_PENDING_TTL_MS) {
     await deletePendingRecord(state).catch(() => {});
     return {
       ok: false,
@@ -156,26 +171,13 @@ async function completeFlow(state: string, code: string): Promise<CallbackOutcom
   // Per-user DM flow: the token belongs to the DM participant; client
   // credentials stay in the shared client record written when the flow began.
   if (pending.slack_user_id) {
-    await writeUserOAuthRecord(
-      {
-        server_name: pending.server_name,
-        slack_user_id: pending.slack_user_id,
-        label: pending.label,
-        expires_at: expiresAt,
-        created_at: nowSec,
-        updated_at: nowSec,
-        issuer: pending.issuer,
-        token_endpoint: pending.token_endpoint,
-        scopes: pending.scopes,
-        resource: pending.resource,
-      },
-      {
-        access_token: tokens.access_token,
-        refresh_token: typeof tokens.refresh_token === 'string' ? tokens.refresh_token : undefined,
-        token_type: tokens.token_type,
-      },
-    );
-    await deletePendingRecord(state);
+    await markPendingCompleted(state, {
+      access_token: tokens.access_token,
+      refresh_token: typeof tokens.refresh_token === 'string' ? tokens.refresh_token : undefined,
+      token_type: tokens.token_type,
+      expires_at: expiresAt,
+      scopes: parseOAuthScope(tokens.scope, pending.scopes),
+    });
     logger.system(`OAuth: user ${pending.slack_user_id} connected MCP server "${pending.server_name}"`);
 
     const resumed = await wakeDmTask(pending);
@@ -198,8 +200,9 @@ async function completeFlow(state: string, code: string): Promise<CallbackOutcom
       updated_at: nowSec,
       issuer: pending.issuer,
       token_endpoint: pending.token_endpoint,
-      scopes: pending.scopes,
+      scopes: parseOAuthScope(tokens.scope, pending.scopes),
       resource: pending.resource,
+      redirect_uri: pending.redirect_uri,
     },
     {
       access_token: tokens.access_token,
@@ -221,42 +224,77 @@ async function completeFlow(state: string, code: string): Promise<CallbackOutcom
   };
 }
 
+function ensureWakeDispatcher(): void {
+  if (wakeDispatcherStarted) return;
+  wakeDispatcherStarted = true;
+  onEvent((event: SystemEvent) => {
+    if (event.type !== 'task:stopped' && event.type !== 'task:completed') return;
+    void drainCompletedDmWakes(event.taskId).catch((err) =>
+      logger.error('oauth', `Failed to drain completed OAuth wakes for task ${event.taskId}`, err));
+  });
+}
+
+async function deliverCompletedDmWake(pending: OAuthPendingRecord): Promise<boolean> {
+  if (!pending.task_id) return false;
+  return withKeyMutex(`oauth:wake:${pending.state}`, async () => {
+    const current = await readPendingRecord(pending.state);
+    if (!current?.completed_at || current.error || !current.task_id || !current.slack_user_id) return false;
+    if (!current.resource) throw new Error(`Completed OAuth wake ${current.state} has no resource binding`);
+    const grant = (await readPendingSealed(current)).user_grant;
+    if (!grant) throw new Error(`Completed OAuth wake ${current.state} has no encrypted grant`);
+    const { expires_at: expiresAt, scopes, ...sealedGrant } = grant;
+    await storeUserOAuthGrant(
+      {
+        server_name: current.server_name,
+        slack_user_id: current.slack_user_id,
+        label: current.label,
+        expires_at: expiresAt,
+        created_at: current.completed_at,
+        updated_at: current.completed_at,
+        issuer: current.issuer,
+        token_endpoint: current.token_endpoint,
+        scopes,
+        resource: current.resource,
+        redirect_uri: current.redirect_uri,
+      },
+      sealedGrant,
+    );
+    const resumedTask = await Task.get(current.task_id);
+    await resumedTask.sendMessage(
+      `OAuth authorization for "${current.server_name}" completed. Continue the task with the newly available MCP tools.`,
+      'pm-agent',
+    );
+    await resumedTask.save(true);
+    await deletePendingRecord(current.state);
+    return true;
+  });
+}
+
+async function drainCompletedDmWakes(taskId?: string, force = false): Promise<boolean> {
+  let delivered = false;
+  for (const pending of await listCompletedDmWakes(taskId)) {
+    const id = pending.task_id!;
+    if (!force && (isTaskActive(id) || isTaskTerminating(id))) continue;
+    try {
+      delivered = (await deliverCompletedDmWake(pending)) || delivered;
+    } catch (err) {
+      logger.error('oauth', `Failed to wake DM task ${id} after authorizing "${pending.server_name}"`, err);
+    }
+  }
+  return delivered;
+}
+
 export async function wakeDmTask(pending: OAuthPendingRecord): Promise<boolean> {
   if (!pending.task_id) return false;
-  const taskId = pending.task_id;
-  const resume = async (): Promise<void> => {
-    const resumedTask = await Task.get(taskId);
-    await resumedTask.sendMessage(`OAuth authorization for "${pending.server_name}" completed. Continue the task with the newly available MCP tools.`, 'pm-agent');
-  };
-  const logFailure = (err: unknown): void => {
-    logger.error('oauth', `Failed to wake DM task ${taskId} after authorizing "${pending.server_name}"`, err);
-  };
-  let wakeStarted = false;
-  const startResume = async (): Promise<void> => {
-    if (wakeStarted) return;
-    wakeStarted = true;
-    await resume();
-  };
-  const listener = (event: SystemEvent): void => {
-    if (event.type !== 'task:stopped' || event.taskId !== taskId) return;
-    offEvent(listener);
-    void startResume().catch(logFailure);
-  };
+  ensureWakeDispatcher();
+  if (isTaskActive(pending.task_id) || isTaskTerminating(pending.task_id)) return true;
+  if (await drainCompletedDmWakes(pending.task_id)) return true;
+  return (await readPendingRecord(pending.state)) === null;
+}
 
-  onEvent(listener);
-  try {
-    const task = await Task.get(taskId);
-    // The auth request is flushed as in_progress; an inactive copy with that status is mid-stop.
-    if (!task.isActive && task.metadata.status !== 'in_progress') {
-      offEvent(listener);
-      await startResume();
-    }
-    return true;
-  } catch (err) {
-    offEvent(listener);
-    logFailure(err);
-    return false;
-  }
+export async function replayCompletedDmWakes(): Promise<void> {
+  ensureWakeDispatcher();
+  await drainCompletedDmWakes(undefined, true);
 }
 
 function renderResultPage(outcome: CallbackOutcome): string {
@@ -298,11 +336,11 @@ function escapeHtml(s: string): string {
 }
 
 function startPendingReaper(): void {
-  void reapStalePending(PENDING_TTL_MS).catch((err) =>
+  void reapStalePending(OAUTH_PENDING_TTL_MS).catch((err) =>
     logger.error('oauth', 'Pending reaper failed', err),
   );
   const timer = setInterval(() => {
-    void reapStalePending(PENDING_TTL_MS).catch((err) =>
+    void reapStalePending(OAUTH_PENDING_TTL_MS).catch((err) =>
       logger.error('oauth', 'Pending reaper failed', err),
     );
   }, REAPER_INTERVAL_MS);

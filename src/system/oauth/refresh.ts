@@ -5,7 +5,7 @@
  */
 
 import { withKeyMutex } from '../secrets-vault.js';
-import { refreshAccessToken, clientAuthFor } from './flow.js';
+import { refreshAccessToken, clientAuthFor, parseOAuthScope } from './flow.js';
 import {
   readOAuthRecord,
   readOAuthSealed,
@@ -15,8 +15,9 @@ import {
   readUserOAuthRecord,
   readUserOAuthSealed,
   writeUserOAuthRecord,
+  withUserOAuthTokenLock,
 } from './storage.js';
-import type { OAuthSealed, OAuthUserSealed } from './types.js';
+import type { OAuthSealed, OAuthUserRecordMeta, OAuthUserSealed } from './types.js';
 
 /** Refresh if the token expires within this many seconds. */
 const REFRESH_LEEWAY_SECONDS = 60;
@@ -122,6 +123,7 @@ export async function ensureFreshToken(
         ...record,
         updated_at: nowSec,
         expires_at: expiresAt,
+        scopes: parseOAuthScope(response.scope, record.scopes),
       },
       refreshedSealed,
     );
@@ -144,12 +146,31 @@ export async function ensureFreshToken(
 export async function ensureFreshUserToken(
   slackUserId: string,
   serverName: string,
+  expectedResource: string,
   options: EnsureFreshTokenOptions = {},
 ): Promise<FreshToken> {
   const { now = Date.now(), force = false } = options;
-  return withKeyMutex(`oauth:user:${slackUserId}:${serverName}`, async () => {
+  return withUserOAuthTokenLock(slackUserId, serverName, async () => {
     const record = await readUserOAuthRecord(slackUserId, serverName);
     if (!record) throw new OAuthUserRecordMissingError(slackUserId, serverName);
+
+    const clientRecord = await readOAuthClientRecord(serverName);
+    if (!clientRecord) {
+      throw new OAuthRefreshError(serverName, new Error('Shared client registration missing — re-authorization required'));
+    }
+    try {
+      const expected = new URL(expectedResource).toString();
+      if (
+        new URL(record.resource).toString() !== expected
+        || new URL(clientRecord.resource).toString() !== expected
+        || record.issuer !== clientRecord.issuer
+        || record.redirect_uri !== clientRecord.redirect_uri
+      ) {
+        throw new Error('Stored personal credentials do not match the configured resource or client registration');
+      }
+    } catch (err) {
+      throw new OAuthRefreshError(serverName, err);
+    }
 
     const nowSec = Math.floor(now / 1000);
     const sealed = await readUserOAuthSealed(record);
@@ -163,10 +184,6 @@ export async function ensureFreshUserToken(
 
     if (!sealed.refresh_token) {
       throw new OAuthRefreshError(serverName, new Error('No refresh_token stored — re-authorization required'));
-    }
-    const clientRecord = await readOAuthClientRecord(serverName);
-    if (!clientRecord) {
-      throw new OAuthRefreshError(serverName, new Error('Shared client registration missing — re-authorization required'));
     }
     const client = await readOAuthClientSealed(clientRecord);
 
@@ -197,6 +214,7 @@ export async function ensureFreshUserToken(
         ...record,
         updated_at: nowSec,
         expires_at: expiresAt,
+        scopes: parseOAuthScope(response.scope, record.scopes),
       },
       refreshedSealed,
     );
@@ -207,4 +225,12 @@ export async function ensureFreshUserToken(
       expiresAt,
     };
   });
+}
+
+export function storeUserOAuthGrant(
+  meta: OAuthUserRecordMeta,
+  sealed: OAuthUserSealed,
+): Promise<void> {
+  return withUserOAuthTokenLock(meta.slack_user_id, meta.server_name, () =>
+    writeUserOAuthRecord(meta, sealed));
 }

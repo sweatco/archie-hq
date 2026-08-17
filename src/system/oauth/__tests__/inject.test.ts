@@ -76,10 +76,18 @@ describe('applyOAuthBindings', () => {
   it('holds back credential-less servers that require OAuth as requestable', async () => {
     const { inject } = await load();
     // Spec probe: 401 with resource_metadata → the server needs OAuth.
-    globalThis.fetch = vi.fn(async () => new Response('', {
-      status: 401,
-      headers: { 'WWW-Authenticate': 'Bearer resource_metadata="https://oauth.example.com/.well-known/oauth-protected-resource"' },
-    })) as any;
+    globalThis.fetch = vi.fn(async (url: string | URL) => {
+      if (String(url) === 'https://oauth.example.com/mcp') {
+        return new Response('', {
+          status: 401,
+          headers: { 'WWW-Authenticate': 'Bearer resource_metadata="https://oauth.example.com/.well-known/oauth-protected-resource"' },
+        });
+      }
+      return new Response(JSON.stringify({
+        resource: 'https://oauth.example.com/mcp',
+        authorization_servers: ['https://auth.example.com'],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as typeof fetch;
     const mcp: Record<string, any> = {
       needs_auth: { type: 'http', url: 'https://oauth.example.com/mcp' },
     };
@@ -99,6 +107,8 @@ describe('applyOAuthBindings', () => {
         issuer: 'https://auth.example.com',
         token_endpoint: 'https://auth.example.com/token',
         scopes: [],
+        resource: 'https://mcp.example.com/mcp',
+        redirect_uri: 'https://archie.example.com/oauth/callback',
       },
       { access_token: 'VAULT', refresh_token: 'RT', client_id: 'cli', token_type: 'Bearer' },
     );
@@ -141,6 +151,8 @@ describe('applyOAuthBindings', () => {
   // ---- DM-only per-user tokens ----
 
   const nowSec = () => Math.floor(Date.now() / 1000);
+  const resource = 'https://mcp.example.com/mcp';
+  const redirectUri = 'https://archie.example.com/oauth/callback';
 
   async function seedShared(storage: any, server: string, accessToken: string) {
     await storage.writeOAuthRecord(
@@ -157,6 +169,17 @@ describe('applyOAuthBindings', () => {
   }
 
   async function seedUser(storage: any, uid: string, server: string, accessToken: string, expiresInSec = 3600) {
+    await storage.writeOAuthClientRecord(
+      {
+        server_name: server,
+        issuer: 'https://auth.example.com',
+        resource,
+        redirect_uri: redirectUri,
+        created_at: nowSec(),
+        updated_at: nowSec(),
+      },
+      { client_id: 'shared-client' },
+    );
     await storage.writeUserOAuthRecord(
       {
         server_name: server,
@@ -166,6 +189,8 @@ describe('applyOAuthBindings', () => {
         issuer: 'https://auth.example.com',
         token_endpoint: 'https://auth.example.com/token',
         scopes: [],
+        resource,
+        redirect_uri: redirectUri,
       },
       { access_token: accessToken, refresh_token: 'RT-u', token_type: 'Bearer' },
     );
@@ -197,6 +222,54 @@ describe('applyOAuthBindings', () => {
     expect(mcp.notion.headers.Authorization).toBe('Bearer USER-TOKEN');
   });
 
+  it.each(['Authorization', 'authorization'])(
+    'personal selection overrides a configured %s header',
+    async (headerName) => {
+      const { inject, storage } = await load();
+      await seedUser(storage, 'U1', 'notion', 'USER-TOKEN');
+      const mcp: Record<string, any> = {
+        notion: {
+          type: 'http',
+          url: resource,
+          headers: { [headerName]: 'Bearer STATIC', 'X-Keep': 'yes' },
+        },
+      };
+
+      const result = await inject.applyOAuthBindings(mcp, 'U1', ['notion']);
+
+      expect(result.injected).toEqual(['notion']);
+      expect(result.sharedInjected).toEqual([]);
+      expect(mcp.notion.headers).toEqual({ 'X-Keep': 'yes', Authorization: 'Bearer USER-TOKEN' });
+    },
+  );
+
+  it('does not fall back to a configured header when selected personal credentials are missing', async () => {
+    const { inject } = await load();
+    const mcp: Record<string, any> = {
+      notion: { type: 'http', url: resource, headers: { Authorization: 'Bearer STATIC' } },
+    };
+
+    const result = await inject.applyOAuthBindings(mcp, 'U1', ['notion']);
+
+    expect(result.requestable).toEqual(['notion']);
+    expect(result.dropped.map((failure) => failure.serverName)).toEqual(['notion']);
+    expect(mcp.notion).toBeUndefined();
+  });
+
+  it('does not inject a personal token bound to a different resource', async () => {
+    const { inject, storage } = await load();
+    await seedUser(storage, 'U1', 'notion', 'USER-TOKEN');
+    const mcp: Record<string, any> = {
+      notion: { type: 'http', url: 'https://replacement.example.com/mcp' },
+    };
+
+    const result = await inject.applyOAuthBindings(mcp, 'U1', ['notion']);
+
+    expect(result.requestable).toEqual(['notion']);
+    expect(result.dropped.map((failure) => failure.serverName)).toEqual(['notion']);
+    expect(mcp.notion).toBeUndefined();
+  });
+
   it('a DM without a user token continues with usable shared credentials', async () => {
     const { inject, storage } = await load();
     await seedShared(storage, 'notion', 'SHARED');
@@ -213,7 +286,14 @@ describe('applyOAuthBindings', () => {
     await seedShared(storage, 'notion', 'SHARED');
     const nsec = Math.floor(Date.now() / 1000);
     await storage.writeOAuthClientRecord(
-      { server_name: 'notion', issuer: 'https://auth.example.com', created_at: nsec, updated_at: nsec },
+      {
+        server_name: 'notion',
+        issuer: 'https://auth.example.com',
+        resource: 'https://mcp.example.com/mcp',
+        redirect_uri: 'https://archie.example.com/oauth/callback',
+        created_at: nsec,
+        updated_at: nsec,
+      },
       { client_id: 'shared-client' },
     );
     await seedUser(storage, 'U1', 'notion', 'STALE', 5); // within refresh leeway

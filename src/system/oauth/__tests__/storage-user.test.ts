@@ -38,6 +38,7 @@ describe('per-user + shared-client OAuth storage', () => {
       token_endpoint: 'https://auth.example.com/token',
       scopes: ['read'],
       resource: 'https://mcp.example.com/mcp',
+      redirect_uri: 'https://archie.example.com/oauth/callback',
     };
   };
 
@@ -66,7 +67,11 @@ describe('per-user + shared-client OAuth storage', () => {
     const storage = await load();
     const nowSec = Math.floor(Date.now() / 1000);
     await storage.writeOAuthClientRecord(
-      { server_name: 'notion', issuer: 'https://auth.example.com', created_at: nowSec, updated_at: nowSec },
+      {
+        server_name: 'notion', issuer: 'https://auth.example.com',
+        resource: 'https://mcp.example.com/mcp', redirect_uri: 'https://archie.example.com/oauth/callback',
+        created_at: nowSec, updated_at: nowSec,
+      },
       { client_id: 'client-1', client_secret: 'shh' },
     );
     const record = await storage.readOAuthClientRecord('notion');
@@ -88,7 +93,11 @@ describe('per-user + shared-client OAuth storage', () => {
     const storage = await load();
     const nowSec = Math.floor(Date.now() / 1000);
     await storage.writeOAuthClientRecord(
-      { server_name: 'notion', issuer: 'https://auth.example.com', created_at: nowSec, updated_at: nowSec },
+      {
+        server_name: 'notion', issuer: 'https://auth.example.com',
+        resource: 'https://mcp.example.com/mcp', redirect_uri: 'https://archie.example.com/oauth/callback',
+        created_at: nowSec, updated_at: nowSec,
+      },
       { client_id: 'client-1' },
     );
     await storage.writeUserOAuthRecord(userMeta('U1', 'notion'), { access_token: 'A1', token_type: 'Bearer' });
@@ -113,7 +122,11 @@ describe('per-user + shared-client OAuth storage', () => {
     await storage.deleteUserOAuthRecord('U1', 'notion');
     const nowSec = Math.floor(Date.now() / 1000);
     await storage.writeOAuthClientRecord(
-      { server_name: 'notion', issuer: 'https://x', created_at: nowSec, updated_at: nowSec },
+      {
+        server_name: 'notion', issuer: 'https://x',
+        resource: 'https://mcp.example.com/mcp', redirect_uri: 'https://archie.example.com/oauth/callback',
+        created_at: nowSec, updated_at: nowSec,
+      },
       { client_id: 'c' },
     );
     expect(await storage.anyOAuthRecordExists()).toBe(true);

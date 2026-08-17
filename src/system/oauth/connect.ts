@@ -20,8 +20,7 @@ import * as oauth from 'oauth4webapi';
 import { PLUGINS_DIR } from '../workdir.js';
 import { logger } from '../logger.js';
 import {
-  probeResourceMetadataUrl,
-  fetchProtectedResourceMetadata,
+  discoverProtectedResource,
   fetchAuthServerMetadata,
   type ResourceServer,
 } from './discovery.js';
@@ -115,19 +114,22 @@ export interface DiscoveredServer {
  * (S256 PKCE, required endpoints). Shared by the operator CLI connect and the
  * daemon-side per-user connect.
  */
-export async function discoverServer(serverName: string): Promise<DiscoveredServer> {
+export async function discoverServer(
+  serverName: string,
+  requestedScopes: readonly string[] = [],
+): Promise<DiscoveredServer> {
   const serverUrl = readMcpServerUrl(serverName);
   logger.system(`OAuth connect "${serverName}": probing ${serverUrl}`);
 
-  const resourceMetadataUrl = await probeResourceMetadataUrl(serverUrl);
-  if (!resourceMetadataUrl) {
+  const protectedResource = await discoverProtectedResource(serverUrl);
+  if (!protectedResource) {
     throw new Error(
-      `MCP server "${serverName}" did not advertise a WWW-Authenticate header with resource_metadata. ` +
-      `It may not require OAuth or may not be spec-compliant.`,
+      `MCP server "${serverName}" did not publish protected-resource metadata. ` +
+      'It may not require OAuth or may not be spec-compliant.',
     );
   }
+  const { metadataUrl: resourceMetadataUrl, resource } = protectedResource;
   logger.system(`OAuth connect "${serverName}": fetching resource metadata from ${resourceMetadataUrl}`);
-  const resource = await fetchProtectedResourceMetadata(resourceMetadataUrl, serverUrl);
 
   const authServerUrl = resource.authorization_servers?.[0];
   if (!authServerUrl) {
@@ -154,11 +156,15 @@ export async function discoverServer(serverName: string): Promise<DiscoveredServ
     );
   }
 
+  const discoveredScopes = protectedResource.challengeScopes.length
+    ? protectedResource.challengeScopes
+    : (resource.scopes_supported ?? []);
+
   return {
     serverUrl,
     resource,
     authServer,
-    scopes: resource.scopes_supported ?? [],
+    scopes: [...new Set([...discoveredScopes, ...requestedScopes])].sort(),
     // Persisted so it can be replayed on every token-endpoint request (initial
     // exchange + refresh), not just the authorize step.
     resourceIndicator: resource.resource || serverUrl,
@@ -240,19 +246,47 @@ async function ensureSharedClient(
   serverName: string,
   authServer: oauth.AuthorizationServer,
   resource: ResourceServer,
+  resourceIndicator: string,
   redirectUri: string,
 ): Promise<OAuthClientSealed> {
   return withKeyMutex(`oauth:client:${serverName}`, async () => {
+    const sameResource = (value: string | undefined): boolean => {
+      if (!value) return false;
+      try {
+        return new URL(value).toString() === new URL(resourceIndicator).toString();
+      } catch {
+        return false;
+      }
+    };
     const existing = await readOAuthClientRecord(serverName);
-    if (existing) return readOAuthClientSealed(existing);
+    if (
+      existing
+      && existing.issuer === authServer.issuer
+      && sameResource(existing.resource)
+      && existing.redirect_uri === redirectUri
+    ) {
+      return readOAuthClientSealed(existing);
+    }
 
     const shared = await readOAuthRecord(serverName);
-    if (shared) {
+    if (
+      shared
+      && shared.issuer === authServer.issuer
+      && sameResource(shared.resource)
+      && shared.redirect_uri === redirectUri
+    ) {
       const sealed = await readOAuthSealed(shared);
       const client = { client_id: sealed.client_id, client_secret: sealed.client_secret };
       const nowSec = Math.floor(Date.now() / 1000);
       await writeOAuthClientRecord(
-        { server_name: serverName, issuer: shared.issuer, created_at: nowSec, updated_at: nowSec },
+        {
+          server_name: serverName,
+          issuer: shared.issuer,
+          resource: resourceIndicator,
+          redirect_uri: redirectUri,
+          created_at: nowSec,
+          updated_at: nowSec,
+        },
         client,
       );
       return client;
@@ -261,7 +295,7 @@ async function ensureSharedClient(
     if (!authServer.registration_endpoint) {
       throw new Error(
         `Server "${serverName}" does not expose a registration_endpoint (Dynamic Client Registration). ` +
-        `Connect it once via the CLI with --client-id/--client-secret before using it in DMs.`,
+        'Reconnect it via the CLI with a client registered for this issuer, resource, and redirect URI.',
       );
     }
     logger.system(`OAuth: registering shared dynamic client for "${serverName}"`);
@@ -272,7 +306,14 @@ async function ensureSharedClient(
     });
     const nowSec = Math.floor(Date.now() / 1000);
     await writeOAuthClientRecord(
-      { server_name: serverName, issuer: authServer.issuer, created_at: nowSec, updated_at: nowSec },
+      {
+        server_name: serverName,
+        issuer: authServer.issuer,
+        resource: resourceIndicator,
+        redirect_uri: redirectUri,
+        created_at: nowSec,
+        updated_at: nowSec,
+      },
       { client_id: registered.client_id, client_secret: registered.client_secret },
     );
     return { client_id: registered.client_id, client_secret: registered.client_secret };
@@ -285,18 +326,21 @@ export interface UserConnectInput {
   slackUserId: string;
   /** Task to wake after the callback stores the token. */
   taskId: string;
+  /** Exact scope values required by the failed MCP operation, plus prior scopes. */
+  requestedScopes?: string[];
 }
 
 /**
  * Start a daemon-side authorization for the participant in a 1:1 Slack DM.
  */
-export async function beginUserConnect(input: UserConnectInput): Promise<{ authorizeUrl: string }> {
+export async function beginUserConnect(input: UserConnectInput): Promise<{ authorizeUrl: string; state: string }> {
   const redirectUri = resolveRedirectUri();
-  const discovered = await discoverServer(input.serverName);
+  const discovered = await discoverServer(input.serverName, input.requestedScopes);
   const client = await ensureSharedClient(
     input.serverName,
     discovered.authServer,
     discovered.resource,
+    discovered.resourceIndicator,
     redirectUri,
   );
 
@@ -335,5 +379,5 @@ export async function beginUserConnect(input: UserConnectInput): Promise<{ autho
   );
 
   logger.system(`OAuth: pending authorize for "${input.serverName}" in DM task ${input.taskId}`);
-  return { authorizeUrl };
+  return { authorizeUrl, state };
 }

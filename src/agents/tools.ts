@@ -710,13 +710,16 @@ function createRequestMcpAuthTool(agent: Agent, task: Task) {
     {
       server: z.string().describe('MCP server name from the configuration (e.g. "notion")'),
       reason: z.string().optional().describe('One line on why access is needed — shown to the user on the authorization message'),
+      challenge_scopes: z.array(z.string()).optional().describe(
+        'Exact scope values from the failed MCP WWW-Authenticate challenge, when present',
+      ),
     },
     async (args) => {
       const agentName = agent.def.id as AgentName;
 
       // Already pausing this turn — skip a duplicate wall if the tool fires twice.
       if (agent.pendingTeardown) {
-        return ok('Authorization request already sent — task is pausing until a user authorizes.');
+        return err('Task is already pausing; authorization was not started by this call.');
       }
 
       if (!task.getMcpOAuthUser()) {
@@ -726,12 +729,14 @@ function createRequestMcpAuthTool(agent: Agent, task: Task) {
       logger.agentAction(agentName, 'Requesting MCP authorization', args.server);
       task.touch();
 
-      let outcome: 'ready' | 'authorization_started';
+      let outcome: 'ready' | 'authorization_started' | 'authorization_pending';
       try {
-        outcome = await task.requestMcpAuth(args.server, args.reason);
+        outcome = await task.requestMcpAuth(args.server, args.reason, args.challenge_scopes);
       } catch (e) {
         return err(e instanceof Error ? e.message : String(e));
       }
+
+      task.suspendStatus();
 
       if (outcome === 'ready') {
         agent.deferTeardown(async () => {
@@ -750,9 +755,14 @@ function createRequestMcpAuthTool(agent: Agent, task: Task) {
       }
 
       agent.deferTeardown(() => task.stop());
+      if (outcome === 'authorization_pending') {
+        return ok(
+          `Authorization for "${args.server}" is already pending. Task paused until the DM user finishes it.`,
+        );
+      }
       return ok(
         `Authorization link sent for "${args.server}". Task paused until the DM user authorizes — ` +
-        `you will be re-activated with access afterwards.`,
+        'the PM will continue with access afterwards.',
       );
     },
   );
@@ -2878,6 +2888,7 @@ export function createOrchestrationMcpServer(agent: Agent, task: Task) {
       createReportCompletionTool(agent, task),
       createRequestEditModeTool(agent, task),
       createRequestMaxModeTool(agent, task),
+      createRequestMcpAuthTool(agent, task),
       createGetAgentsStatusTool(agent, task),
       createGetTaskUsageTool(agent, task),
       createListAvailableReposTool(agent, task),
@@ -2956,7 +2967,6 @@ export function createBaseAgentMcpServer(agent: Agent, task: Task) {
       createSendMessageTool(agent, task),
       createLogFindingTool(agent, task),
       createShareArtifactTool(agent, task),
-      createRequestMcpAuthTool(agent, task),
     ],
   });
 }
