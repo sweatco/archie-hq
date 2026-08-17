@@ -71,7 +71,7 @@ One PM agent instance is spawned per task. It is the orchestrator: it receives a
 | `list_available_repos` | List repos the GitHub App installation can reach (paginates `GET /installation/repositories`); tags repos a plugin specialist already covers. Cached per task. |
 | `spawn_repo_agent` | Create an on-demand repo agent bound to a chosen list of available repos (eager-mounted at spawn). Persists a `DynamicAgentSpec` to `metadata.dynamic_agents` and adds it to `task.team`. Rejects a repo already owned as a plugin specialist's primary. |
 
-The `Skill` tool is provided by the Claude Agent SDK itself (not by `pm-agent-tools`); skills are mounted from the `pm` plugin's `skills/` directory and surfaced via `.claude/skills/` symlinks plus `settingSources: ['project']`. Built-in `Read`, `Glob`, and `Grep` tools are available against the PM workspace and the shared task folder (which is mounted read-only via `additionalDirectories`); `WebSearch` and `WebFetch` are explicitly disallowed.
+The `Skill` tool is provided by the Claude Agent SDK itself (not by `pm-agent-tools`); skills are mounted from two sources — the `pm` plugin's own `skills/` directory, plus the core skills the `pm` track mounts per the `CORE_SKILL_MOUNTS` manifest in `src/agents/core-skills.ts` — resolved into one ordered `skillPaths` list and surfaced via `.claude/skills/` symlinks plus `settingSources: ['project']`. Plugin entries come first, so a `pm`-plugin skill shadows a core skill of the same name. See [plugin-system.md](plugin-system.md#core-skills-and-which-tracks-mount-them) for the manifest and the ordering rule. Built-in `Read`, `Glob`, and `Grep` tools are available against the PM workspace and the shared task folder (which is mounted read-only via `additionalDirectories`); `WebSearch` and `WebFetch` are explicitly disallowed.
 
 PR lifecycle tools (push, create PR, merge, etc.) live on repo agents via the `repo-tools` MCP server — the PM has no direct git or GitHub access.
 
@@ -140,7 +140,7 @@ The pre-v30 singular shape (`metadata.archie.repo: {github, baseBranch}`) is sti
 
 The PM can spawn a repo agent on demand via `spawn_repo_agent({shortname, repos, role?, expertise?})` — for repositories no plugin agent covers, without a redeploy. It behaves exactly like a plugin-defined repo agent (eager-mounts all its repos at spawn, same `repo-tools`, same lifecycle), differing only in:
 
-- No plugin Layer-3 prompt body, no skills, no plugin MCP servers — just the universal protocol + the repo-agent track extension + a generic role/expertise.
+- No plugin Layer-3 prompt body, no plugin MCP servers — just the universal protocol + the repo-agent track extension + a generic role/expertise. It mounts no skills either: it has no plugin of its own, and it resolves core skills on the `repo` track, which the manifest leaves empty.
 - Its `repos` come from the PM's spawn args (validated reachable via `GitHubClient.resolveRepo`) rather than plugin frontmatter.
 - Its id is `<shortname>-<4hex>-agent`, and its `visibility` is `global`.
 

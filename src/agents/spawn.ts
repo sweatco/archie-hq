@@ -10,8 +10,8 @@
  * Session recovery pattern (try with session → reset → retry → give up) written once.
  */
 
-import { join } from 'path';
-import { mkdir, symlink, readdir, writeFile, stat } from 'fs/promises';
+import { join, basename } from 'path';
+import { mkdir, symlink, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { randomUUID } from 'node:crypto';
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -117,31 +117,17 @@ async function setupAgentWorkspace(taskId: string, agent: Agent): Promise<string
   const claudeDir = join(agentWorkspace, '.claude');
   await mkdir(claudeDir, { recursive: true });
 
-  // Symlink skills — plugin skills first (so plugins can shadow core skills by name),
-  // then archie-hq built-in skills fill in the rest. coreSkillsPath is only set on the PM.
-  const skillSources = [agent.def.skillsPath, agent.def.coreSkillsPath].filter(
-    (p): p is string => !!p && existsSync(p)
-  );
-  if (skillSources.length > 0) {
+  // Symlink the agent's ordered skill list; the list is already plugin-first and deduplicated by resolveSkillPaths, so shadowing is decided there.
+  const skillPaths = agent.def.skillPaths ?? [];
+  if (skillPaths.length > 0) {
     const agentSkillsDir = join(claudeDir, 'skills');
-
-    for (const skillsPath of skillSources) {
-      for (const skillEntry of await readdir(skillsPath, { withFileTypes: true })) {
-        const entryPath = join(skillsPath, skillEntry.name);
-        // Mount real skill dirs AND symlinks that resolve to a dir. A skill can
-        // be vendored as a git submodule and exposed via a symlink (e.g. the
-        // data-analytics data-context); readdir's Dirent.isDirectory() is false
-        // for a symlink, so stat-follow to classify it. A dangling link is skipped.
-        let isDir = skillEntry.isDirectory();
-        if (!isDir && skillEntry.isSymbolicLink()) {
-          isDir = await stat(entryPath).then((s) => s.isDirectory()).catch(() => false);
-        }
-        if (!isDir) continue;
-        const target = join(agentSkillsDir, skillEntry.name);
-        if (!existsSync(target)) {
-          await mkdir(agentSkillsDir, { recursive: true });
-          await symlink(entryPath, target);
-        }
+    for (const skillPath of skillPaths) {
+      // The list is a scan-time snapshot, so re-check the source here at mount time. The plugins clone can be reset between scanAgentDefs() and this spawn (refreshPlugins does a git reset --hard), and symlink(2) does not validate its target — so mounting a since-removed skill would create a DANGLING link. That link then wedges the agent permanently: on the next spawn into this same workspace existsSync(target) follows the link, reports false, and symlink() throws EEXIST out of a path that does not catch it. The old loop got this check for free because it enumerated the directory here rather than trusting a snapshot.
+      if (!existsSync(skillPath)) continue;
+      const target = join(agentSkillsDir, basename(skillPath));
+      if (!existsSync(target)) {
+        await mkdir(agentSkillsDir, { recursive: true });
+        await symlink(skillPath, target);
       }
     }
   }

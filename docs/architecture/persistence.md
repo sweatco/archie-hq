@@ -42,7 +42,7 @@ ${ARCHIE_WORKDIR}/sessions/
       {agentKey}/                          # Per-agent workspace (PM and plugin agents)
         .claude/
           settings.json                    # plugin hooks (when defined)
-          skills/                          # symlinked skills from the plugin
+          skills/                          # symlinked skills: the plugin's own, plus any core skills this agent's track mounts
     claude/
       {agentKey}/
         session/                           # SDK config dir

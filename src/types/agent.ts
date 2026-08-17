@@ -211,11 +211,8 @@ export interface AgentDef {
   /** Absolute path to plugin's persistent data directory (workdir/plugins-data/<name>/) */
   pluginDataPath?: string;
 
-  /** Absolute path to plugin's skills/ directory */
-  skillsPath?: string;
-
-  /** Absolute path to archie-hq's built-in skills/ directory (PM only). Symlinked alongside plugin skills. */
-  coreSkillsPath?: string;
+  /** Ordered, deduplicated list of absolute skill directories to symlink into the agent workspace. Plugin skills come first, so a plugin shadows a core skill of the same name. Built by resolveSkillPaths in src/agents/core-skills.ts. */
+  skillPaths?: string[];
 
   /** PM-specific fields (PM only) — built dynamically from team */
   pmConfig?: AgentPmDef;
