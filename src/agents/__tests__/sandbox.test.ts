@@ -16,6 +16,7 @@ import {
   TRUSTED_PACKAGE_REGISTRY_DOMAINS,
   type SandboxOptions,
 } from '../sandbox.js';
+import { CACHES_DIR } from '../../system/workdir.js';
 
 const base: SandboxOptions = {
   cwd: '/workdir/sessions/task-1/workspace',
@@ -58,12 +59,10 @@ describe('buildManagedNetworkPolicy', () => {
 });
 
 describe('buildPackageManagerCacheEnv', () => {
-  const WORKSPACE = '/workdir/sessions/task-1/workspace';
-
   it('moves npm and yarn caches off the read-only $HOME', () => {
-    const env = buildPackageManagerCacheEnv(WORKSPACE);
-    expect(env.npm_config_cache).toBe(`${WORKSPACE}/.cache/npm`);
-    expect(env.YARN_CACHE_FOLDER).toBe(`${WORKSPACE}/.cache/yarn`);
+    const env = buildPackageManagerCacheEnv();
+    expect(env.npm_config_cache).toBe(`${CACHES_DIR}/npm`);
+    expect(env.YARN_CACHE_FOLDER).toBe(`${CACHES_DIR}/yarn`);
   });
 
   it('redirects yarn 4 global folder and Corepack home, not just the cache', () => {
@@ -71,26 +70,26 @@ describe('buildPackageManagerCacheEnv', () => {
     // redirected cache alone leaves it dying on ENOENT (observed with the mobile
     // repo's pinned yarn 4.12.0). Corepack fetches pinned releases into
     // COREPACK_HOME, which is unwritable for the same reason.
-    const env = buildPackageManagerCacheEnv(WORKSPACE);
-    expect(env.YARN_GLOBAL_FOLDER).toBe(`${WORKSPACE}/.cache/yarn-global`);
-    expect(env.COREPACK_HOME).toBe(`${WORKSPACE}/.cache/corepack`);
+    const env = buildPackageManagerCacheEnv();
+    expect(env.YARN_GLOBAL_FOLDER).toBe(`${CACHES_DIR}/yarn-global`);
+    expect(env.COREPACK_HOME).toBe(`${CACHES_DIR}/corepack`);
   });
 
-  it('scopes caches per workspace so agents cannot share a cache', () => {
-    // A shared cache (e.g. under /tmp) would let one agent stage content another
-    // agent later installs from.
-    const a = buildPackageManagerCacheEnv('/workdir/sessions/task-a/workspace');
-    const b = buildPackageManagerCacheEnv('/workdir/sessions/task-b/workspace');
-    expect(a.npm_config_cache).not.toBe(b.npm_config_cache);
-    expect(a.YARN_CACHE_FOLDER).not.toBe(b.YARN_CACHE_FOLDER);
-  });
-
-  it('keeps every cache path inside the workspace, which is the writable region', () => {
-    // If a cache escaped the workspace it would land somewhere denied and the
-    // EROFS failure would come straight back.
-    for (const value of Object.values(buildPackageManagerCacheEnv(WORKSPACE))) {
-      expect(value.startsWith(`${WORKSPACE}/`)).toBe(true);
+  it('shares one cache across agents and tasks rather than scoping it per workspace', () => {
+    // The regression this guards: caches used to live at
+    // `<task>/agents/<agent>/.cache`, so every task re-downloaded the same bytes
+    // and kept them forever — 697 per-task caches, ~285 GB, never reclaimed. The
+    // paths are constants now precisely so no caller can reintroduce that.
+    const env = buildPackageManagerCacheEnv();
+    expect(env).toEqual(buildPackageManagerCacheEnv());
+    for (const value of Object.values(env)) {
+      expect(value.startsWith(`${CACHES_DIR}/`)).toBe(true);
+      expect(value).not.toContain('/sessions/');
     }
+  });
+
+  it('takes no arguments, so a cache cannot be scoped to a caller-supplied path', () => {
+    expect(buildPackageManagerCacheEnv.length).toBe(0);
   });
 });
 

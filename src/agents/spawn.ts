@@ -39,7 +39,7 @@ import {
   appendUsageRecord,
   readKnowledgeLog,
 } from '../tasks/persistence.js';
-import { WORKDIR, getBaseCachePath, getPluginsHeadInfo } from '../system/workdir.js';
+import { WORKDIR, CACHES_DIR, getBaseCachePath, getPluginsHeadInfo } from '../system/workdir.js';
 import {
   createRecoverableInputGenerator,
 } from './message-queue.js';
@@ -310,7 +310,10 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     cwd,
     denyReadPaths: [WORKDIR],
     allowReadPaths: [workspace, sharedPath, ...claudeReadDirs, ...pluginReadPaths],
-    allowWritePaths: [workspace, ...claudeWriteDirs],
+    // CACHES_DIR is shared by every agent and must be writable, or package
+    // managers hit the EROFS that buildPackageManagerCacheEnv exists to avoid.
+    // allowWrite only — a path in both lists loses its rw mount (see sandbox.ts).
+    allowWritePaths: [workspace, CACHES_DIR, ...claudeWriteDirs],
     denyWritePaths: [sharedPath, ...pluginPaths, ...protectedWorkspaceFiles],
     allowedNetworkDomains: def.allowedNetworkDomains,
   };
@@ -539,9 +542,11 @@ Shared folder: ${sharedPath} [READ-ONLY]
       cwd,
       denyReadPaths: [WORKDIR],
       allowReadPaths: [workspace, ...allClonePaths, ...claudeReadDirs, ...readOnlyPaths],
+      // CACHES_DIR stays writable in both modes: a readonly agent still runs
+      // package managers (typecheck, test), and they need the cache regardless.
       allowWritePaths: editAllowed
-        ? [workspace, ...allClonePaths, ...claudeWriteDirs]
-        : [workspace, ...claudeWriteDirs],
+        ? [workspace, CACHES_DIR, ...allClonePaths, ...claudeWriteDirs]
+        : [workspace, CACHES_DIR, ...claudeWriteDirs],
       denyWritePaths: editAllowed
         ? [...readOnlyPaths, ...protectedWorkspaceFiles, ...cloneGitHeads]
         : [...allClonePaths, ...readOnlyPaths],
@@ -679,7 +684,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
       CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
       // Redirect npm/yarn caches off the read-only $HOME, or installs fail with
       // EROFS before the network allowlist matters. See buildPackageManagerCacheEnv.
-      ...buildPackageManagerCacheEnv(workspace),
+      ...buildPackageManagerCacheEnv(),
       // Sourced by every non-interactive bash the agent runs; maps the sandbox's
       // per-session proxy onto tools that ignore the standard *_PROXY vars (Yarn
       // Berry). Set by the Dockerfiles — forwarded because the SDK replaces env.

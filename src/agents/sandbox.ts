@@ -15,6 +15,7 @@
 
 import { resolve, normalize } from 'path';
 import type { HookCallbackMatcher, HookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
+import { CACHES_DIR } from '../system/workdir.js';
 
 // ---- Types ----
 
@@ -150,9 +151,44 @@ export function buildManagedNetworkPolicy(opts: SandboxOptions) {
  * is what actually blocked `npm install` in edit mode; the failure reads like a
  * network problem (it names the registry URL) but is purely filesystem.
  *
- * Pointed at the agent's own workspace rather than a shared `/tmp`: a shared
- * cache would let one agent stage content that another agent later installs
- * from, which is a cross-task integrity problem we get to avoid for free.
+ * Shared across every agent and task (`CACHES_DIR`), NOT per workspace. This
+ * used to point at the agent's own workspace to avoid a shared cache letting one
+ * agent stage content another agent later installs from — the alternative on the
+ * table then was `/tmp`, which is world-writable inside the sandbox and a bad
+ * place for this. A managed directory under the workdir is not: it costs one
+ * `allowWrite` entry, and the caches it holds are content-addressed and verified
+ * on read, so the staging attack does not survive the integrity check.
+ *
+ * Verified rather than assumed, because the whole design rests on it. Corrupting
+ * a cached tarball for a lockfile-pinned package and reinstalling gives
+ * `npm warn tarball ... seems to be corrupted. Refreshing cache.` — npm hashes
+ * content while streaming and compares against the lockfile's `integrity`, so a
+ * mismatch discards the entry and refetches. Poisoning a pinned install needs a
+ * SHA-512 preimage. Yarn Berry checks cache zips against `yarn.lock` checksums
+ * (`checksumBehavior: throw`) on the same terms.
+ *
+ * The exception, accepted knowingly: `_npx`. It is a materialized, *executable*
+ * `node_modules` that npx reuses on directory presence and never re-verifies —
+ * appending to a file inside it and re-running the same `npx` command executes
+ * the modified code, with a `package-lock.json` sitting unread beside it. npm
+ * derives `_npx`, `_cacache` and `_tuf` from the single `cache` config
+ * (`@npmcli/config` definitions: `cache`), so there is no env that splits them.
+ * MCP servers launched `npx -y` therefore share a tamperable tree. Closing it
+ * means either preinstalling those servers in the image (couples the plugins repo
+ * to the Dockerfile) or symlinking `_cacache` out to a shared dir while `_npx`
+ * stays per-task and gets reaped. Both work; neither was worth the complexity
+ * against a per-task cost of ~285 GB.
+ *
+ * Note the sharing is only sound for package managers that verify against a
+ * committed lockfile. pip (`requirements.txt` without hashes) and Bundler
+ * (`Gemfile.lock` carries no digests) do NOT have this property — do not add
+ * their caches here on the strength of the reasoning above.
+ *
+ * Concurrency: npm's `_cacache` is built for concurrent writers. Yarn Berry's
+ * global cache is weaker — parallel installs can leave a partial zip — but
+ * `checksumBehavior: throw` rejects it and refetches, so it surfaces as a flaky
+ * install rather than a silently wrong one. `createKeyedLock` is available if
+ * that ever shows up in practice.
  *
  * `npm_config_cache` is npm's env form of the `cache` config; yarn 1 reads
  * `YARN_CACHE_FOLDER`. Yarn 4 (Berry) needs more: it creates its *global folder*
@@ -166,8 +202,8 @@ export function buildManagedNetworkPolicy(opts: SandboxOptions) {
  * instantly on the global-folder ENOENT while yarn 1 in the same sandbox worked
  * fine — which is why this covers both generations rather than just the cache.
  */
-export function buildPackageManagerCacheEnv(workspace: string): Record<string, string> {
-  const cacheRoot = resolve(workspace, '.cache');
+export function buildPackageManagerCacheEnv(): Record<string, string> {
+  const cacheRoot = CACHES_DIR;
   return {
     npm_config_cache: resolve(cacheRoot, 'npm'),
     YARN_CACHE_FOLDER: resolve(cacheRoot, 'yarn'),
