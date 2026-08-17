@@ -9,11 +9,11 @@
  * module is the durable source of truth.
  */
 
-import { mkdir, readFile, writeFile, readdir, unlink } from 'fs/promises';
+import { mkdir, readFile, writeFile, readdir, unlink, rm } from 'fs/promises';
 import { existsSync } from 'fs';
 import { resolve, sep } from 'path';
 import type { Trigger } from '../types/trigger.js';
-import { TRIGGERS_DIR } from './workdir.js';
+import { TRIGGERS_DIR, TRIGGERS_DATA_DIR } from './workdir.js';
 import { logger } from './logger.js';
 
 /**
@@ -81,6 +81,59 @@ export function getTriggerPath(id: string): string {
   return full;
 }
 
+/**
+ * Path to a trigger's persistent data directory. Same two-guard shape as
+ * {@link getTriggerPath} — the id-shape check, then resolved-path containment
+ * within TRIGGERS_DATA_DIR — because this path is handed to `mkdir`/`rm` and to
+ * a sandbox write grant, all of which deserve the same provable containment.
+ * The one difference: no `.json` suffix, because this is a directory the agent
+ * writes files into, not a record file.
+ */
+export function getTriggerDataPath(id: string): string {
+  const safeId = matchedTriggerId(id);
+  if (safeId === null) {
+    throw new Error(`Invalid trigger id: ${JSON.stringify(id)}`);
+  }
+  const base = resolve(TRIGGERS_DATA_DIR);
+  const full = resolve(base, safeId);
+  if (!full.startsWith(base + sep)) {
+    throw new Error(`Invalid trigger id: ${JSON.stringify(id)}`);
+  }
+  return full;
+}
+
+/**
+ * Ensure a trigger's persistent data directory exists, and return its path.
+ *
+ * The directory is deliberately left empty — no seed file, no subdirectories.
+ * Conventions for what belongs in there are taught to the agent by the
+ * `trigger-continuity` skill, and imposing a structure from code is an explicit
+ * non-goal: the agent decides its own layout and the skill describes it.
+ *
+ * `recursive: true` is what makes this idempotent, and idempotence is required
+ * rather than merely nice: agent spawn re-runs this per agent, on every wake of
+ * a task, and again after a process restart, so it must be safe to call on a
+ * directory that already exists and already holds an earlier fire's notes.
+ */
+export async function ensureTriggerDataDir(id: string): Promise<string> {
+  const path = getTriggerDataPath(id);
+  await mkdir(path, { recursive: true });
+  return path;
+}
+
+/**
+ * Remove a trigger's persistent data directory and everything inside it.
+ * Mirrors {@link deleteTrigger}'s malformed-id contract: a silent return, not a
+ * throw. `force: true` makes a never-created directory a silent no-op, which is
+ * the common case rather than the exception — a pending trigger that was denied,
+ * refused by a cap, or garbage-collected never fired, so it never got a
+ * directory in the first place.
+ */
+export async function removeTriggerDataDir(id: string): Promise<void> {
+  if (!isValidTriggerId(id)) return; // malformed id → nothing to delete
+  await rm(getTriggerDataPath(id), { recursive: true, force: true });
+}
+
 /** Ensure the triggers directory exists. */
 async function ensureTriggersDir(): Promise<void> {
   if (!existsSync(TRIGGERS_DIR)) {
@@ -120,13 +173,17 @@ export async function listTriggers(): Promise<Trigger[]> {
   return triggers;
 }
 
-/** Delete a trigger's file. No-op if already gone. */
+/** Delete a trigger's file and its persistent data directory. No-op if already gone. */
 export async function deleteTrigger(id: string): Promise<void> {
   if (!isValidTriggerId(id)) return; // malformed id → nothing to delete
   const path = getTriggerPath(id);
   if (existsSync(path)) {
     await unlink(path);
   }
+  // Every deletion entry point — the PM tool, the API route, the pending-trigger
+  // GC — funnels through this one function, so putting the directory cleanup
+  // here reaches all of them without any caller having to change.
+  await removeTriggerDataDir(id);
 }
 
 /**
