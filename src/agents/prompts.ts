@@ -17,6 +17,17 @@ export const AGENT_PROMPTS = {
   existingTask: 'New input received. Check knowledge.log for the update.',
   recovery: 'Task was interrupted. Check knowledge.log for current state and continue where you left off.',
 
+  // GitHub activity on work PM has already delegated — review comments, review
+  // bodies, PR conversation comments, CI results. Distinct from `existingTask`
+  // because the author is often the same person PM is talking to in Slack, and
+  // under the generic prompt PM read the notification as news to relay: it
+  // narrated the reviewer's own comments back at them and asked what they had
+  // meant. Naming the owner instead points the input at the agent holding the
+  // branch, which is the only party that can answer on the PR. Merge outcomes
+  // (see connectors/github/merge.ts) keep `existingTask` — those really are PM's
+  // to announce, not to delegate.
+  githubInput: 'Activity on GitHub for work you delegated — check knowledge.log for what it is and which PR. Hand it to the agent that owns that branch.',
+
   // Stage 3: Reinforcement prompts for idle detection recovery
   reinforcePM: `RECOVERY: You went idle without completing the task.
 
