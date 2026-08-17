@@ -34,8 +34,8 @@ secrets/oauth/
 secrets/*-credentials.json
 
 # Runtime data
-workdir/
-claude-data/
+workdir
+claude-data
 *.log
 
 # OS
