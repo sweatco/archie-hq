@@ -65,3 +65,43 @@ describe('buildTriggerDataPromptSection', () => {
     expect(section).toContain('trigger-continuity');
   });
 });
+
+describe('buildTriggerDataPromptSection listing', () => {
+  const P = '/workdir/triggers-data/trg-20260817-1200-abc123';
+
+  it('says the directory is empty when it is, rather than omitting the listing', () => {
+    const out = buildTriggerDataPromptSection(P, []);
+    expect(out).toContain('Contents: empty');
+    expect(out).not.toContain('- ');
+  });
+
+  it('defaults to the empty listing when no entries are passed', () => {
+    expect(buildTriggerDataPromptSection(P)).toContain('Contents: empty');
+  });
+
+  it('names every entry, sorted, so the agent can Read one without listing the directory', () => {
+    const out = buildTriggerDataPromptSection(P, ['state.json', 'a-note.md']);
+    expect(out).toContain('Contents (2 entries)');
+    expect(out.indexOf('- a-note.md')).toBeLessThan(out.indexOf('- state.json'));
+  });
+
+  it('uses the singular for one entry', () => {
+    expect(buildTriggerDataPromptSection(P, ['only.md'])).toContain('Contents (1 entry)');
+  });
+
+  it('caps the listing so a runaway directory cannot grow every later prompt without bound', () => {
+    const many = Array.from({ length: 130 }, (_, i) => `f${String(i).padStart(3, '0')}.md`);
+    const out = buildTriggerDataPromptSection(P, many);
+    expect(out).toContain('Contents (130 entries)');
+    expect(out).toContain('- f000.md');
+    expect(out).toContain('and 80 more, not listed');
+    expect(out).not.toContain('- f050.md');
+    expect(out.split('\n').filter((l) => l.startsWith('- ')).length).toBe(51); // 50 names + the truncation line
+  });
+
+  it('does not mutate the caller\'s array while sorting', () => {
+    const entries = ['z.md', 'a.md'];
+    buildTriggerDataPromptSection(P, entries);
+    expect(entries).toEqual(['z.md', 'a.md']);
+  });
+});

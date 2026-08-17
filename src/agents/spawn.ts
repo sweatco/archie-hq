@@ -11,7 +11,7 @@
  */
 
 import { join, basename } from 'path';
-import { mkdir, symlink, writeFile } from 'fs/promises';
+import { mkdir, readdir, symlink, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { randomUUID } from 'node:crypto';
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -620,7 +620,8 @@ Shared folder: ${sharedPath} [READ-ONLY]
     : null;
   if (triggerDataPath) {
     sandboxOpts = grantTriggerDataWrite(sandboxOpts, triggerDataPath);
-    systemPrompt = `${systemPrompt}\n\n${buildTriggerDataPromptSection(triggerDataPath)}`;
+    // The names are read here rather than left to the agent because it has no way to list this directory itself — `Bash` cannot see the path (write-only grant under a denied parent) and `Glob` is absent from the runtime, so a live fire that asked for it got "No such tool available: Glob" and could only read a file whose exact name it had been handed. Names only; opening them stays the agent's choice.
+    systemPrompt = `${systemPrompt}\n\n${buildTriggerDataPromptSection(triggerDataPath, await readdir(triggerDataPath))}`;
   }
 
   // ---- Organizational memory injection (read path; gated by ARCHIE_MEMORY_INJECT, default off) ----
