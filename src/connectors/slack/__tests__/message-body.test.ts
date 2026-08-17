@@ -7,6 +7,20 @@
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../client.js', () => ({
+  classifySlackIngestAuthor: (user: {
+    teamId?: string;
+    isRestricted?: boolean;
+    isUltraRestricted?: boolean;
+    isBot?: boolean;
+    isAppUser?: boolean;
+    trustedAutomation?: boolean;
+  }) => {
+    if (user.isRestricted || user.isUltraRestricted) return 'external';
+    if (!user.teamId) return 'unknown';
+    if (user.teamId !== 'T_HOME') return 'external';
+    if (user.isBot || user.isAppUser) return user.trustedAutomation ? 'internal' : 'untrusted';
+    return 'internal';
+  },
   isExternalUser: (user: { teamId?: string; isRestricted?: boolean; isUltraRestricted?: boolean }) => {
     if (user.isRestricted || user.isUltraRestricted) return true;
     if (user.teamId && user.teamId !== 'T_HOME') return true;
@@ -73,6 +87,14 @@ describe('renderMessageBody', () => {
       { redacted: true },
     );
     expect(out).toBe('[redacted: external participant in shared channel]');
+  });
+
+  it('distinguishes an unresolved author from a verified external author', () => {
+    const out = renderMessageBody(
+      { ownText: 'must not appear' },
+      { redacted: true, redactionReason: 'unresolved' },
+    );
+    expect(out).toBe('[redacted: unresolved Slack author]');
   });
 
   it('renders externally-authored attachment under a forwarded-from label', () => {
@@ -146,6 +168,36 @@ describe('renderMessageBody', () => {
       { redacted: false },
     );
     expect(out).toBe('top\n[forwarded from <@UG:G> — external]\nguest content');
+  });
+
+  it('labels an unresolved attachment instead of treating it as internal', () => {
+    const out = renderMessageBody(
+      {
+        ownText: 'top',
+        attachments: [{
+          text: 'unresolved content',
+          author: { id: 'U?', username: 'unknown', realName: 'Unknown' },
+        }],
+      },
+      { redacted: false },
+    );
+    expect(out).toBe('top\n[forwarded from <@U?:Unknown> — unknown]\nunresolved content');
+  });
+
+  it('labels untrusted automation forwarded by an internal author', () => {
+    const out = renderMessageBody(
+      {
+        ownText: 'top',
+        attachments: [{
+          text: 'automation payload',
+          author: {
+            id: 'B_ALERT', username: 'alert', realName: 'Alert Bot', teamId: 'T_HOME', isBot: true,
+          },
+        }],
+      },
+      { redacted: false },
+    );
+    expect(out).toBe('top\n[forwarded from <@B_ALERT:Alert Bot> — untrusted, team T_HOME]\nautomation payload');
   });
 
   it('omits the [Reactions] suffix entirely when includeReactions is false', () => {

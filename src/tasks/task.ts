@@ -39,7 +39,7 @@ import { Agent } from '../agents/agent.js';
 
 import {
   loadMetadata,
-  getMetadataPath,
+  writeTaskMetadata,
   appendAgentFinding,
   appendAgentMessage,
   appendMessageToUser,
@@ -235,7 +235,7 @@ export class Task {
       updated_at: new Date().toISOString(),
     };
 
-    await writeFile(getMetadataPath(taskId), JSON.stringify(metadata, null, 2));
+    await writeTaskMetadata(taskId, metadata);
     await writeFile(getKnowledgeLogPath(taskId), '');
 
     logger.system(`Created task ${taskId}`);
@@ -280,7 +280,7 @@ export class Task {
     // repo agent still resolves (a later plugin removal would otherwise make the
     // migration drop those entries). Only an active task ever re-saves on its own.
     if (didMigrateRepositories || didMigrateVisibility) {
-      await writeFile(getMetadataPath(taskId), JSON.stringify(metadata, null, 2));
+      await writeTaskMetadata(taskId, metadata);
       // Log once, here — the migration persisted, so it won't run again. (The
       // migrate fn stays silent: it runs on every load, incl. read-only
       // findTaskByPRNumber, so logging there would spam.)
@@ -386,11 +386,17 @@ export class Task {
     // Only positively verified internal authors may enter task memory.
     const writeMessage = async (msg: typeof thread.messages[number]): Promise<boolean> => {
       const identity = classifySlackIngestAuthor(msg.user);
-      if (identity === 'unknown') return false;
+      // The event actor was checked separately before this thread was fetched.
+      // If its identity cannot be reproduced here, do not turn that current
+      // ingress into a historical redaction and advance its watermark.
+      if (identity === 'unknown' && msg.ts === thread.currentMessageTs) return false;
       if (identity !== 'internal') {
         await appendSlackMessage(
           this.taskId, thread.channel, thread.threadId, msg.user,
-          renderMessageBody(msg, { redacted: true }),
+          renderMessageBody(msg, {
+            redacted: true,
+            redactionReason: identity === 'unknown' ? 'unresolved' : 'external',
+          }),
           { redacted: true, ts: msg.ts },
         );
       } else {
@@ -1141,7 +1147,9 @@ export class Task {
     // the final message. Best-effort; must never block teardown.
     await this.resurfacePrCards().catch((e) => logger.warn('task', 'PR card resurface failed on complete', e));
 
-    await withTaskDataLock(this.taskId, async () => {
+    const completed = await withTaskDataLock(this.taskId, async () => {
+      if (!this.isActive) return false;
+
       // Persist the memory intent before any state transition that would make
       // this task look safely parked. Extraction takes the same data lock for
       // its snapshot, so it cannot observe the task before the completed status
@@ -1176,7 +1184,10 @@ export class Task {
 
       this.metadata.status = 'completed';
       await this.save(true);
+      return true;
     });
+
+    if (!completed) return;
 
     logger.system(`Task ${this.taskId} completed`);
     emitEvent('task:completed', this.taskId);
@@ -1250,10 +1261,7 @@ export class Task {
     // saveLegacyTask expects TaskRuntimeState, but we need to bridge
     // For now, write directly
     if (flush) {
-      await writeFile(
-        getMetadataPath(this.taskId),
-        JSON.stringify(this.metadata, null, 2),
-      );
+      await writeTaskMetadata(this.taskId, this.metadata);
     } else {
       // Debounced — use the legacy saveTask by creating a compat shim
       this.debouncedSave();
@@ -1880,10 +1888,7 @@ export class Task {
           this.metadata.agent_sessions[agentName] = { ...agent.session };
         }
         this.metadata.updated_at = new Date().toISOString();
-        await writeFile(
-          getMetadataPath(this.taskId),
-          JSON.stringify(this.metadata, null, 2),
-        );
+        await writeTaskMetadata(this.taskId, this.metadata);
       } catch (err) {
         logger.error('task', `Failed to save task ${this.taskId}`, err);
       }
@@ -1932,8 +1937,16 @@ export async function persistVisibilityRestriction(
   source: TaskVisibility,
   save: () => Promise<void>,
 ): Promise<boolean> {
+  const previous = metadata.visibility;
   const changed = restrictTaskVisibility(metadata, source);
-  if (changed) await save();
+  if (changed) {
+    try {
+      await save();
+    } catch (error) {
+      metadata.visibility = previous;
+      throw error;
+    }
+  }
   return changed;
 }
 

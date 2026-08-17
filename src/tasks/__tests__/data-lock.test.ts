@@ -150,4 +150,46 @@ describe('task data lock', () => {
     const persisted = JSON.parse(await readFile(getMetadataPath(TASK_ID), 'utf-8')) as TaskMetadata;
     expect(persisted.channels['slack:C_DATA:1.0']).toMatchObject({ last_processed_ts: '2.0' });
   });
+
+  it('redacts an unresolved historical author and advances past it', async () => {
+    const task = new TaskCtor(TASK_ID, metadata(), []);
+    const unresolved = {
+      user: { id: 'U_MISSING', username: 'U_MISSING', realName: 'U_MISSING' },
+      ownText: 'unverifiable historical payload',
+      ts: '1.0',
+    };
+
+    await expect(task.append(thread([
+      unresolved,
+      { user: human, ownText: 'human follow-up', ts: '2.0' },
+    ]))).resolves.toBe(true);
+
+    const log = await readFile(getKnowledgeLogPath(TASK_ID), 'utf-8');
+    expect(log).toContain('[redacted: unresolved Slack author]');
+    expect(log).not.toContain('unverifiable historical payload');
+    expect(log).toContain('human follow-up');
+
+    const persisted = JSON.parse(await readFile(getMetadataPath(TASK_ID), 'utf-8')) as TaskMetadata;
+    expect(persisted.channels['slack:C_DATA:1.0']).toMatchObject({ last_processed_ts: '2.0' });
+  });
+
+  it('does not advance past an unresolved current actor', async () => {
+    const task = new TaskCtor(TASK_ID, metadata(), []);
+    const unresolved = {
+      user: { id: 'U_MISSING', username: 'U_MISSING', realName: 'U_MISSING' },
+      ownText: 'current payload',
+      ts: '2.0',
+    };
+
+    await expect(task.append(thread([
+      { user: human, ownText: 'historical message', ts: '1.0' },
+      unresolved,
+    ]))).resolves.toBe(false);
+
+    const log = await readFile(getKnowledgeLogPath(TASK_ID), 'utf-8');
+    expect(log).toContain('historical message');
+    expect(log).not.toContain('current payload');
+    const persisted = JSON.parse(await readFile(getMetadataPath(TASK_ID), 'utf-8')) as TaskMetadata;
+    expect(persisted.channels['slack:C_DATA:1.0']).toMatchObject({ last_processed_ts: '1.0' });
+  });
 });

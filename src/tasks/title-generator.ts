@@ -11,7 +11,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { z, toJSONSchema } from 'zod';
 import type { SlackThread } from '../types/index.js';
 import { renderMessageBody, REDACTION_PLACEHOLDER } from '../connectors/slack/message-body.js';
-import { classifySlackIdentity } from '../connectors/slack/client.js';
+import { classifySlackIngestAuthor } from '../connectors/slack/client.js';
 import { logger } from '../system/logger.js';
 
 const TitleSchema = z.object({
@@ -40,8 +40,12 @@ function buildTranscript(thread: SlackThread): { transcript: string; hasUsableCo
   let hasUsableContent = false;
 
   for (const msg of thread.messages) {
-    const redacted = classifySlackIdentity(msg.user) !== 'internal';
-    const body = renderMessageBody(msg, { redacted });
+    const identity = classifySlackIngestAuthor(msg.user);
+    const redacted = identity !== 'internal';
+    const body = renderMessageBody(msg, {
+      redacted,
+      redactionReason: identity === 'unknown' ? 'unresolved' : 'external',
+    });
     const author = redacted ? 'external' : msg.user.realName;
     lines.push(`[${author}]: ${body}`);
     if (!redacted && body.trim() !== '' && body !== REDACTION_PLACEHOLDER) {

@@ -5,12 +5,13 @@
  */
 
 import type { SlackFile, SlackAttachment, SlackReaction, SlackAuthor } from '../../types/index.js';
-import { isExternalUser, extractMessageContent } from './client.js';
+import { classifySlackIngestAuthor, isExternalUser, extractMessageContent } from './client.js';
 
 /**
  * The exact text substituted for a redacted message body. Consumers that need to recognise a redacted body (e.g. deciding whether a transcript has usable content) must compare against this constant rather than re-declaring the literal, so the placeholder text stays a single fact.
  */
 export const REDACTION_PLACEHOLDER = '[redacted: external participant in shared channel]';
+export const UNRESOLVED_AUTHOR_PLACEHOLDER = '[redacted: unresolved Slack author]';
 
 /** The parts of a Slack message that contribute to its rendered body. */
 export interface SlackMessageParts {
@@ -34,10 +35,16 @@ export interface SlackMessageParts {
  */
 export function renderMessageBody(
   parts: SlackMessageParts,
-  options: { redacted: boolean; includeReactions?: boolean }
+  options: {
+    redacted: boolean;
+    redactionReason?: 'external' | 'unresolved';
+    includeReactions?: boolean;
+  }
 ): string {
   if (options.redacted) {
-    return REDACTION_PLACEHOLDER;
+    return options.redactionReason === 'unresolved'
+      ? UNRESOLVED_AUTHOR_PLACEHOLDER
+      : REDACTION_PLACEHOLDER;
   }
 
   const inlineParts: string[] = [];
@@ -45,13 +52,14 @@ export function renderMessageBody(
 
   let forwardedBlock = '';
   for (const att of parts.attachments ?? []) {
-    if (att.author && isExternalUser(att.author)) {
-      // Render the externally-authored attachment under a provenance label.
+    const identity = att.author ? classifySlackIngestAuthor(att.author) : 'internal';
+    if (att.author && identity !== 'internal') {
+      // Render the non-internal attachment under a provenance label.
       // Only the first one gets the label block; subsequent ones (rare)
       // fold inline so the agent still sees them.
       if (!forwardedBlock) {
         const teamSuffix = att.author.teamId ? `, team ${att.author.teamId}` : '';
-        const label = `[forwarded from <@${att.author.id}:${att.author.realName}> — external${teamSuffix}]`;
+        const label = `[forwarded from <@${att.author.id}:${att.author.realName}> — ${identity}${teamSuffix}]`;
         forwardedBlock = `${label}\n${att.text}`;
         continue;
       }

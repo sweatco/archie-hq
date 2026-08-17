@@ -639,15 +639,14 @@ describe('fetchSlackThread — task visibility', () => {
     expect((await client.fetchSlackThread('D_private', '600.0', '600.0')).taskVisibility).toBe('private');
   });
 
-  it('fails closed to a private task when channel info is unavailable', async () => {
+  it('aborts thread ingestion when channel privacy cannot be verified', async () => {
     slackApi.conversations.info.mockRejectedValue(new Error('Slack unavailable'));
     slackApi.conversations.replies.mockResolvedValue({
       messages: [rawMsg({ ts: '700.0', user: 'UHUMAN', text: 'request during outage' })],
     });
 
-    const thread = await client.fetchSlackThread('C_unknown', '700.0', '700.0');
-
-    expect(thread.taskVisibility).toBe('private');
+    await expect(client.fetchSlackThread('C_unknown', '700.0', '700.0'))
+      .rejects.toThrow('Slack unavailable');
   });
 });
 
@@ -678,13 +677,27 @@ describe('isChannelShared', () => {
 });
 
 describe('classifySlackIdentity', () => {
-  it('requires a known home team', async () => {
+  it('fails initialization when the home team is missing', async () => {
     slackApi.auth.test.mockResolvedValue({ user_id: BOT_USER, bot_id: BOT_ID, url: 'https://acme.slack.com' });
     vi.resetModules();
     client = await import('../client.js');
-    await client.initSlackClient('xoxb-test');
+    await expect(client.initSlackClient('xoxb-test')).rejects.toThrow('required user_id and team_id');
 
+    expect(client.getBotUserId()).toBeNull();
+    expect(client.getHomeTeamId()).toBeNull();
     expect(client.classifySlackIdentity({ teamId: 'THOME' })).toBe('unknown');
+  });
+
+  it('clears a previously cached identity when reinitialization fails', async () => {
+    expect(client.getBotUserId()).toBe(BOT_USER);
+    expect(client.getHomeTeamId()).toBe('THOME');
+    slackApi.auth.test.mockRejectedValue(new Error('invalid_auth'));
+
+    await expect(client.initSlackClient('xoxb-replacement')).rejects.toThrow('invalid_auth');
+
+    expect(client.getBotUserId()).toBeNull();
+    expect(client.getHomeTeamId()).toBeNull();
+    expect(() => client.getSlackClient()).toThrow('not initialized');
   });
 
   it('requires the actor team and rejects guests and bots', () => {
@@ -1044,18 +1057,13 @@ describe('resolvePeopleFromTranscript — titles are untrusted input', () => {
     expect(people.map(p => p.title)).toEqual(['', '']);
   });
 
-  it('withholds every title when the home team is unknown — fails closed', async () => {
-    // auth.test with no team_id is the fail-OPEN case for isExternalUser; titles
-    // must not inherit that leniency, since we cannot tell insider from outsider.
+  it('does not expose a client when startup cannot establish the home team', async () => {
     slackApi.auth.test.mockResolvedValue({ user_id: BOT_USER, bot_id: BOT_ID, url: 'https://acme.slack.com' });
     vi.resetModules();
     client = await import('../client.js');
-    await client.initSlackClient('xoxb-test');
-    slackApi.users.list.mockResolvedValue({ members: [member('UENG1', 'Nikita Sidorin', 'Backend Lead')] });
+    await expect(client.initSlackClient('xoxb-test')).rejects.toThrow('required user_id and team_id');
 
-    expect(await client.resolvePeopleFromTranscript('<@UENG1:Nikita>')).toEqual([
-      { id: 'UENG1', marker: '<@UENG1:Nikita>', title: '' },
-    ]);
+    expect(() => client.getSlackClient()).toThrow('not initialized');
   });
 
   it('flattens newlines out of an internal title so it cannot forge a prompt section', async () => {

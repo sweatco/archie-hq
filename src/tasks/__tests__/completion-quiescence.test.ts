@@ -17,7 +17,7 @@ vi.mock('../../system/workdir.js', async (importOriginal) => ({
 import { createOrchestrationMcpServer } from '../../agents/tools.js';
 import { idleDecision, scheduleIdleCheck } from '../recovery.js';
 import { activeTasks, shouldClearCompletionIntent, Task } from '../task.js';
-import { offTaskCompleted, onTaskCompleted } from '../../system/event-bus.js';
+import { offEvent, offTaskCompleted, onEvent, onTaskCompleted } from '../../system/event-bus.js';
 import { logger } from '../../system/logger.js';
 import type { Agent } from '../../agents/agent.js';
 import type { AgentDef } from '../../types/agent.js';
@@ -195,6 +195,41 @@ describe('completion quiescence wiring', () => {
 
     offTaskCompleted(listener);
     activeTasks.delete(task.taskId);
+  });
+
+  it('runs durable preparation, persistence, and completion publication once for concurrent callers', async () => {
+    const taskId = 'task-concurrent-complete';
+    await mkdir(join(SESSIONS_ROOT, taskId, 'shared'), { recursive: true });
+    const listener = vi.fn().mockResolvedValue(undefined);
+    const events = vi.fn();
+    onTaskCompleted(listener);
+    onEvent(events);
+    const task = new TaskCtor(taskId, {
+      task_id: taskId,
+      visibility: 'public',
+      task_owner: null,
+      participants: [],
+      channels: {},
+      default_channel: null,
+      agent_sessions: {},
+      repositories: {},
+      edit_allowed: true,
+      status: 'in_progress',
+      created_at: '2026-08-15T12:00:00.000Z',
+      updated_at: '2026-08-15T12:00:00.000Z',
+    }, []);
+    task.isActive = true;
+    activeTasks.set(taskId, task);
+    const save = vi.spyOn(task, 'save');
+
+    await Promise.all([task.complete(), task.complete()]);
+
+    expect(listener).toHaveBeenCalledOnce();
+    expect(save).toHaveBeenCalledOnce();
+    expect(events.mock.calls.filter(([event]) => event.type === 'task:completed')).toHaveLength(1);
+    offTaskCompleted(listener);
+    offEvent(events);
+    activeTasks.delete(taskId);
   });
 
   it('logs and reschedules an idle completion after durable setup fails', async () => {

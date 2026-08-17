@@ -44,7 +44,7 @@ vi.mock('../client.js', () => ({
   isChannelShared: vi.fn().mockResolvedValue(false),
   postEphemeral: vi.fn(),
   getSlackClient: vi.fn(),
-  getChannelInfo: vi.fn().mockResolvedValue({ id: 'C_EDIT', name: 'private', isPrivate: false, isIm: false }),
+  fetchChannelIsPrivate: vi.fn().mockResolvedValue(false),
   cleanSlackText: vi.fn((s: string) => s),
   extractMessageContent: vi.fn().mockResolvedValue({ text: 'edited text' }),
 }));
@@ -84,7 +84,7 @@ vi.mock('../../../system/logger.js', () => ({
 
 import { handleSlackEdit, handleSlackEvent } from '../events.js';
 import { Task } from '../../../tasks/task.js';
-import { getUserInfo, classifySlackIdentity, addReaction, fetchSlackThread, getChannelInfo } from '../client.js';
+import { getUserInfo, classifySlackIdentity, addReaction, fetchSlackThread, fetchChannelIsPrivate } from '../client.js';
 import { findTaskByThread } from '../../../tasks/persistence.js';
 
 // Both id shapes Slack issues for an mpim. `G…` is the documented classic shape;
@@ -171,6 +171,24 @@ describe('mpim external-author bail-out (AC4)', () => {
     expect(vi.mocked(fetchSlackThread)).not.toHaveBeenCalled();
     expect(vi.mocked(Task.create)).not.toHaveBeenCalled();
   });
+
+  it('aborts before acknowledging when channel confidentiality cannot be verified', async () => {
+    vi.mocked(getUserInfo).mockResolvedValue({
+      name: 'internal', realName: 'Internal', teamId: HOME_TEAM,
+    } as never);
+    vi.mocked(fetchSlackThread).mockRejectedValue(new Error('Slack unavailable'));
+
+    await expect(handleSlackEvent({
+      type: 'app_mention',
+      channel: 'C_PUBLIC',
+      user: 'U_INTERNAL',
+      text: '<@UBOT> help',
+      ts: '1700000000.000400',
+    })).rejects.toThrow('Slack unavailable');
+
+    expect(vi.mocked(addReaction)).not.toHaveBeenCalled();
+    expect(vi.mocked(Task.create)).not.toHaveBeenCalled();
+  });
 });
 
 describe('message edit author and visibility policy', () => {
@@ -215,9 +233,7 @@ describe('message edit author and visibility policy', () => {
     vi.mocked(getUserInfo).mockResolvedValue({
       name: 'editor', realName: 'Editor', teamId: HOME_TEAM,
     } as never);
-    vi.mocked(getChannelInfo).mockResolvedValue({
-      id: 'C_EDIT', name: 'private', isPrivate: true, isIm: false,
-    });
+    vi.mocked(fetchChannelIsPrivate).mockResolvedValue(true);
     vi.mocked(Task.get).mockResolvedValue(task as never);
 
     await handleSlackEdit(editEvent);
@@ -229,5 +245,28 @@ describe('message edit author and visibility policy', () => {
       'edited text',
       'private',
     );
+  });
+
+  it('skips an edit when channel privacy cannot be verified', async () => {
+    const task = {
+      metadata: {
+        channels: {
+          'slack:C_EDIT:1.0': { type: 'slack', channel_id: 'C_EDIT', channel_name: 'channel', thread_id: '1.0' },
+        },
+      },
+      appendSlackEdit: vi.fn(),
+      sendMessage: vi.fn(),
+    };
+    vi.mocked(getUserInfo).mockResolvedValue({
+      name: 'editor', realName: 'Editor', teamId: HOME_TEAM,
+    } as never);
+    vi.mocked(fetchChannelIsPrivate).mockRejectedValue(new Error('Slack unavailable'));
+    vi.mocked(Task.get).mockResolvedValue(task as never);
+
+    await handleSlackEdit(editEvent);
+
+    expect(task.appendSlackEdit).not.toHaveBeenCalled();
+    expect(task.sendMessage).not.toHaveBeenCalled();
+    expect(vi.mocked(Task.get)).not.toHaveBeenCalled();
   });
 });
