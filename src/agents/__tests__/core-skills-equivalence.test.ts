@@ -3,7 +3,9 @@
  *
  * This loads the real plugin tree off disk and asserts the mount set every agent def ends up with, so the `skillsPath`/`coreSkillsPath` → `skillPaths` refactor is provably behavior-preserving rather than only argued to be. It needs no `.env`, no secrets and no network: `initPlugins()` and `initRegistry()` are synchronous disk scans.
  *
- * The numbers 26 / 22 / 4 come from a baseline captured on the untouched branch before this change. A plugins-clone update can legitimately move 26 (the PM's total) and 22 (its plugin-sourced entries) — when the plugins repo gains or loses a PM skill, update those two together. The four core skill names and the two ordering/uniqueness invariants must NOT move: they are the behavior this file exists to protect.
+ * IMPORTANT — this file does not run in CI, and a green CI is therefore not evidence that equivalence holds. `PLUGINS_DIR` is `<cwd>/workdir/plugins`, `workdir/` is gitignored, and `.github/workflows/ci.yml` checks out only archie-hq, so every test here skips there. It is a developer-machine pin, meaningful only with an archie-plugins clone present. The behavior rules it covers — plugin-first ordering, basename dedupe, symlink classification — are also covered by fixtures in the sibling core-skills.test.ts, which DOES run in CI; that file is the real regression net.
+ *
+ * Counts are derived rather than hard-coded on purpose. The PM's total and its plugin-sourced count are owned by the separately versioned archie-plugins repo, so pinning literal numbers here would break this suite whenever that repo gained or lost a PM skill — a failure with no local cause and, per the paragraph above, no CI signal either. What is pinned instead are the invariants that must not move whatever the plugins clone contains: the four core skill names, the plugin-before-core ordering, basename uniqueness, and that no non-PM def mounts a core skill.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -13,6 +15,7 @@ import { fileURLToPath } from 'url';
 import { initPlugins } from '../../system/plugin-loader.js';
 import { PLUGINS_DIR } from '../../system/workdir.js';
 import { initRegistry, getAllAgentDefs } from '../registry.js';
+import { CORE_SKILL_MOUNTS } from '../core-skills.js';
 import type { AgentDef } from '../../types/agent.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -21,11 +24,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_SKILLS_DIR = join(__dirname, '..', '..', '..', 'skills');
 
 const CORE_SKILL_NAMES = ['channel-canvas', 'self-awareness', 'thread-conduct', 'triggers'];
-
-/** Baseline captured before the refactor: the PM mounts 22 plugin skills plus the 4 core skills. */
-const PM_MOUNT_COUNT = 26;
-const PM_PLUGIN_SOURCED = 22;
-const PM_CORE_SOURCED = 4;
 
 const pluginsDirExists = existsSync(PLUGINS_DIR);
 
@@ -62,19 +60,25 @@ function mountedNames(def: AgentDef): string[] {
 const isUnder = (path: string, dir: string): boolean => path.startsWith(dir + sep);
 
 describe('mounted skill sets match the pre-refactor baseline', () => {
-  pinned('gives exactly one PM def, mounting the baseline number of skills', () => {
+  pinned('gives exactly one PM def, and every entry it mounts comes from one of the two sources', () => {
     const pms = defs.filter((def) => def.isPm === true);
     expect(pms.map((def) => def.id)).toHaveLength(1);
-    expect(mountedNames(pms[0])).toHaveLength(PM_MOUNT_COUNT);
+
+    // Deliberately not a hard-coded 26: that total is owned by the separately versioned archie-plugins repo, so pinning it would break this suite from a change made elsewhere. What must hold is that the total is exactly the two sources and nothing else.
+    const paths = pms[0].skillPaths ?? [];
+    const fromPlugins = paths.filter((p) => isUnder(p, PLUGINS_DIR));
+    const fromCore = paths.filter((p) => isUnder(p, REPO_SKILLS_DIR));
+    expect(fromPlugins.length + fromCore.length).toBe(paths.length);
+    expect(fromPlugins.length).toBeGreaterThan(0);
   });
 
-  pinned('mounts all four core skills on the PM, and splits its entries 22 plugin / 4 core', () => {
+  pinned('mounts exactly the pm track\'s core skills on the PM, and no others', () => {
     const pm = defs.find((def) => def.isPm === true)!;
     const paths = pm.skillPaths ?? [];
 
     expect(mountedNames(pm)).toEqual(expect.arrayContaining(CORE_SKILL_NAMES));
-    expect(paths.filter((p) => isUnder(p, REPO_SKILLS_DIR))).toHaveLength(PM_CORE_SOURCED);
-    expect(paths.filter((p) => isUnder(p, PLUGINS_DIR))).toHaveLength(PM_PLUGIN_SOURCED);
+    // Derived from the manifest rather than written as 4, so adding a core skill to the pm track updates this expectation automatically instead of failing here.
+    expect(paths.filter((p) => isUnder(p, REPO_SKILLS_DIR))).toHaveLength(CORE_SKILL_MOUNTS.pm.length);
   });
 
   pinned('mounts no core skill on any non-PM def', () => {
@@ -85,6 +89,7 @@ describe('mounted skill sets match the pre-refactor baseline', () => {
   });
 
   pinned('never mounts two skills sharing a basename on the same def', () => {
+    // Cannot fail against today's tree — no plugin skill collides with a core name, so removing the dedupe entirely would leave this green. It is here as a real-tree invariant that would catch a future collision; the falsifiable proof of the dedupe itself is the fixture test in core-skills.test.ts.
     for (const def of defs) {
       const names = mountedNames(def);
       expect(new Set(names).size, `${def.id} has duplicate skill names: ${names.join(', ')}`).toBe(names.length);
@@ -92,7 +97,7 @@ describe('mounted skill sets match the pre-refactor baseline', () => {
   });
 
   pinned('orders every core-sourced PM entry after every plugin-sourced one', () => {
-    // This is the plugin-shadows-core rule, and it is invisible in the real tree today because no plugin skill collides with a core name — so this assertion is the only thing protecting it. Asserted on the UNSORTED list, because the order is the rule.
+    // This is the plugin-shadows-core rule. Unlike the dedupe assertion above it does bite against the real tree: reversing the two source blocks in resolveSkillPaths puts firstCore before lastPlugin and fails here. Asserted on the UNSORTED list, because the order is the rule.
     const paths = (defs.find((def) => def.isPm === true)!.skillPaths ?? []);
     const lastPlugin = paths.reduce((acc, p, i) => (isUnder(p, PLUGINS_DIR) ? i : acc), -1);
     const firstCore = paths.findIndex((p) => isUnder(p, REPO_SKILLS_DIR));

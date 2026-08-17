@@ -9,7 +9,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, existsSync,
 import { join, dirname, basename } from 'path';
 import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
-import { CORE_SKILL_MOUNTS, resolveSkillPaths, findUnmountedCoreSkills } from '../core-skills.js';
+import { CORE_SKILL_MOUNTS, resolveSkillPaths, findUnmountedCoreSkills, mountedSkillNames } from '../core-skills.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -120,8 +120,8 @@ describe('resolveSkillPaths', () => {
   });
 
   it('derives the boot banner name list, symlinked skills included', () => {
-    // The banner sorts basenames; no symlinked skill exists in the real tree, so only a fixture can prove one survives the derivation. Note the callback is wrapped rather than `map(basename)` — Array#map passes the index as basename's `suffix`, which throws.
-    expect(resolveSkillPaths('plain', fixtureDir).map((p) => basename(p)).sort()).toEqual([
+    // Calls the same exported helper the boot banner calls, so the two cannot drift. No symlinked skill exists in the real tree, so only a fixture can prove one survives the derivation.
+    expect(mountedSkillNames(resolveSkillPaths('plain', fixtureDir))).toEqual([
       'alpha-skill',
       'beta-skill',
       'linked-skill',
@@ -129,8 +129,33 @@ describe('resolveSkillPaths', () => {
   });
 });
 
+describe('mountedSkillNames', () => {
+  it('sorts basenames and tolerates an absent list', () => {
+    expect(mountedSkillNames(['/x/zeta', '/y/alpha'])).toEqual(['alpha', 'zeta']);
+    expect(mountedSkillNames()).toEqual([]);
+  });
+});
+
 describe('findUnmountedCoreSkills', () => {
   it('finds no core skill that ships without a track mounting it', () => {
     expect(findUnmountedCoreSkills()).toEqual([]);
+  });
+
+  // The positive case is what actually guards the boot warning: without it the whole function could be replaced by `return []` with every other test still green. The real skills dir has nothing unmounted, so it takes a fixture standing in for it.
+  it('names every shipped skill directory that no track mounts', () => {
+    expect(findUnmountedCoreSkills(fixtureDir)).toEqual([
+      'alpha-skill',
+      'beta-skill',
+      'linked-skill',
+    ]);
+  });
+
+  it('does not name a directory the manifest does mount', () => {
+    // collidingDir holds `triggers` (mounted by the pm track) and `zeta-skill` (mounted by nobody).
+    expect(findUnmountedCoreSkills(collidingDir)).toEqual(['zeta-skill']);
+  });
+
+  it('reports nothing when the skills directory is absent, as in an image built without it', () => {
+    expect(findUnmountedCoreSkills(join(root, 'no-such-dir'))).toEqual([]);
   });
 });

@@ -122,6 +122,8 @@ async function setupAgentWorkspace(taskId: string, agent: Agent): Promise<string
   if (skillPaths.length > 0) {
     const agentSkillsDir = join(claudeDir, 'skills');
     for (const skillPath of skillPaths) {
+      // The list is a scan-time snapshot, so re-check the source here at mount time. The plugins clone can be reset between scanAgentDefs() and this spawn (refreshPlugins does a git reset --hard), and symlink(2) does not validate its target — so mounting a since-removed skill would create a DANGLING link. That link then wedges the agent permanently: on the next spawn into this same workspace existsSync(target) follows the link, reports false, and symlink() throws EEXIST out of a path that does not catch it. The old loop got this check for free because it enumerated the directory here rather than trusting a snapshot.
+      if (!existsSync(skillPath)) continue;
       const target = join(agentSkillsDir, basename(skillPath));
       if (!existsSync(target)) {
         await mkdir(agentSkillsDir, { recursive: true });

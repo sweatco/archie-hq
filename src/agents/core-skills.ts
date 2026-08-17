@@ -26,7 +26,7 @@ export type AgentTrack = 'pm' | 'repo' | 'plain';
 /**
  * The single declaration of which core skills each track mounts. It encodes today's mapping exactly — all four on the PM, nothing on the others — so behavior is unchanged.
  *
- * This mapping is intentionally a hardcoded constant — NOT plugin- or PM-settable — so the set of skills an agent track mounts can't be widened from a hot-reloaded plugins change or a compromised orchestrator.
+ * This mapping is intentionally a hardcoded constant rather than configuration: no plugin manifest, no hot-reloaded plugins change and no instruction to the orchestrator can widen the set of skills a track mounts, because there is no code path that reads this from anywhere but here. (It is a plain object, so it is mutable in-process like `TRUSTED_PACKAGE_REGISTRY_DOMAINS` at `src/agents/sandbox.ts:48`; the guarantee is about where the values come from, not about runtime immutability.)
  *
  * Sandbox limit: adding a core skill to another track makes it loadable through the `Skill` and `Read` tools — the PreToolUse guard resolves the raw tool-input path with `resolve(cwd, rawPath)` and never calls `realpath` (`src/agents/sandbox.ts:231`), `READ_TOOLS` is only `{Read, Glob, Grep}` so `Skill` is never seen (`src/agents/sandbox.ts:181`), and the workspace is in `allowReadPaths` on every track (`src/agents/spawn.ts:326`). It does NOT make the files readable from `Bash`: bwrap resolves symlinks and `/app` is hardcoded in `denyRead` (`src/agents/sandbox.ts:83`).
  *
@@ -84,15 +84,26 @@ export function resolveSkillPaths(track: AgentTrack, pluginSkillsPath?: string):
 }
 
 /**
- * The sorted names of directories directly under the core skills dir that appear in no `CORE_SKILL_MOUNTS` value — a core skill that ships but no track mounts, which is dead weight nobody can load. Empty when the core skills dir is absent (the prod-image case above).
+ * The mounted skill names for an agent's ordered list, sorted. Shared by the boot banner's `skills:` line and by the tests, so the two cannot drift apart.
+ *
+ * Written as a wrapped callback rather than `map(basename)` on purpose: `Array#map` passes the index as `basename`'s `suffix` argument, which throws `ERR_INVALID_ARG_TYPE`.
  */
-export function findUnmountedCoreSkills(): string[] {
-  if (!existsSync(CORE_SKILLS_DIR)) return [];
+export function mountedSkillNames(skillPaths: string[] = []): string[] {
+  return skillPaths.map((p) => basename(p)).sort();
+}
+
+/**
+ * The sorted names of directories directly under the core skills dir that appear in no `CORE_SKILL_MOUNTS` value — a core skill that ships but no track mounts, which is dead weight nobody can load. Empty when the core skills dir is absent (the prod-image case above).
+ *
+ * `coreSkillsDir` exists only so a test can point this at a fixture: `CORE_SKILLS_DIR` is module-private and the real tree has nothing unmounted, so without an injection point the only assertable case is the empty one — and a function that can be replaced by `return []` with every test still green is not actually guarded. Production callers pass nothing.
+ */
+export function findUnmountedCoreSkills(coreSkillsDir: string = CORE_SKILLS_DIR): string[] {
+  if (!existsSync(coreSkillsDir)) return [];
 
   const mounted = new Set(Object.values(CORE_SKILL_MOUNTS).flat());
   const unmounted: string[] = [];
-  for (const entry of readdirSync(CORE_SKILLS_DIR, { withFileTypes: true })) {
-    if (!isSkillDir(CORE_SKILLS_DIR, entry)) continue;
+  for (const entry of readdirSync(coreSkillsDir, { withFileTypes: true })) {
+    if (!isSkillDir(coreSkillsDir, entry)) continue;
     if (!mounted.has(entry.name)) unmounted.push(entry.name);
   }
   return unmounted.sort();

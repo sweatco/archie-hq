@@ -31,12 +31,12 @@ import { getIsShuttingDown, setShuttingDown } from './system/shutdown.js';
 import { getActiveTaskIds } from './tasks/task.js';
 import { logger } from './system/logger.js';
 import { bootstrapWorkdir, cloneRepos, OAUTH_DIR, REPOS_DIR } from './system/workdir.js';
-import { join, basename } from 'path';
+import { join } from 'path';
 import { validateMasterKey } from './system/secrets-vault.js';
 import { initPlugins, getPlugins } from './system/plugin-loader.js';
 import { startContextProbe } from './system/context-probe.js';
 import { initRegistry, getAllAgentDefs } from './agents/registry.js';
-import { findUnmountedCoreSkills } from './agents/core-skills.js';
+import { findUnmountedCoreSkills, mountedSkillNames } from './agents/core-skills.js';
 import { isRepoAgent, isPmAgent } from './types/agent.js';
 import { configureGitIdentity } from './connectors/github/client.js';
 import { recoverActiveTasks } from './tasks/recovery.js';
@@ -139,7 +139,7 @@ async function main(): Promise<void> {
 
     logger.plain('Team:');
     logger.plain('  pm-agent (orchestrator)');
-    const pmSkillNames = (pmDef?.skillPaths ?? []).map((p) => basename(p)).sort();
+    const pmSkillNames = mountedSkillNames(pmDef?.skillPaths);
     if (pmSkillNames.length > 0) {
       logger.plain(`    skills: ${pmSkillNames.join(', ')}`);
     }
@@ -195,7 +195,7 @@ async function main(): Promise<void> {
     }
 
     // A core skill that no agent track mounts is dead weight nobody can load — it ships in the image, occupies a directory, and is unreachable from every agent's `.claude/skills`.
-    // This check exists so forgetting to add a new core skill to the mounting manifest fails loudly at startup instead of silently never being available.
+    // This check exists so forgetting to add a new core skill to the mounting manifest is announced at startup instead of the skill silently never being available to anyone.
     for (const name of findUnmountedCoreSkills()) {
       logger.warn('system', `Core skill "${name}" is mounted by no agent track — add it to CORE_SKILL_MOUNTS in src/agents/core-skills.ts, or delete the skill.`);
     }
