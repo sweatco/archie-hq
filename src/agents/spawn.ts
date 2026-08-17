@@ -40,6 +40,7 @@ import {
   readKnowledgeLog,
 } from '../tasks/persistence.js';
 import { WORKDIR, getBaseCachePath, getPluginsHeadInfo } from '../system/workdir.js';
+import { ensureTriggerDataDir } from '../system/trigger-store.js';
 import {
   createRecoverableInputGenerator,
 } from './message-queue.js';
@@ -53,6 +54,7 @@ import { processAgentEventForLogging, logger } from '../system/logger.js';
 import { emitEvent } from '../system/event-bus.js';
 import { getProbeBaseUrl } from '../system/context-probe.js';
 import { buildSandboxConfig, buildManagedNetworkPolicy, buildPackageManagerCacheEnv, createFilesystemGuardHooks, TRUSTED_PACKAGE_REGISTRY_DOMAINS, type SandboxOptions } from './sandbox.js';
+import { grantTriggerDataWrite, buildTriggerDataPromptSection } from './trigger-data.js';
 import { applyOAuthBindings } from '../system/oauth/inject.js';
 import { enrichPromptWithMemory, isMemoryEnabled, isInjectionEnabled } from '../memory/index.js';
 
@@ -358,7 +360,7 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
       contextLines.push(`Reminder: ${metadata.reminder.trigger_at} — ${metadata.reminder.reason}`);
     }
     if (metadata.triggered_by) {
-      contextLines.push(`Spawned by trigger: ${metadata.triggered_by} (this is a fresh, trigger-initiated task — deliver the result as instructed in the first message)`);
+      contextLines.push(`Spawned by trigger: ${metadata.triggered_by} (a trigger-initiated task — there is no prior Slack thread here, but this trigger has a directory that carries work across fires; deliver the result as instructed in the first message)`);
     }
     // Surface the live plugins-repo version so the PM can tell users when the
     // plugins/agents were last updated. Refreshed on every task start/load.
@@ -601,6 +603,23 @@ Shared folder: ${sharedPath} [READ-ONLY]
   const channelCanvasSection = await buildChannelCanvasPromptSection(metadata);
   if (channelCanvasSection) {
     systemPrompt = `${systemPrompt}\n\n${channelCanvasSection}`;
+  }
+
+  // ---- Persistent per-trigger directory (trigger-fired tasks only, every track) ----
+  //
+  // Placed after all three per-track branches for the same reason the canvas block above is: one injection point, so no branch can miss it. It also has to land before `agent.sandbox = sandboxOpts` below, because that object is what the in-process tools validate their paths against — which puts it ahead of all three consumers inside `buildQueryOptions` too (the bwrap config, the network policy, and the filesystem-guard hooks).
+  //
+  // The path is granted as a WRITE path only, and must never also be added to `allowReadPaths` — `grantTriggerDataWrite` carries the bwrap reason for that.
+  //
+  // It is also deliberately NOT added to `additionalDirectories`. `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1'` (below) auto-loads a `CLAUDE.md` from any additional directory, and this directory is agent-writable — so listing it would let one agent drop a file that becomes prompt text for every later agent on the same trigger. Auto-injecting the directory's contents is an explicit non-goal; the agent reads what it wants with `Read`.
+  //
+  // Creation is idempotent because this runs per agent, on every wake, and again after a restart — `Agent.spawn`'s only guard is `if (this.isRunning) return` (src/agents/agent.ts:142), which is always false after a restart.
+  const triggerDataPath = metadata.triggered_by
+    ? await ensureTriggerDataDir(metadata.triggered_by)
+    : null;
+  if (triggerDataPath) {
+    sandboxOpts = grantTriggerDataWrite(sandboxOpts, triggerDataPath);
+    systemPrompt = `${systemPrompt}\n\n${buildTriggerDataPromptSection(triggerDataPath)}`;
   }
 
   // ---- Organizational memory injection (read path; gated by ARCHIE_MEMORY_INJECT, default off) ----
