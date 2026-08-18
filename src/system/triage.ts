@@ -141,7 +141,7 @@ Thread History:
 ${thread.messages.map((m) => `[${m.user.realName}]: ${messageBody(m, thread)}`).join("\n")}
 
 Current Message:
-${currentMessage?.ownText ?? ''}
+${currentMessage ? messageBody(currentMessage, thread) : ''}
 
 ${context}`;
 }
