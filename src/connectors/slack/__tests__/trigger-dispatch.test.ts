@@ -104,9 +104,10 @@ vi.mock('../../../system/logger.js', () => ({
 }));
 
 import { handleSlackEvent, mountSlackApp } from '../events.js';
-import { fetchSlackThread } from '../client.js';
+import { fetchSlackThread, getBotUserId } from '../client.js';
 import { getChannelMessageTriggers, fireTrigger } from '../../../system/trigger-scheduler.js';
 import { logger } from '../../../system/logger.js';
+import { Task } from '../../../tasks/task.js';
 
 const CHANNEL = 'C0WATCHED';
 
@@ -140,6 +141,16 @@ async function deliverAmbientPost(raw: Record<string, unknown>): Promise<void> {
     raw,
     ts: raw.ts as string,
   });
+}
+
+/**
+ * The Bolt `message` handler fires `handleSlackEvent(...).catch(...)` WITHOUT awaiting, so a plain
+ * `await messageHandler(...)` returns before any of the async routing has run. Without this flush an
+ * assertion that something was NOT called passes trivially — it would be asserting that work which has
+ * not started yet has not happened.
+ */
+async function flushHandler(): Promise<void> {
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
 }
 
 beforeEach(() => {
@@ -259,5 +270,113 @@ describe('routing-gate drop log', () => {
     });
 
     expect(vi.mocked(logger.warn)).not.toHaveBeenCalled();
+  });
+});
+
+describe('the content floor on task creation', () => {
+  // The denylist inversion deliberately forwards subtypes nobody enumerated, which is what fixes the
+  // trigger arm. But this branch CREATES a task and spends a PM turn, so it needs a floor that is not a
+  // subtype list. Without it, a payload with no author and no body reached Task.create() and woke the PM
+  // on an empty knowledge log.
+  it('does not create a task for a DM whose fetched thread has no visible messages', async () => {
+    vi.mocked(fetchSlackThread).mockResolvedValue({
+      threadId: '1700000000.001000',
+      channel: { id: 'D0USER', name: 'dm' },
+      rootAuthorWasBot: false,
+      messages: [],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    await handleSlackEvent({
+      type: 'message',
+      channel: 'D0USER',
+      user: '',
+      raw: { type: 'message', subtype: 'assistant_app_thread', channel: 'D0USER', ts: '1700000000.001000' },
+      ts: '1700000000.001000',
+    });
+
+    expect(vi.mocked(Task.create)).not.toHaveBeenCalled();
+  });
+
+  it('still creates a task for a DM that carries a message', async () => {
+    const task = {
+      metadata: { channels: {}, title: 'x' },
+      append: vi.fn().mockResolvedValue({ linkedNewThread: true }),
+      ackMessage: vi.fn(),
+      sendMessage: vi.fn().mockResolvedValue(undefined),
+      debouncedSave: vi.fn(),
+    };
+    vi.mocked(Task.create).mockResolvedValue(task as never);
+    vi.mocked(fetchSlackThread).mockResolvedValue({
+      threadId: '1700000000.001100',
+      channel: { id: 'D0USER', name: 'dm' },
+      rootAuthorWasBot: false,
+      messages: [{ user: { id: 'U1', username: 'r', realName: 'R' }, ownText: 'hello', ts: '1700000000.001100' }],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    await handleSlackEvent({
+      type: 'message',
+      channel: 'D0USER',
+      user: 'U1',
+      raw: { type: 'message', channel: 'D0USER', user: 'U1', text: 'hello', ts: '1700000000.001100' },
+      ts: '1700000000.001100',
+    });
+
+    expect(vi.mocked(Task.create)).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('self-loop guard', () => {
+  // Insurance with no known reachable path today, kept because the failure mode is a feedback loop:
+  // handleSlackEvent refreshes the canvas and pin index, so the day any of those paths starts writing,
+  // a filterless trigger would fire on Archie's own housekeeping and each firing would refresh again.
+  //
+  // This must drive the Bolt handler, not handleSlackEvent: the discard lives in routeSlackEvent, which
+  // runs one level up. Calling handleSlackEvent directly would bypass the very guard under test.
+  let messageHandler: (arg: { event: unknown }) => unknown;
+
+  beforeEach(async () => {
+    await mountSlackApp({} as Application, { slackBotToken: 'xoxb-test', slackAppToken: 'xapp-test' });
+    messageHandler = bolt.handlers.get('message')!;
+  });
+
+  it('discards an event Slack attributes to our own bot user', async () => {
+    vi.mocked(getBotUserId).mockReturnValue('U_ARCHIE');
+    vi.mocked(getChannelMessageTriggers).mockReturnValue([makeTrigger()]);
+    vi.mocked(fetchSlackThread).mockResolvedValue({
+      threadId: '1700000000.001200',
+      channel: { id: CHANNEL, name: 'watched' },
+      rootAuthorWasBot: false,
+      messages: [],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    await messageHandler({
+      event: { type: 'message', channel: CHANNEL, user: 'U_ARCHIE', text: 'archie own post', ts: '1700000000.001200' },
+    });
+    await flushHandler();
+
+    expect(vi.mocked(fireTrigger)).not.toHaveBeenCalled();
+  });
+
+  it('still routes an event from a different user in the same channel', async () => {
+    vi.mocked(getBotUserId).mockReturnValue('U_ARCHIE');
+    vi.mocked(getChannelMessageTriggers).mockReturnValue([makeTrigger()]);
+    vi.mocked(fetchSlackThread).mockResolvedValue({
+      threadId: '1700000000.001300',
+      channel: { id: CHANNEL, name: 'watched' },
+      rootAuthorWasBot: false,
+      messages: [],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    await messageHandler({
+      event: { type: 'message', channel: CHANNEL, user: 'U_HUMAN', text: 'a real post', ts: '1700000000.001300' },
+    });
+    await flushHandler();
+
+    // The control that makes the assertion above meaningful: same channel, same shape, different user.
+    expect(vi.mocked(fireTrigger)).toHaveBeenCalledTimes(1);
   });
 });

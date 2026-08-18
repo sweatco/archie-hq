@@ -173,15 +173,17 @@ export async function mountSlackApp(
     // stay a no-op). handleSlackEvent then runs the same own-bot/external/
     // @mention filtering before firing any trigger.
     if (!shouldForwardMessageEvent(event, (ch) => getChannelMessageTriggers(ch).length > 0)) {
-      // Record, for a channel someone is actively watching, that the gate dropped an event and which subtype did it — from the trigger owner's side a silent drop is indistinguishable from "nothing was posted", and the subtype name is the one fact that makes "why didn't my trigger fire?" answerable.
+      // Record, for a channel someone is actively watching, that the gate dropped an event and why — from the trigger owner's side a silent drop is indistinguishable from "nothing was posted", and this line is what makes "why didn't my trigger fire?" answerable.
       //
-      // Deliberately `debug`, not `warn`. Now that the gate is a DENYLIST, the only events that can be dropped in a watched channel are the denylisted noise ones: a content-bearing top-level post always satisfies `mayReachTriggers` there. So this line reports routine `channel_join` / `pinned_item` traffic, not an anomaly — the class of silent drop it was originally written to catch (an unenumerated subtype vanishing) is now structurally impossible rather than merely logged. Warning on expected noise would train the reader to ignore it.
+      // Deliberately `debug`, not `warn`. Two classes reach here and both are routine: a denylisted noise subtype, and an app post that is not a top-level channel message (app posts reach triggers but never wake a task, so a bot thread reply satisfies neither arm). Neither is an anomaly worth a warning, and the class this was originally written to catch — an unenumerated subtype vanishing — is now structurally impossible rather than merely logged, because the gate is a denylist.
+      //
+      // The message must not claim the denylist is the reason: `bot_message` is deliberately absent from it, so naming the denylist for a dropped bot reply would state the one fact the line exists to convey, wrongly. Report the subtype and let the reader compare it against the list.
       //
       // Consulting the trigger index here means it is no longer a lazy lookup on the dropped path; that is fine, it is an in-memory read.
       if (getChannelMessageTriggers(event.channel).length > 0) {
         logger.debug(
           'Slack',
-          `Dropped a message event in trigger-watched channel ${event.channel} (ts ${event.ts}): subtype "${event.subtype ?? 'none'}" is on the noise denylist, so no channel-message trigger saw it`,
+          `Dropped a message event in trigger-watched channel ${event.channel} (ts ${event.ts}): subtype "${event.subtype ?? 'none'}"${event.bot_id ? ', app-authored' : ''} is not routed, so no channel-message trigger saw it`,
         );
       }
       return;
@@ -654,7 +656,7 @@ function routeSlackEvent(event: {
     return { action: 'discard', reason: 'Own bot message' };
   }
 
-  // Also discard anything Slack attributes to our own bot USER rather than to a bot id. Slack reports some app-authored events (canvas and pin changes, topic edits) under the acting user, so a `bot_id` check alone does not close the self-loop — and `handleSlackEvent` itself refreshes the channel canvas and pin index, which means a filterless trigger in a watched channel could otherwise fire on Archie's own housekeeping.
+  // Also discard anything Slack attributes to our own bot USER rather than to a `bot_id`. This is insurance, and it has no known reachable path today: everything Archie posts goes through `postSlackMessage` with the bot token, so it carries our `bot_id` and the check above already catches it, and the canvas and pin scans are read-only (no `pins.add`, no `canvases.create`, no `conversations.setTopic` anywhere in this codebase). The reason to keep it anyway is that the cost is one comparison and the failure mode is a feedback loop: `handleSlackEvent` refreshes the canvas and pin index, so the day any of those paths starts writing, a filterless trigger in a watched channel would fire on Archie's own housekeeping and each firing would refresh again.
   const ourBotUserId = getBotUserId();
   if (event.user && ourBotUserId && event.user === ourBotUserId) {
     return { action: 'discard', reason: 'Own bot user message' };

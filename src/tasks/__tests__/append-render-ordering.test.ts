@@ -18,6 +18,17 @@ vi.mock('../../system/logger.js', () => ({
 
 vi.mock('../../agents/spawn.js', () => ({ spawnAgent: vi.fn() }));
 
+// Without this the case below is a dead branch: `isExternalUser` fails open to false when the Slack
+// client was never initialised, so `shouldRedact` would return false and the redacted case would be a
+// byte-for-byte duplicate of the first one.
+vi.mock('../../connectors/slack/client.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../connectors/slack/client.js')>();
+  return {
+    ...actual,
+    isExternalUser: (user: { teamId?: string }) => user.teamId === 'T_OTHER',
+  };
+});
+
 // The two persistence seams this test is about. `downloadMessageFiles` stands in for the real
 // download: it returns the same files with `localPath` populated, which is exactly what production
 // does and exactly what the render must wait for.
@@ -111,15 +122,11 @@ describe('Task.append renders after the file download', () => {
 
     await newTask().append(thread);
 
-    // Redaction is decided by `shouldRedact`, which needs a home team to compare against; when the
-    // Slack client was never initialised `isExternalUser` fails open to false, so this asserts the
-    // download/render pairing rather than the redaction rule itself (that is covered in message-body).
+    // Both halves matter and neither held before: the download must not run for a redacted message (its
+    // files must never reach the task's attachments folder, since the body referencing them is a
+    // placeholder), and the body must be exactly the placeholder.
+    expect(downloadMock).not.toHaveBeenCalled();
     expect(appendMock).toHaveBeenCalledTimes(1);
-    const body = appendMock.mock.calls[0]![4] as string;
-    if (downloadMock.mock.calls.length === 0) {
-      expect(body).toBe('[redacted: external participant in shared channel]');
-    } else {
-      expect(body).toContain(`runbook.pdf (${LOCAL_PATH})`);
-    }
+    expect(appendMock.mock.calls[0]![4]).toBe('[redacted: external participant in shared channel]');
   });
 });

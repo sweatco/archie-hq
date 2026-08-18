@@ -71,6 +71,8 @@ interface MessageEventShape {
   channel: string;
   ts: string;
   thread_ts?: string;
+  /** Slack-assigned bot identity, present on ANY app-authored post. This is the reliable bot signal, not `subtype`: Slack only sets `subtype: 'bot_message'` for incoming-webhook and `as_user: false` posts, while an app calling `chat.postMessage` with a bot token emits `bot_id` and no subtype at all. The rest of the codebase keys bot-ness on this field too (client.ts, events.ts). */
+  bot_id?: string;
 }
 
 /**
@@ -90,8 +92,10 @@ export function isContentBearingSubtype(subtype?: string): boolean {
 export function mayWakeTask(event: MessageEventShape): boolean {
   const isDm = event.channel.startsWith('D');
   const isThreadReply = !!event.thread_ts && event.thread_ts !== event.ts;
-  // `bot_message` is content-bearing and reaches TRIGGERS (see `mayReachTriggers`) — that is the defect this change fixes. It deliberately does NOT wake a task: waking one spends a PM model turn, so every CI, Jira, Datadog or GitHub-app post into a thread a task follows would cost a turn apiece, and app posts arrive in volume no human sends. This is an asymmetry between the two questions, which is exactly why they are two functions.
-  if (event.subtype === 'bot_message') return false;
+  // App posts are content-bearing and DO reach triggers (see `mayReachTriggers`) — that is the defect this change fixes. They deliberately do NOT wake a task: waking one spends a PM model turn, so every CI, Jira, Datadog or GitHub-app post into a followed thread would cost a turn apiece, at volumes no human sends. This asymmetry between the two questions is exactly why they are two functions rather than one boolean.
+  //
+  // The test is `bot_id`, NOT `subtype === 'bot_message'`. Slack sets that subtype only for incoming-webhook and `as_user: false` posts; an app calling `chat.postMessage` with a bot token arrives with `bot_id` and no subtype whatsoever, and `file_share` / `thread_broadcast` from an app carry `bot_id` under their own subtype. Keying on the subtype alone caught only the webhook shape and let every other app post through — which is most of them. Both signals are tested rather than just `bot_id`, because they are independently sufficient: a real webhook post carries both, but neither field alone is guaranteed across every app-posting path, and the cost of the extra comparison is nothing against the cost of a missed one.
+  if (event.bot_id || event.subtype === 'bot_message') return false;
   return isContentBearingSubtype(event.subtype) && (isThreadReply || isDm);
 }
 

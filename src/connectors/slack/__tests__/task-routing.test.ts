@@ -127,6 +127,23 @@ describe('subtype denylist', () => {
   }
 
   // `bot_message` is the one deliberate asymmetry between the two questions, and it is the reason they are two functions rather than one boolean. It is content-bearing and it reaches triggers — that is the defect this change fixes — but it must not WAKE a task, because waking one spends a PM model turn and app posts (CI, Jira, Datadog, GitHub) arrive in volumes no human sends.
+  // App posts arrive in more than one shape and each must be blocked from waking a task. Slack sets
+  // `subtype: 'bot_message'` only for incoming-webhook / as_user:false posts; an app calling
+  // chat.postMessage with a bot token arrives with `bot_id` and NO subtype, and an app file upload or
+  // reply-broadcast carries `bot_id` under its own subtype. Keying on the subtype alone missed most of them.
+  for (const [name, extra] of [
+    ['a webhook post (subtype, no bot_id)', { subtype: 'bot_message' }],
+    ['a chat.postMessage app post (bot_id, no subtype)', { bot_id: 'B_GITHUB' }],
+    ['a webhook post carrying both signals', { subtype: 'bot_message', bot_id: 'B_HOOK' }],
+    ['an app file_share', { subtype: 'file_share', bot_id: 'B_GITHUB' }],
+    ['an app thread_broadcast', { subtype: 'thread_broadcast', bot_id: 'B_GITHUB' }],
+  ] as Array<[string, Record<string, unknown>]>) {
+    it(`never wakes a task for ${name}`, () => {
+      expect(mayWakeTask({ ...asThreadReply(undefined), ...extra })).toBe(false);
+      expect(mayWakeTask({ ...asDm(undefined), ...extra })).toBe(false);
+    });
+  }
+
   it('lets `bot_message` reach triggers but never wake a task', () => {
     expect(isContentBearingSubtype('bot_message')).toBe(true);
 
