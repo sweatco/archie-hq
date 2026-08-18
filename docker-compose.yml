@@ -65,7 +65,7 @@ services:
       # Mount source code for hot reload
       - ./src:/app/src
       - ./prompts:/app/prompts
-      # Core skills agents load by name (four on the `pm` track, trigger-task on all three). src/agents/core-skills.ts mounts them from /app/skills and only if that directory exists, and Dockerfile.dev never copies them, so this bind mount is their only source in dev — without it every core-skill `Skill` call fails with "Unknown skill".
+      # Core skills, which src/agents/core-skills.ts mounts from /app/skills per its CORE_SKILL_MOUNTS manifest, and only if that directory exists. Dockerfile.dev never copies them, so this bind mount is their only source in dev — without it every core-skill `Skill` call fails with "Unknown skill".
       - ./skills:/app/skills
 
       # SSH agent forwarding (macOS Docker Desktop)
