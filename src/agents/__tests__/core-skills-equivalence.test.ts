@@ -5,7 +5,7 @@
  *
  * IMPORTANT — this file does not run in CI, and a green CI is therefore not evidence that equivalence holds. `PLUGINS_DIR` is `<cwd>/workdir/plugins`, `workdir/` is gitignored, and `.github/workflows/ci.yml` checks out only archie-hq, so every test here skips there. It is a developer-machine pin, meaningful only with an archie-plugins clone present. The behavior rules it covers — plugin-first ordering, basename dedupe, symlink classification — are also covered by fixtures in the sibling core-skills.test.ts, which DOES run in CI; that file is the real regression net.
  *
- * Counts are derived rather than hard-coded on purpose. The PM's total and its plugin-sourced count are owned by the separately versioned archie-plugins repo, so pinning literal numbers here would break this suite whenever that repo gained or lost a PM skill — a failure with no local cause and, per the paragraph above, no CI signal either. What is pinned instead are the invariants that must not move whatever the plugins clone contains: the core skill names, the plugin-before-core ordering, basename uniqueness, and that every def's core-sourced mounts are exactly its own track's manifest entry.
+ * Counts are derived rather than hard-coded, because the PM's totals are owned by the separately versioned archie-plugins repo. What is pinned are the invariants that hold whatever that clone contains: the core skill names, plugin-before-core ordering, basename uniqueness, and that every def's core-sourced mounts are exactly its own track's manifest entry.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -86,11 +86,7 @@ describe('mounted skill sets match the pre-refactor baseline', () => {
       // The tracks as core-skills.ts defines them: repo access attached → repo, neither that nor isPm → plain.
       const track = def.repo != null ? 'repo' : 'plain';
       const fromCore = (def.skillPaths ?? []).filter((p) => isUnder(p, REPO_SKILLS_DIR));
-      // Derived from the manifest rather than written out, the same way the pm assertion above derives its count, so mounting another core skill on a non-PM track updates this expectation automatically instead of failing here.
-      //
-      // Be precise about what that does and does not buy, because this assertion replaced a flat `toEqual([])` and could otherwise be read as still guarding what that did. What it pins: every non-PM def ends up with exactly its own track's manifest entries, in manifest order, resolved off the real tree — so a manifest name that resolves to nothing fails here, because resolveSkillPaths re-classifies each name at mount time and skips it (core-skills.ts:80), and so does a plugin skill colliding on a core basename, via the dedupe. A pm-vs-non-pm track-dispatch bug fails here too.
-      //
-      // What it does NOT pin: whether the names in the manifest are the RIGHT names, since the expectation is derived from the same constant. Nor a repo↔plain mix-up — those two arrays are currently identical, so swapping the track literals at all three non-PM registry sites leaves this green. The guard on the manifest's content is the literal expectation in core-skills.test.ts, not this.
+      // Derived from the manifest, so mounting another core skill on a non-PM track does not need an edit here. It pins that each non-PM def resolves exactly its own track's entries off the real tree — a manifest name resolving to nothing fails, as does a plugin skill colliding on a core basename. It does not pin that the manifest names are the right ones (same constant), nor catch a repo↔plain swap while those arrays are identical; the literal expectation in core-skills.test.ts is that guard.
       expect(fromCore.map((p) => basename(p)), `${def.id} does not mount its ${track} track core skills`).toEqual(CORE_SKILL_MOUNTS[track]);
     }
   });

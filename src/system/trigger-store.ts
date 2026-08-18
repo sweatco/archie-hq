@@ -82,12 +82,8 @@ export function getTriggerPath(id: string): string {
 }
 
 /**
- * Path to a trigger's persistent data directory. Same two-guard shape as
- * {@link getTriggerPath} — the id-shape check, then resolved-path containment
- * within TRIGGERS_DATA_DIR — because this path is handed to `mkdir`/`rm` and to
- * a sandbox write grant, all of which deserve the same provable containment.
- * The one difference: no `.json` suffix, because this is a directory the agent
- * writes files into, not a record file.
+ * Path to a trigger's persistent data directory. Same two guards as {@link getTriggerPath},
+ * because this path is handed to `mkdir`/`rm` and to a sandbox grant; no `.json` suffix.
  */
 export function getTriggerDataPath(id: string): string {
   const safeId = matchedTriggerId(id);
@@ -103,38 +99,15 @@ export function getTriggerDataPath(id: string): string {
 }
 
 /**
- * Ensure a trigger's persistent data directory exists, and return its path.
- * Returns null when the trigger no longer exists, having created nothing.
+ * Ensure a trigger's persistent data directory exists, and return its path. Returns null
+ * when the trigger's record is gone, having created nothing — a task outlives the fire
+ * that created it, so without that check the next spawn would recreate the directory
+ * after {@link deleteTrigger} removed it, and nothing scans for orphans.
  *
- * The directory is deliberately left empty — no seed file, no subdirectories.
- * Conventions for what belongs in there are taught to the agent by the
- * `trigger-task` skill, and imposing a structure from code is an explicit
- * non-goal: the agent decides its own layout and the skill describes it.
- *
- * `recursive: true` is what makes this idempotent, and idempotence is required
- * rather than merely nice: agent spawn re-runs this per agent, on every wake of
- * a task, and again after a process restart, so it must be safe to call on a
- * directory that already exists and already holds an earlier fire's notes.
- *
- * That same re-entrancy is why the record has to be checked first. A task
- * outlives the fire that created it — a user can keep replying in its thread,
- * the PM can delegate to a specialist, and a restart re-spawns it — while
- * `metadata.triggered_by` keeps naming a trigger the user may have deleted in
- * the meantime. Without this check the next spawn would `mkdir` the directory
- * straight back after {@link deleteTrigger} removed it, so deleted content
- * reappears on disk and the directory is orphaned for good: nothing scans
- * TRIGGERS_DATA_DIR for entries whose record is gone, so nothing would ever
- * remove it again.
- *
- * The check is deliberately `existsSync` on the record path rather than
- * {@link loadTrigger}. `loadTrigger` returns null for three different states —
- * malformed id, missing file, and a `JSON.parse` failure — and only the first
- * two mean "gone". `saveTrigger` is a plain `writeFile`, so it truncates before
- * it writes, and it runs on every fire as well as on every PM edit; a spawn that
- * happened to read the record mid-write would see unparseable JSON and conclude
- * a perfectly live trigger had been deleted, silently denying that fire its
- * directory. Existence cannot be torn that way, and it costs no read or parse on
- * a path that runs once per agent per wake.
+ * `existsSync` on the record rather than {@link loadTrigger}: `loadTrigger` also returns
+ * null on a `JSON.parse` failure, and `saveTrigger` truncates before writing, so a spawn
+ * reading mid-write would deny a live trigger its directory. Left empty on purpose;
+ * conventions live in the `trigger-task` skill.
  */
 export async function ensureTriggerDataDir(id: string): Promise<string | null> {
   if (!isValidTriggerId(id) || !existsSync(getTriggerPath(id))) return null;
@@ -144,27 +117,13 @@ export async function ensureTriggerDataDir(id: string): Promise<string | null> {
 }
 
 /**
- * Remove a trigger's persistent data directory and everything inside it.
- * Mirrors {@link deleteTrigger}'s malformed-id contract: a silent return, not a
- * throw. `force: true` makes a never-created directory a silent no-op, which is
- * the common case rather than the exception — a pending trigger that was denied,
- * refused by a cap, or garbage-collected never fired, so it never got a
- * directory in the first place.
+ * Remove a trigger's persistent data directory and everything inside it. Silent on a
+ * malformed id, matching {@link deleteTrigger}; `force: true` because a trigger that
+ * never fired never got a directory.
  *
- * A real filesystem refusal (EACCES, EPERM, a busy mount) propagates, on
- * purpose. Swallowing it was tried and reverted: it made every caller report a
- * deletion that had not happened — the PM tool answers "deleted" and announces
- * it to the bound channel, the API route returns ok — while the record was
- * already unlinked, leaving the retained notes both unreachable (nothing can
- * resolve a directory whose record is gone) and unremovable (no caller reaches
- * this function except through {@link deleteTrigger}). Telling a user their
- * automation's data is gone when it is still on the host is worse than failing
- * loudly.
- *
- * That leaves `deleteTrigger` with two throw sites inside the loop
- * `rebuildFromDisk` uses to index enabled triggers, so a refusal there still
- * aborts the scan. That fragility is pre-existing — the `unlink` above throws
- * the same way — and the fix belongs in the scheduler's GC call, not here.
+ * A real filesystem refusal propagates. Swallowing it was tried and reverted: it made
+ * every caller report a deletion that had not happened, while the record was already
+ * unlinked — leaving the notes both unreachable and unremovable.
  */
 export async function removeTriggerDataDir(id: string): Promise<void> {
   if (!isValidTriggerId(id)) return; // malformed id → nothing to delete
@@ -217,9 +176,7 @@ export async function deleteTrigger(id: string): Promise<void> {
   if (existsSync(path)) {
     await unlink(path);
   }
-  // Every deletion entry point — the PM tool, the API route, the pending-trigger
-  // GC — funnels through this one function, so putting the directory cleanup
-  // here reaches all of them without any caller having to change.
+  // Every deletion entry point funnels through here, so no caller has to change.
   await removeTriggerDataDir(id);
 }
 

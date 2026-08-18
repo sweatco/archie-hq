@@ -1,16 +1,10 @@
 /**
  * Tests for the two pure trigger-data helpers.
  *
- * The load-bearing assertion is that the trigger directory lands in BOTH sandbox
- * lists. `assertReadable` (src/agents/artifacts.ts) validates against
- * `allowReadPaths` alone, so a write-only grant would let an agent write a file
- * here and then be refused when it tried to `share_artifact` the result — see the
- * write-only case in artifacts.test.ts, which pins exactly that.
- *
- * An earlier version of this file asserted the opposite, on the belief that
- * listing a path in both lists makes bwrap lay a `--ro-bind` over the writable
- * mount and silently downgrade it. That was measured and is false; see the
- * corrected Known Limitation 1 in docs/architecture/security.md.
+ * The load-bearing assertion is that the trigger directory lands in BOTH sandbox lists:
+ * `assertReadable` (src/agents/artifacts.ts) validates `allowReadPaths` alone, so a
+ * write-only grant would let an agent write a file here and then be refused when it tried
+ * to `share_artifact` it.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -38,9 +32,6 @@ describe('grantTriggerDataAccess', () => {
   });
 
   it('appends the trigger directory to allowReadPaths too, so artifact tools can read it', () => {
-    // Both lists, the same shape the workspace and the repo clones use. Write-only
-    // would leave assertReadable (src/agents/artifacts.ts) refusing to share a file
-    // the agent had just written there — see the write-only case in artifacts.test.ts.
     const granted = grantTriggerDataAccess(base, TRIGGER_DATA);
     expect(granted.allowReadPaths).toEqual([...base.allowReadPaths, TRIGGER_DATA]);
   });
@@ -78,16 +69,13 @@ describe('buildTriggerDataPromptSection', () => {
     expect(section).toContain('[READ-WRITE]');
   });
 
-  // This is the only trigger-specific text every track sees, so it is where the skill
-  // instruction has to be: the seed message that used to carry it reaches the PM alone,
-  // and a delegated agent holds the same directory.
+  // Here rather than in the seed message, which reaches the PM alone while a delegated
+  // agent holds the same directory.
   it('tells the agent to load the trigger-task skill', () => {
     expect(buildTriggerDataPromptSection(TRIGGER_ID, TRIGGER_DATA)).toContain('`trigger-task` skill');
   });
 
-  // Three prompt sites once said some version of "you were spawned by a trigger", and
-  // they drifted. What is left names no tool — an agent knows how to read a file, and a
-  // named tool dates the prompt to one runtime's tool set.
+  // A named tool dates the prompt to one runtime's tool set.
   it('names no tool', () => {
     const section = buildTriggerDataPromptSection(TRIGGER_ID, TRIGGER_DATA, ['note.md']);
     for (const tool of ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', '`ls']) {

@@ -109,11 +109,8 @@ describe('ensureTriggerDataDir', () => {
   });
 
   it('creates nothing and returns null once the trigger record is gone', async () => {
-    // A task outlives the fire that created it, so spawn re-runs — on a user
-    // reply, a delegation, or a restart — while metadata.triggered_by still names
-    // a trigger the user may have deleted meanwhile. Re-creating the directory
-    // then would resurrect deleted content and orphan it for good, since nothing
-    // scans the data dir for entries whose record has gone.
+    // Spawn re-runs after deletion — a user reply, a delegation, a restart — and
+    // re-creating the directory would orphan resurrected content for good.
     const id = 'trg-20260817-1205-deleted';
     await saveTrigger(sampleTrigger(id));
     const path = await ensureTriggerDataDir(id);
@@ -147,14 +144,12 @@ describe('removeTriggerDataDir', () => {
   });
 
   it('resolves for a well-formed id whose directory was never created', async () => {
-    // The common case: a pending trigger that was denied, cap-refused or GC'd
-    // never fired, so it never got a directory.
+    // The common case: a trigger that never fired never got a directory.
     await expect(removeTriggerDataDir('trg-20260817-1203-neverwas')).resolves.toBeUndefined();
   });
 
-  // `force: true` swallows only a missing directory. A real refusal propagates,
-  // deliberately: a caller that reported success while the data was still on disk
-  // would tell a user their automation's notes were deleted when they were not.
+  // `force: true` swallows only a missing directory; a real refusal propagates, so no
+  // caller reports a deletion while the data is still on disk.
   // Skipped as root, which ignores directory permissions, so the chmod would not
   // bite and the test would pass vacuously.
   it.skipIf(process.getuid?.() === 0)('rejects rather than reporting success when the filesystem refuses', async () => {

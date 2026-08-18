@@ -126,7 +126,6 @@ describe('resolveSkillPaths', () => {
 
   it('derives the boot banner name list, symlinked skills included', () => {
     // Calls the same exported helper the boot banner calls, so the two cannot drift. No symlinked skill exists in the real tree, so only a fixture can prove one survives the derivation.
-    // Sorted, not in mount order — `trigger-task` lands last alphabetically rather than because it is the plain track's core entry.
     expect(mountedSkillNames(resolveSkillPaths('plain', fixtureDir))).toEqual([
       'alpha-skill',
       'beta-skill',

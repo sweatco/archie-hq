@@ -314,7 +314,7 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     allowReadPaths: [workspace, sharedPath, ...claudeReadDirs, ...pluginReadPaths],
     // CACHES_DIR is shared by every agent and must be writable, or package
     // managers hit the EROFS that buildPackageManagerCacheEnv exists to avoid.
-    // allowWrite only, which is enough: writable implies readable at this layer. (Not because both lists would break it — that claim is debunked, see sandbox.ts. The consequence is narrower: a write-only path cannot be handed to the artifact tools, which package tarballs never need.)
+    // allowWrite only: writable implies readable here. The one thing it costs is the artifact tools, which validate allowReadPaths alone — see sandbox.ts.
     allowWritePaths: [workspace, CACHES_DIR, ...claudeWriteDirs],
     denyWritePaths: [sharedPath, ...pluginPaths, ...protectedWorkspaceFiles],
     allowedNetworkDomains: def.allowedNetworkDomains,
@@ -609,25 +609,20 @@ Shared folder: ${sharedPath} [READ-ONLY]
 
   // ---- Persistent per-trigger directory (trigger-fired tasks only, every track) ----
   //
-  // Placed after all three per-track branches for the same reason the canvas block above is: one injection point, so no branch can miss it. It also has to land before `agent.sandbox = sandboxOpts` below, because that object is what the in-process tools validate their paths against — which puts it ahead of all three consumers inside `buildQueryOptions` too (the bwrap config, the network policy, and the filesystem-guard hooks).
+  // After all three per-track branches, like the canvas block above: one injection point,
+  // so no branch can miss it. Must stay ahead of `agent.sandbox = sandboxOpts` below —
+  // that object is what the guard hooks and the bwrap config are built from.
   //
-  // The path is granted read-write, in both sandbox lists, the same shape the workspace and the repo clones use — `grantTriggerDataAccess` carries the reason, including why the write-only form this once used was wrong.
-  //
-  // It is also deliberately NOT added to `additionalDirectories`. `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1'` (below) auto-loads a `CLAUDE.md` from any additional directory, and this directory is agent-writable — so listing it would let one agent drop a file that becomes prompt text for every later agent on the same trigger. Auto-injecting the directory's contents is an explicit non-goal; the agent reads what it wants with `Read`.
-  //
-  // Creation is idempotent because this runs per agent, on every wake, and again after a restart — `Agent.spawn`'s only guard is `if (this.isRunning) return` (src/agents/agent.ts), which is always false after a restart.
+  // Deliberately NOT in `additionalDirectories`: CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD
+  // auto-loads a CLAUDE.md from those, and this directory is agent-writable, so listing it
+  // would let one agent write prompt text for every later agent on the same trigger.
   const triggerId = metadata.triggered_by;
   const triggerDataPath = triggerId ? await ensureTriggerDataDir(triggerId) : null;
   if (triggerId && triggerDataPath) {
     sandboxOpts = grantTriggerDataAccess(sandboxOpts, triggerDataPath);
-    // The names are read here to save the agent a turn, not because it cannot look — the
-    // directory is granted read-write on both enforcement layers, so listing it works.
-    // Names only; opening them stays the agent's choice.
-    // Never let the listing fail the spawn. deleteTrigger's rm can interleave between
-    // the mkdir above and this read, and an ENOENT escaping here would reject
-    // spawnAgent and stop the agent starting at all. Degrading to an empty listing
-    // is the right failure: the prompt builder already renders that case, and the
-    // agent can still list the directory itself.
+    // Names only, to save the agent a turn — it can list the directory itself either way.
+    // deleteTrigger's rm can interleave with this read, and an ENOENT escaping here would
+    // stop the agent starting, so degrade to the empty listing the builder already renders.
     const triggerDataEntries = await readdir(triggerDataPath).catch((err) => {
       logger.warn('trigger-data', `Could not list ${triggerDataPath}, announcing it as empty: ${err}`);
       return [] as string[];

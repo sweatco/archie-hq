@@ -40,16 +40,10 @@ Read knowledge.log to see where you left off, then take action.`,
 
   reminder: (reason: string) => `Your scheduled reminder has fired. Reason: ${reason}\n\nCheck knowledge.log for the latest context and decide what to do next.`,
 
-  // Says nothing about the trigger directory or the `trigger-task` skill, though the
-  // task has both. Those are named in the section buildTriggerDataPromptSection appends
-  // to the system prompt, which is the one trigger-specific text every track sees — this
-  // message reaches the PM alone. Nor does it repeat "you were started by a trigger":
-  // the first sentence already said the trigger fired.
-  //
-  // The clause it used to end on — "there is no prior conversation" — is gone. It was
-  // true about the Slack thread and false in spirit, since a trigger that has run before
-  // does leave context; what it was actually for is the operational fact that no one is
-  // waiting on the other end, which is now what it says.
+  // Names neither the trigger directory nor the `trigger-task` skill: those belong in the
+  // section buildTriggerDataPromptSection appends, which every track sees, while this
+  // message reaches the PM alone. It also no longer claims "there is no prior
+  // conversation" — true of the thread, misleading about a trigger that has run before.
   triggered: (prompt: string, context: string) => `A trigger you were set up with has fired (${context}).\n\nDo this now: ${prompt}\n\nNobody is waiting in a thread here — post the result to the bound channel when you are done. You are read-only by default; if the work requires code changes, request edit mode first.`,
 
   reinforceAgent: `RECOVERY: You went idle without reporting back.

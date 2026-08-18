@@ -1,20 +1,14 @@
 /**
  * Tests for `assertReadable`'s scope rule.
  *
- * The load-bearing case is that a path granted through `allowWritePaths` alone is
- * NOT readable here, even though the OS sandbox and the PreToolUse guard both
- * treat writable as readable (see the read check in `createFilesystemGuardHooks`,
- * src/agents/sandbox.ts). That asymmetry is the reason a path agents are expected
- * to produce shareable output in has to be granted in both lists — which is what
- * `grantTriggerDataAccess` does for a trigger's directory. `CACHES_DIR` is granted
- * write-only and lives with the consequence: its files cannot be shared through
- * the artifact tools.
+ * The load-bearing case: a path granted through `allowWritePaths` alone is NOT readable
+ * here, even though the OS sandbox and the PreToolUse guard both treat writable as
+ * readable. That asymmetry is why a path agents produce shareable output in has to be in
+ * both lists.
  *
- * Real directories and real files throughout, because `assertInsideRoots` calls
- * `realpath` and throws `Cannot access path` on anything that isn't on disk. The
- * roots are pushed through `realpath` too: on macOS `mkdtemp` hands back a path
- * under `/var`, which is a symlink to `/private/var`, so an unresolved root would
- * never contain the resolved file.
+ * Real directories and files throughout, because `assertInsideRoots` calls `realpath`;
+ * the roots are resolved too, since macOS `mkdtemp` returns a path under the `/var`
+ * symlink.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -63,17 +57,9 @@ function sandbox(overrides: Partial<SandboxOptions> = {}): SandboxOptions {
 
 describe('assertReadable', () => {
   it('throws for a file under a root listed only in allowWritePaths', async () => {
-    // Writable is NOT sufficient here, and this is the constraint that decides how
-    // a read-write path must be granted. The OS sandbox and the PreToolUse read
-    // check both treat writable as readable, but this helper validates against
-    // allowReadPaths alone — so an agent can write a file into a write-only path
-    // and then be refused when it tries to share_artifact the result.
-    //
-    // That is why a trigger's persistent directory is granted in BOTH lists (see
-    // grantTriggerDataAccess) rather than write-only. CACHES_DIR, the shared
-    // package-manager cache, is granted write-only and does hit this: its files
-    // cannot be shared through the artifact tools. Nobody has needed to, so it
-    // stands as a documented limitation rather than a bug.
+    // Writable is not sufficient here, unlike at the sandbox and guard layers — so an
+    // agent can write into a write-only path and then be refused when it tries to
+    // share_artifact the result. CACHES_DIR is granted write-only and lives with that.
     await expect(assertReadable(writeOnlyFile, sandbox())).rejects.toThrow(
       /outside your readable sandbox/,
     );
