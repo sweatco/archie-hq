@@ -47,7 +47,7 @@ export function resolveTimeoutSeconds(
   const parse = (raw: string, source: string): number => {
     const n = Number(raw);
     if (!Number.isFinite(n) || n <= 0) {
-      throw new Error(`invalid timeout from ${source}: "${raw}" (expected a positive number of seconds)`);
+      throw new Error(`invalid timeout from ${source} (expected a positive number of seconds)`);
     }
     return n;
   };
