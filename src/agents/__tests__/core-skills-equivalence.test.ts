@@ -23,7 +23,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // The module deliberately does not export its CORE_SKILLS_DIR, so recompute it here the way the sibling core-skills.test.ts does: src/agents/__tests__ -> repo root -> skills.
 const REPO_SKILLS_DIR = join(__dirname, '..', '..', '..', 'skills');
 
-const CORE_SKILL_NAMES = ['channel-canvas', 'self-awareness', 'thread-conduct', 'triggers', 'trigger-continuity'];
+const CORE_SKILL_NAMES = ['channel-canvas', 'self-awareness', 'thread-conduct', 'triggers', 'trigger-task'];
 
 const pluginsDirExists = existsSync(PLUGINS_DIR);
 

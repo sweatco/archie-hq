@@ -46,16 +46,16 @@ afterAll(() => {
 });
 
 describe('CORE_SKILL_MOUNTS', () => {
-  it('mounts all five core skills on the PM and trigger-continuity alone on the other tracks', () => {
+  it('mounts all five core skills on the PM and trigger-task alone on the other tracks', () => {
     expect(CORE_SKILL_MOUNTS.pm).toEqual([
       'channel-canvas',
       'self-awareness',
       'thread-conduct',
       'triggers',
-      'trigger-continuity',
+      'trigger-task',
     ]);
-    expect(CORE_SKILL_MOUNTS.repo).toEqual(['trigger-continuity']);
-    expect(CORE_SKILL_MOUNTS.plain).toEqual(['trigger-continuity']);
+    expect(CORE_SKILL_MOUNTS.repo).toEqual(['trigger-task']);
+    expect(CORE_SKILL_MOUNTS.plain).toEqual(['trigger-task']);
   });
 
   it('names only skills that actually exist under the repo skills dir', () => {
@@ -81,7 +81,7 @@ describe('resolveSkillPaths', () => {
       join(REPO_SKILLS_DIR, 'self-awareness'),
       join(REPO_SKILLS_DIR, 'thread-conduct'),
       join(REPO_SKILLS_DIR, 'triggers'),
-      join(REPO_SKILLS_DIR, 'trigger-continuity'),
+      join(REPO_SKILLS_DIR, 'trigger-task'),
     ]);
   });
 
@@ -109,7 +109,7 @@ describe('resolveSkillPaths', () => {
       'channel-canvas',
       'self-awareness',
       'thread-conduct',
-      'trigger-continuity',
+      'trigger-task',
     ]);
   });
 
@@ -121,17 +121,17 @@ describe('resolveSkillPaths', () => {
   });
 
   it('returns just the track\'s core entries when there is no plugin path', () => {
-    expect(resolveSkillPaths('repo')).toEqual([join(REPO_SKILLS_DIR, 'trigger-continuity')]);
+    expect(resolveSkillPaths('repo')).toEqual([join(REPO_SKILLS_DIR, 'trigger-task')]);
   });
 
   it('derives the boot banner name list, symlinked skills included', () => {
     // Calls the same exported helper the boot banner calls, so the two cannot drift. No symlinked skill exists in the real tree, so only a fixture can prove one survives the derivation.
-    // Sorted, not in mount order — `trigger-continuity` lands last alphabetically rather than because it is the plain track's core entry.
+    // Sorted, not in mount order — `trigger-task` lands last alphabetically rather than because it is the plain track's core entry.
     expect(mountedSkillNames(resolveSkillPaths('plain', fixtureDir))).toEqual([
       'alpha-skill',
       'beta-skill',
       'linked-skill',
-      'trigger-continuity',
+      'trigger-task',
     ]);
   });
 });

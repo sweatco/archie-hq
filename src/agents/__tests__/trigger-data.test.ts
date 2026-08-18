@@ -58,11 +58,11 @@ describe('grantTriggerDataWrite', () => {
 });
 
 describe('buildTriggerDataPromptSection', () => {
-  it('names the path, marks it read-write, and points at the continuity skill', () => {
+  it('names the path, marks it read-write, and points at the trigger-task skill', () => {
     const section = buildTriggerDataPromptSection(TRIGGER_DATA);
     expect(section).toContain(TRIGGER_DATA);
     expect(section).toContain('[READ-WRITE]');
-    expect(section).toContain('trigger-continuity');
+    expect(section).toContain('trigger-task');
   });
 });
 

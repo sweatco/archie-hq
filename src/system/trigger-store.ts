@@ -108,7 +108,7 @@ export function getTriggerDataPath(id: string): string {
  *
  * The directory is deliberately left empty — no seed file, no subdirectories.
  * Conventions for what belongs in there are taught to the agent by the
- * `trigger-continuity` skill, and imposing a structure from code is an explicit
+ * `trigger-task` skill, and imposing a structure from code is an explicit
  * non-goal: the agent decides its own layout and the skill describes it.
  *
  * `recursive: true` is what makes this idempotent, and idempotence is required

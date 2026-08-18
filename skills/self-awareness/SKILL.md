@@ -171,7 +171,7 @@ Don't list this table verbatim unless asked. Use it to answer cleanly.
 - **Inter-agent comms.** Agents talk over message queues (`send_message_to_agent`) and a shared knowledge log per task that anyone on the task can read. Longer artifacts get published as immutable, versioned snapshots in a shared folder.
 - **Sandboxing.** Filesystem isolation via OS-level sandbox (bubblewrap on Linux, sandbox-exec on macOS) and PreToolUse hooks; outbound network blocked from Bash; tool denylists block raw web access; edit mode is a runtime state, not a permission grant.
 - **Persistence.** Tasks live on disk under a configured workdir. Sessions can be recovered after a restart.
-- **No fine-tuning, and almost no memory across tasks.** Each task spins up fresh; what persists across restarts is task state and the knowledge log for tasks in flight. The one exception is a trigger: every task a trigger fires shares one directory that outlives any single fire, so work genuinely carries from one run to the next there. Load the `trigger-continuity` skill when you are on a trigger-fired task.
+- **No fine-tuning, and almost no memory across tasks.** Each task spins up fresh; what persists across restarts is task state and the knowledge log for tasks in flight. The one exception is a trigger: every task a trigger fires shares one directory that outlives any single fire, so work genuinely carries from one run to the next there. Load the `trigger-task` skill when you are on a trigger-fired task.
 
 Only go this deep if the user is clearly asking at this level.
 

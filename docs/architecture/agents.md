@@ -142,7 +142,7 @@ The pre-v30 singular shape (`metadata.archie.repo: {github, baseBranch}`) is sti
 
 The PM can spawn a repo agent on demand via `spawn_repo_agent({shortname, repos, role?, expertise?})` — for repositories no plugin agent covers, without a redeploy. It behaves exactly like a plugin-defined repo agent (eager-mounts all its repos at spawn, same `repo-tools`, same lifecycle), differing only in:
 
-- No plugin Layer-3 prompt body, no plugin MCP servers — just the universal protocol + the repo-agent track extension + a generic role/expertise. It has no plugin of its own, so the only skill it mounts is whatever the `repo` track carries in the manifest — today just `trigger-continuity`.
+- No plugin Layer-3 prompt body, no plugin MCP servers — just the universal protocol + the repo-agent track extension + a generic role/expertise. It has no plugin of its own, so the only skill it mounts is whatever the `repo` track carries in the manifest — today just `trigger-task`.
 - Its `repos` come from the PM's spawn args (validated reachable via `GitHubClient.resolveRepo`) rather than plugin frontmatter.
 - Its id is `<shortname>-<4hex>-agent`, and its `visibility` is `global`.
 
@@ -167,7 +167,7 @@ Plugin agents are lightweight agents for domains that don't need git or GitHub i
 | `share_artifact` | `agent-tools` | Publish an immutable snapshot to `shared/artifacts/` |
 | `web_research` | `research-tools` | Spawn a research pipeline |
 | `Read`, `Glob`, `Grep` | (built-in) | Explore files in the agent workspace and (read-only) shared folder |
-| `Skill` | (SDK built-in) | Load agent skills mounted from the plugin, plus any core skill this agent's track mounts (today `trigger-continuity` on every track) |
+| `Skill` | (SDK built-in) | Load agent skills mounted from the plugin, plus any core skill this agent's track mounts (today `trigger-task` on every track) |
 | `Write`, `Edit` | (built-in) | Create and modify files within the agent workspace (`.claude/settings.json`, `.claude/skills`, `.claude/hooks` and `CLAUDE.md` are protected) |
 | `Bash` | (built-in) | Run commands, sandboxed to the same write boundary; no network egress unless frontmatter declares `allowedNetworkDomains` |
 

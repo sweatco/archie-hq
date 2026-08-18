@@ -31,7 +31,7 @@ RUN npm ci
 COPY tsconfig.json tsconfig.scripts.json ./
 COPY src/ ./src/
 COPY prompts/ ./prompts/
-# Core skills agents load by name (thread-conduct, triggers, channel-canvas, self-awareness on the `pm` track; trigger-continuity on all three). src/agents/core-skills.ts resolves the core skills directory to /app/skills, and its CORE_SKILL_MOUNTS manifest is what mounts each one per track — each only if the directory is actually there. Without this COPY it never is, and every `Skill` call for a core skill fails with "Unknown skill".
+# Core skills agents load by name (thread-conduct, triggers, channel-canvas, self-awareness on the `pm` track; trigger-task on all three). src/agents/core-skills.ts resolves the core skills directory to /app/skills, and its CORE_SKILL_MOUNTS manifest is what mounts each one per track — each only if the directory is actually there. Without this COPY it never is, and every `Skill` call for a core skill fails with "Unknown skill".
 COPY skills/ ./skills/
 COPY scripts/ ./scripts/
 

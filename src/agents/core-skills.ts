@@ -30,12 +30,12 @@ export type AgentTrack = 'pm' | 'repo' | 'plain';
  *
  * Sandbox limit: a core skill mounted on a non-PM track is loadable there through the `Skill` and `Read` tools — the PreToolUse guard resolves the raw tool-input path with `resolve(cwd, rawPath)` and never calls `realpath` (`src/agents/sandbox.ts:231`), `READ_TOOLS` is only `{Read, Glob, Grep}` so `Skill` is never seen (`src/agents/sandbox.ts:181`), and the workspace is in `allowReadPaths` on both the base and repo tracks (`src/agents/spawn.ts:314` and `:544`). It does NOT make the files readable from `Bash`: bwrap resolves symlinks and `/app` is hardcoded in `denyRead` (`src/agents/sandbox.ts:83`).
  *
- * Content limit: the PM-track skills are written in the PM's voice and instruct tools attached only inside the `isPmAgent(def)` branch that begins at `src/agents/spawn.ts:327` — `comms-tools` and `orchestration-tools` are registered at `:401-402`, giving the PM alone `post_to_channel`, `mute_channel`, `read_thread`, `fetch_slack_reference` and `report_completion`, all of which those skills instruct by name. `skills/self-awareness/SKILL.md:53` even describes itself as a built-in PM skill. So giving a PM-voiced skill a new audience needs prompt and tool work too, not just a line here. `trigger-continuity` can sit on `repo` and `plain` only because it was deliberately written for that audience: track-neutral prose that assumes no channel, no users and no teammates, and names none of those five tools — none of any MCP tool, in fact. That is the bar a future core skill added to a non-PM track has to clear.
+ * Content limit: the PM-track skills are written in the PM's voice and instruct tools attached only inside the `isPmAgent(def)` branch that begins at `src/agents/spawn.ts:327` — `comms-tools` and `orchestration-tools` are registered at `:401-402`, giving the PM alone `post_to_channel`, `mute_channel`, `read_thread`, `fetch_slack_reference` and `report_completion`, all of which those skills instruct by name. `skills/self-awareness/SKILL.md:53` even describes itself as a built-in PM skill. So giving a PM-voiced skill a new audience needs prompt and tool work too, not just a line here. `trigger-task` can sit on `repo` and `plain` only because it was deliberately written for that audience: track-neutral prose that assumes no channel, no users and no teammates, and names none of those five tools — none of any MCP tool, in fact. That is the bar a future core skill added to a non-PM track has to clear.
  */
 export const CORE_SKILL_MOUNTS: Record<AgentTrack, string[]> = {
-  pm: ['channel-canvas', 'self-awareness', 'thread-conduct', 'triggers', 'trigger-continuity'],
-  repo: ['trigger-continuity'],
-  plain: ['trigger-continuity'],
+  pm: ['channel-canvas', 'self-awareness', 'thread-conduct', 'triggers', 'trigger-task'],
+  repo: ['trigger-task'],
+  plain: ['trigger-task'],
 };
 
 /**
