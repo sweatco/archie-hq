@@ -820,6 +820,7 @@ async function dispatchChannelMessageTriggers(
       await fireTrigger(trigger, {
         kind: 'message',
         text: event.text,
+        authorId: event.user,
         threadId: event.ts,
         channelId: event.channel,
         channelName,
