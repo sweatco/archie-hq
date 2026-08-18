@@ -61,7 +61,11 @@ PreToolUse hooks (Read, Write, Edit, Glob, Grep):
 
 **Reads:** System paths (`/bin`, `/usr`, `/etc`, `/tmp`, etc.) are open — Bash needs them. Application code (`/app`) and CLI session logs (`/home/archie/.claude`) are denied. Specific agent paths are re-allowed via `allowRead`.
 
-One of those re-allowed paths is worth calling out, because it is a hole punched through the `/app` denial rather than a path outside it: an agent's **mounted core skill directories**. Core skills live in archie-hq's own `skills/` tree — `/app/skills` in the production image — and mount into the workspace as symlinks, which bubblewrap resolves back to the denied original. Loading a skill is unaffected either way (`Skill` is gated by neither layer, and the CLI reads the file in-process), but reading a skill's *file* is: measured in the container, without the grant the file is unreachable from `Bash` by either route and reachable to `Read` only through the workspace symlink, because the hook checks the raw tool-input path while bubblewrap resolves it. `spawn.ts` therefore adds the directories an agent actually mounts — not the whole tree — to `allowReadPaths`. Plugin skills need no equivalent: their real path is inside the already-granted plugin dir.
+One of those re-allowed paths is worth calling out, because it is a hole punched through the `/app` denial rather than a path outside it: an agent's **mounted core skill directories**. Core skills live in archie-hq's own `skills/` tree, which is `/app/skills` in the container, and they mount into the agent workspace as symlinks.
+
+Loading a skill needs no grant at all and never did: `Skill` is in neither the hook's `READ_TOOLS` nor its `WRITE_TOOLS`, so the hook returns before it looks at a path, and the CLI reads the `SKILL.md` in-process rather than through `Bash`. Reading a skill's *file* is what is gated, and the two layers block it for different reasons — the hook because the core skills directory appears in no `allowRead`/`allowWrite` list, which holds in any environment, and bubblewrap because it resolves the workspace symlink back to `/app`. Measured in the container against `/app/skills/triggers/SKILL.md` before the grant: unreachable from `Bash` by either route, and reachable to `Read` only through the workspace symlink, since the hook checks the raw tool-input path without resolving it.
+
+`spawn.ts` therefore adds the directories an agent actually mounts — not the whole tree — to `allowReadPaths`, on both the base and repo tracks. Plugin skills need no equivalent: their real path is inside the plugin dir, which is already granted.
 
 **Writes:** Deny-all by default. Workspace paths added to `allowWrite` per track. `/tmp` is always writable (tools need scratch space). Protected files (`.claude/settings.json`, `.claude/skills`, `.claude/hooks`, `CLAUDE.md`) are in `denyWrite` — agents cannot modify their own configuration at runtime.
 
@@ -91,25 +95,25 @@ Git identity is configured on each clone at spawn time. Bwrap sandbox artifacts 
 
 **PM Agent:**
 - CWD: `sessions/<taskId>/agents/pm-agent`
-- Read: workspace + shared folder + plugin dirs
+- Read: workspace + shared folder + plugin dirs + mounted core skill dirs
 - Write: workspace
 - Bash: available (sandboxed)
 
 **Repo Agent (read-only):**
 - CWD: `sessions/<taskId>/repos/<repoKey>` (shared clone)
-- Read: clone + shared folder + `baseRepo/.git/objects` + plugin dirs
+- Read: clone + shared folder + `baseRepo/.git/objects` + plugin dirs + mounted core skill dirs
 - Write: workspace, `CACHES_DIR` and `/tmp` — never the clone. On a **trigger-fired** task, also that trigger's data directory (read-write; see the note under Filesystem Isolation). So a read-only repo agent is read-only *with respect to the code*, not write-denied everywhere.
 - Bash: available — git read commands work, write attempts against the clone fail at OS level
 
 **Repo Agent (edit mode):**
 - CWD: `sessions/<taskId>/repos/<repoKey>` (shared clone)
-- Read: shared folder + `baseRepo/.git/objects` + plugin dirs (clone is in allowWrite, which provides read)
+- Read: shared folder + `baseRepo/.git/objects` + plugin dirs + mounted core skill dirs (clone is in allowWrite, which provides read)
 - Write: clone (excluding `.claude/settings.json`, `.claude/skills`, `.claude/hooks`, `CLAUDE.md`)
 - Bash: available with full write access — git add, commit, etc. work
 
 **Plugin Agent:**
 - CWD: `sessions/<taskId>/agents/<agentKey>`
-- Read: shared folder + plugin source dir + plugin data dir (workspace is in allowWrite)
+- Read: shared folder + plugin source dir + plugin data dir + mounted core skill dirs (workspace is in allowWrite)
 - Write: workspace (excluding `.claude/settings.json`, `.claude/skills`, `.claude/hooks`, `CLAUDE.md`)
 - Bash: available (sandboxed) — no network, no writes outside workspace
 
