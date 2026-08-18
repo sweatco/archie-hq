@@ -121,6 +121,8 @@ describe('applyOAuthBindings', () => {
 
   it('drops servers whose refresh fails', async () => {
     const { inject, storage } = await load();
+    const { logger } = await import('../../logger.js');
+    const log = vi.spyOn(logger, 'error').mockImplementation(() => {});
     const nowSec = Math.floor(Date.now() / 1000);
     await storage.writeOAuthRecord(
       {
@@ -144,6 +146,15 @@ describe('applyOAuthBindings', () => {
     };
     const result = await inject.applyOAuthBindings(mcp);
     expect(result.dropped.map((d) => d.serverName)).toEqual(['broken']);
+    expect(result.dropped[0]?.error.message).toBe(
+      'OAuth token refresh failed; reconnect it as an operator',
+    );
+    expect(result.dropped[0]?.error.message).not.toContain('invalid_grant');
+    expect(log).toHaveBeenCalledWith(
+      'oauth',
+      'Failed to bind shared credentials for MCP server "broken", dropping',
+      expect.objectContaining({ message: 'OAuth token refresh failed; reconnect it as an operator' }),
+    );
     expect(mcp.broken).toBeUndefined();
     expect(mcp.keep).toBeDefined();
   });
@@ -245,6 +256,8 @@ describe('applyOAuthBindings', () => {
 
   it('does not fall back to a configured header when selected personal credentials are missing', async () => {
     const { inject } = await load();
+    const { logger } = await import('../../logger.js');
+    const log = vi.spyOn(logger, 'error').mockImplementation(() => {});
     const mcp: Record<string, any> = {
       notion: { type: 'http', url: resource, headers: { Authorization: 'Bearer STATIC' } },
     };
@@ -253,6 +266,14 @@ describe('applyOAuthBindings', () => {
 
     expect(result.requestable).toEqual(['notion']);
     expect(result.dropped.map((failure) => failure.serverName)).toEqual(['notion']);
+    expect(result.dropped[0]?.error.message).toBe(
+      'OAuth credentials are missing; authorize it again in the DM',
+    );
+    expect(log).toHaveBeenCalledWith(
+      'oauth',
+      'MCP "notion": personal credentials are unusable',
+      expect.objectContaining({ message: 'OAuth credentials are missing; authorize it again in the DM' }),
+    );
     expect(mcp.notion).toBeUndefined();
   });
 

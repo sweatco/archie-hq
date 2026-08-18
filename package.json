@@ -22,6 +22,7 @@
     "memory:housekeeping": "tsx scripts/memory-housekeeping.ts",
     "docker:dev": "docker compose up --build",
     "docker:stop": "docker compose down",
+    "e2e:oauth:notion": "tsx tools/e2e/oauth-notion.ts",
     "test": "vitest run --reporter=verbose",
     "test:watch": "vitest"
   },

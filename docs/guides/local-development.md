@@ -100,6 +100,28 @@ OAuth endpoints require public HTTPS. For a local provider only, set
 `ARCHIE_OAUTH_ALLOW_INSECURE_LOOPBACK=1`; this exception accepts HTTP on
 `localhost` or a loopback IP and nowhere else.
 
+To verify the complete shared-to-personal DM flow against hosted Notion MCP,
+prepare two Notion pages with synthetic marker text: one accessible to operator
+identity A and one private to Slack identity B. Boot Archie through the E2E
+harness with an isolated secrets directory and run:
+
+```bash
+npm run e2e:oauth:notion -- \
+  --shared-page https://www.notion.so/... \
+  --shared-marker SHARED_MARKER_123 \
+  --personal-page https://www.notion.so/... \
+  --personal-marker PERSONAL_MARKER_456
+```
+
+The runner prints the two required human steps: authorize identity A in the
+browser, then send one nonce-tagged DM as identity B and approve the personal
+link there. It automatically verifies shared-first access, callback wake,
+restart persistence, forced refresh, targeted revoke, and the next personal
+re-prompt. It writes redacted evidence under `e2e-evidence/`. Hosted Notion MCP
+requires user OAuth consent, so this gate is deliberately opt-in rather than a
+default CI test. Use `--reuse-shared` only when the existing shared record is
+known to belong to identity A; otherwise use an isolated secrets directory.
+
 ### REST API
 
 In addition to the TUI, you can drive the server with HTTP directly:

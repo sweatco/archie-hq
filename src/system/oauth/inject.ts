@@ -2,7 +2,14 @@
 
 import { logger } from '../logger.js';
 import { hasOAuthRecord, hasUserOAuthRecord } from './storage.js';
-import { ensureFreshToken, ensureFreshUserToken, type FreshToken } from './refresh.js';
+import {
+  ensureFreshToken,
+  ensureFreshUserToken,
+  OAuthRecordMissingError,
+  OAuthRefreshError,
+  OAuthUserRecordMissingError,
+  type FreshToken,
+} from './refresh.js';
 import { classifyServerAuth } from './discovery.js';
 
 export interface OAuthBindingFailure {
@@ -43,10 +50,11 @@ export async function applyOAuthBindings(
         setAuthHeader(config, await ensureFreshUserToken(dmUserId!, name, config.url!));
         injected.push(name);
       } catch (err) {
-        dropped.push({ serverName: name, error: toError(err) });
+        const safeError = sanitizeBindingError(err, 'personal');
+        dropped.push({ serverName: name, error: safeError });
         requestable.push(name);
         delete mcpServers[name];
-        logger.error('oauth', `MCP "${name}": user token for ${dmUserId} is unusable`, err);
+        logger.error('oauth', `MCP "${name}": personal credentials are unusable`, safeError);
       }
     };
 
@@ -66,13 +74,18 @@ export async function applyOAuthBindings(
         sharedInjected.push(name);
       } catch (err) {
         if (dmUserId && (await hasUserOAuthRecord(dmUserId, name))) {
-          logger.error('oauth', `Shared credentials for MCP "${name}" failed; trying ${dmUserId}'s token`, err);
+          logger.error(
+            'oauth',
+            `Shared credentials for MCP "${name}" failed; trying the DM participant's token`,
+            sanitizeBindingError(err, 'shared'),
+          );
           await injectUser();
         } else {
-          dropped.push({ serverName: name, error: toError(err) });
+          const safeError = sanitizeBindingError(err, 'shared');
+          dropped.push({ serverName: name, error: safeError });
           if (dmUserId) requestable.push(name);
           delete mcpServers[name];
-          logger.error('oauth', `Failed to bind shared credentials for MCP server "${name}", dropping`, err);
+          logger.error('oauth', `Failed to bind shared credentials for MCP server "${name}", dropping`, safeError);
         }
       }
       continue;
@@ -114,10 +127,13 @@ function setAuthHeader(config: { headers?: Record<string, string> }, token: Fres
   config.headers = { ...headers, Authorization: `${scheme} ${token.accessToken}` };
 }
 
-function toError(err: unknown): Error {
-  if (err instanceof Error) {
-    const code = (err as { code?: unknown }).code;
-    return new Error(typeof code === 'string' || typeof code === 'number' ? `${err.name} (${code})` : err.name);
+function sanitizeBindingError(err: unknown, kind: 'shared' | 'personal'): Error {
+  const action = kind === 'shared' ? 'reconnect it as an operator' : 'authorize it again in the DM';
+  if (err instanceof OAuthRecordMissingError || err instanceof OAuthUserRecordMissingError) {
+    return new Error(`OAuth credentials are missing; ${action}`);
   }
-  return new Error('UnknownError');
+  if (err instanceof OAuthRefreshError) {
+    return new Error(`OAuth token refresh failed; ${action}`);
+  }
+  return new Error(`OAuth credentials could not be loaded; ${action}`);
 }

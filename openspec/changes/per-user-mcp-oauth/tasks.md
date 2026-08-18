@@ -36,6 +36,9 @@
 - [x] 4.2 Cover shared-first, escalated DM, and non-DM injection behavior.
 - [x] 4.3 Cover default-DM identity resolution.
 - [ ] 4.4 Verify the complete flow against a real OAuth MCP server.
+  - Run the opt-in gate with `npm run e2e:oauth:notion -- ...`; it automates
+    every assertion around Notion's required operator and DM-user browser
+    consent checkpoints and writes redacted evidence.
   - Configure the official Notion Streamable HTTP endpoint
     (`https://mcp.notion.com/mcp`) as `notion` in `.mcp.json`. Use an isolated
     `ARCHIE_SECRETS_DIR`, a publicly reachable `ARCHIE_PUBLIC_URL`, operator
