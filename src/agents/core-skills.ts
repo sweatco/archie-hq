@@ -7,7 +7,7 @@
  */
 
 import { existsSync, readdirSync, statSync } from 'fs';
-import { join, dirname, basename } from 'path';
+import { join, dirname, basename, resolve, sep } from 'path';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -98,6 +98,38 @@ export function resolveSkillPaths(track: AgentTrack, pluginSkillsPath?: string):
  */
 export function mountedSkillNames(skillPaths: string[] = []): string[] {
   return skillPaths.map((p) => basename(p)).sort();
+}
+
+/**
+ * The subset of an agent's mounted skill paths whose real files live in archie-hq's
+ * own `skills/` directory, rather than inside a plugin.
+ *
+ * Callers need this to grant read access to those files. Loading a skill is not what
+ * needs the grant: `Skill` is in neither `READ_TOOLS` nor `WRITE_TOOLS`, so the
+ * PreToolUse guard returns early without inspecting a path, and the CLI reads the
+ * SKILL.md in-process, outside bubblewrap. Reading the skill's *file* is what needs it,
+ * and measured inside the container (`bwrap` 0.11.0, target `/app/skills/triggers/SKILL.md`):
+ *
+ *   no grant, real path              Bash fail, Read fail
+ *   no grant, workspace symlink      Bash fail, Read ok
+ *   granted                          Bash ok,   Read ok
+ *
+ * So without a grant the file is unreachable from the shell by either route, and reachable
+ * to `Read` only through the mount symlink — which works because the guard checks the raw
+ * tool-input path without resolving it, while bwrap does resolve it and lands on `/app`,
+ * which `buildSandboxConfig` denies. Plugin skills never depended on that: their real path
+ * sits inside `def.pluginPath`, which is already granted.
+ *
+ * Only the skills an agent actually mounts are returned, so a track that mounts one core
+ * skill does not gain read access to the ones it did not mount.
+ *
+ * `coreSkillsDir` exists for the same reason it does on {@link findUnmountedCoreSkills}:
+ * `CORE_SKILLS_DIR` is module-private, so a test needs an injection point. Production
+ * callers pass nothing.
+ */
+export function coreSkillPaths(skillPaths: string[] = [], coreSkillsDir: string = CORE_SKILLS_DIR): string[] {
+  const base = resolve(coreSkillsDir);
+  return skillPaths.filter((p) => resolve(p).startsWith(base + sep));
 }
 
 /**

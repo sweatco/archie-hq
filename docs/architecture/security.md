@@ -49,7 +49,7 @@ Both layers use the same allow/deny path lists, ensuring consistent enforcement 
 ```
 OS-level sandbox (Bash only):
   denyRead:  [/app, /home/archie/.claude]
-  allowRead: [shared folder, shell-snapshots, base repo .git/objects, plugin dirs]
+  allowRead: [shared folder, shell-snapshots, base repo .git/objects, plugin dirs, mounted core skill dirs]
   allowWrite: [/tmp, CACHES_DIR, agent's workspace, trigger data dir (trigger-fired tasks)]
   denyWrite:  [.claude/settings.json, .claude/skills, .claude/hooks, CLAUDE.md]
 
@@ -60,6 +60,8 @@ PreToolUse hooks (Read, Write, Edit, Glob, Grep):
 ```
 
 **Reads:** System paths (`/bin`, `/usr`, `/etc`, `/tmp`, etc.) are open — Bash needs them. Application code (`/app`) and CLI session logs (`/home/archie/.claude`) are denied. Specific agent paths are re-allowed via `allowRead`.
+
+One of those re-allowed paths is worth calling out, because it is a hole punched through the `/app` denial rather than a path outside it: an agent's **mounted core skill directories**. Core skills live in archie-hq's own `skills/` tree — `/app/skills` in the production image — and mount into the workspace as symlinks, which bubblewrap resolves back to the denied original. Loading a skill is unaffected either way (`Skill` is gated by neither layer, and the CLI reads the file in-process), but reading a skill's *file* is: measured in the container, without the grant the file is unreachable from `Bash` by either route and reachable to `Read` only through the workspace symlink, because the hook checks the raw tool-input path while bubblewrap resolves it. `spawn.ts` therefore adds the directories an agent actually mounts — not the whole tree — to `allowReadPaths`. Plugin skills need no equivalent: their real path is inside the already-granted plugin dir.
 
 **Writes:** Deny-all by default. Workspace paths added to `allowWrite` per track. `/tmp` is always writable (tools need scratch space). Protected files (`.claude/settings.json`, `.claude/skills`, `.claude/hooks`, `CLAUDE.md`) are in `denyWrite` — agents cannot modify their own configuration at runtime.
 
@@ -245,7 +247,7 @@ Every task maintains a `knowledge.log` file (`sessions/{task-id}/shared/knowledg
 
 ```
 Layer 1: OS-level sandbox (Bash only)
-  ├── denyRead [/app, ~/.claude] + allowRead [shared, base .git/objects, plugin dirs]
+  ├── denyRead [/app, ~/.claude] + allowRead [shared, base .git/objects, plugin dirs, mounted core skill dirs]
   ├── allowWrite [/tmp, CACHES_DIR, workspace, trigger data dir] + denyWrite [.claude/settings.json, .claude/skills, .claude/hooks, CLAUDE.md]
   ├── failIfUnavailable: true (refuse to start rather than run unsandboxed)
   └── network namespace: no DNS, no direct route — all egress via the sandbox proxy

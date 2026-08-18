@@ -9,7 +9,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, existsSync,
 import { join, dirname, basename } from 'path';
 import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
-import { CORE_SKILL_MOUNTS, resolveSkillPaths, findUnmountedCoreSkills, mountedSkillNames } from '../core-skills.js';
+import { CORE_SKILL_MOUNTS, resolveSkillPaths, findUnmountedCoreSkills, mountedSkillNames, coreSkillPaths } from '../core-skills.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -163,5 +163,42 @@ describe('findUnmountedCoreSkills', () => {
 
   it('reports nothing when the skills directory is absent, as in an image built without it', () => {
     expect(findUnmountedCoreSkills(join(root, 'no-such-dir'))).toEqual([]);
+  });
+});
+
+describe('coreSkillPaths', () => {
+  // The grant these feed is a read grant, so a filter that is too loose widens what an
+  // agent can read and a filter that is too tight breaks reading a skill it mounted.
+
+  it('keeps the core skills a track mounts and drops the plugin ones', () => {
+    // resolveSkillPaths returns both kinds interleaved; only the core half needs a grant.
+    const mounted = resolveSkillPaths('pm', fixtureDir);
+    const core = coreSkillPaths(mounted);
+    expect(core.every((p) => p.startsWith(REPO_SKILLS_DIR + '/'))).toBe(true);
+    expect(core.map((p) => basename(p)).sort()).toEqual([...CORE_SKILL_MOUNTS.pm].sort());
+    expect(core).not.toContain(join(fixtureDir, 'alpha-skill'));
+  });
+
+  it('grants only what was mounted, not the whole core skills dir', () => {
+    const one = join(REPO_SKILLS_DIR, CORE_SKILL_MOUNTS.pm[0]);
+    expect(coreSkillPaths([one])).toEqual([one]);
+    expect(coreSkillPaths([one])).not.toContain(REPO_SKILLS_DIR);
+  });
+
+  it('excludes the core skills dir itself, so a sibling prefix cannot sneak in', () => {
+    // `<root>/skills-extra` shares the string prefix `<root>/skills` — matching on the
+    // separator is what stops it from being treated as a core skill.
+    expect(coreSkillPaths([root, join(root, 'skills-extra', 'x')], join(root, 'skills'))).toEqual([]);
+    expect(coreSkillPaths([join(root, 'skills')], join(root, 'skills'))).toEqual([]);
+  });
+
+  it('normalises before comparing, so an unresolved path still matches', () => {
+    const p = join(root, 'skills', '..', 'skills', 'a');
+    expect(coreSkillPaths([p], join(root, 'skills'))).toEqual([p]);
+  });
+
+  it('tolerates an agent with no skills at all', () => {
+    expect(coreSkillPaths()).toEqual([]);
+    expect(coreSkillPaths([])).toEqual([]);
   });
 });

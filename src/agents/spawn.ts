@@ -19,6 +19,7 @@ import type { Agent } from './agent.js';
 import type { Task } from '../tasks/task.js';
 import { isRepoAgent, isPmAgent } from '../types/agent.js';
 import { buildCommitAuthorEnv } from './commit-author.js';
+import { coreSkillPaths } from './core-skills.js';
 import { resolveAgentModel, resolveAgentEffort } from './model-label.js';
 import {
   createBaseAgentMcpServer,
@@ -270,6 +271,13 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
 
   const pluginPaths = def.pluginPath ? [def.pluginPath] : [];
   const pluginReadPaths = [...pluginPaths, ...(def.pluginDataPath ? [def.pluginDataPath] : [])];
+  // Core skills mount as symlinks under the workspace, but their real files live in
+  // archie-hq's own skills/ dir — /app/skills in the production image, and /app is
+  // denied. Loading a skill is unaffected (`Skill` is ungated), but reading its file
+  // is: without this grant Bash cannot reach it by either route, and Read reaches it
+  // only through the mount symlink, which the guard does not resolve. Plugin skills
+  // need no equivalent — their real path is inside pluginPath, granted just above.
+  const coreSkillReadPaths = coreSkillPaths(def.skillPaths);
   const claudeReadDirs = useClaudeDirs ? [claudeConfigDir, claudeTmpDir] : [];
   const claudeWriteDirs = useClaudeDirs ? [claudeTmpDir] : [];
   const protectedWorkspaceFiles = [
@@ -311,7 +319,7 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   let sandboxOpts: SandboxOptions = {
     cwd,
     denyReadPaths: [WORKDIR],
-    allowReadPaths: [workspace, sharedPath, ...claudeReadDirs, ...pluginReadPaths],
+    allowReadPaths: [workspace, sharedPath, ...claudeReadDirs, ...pluginReadPaths, ...coreSkillReadPaths],
     // CACHES_DIR is shared by every agent and must be writable, or package
     // managers hit the EROFS that buildPackageManagerCacheEnv exists to avoid.
     // allowWrite only: writable implies readable here. The one thing it costs is the artifact tools, which validate allowReadPaths alone — see sandbox.ts.
@@ -535,7 +543,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
 
     // Repo agents extend the base sandbox with every attached clone (RW in edit
     // mode) plus per-repo read-only/protected paths.
-    const readOnlyPaths = [sharedPath, ...repoMounts.map((m) => m.baseObjectsPath), ...pluginReadPaths];
+    const readOnlyPaths = [sharedPath, ...repoMounts.map((m) => m.baseObjectsPath), ...pluginReadPaths, ...coreSkillReadPaths];
     const cloneGitHeads = repoMounts.map((m) => join(m.clonePath, '.git', 'HEAD'));
     sandboxOpts = {
       cwd,
