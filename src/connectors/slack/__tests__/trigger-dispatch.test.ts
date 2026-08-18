@@ -273,6 +273,10 @@ describe('routing-gate drop log', () => {
       event: { type: 'message', subtype: 'channel_join', channel: 'C0QUIET', user: 'U_DEV', ts: '1700000000.000600' },
     });
 
+    // Must assert on `debug`, the level production actually uses. Asserting `warn` here was vacuous:
+    // it held whether or not the trigger-index guard existed, so mutating that guard to `if (true)`
+    // left every case in this file green.
+    expect(vi.mocked(logger.debug)).not.toHaveBeenCalled();
     expect(vi.mocked(logger.warn)).not.toHaveBeenCalled();
   });
 });

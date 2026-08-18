@@ -215,15 +215,15 @@ describe('an attachment-only bot post survives into every agent-facing entry poi
     slackApi.pins.list.mockResolvedValue({
       items: [{ type: 'message', created: 1700000000, created_by: 'UPINNER', message: attachmentOnlyBotPost() }],
     });
-    const { renderMessageBody } = await import('../message-body.js');
+    const { pinBody } = await import('../message-body.js');
 
     const pins = await client.listChannelPins(CHANNEL);
     const item = pins![0];
-    // Rendered exactly as `channel-pins.ts` does it, `includeReactions: false` included — the pin index feeds this string into a content digest.
-    const rendered = renderMessageBody(
-      { ownText: item.ownText ?? '', attachments: item.attachments, files: item.files, reactions: item.reactions },
-      { redacted: false, includeReactions: false },
-    );
+    // Calls `pinBody`, the function `channel-pins.ts:145` actually uses, rather than re-implementing its
+    // options inline. Inlining `renderMessageBody(..., { includeReactions: false })` here looked equivalent
+    // but left the case green against any change INSIDE `pinBody` — including dropping the reactions
+    // suppression that keeps a reaction out of the pin's content digest.
+    const rendered = pinBody(item);
 
     // The client hands the parts out structured; nothing is pre-joined, so the phrase exists only once the caller renders.
     expect(item.ownText).toBe('');
