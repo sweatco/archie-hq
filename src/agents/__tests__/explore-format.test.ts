@@ -36,4 +36,20 @@ describe('formatExploreMessages', () => {
     expect(out).toContain('shot.png');
     expect(out).toContain('eyes');
   });
+
+  /**
+   * Explore is the one deliberately never-redacted path: the agent asked to read this channel, and redacting would hand back placeholders instead of the content it went to read. This case exists to fail loudly if someone later routes explore through the redaction policy — the failure would otherwise be silent, since a wall of placeholders is still a well-formed transcript.
+   */
+  it('renders an external author in full — explore is never redacted', () => {
+    const external = { id: 'UEXT', username: 'partner', realName: 'Partner Person', teamId: 'T_OTHER', isRestricted: true };
+    const out = formatExploreMessages([{
+      user: external,
+      ts: '3.0',
+      ownText: 'shipping the integration on Friday',
+    }]);
+
+    expect(out).toContain('shipping the integration on Friday');
+    expect(out).not.toContain('[redacted:');
+    expect(out).toContain('<@UEXT:Partner Person>');
+  });
 });

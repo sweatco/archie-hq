@@ -11,6 +11,7 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import pc from "picocolors";
 import type { TriageResult, SlackThread } from "../types/index.js";
 import { findTaskByThread } from "../tasks/persistence.js";
+import { messageBody } from "../connectors/slack/message-body.js";
 import { SESSIONS_DIR } from "./workdir.js";
 import { processAgentEventForLogging, logger } from "./logger.js";
 import { loadPrompt } from "../utils/prompt-loader.js";
@@ -137,7 +138,7 @@ Slack Message:
 - User: ${currentMessage?.user.realName ?? 'unknown'}
 
 Thread History:
-${thread.messages.map((m) => `[${m.user.realName}]: ${m.ownText}`).join("\n")}
+${thread.messages.map((m) => `[${m.user.realName}]: ${messageBody(m, thread)}`).join("\n")}
 
 Current Message:
 ${currentMessage?.ownText ?? ''}

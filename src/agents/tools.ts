@@ -22,7 +22,7 @@ import { gitExec } from '../connectors/github/repo-clone.js';
 import { hydrateBranchState, findBranchStateByPR, assignPrNumber } from '../connectors/github/branch-state.js';
 import { taskBranchName } from '../connectors/github/branch-naming.js';
 import { appendAgentFinding, appendArtifactShared, isThreadMuted } from '../tasks/persistence.js';
-import { renderMessageBody } from '../connectors/slack/message-body.js';
+import { exploreBody } from '../connectors/slack/message-body.js';
 import { copyArtifactToShared, assertReadable } from './artifacts.js';
 import { aggregateTaskUsage, formatTaskUsageReport } from './task-usage.js';
 import { logger } from '../system/logger.js';
@@ -88,14 +88,8 @@ export function formatExploreMessages(messages: SlackThreadMessage[]): string {
   return messages
     .map((m) => {
       const who = m.user.realName || m.user.username;
-      // Share the knowledge log's renderer rather than re-implementing it: this
-      // used to print `m.text` alone, so an attachment-only message — a Grafana
-      // alert, a Bugsnag error, 57 of 60 messages in #mobile-alerts — reached
-      // the agent completely blank.
-      const body = renderMessageBody(
-        { ownText: m.ownText, files: m.files, attachments: m.attachments, reactions: m.reactions },
-        { redacted: false },
-      );
+      // `exploreBody` is the one sanctioned never-redacted render, and it is named rather than an inline `redacted: false` so that decision is greppable and auditable in a single place. Explore is deliberately unredacted because the agent asked to look at this channel: redacting here would hand back a wall of placeholders instead of the content it went to read. `SlackChannelMessages` accordingly carries no `shared` field — there is nothing here for a redaction policy to consult.
+      const body = exploreBody(m);
       return `<@${m.user.id}:${who}> | msg:${m.ts}\n${body}`;
     })
     .join('\n\n');
