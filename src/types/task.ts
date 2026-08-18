@@ -343,6 +343,14 @@ export interface TaskMetadata {
   };
   triggered_by?: string;             // Trigger ID that spawned this task (set by fireTrigger). Blocks the task from creating triggers.
   pending_trigger_id?: string;       // Trigger ID proposed by this task, awaiting approve/deny (read by handleTriggerApproval/Denial)
+  /**
+   * Where this task must deliver its first user-facing message when it starts with no
+   * linked channel — set by `fireTrigger` for a schedule fire, whose task has no thread
+   * to reply in. `postToUser` posts there top-level, links the thread it just created,
+   * and clears this. Absent on every other task: a task that already lives in a thread
+   * has a default channel instead.
+   */
+  delivery_target?: { channel_id: string; channel_name: string };
   created_at: string;
   updated_at: string;
 }

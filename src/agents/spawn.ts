@@ -346,8 +346,14 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
       `Status: ${metadata.status}`,
     ];
     if (channelEntries.length === 0) {
+      // A `delivery_target` means there IS somewhere to post, it just has no thread yet:
+      // the first post_to_user opens one there and links it (Task.postToUser). Saying
+      // "nowhere to reply" here is what made a scheduled fire deliver nothing — the PM read
+      // the line, concluded post_to_user had no destination, and finished silently.
       contextLines.push(
-        'Channel(s): none — there is nowhere to reply in this task; finish with report_completion() (no message).'
+        metadata.delivery_target
+          ? `Channel(s): none linked yet — this task delivers to #${metadata.delivery_target.channel_name}. Post there with post_to_user (no target): the first message opens a thread and links it, so replies come back to this task.`
+          : 'Channel(s): none — there is nowhere to reply in this task; finish with report_completion() (no message).'
       );
     } else {
       contextLines.push(`Channel(s): ${channelEntries.map(([id, ch]) => renderChannel(id, ch)).join(', ')}`);

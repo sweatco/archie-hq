@@ -336,33 +336,37 @@ async function tickTrigger(trigger: Trigger, now: Date): Promise<void> {
  */
 /**
  * The instruction a fired trigger wakes its PM with: the trigger's own action prompt, plus
- * a delivery line when — and only when — the PM would not otherwise know where to go.
+ * a delivery line only when the PM would otherwise have nowhere to route.
  *
- * A schedule fire needs one: no channel is linked, so the destination is either the bound
- * channel or a DM to the creator. A message fire needs none: `Task.append` linked the
- * triggering thread as the task's default channel, and `post_to_user` routes there by
- * default, so a line saying "reply in the thread" only restates what already happens.
+ * Two of the three shapes need nothing. A message fire has the triggering thread linked as
+ * its default channel; a channel-bound schedule fire has `delivery_target` recorded, and
+ * `post_to_user` opens a thread there on the first message and links it. Both are just
+ * "post to the user", which is what the PM does in any other task.
+ *
+ * A user-bound schedule fire is the exception and still carries a line — see the comment
+ * at the branch for why DM delivery cannot take the same path yet.
  *
  * A message fire's message is not mentioned here either. `Task.append` has written it to
  * knowledge.log, which the PM reads at the start of every turn (prompts/pm-agent.md) and
  * which is the only place a delegated specialist can see it.
  *
- * Delivery is decided here rather than in the prompt template because this is the only
- * place that knows the fire kind. Pure, so all three shapes are assertable — `fireTrigger`
- * itself creates tasks.
+ * Pure, so every shape is assertable — `fireTrigger` itself creates tasks.
  */
 export function buildTriggerSeed(trigger: Trigger, context: FireContext): string {
   const parts = [trigger.action.prompt];
 
-  // A message fire needs no delivery line: `Task.append` linked the triggering thread as
-  // the task's default channel, and that is where `post_to_user` routes with no argument.
-  // A schedule fire has no linked channel, so it has to be told where to go.
-  if (context.kind === 'message') {
-    // nothing to add
-  } else if (trigger.binding.type === 'user') {
+  // Neither a message fire nor a channel-bound schedule fire needs a delivery line. A
+  // message fire has the triggering thread linked as its default channel; a channel-bound
+  // schedule fire has `delivery_target` set, and posting to the user opens a thread there
+  // and links it. Both land on `post_to_user` with no argument — what the PM reaches for in
+  // any other task, rather than a channel id it has to route by hand.
+  //
+  // A user-bound schedule fire still needs telling. DM delivery does not go through that
+  // path: the id to store would be the `U…` the message was addressed to, while a reply
+  // arrives on a `D…` channel, so linking it correctly needs a `conversations.open` that
+  // this does not do.
+  if (context.kind === 'schedule' && trigger.binding.type === 'user') {
     parts.push(`Deliver the result to the user as a direct message (Slack user ID ${trigger.binding.user_id}).`);
-  } else {
-    parts.push(`Deliver the result by posting it to the channel #${trigger.binding.channel_name} (Slack channel ID ${trigger.binding.channel_id}).`);
   }
 
   return parts.join('\n\n');
@@ -405,6 +409,14 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
   // fire has no thread; the PM opens the destination itself.
   if (context.kind === 'message') {
     await task.append(context.thread);
+  } else if (trigger.binding.type === 'channel') {
+    // No thread to reply in, so record where the first user-facing message goes.
+    // `Task.postToUser` posts there and links the thread it creates, which is what makes a
+    // reply to a scheduled delivery come back to this task instead of starting a new one.
+    task.metadata.delivery_target = {
+      channel_id: trigger.binding.channel_id,
+      channel_name: trigger.binding.channel_name,
+    };
   }
   task.debouncedSave();
 

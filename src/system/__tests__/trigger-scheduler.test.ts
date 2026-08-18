@@ -150,9 +150,6 @@ describe('buildTriggerSeed', () => {
     expect(seed).not.toContain('bot-test"');
   });
 
-  it('adds exactly one delivery line to a schedule fire, and nothing more', () => {
-    expect(buildTriggerSeed(trigger(channelBinding), { kind: 'schedule' }).split('\n\n')).toHaveLength(2);
-  });
 
   // The triggering thread is the task's default channel by the time this runs, and that is
   // where post_to_user goes on its own, so a delivery line here would restate a default.
@@ -160,10 +157,17 @@ describe('buildTriggerSeed', () => {
     expect(buildTriggerSeed(trigger(channelBinding), messageFire)).toBe('Summarise what changed.');
   });
 
-  it('names the bound channel for a channel-bound schedule fire', () => {
+  // A channel-bound schedule fire routes through post_to_user like everything else: the
+  // fire recorded `delivery_target`, and the first post opens a thread there and links it.
+  // So there is no channel id to hand the PM, and no delivery line at all.
+  it('gives a channel-bound schedule fire no delivery line either', () => {
     const seed = buildTriggerSeed(trigger(channelBinding), { kind: 'schedule' });
-    expect(seed).toContain('#bot-test');
-    expect(seed).toContain('Slack channel ID C0BL');
+    expect(seed).toBe('Summarise what changed.');
+    expect(seed).not.toContain('C0BL');
+  });
+
+  it('adds exactly one line for the DM case, which cannot take that path yet', () => {
+    expect(buildTriggerSeed(trigger({ type: 'user', user_id: 'U123ABC' }), { kind: 'schedule' }).split('\n\n')).toHaveLength(2);
   });
 
   it('DMs the creator for a user-bound schedule fire', () => {

@@ -412,6 +412,7 @@ function createPostToUserTool(agent: Agent, task: Task) {
   return tool(
     'post_to_user',
     'Send a message to the user in this task. Without target, posts to the default channel — wherever this task already lives (use that almost always). ' +
+    'On a task that has no thread yet (a scheduled automation), the first message opens one in the destination the automation was set up for, and replies to it come back to this task. ' +
     'Use target.channel only to reach another thread ALREADY linked to this task. ' +
     'If this task lives in a channel thread, bring someone in by @mentioning them in that thread. ' +
     'To say something in a channel that is NOT part of this task (exploration/outreach), use `post_to_channel` — it deliberately does not link to this task. ' +
@@ -426,7 +427,9 @@ function createPostToUserTool(agent: Agent, task: Task) {
     async (args) => {
       const agentName = agent.def.id as AgentName;
       const hasTarget = !!args.target?.channel;
-      if (!hasTarget && Object.keys(task.metadata.channels).length === 0) {
+      // `delivery_target` counts as somewhere to post: a schedule-fired trigger task has
+      // no thread yet, and posting is what creates one (see Task.postToUser).
+      if (!hasTarget && Object.keys(task.metadata.channels).length === 0 && !task.metadata.delivery_target) {
         return ok(
           'No channel is linked to this task, so there is nowhere to post. ' +
           'Call report_completion() without a message to finish silently.'
@@ -805,7 +808,7 @@ function createReportCompletionTool(agent: Agent, task: Task) {
         ? findMutedTarget(task.metadata.channels, task.metadata.default_channel)
         : null;
       if (args.message && !mutedDefault) {
-        if (Object.keys(task.metadata.channels).length === 0) {
+        if (Object.keys(task.metadata.channels).length === 0 && !task.metadata.delivery_target) {
           return ok(
             'Cannot post a completion message — no channel linked to this task. ' +
             'Call report_completion() without a message to finish silently.'

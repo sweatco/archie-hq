@@ -457,6 +457,39 @@ export class Task {
     const defaultCh = this.metadata.default_channel
       ? this.metadata.channels[this.metadata.default_channel]
       : null;
+
+    // First delivery on a task that has nowhere to reply yet — a schedule-fired trigger
+    // task. Post top-level to the destination the fire recorded, then link the thread that
+    // post just created, so a human replying to it comes back to THIS task instead of
+    // starting a stranger one. Distinct from `post_to_channel`, which stays deliberately
+    // fire-and-forget for talking to channels this task does not live in.
+    if (!defaultCh && this.metadata.delivery_target) {
+      const { channel_id, channel_name } = this.metadata.delivery_target;
+      const ts = await postSlackMessage({ channel: channel_id, text: message, footer });
+      if (!ts) {
+        // Dry run, or Slack returned no ts. The message is out; there is just nothing to
+        // link, and inventing a thread id would strand every later post on a bad key.
+        logger.warn('task', `postToUser on task ${this.taskId} delivered to ${channel_name} but got no ts back — thread not linked`);
+        this.logOutgoingMessage(sender, message, `#${channel_name}`, undefined, footer);
+        return null;
+      }
+      const key = `slack:${channel_id}:${ts}`;
+      const channel: SlackChannel = {
+        type: 'slack',
+        thread_id: ts,
+        channel_id,
+        channel_name,
+        last_processed_ts: ts,
+        url: buildThreadUrl(channel_id, ts) ?? undefined,
+      };
+      this.metadata.channels[key] = channel;
+      this.metadata.default_channel ??= key;
+      delete this.metadata.delivery_target;
+      this.debouncedSave();
+      this.logOutgoingMessage(sender, message, Task.formatSlackDest(channel).display, channel, footer);
+      return key;
+    }
+
     if (!defaultCh) {
       logger.warn('task', `postToUser called on task ${this.taskId} with no default channel — message dropped`);
       return null;

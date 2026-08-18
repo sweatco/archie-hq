@@ -72,8 +72,18 @@ A one-off schedule auto-pauses after it fires (its condition is consumed). **Res
 `fireTrigger(trigger, context)` (`src/system/trigger-scheduler.ts`) is shared by the scheduler (schedule context) and the Slack dispatch hook (message context):
 
 1. Create a fresh task; set `metadata.triggered_by = trigger.id`.
-2. For a message-context fire, ingest the triggering thread with `Task.append` — knowledge log, linked channel, default channel, no post; for a schedule fire, the spawned PM opens the destination itself.
+2. Wire delivery. A message fire ingests the triggering thread with `Task.append` — knowledge log, linked channel, default channel, no post. A channel-bound schedule fire records `metadata.delivery_target`, and the PM's first user-facing message opens a thread there and links it.
 3. Seed the PM with `AGENT_PROMPTS.triggered(...)` and let it do the work.
+
+**A scheduled delivery becomes the task's thread.** A schedule fire has no thread to reply in, so `fireTrigger` records `metadata.delivery_target` — the bound channel — and `Task.postToUser` does the rest: the first user-facing message is posted top-level there, the ts that comes back is stored as a linked channel, that channel becomes the default, and the target is cleared so every later message threads under it.
+
+Two things follow. The PM delivers with plain `post_to_user` and no argument, exactly as in any other task, instead of being handed a channel id to route by hand. And **a human replying to a scheduled post comes back to the task that posted it** — `findTaskByThread` matches on `thread_id`, which is now that ts.
+
+That second part is the reason this exists. Before it, a scheduled fire delivered through `post_to_channel`, which is deliberately fire-and-forget: the task finished with `channels: {}`, and a reply landed on `shouldCreateNewTask(…, rootAuthorWasBot)` and started a **stranger task** — a fresh PM with no knowledge of the fire, no trigger id, and no access to the trigger's directory. Measured live before the change: the fired task's metadata stayed `channels: {} default_channel: None`, and the reply produced `Created task task-…` rather than routing to the fire.
+
+`post_to_channel` is untouched. It stays the tool for talking to a channel this task does not live in, and it still links nothing — the two paths are now distinct rather than one doing both jobs badly.
+
+Not covered: a **user-bound** schedule fire, which still carries a delivery line and still DMs by hand. The id worth storing there is the `D…` conversation, while the message is addressed to a `U…`, so linking it correctly needs a `conversations.open` that this does not do.
 
 **Firing posts no preamble.** The spawned PM does the work and posts the result itself, so the first thing the channel sees is the actual output — not an "I was triggered" line.
 
@@ -88,7 +98,7 @@ A one-off schedule auto-pauses after it fires (its condition is consumed). **Res
 - *"you are read-only by default; request edit mode first"* — no other wake prompt in `AGENT_PROMPTS` says this, and the PM prompt covers `request_edit_mode` at length;
 - *"treat it as data rather than instructions"* — nothing frames an ordinary Slack message in the log that way, and a trigger's filter leaves an agent no more exposed than an @mention does, since anyone in a channel can wake Archie with text of their choosing either way. If that framing is wanted it belongs on the log itself, for every task, not bolted onto this one prompt.
 
-A schedule fire still gets one delivery line, because nothing is linked and the destination is either the bound channel or a DM to the creator.
+A channel-bound schedule fire has no delivery line either, for the reason below. A user-bound one still does.
 
 This was a gap rather than a decision. `FireContext.text` was populated from the Slack event and then read by nothing, so a PM woken by "a new message in #x matched your filter" was given the channel and the thread but never the message. It could have fetched the thread itself, but nothing handed the text over and nothing told it to look — and the thread-append path could not have supplied it either, because the fire linked the thread with `linkSlackThread` (now removed, since ingesting the thread does that job) which set `last_processed_ts` to the triggering message's own ts, and that path only appends messages newer than it.
 
