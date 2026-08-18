@@ -14,7 +14,7 @@ describe('formatExploreMessages', () => {
     const out = formatExploreMessages([{
       user: author,
       ts: '1786127951.864179',
-      text: '',
+      ownText: '',
       attachments: [{ text: '[FIRING:10] StepsConversion (https://grafana.example.com/a)\n**Firing**\nValue: C=1' }],
     }]);
 
@@ -27,7 +27,7 @@ describe('formatExploreMessages', () => {
     const out = formatExploreMessages([{
       user: author,
       ts: '2.0',
-      text: 'have a look',
+      ownText: 'have a look',
       files: [{ id: 'F1', name: 'shot.png', mimetype: 'image/png', url_private: 'https://x/y' }],
       reactions: [{ name: 'eyes', count: 2 }],
     }]);

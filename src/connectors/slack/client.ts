@@ -19,7 +19,7 @@ import { prCardSubtitle, SLACK_PR_CARD_EMOJI } from '../../system/pr-card-format
 interface RawSlackMessage {
   /** Author's user ID. Empty string when the message was posted by an app/bot. */
   user: string;
-  text: string;
+  ownText: string;
   ts: string;
   files?: SlackFile[];
   attachments?: SlackAttachment[];
@@ -1395,7 +1395,7 @@ async function resolveRawMessages(
 
     return {
       user: msg.user || '',
-      text: applyMentionReplacements(ownTextWithResidue, userInfoMap, groupInfoMap, channelInfoMap),
+      ownText: applyMentionReplacements(ownTextWithResidue, userInfoMap, groupInfoMap, channelInfoMap),
       ts: msg.ts || '',
       ...(files && files.length > 0 ? { files } : {}),
       ...(resolvedAttachments.length > 0 ? { attachments: resolvedAttachments } : {}),
@@ -1440,7 +1440,7 @@ async function resolveAuthorsAndMap(messages: RawSlackMessage[]): Promise<SlackT
       : { id: msg.botId!, username: msg.botName || 'bot', realName: msg.botName || 'bot', teamId: msg.teamId };
     return {
       user: author,
-      text: msg.text,
+      ownText: msg.ownText,
       ts: msg.ts,
       ...(msg.files && msg.files.length > 0 ? { files: msg.files } : {}),
       ...(msg.attachments && msg.attachments.length > 0 ? { attachments: msg.attachments } : {}),
@@ -1926,7 +1926,7 @@ export async function listChannelPins(channelId: string): Promise<PinnedItem[] |
         const full = byTs.get(item.message.ts);
         // Attachment bodies carry the substance of a forwarded or app-posted message, so
         // they belong in the index text; the summariser flattens the whole thing anyway.
-        const parts = [full?.text ?? item.message.text ?? '', ...(full?.attachments ?? []).map((a) => a.text)];
+        const parts = [full?.ownText ?? item.message.text ?? '', ...(full?.attachments ?? []).map((a) => a.text)];
         items.push({
           kind: 'message',
           pinnedAt: item.created ?? 0,
@@ -2107,7 +2107,7 @@ export async function extractMessageContent(
   if (!resolved) return { text: '' };
   const authorless = (resolved.attachments ?? []).map((a) => ({ text: a.text }));
   return {
-    text: resolved.text,
+    text: resolved.ownText,
     ...(authorless.length > 0 ? { attachments: authorless } : {}),
     ...(resolved.files?.length ? { files: resolved.files } : {}),
   };

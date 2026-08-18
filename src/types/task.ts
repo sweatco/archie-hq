@@ -52,8 +52,10 @@ export interface SlackReaction {
 /** A fully-resolved message from a Slack thread */
 export interface SlackThreadMessage {
   user: SlackAuthor;
-  /** The author's own typed text (top-level blocks/text + file descriptions), mentions already resolved. */
-  text: string;
+  /**
+   * ONLY the author's own typed text — top-level blocks/text plus file descriptions, mentions already resolved. This is NOT the message body: the body comes from `renderMessageBody` / `messageBody` in `src/connectors/slack/message-body.ts`, which folds in attachment cards, the file list and reactions.
+   */
+  ownText: string;
   ts: string;
   files?: SlackFile[];    // raw file metadata (not yet downloaded)
   /** Forwarded / unfurled message attachments — each carries its author and text. */
@@ -68,7 +70,7 @@ export interface SlackThreadMessage {
  * `shared` is a thread-level signal: when true, the channel is currently
  * shared with one or more external workspaces (Slack Connect). Consumers use
  * `shared && isExternalUser(msg.user)` to decide whether to redact a message
- * when writing it out — the data layer never strips content itself.
+ * when writing it out — the data layer never strips content itself. Redaction covers the whole message body (`ownText` plus attachments, files and reactions), not just `ownText`.
  */
 export interface SlackThread {
   threadId: string;

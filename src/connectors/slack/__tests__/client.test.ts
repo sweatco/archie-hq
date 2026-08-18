@@ -78,7 +78,7 @@ describe('fetchSlackThread — rootAuthorWasBot', () => {
     const thread = await client.fetchSlackThread('C_botuser', '100.0', '101.0');
 
     expect(thread.rootAuthorWasBot).toBe(true);
-    const texts = thread.messages.map((m) => m.text);
+    const texts = thread.messages.map((m) => m.ownText);
     expect(texts).toContain('anyone seen the deploy fail?'); // bot root preserved
     expect(texts).toContain('yes, looking now');
   });
@@ -108,7 +108,7 @@ describe('fetchSlackThread — rootAuthorWasBot', () => {
     const thread = await client.fetchSlackThread('C_human', '300.0', '302.0');
 
     expect(thread.rootAuthorWasBot).toBe(false);
-    const texts = thread.messages.map((m) => m.text);
+    const texts = thread.messages.map((m) => m.ownText);
     expect(texts).toContain('human starts the thread');
     expect(texts).toContain('another human');
     expect(texts).not.toContain('archie chimed in'); // bot non-root message filtered out
@@ -152,7 +152,7 @@ describe('fetchSlackThread — link chips survive the Block Kit walk', () => {
 
     const thread = await client.fetchSlackThread('C_chip', '403.0', '403.0');
 
-    expect(thread.messages[0].text)
+    expect(thread.messages[0].ownText)
       .toBe('Will be fixed with this: Silent retry for no-fill (https://acme.atlassian.net/browse/IO-2862)');
   });
 
@@ -176,8 +176,8 @@ describe('fetchSlackThread — link chips survive the Block Kit walk', () => {
 
     const thread = await client.fetchSlackThread('C_chip', '404.0', '404.0');
 
-    expect(thread.messages[0].text).toContain('| Campaign | 28 Jul |');
-    expect(thread.messages[0].text).toContain('| Minecraft | 3,842 |');
+    expect(thread.messages[0].ownText).toContain('| Campaign | 28 Jul |');
+    expect(thread.messages[0].ownText).toContain('| Minecraft | 3,842 |');
   });
 
   it('renders a card block, whose title holds the only copy of the URL', async () => {
@@ -198,8 +198,8 @@ describe('fetchSlackThread — link chips survive the Block Kit walk', () => {
 
     const thread = await client.fetchSlackThread('C_chip', '405.0', '405.0');
 
-    expect(thread.messages[0].text).toContain('https://github.com/acme/app/pull/6887');
-    expect(thread.messages[0].text).toContain('CI checks (5/5)');
+    expect(thread.messages[0].ownText).toContain('https://github.com/acme/app/pull/6887');
+    expect(thread.messages[0].ownText).toContain('CI checks (5/5)');
   });
 
   it('keeps a text-field headline the blocks never mention', async () => {
@@ -218,9 +218,9 @@ describe('fetchSlackThread — link chips survive the Block Kit walk', () => {
 
     const thread = await client.fetchSlackThread('C_chip', '406.0', '406.0');
 
-    expect(thread.messages[0].text).toContain('The rollout for release');
-    expect(thread.messages[0].text).toContain('Production release was started!');
-    expect(thread.messages[0].text).not.toContain('[unparsed:');
+    expect(thread.messages[0].ownText).toContain('The rollout for release');
+    expect(thread.messages[0].ownText).toContain('Production release was started!');
+    expect(thread.messages[0].ownText).not.toContain('[unparsed:');
   });
 
   it('appends only the uncovered lines of the text field, not the whole body', async () => {
@@ -239,7 +239,7 @@ describe('fetchSlackThread — link chips survive the Block Kit walk', () => {
     });
 
     const thread = await client.fetchSlackThread('C_chip', '407.0', '407.0');
-    const text = thread.messages[0].text;
+    const text = thread.messages[0].ownText;
 
     // The missing link line is recovered...
     expect(text).toContain('https://admin.example.com/users/128001');
@@ -266,7 +266,7 @@ describe('fetchSlackThread — link chips survive the Block Kit walk', () => {
 
     const thread = await client.fetchSlackThread('C_chip', '400.0', '400.0');
 
-    expect(thread.messages[0].text).toContain('https://acme.atlassian.net/browse/IO-3120');
+    expect(thread.messages[0].ownText).toContain('https://acme.atlassian.net/browse/IO-3120');
   });
 
   it('keeps the URL of a message_mention chip inline, without duplicating it', async () => {
@@ -287,7 +287,7 @@ describe('fetchSlackThread — link chips survive the Block Kit walk', () => {
 
     const thread = await client.fetchSlackThread('C_chip', '401.0', '401.0');
 
-    expect(thread.messages[0].text).toBe(`see ${permalink}`);
+    expect(thread.messages[0].ownText).toBe(`see ${permalink}`);
   });
 
   it('does not re-append a query-string URL the blocks already rendered', async () => {
@@ -311,8 +311,8 @@ describe('fetchSlackThread — link chips survive the Block Kit walk', () => {
 
     const thread = await client.fetchSlackThread('C_chip', '408.0', '408.0');
 
-    expect(thread.messages[0].text).toBe('see https://example.com/?a=1&b=2 please');
-    expect(thread.messages[0].text.match(/example\.com/g)).toHaveLength(1);
+    expect(thread.messages[0].ownText).toBe('see https://example.com/?a=1&b=2 please');
+    expect(thread.messages[0].ownText.match(/example\.com/g)).toHaveLength(1);
   });
 
   it('leaves a plain rich_text link alone', async () => {
@@ -332,7 +332,7 @@ describe('fetchSlackThread — link chips survive the Block Kit walk', () => {
 
     const thread = await client.fetchSlackThread('C_chip', '402.0', '402.0');
 
-    expect(thread.messages[0].text).toBe('docs at https://example.com/a');
+    expect(thread.messages[0].ownText).toBe('docs at https://example.com/a');
   });
 });
 
@@ -426,8 +426,8 @@ describe('fetchSlackThread — unrendered-content backstop', () => {
 
     const thread = await client.fetchSlackThread('C_res', '600.0', '600.0');
 
-    expect(thread.messages[0].text).toContain('look at this');
-    expect(thread.messages[0].text).toContain('[unparsed: Deploy 4.2 rolled back]');
+    expect(thread.messages[0].ownText).toContain('look at this');
+    expect(thread.messages[0].ownText).toContain('[unparsed: Deploy 4.2 rolled back]');
   });
 
   it('stays quiet when Slack merely restates the body in its legacy dialect', async () => {
@@ -461,9 +461,9 @@ describe('fetchSlackThread — unrendered-content backstop', () => {
 
     const thread = await client.fetchSlackThread('C_res', '601.0', '601.0');
 
-    expect(thread.messages[0].text).not.toContain('[unparsed:');
+    expect(thread.messages[0].ownText).not.toContain('[unparsed:');
     // Ampersand decoded, so the query string is usable.
-    expect(thread.messages[0].text).toContain('https://x.example.com/a?b=1&c=2');
+    expect(thread.messages[0].ownText).toContain('https://x.example.com/a?b=1&c=2');
   });
 });
 
@@ -480,7 +480,7 @@ describe('fetchSlackThread — pagination', () => {
 
     const thread = await client.fetchSlackThread('C_page', '700.0', '701.0');
 
-    expect(thread.messages.map((m) => m.text)).toEqual(['first page', 'second page']);
+    expect(thread.messages.map((m) => m.ownText)).toEqual(['first page', 'second page']);
     expect(slackApi.conversations.replies).toHaveBeenCalledTimes(2);
   });
 });
@@ -530,7 +530,7 @@ describe('fetchSlackThread — malformed payloads never throw', () => {
 
       const thread = await client.fetchSlackThread('C_fuzz', '800.0', '800.0');
 
-      expect(typeof thread.messages[0].text).toBe('string');
+      expect(typeof thread.messages[0].ownText).toBe('string');
     });
   }
 });
@@ -623,7 +623,7 @@ describe('fetchChannelHistory — public only, chronological', () => {
     const { channel, messages } = await client.fetchChannelHistory('C_pub');
 
     expect(channel).toMatchObject({ id: 'C_pub', name: 'general' });
-    expect(messages.map((m) => m.text)).toEqual(['oldest', 'middle', 'newest']);
+    expect(messages.map((m) => m.ownText)).toEqual(['oldest', 'middle', 'newest']);
   });
 
   it("allows this task's OWN channel even when it's private (via allowedIds)", async () => {
@@ -636,7 +636,7 @@ describe('fetchChannelHistory — public only, chronological', () => {
 
     const { messages } = await client.fetchChannelHistory('C_own', 30, new Set(['C_own']));
 
-    expect(messages.map((m) => m.text)).toEqual(['private but ours']);
+    expect(messages.map((m) => m.ownText)).toEqual(['private but ours']);
   });
 });
 
@@ -667,7 +667,7 @@ describe('fetchExploreThread — accessible-set gate, no bot filtering', () => {
       messages: [rawMsg({ ts: '1.0', user: 'U1', text: 'ours' })],
     });
     const { messages } = await client.fetchExploreThread('C_own', '1.0', new Set(['C_own']));
-    expect(messages.map((m) => m.text)).toEqual(['ours']);
+    expect(messages.map((m) => m.ownText)).toEqual(['ours']);
   });
 
   it('refuses a private channel that is NOT this task\'s own (no allowedIds)', async () => {
@@ -696,7 +696,7 @@ describe('fetchExploreThread — accessible-set gate, no bot filtering', () => {
     const { messages } = await client.fetchExploreThread('C_pt', '1.0');
 
     // Unlike task ingestion, explore reads do NOT filter the bot's messages.
-    expect(messages.map((m) => m.text)).toContain('archie reply (kept in explore reads)');
+    expect(messages.map((m) => m.ownText)).toContain('archie reply (kept in explore reads)');
     const withFile = messages.find((m) => m.files?.length);
     expect(withFile?.files?.[0]).toMatchObject({ id: 'F1', name: 'log.txt' });
     const withReaction = messages.find((m) => m.reactions?.length);

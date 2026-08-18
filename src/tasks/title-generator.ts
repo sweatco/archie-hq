@@ -45,7 +45,7 @@ function buildTranscript(thread: SlackThread): { transcript: string; hasUsableCo
 
   for (const msg of thread.messages) {
     const redacted = thread.shared && isExternalUser(msg.user);
-    const body = renderMessageForContext(msg, { redacted });
+    const body = renderMessageForContext({ text: msg.ownText, files: msg.files, attachments: msg.attachments, reactions: msg.reactions }, { redacted });
     const author = redacted ? 'external' : msg.user.realName;
     lines.push(`[${author}]: ${body}`);
     if (!redacted && body.trim() !== '' && body !== REDACTION_PLACEHOLDER) {

@@ -92,7 +92,7 @@ export function formatExploreMessages(messages: SlackThreadMessage[]): string {
       // alert, a Bugsnag error, 57 of 60 messages in #mobile-alerts — reached
       // the agent completely blank.
       const body = renderMessageForContext(
-        { text: m.text, files: m.files, attachments: m.attachments, reactions: m.reactions },
+        { text: m.ownText, files: m.files, attachments: m.attachments, reactions: m.reactions },
         { redacted: false },
       );
       return `<@${m.user.id}:${who}> | msg:${m.ts}\n${body}`;

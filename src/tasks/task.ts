@@ -343,7 +343,7 @@ export class Task {
       } else {
         const downloadedFiles = msg.files ? await downloadMessageFiles(this.taskId, msg.files) : undefined;
         await appendSlackMessage(
-          this.taskId, thread.channel, thread.threadId, msg.user, msg.text,
+          this.taskId, thread.channel, thread.threadId, msg.user, msg.ownText,
           downloadedFiles, msg.attachments,
           { ts: msg.ts, reactions: msg.reactions },
         );

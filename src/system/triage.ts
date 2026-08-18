@@ -137,10 +137,10 @@ Slack Message:
 - User: ${currentMessage?.user.realName ?? 'unknown'}
 
 Thread History:
-${thread.messages.map((m) => `[${m.user.realName}]: ${m.text}`).join("\n")}
+${thread.messages.map((m) => `[${m.user.realName}]: ${m.ownText}`).join("\n")}
 
 Current Message:
-${currentMessage?.text ?? ''}
+${currentMessage?.ownText ?? ''}
 
 ${context}`;
 }
