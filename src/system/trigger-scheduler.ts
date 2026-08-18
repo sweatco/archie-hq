@@ -335,25 +335,30 @@ async function tickTrigger(trigger: Trigger, now: Date): Promise<void> {
  * itself, so the first message the channel sees is the actual output.
  */
 /**
- * The instruction a fired trigger wakes its PM with: the trigger's own action prompt, then
- * where the result goes.
+ * The instruction a fired trigger wakes its PM with: the trigger's own action prompt, plus
+ * a delivery line when — and only when — the PM would not otherwise know where to go.
+ *
+ * A schedule fire needs one: no channel is linked, so the destination is either the bound
+ * channel or a DM to the creator. A message fire needs none: `Task.append` linked the
+ * triggering thread as the task's default channel, and `post_to_user` routes there by
+ * default, so a line saying "reply in the thread" only restates what already happens.
+ *
+ * A message fire's message is not mentioned here either. `Task.append` has written it to
+ * knowledge.log, which the PM reads at the start of every turn (prompts/pm-agent.md) and
+ * which is the only place a delegated specialist can see it.
  *
  * Delivery is decided here rather than in the prompt template because this is the only
- * place that knows the fire kind: a message fire replies in the triggering thread, a
- * schedule fire posts to the bound channel or DMs the creator.
- *
- * A message fire's message is NOT mentioned here, let alone inlined. `Task.append` has
- * already written it to knowledge.log, which the PM reads at the start of every turn
- * (prompts/pm-agent.md) — and the log is also the only place a delegated specialist can
- * see it, which is why it goes there rather than into this seed.
- *
- * Pure, so all three delivery shapes are assertable — `fireTrigger` itself creates tasks.
+ * place that knows the fire kind. Pure, so all three shapes are assertable — `fireTrigger`
+ * itself creates tasks.
  */
 export function buildTriggerSeed(trigger: Trigger, context: FireContext): string {
   const parts = [trigger.action.prompt];
 
+  // A message fire needs no delivery line: `Task.append` linked the triggering thread as
+  // the task's default channel, and that is where `post_to_user` routes with no argument.
+  // A schedule fire has no linked channel, so it has to be told where to go.
   if (context.kind === 'message') {
-    parts.push('Post your reply in your default channel — the thread where the triggering message was posted.');
+    // nothing to add
   } else if (trigger.binding.type === 'user') {
     parts.push(`Deliver the result to the user as a direct message (Slack user ID ${trigger.binding.user_id}).`);
   } else {

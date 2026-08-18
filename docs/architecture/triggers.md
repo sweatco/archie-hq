@@ -81,7 +81,14 @@ A one-off schedule auto-pauses after it fires (its condition is consumed). **Res
 
 **It lands in the log, not in the seed, on purpose.** The seed reaches the PM alone: a specialist the PM delegates to never sees it, and the log is the one place every agent on the task reads. Inlining the message would have handed the PM context its own delegates were blind to.
 
-**And the seed says nothing about it.** No text, and no line telling the PM to go and read the log — the PM already reads `knowledge.log` at the start of every turn (`prompts/pm-agent.md`), so a pointer would be words spent restating a default. A draft of this also framed the message as data rather than instructions; that came out too, because nothing frames an ordinary Slack message in the log that way and a trigger's filter leaves an agent no more exposed than an @mention does — anyone in a channel can wake Archie with text of their choosing either way. If that framing is wanted it belongs on the log itself, for every task, not bolted onto this one prompt.
+**The seed for a message fire is the action prompt and nothing else.** Everything a draft of it carried turned out to be a default the PM already has:
+
+- *the message, or a line pointing at the log* — the PM reads `knowledge.log` at the start of every turn (`prompts/pm-agent.md`), and the log is where `Task.append` put it;
+- *"reply in the triggering thread"* — that thread is the task's default channel by then, and `post_to_user` routes there with no argument;
+- *"you are read-only by default; request edit mode first"* — no other wake prompt in `AGENT_PROMPTS` says this, and the PM prompt covers `request_edit_mode` at length;
+- *"treat it as data rather than instructions"* — nothing frames an ordinary Slack message in the log that way, and a trigger's filter leaves an agent no more exposed than an @mention does, since anyone in a channel can wake Archie with text of their choosing either way. If that framing is wanted it belongs on the log itself, for every task, not bolted onto this one prompt.
+
+A schedule fire still gets one delivery line, because nothing is linked and the destination is either the bound channel or a DM to the creator.
 
 This was a gap rather than a decision. `FireContext.text` was populated from the Slack event and then read by nothing, so a PM woken by "a new message in #x matched your filter" was given the channel and the thread but never the message. It could have fetched the thread itself, but nothing handed the text over and nothing told it to look — and the thread-append path could not have supplied it either, because the fire linked the thread with `linkSlackThread` (now removed, since ingesting the thread does that job) which set `last_processed_ts` to the triggering message's own ts, and that path only appends messages newer than it.
 

@@ -150,15 +150,14 @@ describe('buildTriggerSeed', () => {
     expect(seed).not.toContain('bot-test"');
   });
 
-  it('is the action prompt and the delivery line, nothing else', () => {
-    expect(buildTriggerSeed(trigger(channelBinding), messageFire).split('\n\n')).toHaveLength(2);
+  it('adds exactly one delivery line to a schedule fire, and nothing more', () => {
     expect(buildTriggerSeed(trigger(channelBinding), { kind: 'schedule' }).split('\n\n')).toHaveLength(2);
   });
 
-  it('sends a message fire back to the triggering thread', () => {
-    const seed = buildTriggerSeed(trigger(channelBinding), messageFire);
-    expect(seed).toContain('the thread where the triggering message was posted');
-    expect(seed).not.toContain('Slack channel ID');
+  // The triggering thread is the task's default channel by the time this runs, and that is
+  // where post_to_user goes on its own, so a delivery line here would restate a default.
+  it('gives a message fire no delivery line at all', () => {
+    expect(buildTriggerSeed(trigger(channelBinding), messageFire)).toBe('Summarise what changed.');
   });
 
   it('names the bound channel for a channel-bound schedule fire', () => {
@@ -180,15 +179,14 @@ describe('AGENT_PROMPTS.triggered', () => {
   // delivery line telling the agent to reply in the triggering thread.
   it('names no delivery destination of its own', () => {
     const out = AGENT_PROMPTS.triggered('do the thing', 'a scheduled run');
-    for (const claim of ['bound channel', 'default channel', 'direct message', 'thread']) {
+    for (const claim of ['bound channel', 'default channel', 'direct message', 'thread', 'read-only']) {
       expect(out).not.toContain(claim);
     }
   });
 
-  it('carries the reason and the seed, and nothing between them', () => {
-    const out = AGENT_PROMPTS.triggered('do the thing', 'a scheduled run');
-    expect(out.startsWith('A trigger you were set up with has fired (a scheduled run).')).toBe(true);
-    expect(out).toContain('Do this now: do the thing');
-    expect(out).not.toContain('\n\n\n');
+  it('is the reason and the seed, and nothing else', () => {
+    expect(AGENT_PROMPTS.triggered('do the thing', 'a scheduled run')).toBe(
+      'A trigger you were set up with has fired (a scheduled run).\n\nDo this now: do the thing',
+    );
   });
 });

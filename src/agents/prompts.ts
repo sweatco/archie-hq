@@ -40,17 +40,18 @@ Read knowledge.log to see where you left off, then take action.`,
 
   reminder: (reason: string) => `Your scheduled reminder has fired. Reason: ${reason}\n\nCheck knowledge.log for the latest context and decide what to do next.`,
 
-  // Deliberately says nothing about WHERE the result goes, and does not carry the
-  // triggering message either. `buildTriggerSeed` (src/system/trigger-scheduler.ts) owns
-  // both: it is the only place that knows the fire kind, and a message fire's message goes
-  // to knowledge.log rather than into this message, which reaches the PM alone. This
-  // template used to close with "post the result to the bound channel", which on a message
-  // fire contradicted the delivery line two paragraphs above it.
+  // Two sentences, because everything else a trigger-fired PM needs is already a default
+  // it carries into every task. It used to close with "post the result to the bound
+  // channel" — which on a message fire contradicted the delivery line above it — and with
+  // a read-only reminder that no other wake prompt here bothers to give.
   //
-  // It also names neither the trigger directory nor the `trigger-task` skill: those belong
-  // in the section buildTriggerDataPromptSection appends, which every track sees.
+  // Delivery lives in `buildTriggerSeed` (src/system/trigger-scheduler.ts), the only place
+  // that knows the fire kind, and it says nothing at all for a message fire: the thread is
+  // linked as the task's default channel, which is where `post_to_user` routes anyway.
+  // A message fire's message is not here either — `Task.append` puts it in knowledge.log,
+  // which the PM reads every turn and which is the only place a delegate can see it.
   triggered: (prompt: string, reason: string) =>
-    `A trigger you were set up with has fired (${reason}).\n\nDo this now: ${prompt}\n\nYou are read-only by default; if the work requires code changes, request edit mode first.`,
+    `A trigger you were set up with has fired (${reason}).\n\nDo this now: ${prompt}`,
 
   reinforceAgent: `RECOVERY: You went idle without reporting back.
 
