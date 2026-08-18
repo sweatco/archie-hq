@@ -26,7 +26,6 @@ import {
   postEphemeral,
   getSlackClient,
   cleanSlackText,
-  extractMessageContent,
 } from './client.js';
 import { ensureChannelCanvas } from './channel-canvas.js';
 import { ensureChannelPins } from './channel-pins.js';
@@ -35,7 +34,8 @@ import { Task } from '../../tasks/task.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
 import { getIsShuttingDown } from '../../system/shutdown.js';
-import { findTaskByThread, renderMessageForContext } from '../../tasks/persistence.js';
+import { findTaskByThread } from '../../tasks/persistence.js';
+import { rawMessageBody } from './message-body.js';
 import { getChannelMessageTriggers, fireTrigger, triggerWhat } from '../../system/trigger-scheduler.js';
 import type { Trigger } from '../../types/trigger.js';
 import { generateTaskTitle } from '../../tasks/title-generator.js';
@@ -897,11 +897,7 @@ async function handleSlackEdit(event: any): Promise<void> {
   // `label (url)`, and anything carried in `blocks` was lost on the edit path.
   // Only the new text is logged — the pre-edit text already lives in the log
   // under the same `msg:<ts>` id.
-  const extracted = await extractMessageContent(msg, channelId);
-  const newText = renderMessageForContext(
-    { text: extracted.text, attachments: extracted.attachments },
-    { redacted: false },
-  );
+  const newText = await rawMessageBody(msg, channelId);
   const author: SlackAuthor = {
     id: msg.user,
     username: authorInfo?.name ?? msg.user,

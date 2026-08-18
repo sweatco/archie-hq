@@ -1,8 +1,7 @@
 /**
- * Unit tests for renderMessageForContext, plus metadata round-trip persistence.
+ * Unit tests for the persistence-side rendering helpers, plus metadata round-trip persistence.
  *
- * Direct tests on the pure rendering helper extracted from appendSlackMessage.
- * Covers redaction, forwarded-attachment labels, file lists, edge cases.
+ * Body rendering itself now lives in `src/connectors/slack/message-body.ts` and is tested there; what remains here is `renderAttachmentsSuffix` (the OUTBOUND suffix, which has no Slack input) and `renderEditForContext`. The suffix cases below pin how far outbound agreement with the inbound renderer goes — and where it deliberately stops.
  */
 
 import { describe, it, expect, vi, afterAll } from 'vitest';
@@ -46,142 +45,49 @@ vi.mock('./task.js', () => ({
   activeTasks: new Map(),
 }));
 
-import { renderMessageForContext, renderEditForContext, loadMetadata, getMetadataPath } from '../persistence.js';
+import { renderAttachmentsSuffix, renderEditForContext, loadMetadata, getMetadataPath } from '../persistence.js';
+import { renderMessageBody } from '../../connectors/slack/message-body.js';
+import type { SlackFile } from '../../types/index.js';
 import type { TaskMetadata } from '../../types/task.js';
 
 afterAll(async () => {
   await rm(SESSIONS_ROOT, { recursive: true, force: true });
 });
 
-describe('renderMessageForContext', () => {
-  it('renders plain message text with no attachments', () => {
-    const out = renderMessageForContext({ text: 'hello world' }, { redacted: false });
-    expect(out).toBe('hello world');
+/**
+ * `renderAttachmentsSuffix` serves the OUTBOUND side (agent → Slack), where every artifact is a real local path, while the inbound suffix serves messages whose files may or may not have been downloaded yet. The two are expected to agree only in the case where that difference vanishes.
+ */
+describe('renderAttachmentsSuffix — agreement with the inbound [Attachments: …] suffix', () => {
+  it('matches the inbound suffix exactly when every file has a localPath', () => {
+    const paths = ['/tmp/artifacts/report.pdf', '/tmp/artifacts/chart.png'];
+    // Same files, expressed as the inbound shape: name is the basename, localPath the full path — the one case where both renderers have identical information.
+    const files: SlackFile[] = paths.map((p, i) => ({
+      id: `F${i}`,
+      name: p.slice(p.lastIndexOf('/') + 1),
+      mimetype: 'application/octet-stream',
+      url_private: '',
+      localPath: p,
+    }));
+
+    const inbound = renderMessageBody({ ownText: 'here you go', files }, { redacted: false });
+    const suffix = renderAttachmentsSuffix(paths);
+
+    expect(suffix).toBe('\n  [Attachments: report.pdf (/tmp/artifacts/report.pdf), chart.png (/tmp/artifacts/chart.png)]');
+    expect(inbound).toBe(`here you go${suffix}`);
+    expect(inbound.endsWith(suffix)).toBe(true);
   });
 
-  it('appends file list as trailing [Attachments] line', () => {
-    const out = renderMessageForContext(
-      {
-        text: 'see file',
-        files: [
-          { id: 'F1', name: 'a.txt', mimetype: 'text/plain', url_private: '', localPath: '/p/a.txt' },
-        ],
-      },
-      { redacted: false },
-    );
-    expect(out).toBe('see file\n  [Attachments: a.txt (/p/a.txt)]');
-  });
+  it('deliberately diverges from the inbound suffix for a file with no localPath', () => {
+    // `SlackFile.localPath` is optional: a message whose files were never downloaded (a redaction-adjacent path, or a download failure) renders the bare name. `renderAttachmentsSuffix` cannot reach this state — it is always given real paths — so the two forms differ by design and neither should be "fixed" to match the other.
+    const files: SlackFile[] = [
+      { id: 'F1', name: 'report.pdf', mimetype: 'application/pdf', url_private: '' },
+    ];
 
-  it('appends reactions as a trailing [Reactions] line, with counts only above 1', () => {
-    const out = renderMessageForContext(
-      {
-        text: 'nice',
-        reactions: [
-          { name: 'thumbsup', count: 3 },
-          { name: 'eyes', count: 1 },
-        ],
-      },
-      { redacted: false },
-    );
-    expect(out).toBe('nice\n  [Reactions: :thumbsup: ×3, :eyes:]');
-  });
+    const inbound = renderMessageBody({ ownText: 'here you go', files }, { redacted: false });
 
-  it('renders both attachments and reactions lines together', () => {
-    const out = renderMessageForContext(
-      {
-        text: 'see file',
-        files: [
-          { id: 'F1', name: 'a.txt', mimetype: 'text/plain', url_private: '', localPath: '/p/a.txt' },
-        ],
-        reactions: [{ name: 'tada', count: 1 }],
-      },
-      { redacted: false },
-    );
-    expect(out).toBe('see file\n  [Attachments: a.txt (/p/a.txt)]\n  [Reactions: :tada:]');
-  });
-
-  it('returns the redaction placeholder when redacted is true', () => {
-    const out = renderMessageForContext(
-      {
-        text: 'should not appear',
-        attachments: [{ text: 'also hidden' }],
-      },
-      { redacted: true },
-    );
-    expect(out).toBe('[redacted: external participant in shared channel]');
-  });
-
-  it('renders externally-authored attachment under a forwarded-from label', () => {
-    const out = renderMessageForContext(
-      {
-        text: 'check this out',
-        attachments: [
-          {
-            text: 'external content body',
-            author: {
-              id: 'UEXT',
-              username: 'ext',
-              realName: 'External Person',
-              teamId: 'T_OTHER',
-            },
-          },
-        ],
-      },
-      { redacted: false },
-    );
-    expect(out).toBe(
-      'check this out\n[forwarded from <@UEXT:External Person> — external, team T_OTHER]\nexternal content body',
-    );
-  });
-
-  it('only labels first external attachment; later externals fold inline', () => {
-    const out = renderMessageForContext(
-      {
-        text: 'top',
-        attachments: [
-          {
-            text: 'first ext',
-            author: { id: 'U1', username: 'a', realName: 'A', teamId: 'T_OTHER' },
-          },
-          {
-            text: 'second ext',
-            author: { id: 'U2', username: 'b', realName: 'B', teamId: 'T_OTHER' },
-          },
-        ],
-      },
-      { redacted: false },
-    );
-    // top, second ext (folded inline), then forwarded block for first
-    expect(out).toBe(
-      'top\nsecond ext\n[forwarded from <@U1:A> — external, team T_OTHER]\nfirst ext',
-    );
-  });
-
-  it('renders empty text + only attachments without leading newline', () => {
-    const out = renderMessageForContext(
-      {
-        text: '',
-        attachments: [{ text: 'inline body' }],
-      },
-      { redacted: false },
-    );
-    expect(out).toBe('inline body');
-  });
-
-  it('omits team suffix when external author has no teamId', () => {
-    const out = renderMessageForContext(
-      {
-        text: 'top',
-        attachments: [
-          {
-            text: 'guest content',
-            author: { id: 'UG', username: 'g', realName: 'G', isRestricted: true },
-          },
-        ],
-      },
-      { redacted: false },
-    );
-    expect(out).toBe('top\n[forwarded from <@UG:G> — external]\nguest content');
+    expect(inbound).toBe('here you go\n  [Attachments: report.pdf]');
+    expect(inbound).not.toBe(`here you go${renderAttachmentsSuffix(['report.pdf'])}`);
+    expect(renderAttachmentsSuffix(['report.pdf'])).toBe('\n  [Attachments: report.pdf (report.pdf)]');
   });
 });
 

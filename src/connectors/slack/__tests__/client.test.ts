@@ -557,7 +557,7 @@ describe('fetchSlackThread — shared-channel redaction is unaffected by richer 
         }),
       ],
     });
-    const { renderMessageForContext } = await import('../../../tasks/persistence.js');
+    const { renderMessageBody } = await import('../message-body.js');
 
     const thread = await client.fetchSlackThread('C_shared', '801.0', '801.0');
     expect(thread.shared).toBe(true);
@@ -566,8 +566,8 @@ describe('fetchSlackThread — shared-channel redaction is unaffected by richer 
 
     // Mirrors Task.append: an external author in a shared channel is written
     // with empty content, so nothing the extractors found can escape.
-    const rendered = renderMessageForContext(
-      { text: '', files: undefined, attachments: undefined },
+    const rendered = renderMessageBody(
+      { ownText: '', files: undefined, attachments: undefined },
       { redacted: true },
     );
     expect(rendered).toBe('[redacted: external participant in shared channel]');

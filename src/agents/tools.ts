@@ -21,7 +21,8 @@ import { getGitHubClient, parseCheckRef } from '../connectors/github/client.js';
 import { gitExec } from '../connectors/github/repo-clone.js';
 import { hydrateBranchState, findBranchStateByPR, assignPrNumber } from '../connectors/github/branch-state.js';
 import { taskBranchName } from '../connectors/github/branch-naming.js';
-import { appendAgentFinding, appendArtifactShared, isThreadMuted, renderMessageForContext } from '../tasks/persistence.js';
+import { appendAgentFinding, appendArtifactShared, isThreadMuted } from '../tasks/persistence.js';
+import { renderMessageBody } from '../connectors/slack/message-body.js';
 import { copyArtifactToShared, assertReadable } from './artifacts.js';
 import { aggregateTaskUsage, formatTaskUsageReport } from './task-usage.js';
 import { logger } from '../system/logger.js';
@@ -91,8 +92,8 @@ export function formatExploreMessages(messages: SlackThreadMessage[]): string {
       // used to print `m.text` alone, so an attachment-only message — a Grafana
       // alert, a Bugsnag error, 57 of 60 messages in #mobile-alerts — reached
       // the agent completely blank.
-      const body = renderMessageForContext(
-        { text: m.ownText, files: m.files, attachments: m.attachments, reactions: m.reactions },
+      const body = renderMessageBody(
+        { ownText: m.ownText, files: m.files, attachments: m.attachments, reactions: m.reactions },
         { redacted: false },
       );
       return `<@${m.user.id}:${who}> | msg:${m.ts}\n${body}`;
