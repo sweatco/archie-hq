@@ -362,10 +362,6 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     if (metadata.reminder) {
       contextLines.push(`Reminder: ${metadata.reminder.trigger_at} — ${metadata.reminder.reason}`);
     }
-    if (metadata.triggered_by) {
-      // Says nothing about the trigger's directory on purpose: this line is built from `triggered_by` alone, which stays set even after the trigger is deleted, whereas the directory block appended after the per-track branches appears only when the directory actually exists. Claiming a directory here would contradict that block on exactly the runs where they disagree.
-      contextLines.push(`Spawned by trigger: ${metadata.triggered_by} (a trigger-initiated task — there is no prior Slack thread here; deliver the result as instructed in the first message)`);
-    }
     // Surface the live plugins-repo version so the PM can tell users when the
     // plugins/agents were last updated. Refreshed on every task start/load.
     const pluginsHead = await getPluginsHeadInfo();
@@ -620,12 +616,13 @@ Shared folder: ${sharedPath} [READ-ONLY]
   // It is also deliberately NOT added to `additionalDirectories`. `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1'` (below) auto-loads a `CLAUDE.md` from any additional directory, and this directory is agent-writable — so listing it would let one agent drop a file that becomes prompt text for every later agent on the same trigger. Auto-injecting the directory's contents is an explicit non-goal; the agent reads what it wants with `Read`.
   //
   // Creation is idempotent because this runs per agent, on every wake, and again after a restart — `Agent.spawn`'s only guard is `if (this.isRunning) return` (src/agents/agent.ts), which is always false after a restart.
-  const triggerDataPath = metadata.triggered_by
-    ? await ensureTriggerDataDir(metadata.triggered_by)
-    : null;
-  if (triggerDataPath) {
+  const triggerId = metadata.triggered_by;
+  const triggerDataPath = triggerId ? await ensureTriggerDataDir(triggerId) : null;
+  if (triggerId && triggerDataPath) {
     sandboxOpts = grantTriggerDataAccess(sandboxOpts, triggerDataPath);
-    // The names are read here to save the agent a turn, not because it cannot look: `ls` from `Bash` does work on this path (measured under bwrap 0.11.0 with denyRead on the workdir — the write grant's bind mounts on top of the deny tmpfs). What it lacks is `Glob`, which is absent from this runtime, so a fire reaching for the obvious lister gets "No such tool available" and has to recover; one live fire gave up at that point. Names only; opening them stays the agent's choice.
+    // The names are read here to save the agent a turn, not because it cannot look — the
+    // directory is granted read-write on both enforcement layers, so listing it works.
+    // Names only; opening them stays the agent's choice.
     // Never let the listing fail the spawn. deleteTrigger's rm can interleave between
     // the mkdir above and this read, and an ENOENT escaping here would reject
     // spawnAgent and stop the agent starting at all. Degrading to an empty listing
@@ -635,7 +632,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
       logger.warn('trigger-data', `Could not list ${triggerDataPath}, announcing it as empty: ${err}`);
       return [] as string[];
     });
-    systemPrompt = `${systemPrompt}\n\n${buildTriggerDataPromptSection(triggerDataPath, triggerDataEntries)}`;
+    systemPrompt = `${systemPrompt}\n\n${buildTriggerDataPromptSection(triggerId, triggerDataPath, triggerDataEntries)}`;
   }
 
   // ---- Organizational memory injection (read path; gated by ARCHIE_MEMORY_INJECT, default off) ----

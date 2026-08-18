@@ -40,7 +40,12 @@ Read knowledge.log to see where you left off, then take action.`,
 
   reminder: (reason: string) => `Your scheduled reminder has fired. Reason: ${reason}\n\nCheck knowledge.log for the latest context and decide what to do next.`,
 
-  triggered: (prompt: string, context: string) => `A trigger you were set up with has fired (${context}).\n\nDo the following now: ${prompt}\n\nThis is a fresh task spawned by the trigger — there is no prior conversation to read, but if this trigger has run before, its directory may hold what an earlier fire left for you. Carry out the instruction and post the result to the bound channel. You are read-only by default; if the work requires code changes, request edit mode first.`,
+  // Load the skill FIRST, before the work: it covers how a fire picks up from the one
+  // before it, which is a decision taken at the start of the turn or not at all. The
+  // skill and the trigger directory are named in exactly one other place between them —
+  // the section buildTriggerDataPromptSection appends to the system prompt names the
+  // directory, this line names the skill, and neither repeats the other.
+  triggered: (prompt: string, context: string) => `A trigger you were set up with has fired (${context}).\n\nLoad the \`trigger-task\` skill before you start — this task was started by a trigger, and that skill covers how to work in one.\n\nThen do the following: ${prompt}\n\nThere is no prior conversation to read here. Carry out the instruction and post the result to the bound channel. You are read-only by default; if the work requires code changes, request edit mode first.`,
 
   reinforceAgent: `RECOVERY: You went idle without reporting back.
 
