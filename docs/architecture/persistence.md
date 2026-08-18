@@ -227,7 +227,7 @@ and omitted for Slack messages and GitHub events.
 
 | Source pattern | Written by | Example |
 |---|---|---|
-| `slack:#<{channelId}:{channelName}>:{threadId}` | `appendSlackMessage()` | `[2025-01-15T10:30:00Z] [slack:#<C123:general>:1234.5678] [@<U456:Jane Doe>] Fix the login bug` |
+| `slack:#<{channelId}:{channelName}>:{threadId}` | `appendSlackMessage()` (takes an already-rendered body; the render lives in `connectors/slack/message-body.ts`) | `[2025-01-15T10:30:00Z] [slack:#<C123:general>:1234.5678] [@<U456:Jane Doe>] Fix the login bug` |
 | `{agentName}` | `appendAgentFinding()` | `[2025-01-15T10:31:00Z] [pm-agent] [decision] Assigned backend-agent as task owner` |
 | `github:{repoKey}` | `appendGitHubEvent()` | `[2025-01-15T10:32:00Z] [github:backend] PR #42: reviewer approved` |
 | `system` | Various (edit mode, budget) | `[2025-01-15T10:33:00Z] [system] [decision] Edit mode approved by user` |

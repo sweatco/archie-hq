@@ -79,7 +79,9 @@ A one-off schedule auto-pauses after it fires (its condition is consumed). **Res
 
 ### Channel-message dispatch
 
-A single hook in `handleSlackEvent` (`src/connectors/slack/events.ts`) fires channel-message triggers, gated to ambient chatter: no existing task on the thread, not an `@mention`, not a DM, and a top-level message (not a thread reply). So a message that both mentions Archie and matches a trigger creates a direct task and does **not** also fire the trigger. External/guest authors are filtered upstream and can never fire a trigger.
+A single hook in `handleSlackEvent` (`src/connectors/slack/events.ts`) fires channel-message triggers, gated to ambient chatter: no existing task on the thread, not an `@mention`, not a DM, and a top-level message (not a thread reply).
+
+**The `contains` filter matches the rendered message body, not Slack's `text` field.** The body comes from `rawMessageBody`, which runs the raw event through the full inbound extraction (Block Kit, attachment cards, files, mention resolution) and then the shared renderer. This matters because the messages most worth watching for — a Grafana alert, a Bugsnag error, a report posted through an incoming webhook — arrive with an empty `text` and everything in attachment cards, so matching the raw field made them invisible to the very filter watching for them. There is deliberately no fallback to the raw field: a message whose extraction yields nothing simply does not match. The render is computed only after the trigger-index lookup short-circuits, so a channel nobody watches costs nothing. So a message that both mentions Archie and matches a trigger creates a direct task and does **not** also fire the trigger. External/guest authors are filtered upstream and can never fire a trigger.
 
 ## Confirmation gate (channel-agnostic)
 
