@@ -57,7 +57,7 @@ import { scheduleIdleCheck } from './recovery.js';
 import { scanAgentDefs, getAgentDef, getVisiblePeerIdsForSender, synthesizeDynamicAgentDef } from '../agents/registry.js';
 import type { AttachedRepo } from '../types/task.js';
 import { syncPlugins } from '../system/plugin-sync.js';
-import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, isExternalUser, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, isExternalUser, formatSlackChannelRef, formatSlackChannelDisplay, assertPostableChannel } from '../connectors/slack/client.js';
 import { basename } from 'path';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
@@ -425,18 +425,28 @@ export class Task {
   }
 
   /**
-   * Post a message to the user.
+   * Post a message to the user. Returns the channel key when this call linked a new
+   * channel (see `mayOpenThread`), null otherwise.
    *
    * Targeting modes:
-   * - No target: post to default_channel only
-   * - target.channel: post to a specific already-linked thread
+   * - No target: post to default_channel; or, with `mayOpenThread`, open the task's
+   *   thread at `delivery_target` if it has none yet
+   * - target.channel: post to a specific already-linked thread; throws if it is not linked
    *
-   * Opening new DMs/threads is intentionally not supported — the PM reaches
-   * other channels via the task-decoupled `post_to_channel` explore tool, which
-   * deliberately does NOT link them to this task. Always returns null (the
-   * return type is kept for call-site compatibility).
+   * `mayOpenThread` is opt-in per caller, and only the two tools that deliver a
+   * user-facing result pass it. Incidental system messages — the inter-agent budget
+   * warning, the wall-clock pause notice — must NOT be able to become the first thing a
+   * bound channel hears from Archie, nor the thread the task then links.
+   *
+   * The PM still reaches channels this task does not live in via `post_to_channel`, which
+   * deliberately links nothing.
    */
-  async postToUser(message: string, agentName?: string, target?: PostTarget): Promise<string | null> {
+  async postToUser(
+    message: string,
+    agentName?: string,
+    target?: PostTarget,
+    opts?: { mayOpenThread?: boolean },
+  ): Promise<string | null> {
     const sender = agentName || 'system';
     // Grey footer (task id + PM model) appended to every user-facing message:
     // a Slack `context` block, and the same string on the `message` event so the
@@ -446,7 +456,13 @@ export class Task {
     // Specific existing channel
     if (target?.channel) {
       const ch = this.metadata.channels[target.channel];
-      if (ch?.type === 'slack') {
+      // An unlinked key used to post nothing and return null, which the caller reported to
+      // the agent as success. That silent drop is reachable for every key on a task whose
+      // channels are still empty, so it throws instead and the tool surfaces it.
+      if (!ch) {
+        throw new Error(`Channel ${target.channel} is not linked to this task`);
+      }
+      if (ch.type === 'slack') {
         await postSlackMessage({ channel: ch.channel_id, threadTs: ch.thread_id, text: message, footer });
         this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch, footer);
       }
@@ -463,14 +479,30 @@ export class Task {
     // post just created, so a human replying to it comes back to THIS task instead of
     // starting a stranger one. Distinct from `post_to_channel`, which stays deliberately
     // fire-and-forget for talking to channels this task does not live in.
-    if (!defaultCh && this.metadata.delivery_target) {
-      const { channel_id, channel_name } = this.metadata.delivery_target;
-      const ts = await postSlackMessage({ channel: channel_id, text: message, footer });
+    if (!defaultCh && this.metadata.delivery_target && opts?.mayOpenThread) {
+      // Claim the target BEFORE awaiting, so two concurrent first posts cannot both pass
+      // this guard and open two roots. Restored if the post throws, so a transient Slack
+      // failure does not cost the task its destination.
+      const targetChannel = this.metadata.delivery_target;
+      delete this.metadata.delivery_target;
+      const { channel_id, channel_name } = targetChannel;
+      let ts: string | undefined;
+      try {
+        // The cross-channel tool refuses DMs and group DMs before posting; this path is
+        // reached from a trigger binding rather than from an agent argument, but the
+        // binding is LLM-supplied at proposal time and never checked against Slack.
+        await assertPostableChannel(channel_id);
+        ts = await postSlackMessage({ channel: channel_id, text: message, footer });
+      } catch (err) {
+        this.metadata.delivery_target = targetChannel;
+        throw err;
+      }
       if (!ts) {
         // Dry run, or Slack returned no ts. The message is out; there is just nothing to
-        // link, and inventing a thread id would strand every later post on a bad key.
-        logger.warn('task', `postToUser on task ${this.taskId} delivered to ${channel_name} but got no ts back — thread not linked`);
-        this.logOutgoingMessage(sender, message, `#${channel_name}`, undefined, footer);
+        // link, and inventing a thread id would strand every later post on a bad key. The
+        // target stays claimed so the next message does not open a second root.
+        logger.warn('task', `postToUser on task ${this.taskId} delivered to ${formatSlackChannelDisplay(channel_name)} but got no ts back — thread not linked`);
+        this.logOutgoingMessage(sender, message, formatSlackChannelDisplay(channel_name), undefined, footer);
         return null;
       }
       const key = `slack:${channel_id}:${ts}`;
@@ -484,8 +516,10 @@ export class Task {
       };
       this.metadata.channels[key] = channel;
       this.metadata.default_channel ??= key;
-      delete this.metadata.delivery_target;
-      this.debouncedSave();
+      // Flushed rather than debounced: this record is the only thing tying a message humans
+      // can already see and reply to back to this task. Losing it in a 500 ms crash window
+      // brings back the stranger-task routing AND posts a duplicate root on recovery.
+      await this.save(true);
       this.logOutgoingMessage(sender, message, Task.formatSlackDest(channel).display, channel, footer);
       return key;
     }
@@ -951,6 +985,8 @@ export class Task {
     // the final message. Best-effort; must never block teardown.
     await this.resurfacePrCards().catch((e) => logger.warn('task', 'PR card resurface failed on stop', e));
 
+    this.warnUnconsumedDeliveryTarget();
+
     this.isActive = false;
     activeTasks.delete(this.taskId);
     this.clearTaskTimeout();
@@ -995,6 +1031,8 @@ export class Task {
     // PM has yielded the turn — (re)post any changed PR cards so they land under
     // the final message. Best-effort; must never block teardown.
     await this.resurfacePrCards().catch((e) => logger.warn('task', 'PR card resurface failed on complete', e));
+
+    this.warnUnconsumedDeliveryTarget();
 
     this.isActive = false;
     activeTasks.delete(this.taskId);
@@ -1646,6 +1684,22 @@ export class Task {
    * Activate the task — start timeout, mark in_progress.
    * Called lazily on first sendMessage().
    */
+  /**
+   * A task that recorded a delivery destination and never used it ends with the channel
+   * having heard nothing. That was silent — a fire completing green while its automation
+   * produced no message, observed live. Warn on either ending, and drop the target so it
+   * does not linger on a finished task as a destination nothing will ever consume.
+   */
+  private warnUnconsumedDeliveryTarget(): void {
+    if (!this.metadata.delivery_target) return;
+    logger.warn(
+      'task',
+      `Task ${this.taskId} ended without delivering to ${formatSlackChannelDisplay(this.metadata.delivery_target.channel_name)} — its recorded destination was never used`,
+    );
+    delete this.metadata.delivery_target;
+    this.debouncedSave();
+  }
+
   private activate(): void {
     this.isActive = true;
     // A fresh activation (new task or reopen of a parked one) starts a new cycle —

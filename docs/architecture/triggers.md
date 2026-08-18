@@ -81,6 +81,14 @@ Two things follow. The PM delivers with plain `post_to_user` and no argument, ex
 
 That second part is the reason this exists. Before it, a scheduled fire delivered through `post_to_channel`, which is deliberately fire-and-forget: the task finished with `channels: {}`, and a reply landed on `shouldCreateNewTask(…, rootAuthorWasBot)` and started a **stranger task** — a fresh PM with no knowledge of the fire, no trigger id, and no access to the trigger's directory. Measured live before the change: the fired task's metadata stayed `channels: {} default_channel: None`, and the reply produced `Created task task-…` rather than routing to the fire.
 
+Three guards came out of reviewing this, each closing a way the delivery could go wrong silently:
+
+- **Opening the thread is opt-in per caller.** `postToUser` also carries the inter-agent budget warning and the wall-clock pause notice, neither of which may become the first thing a bound channel hears from Archie — a stalled hourly trigger would otherwise put "⏸️ Pausing this task — respond in this thread whenever you're ready" into a public channel with nothing before it. Only `post_to_user` and `report_completion` pass `mayOpenThread`.
+- **An unlinked `target.channel` throws** instead of posting nothing and reporting success. That silent drop was pre-existing, but on a task whose `channels` are still empty *every* key is unlinked — and the PM has just been told which channel it delivers to, so passing it as a target was the likeliest wrong move and lost the message with no error.
+- **A task that ends with its destination unused says so.** `warnUnconsumedDeliveryTarget` logs on either ending and drops the target. Delivery is a prompt instruction, not an enforced step: a fire was observed completing green having posted nothing, and nothing in the system noticed.
+
+The claim on the destination is taken before the post, not after, so two concurrent first messages cannot open two threads; it is restored if the post throws. The link is flushed with `save(true)` rather than debounced, because it is the only record tying a message humans can already see back to this task.
+
 `post_to_channel` is untouched. It stays the tool for talking to a channel this task does not live in, and it still links nothing — the two paths are now distinct rather than one doing both jobs badly.
 
 Not covered: a **user-bound** schedule fire, which still carries a delivery line and still DMs by hand. The id worth storing there is the `D…` conversation, while the message is addressed to a `U…`, so linking it correctly needs a `conversations.open` that this does not do.
@@ -102,7 +110,7 @@ A channel-bound schedule fire has no delivery line either, for the reason below.
 
 This was a gap rather than a decision. `FireContext.text` was populated from the Slack event and then read by nothing, so a PM woken by "a new message in #x matched your filter" was given the channel and the thread but never the message. It could have fetched the thread itself, but nothing handed the text over and nothing told it to look — and the thread-append path could not have supplied it either, because the fire linked the thread with `linkSlackThread` (now removed, since ingesting the thread does that job) which set `last_processed_ts` to the triggering message's own ts, and that path only appends messages newer than it.
 
-**The seed states no destination.** `AGENT_PROMPTS.triggered` deliberately says nothing about where the result goes, because `fireTrigger` already appended a delivery line to the prompt it passes in and it is the only thing that knows the fire kind. The template used to close with "post the result to the bound channel", which on a message fire sat two paragraphs under a delivery line telling the agent to reply in the triggering thread — one message, two contradictory destinations.
+**The seed states no destination.** `AGENT_PROMPTS.triggered` says nothing about where the result goes, because for every binding a human can currently create there is nothing to say: a message fire replies in its linked thread and a channel-bound schedule fire posts to the user, whose destination the task already carries. `buildTriggerSeed` owns the one exception (a user-bound fire's DM line). The template used to close with "post the result to the bound channel", which on a message fire sat two paragraphs under a delivery line telling the agent to reply in the triggering thread — one message, two contradictory destinations.
 
 ## Persistent per-trigger directory
 

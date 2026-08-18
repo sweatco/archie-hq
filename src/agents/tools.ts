@@ -38,8 +38,7 @@ import {
   getChannelInfo,
   getUserInfo,
   listWorkspaceChannels,
-  fetchChannelIsPrivate,
-} from '../connectors/slack/client.js';
+  fetchChannelIsPrivate, formatSlackChannelDisplay } from '../connectors/slack/client.js';
 import { readCanvas } from '../connectors/slack/canvas-read.js';
 import {
   collectCanvasFileAllowlist,
@@ -441,7 +440,7 @@ function createPostToUserTool(agent: Agent, task: Task) {
       task.touch();
       let newChannelKey: string | null;
       try {
-        newChannelKey = await task.postToUser(args.message, agentName, args.target);
+        newChannelKey = await task.postToUser(args.message, agentName, args.target, { mayOpenThread: true });
       } catch (e) {
         return ok(formatSlackSendError(e));
       }
@@ -640,6 +639,17 @@ function createRequestEditModeTool(agent: Agent, task: Task) {
         return ok('Edit mode request already sent — task is pausing pending user approval.');
       }
 
+      // An approval card needs a thread to land in. On a task whose destination is recorded
+      // but not yet opened (a scheduled trigger fire before its first post), there is none:
+      // the card would go to the console log and the task would then pause waiting for an
+      // approval nobody can give. Deliver first — that opens the thread.
+      if (!args.channel && !task.metadata.default_channel && task.metadata.delivery_target) {
+        return ok(
+          `This task has no thread yet — it delivers to ${formatSlackChannelDisplay(task.metadata.delivery_target.channel_name)}. ` +
+          'Post there with post_to_user first (that opens the thread), then request approval.'
+        );
+      }
+
       // Validate an explicit target before posting so a bad key surfaces as
       // actionable feedback instead of silently dropping to the CLI log. The
       // task is left running so the agent can retry with a valid channel.
@@ -721,6 +731,17 @@ function createRequestMaxModeTool(agent: Agent, task: Task) {
       // end. Skip a duplicate approval post if the tool fires twice.
       if (agent.pendingTeardown) {
         return ok('Max mode request already sent — task is pausing pending user approval.');
+      }
+
+      // An approval card needs a thread to land in. On a task whose destination is recorded
+      // but not yet opened (a scheduled trigger fire before its first post), there is none:
+      // the card would go to the console log and the task would then pause waiting for an
+      // approval nobody can give. Deliver first — that opens the thread.
+      if (!args.channel && !task.metadata.default_channel && task.metadata.delivery_target) {
+        return ok(
+          `This task has no thread yet — it delivers to ${formatSlackChannelDisplay(task.metadata.delivery_target.channel_name)}. ` +
+          'Post there with post_to_user first (that opens the thread), then request approval.'
+        );
       }
 
       // Validate an explicit target before posting so a bad key surfaces as
@@ -815,7 +836,7 @@ function createReportCompletionTool(agent: Agent, task: Task) {
           );
         }
         try {
-          await task.postToUser(args.message, agentName);
+          await task.postToUser(args.message, agentName, undefined, { mayOpenThread: true });
         } catch (err) {
           // Surface the error to the agent so it can retry (e.g. split the
           // message). Do NOT record completion — it only proceeds after a
