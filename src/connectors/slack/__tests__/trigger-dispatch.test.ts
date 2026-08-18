@@ -108,6 +108,7 @@ import { fetchSlackThread, getBotUserId } from '../client.js';
 import { getChannelMessageTriggers, fireTrigger } from '../../../system/trigger-scheduler.js';
 import { logger } from '../../../system/logger.js';
 import { Task } from '../../../tasks/task.js';
+import { findTaskByThread } from '../../../tasks/persistence.js';
 
 const CHANNEL = 'C0WATCHED';
 
@@ -386,5 +387,53 @@ describe('self-loop guard', () => {
 
     // The control that makes the assertion above meaningful: same channel, same shape, different user.
     expect(vi.mocked(fireTrigger)).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('the message-edit entry point renders through the shared module', () => {
+  // The edit path is one of the entry points the single-render-path contract names, and it was the ONLY
+  // one with no test driving the real handler: the suite called `rawMessageBody` directly, so reverting
+  // the production call to the raw `text` field would have left every test green. It also could not be
+  // covered by the attachment-only BOT fixture used elsewhere — `handleSlackEdit` bails on `bot_id` and
+  // on `subtype: 'bot_message'`, and then drops an edit whose text is unchanged as an unfurl re-render.
+  // So this uses a reachable shape: a human author, text that genuinely changed, and the new content
+  // living in an attachment card.
+  let messageHandler: (arg: { event: unknown }) => unknown;
+
+  beforeEach(async () => {
+    await mountSlackApp({} as Application, { slackBotToken: 'xoxb-test', slackAppToken: 'xapp-test' });
+    messageHandler = bolt.handlers.get('message')!;
+  });
+
+  it('renders an edited message from its attachment card, not from the raw text field', async () => {
+    const appendSlackEdit = vi.fn().mockResolvedValue(true);
+    vi.mocked(findTaskByThread).mockResolvedValue('task-1');
+    vi.mocked(Task.get).mockResolvedValue({
+      metadata: { channels: { 'slack:C0WATCHED:900.000': { type: 'slack', channel_id: CHANNEL, channel_name: 'watched', thread_id: '900.000' } } },
+      appendSlackEdit,
+      sendMessage: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    await messageHandler({
+      event: {
+        type: 'message',
+        subtype: 'message_changed',
+        channel: CHANNEL,
+        previous_message: { ts: '900.000', user: 'U_HUMAN', text: 'before' },
+        message: {
+          ts: '900.000',
+          user: 'U_HUMAN',
+          text: 'after',
+          attachments: [{ text: 'deploy failed on prod (build 4711)' }],
+        },
+      },
+    });
+    await flushHandler();
+
+    expect(appendSlackEdit).toHaveBeenCalledTimes(1);
+    // The body must carry the attachment card, which only the shared renderer folds in. Reverting the
+    // production call to `msg.text` yields 'after' alone and fails here.
+    const body = appendSlackEdit.mock.calls[0]![3] as string;
+    expect(body).toContain('deploy failed on prod (build 4711)');
   });
 });
