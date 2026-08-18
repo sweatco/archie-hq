@@ -9,11 +9,11 @@
  * module is the durable source of truth.
  */
 
-import { mkdir, readFile, writeFile, readdir, unlink } from 'fs/promises';
+import { mkdir, readFile, writeFile, readdir, unlink, rm } from 'fs/promises';
 import { existsSync } from 'fs';
 import { resolve, sep } from 'path';
 import type { Trigger } from '../types/trigger.js';
-import { TRIGGERS_DIR } from './workdir.js';
+import { TRIGGERS_DIR, TRIGGERS_DATA_DIR } from './workdir.js';
 import { logger } from './logger.js';
 
 /**
@@ -81,6 +81,55 @@ export function getTriggerPath(id: string): string {
   return full;
 }
 
+/**
+ * Path to a trigger's persistent data directory. Same two guards as {@link getTriggerPath},
+ * because this path is handed to `mkdir`/`rm` and to a sandbox grant; no `.json` suffix.
+ */
+export function getTriggerDataPath(id: string): string {
+  const safeId = matchedTriggerId(id);
+  if (safeId === null) {
+    throw new Error(`Invalid trigger id: ${JSON.stringify(id)}`);
+  }
+  const base = resolve(TRIGGERS_DATA_DIR);
+  const full = resolve(base, safeId);
+  if (!full.startsWith(base + sep)) {
+    throw new Error(`Invalid trigger id: ${JSON.stringify(id)}`);
+  }
+  return full;
+}
+
+/**
+ * Ensure a trigger's persistent data directory exists, and return its path. Returns null
+ * when the trigger's record is gone, having created nothing — a task outlives the fire
+ * that created it, so without that check the next spawn would recreate the directory
+ * after {@link deleteTrigger} removed it, and nothing scans for orphans.
+ *
+ * `existsSync` on the record rather than {@link loadTrigger}: `loadTrigger` also returns
+ * null on a `JSON.parse` failure, and `saveTrigger` truncates before writing, so a spawn
+ * reading mid-write would deny a live trigger its directory. Left empty on purpose;
+ * conventions live in the `trigger-task` skill.
+ */
+export async function ensureTriggerDataDir(id: string): Promise<string | null> {
+  if (!isValidTriggerId(id) || !existsSync(getTriggerPath(id))) return null;
+  const path = getTriggerDataPath(id);
+  await mkdir(path, { recursive: true });
+  return path;
+}
+
+/**
+ * Remove a trigger's persistent data directory and everything inside it. Silent on a
+ * malformed id, matching {@link deleteTrigger}; `force: true` because a trigger that
+ * never fired never got a directory.
+ *
+ * A real filesystem refusal propagates. Swallowing it was tried and reverted: it made
+ * every caller report a deletion that had not happened, while the record was already
+ * unlinked — leaving the notes both unreachable and unremovable.
+ */
+export async function removeTriggerDataDir(id: string): Promise<void> {
+  if (!isValidTriggerId(id)) return; // malformed id → nothing to delete
+  await rm(getTriggerDataPath(id), { recursive: true, force: true });
+}
+
 /** Ensure the triggers directory exists. */
 async function ensureTriggersDir(): Promise<void> {
   if (!existsSync(TRIGGERS_DIR)) {
@@ -120,13 +169,15 @@ export async function listTriggers(): Promise<Trigger[]> {
   return triggers;
 }
 
-/** Delete a trigger's file. No-op if already gone. */
+/** Delete a trigger's file and its persistent data directory. No-op if already gone. */
 export async function deleteTrigger(id: string): Promise<void> {
   if (!isValidTriggerId(id)) return; // malformed id → nothing to delete
   const path = getTriggerPath(id);
   if (existsSync(path)) {
     await unlink(path);
   }
+  // Every deletion entry point funnels through here, so no caller has to change.
+  await removeTriggerDataDir(id);
 }
 
 /**

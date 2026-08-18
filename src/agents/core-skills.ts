@@ -24,18 +24,18 @@ const CORE_SKILLS_DIR = join(__dirname, '..', '..', 'skills');
 export type AgentTrack = 'pm' | 'repo' | 'plain';
 
 /**
- * The single declaration of which core skills each track mounts. It encodes today's mapping exactly — all four on the PM, nothing on the others — so behavior is unchanged.
+ * The single declaration of which core skills each track mounts. Read the constant below for the current mapping rather than trusting a summary here; what is worth knowing is the shape — most core skills are written for the PM and mount on `pm` alone, while a skill describing something every agent gets (such as a trigger-fired task's directory) mounts on every track.
  *
  * This mapping is intentionally a hardcoded constant rather than configuration: no plugin manifest, no hot-reloaded plugins change and no instruction to the orchestrator can widen the set of skills a track mounts, because there is no code path that reads this from anywhere but here. (It is a plain object, so it is mutable in-process like `TRUSTED_PACKAGE_REGISTRY_DOMAINS` at `src/agents/sandbox.ts:48`; the guarantee is about where the values come from, not about runtime immutability.)
  *
- * Sandbox limit: adding a core skill to another track makes it loadable through the `Skill` and `Read` tools — the PreToolUse guard resolves the raw tool-input path with `resolve(cwd, rawPath)` and never calls `realpath` (`src/agents/sandbox.ts:231`), `READ_TOOLS` is only `{Read, Glob, Grep}` so `Skill` is never seen (`src/agents/sandbox.ts:181`), and the workspace is in `allowReadPaths` on both the base and repo tracks (`src/agents/spawn.ts:312` and `:541`). It does NOT make the files readable from `Bash`: bwrap resolves symlinks and `/app` is hardcoded in `denyRead` (`src/agents/sandbox.ts:83`).
+ * Sandbox limit: a core skill mounted on a non-PM track is loadable there through the `Skill` and `Read` tools — the PreToolUse guard resolves the raw tool-input path with `resolve(cwd, rawPath)` and never calls `realpath`, and its `READ_TOOLS` set is only `{Read, Glob, Grep}` so `Skill` is never seen (both in `createFilesystemGuardHooks`, `src/agents/sandbox.ts`); the workspace is in `allowReadPaths` on both the base and repo tracks (the two `sandboxOpts` literals in `src/agents/spawn.ts`). It does NOT make the files readable from `Bash`: bwrap resolves symlinks and `/app` is hardcoded in `denyRead` (`buildSandboxConfig`, `src/agents/sandbox.ts`).
  *
- * Content limit: all four core skills are written in the PM's voice and instruct tools attached only inside the `isPmAgent(def)` branch that begins at `src/agents/spawn.ts:325` — `comms-tools` and `orchestration-tools` are registered at `:398-400`, giving the PM alone `post_to_channel`, `mute_channel`, `read_thread`, `fetch_slack_reference` and `report_completion`, all of which these skills instruct by name. `skills/self-awareness/SKILL.md:53` even describes itself as a built-in PM skill. So giving one of them a new audience needs prompt and tool work too, not just a line here.
+ * Content limit: a PM-voiced skill instructs tools attached only inside the `isPmAgent(def)` branch of `spawnAgent` — `post_to_channel`, `mute_channel`, `read_thread`, `fetch_slack_reference`, `report_completion` — so giving one a new audience needs prompt and tool work too, not just a line here. A skill on `repo` or `plain` has to be written for that audience from the start: track-neutral, naming no MCP tool, assuming no channel and no users.
  */
 export const CORE_SKILL_MOUNTS: Record<AgentTrack, string[]> = {
-  pm: ['channel-canvas', 'self-awareness', 'thread-conduct', 'triggers'],
-  repo: [],
-  plain: [],
+  pm: ['channel-canvas', 'self-awareness', 'thread-conduct', 'triggers', 'trigger-task'],
+  repo: ['trigger-task'],
+  plain: ['trigger-task'],
 };
 
 /**

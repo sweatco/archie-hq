@@ -41,6 +41,9 @@ export const TRIGGERS_DIR = join(WORKDIR, 'triggers');
 /** Persistent per-plugin data directory */
 export const PLUGINS_DATA_DIR = join(WORKDIR, 'plugins-data');
 
+/** Persistent per-trigger data directory (one subdirectory per trigger, outlives a single fire) */
+export const TRIGGERS_DATA_DIR = join(WORKDIR, 'triggers-data');
+
 /**
  * Shared package-manager caches (npm, yarn, Corepack), written by every agent.
  *
@@ -91,6 +94,7 @@ export async function bootstrapWorkdir(): Promise<void> {
   await mkdir(SESSIONS_DIR, { recursive: true });
   await mkdir(TRIGGERS_DIR, { recursive: true });
   await mkdir(PLUGINS_DATA_DIR, { recursive: true });
+  await mkdir(TRIGGERS_DATA_DIR, { recursive: true });
   await mkdir(CACHES_DIR, { recursive: true });
   await mkdir(OAUTH_DIR, { recursive: true, mode: 0o700 });
   await mkdir(OAUTH_PENDING_DIR, { recursive: true, mode: 0o700 });

@@ -117,7 +117,7 @@ echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/9
 
 | Host Path | Container Path | Purpose |
 |-----------|---------------|---------|
-| `/workdir` | `/workdir` | Runtime state: `plugins/`, `repos/`, `sessions/`, `plugins-data/` (set via `ARCHIE_WORKDIR`) |
+| `/workdir` | `/workdir` | Runtime state: `plugins/`, `repos/`, `sessions/`, `plugins-data/`, `triggers/`, `triggers-data/` (set via `ARCHIE_WORKDIR`) |
 | `/data/claude` | `/home/archie/.claude` | Claude CLI config and session logs |
 | `/data/claude/.claude.json` | `/home/archie/.claude.json` | Claude CLI feature flags |
 | `/app/secrets` | `/app/secrets` | GitHub App private key + encrypted OAuth vault (read-write — daemon persists refreshed tokens) |

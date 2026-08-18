@@ -46,15 +46,16 @@ afterAll(() => {
 });
 
 describe('CORE_SKILL_MOUNTS', () => {
-  it('mounts all four core skills on the PM and none on the other tracks', () => {
+  it('mounts all five core skills on the PM and trigger-task alone on the other tracks', () => {
     expect(CORE_SKILL_MOUNTS.pm).toEqual([
       'channel-canvas',
       'self-awareness',
       'thread-conduct',
       'triggers',
+      'trigger-task',
     ]);
-    expect(CORE_SKILL_MOUNTS.repo).toEqual([]);
-    expect(CORE_SKILL_MOUNTS.plain).toEqual([]);
+    expect(CORE_SKILL_MOUNTS.repo).toEqual(['trigger-task']);
+    expect(CORE_SKILL_MOUNTS.plain).toEqual(['trigger-task']);
   });
 
   it('names only skills that actually exist under the repo skills dir', () => {
@@ -80,17 +81,20 @@ describe('resolveSkillPaths', () => {
       join(REPO_SKILLS_DIR, 'self-awareness'),
       join(REPO_SKILLS_DIR, 'thread-conduct'),
       join(REPO_SKILLS_DIR, 'triggers'),
+      join(REPO_SKILLS_DIR, 'trigger-task'),
     ]);
   });
 
-  it('gives the repo and plain tracks the plugin entries and no core entries', () => {
-    const expected = [
+  it('gives the repo and plain tracks the plugin entries plus their own track\'s core entries', () => {
+    const pluginEntries = [
       join(fixtureDir, 'alpha-skill'),
       join(fixtureDir, 'beta-skill'),
       join(fixtureDir, 'linked-skill'),
     ];
-    expect(resolveSkillPaths('repo', fixtureDir)).toEqual(expected);
-    expect(resolveSkillPaths('plain', fixtureDir)).toEqual(expected);
+    // Derived from the manifest rather than spelled out, so these two tracks gaining a core skill does not need an edit here — what is pinned is that they get their track's entries and nothing from another track's.
+    const coreEntries = (track: 'repo' | 'plain'): string[] => CORE_SKILL_MOUNTS[track].map((name) => join(REPO_SKILLS_DIR, name));
+    expect(resolveSkillPaths('repo', fixtureDir)).toEqual([...pluginEntries, ...coreEntries('repo')]);
+    expect(resolveSkillPaths('plain', fixtureDir)).toEqual([...pluginEntries, ...coreEntries('plain')]);
   });
 
   it('lets a plugin skill shadow a core skill of the same name, exactly once', () => {
@@ -98,13 +102,14 @@ describe('resolveSkillPaths', () => {
     const triggers = paths.filter((p) => basename(p) === 'triggers');
     expect(triggers).toEqual([join(collidingDir, 'triggers')]);
     expect(paths).not.toContain(join(REPO_SKILLS_DIR, 'triggers'));
-    // The other three core skills still mount.
+    // The other four core skills still mount.
     expect(paths.map((p) => basename(p))).toEqual([
       'triggers',
       'zeta-skill',
       'channel-canvas',
       'self-awareness',
       'thread-conduct',
+      'trigger-task',
     ]);
   });
 
@@ -115,8 +120,8 @@ describe('resolveSkillPaths', () => {
     expect(paths).not.toContain(join(fixtureDir, '.DS_Store'));
   });
 
-  it('returns nothing for a track with no core skills and no plugin path', () => {
-    expect(resolveSkillPaths('repo')).toEqual([]);
+  it('returns just the track\'s core entries when there is no plugin path', () => {
+    expect(resolveSkillPaths('repo')).toEqual([join(REPO_SKILLS_DIR, 'trigger-task')]);
   });
 
   it('derives the boot banner name list, symlinked skills included', () => {
@@ -125,6 +130,7 @@ describe('resolveSkillPaths', () => {
       'alpha-skill',
       'beta-skill',
       'linked-skill',
+      'trigger-task',
     ]);
   });
 });
