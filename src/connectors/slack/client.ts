@@ -1847,6 +1847,10 @@ export interface PinnedItem {
   attachments?: SlackAttachment[];
   /** Files on the pinned message, carried out for the same reason. */
   files?: SlackFile[];
+  /**
+   * Reactions on the pinned message, carried out like everything else the extractor found. The pin path deliberately renders WITHOUT them (`includeReactions: false`) because the rendered string feeds a content digest: reactions change without the pin ever being edited, so digesting them would turn re-summarise-on-edit into re-summarise-on-every-emoji. Carrying the field and suppressing it at render time — rather than never carrying it — is what lets a test prove the suppression actually happens.
+   */
+  reactions?: SlackReaction[];
   permalink?: string;
   fileId?: string;
   fileName?: string;
@@ -1942,6 +1946,7 @@ export async function listChannelPins(channelId: string): Promise<PinnedItem[] |
           ownText: full?.ownText ?? item.message.text ?? '',
           ...(full?.attachments ? { attachments: full.attachments } : {}),
           ...(full?.files ? { files: full.files } : {}),
+          ...(full?.reactions ? { reactions: full.reactions } : {}),
           permalink: item.message.permalink,
         });
       } else if (item.type === 'file' && item.file?.id) {

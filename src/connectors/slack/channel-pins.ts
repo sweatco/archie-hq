@@ -144,7 +144,7 @@ export async function ensureChannelPins(channelId: string): Promise<void> {
       // `includeReactions: false` is load-bearing, not cosmetic. The digest below is computed from this exact string and is what makes "re-summarise once when the pin is edited" work. Reactions change without the pin ever being edited, so letting a `[Reactions: …]` suffix into the digest input would turn that into "re-summarise every time someone adds an emoji" — a model call per reaction, forever.
       const sourceText = (item.kind === 'message'
         ? renderMessageBody(
-            { ownText: item.ownText ?? '', attachments: item.attachments, files: item.files },
+            { ownText: item.ownText ?? '', attachments: item.attachments, files: item.files, reactions: item.reactions },
             { redacted: false, includeReactions: false },
           )
         : item.fileName) ?? '';
