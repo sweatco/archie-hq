@@ -141,7 +141,7 @@ export async function mountSlackApp(
       type: event.type,
       channel: event.channel,
       user: event.user ?? '',
-      text: event.text,
+      raw: event,
       ts: event.ts,
       thread_ts: event.thread_ts,
     }).catch((err: unknown) => logger.error('Server', 'Error processing Slack event', err));
@@ -173,6 +173,13 @@ export async function mountSlackApp(
     // stay a no-op). handleSlackEvent then runs the same own-bot/external/
     // @mention filtering before firing any trigger.
     if (!shouldForwardMessageEvent(event, (ch) => getChannelMessageTriggers(ch).length > 0)) {
+      // A channel someone is actively watching with a channel-message trigger just lost an event to the gate: the subtype is on the noise denylist, so no trigger will ever see this post. Say so at warn level with the subtype, because from the trigger owner's side a silent drop is indistinguishable from "nothing was posted" — the subtype name is the one fact that makes it diagnosable. Consulting the trigger index here means it is no longer a lazy lookup on the dropped path; that is fine, it is an in-memory read.
+      if (getChannelMessageTriggers(event.channel).length > 0) {
+        logger.warn(
+          'Slack',
+          `Dropped a message event in trigger-watched channel ${event.channel} (ts ${event.ts}): subtype "${event.subtype ?? 'none'}" is not routed, so no channel-message trigger saw it`,
+        );
+      }
       return;
     }
 
@@ -199,7 +206,7 @@ export async function mountSlackApp(
       type: event.type,
       channel: event.channel,
       user: event.user || '',
-      text: event.text || '',
+      raw: event,
       ts: event.ts,
       thread_ts: event.thread_ts,
     }).catch((err: unknown) => logger.error('Server', 'Error processing Slack event', err));
@@ -653,7 +660,7 @@ export async function handleSlackEvent(event: {
   type: string;
   channel: string;
   user: string;
-  text: string;
+  raw: unknown;
   ts: string;
   thread_ts?: string;
 }): Promise<void> {
@@ -798,18 +805,27 @@ export async function handleSlackEvent(event: {
  * Fire any channel-message triggers watching this channel whose filter matches
  * the message. Each match spawns an independent read-only task that replies in
  * the triggering thread. External authors are already filtered upstream.
+ *
+ * The filter is matched against the *rendered* body — the same text an agent would be shown — not against the raw event's top-level `text`. That distinction is the whole point: a webhook or app post carries an empty `text` with all of its content in `attachments`/`blocks`, so matching the raw field made every such post invisible to `contains` filters. `rawMessageBody` runs the payload through the full inbound extraction, so blocks, attachment cards and files all become matchable.
+ *
+ * There is deliberately no fallback to the raw text and no re-fetch of the message by `ts`: a fallback would silently restore the original bug on exactly the payloads it was meant to fix, and a thread re-fetch can't see a message that has neither a `user` nor a `botId` anyway. If extraction yields an empty body, an empty body is what the filter sees.
  */
 async function dispatchChannelMessageTriggers(
-  event: { channel: string; user: string; text: string; ts: string },
+  event: { channel: string; user: string; ts: string; raw: unknown },
   channelName: string,
 ): Promise<void> {
   const triggers = getChannelMessageTriggers(event.channel);
   if (triggers.length === 0) return;
 
+  // Rendered once, after the no-triggers short-circuit above: a channel nobody
+  // is watching must stay free, and extraction resolves mentions (a network
+  // read) so it is not free.
+  const body = await rawMessageBody(event.raw, event.channel);
+
   const matches = (trigger: Trigger): boolean =>
     trigger.conditions.some((c) => {
       if (c.type !== 'channel_message' || c.channel_id !== event.channel) return false;
-      if (c.match?.contains && !event.text.toLowerCase().includes(c.match.contains.toLowerCase())) return false;
+      if (c.match?.contains && !body.toLowerCase().includes(c.match.contains.toLowerCase())) return false;
       if (c.match?.from_user && event.user !== c.match.from_user) return false;
       return true;
     });
@@ -819,7 +835,7 @@ async function dispatchChannelMessageTriggers(
     try {
       await fireTrigger(trigger, {
         kind: 'message',
-        text: event.text,
+        text: body,
         threadId: event.ts,
         channelId: event.channel,
         channelName,
