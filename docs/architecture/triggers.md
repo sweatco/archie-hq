@@ -92,13 +92,17 @@ Each fire is a brand-new task with its own agent workspace, and no fire can reac
 
 **Not in `additionalDirectories`.** `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` is on, so a `CLAUDE.md` in an additional directory is auto-loaded into the prompt — and this directory is agent-writable, so listing it there would let one agent inject a prompt into every later agent on the same trigger.
 
-**Announced once, in one place, on every track.** `buildTriggerDataPromptSection` builds a single block appended after the per-track branches. It names the trigger, names the path as read-write, lists the directory's entries (names only, sorted, capped at 50), and frames whatever is in there as data rather than instructions, since it was written by an earlier agent. That is all it does.
+**Announced once, in one place, on every track.** `buildTriggerDataPromptSection` builds a single block appended after the per-track branches. It names the trigger, names the path as read-write, lists the directory's entries (names only, sorted, capped at 50), says to load the `trigger-task` skill, and frames whatever is in there as data rather than instructions, since it was written by an earlier agent. That is all it does.
 
-Three things it deliberately does not do, each of which it did at some point during development:
+**Why the skill instruction is in the block and not in the seed message.** The seed (`AGENT_PROMPTS.triggered`) reaches the PM alone, and a delegated repo or plugin agent holds the same directory read-write. The block is the only trigger-specific text every track sees, so it is the only place an instruction reaches everyone who might write there. `knowledge.log` was the other candidate and is worse on two counts: it is the data channel, where user-authored text lands and where the injection rules say to treat what you read as data rather than instruction, and it is chronological, so a line written at fire time reads as a stale event ten turns later rather than as a standing instruction.
+
+Three things the block deliberately does not do, each of which it did at some point during development:
 
 - **It does not name a tool.** Reading a file and listing a directory are things an agent already knows how to do, and a named tool dates the prompt. The failure that made the point was of exactly that kind: an early draft named `Glob`, which this runtime does not have, so the fire reaching for it got `No such tool available` and spent its turn hunting a substitute instead of reading the directory.
-- **It does not mention the skill.** The seed message that wakes a trigger-fired task does that (`AGENT_PROMPTS.triggered`), which is where an instruction about how to *start* belongs.
-- **It does not repeat itself.** The PM's context block used to carry a second `Spawned by trigger:` line and the seed a third mention of the directory. Three statements of one fact drift the moment one is edited, and they did. Now: the seed names the skill, this block names the directory, the skill carries the conventions.
+- **It does not explain why fires cannot see each other.** That is the skill's opening paragraph. A prompt block that re-explains the model of the feature is a second copy of the skill with nothing keeping the two in step.
+- **It does not repeat itself, and neither does the seed.** The PM's context block used to carry a second `Spawned by trigger:` line, the seed a third mention of the directory, and both the seed and the block asserted "you were started by a trigger" after the seed's first sentence had already said the trigger fired. Three statements of one fact drift the moment one is edited, and they did. Now: the seed says what fired and where the result goes, the block names the trigger and its directory, the skill carries the model and the conventions.
+
+The seed no longer claims "there is no prior conversation" either. That was true of the Slack thread and false in spirit — a trigger that has run before does leave context behind. What the sentence was actually carrying is that nobody is waiting on the other end, which is now what it says.
 
 The listing is a convenience rather than a workaround — the directory is granted read-write on both enforcement layers, so an agent can list it perfectly well itself. It is there because it costs nothing and it is what tells a fire whether it has a past at all.
 

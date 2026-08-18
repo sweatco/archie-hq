@@ -78,12 +78,19 @@ describe('buildTriggerDataPromptSection', () => {
     expect(section).toContain('[READ-WRITE]');
   });
 
+  // This is the only trigger-specific text every track sees, so it is where the skill
+  // instruction has to be: the seed message that used to carry it reaches the PM alone,
+  // and a delegated agent holds the same directory.
+  it('tells the agent to load the trigger-task skill', () => {
+    expect(buildTriggerDataPromptSection(TRIGGER_ID, TRIGGER_DATA)).toContain('`trigger-task` skill');
+  });
+
   // Three prompt sites once said some version of "you were spawned by a trigger", and
-  // they drifted. The division now: the seed message names the skill, this section names
-  // the directory, and neither restates the other or names a tool to use.
-  it('names no tool and does not restate the skill instruction', () => {
+  // they drifted. What is left names no tool — an agent knows how to read a file, and a
+  // named tool dates the prompt to one runtime's tool set.
+  it('names no tool', () => {
     const section = buildTriggerDataPromptSection(TRIGGER_ID, TRIGGER_DATA, ['note.md']);
-    for (const tool of ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', '`ls', 'trigger-task', 'skill']) {
+    for (const tool of ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', '`ls']) {
       expect(section).not.toContain(tool);
     }
   });
