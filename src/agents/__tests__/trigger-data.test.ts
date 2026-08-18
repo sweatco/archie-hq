@@ -1,10 +1,16 @@
 /**
  * Tests for the two pure trigger-data helpers.
  *
- * The load-bearing assertion is that the trigger directory lands in
- * `allowWritePaths` and NOWHERE else: adding it to `allowReadPaths` too would look
- * more symmetric but lays a bwrap --ro-bind over the writable mount and silently
- * makes the directory read-only (src/agents/sandbox.ts:64-70).
+ * The load-bearing assertion is that the trigger directory lands in BOTH sandbox
+ * lists. `assertReadable` (src/agents/artifacts.ts) validates against
+ * `allowReadPaths` alone, so a write-only grant would let an agent write a file
+ * here and then be refused when it tried to `share_artifact` the result — see the
+ * write-only case in artifacts.test.ts, which pins exactly that.
+ *
+ * An earlier version of this file asserted the opposite, on the belief that
+ * listing a path in both lists makes bwrap lay a `--ro-bind` over the writable
+ * mount and silently downgrade it. That was measured and is false; see the
+ * corrected Known Limitation 1 in docs/architecture/security.md.
  */
 
 import { describe, it, expect } from 'vitest';

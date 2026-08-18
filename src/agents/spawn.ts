@@ -314,7 +314,7 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     allowReadPaths: [workspace, sharedPath, ...claudeReadDirs, ...pluginReadPaths],
     // CACHES_DIR is shared by every agent and must be writable, or package
     // managers hit the EROFS that buildPackageManagerCacheEnv exists to avoid.
-    // allowWrite only — a path in both lists loses its rw mount (see sandbox.ts).
+    // allowWrite only, which is enough: writable implies readable at this layer. (Not because both lists would break it — that claim is debunked, see sandbox.ts. The consequence is narrower: a write-only path cannot be handed to the artifact tools, which package tarballs never need.)
     allowWritePaths: [workspace, CACHES_DIR, ...claudeWriteDirs],
     denyWritePaths: [sharedPath, ...pluginPaths, ...protectedWorkspaceFiles],
     allowedNetworkDomains: def.allowedNetworkDomains,
@@ -619,14 +619,23 @@ Shared folder: ${sharedPath} [READ-ONLY]
   //
   // It is also deliberately NOT added to `additionalDirectories`. `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1'` (below) auto-loads a `CLAUDE.md` from any additional directory, and this directory is agent-writable — so listing it would let one agent drop a file that becomes prompt text for every later agent on the same trigger. Auto-injecting the directory's contents is an explicit non-goal; the agent reads what it wants with `Read`.
   //
-  // Creation is idempotent because this runs per agent, on every wake, and again after a restart — `Agent.spawn`'s only guard is `if (this.isRunning) return` (src/agents/agent.ts:142), which is always false after a restart.
+  // Creation is idempotent because this runs per agent, on every wake, and again after a restart — `Agent.spawn`'s only guard is `if (this.isRunning) return` (src/agents/agent.ts), which is always false after a restart.
   const triggerDataPath = metadata.triggered_by
     ? await ensureTriggerDataDir(metadata.triggered_by)
     : null;
   if (triggerDataPath) {
     sandboxOpts = grantTriggerDataAccess(sandboxOpts, triggerDataPath);
     // The names are read here to save the agent a turn, not because it cannot look: `ls` from `Bash` does work on this path (measured under bwrap 0.11.0 with denyRead on the workdir — the write grant's bind mounts on top of the deny tmpfs). What it lacks is `Glob`, which is absent from this runtime, so a fire reaching for the obvious lister gets "No such tool available" and has to recover; one live fire gave up at that point. Names only; opening them stays the agent's choice.
-    systemPrompt = `${systemPrompt}\n\n${buildTriggerDataPromptSection(triggerDataPath, await readdir(triggerDataPath))}`;
+    // Never let the listing fail the spawn. deleteTrigger's rm can interleave between
+    // the mkdir above and this read, and an ENOENT escaping here would reject
+    // spawnAgent and stop the agent starting at all. Degrading to an empty listing
+    // is the right failure: the prompt builder already renders that case, and the
+    // agent can still list the directory itself.
+    const triggerDataEntries = await readdir(triggerDataPath).catch((err) => {
+      logger.warn('trigger-data', `Could not list ${triggerDataPath}, announcing it as empty: ${err}`);
+      return [] as string[];
+    });
+    systemPrompt = `${systemPrompt}\n\n${buildTriggerDataPromptSection(triggerDataPath, triggerDataEntries)}`;
   }
 
   // ---- Organizational memory injection (read path; gated by ARCHIE_MEMORY_INJECT, default off) ----

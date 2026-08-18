@@ -50,7 +50,7 @@ Both layers use the same allow/deny path lists, ensuring consistent enforcement 
 OS-level sandbox (Bash only):
   denyRead:  [/app, /home/archie/.claude]
   allowRead: [shared folder, shell-snapshots, base repo .git/objects, plugin dirs]
-  allowWrite: [/tmp, agent's workspace (if edit mode)]
+  allowWrite: [/tmp, CACHES_DIR, agent's workspace, trigger data dir (trigger-fired tasks)]
   denyWrite:  [.claude/settings.json, .claude/skills, .claude/hooks, CLAUDE.md]
 
 PreToolUse hooks (Read, Write, Edit, Glob, Grep):
@@ -96,7 +96,7 @@ Git identity is configured on each clone at spawn time. Bwrap sandbox artifacts 
 **Repo Agent (read-only):**
 - CWD: `sessions/<taskId>/repos/<repoKey>` (shared clone)
 - Read: clone + shared folder + `baseRepo/.git/objects` + plugin dirs
-- Write: workspace only — never the clone. On a **trigger-fired** task, also that trigger's data directory (write-only; see the note under Filesystem Isolation), which is the one writable path any track gets outside its own workspace while read-only.
+- Write: workspace, `CACHES_DIR` and `/tmp` — never the clone. On a **trigger-fired** task, also that trigger's data directory (read-write; see the note under Filesystem Isolation). So a read-only repo agent is read-only *with respect to the code*, not write-denied everywhere.
 - Bash: available — git read commands work, write attempts against the clone fail at OS level
 
 **Repo Agent (edit mode):**
@@ -246,7 +246,7 @@ Every task maintains a `knowledge.log` file (`sessions/{task-id}/shared/knowledg
 ```
 Layer 1: OS-level sandbox (Bash only)
   ├── denyRead [/app, ~/.claude] + allowRead [shared, base .git/objects, plugin dirs]
-  ├── allowWrite [/tmp, workspace] + denyWrite [.claude/settings.json, .claude/skills, .claude/hooks, CLAUDE.md]
+  ├── allowWrite [/tmp, CACHES_DIR, workspace, trigger data dir] + denyWrite [.claude/settings.json, .claude/skills, .claude/hooks, CLAUDE.md]
   ├── failIfUnavailable: true (refuse to start rather than run unsandboxed)
   └── network namespace: no DNS, no direct route — all egress via the sandbox proxy
 
@@ -329,7 +329,7 @@ Web research is performed by the host process via Perplexity Agent API — there
 
 ## Known Sandbox Limitations
 
-These are tracked issues with workarounds in place. Remove workarounds when upstream fixes land.
+Tracked sandbox issues. Each says whether a workaround is in place; remove a workaround when the upstream fix lands. Item 1 is retained as a correction rather than an open issue — it needs no workaround because it does not reproduce.
 
 ### 1. ~~denyRead on parent destroys allowWrite on children~~ — not reproducible; entry retained as a correction
 

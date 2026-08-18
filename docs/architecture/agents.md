@@ -71,9 +71,9 @@ One PM agent instance is spawned per task. It is the orchestrator: it receives a
 | `list_available_repos` | List repos the GitHub App installation can reach (paginates `GET /installation/repositories`); tags repos a plugin specialist already covers. Cached per task. |
 | `spawn_repo_agent` | Create an on-demand repo agent bound to a chosen list of available repos (eager-mounted at spawn). Persists a `DynamicAgentSpec` to `metadata.dynamic_agents` and adds it to `task.team`. Rejects a repo already owned as a plugin specialist's primary. |
 
-The `Skill` tool is provided by the Claude Agent SDK itself (not by `pm-agent-tools`); skills are mounted from two sources — the `pm` plugin's own `skills/` directory, plus the core skills the `pm` track mounts per the `CORE_SKILL_MOUNTS` manifest in `src/agents/core-skills.ts` — resolved into one ordered `skillPaths` list and surfaced via `.claude/skills/` symlinks plus `settingSources: ['project']`. Plugin entries come first, so a `pm`-plugin skill shadows a core skill of the same name. See [plugin-system.md](plugin-system.md#core-skills-and-which-tracks-mount-them) for the manifest and the ordering rule. Built-in `Read` is available against the PM workspace and the shared task folder (which is mounted read-only via `additionalDirectories`); `WebSearch` and `WebFetch` are explicitly disallowed.
+The `Skill` tool is provided by the Claude Agent SDK itself (not by `pm-agent-tools`); skills are mounted from two sources — the `pm` plugin's own `skills/` directory, plus the core skills the `pm` track mounts per the `CORE_SKILL_MOUNTS` manifest in `src/agents/core-skills.ts` — resolved into one ordered `skillPaths` list and surfaced via `.claude/skills/` symlinks plus `settingSources: ['project']`. Plugin entries come first, so a `pm`-plugin skill shadows a core skill of the same name. See [plugin-system.md](plugin-system.md#core-skills-and-which-tracks-mount-them) for the manifest and the ordering rule. Built-in `Read` is available against the PM workspace and the shared task folder (which is mounted read-only via `additionalDirectories`); `WebSearch` and `WebFetch` are explicitly disallowed. `Bash` is available and sandboxed.
 
-> **Caveat on `Glob`, observed live and pre-existing.** The filesystem guard's read check covers `Read`, `Glob` and `Grep`, and several sections of these docs plus `prompts/plugin-agent.md` and `prompts/repo-agent.md` offer `Glob` to agents — but **`Glob` is not actually present in this runtime**. A live agent asking for it gets `No such tool available: Glob`, and it is not available as a deferred tool either. Nothing disallows it; it simply is not in the SDK tool set here. Treat every mention of `Glob` in this documentation and in the agent prompts as unverified, and never rely on it to enumerate a directory.
+> **Caveat on `Glob` and `Grep`, observed live and pre-existing.** The filesystem guard's read check covers `Read`, `Glob` and `Grep`, and several sections of these docs plus `prompts/plugin-agent.md`, `prompts/repo-agent.md` and `prompts/triage-agent.md` offer them to agents — but **`Glob` is not actually present in this runtime**. A live agent asking for it gets `No such tool available: Glob`, and it is not a deferred tool either. Nothing disallows it: the SDK ships as a native build, and per its own `tools` documentation native builds omit the dedicated `Grep`/`Glob` tools in favour of Bash `find`/`grep` unless they are named in `tools` or `allowedTools`, which this app does not do. **`Grep` is therefore very likely absent for the same reason, though that was never confirmed.** Treat every mention of either in this documentation and in the agent prompts as unverified, and use `Bash` (`ls`, `find`, `grep`) to enumerate a directory.
 
 PR lifecycle tools (push, create PR, merge, etc.) live on repo agents via the `repo-tools` MCP server — the PM has no direct git or GitHub access.
 
@@ -303,12 +303,13 @@ Triage Agent (disabled):
 
 ## Agent Characteristics
 
-### No Persistent Code Memory
+### No Persistent Code Memory (one exception)
 
 Agents do not retain knowledge of code between tasks. Each task starts with fresh agent instances. Context comes from:
 - `knowledge.log` (task history, previous findings)
 - `metadata.json` (task state, participants, thread/PR info)
 - The repository itself (read via tools)
+- **On a trigger-fired task only:** that trigger's persistent directory, which is shared by every fire of the same trigger and is the one place an agent can leave notes for a future task — see [triggers.md](triggers.md#persistent-per-trigger-directory)
 
 ### Session History
 

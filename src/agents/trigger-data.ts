@@ -21,12 +21,15 @@ const LISTING_CAP = 50;
 /**
  * Grant read-write access to a trigger's persistent data directory.
  *
- * The path goes into BOTH `allowReadPaths` and `allowWritePaths`, which is what
- * every other read-write path in the sandbox does (the agent workspace, the repo
- * clones). Keeping that shape matters beyond tidiness: `assertReadable`
- * (src/agents/artifacts.ts) validates against `allowReadPaths`, so a path granted
- * write-only is one the agent can write and then be refused when it tries to
- * `share_artifact` the result.
+ * The path goes into BOTH `allowReadPaths` and `allowWritePaths`, the shape the
+ * agent workspace and the repo clones use. That is not just for symmetry:
+ * `assertReadable` (src/agents/artifacts.ts) validates against `allowReadPaths`,
+ * so a path granted write-only is one the agent can write and then be refused when
+ * it tries to `share_artifact` the result. Anything agents are expected to produce
+ * shareable output in therefore wants both lists. A path granted write-only is not
+ * broken — CACHES_DIR is one, and package managers read and write it happily
+ * through Bash and the file tools — it just cannot be handed to the artifact
+ * tools.
  *
  * An earlier version granted write only, on the belief that listing a path in both
  * lists makes bwrap lay a `--ro-bind` over the `--bind` and silently downgrade it
@@ -61,7 +64,7 @@ export function grantTriggerDataAccess(opts: SandboxOptions, triggerDataPath: st
  * The opening deliberately does not claim the trigger has fired before or will
  * fire again, because neither is reliably true: on a first fire there is no
  * earlier run, and a one-off schedule condition is flipped to `paused` right
- * after its single fire (src/system/trigger-scheduler.ts:320-325), so promising
+ * after its single fire (`tickTrigger`, src/system/trigger-scheduler.ts), so promising
  * a next fire would have the agent spend a turn on notes nothing will ever read.
  *
  * `entries` is why this takes a second argument: it saves the agent a turn. The

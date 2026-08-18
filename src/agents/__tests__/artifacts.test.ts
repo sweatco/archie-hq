@@ -1,11 +1,14 @@
 /**
  * Tests for `assertReadable`'s scope rule.
  *
- * The load-bearing case is (a): a path granted through `allowWritePaths` alone —
- * which the persistent per-trigger directory is the first of — must resolve, so
- * an agent can `share_artifact` a file it just legitimately wrote. That mirrors
- * the OS-level PreToolUse guard, where writable already implies readable
- * (src/agents/sandbox.ts:236-237).
+ * The load-bearing case is that a path granted through `allowWritePaths` alone is
+ * NOT readable here, even though the OS sandbox and the PreToolUse guard both
+ * treat writable as readable (see the read check in `createFilesystemGuardHooks`,
+ * src/agents/sandbox.ts). That asymmetry is the reason a path agents are expected
+ * to produce shareable output in has to be granted in both lists — which is what
+ * `grantTriggerDataAccess` does for a trigger's directory. `CACHES_DIR` is granted
+ * write-only and lives with the consequence: its files cannot be shared through
+ * the artifact tools.
  *
  * Real directories and real files throughout, because `assertInsideRoots` calls
  * `realpath` and throws `Cannot access path` on anything that isn't on disk. The

@@ -63,11 +63,20 @@ export const TRUSTED_PACKAGE_REGISTRY_DOMAINS = [
  * - Network: deny-all by default from Bash.
  */
 /**
- * IMPORTANT: allowRead and allowWrite must NOT overlap on the same path.
- * bwrap processes mounts sequentially: allowWrite creates a --bind (rw) mount,
- * then allowRead creates a --ro-bind mount on the same path, which OVERRIDES
- * the writable mount, downgrading it to read-only. If a path needs write access,
- * put it ONLY in allowWritePaths — writable bind mounts provide read access too.
+ * A path MAY appear in both allowRead and allowWrite. This comment used to say the
+ * opposite — that bwrap emits the allowWrite --bind first and a later allowRead
+ * --ro-bind overrides it, downgrading the path to read-only, so a writable path
+ * must be listed ONLY in allowWritePaths. That was measured under bubblewrap 0.11.0
+ * and does not reproduce: both forms behave identically, read and write. The ordering
+ * is the reverse of the claim, and the repo's own config already contradicted it —
+ * the agent workspace and the repo clones sit in both lists and are demonstrably
+ * writable. See Known Limitation 1 in docs/architecture/security.md for the full
+ * measurement.
+ *
+ * Writable does imply readable, so listing a write path in allowRead as well is
+ * redundant at this layer. It is not redundant everywhere: assertReadable
+ * (src/agents/artifacts.ts) validates against allowReadPaths alone, so a path
+ * granted write-only cannot be handed to the artifact tools.
  */
 export function buildSandboxConfig(opts: SandboxOptions) {
   return {
