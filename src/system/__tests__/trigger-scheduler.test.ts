@@ -141,17 +141,18 @@ describe('buildTriggerSeed', () => {
     }
   });
 
-  // A message fire's message is in knowledge.log, not in this seed, so that a delegated
-  // specialist can read it too — which only works if something tells the PM to look.
-  it('points a message fire at the knowledge log and frames it as data', () => {
+  // The message is in knowledge.log, which the PM reads at the start of every turn and
+  // which is the only place a delegated specialist can see it. Nothing about it belongs in
+  // this seed — not the text, and not a line telling the PM to go and read the log.
+  it('says nothing about the message or the log', () => {
     const seed = buildTriggerSeed(trigger(channelBinding), messageFire);
-    expect(seed).toContain('in your knowledge log');
-    expect(seed).toContain('data rather than instructions');
+    expect(seed).not.toContain('knowledge');
+    expect(seed).not.toContain('bot-test"');
   });
 
-  it('does not inline the message itself', () => {
-    // The thread fixture would surface as text if the seed ever started copying it in.
-    expect(buildTriggerSeed(trigger(channelBinding), messageFire)).not.toContain('bot-test"');
+  it('is the action prompt and the delivery line, nothing else', () => {
+    expect(buildTriggerSeed(trigger(channelBinding), messageFire).split('\n\n')).toHaveLength(2);
+    expect(buildTriggerSeed(trigger(channelBinding), { kind: 'schedule' }).split('\n\n')).toHaveLength(2);
   });
 
   it('sends a message fire back to the triggering thread', () => {
@@ -164,7 +165,6 @@ describe('buildTriggerSeed', () => {
     const seed = buildTriggerSeed(trigger(channelBinding), { kind: 'schedule' });
     expect(seed).toContain('#bot-test');
     expect(seed).toContain('Slack channel ID C0BL');
-    expect(seed).not.toContain('knowledge log');
   });
 
   it('DMs the creator for a user-bound schedule fire', () => {
