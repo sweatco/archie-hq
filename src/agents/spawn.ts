@@ -54,7 +54,7 @@ import { processAgentEventForLogging, logger } from '../system/logger.js';
 import { emitEvent } from '../system/event-bus.js';
 import { getProbeBaseUrl } from '../system/context-probe.js';
 import { buildSandboxConfig, buildManagedNetworkPolicy, buildPackageManagerCacheEnv, createFilesystemGuardHooks, TRUSTED_PACKAGE_REGISTRY_DOMAINS, type SandboxOptions } from './sandbox.js';
-import { grantTriggerDataWrite, buildTriggerDataPromptSection } from './trigger-data.js';
+import { grantTriggerDataAccess, buildTriggerDataPromptSection } from './trigger-data.js';
 import { applyOAuthBindings } from '../system/oauth/inject.js';
 import { enrichPromptWithMemory, isMemoryEnabled, isInjectionEnabled } from '../memory/index.js';
 
@@ -615,7 +615,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
   //
   // Placed after all three per-track branches for the same reason the canvas block above is: one injection point, so no branch can miss it. It also has to land before `agent.sandbox = sandboxOpts` below, because that object is what the in-process tools validate their paths against — which puts it ahead of all three consumers inside `buildQueryOptions` too (the bwrap config, the network policy, and the filesystem-guard hooks).
   //
-  // The path is granted as a WRITE path only, and must never also be added to `allowReadPaths` — `grantTriggerDataWrite` carries the bwrap reason for that.
+  // The path is granted read-write, in both sandbox lists, the same shape the workspace and the repo clones use — `grantTriggerDataAccess` carries the reason, including why the write-only form this once used was wrong.
   //
   // It is also deliberately NOT added to `additionalDirectories`. `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1'` (below) auto-loads a `CLAUDE.md` from any additional directory, and this directory is agent-writable — so listing it would let one agent drop a file that becomes prompt text for every later agent on the same trigger. Auto-injecting the directory's contents is an explicit non-goal; the agent reads what it wants with `Read`.
   //
@@ -624,7 +624,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
     ? await ensureTriggerDataDir(metadata.triggered_by)
     : null;
   if (triggerDataPath) {
-    sandboxOpts = grantTriggerDataWrite(sandboxOpts, triggerDataPath);
+    sandboxOpts = grantTriggerDataAccess(sandboxOpts, triggerDataPath);
     // The names are read here to save the agent a turn, not because it cannot look: `ls` from `Bash` does work on this path (measured under bwrap 0.11.0 with denyRead on the workdir — the write grant's bind mounts on top of the deny tmpfs). What it lacks is `Glob`, which is absent from this runtime, so a fire reaching for the obvious lister gets "No such tool available" and has to recover; one live fire gave up at that point. Names only; opening them stays the agent's choice.
     systemPrompt = `${systemPrompt}\n\n${buildTriggerDataPromptSection(triggerDataPath, await readdir(triggerDataPath))}`;
   }

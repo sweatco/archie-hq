@@ -24,34 +24,14 @@ import { getArtifactsPath } from '../tasks/persistence.js';
  * Resolve `inputPath` to an absolute, real (symlink-followed) path that lives
  * inside the sandbox's read scope. Throws on any rule violation.
  *
- * The read scope is the union of `allowReadPaths` and `allowWritePaths`, which
- * mirrors the rule the OS-level PreToolUse guard already applies
- * (src/agents/sandbox.ts:236-237): writable implies readable. Without the union
- * these in-process artifact tools would be *stricter* than the sandbox they
- * exist to mirror, silently refusing to share a file the agent had just
- * legitimately written.
- *
- * What this changes in practice: for a path that appears in both lists — most of
- * them — the union is a no-op. For a path granted `allowWrite` without a matching
- * `allowRead`, it is what makes that path shareable through these tools at all.
- *
- * So the union is worth a thought whenever a write-only grant is added: it means
- * the granting code decides not just what an agent may write, but what it may hand
- * outward via `share_artifact` and friends. Where a grant is shared across tasks
- * rather than scoped to one, that is a cross-task read surface this union opens
- * rather than one it inherits — acceptable for low-value content, worth weighing
- * for anything else. Check `allowWritePaths` at the grant sites in
- * `src/agents/spawn.ts` for what is currently in that position.
- *
- * Companion to a future `assertWritable` (sandbox.allowWritePaths), still
- * unimplemented — the union here does not add it. The pair would keep the call
- * sites readable while sharing the same root-validation logic.
+ * Companion to a future `assertWritable` (sandbox.allowWritePaths) — the pair
+ * keeps the call sites readable while sharing the same root-validation logic.
  */
 export async function assertReadable(
   inputPath: string,
   sandbox: SandboxOptions,
 ): Promise<string> {
-  return assertInsideRoots(inputPath, [...sandbox.allowReadPaths, ...(sandbox.allowWritePaths ?? [])], 'readable');
+  return assertInsideRoots(inputPath, sandbox.allowReadPaths, 'readable');
 }
 
 async function assertInsideRoots(

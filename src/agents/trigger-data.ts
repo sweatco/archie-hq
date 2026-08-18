@@ -19,33 +19,34 @@ import type { SandboxOptions } from './sandbox.js';
 const LISTING_CAP = 50;
 
 /**
- * Grant write access to a trigger's persistent data directory.
+ * Grant read-write access to a trigger's persistent data directory.
  *
- * The path goes into `allowWritePaths` ONLY, and needs nothing else: a writable
- * bind mount conveys read at the OS level, and the PreToolUse read check
- * independently passes a path present only in `allowWritePaths`, because writable
- * implies readable (src/agents/sandbox.ts:236-237).
+ * The path goes into BOTH `allowReadPaths` and `allowWritePaths`, which is what
+ * every other read-write path in the sandbox does (the agent workspace, the repo
+ * clones). Keeping that shape matters beyond tidiness: `assertReadable`
+ * (src/agents/artifacts.ts) validates against `allowReadPaths`, so a path granted
+ * write-only is one the agent can write and then be refused when it tries to
+ * `share_artifact` the result.
  *
- * Measured rather than reasoned, because the comment that used to sit here got it
- * wrong. Under bwrap 0.11.0, with `denyReadPaths: ['/workdir']` exactly as spawn
- * sets it, an agent granted this path write-only can `cat`, `ls` and write to it
- * from `Bash`, and the writes land on real disk. `denyRead` emits its `--tmpfs`
- * BEFORE the `allowWrite --bind`, so the bind sits on top and survives — the
- * reverse of what docs/architecture/security.md's Known Limitation 1 claims. The
- * parent stays opaque (it renders as a mode-700 tmpfs) while the granted subtree
- * punches through. Adding the path to `allowReadPaths` as well changes nothing
- * observable; `allowRead` alone is the only combination that yields
- * read-without-write.
- *
- * A write-only grant does have one non-obvious consequence: `assertReadable`
- * (src/agents/artifacts.ts) used to consult `allowReadPaths` alone, so the
- * in-process artifact tools would refuse a file the agent had just written here.
- * It now takes the union of both lists.
+ * An earlier version granted write only, on the belief that listing a path in both
+ * lists makes bwrap lay a `--ro-bind` over the `--bind` and silently downgrade it
+ * to read-only — the claim in docs/architecture/security.md's Known Limitation 1.
+ * That was measured and is false. Under bwrap 0.11.0 with `denyReadPaths:
+ * ['/workdir']` exactly as spawn sets it, both forms behave identically: read and
+ * write both work from `Bash` and the writes land on real disk. `denyRead` emits
+ * its `--tmpfs` BEFORE the `allowWrite --bind`, so the bind sits on top and
+ * survives either way, and the parent stays opaque while the granted subtree
+ * punches through. With no downgrade to avoid, there is no reason to deviate from
+ * the shape everything else uses.
  *
  * Returns a new options object; the input is not mutated.
  */
-export function grantTriggerDataWrite(opts: SandboxOptions, triggerDataPath: string): SandboxOptions {
-  return { ...opts, allowWritePaths: [...(opts.allowWritePaths ?? []), triggerDataPath] };
+export function grantTriggerDataAccess(opts: SandboxOptions, triggerDataPath: string): SandboxOptions {
+  return {
+    ...opts,
+    allowReadPaths: [...opts.allowReadPaths, triggerDataPath],
+    allowWritePaths: [...(opts.allowWritePaths ?? []), triggerDataPath],
+  };
 }
 
 /**

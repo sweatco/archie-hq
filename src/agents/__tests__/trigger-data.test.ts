@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { SandboxOptions } from '../sandbox.js';
-import { grantTriggerDataWrite, buildTriggerDataPromptSection } from '../trigger-data.js';
+import { grantTriggerDataAccess, buildTriggerDataPromptSection } from '../trigger-data.js';
 
 const TRIGGER_DATA = '/workdir/triggers-data/trg-20260817-1200-abc123';
 
@@ -22,22 +22,24 @@ const base: SandboxOptions = {
   allowedNetworkDomains: ['registry.npmjs.org'],
 };
 
-describe('grantTriggerDataWrite', () => {
+describe('grantTriggerDataAccess', () => {
   it('appends the trigger directory to allowWritePaths', () => {
-    expect(grantTriggerDataWrite(base, TRIGGER_DATA).allowWritePaths).toEqual([
+    expect(grantTriggerDataAccess(base, TRIGGER_DATA).allowWritePaths).toEqual([
       '/workdir/sessions/task-1/workspace',
       TRIGGER_DATA,
     ]);
   });
 
-  it('leaves allowReadPaths untouched — a read grant would downgrade the mount to read-only', () => {
-    const granted = grantTriggerDataWrite(base, TRIGGER_DATA);
-    expect(granted.allowReadPaths).toEqual(base.allowReadPaths);
-    expect(granted.allowReadPaths).not.toContain(TRIGGER_DATA);
+  it('appends the trigger directory to allowReadPaths too, so artifact tools can read it', () => {
+    // Both lists, the same shape the workspace and the repo clones use. Write-only
+    // would leave assertReadable (src/agents/artifacts.ts) refusing to share a file
+    // the agent had just written there — see the write-only case in artifacts.test.ts.
+    const granted = grantTriggerDataAccess(base, TRIGGER_DATA);
+    expect(granted.allowReadPaths).toEqual([...base.allowReadPaths, TRIGGER_DATA]);
   });
 
   it('passes every other option through unchanged', () => {
-    const granted = grantTriggerDataWrite(base, TRIGGER_DATA);
+    const granted = grantTriggerDataAccess(base, TRIGGER_DATA);
     expect(granted.cwd).toBe(base.cwd);
     expect(granted.denyReadPaths).toEqual(base.denyReadPaths);
     expect(granted.denyWritePaths).toEqual(base.denyWritePaths);
@@ -45,15 +47,19 @@ describe('grantTriggerDataWrite', () => {
   });
 
   it('does not mutate the options it was given', () => {
-    const input: SandboxOptions = { ...base, allowWritePaths: [...base.allowWritePaths!] };
-    grantTriggerDataWrite(input, TRIGGER_DATA);
-    expect(input.allowWritePaths).toHaveLength(1);
+    const input: SandboxOptions = {
+      ...base,
+      allowReadPaths: [...base.allowReadPaths],
+      allowWritePaths: [...base.allowWritePaths!],
+    };
+    grantTriggerDataAccess(input, TRIGGER_DATA);
     expect(input.allowWritePaths).not.toContain(TRIGGER_DATA);
+    expect(input.allowReadPaths).not.toContain(TRIGGER_DATA);
   });
 
   it('produces a one-element list when the input had no allowWritePaths', () => {
     const readOnly: SandboxOptions = { cwd: base.cwd, allowReadPaths: base.allowReadPaths };
-    expect(grantTriggerDataWrite(readOnly, TRIGGER_DATA).allowWritePaths).toEqual([TRIGGER_DATA]);
+    expect(grantTriggerDataAccess(readOnly, TRIGGER_DATA).allowWritePaths).toEqual([TRIGGER_DATA]);
   });
 });
 

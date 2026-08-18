@@ -59,9 +59,21 @@ function sandbox(overrides: Partial<SandboxOptions> = {}): SandboxOptions {
 }
 
 describe('assertReadable', () => {
-  it('resolves a file under a root listed only in allowWritePaths', async () => {
-    // The trigger directory's shape: writable, absent from allowReadPaths.
-    await expect(assertReadable(writeOnlyFile, sandbox())).resolves.toBe(writeOnlyFile);
+  it('throws for a file under a root listed only in allowWritePaths', async () => {
+    // Writable is NOT sufficient here, and this is the constraint that decides how
+    // a read-write path must be granted. The OS sandbox and the PreToolUse read
+    // check both treat writable as readable, but this helper validates against
+    // allowReadPaths alone — so an agent can write a file into a write-only path
+    // and then be refused when it tries to share_artifact the result.
+    //
+    // That is why a trigger's persistent directory is granted in BOTH lists (see
+    // grantTriggerDataAccess) rather than write-only. CACHES_DIR, the shared
+    // package-manager cache, is granted write-only and does hit this: its files
+    // cannot be shared through the artifact tools. Nobody has needed to, so it
+    // stands as a documented limitation rather than a bug.
+    await expect(assertReadable(writeOnlyFile, sandbox())).rejects.toThrow(
+      /outside your readable sandbox/,
+    );
   });
 
   it('resolves a file under a root in allowReadPaths', async () => {
