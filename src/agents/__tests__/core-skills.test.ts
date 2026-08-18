@@ -170,12 +170,13 @@ describe('coreSkillPaths', () => {
   // The grant these feed is a read grant, so a filter that is too loose widens what an
   // agent can read and a filter that is too tight breaks reading a skill it mounted.
 
-  it('keeps the core skills a track mounts and drops the plugin ones', () => {
+  // Every track, because the grant is per-agent: a repo or plain agent mounting a core
+  // skill needs its files readable just as much as the PM does.
+  it.each(['pm', 'repo', 'plain'] as const)('keeps the core skills the %s track mounts and drops the plugin ones', (track) => {
     // resolveSkillPaths returns both kinds interleaved; only the core half needs a grant.
-    const mounted = resolveSkillPaths('pm', fixtureDir);
-    const core = coreSkillPaths(mounted);
+    const core = coreSkillPaths(resolveSkillPaths(track, fixtureDir));
     expect(core.every((p) => p.startsWith(REPO_SKILLS_DIR + '/'))).toBe(true);
-    expect(core.map((p) => basename(p)).sort()).toEqual([...CORE_SKILL_MOUNTS.pm].sort());
+    expect(core.map((p) => basename(p)).sort()).toEqual([...CORE_SKILL_MOUNTS[track]].sort());
     expect(core).not.toContain(join(fixtureDir, 'alpha-skill'));
   });
 
