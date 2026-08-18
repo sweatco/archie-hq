@@ -90,6 +90,8 @@ export function isContentBearingSubtype(subtype?: string): boolean {
 export function mayWakeTask(event: MessageEventShape): boolean {
   const isDm = event.channel.startsWith('D');
   const isThreadReply = !!event.thread_ts && event.thread_ts !== event.ts;
+  // `bot_message` is content-bearing and reaches TRIGGERS (see `mayReachTriggers`) — that is the defect this change fixes. It deliberately does NOT wake a task: waking one spends a PM model turn, so every CI, Jira, Datadog or GitHub-app post into a thread a task follows would cost a turn apiece, and app posts arrive in volume no human sends. This is an asymmetry between the two questions, which is exactly why they are two functions.
+  if (event.subtype === 'bot_message') return false;
   return isContentBearingSubtype(event.subtype) && (isThreadReply || isDm);
 }
 

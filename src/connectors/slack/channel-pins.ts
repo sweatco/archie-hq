@@ -12,7 +12,7 @@ import {
   updateChannelStore,
   type ChannelPinEntry,
 } from '../../system/channel-store.js';
-import { renderMessageBody } from './message-body.js';
+import { pinBody } from './message-body.js';
 import { digestOf, normalisePinText, summarisePinText, truncateTo, VERBATIM_MAX } from './pin-summary.js';
 import type { TaskMetadata } from '../../types/task.js';
 
@@ -141,13 +141,8 @@ export async function ensureChannelPins(channelId: string): Promise<void> {
 
       // Render the pin through the one module that turns a Slack message into agent-facing text, so an app post, a workflow card or an unfurl indexes from its real body rather than an empty legacy `text`. `listChannelPins` hands the parts out structured precisely so this render happens here: `message-body.ts` imports from `client.js`, and this file imports `listChannelPins` from it, so rendering inside the client would close a cycle.
       //
-      // `includeReactions: false` is load-bearing, not cosmetic. The digest below is computed from this exact string and is what makes "re-summarise once when the pin is edited" work. Reactions change without the pin ever being edited, so letting a `[Reactions: …]` suffix into the digest input would turn that into "re-summarise every time someone adds an emoji" — a model call per reaction, forever.
-      const sourceText = (item.kind === 'message'
-        ? renderMessageBody(
-            { ownText: item.ownText ?? '', attachments: item.attachments, files: item.files, reactions: item.reactions },
-            { redacted: false, includeReactions: false },
-          )
-        : item.fileName) ?? '';
+      // `pinBody` owns both of the pin path's rendering decisions — reactions excluded so they cannot destabilise the digest below, and unredacted because the two-principal gate above already dropped anything externally authored or externally pinned. Keeping them inside that function is what stops this call site from becoming a second place that answers the redaction question.
+      const sourceText = (item.kind === 'message' ? pinBody(item) : item.fileName) ?? '';
       const digest = digestOf(normalisePinText(sourceText));
 
       // Same text as last scan → same one-liner, and no model call. The digest changes

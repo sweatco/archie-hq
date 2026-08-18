@@ -165,7 +165,7 @@ describe('channel-message trigger dispatch matches the rendered body', () => {
     });
 
     expect(vi.mocked(fireTrigger)).toHaveBeenCalledTimes(1);
-    // ...and the rendered body — not the empty raw text — is what travels on.
+    // ...and the rendered body is what the filter was matched against. Note what this does NOT claim: `FireContext.text` is never read inside `fireTrigger` (src/system/trigger-scheduler.ts:193), and the triggered task's own knowledge log starts at the triggering ts, so the body does not reach the spawned agent. The behaviour this change fixes is which posts FIRE, not what the agent then reads.
     expect(vi.mocked(fireTrigger).mock.calls[0][1]).toMatchObject({
       kind: 'message',
       text: 'deploy failed on prod (build 4711)',
@@ -188,23 +188,17 @@ describe('channel-message trigger dispatch matches the rendered body', () => {
     expect(vi.mocked(fireTrigger)).toHaveBeenCalledTimes(1);
   });
 
-  // No fallback of any kind: when extraction yields nothing, the filter sees an
-  // empty body and simply does not match. A `?? rawText` fallback here would
-  // reopen the original bug.
-  it('does not match a non-empty filter when extraction yields an empty body', async () => {
-    vi.mocked(getChannelMessageTriggers).mockReturnValue([makeTrigger('deploy failed')]);
-
-    await deliverAmbientPost({
-      type: 'message',
-      subtype: 'bot_message',
-      channel: CHANNEL,
-      bot_id: 'B_OTHER',
-      text: '',
-      ts: '1700000000.000300',
-    });
-
-    expect(vi.mocked(fireTrigger)).not.toHaveBeenCalled();
-  });
+  // There is deliberately NO test here of the form "a fallback to raw text would change the match".
+  // Two attempts at one are unwritable rather than merely awkward, and the reasons are worth recording
+  // so nobody adds a vacuous one later. A message with empty text and no attachments renders to '' and
+  // matches nothing either way, so it passes identically with and without the fix. And the rendered
+  // body CONTAINS `ownText`, so it is a superset of the raw field — any filter that matches the raw
+  // text also matches the render, which means no `contains` value can separate them.
+  //
+  // What the fix actually buys is covered above: content reachable ONLY through extraction (an
+  // attachment card, a Block Kit body, a resolved mention) becomes matchable. Reverting dispatch to the
+  // raw field fails the attachment-only case. The absence of the fallback itself is pinned structurally
+  // by render-path-structure.test.ts, which asserts the nullish-coalescing-to-a-text-object form appears nowhere under src/ (spelled there from string parts, precisely so the guard does not match its own source).
 
   it('costs no rendering when no trigger watches the channel', async () => {
     vi.mocked(getChannelMessageTriggers).mockReturnValue([]);
@@ -233,14 +227,14 @@ describe('routing-gate drop log', () => {
       slackAppToken: 'xapp-test',
     });
     messageHandler = bolt.handlers.get('message')!;
-    vi.mocked(logger.warn).mockClear();
+    vi.mocked(logger.debug).mockClear();
   });
 
   it('registers a `message` handler at all (guards the fake-Bolt seam)', () => {
     expect(messageHandler).toBeTypeOf('function');
   });
 
-  it('warns when a gate-dropped event lands in a trigger-watched channel', async () => {
+  it('records a gate-dropped event in a trigger-watched channel, at debug because a denylist makes it routine', async () => {
     vi.mocked(getChannelMessageTriggers).mockReturnValue([makeTrigger('deploy failed')]);
 
     await messageHandler({
@@ -248,8 +242,10 @@ describe('routing-gate drop log', () => {
     });
 
     expect(vi.mocked(fireTrigger)).not.toHaveBeenCalled();
-    expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
-    const [, message] = vi.mocked(logger.warn).mock.calls[0];
+    expect(vi.mocked(logger.debug)).toHaveBeenCalledTimes(1);
+    // Deliberately not `warn`: with a denylist the only droppable events in a watched channel ARE the denylisted noise ones, so warning here would flag routine channel_join traffic as an anomaly.
+    expect(vi.mocked(logger.warn)).not.toHaveBeenCalled();
+    const [, message] = vi.mocked(logger.debug).mock.calls[0];
     expect(message).toContain(CHANNEL);
     expect(message).toContain('channel_join');
     expect(message).toContain('1700000000.000500');

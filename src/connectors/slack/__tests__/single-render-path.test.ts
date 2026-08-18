@@ -234,7 +234,7 @@ describe('an attachment-only bot post survives into every agent-facing entry poi
     await loadClient();
     const { handleSlackEvent } = await import('../events.js');
     const { getChannelMessageTriggers, fireTrigger } = await import('../../../system/trigger-scheduler.js');
-    // A watching trigger with no filter at all: whatever body dispatch rendered is the body a filter would have been matched against, and it travels on to the trigger as `text`.
+    // A watching trigger with no filter at all: whatever body dispatch rendered is the body a filter would have been matched against. This enters at `handleSlackEvent`, so it does NOT cross the inbound subtype gate — that `bot_message` is forwarded at all is asserted in task-routing.test.ts, and this asserts what dispatch does once it arrives. Note also that `FireContext.text` is never read inside `fireTrigger`, so this pins the matcher's input rather than anything the spawned agent goes on to see.
     vi.mocked(getChannelMessageTriggers).mockReturnValue([makeTrigger()]);
 
     await handleSlackEvent({
@@ -247,7 +247,7 @@ describe('an attachment-only bot post survives into every agent-facing entry poi
 });
 
 describe('the routing gate lets the message kinds #280 lost through', () => {
-  it('fires a `contains` trigger on a top-level bot_message whose text is empty — the #280 regression, end to end', async () => {
+  it('fires a `contains` trigger on a top-level bot_message whose text is empty — the #280 regression, from handleSlackEvent inward', async () => {
     await loadClient();
     const { handleSlackEvent } = await import('../events.js');
     const { getChannelMessageTriggers, fireTrigger } = await import('../../../system/trigger-scheduler.js');

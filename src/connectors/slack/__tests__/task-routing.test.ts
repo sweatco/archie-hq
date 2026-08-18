@@ -116,16 +116,28 @@ describe('subtype denylist', () => {
     expect(shouldForwardMessageEvent(asWatchedTopLevel(future), () => true)).toBe(true);
   });
 
-  // `bot_message` in particular is forwarded purely by not being on the
-  // denylist — there is no special case for it, and this pins that.
-  for (const subtype of ['bot_message', 'me_message', 'huddle_thread', 'channel_topic']) {
-    it(`forwards \`${subtype}\``, () => {
+  // These are forwarded purely by not being on the denylist — there is no special case for any of them, and this pins that.
+  for (const subtype of ['me_message', 'huddle_thread', 'channel_topic']) {
+    it(`forwards \`${subtype}\` on every arm`, () => {
       expect(isContentBearingSubtype(subtype)).toBe(true);
       expect(shouldForwardMessageEvent(asThreadReply(subtype), () => false)).toBe(true);
       expect(shouldForwardMessageEvent(asDm(subtype), () => false)).toBe(true);
       expect(shouldForwardMessageEvent(asWatchedTopLevel(subtype), () => true)).toBe(true);
     });
   }
+
+  // `bot_message` is the one deliberate asymmetry between the two questions, and it is the reason they are two functions rather than one boolean. It is content-bearing and it reaches triggers — that is the defect this change fixes — but it must not WAKE a task, because waking one spends a PM model turn and app posts (CI, Jira, Datadog, GitHub) arrive in volumes no human sends.
+  it('lets `bot_message` reach triggers but never wake a task', () => {
+    expect(isContentBearingSubtype('bot_message')).toBe(true);
+
+    expect(mayReachTriggers(asWatchedTopLevel('bot_message'), () => true)).toBe(true);
+    expect(shouldForwardMessageEvent(asWatchedTopLevel('bot_message'), () => true)).toBe(true);
+
+    expect(mayWakeTask(asThreadReply('bot_message'))).toBe(false);
+    expect(mayWakeTask(asDm('bot_message'))).toBe(false);
+    expect(shouldForwardMessageEvent(asThreadReply('bot_message'), () => false)).toBe(false);
+    expect(shouldForwardMessageEvent(asDm('bot_message'), () => false)).toBe(false);
+  });
 
   it('treats a missing subtype as content-bearing', () => {
     expect(isContentBearingSubtype()).toBe(true);

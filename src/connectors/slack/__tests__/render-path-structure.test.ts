@@ -110,7 +110,6 @@ function interfaceBody(code: string, name: string): string {
 const OWN_TEXT_READERS_ALLOWED = [
   'src/connectors/slack/client.ts',
   'src/connectors/slack/message-body.ts',
-  'src/connectors/slack/channel-pins.ts',
 ];
 function ownTextReadOffenders(files: SourceFile[]): string[] {
   return files
@@ -118,10 +117,9 @@ function ownTextReadOffenders(files: SourceFile[]): string[] {
     .map((f) => f.path);
 }
 
-/** Files outside the allowed set that decide NOT to redact for themselves. `channel-pins.ts` is allowed on a stated reason, recorded in the failure message below. */
+/** Files outside the allowed set that decide NOT to redact for themselves. The render module is the only one: the pin path's unredacted render lives inside it as the named `pinBody`, so no call site answers the question. */
 const UNREDACTED_RENDER_ALLOWED = [
   'src/connectors/slack/message-body.ts',
-  'src/connectors/slack/channel-pins.ts',
 ];
 function unredactedRenderOffenders(files: SourceFile[]): string[] {
   return files
@@ -165,7 +163,7 @@ describe('the Slack render path stays single', () => {
   it('does not re-decide redaction at call sites', () => {
     expect(
       unredactedRenderOffenders(sources),
-      `An inline \`redacted: false\` is a call site deciding for itself that a message need not be redacted. The question is answered once, by \`shouldRedact\` in message-body.ts, and the one sanctioned unredacted path is the named \`exploreBody\` — named so the decision is greppable and auditable. \`channel-pins.ts\` is allowed because pins are gated upstream by a two-principal trust check that DROPS external content before it can ever be rendered, so redaction there is structurally unnecessary rather than merely convenient.`,
+      `An inline \`redacted: false\` is a call site deciding for itself that a message need not be redacted. The question is answered once, by \`shouldRedact\` in message-body.ts, and the one sanctioned unredacted path is the named \`exploreBody\` — named so the decision is greppable and auditable. The pin path's unredacted render is the named \`pinBody\` inside the render module rather than an inline literal at its call site — pins are gated upstream by a two-principal trust check that DROPS external content before it can ever be rendered, and keeping that reasoning next to the render is what stops it being re-litigated per caller.`,
     ).toEqual([]);
   });
 });

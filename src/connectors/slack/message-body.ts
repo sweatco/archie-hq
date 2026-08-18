@@ -108,6 +108,20 @@ export function exploreBody(msg: SlackMessageParts): string {
 }
 
 /**
+ * Render a pinned message for the channel pin index.
+ *
+ * Two things are deliberate here and both are load-bearing. Reactions are excluded because the rendered string feeds `digestOf` in the pin index, which is what makes "re-summarise once when the pin is edited" work — reactions change without the pin ever being edited, so digesting them would spend a model call per emoji forever. And the render is unredacted because pins are gated upstream by a two-principal trust check that DROPS an externally-authored or externally-pinned item outright before it can reach a renderer, so there is nothing here for a redaction policy to decide.
+ *
+ * Existing as a named function rather than an inline `renderMessageBody(..., { redacted: false, includeReactions: false })` at the call site is the point: it keeps the pin path from being a second place that answers the redaction question, and keeps the partial `ownText` field read inside this module.
+ */
+export function pinBody(pin: SlackMessageParts | { ownText?: string; files?: SlackFile[]; attachments?: SlackAttachment[]; reactions?: SlackReaction[] }): string {
+  return renderMessageBody(
+    { ownText: pin.ownText ?? '', attachments: pin.attachments, files: pin.files, reactions: pin.reactions },
+    { redacted: false, includeReactions: false },
+  );
+}
+
+/**
  * Render a raw Slack message payload by running it through the full inbound extraction first (blocks, attachment cards, files, mention resolution) — for callers holding a payload rather than a fetched thread, notably the `message_changed` edit handler.
  *
  * This path cannot emit the forwarded-from-external provenance label: `extractMessageContent` strips attachment authors, handing back an authorless `{ text }` shape, so `renderMessageBody` has no author to classify. Extraction may also yield neither attachments nor files at all (a bare `{ text: '' }` when the resolver produces nothing), which renders as an empty body.

@@ -173,11 +173,15 @@ export async function mountSlackApp(
     // stay a no-op). handleSlackEvent then runs the same own-bot/external/
     // @mention filtering before firing any trigger.
     if (!shouldForwardMessageEvent(event, (ch) => getChannelMessageTriggers(ch).length > 0)) {
-      // A channel someone is actively watching with a channel-message trigger just lost an event to the gate: the subtype is on the noise denylist, so no trigger will ever see this post. Say so at warn level with the subtype, because from the trigger owner's side a silent drop is indistinguishable from "nothing was posted" — the subtype name is the one fact that makes it diagnosable. Consulting the trigger index here means it is no longer a lazy lookup on the dropped path; that is fine, it is an in-memory read.
+      // Record, for a channel someone is actively watching, that the gate dropped an event and which subtype did it — from the trigger owner's side a silent drop is indistinguishable from "nothing was posted", and the subtype name is the one fact that makes "why didn't my trigger fire?" answerable.
+      //
+      // Deliberately `debug`, not `warn`. Now that the gate is a DENYLIST, the only events that can be dropped in a watched channel are the denylisted noise ones: a content-bearing top-level post always satisfies `mayReachTriggers` there. So this line reports routine `channel_join` / `pinned_item` traffic, not an anomaly — the class of silent drop it was originally written to catch (an unenumerated subtype vanishing) is now structurally impossible rather than merely logged. Warning on expected noise would train the reader to ignore it.
+      //
+      // Consulting the trigger index here means it is no longer a lazy lookup on the dropped path; that is fine, it is an in-memory read.
       if (getChannelMessageTriggers(event.channel).length > 0) {
-        logger.warn(
+        logger.debug(
           'Slack',
-          `Dropped a message event in trigger-watched channel ${event.channel} (ts ${event.ts}): subtype "${event.subtype ?? 'none'}" is not routed, so no channel-message trigger saw it`,
+          `Dropped a message event in trigger-watched channel ${event.channel} (ts ${event.ts}): subtype "${event.subtype ?? 'none'}" is on the noise denylist, so no channel-message trigger saw it`,
         );
       }
       return;
@@ -642,11 +646,18 @@ type SlackRouteResult =
 
 function routeSlackEvent(event: {
   bot_id?: string;
+  user?: string;
   type: string;
 }): SlackRouteResult {
   const ourBotId = getBotId();
   if (event.bot_id && ourBotId && event.bot_id === ourBotId) {
     return { action: 'discard', reason: 'Own bot message' };
+  }
+
+  // Also discard anything Slack attributes to our own bot USER rather than to a bot id. Slack reports some app-authored events (canvas and pin changes, topic edits) under the acting user, so a `bot_id` check alone does not close the self-loop — and `handleSlackEvent` itself refreshes the channel canvas and pin index, which means a filterless trigger in a watched channel could otherwise fire on Archie's own housekeeping.
+  const ourBotUserId = getBotUserId();
+  if (event.user && ourBotUserId && event.user === ourBotUserId) {
+    return { action: 'discard', reason: 'Own bot user message' };
   }
 
   return { action: 'triage' };
@@ -772,13 +783,17 @@ export async function handleSlackEvent(event: {
     }
     await sendSharedChannelWarnings(task, event.channel, threadId, thread, shared);
     await task.sendMessage(AGENT_PROMPTS.existingTask);
-  } else if (shouldCreateNewTask(event.type, event.channel, thread.rootAuthorWasBot)) {
+  } else if (shouldCreateNewTask(event.type, event.channel, thread.rootAuthorWasBot) && thread.messages.length > 0) {
     logger.system(`Processing #${thread.channel.name} (thread: ${threadId})`);
 
     // Start a new task when: the bot was @mentioned, this is a DM, OR a human is
     // replying to a thread Archie itself started (a top-level post it made via the
     // post_to_channel explore tool). A reply inside a human-started thread never
     // lands here — its root author isn't the bot — so it stays ignored, as before.
+    //
+    // The `thread.messages.length > 0` conjunct is a content floor on TASK CREATION specifically. Inverting the subtype gate to a denylist deliberately forwards subtypes nobody enumerated, which is what fixes the trigger arm, but this branch spends a PM turn: a payload with no author and no body (an assistant-container notice, a `tombstone`, a `bot_add`) otherwise reached `Task.create()` and woke the PM on an empty knowledge log. Checking the fetched thread rather than the subtype keeps that robust — any future subtype carrying nothing is refused for the same reason, with no list to maintain.
+    //
+    // It is deliberately NOT applied to the trigger branch below. That path renders from the raw event, not from the fetched thread, precisely because `fetchSlackThread` drops a message with neither a `user` nor a `botId` — gating it on `thread.messages` would reintroduce the very blindness this change removes.
     const task = await Task.create();
     await task.append(thread);
     // Ack the triggering message. For @mention/DM the :eyes: was already added

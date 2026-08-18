@@ -997,6 +997,35 @@ describe('listChannelPins', () => {
     expect(pins![0].ownText).not.toContain(' — ');
   });
 
+  // `reactions` and `files` are carried out for the same reason as `attachments`: the pin path renders
+  // through `pinBody`, which decides to DROP reactions so they cannot reach the summary digest. That
+  // suppression is only observable if production actually supplies the value — without these
+  // assertions, deleting the carry here would leave the whole suite green and make the digest guard
+  // in channel-pins.test.ts prove a property about a value nothing produces.
+  it('carries reactions and files out so the pin render is what decides to drop them', async () => {
+    slackApi.pins.list.mockResolvedValue({
+      items: [
+        {
+          type: 'message',
+          created: 1700000000,
+          created_by: 'UPINNER',
+          message: {
+            ts: '778.999',
+            user: 'UAUTHOR',
+            text: 'deploy runbook',
+            reactions: [{ name: 'eyes', count: 3 }],
+            files: [{ id: 'F9', name: 'runbook.pdf', mimetype: 'application/pdf', url_private: 'https://x/y' }],
+          },
+        },
+      ],
+    });
+
+    const pins = await client.listChannelPins('C1');
+
+    expect(pins![0].reactions?.map((r) => r.name)).toEqual(['eyes']);
+    expect(pins![0].files?.map((f) => f.name)).toEqual(['runbook.pdf']);
+  });
+
   // An app/bot post has no human author, and `resolveRawMessages` reports that as an
   // empty user. The caller's trust gate reads that as unclassifiable and refuses to
   // adopt, so a relay bot cannot launder outside content in as an internal user.
