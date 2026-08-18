@@ -683,9 +683,16 @@ export async function handleSlackEvent(event: {
 
   // ---- External-author bail-out --------------------------------------------
   // Resolve the event author and bail if external (different team, or guest).
-  // No agent spawn, no task creation, no reactions, no log entries. The
-  // redacted history will be appended lazily the next time an internal user
-  // triggers the handler (fetchSlackThread re-reads full history and redacts).
+  // No agent spawn, no task creation, no reactions, no log entries. The redacted
+  // history is appended lazily the next time an internal user triggers the
+  // handler: `fetchSlackThread` re-reads full history but strips nothing itself —
+  // redaction is a RENDER decision, made by `shouldRedact` in message-body.ts as
+  // the messages are written out.
+  //
+  // Note this guard is `event.user`-gated, so an app post (which carries no
+  // `user`) is never classified here. Paths that can be reached by an app post
+  // therefore gate on the bot's own team themselves — see the app-post check in
+  // `dispatchChannelMessageTriggers`.
   if (event.user) {
     try {
       const authorInfo = await getUserInfo(event.user);
@@ -833,6 +840,22 @@ async function dispatchChannelMessageTriggers(
 ): Promise<void> {
   const triggers = getChannelMessageTriggers(event.channel);
   if (triggers.length === 0) return;
+
+  // An app post from ANOTHER workspace never fires a trigger. The external-author bail-out earlier in
+  // `handleSlackEvent` is guarded by `if (event.user)`, and an app post carries no `user`, so it is not
+  // classified there; and this path renders from the raw event rather than the fetched thread, so
+  // `fetchSlackThread`'s own external-bot filter never sees it either. Before app posts were forwarded at
+  // all, the subtype allowlist closed this by accident. Now that they are forwarded deliberately, the gate
+  // has to be explicit — and it mirrors the rule thread ingestion and the pin index already draw (drop a
+  // bot from a foreign team, keep internal bots) rather than inventing a stricter one.
+  const raw = event.raw as { bot_id?: string; team?: string; bot_profile?: { team_id?: string } } | null | undefined;
+  if (raw?.bot_id) {
+    const botTeamId = raw.bot_profile?.team_id || raw.team;
+    if (isExternalUser({ teamId: botTeamId })) {
+      logger.system(`Skipping channel-message triggers for an app post from another workspace in ${channelName} (bot ${raw.bot_id}, team ${botTeamId})`);
+      return;
+    }
+  }
 
   // Rendered once, after the no-triggers short-circuit above: a channel nobody
   // is watching must stay free, and extraction resolves mentions (a network

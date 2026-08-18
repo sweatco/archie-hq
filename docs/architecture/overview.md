@@ -134,7 +134,8 @@ See [plugin-system.md](plugin-system.md) for details.
      AGENT_PROMPTS.existingTask)
    → Otherwise start a new task if it's an @mention, a DM, or a human reply to
      a thread Archie itself started (rootAuthorWasBot — a post it made via the
-     post_to_channel explore tool)
+     post_to_channel explore tool), AND the fetched thread carries at least one
+     visible message — a payload with no author and no body never seeds a task
      (Task.create → task.append → task.sendMessage with AGENT_PROMPTS.newTask)
    → Replies in human-started threads the bot didn't start are ignored
 

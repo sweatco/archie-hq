@@ -84,10 +84,11 @@ Slack webhook (POST /webhooks/slack)
     --> handleSlackEvent()         [connectors/slack/events.ts]
         - bail out if author is external/guest in a shared channel
         - add :eyes: reaction (remove from previous message in same thread)
-        - fetchSlackThread() — full thread history with redaction
+        - fetchSlackThread() — full thread history; redaction is applied later, at render time
         - findTaskByThread(threadId):
             existing task -> Task.get() + append() new messages + sendMessage(pm-agent, existingTask)
-            no task, and (app_mention OR DM OR rootAuthorWasBot) -> Task.create() + append() + sendMessage(pm-agent, newTask)
+            no task, and (app_mention OR DM OR rootAuthorWasBot), and thread has >=1 visible message
+              -> Task.create() + append() + sendMessage(pm-agent, newTask)
             no task, reply in a human-started thread the bot didn't start -> ignore
         - shared-channel ephemeral warnings (per user, per thread)
         - fire-and-forget title generation (Haiku) on first message
@@ -424,7 +425,7 @@ type SlackRouteResult =
   | { action: 'triage' };
 ```
 
-The router only filters out the bot's own messages (matched by `bot_id`). Everything
+The router only filters out the bot's own messages (matched by `bot_id`, or by our own bot user id). Everything
 else returns `{ action: 'triage' }`, but the AI triage step is currently **disabled**
 — `handleSlackEvent()` routes the message directly to the PM agent based on whether
 a task already exists for the Slack thread (see "Slack Messages" above). The

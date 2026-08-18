@@ -78,7 +78,7 @@ interface MessageEventShape {
 /**
  * Whether a `message` subtype carries content worth routing at all — i.e. whether it is absent from the noise denylist above. A missing subtype is a plain message and always content-bearing.
  *
- * `bot_message` passes here purely by not being on the denylist; there is no special case for it anywhere, and adding one would defeat the point of inverting the list.
+ * `bot_message` passes THIS predicate purely by not being on the denylist — the denylist has no special case for it, and adding one would defeat the point of inverting the list. `mayWakeTask` does test it separately, for a different reason: an app post is content worth showing a trigger but not worth spending a PM turn on.
  */
 export function isContentBearingSubtype(subtype?: string): boolean {
   return !subtype || !MESSAGE_NOISE_SUBTYPES.has(subtype);

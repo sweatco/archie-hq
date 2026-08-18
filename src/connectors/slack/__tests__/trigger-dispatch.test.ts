@@ -104,7 +104,7 @@ vi.mock('../../../system/logger.js', () => ({
 }));
 
 import { handleSlackEvent, mountSlackApp } from '../events.js';
-import { fetchSlackThread, getBotUserId } from '../client.js';
+import { fetchSlackThread, getBotUserId, isExternalUser, extractMessageContent } from '../client.js';
 import { getChannelMessageTriggers, fireTrigger } from '../../../system/trigger-scheduler.js';
 import { logger } from '../../../system/logger.js';
 import { Task } from '../../../tasks/task.js';
@@ -157,6 +157,11 @@ async function flushHandler(): Promise<void> {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getChannelMessageTriggers).mockReturnValue([]);
+  // `clearAllMocks` clears recorded calls but NOT implementations, so a `mockResolvedValue` set in one
+  // describe leaks into the next and makes failures depend on test order. Reset the stateful ones here.
+  vi.mocked(findTaskByThread).mockResolvedValue(null);
+  vi.mocked(isExternalUser).mockReturnValue(false);
+  vi.mocked(getBotUserId).mockReturnValue('U_BOT');
 });
 
 describe('channel-message trigger dispatch matches the rendered body', () => {
@@ -435,5 +440,44 @@ describe('the message-edit entry point renders through the shared module', () =>
     // production call to `msg.text` yields 'after' alone and fails here.
     const body = appendSlackEdit.mock.calls[0]![3] as string;
     expect(body).toContain('deploy failed on prod (build 4711)');
+  });
+});
+
+describe('an app post from another workspace never fires a trigger', () => {
+  // Newly reachable, and newly closed. The external-author bail-out in handleSlackEvent is guarded by
+  // `if (event.user)` and an app post carries no `user`, so it is never classified there; and this path
+  // renders from the raw event rather than the fetched thread, so fetchSlackThread's own external-bot
+  // filter never sees it either. While app posts were dropped by the subtype allowlist, that closed the
+  // hole by accident. Forwarding them deliberately means the gate has to be explicit — mirroring the rule
+  // thread ingestion and the pin index already draw: drop a bot from a foreign team, keep internal bots.
+  const foreignPost = {
+    type: 'message',
+    subtype: 'bot_message',
+    channel: CHANNEL,
+    bot_id: 'B_FOREIGN',
+    bot_profile: { team_id: 'T_OTHER' },
+    text: '',
+    attachments: [{ text: 'deploy failed on prod' }],
+    ts: '1700000000.002000',
+  };
+
+  it('drops it before rendering or matching', async () => {
+    vi.mocked(isExternalUser).mockImplementation((u: { teamId?: string }) => u.teamId === 'T_OTHER');
+    vi.mocked(getChannelMessageTriggers).mockReturnValue([makeTrigger('deploy failed')]);
+
+    await deliverAmbientPost({ ...foreignPost });
+
+    expect(vi.mocked(fireTrigger)).not.toHaveBeenCalled();
+    // Dropped BEFORE the render, so it costs no extraction either.
+    expect(vi.mocked(extractMessageContent)).not.toHaveBeenCalled();
+  });
+
+  it('still fires for an app post from our own workspace — the control that makes the above meaningful', async () => {
+    vi.mocked(isExternalUser).mockImplementation((u: { teamId?: string }) => u.teamId === 'T_OTHER');
+    vi.mocked(getChannelMessageTriggers).mockReturnValue([makeTrigger('deploy failed')]);
+
+    await deliverAmbientPost({ ...foreignPost, bot_profile: { team_id: 'T_HOME' }, ts: '1700000000.002001' });
+
+    expect(vi.mocked(fireTrigger)).toHaveBeenCalledTimes(1);
   });
 });
