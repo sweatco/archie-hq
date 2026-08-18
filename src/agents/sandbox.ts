@@ -37,10 +37,20 @@ export interface SandboxOptions {
 /**
  * Trusted public package registries that repo build sandboxes may reach when a
  * human has approved edit mode — just enough egress to run `npm`/`yarn` installs
- * and regenerate lockfiles. Deliberately minimal: these two hosts cover npm
- * (tarballs serve from registry.npmjs.org) and Yarn 4 (default
- * registry.yarnpkg.com). Listing the hostnames also permits DNS resolution for
+ * and regenerate lockfiles. Deliberately minimal: npm (tarballs serve from
+ * registry.npmjs.org), Yarn 4 (default registry.yarnpkg.com), and nodejs.org,
+ * which node-gyp fetches the Node headers from before it can compile a native
+ * addon — without it every native build fails on `403 response downloading
+ * node-vX-headers.tar.gz`. Listing the hostnames also permits DNS resolution for
  * them, so no separate DNS rule is needed.
+ *
+ * nodejs.org is a static download host: no upload endpoint and no user content to
+ * echo back, so it is a weaker exfiltration channel than registry.npmjs.org
+ * already on this list, where `npm publish` would carry data out. It adds no
+ * meaningful code-execution reach either, since an agent can already install and
+ * run arbitrary packages from the registry. node-gyp verifies what it downloads
+ * against SHASUMS256.txt, which defeats tampering in transit but not a compromise
+ * of the host itself — the same trust already extended to the registry.
  *
  * This list is intentionally a hardcoded constant — NOT plugin- or PM-settable —
  * so the egress surface can't be widened from a hot-reloaded plugins change or a
@@ -49,6 +59,7 @@ export interface SandboxOptions {
 export const TRUSTED_PACKAGE_REGISTRY_DOMAINS = [
   'registry.npmjs.org',
   'registry.yarnpkg.com',
+  'nodejs.org',
 ];
 
 // ---- Sandbox config (OS-level, Bash only) ----
@@ -198,6 +209,15 @@ export function buildManagedNetworkPolicy(opts: SandboxOptions) {
  * Repos that pin `packageManager` also let Corepack fetch the pinned release into
  * `COREPACK_HOME` (`~/.cache/node/corepack`), which is likewise unwritable.
  *
+ * `npm_config_devdir` covers node-gyp, the same failure one layer down: it keeps
+ * the Node headers it compiles native addons against in a "devdir", defaulting to
+ * `$HOME/.cache/node-gyp` — a path that does not exist in the image and is not in
+ * allowWrite, so every native build died on ENOENT. It stayed hidden because npm
+ * and yarn treat a failed OPTIONAL postinstall as a warning and still exit 0.
+ * node-gyp reads `npm_config_*` straight from the env; that prefix is deprecated
+ * in npm v11 for `npm_package_config_node_gyp_*`, which deliberately outranks it —
+ * so setting the old one leaves a repo free to override from its own package.json.
+ *
  * Observed live: the mobile repo pins yarn 4.12.0, and `yarn install` failed
  * instantly on the global-folder ENOENT while yarn 1 in the same sandbox worked
  * fine — which is why this covers both generations rather than just the cache.
@@ -209,6 +229,7 @@ export function buildPackageManagerCacheEnv(): Record<string, string> {
     YARN_CACHE_FOLDER: resolve(cacheRoot, 'yarn'),
     YARN_GLOBAL_FOLDER: resolve(cacheRoot, 'yarn-global'),
     COREPACK_HOME: resolve(cacheRoot, 'corepack'),
+    npm_config_devdir: resolve(cacheRoot, 'node-gyp'),
   };
 }
 

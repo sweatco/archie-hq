@@ -34,10 +34,10 @@ describe('buildManagedNetworkPolicy', () => {
       ...base,
       allowedNetworkDomains: [...TRUSTED_PACKAGE_REGISTRY_DOMAINS],
     });
-    expect(policy.sandbox.network.allowedDomains).toEqual([
-      'registry.npmjs.org',
-      'registry.yarnpkg.com',
-    ]);
+    // Compared against the input, not a copy of it: this test is about the policy
+    // passing through what it is handed. The allowlist's actual contents are
+    // pinned separately, so growing the constant does not fail this.
+    expect(policy.sandbox.network.allowedDomains).toEqual([...TRUSTED_PACKAGE_REGISTRY_DOMAINS]);
   });
 
   it('always sets allowManagedDomainsOnly — the allowlist is not enforced without it', () => {
@@ -73,6 +73,42 @@ describe('buildPackageManagerCacheEnv', () => {
     const env = buildPackageManagerCacheEnv();
     expect(env.YARN_GLOBAL_FOLDER).toBe(`${CACHES_DIR}/yarn-global`);
     expect(env.COREPACK_HOME).toBe(`${CACHES_DIR}/corepack`);
+  });
+
+  it('allowlists nodejs.org, without which node-gyp cannot fetch headers', () => {
+    // The devdir redirect alone is not enough: node-gyp downloads
+    // node-vX-headers.tar.gz from nodejs.org, and with only the two registries
+    // allowlisted that 403s and every native build still fails.
+    expect(TRUSTED_PACKAGE_REGISTRY_DOMAINS).toContain('nodejs.org');
+  });
+
+  it('keeps the egress allowlist to package-supply hosts only', () => {
+    // Guards the boundary this constant exists to hold: each entry is a package
+    // or toolchain source, never a general-purpose host that could serve as an
+    // exfiltration channel.
+    expect(TRUSTED_PACKAGE_REGISTRY_DOMAINS).toEqual([
+      'registry.npmjs.org',
+      'registry.yarnpkg.com',
+      'nodejs.org',
+    ]);
+  });
+
+  it('redirects node-gyp\'s devdir, so native addons can actually build', () => {
+    // Without this node-gyp falls back to $HOME/.cache/node-gyp, which does not
+    // exist in the image and sits outside allowWrite — so every native build
+    // died on ENOENT. It stayed hidden because a failed OPTIONAL postinstall is
+    // only a warning: the install still exits 0.
+    const env = buildPackageManagerCacheEnv();
+    expect(env.npm_config_devdir).toBe(`${CACHES_DIR}/node-gyp`);
+  });
+
+  it('leaves the node-gyp devdir overridable from a repo\'s own package.json', () => {
+    // node-gyp reads npm_config_* but lets npm_package_config_node_gyp_* win.
+    // Setting only the former keeps a repo able to override; setting the latter
+    // here would silently outrank the repo's own config.
+    expect(Object.keys(buildPackageManagerCacheEnv())).not.toContain(
+      'npm_package_config_node_gyp_devdir',
+    );
   });
 
   it('shares one cache across agents and tasks rather than scoping it per workspace', () => {
