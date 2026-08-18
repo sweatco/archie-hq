@@ -13,11 +13,12 @@
 import { Cron } from 'croner';
 import { Task } from '../tasks/task.js';
 import type { Trigger, TriggerBinding, TriggerCondition } from '../types/trigger.js';
+import type { TaskVisibility } from '../types/task.js';
 import { listTriggers, saveTrigger, deleteTrigger } from './trigger-store.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { emitEvent } from './event-bus.js';
 import { logger } from './logger.js';
-import { postSlackMessage, isChannelReachable } from '../connectors/slack/client.js';
+import { postSlackMessage, isChannelReachable, fetchChannelIsPrivate } from '../connectors/slack/client.js';
 
 // ---- Limits / config ----
 
@@ -187,15 +188,18 @@ export function getChannelMessageTriggers(channelId: string): Trigger[] {
 
 // ---- Schedule firing ----
 
-interface FireContext {
-  kind: 'schedule' | 'message';
-  /** For message context: the triggering message text. */
-  text?: string;
-  /** For message context: the thread to reply in + its channel. */
-  channelId?: string;
-  channelName?: string;
-  threadId?: string;
-}
+type FireContext =
+  | { kind: 'schedule' }
+  | {
+      kind: 'message';
+      text?: string;
+      channelId: string;
+      channelName?: string;
+      threadId: string;
+      visibility: TaskVisibility;
+    };
+
+export type FireOutcome = 'fired' | 'deferred' | 'cap-dropped' | 'paused';
 
 /**
  * Pure planning step for a single tick: given a trigger and the current instant,
@@ -307,10 +311,13 @@ async function tickTrigger(trigger: Trigger, now: Date): Promise<void> {
 
   // Fire ONCE for the trigger this tick, even when several conditions coincide
   // (M2: "any match fires the trigger" — not one task per condition).
-  await fireTrigger(trigger, { kind: 'schedule' });
+  const outcome = await fireTrigger(trigger, { kind: 'schedule' });
 
-  // fireTrigger may have paused + deindexed the trigger (daily cap, unreachable
-  // channel). If so, leave its conditions alone.
+  // A privacy/provenance check can defer a due run. Keep the exact due
+  // conditions so the scheduler retries after a public prompt update.
+  if (outcome === 'deferred') return;
+
+  // fireTrigger may have paused + deindexed an unreachable destination.
   if (!enabledTriggers.has(trigger.id)) return;
 
   trigger.conditions = plan.nextConditions;
@@ -333,8 +340,8 @@ async function tickTrigger(trigger: Trigger, now: Date): Promise<void> {
  * Firing posts no preamble — the spawned PM does the work and posts the result
  * itself, so the first message the channel sees is the actual output.
  */
-export async function fireTrigger(trigger: Trigger, context: FireContext): Promise<void> {
-  if (!triggersEnabled()) return;
+export async function fireTrigger(trigger: Trigger, context: FireContext): Promise<FireOutcome> {
+  if (!triggersEnabled()) return 'deferred';
 
   // Pre-flight for a channel-bound schedule fire: if the bound channel was
   // deleted or archived (or the bot removed and it archived), pause the trigger
@@ -350,23 +357,38 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
       deindexTrigger(trigger.id);
       emitEvent('trigger:paused', trigger.id, { reason: 'bound channel unreachable' });
       await notifyCreator(trigger, `⚠️ A trigger you set up was paused — its channel (#${trigger.binding.channel_name}) is gone or archived. Recreate it elsewhere if you still need it.`);
-      return;
+      return 'paused';
     }
+  }
+
+  // Resolve the live destination before quota accounting. A stored prompt may
+  // move from a private/unknown source into a private destination, but it may
+  // never cross into a public task without explicit public provenance.
+  const visibility: TaskVisibility = context.kind === 'message'
+    ? context.visibility
+    : trigger.binding.type === 'user'
+      ? 'private'
+      : (await fetchChannelIsPrivate(trigger.binding.channel_id)) ? 'private' : 'public';
+  if (visibility === 'public' && trigger.prompt_origin_visibility !== 'public') {
+    logger.warn(
+      'trigger-scheduler',
+      `Trigger ${trigger.id} deferred: public destination requires a publicly sourced prompt`,
+    );
+    return 'deferred';
   }
 
   if (!withinDailyCap()) {
     logger.warn('trigger-scheduler', `Daily fire cap (${DAILY_FIRE_CAP}) reached — dropping trigger ${trigger.id}`);
     await notifyCreator(trigger, `⚠️ A trigger you set up couldn't run — Archie hit its daily limit of automated runs. It will resume tomorrow.`);
-    return;
+    return 'cap-dropped';
   }
-
-  const task = await Task.create();
+  const task = await Task.create(visibility);
   task.metadata.triggered_by = trigger.id;
 
   // Wire delivery. message context → reply in the triggering thread (linked as
   // default, no post). schedule context → the PM opens the destination itself.
   let delivery: string;
-  if (context.kind === 'message' && context.channelId && context.threadId) {
+  if (context.kind === 'message') {
     task.linkSlackThread(context.channelId, context.threadId, context.channelName ?? context.channelId);
     delivery = 'Post your reply in your default channel — the thread where the triggering message was posted.';
   } else if (trigger.binding.type === 'user') {
@@ -387,6 +409,7 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
   trigger.last_fired_at = new Date().toISOString();
   await saveTrigger(trigger);
   emitEvent('trigger:fired', task.taskId, { trigger_id: trigger.id });
+  return 'fired';
 }
 
 // ---- Announcements (config changes only — never firing) ----

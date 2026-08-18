@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, afterAll } from 'vitest';
-import { mkdir, writeFile, rm } from 'fs/promises';
+import { mkdir, writeFile, readFile, rm } from 'fs/promises';
 import { dirname } from 'path';
 
 const SESSIONS_ROOT = await vi.hoisted(async () => {
@@ -17,10 +17,19 @@ const SESSIONS_ROOT = await vi.hoisted(async () => {
 });
 
 vi.mock('../../connectors/slack/client.js', () => ({
-  isExternalUser: (user: { teamId?: string; isRestricted?: boolean; isUltraRestricted?: boolean }) => {
-    if (user.isRestricted || user.isUltraRestricted) return true;
-    if (user.teamId && user.teamId !== 'T_HOME') return true;
-    return false;
+  classifySlackIngestAuthor: (user: {
+    teamId?: string;
+    isRestricted?: boolean;
+    isUltraRestricted?: boolean;
+    isBot?: boolean;
+    isAppUser?: boolean;
+    trustedAutomation?: boolean;
+  }) => {
+    if (user.isRestricted || user.isUltraRestricted) return 'external';
+    if (!user.teamId) return 'unknown';
+    if (user.teamId !== 'T_HOME') return 'external';
+    if (user.isBot || user.isAppUser) return user.trustedAutomation ? 'internal' : 'untrusted';
+    return 'internal';
   },
   formatSlackChannelRef: vi.fn(),
   formatSlackChannelDisplay: vi.fn(),
@@ -46,7 +55,13 @@ vi.mock('./task.js', () => ({
   activeTasks: new Map(),
 }));
 
-import { renderMessageForContext, renderEditForContext, loadMetadata, getMetadataPath } from '../persistence.js';
+import {
+  renderMessageForContext,
+  renderEditForContext,
+  loadMetadata,
+  getMetadataPath,
+  writeTaskMetadata,
+} from '../persistence.js';
 import type { TaskMetadata } from '../../types/task.js';
 
 afterAll(async () => {
@@ -109,6 +124,14 @@ describe('renderMessageForContext', () => {
       { redacted: true },
     );
     expect(out).toBe('[redacted: external participant in shared channel]');
+  });
+
+  it('distinguishes an unresolved author from a verified external author', () => {
+    const out = renderMessageForContext(
+      { text: 'must not appear' },
+      { redacted: true, redactionReason: 'unresolved' },
+    );
+    expect(out).toBe('[redacted: unresolved Slack author]');
   });
 
   it('renders externally-authored attachment under a forwarded-from label', () => {
@@ -183,6 +206,75 @@ describe('renderMessageForContext', () => {
     );
     expect(out).toBe('top\n[forwarded from <@UG:G> — external]\nguest content');
   });
+
+  it('labels an unresolved attachment instead of treating it as internal', () => {
+    const out = renderMessageForContext(
+      {
+        text: 'top',
+        attachments: [{
+          text: 'unresolved content',
+          author: { id: 'U?', username: 'unknown', realName: 'Unknown' },
+        }],
+      },
+      { redacted: false },
+    );
+    expect(out).toBe('top\n[forwarded from <@U?:Unknown> — unknown]\nunresolved content');
+  });
+
+  it('labels untrusted automation forwarded by an internal author', () => {
+    const out = renderMessageForContext(
+      {
+        text: 'top',
+        attachments: [{
+          text: 'automation payload',
+          author: {
+            id: 'B_ALERT', username: 'alert', realName: 'Alert Bot', teamId: 'T_HOME', isBot: true,
+          },
+        }],
+      },
+      { redacted: false },
+    );
+    expect(out).toBe('top\n[forwarded from <@B_ALERT:Alert Bot> — untrusted, team T_HOME]\nautomation payload');
+  });
+});
+
+describe('writeTaskMetadata', () => {
+  it('prevents a concurrent stale public writer from restoring persisted public visibility', async () => {
+    const taskId = 'task-20260817-1200-visrace';
+    const path = getMetadataPath(taskId);
+    await mkdir(dirname(path), { recursive: true });
+    const base: TaskMetadata = {
+      task_id: taskId,
+      visibility: 'public',
+      task_owner: null,
+      participants: [],
+      channels: {},
+      default_channel: null,
+      agent_sessions: {},
+      repositories: {},
+      status: 'in_progress',
+      created_at: '2026-07-06T00:00:00.000Z',
+      updated_at: '2026-07-06T00:00:00.000Z',
+    };
+    await writeFile(path, JSON.stringify(base, null, 2));
+    const downgrade = { ...base, visibility: 'private' as const };
+    const stalePublic = { ...base, status: 'stopped' as const };
+
+    await Promise.all([
+      writeTaskMetadata(taskId, downgrade),
+      writeTaskMetadata(taskId, stalePublic),
+    ]);
+
+    const persisted = JSON.parse(await readFile(path, 'utf-8')) as TaskMetadata;
+    expect(persisted.visibility).toBe('private');
+    expect(stalePublic.visibility).toBe('private');
+  });
+
+  it('rejects malformed task IDs before constructing metadata paths', async () => {
+    await expect(
+      writeTaskMetadata('../escape', { task_id: '../escape', visibility: 'public' } as TaskMetadata),
+    ).rejects.toThrow('Invalid task ID');
+  });
 });
 
 describe('metadata round-trip — pending_merge_approval', () => {
@@ -196,6 +288,7 @@ describe('metadata round-trip — pending_merge_approval', () => {
     };
     const metadata: TaskMetadata = {
       task_id: taskId,
+      visibility: 'public',
       task_owner: null,
       participants: [],
       channels: {},
@@ -221,6 +314,7 @@ describe('metadata round-trip — pending_merge_approval', () => {
     const taskId = 'task-no-merge-approval';
     const metadata: TaskMetadata = {
       task_id: taskId,
+      visibility: 'public',
       task_owner: null,
       participants: [],
       channels: {},

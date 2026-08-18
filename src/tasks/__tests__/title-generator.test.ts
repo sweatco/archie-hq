@@ -31,11 +31,26 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 }));
 
 vi.mock('../../connectors/slack/client.js', () => ({
-  isExternalUser: (user: { teamId?: string; isRestricted?: boolean; isUltraRestricted?: boolean }) => {
-    if (user.isRestricted || user.isUltraRestricted) return true;
-    if (user.teamId && user.teamId !== 'T_HOME') return true;
-    return false;
+  classifySlackIdentity: (user: { teamId?: string; isRestricted?: boolean; isUltraRestricted?: boolean }) => {
+    if (!user.teamId) return 'unknown';
+    if (user.isRestricted || user.isUltraRestricted || user.teamId !== 'T_HOME') return 'external';
+    return 'internal';
   },
+  classifySlackIngestAuthor: (user: {
+    teamId?: string;
+    isRestricted?: boolean;
+    isUltraRestricted?: boolean;
+    isBot?: boolean;
+    isAppUser?: boolean;
+    trustedAutomation?: boolean;
+  }) => {
+    if (!user.teamId) return 'unknown';
+    if (user.isRestricted || user.isUltraRestricted || user.teamId !== 'T_HOME') return 'external';
+    if (user.isBot || user.isAppUser) return user.trustedAutomation ? 'internal' : 'untrusted';
+    return 'internal';
+  },
+  isExternalUser: (user: { teamId?: string; isRestricted?: boolean; isUltraRestricted?: boolean }) =>
+    Boolean(user.isRestricted || user.isUltraRestricted || (user.teamId && user.teamId !== 'T_HOME')),
   formatSlackChannelRef: vi.fn(),
   formatSlackChannelDisplay: vi.fn(),
 }));
@@ -69,6 +84,7 @@ function makeThread(overrides?: Partial<SlackThread>): SlackThread {
     threadId: '1.0',
     channel: { id: 'D1', name: 'DM' },
     shared: false,
+    taskVisibility: 'private',
     currentMessageTs: '1.0',
     rootAuthorWasBot: false,
     messages: [
@@ -181,6 +197,43 @@ describe('generateTaskTitle', () => {
     expect(transcript).toContain('[external]: [redacted: external participant in shared channel]');
     expect(transcript).toContain('[Dana]: internal subject');
     expect(transcript).not.toContain('should be redacted');
+  });
+
+  it('redacts an unverified author even when shared-channel lookup says false', async () => {
+    state.queryEvents = [successEvent('Must not run')];
+    const thread = makeThread({
+      shared: false,
+      taskVisibility: 'public',
+      messages: [{
+        ts: '1.0',
+        text: 'must not enter public memory',
+        user: { id: 'UUNKNOWN', username: 'unknown', realName: 'Unknown' },
+      }],
+    });
+
+    await expect(generateTaskTitle(thread)).resolves.toBeNull();
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('uses task-ingestion trust for configured automation', async () => {
+    state.queryEvents = [successEvent('Automation title')];
+    const thread = makeThread({
+      messages: [{
+        ts: '1.0',
+        text: 'deployment completed',
+        user: {
+          id: 'B_DEPLOY',
+          username: 'deploy',
+          realName: 'Deploy Bot',
+          teamId: 'T_HOME',
+          isBot: true,
+          trustedAutomation: true,
+        },
+      }],
+    });
+
+    await expect(generateTaskTitle(thread)).resolves.toBe('Automation title');
+    expect(state.lastQueryArgs.prompt).toContain('[Deploy Bot]: deployment completed');
   });
 
   it('includes forwarded-from label for externally-authored attachment from internal author', async () => {

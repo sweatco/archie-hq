@@ -47,6 +47,7 @@ const BOT_ID = 'BBOT';
 beforeEach(async () => {
   vi.clearAllMocks();
   vi.resetModules();
+  delete process.env.SLACK_TRUSTED_AUTOMATION_IDS;
 
   slackApi.auth.test.mockResolvedValue({
     user_id: BOT_USER, bot_id: BOT_ID, team_id: 'THOME', url: 'https://acme.slack.com',
@@ -574,6 +575,17 @@ describe('fetchSlackThread — shared-channel redaction is unaffected by richer 
     expect(rendered).not.toContain('CANARY');
   });
 
+  it('keeps a failed author lookup unverified instead of treating it as internal', async () => {
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [rawMsg({ ts: '803.0', user: 'UUNKNOWN', text: 'sensitive' })],
+    });
+    slackApi.users.info.mockRejectedValue(new Error('rate limited'));
+
+    const thread = await client.fetchSlackThread('C_public', '803.0', '803.0');
+
+    expect(client.classifySlackIdentity(thread.messages[0].user)).toBe('unknown');
+  });
+
   it('logs only JSON paths from the backstop, never the content it found', async () => {
     slackApi.conversations.replies.mockResolvedValue({
       messages: [rawMsg({
@@ -588,6 +600,158 @@ describe('fetchSlackThread — shared-channel redaction is unaffected by richer 
     const logged = JSON.stringify(loggerWarn.mock.calls);
     expect(logged).toContain('some_future_shape.headline');
     expect(logged).not.toContain('SENSITIVE-CANARY');
+  });
+});
+
+describe('fetchSlackThread — task visibility', () => {
+  it('treats public Slack Connect channels as public tasks', async () => {
+    slackApi.conversations.info.mockResolvedValue({
+      ok: true,
+      channel: { id: 'C_shared', name: 'partner', is_private: false, is_im: false, is_ext_shared: true },
+    });
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [rawMsg({ ts: '400.0', user: 'UHUMAN', text: 'internal request' })],
+    });
+
+    const thread = await client.fetchSlackThread('C_shared', '400.0', '400.0');
+
+    expect(thread.shared).toBe(true);
+    expect(thread.taskVisibility).toBe('public');
+  });
+
+  it('treats private channels and DMs as private tasks', async () => {
+    slackApi.conversations.info.mockResolvedValue({
+      ok: true,
+      channel: { id: 'G_private', name: 'secret', is_private: true, is_im: false },
+    });
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [rawMsg({ ts: '500.0', user: 'UHUMAN', text: 'private request' })],
+    });
+    expect((await client.fetchSlackThread('G_private', '500.0', '500.0')).taskVisibility).toBe('private');
+
+    slackApi.conversations.info.mockResolvedValue({
+      ok: true,
+      channel: { id: 'D_private', is_private: true, is_im: true },
+    });
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [rawMsg({ ts: '600.0', user: 'UHUMAN', text: 'dm request' })],
+    });
+    expect((await client.fetchSlackThread('D_private', '600.0', '600.0')).taskVisibility).toBe('private');
+  });
+
+  it('aborts thread ingestion when channel privacy cannot be verified', async () => {
+    slackApi.conversations.info.mockRejectedValue(new Error('Slack unavailable'));
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [rawMsg({ ts: '700.0', user: 'UHUMAN', text: 'request during outage' })],
+    });
+
+    await expect(client.fetchSlackThread('C_unknown', '700.0', '700.0'))
+      .rejects.toThrow('Slack unavailable');
+  });
+});
+
+describe('isChannelShared', () => {
+  it('short-circuits DMs without a conversations.info call', async () => {
+    await expect(client.isChannelShared('D123')).resolves.toBe(false);
+    expect(slackApi.conversations.info).not.toHaveBeenCalled();
+  });
+
+  it('preserves a previously observed shared status across a transient API failure', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    slackApi.conversations.info.mockResolvedValue({
+      ok: true,
+      channel: { id: 'C_shared_cached', name: 'partner', is_ext_shared: true },
+    });
+    await expect(client.isChannelShared('C_shared_cached')).resolves.toBe(true);
+
+    now.mockReturnValue(62_000);
+    slackApi.conversations.info.mockRejectedValue(new Error('rate limited'));
+    await expect(client.isChannelShared('C_shared_cached')).resolves.toBe(true);
+    now.mockRestore();
+  });
+
+  it('still returns false when the first shared-channel lookup fails', async () => {
+    slackApi.conversations.info.mockRejectedValue(new Error('rate limited'));
+    await expect(client.isChannelShared('C_unknown_shared')).resolves.toBe(false);
+  });
+});
+
+describe('classifySlackIdentity', () => {
+  it('fails initialization when the home team is missing', async () => {
+    slackApi.auth.test.mockResolvedValue({ user_id: BOT_USER, bot_id: BOT_ID, url: 'https://acme.slack.com' });
+    vi.resetModules();
+    client = await import('../client.js');
+    await expect(client.initSlackClient('xoxb-test')).rejects.toThrow('required user_id and team_id');
+
+    expect(client.getBotUserId()).toBeNull();
+    expect(client.getHomeTeamId()).toBeNull();
+    expect(client.classifySlackIdentity({ teamId: 'THOME' })).toBe('unknown');
+  });
+
+  it('clears a previously cached identity when reinitialization fails', async () => {
+    expect(client.getBotUserId()).toBe(BOT_USER);
+    expect(client.getHomeTeamId()).toBe('THOME');
+    slackApi.auth.test.mockRejectedValue(new Error('invalid_auth'));
+
+    await expect(client.initSlackClient('xoxb-replacement')).rejects.toThrow('invalid_auth');
+
+    expect(client.getBotUserId()).toBeNull();
+    expect(client.getHomeTeamId()).toBeNull();
+    expect(() => client.getSlackClient()).toThrow('not initialized');
+  });
+
+  it('requires the actor team and rejects guests and bots', () => {
+    expect(client.classifySlackIdentity({})).toBe('unknown');
+    expect(client.classifySlackIdentity({ teamId: 'THOME', isRestricted: true })).toBe('external');
+    expect(client.classifySlackIdentity({ teamId: 'THOME', isUltraRestricted: true })).toBe('external');
+    expect(client.classifySlackIdentity({ teamId: 'THOME', isBot: true })).toBe('external');
+    expect(client.classifySlackIdentity({ teamId: 'THOME' })).toBe('internal');
+  });
+
+  it('separates workspace affiliation from task-ingest automation trust', () => {
+    expect(client.classifySlackAffiliation({ teamId: 'THOME' })).toBe('internal');
+    expect(client.classifySlackIngestAuthor({ id: 'B1', teamId: 'THOME', isBot: true })).toBe('untrusted');
+    expect(client.classifySlackIngestAuthor({
+      id: 'B1', teamId: 'THOME', isBot: true, trustedAutomation: true,
+    })).toBe('internal');
+    expect(client.classifySlackIngestAuthor({
+      id: 'B1', teamId: 'TOTHER', isBot: true, trustedAutomation: true,
+    })).toBe('external');
+    expect(client.classifySlackIngestAuthor({ id: 'UUNKNOWN' })).toBe('unknown');
+  });
+});
+
+describe('fetchSlackThread — trusted automation', () => {
+  it("marks Archie's root and configured same-workspace integrations as trusted", async () => {
+    process.env.SLACK_TRUSTED_AUTOMATION_IDS = 'BTRACKER';
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [
+        rawMsg({ ts: '900.0', user: undefined, bot_id: BOT_ID, bot_profile: { name: 'Archie' }, text: 'root' }),
+        rawMsg({
+          ts: '901.0',
+          user: undefined,
+          bot_id: 'BTRACKER',
+          bot_profile: { name: 'Tracker', team_id: 'THOME' },
+          text: 'ticket update',
+        }),
+      ],
+    });
+
+    const thread = await client.fetchSlackThread('C_bots', '900.0', '901.0');
+
+    expect(thread.messages).toHaveLength(2);
+    expect(thread.messages.every((message) => client.classifySlackIngestAuthor(message.user) === 'internal')).toBe(true);
+  });
+
+  it('keeps transiently unresolved authors unknown for a later retry', async () => {
+    slackApi.users.info.mockRejectedValue(new Error('rate limited'));
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [rawMsg({ ts: '902.0', user: 'UTRANSIENT', text: 'retry me' })],
+    });
+
+    const thread = await client.fetchSlackThread('C_retry', '902.0', '902.0');
+
+    expect(client.classifySlackIngestAuthor(thread.messages[0].user)).toBe('unknown');
   });
 });
 
@@ -771,6 +935,15 @@ describe('G… (group DM) is not short-circuited like a 1:1 DM — AC6', () => {
     expect(slackApi.conversations.info).toHaveBeenCalledWith({ channel: 'G_mpim' });
     expect(tabs).toEqual([]);
   });
+
+  it.each(['G_mpim', 'C_mpim'])('treats %s as private from is_mpim alone', async (channelId) => {
+    slackApi.conversations.info.mockResolvedValue({
+      ok: true, channel: { id: channelId, name: 'mpdm', is_mpim: true },
+    });
+
+    await expect(client.fetchChannelIsPrivate(channelId)).resolves.toBe(true);
+    await expect(client.getChannelInfo(channelId)).resolves.toMatchObject({ isPrivate: true, isIm: false });
+  });
 });
 
 describe('resolvePeopleFromTranscript — the log names people, we only add titles', () => {
@@ -884,18 +1057,13 @@ describe('resolvePeopleFromTranscript — titles are untrusted input', () => {
     expect(people.map(p => p.title)).toEqual(['', '']);
   });
 
-  it('withholds every title when the home team is unknown — fails closed', async () => {
-    // auth.test with no team_id is the fail-OPEN case for isExternalUser; titles
-    // must not inherit that leniency, since we cannot tell insider from outsider.
+  it('does not expose a client when startup cannot establish the home team', async () => {
     slackApi.auth.test.mockResolvedValue({ user_id: BOT_USER, bot_id: BOT_ID, url: 'https://acme.slack.com' });
     vi.resetModules();
     client = await import('../client.js');
-    await client.initSlackClient('xoxb-test');
-    slackApi.users.list.mockResolvedValue({ members: [member('UENG1', 'Nikita Sidorin', 'Backend Lead')] });
+    await expect(client.initSlackClient('xoxb-test')).rejects.toThrow('required user_id and team_id');
 
-    expect(await client.resolvePeopleFromTranscript('<@UENG1:Nikita>')).toEqual([
-      { id: 'UENG1', marker: '<@UENG1:Nikita>', title: '' },
-    ]);
+    expect(() => client.getSlackClient()).toThrow('not initialized');
   });
 
   it('flattens newlines out of an internal title so it cannot forge a prompt section', async () => {

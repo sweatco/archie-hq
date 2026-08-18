@@ -5,22 +5,24 @@
  * appending to knowledge.log
  */
 
-import { mkdir, readdir, readFile, writeFile, appendFile } from 'fs/promises';
+import { mkdir, readdir, readFile, writeFile, appendFile, rename } from 'fs/promises';
 import { createReadStream, existsSync } from 'fs';
 import { createInterface } from 'readline';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { join, resolve, relative, isAbsolute, sep } from 'path';
 import type { TaskMetadata, LogEntry, FindingType, SlackFile, SlackAttachment, SlackAuthor, SlackReaction } from '../types/index.js';
-import { isExternalUser } from '../connectors/slack/client.js';
+import { classifySlackIngestAuthor } from '../connectors/slack/client.js';
 import type { SystemEvent } from '../system/event-bus.js';
 import { activeTasks } from './task.js';
 import { SESSIONS_DIR } from '../system/workdir.js';
 import { emitEvent, onEvent } from '../system/event-bus.js';
 import { logger } from '../system/logger.js';
 import { formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { createKeyedLock } from '../system/keyed-lock.js';
 
 const execFileAsync = promisify(execFile);
+const metadataWriteLock = createKeyedLock();
 
 /**
  * Ceiling on a scan's stdout. Only matching paths are printed, so this is ~150
@@ -229,11 +231,48 @@ export async function loadMetadata(taskId: string): Promise<TaskMetadata | null>
 }
 
 /**
- * Format a log entry for the shared knowledge log
+ * Replace one task metadata file under a dedicated write lock. Visibility is
+ * merged monotonically against the latest persisted record so a detached,
+ * stale public Task instance cannot overwrite a private downgrade.
  */
+export async function writeTaskMetadata(
+  taskId: string,
+  metadata: TaskMetadata,
+): Promise<TaskMetadata> {
+  // Keep the literal allowlist beside the filesystem sinks for path analysis.
+  if (!/^task-\d{8}-\d{4}-[a-z0-9]+$/.test(taskId)) {
+    throw new Error('Invalid task ID');
+  }
+  const candidate = JSON.parse(JSON.stringify(metadata)) as TaskMetadata;
+
+  return metadataWriteLock(taskId, async () => {
+    const root = resolve(SESSIONS_DIR);
+    const path = resolve(getMetadataPath(taskId));
+    const rel = relative(root, path);
+    if (rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)) {
+      throw new Error('Task metadata path escapes sessions directory');
+    }
+    const persistedExists = existsSync(path);
+    const persisted = persistedExists ? await loadMetadata(taskId) : null;
+    const effectiveVisibility: TaskMetadata['visibility'] = persistedExists
+      ? persisted?.visibility === 'public' && candidate.visibility === 'public' ? 'public' : 'private'
+      : candidate.visibility === 'public' ? 'public' : 'private';
+    const effective = { ...candidate, visibility: effectiveVisibility };
+    const temporaryPath = `${path}.${process.pid}.tmp`;
+
+    await writeFile(temporaryPath, JSON.stringify(effective, null, 2));
+    await rename(temporaryPath, path);
+    metadata.visibility = effectiveVisibility;
+    return effective;
+  });
+}
+
+/** Format a log entry so body continuations cannot mimic source lines. */
 function formatLogEntry(entry: LogEntry): string {
   const typeStr = entry.type ? ` [${entry.type}]` : '';
-  return `[${entry.timestamp}] [${entry.source}]${typeStr} ${entry.message}\n`;
+  const safeSource = entry.source.replace(/[\r\n]+/g, ' ');
+  const framedMessage = entry.message.replace(/\r\n?/g, '\n').replace(/\n/g, '\n  ');
+  return `[${entry.timestamp}] [${safeSource}]${typeStr} ${framedMessage}\n`;
 }
 
 /**
@@ -266,10 +305,12 @@ export function renderAttachmentsSuffix(artifactPaths: readonly string[]): strin
  */
 export function renderMessageForContext(
   msg: { text: string; files?: SlackFile[]; attachments?: SlackAttachment[]; reactions?: SlackReaction[] },
-  options: { redacted: boolean }
+  options: { redacted: boolean; redactionReason?: 'external' | 'unresolved' }
 ): string {
   if (options.redacted) {
-    return '[redacted: external participant in shared channel]';
+    return options.redactionReason === 'unresolved'
+      ? '[redacted: unresolved Slack author]'
+      : '[redacted: external participant in shared channel]';
   }
 
   const inlineParts: string[] = [];
@@ -277,13 +318,14 @@ export function renderMessageForContext(
 
   let forwardedBlock = '';
   for (const att of msg.attachments ?? []) {
-    if (att.author && isExternalUser(att.author)) {
-      // Render the externally-authored attachment under a provenance label.
+    const identity = att.author ? classifySlackIngestAuthor(att.author) : 'internal';
+    if (att.author && identity !== 'internal') {
+      // Render the non-internal attachment under a provenance label.
       // Only the first one gets the label block; subsequent ones (rare)
       // fold inline so the agent still sees them.
       if (!forwardedBlock) {
         const teamSuffix = att.author.teamId ? `, team ${att.author.teamId}` : '';
-        const label = `[forwarded from <@${att.author.id}:${att.author.realName}> — external${teamSuffix}]`;
+        const label = `[forwarded from <@${att.author.id}:${att.author.realName}> — ${identity}${teamSuffix}]`;
         forwardedBlock = `${label}\n${att.text}`;
         continue;
       }
@@ -323,12 +365,12 @@ export async function appendSlackMessage(
   message: string,
   files?: SlackFile[],
   attachments?: SlackAttachment[],
-  options?: { redacted?: boolean; ts?: string; reactions?: SlackReaction[] }
+  options?: { redacted?: boolean; redactionReason?: 'external' | 'unresolved'; ts?: string; reactions?: SlackReaction[] }
 ): Promise<void> {
   const redacted = options?.redacted === true;
   const fullMessage = renderMessageForContext(
     { text: message, files, attachments, reactions: options?.reactions },
-    { redacted },
+    { redacted, redactionReason: options?.redactionReason },
   );
 
   // Mask the author name in the source line when the body is redacted, so the
@@ -867,26 +909,17 @@ export interface TaskUsageRecord {
 const usageWriteQueues = new Map<string, Promise<void>>();
 
 /**
- * Append a usage record to the task's usage.jsonl (fire-and-forget).
- * No-ops if the shared/ dir is missing; never throws.
+ * Queue a usage record append and resolve after it has been handled.
+ * Callers may fire-and-forget it; missing directories and write failures never
+ * reject the returned promise.
  */
 export async function appendUsageRecord(record: TaskUsageRecord): Promise<void> {
-  // taskId flows into filesystem path construction below (getSharedPath /
-  // getUsageLogPath → appendFile), and it can arrive from the HTTP API, so it
-  // is untrusted. Two barriers, both written INLINE here rather than behind the
-  // `isSafeTaskId` helper — CodeQL's path-injection analysis does not treat a
-  // regexp test hidden in a boolean-returning helper as a sanitizer, so the
-  // literal guards must sit in the function that reaches the sink. No-op on any
-  // rejection so the fire-and-forget / never-throw contract is preserved.
-
-  // (a) INLINE allowlist barrier at entry — the canonical single-segment id.
+  // Keep the literal allowlist beside the filesystem sink for static analysis.
   if (!/^task-\d{8}-\d{4}-[a-z0-9]+$/.test(record.taskId)) return;
   const prev = usageWriteQueues.get(record.taskId) ?? Promise.resolve();
   const next = prev.then(async () => {
     try {
-      // (b) INLINE containment barrier before the existsSync / appendFile
-      // sinks: resolve the taskId-derived paths and confirm they stay under
-      // SESSIONS_DIR, then hand the sinks the resolved absolute paths.
+      // Defense in depth if the accepted task-id shape changes later.
       const root = resolve(SESSIONS_DIR);
       const dir = resolve(getSharedPath(record.taskId));
       const abs = resolve(getUsageLogPath(record.taskId));
@@ -904,6 +937,8 @@ export async function appendUsageRecord(record: TaskUsageRecord): Promise<void> 
     }
   });
   usageWriteQueues.set(record.taskId, next);
+  await next;
+  if (usageWriteQueues.get(record.taskId) === next) usageWriteQueues.delete(record.taskId);
 }
 
 /**
