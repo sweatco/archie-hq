@@ -37,10 +37,10 @@ const LISTING_CAP = 50;
  * observable; `allowRead` alone is the only combination that yields
  * read-without-write.
  *
- * It is one of two paths granted through `allowWritePaths` alone — the other is
- * CACHES_DIR, the shared package-manager cache — which is why `assertReadable`
- * had to start consulting both lists (src/agents/artifacts.ts). Everything else
- * writable also appears in `allowReadPaths`.
+ * A write-only grant does have one non-obvious consequence: `assertReadable`
+ * (src/agents/artifacts.ts) used to consult `allowReadPaths` alone, so the
+ * in-process artifact tools would refuse a file the agent had just written here.
+ * It now takes the union of both lists.
  *
  * Returns a new options object; the input is not mutated.
  */
