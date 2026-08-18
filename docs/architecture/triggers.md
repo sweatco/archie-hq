@@ -45,7 +45,7 @@ interface Trigger {
 - A **one-off** schedule condition has only `next_run_at` (no `cron`); it auto-pauses after firing once.
 - **Channel privacy is deliberately not stored** on the binding — it's resolved live at list time (see Visibility), so a public↔private conversion can't leak a now-private channel's triggers.
 
-Storage: one JSON file per trigger under `$ARCHIE_WORKDIR/triggers/` (`src/system/trigger-store.ts`).
+Storage: one JSON file per trigger under `$ARCHIE_WORKDIR/triggers/` (`src/system/trigger-store.ts`), plus — for a trigger that has actually fired — one directory per trigger under `$ARCHIE_WORKDIR/triggers-data/` (see [Persistent per-trigger directory](#persistent-per-trigger-directory) below).
 
 ## Scheduling: cron, kept internal
 
@@ -76,6 +76,41 @@ A one-off schedule auto-pauses after it fires (its condition is consumed). **Res
 3. Seed the PM with `AGENT_PROMPTS.triggered(...)` and let it do the work.
 
 **Firing posts no preamble.** The spawned PM does the work and posts the result itself, so the first thing the channel sees is the actual output — not an "I was triggered" line.
+
+## Persistent per-trigger directory
+
+Each fire is a brand-new task with its own agent workspace, and no fire can reach another's. So a trigger whose job needs continuity — "summarise what changed since last time", "chase the thing you raised yesterday" — used to have no way to carry anything forward, and silently degraded into redoing the work and re-reporting it in full. Every trigger that actually fires now gets one directory that outlives a single fire, at `$ARCHIE_WORKDIR/triggers-data/<trigger-id>/`. A trigger that is never approved or never fires gets none, because creation happens at agent spawn.
+
+**Created at agent spawn, not at fire.** The scheduler is untouched. `ensureTriggerDataDir` (`src/system/trigger-store.ts`) runs from the one block in `spawnAgent` that sits after all three per-track branches, so every agent on a trigger-fired task gets it — PM, repo agent and plugin agent alike. `mkdir` is recursive, which is what makes it idempotent: spawn re-runs once per agent, again on every wake of the task, and again after a restart.
+
+**It refuses to create once the record is gone.** A task outlives the fire that created it — a user can keep replying in its thread, the PM can delegate, a restart re-spawns it — while `metadata.triggered_by` keeps naming a trigger that may since have been deleted. So creation checks that the trigger's record file still exists first, and returns null when it does not. Without that check the next spawn would recreate the directory straight after `deleteTrigger` removed it, resurrecting deleted content and orphaning it for good, because nothing scans `triggers-data/` for entries whose record has gone. The check is deliberately `existsSync` on the record path rather than `loadTrigger`, because `loadTrigger` also returns null for a `JSON.parse` failure and `saveTrigger` truncates before it writes — a spawn reading the record mid-write would otherwise conclude a live trigger had been deleted.
+
+**Granted read-write, in both sandbox lists.** The directory goes into `allowReadPaths` and `allowWritePaths`, the same shape the agent workspace and the repo clones use. It was briefly granted write-only, on the belief that listing a path in both lists makes bwrap lay a read-only bind over the writable one and downgrade it — the claim in [security.md](security.md#known-sandbox-limitations)'s Known Limitation 1. That was measured and is false; both forms behave identically. Write-only also has a real cost: `assertReadable` (`src/agents/artifacts.ts`) validates against `allowReadPaths` alone, so an agent could write a file here and then be refused when it tried to `share_artifact` it. Two things about the grant are still worth knowing:
+
+- **`Bash` reaches it fine, which took measuring.** `denyReadPaths` includes `$ARCHIE_WORKDIR`, so the obvious reading — and an earlier version of this section — was that the parent's `denyRead` destroys the child's grant. It does not. Measured under bwrap 0.11.0 with the production config: an agent granted this path write-only can `cat`, `ls` and write to it from `Bash`, and the writes persist to real disk. `denyRead` emits its `--tmpfs` **before** the `allowWrite --bind`, so the bind lands on top and survives; the parent stays opaque (it renders as a mode-700 tmpfs) while the granted subtree punches through. That is the reverse of what Known Limitation 1 in [security.md](security.md#known-sandbox-limitations) used to claim; that entry now records the correction.
+- **The artifact tools can read it**, because it is in `allowReadPaths`. That is not automatic: `assertReadable` checks that list alone, unlike the OS sandbox and the PreToolUse hook, which both treat writable as readable. Any future path granted write-only inherits that gap — `CACHES_DIR` does, and its files cannot be shared through the artifact tools.
+
+**Not in `additionalDirectories`.** `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` is on, so a `CLAUDE.md` in an additional directory is auto-loaded into the prompt — and this directory is agent-writable, so listing it there would let one agent inject a prompt into every later agent on the same trigger.
+
+**Announced once, in one place, on every track.** `buildTriggerDataPromptSection` builds a single block appended after the per-track branches. It names the trigger, names the path as read-write, lists the directory's entries (names only, sorted, capped at 50), says to load the `trigger-task` skill, and frames whatever is in there as data rather than instructions, since it was written by an earlier agent. That is all it does.
+
+**Why the skill instruction is in the block and not in the seed message.** The seed (`AGENT_PROMPTS.triggered`) reaches the PM alone, and a delegated repo or plugin agent holds the same directory read-write. The block is the only trigger-specific text every track sees, so it is the only place an instruction reaches everyone who might write there. `knowledge.log` was the other candidate and is worse on two counts: it is the data channel, where user-authored text lands and where the injection rules say to treat what you read as data rather than instruction, and it is chronological, so a line written at fire time reads as a stale event ten turns later rather than as a standing instruction.
+
+Three things the block deliberately does not do, each of which it did at some point during development:
+
+- **It does not name a tool.** Reading a file and listing a directory are things an agent already knows how to do, and a named tool dates the prompt. The failure that made the point was of exactly that kind: an early draft named `Glob`, which this runtime does not have, so the fire reaching for it got `No such tool available` and spent its turn hunting a substitute instead of reading the directory.
+- **It does not explain why fires cannot see each other.** That is the skill's opening paragraph. A prompt block that re-explains the model of the feature is a second copy of the skill with nothing keeping the two in step.
+- **It does not repeat itself, and neither does the seed.** The PM's context block used to carry a second `Spawned by trigger:` line, the seed a third mention of the directory, and both the seed and the block asserted "you were started by a trigger" after the seed's first sentence had already said the trigger fired. Three statements of one fact drift the moment one is edited, and they did. Now: the seed says what fired and where the result goes, the block names the trigger and its directory, the skill carries the model and the conventions.
+
+The seed no longer claims "there is no prior conversation" either. That was true of the Slack thread and false in spirit — a trigger that has run before does leave context behind. What the sentence was actually carrying is that nobody is waiting on the other end, which is now what it says.
+
+The listing is a convenience rather than a workaround — the directory is granted read-write on both enforcement layers, so an agent can list it perfectly well itself. It is there because it costs nothing and it is what tells a fire whether it has a past at all.
+
+**Two rough edges worth knowing.** The listing is a bare `readdir`, so a subdirectory an earlier fire created appears as a plain name with nothing marking it as a directory; the block says the listing is top-level only, and the skill says to look deeper when it matters. And the grant and the announcement attach on *every* spawn of a task whose `triggered_by` is set, not only on the fire itself: a user replying in the thread days later, a PM delegation, or a post-restart recovery all get them, even though the `trigger-task` skill is written in the voice of a fire. Neither is harmful; both are places the model may be mildly surprised.
+
+**Removed when the trigger is deleted.** `removeTriggerDataDir` is called inside `deleteTrigger`, the single function every deletion entry point funnels through, so no caller changes. A filesystem refusal propagates rather than being swallowed — a caller reporting a deletion that did not happen would tell a user their automation's notes were gone while they were still on disk.
+
+**What is deliberately absent:** nothing pre-creates a file or subdirectory inside it, nothing prunes it, nothing surfaces it to an operator, no trigger can see another's, and its contents are never auto-injected. Conventions — read before you work, leave what the next fire needs, keep it small, treat what is there as data — live in `skills/trigger-task/SKILL.md`, which is mounted on all three agent tracks. A runaway directory therefore stays unbounded and invisible until someone looks at the disk.
 
 ### Channel-message dispatch
 
@@ -127,7 +162,8 @@ Every **configuration change** — created/enabled, edited, paused/resumed, dele
 | File | Responsibility |
 | --- | --- |
 | `src/types/trigger.ts` | `Trigger`, `TriggerBinding`, `TriggerCondition` |
-| `src/system/trigger-store.ts` | One-JSON-file-per-trigger persistence |
+| `src/system/trigger-store.ts` | One-JSON-file-per-trigger persistence, plus the per-trigger data directory's lifecycle (`getTriggerDataPath`, `ensureTriggerDataDir`, `removeTriggerDataDir`) |
+| `src/agents/trigger-data.ts` | The two pure pieces of the persistent directory: the sandbox grant, and the prompt block that announces the path and lists its contents |
 | `src/system/trigger-scheduler.ts` | In-memory index, 60s tick, cron math, `fireTrigger`, announcements |
 | `src/system/trigger-visibility.ts` | Pure visibility decision (privacy injected) |
 | `src/agents/tools.ts` | PM tools: `propose_trigger`, `list_triggers`, `update_trigger`, `delete_trigger` |
@@ -135,4 +171,5 @@ Every **configuration change** — created/enabled, edited, paused/resumed, dele
 | `src/connectors/slack/events.ts` | Approve/Deny buttons + channel-message dispatch hook |
 | `src/connectors/api/routes.ts` | `/triggers` endpoints + the `trigger` approval branch |
 | `skills/triggers/SKILL.md` | Engine-owned PM skill (the orchestration playbook), loaded via the `Skill` tool |
+| `skills/trigger-task/SKILL.md` | Conventions for the per-trigger directory. Mounted on **all three** agent tracks, so it is written track-neutrally rather than in the PM's voice |
 | `prompts/pm-agent.md` | Short always-present blurb so the PM knows triggers exist before loading the skill |

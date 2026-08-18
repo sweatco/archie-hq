@@ -71,7 +71,9 @@ One PM agent instance is spawned per task. It is the orchestrator: it receives a
 | `list_available_repos` | List repos the GitHub App installation can reach (paginates `GET /installation/repositories`); tags repos a plugin specialist already covers. Cached per task. |
 | `spawn_repo_agent` | Create an on-demand repo agent bound to a chosen list of available repos (eager-mounted at spawn). Persists a `DynamicAgentSpec` to `metadata.dynamic_agents` and adds it to `task.team`. Rejects a repo already owned as a plugin specialist's primary. |
 
-The `Skill` tool is provided by the Claude Agent SDK itself (not by `pm-agent-tools`); skills are mounted from two sources — the `pm` plugin's own `skills/` directory, plus the core skills the `pm` track mounts per the `CORE_SKILL_MOUNTS` manifest in `src/agents/core-skills.ts` — resolved into one ordered `skillPaths` list and surfaced via `.claude/skills/` symlinks plus `settingSources: ['project']`. Plugin entries come first, so a `pm`-plugin skill shadows a core skill of the same name. See [plugin-system.md](plugin-system.md#core-skills-and-which-tracks-mount-them) for the manifest and the ordering rule. Built-in `Read`, `Glob`, and `Grep` tools are available against the PM workspace and the shared task folder (which is mounted read-only via `additionalDirectories`); `WebSearch` and `WebFetch` are explicitly disallowed.
+The `Skill` tool is provided by the Claude Agent SDK itself (not by `pm-agent-tools`); skills are mounted from two sources — the `pm` plugin's own `skills/` directory, plus the core skills the `pm` track mounts per the `CORE_SKILL_MOUNTS` manifest in `src/agents/core-skills.ts` — resolved into one ordered `skillPaths` list and surfaced via `.claude/skills/` symlinks plus `settingSources: ['project']`. Plugin entries come first, so a `pm`-plugin skill shadows a core skill of the same name. See [plugin-system.md](plugin-system.md#core-skills-and-which-tracks-mount-them) for the manifest and the ordering rule. Built-in `Read` is available against the PM workspace and the shared task folder (which is mounted read-only via `additionalDirectories`); `WebSearch` and `WebFetch` are explicitly disallowed. `Bash` is available and sandboxed.
+
+> **Caveat on `Glob` and `Grep`, observed live and pre-existing.** The filesystem guard's read check covers `Read`, `Glob` and `Grep`, and several sections of these docs plus `prompts/plugin-agent.md`, `prompts/repo-agent.md` and `prompts/triage-agent.md` offer them to agents — but **`Glob` is not actually present in this runtime**. A live agent asking for it gets `No such tool available: Glob`, and it is not a deferred tool either. Nothing disallows it: the SDK ships as a native build, and per its own `tools` documentation native builds omit the dedicated `Grep`/`Glob` tools in favour of Bash `find`/`grep` unless they are named in `tools` or `allowedTools`, which this app does not do. **`Grep` is therefore very likely absent for the same reason, though that was never confirmed.** Treat every mention of either in this documentation and in the agent prompts as unverified, and use `Bash` (`ls`, `find`, `grep`) to enumerate a directory.
 
 PR lifecycle tools (push, create PR, merge, etc.) live on repo agents via the `repo-tools` MCP server — the PM has no direct git or GitHub access.
 
@@ -140,7 +142,7 @@ The pre-v30 singular shape (`metadata.archie.repo: {github, baseBranch}`) is sti
 
 The PM can spawn a repo agent on demand via `spawn_repo_agent({shortname, repos, role?, expertise?})` — for repositories no plugin agent covers, without a redeploy. It behaves exactly like a plugin-defined repo agent (eager-mounts all its repos at spawn, same `repo-tools`, same lifecycle), differing only in:
 
-- No plugin Layer-3 prompt body, no plugin MCP servers — just the universal protocol + the repo-agent track extension + a generic role/expertise. It mounts no skills either: it has no plugin of its own, and it resolves core skills on the `repo` track, which the manifest leaves empty.
+- No plugin Layer-3 prompt body, no plugin MCP servers — just the universal protocol + the repo-agent track extension + a generic role/expertise. It has no plugin of its own, so the only skill it mounts is whatever the `repo` track carries in the manifest — today just `trigger-task`.
 - Its `repos` come from the PM's spawn args (validated reachable via `GitHubClient.resolveRepo`) rather than plugin frontmatter.
 - Its id is `<shortname>-<4hex>-agent`, and its `visibility` is `global`.
 
@@ -165,13 +167,13 @@ Plugin agents are lightweight agents for domains that don't need git or GitHub i
 | `share_artifact` | `agent-tools` | Publish an immutable snapshot to `shared/artifacts/` |
 | `web_research` | `research-tools` | Spawn a research pipeline |
 | `Read`, `Glob`, `Grep` | (built-in) | Explore files in the agent workspace and (read-only) shared folder |
-| `Skill` | (SDK built-in) | Load domain-specific agent skills mounted from the plugin |
+| `Skill` | (SDK built-in) | Load agent skills mounted from the plugin, plus any core skill this agent's track mounts (today `trigger-task` on every track) |
 | `Write`, `Edit` | (built-in) | Create and modify files within the agent workspace (`.claude/settings.json`, `.claude/skills`, `.claude/hooks` and `CLAUDE.md` are protected) |
 | `Bash` | (built-in) | Run commands, sandboxed to the same write boundary; no network egress unless frontmatter declares `allowedNetworkDomains` |
 
 `WebSearch` and `WebFetch` are explicitly disallowed. Plugin agents have no access to git or `repo-tools`, so there is no repository for `Write`/`Edit`/`Bash` to reach — the write boundary is the sandbox, not the tool list. An agent's frontmatter may narrow this set further via `tools` or `disallowedTools`.
 
-**Workspace**: Each plugin agent gets its own workspace at `sessions/{taskId}/agents/{key}/` (cwd, read-write). Plugin skills are symlinked into `.claude/skills/`, plugin hooks are written to `.claude/settings.json`, and the shared task folder is mounted read-only via `additionalDirectories`.
+**Workspace**: Each plugin agent gets its own workspace at `sessions/{taskId}/agents/{key}/` (cwd, read-write). Plugin skills, plus any core skill this agent's track mounts, are symlinked into `.claude/skills/`, plugin hooks are written to `.claude/settings.json`, and the shared task folder is mounted read-only via `additionalDirectories`.
 
 ## Two-Channel Communication
 
@@ -301,12 +303,13 @@ Triage Agent (disabled):
 
 ## Agent Characteristics
 
-### No Persistent Code Memory
+### No Persistent Code Memory (one exception)
 
 Agents do not retain knowledge of code between tasks. Each task starts with fresh agent instances. Context comes from:
 - `knowledge.log` (task history, previous findings)
 - `metadata.json` (task state, participants, thread/PR info)
 - The repository itself (read via tools)
+- **On a trigger-fired task only:** that trigger's persistent directory, which is shared by every fire of the same trigger and is the one place an agent can leave notes for a future task — see [triggers.md](triggers.md#persistent-per-trigger-directory)
 
 ### Session History
 

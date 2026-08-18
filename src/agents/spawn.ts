@@ -11,7 +11,7 @@
  */
 
 import { join, basename } from 'path';
-import { mkdir, symlink, writeFile } from 'fs/promises';
+import { mkdir, readdir, symlink, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { randomUUID } from 'node:crypto';
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -40,6 +40,7 @@ import {
   readKnowledgeLog,
 } from '../tasks/persistence.js';
 import { WORKDIR, CACHES_DIR, getBaseCachePath, getPluginsHeadInfo } from '../system/workdir.js';
+import { ensureTriggerDataDir } from '../system/trigger-store.js';
 import {
   createRecoverableInputGenerator,
 } from './message-queue.js';
@@ -53,6 +54,7 @@ import { processAgentEventForLogging, logger } from '../system/logger.js';
 import { emitEvent } from '../system/event-bus.js';
 import { getProbeBaseUrl } from '../system/context-probe.js';
 import { buildSandboxConfig, buildManagedNetworkPolicy, buildPackageManagerCacheEnv, createFilesystemGuardHooks, TRUSTED_PACKAGE_REGISTRY_DOMAINS, type SandboxOptions } from './sandbox.js';
+import { grantTriggerDataAccess, buildTriggerDataPromptSection } from './trigger-data.js';
 import { applyOAuthBindings } from '../system/oauth/inject.js';
 import { enrichPromptWithMemory, isMemoryEnabled, isInjectionEnabled } from '../memory/index.js';
 
@@ -312,7 +314,7 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     allowReadPaths: [workspace, sharedPath, ...claudeReadDirs, ...pluginReadPaths],
     // CACHES_DIR is shared by every agent and must be writable, or package
     // managers hit the EROFS that buildPackageManagerCacheEnv exists to avoid.
-    // allowWrite only — a path in both lists loses its rw mount (see sandbox.ts).
+    // allowWrite only: writable implies readable here. The one thing it costs is the artifact tools, which validate allowReadPaths alone — see sandbox.ts.
     allowWritePaths: [workspace, CACHES_DIR, ...claudeWriteDirs],
     denyWritePaths: [sharedPath, ...pluginPaths, ...protectedWorkspaceFiles],
     allowedNetworkDomains: def.allowedNetworkDomains,
@@ -359,9 +361,6 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     );
     if (metadata.reminder) {
       contextLines.push(`Reminder: ${metadata.reminder.trigger_at} — ${metadata.reminder.reason}`);
-    }
-    if (metadata.triggered_by) {
-      contextLines.push(`Spawned by trigger: ${metadata.triggered_by} (this is a fresh, trigger-initiated task — deliver the result as instructed in the first message)`);
     }
     // Surface the live plugins-repo version so the PM can tell users when the
     // plugins/agents were last updated. Refreshed on every task start/load.
@@ -606,6 +605,29 @@ Shared folder: ${sharedPath} [READ-ONLY]
   const channelCanvasSection = await buildChannelCanvasPromptSection(metadata);
   if (channelCanvasSection) {
     systemPrompt = `${systemPrompt}\n\n${channelCanvasSection}`;
+  }
+
+  // ---- Persistent per-trigger directory (trigger-fired tasks only, every track) ----
+  //
+  // After all three per-track branches, like the canvas block above: one injection point,
+  // so no branch can miss it. Must stay ahead of `agent.sandbox = sandboxOpts` below —
+  // that object is what the guard hooks and the bwrap config are built from.
+  //
+  // Deliberately NOT in `additionalDirectories`: CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD
+  // auto-loads a CLAUDE.md from those, and this directory is agent-writable, so listing it
+  // would let one agent write prompt text for every later agent on the same trigger.
+  const triggerId = metadata.triggered_by;
+  const triggerDataPath = triggerId ? await ensureTriggerDataDir(triggerId) : null;
+  if (triggerId && triggerDataPath) {
+    sandboxOpts = grantTriggerDataAccess(sandboxOpts, triggerDataPath);
+    // Names only, to save the agent a turn — it can list the directory itself either way.
+    // deleteTrigger's rm can interleave with this read, and an ENOENT escaping here would
+    // stop the agent starting, so degrade to the empty listing the builder already renders.
+    const triggerDataEntries = await readdir(triggerDataPath).catch((err) => {
+      logger.warn('trigger-data', `Could not list ${triggerDataPath}, announcing it as empty: ${err}`);
+      return [] as string[];
+    });
+    systemPrompt = `${systemPrompt}\n\n${buildTriggerDataPromptSection(triggerId, triggerDataPath, triggerDataEntries)}`;
   }
 
   // ---- Organizational memory injection (read path; gated by ARCHIE_MEMORY_INJECT, default off) ----

@@ -50,7 +50,7 @@ Both layers use the same allow/deny path lists, ensuring consistent enforcement 
 OS-level sandbox (Bash only):
   denyRead:  [/app, /home/archie/.claude]
   allowRead: [shared folder, shell-snapshots, base repo .git/objects, plugin dirs]
-  allowWrite: [/tmp, agent's workspace (if edit mode)]
+  allowWrite: [/tmp, CACHES_DIR, agent's workspace, trigger data dir (trigger-fired tasks)]
   denyWrite:  [.claude/settings.json, .claude/skills, .claude/hooks, CLAUDE.md]
 
 PreToolUse hooks (Read, Write, Edit, Glob, Grep):
@@ -62,6 +62,12 @@ PreToolUse hooks (Read, Write, Edit, Glob, Grep):
 **Reads:** System paths (`/bin`, `/usr`, `/etc`, `/tmp`, etc.) are open — Bash needs them. Application code (`/app`) and CLI session logs (`/home/archie/.claude`) are denied. Specific agent paths are re-allowed via `allowRead`.
 
 **Writes:** Deny-all by default. Workspace paths added to `allowWrite` per track. `/tmp` is always writable (tools need scratch space). Protected files (`.claude/settings.json`, `.claude/skills`, `.claude/hooks`, `CLAUDE.md`) are in `denyWrite` — agents cannot modify their own configuration at runtime.
+
+**A path can be granted write-only** — present in `allowWrite` without a matching `allowRead`. `CACHES_DIR` (`$ARCHIE_WORKDIR/caches/`, the shared package-manager cache) is granted that way; check the `allowWritePaths` grant sites in `src/agents/spawn.ts` for the current set rather than trusting a list here. Two things about that form are worth knowing, because both are counter-intuitive.
+
+**It is still fully readable, including from `Bash`.** The intuitive reading — and what Known Limitation 1 below used to assert — is that the parent's `denyRead` destroys the child's grant. Measured under bwrap 0.11.0 with the production config, it does not: an agent can `cat`, `ls` and write to the path from the shell, and the writes persist to real disk. `denyRead` emits its `--tmpfs` **before** the `allowWrite --bind`, so the bind sits on top and survives, and the parent stays opaque while the granted subtree punches through. Listing the path in `allowRead` as well changes nothing observable, so write-only is a free choice rather than something the sandbox forces.
+
+**But the in-process artifact tools cannot read it.** `assertReadable` (`src/agents/artifacts.ts`) validates against `allowReadPaths` alone, unlike the OS sandbox and the PreToolUse hook, which both treat writable as readable. So an agent can write a file into a write-only path and then be refused when it tries to `share_artifact` it. `CACHES_DIR` lives with that — its package tarballs are not shareable and nobody has needed them to be. **A path agents are expected to produce shareable output in should be granted in both lists**, which is what a trigger-fired task's `$ARCHIE_WORKDIR/triggers-data/<trigger-id>/` does (see [Triggers](triggers.md#persistent-per-trigger-directory)).
 
 **Network:** Outbound access from Bash is deny-all by default. Agents cannot `curl`, `wget`, or otherwise reach the internet from shell commands; web access is only available through the controlled research pipeline (MCP tools). Two narrow exceptions widen the allowlist: repo agents in **edit mode** may reach the trusted package registries (`registry.npmjs.org`, `registry.yarnpkg.com`) so `npm`/`yarn` installs and lockfile regeneration work, and a plugin agent may declare `allowedNetworkDomains` in its frontmatter (e.g. the `ops` plugin reaching `sheets.googleapis.com`). Read-only repo agents and the PM stay fully denied.
 
@@ -90,8 +96,8 @@ Git identity is configured on each clone at spawn time. Bwrap sandbox artifacts 
 **Repo Agent (read-only):**
 - CWD: `sessions/<taskId>/repos/<repoKey>` (shared clone)
 - Read: clone + shared folder + `baseRepo/.git/objects` + plugin dirs
-- Write: none
-- Bash: available — git read commands work, write attempts fail at OS level
+- Write: workspace, `CACHES_DIR` and `/tmp` — never the clone. On a **trigger-fired** task, also that trigger's data directory (read-write; see the note under Filesystem Isolation). So a read-only repo agent is read-only *with respect to the code*, not write-denied everywhere.
+- Bash: available — git read commands work, write attempts against the clone fail at OS level
 
 **Repo Agent (edit mode):**
 - CWD: `sessions/<taskId>/repos/<repoKey>` (shared clone)
@@ -240,7 +246,7 @@ Every task maintains a `knowledge.log` file (`sessions/{task-id}/shared/knowledg
 ```
 Layer 1: OS-level sandbox (Bash only)
   ├── denyRead [/app, ~/.claude] + allowRead [shared, base .git/objects, plugin dirs]
-  ├── allowWrite [/tmp, workspace] + denyWrite [.claude/settings.json, .claude/skills, .claude/hooks, CLAUDE.md]
+  ├── allowWrite [/tmp, CACHES_DIR, workspace, trigger data dir] + denyWrite [.claude/settings.json, .claude/skills, .claude/hooks, CLAUDE.md]
   ├── failIfUnavailable: true (refuse to start rather than run unsandboxed)
   └── network namespace: no DNS, no direct route — all egress via the sandbox proxy
 
@@ -305,7 +311,7 @@ Production requires these persistent mounts:
 
 | Path | Purpose |
 |------|---------|
-| `/workdir` | Runtime state: repos, sessions, plugins |
+| `/workdir` | Runtime state: repos, sessions, plugins, trigger records and per-trigger data |
 | `/home/archie/.claude` | Claude CLI config, session logs, shell snapshots |
 | `/home/archie/.claude.json` | Claude CLI feature flags (auto-regenerated if missing) |
 
@@ -323,15 +329,17 @@ Web research is performed by the host process via Perplexity Agent API — there
 
 ## Known Sandbox Limitations
 
-These are tracked issues with workarounds in place. Remove workarounds when upstream fixes land.
+Tracked sandbox issues. Each says whether a workaround is in place; remove a workaround when the upstream fix lands. Item 1 is retained as a correction rather than an open issue — it needs no workaround because it does not reproduce.
 
-### 1. denyRead on parent destroys allowWrite on children (sandbox-runtime bug)
+### 1. ~~denyRead on parent destroys allowWrite on children~~ — not reproducible; entry retained as a correction
 
-**Issue:** bwrap's mount ordering emits `allowWrite --bind` before `denyRead --tmpfs`. The tmpfs on the parent destroys the child's writable bind mount. `allowRead` then restores read-only access but write access is permanently lost.
+**This entry was wrong, and its claim survived long enough to shape both code comments and agent-facing prompt text, so it is corrected here rather than deleted.**
 
-**Workaround:** Don't `denyRead` any directory that contains writable child paths. Currently `/workdir/sessions` is left open to Bash (not denied). PreToolUse hooks enforce read boundaries on in-process tools (Read/Glob/Grep). This means Bash can technically browse other tasks' session directories. Exfiltrating what it finds is bounded by the egress allowlist rather than impossible — a read-only agent is denied all egress, but an edit-mode agent can reach the package registries, so this control depends on the network boundary actually holding (see **Network** above).
+**What it claimed:** that bwrap emits `allowWrite --bind` before `denyRead --tmpfs`, so a tmpfs on the parent destroys a child's writable bind, leaving `allowRead` to restore read-only access with write "permanently lost". It also claimed `/workdir/sessions` was left undenied as a workaround.
 
-**When to remove:** When `sandbox-runtime` fixes mount ordering (tmpfs before bind) or provides a `denyRead` mode that doesn't use tmpfs. Track: `anthropic-experimental/sandbox-runtime` issues.
+**What is actually true**, measured inside the container under **bubblewrap 0.11.0** with the production config (`denyReadPaths: ['/workdir']`, child granted through `allowWritePaths` only): the child is fully readable **and** writable from `Bash`, and the writes persist to the real host-mounted disk. The ordering is the reverse of the claim — the `denyRead` tmpfs is emitted **first** and the `allowWrite` bind is layered on top, so it survives. Inside the sandbox the granted child lists normally while its parent renders as a mode-700, 60-byte tmpfs: the deny holds for everything except the explicitly granted subtree. A control with `allowRead` alone yields read-without-write, confirming the sandbox was genuinely enforcing rather than disabled. Separately, the workaround claim was already false against the code: `src/agents/spawn.ts` denies all of `WORKDIR`, `/workdir/sessions` included.
+
+**Consequence:** no workaround is needed, and `denyRead` on a parent is safe to combine with `allowWrite` on a child. Do not reason from this entry's original claim; if a future `sandbox-runtime` upgrade changes mount ordering, re-measure rather than assuming either direction.
 
 **Source:** `src/agents/sandbox.ts` (`buildSandboxConfig` comment)
 

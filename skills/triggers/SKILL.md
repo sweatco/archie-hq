@@ -22,7 +22,7 @@ A reminder ("remind me in 10 minutes") wakes the *current* conversation later an
 
 Don't propose a trigger until you have:
 
-1. **What to do when it fires** — the concrete action, in enough detail that a fresh task with no prior context could carry it out (it genuinely starts clean each time). Also give it a **short, friendly name** — a few words, a noun phrase, not a full sentence and not ending in a period (e.g. "Daily #bot-test summary", "Reply to messages mentioning Archie"). That name is what the user sees in the approval card and the channel notices, so it must describe **what the automation produces/does** — not restate the schedule (the cadence is rendered automatically) and, for a message-watch trigger, not restate the triggering condition ("A new message was posted…"). Keep the detailed instruction in the action prompt, behind the scenes.
+1. **What to do when it fires** — the concrete action, in enough detail that a fresh task with no prior conversation could carry it out (every fire starts a new task that cannot see this one). A trigger does keep one directory across its fires, though, so the action may legitimately tell the agent to build on what an earlier fire left there — just never on a conversation. Also give it a **short, friendly name** — a few words, a noun phrase, not a full sentence and not ending in a period (e.g. "Daily #bot-test summary", "Reply to messages mentioning Archie"). That name is what the user sees in the approval card and the channel notices, so it must describe **what the automation produces/does** — not restate the schedule (the cadence is rendered automatically) and, for a message-watch trigger, not restate the triggering condition ("A new message was posted…"). Keep the detailed instruction in the action prompt, behind the scenes.
 2. **When / what to watch** —
    - Schedule: the cadence or the one-off time, **and the timezone** (confirm it if you're not sure — "9am" is meaningless without one).
    - Channel-message: which channel, and any filter (a keyword, a specific sender).
@@ -44,7 +44,7 @@ You can only see and manage triggers that belong to the space the user is talkin
 - From a **private channel**: that channel's triggers, plus public ones.
 - From a **DM**: that person's own DM triggers, plus public ones.
 
-A private channel's or a DM's triggers are never visible from anywhere else. When someone asks "what's set up here", list everything you can see and narrow it conversationally if they want just one channel or just the schedules. When they ask to pause, resume, edit, or delete one, do it by its id — anything you can see, you can manage.
+A private channel's or a DM's triggers are never visible from anywhere else. When someone asks "what's set up here", list everything you can see and narrow it conversationally if they want just one channel or just the schedules. When they ask to pause, resume, edit, or delete one, do it by its id — anything you can see, you can manage. One warning worth giving before you delete: a trigger keeps a directory that its runs use to carry work forward, and deleting the trigger deletes that too. If the automation has been running a while, say so and offer to pause it instead.
 
 ### Changes are announced; firing is not
 

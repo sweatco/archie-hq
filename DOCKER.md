@@ -75,6 +75,8 @@ archie-hq/
 └── workdir/                # All runtime state (git-ignored)
     ├── plugins/            # Auto-cloned from ARCHIE_PLUGINS
     ├── plugins-data/       # Persistent per-plugin data
+    ├── triggers/           # One JSON record per trigger
+    ├── triggers-data/      # Persistent per-trigger data, one dir per fired trigger
     ├── repos/              # Base repo clones
     │   ├── backend/
     │   └── mobile/
