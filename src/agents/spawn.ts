@@ -10,8 +10,8 @@
  * Session recovery pattern (try with session → reset → retry → give up) written once.
  */
 
-import { join, basename } from 'path';
-import { mkdir, symlink, writeFile } from 'fs/promises';
+import { join, basename, dirname, resolve, sep } from 'path';
+import { mkdir, rm, symlink, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { randomUUID } from 'node:crypto';
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -538,6 +538,39 @@ Shared folder: ${sharedPath} [READ-ONLY]
     // mode) plus per-repo read-only/protected paths.
     const readOnlyPaths = [sharedPath, ...repoMounts.map((m) => m.baseObjectsPath), ...pluginReadPaths];
     const cloneGitHeads = repoMounts.map((m) => join(m.clonePath, '.git', 'HEAD'));
+    // git-lfs writes a temp object into `.git/lfs/tmp` whenever its clean filter
+    // runs, which `git status` triggers on an LFS file with stale index stat data.
+    // On a read-only clone that write fails and git exits 128. Symlinked into the
+    // writable workspace instead of added to allowWrite: the clone has to stay in
+    // allowRead, and that ro-bind shadows any rw bind beneath it (verified).
+    // Per agent and per repo; holds only in-flight temp files, so replacing the
+    // dir git-lfs may have made during checkout loses nothing.
+    // Both paths are derived from PM-influenced values (the attached repo id), so
+    // each is resolved and then checked to be inside its intended root before any
+    // fs call — `..` survives the character filter on its own, and resolve() is
+    // what collapses it.
+    const lfsScratchRoot = resolve(workspace, '.lfs-tmp');
+    const taskRoot = resolve(getTaskPath(taskId));
+    const cloneLfsTmp = repoMounts.map((m) => ({
+      link: resolve(m.clonePath, '.git', 'lfs', 'tmp'),
+      target: resolve(lfsScratchRoot, m.github.replace(/[^\w.-]/g, '_')),
+    }));
+    await Promise.all(cloneLfsTmp.map(async ({ link, target }) => {
+      if (!target.startsWith(lfsScratchRoot + sep) || !link.startsWith(taskRoot + sep)) {
+        logger.warn('spawn', `Refusing git-lfs scratch redirect outside its root: ${link} -> ${target}`);
+        return;
+      }
+      try {
+        await mkdir(target, { recursive: true });
+        await rm(link, { recursive: true, force: true });
+        await mkdir(dirname(link), { recursive: true });
+        await symlink(target, link);
+      } catch (error) {
+        // Best-effort: LFS still works for anything not needing scratch space.
+        logger.warn('spawn', `Could not redirect git-lfs scratch for ${link}: ${error}`);
+      }
+    }));
+
     sandboxOpts = {
       cwd,
       denyReadPaths: [WORKDIR],
