@@ -12,6 +12,7 @@ import {
   updateChannelStore,
   type ChannelPinEntry,
 } from '../../system/channel-store.js';
+import { renderMessageBody } from './message-body.js';
 import { digestOf, normalisePinText, summarisePinText, truncateTo, VERBATIM_MAX } from './pin-summary.js';
 import type { TaskMetadata } from '../../types/task.js';
 
@@ -138,7 +139,15 @@ export async function ensureChannelPins(channelId: string): Promise<void> {
         continue;
       }
 
-      const sourceText = (item.kind === 'message' ? item.text : item.fileName) ?? '';
+      // Render the pin through the one module that turns a Slack message into agent-facing text, so an app post, a workflow card or an unfurl indexes from its real body rather than an empty legacy `text`. `listChannelPins` hands the parts out structured precisely so this render happens here: `message-body.ts` imports from `client.js`, and this file imports `listChannelPins` from it, so rendering inside the client would close a cycle.
+      //
+      // `includeReactions: false` is load-bearing, not cosmetic. The digest below is computed from this exact string and is what makes "re-summarise once when the pin is edited" work. Reactions change without the pin ever being edited, so letting a `[Reactions: …]` suffix into the digest input would turn that into "re-summarise every time someone adds an emoji" — a model call per reaction, forever.
+      const sourceText = (item.kind === 'message'
+        ? renderMessageBody(
+            { ownText: item.ownText ?? '', attachments: item.attachments, files: item.files },
+            { redacted: false, includeReactions: false },
+          )
+        : item.fileName) ?? '';
       const digest = digestOf(normalisePinText(sourceText));
 
       // Same text as last scan → same one-liner, and no model call. The digest changes

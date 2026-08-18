@@ -966,8 +966,35 @@ describe('listChannelPins', () => {
     const pins = await client.listChannelPins('C1');
 
     expect(pins).toHaveLength(1);
-    expect(pins![0].text).toContain('quarterly planning doc');
-    expect(pins![0].text).toContain('link preview body');
+    expect(pins![0].ownText).toContain('quarterly planning doc');
+    expect(pins![0].attachments?.map((a) => a.text)).toContain('link preview body');
+  });
+
+  // The parts are handed out structured, never pre-joined here: rendering a message into
+  // agent-facing text belongs to `message-body.ts`, and the caller does it.
+  it('carries an attachment out unrendered rather than joining it into the text', async () => {
+    slackApi.pins.list.mockResolvedValue({
+      items: [
+        {
+          type: 'message',
+          created: 1700000000,
+          created_by: 'UPINNER',
+          message: {
+            ts: '777.888',
+            user: 'UAUTHOR',
+            text: 'see the card',
+            attachments: [{ text: 'incident postmortem body' }],
+          },
+        },
+      ],
+    });
+
+    const pins = await client.listChannelPins('C1');
+
+    expect(pins![0].ownText).toBe('see the card');
+    expect(pins![0].attachments).toHaveLength(1);
+    expect(pins![0].attachments![0].text).toBe('incident postmortem body');
+    expect(pins![0].ownText).not.toContain(' — ');
   });
 
   // An app/bot post has no human author, and `resolveRawMessages` reports that as an
@@ -1025,7 +1052,7 @@ describe('listChannelPins', () => {
         pinnedBy: 'UPINNER',
         messageTs: '111.222',
         author: 'UAUTHOR',
-        text: 'read the deploy runbook first',
+        ownText: 'read the deploy runbook first',
         permalink: 'https://acme.slack.com/archives/C1/p111222',
       },
       {
