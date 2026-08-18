@@ -209,7 +209,11 @@ describe('channel-message trigger dispatch matches the rendered body', () => {
   // What the fix actually buys is covered above: content reachable ONLY through extraction (an
   // attachment card, a Block Kit body, a resolved mention) becomes matchable. Reverting dispatch to the
   // raw field fails the attachment-only case. The absence of the fallback itself is pinned structurally
-  // by render-path-structure.test.ts, which asserts the nullish-coalescing-to-a-text-object form appears nowhere under src/ (spelled there from string parts, precisely so the guard does not match its own source).
+  // by render-path-structure.test.ts only for the exact thread-root form that PR #280 used — it does NOT
+  // catch an arbitrary raw-text fallback added to dispatch later, and claiming otherwise would be
+  // overstating it. The discriminator that WOULD catch that is mention resolution: extraction rewrites
+  // `<@U123>` to `<@U123:Real Name>`, so a filter on the resolved name matches the render and not the raw
+  // field. That test is not written here; it is recorded as a known gap rather than implied to exist.
 
   it('costs no rendering when no trigger watches the channel', async () => {
     vi.mocked(getChannelMessageTriggers).mockReturnValue([]);
