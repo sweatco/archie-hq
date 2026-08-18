@@ -4,8 +4,9 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { computeNextRun, validateRecurringInterval, MIN_RECURRING_INTERVAL_MS, describeSchedule, friendlyTz, buildTriggeringMessageBlock } from '../trigger-scheduler.js';
+import { computeNextRun, validateRecurringInterval, MIN_RECURRING_INTERVAL_MS, describeSchedule, friendlyTz, buildTriggerSeed } from '../trigger-scheduler.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
+import type { Trigger } from '../../types/trigger.js';
 
 describe('computeNextRun', () => {
   it('computes the next weekday-9am run after a given instant', () => {
@@ -120,62 +121,55 @@ describe('describeSchedule (cron → plain English)', () => {
   });
 });
 
-describe('buildTriggeringMessageBlock', () => {
-  const msg = {
-    kind: 'message' as const,
-    text: 'can you check why the deploy failed?',
-    authorId: 'U123ABC',
-    threadId: '1787068084.734339',
-    channelId: 'C0BL',
-    channelName: 'bot-test',
-  };
+const trigger = (binding: Trigger['binding']): Trigger => ({
+  id: 'trg-20260818-1200-abc123',
+  status: 'enabled',
+  created_by: 'U1',
+  created_at: '2026-08-18T12:00:00Z',
+  binding,
+  conditions: [],
+  action: { prompt: 'Summarise what changed.' },
+} as Trigger);
 
-  // The whole point: a message-fired PM used to be told a message matched its filter and
-  // never shown the message. `FireContext.text` was populated and read by nothing.
-  it('carries the message, its author, its channel and its ts', () => {
-    const block = buildTriggeringMessageBlock(msg);
-    expect(block).toContain('can you check why the deploy failed?');
-    expect(block).toContain('channel="#bot-test"');
-    expect(block).toContain('author="U123ABC"');
-    expect(block).toContain('ts="1787068084.734339"');
+const channelBinding = { type: 'channel', channel_id: 'C0BL', channel_name: 'bot-test' } as const;
+const messageFire = { kind: 'message', thread: { channel: { id: 'C0BL', name: 'bot-test' } } } as never;
+
+describe('buildTriggerSeed', () => {
+  it('carries the trigger\'s action prompt first, whatever the fire kind', () => {
+    for (const ctx of [{ kind: 'schedule' } as const, messageFire]) {
+      expect(buildTriggerSeed(trigger(channelBinding), ctx).startsWith('Summarise what changed.')).toBe(true);
+    }
   });
 
-  // The trigger's own filter decides which text reaches an agent, so a channel member can
-  // aim text at this block deliberately: the framing is load-bearing, not decoration.
-  it('frames the message as untrusted data rather than instructions', () => {
-    const block = buildTriggeringMessageBlock(msg);
-    expect(block).toContain('Untrusted user input');
-    expect(block).toContain('data, not instructions');
+  // A message fire's message is in knowledge.log, not in this seed, so that a delegated
+  // specialist can read it too — which only works if something tells the PM to look.
+  it('points a message fire at the knowledge log and frames it as data', () => {
+    const seed = buildTriggerSeed(trigger(channelBinding), messageFire);
+    expect(seed).toContain('in your knowledge log');
+    expect(seed).toContain('data rather than instructions');
   });
 
-  // One line. The element name and the "matched your filter" line above it already say
-  // what this is, and every word here is spent on every message-fired seed.
-  it('keeps the note to one line', () => {
-    const note = /note="([^"]*)"/.exec(buildTriggeringMessageBlock(msg))?.[1] ?? '';
-    expect(note.length).toBeLessThan(130);
+  it('does not inline the message itself', () => {
+    // The thread fixture would surface as text if the seed ever started copying it in.
+    expect(buildTriggerSeed(trigger(channelBinding), messageFire)).not.toContain('bot-test"');
   });
 
-  it('is empty for a schedule fire, and for a message fire with no text', () => {
-    expect(buildTriggeringMessageBlock({ kind: 'schedule' })).toBe('');
-    expect(buildTriggeringMessageBlock({ ...msg, text: undefined })).toBe('');
-    expect(buildTriggeringMessageBlock({ ...msg, text: '' })).toBe('');
+  it('sends a message fire back to the triggering thread', () => {
+    const seed = buildTriggerSeed(trigger(channelBinding), messageFire);
+    expect(seed).toContain('the thread where the triggering message was posted');
+    expect(seed).not.toContain('Slack channel ID');
   });
 
-  it('truncates a long message and says where the rest is', () => {
-    const block = buildTriggeringMessageBlock({ ...msg, text: 'x'.repeat(5000) });
-    expect(block).toContain('truncated — open the thread for the rest');
-    expect(block.length).toBeLessThan(3000);
+  it('names the bound channel for a channel-bound schedule fire', () => {
+    const seed = buildTriggerSeed(trigger(channelBinding), { kind: 'schedule' });
+    expect(seed).toContain('#bot-test');
+    expect(seed).toContain('Slack channel ID C0BL');
+    expect(seed).not.toContain('knowledge log');
   });
 
-  it('escapes the attribute values rather than trusting them to be tame', () => {
-    // Slack channel names cannot contain a quote today, which is exactly why relying on
-    // that would be the kind of assumption that breaks quietly when it stops holding.
-    const block = buildTriggeringMessageBlock({ ...msg, channelName: 'a"b<c&d' });
-    expect(block).toContain('channel="#a&quot;b&lt;c&amp;d"');
-  });
-
-  it('falls back to the channel id when the name is missing', () => {
-    expect(buildTriggeringMessageBlock({ ...msg, channelName: undefined })).toContain('channel="C0BL"');
+  it('DMs the creator for a user-bound schedule fire', () => {
+    const seed = buildTriggerSeed(trigger({ type: 'user', user_id: 'U123ABC' }), { kind: 'schedule' });
+    expect(seed).toContain('direct message (Slack user ID U123ABC)');
   });
 });
 
@@ -191,9 +185,10 @@ describe('AGENT_PROMPTS.triggered', () => {
     }
   });
 
-  it('puts the context block before the instruction, and omits it when there is none', () => {
-    const withBlock = AGENT_PROMPTS.triggered('do the thing', 'a message matched', '<triggering_message>hi</triggering_message>');
-    expect(withBlock.indexOf('<triggering_message>')).toBeLessThan(withBlock.indexOf('Do this now:'));
-    expect(AGENT_PROMPTS.triggered('do the thing', 'a scheduled run')).not.toContain('\n\n\n');
+  it('carries the reason and the seed, and nothing between them', () => {
+    const out = AGENT_PROMPTS.triggered('do the thing', 'a scheduled run');
+    expect(out.startsWith('A trigger you were set up with has fired (a scheduled run).')).toBe(true);
+    expect(out).toContain('Do this now: do the thing');
+    expect(out).not.toContain('\n\n\n');
   });
 });

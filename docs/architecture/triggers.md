@@ -72,14 +72,16 @@ A one-off schedule auto-pauses after it fires (its condition is consumed). **Res
 `fireTrigger(trigger, context)` (`src/system/trigger-scheduler.ts`) is shared by the scheduler (schedule context) and the Slack dispatch hook (message context):
 
 1. Create a fresh task; set `metadata.triggered_by = trigger.id`.
-2. Wire delivery — for a message-context fire, link the triggering thread as the default channel (no post); for a schedule fire, the spawned PM opens the destination itself.
+2. For a message-context fire, ingest the triggering thread with `Task.append` — knowledge log, linked channel, default channel, no post; for a schedule fire, the spawned PM opens the destination itself.
 3. Seed the PM with `AGENT_PROMPTS.triggered(...)` and let it do the work.
 
 **Firing posts no preamble.** The spawned PM does the work and posts the result itself, so the first thing the channel sees is the actual output — not an "I was triggered" line.
 
-**A message fire hands over the message.** `buildTriggeringMessageBlock` puts the matched message — its text, its author's Slack id, its channel and its ts — into the seed as a `<triggering_message>` block, ahead of the instruction. Its `note` is one line, and carries only the part that has to be there: the text is untrusted input and is data rather than instructions. That matters more here than elsewhere, because the trigger's own filter decides which text reaches an agent, so a channel member can aim text at this block deliberately. It does not repeat what the element name and the reason line above it already say, and unlike `buildChannelPinnedMessagesSection` it says nothing about Slack identities being self-chosen — `author` is an immutable user id, not a display name. Long messages are cut at 2000 characters with a pointer to the thread.
+**A message fire ingests the thread like any other.** `FireContext` for a message fire carries the whole `SlackThread` the Slack event handler already fetched, and `fireTrigger` hands it to `Task.append` — the same path an @mention or a DM goes through. So the triggering message lands in `knowledge.log` with its real author, its files and attachments, and shared-channel redaction applied, and the thread is linked as the task's default channel, which is what makes the PM reply in the right place.
 
-This was a gap rather than a decision. `FireContext.text` was populated from the Slack event and then read by nothing, so a PM woken by "a new message in #x matched your filter" was given the channel and the thread but never the message. It could fetch the thread itself — `linkSlackThread` makes that its default channel — but nothing handed the text over and nothing told it to look, and the thread-append path could not have supplied it either: linking sets `last_processed_ts` to the triggering message's own ts, and that path only appends messages newer than it.
+**It lands in the log, not in the seed, on purpose.** The seed reaches the PM alone: a specialist the PM delegates to never sees it, and the log is the one place every agent on the task reads. Inlining the message would have handed the PM context its own delegates were blind to. Because `AGENT_PROMPTS.triggered` carries the action rather than a "check the log" instruction like `newTask`/`existingTask` do, `buildTriggerSeed` adds one line pointing at the log and framing what is there as data rather than instructions — that framing matters here, since the trigger's own filter is what decides which text reaches an agent.
+
+This was a gap rather than a decision. `FireContext.text` was populated from the Slack event and then read by nothing, so a PM woken by "a new message in #x matched your filter" was given the channel and the thread but never the message. It could have fetched the thread itself, but nothing handed the text over and nothing told it to look — and the thread-append path could not have supplied it either, because the fire linked the thread with `linkSlackThread` (now removed, since ingesting the thread does that job) which set `last_processed_ts` to the triggering message's own ts, and that path only appends messages newer than it.
 
 **The seed states no destination.** `AGENT_PROMPTS.triggered` deliberately says nothing about where the result goes, because `fireTrigger` already appended a delivery line to the prompt it passes in and it is the only thing that knows the fire kind. The template used to close with "post the result to the bound channel", which on a message fire sat two paragraphs under a delivery line telling the agent to reply in the triggering thread — one message, two contradictory destinations.
 
@@ -173,7 +175,7 @@ Every **configuration change** — created/enabled, edited, paused/resumed, dele
 | `src/system/trigger-scheduler.ts` | In-memory index, 60s tick, cron math, `fireTrigger`, announcements |
 | `src/system/trigger-visibility.ts` | Pure visibility decision (privacy injected) |
 | `src/agents/tools.ts` | PM tools: `propose_trigger`, `list_triggers`, `update_trigger`, `delete_trigger` |
-| `src/tasks/task.ts` | `handleTriggerApproval` / `handleTriggerDenial`, `linkSlackThread` |
+| `src/tasks/task.ts` | `handleTriggerApproval` / `handleTriggerDenial`, `append` (ingests a message fire's thread) |
 | `src/connectors/slack/events.ts` | Approve/Deny buttons + channel-message dispatch hook |
 | `src/connectors/api/routes.ts` | `/triggers` endpoints + the `trigger` approval branch |
 | `skills/triggers/SKILL.md` | Engine-owned PM skill (the orchestration playbook), loaded via the `Skill` tool |

@@ -906,30 +906,6 @@ export class Task {
   }
 
   /**
-   * Link an existing Slack thread to this task and promote it to the default
-   * channel. Posts nothing — used by `fireTrigger` for channel-message triggers
-   * so the spawned PM replies in the triggering thread rather than opening a new
-   * one. Idempotent; mirrors the channel-registration shape used by `append`.
-   * Returns the channel key.
-   */
-  linkSlackThread(channelId: string, threadTs: string, channelName: string): string {
-    const key = `slack:${channelId}:${threadTs}`;
-    if (!this.metadata.channels[key]) {
-      this.metadata.channels[key] = {
-        type: 'slack',
-        thread_id: threadTs,
-        channel_id: channelId,
-        channel_name: channelName,
-        last_processed_ts: threadTs,
-        url: buildThreadUrl(channelId, threadTs) ?? undefined,
-      };
-    }
-    this.metadata.default_channel ??= key;
-    this.debouncedSave();
-    return key;
-  }
-
-  /**
    * Stop the task and clean up all agents.
    */
   async stop(): Promise<void> {

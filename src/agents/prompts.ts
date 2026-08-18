@@ -40,21 +40,17 @@ Read knowledge.log to see where you left off, then take action.`,
 
   reminder: (reason: string) => `Your scheduled reminder has fired. Reason: ${reason}\n\nCheck knowledge.log for the latest context and decide what to do next.`,
 
-  // Deliberately says nothing about WHERE the result goes. `fireTrigger` appends a
-  // delivery line to the prompt it passes here, and it is the only thing that knows the
-  // fire kind: a message fire replies in the triggering thread, a schedule fire posts to
-  // the bound channel or DMs the creator. This template used to close with "post the
-  // result to the bound channel", which on a message fire directly contradicted the
-  // delivery line two paragraphs above it.
+  // Deliberately says nothing about WHERE the result goes, and does not carry the
+  // triggering message either. `buildTriggerSeed` (src/system/trigger-scheduler.ts) owns
+  // both: it is the only place that knows the fire kind, and a message fire's message goes
+  // to knowledge.log rather than into this message, which reaches the PM alone. This
+  // template used to close with "post the result to the bound channel", which on a message
+  // fire contradicted the delivery line two paragraphs above it.
   //
-  // It also names neither the trigger directory nor the `trigger-task` skill: those
-  // belong in the section buildTriggerDataPromptSection appends, which every track sees,
-  // while this message reaches the PM alone.
-  //
-  // `contextBlock` carries whatever fired the trigger — today the triggering Slack
-  // message. It sits before the instruction because it is what the instruction is about.
-  triggered: (prompt: string, reason: string, contextBlock = '') =>
-    `A trigger you were set up with has fired (${reason}).${contextBlock ? `\n\n${contextBlock}` : ''}\n\nDo this now: ${prompt}\n\nYou are read-only by default; if the work requires code changes, request edit mode first.`,
+  // It also names neither the trigger directory nor the `trigger-task` skill: those belong
+  // in the section buildTriggerDataPromptSection appends, which every track sees.
+  triggered: (prompt: string, reason: string) =>
+    `A trigger you were set up with has fired (${reason}).\n\nDo this now: ${prompt}\n\nYou are read-only by default; if the work requires code changes, request edit mode first.`,
 
   reinforceAgent: `RECOVERY: You went idle without reporting back.
 
