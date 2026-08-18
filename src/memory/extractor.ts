@@ -8,6 +8,8 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { logger } from '../system/logger.js';
+import { isAllowedDomain } from './sanitize.js';
+import { escapeXmlText } from './envelope.js';
 import type { ExtractionResult, MemoryUpdate, EntityUpdate } from './types.js';
 
 // ============================================================================
@@ -15,7 +17,7 @@ import type { ExtractionResult, MemoryUpdate, EntityUpdate } from './types.js';
 // ============================================================================
 
 export interface ExtractionInput {
-  userMemory: string;
+  collaborationProfiles: string;
   /** Current entity index (thin table) so the extractor resolves to existing entities. */
   entityIndex: string;
   taskId: string;
@@ -32,41 +34,6 @@ export interface ExtractionInput {
 
 const TRANSCRIPT_LIMIT = 100_000;
 
-const FALLBACK_TEMPLATE = `You are reviewing a completed task session. Extract learnings.
-
-Current user knowledge:
-<user_memory>
-{{USER_MEMORY}}
-</user_memory>
-
-Known entities (resolve against these — do not duplicate):
-<entity_index>
-{{ENTITY_INDEX}}
-</entity_index>
-
-Task metadata:
-<task_metadata>
-Task ID: {{TASK_ID}}
-Participants: {{PARTICIPANTS}}
-Task Owner: {{TASK_OWNER}}
-Status: {{STATUS}}
-Created: {{CREATED_AT}}
-</task_metadata>
-
-Task transcript:
-<transcript>
-{{TRANSCRIPT}}
-</transcript>
-
-Respond with ONLY a JSON object:
-{
-  "user_updates": {},
-  "entity_updates": [],
-  "task_summary": "Summary of what happened.",
-  "activity_summary": "One-line activity description",
-  "domain": "engineering|marketing|operations|product|other"
-}`;
-
 // ============================================================================
 // buildExtractionPrompt
 // ============================================================================
@@ -74,35 +41,27 @@ Respond with ONLY a JSON object:
 /**
  * Load the memory-extractor template and substitute all {{VAR}} placeholders.
  * Transcript is truncated at 100K chars if needed.
- * Falls back to an inline template if the prompt file does not exist.
  */
 export async function buildExtractionPrompt(input: ExtractionInput): Promise<string> {
-  let transcript = input.transcript;
-  if (transcript.length > TRANSCRIPT_LIMIT) {
-    transcript = transcript.slice(0, TRANSCRIPT_LIMIT) + '\n[truncated]';
-  }
+  let transcript = escapeXmlText(input.transcript);
+  if (transcript.length > TRANSCRIPT_LIMIT) transcript = `${transcript.slice(0, TRANSCRIPT_LIMIT)}\n[truncated]`;
 
   const variables: Record<string, string> = {
-    USER_MEMORY: input.userMemory,
-    ENTITY_INDEX: input.entityIndex,
-    TASK_ID: input.taskId,
-    PARTICIPANTS: input.participants,
-    TASK_OWNER: input.taskOwner,
-    STATUS: input.status,
-    CREATED_AT: input.createdAt,
+    COLLABORATION_PROFILES: escapeXmlText(input.collaborationProfiles),
+    ENTITY_INDEX: escapeXmlText(input.entityIndex),
+    TASK_ID: escapeXmlText(input.taskId),
+    PARTICIPANTS: escapeXmlText(input.participants),
+    TASK_OWNER: escapeXmlText(input.taskOwner),
+    STATUS: escapeXmlText(input.status),
+    CREATED_AT: escapeXmlText(input.createdAt),
     TRANSCRIPT: transcript,
   };
 
   try {
     return await loadPrompt('memory-extractor', variables);
-  } catch {
-    logger.warn('memory', 'memory-extractor prompt template not found, using inline fallback');
-    let template = FALLBACK_TEMPLATE;
-    for (const [key, value] of Object.entries(variables)) {
-      const pattern = new RegExp(`{{${key}}}`, 'g');
-      template = template.replace(pattern, value);
-    }
-    return template;
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`Required prompt prompts/memory-extractor.md could not be loaded: ${reason}`);
   }
 }
 
@@ -111,13 +70,19 @@ export async function buildExtractionPrompt(input: ExtractionInput): Promise<str
 // ============================================================================
 
 /**
- * Validate a single update has required fields.
+ * Validate a single update has required fields. `evidence` is normalized to a
+ * string array here; whether the citations actually resolve to lines authored
+ * by the target user is enforced by the lifecycle (own-statements check).
  */
 function isValidUpdate(u: unknown): u is MemoryUpdate {
   if (typeof u !== 'object' || u === null) return false;
   const obj = u as Record<string, unknown>;
   if (obj.action !== 'add' && obj.action !== 'update') return false;
   if (typeof obj.content !== 'string') return false;
+  if (obj.evidence !== undefined) {
+    if (!Array.isArray(obj.evidence)) return false;
+    obj.evidence = obj.evidence.filter((e) => typeof e === 'string');
+  }
   return true;
 }
 
@@ -196,12 +161,18 @@ export function parseExtractionResponse(
     filteredUserUpdates[username] = updates as MemoryUpdate[];
   }
 
+  const requestedDomain = obj.domain.toLowerCase().trim();
+  const domain = isAllowedDomain(requestedDomain) ? requestedDomain : 'other';
+  if (domain !== requestedDomain) {
+    logger.warn('memory', `parseExtractionResponse: invalid domain ${JSON.stringify(obj.domain)} — using "other"`);
+  }
+
   return {
     user_updates: filteredUserUpdates,
     entity_updates: parseEntityUpdates(obj.entity_updates),
     task_summary: obj.task_summary,
     activity_summary: obj.activity_summary,
-    domain: obj.domain,
+    domain,
   };
 }
 

@@ -17,23 +17,31 @@ const HEADER = `# Recent Activity
 | Date | Task ID | Summary | Domain | User |
 |------|---------|---------|--------|------|`;
 
-const ROW_REGEX = /^\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|$/;
-const SEPARATOR_REGEX = /^\|[-\s|]+\|$/;
-
 function parseRow(line: string): ActivityEntry | null {
-  const match = ROW_REGEX.exec(line);
-  if (!match) return null;
+  if (!line.startsWith('|') || !line.endsWith('|')) return null;
+  const cells: string[] = [];
+  let cell = '';
+  for (let i = 1; i < line.length - 1; i++) {
+    if (line[i] === '|' && line[i - 1] !== '\\') {
+      cells.push(cell.trim());
+      cell = '';
+    } else {
+      cell += line[i];
+    }
+  }
+  cells.push(cell.trim());
+  if (cells.length !== 5) return null;
 
-  const date = match[1].trim();
+  const date = cells[0];
   // Skip header row and separator row
   if (date === 'Date' || date.startsWith('-')) return null;
 
   return {
     date,
-    taskId: match[2].trim(),
-    summary: match[3].trim(),
-    domain: match[4].trim(),
-    user: match[5].trim(),
+    taskId: cells[1],
+    summary: cells[2].replace(/\\\|/g, '|'),
+    domain: cells[3],
+    user: cells[4],
   };
 }
 
@@ -46,15 +54,26 @@ function buildFile(entries: ActivityEntry[]): string {
   return rows.length > 0 ? `${HEADER}\n${rows}\n` : `${HEADER}\n`;
 }
 
+/**
+ * Render entries as the activity markdown table (header + rows).
+ */
+export function renderActivityTable(entries: ActivityEntry[]): string {
+  return buildFile(entries);
+}
+
+/** Read the activity file verbatim for prompt injection. */
+export async function readActivityMarkdown(): Promise<string> {
+  try {
+    return await readFile(getRecentActivityPath(), 'utf-8');
+  } catch {
+    return '';
+  }
+}
+
 /** Parse the markdown table and return all data entries. */
 export async function readActivity(): Promise<ActivityEntry[]> {
-  const path = getRecentActivityPath();
-  let content: string;
-  try {
-    content = await readFile(path, 'utf-8');
-  } catch {
-    return [];
-  }
+  const content = await readActivityMarkdown();
+  if (!content) return [];
 
   const entries: ActivityEntry[] = [];
   for (const line of content.split('\n')) {
@@ -73,7 +92,7 @@ export async function readActivity(): Promise<ActivityEntry[]> {
  * removed before the new row is inserted at the top. This keeps the index
  * idempotent under retries.
  */
-export async function appendActivity(entry: ActivityEntry): Promise<void> {
+export async function appendActivity(entry: ActivityEntry, maxEntries = 50): Promise<void> {
   const clean = sanitizeActivityEntry(entry);
   if (!clean) {
     logger.warn('memory', `dropped activity entry (sanitizer rejected): ${JSON.stringify(entry).slice(0, 120)}`);
@@ -83,56 +102,14 @@ export async function appendActivity(entry: ActivityEntry): Promise<void> {
   const path = getRecentActivityPath();
   await mkdir(dirname(path), { recursive: true });
 
-  let content: string;
-  try {
-    content = await readFile(path, 'utf-8');
-  } catch {
-    await writeFile(path, `${HEADER}\n${entryToRow(clean)}\n`, 'utf-8');
-    return;
-  }
+  const content = await readFile(path, 'utf-8').catch(() => '');
 
-  const lines = content.split('\n');
-  const sepIndex = lines.findIndex((line) => SEPARATOR_REGEX.test(line.trimEnd()));
-
-  if (sepIndex === -1) {
-    // Malformed file — rewrite from scratch with only the new entry
-    await writeFile(path, `${HEADER}\n${entryToRow(clean)}\n`, 'utf-8');
-    return;
-  }
-
-  // Drop any existing row(s) for the same taskId — last-write-wins semantics.
-  const filtered = lines.filter((line, idx) => {
-    if (idx <= sepIndex) return true; // header + separator
-    const parsed = parseRow(line.trimEnd());
-    return !parsed || parsed.taskId !== clean.taskId;
-  });
-
-  // Re-find the separator in the filtered list (shouldn't move, but be safe)
-  const newSep = filtered.findIndex((line) => SEPARATOR_REGEX.test(line.trimEnd()));
-  filtered.splice(newSep + 1, 0, entryToRow(clean));
-  await writeFile(path, filtered.join('\n'), 'utf-8');
-}
-
-/** Keep only the newest maxEntries entries. Rewrites the file if trimming is needed. */
-export async function trimActivity(maxEntries = 50): Promise<void> {
-  const path = getRecentActivityPath();
-
-  let content: string;
-  try {
-    content = await readFile(path, 'utf-8');
-  } catch {
-    // File doesn't exist — nothing to trim
-    return;
-  }
-
-  const entries: ActivityEntry[] = [];
+  const entries: ActivityEntry[] = [clean];
   for (const line of content.split('\n')) {
-    const entry = parseRow(line.trimEnd());
-    if (entry) entries.push(entry);
+    const parsed = parseRow(line.trimEnd());
+    if (!parsed || parsed.taskId === clean.taskId) continue;
+    const existing = sanitizeActivityEntry(parsed);
+    if (existing) entries.push(existing);
   }
-
-  if (entries.length <= maxEntries) return;
-
-  const trimmed = entries.slice(0, maxEntries);
-  await writeFile(path, buildFile(trimmed), 'utf-8');
+  await writeFile(path, buildFile(entries.slice(0, Math.max(0, maxEntries))), 'utf-8');
 }

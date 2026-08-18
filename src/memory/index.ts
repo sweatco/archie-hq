@@ -8,17 +8,20 @@
  * Ejection: delete this file + src/memory/ directory + remove the initMemory() call from src/index.ts.
  */
 
-import { mkdir, readdir } from 'fs/promises';
+import { mkdir, readdir, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
-import { onEvent } from '../system/event-bus.js';
+import { join } from 'path';
+import { onTaskCompleted } from '../system/event-bus.js';
 import { handleTaskCompleted, rescheduleTaskCompleted } from './lifecycle.js';
-import { readPending } from './pending-queue.js';
+import { readPendingEntries } from './pending-queue.js';
 import {
   getMemoryDir,
+  getPublicStoreMarkerPath,
   getUsersDir,
-  getSummariesDir,
+  getTasksDir,
   getEntitiesDir,
   isMemoryEnabled,
+  disableMemoryRuntime,
   isAllowedUserId,
 } from './paths.js';
 import { logger } from '../system/logger.js';
@@ -33,21 +36,48 @@ export async function initMemory(): Promise<void> {
     return;
   }
 
-  await mkdir(getMemoryDir(), { recursive: true });
-  await mkdir(getUsersDir(), { recursive: true });
-  await mkdir(getSummariesDir(), { recursive: true });
-  await mkdir(getEntitiesDir(), { recursive: true });
+  try {
+    if (!(await preparePublicStore())) return;
+    await warnLegacyUserFiles();
+    await drainPendingExtractions();
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    disableMemoryRuntime(reason);
+    logger.error('memory', `Memory initialization failed; memory is disabled for this process: ${reason}`);
+    return;
+  }
 
-  await warnLegacyUserFiles();
-  await drainPendingExtractions();
-
-  onEvent((event) => {
-    if (event.type === 'task:completed') {
-      handleTaskCompleted(event.taskId);
-    }
-  });
+  onTaskCompleted((event) => handleTaskCompleted(event.taskId));
 
   logger.system('Memory layer initialized');
+}
+
+async function preparePublicStore(): Promise<boolean> {
+  const memoryDir = getMemoryDir();
+  const marker = getPublicStoreMarkerPath();
+  if (!existsSync(marker) && await containsAnyFile(memoryDir)) {
+    const reason = `existing store has no public-store marker; snapshot and clear ${memoryDir} before enabling memory`;
+    disableMemoryRuntime(reason);
+    logger.error('memory', `Memory disabled: ${reason}`);
+    return false;
+  }
+
+  await mkdir(memoryDir, { recursive: true });
+  await mkdir(getUsersDir(), { recursive: true });
+  await mkdir(getTasksDir(), { recursive: true });
+  await mkdir(getEntitiesDir(), { recursive: true });
+  if (!existsSync(marker)) await writeFile(marker, 'public-store-v1\n', 'utf-8');
+  return true;
+}
+
+async function containsAnyFile(dir: string): Promise<boolean> {
+  if (!existsSync(dir)) return false;
+  const entries = await readdir(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isFile() || entry.isSymbolicLink()) return true;
+    if (entry.isDirectory() && await containsAnyFile(join(dir, entry.name))) return true;
+  }
+  return false;
 }
 
 /**
@@ -56,17 +86,17 @@ export async function initMemory(): Promise<void> {
  * lose the learning.
  */
 async function drainPendingExtractions(): Promise<void> {
-  const pending = await readPending();
+  const pending = await readPendingEntries();
   if (pending.length === 0) return;
   logger.system(`[memory] Draining ${pending.length} pending extraction(s) from prior run`);
-  for (const taskId of pending) {
-    rescheduleTaskCompleted(taskId);
+  for (const { taskId, generation } of pending) {
+    rescheduleTaskCompleted(taskId, generation);
   }
 }
 
 /**
- * Scan workdir/memory/users/ for filenames that are NOT raw Slack IDs and
- * NOT documented fallback identifiers. Log a warning per file. No file is
+ * Scan workdir/memory/users/ for profile filenames that are NOT raw Slack IDs
+ * or documented fallback identifiers. Log a warning per file. No file is
  * renamed or deleted — operators decide what to do with legacy data.
  */
 async function warnLegacyUserFiles(): Promise<void> {
@@ -84,7 +114,7 @@ async function warnLegacyUserFiles(): Promise<void> {
     // Reverse the colon-to-double-underscore normalisation for fallback IDs.
     const candidate = stem.replace(/^(cli|local)__/, '$1:');
     if (!isAllowedUserId(candidate)) {
-      logger.warn('memory', `legacy user file (non-Slack-ID name): users/${name} — read at extraction time, never written to by this version`);
+      logger.warn('memory', `legacy profile file (non-Slack-ID name): users/${name} — retained unchanged and ignored by profile extraction`);
     }
   }
 }

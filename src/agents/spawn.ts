@@ -47,7 +47,7 @@ import { setupSharedClone, cloneExists, type CloneCheckout } from '../connectors
 import { configureGitIdentity, getGitHubAppIdentity } from '../connectors/github/client.js';
 import { buildChannelCanvasPromptSection } from '../connectors/slack/channel-canvas.js';
 import { buildChannelPinsPromptSection } from '../connectors/slack/channel-pins.js';
-import { resolvePeopleFromTranscript } from '../connectors/slack/client.js';
+import { getBotUserId, resolvePeopleFromTranscript } from '../connectors/slack/client.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { processAgentEventForLogging, logger } from '../system/logger.js';
 import { emitEvent } from '../system/event-bus.js';
@@ -55,6 +55,7 @@ import { getProbeBaseUrl } from '../system/context-probe.js';
 import { buildSandboxConfig, buildManagedNetworkPolicy, buildPackageManagerCacheEnv, createFilesystemGuardHooks, TRUSTED_PACKAGE_REGISTRY_DOMAINS, type SandboxOptions } from './sandbox.js';
 import { applyOAuthBindings } from '../system/oauth/inject.js';
 import { enrichPromptWithMemory, isMemoryEnabled, isInjectionEnabled } from '../memory/index.js';
+import { parseTranscript } from '../memory/transcript.js';
 
 // ---- Prompt generation (per agent kind) ----
 
@@ -159,21 +160,19 @@ async function setupAgentWorkspace(taskId: string, agent: Agent): Promise<string
 
 // ---- Memory helpers ----
 
-/**
- * Extract Slack user references from a task's knowledge.log.
- * Returns empty array if memory disabled, injection disabled, or log unavailable.
- * The result feeds only prompt injection, so when injection is off we skip the
- * transcript scan and user-file reads entirely.
- */
-async function extractTaskUsernames(taskId: string): Promise<import('../memory/types.js').UserRef[]> {
-  if (!isMemoryEnabled() || !isInjectionEnabled()) return [];
+async function extractTaskMemoryContext(taskId: string): Promise<{
+  users: import('../memory/types.js').UserRef[];
+  firstUserMessage?: string;
+}> {
+  if (!isMemoryEnabled() || !isInjectionEnabled()) return { users: [] };
   try {
-    const { readKnowledgeLog } = await import('../tasks/persistence.js');
-    const { extractUsernames } = await import('../memory/lifecycle.js');
-    const log = await readKnowledgeLog(taskId);
-    return extractUsernames(log);
+    const parsed = parseTranscript(await readKnowledgeLog(taskId), getBotUserId() ?? undefined);
+    return {
+      users: parsed.authors,
+      firstUserMessage: parsed.firstUserMessage,
+    };
   } catch {
-    return [];
+    return { users: [] };
   }
 }
 
@@ -211,6 +210,11 @@ export async function buildTaskPeopleSection(taskId: string): Promise<string> {
     lines.join('\n') +
     '\n</people_in_task>'
   );
+}
+
+export function deriveMemoryTaskTitle(title: string | null | undefined, firstUserMessage?: string): string | undefined {
+  const value = title?.trim() || firstUserMessage?.trim();
+  return value ? value.slice(0, 500) : undefined;
 }
 
 // ---- Main spawner ----
@@ -324,6 +328,9 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     'agent-tools': createBaseAgentMcpServer(agent, task),
     'research-tools': researchServer,
   };
+
+  const taskMemoryContext = await extractTaskMemoryContext(taskId);
+  const memoryUsers = taskMemoryContext.users;
 
   if (isPmAgent(def)) {
     // ---- PM coordinator ----
@@ -609,14 +616,16 @@ Shared folder: ${sharedPath} [READ-ONLY]
   }
 
   // ---- Organizational memory injection (read path; gated by ARCHIE_MEMORY_INJECT, default off) ----
-  const taskTitle = metadata.title ?? undefined;
+  // Users are the task's authors, computed once above.
+  const taskTitle = deriveMemoryTaskTitle(metadata.title, taskMemoryContext.firstUserMessage);
+  // taskId + agent feed the operator-only selection sensor under memory/telemetry/.
+  const memoryBase = { taskId, visibility: metadata.visibility, agent: def.id, taskTitle };
   const memorySelectors = isPmAgent(def)
-    ? { taskTitle }
+    ? memoryBase
     : isRepoAgent(def)
-      ? { repo: def.repo!.primary, taskTitle }
-      : { plugin: def.pluginName, taskTitle };
-  const memoryUsernames = await extractTaskUsernames(taskId);
-  systemPrompt = await enrichPromptWithMemory(systemPrompt, memoryUsernames, memorySelectors);
+      ? { ...memoryBase, repo: def.repo!.primary }
+      : { ...memoryBase, plugin: def.pluginName };
+  systemPrompt = await enrichPromptWithMemory(systemPrompt, memoryUsers, memorySelectors);
 
   // Expose the sandbox config on the agent so in-process tools (e.g.
   // `share_artifact`, `post_to_user` artifact_paths) can validate paths against
