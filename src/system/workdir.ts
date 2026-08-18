@@ -45,6 +45,20 @@ export const PLUGINS_DATA_DIR = join(WORKDIR, 'plugins-data');
 export const TRIGGERS_DATA_DIR = join(WORKDIR, 'triggers-data');
 
 /**
+ * Shared package-manager caches (npm, yarn, Corepack), written by every agent.
+ *
+ * Deliberately outside `SESSIONS_DIR`: cache content is a function of the
+ * lockfiles being installed, not of the task installing them, so scoping it per
+ * task means every task re-downloads the same bytes and keeps its own copy
+ * forever. That is what it did until this directory existed — 697 per-task
+ * caches holding ~285 GB, two thirds of it a single `_npx` tree.
+ *
+ * See `buildPackageManagerCacheEnv` for why sharing is safe (and the one place
+ * it isn't).
+ */
+export const CACHES_DIR = join(WORKDIR, 'caches');
+
+/**
  * Directory holding encrypted runtime secrets (e.g. OAuth tokens).
  * Defaults to `/app/secrets` (the docker-mounted volume) when present,
  * otherwise `<repo>/secrets` for local development. Override with
@@ -81,6 +95,7 @@ export async function bootstrapWorkdir(): Promise<void> {
   await mkdir(TRIGGERS_DIR, { recursive: true });
   await mkdir(PLUGINS_DATA_DIR, { recursive: true });
   await mkdir(TRIGGERS_DATA_DIR, { recursive: true });
+  await mkdir(CACHES_DIR, { recursive: true });
   await mkdir(OAUTH_DIR, { recursive: true, mode: 0o700 });
   await mkdir(OAUTH_PENDING_DIR, { recursive: true, mode: 0o700 });
 

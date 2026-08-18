@@ -276,6 +276,7 @@ archie-hq/
 ├── workdir/              # Runtime state (gitignored)
 │   ├── plugins/          # Symlink to archie-plugins (or auto-cloned via ARCHIE_PLUGINS)
 │   ├── plugins-data/     # Persistent per-plugin data
+│   ├── caches/           # Shared npm/yarn/Corepack caches (all agents, all tasks)
 │   ├── triggers/         # One JSON record per trigger
 │   ├── triggers-data/    # Persistent per-trigger data (survives across fires)
 │   ├── repos/            # Auto-cloned (or pre-cloned with SSH)

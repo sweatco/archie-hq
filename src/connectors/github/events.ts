@@ -300,5 +300,5 @@ async function handleExistingTaskDirect(
   }
 
   await appendGitHubEvent(taskId, context.githubRepo, formatGitHubEvent(context));
-  await task.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+  await task.sendMessage(AGENT_PROMPTS.githubInput, 'pm-agent');
 }

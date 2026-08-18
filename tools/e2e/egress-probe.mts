@@ -17,6 +17,7 @@
  * gets), so a pass here bounds every other agent.
  */
 
+import { dirname } from 'node:path';
 import { query } from '/app/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs';
 import {
   buildSandboxConfig,
@@ -32,10 +33,21 @@ const ALLOWED_HOST = `https://${TRUSTED_PACKAGE_REGISTRY_DOMAINS[0]}/npm`;
 
 const WORKSPACE = '/tmp/egress-check-ws';
 
+// Package-manager caches live in one shared directory outside the workspace, so
+// the probe's sandbox has to allow writing there or step 3 fails on EROFS for a
+// reason that has nothing to do with the network. Derived from the env builder
+// rather than hardcoded: this file is outside `tsconfig.json`'s `src/**/*`
+// include, so a drifting cache location is not a type error here — it is a
+// silent PKG=failed. Reading the path back from the function keeps the two in
+// step by construction.
+const cacheEnv = buildPackageManagerCacheEnv();
+const CACHE_ROOT = dirname(cacheEnv.npm_config_cache);
+
 const sandboxOpts = {
   cwd: WORKSPACE,
   allowReadPaths: [WORKSPACE],
-  allowWritePaths: [WORKSPACE],
+  // allowWrite only — a path in both lists loses its rw mount (see sandbox.ts).
+  allowWritePaths: [WORKSPACE, CACHE_ROOT],
   allowedNetworkDomains: [...TRUSTED_PACKAGE_REGISTRY_DOMAINS],
 };
 
@@ -62,7 +74,7 @@ const it = query({
       SHELL: '/bin/bash',
       // Same cache redirection spawn.ts applies — without it npm dies on the
       // read-only $HOME and step 3 fails for a reason unrelated to the network.
-      ...buildPackageManagerCacheEnv(WORKSPACE),
+      ...cacheEnv,
       // Same as spawn.ts: maps the sandbox proxy onto Yarn Berry's own config keys.
       ...(process.env.BASH_ENV ? { BASH_ENV: process.env.BASH_ENV } : {}),
       ...(process.env.NODE_USE_SYSTEM_CA ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA } : {}),

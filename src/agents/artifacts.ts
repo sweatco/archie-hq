@@ -31,11 +31,17 @@ import { getArtifactsPath } from '../tasks/persistence.js';
  * exist to mirror, silently refusing to share a file the agent had just
  * legitimately written.
  *
- * It is a behavioural no-op for every path that exists today, because
- * `allowWritePaths` is a subset of `allowReadPaths` on the base track
- * (src/agents/spawn.ts:314-315, :273-274) and on both repo-track branches
- * (:545-547). Only a path granted write-only changes behaviour — the persistent
- * per-trigger directory is the first of those.
+ * Two paths are granted write-only, so the union genuinely widens the read scope
+ * for exactly those two and for nothing else. Every other writable path is also
+ * in `allowReadPaths` (the workspace and the clones, src/agents/spawn.ts:314-315
+ * and :546-552; claudeTmpDir at :273-274), so for them this is a no-op.
+ *
+ * The two are the persistent per-trigger directory, and CACHES_DIR — the shared
+ * package-manager cache, granted `allowWrite`-only on both tracks. The CACHES_DIR
+ * consequence is deliberate but worth naming: an agent can now `share_artifact` a
+ * file out of the shared cache, which it could not before. That cache is package
+ * tarballs written by any agent on any task, so the content is low-value, but it
+ * is a cross-task read surface that this union opens rather than one it inherits.
  *
  * Companion to a future `assertWritable` (sandbox.allowWritePaths), still
  * unimplemented — the union here does not add it. The pair would keep the call

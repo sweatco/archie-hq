@@ -37,10 +37,10 @@ const LISTING_CAP = 50;
  * observable; `allowRead` alone is the only combination that yields
  * read-without-write.
  *
- * This is still the first path in the repository granted through `allowWritePaths`
- * alone — every other path appears in both lists (the agent workspace at
- * src/agents/spawn.ts:314-315, claudeTmpDir at :273-274) — which is why
- * `assertReadable` had to start consulting both lists (src/agents/artifacts.ts).
+ * It is one of two paths granted through `allowWritePaths` alone — the other is
+ * CACHES_DIR, the shared package-manager cache — which is why `assertReadable`
+ * had to start consulting both lists (src/agents/artifacts.ts). Everything else
+ * writable also appears in `allowReadPaths`.
  *
  * Returns a new options object; the input is not mutated.
  */
