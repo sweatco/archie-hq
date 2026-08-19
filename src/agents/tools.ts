@@ -48,7 +48,7 @@ import {
   buildOtherChannelContextSection,
 } from '../connectors/slack/channel-canvas.js';
 import { collectPinnedFileAllowlist } from '../connectors/slack/channel-pins.js';
-import { isDmOrUserId, findMutedTarget, taskSlackChannelIds } from '../connectors/slack/channel-ids.js';
+import { isDmOrUserId, findMutedTarget, taskSlackChannelIds, taskSlackChannelLabels } from '../connectors/slack/channel-ids.js';
 import {
   formatSlackSendError,
   formatSlackPostError,
@@ -554,10 +554,15 @@ function createListChannelsTool(_agent: Agent, task: Task) {
         // enumerable for the same reason it is readable: the canvas and pin blocks in the prompt name that
         // channel by its `#label`, and every read tool takes an id. Listing the capability without listing the
         // channel leaves the agent told about context it cannot go and look at.
-        const home = task.metadata.home_channel;
-        if (home && !seen.has(home.channel_id)) {
-          seen.add(home.channel_id);
-          own.push({ name: home.channel_name || home.channel_id, id: home.channel_id });
+        //
+        // Derived from the same helper the read gate and the standing-context blocks use, rather than reading
+        // `home_channel` again here. The linked channels above are a subset of it, so this only ever adds what
+        // `seen` has not already covered — and there is one answer to "which channels are this task's own"
+        // instead of two that can drift.
+        for (const [channelId, label] of taskSlackChannelLabels(task.metadata)) {
+          if (seen.has(channelId)) continue;
+          seen.add(channelId);
+          own.push({ name: label.replace(/^#/, ''), id: channelId });
         }
         if (publicChannels.length === 0 && own.length === 0) {
           return ok("Archie isn't a member of any channels you can use yet. Invite it to a channel (`/invite @Archie`) to explore there.");

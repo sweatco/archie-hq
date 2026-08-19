@@ -216,7 +216,9 @@ export async function ensureChannelCanvas(channelId: string, opts?: { announce?:
       // reclassified as external, abandoning the write keeps that canvas — with its markdown — in the store, so
       // the fired task's system prompt would carry externally-authored content for exactly the one fire that the
       // fail-closed classification above exists to prevent. Writing the fresh state and queuing the notice keeps
-      // context fail-closed and loses no notice: the next scan that may announce flushes the queue first.
+      // context fail-closed and loses no notice to the deferral itself: the next scan that may announce flushes the
+      // queue first. (A flush whose Slack post fails is still best-effort, as every announcement here always was —
+      // `announceCanvas` swallows and logs, and the queue is cleared with the flush.)
       for (const r of resolved) {
         store.announced[r.fileId] = true;
       }

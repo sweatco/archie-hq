@@ -28,6 +28,7 @@ Historical record of Archie's incremental development. Each plan represents a mi
 | [20260817](20260817-unify-core-skill-mounting.md) | Core skill mounting unified behind one manifest | Implemented |
 | [20260817](20260817-persistent-trigger-directory.md) | Persistent per-trigger directory that outlives a single fire | Implemented |
 | [20260818](20260818-slack-single-message-path.md) | One Slack message render path, and a denylist inbound gate | Implemented |
+| [20260819](20260819-trigger-task-owns-conversation.md) | A trigger-fired task owns its conversation: the message that fired it, and its own thread | Implemented |
 
 ## Evolution Arc
 

@@ -436,9 +436,9 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
   //
   // `announce: false` is what keeps "firing posts no preamble" true: a canvas scan announces adoption as a new
   // top-level message in the channel, and posted here it would arrive AHEAD of the task's own result and root a
-  // thread a human reply would turn into a stranger task. Suppressed, the scan leaves the store untouched
-  // whenever it had something to announce, so the next inbound event announces it properly. The pin index never
-  // announces anything, so it needs no such option.
+  // thread a human reply would turn into a stranger task. The scan still refreshes the store; what it defers is
+  // the NOTICE, queued in the channel store for the next scan that may post (see ensureChannelCanvas). The pin
+  // index never announces anything, so it needs no such option.
   //
   // The `.catch` is deliberate rather than defensive: a canvas or pins scan is context, and a failed scan
   // must never cost the fire itself — a scheduled run that silently does not happen is far worse than one

@@ -52,6 +52,8 @@ Whenever a trigger is created, edited, paused, resumed, or deleted, Archie autom
 
 When a trigger **fires**, the spawned task just does the work and posts the result normally — there's no "I was triggered" preamble, and you don't add one.
 
+Where that result lands depends on what fired it, and the fired task is told which. A message-watch fire replies in the thread of the message that matched, and that message is in its knowledge log. A scheduled fire has no thread yet: its first message to the user **opens the task's own thread** in the channel the trigger delivers to, and everything after that goes into the same thread — so when someone replies there, it comes back to the run that posted rather than starting a new one.
+
 ### A few hard rules
 
 - You can set up a trigger even from a task that was itself started by a trigger — it still requires the user's Approve/Deny, so there's no runaway risk.

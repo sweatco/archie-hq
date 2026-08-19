@@ -98,9 +98,10 @@ interface TaskMetadata {
   participants: AgentName[];                    // all agents that have participated
   channels: Record<string, Channel>;            // active message delivery targets, keyed by channel ID
   default_channel: string | null;               // channel ID of originating channel
+  home_channel?: { channel_id, channel_name };  // trigger-fired tasks: the channel to open the task's own thread in
   slack_threads?: SlackThreadRef[];             // legacy — only on old tasks, removed after migration
   agent_sessions: Record<string, AgentSessionState | string>;  // per-agent session state
-  repositories: Record<string, RepositoryInfo>; // per-repo metadata
+  repositories: Record<string, AttachedRepo[]>; // per-agent attached repos, keyed by agent id
   status: TaskStatus;                           // 'in_progress' | 'stopped' | 'completed'
   edit_allowed?: boolean;                       // user approved edit mode
   research_budget_extra?: number;               // additional budget granted (+5 per approval)
@@ -110,6 +111,8 @@ interface TaskMetadata {
   updated_at: string;                           // ISO timestamp, set on every write
 }
 ```
+
+The block above is illustrative, not exhaustive — several fields (`title`, `briefed_channels`, `max_mode`, `edit_approved_by`, `pending_merge_approval`, `triggered_by`, `pending_trigger_id`, `reminder`, `dynamic_agents`) are omitted. `src/types/task.ts` is the source of truth. Nothing validates or filters metadata on the way to disk: `save()` stringifies the whole object and `loadMetadata` is a bare `JSON.parse`, so an older build never drops a field a newer one wrote.
 
 ### Channel (replaces legacy `slack_threads`)
 

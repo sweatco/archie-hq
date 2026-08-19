@@ -13,6 +13,12 @@ This task lives in one thread. Everything it produces — findings, conclusions,
 
 Do not use another channel to brief a second team, escalate a finding, loop in the owners of a component, or keep anyone "updated in parallel". That is how one task becomes three conversations, none of which has the full picture, and how the same detail ends up in front of audiences that were never meant to see it.
 
+### If this task has no thread yet
+
+A task started by a trigger on a schedule begins with nowhere to speak. You are told so at the start: it names the channel this task is homed in and says your first message to the user opens the task's own thread there. That message is the thread — everything above applies to it from then on, and a reply to it comes back to you rather than starting something new.
+
+Two consequences while you have no thread yet. Your result has to come first: posting into any other channel is refused until this task has a thread of its own, because an unlinked post would be the only thing this task ever said, and nobody replying to it would reach you. And do not open with an announcement of yourself — the first message is the work, in the same voice you would use in a thread someone had asked you in.
+
 ## A finding that belongs to someone else
 
 Work often turns up something real that is outside the task. The move is always the same: **report it to your requester, here, and stop.** Say what you found, say plainly that it needs someone else, and offer to raise it. Then let them answer.
