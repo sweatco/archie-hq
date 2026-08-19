@@ -34,6 +34,8 @@ ln -s /path/to/main/checkout/claude-data  claude-data
 cp -R /path/to/main/checkout/secrets      secrets     # a real copy, NOT a symlink
 ```
 
+**Do all three, and link `workdir` whole — that alone resolves the setup.** In particular it is what supplies the plugins: main's `workdir/plugins` is itself a symlink to a local `archie-plugins` checkout, so linking main's `workdir` gets you the configured agents and their repos for free. Creating `workdir/` yourself instead — or letting the boot create it — leaves `workdir/plugins` empty, and **that does not fail the boot**: `ARCHIE_PLUGINS` is unset in local dev so nothing clones, and `initWorkdir`'s guard only tests that the directory *exists*. The instance comes up healthy with **zero agents**, and the first symptom is a repo-change scenario where the PM never requests edit mode — which reads like a product bug rather than setup.
+
 `workdir` is designed for concurrent access by many containers, so sharing it between checkouts is correct rather than risky — and copying it is not an option at ~20G.
 
 **`secrets/` is the exception and must be a real directory.** `Dockerfile.dev` does `COPY secrets/ /tmp/ca-src/`, and Docker's build context does not follow symlinks at the context root: a symlinked `secrets` fails the build with `"/secrets": not found`. Bind mounts *do* follow host symlinks, which is why `workdir` and `claude-data` are fine. The same asymmetry is why `docker-compose.yml` re-mounts `./workdir/plugins` explicitly — a symlink *inside* a mounted tree does not resolve in the container.
