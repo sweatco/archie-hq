@@ -28,6 +28,7 @@ vi.mock('../../connectors/github/client.js', async (importOriginal) => {
     parseCheckRef: actual.parseCheckRef,
     getGitHubClient: vi.fn(),
     fetchOrigin: vi.fn().mockResolvedValue(undefined),
+    getArchieAttributionIdentity: vi.fn(),
   };
 });
 
@@ -67,7 +68,7 @@ vi.mock('../registry.js', () => ({
 
 // ---- Helpers ----
 
-import { getGitHubClient } from '../../connectors/github/client.js';
+import { getGitHubClient, getArchieAttributionIdentity } from '../../connectors/github/client.js';
 import { isAutoMergeRepo } from '../registry.js';
 
 const mockGitHubClient = {
@@ -716,5 +717,60 @@ describe('findBranchStateByPR', () => {
   it('returns undefined when no branch_states', () => {
     const attached: AttachedRepo = { github: 'org/backend' };
     expect(findBranchStateByPR(attached, 42)).toBeUndefined();
+  });
+});
+
+/**
+ * PR attribution: the body is the only place the human behind a PR can appear,
+ * because GitHub sets the author from the credential that opens it. These cover
+ * the wiring — who gets named, and that a body rewrite doesn't drop the line.
+ */
+describe('PR attribution', () => {
+  const ARCHIE = { name: 'Archie HQ', email: 'x', mention: '@archie-hq' };
+  const APPROVER = { id: 'U1', name: 'Bandita Parida', email: 'b.parida@sweatco.in' };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getGitHubClient).mockReturnValue(mockGitHubClient as any);
+    vi.mocked(getArchieAttributionIdentity).mockReturnValue(ARCHIE as any);
+    vi.mocked(isAutoMergeRepo).mockReturnValue(true);
+    mockGitHubClient.createPullRequest.mockResolvedValue({ pr_number: 42, pr_url: 'https://gh/pr/42' });
+  });
+
+  /** The body create_pull_request actually sent to GitHub. */
+  const sentBody = () => mockGitHubClient.createPullRequest.mock.calls[0][4] as string;
+
+  it('names the approver, using their Slack display name', () => {
+    const tool = getRepoTool(makeAgent(), makeTask({ edit_approved_by: APPROVER }), 'create_pull_request');
+
+    return tool({ title: 'T', body: 'Description.' }, {}).then(() => {
+      expect(sentBody()).toContain('Opened by @archie-hq on behalf of Bandita Parida.');
+      expect(sentBody()).toContain('Description.');
+    });
+  });
+
+  it('names nobody when no approver was recorded', async () => {
+    // CLI approvals and pre-feature tasks have no edit_approved_by.
+    const tool = getRepoTool(makeAgent(), makeTask(), 'create_pull_request');
+    await tool({ title: 'T', body: 'Description.' }, {});
+
+    expect(sentBody()).toContain('Opened by @archie-hq.');
+    expect(sentBody()).not.toContain('on behalf of');
+  });
+
+  it('re-stamps attribution when update_pr rewrites the body', async () => {
+    const tool = getRepoTool(makeAgent(), makeTask({ edit_approved_by: APPROVER }), 'update_pr');
+    await tool({ pr_number: 42, body: 'Rewritten.' }, {});
+
+    const patched = mockGitHubClient.updatePR.mock.calls[0][2].body as string;
+    expect(patched).toContain('Opened by @archie-hq on behalf of Bandita Parida.');
+    expect(patched).toContain('Rewritten.');
+  });
+
+  it('leaves the body untouched when update_pr changes only the title', async () => {
+    const tool = getRepoTool(makeAgent(), makeTask({ edit_approved_by: APPROVER }), 'update_pr');
+    await tool({ pr_number: 42, title: 'New title' }, {});
+
+    expect(mockGitHubClient.updatePR.mock.calls[0][2].body).toBeUndefined();
   });
 });
