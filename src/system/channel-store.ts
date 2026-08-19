@@ -67,16 +67,10 @@ export interface ChannelStore {
   pinsCheckedAt?: number;
   /** How many pins passed the trust gate before the display cap, so the prompt block can disclose what the CAP hid — never what the gate refused. */
   pinsEligible?: number;
-  /**
-   * Canvas state changes that were detected by a scan which was not allowed to post, waiting for one that is.
-   *
-   * The trigger scheduler refreshes a channel's standing context immediately before a fired task speaks for the first time, and an adoption or drop notice posted there would land ahead of the automation's own result. Queuing the notice instead of dropping it is what keeps "no silent changes" true without turning a scheduled run into a preamble: the next scan that may announce flushes this list first.
-   */
-  pendingAnnouncements?: Array<{ kind: 'adopted' | 'ignored' | 'dropped'; title: string }>;
 }
 
 function emptyStore(): ChannelStore {
-  return { canvases: [], announced: {}, checkedAt: 0, pins: [], pinsCheckedAt: 0, pinsEligible: 0, pendingAnnouncements: [] };
+  return { canvases: [], announced: {}, checkedAt: 0, pins: [], pinsCheckedAt: 0, pinsEligible: 0 };
 }
 
 function storePath(channelId: string): string {
@@ -99,7 +93,6 @@ export async function loadChannelStore(channelId: string): Promise<ChannelStore 
       pins: parsed.pins ?? [],
       pinsCheckedAt: parsed.pinsCheckedAt ?? 0,
       pinsEligible: parsed.pinsEligible ?? 0,
-      pendingAnnouncements: parsed.pendingAnnouncements ?? [],
     };
   } catch (err) {
     logger.warn('channel-store', `Failed to parse store for ${channelId}: ${err}`);

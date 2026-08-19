@@ -14,7 +14,7 @@ let tabs: Array<{ file_id: string; title?: string }> | null = [];
 let fileInfos: Record<string, { title?: string; user?: string; updated?: number; filetype?: string }> = {};
 let userInfoImpl: (id: string) => Promise<{ external?: boolean }>;
 let storesByChannel: Record<string, unknown> = {};
-let savedStore: { canvases: unknown[]; announced: Record<string, boolean>; checkedAt: number; pendingAnnouncements?: Array<{ kind: string; title: string }> } | null = null;
+let savedStore: { canvases: unknown[]; announced: Record<string, boolean>; checkedAt: number } | null = null;
 
 vi.mock('../client.js', () => ({
   getChannelCanvasTabs: vi.fn(async () => tabs),
@@ -456,99 +456,6 @@ describe('ensureChannelCanvas — drop announcement', () => {
 
     expect(savedStore).toBeNull();
     expect(postSlackMessage).not.toHaveBeenCalled();
-  });
-});
-
-// `announce: false` is the trigger scheduler's option. It refreshes this store just before a fired task speaks for the first time, and an adoption notice posted there would land in the channel AHEAD of the automation's own result — a bot-rooted top-level message a human reply would turn into a stranger task, which is the exact shape the fired-task thread exists to replace. The contract is therefore all-or-nothing rather than "write but stay quiet": whenever the scan HAS something to announce, it must leave the store byte-for-byte as it found it — no `announced` flags, no `canvases` overwrite, no `checkedAt` advance — so the next inbound Slack event in the channel re-scans immediately and announces properly. Anything less would either post a preamble ahead of the result or mark the change announced while never announcing it, and the channel would then never learn that its standing context moved.
-describe('ensureChannelCanvas — announce: false defers the notice, never the refresh', () => {
-  beforeEach(() => {
-    tabs = [{ file_id: 'F_CANVAS', title: 'Archie — brief' }];
-    fileInfos = { F_CANVAS: { title: 'Archie — brief', user: 'U_INTERNAL', updated: 5 } };
-    userInfoImpl = async () => ({ external: false });
-    storesByChannel = { [CHANNEL]: { canvases: [], announced: {}, checkedAt: 0 } };
-    savedStore = null;
-    vi.mocked(postSlackMessage).mockClear();
-  });
-
-  it('adopts the canvas, posts nothing, and queues the notice for a caller that may post', async () => {
-    await ensureChannelCanvas(CHANNEL, { announce: false });
-
-    expect(postSlackMessage).not.toHaveBeenCalled();
-    // The refresh itself is never deferred. Abandoning the write was the first attempt at this and it is
-    // worse where it counts: a canvas whose creator has just been reclassified as external would stay in
-    // the store, markdown and all, and reach the prompt of the one fire this scan was run for.
-    expect(savedStore?.canvases).toHaveLength(1);
-    expect(savedStore?.announced['F_CANVAS']).toBe(true);
-    expect(savedStore?.checkedAt).toBeGreaterThan(0);
-    // Queued rather than dropped: the flag above is what would otherwise make this adoption silent forever.
-    expect(savedStore?.pendingAnnouncements).toEqual([{ kind: 'adopted', title: 'Archie — brief' }]);
-  });
-
-  it('a later caller that may post flushes the queue, ahead of the TTL and then clears it', async () => {
-    await ensureChannelCanvas(CHANNEL, { announce: false });
-    vi.mocked(postSlackMessage).mockClear();
-    // Carry the deferred store forward as the next scan's starting point, exactly as disk would.
-    storesByChannel[CHANNEL] = savedStore as unknown as Record<string, unknown>;
-
-    await ensureChannelCanvas(CHANNEL);
-
-    // The flush runs BEFORE the TTL early-return — `checkedAt` was just set, so a queue that only drained
-    // on a full re-scan would sit unposted for the whole TTL, and forever in a channel with no more traffic.
-    expect(postSlackMessage).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(postSlackMessage).mock.calls[0][0]).toMatchObject({ channel: CHANNEL });
-    expect(savedStore?.pendingAnnouncements).toEqual([]);
-  });
-
-  // The control that gives the case above its meaning: the identical scan, default caller. Without
-  // this pair, a broken scan that adopted nothing for anyone would pass the suppression assertions.
-  it('control: the same scan adopts and announces for a default caller', async () => {
-    await ensureChannelCanvas(CHANNEL);
-
-    expect(postSlackMessage).toHaveBeenCalledTimes(1);
-    expect(savedStore?.canvases).toHaveLength(1);
-    expect((savedStore?.canvases[0] as { file_id: string }).file_id).toBe('F_CANVAS');
-    expect(savedStore?.announced['F_CANVAS']).toBe(true);
-    expect(savedStore?.checkedAt).toBeGreaterThan(0);
-  });
-
-  // A drop is the asymmetry that bites hardest: losing the notice would leave the channel believing Archie
-  // still holds a brief it has stopped reading. The canvas itself must go immediately — that is the whole
-  // point of dropping it — so the notice, not the state, is what waits.
-  it('drops the canvas immediately and queues the drop notice', async () => {
-    storesByChannel[CHANNEL] = {
-      canvases: [{ ...adoptedEntry('F_CANVAS'), title: 'Archie — brief', creator: 'U_INTERNAL' }],
-      announced: { F_CANVAS: true },
-      checkedAt: 0,
-    };
-    tabs = [];
-
-    await ensureChannelCanvas(CHANNEL, { announce: false });
-
-    expect(postSlackMessage).not.toHaveBeenCalled();
-    expect(savedStore?.canvases).toEqual([]);
-    expect(savedStore?.pendingAnnouncements).toEqual([{ kind: 'dropped', title: 'Archie — brief' }]);
-  });
-
-  // Suppression is scoped to announcements, not to the refresh. In the steady state nothing would be
-  // announced, so a non-announcing caller must still get the ordinary write — otherwise every
-  // trigger fire in a settled channel would pointlessly abandon its own scan and read stale context.
-  it('still refreshes normally when there is nothing to announce', async () => {
-    storesByChannel[CHANNEL] = {
-      canvases: [{ ...adoptedEntry('F_CANVAS'), title: 'Archie — brief', creator: 'U_INTERNAL', updatedTs: 5 }],
-      announced: { F_CANVAS: true },
-      checkedAt: 0,
-    };
-
-    await ensureChannelCanvas(CHANNEL, { announce: false });
-
-    expect(postSlackMessage).not.toHaveBeenCalled();
-    expect(savedStore?.canvases).toHaveLength(1);
-    expect(savedStore?.announced).toEqual({ F_CANVAS: true });
-    expect(savedStore?.checkedAt).toBeGreaterThan(0);
-    // Nothing changed, so nothing is queued either — a non-announcing caller in a settled channel leaves no
-    // trace for the next one to post. Read through `?? []` deliberately: production normalises the field to an
-    // empty array on load, this suite's store mock does not, and what matters here is that nothing was ADDED.
-    expect(savedStore?.pendingAnnouncements ?? []).toEqual([]);
   });
 });
 

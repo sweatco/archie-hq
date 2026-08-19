@@ -352,11 +352,11 @@ describe('a schedule fire homes its task in the bound channel', () => {
   it('refreshes that channel\'s canvas and pin index before the first agent spawns', async () => {
     await fireTrigger(makeTrigger(), { kind: 'schedule' });
 
-    // `announce: false` is what keeps "firing posts no preamble" true even when the scan finds a change: a
-    // canvas adoption notice is a new top-level message, and posted here it would arrive ahead of the task's
-    // own result and root a thread a human reply would turn into a stranger task. The pin index announces
-    // nothing, so it needs no such option — hence the asymmetry in these two assertions.
-    expect(ensureChannelCanvasMock).toHaveBeenCalledWith(CHANNEL, { announce: false });
+    // The scan is called exactly as any other caller calls it, announcements included. A canvas adoption notice
+    // reports a real change to what Archie reads in this channel and carries no task footer, so it cannot be
+    // mistaken for the automation's own result — "firing posts no preamble" is about the fire not announcing
+    // ITSELF, which is asserted separately below.
+    expect(ensureChannelCanvasMock).toHaveBeenCalledWith(CHANNEL);
     expect(ensureChannelPinsMock).toHaveBeenCalledWith(CHANNEL);
     // Ordering is the point, not the calls: `sendMessage` assembles the first agent's system prompt inside
     // its own await (deliver → ensureAgentSpawned → agent.spawn), so a scan that lands afterwards reaches

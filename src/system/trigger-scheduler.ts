@@ -434,17 +434,16 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
   // `agent.spawn` assembles the first agent's system prompt inside that awaited call, so anything that has
   // to reach that prompt has to be in place beforehand.
   //
-  // `announce: false` is what keeps "firing posts no preamble" true: a canvas scan announces adoption as a new
-  // top-level message in the channel, and posted here it would arrive AHEAD of the task's own result and root a
-  // thread a human reply would turn into a stranger task. The scan still refreshes the store; what it defers is
-  // the NOTICE, queued in the channel store for the next scan that may post (see ensureChannelCanvas). The pin
-  // index never announces anything, so it needs no such option.
+  // The scan announces canvas adoption in the channel exactly as it does for any other caller, and that is wanted
+  // rather than tolerated: the notice reports a real change to what Archie reads in this channel, it is what
+  // explains why the fire's output looks the way it does, and it carries no task footer so it cannot be mistaken
+  // for the automation's own result. "Firing posts no preamble" is about the fire not announcing ITSELF.
   //
   // The `.catch` is deliberate rather than defensive: a canvas or pins scan is context, and a failed scan
   // must never cost the fire itself — a scheduled run that silently does not happen is far worse than one
   // that runs with a stale brief.
   if (homeChannelId) {
-    await Promise.all([ensureChannelCanvas(homeChannelId, { announce: false }), ensureChannelPins(homeChannelId)])
+    await Promise.all([ensureChannelCanvas(homeChannelId), ensureChannelPins(homeChannelId)])
       .catch((err) => logger.warn('trigger-scheduler', `Failed to refresh standing context for home channel ${homeChannelId} on trigger ${trigger.id}`, err));
   }
 
