@@ -282,6 +282,12 @@ export interface TaskMetadata {
   participants: AgentName[];
   channels: Record<string, Channel>;   // Active message delivery targets, keyed by channel ID
   default_channel: string | null;      // Channel ID of the originating channel (null for CLI-originated tasks)
+  /**
+   * The Slack channel a trigger-fired task is homed in. Written only by `fireTrigger`, from the binding on an approved trigger — never from a model input.
+   *
+   * It answers two questions for a task that has no thread yet: where the task opens its own thread (its first user-facing agent message becomes that thread's root), and whose standing context applies before that thread exists.
+   */
+  home_channel?: { channel_id: string; channel_name: string };
   title?: string;                      // AI-generated one-line summary; absent on pre-feature tasks
   slack_threads?: SlackThreadRef[];    // Legacy — only present on old tasks loaded from disk, removed after migration
   agent_sessions: Record<string, AgentSessionState | string>; // union handles legacy string values on disk

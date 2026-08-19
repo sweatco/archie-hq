@@ -442,10 +442,11 @@ export class Task {
    * - No target: post to default_channel only
    * - target.channel: post to a specific already-linked thread
    *
-   * Opening new DMs/threads is intentionally not supported — the PM reaches
-   * other channels via the task-decoupled `post_to_channel` explore tool, which
-   * deliberately does NOT link them to this task. Always returns null (the
-   * return type is kept for call-site compatibility).
+   * Posts to `default_channel`, or to an already-linked thread via
+   * `target.channel`. For a trigger-fired task that has a `home_channel` and no
+   * channel yet, a message sent by an agent opens the task's own thread there
+   * (the message itself becomes the thread root) and returns its channel key —
+   * that is the only way a new thread is ever opened. Otherwise returns null.
    */
   async postToUser(message: string, agentName?: string, target?: PostTarget): Promise<string | null> {
     const sender = agentName || 'system';
@@ -469,6 +470,16 @@ export class Task {
       ? this.metadata.channels[this.metadata.default_channel]
       : null;
     if (!defaultCh) {
+      // A trigger-fired task starts with no thread: its first user-facing message becomes the root of
+      // the thread it will live in. `sender !== 'system'` is load-bearing, not defensive — `sender` is
+      // `agentName || 'system'`, and the internal callers that post without an agentName are operational
+      // notices (the inter-agent budget warning and the wall-clock pause message). Letting one of those
+      // open the thread would make the root a preamble about the machinery rather than the result the
+      // trigger was created to deliver, which is exactly what this feature exists to avoid. So only an
+      // agent's own message may open a task's thread; a system notice with nowhere to go is still dropped.
+      if (this.metadata.home_channel && sender !== 'system') {
+        return this.openHomeThread(message, sender, footer);
+      }
       logger.warn('task', `postToUser called on task ${this.taskId} with no default channel — message dropped`);
       return null;
     }
@@ -479,6 +490,49 @@ export class Task {
       this.logOutgoingMessage(sender, message, 'cli', undefined, footer);
     }
     return null;
+  }
+
+  /**
+   * Post `message` as a new top-level message in the task's home channel and adopt that message as the task's thread, so every human reply to it routes back to this task instead of starting a new one.
+   *
+   * The message is the thread root: nothing is posted ahead of it. Only reached from `postToUser` for a task that has a `home_channel` and no channel yet.
+   */
+  private async openHomeThread(message: string, sender: string, footer: string): Promise<string | null> {
+    const home = this.metadata.home_channel!;
+
+    // One thread per channel: if this task already has a thread in the home channel (a reply arrived
+    // and linked it, or a restart re-read it from disk while default_channel was still null), post
+    // into that thread rather than rooting a second one alongside it.
+    const existing = Object.entries(this.metadata.channels).find(
+      (entry): entry is [string, SlackChannel] => entry[1].type === 'slack' && entry[1].channel_id === home.channel_id,
+    );
+    if (existing) {
+      const [key, ch] = existing;
+      this.metadata.default_channel = key;
+      await postSlackMessage({ channel: ch.channel_id, threadTs: ch.thread_id, text: message, footer });
+      this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch, footer);
+      await this.save(true);
+      return key;
+    }
+
+    // No threadTs — this is a new top-level post in the channel, and its ts becomes the thread root.
+    const ts = await postSlackMessage({ channel: home.channel_id, text: message, footer });
+    if (!ts) {
+      // Dry-run mode returns undefined without ever reaching Slack, so there is no thread to link to.
+      // Log the message so it still surfaces, but leave the task threadless rather than inventing a key.
+      logger.warn('task', `openHomeThread on task ${this.taskId}: no message ts returned for channel ${home.channel_id} — nothing linked`);
+      this.logOutgoingMessage(sender, message, formatSlackChannelDisplay(home.channel_name), undefined, footer);
+      return null;
+    }
+
+    const key = this.linkSlackThread(home.channel_id, ts, home.channel_name);
+    const ch = this.metadata.channels[key] as SlackChannel;
+    this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch, footer);
+    // Flushed rather than debounced on purpose: this record is what routes every future human reply back
+    // to this task, and the message is already live in Slack. A crash in the debounce window would leave a
+    // thread nobody owns — replies to it would open a brand-new task, which is the bug this feature fixes.
+    await this.save(true);
+    return key;
   }
 
   /**
