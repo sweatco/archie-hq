@@ -259,10 +259,9 @@ describe('the routing gate lets the message kinds #280 lost through', () => {
     });
 
     expect(vi.mocked(fireTrigger)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(fireTrigger).mock.calls[0][1]).toMatchObject({
-      kind: 'message', triggerTs: FIXTURE_TS,
-    });
+    expect(vi.mocked(fireTrigger).mock.calls[0][1]).toMatchObject({ kind: 'message' });
     expect(vi.mocked(fireTrigger).mock.calls[0][1].thread?.channel.id).toBe(CHANNEL);
+    expect(vi.mocked(fireTrigger).mock.calls[0][1].thread?.threadId).toBe(FIXTURE_TS);
   });
 
   it('forwards a me_message thread reply — the message kind the old allowlist made invisible', async () => {

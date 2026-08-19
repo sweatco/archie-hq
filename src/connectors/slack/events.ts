@@ -878,7 +878,6 @@ async function dispatchChannelMessageTriggers(
         kind: 'message',
         thread,
         body,
-        triggerTs: event.ts,
         authorId: event.user || raw?.bot_id || undefined,
         channelName,
       });

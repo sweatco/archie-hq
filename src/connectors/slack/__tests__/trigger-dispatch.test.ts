@@ -186,10 +186,11 @@ describe('channel-message trigger dispatch matches the rendered body', () => {
     expect(vi.mocked(fireTrigger).mock.calls[0][1]).toMatchObject({
       kind: 'message',
       body: 'deploy failed on prod (build 4711)',
-      triggerTs: '1700000000.000100',
     });
-    // The fetched thread travels with the fire — it is what the task ingests.
+    // The fetched thread travels with the fire — it is what the task ingests, and its root ts is the
+    // triggering message's own, since dispatch only ever fires on a top-level post.
     expect(vi.mocked(fireTrigger).mock.calls[0][1].thread?.channel.id).toBe(CHANNEL);
+    expect(vi.mocked(fireTrigger).mock.calls[0][1].thread?.threadId).toBe('1700000000.000100');
   });
 
   it('still fires on plain top-level text', async () => {

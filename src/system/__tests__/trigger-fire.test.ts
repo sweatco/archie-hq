@@ -177,7 +177,7 @@ describe('a message fire ingests its thread', () => {
     const thread = messageThread();
 
     await fireTrigger(makeTrigger(), {
-      kind: 'message', thread, body: BODY, triggerTs: TRIGGER_TS, authorId: 'U_DEV', channelName: CHANNEL_NAME,
+      kind: 'message', thread, body: BODY, authorId: 'U_DEV', channelName: CHANNEL_NAME,
     });
 
     const task = createdTasks[0]!;
@@ -193,7 +193,7 @@ describe('a message fire ingests its thread', () => {
 
   it('seeds the agent with where to reply, not with the message text', async () => {
     await fireTrigger(makeTrigger(), {
-      kind: 'message', thread: messageThread(), body: BODY, triggerTs: TRIGGER_TS, authorId: 'U_DEV', channelName: CHANNEL_NAME,
+      kind: 'message', thread: messageThread(), body: BODY, authorId: 'U_DEV', channelName: CHANNEL_NAME,
     });
 
     const task = createdTasks[0]!;
@@ -208,7 +208,7 @@ describe('a message fire ingests its thread', () => {
 
   it('posts no preamble to Slack', async () => {
     await fireTrigger(makeTrigger(), {
-      kind: 'message', thread: messageThread(), body: BODY, triggerTs: TRIGGER_TS, authorId: 'U_DEV', channelName: CHANNEL_NAME,
+      kind: 'message', thread: messageThread(), body: BODY, authorId: 'U_DEV', channelName: CHANNEL_NAME,
     });
 
     // The first thing the channel sees is the agent's actual answer, in the thread it already owns.
@@ -219,11 +219,10 @@ describe('a message fire ingests its thread', () => {
     const trigger = makeTrigger();
     const ctx = { kind: 'message' as const, body: BODY, authorId: 'U_DEV', channelName: CHANNEL_NAME };
 
-    await fireTrigger(trigger, { ...ctx, thread: messageThread(), triggerTs: TRIGGER_TS });
+    await fireTrigger(trigger, { ...ctx, thread: messageThread() });
     await fireTrigger(trigger, {
       ...ctx,
       thread: messageThread({ threadId: '1700000000.000200', currentMessageTs: '1700000000.000200', messages: [] }),
-      triggerTs: '1700000000.000200',
     });
 
     expect(taskCreateMock).toHaveBeenCalledTimes(2);
@@ -266,7 +265,7 @@ describe('a message fire ingests its thread', () => {
     const thread = messageThread({ messages: [] });
 
     await fireTrigger(makeTrigger(), {
-      kind: 'message', thread, body: BODY, triggerTs: TRIGGER_TS, channelName: CHANNEL_NAME,
+      kind: 'message', thread, body: BODY, channelName: CHANNEL_NAME,
     });
 
     const task = createdTasks[0]!;
@@ -288,12 +287,11 @@ describe('a message fire ingests its thread', () => {
 
 // The floor is a direct write to knowledge.log that bypasses `Task.append`, and therefore bypasses the redaction policy every other write to that log goes through. It exists for exactly one shape, and the four conditions below are what keep it to that shape.
 //
-// `fetchSlackThread` drops a raw message with neither a `user` nor a `botId`, which is the ONLY reason the triggering message can legitimately be missing from the thread it was fetched from — and the dispatch derives `authorId` from the same two fields (`event.user || raw?.bot_id`), so that shape is exactly "no authorId". The fetch filter also drops a bot post from a foreign workspace, and the dispatch-side gate meant to catch those first reads different fields (`bot_profile.team_id || team`), so a payload carrying no team at all can clear dispatch and still be dropped by the fetch. Firing the floor on ANY absence from the thread would therefore re-admit that content — an external bot's message, unredacted, written straight into the log. The remaining two conditions refuse a write that would misrepresent the log: no body means an entry claiming a message with no text, and no `triggerTs` means an entry with no `msg:<ts>` id, which is both uncitable and indistinguishable from whatever `append` already wrote.
+// `fetchSlackThread` drops a raw message with neither a `user` nor a `botId`, which is the ONLY reason the triggering message can legitimately be missing from the thread it was fetched from — and the dispatch derives `authorId` from the same two fields (`event.user || raw?.bot_id`), so that shape is exactly "no authorId". The fetch filter also drops a bot post from a foreign workspace, and the dispatch-side gate meant to catch those first reads different fields (`bot_profile.team_id || team`), so a payload carrying no team at all can clear dispatch and still be dropped by the fetch. Firing the floor on ANY absence from the thread would therefore re-admit that content — an external bot's message, unredacted, written straight into the log. The remaining condition refuses a write that would misrepresent the log: no body means an entry claiming a message with no text. The message's ts is read off `thread.threadId`, because dispatch fires only on top-level messages — so the thread's root IS the firing message, and the check asks whether the fetched thread contained its own root.
 describe('the ingestion floor fires only for the shape the fetch filter drops', () => {
   const floorCtx = {
     kind: 'message' as const,
     body: BODY,
-    triggerTs: TRIGGER_TS,
     channelName: CHANNEL_NAME,
   };
 
@@ -320,12 +318,6 @@ describe('the ingestion floor fires only for the shape the fetch filter drops', 
 
   it('writes nothing when the rendered body is empty', async () => {
     await fireTrigger(makeTrigger(), { ...floorCtx, thread: emptyThread(), body: '' });
-
-    expect(appendSlackMessageMock).not.toHaveBeenCalled();
-  });
-
-  it('writes nothing when there is no triggering ts to key the entry by', async () => {
-    await fireTrigger(makeTrigger(), { ...floorCtx, thread: emptyThread(), triggerTs: undefined });
 
     expect(appendSlackMessageMock).not.toHaveBeenCalled();
   });
@@ -388,7 +380,7 @@ describe('a schedule fire homes its task in the bound channel', () => {
 
   it('leaves a message fire unhomed and costs it no scan', async () => {
     await fireTrigger(makeTrigger(), {
-      kind: 'message', thread: messageThread(), body: BODY, triggerTs: TRIGGER_TS, authorId: 'U_DEV', channelName: CHANNEL_NAME,
+      kind: 'message', thread: messageThread(), body: BODY, authorId: 'U_DEV', channelName: CHANNEL_NAME,
     });
 
     // A message fire already owns a thread, and the event path that dispatched it already scanned the
@@ -443,7 +435,7 @@ describe('a message fire ingests through the real Task.append', () => {
     });
 
     await fireTrigger(makeTrigger(), {
-      kind: 'message', thread, body: BODY, triggerTs: TRIGGER_TS, authorId: 'U_EXT', channelName: CHANNEL_NAME,
+      kind: 'message', thread, body: BODY, authorId: 'U_EXT', channelName: CHANNEL_NAME,
     });
 
     expect(appendSlackMessageMock).toHaveBeenCalledTimes(1);
