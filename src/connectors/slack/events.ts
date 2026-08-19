@@ -820,7 +820,7 @@ export async function handleSlackEvent(event: {
     // Ambient top-level channel message (no task, not an @mention, not a thread
     // reply) — the only place channel-message triggers fire. @mentions and DMs
     // are excluded above so a message aimed at Archie never also fires a trigger.
-    await dispatchChannelMessageTriggers(event, thread.channel.name);
+    await dispatchChannelMessageTriggers(event, thread.channel.name, thread);
   }
   // Otherwise: a reply in a human-started thread the bot wasn't part of — ignore
 }
@@ -837,6 +837,7 @@ export async function handleSlackEvent(event: {
 async function dispatchChannelMessageTriggers(
   event: { channel: string; user: string; ts: string; raw: unknown },
   channelName: string,
+  thread: SlackThread,
 ): Promise<void> {
   const triggers = getChannelMessageTriggers(event.channel);
   if (triggers.length === 0) return;
@@ -875,9 +876,10 @@ async function dispatchChannelMessageTriggers(
     try {
       await fireTrigger(trigger, {
         kind: 'message',
-        text: body,
-        threadId: event.ts,
-        channelId: event.channel,
+        thread,
+        body,
+        triggerTs: event.ts,
+        authorId: event.user || raw?.bot_id || 'unknown',
         channelName,
       });
     } catch (err) {

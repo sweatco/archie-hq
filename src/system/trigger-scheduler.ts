@@ -12,6 +12,8 @@
 
 import { Cron } from 'croner';
 import { Task } from '../tasks/task.js';
+import { appendSlackMessage } from '../tasks/persistence.js';
+import type { SlackThread } from '../types/task.js';
 import type { Trigger, TriggerBinding, TriggerCondition } from '../types/trigger.js';
 import { listTriggers, saveTrigger, deleteTrigger } from './trigger-store.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
@@ -189,12 +191,20 @@ export function getChannelMessageTriggers(channelId: string): Trigger[] {
 
 interface FireContext {
   kind: 'schedule' | 'message';
-  /** For message context: the triggering message text. */
-  text?: string;
-  /** For message context: the thread to reply in + its channel. */
-  channelId?: string;
+  /**
+   * For message context: the thread the triggering message was posted in, exactly as `fetchSlackThread` returned it. This is what the fired task ingests — `Task.append(thread)` is the single path every other Slack task uses, so a triggered task's knowledge log is written by the same renderer, under the same redaction policy, with the same `msg:<ts>` ids.
+   */
+  thread?: SlackThread;
+  /**
+   * For message context: the already-rendered body of the triggering message — the same string the `contains` filter was matched against. It exists here as the ingestion floor's payload: `fetchSlackThread` drops a raw message that has neither a `user` nor a `botId`, so the message that fired the trigger is sometimes absent from `thread.messages` and `append` writes nothing for it. This field is what gets written in that case.
+   */
+  body?: string;
+  /** For message context: the `ts` of the triggering message, used both to detect its absence from the fetched thread and as its `msg:<ts>` id when written directly. */
+  triggerTs?: string;
+  /** For message context: the triggering message's author (user id, else bot id, else 'unknown'). */
+  authorId?: string;
+  /** Human-readable channel name for the reason line shown to the agent. */
   channelName?: string;
-  threadId?: string;
 }
 
 /**
@@ -363,12 +373,28 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
   const task = await Task.create();
   task.metadata.triggered_by = trigger.id;
 
-  // Wire delivery. message context → reply in the triggering thread (linked as
-  // default, no post). schedule context → the PM opens the destination itself.
+  // Wire delivery. message context → ingest the triggering thread (which links it
+  // as the default channel, no post). schedule context → the PM opens the
+  // destination itself.
   let delivery: string;
-  if (context.kind === 'message' && context.channelId && context.threadId) {
-    task.linkSlackThread(context.channelId, context.threadId, context.channelName ?? context.channelId);
-    delivery = 'Post your reply in your default channel — the thread where the triggering message was posted.';
+  if (context.kind === 'message' && context.thread) {
+    // Ingestion, not announcement. `append` is the one path every other Slack task uses, and it does five things this branch would otherwise have to reinvent (and previously simply skipped): it writes the message to knowledge.log through the single renderer with the author line and the `msg:<ts>` id, applies the redaction policy via `shouldRedact`, skips file downloads for a redacted message while downloading them otherwise so the `[Attachments: …]` suffix carries usable local paths, links `slack:<channel>:<threadId>` as a channel, and promotes it to `default_channel`. That last pair is why `linkSlackThread` is NOT also called here — `append` links the identical key with the same shape, so doing both would double-write the same record.
+    await task.append(context.thread);
+
+    // The ingestion floor. `fetchSlackThread` drops any raw message that has neither a `user` nor a `botId`, so the very message that fired this trigger can be missing from the thread it was fetched from — in which case `append` walked an empty (or incomplete) message list and wrote no log entry for it, and a delegated agent, which sees only knowledge.log, would have no idea what was said. Writing it directly from the body dispatch already rendered is what closes that hole. Nothing else is needed: `append` registers the channel, promotes `default_channel` and advances `last_processed_ts` even when `thread.messages` is empty — only the per-message loop is skipped — so the thread is already owned and a second link would be redundant.
+    if (!context.thread.messages.some((m) => m.ts === context.triggerTs)) {
+      const author = context.authorId ?? 'unknown';
+      await appendSlackMessage(
+        task.taskId,
+        { id: context.thread.channel.id, name: context.thread.channel.name },
+        context.thread.threadId,
+        { id: author, username: author, realName: author },
+        context.body ?? '',
+        { ts: context.triggerTs },
+      );
+    }
+
+    delivery = 'Post your reply in your default channel — the thread where the triggering message was posted. The triggering message itself is in knowledge.log.';
   } else if (trigger.binding.type === 'user') {
     delivery = `Deliver the result to the user as a direct message (Slack user ID ${trigger.binding.user_id}).`;
   } else {
@@ -377,7 +403,7 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
   task.debouncedSave();
 
   const reason = context.kind === 'message'
-    ? `a new message in #${context.channelName ?? context.channelId ?? 'a channel'} matched your filter`
+    ? `a new message in #${context.channelName ?? 'a channel'} matched your filter`
     : 'a scheduled run';
   const seed = `${trigger.action.prompt}\n\n${delivery}`;
 

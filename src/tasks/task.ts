@@ -972,10 +972,11 @@ export class Task {
 
   /**
    * Link an existing Slack thread to this task and promote it to the default
-   * channel. Posts nothing — used by `fireTrigger` for channel-message triggers
-   * so the spawned PM replies in the triggering thread rather than opening a new
-   * one. Idempotent; mirrors the channel-registration shape used by `append`.
-   * Returns the channel key.
+   * channel. Posts nothing — this is how a task takes ownership of a thread it is
+   * about to speak in, so every human reply to that thread routes back here. Its
+   * only caller is `openHomeThread`, which links the thread it just rooted in the
+   * task's home channel. Idempotent; mirrors the channel-registration shape used
+   * by `append`. Returns the channel key.
    */
   linkSlackThread(channelId: string, threadTs: string, channelName: string): string {
     const key = `slack:${channelId}:${threadTs}`;
