@@ -12,6 +12,7 @@ export interface RunnerProfile {
   allowedAgents: string[];
   labels: Record<string, string>;
   resources: Record<string, number>;
+  networkMode: 'softnet' | 'nat';
   softnetAllow: string[];
   readinessCommand?: string[];
   remoteWorkspaceRoot?: string;
@@ -68,6 +69,7 @@ export interface RunnerSpec {
   password: string;
   labels: Record<string, string>;
   resources: Record<string, number>;
+  networkMode: 'softnet' | 'nat';
   softnetAllow: string[];
 }
 
@@ -85,7 +87,8 @@ export type ExecEvent =
   | { type: 'stdout' | 'stderr'; data: Uint8Array; watermark?: number }
   | { type: 'exit'; code: number; watermark?: number }
   | { type: 'error'; error: string; watermark?: number }
-  | { type: 'history_end'; watermark: number };
+  | { type: 'history_end'; watermark: number }
+  | { type: 'bootstrap_complete' };
 
 export interface RunnerProvider {
   provision(spec: RunnerSpec): Promise<RunnerInstance>;
@@ -99,9 +102,12 @@ export interface RunnerProvider {
 export interface RunnerExecSession {
   id: string;
   sessionId: string;
+  requestFingerprint?: string;
   state: RunnerExecState;
   watermark: number;
+  deliveryCursor: number;
   outputBytes: number;
+  outputTruncated: boolean;
   startedAt: string;
   deadlineAt: string;
   finishedAt?: string;
@@ -142,6 +148,8 @@ export interface RunnerCommandResult {
   stdout: string;
   stderr: string;
   truncated: boolean;
+  cursor: number;
+  hasMore: boolean;
 }
 
 export interface RunnerHealth {

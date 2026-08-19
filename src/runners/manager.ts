@@ -1,36 +1,20 @@
-import { createWriteStream } from 'node:fs';
-import { mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
-import { once } from 'node:events';
-import { finished } from 'node:stream/promises';
+import { posix } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { createKeyedLock } from '../system/keyed-lock.js';
 import { emitEvent } from '../system/event-bus.js';
 import { logger } from '../system/logger.js';
-import { SESSIONS_DIR } from '../system/workdir.js';
-import { getArtifactsPath, loadMetadata } from '../tasks/persistence.js';
-import { profileWorkspaceRoot } from './config.js';
+import { loadMetadata } from '../tasks/persistence.js';
 import {
-  appendRunnerExecLog,
   listRunnerTaskIds,
   loadRunnerLeases,
-  readRunnerExecWatermark,
-  removeRunnerExecLog,
   saveRunnerLeases,
 } from './store.js';
-import {
-  assertRelativeRunnerPath,
-  collectionName,
-  createRepositoryArchive,
-  extractRunnerArchive,
-} from './transfer.js';
+import { RunnerExecution, validateExecuteCommand } from './execution.js';
+import { assertRelativeRunnerPath } from './transfer.js';
+import { RunnerWorkspace } from './workspace.js';
 import type {
-  ExecEvent,
-  ExecRequest,
   LoadedRunnerConfig,
   RunnerCommandResult,
-  RunnerExecSession,
   RunnerHealth,
   RunnerInstance,
   RunnerLease,
@@ -38,7 +22,6 @@ import type {
   RunnerProvider,
 } from './types.js';
 
-const TOOL_OUTPUT_LIMIT = 128 * 1024;
 const READINESS_RETRY_MS = 5000;
 
 class RunnerReadinessError extends Error {}
@@ -55,12 +38,7 @@ function sanitizeName(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32) || 'runner';
 }
 
-export function runnerRepositoryPath(profile: RunnerProfile, github: string): string {
-  const components = github.split('/').map(sanitizeName);
-  const leaf = components.pop() ?? 'repo';
-  const digest = createHash('sha256').update(github).digest('hex').slice(0, 12);
-  return posix.join(profileWorkspaceRoot(profile), 'workspace', ...components, `${leaf}-${digest}`);
-}
+export { runnerRepositoryPath } from './workspace.js';
 
 function safeError(error: unknown): string {
   if (error instanceof Error) return error.message.slice(0, 500);
@@ -71,21 +49,8 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-function isTerminal(session: RunnerExecSession): boolean {
-  return session.state !== 'running';
-}
-
-function validateEnvironment(env: Record<string, string>): void {
-  const entries = Object.entries(env);
-  if (entries.length > 100) throw new Error('Runner commands accept at most 100 environment variables');
-  let totalBytes = 0;
-  for (const [key, value] of entries) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`Invalid environment variable name: ${key}`);
-    if (value.includes('\0')) throw new Error(`Environment variable ${key} contains a null byte`);
-    if (Buffer.byteLength(value) > 32 * 1024) throw new Error(`Environment variable ${key} exceeds 32 KiB`);
-    totalBytes += Buffer.byteLength(key) + Buffer.byteLength(value);
-  }
-  if (totalBytes > 64 * 1024) throw new Error('Runner command environment exceeds 64 KiB');
+function leaseKey(taskId: string, agentId: string, profile: string): string {
+  return `${taskId}:${agentId}:${profile}`;
 }
 
 export class RunnerManager {
@@ -95,11 +60,25 @@ export class RunnerManager {
   private reaper?: NodeJS.Timeout;
   private reaping = false;
   private readonly degradedReasons = new Map<string, string>();
+  private readonly execution: RunnerExecution;
+  private readonly workspace: RunnerWorkspace;
 
   constructor(
     private readonly loaded: LoadedRunnerConfig,
     private readonly provider: RunnerProvider,
-  ) {}
+  ) {
+    this.execution = new RunnerExecution(provider, {
+      persist: (taskId) => this.persist(taskId),
+      markDegraded: (error, key) => this.markDegraded(error, key),
+      markHealthy: (key) => this.markHealthy(key),
+      touch: (lease, profile) => this.touch(lease, profile),
+    });
+    this.workspace = new RunnerWorkspace({
+      transfer: (lease, profile, command) => this.execution.transfer(lease, profile, command),
+      persist: (taskId) => this.persist(taskId),
+      touch: (lease, profile) => this.touch(lease, profile),
+    });
+  }
 
   get config() {
     return this.loaded.config;
@@ -112,9 +91,7 @@ export class RunnerManager {
         for (const lease of taskLeases) {
           if (lease.taskId !== taskId) throw new Error(`Runner lease ${lease.id} is stored under the wrong task`);
           if (!lease.backendId.startsWith(this.backendPrefix())) throw new Error(`Runner lease ${lease.id} does not belong to instance ${this.config.instanceId}`);
-          for (const session of Object.values(lease.execSessions)) {
-            session.watermark = Math.max(session.watermark, await readRunnerExecWatermark(taskId, lease.id, session.id));
-          }
+          await this.execution.restoreLogCursors(lease);
         }
         this.leases.set(taskId, taskLeases);
         this.markHealthy(`state:${taskId}`);
@@ -215,38 +192,6 @@ export class RunnerManager {
     await this.releaseLease(lease).catch(() => {});
   }
 
-  private async pruneExecHistory(lease: RunnerLease, profile: RunnerProfile): Promise<void> {
-    const terminal = Object.values(lease.execSessions)
-      .filter(isTerminal)
-      .sort((left, right) => Date.parse(left.finishedAt ?? left.startedAt) - Date.parse(right.finishedAt ?? right.startedAt));
-    const excess = terminal.slice(0, Math.max(0, terminal.length - profile.maxExecSessionHistory));
-    for (const session of excess) {
-      await removeRunnerExecLog(lease.taskId, lease.id, session.id);
-      delete lease.execSessions[session.id];
-    }
-    if (excess.length > 0) await this.persist(lease.taskId);
-  }
-
-  private assertExecCapacity(lease: RunnerLease, profile: RunnerProfile): void {
-    const active = Object.values(lease.execSessions).filter((session) => session.state === 'running').length;
-    if (active >= profile.maxActiveExecSessions) {
-      throw new Error(`Runner has reached its ${profile.maxActiveExecSessions}-session active exec limit`);
-    }
-  }
-
-  private async closeSession(lease: RunnerLease, session: RunnerExecSession): Promise<boolean> {
-    try {
-      await this.provider.closeExec(lease.backendId, session.sessionId);
-      this.markHealthy(`close:${session.id}`);
-      return true;
-    } catch (error) {
-      session.deadlineAt = nowIso();
-      this.markDegraded(error, `close:${session.id}`);
-      await this.persist(lease.taskId).catch((persistError) => this.markDegraded(persistError, `persist:${lease.id}`));
-      return false;
-    }
-  }
-
   private touch(lease: RunnerLease, profile: RunnerProfile): void {
     lease.lastUsedAt = nowIso();
     lease.expiresAt = addMinutes(profile.leaseTtlMinutes);
@@ -273,7 +218,7 @@ export class RunnerManager {
 
   async ensure(taskId: string, agentId: string, profileName: string): Promise<RunnerLease> {
     const profile = this.profile(agentId, profileName);
-    const key = `${taskId}:${agentId}:${profileName}`;
+    const key = leaseKey(taskId, agentId, profileName);
     return this.lock(key, async () => {
       const current = this.findLease(taskId, agentId, profileName);
       if (current) {
@@ -356,6 +301,7 @@ export class RunnerManager {
           password: this.loaded.guestPasswords[profileName],
           labels: profile.labels,
           resources: profile.resources,
+          networkMode: profile.networkMode,
           softnetAllow: profile.softnetAllow,
         });
         return await this.waitUntilReady(lease, profile);
@@ -393,11 +339,25 @@ export class RunnerManager {
     const deadline = Date.now() + profile.readinessTimeoutSeconds * 1000;
     let lastFailure = 'Runner readiness command did not succeed';
     while (true) {
+      let instance: RunnerInstance | null = null;
+      let inspected = false;
       try {
-        await this.probeReadiness(lease, profile, deadline);
-        return;
+        instance = await this.provider.inspect(lease.backendId);
+        inspected = true;
       } catch (error) {
         lastFailure = error instanceof Error ? error.message : String(error);
+      }
+      if (inspected && !instance) {
+        throw new RunnerReadinessError(`Orchard VM ${lease.backendId} disappeared during readiness`);
+      } else if (instance?.status === 'failed') {
+        throw new RunnerReadinessError(`Orchard VM failed during readiness: ${instance.statusMessage ?? 'unknown error'}`);
+      } else if (instance?.status === 'running') {
+        try {
+          await this.probeReadiness(lease, profile, deadline);
+          return;
+        } catch (error) {
+          lastFailure = error instanceof Error ? error.message : String(error);
+        }
       }
       if (Date.now() + READINESS_RETRY_MS >= deadline) break;
       await new Promise((resolve) => setTimeout(resolve, READINESS_RETRY_MS));
@@ -429,35 +389,12 @@ export class RunnerManager {
     }
   }
 
-  async sync(taskId: string, agentId: string, profileName: string, github: string, clonePath: string): Promise<{ lease: RunnerLease; remotePath: string; bytes: number; files: number }> {
+  async sync(taskId: string, agentId: string, profileName: string, github: string, clonePath: string, signal?: AbortSignal): Promise<{ lease: RunnerLease; remotePath: string; bytes: number; files: number }> {
     await this.ensure(taskId, agentId, profileName);
-    return this.lock(`${taskId}:${agentId}:${profileName}`, async () => {
+    return this.lock(leaseKey(taskId, agentId, profileName), async () => {
       const lease = this.activeLease(taskId, agentId, profileName);
       const profile = this.profile(agentId, profileName);
-      const archive = await createRepositoryArchive(clonePath, profile.maxUploadBytes);
-      const remotePath = runnerRepositoryPath(profile, github);
-      const staging = `${remotePath}.staging-${randomUUID().slice(0, 8)}`;
-      const previous = `${remotePath}.previous`;
-      const script = [
-        'set -eu',
-        `mkdir -p ${shellQuote(posix.dirname(remotePath))}`,
-        `rm -rf ${shellQuote(staging)} ${shellQuote(previous)}`,
-        `mkdir -p ${shellQuote(staging)}`,
-        `/usr/bin/tar -xpf - -C ${shellQuote(staging)}`,
-        `[ ! -e ${shellQuote(remotePath)} ] || mv ${shellQuote(remotePath)} ${shellQuote(previous)}`,
-        `mv ${shellQuote(staging)} ${shellQuote(remotePath)}`,
-        `rm -rf ${shellQuote(previous)}`,
-      ].join('\n');
-      try {
-        await this.runTransfer(lease, profile, ['/bin/sh', '-lc', script], undefined, archive.stream());
-        lease.syncedRepos[github] = { github, remotePath, syncedAt: nowIso() };
-        this.touch(lease, profile);
-        await this.persist(taskId);
-        emitEvent('runner:sync', taskId, { leaseId: lease.id, profile: profileName, github, bytes: archive.size, files: archive.fileCount }, agentId);
-        return { lease, remotePath, bytes: archive.size, files: archive.fileCount };
-      } finally {
-        await archive.cleanup();
-      }
+      return this.workspace.sync(lease, profile, github, clonePath, signal);
     });
   }
 
@@ -470,316 +407,64 @@ export class RunnerManager {
     cwd = '.',
     env: Record<string, string> = {},
     waitSeconds?: number,
+    requestId: string = randomUUID(),
   ): Promise<RunnerCommandResult> {
-    if (argv.length === 0 || argv.length > 256) throw new Error('argv must contain between 1 and 256 entries');
-    if (argv.some((part) => Buffer.byteLength(part) > 32 * 1024)) throw new Error('Each argv entry must be at most 32 KiB');
-    if (argv.reduce((bytes, part) => bytes + Buffer.byteLength(part), 0) > 64 * 1024) throw new Error('Runner command argv exceeds 64 KiB');
-    validateEnvironment(env);
+    validateExecuteCommand({ github, argv, cwd, env, waitSeconds, requestId });
     const relativeCwd = cwd === '.' ? '.' : assertRelativeRunnerPath(cwd);
     await this.ensure(taskId, agentId, profileName);
-    return this.lock(`${taskId}:${agentId}:${profileName}`, async () => {
+    return this.lock(leaseKey(taskId, agentId, profileName), async () => {
       const lease = this.activeLease(taskId, agentId, profileName);
       const profile = this.profile(agentId, profileName);
-      this.assertExecCapacity(lease, profile);
       const synced = lease.syncedRepos[github];
       if (!synced) throw new Error(`Repository ${github} has not been synced to runner profile ${profileName}`);
       const remoteCwd = relativeCwd === '.' ? synced.remotePath : posix.join(synced.remotePath, relativeCwd);
-      const execId = randomUUID();
-      const session: RunnerExecSession = {
-        id: execId,
-        sessionId: `archie-${execId}`,
-        state: 'running',
-        watermark: 0,
-        outputBytes: 0,
-        startedAt: nowIso(),
-        deadlineAt: new Date(Date.now() + profile.execTimeoutSeconds * 1000).toISOString(),
-      };
-      lease.execSessions[execId] = session;
-      this.touch(lease, profile);
-      await this.persist(taskId);
-      emitEvent('runner:exec', taskId, { action: 'start', leaseId: lease.id, execId, profile: profileName }, agentId);
-      return this.consumeCommand(lease, profile, session, {
+      return this.execution.startOrResume(lease, profile, {
+        github,
         argv,
         cwd: remoteCwd,
         env,
-        sessionId: session.sessionId,
-      }, waitSeconds);
+        waitSeconds,
+        requestId,
+      });
     });
   }
 
-  async poll(taskId: string, agentId: string, profileName: string, execId: string, waitSeconds?: number): Promise<RunnerCommandResult> {
-    return this.lock(`${taskId}:${agentId}:${profileName}`, async () => {
+  async poll(taskId: string, agentId: string, profileName: string, execId: string, afterCursor: number, waitSeconds?: number): Promise<RunnerCommandResult> {
+    return this.lock(leaseKey(taskId, agentId, profileName), async () => {
       const lease = this.findLease(taskId, agentId, profileName);
       if (!lease) throw new Error(`No active ${profileName} runner lease`);
       const profile = this.profile(agentId, profileName);
-      const session = lease.execSessions[execId];
-      if (!session) throw new Error(`Unknown runner exec session: ${execId}`);
-      if (isTerminal(session)) return this.commandResult(session, '', '', false);
-      if (Date.parse(session.deadlineAt) <= Date.now()) {
-        await this.timeoutSession(lease, session);
-        return this.commandResult(session, '', '', false);
-      }
-      return this.consumeCommand(lease, profile, session, {
-        sessionId: session.sessionId,
-        reconnectFrom: session.watermark,
-      }, waitSeconds);
+      return this.execution.poll(lease, profile, execId, afterCursor, waitSeconds);
     });
-  }
-
-  private async consumeCommand(
-    lease: RunnerLease,
-    profile: RunnerProfile,
-    session: RunnerExecSession,
-    request: ExecRequest,
-    requestedWait?: number,
-  ): Promise<RunnerCommandResult> {
-    const waitSeconds = Math.max(0, Math.min(requestedWait ?? profile.maxExecWaitSeconds, profile.maxExecWaitSeconds));
-    const controller = new AbortController();
-    let deadlineReached = false;
-    const waitTimer = setTimeout(() => controller.abort(), waitSeconds * 1000);
-    const deadlineTimer = setTimeout(() => {
-      deadlineReached = true;
-      controller.abort();
-    }, Math.max(0, Date.parse(session.deadlineAt) - Date.now()));
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    let returnedBytes = 0;
-    let truncated = false;
-    const appendReturned = (target: Buffer[], value: Uint8Array) => {
-      if (returnedBytes >= TOOL_OUTPUT_LIMIT) {
-        truncated = true;
-        return;
-      }
-      const remaining = TOOL_OUTPUT_LIMIT - returnedBytes;
-      const data = Buffer.from(value).subarray(0, remaining);
-      target.push(data);
-      returnedBytes += data.length;
-      if (data.length < value.byteLength) truncated = true;
-    };
-    try {
-      for await (const event of this.provider.exec(lease.backendId, { ...request, signal: controller.signal })) {
-        if (event.type === 'stdout' || event.type === 'stderr') {
-          session.outputBytes += event.data.byteLength;
-          if (session.outputBytes > profile.maxExecOutputBytes) {
-            throw new Error(`Runner command exceeded the ${profile.maxExecOutputBytes}-byte output limit`);
-          }
-          await appendRunnerExecLog(lease.taskId, lease.id, session.id, event);
-          appendReturned(event.type === 'stdout' ? stdout : stderr, event.data);
-        } else if (event.type === 'exit') {
-          await appendRunnerExecLog(lease.taskId, lease.id, session.id, event);
-          session.state = 'completed';
-          session.exitCode = event.code;
-          session.finishedAt = nowIso();
-        } else if (event.type === 'error') {
-          const errorData = Buffer.from(event.error);
-          session.outputBytes += errorData.byteLength;
-          if (session.outputBytes > profile.maxExecOutputBytes) {
-            const bounded = `Runner error exceeded the ${profile.maxExecOutputBytes}-byte output limit`;
-            await appendRunnerExecLog(lease.taskId, lease.id, session.id, { type: 'error', error: bounded, watermark: event.watermark });
-            appendReturned(stderr, Buffer.from(bounded));
-            truncated = true;
-          } else {
-            await appendRunnerExecLog(lease.taskId, lease.id, session.id, event);
-            appendReturned(stderr, errorData);
-          }
-          session.state = 'failed';
-          session.finishedAt = nowIso();
-        }
-        if ('watermark' in event && event.watermark !== undefined) session.watermark = Math.max(session.watermark, event.watermark);
-        await this.persist(lease.taskId);
-      }
-    } catch (error) {
-      if (!controller.signal.aborted) {
-        if (await this.closeSession(lease, session)) {
-          session.state = 'failed';
-          session.finishedAt = nowIso();
-          await this.persist(lease.taskId);
-        }
-        throw error;
-      }
-    } finally {
-      clearTimeout(waitTimer);
-      clearTimeout(deadlineTimer);
-    }
-    if (deadlineReached && session.state === 'running') {
-      await this.timeoutSession(lease, session);
-    }
-    if (isTerminal(session)) {
-      await this.pruneExecHistory(lease, profile);
-      emitEvent('runner:exec', lease.taskId, { action: 'end', leaseId: lease.id, execId: session.id, state: session.state, exitCode: session.exitCode }, lease.agentId);
-    }
-    return this.commandResult(session, Buffer.concat(stdout).toString('utf8'), Buffer.concat(stderr).toString('utf8'), truncated);
-  }
-
-  private commandResult(session: RunnerExecSession, stdout: string, stderr: string, truncated: boolean): RunnerCommandResult {
-    return { execId: session.id, state: session.state, exitCode: session.exitCode, stdout, stderr, truncated };
   }
 
   async cancel(taskId: string, agentId: string, profileName: string, execId: string): Promise<void> {
-    await this.lock(`${taskId}:${agentId}:${profileName}`, async () => {
+    await this.lock(leaseKey(taskId, agentId, profileName), async () => {
       const lease = this.findLease(taskId, agentId, profileName);
       if (!lease) throw new Error(`No active ${profileName} runner lease`);
-      this.profile(agentId, profileName);
-      const session = lease.execSessions[execId];
-      if (!session) throw new Error(`Unknown runner exec session: ${execId}`);
-      if (isTerminal(session)) return;
-      if (!await this.closeSession(lease, session)) throw new Error(`Failed to close runner command ${execId}; cleanup will retry`);
-      session.state = 'cancelled';
-      session.finishedAt = nowIso();
-      await this.persist(taskId);
-      await this.pruneExecHistory(lease, this.profile(agentId, profileName));
-      emitEvent('runner:exec', taskId, { action: 'cancel', leaseId: lease.id, execId }, agentId);
+      await this.execution.cancel(lease, this.profile(agentId, profileName), execId);
     });
   }
 
-  private async runTransfer(
-    lease: RunnerLease,
-    profile: RunnerProfile,
-    argv: string[],
-    cwd?: string,
-    stdin?: AsyncIterable<Uint8Array>,
-    onStdout?: (data: Uint8Array) => Promise<void>,
-  ): Promise<void> {
-    this.assertExecCapacity(lease, profile);
-    const execId = randomUUID();
-    const session: RunnerExecSession = {
-      id: execId,
-      sessionId: `archie-${execId}`,
-      state: 'running',
-      watermark: 0,
-      outputBytes: 0,
-      startedAt: nowIso(),
-      deadlineAt: new Date(Date.now() + profile.execTimeoutSeconds * 1000).toISOString(),
-    };
-    lease.execSessions[execId] = session;
-    await this.persist(lease.taskId);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), profile.execTimeoutSeconds * 1000);
-    const failure: Buffer[] = [];
-    let failureBytes = 0;
-    let diagnosticBytes = 0;
-    const appendFailure = (value: Uint8Array) => {
-      diagnosticBytes += value.byteLength;
-      if (diagnosticBytes > profile.maxExecOutputBytes) {
-        throw new Error(`Runner transfer exceeded the ${profile.maxExecOutputBytes}-byte diagnostic output limit`);
-      }
-      if (failureBytes >= TOOL_OUTPUT_LIMIT) return;
-      const data = Buffer.from(value).subarray(0, TOOL_OUTPUT_LIMIT - failureBytes);
-      failure.push(data);
-      failureBytes += data.length;
-    };
-    try {
-      for await (const event of this.provider.exec(lease.backendId, { argv, cwd, stdin, sessionId: session.sessionId, signal: controller.signal })) {
-        if (event.type === 'stdout') {
-          session.outputBytes += event.data.byteLength;
-          if (onStdout) await onStdout(event.data);
-          else appendFailure(event.data);
-        } else {
-          await appendRunnerExecLog(lease.taskId, lease.id, session.id, event);
-        }
-        if (event.type === 'stderr') appendFailure(event.data);
-        if (event.type === 'exit') {
-          session.state = event.code === 0 ? 'completed' : 'failed';
-          session.exitCode = event.code;
-          session.finishedAt = nowIso();
-        }
-        if (event.type === 'error') {
-          session.state = 'failed';
-          session.finishedAt = nowIso();
-          appendFailure(Buffer.from(event.error));
-        }
-        if ('watermark' in event && event.watermark !== undefined) session.watermark = Math.max(session.watermark, event.watermark);
-        await this.persist(lease.taskId);
-      }
-      if (controller.signal.aborted && session.state === 'running') {
-        await this.timeoutSession(lease, session);
-      }
-      if (session.state !== 'completed' || session.exitCode !== 0) throw new Error(Buffer.concat(failure).toString('utf8').trim() || `Runner transfer exited with ${session.exitCode ?? 'no status'}`);
-    } catch (error) {
-      if (session.state === 'running') {
-        if (await this.closeSession(lease, session)) {
-          session.state = controller.signal.aborted ? 'timed_out' : 'failed';
-          session.finishedAt = nowIso();
-          await this.persist(lease.taskId);
-        }
-      }
-      throw error;
-    } finally {
-      clearTimeout(timer);
-      if (isTerminal(session)) {
-        await this.pruneExecHistory(lease, profile).catch((error) => this.markDegraded(error, `history:${lease.id}`));
-      }
-    }
-  }
-
-  async collect(taskId: string, agentId: string, profileName: string, github: string, paths: string[]): Promise<string> {
+  async collect(taskId: string, agentId: string, profileName: string, github: string, paths: string[], signal?: AbortSignal): Promise<string> {
     if (!/^task-\d{8}-\d{4}-[a-z0-9]+$/.test(taskId)) throw new Error(`Invalid task id: ${taskId}`);
     if (paths.length === 0 || paths.length > 100) throw new Error('paths must contain between 1 and 100 entries');
     const safePaths = paths.map(assertRelativeRunnerPath);
     await this.ensure(taskId, agentId, profileName);
-    return this.lock(`${taskId}:${agentId}:${profileName}`, async () => {
+    return this.lock(leaseKey(taskId, agentId, profileName), async () => {
       const lease = this.activeLease(taskId, agentId, profileName);
       const profile = this.profile(agentId, profileName);
-      const synced = lease.syncedRepos[github];
-      if (!synced) throw new Error(`Repository ${github} has not been synced to runner profile ${profileName}`);
-      const tempDir = await mkdtemp(join(tmpdir(), 'archie-runner-download-'));
-      const archivePath = join(tempDir, 'artifacts.tar');
-      const output = createWriteStream(archivePath, { mode: 0o600 });
-      const outputDone = finished(output);
-      void outputDone.catch(() => {});
-      let bytes = 0;
-      try {
-        await this.runTransfer(
-          lease,
-          profile,
-          ['/usr/bin/tar', '-cf', '-', '--', ...safePaths],
-          synced.remotePath,
-          undefined,
-          async (data) => {
-            bytes += data.byteLength;
-            if (bytes > profile.maxDownloadBytes) throw new Error(`Collected archive exceeds the ${profile.maxDownloadBytes}-byte download limit`);
-            if (!output.write(data)) await Promise.race([once(output, 'drain'), outputDone]);
-          },
-        );
-        output.end();
-        await outputDone;
-        if ((await stat(archivePath)).size !== bytes) throw new Error('Collected archive was not written completely');
-
-        const sessionsRoot = resolve(SESSIONS_DIR);
-        const artifactsRoot = resolve(getArtifactsPath(taskId));
-        const artifactsRelative = relative(sessionsRoot, artifactsRoot);
-        if (artifactsRelative === '..' || artifactsRelative.startsWith('..' + sep) || isAbsolute(artifactsRelative)) {
-          throw new Error('Runner artifacts path escapes the sessions directory');
-        }
-        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(lease.id)) {
-          throw new Error(`Invalid runner lease id: ${lease.id}`);
-        }
-        const parent = resolve(artifactsRoot, 'runners', lease.id);
-        const parentRelative = relative(artifactsRoot, parent);
-        if (parentRelative === '..' || parentRelative.startsWith('..' + sep) || isAbsolute(parentRelative)) {
-          throw new Error('Runner lease path escapes the task artifacts directory');
-        }
-        await mkdir(parent, { recursive: true });
-        const destination = resolve(parent, collectionName());
-        const destinationRelative = relative(parent, destination);
-        if (destinationRelative === '..' || destinationRelative.startsWith('..' + sep) || isAbsolute(destinationRelative)) {
-          throw new Error('Runner collection path escapes the lease directory');
-        }
-        await extractRunnerArchive(archivePath, destination, parent, profile.maxDownloadBytes);
-        this.touch(lease, profile);
-        await this.persist(taskId);
-        emitEvent('runner:artifacts', taskId, { leaseId: lease.id, profile: profileName, github, paths: safePaths, bytes, destination }, agentId);
-        return destination;
-      } finally {
-        output.destroy();
-        await rm(tempDir, { recursive: true, force: true });
-      }
+      return this.workspace.collect(lease, profile, github, safePaths, signal);
     });
   }
 
-  async openDebug(taskId: string, agentId: string, profileName: string, ttlMinutes?: number): Promise<{ backendId: string; context: string; expiresAt: string; commands: string[] }> {
+  async openDebug(taskId: string, agentId: string, profileName: string, ttlMinutes?: number, ports: number[] = []): Promise<{ backendId: string; context: string; expiresAt: string; commands: string[] }> {
+    if (ports.length > 8 || ports.some((port) => !Number.isSafeInteger(port) || port < 1024 || port > 65535)) {
+      throw new Error('Debug ports must contain at most 8 integers between 1024 and 65535');
+    }
+    if (new Set(ports).size !== ports.length) throw new Error('Debug ports must be unique');
     await this.ensure(taskId, agentId, profileName);
-    return this.lock(`${taskId}:${agentId}:${profileName}`, async () => {
+    return this.lock(leaseKey(taskId, agentId, profileName), async () => {
       const lease = this.findLease(taskId, agentId, profileName);
       if (!lease) throw new Error(`No active ${profileName} runner lease`);
       const profile = this.profile(agentId, profileName);
@@ -795,6 +480,7 @@ export class RunnerManager {
         commands: [
           `orchard context default ${shellQuote(this.config.orchard.context)}`,
           `orchard vnc vm ${shellQuote(lease.backendId)}`,
+          ...ports.map((port) => `orchard port-forward vm ${shellQuote(lease.backendId)} ${port}:${port}`),
         ],
       };
     });
@@ -802,7 +488,7 @@ export class RunnerManager {
 
   async release(taskId: string, agentId: string, profileName: string): Promise<void> {
     this.profile(agentId, profileName);
-    await this.lock(`${taskId}:${agentId}:${profileName}`, async () => {
+    await this.lock(leaseKey(taskId, agentId, profileName), async () => {
       const lease = this.taskLeases(taskId).find((candidate) => candidate.agentId === agentId && candidate.profile === profileName);
       if (!lease) return;
       await this.releaseLease(lease);
@@ -813,7 +499,7 @@ export class RunnerManager {
     const failures: unknown[] = [];
     for (const lease of [...this.taskLeases(taskId)]) {
       try {
-        await this.lock(`${lease.taskId}:${lease.agentId}:${lease.profile}`, async () => {
+        await this.lock(leaseKey(lease.taskId, lease.agentId, lease.profile), async () => {
           if (!this.taskLeases(taskId).includes(lease)) return;
           if (lease.debugExpiresAt && Date.parse(lease.debugExpiresAt) > Date.now()) {
             lease.expiresAt = lease.debugExpiresAt;
@@ -847,12 +533,52 @@ export class RunnerManager {
     }
   }
 
-  private async timeoutSession(lease: RunnerLease, session: RunnerExecSession): Promise<void> {
-    if (!await this.closeSession(lease, session)) return;
-    session.state = 'timed_out';
-    session.finishedAt = nowIso();
-    await this.persist(lease.taskId);
-    emitEvent('runner:exec', lease.taskId, { action: 'timeout', leaseId: lease.id, execId: session.id }, lease.agentId);
+  private async inspectLease(
+    lease: RunnerLease,
+    operation: 'reconcile' | 'reap',
+  ): Promise<{ profile: RunnerProfile; instance: RunnerInstance } | undefined> {
+    const profile = this.config.profiles[lease.profile];
+    if (!profile || !profile.allowedAgents.includes(lease.agentId)) {
+      await this.failLease(lease, 'Runner profile or agent allowlist changed', operation);
+      return undefined;
+    }
+
+    let instance: RunnerInstance | null;
+    try {
+      instance = await this.provider.inspect(lease.backendId);
+    } catch (error) {
+      this.markDegraded(error, `inspect:${lease.id}`);
+      return undefined;
+    }
+    this.markHealthy(`inspect:${lease.id}`);
+    if (!instance) {
+      await this.failLease(lease, 'Runner backend is missing', operation);
+      return undefined;
+    }
+    if (instance.status === 'failed') {
+      const fallback = operation === 'reconcile' ? 'Runner backend failed' : 'Runner backend is missing';
+      await this.failLease(lease, instance.statusMessage ?? fallback, operation);
+      return undefined;
+    }
+    if (instance.status === 'pending' && lease.state === 'provisioning'
+      && Date.parse(lease.createdAt) + profile.provisionTimeoutSeconds * 1000 <= Date.now()) {
+      await this.failLease(lease, 'Runner provisioning deadline expired', operation);
+      return undefined;
+    }
+    return { profile, instance };
+  }
+
+  private async finishProvisioning(lease: RunnerLease, profile: RunnerProfile): Promise<boolean> {
+    if (profile.readinessCommand) {
+      try {
+        await this.checkReadiness(lease, profile);
+      } catch (error) {
+        await this.failLease(lease, error, 'readiness');
+        return false;
+      }
+    }
+    lease.state = 'ready';
+    return true;
   }
 
   private async reconcile(): Promise<void> {
@@ -877,46 +603,14 @@ export class RunnerManager {
           await this.releaseLease(lease).catch(() => {});
           continue;
         }
-        const profile = this.config.profiles[lease.profile];
-        if (!profile || !profile.allowedAgents.includes(lease.agentId)) {
-          await this.failLease(lease, 'Runner profile or agent allowlist changed', 'reconcile');
-          continue;
-        }
-        let instance: RunnerInstance | null;
-        try {
-          instance = await this.provider.inspect(lease.backendId);
-        } catch (error) {
-          this.markDegraded(error, `inspect:${lease.id}`);
-          continue;
-        }
-        this.markHealthy(`inspect:${lease.id}`);
-        if (!instance) {
-          await this.failLease(lease, 'Runner backend is missing', 'reconcile');
-          continue;
-        }
-        if (instance.status === 'failed') {
-          await this.failLease(lease, instance.statusMessage ?? 'Runner backend failed', 'reconcile');
-          continue;
-        }
-        if (instance.status === 'pending' && lease.state === 'provisioning'
-          && Date.parse(lease.createdAt) + profile.provisionTimeoutSeconds * 1000 <= Date.now()) {
-          await this.failLease(lease, 'Runner provisioning deadline expired', 'reconcile');
-          continue;
-        }
+        const inspected = await this.inspectLease(lease, 'reconcile');
+        if (!inspected) continue;
+        const { profile, instance } = inspected;
         if (instance.status === 'running' && lease.state === 'provisioning') {
-          if (profile.readinessCommand) {
-            try {
-              await this.checkReadiness(lease, profile);
-            } catch (error) {
-              await this.failLease(lease, error, 'readiness');
-              continue;
-            }
-          }
+          if (!await this.finishProvisioning(lease, profile)) continue;
         }
         lease.state = instance.status === 'running' ? 'ready' : 'provisioning';
-        for (const session of Object.values(lease.execSessions)) {
-          if (session.state === 'running' && Date.parse(session.deadlineAt) <= Date.now()) await this.timeoutSession(lease, session);
-        }
+        await this.execution.timeoutOverdueSessions(lease);
         await this.persist(lease.taskId);
       }
     }
@@ -945,51 +639,22 @@ export class RunnerManager {
   private async reap(): Promise<void> {
     for (const taskLeases of [...this.leases.values()]) {
       for (const lease of [...taskLeases]) {
-        await this.lock(`${lease.taskId}:${lease.agentId}:${lease.profile}`, async () => {
+        await this.lock(leaseKey(lease.taskId, lease.agentId, lease.profile), async () => {
           if (!this.taskLeases(lease.taskId).includes(lease)) return;
           if (lease.state === 'releasing') {
             await this.releaseLease(lease);
             return;
           }
-          const profile = this.config.profiles[lease.profile];
-          if (!profile || !profile.allowedAgents.includes(lease.agentId)) {
-            await this.failLease(lease, 'Runner profile or agent allowlist changed', 'reap');
-            return;
-          }
-          let instance: RunnerInstance | null;
-          try {
-            instance = await this.provider.inspect(lease.backendId);
-          } catch (error) {
-            this.markDegraded(error, `inspect:${lease.id}`);
-            return;
-          }
-          this.markHealthy(`inspect:${lease.id}`);
-          if (!instance || instance.status === 'failed') {
-            await this.failLease(lease, instance?.statusMessage ?? 'Runner backend is missing', 'reap');
-            return;
-          }
-          if (lease.state === 'provisioning' && instance.status === 'pending'
-            && Date.parse(lease.createdAt) + profile.provisionTimeoutSeconds * 1000 <= Date.now()) {
-            await this.failLease(lease, 'Runner provisioning deadline expired', 'reap');
-            return;
-          }
+          const inspected = await this.inspectLease(lease, 'reap');
+          if (!inspected) return;
+          const { profile, instance } = inspected;
           if (lease.state === 'provisioning' && instance.status === 'running') {
-            if (profile.readinessCommand) {
-              try {
-                await this.checkReadiness(lease, profile);
-              } catch (error) {
-                await this.failLease(lease, error, 'readiness');
-                return;
-              }
-            }
-            lease.state = 'ready';
+            if (!await this.finishProvisioning(lease, profile)) return;
             this.touch(lease, profile);
             await this.persist(lease.taskId);
           }
-          for (const session of Object.values(lease.execSessions)) {
-            if (session.state === 'running' && Date.parse(session.deadlineAt) <= Date.now()) await this.timeoutSession(lease, session);
-          }
-          await this.pruneExecHistory(lease, profile);
+          await this.execution.timeoutOverdueSessions(lease);
+          await this.execution.pruneHistory(lease, profile);
           if (this.leaseExpired(lease)) await this.releaseLease(lease);
           this.markHealthy(`reap:${lease.id}`);
         }).catch((error) => this.markDegraded(error, `reap:${lease.id}`));

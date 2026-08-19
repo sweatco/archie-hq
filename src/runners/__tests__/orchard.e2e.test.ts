@@ -39,7 +39,7 @@ describe('real Orchard runner', () => {
 
       const detached = await manager.exec(taskId, agentId, profile, github, ['/bin/sh', '-lc', 'sleep 2; echo reconnected'], '.', {}, 0);
       expect(detached.state).toBe('running');
-      const reconnected = await manager.poll(taskId, agentId, profile, detached.execId, 10);
+      const reconnected = await manager.poll(taskId, agentId, profile, detached.execId, detached.cursor, 10);
       expect(reconnected.state).toBe('completed');
       expect(reconnected.stdout).toContain('reconnected');
 

@@ -1,17 +1,76 @@
+import { execFile } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RunnerManager, runnerRepositoryPath } from '../manager.js';
 import type { ExecEvent, ExecRequest, LoadedRunnerConfig, RunnerInstance, RunnerLease, RunnerProvider, RunnerSpec } from '../types.js';
-import { listRunnerTaskIds, loadRunnerLeases, readRunnerExecWatermark, removeRunnerExecLog } from '../store.js';
+import { listRunnerTaskIds, loadRunnerLeases, readRunnerExecLogState, removeRunnerExecLog } from '../store.js';
+
+const execFileAsync = promisify(execFile);
 
 const persisted = new Map<string, RunnerLease[]>();
+const execLogs = new Map<string, Array<{ cursor: number; event: ExecEvent }>>();
+const execLogKey = (taskId: string, leaseId: string, execId: string) => `${taskId}:${leaseId}:${execId}`;
 
 vi.mock('../store.js', () => ({
   listRunnerTaskIds: vi.fn().mockResolvedValue([]),
   loadRunnerLeases: vi.fn().mockResolvedValue([]),
-  readRunnerExecWatermark: vi.fn().mockResolvedValue(0),
+  readRunnerExecLogState: vi.fn().mockResolvedValue({ watermark: 0, deliveryCursor: 0 }),
+  readRunnerExecOutput: vi.fn(async (taskId: string, leaseId: string, execId: string, afterCursor: number, maxBytes: number) => {
+    const records = execLogs.get(execLogKey(taskId, leaseId, execId)) ?? [];
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let cursor = afterCursor;
+    let bytes = 0;
+    let hasMore = false;
+    let recordStart = 0;
+    let deliveryBlocked = false;
+    for (const record of records) {
+      const value = record.event.type === 'stdout' || record.event.type === 'stderr'
+        ? Buffer.from(record.event.data)
+        : record.event.type === 'error'
+          ? Buffer.from(record.event.error)
+          : undefined;
+      const candidateStart = recordStart;
+      recordStart = record.cursor;
+      if (record.cursor <= cursor) continue;
+      if (deliveryBlocked) {
+        hasMore = true;
+        continue;
+      }
+      if (value && value.length > 0) {
+        const offset = Math.max(0, cursor - candidateStart);
+        const delivered = value.subarray(offset, offset + maxBytes - bytes);
+        (record.event.type === 'stdout' ? stdout : stderr).push(delivered);
+        bytes += delivered.length;
+        cursor = candidateStart + offset + delivered.length;
+        if (cursor < record.cursor) {
+          deliveryBlocked = true;
+          hasMore = true;
+        }
+      } else {
+        cursor = record.cursor;
+      }
+    }
+    return { stdout: Buffer.concat(stdout).toString(), stderr: Buffer.concat(stderr).toString(), cursor, hasMore, truncated: false };
+  }),
   saveRunnerLeases: vi.fn(async (taskId: string, leases: RunnerLease[]) => persisted.set(taskId, leases)),
-  appendRunnerExecLog: vi.fn().mockResolvedValue(undefined),
-  removeRunnerExecLog: vi.fn().mockResolvedValue(undefined),
+  appendRunnerExecLog: vi.fn(async (taskId: string, leaseId: string, execId: string, event: ExecEvent, afterCursor: number) => {
+    const key = execLogKey(taskId, leaseId, execId);
+    const value = event.type === 'stdout' || event.type === 'stderr'
+      ? Buffer.from(event.data)
+      : event.type === 'error'
+        ? Buffer.from(event.error)
+        : undefined;
+    const cursor = afterCursor + Math.max(1, value?.length ?? 0);
+    execLogs.set(key, [...(execLogs.get(key) ?? []), { cursor, event }]);
+    return cursor;
+  }),
+  removeRunnerExecLog: vi.fn(async (taskId: string, leaseId: string, execId: string) => {
+    execLogs.delete(execLogKey(taskId, leaseId, execId));
+  }),
 }));
 
 vi.mock('../../system/logger.js', () => ({
@@ -61,7 +120,7 @@ function loadedConfig(maxConcurrent = 2): LoadedRunnerConfig {
           image: `ghcr.io/example/xcode@sha256:${'a'.repeat(64)}`,
           os: 'darwin', cpu: 4, memoryMiB: 8192, diskGiB: 100,
           username: 'admin', passwordEnv: 'GUEST', allowedAgents: ['mobile-agent', 'second-agent'],
-          labels: {}, resources: {}, softnetAllow: [], leaseTtlMinutes: 120,
+          labels: {}, resources: {}, networkMode: 'softnet', softnetAllow: [], leaseTtlMinutes: 120,
           debugTtlMinutes: 30, maxDebugTtlMinutes: 60, execTimeoutSeconds: 3600,
           provisionTimeoutSeconds: 30, readinessTimeoutSeconds: 30, maxExecWaitSeconds: 1,
           maxExecOutputBytes: 1024, maxActiveExecSessions: 4, maxExecSessionHistory: 50,
@@ -75,9 +134,10 @@ function loadedConfig(maxConcurrent = 2): LoadedRunnerConfig {
 describe('RunnerManager', () => {
   beforeEach(() => {
     persisted.clear();
+    execLogs.clear();
     vi.mocked(listRunnerTaskIds).mockResolvedValue([]);
     vi.mocked(loadRunnerLeases).mockResolvedValue([]);
-    vi.mocked(readRunnerExecWatermark).mockResolvedValue(0);
+    vi.mocked(readRunnerExecLogState).mockResolvedValue({ watermark: 0, deliveryCursor: 0 });
     vi.mocked(removeRunnerExecLog).mockClear();
   });
 
@@ -165,8 +225,10 @@ describe('RunnerManager', () => {
     const manager = new RunnerManager(loadedConfig(), provider);
     await manager.initialize();
     const lease = await manager.ensure('task-1', 'mobile-agent', 'ios');
-    const debug = await manager.openDebug('task-1', 'mobile-agent', 'ios', 999);
+    const debug = await manager.openDebug('task-1', 'mobile-agent', 'ios', 999, [18080]);
     expect(Date.parse(debug.expiresAt) - Date.now()).toBeLessThanOrEqual(60 * 60_000);
+    expect(debug.commands).toContain(`orchard port-forward vm '${debug.backendId}' 18080:18080`);
+    await expect(manager.openDebug('task-1', 'mobile-agent', 'ios', 5, [18080, 18080])).rejects.toThrow(/unique/);
     await manager.completeTask('task-1');
     expect(lease.expiresAt).toBe(debug.expiresAt);
     expect(provider.released).toHaveLength(0);
@@ -191,6 +253,38 @@ describe('RunnerManager', () => {
     await expect(manager.ensure('task-1', 'mobile-agent', 'ios')).rejects.toThrow(/guest agent unavailable/);
     expect(provider.released).toHaveLength(1);
     expect(persisted.get('task-1')).toEqual([]);
+    manager.shutdown();
+  });
+
+  it('stops readiness retries when the backend fails', async () => {
+    class BackendFailsDuringReadinessProvider extends FakeProvider {
+      readinessAttempts = 0;
+      override async inspect(id: string) {
+        const instance = await super.inspect(id);
+        if (instance && this.readinessAttempts > 0) {
+          return { ...instance, status: 'failed' as const, statusMessage: 'Softnet requires root' };
+        }
+        return instance;
+      }
+      override async *exec(_id: string, request: ExecRequest): AsyncIterable<ExecEvent> {
+        if (request.sessionId.startsWith('readiness-')) this.readinessAttempts += 1;
+        throw new Error('guest not reachable');
+      }
+    }
+    const provider = new BackendFailsDuringReadinessProvider();
+    const loaded = loadedConfig();
+    loaded.config.profiles.ios.readinessCommand = ['/usr/bin/true'];
+    const manager = new RunnerManager(loaded, provider);
+    await manager.initialize();
+    vi.useFakeTimers();
+    try {
+      const rejected = expect(manager.ensure('task-1', 'mobile-agent', 'ios')).rejects.toThrow(/Softnet requires root/);
+      await vi.advanceTimersByTimeAsync(6000);
+      await rejected;
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(provider.released).toHaveLength(1);
     manager.shutdown();
   });
 
@@ -232,7 +326,143 @@ describe('RunnerManager', () => {
     const result = await manager.exec('task-1', 'mobile-agent', 'ios', 'org/app', ['xcodebuild', '-version']);
     expect(result).toMatchObject({ state: 'completed', exitCode: 0, stdout: 'ok' });
     expect(lease.execSessions[result.execId].watermark).toBe(2);
+    expect(result).toMatchObject({ cursor: 3, hasMore: false });
     manager.shutdown();
+  });
+
+  it('reconnects a dropped transfer session before accepting its exit status', async () => {
+    class DroppedTransferProvider extends FakeProvider {
+      transferAttempts = 0;
+
+      override async *exec(id: string, request: ExecRequest): AsyncIterable<ExecEvent> {
+        if (request.stdin) {
+          this.transferAttempts += 1;
+          for await (const _chunk of request.stdin) {}
+          yield { type: 'bootstrap_complete' };
+          return;
+        }
+        if (this.transferAttempts > 0 && request.reconnectFrom !== undefined) {
+          this.transferAttempts += 1;
+          yield { type: 'history_end', watermark: request.reconnectFrom };
+          yield { type: 'exit', code: 0, watermark: request.reconnectFrom + 1 };
+          return;
+        }
+        yield* super.exec(id, request);
+      }
+    }
+    const repo = await mkdtemp(join(tmpdir(), 'archie-runner-sync-reconnect-'));
+    try {
+      await execFileAsync('git', ['init', '-q'], { cwd: repo });
+      await writeFile(join(repo, 'fixture.txt'), 'transfer payload');
+      const provider = new DroppedTransferProvider();
+      const manager = new RunnerManager(loadedConfig(), provider);
+      await manager.initialize();
+
+      const synced = await manager.sync('task-1', 'mobile-agent', 'ios', 'org/app', repo);
+
+      expect(provider.transferAttempts).toBe(2);
+      expect(synced.files).toBe(1);
+      manager.shutdown();
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('fails a transfer instead of reconnecting when stdin delivery was incomplete', async () => {
+    class InterruptedUploadProvider extends FakeProvider {
+      transferAttempts = 0;
+
+      override async *exec(id: string, request: ExecRequest): AsyncIterable<ExecEvent> {
+        if (request.stdin) {
+          this.transferAttempts += 1;
+          return;
+        }
+        if (request.reconnectFrom !== undefined) this.transferAttempts += 1;
+        yield* super.exec(id, request);
+      }
+    }
+    const repo = await mkdtemp(join(tmpdir(), 'archie-runner-sync-interrupted-'));
+    try {
+      await execFileAsync('git', ['init', '-q'], { cwd: repo });
+      await writeFile(join(repo, 'fixture.txt'), 'transfer payload');
+      const provider = new InterruptedUploadProvider();
+      const manager = new RunnerManager(loadedConfig(), provider);
+
+      await expect(manager.sync('task-1', 'mobile-agent', 'ios', 'org/app', repo)).rejects.toThrow(/stdin upload completed/);
+      expect(provider.transferAttempts).toBe(1);
+      manager.shutdown();
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('reuses a stable request id and replays output after the client cursor', async () => {
+    class CountingProvider extends FakeProvider {
+      commandStarts = 0;
+      override async *exec(id: string, request: ExecRequest): AsyncIterable<ExecEvent> {
+        this.commandStarts += 1;
+        yield* super.exec(id, request);
+      }
+    }
+    const provider = new CountingProvider();
+    const manager = new RunnerManager(loadedConfig(), provider);
+    await manager.initialize();
+    const lease = await manager.ensure('task-1', 'mobile-agent', 'ios');
+    lease.syncedRepos['org/app'] = { github: 'org/app', remotePath: '/workspace/app', syncedAt: new Date().toISOString() };
+    const requestId = '11111111-1111-4111-8111-111111111111';
+
+    const env = { RUNNER_SECRET: 'delivery-secret' };
+    const first = await manager.exec('task-1', 'mobile-agent', 'ios', 'org/app', ['/usr/bin/printf', 'ok'], '.', env, 1, requestId);
+    const replayedStart = await manager.exec('task-1', 'mobile-agent', 'ios', 'org/app', ['/usr/bin/printf', 'ok'], '.', env, 1, requestId);
+    const replayedPoll = await manager.poll('task-1', 'mobile-agent', 'ios', requestId, 0, 0);
+    const acknowledged = await manager.poll('task-1', 'mobile-agent', 'ios', requestId, first.cursor, 0);
+
+    expect(provider.commandStarts).toBe(1);
+    expect(replayedStart).toMatchObject({ execId: requestId, stdout: 'ok', cursor: 3, hasMore: false });
+    expect(replayedPoll).toMatchObject({ stdout: 'ok', cursor: 3, hasMore: false });
+    expect(acknowledged).toMatchObject({ stdout: '', stderr: '', cursor: 3, hasMore: false });
+    expect(JSON.stringify(persisted.get('task-1'))).not.toContain('delivery-secret');
+    await expect(manager.poll('task-1', 'mobile-agent', 'ios', requestId, 4, 0)).rejects.toThrow(/Invalid delivery cursor/);
+    await expect(manager.exec('task-1', 'mobile-agent', 'ios', 'org/app', ['/usr/bin/false'], '.', {}, 1, requestId)).rejects.toThrow(/different command/);
+    manager.shutdown();
+  });
+
+  it('replays a persisted command result after manager restart', async () => {
+    class CountingProvider extends FakeProvider {
+      commandStarts = 0;
+      override async *exec(id: string, request: ExecRequest): AsyncIterable<ExecEvent> {
+        this.commandStarts += 1;
+        yield* super.exec(id, request);
+      }
+    }
+    const provider = new CountingProvider();
+    const firstManager = new RunnerManager(loadedConfig(), provider);
+    await firstManager.initialize();
+    const lease = await firstManager.ensure('task-1', 'mobile-agent', 'ios');
+    lease.syncedRepos['org/app'] = { github: 'org/app', remotePath: '/workspace/app', syncedAt: new Date().toISOString() };
+    const requestId = '22222222-2222-4222-8222-222222222222';
+    await firstManager.exec('task-1', 'mobile-agent', 'ios', 'org/app', ['/usr/bin/printf', 'ok'], '.', {}, 1, requestId);
+    const recoveredLeases = structuredClone(persisted.get('task-1') ?? []);
+    firstManager.shutdown();
+
+    vi.mocked(listRunnerTaskIds).mockResolvedValue(['task-1']);
+    vi.mocked(loadRunnerLeases).mockResolvedValue(recoveredLeases);
+    vi.mocked(readRunnerExecLogState).mockImplementation(async (taskId, leaseId, execId) => {
+      const records = execLogs.get(execLogKey(taskId, leaseId, execId)) ?? [];
+      const watermarks = records.flatMap(({ event }) => 'watermark' in event && event.watermark !== undefined ? [event.watermark] : []);
+      return {
+        watermark: Math.max(0, ...watermarks),
+        deliveryCursor: Math.max(0, ...records.map((record) => record.cursor)),
+      };
+    });
+    const recoveredManager = new RunnerManager(loadedConfig(), provider);
+    await recoveredManager.initialize();
+
+    const replayed = await recoveredManager.poll('task-1', 'mobile-agent', 'ios', requestId, 0, 0);
+
+    expect(provider.commandStarts).toBe(1);
+    expect(replayed).toMatchObject({ state: 'completed', stdout: 'ok', cursor: 3, hasMore: false });
+    recoveredManager.shutdown();
   });
 
   it('bounds active detached commands', async () => {
@@ -358,7 +588,7 @@ describe('RunnerManager', () => {
       expiresAt: new Date(Date.now() + 60_000).toISOString(), syncedRepos: {},
       execSessions: {
         exec: {
-          id: 'exec', sessionId: 'archie-exec', state: 'running', watermark: 2, outputBytes: 10,
+          id: 'exec', sessionId: 'archie-exec', state: 'running', watermark: 2, deliveryCursor: 1, outputBytes: 10, outputTruncated: false,
           startedAt: new Date().toISOString(), deadlineAt: new Date(Date.now() + 60_000).toISOString(),
         },
       },
@@ -366,10 +596,11 @@ describe('RunnerManager', () => {
     provider.instances.set(lease.backendId, { id: lease.backendId, status: 'running' });
     vi.mocked(listRunnerTaskIds).mockResolvedValue(['task-1']);
     vi.mocked(loadRunnerLeases).mockResolvedValue([lease]);
-    vi.mocked(readRunnerExecWatermark).mockResolvedValue(7);
+    vi.mocked(readRunnerExecLogState).mockResolvedValue({ watermark: 7, deliveryCursor: 4 });
     const manager = new RunnerManager(loadedConfig(), provider);
     await manager.initialize();
     expect(lease.execSessions.exec.watermark).toBe(7);
+    expect(lease.execSessions.exec.deliveryCursor).toBe(4);
     manager.shutdown();
   });
 

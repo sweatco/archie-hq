@@ -49,6 +49,28 @@ Secrets are injected via the container's environment file plus the mounted
 
 Runner deployments require outbound HTTPS and WebSocket access from Archie to the Orchard controller and Apple Silicon workers registered with Orchard. Mount the operator-owned JSON file read-only into the container, set `ARCHIE_RUNNERS_CONFIG` to its container path, and keep Orchard and guest credentials only in the environment file. See [Tart Runners](../architecture/runners.md) for the schema and lifecycle.
 
+On macOS 15 and newer, run each Orchard worker through the supported privileged-helper form: start `orchard worker run` as root with `--user <regular-host-user>`. This keeps Tart state under the regular account, drops the worker's privileges, and leaves only Orchard's small local-network connection helper privileged. Do not rely on an SSH-launched unprivileged worker: macOS Local Network privacy can let an interactive shell reach a NAT guest while denying the worker's exec and port-forward sockets. Production profiles use `networkMode: "softnet"`; the `nat` mode is an explicitly unisolated lab-only fallback. Archie enforces this boundary at startup: `NODE_ENV=production` rejects NAT profiles and insecure Orchard HTTP.
+
+The TeamCity E2E host can be exercised before sudo is available with the pinned patch in `scripts/teamcity/orchard-0.56.1-external-netcat.patch`. It applies only to Orchard tag `0.56.1` and adds an explicit development-only `--unsafe-external-netcat-dialer` flag. Build it from the exact tag, run its dialer tests, ad-hoc sign the resulting local binary if required by the host, and keep the unauthenticated development controller reachable only through an SSH localhost tunnel. This lab transport is intentionally separate from the official binary and data directory and must not be promoted to staging or production.
+
+The pinned source commit is `1c241832f5710f68d395c91c414ca55afcb0468a`. Build and sign it with the checked helper; the helper refuses a different or dirty checkout, applies the patch, runs the dialer tests, builds, signs, and prints the binary SHA-256:
+
+```bash
+git clone --branch 0.56.1 --depth 1 https://github.com/openai/orchard.git orchard-lab
+./scripts/teamcity/build-orchard-lab.sh orchard-lab ./orchard.lab
+```
+
+Copy the printed checksum and verify it again after transferring the binary to the TeamCity host. Start the lab binary in the foreground with an isolated data directory:
+
+```bash
+./orchard.lab dev \
+  --data-dir /Users/customer/archie-runner/orchard-data-netcat \
+  --resources org.cirruslabs.logical-cores=8 \
+  --unsafe-external-netcat-dialer
+```
+
+The unsafe flag forces the development controller to bind `127.0.0.1:6120`; do not add a public proxy. From the Archie test client, forward that loopback socket with `ssh -N -L 16120:127.0.0.1:6120 <teamcity-host>` and point the lab profile at `http://127.0.0.1:16120/v1`. Use a dedicated lab `instanceId`, workdir, profile, and controller data directory. Before stopping either foreground process, release the canary, require `GET /v1/vms` to return an empty array, verify no matching Tart VM remains on the worker, and then stop the SSH tunnel and Orchard with `Ctrl-C`.
+
 Start with one digest-pinned iOS profile, one allowed mobile agent, and `maxConcurrent: 1`. Verify provisioning, repository sync, `xcodebuild`, Simulator boot/install/launch, artifact collection, reconnectable long-running exec, VNC, task completion, and VM deletion before increasing capacity.
 
 Run only one runner-enabled Archie replica for an `instanceId` and workdir. Capacity accounting and locks are process-local, and duplicate replicas can delete each other's VMs during orphan reconciliation. Keep the runner controller single-replica until distributed leases and leader election exist.

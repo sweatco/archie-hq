@@ -62,6 +62,7 @@ class AsyncEventQueue<T> {
 }
 
 const MAX_EXEC_QUEUE_BYTES = 8 * 1024 * 1024;
+const ORCHARD_STDIN_CHUNK_BYTES = 16 * 1024;
 
 function eventBytes(event: ExecEvent): number {
   if (event.type === 'stdout' || event.type === 'stderr') return event.data.byteLength;
@@ -148,9 +149,11 @@ export class OrchardRunnerProvider implements RunnerProvider {
         restart_policy: 'Never',
         resources: spec.resources,
         labels: spec.labels,
-        netSoftnet: true,
-        netSoftnetAllow: spec.softnetAllow,
-        netSoftnetBlock: ['0.0.0.0/0'],
+        ...(spec.networkMode === 'softnet' ? {
+          netSoftnet: true,
+          netSoftnetAllow: spec.softnetAllow,
+          netSoftnetBlock: ['0.0.0.0/0'],
+        } : {}),
       }),
     });
     return toInstance(vm);
@@ -198,6 +201,7 @@ export class OrchardRunnerProvider implements RunnerProvider {
     let opened = false;
     let bootstrapComplete = false;
     let detachRequested = false;
+    let receivedWatermark = wireRequest.reconnectFrom ?? 0;
     const handshakeTimer = setTimeout(() => {
       queue.fail(new Error(`Timed out opening Orchard exec session ${request.sessionId}`));
       ws.terminate();
@@ -228,9 +232,15 @@ export class OrchardRunnerProvider implements RunnerProvider {
         if (wireRequest.stdin) {
           for await (const chunk of wireRequest.stdin) {
             if (ws.readyState !== WebSocket.OPEN || (request.signal?.aborted && !hasPrivateEnvironment)) return;
-            await send({ type: 'stdin', data: Buffer.from(chunk).toString('base64') });
+            const data = Buffer.from(chunk);
+            for (let offset = 0; offset < data.length; offset += ORCHARD_STDIN_CHUNK_BYTES) {
+              if (ws.readyState !== WebSocket.OPEN || (request.signal?.aborted && !hasPrivateEnvironment)) return;
+              await send({ type: 'stdin', data: data.subarray(offset, offset + ORCHARD_STDIN_CHUNK_BYTES).toString('base64') });
+            }
           }
-          if (ws.readyState === WebSocket.OPEN) await send({ type: 'stdin', data: '' });
+          if (ws.readyState !== WebSocket.OPEN) return;
+          await send({ type: 'stdin', data: '' });
+          if (!queue.push({ type: 'bootstrap_complete' })) ws.terminate();
         }
       })().catch((error) => queue.fail(error)).finally(() => {
         bootstrapComplete = true;
@@ -248,20 +258,40 @@ export class OrchardRunnerProvider implements RunnerProvider {
             ? frame.watermark
             : (() => { throw new Error('Invalid Orchard exec watermark'); })();
         if (frame.type === 'stdout' || frame.type === 'stderr') {
+          if (watermark === undefined) throw new Error(`Missing Orchard exec watermark for ${frame.type}`);
+          if (watermark !== receivedWatermark + 1) {
+            throw new Error(`Orchard exec history gap: expected watermark ${receivedWatermark + 1}, received ${watermark}`);
+          }
+          receivedWatermark = watermark;
           if (!queue.push({ type: frame.type, data: Buffer.from(String(frame.data ?? ''), 'base64'), watermark })) ws.terminate();
         } else if (frame.type === 'exit') {
+          if (watermark === undefined) throw new Error('Missing Orchard exec watermark for exit');
+          if (watermark !== receivedWatermark + 1) {
+            throw new Error(`Orchard exec history gap: expected watermark ${receivedWatermark + 1}, received ${watermark}`);
+          }
+          receivedWatermark = watermark;
           terminal = true;
           const exit = frame.exit as { code?: unknown } | undefined;
           if (typeof exit?.code !== 'number' || !Number.isSafeInteger(exit.code)) throw new Error('Invalid Orchard exec exit code');
           if (!queue.push({ type: 'exit', code: exit.code, watermark })) ws.terminate();
         } else if (frame.type === 'error') {
+          if (watermark === undefined) throw new Error('Missing Orchard exec watermark for error');
+          if (watermark !== receivedWatermark + 1) {
+            throw new Error(`Orchard exec history gap: expected watermark ${receivedWatermark + 1}, received ${watermark}`);
+          }
+          receivedWatermark = watermark;
           terminal = true;
           if (!queue.push({ type: 'error', error: String(frame.error ?? 'Unknown Orchard exec error'), watermark })) ws.terminate();
-        } else if (frame.type === 'no_more_history' && watermark !== undefined) {
-          if (!queue.push({ type: 'history_end', watermark })) ws.terminate();
+        } else if (frame.type === 'no_more_history') {
+          const historyWatermark = watermark ?? 0;
+          if (historyWatermark !== receivedWatermark) {
+            throw new Error(`Orchard exec history gap: expected watermark ${receivedWatermark}, history ended at ${historyWatermark}`);
+          }
+          if (!queue.push({ type: 'history_end', watermark: historyWatermark })) ws.terminate();
         }
       } catch (error) {
         queue.fail(error);
+        ws.terminate();
       }
     });
     ws.once('error', (error) => {
