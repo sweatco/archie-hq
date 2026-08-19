@@ -141,6 +141,28 @@ The opt-in Vitest case `src/runners/__tests__/orchard.e2e.test.ts` exercises a r
 
 The canary provisions and syncs a real repository, runs every configured command, detaches and reconnects to a long command, validates the VNC handoff, releases the lease, and confirms Orchard deleted the VM.
 
+`npm run runner:ios-full-cycle-e2e` is the source-to-debug acceptance canary. It uses a clean, exact Git commit and a deterministic dependency-free fixture by default, then proves the complete runner cycle:
+
+1. Hash the clean source tree, sync it through `RunnerManager`, and recompute the same manifest in the guest.
+2. Create and boot an exact Simulator device and runtime.
+3. Run `xcodebuild build-for-testing` and `test-without-building`, retaining both `.xcresult` bundles and their machine-readable summaries.
+4. Install and launch the built app, assert the UI through XCTest, and capture a PNG.
+5. Attach LLDB, hit a configured source breakpoint, step to a configured local variable, verify its expected value, collect a backtrace, and detach.
+6. Relaunch into a deliberate crash, retain the marker-bearing unified log and the guest `.ips` report when ReportCrash emits one, otherwise retain an explicit unified-log crash report, then collect all evidence through `RunnerManager`.
+7. Delete the Simulator, release the exact VM, and verify that Orchard no longer reports the backend.
+
+The harness does not call `RunnerManager.initialize()`, so a disposable canary workdir cannot classify VMs owned by another controller as orphans. It still requires a dedicated lab `instanceId`, controller, profile, workdir, and credentials. The destructive opt-in is `ARCHIE_IOS_FULL_CYCLE_E2E=true`. Provide the normal runner configuration and credentials plus:
+
+- Source: `ARCHIE_IOS_E2E_REPO`, `ARCHIE_IOS_E2E_GITHUB`, and full `ARCHIE_IOS_E2E_COMMIT`.
+- Xcode: exactly one of `ARCHIE_IOS_E2E_PROJECT` or `ARCHIE_IOS_E2E_WORKSPACE`, plus `ARCHIE_IOS_E2E_SCHEME`, optional `ARCHIE_IOS_E2E_CONFIGURATION`, and optional JSON-array `ARCHIE_IOS_E2E_XCODE_ARGUMENTS`.
+- Product: `ARCHIE_IOS_E2E_BUNDLE_ID`, `ARCHIE_IOS_E2E_APP_PATH` below `.archie-full-cycle/DerivedData`, and `ARCHIE_IOS_E2E_PROCESS_NAME`.
+- Simulator: exact `ARCHIE_IOS_E2E_RUNTIME` and optional `ARCHIE_IOS_E2E_DEVICE_TYPE`.
+- Debug/crash contract: optional breakpoint, step count, variable, expected value, crash marker, launch arguments, and crash arguments through the other `ARCHIE_IOS_E2E_*` variables defined by the checked harness.
+- Bounds: `ARCHIE_IOS_E2E_MIN_TESTS`, `ARCHIE_IOS_E2E_TIMEOUT_SECONDS`, and optional `ARCHIE_IOS_E2E_HOLD_SECONDS`. A positive hold prints a bounded VNC handoff after LLDB verification and before the deliberate crash.
+- Build identity: `ARCHIE_BUILD_COMMIT` is required when the compiled Archie image has no clean Git checkout metadata. It is recorded in `evidence.json`.
+
+For the checked fixture, use the committed `RunnerFixture.xcodeproj`, scheme `RunnerFixture`, bundle `dev.archie.runner-fixture`, process `RunnerFixture`, app path `.archie-full-cycle/DerivedData/Build/Products/Debug-iphonesimulator/RunnerFixture.app`, and the runtime identifier installed in the runner image. The canary is compiled into the production image and does not depend on the `tsx` development dependency.
+
 `npm run runner:sweatcoin-e2e` is a compiled, manager-level live canary. It does not exercise task creation, agent spawning, MCP tool registration, or terminal-task cleanup, so it must not be described as a full Archie product-flow test. It requires `ARCHIE_SWEATCOIN_LIVE_E2E=true`, provisions a new lease without running global orphan reconciliation, and fails unless it can verify that its exact backend was deleted during cleanup.
 
 Use a dedicated lab runner configuration and a clean, commit-exact fixture containing `swc.app.tgz`, `axe.tgz` with AXe's `libexec` directory, and the bounded one-shot `mjpeg_bridge.py`. In addition to the normal runner credentials, provide:
