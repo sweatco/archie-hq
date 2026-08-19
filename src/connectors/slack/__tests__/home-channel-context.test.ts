@@ -48,9 +48,9 @@ vi.mock('../../../system/logger.js', () => ({
   logger: { warn: vi.fn(), system: vi.fn(), error: vi.fn(), debug: vi.fn(), info: vi.fn() },
 }));
 
-import { taskSlackChannelLabels } from '../channel-ids.js';
-import { buildChannelCanvasPromptSection } from '../channel-canvas.js';
-import { buildChannelPinsPromptSection } from '../channel-pins.js';
+import { taskSlackChannelIds, taskSlackChannelLabels } from '../channel-ids.js';
+import { buildChannelCanvasPromptSection, collectCanvasFileAllowlist } from '../channel-canvas.js';
+import { buildChannelPinsPromptSection, collectPinnedFileAllowlist } from '../channel-pins.js';
 import { digestOf, normalisePinText } from '../pin-summary.js';
 
 const HOME = 'C_HOME';
@@ -150,5 +150,55 @@ describe('standing context reaches a trigger-fired task before it has a thread',
 
     expect(await buildChannelCanvasPromptSection(cliOnly)).toBe('');
     expect(await buildChannelPinsPromptSection(cliOnly)).toBe('');
+  });
+});
+
+// The blocks above are only half of it. Each one names files and tells the agent to open them — the canvas brief cites its referenced attachments, the pin index prints a pinned file's id — and `fetch_slack_reference` refuses any id outside its allowlist. Deriving the prompt from one channel set and the allowlist from another is what made a threadless trigger-fired task's own first-turn instructions point at a tool that said no: it was handed its home channel's brief and pin index while both allowlists were still built from linked channels alone, of which it had none. Sharing `taskSlackChannelIds` is what keeps the two in step, so these cases pin the derivation itself and both of its consumers.
+describe('capability derivation covers the home channel too', () => {
+  const triggerMetadata = {
+    channels: {},
+    home_channel: { channel_id: HOME, channel_name: 'home' },
+  } as unknown as TaskMetadata;
+
+  it('taskSlackChannelIds includes a home channel with no linked channels', () => {
+    const ids = taskSlackChannelIds(triggerMetadata);
+
+    expect([...ids]).toEqual([HOME]);
+  });
+
+  it('the canvas allowlist covers the home channel canvas and the files it references', async () => {
+    storesByChannel = {
+      [HOME]: { ...homeStore(), canvases: [{ ...canvasEntry(), fileIds: ['F_REF_A', 'F_REF_B'] }] },
+    };
+
+    const allowed = await collectCanvasFileAllowlist(triggerMetadata);
+
+    // The canvas itself AND its references: the brief the agent was just handed cites the latter by id.
+    expect([...allowed].sort()).toEqual(['F_CANVAS', 'F_REF_A', 'F_REF_B']);
+  });
+
+  it('the pinned-file allowlist covers a file pinned in the home channel', async () => {
+    storesByChannel = {
+      [HOME]: {
+        ...homeStore(),
+        pins: [
+          pinEntry(),
+          { ...pinEntry(), kind: 'file', key: 'F_PINNED', fileId: 'F_PINNED', summary: 'the runbook pdf' },
+        ],
+      },
+    };
+
+    const allowed = await collectPinnedFileAllowlist(triggerMetadata);
+
+    expect([...allowed]).toEqual(['F_PINNED']);
+  });
+
+  // The widening is scoped to the home channel, not a blanket "allow whatever the stores hold": a task
+  // with no slack surface at all must still get nothing.
+  it('both allowlists stay empty with no slack channels and no home channel', async () => {
+    const cliOnly = { channels: { a: { type: 'cli', id: 'cli:local' } } } as unknown as TaskMetadata;
+
+    expect((await collectCanvasFileAllowlist(cliOnly)).size).toBe(0);
+    expect((await collectPinnedFileAllowlist(cliOnly)).size).toBe(0);
   });
 });

@@ -18,7 +18,7 @@ import {
   postSlackMessage,
 } from './client.js';
 import { readCanvas } from './canvas-read.js';
-import { taskSlackChannelLabels } from './channel-ids.js';
+import { taskSlackChannelIds, taskSlackChannelLabels } from './channel-ids.js';
 import {
   loadChannelStore,
   updateChannelStore,
@@ -79,8 +79,9 @@ const CANVAS_TTL_MS = 60_000;
  * in-memory merge + dedup + persist, so announce-once survives concurrent
  * fire-and-forget events.
  */
-export async function ensureChannelCanvas(channelId: string): Promise<void> {
+export async function ensureChannelCanvas(channelId: string, opts?: { announce?: boolean }): Promise<void> {
   if (channelId.startsWith('D')) return;
+  const announce = opts?.announce !== false;
 
   try {
     const pre = await loadChannelStore(channelId);
@@ -163,12 +164,14 @@ export async function ensureChannelCanvas(channelId: string): Promise<void> {
     }
 
     const announcements: Array<{ kind: AnnounceKind; title: string }> = [];
+    let suppressed = false;
     await updateChannelStore(channelId, (store) => {
       const canvases: ChannelCanvasEntry[] = [];
+      // Computed before anything is mutated, because a caller that may not announce has to be able to walk away leaving the store exactly as it found it.
+      const pending: Array<{ kind: AnnounceKind; title: string }> = [];
       for (const r of resolved) {
         if (!store.announced[r.fileId]) {
-          announcements.push({ kind: r.external ? 'ignored' : 'adopted', title: r.title });
-          store.announced[r.fileId] = true;
+          pending.push({ kind: r.external ? 'ignored' : 'adopted', title: r.title });
         }
         if (!r.external && r.entry) canvases.push(r.entry);
       }
@@ -183,9 +186,22 @@ export async function ensureChannelCanvas(channelId: string): Promise<void> {
       const adoptedNow = new Set(canvases.map((c) => c.file_id));
       for (const prevAdopted of store.canvases) {
         if (!adoptedNow.has(prevAdopted.file_id)) {
-          announcements.push({ kind: 'dropped', title: prevAdopted.title });
+          pending.push({ kind: 'dropped', title: prevAdopted.title });
         }
       }
+
+      // A caller that must not post walks away rather than announcing silently. `announce: false` exists for the trigger scheduler, which refreshes this store just before a fired task speaks for the first time: an adoption notice posted there would land in the channel AHEAD of the automation's own result, as a bot-rooted top-level message that a human reply would turn into a stranger task — the exact shape the fired-task thread exists to replace.
+      //
+      // So when something WOULD be announced, nothing is written at all: the store keeps its previous canvases and its previous `checkedAt`, so the next inbound Slack event in this channel re-scans immediately and announces properly. The cost is that one fire reads slightly stale standing context; the alternative is either a preamble in the channel or a notice that is silently lost, and both are worse. In the steady state — nothing changed since the last scan — `pending` is empty and the refresh proceeds exactly as it does for any other caller.
+      if (!announce && pending.length > 0) {
+        suppressed = true;
+        return store;
+      }
+
+      for (const r of resolved) {
+        store.announced[r.fileId] = true;
+      }
+      announcements.push(...pending);
 
       // Forget canvases that no longer resolve at all. Without this the `announced`
       // flag outlives the canvas, so renaming it back re-adopts it *silently*. Keyed
@@ -201,6 +217,9 @@ export async function ensureChannelCanvas(channelId: string): Promise<void> {
       return store;
     });
 
+    if (suppressed) {
+      logger.system(`Canvas scan for ${channelId} left the store untouched — a change is pending announcement and this caller must not post`);
+    }
     for (const a of announcements) {
       await announceCanvas(channelId, a.kind, a.title);
     }
@@ -353,9 +372,9 @@ export async function buildOtherChannelContextSection(
  */
 export async function collectCanvasFileAllowlist(metadata: TaskMetadata): Promise<Set<string>> {
   const allowed = new Set<string>();
-  for (const ch of Object.values(metadata.channels)) {
-    if (ch.type !== 'slack') continue;
-    const store = await loadChannelStore(ch.channel_id);
+  // Same channel set the prompt block is built from, home channel included: a task handed a canvas brief must be able to open the files that brief references, or its own instructions point at a tool that refuses.
+  for (const channelId of taskSlackChannelIds(metadata)) {
+    const store = await loadChannelStore(channelId);
     if (!store) continue;
     for (const c of store.canvases) {
       if (c.external) continue;

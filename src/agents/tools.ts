@@ -48,7 +48,7 @@ import {
   buildOtherChannelContextSection,
 } from '../connectors/slack/channel-canvas.js';
 import { collectPinnedFileAllowlist } from '../connectors/slack/channel-pins.js';
-import { isDmOrUserId, findMutedTarget } from '../connectors/slack/channel-ids.js';
+import { isDmOrUserId, findMutedTarget, taskSlackChannelIds } from '../connectors/slack/channel-ids.js';
 import {
   formatSlackSendError,
   formatSlackPostError,
@@ -71,16 +71,15 @@ function rejectDmTarget(channel: string): string | null {
 }
 
 /**
- * The Slack channel ids THIS task is linked to (its own origin channel(s)).
+ * The Slack channel ids THIS task is linked to (its own origin channel(s)), plus the
+ * home channel a trigger-fired task has before it opens its own thread there.
  * Explore reads treat these as accessible regardless of type — so the PM can read
  * the private channel or DM the task itself lives in, but no other private/DM.
+ *
+ * Delegates to the shared derivation so the channels a task may READ are the same ones whose standing context it was given: a task homed in a private channel is handed that channel's pin index on its first turn, and refusing to let it read the channel that index describes made its own prompt incoherent for exactly one turn.
  */
-function taskSlackChannelIds(task: Task): Set<string> {
-  const ids = new Set<string>();
-  for (const ch of Object.values(task.metadata.channels)) {
-    if (ch.type === 'slack') ids.add(ch.channel_id);
-  }
-  return ids;
+function taskChannelIds(task: Task): Set<string> {
+  return taskSlackChannelIds(task.metadata);
 }
 
 /** Render explore messages in the same `@<id:name> | msg:ts` shape the PM sees elsewhere. */
@@ -991,7 +990,7 @@ function createReadChannelHistoryTool(_agent: Agent, task: Task) {
       limit: z.number().int().min(1).max(100).optional().describe('How many recent messages to read (default 30, max 100)'),
     },
     async (args) => {
-      const allowed = taskSlackChannelIds(task);
+      const allowed = taskChannelIds(task);
       if (!allowed.has(args.channel)) {
         const dm = rejectDmTarget(args.channel);
         if (dm) return ok(dm);
@@ -1018,7 +1017,7 @@ function createReadThreadTool(_agent: Agent, task: Task) {
       thread_ts: z.string().describe('Parent message ts of the thread (e.g. "1716998400.123456")'),
     },
     async (args) => {
-      const allowed = taskSlackChannelIds(task);
+      const allowed = taskChannelIds(task);
       if (!allowed.has(args.channel)) {
         const dm = rejectDmTarget(args.channel);
         if (dm) return ok(dm);

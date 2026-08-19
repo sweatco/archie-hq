@@ -33,6 +33,7 @@ vi.mock('../persistence.js', async (importOriginal) => {
 });
 
 import { Task } from '../task.js';
+import { appendMessageToUser } from '../persistence.js';
 import { logger } from '../../system/logger.js';
 import type { TaskMetadata } from '../../types/task.js';
 import type { AgentDef } from '../../types/agent.js';
@@ -86,6 +87,7 @@ describe('postToUser opens the task thread in home_channel', () => {
     postMock.mockReset();
     postMock.mockResolvedValue(TS);
     vi.mocked(logger.warn).mockClear();
+    vi.mocked(appendMessageToUser).mockClear();
   });
 
   it('posts the agent message top-level and adopts it as the task thread', async () => {
@@ -141,6 +143,13 @@ describe('postToUser opens the task thread in home_channel', () => {
     expect(key).toBeNull();
     expect(meta.channels).toEqual({});
     expect(meta.default_channel).toBeNull();
+    // Unlinked is not the same as unsaid. Dry-run never reaches Slack, so there is no ts to key a thread
+    // by — but the agent did produce this message, and knowledge.log is the only place any other agent on
+    // the task can read it. Dropping it here would make a dry-run fire look like a fire that said nothing,
+    // and the destination is still recorded as the home channel it was meant for.
+    expect(vi.mocked(appendMessageToUser)).toHaveBeenCalledWith(
+      't1', 'pm-agent', 'the nightly report', `#${HOME.channel_name}`,
+    );
   });
 
   it('links nothing when the post fails, and lets the error propagate', async () => {
@@ -211,5 +220,85 @@ describe('postToUser opens the task thread in home_channel', () => {
     expect(postMock).toHaveBeenCalledTimes(1);
     expect(lastPostArgs().threadTs).toBe(TS);
     expect(Object.keys(reloaded.channels)).toEqual([key]);
+  });
+
+  // Reply routing does not read this metadata as an object. `findTaskByThread` (src/tasks/persistence.ts)
+  // checks in-memory tasks first, and for everything else it greps the serialized metadata files on disk
+  // for the exact substring `"thread_id": "<ts>"` — two spaces of JSON.stringify(…, 2) indentation
+  // notwithstanding, that literal is the whole match. So the SHAPE is load-bearing and not just the value:
+  // renaming the field, nesting the thread id one level deeper under a different key, or writing the
+  // metadata with different `JSON.stringify` spacing would each leave a thread that resolves to no task,
+  // and every human reply to the report Archie just posted would silently open a stranger task instead —
+  // exactly the bug the home-channel thread exists to fix, reintroduced with all the unit tests still green.
+  it('serializes the opened thread id in the exact form the reply-routing scan greps for', async () => {
+    const meta = metadata({ home_channel: HOME });
+    await newTask(meta).postToUser('the nightly report', 'pm-agent');
+
+    // The same string `findTaskByThread` builds: `"thread_id": ${JSON.stringify(threadId)}`.
+    const needle = `"thread_id": ${JSON.stringify(TS)}`;
+    expect(JSON.stringify(meta, null, 2)).toContain(needle);
+  });
+});
+
+// A task has exactly one thread, and an agent can emit two `post_to_user` calls in a single turn without
+// awaiting the first. Before the single-flight guard both would find no default channel, both would root a
+// top-level message in the home channel, and only one of the two would end up linked — so the channel would
+// show two competing roots for one task and a human replying under the unlinked one would open a stranger
+// task. That is the failure these cases pin: not "two posts happened" (two posts are correct) but "two
+// THREADS were rooted".
+describe('opening the home thread is single-flight', () => {
+  beforeEach(() => {
+    postMock.mockReset();
+    vi.mocked(logger.warn).mockClear();
+  });
+
+  it('two concurrent posts root one thread, and the second lands inside it', async () => {
+    // The first post is held open so both `postToUser` calls are genuinely in flight when the second one
+    // looks for a thread — resolving immediately would let the first finish and reduce this to the ordinary
+    // sequential case, which the block above already covers.
+    let releaseFirst: (ts: string) => void = () => {};
+    const firstPost = new Promise<string>((resolve) => { releaseFirst = resolve; });
+    postMock.mockImplementationOnce(() => firstPost);
+    postMock.mockResolvedValue(TS);
+
+    const meta = metadata({ home_channel: HOME, default_channel: null });
+    const task = newTask(meta);
+
+    const both = Promise.all([
+      task.postToUser('the nightly report', 'pm-agent'),
+      task.postToUser('and the follow-up', 'pm-agent'),
+    ]);
+    releaseFirst(TS);
+    await both;
+
+    expect(postMock).toHaveBeenCalledTimes(2);
+    const rootPosts = postMock.mock.calls.filter((c) => (c[0] as { threadTs?: string }).threadTs === undefined);
+    // The assertion that matters: exactly one of the two posts rooted a thread.
+    expect(rootPosts).toHaveLength(1);
+    expect(Object.keys(meta.channels)).toEqual([`slack:${HOME.channel_id}:${TS}`]);
+    expect(meta.default_channel).toBe(`slack:${HOME.channel_id}:${TS}`);
+    // And the waiter posted into the thread the opener rooted, rather than being dropped for having
+    // nowhere to go.
+    expect(lastPostArgs().threadTs).toBe(TS);
+  });
+
+  // The guard must not wedge the task: a failed open leaves no thread, so the next message is entitled to
+  // try again. Latching it would mean one transient Slack error costs the task its voice for good.
+  it('lets a later post open the thread after the first attempt failed', async () => {
+    postMock.mockRejectedValueOnce(new Error('slack down'));
+    postMock.mockResolvedValue(TS);
+
+    const meta = metadata({ home_channel: HOME });
+    const task = newTask(meta);
+
+    await expect(task.postToUser('the first try', 'pm-agent')).rejects.toThrow('slack down');
+    expect(meta.channels).toEqual({});
+
+    const key = await task.postToUser('the second try', 'pm-agent');
+
+    expect(key).toBe(`slack:${HOME.channel_id}:${TS}`);
+    expect(postMock).toHaveBeenCalledTimes(2);
+    expect(lastPostArgs().threadTs).toBeUndefined();
+    expect(Object.keys(meta.channels)).toEqual([key]);
   });
 });

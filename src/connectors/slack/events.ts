@@ -879,7 +879,7 @@ async function dispatchChannelMessageTriggers(
         thread,
         body,
         triggerTs: event.ts,
-        authorId: event.user || raw?.bot_id || 'unknown',
+        authorId: event.user || raw?.bot_id || undefined,
         channelName,
       });
     } catch (err) {

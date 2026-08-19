@@ -145,6 +145,12 @@ export class Task {
    * only — lost on restart, where recovery re-arms the lifecycle instead.
    */
   completionIntent: boolean = false;
+  /**
+   * The in-flight attempt to open this task's own thread in its home channel, if one is running. In-memory
+   * only: it exists to keep two `post_to_user` calls in a single agent turn from rooting two threads for one
+   * task, and after a restart the thread either exists in metadata or does not.
+   */
+  private homeThreadOpening?: Promise<string | null>;
   taskTimeoutTimer?: ReturnType<typeof setInterval>;
   /** Drives the "Archie is …" Slack loading indicator from agent activity. */
   private readonly statusController: TaskStatusController;
@@ -496,8 +502,36 @@ export class Task {
    * Post `message` as a new top-level message in the task's home channel and adopt that message as the task's thread, so every human reply to it routes back to this task instead of starting a new one.
    *
    * The message is the thread root: nothing is posted ahead of it. Only reached from `postToUser` for a task that has a `home_channel` and no channel yet.
+   *
+   * Single-flight, because a task has exactly one thread and an agent can emit two `post_to_user` calls in one turn. Both would see no default channel, both would root a top-level message, and the channel would show two competing roots for one task with only one of them linked — so the second caller waits for the first and then posts into the thread it opened.
    */
   private async openHomeThread(message: string, sender: string, footer: string): Promise<string | null> {
+    const inFlight = this.homeThreadOpening;
+    if (inFlight) {
+      // Swallowed deliberately: the first caller's failure is reported to ITS caller, and this one's job is
+      // only to find out whether a thread now exists.
+      await inFlight.catch(() => {});
+      const key = this.metadata.default_channel;
+      const opened = key ? this.metadata.channels[key] : undefined;
+      if (opened?.type === 'slack') {
+        await postSlackMessage({ channel: opened.channel_id, threadTs: opened.thread_id, text: message, footer });
+        this.logOutgoingMessage(sender, message, Task.formatSlackDest(opened).display, opened, footer);
+        return key;
+      }
+      // The first attempt linked nothing (it threw, or dry-run returned no ts), so there is still no thread
+      // and this message may legitimately try to open one.
+    }
+    const attempt = this.rootHomeThread(message, sender, footer);
+    this.homeThreadOpening = attempt;
+    try {
+      return await attempt;
+    } finally {
+      if (this.homeThreadOpening === attempt) this.homeThreadOpening = undefined;
+    }
+  }
+
+  /** The body of {@link openHomeThread}, run at most once at a time by it. */
+  private async rootHomeThread(message: string, sender: string, footer: string): Promise<string | null> {
     const home = this.metadata.home_channel!;
 
     // One thread per channel: if this task already has a thread in the home channel (a reply arrived

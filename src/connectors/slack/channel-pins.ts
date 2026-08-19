@@ -12,7 +12,7 @@ import {
   updateChannelStore,
   type ChannelPinEntry,
 } from '../../system/channel-store.js';
-import { taskSlackChannelLabels } from './channel-ids.js';
+import { taskSlackChannelIds, taskSlackChannelLabels } from './channel-ids.js';
 import { pinBody } from './message-body.js';
 import { digestOf, normalisePinText, summarisePinText, truncateTo, VERBATIM_MAX } from './pin-summary.js';
 import type { TaskMetadata } from '../../types/task.js';
@@ -393,9 +393,9 @@ export async function buildChannelPinsPromptSection(metadata: TaskMetadata): Pro
  */
 export async function collectPinnedFileAllowlist(metadata: TaskMetadata): Promise<Set<string>> {
   const allowed = new Set<string>();
-  for (const ch of Object.values(metadata.channels)) {
-    if (ch.type !== 'slack') continue;
-    const store = await loadChannelStore(ch.channel_id);
+  // Same channel set the pin block is built from, home channel included — the block names a file id and tells the PM to open it, so the allowlist has to cover the channels the block drew from.
+  for (const channelId of taskSlackChannelIds(metadata)) {
+    const store = await loadChannelStore(channelId);
     if (!store) continue;
     for (const p of store.pins ?? []) {
       if (p.kind === 'file' && p.fileId) allowed.add(p.fileId);

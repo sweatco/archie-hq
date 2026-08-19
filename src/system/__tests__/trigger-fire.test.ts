@@ -236,11 +236,13 @@ describe('a message fire ingests its thread', () => {
 
   it('writes the rendered body itself when the fetched thread does not contain the triggering message', async () => {
     // The shape `fetchSlackThread` returns for a payload with neither a `user` nor a `bot_id`: the thread
-    // exists, but the message that fired the trigger was dropped from it.
+    // exists, but the message that fired the trigger was dropped from it. `authorId` is absent for the same
+    // reason the fetch dropped the message — the dispatch reads `event.user || raw?.bot_id`, and neither was
+    // there — which is precisely what the floor keys on, so it must be absent here too.
     const thread = messageThread({ messages: [] });
 
     await fireTrigger(makeTrigger(), {
-      kind: 'message', thread, body: BODY, triggerTs: TRIGGER_TS, authorId: 'unknown', channelName: CHANNEL_NAME,
+      kind: 'message', thread, body: BODY, triggerTs: TRIGGER_TS, channelName: CHANNEL_NAME,
     });
 
     const task = createdTasks[0]!;
@@ -260,6 +262,59 @@ describe('a message fire ingests its thread', () => {
   });
 });
 
+// The floor is a direct write to knowledge.log that bypasses `Task.append`, and therefore bypasses the redaction policy every other write to that log goes through. It exists for exactly one shape, and the four conditions below are what keep it to that shape.
+//
+// `fetchSlackThread` drops a raw message with neither a `user` nor a `botId`, which is the ONLY reason the triggering message can legitimately be missing from the thread it was fetched from — and the dispatch derives `authorId` from the same two fields (`event.user || raw?.bot_id`), so that shape is exactly "no authorId". The fetch filter also drops a bot post from a foreign workspace, and the dispatch-side gate meant to catch those first reads different fields (`bot_profile.team_id || team`), so a payload carrying no team at all can clear dispatch and still be dropped by the fetch. Firing the floor on ANY absence from the thread would therefore re-admit that content — an external bot's message, unredacted, written straight into the log. The remaining two conditions refuse a write that would misrepresent the log: no body means an entry claiming a message with no text, and no `triggerTs` means an entry with no `msg:<ts>` id, which is both uncitable and indistinguishable from whatever `append` already wrote.
+describe('the ingestion floor fires only for the shape the fetch filter drops', () => {
+  const floorCtx = {
+    kind: 'message' as const,
+    body: BODY,
+    triggerTs: TRIGGER_TS,
+    channelName: CHANNEL_NAME,
+  };
+
+  /** The absent-message shape: the thread came back without the message that fired the trigger. */
+  const emptyThread = () => messageThread({ messages: [] });
+
+  it('writes the body when there is no author, a body, a ts, and the thread lacks the message', async () => {
+    await fireTrigger(makeTrigger(), { ...floorCtx, thread: emptyThread() });
+
+    expect(appendSlackMessageMock).toHaveBeenCalledTimes(1);
+    const call = appendSlackMessageMock.mock.calls[0]!;
+    expect(call[4]).toBe(BODY);
+    expect(call[5]).toEqual({ ts: TRIGGER_TS });
+  });
+
+  // The one that matters: an identified author means the fetch dropped the message for some OTHER reason —
+  // a foreign-workspace bot post is the known one — and that content must go through the redaction policy
+  // or not be written at all. Writing it here would make the floor a hole in that policy.
+  it('writes nothing when the message HAD an author id', async () => {
+    await fireTrigger(makeTrigger(), { ...floorCtx, thread: emptyThread(), authorId: 'B_FOREIGN_BOT' });
+
+    expect(appendSlackMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('writes nothing when the rendered body is empty', async () => {
+    await fireTrigger(makeTrigger(), { ...floorCtx, thread: emptyThread(), body: '' });
+
+    expect(appendSlackMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('writes nothing when there is no triggering ts to key the entry by', async () => {
+    await fireTrigger(makeTrigger(), { ...floorCtx, thread: emptyThread(), triggerTs: undefined });
+
+    expect(appendSlackMessageMock).not.toHaveBeenCalled();
+  });
+
+  // `append` already wrote this message through the real renderer, with its redaction verdict and its
+  // `msg:<ts>` id. A second write would duplicate it in the log the delegated agents read.
+  it('writes nothing when the fetched thread does contain the triggering message', async () => {
+    await fireTrigger(makeTrigger(), { ...floorCtx, thread: messageThread() });
+
+    expect(appendSlackMessageMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('a schedule fire homes its task in the bound channel', () => {
   it('records the bound channel as the task home', async () => {
     await fireTrigger(makeTrigger(), { kind: 'schedule' });
@@ -273,7 +328,11 @@ describe('a schedule fire homes its task in the bound channel', () => {
   it('refreshes that channel\'s canvas and pin index before the first agent spawns', async () => {
     await fireTrigger(makeTrigger(), { kind: 'schedule' });
 
-    expect(ensureChannelCanvasMock).toHaveBeenCalledWith(CHANNEL);
+    // `announce: false` is what keeps "firing posts no preamble" true even when the scan finds a change: a
+    // canvas adoption notice is a new top-level message, and posted here it would arrive ahead of the task's
+    // own result and root a thread a human reply would turn into a stranger task. The pin index announces
+    // nothing, so it needs no such option — hence the asymmetry in these two assertions.
+    expect(ensureChannelCanvasMock).toHaveBeenCalledWith(CHANNEL, { announce: false });
     expect(ensureChannelPinsMock).toHaveBeenCalledWith(CHANNEL);
     // Ordering is the point, not the calls: `sendMessage` assembles the first agent's system prompt inside
     // its own await (deliver → ensureAgentSpawned → agent.spawn), so a scan that lands afterwards reaches

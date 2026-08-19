@@ -375,9 +375,9 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
   const task = await Task.create();
   task.metadata.triggered_by = trigger.id;
 
-  // Wire delivery. message context → ingest the triggering thread (which links it
-  // as the default channel, no post). schedule context → the PM opens the
-  // destination itself.
+  // Wire delivery. A message fire ingests the triggering thread, which links it as the default channel and
+  // posts nothing. A schedule fire has no thread, so the task is homed in the bound channel and its first
+  // user-facing message opens its own thread there.
   let delivery: string;
   // Set only by the channel-binding schedule branch below, and used after the if/else to refresh that
   // channel's standing context. It doubles as the "this fire homed a task in a channel" flag: a message
@@ -387,9 +387,11 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
     // Ingestion, not announcement. `append` is the one path every other Slack task uses, and it does five things this branch would otherwise have to reinvent (and previously simply skipped): it writes the message to knowledge.log through the single renderer with the author line and the `msg:<ts>` id, applies the redaction policy via `shouldRedact`, skips file downloads for a redacted message while downloading them otherwise so the `[Attachments: …]` suffix carries usable local paths, links `slack:<channel>:<threadId>` as a channel, and promotes it to `default_channel`. That last pair is why `linkSlackThread` is NOT also called here — `append` links the identical key with the same shape, so doing both would double-write the same record.
     await task.append(context.thread);
 
-    // The ingestion floor. `fetchSlackThread` drops any raw message that has neither a `user` nor a `botId`, so the very message that fired this trigger can be missing from the thread it was fetched from — in which case `append` walked an empty (or incomplete) message list and wrote no log entry for it, and a delegated agent, which sees only knowledge.log, would have no idea what was said. Writing it directly from the body dispatch already rendered is what closes that hole. Nothing else is needed: `append` registers the channel, promotes `default_channel` and advances `last_processed_ts` even when `thread.messages` is empty — only the per-message loop is skipped — so the thread is already owned and a second link would be redundant.
-    if (!context.thread.messages.some((m) => m.ts === context.triggerTs)) {
-      const author = context.authorId ?? 'unknown';
+    // The ingestion floor, deliberately narrow. `fetchSlackThread` drops any raw message that has neither a `user` nor a `botId`, so the very message that fired this trigger can be missing from the thread it was fetched from — in which case `append` walked an empty (or incomplete) message list and wrote no log entry for it, and a delegated agent, which sees only knowledge.log, would have no idea what was said. Writing it directly from the body dispatch already rendered is what closes that hole.
+    //
+    // It fires ONLY for that reason, which is what `!context.authorId` tests — no user id and no bot id, so there is no identity for the redaction policy to classify in the first place. The fetch filter also drops a bot post from another workspace, and the dispatch-side gate that is supposed to catch those first reads different fields (`bot_profile.team_id || team`), so a payload carrying no team at all can pass dispatch and still be dropped here. Writing on *any* absence would re-admit exactly that content, unredacted, past the one policy every other write to this log goes through. An empty body and a missing `ts` are refused for the same reason in miniature: an entry with no text claims a message the log does not actually carry, and an entry with no `msg:<ts>` id would duplicate whatever `append` already wrote. Nothing else is needed: `append` registers the channel, promotes `default_channel` and advances `last_processed_ts` even when `thread.messages` is empty — only the per-message loop is skipped — so the thread is already owned and a second link would be redundant.
+    if (!context.authorId && context.triggerTs && context.body && !context.thread.messages.some((m) => m.ts === context.triggerTs)) {
+      const author = 'unknown';
       await appendSlackMessage(
         task.taskId,
         { id: context.thread.channel.id, name: context.thread.channel.name },
@@ -432,11 +434,17 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
   // `agent.spawn` assembles the first agent's system prompt inside that awaited call, so anything that has
   // to reach that prompt has to be in place beforehand.
   //
+  // `announce: false` is what keeps "firing posts no preamble" true: a canvas scan announces adoption as a new
+  // top-level message in the channel, and posted here it would arrive AHEAD of the task's own result and root a
+  // thread a human reply would turn into a stranger task. Suppressed, the scan leaves the store untouched
+  // whenever it had something to announce, so the next inbound event announces it properly. The pin index never
+  // announces anything, so it needs no such option.
+  //
   // The `.catch` is deliberate rather than defensive: a canvas or pins scan is context, and a failed scan
   // must never cost the fire itself — a scheduled run that silently does not happen is far worse than one
   // that runs with a stale brief.
   if (homeChannelId) {
-    await Promise.all([ensureChannelCanvas(homeChannelId), ensureChannelPins(homeChannelId)])
+    await Promise.all([ensureChannelCanvas(homeChannelId, { announce: false }), ensureChannelPins(homeChannelId)])
       .catch((err) => logger.warn('trigger-scheduler', `Failed to refresh standing context for home channel ${homeChannelId} on trigger ${trigger.id}`, err));
   }
 

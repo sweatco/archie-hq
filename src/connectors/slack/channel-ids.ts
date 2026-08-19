@@ -64,3 +64,12 @@ export function taskSlackChannelLabels(metadata: TaskMetadata): Map<string, stri
   }
   return labels;
 }
+
+/**
+ * The Slack channel ids this task covers — the keys of {@link taskSlackChannelLabels}, so exactly the channels whose standing context the task is given.
+ *
+ * Prompt and capability must be derived from the SAME set. When they were not, a threadless trigger-fired task was handed its home channel's canvas brief and pin index while every capability those blocks tell it to use — `fetch_slack_reference` on a referenced file, `read_channel_history` on the channel itself — still resolved from linked channels alone, so the first turn's instructions pointed at tools that refused. Sharing one derivation is what keeps the two in step.
+ */
+export function taskSlackChannelIds(metadata: TaskMetadata): Set<string> {
+  return new Set(taskSlackChannelLabels(metadata).keys());
+}
