@@ -421,7 +421,8 @@ function createPostToUserTool(agent: Agent, task: Task) {
     async (args) => {
       const agentName = agent.def.id as AgentName;
       const hasTarget = !!args.target?.channel;
-      if (!hasTarget && Object.keys(task.metadata.channels).length === 0) {
+      // A trigger-fired task has no thread yet but does have a home channel, and this call is exactly what opens that thread — so "no channels" is only "nowhere to post" when there is no home channel either.
+      if (!hasTarget && Object.keys(task.metadata.channels).length === 0 && !task.metadata.home_channel) {
         return ok(
           'No channel is linked to this task, so there is nowhere to post. ' +
           'Call report_completion() without a message to finish silently.'
@@ -800,7 +801,8 @@ function createReportCompletionTool(agent: Agent, task: Task) {
         ? findMutedTarget(task.metadata.channels, task.metadata.default_channel)
         : null;
       if (args.message && !mutedDefault) {
-        if (Object.keys(task.metadata.channels).length === 0) {
+        // Same exception as post_to_user: a trigger-fired task's home channel is a place to post, and the completion message is often the first thing it says — posting it is what opens the task's own thread.
+        if (Object.keys(task.metadata.channels).length === 0 && !task.metadata.home_channel) {
           return ok(
             'Cannot post a completion message — no channel linked to this task. ' +
             'Call report_completion() without a message to finish silently.'
@@ -1050,7 +1052,8 @@ function createPostToChannelTool(_agent: Agent, task: Task) {
     "Works in PUBLIC and PRIVATE channels Archie has been invited to (DMs are not allowed, and neither is a channel muted for this task). Unlike reading, posting is NOT limited to this task's channel — escalating outward is a valid use. " +
     'Fire-and-forget: it does not become a touchpoint of this task, and any reply is invisible to you here. If a human replies to a NEW top-level message you post, that reply starts its OWN fresh task; a reply inside someone else\'s existing thread never does. ' +
     "GUARDRAIL: only post where a human in this task asked you to — the required `mandate` arg is where you quote them, and without one you report to your requester instead and let them route it. Keep it short and match what you post to the destination's audience — never relay private or sensitive task content into a broader or unrelated channel. " +
-    'Pass a channel ID; optionally `thread_ts` to reply in an existing thread. To talk to the user about THIS task, use post_to_user instead.',
+    'Pass a channel ID; optionally `thread_ts` to reply in an existing thread. To talk to the user about THIS task, use post_to_user instead. ' +
+    'A task started by a trigger has to post its result to the user first — that is what opens its own thread — so this tool is unavailable until then.',
     {
       channel: z.string().describe('Slack channel ID (e.g. "C1234567")'),
       message: z.string().describe('The message to post'),
@@ -1062,6 +1065,18 @@ function createPostToChannelTool(_agent: Agent, task: Task) {
       thread_ts: z.string().optional().describe('Parent message ts to reply inside an existing thread; omit to post a new top-level message'),
     },
     async (args) => {
+      // Sequencing, checked before anything about the destination: a trigger-fired task has a home channel but no thread of its own yet, and this tool posts WITHOUT linking the channel to the task — which is precisely the detached, unanswerable message that homing a fired task in a channel exists to replace. So while the task has no channel open, the first thing it says has to be its result to the user, which is what opens its thread; only after that is posting elsewhere a coherent act rather than the task's only utterance.
+      //
+      // This outranks the DM and mandate checks deliberately. Both of those describe something wrong with *this call* (wrong kind of target, no one asked for it), and answering them first would send the agent off to fix the wrong problem — hunting for a mandate quote, or picking a different channel — when the real answer is that nothing may be posted anywhere yet. The sequencing message is the only one that points at the fix.
+      //
+      // There is deliberately NO branch here comparing the target to the task's own channel. Once a channel is open, post_to_channel behaves exactly as it always has for every destination, including the task's home channel: the task can then be replied to in its own thread, so an unlinked post beside it is a normal, recoverable thing to do rather than a dead end.
+      if (task.metadata.home_channel && !task.metadata.default_channel) {
+        return ok(
+          'Nothing was posted. This task has no channel of its own yet — post the result with `post_to_user` first, which opens this task\'s thread in ' +
+          `#${task.metadata.home_channel.channel_name}. ` +
+          '`post_to_channel` is available for other channels after that.',
+        );
+      }
       const dm = rejectDmTarget(args.channel);
       if (dm) return ok(dm);
       // The mandate is the whole gate on unsolicited outreach: it can't be

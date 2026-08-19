@@ -345,7 +345,13 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
       `Task: ${taskId}`,
       `Status: ${metadata.status}`,
     ];
-    if (channelEntries.length === 0) {
+    if (channelEntries.length === 0 && metadata.home_channel) {
+      // A trigger-fired task has no thread yet but does have a home channel, so telling it there is nowhere to reply would be exactly backwards: its first user-facing message is what opens the thread this task then lives in.
+      contextLines.push(
+        `Channel(s): none yet — this task is homed in #${metadata.home_channel.channel_name} but has no thread of its own. ` +
+        `Your first post_to_user opens this task's own thread there, and every message after that goes into that thread.`
+      );
+    } else if (channelEntries.length === 0) {
       contextLines.push(
         'Channel(s): none — there is nowhere to reply in this task; finish with report_completion() (no message).'
       );
