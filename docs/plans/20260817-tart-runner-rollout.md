@@ -24,7 +24,7 @@ Archie now separates Orchard receipt acknowledgement from client delivery. Each 
 ## Production Blockers
 
 - Add a stateful fake-Orchard REST and WebSocket integration server. It must exercise VM CRUD, pending/running/failed transitions, history replay, ACK, detach, close, VNC naming, 404 close, authentication, connection loss, bounded queues, and Archie restart.
-- Replace the toolchain-only canary with a deterministic fixture app that proves build, test, Simulator boot/install/launch, UI state, screenshot capture, crash logs, LLDB attach/breakpoint/evaluation, artifact collection, and teardown.
+- Run the implemented deterministic source-build canary through the production-container task/agent/MCP path and add forced controller-restart/cursor-replay fault injection. The manager-level Tart run now proves build, test, Simulator boot/install/launch, UI state, screenshot, crash report, LLDB breakpoint/value inspection, artifact collection, and teardown.
 - Add runner admission and drain controls plus an operator inventory endpoint or command. Rollback currently depends on manual coordination because disabling the config also disables reconciliation.
 - Export runner metrics and alerts: provisioning latency/failure, active and queued capacity, exec reconnects/timeouts, output truncation, release retries, orphan count, image pull time, VM age, and controller degraded reasons.
 - Prove the single-controller deployment invariant. Run exactly one Archie runner controller per `instanceId` and workdir until distributed leases and leader election exist.
@@ -112,8 +112,16 @@ Run the lab canary on every runner-controller or image change and as a nightly s
 
 1. Build the stateful fake-Orchard integration harness and production-container test.
 2. Add admission, drain, inventory, and forced-cleanup operations with audit events.
-3. Create the fixture iOS app and automate the full Simulator, LLDB, artifact, VNC, cursor-replay, and restart canary.
+3. Add the source-build canary's separate production-container task/agent/MCP pass and cursor-replay/controller-restart fault injection.
 4. Add runner metrics, dashboards, alerts, and operator runbooks.
 5. Automate Packer image creation, digest promotion, pre-pull, and rollback.
 6. Remediate the production dependency audit and prove the rebuilt image is clean enough for the agreed deployment policy.
 7. Execute lab and staging soak gates before the one-team production pilot.
+
+## Source-build canary status
+
+The repository now contains `fixtures/ios-runner-app`, a dependency-free Simulator app with unit and UI tests, a stable LLDB breakpoint/value contract, and a deliberate crash. `runner:ios-full-cycle-e2e` drives it through Archie's real `RunnerManager`: commit and manifest verification, sync, exact Simulator provisioning, `build-for-testing`, `test-without-building`, `.xcresult` summaries, install, launch, screenshot, breakpoint/value/backtrace/detach, crash report and unified log, artifact collection, optional VNC hold, Simulator deletion, VM release, and backend inventory verification.
+
+Local Xcode 26.5 / iOS 26.5 evidence passed with two tests, the expected accessibility tree, a 402×874 screenshot, the configured `nonce` value observed in LLDB, and an `.ips` report paired with the `ARCHIE_FULL_CYCLE_CRASH` unified-log marker.
+
+The compiled harness then passed through Archie's real `RunnerManager` against an isolated Orchard controller/worker and the digest-pinned Xcode 26.5 Tart image as task `task-20260820-0001-6ee0wg`: manifest-verified source sync, successful build, two passing tests, 1206×2622 screenshot, LLDB breakpoint/local-value/backtrace/detach, 19,523-byte `.ips`, both `.xcresult` bundles, evidence hashes, Simulator deletion, VM release, and empty Orchard/Tart inventories. A clean source build of the real Sweatcoin app remains a later image/cache gate because its private dependency bootstrap is intentionally not embedded in this deterministic fixture.
