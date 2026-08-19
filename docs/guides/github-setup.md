@@ -77,6 +77,20 @@ GITHUB_WEBHOOK_SECRET=your-webhook-secret              # must match the App's we
 
 The engine authenticates as the installation (`@octokit/app`) and pushes git over HTTPS using a short-lived installation token (`x-access-token`), so no SSH key or personal token is involved for App-driven work.
 
+### Optional: the account Archie is credited as
+
+The App above is the identity Archie *acts* as. The identity it is *credited* as — the `Co-Authored-By` trailer on its commits and the attribution footer on PRs it opens — is a separate, ordinary user account, because a GitHub App bot cannot be `@mentioned` and its profile is an app page rather than an account:
+
+```bash
+ARCHIE_GITHUB_LOGIN=archie-hq                          # the account's login
+ARCHIE_GITHUB_USER_ID=302249786                        # its numeric USER id — not the App ID
+ARCHIE_GITHUB_NAME=Archie HQ                           # display name (optional; defaults to the login)
+```
+
+Read the user ID from `https://api.github.com/users/<login>`. It has to be the account's own ID: GitHub resolves `<id>+<login>@users.noreply.github.com` by ID and credits nobody at all when the ID doesn't match the login. Omit both vars to fall back to the App bot.
+
+The account needs **no repository access** to be credited. Add it as a read-level collaborator (or an org member) only if you want `@archie-hq` to appear in GitHub's mention autocomplete — that list is drawn from collaborators, org members, and thread participants, so a new account is otherwise invisible in it. Mentions of it still work either way on public repos.
+
 ## 6. Verify
 
 - Confirm the daemon is reachable at `https://<your-host>/webhooks/github` and that GitHub's webhook **Recent Deliveries** show `200`s.

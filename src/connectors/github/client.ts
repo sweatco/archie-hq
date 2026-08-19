@@ -1204,7 +1204,13 @@ export function createGitHubClient(): GitHubClient | null {
 }
 
 /**
- * Get GitHub App bot identity for git commits
+ * The GitHub App bot's name and commit address.
+ *
+ * Only a fallback now — `getArchieAttributionIdentity()` returns this when the
+ * attribution account isn't configured, so a deployment without those vars keeps
+ * its prior behaviour. Nothing credits the bot deliberately: the numeric prefix
+ * below is `GITHUB_APP_ID`, which is not a user ID, so GitHub resolves the
+ * address to no account. See `getArchieAttributionIdentity()`.
  */
 export function getGitHubAppIdentity(): { name: string; email: string } | null {
   const appId = process.env.GITHUB_APP_ID;
@@ -1217,6 +1223,65 @@ export function getGitHubAppIdentity(): { name: string; email: string } | null {
   return {
     name: `${appSlug}[bot]`,
     email: `${appId}+${appSlug}[bot]@users.noreply.github.com`,
+  };
+}
+
+/**
+ * The identity Archie is *credited* as on GitHub: the committer on every commit
+ * (via `configureGitIdentity`), the `Co-Authored-By` trailer on repo-agent commits,
+ * and the attribution block on PR bodies.
+ *
+ * Deliberately separate from `getGitHubAppIdentity()`, which is the identity Archie
+ * *acts* as — the installation its API calls and git transport authenticate with.
+ * Credit points at the real
+ * `archie-hq` user account instead, for two reasons a bot account can't satisfy:
+ * a GitHub App bot cannot be @mentioned at all, and its profile is an app page
+ * rather than an account. Attribution needs no repository access, so this works
+ * without granting the account anything.
+ *
+ * The numeric prefix must be the account's **user** ID. GitHub resolves the
+ * `<id>+<login>@users.noreply.github.com` form by ID and silently drops the credit
+ * when the ID disagrees with the login — it does not fall back to matching the
+ * login. The bot form above synthesizes that prefix from `GITHUB_APP_ID`, which is
+ * not a user ID (for this App: 2605869 vs. the bot user's 253344994), so every
+ * `Co-Authored-By` line Archie has written resolved to no account: PR #264's
+ * co-author comes back from the API with `login: ""`.
+ *
+ * Falls back to the App bot when the attribution account isn't configured, so a
+ * deployment without the new vars keeps its current behaviour instead of losing
+ * the trailer.
+ */
+export interface ArchieIdentity {
+  /** Display name for the commit trailer and footer link text. */
+  name: string;
+  /** noreply address GitHub resolves to the account. */
+  email: string;
+  /** `@mention` form — GitHub auto-links it to the profile. A bot login is left bare; bots aren't mentionable. */
+  mention: string;
+}
+
+export function getArchieAttributionIdentity(): ArchieIdentity | null {
+  const login = process.env.ARCHIE_GITHUB_LOGIN?.trim();
+  const userId = process.env.ARCHIE_GITHUB_USER_ID?.trim();
+
+  // Both are required, and the ID must be numeric: a non-numeric or absent ID
+  // would produce an address that looks right and credits nobody, which is the
+  // exact failure this function exists to correct. Prefer the visibly-degraded
+  // bot fallback over a silent one.
+  if (login && userId && /^[0-9]+$/.test(userId)) {
+    return {
+      name: process.env.ARCHIE_GITHUB_NAME?.trim() || login,
+      email: `${userId}+${login}@users.noreply.github.com`,
+      mention: `@${login}`,
+    };
+  }
+
+  const bot = getGitHubAppIdentity();
+  if (!bot) return null;
+  return {
+    name: bot.name,
+    email: bot.email,
+    mention: bot.name,
   };
 }
 
@@ -1254,12 +1319,21 @@ async function dropOrphanedConfigLock(repoPath: string): Promise<void> {
 }
 
 /**
- * Configure git identity for a repository using GitHub App bot credentials.
- * Should be called once on server startup for each base repo.
- * Worktrees inherit this config from the base repo.
+ * Write Archie's git identity into a repository — the committer on every commit
+ * made there, and the author too on the commits `buildCommitAuthorEnv` leaves
+ * unattributed (no approver recorded: CLI approvals, pre-feature tasks).
+ *
+ * Uses the attribution account rather than the App bot, because both of those
+ * roles are Archie being *credited*, not Archie authenticating. Push auth is the
+ * installation token via `GIT_ASKPASS` and GitHub does not require the committer
+ * to match the pusher, so the two are free to differ — and the App bot's synthetic
+ * address resolves to no account at all (see `getArchieAttributionIdentity`),
+ * which left every commit's committer line unlinked.
+ *
+ * Called once on server startup for each base repo; worktrees inherit the config.
  */
 export async function configureGitIdentity(repoPath: string): Promise<string | null> {
-  const identity = getGitHubAppIdentity();
+  const identity = getArchieAttributionIdentity();
   if (identity) {
     await dropOrphanedConfigLock(repoPath);
     await execAsync(`git config user.name "${identity.name}"`, { cwd: repoPath });
