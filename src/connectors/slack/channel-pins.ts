@@ -12,6 +12,7 @@ import {
   updateChannelStore,
   type ChannelPinEntry,
 } from '../../system/channel-store.js';
+import { taskSlackChannelLabels } from './channel-ids.js';
 import { pinBody } from './message-body.js';
 import { digestOf, normalisePinText, summarisePinText, truncateTo, VERBATIM_MAX } from './pin-summary.js';
 import type { TaskMetadata } from '../../types/task.js';
@@ -308,12 +309,7 @@ export async function buildChannelPinsPromptSection(metadata: TaskMetadata): Pro
   // Channel id → display label, in link order. The label goes on each pin because a
   // task can be linked to threads in more than one channel, and a line saying what
   // someone pinned is meaningless without saying where they pinned it.
-  const channelLabels = new Map<string, string>();
-  for (const ch of Object.values(metadata.channels)) {
-    if (ch.type === 'slack' && !channelLabels.has(ch.channel_id)) {
-      channelLabels.set(ch.channel_id, ch.channel_name ? `#${ch.channel_name}` : ch.channel_id);
-    }
-  }
+  const channelLabels = taskSlackChannelLabels(metadata);
   if (channelLabels.size === 0) return '';
 
   const pairs: Array<{ entry: ChannelPinEntry; label: string; channelId: string }> = [];

@@ -18,6 +18,7 @@ import {
   postSlackMessage,
 } from './client.js';
 import { readCanvas } from './canvas-read.js';
+import { taskSlackChannelLabels } from './channel-ids.js';
 import {
   loadChannelStore,
   updateChannelStore,
@@ -256,12 +257,7 @@ export async function buildChannelCanvasPromptSection(metadata: TaskMetadata): P
   // channel, and the agent can also be handed another channel's brief at post time
   // (see buildOtherChannelContextSection) — without attribution those are just
   // stacked instructions with nothing saying which channel each one governs.
-  const channelLabels = new Map<string, string>();
-  for (const ch of Object.values(metadata.channels)) {
-    if (ch.type === 'slack' && !channelLabels.has(ch.channel_id)) {
-      channelLabels.set(ch.channel_id, ch.channel_name ? `#${ch.channel_name}` : ch.channel_id);
-    }
-  }
+  const channelLabels = taskSlackChannelLabels(metadata);
   if (channelLabels.size === 0) return '';
 
   // One canvas can be pinned as a tab in several channels — the intended way to

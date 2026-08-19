@@ -4,7 +4,7 @@
  * Kept dependency-free so the explore/post tools (and their tests) can guard
  * against DM targets without importing the whole Slack client.
  */
-import type { Channel, SlackChannel } from '../../types/task.js';
+import type { Channel, SlackChannel, TaskMetadata } from '../../types/task.js';
 
 /**
  * True when `id` is a 1:1 DM channel (`D…`) or a user id (`U…`/`W…`) that Slack
@@ -40,4 +40,27 @@ export function findMutedTarget(
     if (ch.type === 'slack' && ch.channel_id === target && ch.muted) return ch;
   }
   return null;
+}
+
+/**
+ * Slack channel id → display label for every channel this task's standing context covers, in link order.
+ *
+ * One derivation, shared by the channel-canvas and pinned-message prompt blocks, so the two cannot drift on which channels they consider: a task that gets a channel's canvas brief is a task that gets that channel's pin index, and vice versa.
+ *
+ * It is inclusive of `metadata.home_channel` because a trigger-fired task has no thread yet, so `metadata.channels` is empty when its FIRST agent — the one that actually does the work — spawns. Deriving coverage from links alone would hand that agent no brief and no pin index, and only supply them on some later wake, once its own thread exists.
+ *
+ * Linked channels are walked first and first-link-wins, so a channel that is both linked and the home channel keeps the label it already had and is never listed twice.
+ */
+export function taskSlackChannelLabels(metadata: TaskMetadata): Map<string, string> {
+  const labels = new Map<string, string>();
+  for (const ch of Object.values(metadata.channels)) {
+    if (ch.type === 'slack' && !labels.has(ch.channel_id)) {
+      labels.set(ch.channel_id, ch.channel_name ? `#${ch.channel_name}` : ch.channel_id);
+    }
+  }
+  const home = metadata.home_channel;
+  if (home && !labels.has(home.channel_id)) {
+    labels.set(home.channel_id, home.channel_name ? `#${home.channel_name}` : home.channel_id);
+  }
+  return labels;
 }
