@@ -37,6 +37,7 @@ interface Trigger {
   binding: TriggerBinding;                     // channel thread or user DM
   conditions: TriggerCondition[];              // any match fires
   action: { prompt: string };                  // seeded to the PM when fired
+  prompt_origin_visibility?: 'public' | 'private'; // missing on legacy records means unknown
   last_fired_at?: string;
 }
 ```
@@ -74,6 +75,10 @@ A one-off schedule auto-pauses after it fires (its condition is consumed). **Res
 1. Create a fresh task; set `metadata.triggered_by = trigger.id`.
 2. Wire delivery — for a message-context fire, link the triggering thread as the default channel (no post); for a schedule fire, the spawned PM opens the destination itself.
 3. Seed the PM with `AGENT_PROMPTS.triggered(...)` and let it do the work.
+
+Message fires inherit the triggering Slack thread's public/private visibility. Schedule fires resolve the bound delivery channel live; a lookup failure defers that run without pausing the trigger or guessing the destination's privacy. Private tasks cannot create, approve, or edit trigger content (`action_prompt`, `summary`, or `conditions`); they may still pause or resume a visible trigger.
+
+The saved prompt records the visibility of the task that supplied it. Missing provenance on a legacy record means unknown; Archie does not infer it from the destination. A private or unknown prompt may keep firing into a private destination. If the live destination is public, the run is deferred before quota accounting and conditions are left unchanged. The trigger stays enabled and indexed. A public prompt update, or approval of a pending proposal tied to a public task, establishes public provenance and lets the due run continue.
 
 **Firing posts no preamble.** The spawned PM does the work and posts the result itself, so the first thing the channel sees is the actual output — not an "I was triggered" line.
 
@@ -146,9 +151,11 @@ Every **configuration change** — created/enabled, edited, paused/resumed, dele
 ## Protections & limits
 
 - **Propose-then-confirm** — no agent enables a trigger from a model decision alone.
+- **Public-origin creation** — private tasks cannot propose or approve persistent triggers.
+- **Public-origin content edits** — private tasks may pause or resume visible triggers but cannot replace their prompt, summary, or conditions.
 - **Human approval is the loop guard** — a trigger-spawned task *may* call `propose_trigger`, but that only ever creates a `pending` trigger; nothing enables (or fires) without a human clicking Approve, and a task has no way to self-approve (approval comes only from the Slack button or the CLI `/approve` endpoint). So there is no autonomous amplification loop to gate against — the approval step already breaks it. (Runaway pending-proposal spam is bounded by the daily fire cap.)
 - **Read-only by default** — a fired task is an ordinary task; any write/push still needs in-the-moment edit-mode approval.
-- **Limits** — recurring schedules ≥1h apart; per-user and per-channel active-trigger caps; a per-account daily fired-run cap (in-memory, reset daily).
+- **Limits** — recurring schedules ≥1h apart; per-user and per-channel active-trigger caps; a per-account daily fired-run cap (in-memory, reset daily). Destination privacy and prompt provenance are resolved before the daily quota. Conditions advance only after a real fire or an explicit cap drop.
 - **Kill switch** — `ARCHIE_TRIGGERS_ENABLED=false` disables all firing and creation globally.
 
 ## CLI & API surface

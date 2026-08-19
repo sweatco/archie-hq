@@ -6,10 +6,9 @@
  */
 
 import { execSync } from 'child_process';
-import { writeFile } from 'fs/promises';
 import { Task } from '../tasks/task.js';
 import { SESSIONS_DIR } from './workdir.js';
-import { loadMetadata, getMetadataPath } from '../tasks/persistence.js';
+import { loadMetadata, writeTaskMetadata } from '../tasks/persistence.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { emitEvent } from './event-bus.js';
 import { logger } from './logger.js';
@@ -133,7 +132,7 @@ async function checkDueReminders(): Promise<void> {
       }
 
       metadata.reminder = undefined;
-      await writeFile(getMetadataPath(taskId), JSON.stringify(metadata, null, 2));
+      await writeTaskMetadata(taskId, metadata);
 
       // 3. Reactivate task
       emitEvent('reminder:fired', taskId, { reason: reminder.reason });

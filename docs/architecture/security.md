@@ -20,13 +20,13 @@ An agent caught in a loop (or manipulated into one) could spawn unlimited resear
 
 ### Trust Boundary
 
-**Web content is untrusted, and so is one part of the system prompt.** Plugin configurations, Slack messages from authenticated internal users, and inter-agent messages are treated as trusted.
+Authentication establishes origin, not content trust. Web responses, Slack and GitHub text, task transcripts, inter-agent messages, model output, and persisted memory are all data that may contain hostile instructions. The system prompt and operator-controlled configuration define policy. Web content enters only through `mcp__research-tools__web_research`; `WebSearch` and `WebFetch` are removed from every agent's tool list (`disallowedTools` in `src/agents/spawn.ts`). Memory sanitizes persisted content and marks historical data as untrusted; see [Memory Layer](memory.md).
 
-The exception is the `<channel_pinned_messages>` block (see [Channel Pinned Messages](slack-integration.md#channel-pinned-messages)). It reaches every agent's system prompt, and a line marked `source="verbatim"` is a channel member's own text passed through unaltered — the block's `note` tells the agent to read those lines as untrusted user input rather than as direction. Three defences bound it: both the pin's author and its pinner must classify as internal (a bot posting from another workspace is refused; an internal bot's post is adopted and marked `(app)`, on the same rule thread ingestion uses, with the human pinner as the trust gate), every value is XML-escaped so nothing in a pin can close the wrapper or forge an element with someone else's attribution, and the block is an index that carries no authority until the agent opens the real message. What it does not defend against is an internal member pinning something adversarial — which is the same exposure the `Archie…` canvas already accepts, over a wider surface. The defense architecture focuses on the boundary where web content enters the system through the `mcp__research-tools__web_research` MCP tool (Perplexity-backed). `WebSearch` and `WebFetch` are removed from every agent's tool list (`disallowedTools` in `src/agents/spawn.ts`), so the research MCP tool is the only inbound web channel.
+The `<channel_pinned_messages>` block is a concrete untrusted-data envelope inside the system prompt; see [Channel Pinned Messages](slack-integration.md#channel-pinned-messages). Verbatim pin lines remain user-authored data, every value is XML-escaped, and both the author and pinner must classify as internal. The block is an index without authority: agents must open the referenced message or file before acting on it.
 
 Slack and GitHub events are authenticated at the receiver layer before they reach any agent:
 
-- **Slack:** Bolt verifies request signatures via the configured signing secret (`mountSlackApp` in `src/connectors/slack/events.ts`). On top of signature verification, the event handler classifies the event author with `isExternalUser` (`src/connectors/slack/client.ts`) and bails out for users on a different `team_id` (Slack Connect / shared channels) or guests (`is_restricted` / `is_ultra_restricted`). External-authored content is also redacted from thread history before being shown to the PM.
+- **Slack:** Bolt verifies request signatures via the configured signing secret (`mountSlackApp` in `src/connectors/slack/events.ts`). The event handler classifies authors with `isExternalUser` (`src/connectors/slack/client.ts`) and ignores users from another `team_id` or guest accounts. In known shared channels, external-authored history is redacted before the PM sees it. A first shared-channel lookup failure can still fail open when no cached classification exists; see [Slack Integration](slack-integration.md#acknowledgment-muting-and-shared-channel-awareness). Authorization buttons fail closed: Archie verifies that the actor is internal, and lookup failures leave state unchanged and send a private retry message. The guard covers edit mode, max mode, research budgets, merges, and triggers.
 - **GitHub:** Webhook payloads are HMAC-SHA256 verified against `GITHUB_WEBHOOK_SECRET` via `verifyWebhookSignature` (`src/connectors/github/webhooks.ts`) before any routing or task lookup happens.
 
 ## Defense Layer 1: Agent Sandbox
@@ -184,16 +184,16 @@ Repo agents start in **read-only mode**. To make code changes, the PM agent must
 1. PM calls `request_edit_mode` tool with a reason
 2. System posts Slack message with Approve/Deny buttons
 3. Task pauses (all agents stop)
-4. User clicks Approve → task resumes with `edit_allowed: true`
+4. An internal user clicks Approve → task resumes with `edit_allowed: true`
 5. Repo agents gain Write, Edit tools, write MCP operations, and Bash write access via sandbox
 
 In edit mode, repo agents manage their own PRs directly via the `repo-tools` MCP server.
 
 **Source:** `src/agents/spawn.ts`, `src/agents/tools.ts` (`createRequestEditModeTool`)
 
-### PR Review Enforcement
+### PR and Merge Enforcement
 
-All code changes go through GitHub pull requests. Repo agents create PRs via the `create_pull_request` tool, and merge is gated on external PR review approval. The `merge_pull_request` tool checks that PRs are approved, CI is passing, and there are no conflicts before merging.
+All code changes go through GitHub pull requests. Repositories configured for auto-merge require Archie-visible review approval and a clean GitHub mergeability state. Other repositories require an explicit internal-user merge approval; that approval merges a clean PR immediately or arms it until GitHub reports it clean. Archie does not impose an additional review-count floor on that explicit path. Required reviews, checks, and protected branches remain enforced by GitHub branch protection.
 
 **Source:** `src/agents/tools.ts`, `src/connectors/github/merge.ts`
 
@@ -273,7 +273,8 @@ Layer 4: Git isolation
 
 Layer 5: Human gates
   ├── Edit mode approval via Slack
-  └── PR review before merge
+  ├── Explicit merge approval outside configured auto-merge repositories
+  └── Reviewer approval in configured auto-merge repositories
 
 Layer 6: Resource budgets
   ├── Research: 5 requests/task (extendable via Slack)

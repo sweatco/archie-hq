@@ -6,7 +6,7 @@
  */
 
 import { mkdir, writeFile } from 'fs/promises';
-import type { AgentName, SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, BranchState } from '../types/task.js';
+import type { AgentName, SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, TaskVisibility, BranchState } from '../types/task.js';
 import { CLI_CHANNEL_KEY } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
 import { isPmAgent, isRepoAgent } from '../types/agent.js';
@@ -14,6 +14,7 @@ import { modelDisplayLabel, resolveAgentModel, modelChangingAgentIds } from '../
 import { prCardFingerprint, prCardTitlePlain } from '../system/pr-card-format.js';
 import { getGitHubClient } from '../connectors/github/client.js';
 import { createKeyedLock } from '../system/keyed-lock.js';
+import { withTaskDataLock } from './data-lock.js';
 
 /**
  * Target for postToUser — controls where the message is delivered.
@@ -38,7 +39,7 @@ import { Agent } from '../agents/agent.js';
 
 import {
   loadMetadata,
-  getMetadataPath,
+  writeTaskMetadata,
   appendAgentFinding,
   appendAgentMessage,
   appendMessageToUser,
@@ -57,11 +58,11 @@ import { scheduleIdleCheck } from './recovery.js';
 import { scanAgentDefs, getAgentDef, getVisiblePeerIdsForSender, synthesizeDynamicAgentDef } from '../agents/registry.js';
 import type { AttachedRepo } from '../types/task.js';
 import { syncPlugins } from '../system/plugin-sync.js';
-import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, isExternalUser, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, classifySlackIngestAuthor, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
 import { basename } from 'path';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
-import { emitEvent } from '../system/event-bus.js';
+import { emitEvent, prepareTaskCompleted } from '../system/event-bus.js';
 import { TaskStatusController, isStatusEnabled } from './status.js';
 import { setSlackThreadStatus } from '../connectors/slack/status.js';
 import { agentDomainLabel, deriveActivityFromEvent } from '../agents/activity.js';
@@ -180,6 +181,9 @@ export class Task {
     // Ensure channels/default_channel exist on metadata
     metadata.channels ??= {};
     metadata.default_channel ??= null;
+    // Fail closed for legacy or malformed runtime metadata. Task.get persists
+    // the migration; this keeps direct construction defensive as well.
+    migrateTaskVisibility(metadata);
 
     this.metadata = metadata;
   }
@@ -191,7 +195,7 @@ export class Task {
    * Sets up disk structure (folders, metadata, skills).
    * Task is inert until sendMessage() is called, which activates it.
    */
-  static async create(): Promise<Task> {
+  static async create(visibility: TaskVisibility): Promise<Task> {
     await syncPlugins();
     await ensureSessionsDir();
 
@@ -209,6 +213,7 @@ export class Task {
     // It maps agentId → list of currently-attached repos.
     const metadata: TaskMetadata = {
       task_id: taskId,
+      visibility,
       task_owner: null,
       participants: [],
       channels: {},
@@ -220,7 +225,7 @@ export class Task {
       updated_at: new Date().toISOString(),
     };
 
-    await writeFile(getMetadataPath(taskId), JSON.stringify(metadata, null, 2));
+    await writeTaskMetadata(taskId, metadata);
     await writeFile(getKnowledgeLogPath(taskId), '');
 
     logger.system(`Created task ${taskId}`);
@@ -255,7 +260,8 @@ export class Task {
     // (one object per repo agent, keyed by short name). Now it's
     // Record<agentId, AttachedRepo[]> (per-agent list of attached repos).
     // Detect by structural check: any value that's NOT an array is old shape.
-    const didMigrate = migrateRepositoriesShape(metadata);
+    const didMigrateRepositories = migrateRepositoriesShape(metadata);
+    const didMigrateVisibility = migrateTaskVisibility(metadata);
 
     // Persist the upgrade once. The migration is otherwise in-memory, so a
     // terminal task that's only ever *read* (webhook resolution, comment-dedup
@@ -263,12 +269,16 @@ export class Task {
     // next load hits the fast path — and it locks in the shape now, while every
     // repo agent still resolves (a later plugin removal would otherwise make the
     // migration drop those entries). Only an active task ever re-saves on its own.
-    if (didMigrate) {
-      await writeFile(getMetadataPath(taskId), JSON.stringify(metadata, null, 2));
+    if (didMigrateRepositories || didMigrateVisibility) {
+      await writeTaskMetadata(taskId, metadata);
       // Log once, here — the migration persisted, so it won't run again. (The
       // migrate fn stays silent: it runs on every load, incl. read-only
       // findTaskByPRNumber, so logging there would spam.)
-      logger.system(`[migrate] task ${taskId}: upgraded repositories to v30 (${Object.keys(metadata.repositories).join(', ')})`);
+      const migrations = [
+        didMigrateRepositories ? `repositories to v30 (${Object.keys(metadata.repositories).join(', ')})` : null,
+        didMigrateVisibility ? 'visibility to private' : null,
+      ].filter(Boolean).join('; ');
+      logger.system(`[migrate] task ${taskId}: upgraded ${migrations}`);
     }
 
     const team = scanAgentDefs();
@@ -325,20 +335,59 @@ export class Task {
    * Append a Slack thread's messages to this task.
    * If the thread is new, links it as a channel and appends all messages.
    * If already linked, appends only messages newer than last_processed_ts.
-   * Returns whether a new thread was linked.
    */
-  async append(thread: SlackThread): Promise<{ linkedNewThread: boolean }> {
+  async append(thread: SlackThread): Promise<boolean> {
+    return withTaskDataLock(this.taskId, async () => {
+      const target = await this.resolveTaskDataTarget();
+      return target.appendUnlocked(thread);
+    });
+  }
+
+  /** Resolve mutable task data only after the per-task data lock is held. */
+  private async resolveTaskDataTarget(): Promise<Task> {
+    const active = activeTasks.get(this.taskId);
+    if (active) return active;
+
+    const metadata = await loadMetadata(this.taskId);
+    const newlyActive = activeTasks.get(this.taskId);
+    if (newlyActive) return newlyActive;
+    if (!metadata) throw new Error(`Task ${this.taskId} not found`);
+    migrateTaskVisibility(metadata);
+    this.metadata = metadata;
+    return this;
+  }
+
+  private async appendUnlocked(thread: SlackThread): Promise<boolean> {
     const channelId = `slack:${thread.channel.id}:${thread.threadId}`;
     const existing = this.metadata.channels[channelId] as SlackChannel | undefined;
 
-    // Redaction policy: when the channel is shared and the message author is
-    // external, drop content and don't download files. Author info is logged.
-    const writeMessage = async (msg: typeof thread.messages[number]): Promise<void> => {
-      const redact = thread.shared && isExternalUser(msg.user);
-      if (redact) {
+    if (!existing) {
+      const linkedSlackThread = Object.values(this.metadata.channels).find((ch) => ch.type === 'slack');
+      if (linkedSlackThread) {
+        throw new Error(`Task ${this.taskId} is already bound to another Slack thread`);
+      }
+    }
+    await persistVisibilityRestriction(
+      this.metadata,
+      thread.taskVisibility,
+      () => this.save(true),
+    );
+
+    // Only positively verified internal authors may enter task memory.
+    const writeMessage = async (msg: typeof thread.messages[number]): Promise<boolean> => {
+      const identity = classifySlackIngestAuthor(msg.user);
+      // The event actor was checked separately before this thread was fetched.
+      // If its identity cannot be reproduced here, do not turn that current
+      // ingress into a historical redaction and advance its watermark.
+      if (identity === 'unknown' && msg.ts === thread.currentMessageTs) return false;
+      if (identity !== 'internal') {
         await appendSlackMessage(
           this.taskId, thread.channel, thread.threadId, msg.user, '', undefined, undefined,
-          { redacted: true, ts: msg.ts },
+          {
+            redacted: true,
+            redactionReason: identity === 'unknown' ? 'unresolved' : 'external',
+            ts: msg.ts,
+          },
         );
       } else {
         const downloadedFiles = msg.files ? await downloadMessageFiles(this.taskId, msg.files) : undefined;
@@ -348,7 +397,11 @@ export class Task {
           { ts: msg.ts, reactions: msg.reactions },
         );
       }
+      return true;
     };
+
+    const messages = [...thread.messages].sort((a, b) => Number(a.ts) - Number(b.ts));
+    let complete = true;
 
     if (!existing) {
       // New thread — link it as a channel and append all messages
@@ -357,29 +410,37 @@ export class Task {
         thread_id: thread.threadId,
         channel_id: thread.channel.id,
         channel_name: thread.channel.name,
-        last_processed_ts: thread.currentMessageTs,
+        last_processed_ts: '0',
         url: buildThreadUrl(thread.channel.id, thread.threadId) ?? undefined,
       };
       this.metadata.default_channel ??= channelId;
 
-      for (const msg of thread.messages) {
-        await writeMessage(msg);
+      const channel = this.metadata.channels[channelId] as SlackChannel;
+      for (const msg of messages) {
+        if (!(await writeMessage(msg))) {
+          complete = false;
+          break;
+        }
+        channel.last_processed_ts = msg.ts;
       }
 
-      this.debouncedSave();
-      return { linkedNewThread: true };
+      await this.save(true);
+      return complete;
     }
 
     // Existing thread — only append messages newer than last_processed_ts
     const lastProcessedTs = existing.last_processed_ts;
-    for (const msg of thread.messages) {
+    for (const msg of messages) {
       if (msg.ts <= lastProcessedTs) continue;
-      await writeMessage(msg);
+      if (!(await writeMessage(msg))) {
+        complete = false;
+        break;
+      }
+      existing.last_processed_ts = msg.ts;
     }
 
-    existing.last_processed_ts = thread.currentMessageTs;
-    this.debouncedSave();
-    return { linkedNewThread: false };
+    await this.save(true);
+    return complete;
   }
 
   /**
@@ -398,9 +459,28 @@ export class Task {
     author: SlackAuthor,
     editedTs: string,
     newText: string,
+    sourceVisibility: TaskVisibility,
+  ): Promise<boolean> {
+    return withTaskDataLock(this.taskId, async () => {
+      const target = await this.resolveTaskDataTarget();
+      return target.appendSlackEditUnlocked(channelKey, author, editedTs, newText, sourceVisibility);
+    });
+  }
+
+  private async appendSlackEditUnlocked(
+    channelKey: string,
+    author: SlackAuthor,
+    editedTs: string,
+    newText: string,
+    sourceVisibility: TaskVisibility,
   ): Promise<boolean> {
     const ch = this.metadata.channels[channelKey];
     if (ch?.type !== 'slack') return false;
+    await persistVisibilityRestriction(
+      this.metadata,
+      sourceVisibility,
+      () => this.save(true),
+    );
     await appendSlackEdit(
       this.taskId,
       { id: ch.channel_id, name: ch.channel_name },
@@ -915,6 +995,10 @@ export class Task {
   linkSlackThread(channelId: string, threadTs: string, channelName: string): string {
     const key = `slack:${channelId}:${threadTs}`;
     if (!this.metadata.channels[key]) {
+      const linkedSlackThread = Object.values(this.metadata.channels).find((ch) => ch.type === 'slack');
+      if (linkedSlackThread) {
+        throw new Error(`Task ${this.taskId} is already bound to another Slack thread`);
+      }
       this.metadata.channels[key] = {
         type: 'slack',
         thread_id: threadTs,
@@ -987,34 +1071,47 @@ export class Task {
     // the final message. Best-effort; must never block teardown.
     await this.resurfacePrCards().catch((e) => logger.warn('task', 'PR card resurface failed on complete', e));
 
-    this.isActive = false;
-    activeTasks.delete(this.taskId);
-    this.clearTaskTimeout();
+    const completed = await withTaskDataLock(this.taskId, async () => {
+      if (!this.isActive) return false;
 
-    // Stop all queues. A parked or just-finished agent (session inactive) exits
-    // gracefully on its next queue pull — the resume-safe path the deferred
-    // teardown relies on (see spawn.ts: never .return() the generator), so do
-    // NOT abort it. But an agent still mid-turn keeps generating and hits
-    // "Stream closed" on every tool/hook control request, looping until maxTurns
-    // — stopping its queue can't end it, so hard-abort those. agent:inactive is
-    // emitted by the Stop hook / crash handler (or the aborted loop exiting).
-    for (const a of this.agentProcesses.values()) {
-      const midTurn = a.session.active;
-      a.queue.stop();
-      if (midTurn) a.handle?.abort();
-    }
+      // Persist the memory intent before any state transition that would make
+      // this task look safely parked. Extraction takes the same data lock for
+      // its snapshot, so it cannot observe the task before the completed status
+      // below is durable.
+      await prepareTaskCompleted(this.taskId);
 
-    // Clean up clones to free disk space (only when not in edit mode).
-    // RW clones (edit_allowed) are kept — they have branches, commits, PRs.
-    if (this.metadata.edit_allowed !== true) {
-      await this.cleanupClones();
-    }
+      this.isActive = false;
+      activeTasks.delete(this.taskId);
+      this.clearTaskTimeout();
 
-    this.clearAcks();
-    this.statusController.clear();
+      // Stop all queues. A parked or just-finished agent (session inactive) exits
+      // gracefully on its next queue pull — the resume-safe path the deferred
+      // teardown relies on (see spawn.ts: never .return() the generator), so do
+      // NOT abort it. But an agent still mid-turn keeps generating and hits
+      // "Stream closed" on every tool/hook control request, looping until maxTurns
+      // — stopping its queue can't end it, so hard-abort those. agent:inactive is
+      // emitted by the Stop hook / crash handler (or the aborted loop exiting).
+      for (const a of this.agentProcesses.values()) {
+        const midTurn = a.session.active;
+        a.queue.stop();
+        if (midTurn) a.handle?.abort();
+      }
 
-    this.metadata.status = 'completed';
-    await this.save(true);
+      // Clean up clones to free disk space (only when not in edit mode).
+      // RW clones (edit_allowed) are kept — they have branches, commits, PRs.
+      if (this.metadata.edit_allowed !== true) {
+        await this.cleanupClones();
+      }
+
+      this.clearAcks();
+      this.statusController.clear();
+
+      this.metadata.status = 'completed';
+      await this.save(true);
+      return true;
+    });
+
+    if (!completed) return;
 
     logger.system(`Task ${this.taskId} completed`);
     emitEvent('task:completed', this.taskId);
@@ -1088,10 +1185,7 @@ export class Task {
     // saveLegacyTask expects TaskRuntimeState, but we need to bridge
     // For now, write directly
     if (flush) {
-      await writeFile(
-        getMetadataPath(this.taskId),
-        JSON.stringify(this.metadata, null, 2),
-      );
+      await writeTaskMetadata(this.taskId, this.metadata);
     } else {
       // Debounced — use the legacy saveTask by creating a compat shim
       this.debouncedSave();
@@ -1497,14 +1591,28 @@ export class Task {
       logger.warn('task', `handleTriggerApproval on ${this.taskId} with no trigger id`);
       return null;
     }
-    const { loadTrigger, enableProposedTrigger, deleteTrigger, countActiveTriggers } = await import('../system/trigger-store.js');
+    const { loadTrigger, saveTrigger, enableProposedTrigger, deleteTrigger, countActiveTriggers } = await import('../system/trigger-store.js');
     const { indexTrigger, announceTriggerChange, MAX_TRIGGERS_PER_USER, MAX_TRIGGERS_PER_CHANNEL } = await import('../system/trigger-scheduler.js');
+
+    if (this.metadata.visibility !== 'public') {
+      await deleteTrigger(id);
+      if (this.metadata.pending_trigger_id === id) this.metadata.pending_trigger_id = undefined;
+      this.debouncedSave();
+      await appendAgentFinding(this.taskId, 'system', `Trigger ${id} not enabled — private tasks cannot create persistent triggers`, 'decision');
+      return null;
+    }
 
     // Re-check caps at approval: pending proposals don't count toward the caps,
     // so approving several proposed while under the limit could otherwise blow
     // past it. Refuse (delete the pending file) if enabling would exceed a cap.
     const pending = await loadTrigger(id);
     if (pending && pending.status === 'pending') {
+      // Approval is tied to this public task, so legacy pending proposals gain
+      // an explicit prompt provenance before they become fireable.
+      if (!pending.prompt_origin_visibility) {
+        pending.prompt_origin_visibility = 'public';
+        await saveTrigger(pending);
+      }
       const overChannel = pending.binding.type === 'channel'
         && (await countActiveTriggers((t) => t.binding.type === 'channel' && t.binding.channel_id === (pending.binding as { channel_id: string }).channel_id)) >= MAX_TRIGGERS_PER_CHANNEL;
       const overUser = pending.created_by && pending.created_by !== 'unknown'
@@ -1674,7 +1782,13 @@ export class Task {
       await this.postToUser(msg).catch((err: unknown) =>
         logger.error('budget', 'Failed to post pause message', err),
       );
-      await this.complete();
+      await this.complete().catch((error) => {
+        logger.error(
+          'budget',
+          `Failed to complete task ${this.taskId} after wall-clock cap; will retry`,
+          error,
+        );
+      });
     }, 60_000);
   }
 
@@ -1698,10 +1812,7 @@ export class Task {
           this.metadata.agent_sessions[agentName] = { ...agent.session };
         }
         this.metadata.updated_at = new Date().toISOString();
-        await writeFile(
-          getMetadataPath(this.taskId),
-          JSON.stringify(this.metadata, null, 2),
-        );
+        await writeTaskMetadata(this.taskId, this.metadata);
       } catch (err) {
         logger.error('task', `Failed to save task ${this.taskId}`, err);
       }
@@ -1724,7 +1835,46 @@ export function getTask(taskId: string): Task | undefined {
   return activeTasks.get(taskId);
 }
 
-// ---- v30 migration ----
+// ---- Metadata migrations ----
+
+/**
+ * Normalize persisted task visibility. JSON-loaded metadata is not runtime
+ * type-checked, so both missing and unrecognized values fail closed to private.
+ * Returns whether metadata was changed so Task.get can persist the migration.
+ */
+export function migrateTaskVisibility(metadata: TaskMetadata): boolean {
+  if (metadata.visibility === 'public' || metadata.visibility === 'private') return false;
+  metadata.visibility = 'private';
+  return true;
+}
+
+/** Apply the most restrictive source visibility without ever upgrading a task. */
+export function restrictTaskVisibility(metadata: TaskMetadata, source: TaskVisibility): boolean {
+  if (source !== 'private' || metadata.visibility === 'private') return false;
+  metadata.visibility = 'private';
+  return true;
+}
+
+/** Persist a public-to-private downgrade before any source content is ingested. */
+export async function persistVisibilityRestriction(
+  metadata: TaskMetadata,
+  source: TaskVisibility,
+  save: () => Promise<void>,
+): Promise<boolean> {
+  const previous = metadata.visibility;
+  const changed = restrictTaskVisibility(metadata, source);
+  if (changed) {
+    try {
+      await save();
+    } catch (error) {
+      metadata.visibility = previous;
+      throw error;
+    }
+  }
+  return changed;
+}
+
+// ---- v30 repository migration ----
 
 /**
  * Migrate `metadata.repositories` from the legacy `Record<repoKey, RepositoryInfo>`

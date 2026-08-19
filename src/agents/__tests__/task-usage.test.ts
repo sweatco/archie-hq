@@ -1,13 +1,5 @@
 /**
- * Unit tests for the task-usage aggregator + formatter.
- *
- * The module imports only SESSIONS_DIR from ../../system/workdir.js, so a single
- * mock (a mkdtempSync temp dir) isolates it. Fixtures are written to disk and the
- * aggregator fns are imported directly.
- *
- * Transcript layout mirrors the SDK: sessions/<taskId>/claude/<agentKey>/session/
- * projects/<encoded-cwd>/<sessionId>.jsonl, with subagent transcripts nested under
- * <sessionId>/subagents/**\/agent-*.jsonl. Cost lives in shared/usage.jsonl.
+ * Filesystem-backed tests for task usage aggregation and formatting.
  */
 
 import { describe, it, expect, afterAll, vi } from 'vitest';
@@ -29,7 +21,6 @@ vi.mock('../../system/workdir.js', () => ({
 import {
   aggregateTaskUsage,
   formatTaskUsageReport,
-  type NonceReducer,
 } from '../task-usage.js';
 
 afterAll(async () => {
@@ -80,7 +71,7 @@ async function writeTranscript(dir: string, name: string, lines: string[]): Prom
 
 async function writeUsage(
   taskId: string,
-  records: Array<Record<string, unknown>>,
+  records: unknown[],
 ): Promise<void> {
   await mkdir(sharedDir(taskId), { recursive: true });
   await writeFile(
@@ -89,11 +80,7 @@ async function writeUsage(
   );
 }
 
-// =============================================================================
-// AC2 — token sums: dedup by message.id, exclude <synthetic>, across 2 files.
-// =============================================================================
-
-describe('AC2: token dedup + synthetic exclusion across two session files', () => {
+describe('token aggregation', () => {
   it('sums usage after keep-first dedup and dropping the synthetic line', async () => {
     const taskId = 'task-20260101-1200-ac2';
     const dir = projectsDir(taskId, 'pm');
@@ -125,11 +112,7 @@ describe('AC2: token dedup + synthetic exclusion across two session files', () =
   });
 });
 
-// =============================================================================
-// AC3 — subagent tokens included; sibling journal.jsonl excluded.
-// =============================================================================
-
-describe('AC3: nested subagent transcript included, journal.jsonl excluded', () => {
+describe('nested transcript aggregation', () => {
   it('rolls subagent tokens into the parent agent and skips journal.jsonl', async () => {
     const taskId = 'task-20260101-1200-ac3';
     const dir = projectsDir(taskId, 'backend');
@@ -165,11 +148,7 @@ describe('AC3: nested subagent transcript included, journal.jsonl excluded', () 
   });
 });
 
-// =============================================================================
-// AC4 — grand total + per-agent breakdown present; two-session agent = sessions:2.
-// =============================================================================
-
-describe('AC4: report structure and session counting', () => {
+describe('report structure and session counting', () => {
   it('reports grand + per-agent breakdown, two-session agent as sessions: 2', async () => {
     const taskId = 'task-20260101-1200-ac4';
     const pmDir = projectsDir(taskId, 'pm');
@@ -192,12 +171,8 @@ describe('AC4: report structure and session counting', () => {
   });
 });
 
-// =============================================================================
-// AC6-unit — nonce-based cost aggregation.
-// =============================================================================
-
-describe('AC6-unit: nonce-based cost', () => {
-  it('(i) single nonce, monotonically increasing records → cost = max/final (cumulative)', async () => {
+describe('nonce-based cost', () => {
+  it('uses the maximum cumulative cost for one nonce', async () => {
     const taskId = 'task-20260101-1200-ac6i';
     // A transcript so the report is otherwise well-formed.
     await writeTranscript(projectsDir(taskId, 'pm'), 'sess-1.jsonl', [
@@ -214,13 +189,11 @@ describe('AC6-unit: nonce-based cost', () => {
     expect(report.cost?.costRecordedTurns).toBe(3);
   });
 
-  it('(ii) NO-OMISSION: two cheap+expensive nonces sharing a session_id → grand = $0.62', async () => {
+  it('sums separate nonces that share a session id', async () => {
     const taskId = 'task-20260101-1200-ac6ii';
     await writeTranscript(projectsDir(taskId, 'pm'), 'sess-1.jsonl', [
       assistantLine({ id: 'x', usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
     ]);
-    // The exact scenario the deleted drop-heuristic omitted: nonce A ($0.02) then
-    // nonce B ($0.60), BOTH with the same session_id. Must sum to $0.62.
     await writeUsage(taskId, [
       { query_nonce: 'A', agentKey: 'pm', session_id: 'shared-sess', total_cost_usd: 0.02 },
       { query_nonce: 'B', agentKey: 'pm', session_id: 'shared-sess', total_cost_usd: 0.60 },
@@ -230,7 +203,7 @@ describe('AC6-unit: nonce-based cost', () => {
     expect(report.cost?.grand).toBeCloseTo(0.62, 10);
   });
 
-  it('(iii) two agents each with their own nonce(s) → per-agent costs sum to grand', async () => {
+  it('keeps per-agent costs consistent with the grand total', async () => {
     const taskId = 'task-20260101-1200-ac6iii';
     await writeTranscript(projectsDir(taskId, 'pm'), 'sess-1.jsonl', [
       assistantLine({ id: 'p', usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
@@ -253,31 +226,37 @@ describe('AC6-unit: nonce-based cost', () => {
     expect(report.cost?.grand).toBeCloseTo(0.55, 10);
   });
 
-  it('(iv) delta-fork guard: with reduceNonceCost set to sum, a multi-record nonce sums', async () => {
-    const taskId = 'task-20260101-1200-ac6iv';
-    await writeTranscript(projectsDir(taskId, 'pm'), 'sess-1.jsonl', [
-      assistantLine({ id: 'x', usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
-    ]);
+  it('skips parsed JSON values that are not valid cost records', async () => {
+    const taskId = 'task-20260101-1200-invalid';
     await writeUsage(taskId, [
-      { query_nonce: 'N1', agentKey: 'pm', total_cost_usd: 0.10 },
-      { query_nonce: 'N1', agentKey: 'pm', total_cost_usd: 0.25 },
-      { query_nonce: 'N1', agentKey: 'pm', total_cost_usd: 0.40 },
+      null,
+      [],
+      42,
+      'text',
+      { query_nonce: 'string-cost', agentKey: 'pm', total_cost_usd: '0.5' },
+      { query_nonce: 'missing-cost', agentKey: 'pm' },
+      { query_nonce: 'negative-cost', agentKey: 'pm', total_cost_usd: -1 },
+      { query_nonce: 12, agentKey: 'pm', total_cost_usd: 1 },
+      { query_nonce: 'valid', agentKey: 'pm', total_cost_usd: 0.25 },
     ]);
 
-    // Documents the one-line fallback: the SUM reducer sums within the nonce.
-    const sumReducer: NonceReducer = (records) =>
-      records.reduce((s, r) => s + (r.total_cost_usd ?? 0), 0);
+    const report = await aggregateTaskUsage(taskId);
+    expect(report.cost).toEqual({ grand: 0.25, costRecordedTurns: 1 });
+    expect(report.agents).toEqual([
+      expect.objectContaining({ agentKey: 'pm', cost: 0.25 }),
+    ]);
 
-    const report = await aggregateTaskUsage(taskId, sumReducer);
-    expect(report.cost?.grand).toBeCloseTo(0.75, 10);
+    const invalidOnlyTask = 'task-20260101-1200-invalidonly';
+    await mkdir(sharedDir(invalidOnlyTask), { recursive: true });
+    await writeFile(
+      join(sharedDir(invalidOnlyTask), 'usage.jsonl'),
+      'not json\nnull\n[]\n42\n{"total_cost_usd":-1}\n{"total_cost_usd":1e999}\n',
+    );
+    await expect(aggregateTaskUsage(invalidOnlyTask)).resolves.toMatchObject({ cost: undefined });
   });
 });
 
-// =============================================================================
-// AC7 — missing usage.jsonl → tokens + cost unavailable + gap; fewer records → gap.
-// =============================================================================
-
-describe('AC7: cost unavailable / gap disclosure', () => {
+describe('cost unavailable / gap disclosure', () => {
   it('no usage.jsonl → tokens report, cost undefined, gap disclosed, no throw', async () => {
     const taskId = 'task-20260101-1200-ac7nocost';
     await writeTranscript(projectsDir(taskId, 'pm'), 'sess-1.jsonl', [
@@ -313,10 +292,6 @@ describe('AC7: cost unavailable / gap disclosure', () => {
     expect(text).toContain('Cost covers 1 of 3 turns');
   });
 });
-
-// =============================================================================
-// Cost rendering — never present unmeasured or sub-cent spend as $0.00.
-// =============================================================================
 
 describe('cost rendering: no false zeros', () => {
   it('an agent with transcripts but no usage record reads unavailable, not $0.00', async () => {
@@ -371,11 +346,7 @@ describe('cost rendering: no false zeros', () => {
   });
 });
 
-// =============================================================================
-// AC8 — output contains the SDK-reported label + subscription-auth divergence.
-// =============================================================================
-
-describe('AC8: SDK-reported / subscription-auth divergence disclosure', () => {
+describe('SDK-reported / subscription-auth divergence disclosure', () => {
   it('labels cost SDK-reported and discloses subscription-auth divergence', async () => {
     const taskId = 'task-20260101-1200-ac8';
     await writeTranscript(projectsDir(taskId, 'pm'), 'sess-1.jsonl', [
@@ -391,11 +362,6 @@ describe('AC8: SDK-reported / subscription-auth divergence disclosure', () => {
   });
 });
 
-// =============================================================================
-// SECURITY — path-injection guard (CodeQL js/path-injection): an unsafe taskId
-// is rejected before any filesystem access and yields an empty report.
-// =============================================================================
-
 const EMPTY_TOKENS = {
   input_tokens: 0,
   output_tokens: 0,
@@ -403,7 +369,7 @@ const EMPTY_TOKENS = {
   cache_read_input_tokens: 0,
 };
 
-describe('SECURITY: taskId path-injection guard', () => {
+describe('taskId path-injection guard', () => {
   it('a traversal / non-canonical taskId returns an empty report and does not throw', async () => {
     for (const taskId of ['../../etc', 'task-..%2f', '../../../etc/passwd', '']) {
       const report = await aggregateTaskUsage(taskId);
@@ -430,10 +396,7 @@ describe('SECURITY: taskId path-injection guard', () => {
     expect(safe.grand.input_tokens).toBe(500);
     expect(safe.cost?.grand).toBeCloseTo(9.99, 10);
 
-    // An unsafe id that, if join()'d unguarded, normalizes right back to the
-    // real task's dir under SESSIONS_ROOT (SESSIONS_ROOT = <parent>/<base>, so
-    // `../<base>/<realTaskId>` resolves to SESSIONS_ROOT/<realTaskId>). Without
-    // the guard this would report the real task's 500-token / $9.99 numbers.
+    // This traversal normalizes to the real task directory without the guard.
     const unsafe = `../${basename(SESSIONS_ROOT)}/${realTaskId}`;
     const report = await aggregateTaskUsage(unsafe);
 

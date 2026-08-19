@@ -20,7 +20,7 @@ vi.mock('../client.js', () => ({
   getChannelCanvasTabs: vi.fn(async () => tabs),
   getSlackFileInfo: async (id: string) => fileInfos[id] ?? null,
   getUserInfo: async (id: string) => userInfoImpl(id),
-  isExternalUser: (u: { external?: boolean }) => !!u?.external,
+  classifySlackIdentity: (u: { external?: boolean }) => u?.external ? 'external' : 'internal',
   postSlackMessage: vi.fn(async () => {}),
 }));
 

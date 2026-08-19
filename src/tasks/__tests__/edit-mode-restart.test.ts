@@ -22,6 +22,7 @@ vi.mock('fs/promises', () => ({
   mkdir: vi.fn().mockResolvedValue(undefined),
   appendFile: vi.fn().mockResolvedValue(undefined),
   readFile: vi.fn().mockResolvedValue(''),
+  rename: vi.fn().mockResolvedValue(undefined),
 }));
 const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
 vi.mock('../../agents/spawn.js', () => ({ spawnAgent: spawnMock }));
@@ -36,11 +37,12 @@ const TaskCtor = Task as unknown as new (
   team: AgentDef[],
 ) => Task;
 
-const TASK_ID = 'task-20260625-1122-30wkzk-test';
+const TASK_ID = 'task-20260625-1122-30wkzktest';
 
 function metadata(): TaskMetadata {
   return {
     task_id: TASK_ID,
+    visibility: 'public',
     task_owner: 'backend-agent',
     participants: [],
     channels: {},
