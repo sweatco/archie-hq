@@ -112,7 +112,7 @@ describe('mpim external-author bail-out (AC4)', () => {
             type,
             channel: groupDm,
             user: 'U_EXTERNAL',
-            text: 'hey archie',
+            raw: { type, channel: groupDm, user: 'U_EXTERNAL', text: 'hey archie', ts: '1700000000.000100' },
             ts: '1700000000.000100',
           });
 

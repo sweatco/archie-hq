@@ -20,7 +20,10 @@ type PinnedItemLike = {
   botId?: string;
   botName?: string;
   teamId?: string;
-  text?: string;
+  ownText?: string;
+  attachments?: Array<{ text: string; author?: { id: string; realName: string; teamId?: string } }>;
+  files?: Array<{ id: string; name: string; localPath?: string }>;
+  reactions?: Array<{ name: string; count: number }>;
   permalink?: string;
   fileId?: string;
   fileName?: string;
@@ -102,7 +105,7 @@ const messagePin = (over: Partial<PinnedItemLike> = {}): PinnedItemLike => ({
   pinnedBy: 'U_PINNER',
   messageTs: '1699990000.000100',
   author: 'U_AUTHOR',
-  text: 'deploy runbook lives here',
+  ownText: 'deploy runbook lives here',
   permalink: 'https://slack.example/archives/C1/p1699990000000100',
   ...over,
 });
@@ -342,7 +345,7 @@ describe('ensureChannelPins', () => {
   it('bounds model calls per scan and defers the rest for the next one', async () => {
     const long = 'a runbook paragraph that comfortably exceeds the verbatim threshold. '.repeat(6);
     pins = Array.from({ length: 10 }, (_, i) =>
-      messagePin({ messageTs: `169999${String(i).padStart(4, '0')}.000100`, pinnedAt: 1_700_000_000 + i, text: long }),
+      messagePin({ messageTs: `169999${String(i).padStart(4, '0')}.000100`, pinnedAt: 1_700_000_000 + i, ownText: long }),
     );
 
     await ensureChannelPins(CHANNEL);
@@ -371,13 +374,43 @@ describe('ensureChannelPins', () => {
   });
 
   it('re-summarises exactly once when the pinned text changed', async () => {
-    pins = [messagePin({ text: 'the runbook moved to the wiki' })];
+    pins = [messagePin({ ownText: 'the runbook moved to the wiki' })];
     storesByChannel[CHANNEL] = storeWith([storedEntry()]);
 
     await ensureChannelPins(CHANNEL);
 
     expect(summarisePinText).toHaveBeenCalledTimes(1);
     expect((savedStore?.pins[0] as { summary: string }).summary).toBe('summary:the runbook moved to the wiki');
+  });
+
+  // A channel's most-pinned things — app posts, workflow cards, unfurls — carry their
+  // body in an attachment and arrive with an empty own text. Indexing only `ownText`
+  // would put a blank line in the prompt for exactly the highest-signal pins.
+  it('indexes a pin whose content lives only in an attachment', async () => {
+    pins = [messagePin({ ownText: '', attachments: [{ text: 'the postmortem lives in Notion' }] })];
+
+    await ensureChannelPins(CHANNEL);
+
+    expect((savedStore?.pins[0] as { summary: string }).summary).toBe('summary:the postmortem lives in Notion');
+  });
+
+  // Reactions must stay out of the digest input: they change without the pin ever being
+  // edited, so including them would re-summarise the pin every time someone added an
+  // emoji — a model call per reaction, forever.
+  it('keeps reactions out of the summary and leaves the digest unchanged', async () => {
+    pins = [messagePin()];
+    await ensureChannelPins(CHANNEL);
+    const withoutReactions = savedStore?.pins[0] as { digest: string; summary: string };
+
+    // A second channel rather than a rescan of this one: the first scan stamped
+    // `pinsCheckedAt`, and the TTL would short-circuit the rescan before it derived
+    // anything.
+    pins = [messagePin({ reactions: [{ name: 'eyes', count: 3 }] })];
+    await ensureChannelPins('C_REACTED');
+    const withReactions = savedStore?.pins[0] as { digest: string; summary: string };
+
+    expect(withReactions.summary).not.toContain('[Reactions:');
+    expect(withReactions.digest).toBe(withoutReactions.digest);
   });
 
   // A pin index is passive — nothing about it is a state change worth a channel post.
@@ -608,7 +641,7 @@ describe('ensureChannelPins — the model budget counts only what reaches the mo
   // defer work that was never expensive — and let short pins starve a genuinely long one.
   it('settles ten short pins in a single scan, with no deferred digests', async () => {
     pins = Array.from({ length: 10 }, (_, i) =>
-      messagePin({ messageTs: `169999${String(i).padStart(4, '0')}.000100`, pinnedAt: 1_700_000_000 + i, text: 'short pin' }),
+      messagePin({ messageTs: `169999${String(i).padStart(4, '0')}.000100`, pinnedAt: 1_700_000_000 + i, ownText: 'short pin' }),
     );
 
     await ensureChannelPins(CHANNEL);
@@ -622,9 +655,9 @@ describe('ensureChannelPins — the model budget counts only what reaches the mo
     const long = 'a runbook paragraph that comfortably exceeds the verbatim threshold. '.repeat(6);
     pins = [
       ...Array.from({ length: 8 }, (_, i) =>
-        messagePin({ messageTs: `170000${String(i).padStart(4, '0')}.000100`, pinnedAt: 1_700_001_000 + i, text: 'short pin' }),
+        messagePin({ messageTs: `170000${String(i).padStart(4, '0')}.000100`, pinnedAt: 1_700_001_000 + i, ownText: 'short pin' }),
       ),
-      messagePin({ messageTs: '1699990000.000100', pinnedAt: 1_700_000_000, text: long }),
+      messagePin({ messageTs: '1699990000.000100', pinnedAt: 1_700_000_000, ownText: long }),
     ];
 
     await ensureChannelPins(CHANNEL);

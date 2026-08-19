@@ -10,11 +10,8 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { z, toJSONSchema } from 'zod';
 import type { SlackThread } from '../types/index.js';
-import { renderMessageForContext } from './persistence.js';
-import { isExternalUser } from '../connectors/slack/client.js';
+import { messageBody, shouldRedact, REDACTION_PLACEHOLDER } from '../connectors/slack/message-body.js';
 import { logger } from '../system/logger.js';
-
-const REDACTION_PLACEHOLDER = '[redacted: external participant in shared channel]';
 
 const TitleSchema = z.object({
   title: z.string(),
@@ -35,17 +32,15 @@ Rules:
 Respond with JSON only.`;
 
 /**
- * Render the thread as a transcript for the title generator. Per-message
- * redaction matches what the agent sees in knowledge.log (parity via the
- * shared renderMessageForContext helper).
+ * Render the thread as a transcript for the title generator. Per-message redaction matches what the agent sees in knowledge.log — parity comes from sharing `messageBody`, which applies the same redaction policy and the same body rendering as ingestion, rather than from this file re-deriving either.
  */
 function buildTranscript(thread: SlackThread): { transcript: string; hasUsableContent: boolean } {
   const lines: string[] = [];
   let hasUsableContent = false;
 
   for (const msg of thread.messages) {
-    const redacted = thread.shared && isExternalUser(msg.user);
-    const body = renderMessageForContext(msg, { redacted });
+    const redacted = shouldRedact(msg, thread);
+    const body = messageBody(msg, thread);
     const author = redacted ? 'external' : msg.user.realName;
     lines.push(`[${author}]: ${body}`);
     if (!redacted && body.trim() !== '' && body !== REDACTION_PLACEHOLDER) {

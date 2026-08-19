@@ -57,7 +57,8 @@ import { scheduleIdleCheck } from './recovery.js';
 import { scanAgentDefs, getAgentDef, getVisiblePeerIdsForSender, synthesizeDynamicAgentDef } from '../agents/registry.js';
 import type { AttachedRepo } from '../types/task.js';
 import { syncPlugins } from '../system/plugin-sync.js';
-import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, isExternalUser, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { renderMessageBody, shouldRedact } from '../connectors/slack/message-body.js';
 import { basename } from 'path';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
@@ -333,19 +334,29 @@ export class Task {
 
     // Redaction policy: when the channel is shared and the message author is
     // external, drop content and don't download files. Author info is logged.
+    // The predicate lives in the shared render module so this call site cannot
+    // drift from the other paths that ask the same question.
     const writeMessage = async (msg: typeof thread.messages[number]): Promise<void> => {
-      const redact = thread.shared && isExternalUser(msg.user);
-      if (redact) {
+      const redacted = shouldRedact(msg, thread);
+      if (redacted) {
+        // Skipping the download is load-bearing, not an optimisation: a redacted
+        // message's files must never reach the task's attachments folder, since
+        // the body that would reference them is a placeholder.
         await appendSlackMessage(
-          this.taskId, thread.channel, thread.threadId, msg.user, '', undefined, undefined,
+          this.taskId, thread.channel, thread.threadId, msg.user,
+          renderMessageBody(msg, { redacted: true }),
           { redacted: true, ts: msg.ts },
         );
       } else {
         const downloadedFiles = msg.files ? await downloadMessageFiles(this.taskId, msg.files) : undefined;
+        // Render AFTER the download, from `downloadedFiles` rather than `msg.files`: only the
+        // downloaded copies carry `localPath`, and the `[Attachments: …]` suffix prints the path
+        // only when it is set — rendering earlier would silently strip every local path an agent
+        // needs to open the file.
         await appendSlackMessage(
-          this.taskId, thread.channel, thread.threadId, msg.user, msg.text,
-          downloadedFiles, msg.attachments,
-          { ts: msg.ts, reactions: msg.reactions },
+          this.taskId, thread.channel, thread.threadId, msg.user,
+          renderMessageBody({ ...msg, files: downloadedFiles }, { redacted }),
+          { ts: msg.ts },
         );
       }
     };

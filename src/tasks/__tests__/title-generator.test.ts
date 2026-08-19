@@ -74,7 +74,7 @@ function makeThread(overrides?: Partial<SlackThread>): SlackThread {
     messages: [
       {
         ts: '1.0',
-        text: 'hello, can you help fix the broken auth flow on Android',
+        ownText: 'hello, can you help fix the broken auth flow on Android',
         user: { id: 'U1', username: 'me', realName: 'Dana', teamId: 'T_HOME' },
       },
     ],
@@ -148,7 +148,7 @@ describe('generateTaskTitle', () => {
       messages: [
         {
           ts: '1.0',
-          text: 'external talk',
+          ownText: 'external talk',
           user: { id: 'UEXT', username: 'ext', realName: 'External', teamId: 'T_OTHER' },
         },
       ],
@@ -165,12 +165,12 @@ describe('generateTaskTitle', () => {
       messages: [
         {
           ts: '1.0',
-          text: 'should be redacted',
+          ownText: 'should be redacted',
           user: { id: 'UEXT', username: 'ext', realName: 'External', teamId: 'T_OTHER' },
         },
         {
           ts: '2.0',
-          text: 'internal subject',
+          ownText: 'internal subject',
           user: { id: 'UINT', username: 'me', realName: 'Dana', teamId: 'T_HOME' },
         },
       ],
@@ -190,7 +190,7 @@ describe('generateTaskTitle', () => {
       messages: [
         {
           ts: '1.0',
-          text: 'fyi',
+          ownText: 'fyi',
           user: { id: 'UINT', username: 'me', realName: 'Dana', teamId: 'T_HOME' },
           attachments: [
             {

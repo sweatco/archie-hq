@@ -11,8 +11,7 @@ import { createInterface } from 'readline';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { join, resolve, relative, isAbsolute, sep } from 'path';
-import type { TaskMetadata, LogEntry, FindingType, SlackFile, SlackAttachment, SlackAuthor, SlackReaction } from '../types/index.js';
-import { isExternalUser } from '../connectors/slack/client.js';
+import type { TaskMetadata, LogEntry, FindingType, SlackFile, SlackAuthor } from '../types/index.js';
 import type { SystemEvent } from '../system/event-bus.js';
 import { activeTasks } from './task.js';
 import { SESSIONS_DIR } from '../system/workdir.js';
@@ -238,7 +237,7 @@ function formatLogEntry(entry: LogEntry): string {
 
 /**
  * Build the `[Attachments: …]` suffix for a list of artifact paths.
- * Mirrors the inbound rendering at the bottom of `renderMessageForContext` so
+ * Mirrors the inbound rendering at the bottom of `renderMessageBody` (`src/connectors/slack/message-body.ts`) so
  * outgoing messages with attachments look symmetric in the knowledge log.
  * Returns an empty string when there are no paths.
  */
@@ -255,81 +254,19 @@ export function renderAttachmentsSuffix(artifactPaths: readonly string[]): strin
 }
 
 /**
- * Render the body of a Slack message for context (knowledge log, title generator, etc.).
- *
- * Single source of truth for redaction + forwarded-attachment rendering.
- * - Redacted: fixed placeholder.
- * - With externally-authored attachment: forwarder's text first, then a
- *   provenance label, then the forwarded content. Other (non-external)
- *   attachments fold into the inline body.
- * - Normal: author's text plus inline attachments and file list.
- */
-export function renderMessageForContext(
-  msg: { text: string; files?: SlackFile[]; attachments?: SlackAttachment[]; reactions?: SlackReaction[] },
-  options: { redacted: boolean }
-): string {
-  if (options.redacted) {
-    return '[redacted: external participant in shared channel]';
-  }
-
-  const inlineParts: string[] = [];
-  if (msg.text) inlineParts.push(msg.text);
-
-  let forwardedBlock = '';
-  for (const att of msg.attachments ?? []) {
-    if (att.author && isExternalUser(att.author)) {
-      // Render the externally-authored attachment under a provenance label.
-      // Only the first one gets the label block; subsequent ones (rare)
-      // fold inline so the agent still sees them.
-      if (!forwardedBlock) {
-        const teamSuffix = att.author.teamId ? `, team ${att.author.teamId}` : '';
-        const label = `[forwarded from <@${att.author.id}:${att.author.realName}> — external${teamSuffix}]`;
-        forwardedBlock = `${label}\n${att.text}`;
-        continue;
-      }
-    }
-    if (att.text) inlineParts.push(att.text);
-  }
-  if (forwardedBlock) inlineParts.push(forwardedBlock);
-
-  let fullMessage = inlineParts.join('\n');
-
-  if (msg.files && msg.files.length > 0) {
-    const fileInfo = msg.files.map(f => {
-      const pathInfo = f.localPath ? ` (${f.localPath})` : '';
-      return `${f.name}${pathInfo}`;
-    }).join(', ');
-    fullMessage += `\n  [Attachments: ${fileInfo}]`;
-  }
-
-  if (msg.reactions && msg.reactions.length > 0) {
-    const reactionInfo = msg.reactions
-      .map((r) => `:${r.name}:${r.count > 1 ? ` ×${r.count}` : ''}`)
-      .join(', ');
-    fullMessage += `\n  [Reactions: ${reactionInfo}]`;
-  }
-
-  return fullMessage;
-}
-
-/**
  * Append a Slack message to the knowledge log.
+ *
+ * The body arrives already rendered: rendering is owned by `renderMessageBody` in `src/connectors/slack/message-body.ts`, and the caller is the one that knows the message's parts (in particular the *downloaded* files, whose `localPath` only exists after the download await). Keeping this function to persistence-only concerns is what stops a second renderer growing here.
  */
 export async function appendSlackMessage(
   taskId: string,
   channelInfo: { id: string; name: string },
   threadId: string,
   userInfo: SlackAuthor,
-  message: string,
-  files?: SlackFile[],
-  attachments?: SlackAttachment[],
-  options?: { redacted?: boolean; ts?: string; reactions?: SlackReaction[] }
+  renderedBody: string,
+  options?: { redacted?: boolean; ts?: string }
 ): Promise<void> {
   const redacted = options?.redacted === true;
-  const fullMessage = renderMessageForContext(
-    { text: message, files, attachments, reactions: options?.reactions },
-    { redacted },
-  );
 
   // Mask the author name in the source line when the body is redacted, so the
   // log doesn't leak the external user's display name even though we keep it
@@ -342,7 +279,7 @@ export async function appendSlackMessage(
   const entry: LogEntry = {
     timestamp: new Date().toISOString(),
     source: `<@${userInfo.id}:${displayName}> in ${formatSlackChannelRef(channelInfo.id, channelInfo.name, threadId)}${msgIdSuffix}`,
-    message: fullMessage,
+    message: renderedBody,
   };
 
   await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
@@ -353,7 +290,7 @@ export async function appendSlackMessage(
     from: displayName,
     to: 'pm-agent',
     destination: formatSlackChannelDisplay(channelInfo.name),
-    message: fullMessage,
+    message: renderedBody,
   });
 }
 

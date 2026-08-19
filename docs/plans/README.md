@@ -27,6 +27,7 @@ Historical record of Archie's incremental development. Each plan represents a mi
 | [20260809](20260809-channel-pinned-messages-context.md) | Channel pinned messages as agent context | Implemented (dormant until `pins:read` is granted) |
 | [20260817](20260817-unify-core-skill-mounting.md) | Core skill mounting unified behind one manifest | Implemented |
 | [20260817](20260817-persistent-trigger-directory.md) | Persistent per-trigger directory that outlives a single fire | Implemented |
+| [20260818](20260818-slack-single-message-path.md) | One Slack message render path, and a denylist inbound gate | Implemented |
 
 ## Evolution Arc
 

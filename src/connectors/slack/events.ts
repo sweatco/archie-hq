@@ -26,7 +26,6 @@ import {
   postEphemeral,
   getSlackClient,
   cleanSlackText,
-  extractMessageContent,
 } from './client.js';
 import { ensureChannelCanvas } from './channel-canvas.js';
 import { ensureChannelPins } from './channel-pins.js';
@@ -35,7 +34,8 @@ import { Task } from '../../tasks/task.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
 import { getIsShuttingDown } from '../../system/shutdown.js';
-import { findTaskByThread, renderMessageForContext } from '../../tasks/persistence.js';
+import { findTaskByThread } from '../../tasks/persistence.js';
+import { rawMessageBody } from './message-body.js';
 import { getChannelMessageTriggers, fireTrigger, triggerWhat } from '../../system/trigger-scheduler.js';
 import type { Trigger } from '../../types/trigger.js';
 import { generateTaskTitle } from '../../tasks/title-generator.js';
@@ -141,7 +141,7 @@ export async function mountSlackApp(
       type: event.type,
       channel: event.channel,
       user: event.user ?? '',
-      text: event.text,
+      raw: event,
       ts: event.ts,
       thread_ts: event.thread_ts,
     }).catch((err: unknown) => logger.error('Server', 'Error processing Slack event', err));
@@ -173,6 +173,19 @@ export async function mountSlackApp(
     // stay a no-op). handleSlackEvent then runs the same own-bot/external/
     // @mention filtering before firing any trigger.
     if (!shouldForwardMessageEvent(event, (ch) => getChannelMessageTriggers(ch).length > 0)) {
+      // Record, for a channel someone is actively watching, that the gate dropped an event and why — from the trigger owner's side a silent drop is indistinguishable from "nothing was posted", and this line is what makes "why didn't my trigger fire?" answerable.
+      //
+      // Deliberately `debug`, not `warn`. Two classes reach here and both are routine: a denylisted noise subtype, and an app post that is not a top-level channel message (app posts reach triggers but never wake a task, so a bot thread reply satisfies neither arm). Neither is an anomaly worth a warning, and the class this was originally written to catch — an unenumerated subtype vanishing — is now structurally impossible rather than merely logged, because the gate is a denylist.
+      //
+      // The message must not claim the denylist is the reason: `bot_message` is deliberately absent from it, so naming the denylist for a dropped bot reply would state the one fact the line exists to convey, wrongly. Report the subtype and let the reader compare it against the list.
+      //
+      // Consulting the trigger index here means it is no longer a lazy lookup on the dropped path; that is fine, it is an in-memory read.
+      if (getChannelMessageTriggers(event.channel).length > 0) {
+        logger.debug(
+          'Slack',
+          `Dropped a message event in trigger-watched channel ${event.channel} (ts ${event.ts}): subtype "${event.subtype ?? 'none'}"${event.bot_id ? ', app-authored' : ''} is not routed, so no channel-message trigger saw it`,
+        );
+      }
       return;
     }
 
@@ -199,7 +212,7 @@ export async function mountSlackApp(
       type: event.type,
       channel: event.channel,
       user: event.user || '',
-      text: event.text || '',
+      raw: event,
       ts: event.ts,
       thread_ts: event.thread_ts,
     }).catch((err: unknown) => logger.error('Server', 'Error processing Slack event', err));
@@ -635,11 +648,18 @@ type SlackRouteResult =
 
 function routeSlackEvent(event: {
   bot_id?: string;
+  user?: string;
   type: string;
 }): SlackRouteResult {
   const ourBotId = getBotId();
   if (event.bot_id && ourBotId && event.bot_id === ourBotId) {
     return { action: 'discard', reason: 'Own bot message' };
+  }
+
+  // Also discard anything Slack attributes to our own bot USER rather than to a `bot_id`. This is insurance, and it has no known reachable path today: everything Archie posts goes through `postSlackMessage` with the bot token, so it carries our `bot_id` and the check above already catches it, and the canvas and pin scans are read-only (no `pins.add`, no `canvases.create`, no `conversations.setTopic` anywhere in this codebase). The reason to keep it anyway is that the cost is one comparison and the failure mode is a feedback loop: `handleSlackEvent` refreshes the canvas and pin index, so the day any of those paths starts writing, a filterless trigger in a watched channel would fire on Archie's own housekeeping and each firing would refresh again.
+  const ourBotUserId = getBotUserId();
+  if (event.user && ourBotUserId && event.user === ourBotUserId) {
+    return { action: 'discard', reason: 'Own bot user message' };
   }
 
   return { action: 'triage' };
@@ -653,7 +673,7 @@ export async function handleSlackEvent(event: {
   type: string;
   channel: string;
   user: string;
-  text: string;
+  raw: unknown;
   ts: string;
   thread_ts?: string;
 }): Promise<void> {
@@ -663,9 +683,16 @@ export async function handleSlackEvent(event: {
 
   // ---- External-author bail-out --------------------------------------------
   // Resolve the event author and bail if external (different team, or guest).
-  // No agent spawn, no task creation, no reactions, no log entries. The
-  // redacted history will be appended lazily the next time an internal user
-  // triggers the handler (fetchSlackThread re-reads full history and redacts).
+  // No agent spawn, no task creation, no reactions, no log entries. The redacted
+  // history is appended lazily the next time an internal user triggers the
+  // handler: `fetchSlackThread` re-reads full history but strips nothing itself —
+  // redaction is a RENDER decision, made by `shouldRedact` in message-body.ts as
+  // the messages are written out.
+  //
+  // Note this guard is `event.user`-gated, so an app post (which carries no
+  // `user`) is never classified here. Paths that can be reached by an app post
+  // therefore gate on the bot's own team themselves — see the app-post check in
+  // `dispatchChannelMessageTriggers`.
   if (event.user) {
     try {
       const authorInfo = await getUserInfo(event.user);
@@ -765,13 +792,17 @@ export async function handleSlackEvent(event: {
     }
     await sendSharedChannelWarnings(task, event.channel, threadId, thread, shared);
     await task.sendMessage(AGENT_PROMPTS.existingTask);
-  } else if (shouldCreateNewTask(event.type, event.channel, thread.rootAuthorWasBot)) {
+  } else if (shouldCreateNewTask(event.type, event.channel, thread.rootAuthorWasBot) && thread.messages.length > 0) {
     logger.system(`Processing #${thread.channel.name} (thread: ${threadId})`);
 
     // Start a new task when: the bot was @mentioned, this is a DM, OR a human is
     // replying to a thread Archie itself started (a top-level post it made via the
     // post_to_channel explore tool). A reply inside a human-started thread never
     // lands here — its root author isn't the bot — so it stays ignored, as before.
+    //
+    // The `thread.messages.length > 0` conjunct is a content floor on TASK CREATION specifically. Inverting the subtype gate to a denylist deliberately forwards subtypes nobody enumerated, which is what fixes the trigger arm, but this branch spends a PM turn: a payload with no author and no body (an assistant-container notice, a `tombstone`, a `bot_add`) otherwise reached `Task.create()` and woke the PM on an empty knowledge log. Checking the fetched thread rather than the subtype keeps that robust — any future subtype carrying nothing is refused for the same reason, with no list to maintain.
+    //
+    // It is deliberately NOT applied to the trigger branch below. That path renders from the raw event, not from the fetched thread, precisely because `fetchSlackThread` drops a message with neither a `user` nor a `botId` — gating it on `thread.messages` would reintroduce the very blindness this change removes.
     const task = await Task.create();
     await task.append(thread);
     // Ack the triggering message. For @mention/DM the :eyes: was already added
@@ -798,18 +829,43 @@ export async function handleSlackEvent(event: {
  * Fire any channel-message triggers watching this channel whose filter matches
  * the message. Each match spawns an independent read-only task that replies in
  * the triggering thread. External authors are already filtered upstream.
+ *
+ * The filter is matched against the *rendered* body — the same text an agent would be shown — not against the raw event's top-level `text`. That distinction is the whole point: a webhook or app post carries an empty `text` with all of its content in `attachments`/`blocks`, so matching the raw field made every such post invisible to `contains` filters. `rawMessageBody` runs the payload through the full inbound extraction, so blocks, attachment cards and files all become matchable.
+ *
+ * There is deliberately no fallback to the raw text and no re-fetch of the message by `ts`: a fallback would silently restore the original bug on exactly the payloads it was meant to fix, and a thread re-fetch can't see a message that has neither a `user` nor a `botId` anyway. If extraction yields an empty body, an empty body is what the filter sees.
  */
 async function dispatchChannelMessageTriggers(
-  event: { channel: string; user: string; text: string; ts: string },
+  event: { channel: string; user: string; ts: string; raw: unknown },
   channelName: string,
 ): Promise<void> {
   const triggers = getChannelMessageTriggers(event.channel);
   if (triggers.length === 0) return;
 
+  // An app post from ANOTHER workspace never fires a trigger. The external-author bail-out earlier in
+  // `handleSlackEvent` is guarded by `if (event.user)`, and an app post carries no `user`, so it is not
+  // classified there; and this path renders from the raw event rather than the fetched thread, so
+  // `fetchSlackThread`'s own external-bot filter never sees it either. Before app posts were forwarded at
+  // all, the subtype allowlist closed this by accident. Now that they are forwarded deliberately, the gate
+  // has to be explicit — and it mirrors the rule thread ingestion and the pin index already draw (drop a
+  // bot from a foreign team, keep internal bots) rather than inventing a stricter one.
+  const raw = event.raw as { bot_id?: string; team?: string; bot_profile?: { team_id?: string } } | null | undefined;
+  if (raw?.bot_id) {
+    const botTeamId = raw.bot_profile?.team_id || raw.team;
+    if (isExternalUser({ teamId: botTeamId })) {
+      logger.system(`Skipping channel-message triggers for an app post from another workspace in ${channelName} (bot ${raw.bot_id}, team ${botTeamId})`);
+      return;
+    }
+  }
+
+  // Rendered once, after the no-triggers short-circuit above: a channel nobody
+  // is watching must stay free, and extraction resolves mentions (a network
+  // read) so it is not free.
+  const body = await rawMessageBody(event.raw, event.channel);
+
   const matches = (trigger: Trigger): boolean =>
     trigger.conditions.some((c) => {
       if (c.type !== 'channel_message' || c.channel_id !== event.channel) return false;
-      if (c.match?.contains && !event.text.toLowerCase().includes(c.match.contains.toLowerCase())) return false;
+      if (c.match?.contains && !body.toLowerCase().includes(c.match.contains.toLowerCase())) return false;
       if (c.match?.from_user && event.user !== c.match.from_user) return false;
       return true;
     });
@@ -819,7 +875,7 @@ async function dispatchChannelMessageTriggers(
     try {
       await fireTrigger(trigger, {
         kind: 'message',
-        text: event.text,
+        text: body,
         threadId: event.ts,
         channelId: event.channel,
         channelName,
@@ -897,11 +953,7 @@ async function handleSlackEdit(event: any): Promise<void> {
   // `label (url)`, and anything carried in `blocks` was lost on the edit path.
   // Only the new text is logged — the pre-edit text already lives in the log
   // under the same `msg:<ts>` id.
-  const extracted = await extractMessageContent(msg, channelId);
-  const newText = renderMessageForContext(
-    { text: extracted.text, attachments: extracted.attachments },
-    { redacted: false },
-  );
+  const newText = await rawMessageBody(msg, channelId);
   const author: SlackAuthor = {
     id: msg.user,
     username: authorInfo?.name ?? msg.user,

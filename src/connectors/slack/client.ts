@@ -19,7 +19,7 @@ import { prCardSubtitle, SLACK_PR_CARD_EMOJI } from '../../system/pr-card-format
 interface RawSlackMessage {
   /** Author's user ID. Empty string when the message was posted by an app/bot. */
   user: string;
-  text: string;
+  ownText: string;
   ts: string;
   files?: SlackFile[];
   attachments?: SlackAttachment[];
@@ -1395,7 +1395,7 @@ async function resolveRawMessages(
 
     return {
       user: msg.user || '',
-      text: applyMentionReplacements(ownTextWithResidue, userInfoMap, groupInfoMap, channelInfoMap),
+      ownText: applyMentionReplacements(ownTextWithResidue, userInfoMap, groupInfoMap, channelInfoMap),
       ts: msg.ts || '',
       ...(files && files.length > 0 ? { files } : {}),
       ...(resolvedAttachments.length > 0 ? { attachments: resolvedAttachments } : {}),
@@ -1440,7 +1440,7 @@ async function resolveAuthorsAndMap(messages: RawSlackMessage[]): Promise<SlackT
       : { id: msg.botId!, username: msg.botName || 'bot', realName: msg.botName || 'bot', teamId: msg.teamId };
     return {
       user: author,
-      text: msg.text,
+      ownText: msg.ownText,
       ts: msg.ts,
       ...(msg.files && msg.files.length > 0 ? { files: msg.files } : {}),
       ...(msg.attachments && msg.attachments.length > 0 ? { attachments: msg.attachments } : {}),
@@ -1841,7 +1841,16 @@ export interface PinnedItem {
   botName?: string;
   /** Workspace the message originated from — used to drop bots from another workspace. */
   teamId?: string;
-  text?: string;
+  /** The message's own text, already extracted (blocks flattened, mentions resolved) — never the raw legacy `text` fallback. */
+  ownText?: string;
+  /** Attachment cards on the pinned message, carried out unrendered so the caller renders them through the shared message-body module. */
+  attachments?: SlackAttachment[];
+  /** Files on the pinned message, carried out for the same reason. */
+  files?: SlackFile[];
+  /**
+   * Reactions on the pinned message, carried out like everything else the extractor found. The pin path deliberately renders WITHOUT them (`includeReactions: false`) because the rendered string feeds a content digest: reactions change without the pin ever being edited, so digesting them would turn re-summarise-on-edit into re-summarise-on-every-emoji. Carrying the field and suppressing it at render time — rather than never carrying it — is what lets a test prove the suppression actually happens.
+   */
+  reactions?: SlackReaction[];
   permalink?: string;
   fileId?: string;
   fileName?: string;
@@ -1924,9 +1933,7 @@ export async function listChannelPins(channelId: string): Promise<PinnedItem[] |
     for (const item of raw.items ?? []) {
       if (item.type === 'message' && item.message?.ts) {
         const full = byTs.get(item.message.ts);
-        // Attachment bodies carry the substance of a forwarded or app-posted message, so
-        // they belong in the index text; the summariser flattens the whole thing anyway.
-        const parts = [full?.text ?? item.message.text ?? '', ...(full?.attachments ?? []).map((a) => a.text)];
+        // Attachment and file parts carry the substance of a forwarded or app-posted message, so they belong in the index text — but they are handed OUT structured rather than joined here. This module extracts; rendering a message into agent-facing text is `message-body.ts`'s single job, and that module imports `isExternalUser` from here for the forwarded-from provenance label, so calling it from this file would close a module cycle. The caller (`channel-pins.ts`) renders these parts through it instead.
         items.push({
           kind: 'message',
           pinnedAt: item.created ?? 0,
@@ -1935,7 +1942,11 @@ export async function listChannelPins(channelId: string): Promise<PinnedItem[] |
           author: full?.user ?? item.message.user ?? '',
           ...(full?.botId ? { botId: full.botId, botName: full.botName } : {}),
           ...(full?.teamId ? { teamId: full.teamId } : {}),
-          text: parts.filter((t) => t && t.trim()).join(' — '),
+          // `item.message.text` is the raw Slack payload field — Slack's legacy fallback, kept under its API name — and is only the last resort when extraction produced nothing.
+          ownText: full?.ownText ?? item.message.text ?? '',
+          ...(full?.attachments ? { attachments: full.attachments } : {}),
+          ...(full?.files ? { files: full.files } : {}),
+          ...(full?.reactions ? { reactions: full.reactions } : {}),
           permalink: item.message.permalink,
         });
       } else if (item.type === 'file' && item.file?.id) {
@@ -2107,7 +2118,7 @@ export async function extractMessageContent(
   if (!resolved) return { text: '' };
   const authorless = (resolved.attachments ?? []).map((a) => ({ text: a.text }));
   return {
-    text: resolved.text,
+    text: resolved.ownText,
     ...(authorless.length > 0 ? { attachments: authorless } : {}),
     ...(resolved.files?.length ? { files: resolved.files } : {}),
   };

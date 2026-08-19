@@ -12,6 +12,7 @@ import {
   updateChannelStore,
   type ChannelPinEntry,
 } from '../../system/channel-store.js';
+import { pinBody } from './message-body.js';
 import { digestOf, normalisePinText, summarisePinText, truncateTo, VERBATIM_MAX } from './pin-summary.js';
 import type { TaskMetadata } from '../../types/task.js';
 
@@ -138,7 +139,10 @@ export async function ensureChannelPins(channelId: string): Promise<void> {
         continue;
       }
 
-      const sourceText = (item.kind === 'message' ? item.text : item.fileName) ?? '';
+      // Render the pin through the one module that turns a Slack message into agent-facing text, so an app post, a workflow card or an unfurl indexes from its real body rather than an empty legacy `text`. `listChannelPins` hands the parts out structured precisely so this render happens here: `message-body.ts` imports from `client.js`, and this file imports `listChannelPins` from it, so rendering inside the client would close a cycle.
+      //
+      // `pinBody` owns both of the pin path's rendering decisions — reactions excluded so they cannot destabilise the digest below, and unredacted because the two-principal gate above already dropped anything externally authored or externally pinned. Keeping them inside that function is what stops this call site from becoming a second place that answers the redaction question.
+      const sourceText = (item.kind === 'message' ? pinBody(item) : item.fileName) ?? '';
       const digest = digestOf(normalisePinText(sourceText));
 
       // Same text as last scan → same one-liner, and no model call. The digest changes
