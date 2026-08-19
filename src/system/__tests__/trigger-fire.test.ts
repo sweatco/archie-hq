@@ -234,6 +234,30 @@ describe('a message fire ingests its thread', () => {
     expect(createdTasks[1]!.sendMessage).toHaveBeenCalledTimes(1);
   });
 
+  // The recurring shape of the same rule, and the one that matters for a schedule: a trigger that fires every
+  // morning must not reopen yesterday's task or speak in yesterday's thread. Each fire gets its own task with
+  // its own home channel and nothing linked yet, so each opens its own thread when it posts. The message case
+  // above cannot stand in for this one — `Task.create()` sits above the kind branch, but "above" is exactly the
+  // kind of thing an edit moves, and a schedule fire is the shape where reuse would be tempting to add.
+  it('spawns an independent task per fire — a recurring schedule firing twice', async () => {
+    const trigger = makeTrigger();
+
+    await fireTrigger(trigger, { kind: 'schedule' });
+    await fireTrigger(trigger, { kind: 'schedule' });
+
+    expect(taskCreateMock).toHaveBeenCalledTimes(2);
+    expect(createdTasks).toHaveLength(2);
+    expect(createdTasks[0]).not.toBe(createdTasks[1]);
+    for (const task of createdTasks) {
+      expect(task!.metadata.home_channel).toEqual({ channel_id: CHANNEL, channel_name: CHANNEL_NAME });
+      // Nothing carried over from the other fire: no linked thread, no default channel, one wake each.
+      expect(task!.metadata.channels).toEqual({});
+      expect(task!.metadata.default_channel).toBeNull();
+      expect(task!.sendMessage).toHaveBeenCalledTimes(1);
+      expect(task!.linkSlackThread).not.toHaveBeenCalled();
+    }
+  });
+
   it('writes the rendered body itself when the fetched thread does not contain the triggering message', async () => {
     // The shape `fetchSlackThread` returns for a payload with neither a `user` nor a `bot_id`: the thread
     // exists, but the message that fired the trigger was dropped from it. `authorId` is absent for the same
