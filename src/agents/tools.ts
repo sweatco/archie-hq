@@ -17,7 +17,8 @@ import type { AgentName, FindingType, AttachedRepo, SlackThreadMessage } from '.
 import type { Task } from '../tasks/task.js';
 import type { Agent } from './agent.js';
 import { getVisiblePeerIdsForSender, findAgentDefsContainingRepo, synthesizeDynamicAgentDef, isAutoMergeRepo } from './registry.js';
-import { getGitHubClient, parseCheckRef } from '../connectors/github/client.js';
+import { getGitHubClient, parseCheckRef, getArchieAttributionIdentity } from '../connectors/github/client.js';
+import { buildAttributedBody } from '../connectors/github/pr-attribution.js';
 import { gitExec } from '../connectors/github/repo-clone.js';
 import { hydrateBranchState, findBranchStateByPR, assignPrNumber } from '../connectors/github/branch-state.js';
 import { taskBranchName } from '../connectors/github/branch-naming.js';
@@ -1227,6 +1228,21 @@ function createPushBranchTool(agent: Agent, task: Task) {
   );
 }
 
+/**
+ * Stamp the attribution line onto a PR body: who opened it, and for whom.
+ *
+ * The human is the edit-mode approver, which is also who repo-agent commits are
+ * authored as (`buildCommitAuthorEnv`) — so the PR names exactly whoever
+ * `git blame` will name. Their Slack display name is used as-is.
+ */
+function attributePrBody(task: Task, body: string): string {
+  return buildAttributedBody(
+    body,
+    task.metadata.edit_approved_by?.name ?? null,
+    getArchieAttributionIdentity()?.mention ?? null,
+  );
+}
+
 function createPullRequestTool(agent: Agent, task: Task) {
   return tool(
     'create_pull_request',
@@ -1253,7 +1269,8 @@ function createPullRequestTool(agent: Agent, task: Task) {
       const entry = agent.def.repo!.repos.find((r) => r.github === github);
       const base = state?.base_branch || entry?.baseBranch || 'main';
 
-      const result = await client.createPullRequest(github, head, base, args.title, args.body);
+      const body = attributePrBody(task, args.body);
+      const result = await client.createPullRequest(github, head, base, args.title, body);
 
       if (state) {
         // Reset per-PR markers when this branch's pr_number changes — a reused
@@ -1715,9 +1732,11 @@ function createUpdatePRTool(agent: Agent, task: Task) {
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
+      // Re-stamp attribution: a body rewrite would otherwise drop the line naming
+      // the human this PR was opened for.
       await client.updatePR(resolved.github, args.pr_number, {
         title: args.title,
-        body: args.body,
+        body: args.body === undefined ? undefined : attributePrBody(task, args.body),
         base: args.base,
       });
       return ok(`Updated PR #${args.pr_number} (${resolved.github})`);

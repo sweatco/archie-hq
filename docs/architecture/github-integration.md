@@ -14,13 +14,37 @@ The client lazily initializes an authenticated Octokit instance via `app.getInst
 
 For git operations (push, fetch), authentication is handled by the `GIT_ASKPASS` environment variable rather than the Octokit client.
 
-### Bot Identity for Commits
+### Identities: acting vs. being credited
 
-The system configures git identity using the GitHub App's bot credentials:
-- Name: `{appSlug}[bot]` (e.g., `archie-hq[bot]`)
-- Email: `{appId}+{appSlug}[bot]@users.noreply.github.com`
+Two distinct identities, because GitHub treats them differently.
 
-This is set once per base repository at server startup via `configureGitIdentity()` in `src/connectors/github/client.ts`. Shared clones inherit this configuration from the base repo.
+**The identity Archie acts as** is the GitHub App installation -- what the API calls and the git transport authenticate with. `getGitHubAppIdentity()` builds it as name `{appSlug}[bot]` / email `{appId}+{appSlug}[bot]@users.noreply.github.com`. It is now only a fallback for the identity below; nothing credits the bot deliberately.
+
+**The identity Archie is credited as** is a real user account (`archie-hq`), built by `getArchieAttributionIdentity()` from `ARCHIE_GITHUB_LOGIN` + `ARCHIE_GITHUB_USER_ID` (+ optional `ARCHIE_GITHUB_NAME`). It lands in three places:
+
+- the **committer** on every commit made in a clone, written once per base repository at server startup by `configureGitIdentity()` (shared clones inherit it) -- and the **author** too on commits `buildCommitAuthorEnv` leaves unattributed, i.e. when no approver was recorded;
+- the **`Co-Authored-By` trailer** on repo-agent commits, written into the agent's `.claude/settings.json` as `attribution.commit` by `setupAgentWorkspace()`;
+- the **attribution footer** on PR bodies.
+
+A user account is required rather than merely nicer: a GitHub App bot cannot be `@mentioned` at all, and its profile is an app page rather than an account. Attribution needs no repository access, so the account can be credited without being granted anything.
+
+The committer and the acting identity are free to differ because git push authenticates with the installation token via `GIT_ASKPASS`, and GitHub does not require the committer to match the pusher. Self-event filtering is unaffected for the same reason: a webhook's `sender` comes from the credential that made the API call, not from any commit's identity, so it is still `{appSlug}[bot]`.
+
+`ARCHIE_GITHUB_USER_ID` must be the account's numeric **user** ID, not the App ID. GitHub resolves the `{id}+{login}@users.noreply.github.com` form by ID and silently drops the credit when the ID disagrees with the login -- it does not fall back to matching the login. The bot form above derives that prefix from `GITHUB_APP_ID`, which is not a user ID, so a trailer built from it resolves to no account at all. When the attribution vars are unset, `getArchieAttributionIdentity()` falls back to the App bot, preserving prior behaviour rather than dropping the trailer.
+
+### PR authorship and attribution
+
+GitHub sets a PR's author from the credential that creates it, and offers no field to override it -- an installation token always yields `{appSlug}[bot]`. So a PR Archie opens on someone's behalf can never *be* theirs on GitHub, and the only place the human can appear is the body.
+
+`create_pull_request` therefore stamps one line at the top of the body via `buildAttributedBody()` in `src/connectors/github/pr-attribution.ts`, rather than leaving it to the agent:
+
+```
+Opened by @archie-hq on behalf of Bandita Parida.
+```
+
+The human is the edit-mode approver (`edit_approved_by`), which is also who repo-agent commits are authored as (`buildCommitAuthorEnv` in `src/agents/commit-author.ts`), so the PR names exactly whoever `git blame` will name -- by their Slack display name, with no GitHub-account lookup. GitHub auto-links the `@login` to Archie's profile.
+
+`update_pr` re-stamps the line when it rewrites a body, and both strip any prior copy (matched on the `<!-- archie-attribution -->` marker) so re-injection replaces rather than stacks.
 
 ## Webhook Handling
 
@@ -266,7 +290,8 @@ The system is designed so that the PM agent is only reactivated for GitHub event
 
 ## Relevant Source Files
 
-- `src/connectors/github/client.ts` -- `GitHubClient` class wrapping `@octokit/app`, `configureGitIdentity()`, `fetchOrigin()`, `getGitHubClient()` singleton; PR ops (`listPRs`, `getPRDetails`, `getPRStatus`, `getPRCardData`, `getPRReviews`, `getReviewThreads`, `getPRComments`, `createPullRequest`, `updatePR`, `addPRComment`, `addReviewComment`, `replyToReviewComment`, `resolveReviewThread` (GraphQL), `requestReReview`, `mergePullRequest`, `closePullRequest`)
+- `src/connectors/github/client.ts` -- `GitHubClient` class wrapping `@octokit/app`, `configureGitIdentity()`, `getGitHubAppIdentity()`, `getArchieAttributionIdentity()`, `fetchOrigin()`, `getGitHubClient()` singleton; PR ops (`listPRs`, `getPRDetails`, `getPRStatus`, `getPRCardData`, `getPRReviews`, `getReviewThreads`, `getPRComments`, `createPullRequest`, `updatePR`, `resolveCommitAuthor`, `addPRComment`, `addReviewComment`, `replyToReviewComment`, `resolveReviewThread` (GraphQL), `requestReReview`, `mergePullRequest`, `closePullRequest`)
+- `src/connectors/github/pr-attribution.ts` -- `buildAttributedBody()`, `stripAttribution()`, `ATTRIBUTION_MARKER`: composes the header/footer naming the human a PR was opened for, and strips prior copies plus Claude Code's default footer
 - `src/connectors/github/events.ts` -- `mountGitHubWebhook()` Express handler, `handleGitHubWebhook()`, `maybeRefreshPrCards()` (in-place PR-card updates), `handleExistingTaskDirect()` (with comment dedup)
 - `src/system/pr-card-format.ts` -- pure PR-card formatting shared by Slack + CLI: `summarizeCi`, `prCardFingerprint`, `prCardSubtitle`, `prCardTitlePlain`, `SLACK_PR_CARD_EMOJI`/`CLI_PR_CARD_EMOJI`
 - `src/connectors/github/webhooks.ts` -- HMAC-SHA256 signature verification, context extraction, deterministic routing (`routeGitHubEvent`, `determineRouteAction`), structured event formatting (`formatGitHubEvent`), merge check debouncing (`handleMergeCheckDirect`)

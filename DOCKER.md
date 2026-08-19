@@ -143,6 +143,8 @@ Configure these in your `.env` file:
 | `SLACK_SIGNING_SECRET` | Slack signing secret — HTTP webhook mode | `abc123...` |
 | `SLACK_APP_TOKEN` | Slack app-level token — Socket Mode (alternative to signing secret; no inbound webhook URL needed) | `xapp-...` |
 | `GITHUB_APP_ID` | GitHub App ID | `123456` |
+| `ARCHIE_GITHUB_LOGIN` | Account Archie is credited as (optional) | `archie-hq` |
+| `ARCHIE_GITHUB_USER_ID` | That account's numeric user ID, not the App ID | `302249786` |
 | `GITHUB_INSTALLATION_ID` | GitHub App installation ID | `12345678` |
 | `ARCHIE_PLUGINS` | Git URL for plugins repo | `git@github.com:org/archie-plugins.git` |
 | `PORT` | Server port (optional) | `3000` |
