@@ -282,6 +282,40 @@ describe('opening the home thread is single-flight', () => {
     expect(lastPostArgs().threadTs).toBe(TS);
   });
 
+  // Three callers with the first one FAILING is the case a promise-based single-flight got wrong: every
+  // waiter had already passed its `if (in flight)` gate, so when the opener rejected they all found no
+  // default channel and all fell through to root their own message — two of them successfully. Serializing
+  // on the task's lock instead means each waiter runs the whole open body in turn, and the body's own
+  // "is there already a thread here" check is what makes the second and third post into the first
+  // survivor's thread rather than beside it.
+  it('three concurrent posts root one thread even when the first attempt fails', async () => {
+    let failFirst: (err: Error) => void = () => {};
+    const firstPost = new Promise<string>((_resolve, reject) => { failFirst = reject; });
+    postMock.mockImplementationOnce(() => firstPost);
+    postMock.mockResolvedValue(TS);
+
+    const meta = metadata({ home_channel: HOME, default_channel: null });
+    const task = newTask(meta);
+
+    const all = Promise.allSettled([
+      task.postToUser('first', 'pm-agent'),
+      task.postToUser('second', 'pm-agent'),
+      task.postToUser('third', 'pm-agent'),
+    ]);
+    failFirst(new Error('slack down'));
+    const results = await all;
+
+    expect(results[0].status).toBe('rejected');
+    const rootPosts = postMock.mock.calls.filter((c) => (c[0] as { threadTs?: string }).threadTs === undefined);
+    // Two of the three legitimately tried to root a thread — the failed opener and the first waiter after it,
+    // which found none. What must never happen is a THIRD root, or two roots that both linked.
+    expect(rootPosts).toHaveLength(2);
+    expect(Object.keys(meta.channels)).toEqual([`slack:${HOME.channel_id}:${TS}`]);
+    expect(meta.default_channel).toBe(`slack:${HOME.channel_id}:${TS}`);
+    // The last caller found the thread the middle one opened and replied inside it.
+    expect(lastPostArgs().threadTs).toBe(TS);
+  });
+
   // The guard must not wedge the task: a failed open leaves no thread, so the next message is entitled to
   // try again. Latching it would mean one transient Slack error costs the task its voice for good.
   it('lets a later post open the thread after the first attempt failed', async () => {

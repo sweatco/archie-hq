@@ -102,6 +102,15 @@ const cardLock = createKeyedLock();
  */
 const activationLock = createKeyedLock();
 
+/**
+ * Per-task serialization for opening a task's own thread in its home channel.
+ *
+ * A task has exactly one thread, and an agent can emit two `post_to_user` calls in a single turn. Unserialized, both see no default channel, both root a top-level message, and the channel ends up showing two competing roots for one task with only one of them linked. Keyed by taskId at module scope so it also holds across separate `Task` instances built from disk for the same task.
+ *
+ * The lock is all the coordination needed because the open body re-checks for an existing thread first: whoever runs second finds the thread the first one linked and posts into it. An attempt that fails links nothing, so the next caller may legitimately try again — which is what makes a failed first post non-wedging rather than terminal.
+ */
+const homeThreadLock = createKeyedLock();
+
 // ---- Task class ----
 
 /**
@@ -145,12 +154,6 @@ export class Task {
    * only — lost on restart, where recovery re-arms the lifecycle instead.
    */
   completionIntent: boolean = false;
-  /**
-   * The in-flight attempt to open this task's own thread in its home channel, if one is running. In-memory
-   * only: it exists to keep two `post_to_user` calls in a single agent turn from rooting two threads for one
-   * task, and after a restart the thread either exists in metadata or does not.
-   */
-  private homeThreadOpening?: Promise<string | null>;
   taskTimeoutTimer?: ReturnType<typeof setInterval>;
   /** Drives the "Archie is …" Slack loading indicator from agent activity. */
   private readonly statusController: TaskStatusController;
@@ -503,34 +506,13 @@ export class Task {
    *
    * The message is the thread root: nothing is posted ahead of it. Only reached from `postToUser` for a task that has a `home_channel` and no channel yet.
    *
-   * Single-flight, because a task has exactly one thread and an agent can emit two `post_to_user` calls in one turn. Both would see no default channel, both would root a top-level message, and the channel would show two competing roots for one task with only one of them linked — so the second caller waits for the first and then posts into the thread it opened.
+   * Serialized per task by {@link homeThreadLock}, because a task has exactly one thread and an agent can emit two `post_to_user` calls in one turn. Whoever runs second finds the thread the first one linked and posts into it rather than rooting a second one beside it.
    */
   private async openHomeThread(message: string, sender: string, footer: string): Promise<string | null> {
-    const inFlight = this.homeThreadOpening;
-    if (inFlight) {
-      // Swallowed deliberately: the first caller's failure is reported to ITS caller, and this one's job is
-      // only to find out whether a thread now exists.
-      await inFlight.catch(() => {});
-      const key = this.metadata.default_channel;
-      const opened = key ? this.metadata.channels[key] : undefined;
-      if (opened?.type === 'slack') {
-        await postSlackMessage({ channel: opened.channel_id, threadTs: opened.thread_id, text: message, footer });
-        this.logOutgoingMessage(sender, message, Task.formatSlackDest(opened).display, opened, footer);
-        return key;
-      }
-      // The first attempt linked nothing (it threw, or dry-run returned no ts), so there is still no thread
-      // and this message may legitimately try to open one.
-    }
-    const attempt = this.rootHomeThread(message, sender, footer);
-    this.homeThreadOpening = attempt;
-    try {
-      return await attempt;
-    } finally {
-      if (this.homeThreadOpening === attempt) this.homeThreadOpening = undefined;
-    }
+    return homeThreadLock(this.taskId, () => this.rootHomeThread(message, sender, footer));
   }
 
-  /** The body of {@link openHomeThread}, run at most once at a time by it. */
+  /** The body of {@link openHomeThread}, run one at a time per task by it. */
   private async rootHomeThread(message: string, sender: string, footer: string): Promise<string | null> {
     const home = this.metadata.home_channel!;
 

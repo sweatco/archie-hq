@@ -85,6 +85,21 @@ export async function ensureChannelCanvas(channelId: string, opts?: { announce?:
 
   try {
     const pre = await loadChannelStore(channelId);
+
+    // Flush anything a scan that could not post left queued, BEFORE the TTL check — otherwise a notice deferred
+    // by a trigger-path scan would wait out the TTL, and in a channel with no further traffic it would wait
+    // forever. This is the only thing that runs regardless of the TTL, and only for a caller that may announce.
+    if (announce && pre?.pendingAnnouncements?.length) {
+      const queued = pre.pendingAnnouncements;
+      await updateChannelStore(channelId, (store) => {
+        store.pendingAnnouncements = [];
+        return store;
+      });
+      for (const a of queued) {
+        await announceCanvas(channelId, a.kind, a.title);
+      }
+    }
+
     if (pre && Date.now() - pre.checkedAt < CANVAS_TTL_MS) return;
 
     const tabs = await getChannelCanvasTabs(channelId);
@@ -164,7 +179,7 @@ export async function ensureChannelCanvas(channelId: string, opts?: { announce?:
     }
 
     const announcements: Array<{ kind: AnnounceKind; title: string }> = [];
-    let suppressed = false;
+    let deferred = 0;
     await updateChannelStore(channelId, (store) => {
       const canvases: ChannelCanvasEntry[] = [];
       // Computed before anything is mutated, because a caller that may not announce has to be able to walk away leaving the store exactly as it found it.
@@ -190,18 +205,29 @@ export async function ensureChannelCanvas(channelId: string, opts?: { announce?:
         }
       }
 
-      // A caller that must not post walks away rather than announcing silently. `announce: false` exists for the trigger scheduler, which refreshes this store just before a fired task speaks for the first time: an adoption notice posted there would land in the channel AHEAD of the automation's own result, as a bot-rooted top-level message that a human reply would turn into a stranger task — the exact shape the fired-task thread exists to replace.
+      // A caller that must not post QUEUES its notices instead of posting them. `announce: false` exists for the
+      // trigger scheduler, which refreshes this store just before a fired task speaks for the first time: an
+      // adoption notice posted there would land in the channel AHEAD of the automation's own result, as a
+      // bot-rooted top-level message that a human reply would turn into a stranger task — the exact shape the
+      // fired-task thread exists to replace.
       //
-      // So when something WOULD be announced, nothing is written at all: the store keeps its previous canvases and its previous `checkedAt`, so the next inbound Slack event in this channel re-scans immediately and announces properly. The cost is that one fire reads slightly stale standing context; the alternative is either a preamble in the channel or a notice that is silently lost, and both are worse. In the steady state — nothing changed since the last scan — `pending` is empty and the refresh proceeds exactly as it does for any other caller.
-      if (!announce && pending.length > 0) {
-        suppressed = true;
-        return store;
-      }
-
+      // The store itself is always updated, including for that caller. Deferring the WRITE as well was the first
+      // attempt and it is worse in a way that matters: when the pending item is a canvas whose creator has been
+      // reclassified as external, abandoning the write keeps that canvas — with its markdown — in the store, so
+      // the fired task's system prompt would carry externally-authored content for exactly the one fire that the
+      // fail-closed classification above exists to prevent. Writing the fresh state and queuing the notice keeps
+      // context fail-closed and loses no notice: the next scan that may announce flushes the queue first.
       for (const r of resolved) {
         store.announced[r.fileId] = true;
       }
-      announcements.push(...pending);
+      const carried = store.pendingAnnouncements ?? [];
+      if (announce) {
+        announcements.push(...carried, ...pending);
+        store.pendingAnnouncements = [];
+      } else if (pending.length > 0) {
+        store.pendingAnnouncements = [...carried, ...pending];
+        deferred = pending.length;
+      }
 
       // Forget canvases that no longer resolve at all. Without this the `announced`
       // flag outlives the canvas, so renaming it back re-adopts it *silently*. Keyed
@@ -217,8 +243,8 @@ export async function ensureChannelCanvas(channelId: string, opts?: { announce?:
       return store;
     });
 
-    if (suppressed) {
-      logger.system(`Canvas scan for ${channelId} left the store untouched — a change is pending announcement and this caller must not post`);
+    if (deferred > 0) {
+      logger.system(`Canvas scan for ${channelId}: queued ${deferred} notice(s) for the next scan that may post — this caller must not announce`);
     }
     for (const a of announcements) {
       await announceCanvas(channelId, a.kind, a.title);

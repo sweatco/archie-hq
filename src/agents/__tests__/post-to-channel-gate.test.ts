@@ -31,6 +31,16 @@ vi.mock('../registry.js', () => ({
   getVisiblePeerIdsForSender: vi.fn().mockReturnValue([]),
   getAgentDef: vi.fn().mockReturnValue(undefined),
 }));
+// The trigger-proposal path writes a record to disk under WORKDIR. Only the binding guard is under test here,
+// and it runs before any of this, so the store is stubbed rather than exercised.
+vi.mock('../../system/trigger-store.js', async (importActual) => {
+  const actual = await importActual<typeof import('../../system/trigger-store.js')>();
+  return {
+    ...actual,
+    saveTrigger: vi.fn().mockResolvedValue(undefined),
+    countActiveTriggers: vi.fn().mockResolvedValue(0),
+  };
+});
 
 const { postSlackMessage, listBotChannels, assertPostableChannel } = vi.hoisted(() => ({
   postSlackMessage: vi.fn(),
@@ -273,5 +283,42 @@ describe('report_completion with a message across both shapes', () => {
     expect(task.postToUser).not.toHaveBeenCalled();
     expect(task.setCompletionIntent).not.toHaveBeenCalled();
     expect(out).toBe(OLD_COMPLETION_REFUSAL);
+  });
+});
+
+// The binding's channel id is model-supplied text, and a fired task is HOMED in that channel: it opens its own
+// thread there and treats it as its own for reads, which means the id decides what the task may later read.
+// Everywhere else in the tools layer a `D…`/`U…` value is refused by prefix, and the human approving a trigger
+// sees only the channel NAME on the card — so an id that is not a channel has to be refused at the source.
+describe('propose_trigger refuses a binding that is not a channel', () => {
+  const args = (channel_id: string) => ({
+    binding: { type: 'channel' as const, channel_id, channel_name: 'looks-fine' },
+    conditions: [{ type: 'schedule' as const, cron: '0 9 * * *', tz: 'UTC' }],
+    action_prompt: 'post the daily digest',
+    summary: 'Daily digest',
+  });
+
+  it.each(['D0123456789', 'U0123456789', 'W0123456789'])('refuses %s', async (channelId) => {
+    const task = makeTask();
+
+    const out = textOf(await getOrchestrationHandler('propose_trigger', task)(args(channelId)));
+
+    expect(out).toMatch(/has to deliver to a channel/i);
+    // Refused before anything is written: no proposal id is stashed, so nothing reaches an approval card.
+    expect(task.metadata.pending_trigger_id).toBeUndefined();
+  });
+
+  // The control that gives the cases above their meaning: the same call with a real channel id must get PAST
+  // this guard. Without it, a `propose_trigger` broken in some entirely different way would satisfy every
+  // refusal assertion above. The proposal path beyond the guard is stubbed (`saveTrigger`, and the approval
+  // card the Task would post), because what is under test here is the prefix check, not trigger creation.
+  it('lets a C… id through the guard', async () => {
+    const task = makeTask();
+    (task as unknown as { postInteractiveToUser: unknown }).postInteractiveToUser = vi.fn().mockResolvedValue(undefined);
+
+    const out = textOf(await getOrchestrationHandler('propose_trigger', task)(args('C0123456789')));
+
+    expect(out).not.toMatch(/has to deliver to a channel/i);
+    expect(task.metadata.pending_trigger_id).toBeDefined();
   });
 });

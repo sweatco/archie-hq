@@ -550,6 +550,15 @@ function createListChannelsTool(_agent: Agent, task: Task) {
             own.push({ name: ch.channel_name || ch.channel_id, id: ch.channel_id });
           }
         }
+        // A trigger-fired task's home channel counts as its own before it has a thread there, and it must be
+        // enumerable for the same reason it is readable: the canvas and pin blocks in the prompt name that
+        // channel by its `#label`, and every read tool takes an id. Listing the capability without listing the
+        // channel leaves the agent told about context it cannot go and look at.
+        const home = task.metadata.home_channel;
+        if (home && !seen.has(home.channel_id)) {
+          seen.add(home.channel_id);
+          own.push({ name: home.channel_name || home.channel_id, id: home.channel_id });
+        }
         if (publicChannels.length === 0 && own.length === 0) {
           return ok("Archie isn't a member of any channels you can use yet. Invite it to a channel (`/invite @Archie`) to explore there.");
         }
@@ -2399,6 +2408,13 @@ function createProposeTriggerTool(agent: Agent, task: Task) {
 
       const b = args.binding;
       if (!b.channel_id || !b.channel_name) return ok('A trigger needs both channel_id and channel_name for delivery.');
+      // The binding's channel id is model-supplied text, and a fired task is HOMED in that channel: it opens its
+      // own thread there and treats it as its own for reads. So the id has to be a channel. Without this check a
+      // `D…` or `U…` value would hand a fired task DM access that `post_to_channel` and the explore reads both
+      // refuse by prefix everywhere else — and the human approving it sees only the channel NAME on the card.
+      if (isDmOrUserId(b.channel_id)) {
+        return ok('A trigger has to deliver to a channel, not a DM or a user. Pass a channel ID (e.g. "C…"). Delivery to a person\'s DM is not supported yet.');
+      }
       const binding: TriggerBinding = { type: 'channel', channel_id: b.channel_id, channel_name: b.channel_name };
 
       // Best-effort creator id (only known in a DM) — used for cap accounting and
