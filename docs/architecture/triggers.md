@@ -72,10 +72,46 @@ A one-off schedule auto-pauses after it fires (its condition is consumed). **Res
 `fireTrigger(trigger, context)` (`src/system/trigger-scheduler.ts`) is shared by the scheduler (schedule context) and the Slack dispatch hook (message context):
 
 1. Create a fresh task; set `metadata.triggered_by = trigger.id`.
-2. Wire delivery — for a message-context fire, link the triggering thread as the default channel (no post); for a schedule fire, the spawned PM opens the destination itself.
+2. Wire delivery, differently per mode (below).
 3. Seed the PM with `AGENT_PROMPTS.triggered(...)` and let it do the work.
 
-**Firing posts no preamble.** The spawned PM does the work and posts the result itself, so the first thing the channel sees is the actual output — not an "I was triggered" line.
+**Firing posts no preamble.** The spawned PM does the work and posts the result itself, so the first thing the channel sees is the actual output — not an "I was triggered" line. Nothing else posts on the fire path either, which is why the standing-context refresh below is told not to announce.
+
+#### A message fire ingests its thread
+
+A `channel_message` fire calls `task.append(thread)` with the thread the dispatch hook already fetched. That is the same ingestion path every other Slack task uses, and it does five things at once: it writes the triggering message to `knowledge.log` through the single renderer with its author line and `msg:<ts>` id, applies the redaction policy via `shouldRedact`, downloads its files (or skips them for a redacted message) so the `[Attachments: …]` suffix carries usable local paths, links `slack:<channel>:<threadId>` as a channel, and promotes it to `default_channel`. The task therefore replies under the message that fired it, and **every agent on the task can read that message**, not just the PM — before this, the fire told the PM only that "a new message matched your filter" and the message itself reached nothing, so a delegated repo or plugin agent, which sees only the log, had to guess.
+
+There is one **ingestion floor** behind that, and it is deliberately narrow. `fetchSlackThread` drops a raw message with neither a `user` nor a `botId`, so the very message that fired the trigger can be missing from the thread it was fetched from — and then `append` writes no entry for it. In that case `fireTrigger` writes the already-rendered body itself, attributed to `unknown` — which is not a fallback but the condition: the branch runs precisely because no user id and no bot id came with the payload. It fires **only** for that reason: `append` still links the channel and advances the watermark on an empty message list, so nothing else needs repairing, and the fetch's other drop reason is a bot post from another workspace, whose content must not bypass the redaction policy on its way into the log. An empty body is refused for the same reason in miniature. The entry's `msg:<ts>` id is read off the thread's own root, because dispatch fires only on top-level messages — the thread root *is* the message that fired, so the check asks precisely whether the fetched thread contained its own root.
+
+Matching is unaffected by any of this and lives in the dispatch hook: a `contains` filter is tested against the same rendered body, so a report whose content sits only in Slack attachment cards matches like any other message.
+
+#### A schedule fire homes its task in the bound channel
+
+A schedule fire has no thread to reply in. Rather than hand the agent a detached "post it over there" tool, the task is **homed** in the channel the trigger is bound to: `fireTrigger` sets `metadata.home_channel`, and the task's first user-facing message from an agent is posted as a **new top-level message** there and adopted as the task's thread (`Task.postToUser` → `openHomeThread`). The thread root is the result itself, so the no-preamble rule holds, and a human reply lands in a thread `findTaskByThread` resolves to that same task — the run continues instead of restarting. Before this, the PM could only reach the channel through `post_to_channel`, which deliberately does not link, so a reply to it opened a stranger task with no trigger directory and no history.
+
+Four properties of that open are load-bearing:
+
+- **Only an agent's message opens a thread.** `postToUser` takes the open branch only when `sender !== 'system'`. The internal callers that post without an agent name — the inter-agent budget warning, the wall-clock pause notice — would otherwise make an operational notice the thread root, which is the preamble this feature exists to avoid.
+- **One thread per channel.** The open first looks for a thread this task already has in the home channel and posts into it instead of rooting a second one. The whole open is serialized per task by a keyed lock, because an agent can emit two `post_to_user` calls in one turn and both would otherwise root a top-level message.
+- **The linking write is flushed, not debounced.** That record is what routes every future reply, and the message is already live in Slack, so a crash in a debounce window would leave a thread nobody owns.
+- **The destination never comes from the model.** Opening a task-linked thread was removed from the PM deliberately (commit `89f81b7`). It returns here in the narrowest form: no tool takes a destination, and the only writer of `home_channel` is `fireTrigger` reading the binding of a human-approved trigger. `propose_trigger` refuses a binding id that is a DM or a user, because that id also decides what the fired task may later read.
+
+#### The home channel is the task's own channel
+
+Everything a task gets for a channel it is linked to, a fired task gets for its home channel from its first turn — one derivation, `taskSlackChannelIds` / `taskSlackChannelLabels` in `src/connectors/slack/channel-ids.ts`, feeds all of it: the channel canvas brief and the pinned-message index in the system prompt, the `fetch_slack_reference` file allowlists those blocks name, the explore reads (`read_channel_history`, `read_thread`), and `list_channels`. Deriving the prompt and the capabilities separately is a mistake this made once: the pin index told the agent to open a file id with a tool that then refused it, for exactly one turn.
+
+Because those stores are otherwise refreshed only by inbound Slack events, a schedule fire refreshes them for the home channel before it wakes the task. That is worth knowing about in a channel with no message-watching trigger, where ambient posts are dropped at the routing gate and never scan anything: there, a fire is often the first scan to see a canvas change, and it may therefore be the scan that announces the adoption. That announcement is wanted rather than tolerated — it reports a real change to what Archie reads in the channel, it explains why the fire's output reads the way it does, and it carries no task footer, so it cannot be mistaken for the automation's own result. Suppressing it was tried and reverted: **firing posts no preamble** is about the fire not announcing *itself*, not about silencing every other actor that has something true to say.
+
+`post_to_channel` waits for all of this: while a task has a `home_channel` and no `default_channel`, it refuses and says to post the result to the user first. Once a channel is open it is untouched in every respect — same mandate gate, same mute checks, same standing-brief preflight, same detached semantics — for every target including the task's own channel. That symmetry is deliberate: before a thread exists, a detached post would be the task's only utterance; after one exists, posting elsewhere is an ordinary, answerable act.
+
+**Four rough edges of a task that has not opened its thread yet**, all reachable and none of them fixed here:
+
+- **An approval card reaches nobody.** `postInteractiveToUser` resolves its destination from linked channels only — it has no `home_channel` branch, unlike `postToUser` — so a fired task that follows the seed's advice to request edit mode *before* its first post gets an SSE event and a log line and no buttons in Slack. Post first, then request.
+- **A failed first post leaves the task mute, not merely un-threaded.** If the home-channel post throws (the bot is not in the channel, the channel was archived), `default_channel` stays null, so `post_to_channel` keeps refusing and `post_to_user` keeps throwing. A retry can still open the thread, but until one succeeds the task cannot reach anyone. Note `isChannelReachable` passes a public channel the bot is not a member of, so the pre-flight does not catch that case.
+- **`report_completion(message)` can be the message that opens the thread.** It routes through `postToUser` with the agent as sender, so a fired task that says everything in one final message opens its thread with it. That is intended, not an accident.
+- **`post_files_to_user` cannot open a thread**, because Slack's upload carries no text to serve as a root. The PM is told this by its channel context line at spawn, which names the home channel and says the first `post_to_user` is what opens the thread.
+
+**DM (`user`) bindings are still not delivered.** `propose_trigger` accepts channel bindings only, so no DM-bound trigger can exist to deliver to, and the `user` branch of the delivery seed is unchanged and unreachable in practice.
 
 ## Persistent per-trigger directory
 
@@ -173,7 +209,8 @@ Every **configuration change** — created/enabled, edited, paused/resumed, dele
 | `src/system/trigger-scheduler.ts` | In-memory index, 60s tick, cron math, `fireTrigger`, announcements |
 | `src/system/trigger-visibility.ts` | Pure visibility decision (privacy injected) |
 | `src/agents/tools.ts` | PM tools: `propose_trigger`, `list_triggers`, `update_trigger`, `delete_trigger` |
-| `src/tasks/task.ts` | `handleTriggerApproval` / `handleTriggerDenial`, `linkSlackThread` |
+| `src/tasks/task.ts` | `handleTriggerApproval` / `handleTriggerDenial`; `openHomeThread` (opens and adopts the task's own thread in its home channel) and `linkSlackThread` |
+| `src/connectors/slack/channel-ids.ts` | `taskSlackChannelLabels` / `taskSlackChannelIds` — the one derivation of which channels a task's standing context and capabilities cover, home channel included |
 | `src/connectors/slack/events.ts` | Approve/Deny buttons + channel-message dispatch hook |
 | `src/connectors/api/routes.ts` | `/triggers` endpoints + the `trigger` approval branch |
 | `skills/triggers/SKILL.md` | Engine-owned PM skill (the orchestration playbook), loaded via the `Skill` tool |

@@ -309,6 +309,30 @@ describe('list_channels handler — public channels + this task\'s own channel',
     expect(out).toMatch(/this task's own channel/i);
   });
 
+  // A trigger-fired task's home channel is its own before it has a thread there: the canvas and pin blocks in
+  // its prompt name that channel, and `read_channel_history` takes an id. Listing the capability without
+  // listing the channel would leave the first turn told about context it has no way to go and look at.
+  it("appends a trigger-fired task's home channel before it has a thread there", async () => {
+    const task = makeTask();
+    (task.metadata as unknown as { home_channel: unknown }).home_channel = { channel_id: 'C_HOME', channel_name: 'ops-private' };
+
+    const out = await textOf(await getHandler('list_channels', task)({}));
+
+    expect(out).toContain('#ops-private');
+    expect(out).toContain('C_HOME');
+    expect(out).toMatch(/this task's own channel/i);
+  });
+
+  it('does not list a home channel twice once its thread is linked', async () => {
+    const task = makeTask('C_HOME');
+    (task.metadata as unknown as { home_channel: unknown }).home_channel = { channel_id: 'C_HOME', channel_name: 'ops-private' };
+
+    const out = await textOf(await getHandler('list_channels', task)({}));
+
+    // Linked first and first-link-wins, so the entry carries the linked channel's name, exactly once.
+    expect(out.match(/C_HOME/g)).toHaveLength(1);
+  });
+
   it('never enumerates other private channels (only public + own come from the data)', async () => {
     // listBotChannels is public-only by construction; the handler must not ask it for more.
     await getHandler('list_channels', makeTask('C_priv'))({});

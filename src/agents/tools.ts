@@ -49,7 +49,7 @@ import {
   buildOtherChannelContextSection,
 } from '../connectors/slack/channel-canvas.js';
 import { collectPinnedFileAllowlist } from '../connectors/slack/channel-pins.js';
-import { isDmOrUserId, findMutedTarget } from '../connectors/slack/channel-ids.js';
+import { isDmOrUserId, findMutedTarget, taskSlackChannelIds, taskSlackChannelLabels } from '../connectors/slack/channel-ids.js';
 import {
   formatSlackSendError,
   formatSlackPostError,
@@ -72,16 +72,15 @@ function rejectDmTarget(channel: string): string | null {
 }
 
 /**
- * The Slack channel ids THIS task is linked to (its own origin channel(s)).
+ * The Slack channel ids THIS task is linked to (its own origin channel(s)), plus the
+ * home channel a trigger-fired task has before it opens its own thread there.
  * Explore reads treat these as accessible regardless of type — so the PM can read
  * the private channel or DM the task itself lives in, but no other private/DM.
+ *
+ * Delegates to the shared derivation so the channels a task may READ are the same ones whose standing context it was given: a task homed in a private channel is handed that channel's pin index on its first turn, and refusing to let it read the channel that index describes made its own prompt incoherent for exactly one turn.
  */
-function taskSlackChannelIds(task: Task): Set<string> {
-  const ids = new Set<string>();
-  for (const ch of Object.values(task.metadata.channels)) {
-    if (ch.type === 'slack') ids.add(ch.channel_id);
-  }
-  return ids;
+function taskChannelIds(task: Task): Set<string> {
+  return taskSlackChannelIds(task.metadata);
 }
 
 /** Render explore messages in the same `@<id:name> | msg:ts` shape the PM sees elsewhere. */
@@ -422,7 +421,8 @@ function createPostToUserTool(agent: Agent, task: Task) {
     async (args) => {
       const agentName = agent.def.id as AgentName;
       const hasTarget = !!args.target?.channel;
-      if (!hasTarget && Object.keys(task.metadata.channels).length === 0) {
+      // A trigger-fired task has no thread yet but does have a home channel, and this call is exactly what opens that thread — so "no channels" is only "nowhere to post" when there is no home channel either.
+      if (!hasTarget && Object.keys(task.metadata.channels).length === 0 && !task.metadata.home_channel) {
         return ok(
           'No channel is linked to this task, so there is nowhere to post. ' +
           'Call report_completion() without a message to finish silently.'
@@ -550,6 +550,20 @@ function createListChannelsTool(_agent: Agent, task: Task) {
             seen.add(ch.channel_id);
             own.push({ name: ch.channel_name || ch.channel_id, id: ch.channel_id });
           }
+        }
+        // A trigger-fired task's home channel counts as its own before it has a thread there, and it must be
+        // enumerable for the same reason it is readable: the canvas and pin blocks in the prompt name that
+        // channel by its `#label`, and every read tool takes an id. Listing the capability without listing the
+        // channel leaves the agent told about context it cannot go and look at.
+        //
+        // Derived from the same helper the read gate and the standing-context blocks use, rather than reading
+        // `home_channel` again here. The linked channels above are a subset of it, so this only ever adds what
+        // `seen` has not already covered — and there is one answer to "which channels are this task's own"
+        // instead of two that can drift.
+        for (const [channelId, label] of taskSlackChannelLabels(task.metadata)) {
+          if (seen.has(channelId)) continue;
+          seen.add(channelId);
+          own.push({ name: label.replace(/^#/, ''), id: channelId });
         }
         if (publicChannels.length === 0 && own.length === 0) {
           return ok("Archie isn't a member of any channels you can use yet. Invite it to a channel (`/invite @Archie`) to explore there.");
@@ -801,7 +815,8 @@ function createReportCompletionTool(agent: Agent, task: Task) {
         ? findMutedTarget(task.metadata.channels, task.metadata.default_channel)
         : null;
       if (args.message && !mutedDefault) {
-        if (Object.keys(task.metadata.channels).length === 0) {
+        // Same exception as post_to_user: a trigger-fired task's home channel is a place to post, and the completion message is often the first thing it says — posting it is what opens the task's own thread.
+        if (Object.keys(task.metadata.channels).length === 0 && !task.metadata.home_channel) {
           return ok(
             'Cannot post a completion message — no channel linked to this task. ' +
             'Call report_completion() without a message to finish silently.'
@@ -990,7 +1005,7 @@ function createReadChannelHistoryTool(_agent: Agent, task: Task) {
       limit: z.number().int().min(1).max(100).optional().describe('How many recent messages to read (default 30, max 100)'),
     },
     async (args) => {
-      const allowed = taskSlackChannelIds(task);
+      const allowed = taskChannelIds(task);
       if (!allowed.has(args.channel)) {
         const dm = rejectDmTarget(args.channel);
         if (dm) return ok(dm);
@@ -1017,7 +1032,7 @@ function createReadThreadTool(_agent: Agent, task: Task) {
       thread_ts: z.string().describe('Parent message ts of the thread (e.g. "1716998400.123456")'),
     },
     async (args) => {
-      const allowed = taskSlackChannelIds(task);
+      const allowed = taskChannelIds(task);
       if (!allowed.has(args.channel)) {
         const dm = rejectDmTarget(args.channel);
         if (dm) return ok(dm);
@@ -1051,7 +1066,8 @@ function createPostToChannelTool(_agent: Agent, task: Task) {
     "Works in PUBLIC and PRIVATE channels Archie has been invited to (DMs are not allowed, and neither is a channel muted for this task). Unlike reading, posting is NOT limited to this task's channel — escalating outward is a valid use. " +
     'Fire-and-forget: it does not become a touchpoint of this task, and any reply is invisible to you here. If a human replies to a NEW top-level message you post, that reply starts its OWN fresh task; a reply inside someone else\'s existing thread never does. ' +
     "GUARDRAIL: only post where a human in this task asked you to — the required `mandate` arg is where you quote them, and without one you report to your requester instead and let them route it. Keep it short and match what you post to the destination's audience — never relay private or sensitive task content into a broader or unrelated channel. " +
-    'Pass a channel ID; optionally `thread_ts` to reply in an existing thread. To talk to the user about THIS task, use post_to_user instead.',
+    'Pass a channel ID; optionally `thread_ts` to reply in an existing thread. To talk to the user about THIS task, use post_to_user instead. ' +
+    'A task started by a trigger has to post its result to the user first — that is what opens its own thread — so this tool is unavailable until then.',
     {
       channel: z.string().describe('Slack channel ID (e.g. "C1234567")'),
       message: z.string().describe('The message to post'),
@@ -1063,6 +1079,18 @@ function createPostToChannelTool(_agent: Agent, task: Task) {
       thread_ts: z.string().optional().describe('Parent message ts to reply inside an existing thread; omit to post a new top-level message'),
     },
     async (args) => {
+      // Sequencing, checked before anything about the destination: a trigger-fired task has a home channel but no thread of its own yet, and this tool posts WITHOUT linking the channel to the task — which is precisely the detached, unanswerable message that homing a fired task in a channel exists to replace. So while the task has no channel open, the first thing it says has to be its result to the user, which is what opens its thread; only after that is posting elsewhere a coherent act rather than the task's only utterance.
+      //
+      // This outranks the DM and mandate checks deliberately. Both of those describe something wrong with *this call* (wrong kind of target, no one asked for it), and answering them first would send the agent off to fix the wrong problem — hunting for a mandate quote, or picking a different channel — when the real answer is that nothing may be posted anywhere yet. The sequencing message is the only one that points at the fix.
+      //
+      // There is deliberately NO branch here comparing the target to the task's own channel. Once a channel is open, post_to_channel behaves exactly as it always has for every destination, including the task's home channel: the task can then be replied to in its own thread, so an unlinked post beside it is a normal, recoverable thing to do rather than a dead end.
+      if (task.metadata.home_channel && !task.metadata.default_channel) {
+        return ok(
+          'Nothing was posted. This task has no channel of its own yet — post the result with `post_to_user` first, which opens this task\'s thread in ' +
+          `#${task.metadata.home_channel.channel_name}. ` +
+          '`post_to_channel` is available for other channels after that.',
+        );
+      }
       const dm = rejectDmTarget(args.channel);
       if (dm) return ok(dm);
       // The mandate is the whole gate on unsolicited outreach: it can't be
@@ -2404,6 +2432,13 @@ function createProposeTriggerTool(agent: Agent, task: Task) {
 
       const b = args.binding;
       if (!b.channel_id || !b.channel_name) return ok('A trigger needs both channel_id and channel_name for delivery.');
+      // The binding's channel id is model-supplied text, and a fired task is HOMED in that channel: it opens its
+      // own thread there and treats it as its own for reads. So the id has to be a channel. Without this check a
+      // `D…` or `U…` value would hand a fired task DM access that `post_to_channel` and the explore reads both
+      // refuse by prefix everywhere else — and the human approving it sees only the channel NAME on the card.
+      if (isDmOrUserId(b.channel_id)) {
+        return ok('A trigger has to deliver to a channel, not a DM or a user. Pass a channel ID (e.g. "C…"). Delivery to a person\'s DM is not supported yet.');
+      }
       const binding: TriggerBinding = { type: 'channel', channel_id: b.channel_id, channel_name: b.channel_name };
 
       // Best-effort creator id (only known in a DM) — used for cap accounting and

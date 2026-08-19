@@ -234,7 +234,7 @@ describe('an attachment-only bot post survives into every agent-facing entry poi
     await loadClient();
     const { handleSlackEvent } = await import('../events.js');
     const { getChannelMessageTriggers, fireTrigger } = await import('../../../system/trigger-scheduler.js');
-    // A watching trigger with no filter at all: whatever body dispatch rendered is the body a filter would have been matched against. This enters at `handleSlackEvent`, so it does NOT cross the inbound subtype gate — that `bot_message` is forwarded at all is asserted in task-routing.test.ts, and this asserts what dispatch does once it arrives. Note also that `FireContext.text` is never read inside `fireTrigger`, so this pins the matcher's input rather than anything the spawned agent goes on to see.
+    // A watching trigger with no filter at all: whatever body dispatch rendered is the body a filter would have been matched against. This enters at `handleSlackEvent`, so it does NOT cross the inbound subtype gate — that `bot_message` is forwarded at all is asserted in task-routing.test.ts, and this asserts what dispatch does once it arrives. The same render is also what `fireTrigger` reads as `FireContext.body`, so this pins both the matcher's input and the text the spawned agent can be handed.
     vi.mocked(getChannelMessageTriggers).mockReturnValue([makeTrigger()]);
 
     await handleSlackEvent({
@@ -242,7 +242,7 @@ describe('an attachment-only bot post survives into every agent-facing entry poi
     });
 
     expect(vi.mocked(fireTrigger)).toHaveBeenCalledTimes(1);
-    expect((vi.mocked(fireTrigger).mock.calls[0][1] as { text: string }).text).toContain(PHRASE);
+    expect((vi.mocked(fireTrigger).mock.calls[0][1] as { body: string }).body).toContain(PHRASE);
   });
 });
 
@@ -259,9 +259,9 @@ describe('the routing gate lets the message kinds #280 lost through', () => {
     });
 
     expect(vi.mocked(fireTrigger)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(fireTrigger).mock.calls[0][1]).toMatchObject({
-      kind: 'message', threadId: FIXTURE_TS, channelId: CHANNEL,
-    });
+    expect(vi.mocked(fireTrigger).mock.calls[0][1]).toMatchObject({ kind: 'message' });
+    expect(vi.mocked(fireTrigger).mock.calls[0][1].thread?.channel.id).toBe(CHANNEL);
+    expect(vi.mocked(fireTrigger).mock.calls[0][1].thread?.threadId).toBe(FIXTURE_TS);
   });
 
   it('forwards a me_message thread reply — the message kind the old allowlist made invisible', async () => {
