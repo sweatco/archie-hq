@@ -20,6 +20,8 @@ import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { emitEvent } from './event-bus.js';
 import { logger } from './logger.js';
 import { postSlackMessage, isChannelReachable } from '../connectors/slack/client.js';
+import { ensureChannelCanvas } from '../connectors/slack/channel-canvas.js';
+import { ensureChannelPins } from '../connectors/slack/channel-pins.js';
 
 // ---- Limits / config ----
 
@@ -377,6 +379,10 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
   // as the default channel, no post). schedule context → the PM opens the
   // destination itself.
   let delivery: string;
+  // Set only by the channel-binding schedule branch below, and used after the if/else to refresh that
+  // channel's standing context. It doubles as the "this fire homed a task in a channel" flag: a message
+  // fire and a DM-bound fire both leave it undefined.
+  let homeChannelId: string | undefined;
   if (context.kind === 'message' && context.thread) {
     // Ingestion, not announcement. `append` is the one path every other Slack task uses, and it does five things this branch would otherwise have to reinvent (and previously simply skipped): it writes the message to knowledge.log through the single renderer with the author line and the `msg:<ts>` id, applies the redaction policy via `shouldRedact`, skips file downloads for a redacted message while downloading them otherwise so the `[Attachments: …]` suffix carries usable local paths, links `slack:<channel>:<threadId>` as a channel, and promotes it to `default_channel`. That last pair is why `linkSlackThread` is NOT also called here — `append` links the identical key with the same shape, so doing both would double-write the same record.
     await task.append(context.thread);
@@ -398,7 +404,16 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
   } else if (trigger.binding.type === 'user') {
     delivery = `Deliver the result to the user as a direct message (Slack user ID ${trigger.binding.user_id}).`;
   } else {
-    delivery = `Deliver the result by posting it to the channel #${trigger.binding.channel_name} (Slack channel ID ${trigger.binding.channel_id}).`;
+    // A schedule fire has no thread to reply in, so instead of handing the agent a detached "post it over
+    // there" tool, the task is HOMED in the bound channel: its first user-facing message opens the task's
+    // own thread there (that message becomes the thread root), and every human reply to it routes back to
+    // this task instead of starting a stranger one. `home_channel` is what `postToUser` reads to do that.
+    homeChannelId = trigger.binding.channel_id;
+    task.metadata.home_channel = {
+      channel_id: trigger.binding.channel_id,
+      channel_name: trigger.binding.channel_name,
+    };
+    delivery = `You have no thread yet. Your first post_to_user opens this task's own thread in #${trigger.binding.channel_name}, and every message after that goes into that same thread. Until then you cannot post anywhere else.`;
   }
   task.debouncedSave();
 
@@ -406,6 +421,24 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
     ? `a new message in #${context.channelName ?? 'a channel'} matched your filter`
     : 'a scheduled run';
   const seed = `${trigger.action.prompt}\n\n${delivery}`;
+
+  // Refresh the home channel's standing context — its "Archie" canvas and its pinned-message index — for a
+  // channel-homed fire. Those stores are otherwise only refreshed by inbound Slack events, and a schedule
+  // fire is not one, so without this the first agent on the task would read whatever was last cached (or
+  // nothing at all) for the channel it is about to speak in. A message fire needs none of it: the event path
+  // that dispatched it already scanned that channel.
+  //
+  // This must run BEFORE `sendMessage`, not after: `sendMessage` → `deliver` → `ensureAgentSpawned` →
+  // `agent.spawn` assembles the first agent's system prompt inside that awaited call, so anything that has
+  // to reach that prompt has to be in place beforehand.
+  //
+  // The `.catch` is deliberate rather than defensive: a canvas or pins scan is context, and a failed scan
+  // must never cost the fire itself — a scheduled run that silently does not happen is far worse than one
+  // that runs with a stale brief.
+  if (homeChannelId) {
+    await Promise.all([ensureChannelCanvas(homeChannelId), ensureChannelPins(homeChannelId)])
+      .catch((err) => logger.warn('trigger-scheduler', `Failed to refresh standing context for home channel ${homeChannelId} on trigger ${trigger.id}`, err));
+  }
 
   logger.system(`Trigger ${trigger.id} fired (${context.kind}) → task ${task.taskId}`);
   await task.sendMessage(AGENT_PROMPTS.triggered(seed, reason), 'pm-agent');

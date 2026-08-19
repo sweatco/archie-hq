@@ -44,7 +44,11 @@ Read knowledge.log to see where you left off, then take action.`,
   // section buildTriggerDataPromptSection appends, which every track sees, while this
   // message reaches the PM alone. It also no longer claims "there is no prior
   // conversation" — true of the thread, misleading about a trigger that has run before.
-  triggered: (prompt: string, context: string) => `A trigger you were set up with has fired (${context}).\n\nDo this now: ${prompt}\n\nNobody is waiting in a thread here — post the result to the bound channel when you are done. You are read-only by default; if the work requires code changes, request edit mode first.`,
+  // Where the result goes is deliberately NOT stated here: that is the per-mode delivery
+  // sentence `fireTrigger` builds and folds into `prompt`, because it differs between a
+  // message fire (reply in the thread the task already owns) and a schedule fire (the first
+  // post_to_user opens the task's own thread in its home channel).
+  triggered: (prompt: string, context: string) => `A trigger you were set up with has fired (${context}).\n\nDo this now: ${prompt}\n\nNobody is waiting on the other end, so nothing reaches anyone unless you post it. You are read-only by default; if the work requires code changes, request edit mode first.`,
 
   reinforceAgent: `RECOVERY: You went idle without reporting back.
 

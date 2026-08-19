@@ -5,6 +5,8 @@
  *
  * On a MESSAGE fire the triggering message has to be ingested, not announced: it goes through `Task.append`, the same path every other Slack task uses, so the message lands in knowledge.log under the single renderer with its `msg:<ts>` id and its redaction verdict, and the thread it was posted in becomes the task's default channel. That matters because a delegated repo or plugin agent sees ONLY knowledge.log — before this, the rendered body was passed to `fireTrigger` and dropped on the floor, so such an agent could not know what was said. The ingestion floor covers the case `fetchSlackThread` cannot: it drops a raw message with neither a `user` nor a `botId`, so the triggering message is sometimes absent from the thread it was fetched from, and the rendered body is written directly instead.
  *
+ * On a SCHEDULE fire there is no thread at all, so the task is homed in the bound channel instead: `home_channel` is what lets its first `post_to_user` open the task's own thread there, which is what makes a human reply to the result land back on the task that produced it rather than on a stranger. That channel's standing context — its canvas brief and its pin index — is refreshed as part of the fire, before `sendMessage` assembles the first agent's system prompt, because inbound Slack events are the only other thing that refreshes those stores and a scheduled run is not one.
+ *
  * The seams are mocked at module level, but `Task` deliberately is not fully replaced — only its static factory is. One describe below drives the REAL `Task.append` through `fireTrigger`, because "the redaction policy applies to a triggered task too" is a claim about the real ingestion path and a fake `append` spy cannot support it.
  */
 
@@ -255,6 +257,74 @@ describe('a message fire ingests its thread', () => {
     expect(call[4]).toBe(BODY);
     // The `msg:<ts>` id the log entry is keyed by — without it the entry cannot be reacted to or cited.
     expect(call[5]).toEqual({ ts: TRIGGER_TS });
+  });
+});
+
+describe('a schedule fire homes its task in the bound channel', () => {
+  it('records the bound channel as the task home', async () => {
+    await fireTrigger(makeTrigger(), { kind: 'schedule' });
+
+    expect(createdTasks[0]!.metadata.home_channel).toEqual({
+      channel_id: CHANNEL,
+      channel_name: CHANNEL_NAME,
+    });
+  });
+
+  it('refreshes that channel\'s canvas and pin index before the first agent spawns', async () => {
+    await fireTrigger(makeTrigger(), { kind: 'schedule' });
+
+    expect(ensureChannelCanvasMock).toHaveBeenCalledWith(CHANNEL);
+    expect(ensureChannelPinsMock).toHaveBeenCalledWith(CHANNEL);
+    // Ordering is the point, not the calls: `sendMessage` assembles the first agent's system prompt inside
+    // its own await (deliver → ensureAgentSpawned → agent.spawn), so a scan that lands afterwards reaches
+    // nothing the agent doing the work can read.
+    const sendMessage = createdTasks[0]!.sendMessage;
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    const sendOrder = sendMessage.mock.invocationCallOrder[0]!;
+    expect(ensureChannelCanvasMock.mock.invocationCallOrder[0]!).toBeLessThan(sendOrder);
+    expect(ensureChannelPinsMock.mock.invocationCallOrder[0]!).toBeLessThan(sendOrder);
+  });
+
+  it('posts no preamble — the thread root is the result itself', async () => {
+    await fireTrigger(makeTrigger(), { kind: 'schedule' });
+
+    expect(postSlackMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('seeds the agent with the thread-opening rule rather than a channel to post at', async () => {
+    await fireTrigger(makeTrigger(), { kind: 'schedule' });
+
+    const seed = createdTasks[0]!.sendMessage.mock.calls[0]![0] as string;
+    expect(seed).toContain('post_to_user');
+    expect(seed).toContain(`#${CHANNEL_NAME}`);
+    // The old seed handed the agent a detached "post it to this channel id" instruction, which is exactly
+    // what made a human reply to the result start a stranger task.
+    expect(seed).not.toContain(CHANNEL);
+    expect(seed).not.toMatch(/posting it to the channel/);
+  });
+
+  it('leaves a message fire unhomed and costs it no scan', async () => {
+    await fireTrigger(makeTrigger(), {
+      kind: 'message', thread: messageThread(), body: BODY, triggerTs: TRIGGER_TS, authorId: 'U_DEV', channelName: CHANNEL_NAME,
+    });
+
+    // A message fire already owns a thread, and the event path that dispatched it already scanned the
+    // channel on the way in.
+    expect(createdTasks[0]!.metadata.home_channel).toBeUndefined();
+    expect(ensureChannelCanvasMock).not.toHaveBeenCalled();
+    expect(ensureChannelPinsMock).not.toHaveBeenCalled();
+  });
+
+  it('homes nothing and scans nothing when the bound channel is gone', async () => {
+    isChannelReachableMock.mockResolvedValue(false);
+
+    await fireTrigger(makeTrigger(), { kind: 'schedule' });
+
+    // The pre-flight pauses the trigger and returns before a task exists at all, so there is nothing to
+    // home and no channel worth scanning.
+    expect(taskCreateMock).not.toHaveBeenCalled();
+    expect(ensureChannelCanvasMock).not.toHaveBeenCalled();
+    expect(ensureChannelPinsMock).not.toHaveBeenCalled();
   });
 });
 
