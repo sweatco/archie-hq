@@ -127,10 +127,11 @@ describe('subtype denylist', () => {
   }
 
   // `bot_message` is the one deliberate asymmetry between the two questions, and it is the reason they are two functions rather than one boolean. It is content-bearing and it reaches triggers — that is the defect this change fixes — but it must not WAKE a task, because waking one spends a PM model turn and app posts (CI, Jira, Datadog, GitHub) arrive in volumes no human sends.
-  // App posts arrive in more than one shape and each must be blocked from waking a task. Slack sets
-  // `subtype: 'bot_message'` only for incoming-webhook / as_user:false posts; an app calling
-  // chat.postMessage with a bot token arrives with `bot_id` and NO subtype, and an app file upload or
-  // reply-broadcast carries `bot_id` under its own subtype. Keying on the subtype alone missed most of them.
+  // App posts arrive in more than one shape, and every one of them SHOULD wake a task. A bot reply reaches the
+  // task arm only when it is a reply in a thread Archie is already working in — bots do not DM, and a top-level
+  // bot post never reaches that arm — so the population is small and high-signal: CI reporting a failed build in
+  // the thread Archie is fixing is exactly what the PM should see. This mirrors the line thread ingestion draws,
+  // which keeps internal bots and drops only bots from another workspace.
   for (const [name, extra] of [
     ['a webhook post (subtype, no bot_id)', { subtype: 'bot_message' }],
     ['a chat.postMessage app post (bot_id, no subtype)', { bot_id: 'B_GITHUB' }],
@@ -138,22 +139,22 @@ describe('subtype denylist', () => {
     ['an app file_share', { subtype: 'file_share', bot_id: 'B_GITHUB' }],
     ['an app thread_broadcast', { subtype: 'thread_broadcast', bot_id: 'B_GITHUB' }],
   ] as Array<[string, Record<string, unknown>]>) {
-    it(`never wakes a task for ${name}`, () => {
-      expect(mayWakeTask({ ...asThreadReply(undefined), ...extra })).toBe(false);
-      expect(mayWakeTask({ ...asDm(undefined), ...extra })).toBe(false);
+    it(`wakes a task for a thread reply from ${name}`, () => {
+      expect(mayWakeTask({ ...asThreadReply(undefined), ...extra })).toBe(true);
+      expect(shouldForwardMessageEvent({ ...asThreadReply(undefined), ...extra }, () => false)).toBe(true);
     });
   }
 
-  it('lets `bot_message` reach triggers but never wake a task', () => {
+  // The one bot rule that IS enforced here: a top-level app post still does not wake a task, because no
+  // top-level post does. It reaches triggers instead. That is the asymmetry the two predicates exist for.
+  it('lets a top-level `bot_message` reach triggers without waking a task', () => {
     expect(isContentBearingSubtype('bot_message')).toBe(true);
 
     expect(mayReachTriggers(asWatchedTopLevel('bot_message'), () => true)).toBe(true);
-    expect(shouldForwardMessageEvent(asWatchedTopLevel('bot_message'), () => true)).toBe(true);
+    expect(mayWakeTask(asWatchedTopLevel('bot_message'))).toBe(false);
 
-    expect(mayWakeTask(asThreadReply('bot_message'))).toBe(false);
-    expect(mayWakeTask(asDm('bot_message'))).toBe(false);
-    expect(shouldForwardMessageEvent(asThreadReply('bot_message'), () => false)).toBe(false);
-    expect(shouldForwardMessageEvent(asDm('bot_message'), () => false)).toBe(false);
+    // ...and a reply from the same bot does wake the task Archie is working in.
+    expect(mayWakeTask({ ...asThreadReply('bot_message'), bot_id: 'B_CI' })).toBe(true);
   });
 
   it('treats a missing subtype as content-bearing', () => {

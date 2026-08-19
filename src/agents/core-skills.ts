@@ -7,7 +7,7 @@
  */
 
 import { existsSync, readdirSync, statSync } from 'fs';
-import { join, dirname, basename } from 'path';
+import { join, dirname, basename, resolve, sep } from 'path';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -28,7 +28,7 @@ export type AgentTrack = 'pm' | 'repo' | 'plain';
  *
  * This mapping is intentionally a hardcoded constant rather than configuration: no plugin manifest, no hot-reloaded plugins change and no instruction to the orchestrator can widen the set of skills a track mounts, because there is no code path that reads this from anywhere but here. (It is a plain object, so it is mutable in-process like `TRUSTED_PACKAGE_REGISTRY_DOMAINS` at `src/agents/sandbox.ts:48`; the guarantee is about where the values come from, not about runtime immutability.)
  *
- * Sandbox limit: a core skill mounted on a non-PM track is loadable there through the `Skill` and `Read` tools — the PreToolUse guard resolves the raw tool-input path with `resolve(cwd, rawPath)` and never calls `realpath`, and its `READ_TOOLS` set is only `{Read, Glob, Grep}` so `Skill` is never seen (both in `createFilesystemGuardHooks`, `src/agents/sandbox.ts`); the workspace is in `allowReadPaths` on both the base and repo tracks (the two `sandboxOpts` literals in `src/agents/spawn.ts`). It does NOT make the files readable from `Bash`: bwrap resolves symlinks and `/app` is hardcoded in `denyRead` (`buildSandboxConfig`, `src/agents/sandbox.ts`).
+ * Sandbox: reading a mounted skill's *files* needs a read grant, because their real path is under `/app`, which `buildSandboxConfig` hardcodes into `denyRead` — spawn grants the dirs each agent actually mounts (see {@link coreSkillPaths}). Loading is unaffected either way: `Skill` is in neither the guard's `READ_TOOLS` nor its `WRITE_TOOLS`, and the CLI reads the file in-process, outside bubblewrap.
  *
  * Content limit: a PM-voiced skill instructs tools attached only inside the `isPmAgent(def)` branch of `spawnAgent` — `post_to_channel`, `mute_channel`, `read_thread`, `fetch_slack_reference`, `report_completion` — so giving one a new audience needs prompt and tool work too, not just a line here. A skill on `repo` or `plain` has to be written for that audience from the start: track-neutral, naming no MCP tool, assuming no channel and no users.
  */
@@ -98,6 +98,38 @@ export function resolveSkillPaths(track: AgentTrack, pluginSkillsPath?: string):
  */
 export function mountedSkillNames(skillPaths: string[] = []): string[] {
   return skillPaths.map((p) => basename(p)).sort();
+}
+
+/**
+ * The subset of an agent's mounted skill paths whose real files live in archie-hq's
+ * own `skills/` directory, rather than inside a plugin.
+ *
+ * Callers need this to grant read access to those files. Loading a skill is not what
+ * needs the grant: `Skill` is in neither `READ_TOOLS` nor `WRITE_TOOLS`, so the
+ * PreToolUse guard returns early without inspecting a path, and the CLI reads the
+ * SKILL.md in-process, outside bubblewrap. Reading the skill's *file* is what needs it,
+ * and measured inside the container (`bwrap` 0.11.0, target `/app/skills/triggers/SKILL.md`):
+ *
+ *   no grant, real path              Bash fail, Read fail
+ *   no grant, workspace symlink      Bash fail, Read ok
+ *   granted                          Bash ok,   Read ok
+ *
+ * So without a grant the file is unreachable from the shell by either route, and reachable
+ * to `Read` only through the mount symlink — which works because the guard checks the raw
+ * tool-input path without resolving it, while bwrap does resolve it and lands on `/app`,
+ * which `buildSandboxConfig` denies. Plugin skills never depended on that: their real path
+ * sits inside `def.pluginPath`, which is already granted.
+ *
+ * Only the skills an agent actually mounts are returned, so a track that mounts one core
+ * skill does not gain read access to the ones it did not mount.
+ *
+ * `coreSkillsDir` exists for the same reason it does on {@link findUnmountedCoreSkills}:
+ * `CORE_SKILLS_DIR` is module-private, so a test needs an injection point. Production
+ * callers pass nothing.
+ */
+export function coreSkillPaths(skillPaths: string[] = [], coreSkillsDir: string = CORE_SKILLS_DIR): string[] {
+  const base = resolve(coreSkillsDir);
+  return skillPaths.filter((p) => resolve(p).startsWith(base + sep));
 }
 
 /**

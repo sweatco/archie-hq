@@ -92,10 +92,21 @@ export function isContentBearingSubtype(subtype?: string): boolean {
 export function mayWakeTask(event: MessageEventShape): boolean {
   const isDm = event.channel.startsWith('D');
   const isThreadReply = !!event.thread_ts && event.thread_ts !== event.ts;
-  // App posts are content-bearing and DO reach triggers (see `mayReachTriggers`) — that is the defect this change fixes. They deliberately do NOT wake a task: waking one spends a PM model turn, so every CI, Jira, Datadog or GitHub-app post into a followed thread would cost a turn apiece, at volumes no human sends. This asymmetry between the two questions is exactly why they are two functions rather than one boolean.
+  // An app post DOES wake a task, deliberately. A bot reply lands here only when it is a reply in a thread
+  // Archie is already working in — bots do not DM, and a top-level bot post never reaches this arm — so the
+  // population is small and high-signal: CI reporting a failed build in the very thread Archie is fixing is
+  // exactly what the PM should see. This mirrors the line thread ingestion already draws (`fetchSlackThread`
+  // keeps internal bots such as bug-tracker integrations and drops only bots from another workspace), rather
+  // than inventing a stricter one.
   //
-  // The test is `bot_id`, NOT `subtype === 'bot_message'`. Slack sets that subtype only for incoming-webhook and `as_user: false` posts; an app calling `chat.postMessage` with a bot token arrives with `bot_id` and no subtype whatsoever, and `file_share` / `thread_broadcast` from an app carry `bot_id` under their own subtype. Keying on the subtype alone caught only the webhook shape and let every other app post through — which is most of them. Both signals are tested rather than just `bot_id`, because they are independently sufficient: a real webhook post carries both, but neither field alone is guaranteed across every app-posting path, and the cost of the extra comparison is nothing against the cost of a missed one.
-  if (event.bot_id || event.subtype === 'bot_message') return false;
+  // Our own posts never get here: `routeSlackEvent` discards them by `bot_id` and by our bot user id, which is
+  // what closes the feedback loop — not this predicate.
+  //
+  // A bot from a FOREIGN workspace is not filtered here. On the trigger path it is refused explicitly at the
+  // call site (deciding it needs the home team id, and this module is deliberately import-free). On this path it
+  // needs no guard: `fetchSlackThread` already drops a foreign bot's message from the thread, so its content
+  // never reaches an agent. The residue is that such a reply can still wake the task to find nothing new —
+  // a wasted turn in a Slack Connect channel, not a leak.
   return isContentBearingSubtype(event.subtype) && (isThreadReply || isDm);
 }
 
