@@ -80,29 +80,31 @@ export function createRunnerToolsMcpServer(agent: Agent, task: Task) {
       ),
       tool(
         'runner_exec',
-        'Start a generic argv-based command in the synced primary repository. Long commands detach and can be polled.',
+        'Start a generic argv-based command in the synced primary repository. Reuse the same request_id if the result is lost; long commands detach and can be polled.',
         {
           profile: z.string().min(1),
+          request_id: z.string().uuid(),
           argv: z.array(z.string()).min(1).max(256),
           cwd: z.string().optional(),
           env: z.record(z.string(), z.string()).optional(),
           wait_seconds: z.number().int().min(0).max(120).optional(),
         },
-        async ({ profile, argv, cwd, env, wait_seconds }) => runTool(async () => {
+        async ({ profile, request_id, argv, cwd, env, wait_seconds }) => runTool(async () => {
           const attached = attachedRepository(agent, task);
-          return JSON.stringify(await manager().exec(task.taskId, agent.def.id, profile, attached.github, argv, cwd, env, wait_seconds));
+          return JSON.stringify(await manager().exec(task.taskId, agent.def.id, profile, attached.github, argv, cwd, env, wait_seconds, request_id));
         }),
       ),
       tool(
         'runner_exec_poll',
-        'Reconnect to a detached runner command and return output newer than its durable watermark.',
+        'Reconnect to a command and replay output after the last delivery cursor the caller received. Reuse after_cursor when a poll result is lost.',
         {
           profile: z.string().min(1),
           exec_id: z.string().uuid(),
+          after_cursor: z.number().int().nonnegative(),
           wait_seconds: z.number().int().min(0).max(120).optional(),
         },
-        async ({ profile, exec_id, wait_seconds }) => runTool(async () => JSON.stringify(
-          await manager().poll(task.taskId, agent.def.id, profile, exec_id, wait_seconds),
+        async ({ profile, exec_id, after_cursor, wait_seconds }) => runTool(async () => JSON.stringify(
+          await manager().poll(task.taskId, agent.def.id, profile, exec_id, after_cursor, wait_seconds),
         )),
       ),
       tool(
@@ -126,10 +128,14 @@ export function createRunnerToolsMcpServer(agent: Agent, task: Task) {
       ),
       tool(
         'runner_open_debug',
-        'Extend the VM lease for bounded human VNC debugging and return credential-free Orchard CLI commands.',
-        { profile: z.string().min(1), ttl_minutes: z.number().int().min(1).max(1440).optional() },
-        async ({ profile, ttl_minutes }) => runTool(async () => JSON.stringify(
-          await manager().openDebug(task.taskId, agent.def.id, profile, ttl_minutes),
+        'Extend the VM lease for bounded human debugging and return credential-free Orchard VNC and requested TCP port-forward commands.',
+        {
+          profile: z.string().min(1),
+          ttl_minutes: z.number().int().min(1).max(1440).optional(),
+          ports: z.array(z.number().int().min(1024).max(65535)).max(8).optional(),
+        },
+        async ({ profile, ttl_minutes, ports }) => runTool(async () => JSON.stringify(
+          await manager().openDebug(task.taskId, agent.def.id, profile, ttl_minutes, ports),
         )),
       ),
       tool(

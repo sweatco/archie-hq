@@ -20,6 +20,7 @@
     "oauth:revoke": "tsx src/cli/oauth.ts revoke",
     "oauth:refresh": "tsx src/cli/oauth.ts refresh",
     "memory:housekeeping": "tsx scripts/memory-housekeeping.ts",
+    "runner:sweatcoin-e2e": "node dist/runners/sweatcoin-e2e.js",
     "docker:dev": "docker compose up --build",
     "docker:stop": "docker compose down",
     "test": "vitest run --reporter=verbose",

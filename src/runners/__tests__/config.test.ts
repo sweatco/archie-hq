@@ -32,6 +32,7 @@ describe('runner configuration', () => {
     expect(parsed.maxConcurrent).toBe(1);
     expect(parsed.orchard.allowInsecureHttp).toBe(false);
     expect(parsed.profiles.ios.memoryMiB).toBe(8192);
+    expect(parsed.profiles.ios.networkMode).toBe('softnet');
     expect(parsed.profiles.ios.maxExecSessionHistory).toBe(50);
     expect(parsed.profiles.ios.maxActiveExecSessions).toBe(4);
     expect(() => runnerConfigSchema.parse({
@@ -42,6 +43,10 @@ describe('runner configuration', () => {
       ...baseConfig(),
       profiles: { ios: { ...baseConfig().profiles.ios, softnetAllow: ['::/0'] } },
     })).toThrow(/IPv4 CIDR/);
+    expect(() => runnerConfigSchema.parse({
+      ...baseConfig(),
+      profiles: { ios: { ...baseConfig().profiles.ios, networkMode: 'nat', softnetAllow: ['10.0.0.0/8'] } },
+    })).toThrow(/empty when networkMode is nat/);
     expect(() => runnerConfigSchema.parse({
       ...baseConfig(),
       profiles: { ios: { ...baseConfig().profiles.ios, remoteWorkspaceRoot: '/' } },
@@ -70,6 +75,30 @@ describe('runner configuration', () => {
     expect(loaded?.config.orchard.baseUrl).toBe('https://orchard.example.test');
     expect(loaded?.guestPasswords.ios).toBe('guest-secret');
     expect(JSON.stringify(loaded?.config)).not.toContain('secret');
+  });
+
+  it('rejects insecure HTTP and NAT profiles in production', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'archie-runner-config-'));
+    tempDirs.push(dir);
+    const path = join(dir, 'runners.json');
+    const environment = {
+      NODE_ENV: 'production',
+      ARCHIE_RUNNERS_CONFIG: path,
+      ORCHARD_SERVICE_ACCOUNT_NAME: 'archie',
+      ORCHARD_SERVICE_ACCOUNT_TOKEN: 'service-secret',
+      IOS_RUNNER_PASSWORD: 'guest-secret',
+    };
+    await writeFile(path, JSON.stringify({
+      ...baseConfig(),
+      orchard: { baseUrl: 'http://127.0.0.1:6120/v1', context: 'development', allowInsecureHttp: true },
+    }));
+    await expect(loadRunnerConfig(environment)).rejects.toThrow(/requires HTTPS/);
+
+    await writeFile(path, JSON.stringify({
+      ...baseConfig(),
+      profiles: { ios: { ...baseConfig().profiles.ios, networkMode: 'nat' } },
+    }));
+    await expect(loadRunnerConfig(environment)).rejects.toThrow(/require Softnet/);
   });
 
   it('fails enabled startup when credentials are missing', async () => {

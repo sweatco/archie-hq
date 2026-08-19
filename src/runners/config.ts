@@ -23,6 +23,7 @@ export const runnerProfileSchema = z.object({
   allowedAgents: z.array(z.string().min(1)).min(1),
   labels: z.record(z.string(), z.string()).default({}),
   resources: z.record(z.string(), z.number().int().nonnegative()).default({}),
+  networkMode: z.enum(['softnet', 'nat']).default('softnet'),
   softnetAllow: z.array(cidrSchema).default([]),
   readinessCommand: z.array(z.string()).min(1).optional(),
   remoteWorkspaceRoot: z.string().refine(
@@ -47,6 +48,9 @@ export const runnerProfileSchema = z.object({
   }
   if (new Set(profile.allowedAgents).size !== profile.allowedAgents.length) {
     ctx.addIssue({ code: 'custom', path: ['allowedAgents'], message: 'Agent IDs must be unique' });
+  }
+  if (profile.networkMode === 'nat' && profile.softnetAllow.length > 0) {
+    ctx.addIssue({ code: 'custom', path: ['softnetAllow'], message: 'Must be empty when networkMode is nat' });
   }
 });
 
@@ -80,6 +84,12 @@ export async function loadRunnerConfig(env: NodeJS.ProcessEnv = process.env): Pr
   const raw = await readFile(resolve(configPath), 'utf8');
   const parsed = runnerConfigSchema.parse(JSON.parse(raw)) as RunnerConfig;
   parsed.orchard.baseUrl = parsed.orchard.baseUrl.replace(/\/+$/, '');
+
+  if (env.NODE_ENV === 'production') {
+    if (parsed.orchard.allowInsecureHttp) throw new Error('Production runner configuration requires HTTPS');
+    const natProfiles = Object.entries(parsed.profiles).filter(([, profile]) => profile.networkMode === 'nat').map(([name]) => name);
+    if (natProfiles.length > 0) throw new Error(`Production runner profiles require Softnet; NAT is configured for: ${natProfiles.join(', ')}`);
+  }
 
   const serviceAccountName = env.ORCHARD_SERVICE_ACCOUNT_NAME;
   const serviceAccountToken = env.ORCHARD_SERVICE_ACCOUNT_TOKEN;
