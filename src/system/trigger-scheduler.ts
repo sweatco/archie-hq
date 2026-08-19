@@ -203,7 +203,7 @@ interface FireContext {
   body?: string;
   /** For message context: the `ts` of the triggering message, used both to detect its absence from the fetched thread and as its `msg:<ts>` id when written directly. */
   triggerTs?: string;
-  /** For message context: the triggering message's author (user id, else bot id, else 'unknown'). */
+  /** For message context: the triggering message's author — its user id, else its bot id, and deliberately UNSET when the payload carried neither. That absence is the signal the ingestion floor keys on: it is the one reason `fetchSlackThread` drops a message that the redaction policy has nothing to say about. */
   authorId?: string;
   /** Human-readable channel name for the reason line shown to the agent. */
   channelName?: string;
