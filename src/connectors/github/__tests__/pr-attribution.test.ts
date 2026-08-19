@@ -14,11 +14,11 @@ import { buildAttributedBody, stripAttribution, ATTRIBUTION_MARKER } from '../pr
 const MENTION = '@archie-hq';
 
 describe('buildAttributedBody', () => {
-  it('names Archie and the human above the description', () => {
+  it('names Archie and the human in an alert above the description', () => {
     const out = buildAttributedBody('## The report\n\nSomething broke.', 'Bandita Parida', MENTION);
 
     expect(out).toBe(
-      `${ATTRIBUTION_MARKER}\nOpened by @archie-hq on behalf of Bandita Parida.\n\n## The report\n\nSomething broke.`,
+      `${ATTRIBUTION_MARKER}\n> [!NOTE]\n> Opened by @archie-hq on behalf of **Bandita Parida**.\n\n## The report\n\nSomething broke.`,
     );
   });
 
@@ -26,7 +26,7 @@ describe('buildAttributedBody', () => {
     // CLI approvals and pre-feature tasks have no edit_approved_by.
     const out = buildAttributedBody('Body.', null, MENTION);
 
-    expect(out).toBe(`${ATTRIBUTION_MARKER}\nOpened by @archie-hq.\n\nBody.`);
+    expect(out).toBe(`${ATTRIBUTION_MARKER}\n> [!NOTE]\n> Opened by @archie-hq.\n\nBody.`);
   });
 
   it('leaves the body alone when no identity is configured', () => {
@@ -47,7 +47,7 @@ describe('buildAttributedBody', () => {
     const first = buildAttributedBody('Body.', 'Bandita Parida', MENTION);
     const second = buildAttributedBody(first, 'Egor Khmelev', MENTION);
 
-    expect(second).toContain('on behalf of Egor Khmelev.');
+    expect(second).toContain('on behalf of **Egor Khmelev**.');
     expect(second).not.toContain('Bandita');
   });
 
@@ -61,7 +61,7 @@ describe('buildAttributedBody', () => {
 
   it('leaves no blank description behind when the agent wrote none', () => {
     expect(buildAttributedBody('', 'Bandita Parida', MENTION)).toBe(
-      `${ATTRIBUTION_MARKER}\nOpened by @archie-hq on behalf of Bandita Parida.`,
+      `${ATTRIBUTION_MARKER}\n> [!NOTE]\n> Opened by @archie-hq on behalf of **Bandita Parida**.`,
     );
   });
 });
@@ -71,9 +71,10 @@ describe('stripAttribution', () => {
     expect(stripAttribution('## Report\n\nDetail.')).toBe('## Report\n\nDetail.');
   });
 
-  it('does not eat a line the author wrote themselves', () => {
-    // Only the line directly under the marker belongs to us.
-    const body = 'Opened by someone else, apparently.\n\nProse.';
+  it('does not eat a blockquote the author wrote themselves', () => {
+    // Only the quote directly under the marker belongs to us — an unmarked alert
+    // or quote of the author's own must survive.
+    const body = '> [!WARNING]\n> Do not merge before Friday.\n\nProse.';
 
     expect(stripAttribution(body)).toBe(body);
   });

@@ -23,8 +23,11 @@
  */
 export const ATTRIBUTION_MARKER = '<!-- archie-attribution -->';
 
-/** The marker and the single line under it. */
-const LINE_RE = new RegExp(`${ATTRIBUTION_MARKER}\\n[^\\n]*\\n*`, 'g');
+/**
+ * The marker and the blockquote lines under it. Matches the whole quote rather
+ * than one line because the alert syntax spans two (`> [!NOTE]` then the text).
+ */
+const LINE_RE = new RegExp(`${ATTRIBUTION_MARKER}\\n(?:>[^\\n]*\\n?)*\\n*`, 'g');
 
 /** Drop a previously stamped line, so a rewrite starts clean. Exported for `update_pr`. */
 export function stripAttribution(body: string): string {
@@ -32,9 +35,14 @@ export function stripAttribution(body: string): string {
 }
 
 /**
- * Put the attribution line above the description — that's where "whose PR is
- * this?" gets asked, and GitHub shows a body's opening lines in timelines and
- * previews.
+ * Put the attribution above the description — that's where "whose PR is this?"
+ * gets asked, and GitHub shows a body's opening lines in timelines and previews.
+ *
+ * Rendered as a GitHub Alert (`> [!NOTE]`), which draws a coloured box with an
+ * icon. That is the only way to make a line visually prominent here: GitHub
+ * sanitizes `style` attributes and CSS out of PR bodies, so alerts, blockquotes,
+ * headings and tables are the whole palette. GitHub prints its own "Note" label
+ * above the text and it cannot be renamed or removed.
  *
  * `humanName` is null when no approver was recorded (CLI approvals, pre-feature
  * tasks): the line still names Archie, but nothing invents a human. `mention` is
@@ -48,6 +56,9 @@ export function buildAttributedBody(
   const prose = stripAttribution(body);
   if (!mention) return prose;
 
-  const line = humanName ? `Opened by ${mention} on behalf of ${humanName}.` : `Opened by ${mention}.`;
-  return [`${ATTRIBUTION_MARKER}\n${line}`, prose].filter(Boolean).join('\n\n');
+  const line = humanName
+    ? `Opened by ${mention} on behalf of **${humanName}**.`
+    : `Opened by ${mention}.`;
+  const alert = `${ATTRIBUTION_MARKER}\n> [!NOTE]\n> ${line}`;
+  return [alert, prose].filter(Boolean).join('\n\n');
 }

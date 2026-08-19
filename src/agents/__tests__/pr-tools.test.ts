@@ -744,7 +744,7 @@ describe('PR attribution', () => {
     const tool = getRepoTool(makeAgent(), makeTask({ edit_approved_by: APPROVER }), 'create_pull_request');
 
     return tool({ title: 'T', body: 'Description.' }, {}).then(() => {
-      expect(sentBody()).toContain('Opened by @archie-hq on behalf of Bandita Parida.');
+      expect(sentBody()).toContain('Opened by @archie-hq on behalf of **Bandita Parida**.');
       expect(sentBody()).toContain('Description.');
     });
   });
@@ -763,7 +763,7 @@ describe('PR attribution', () => {
     await tool({ pr_number: 42, body: 'Rewritten.' }, {});
 
     const patched = mockGitHubClient.updatePR.mock.calls[0][2].body as string;
-    expect(patched).toContain('Opened by @archie-hq on behalf of Bandita Parida.');
+    expect(patched).toContain('Opened by @archie-hq on behalf of **Bandita Parida**.');
     expect(patched).toContain('Rewritten.');
   });
 
