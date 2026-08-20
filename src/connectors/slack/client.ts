@@ -1714,12 +1714,12 @@ export async function getChannelInfo(
   try {
     const result = await client.conversations.info({ channel: channelId });
     const channel = result.channel as
-      | { name?: string; is_im?: boolean; is_private?: boolean; user?: string }
+      | { name?: string; is_im?: boolean; is_mpim?: boolean; is_private?: boolean; user?: string }
       | undefined;
 
     const isIm = channel?.is_im === true;
-    // DMs are inherently private; otherwise read the channel's is_private flag.
-    const isPrivate = isIm || channel?.is_private === true;
+    // DMs and group DMs are inherently private; otherwise read the channel's is_private flag.
+    const isPrivate = isIm || channel?.is_mpim === true || channel?.is_private === true;
 
     // For DMs, resolve the other user's name instead of showing a raw ID
     if (isIm && channel?.user) {
@@ -1735,7 +1735,8 @@ export async function getChannelInfo(
     };
   } catch (error) {
     logger.warn('Slack', `Failed to get channel info for ${channelId}`);
-    return { id: channelId, name: channelId, isPrivate: false, isIm: false };
+    // Fail closed: an unreachable channel is treated as private, never public.
+    return { id: channelId, name: channelId, isPrivate: true, isIm: false };
   }
 }
 
@@ -1749,8 +1750,8 @@ export async function getChannelInfo(
 export async function fetchChannelIsPrivate(channelId: string): Promise<boolean> {
   const client = getSlackClient();
   const result = await client.conversations.info({ channel: channelId });
-  const channel = result.channel as { is_im?: boolean; is_private?: boolean } | undefined;
-  return channel?.is_im === true || channel?.is_private === true;
+  const channel = result.channel as { is_im?: boolean; is_mpim?: boolean; is_private?: boolean } | undefined;
+  return channel?.is_im === true || channel?.is_mpim === true || channel?.is_private === true;
 }
 
 // ---- Channel canvas tabs + file reads (project-context canvases) ----------
@@ -2237,6 +2238,7 @@ export async function fetchSlackThread(
     threadId: threadTs,
     channel: channelInfo,
     shared,
+    taskVisibility: channelInfo.isPrivate ? 'private' : 'public',
     messages,
     currentMessageTs,
     rootAuthorWasBot,

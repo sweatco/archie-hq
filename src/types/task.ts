@@ -4,6 +4,9 @@
 
 export type TaskStatus = 'in_progress' | 'stopped' | 'completed';
 
+/** Monotonic confidentiality class: a task may move public → private, never back. */
+export type TaskVisibility = 'public' | 'private';
+
 /** Core agent names - repo agents can be any string ending in '-agent' */
 export type CoreAgentName = 'pm-agent' | 'triage-agent';
 
@@ -76,6 +79,8 @@ export interface SlackThread {
   threadId: string;
   channel: { id: string; name: string };
   shared: boolean;
+  /** Visibility to assign if this thread creates a task. */
+  taskVisibility: TaskVisibility;
   messages: SlackThreadMessage[];  // bot messages excluded, EXCEPT the root when our bot started the thread
   currentMessageTs: string;
   /**
@@ -278,6 +283,8 @@ export interface AgentSessionState {
 
 export interface TaskMetadata {
   task_id: string;
+  /** Task-level confidentiality class. It may downgrade to private, never upgrade. */
+  visibility: TaskVisibility;
   task_owner: AgentName | null;
   participants: AgentName[];
   channels: Record<string, Channel>;   // Active message delivery targets, keyed by channel ID

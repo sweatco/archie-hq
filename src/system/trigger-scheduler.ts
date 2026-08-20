@@ -13,13 +13,13 @@
 import { Cron } from 'croner';
 import { Task } from '../tasks/task.js';
 import { appendSlackMessage } from '../tasks/persistence.js';
-import type { SlackThread } from '../types/task.js';
+import type { SlackThread, TaskVisibility } from '../types/task.js';
 import type { Trigger, TriggerBinding, TriggerCondition } from '../types/trigger.js';
 import { listTriggers, saveTrigger, deleteTrigger } from './trigger-store.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { emitEvent } from './event-bus.js';
 import { logger } from './logger.js';
-import { postSlackMessage, isChannelReachable } from '../connectors/slack/client.js';
+import { postSlackMessage, isChannelReachable, fetchChannelIsPrivate } from '../connectors/slack/client.js';
 import { ensureChannelCanvas } from '../connectors/slack/channel-canvas.js';
 import { ensureChannelPins } from '../connectors/slack/channel-pins.js';
 
@@ -370,7 +370,13 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
     return;
   }
 
-  const task = await Task.create();
+  // Fail closed: a DM, a private channel, and an unresolvable channel are all private.
+  const visibility: TaskVisibility = context.kind === 'message'
+    ? context.thread?.taskVisibility ?? 'private'
+    : trigger.binding.type === 'channel'
+      ? (await fetchChannelIsPrivate(trigger.binding.channel_id).catch(() => true)) ? 'private' : 'public'
+      : 'private';
+  const task = await Task.create(visibility);
   task.metadata.triggered_by = trigger.id;
 
   // Wire delivery. A message fire ingests the triggering thread, which links it as the default channel and

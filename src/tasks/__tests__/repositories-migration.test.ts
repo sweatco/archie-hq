@@ -31,6 +31,7 @@ function repoDef(key: string, github: string): AgentDef {
 function meta(repositories: any): TaskMetadata {
   return {
     task_id: 'task-test',
+    visibility: 'public',
     task_owner: null,
     participants: [],
     channels: {},

@@ -68,6 +68,7 @@ function makeThread(overrides?: Partial<SlackThread>): SlackThread {
   return {
     threadId: '1.0',
     channel: { id: 'D1', name: 'DM' },
+    taskVisibility: 'public',
     shared: false,
     currentMessageTs: '1.0',
     rootAuthorWasBot: false,

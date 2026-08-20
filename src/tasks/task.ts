@@ -6,7 +6,7 @@
  */
 
 import { mkdir, writeFile } from 'fs/promises';
-import type { AgentName, SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, BranchState } from '../types/task.js';
+import type { AgentName, SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, TaskVisibility, BranchState } from '../types/task.js';
 import { CLI_CHANNEL_KEY } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
 import { isPmAgent, isRepoAgent } from '../types/agent.js';
@@ -171,6 +171,8 @@ export class Task {
       taskTimeoutMs: 3_600_000, // 60 minutes
     };
 
+    migrateTaskVisibility(metadata);
+
     // Migrate legacy slack_threads → channels
     if (metadata.slack_threads?.length && !metadata.channels) {
       metadata.channels = {};
@@ -201,7 +203,7 @@ export class Task {
    * Sets up disk structure (folders, metadata, skills).
    * Task is inert until sendMessage() is called, which activates it.
    */
-  static async create(): Promise<Task> {
+  static async create(visibility: TaskVisibility): Promise<Task> {
     await syncPlugins();
     await ensureSessionsDir();
 
@@ -219,6 +221,7 @@ export class Task {
     // It maps agentId → list of currently-attached repos.
     const metadata: TaskMetadata = {
       task_id: taskId,
+      visibility,
       task_owner: null,
       participants: [],
       channels: {},
@@ -265,7 +268,8 @@ export class Task {
     // (one object per repo agent, keyed by short name). Now it's
     // Record<agentId, AttachedRepo[]> (per-agent list of attached repos).
     // Detect by structural check: any value that's NOT an array is old shape.
-    const didMigrate = migrateRepositoriesShape(metadata);
+    const didMigrateRepositories = migrateRepositoriesShape(metadata);
+    const didMigrateVisibility = migrateTaskVisibility(metadata);
 
     // Persist the upgrade once. The migration is otherwise in-memory, so a
     // terminal task that's only ever *read* (webhook resolution, comment-dedup
@@ -273,12 +277,16 @@ export class Task {
     // next load hits the fast path — and it locks in the shape now, while every
     // repo agent still resolves (a later plugin removal would otherwise make the
     // migration drop those entries). Only an active task ever re-saves on its own.
-    if (didMigrate) {
+    if (didMigrateRepositories || didMigrateVisibility) {
       await writeFile(getMetadataPath(taskId), JSON.stringify(metadata, null, 2));
       // Log once, here — the migration persisted, so it won't run again. (The
       // migrate fn stays silent: it runs on every load, incl. read-only
       // findTaskByPRNumber, so logging there would spam.)
-      logger.system(`[migrate] task ${taskId}: upgraded repositories to v30 (${Object.keys(metadata.repositories).join(', ')})`);
+      const migrations = [
+        didMigrateRepositories ? `repositories to v30 (${Object.keys(metadata.repositories).join(', ')})` : null,
+        didMigrateVisibility ? `visibility to ${metadata.visibility}` : null,
+      ].filter(Boolean).join('; ');
+      logger.system(`[migrate] task ${taskId}: upgraded ${migrations}`);
     }
 
     const team = scanAgentDefs();
@@ -1806,7 +1814,21 @@ export function getTask(taskId: string): Task | undefined {
   return activeTasks.get(taskId);
 }
 
-// ---- v30 migration ----
+// ---- Metadata migrations ----
+
+/**
+ * Normalize persisted task visibility. JSON-loaded metadata is not runtime
+ * type-checked, so both missing and unrecognized values fail closed to private —
+ * except a legacy task whose only channel is the operator-only CLI, which has no
+ * Slack channel to inherit confidentiality from and is public by rule.
+ * Returns whether metadata was changed so Task.get can persist the migration.
+ */
+export function migrateTaskVisibility(metadata: TaskMetadata): boolean {
+  if (metadata.visibility === 'public' || metadata.visibility === 'private') return false;
+  const keys = Object.keys(metadata.channels ?? {});
+  metadata.visibility = keys.length > 0 && keys.every((k) => k === CLI_CHANNEL_KEY) ? 'public' : 'private';
+  return true;
+}
 
 /**
  * Migrate `metadata.repositories` from the legacy `Record<repoKey, RepositoryInfo>`

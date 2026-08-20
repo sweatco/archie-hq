@@ -25,6 +25,7 @@ const {
   appendSlackMessageMock,
   downloadMessageFilesMock,
   isChannelReachableMock,
+  fetchChannelIsPrivateMock,
   postSlackMessageMock,
   saveTriggerMock,
   ensureChannelCanvasMock,
@@ -34,6 +35,7 @@ const {
   appendSlackMessageMock: vi.fn(),
   downloadMessageFilesMock: vi.fn(),
   isChannelReachableMock: vi.fn(),
+  fetchChannelIsPrivateMock: vi.fn(),
   postSlackMessageMock: vi.fn(),
   saveTriggerMock: vi.fn(),
   ensureChannelCanvasMock: vi.fn(),
@@ -60,6 +62,7 @@ vi.mock('../../connectors/slack/client.js', async (importOriginal) => {
   return {
     ...actual,
     isChannelReachable: isChannelReachableMock,
+    fetchChannelIsPrivate: fetchChannelIsPrivateMock,
     postSlackMessage: postSlackMessageMock,
     // Without this the redaction case is a dead branch: `isExternalUser` fails open to false when the
     // Slack client was never initialised, so `shouldRedact` would say no and the case would assert the
@@ -143,6 +146,7 @@ function messageThread(over: Partial<SlackThread> = {}): SlackThread {
     threadId: TRIGGER_TS,
     channel: { id: CHANNEL, name: CHANNEL_NAME },
     shared: false,
+    taskVisibility: 'public',
     currentMessageTs: TRIGGER_TS,
     rootAuthorWasBot: false,
     messages: [{
@@ -166,6 +170,7 @@ beforeEach(() => {
   downloadMessageFilesMock.mockImplementation(async (_taskId: string, files: Array<Record<string, unknown>>) =>
     files.map((f) => ({ ...f, localPath: '/sessions/t1/attachments/f.pdf' })));
   isChannelReachableMock.mockResolvedValue(true);
+  fetchChannelIsPrivateMock.mockResolvedValue(false);
   postSlackMessageMock.mockResolvedValue(undefined);
   saveTriggerMock.mockResolvedValue(undefined);
   ensureChannelCanvasMock.mockResolvedValue(undefined);
@@ -445,5 +450,42 @@ describe('a message fire ingests through the real Task.append', () => {
     expect(downloadMessageFilesMock).not.toHaveBeenCalled();
     // And the real append took ownership of the thread, so a human reply routes back to this task.
     expect(task.metadata.default_channel).toBe(`slack:${CHANNEL}:${TRIGGER_TS}`);
+  });
+});
+
+describe('a fire assigns the task its destination visibility', () => {
+  it('a message fire inherits the triggering thread visibility', async () => {
+    await fireTrigger(makeTrigger(), {
+      kind: 'message', thread: messageThread({ taskVisibility: 'private' }), body: BODY, authorId: 'U_DEV', channelName: CHANNEL_NAME,
+    });
+
+    expect(taskCreateMock).toHaveBeenCalledWith('private');
+  });
+
+  it('a channel-bound schedule fire resolves the channel privacy live', async () => {
+    fetchChannelIsPrivateMock.mockResolvedValue(false);
+
+    await fireTrigger(makeTrigger(), { kind: 'schedule' });
+
+    expect(fetchChannelIsPrivateMock).toHaveBeenCalledWith(CHANNEL);
+    expect(taskCreateMock).toHaveBeenCalledWith('public');
+  });
+
+  it('a schedule fire fails closed when the privacy lookup fails', async () => {
+    fetchChannelIsPrivateMock.mockRejectedValue(new Error('channel_not_found'));
+
+    await fireTrigger(makeTrigger(), { kind: 'schedule' });
+
+    expect(taskCreateMock).toHaveBeenCalledWith('private');
+  });
+
+  it('a DM-bound schedule fire is always private', async () => {
+    await fireTrigger(
+      makeTrigger({ binding: { type: 'user', user_id: 'U_DEV' } }),
+      { kind: 'schedule' },
+    );
+
+    expect(fetchChannelIsPrivateMock).not.toHaveBeenCalled();
+    expect(taskCreateMock).toHaveBeenCalledWith('private');
   });
 });
