@@ -342,6 +342,28 @@ export interface TaskMetadata {
     requested_by: string; // agent id — to clear its parked teardown on resolution
     requested_at: string; // ISO 8601, for the audit finding
   };
+  /**
+   * The single pending MCP tool-call approval (written by the PreToolUse gate
+   * in `tool-approval-gate.ts`, cleared on resolution, on a failed Slack post,
+   * or by ageing out). One at a time by design: a queue of pending approvals
+   * invites clearing them in a batch, which is the accident the gate exists to
+   * stop.
+   */
+  pending_tool_approval?: {
+    digest: string;       // identity of the exact (server, tool, arguments) call
+    server: string;       // MCP server key, for the audit finding
+    tool: string;         // bare tool name
+    summary: string;      // rendered prompt body shown to the approver
+    heading: string;      // one-line heading (the tool's description, or server:tool)
+    requested_by: string; // agent id — woken on approval; park cleared on resolution
+    requested_at: string; // ISO 8601
+  };
+  /**
+   * Grants approved but not yet spent. Each is one-shot and bound to a digest
+   * of the exact call, so it cannot be redirected to a different call or
+   * replayed. Expired entries are pruned on read.
+   */
+  approved_tool_calls?: ApprovedToolCall[];
   research_budget_extra?: number;    // Additional research budget granted via Slack approval (+5 per approval)
   research_request_count?: number;   // Persisted research request count (survives stop/reactivate)
   failure_counter?: number;          // Consecutive recovery attempts (Stage 3 idle detection)
@@ -353,6 +375,20 @@ export interface TaskMetadata {
   pending_trigger_id?: string;       // Trigger ID proposed by this task, awaiting approve/deny (read by handleTriggerApproval/Denial)
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * A human-approved, single-use permission to run one gated MCP tool call.
+ * Bound to `digest` — a hash of the server, tool and every argument — so it is
+ * spendable on that call and no other.
+ */
+export interface ApprovedToolCall {
+  digest: string;
+  server: string;
+  tool: string;
+  approved_by?: string;  // Slack user id of the approver, for the audit finding
+  approved_at: string;   // ISO 8601
+  expires_at: string;    // ISO 8601 — unspent grants go stale (APPROVAL_TTL_MS)
 }
 
 export interface LogEntry {

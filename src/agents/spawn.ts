@@ -29,6 +29,7 @@ import {
   createSchedulingMcpServer,
 } from './tools.js';
 import { createFileBridgeMcpServer, shouldAttachFileBridge } from './mcp-file-bridge.js';
+import { createToolApprovalHooks, mcpToolName } from './tool-approval-gate.js';
 import { hydrateBranchState } from '../connectors/github/branch-state.js';
 import { taskBranchName } from '../connectors/github/branch-naming.js';
 import { createResearchMcpServer, createResearchPostToolHook, createResearchDefenseTagHook } from '../mcp/research-tools.js';
@@ -756,7 +757,20 @@ Shared folder: ${sharedPath} [READ-ONLY]
     managedSettings: buildManagedNetworkPolicy(sandboxOpts),
     ...(tools ? { tools } : {}),
     hooks: {
-      PreToolUse: createFilesystemGuardHooks(sandboxOpts),
+      PreToolUse: [
+        ...createFilesystemGuardHooks(sandboxOpts),
+        // MCP tool approval gate (docs/architecture/tool-approvals.md): attached
+        // only when one of this agent's servers declares a policy, so agents
+        // whose servers are all unmanaged are untouched. The port reads live
+        // task metadata, so a grant written by the button handler is visible to
+        // the retry without a respawn.
+        ...(def.mcpPolicy
+          ? createToolApprovalHooks(def.mcpPolicy, {
+              consumeApproval: (digest) => task.consumeToolApproval(digest),
+              requestApproval: (request) => task.requestToolApproval(def.id, request),
+            })
+          : []),
+      ],
       PostToolUse: [
         createResearchPostToolHook({
           getSharedDir: () => getSharedPath(taskId),
@@ -863,7 +877,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
                   const toolMeta = new Map<string, import('../types/agent.js').McpToolMeta>();
                   for (const m of detailed) {
                     for (const t of m.tools ?? []) {
-                      toolMeta.set(`mcp__${m.name}__${t.name}`, {
+                      toolMeta.set(mcpToolName(m.name, t.name), {
                         serverName: m.serverInfo?.name,
                         readOnly: t.annotations?.readOnly,
                       });

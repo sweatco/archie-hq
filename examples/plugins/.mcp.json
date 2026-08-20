@@ -1,3 +1,16 @@
 {
-  "mcpServers": {}
+  "mcpServers": {
+    "gatecheck": {
+      "description": "Gate-check stub — one read tool and one gated mutation, used by the tool-approval-gate e2e check",
+      "command": "node",
+      "args": ["/workdir/plugins/gatecheck/server.mjs"],
+      "archie": {
+        "default": "ask",
+        "allow": ["get_status"],
+        "titles": {
+          "write_marker": "Append a marker line to the shared e2e marker file"
+        }
+      }
+    }
+  }
 }

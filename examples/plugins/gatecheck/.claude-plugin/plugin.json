@@ -1,0 +1,5 @@
+{
+  "name": "gatecheck",
+  "version": "1.0.0",
+  "description": "E2E fixture for the MCP tool approval gate — a stub MCP server with one read and one gated mutation, gated by the server's `archie` policy in .mcp.json. Used by tools/e2e/tool-gate-check.ts; harmless to leave installed."
+}

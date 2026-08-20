@@ -243,6 +243,7 @@ prompts/                         # Repo-root: layered system prompts
 - [GitHub Integration](github-integration.md) -- webhooks, PR management, merge orchestrator
 - [Edit Mode](edit-mode.md) -- approval flow, shared clones, and git workflow
 - [Max Mode](max-mode.md) -- per-task, human-approved model/effort upgrade for coding agents
+- [Tool Approvals](tool-approvals.md) -- per-call human approval for critical MCP tools
 - [Plugin System](plugin-system.md) -- plugin structure, loading, and agent registration
 - [Web Research](web-research.md) -- multi-agent research pipeline and defense layers
 - [Security](security.md) -- research budget, sandwich defense, prompt injection mitigations

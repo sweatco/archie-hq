@@ -201,6 +201,12 @@ In edit mode, repo agents manage their own PRs directly via the `repo-tools` MCP
 
 **Source:** `src/agents/spawn.ts`, `src/agents/tools.ts` (`createRequestEditModeTool`)
 
+### MCP Tool Approval Gate
+
+An MCP server can declare, per tool, that calls need per-call human approval — an `archie` block next to its connection config in the plugins repo's `.mcp.json` (see [Tool Approvals](tool-approvals.md)). A `PreToolUse` hook classifies each call against the policy of the servers that agent mounts: `allow` runs ungated, `deny` never runs (and is withheld through `disallowedTools` up front), `ask` is denied while a Slack Approve/Deny prompt — rendered by the engine from the policy's optional per-tool title and the call's sanitized arguments, never from the agent's summary — is posted and the task parks. Approval stores a single-use grant bound to `sha256(server, tool, canonicalized args)`; the agent's retry of that exact call spends it once. A server with no `archie` block is unmanaged and behaves exactly as before the gate existed. Because the policy travels with the server, every agent that mounts it is covered by the same rules, the PM included. Resolution follows the same trust model as the other gates (any workspace member; identity recorded for audit); the `/api` path is unauthenticated, as with every other approval type.
+
+**Source:** `src/agents/tool-approval-gate.ts`, `src/tasks/task.ts`, `src/connectors/slack/events.ts` (`registerToolApprovalHandlers`)
+
 ### PR Review Enforcement
 
 All code changes go through GitHub pull requests. Repo agents create PRs via the `create_pull_request` tool, and merge is gated on external PR review approval. The `merge_pull_request` tool checks that PRs are approved, CI is passing, and there are no conflicts before merging.

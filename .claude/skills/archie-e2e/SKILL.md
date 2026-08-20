@@ -161,6 +161,16 @@ Why it exists: the allowlist is enforced by the Claude CLI, not by our code, and
 
 A failure here is a release blocker, not a flake. If the non-allowlisted host is reachable, agent egress is open.
 
+## 3c. Tool-approval-gate check (run on any branch that touches the gate, spawn hooks, or bumps the SDK)
+
+```bash
+npx tsx tools/e2e/tool-gate-check.ts     # requires a booted instance
+```
+
+Asserts the MCP tool approval gate end to end on the live instance, using the `gatecheck` example plugin (a stub MCP server whose one mutation appends to `workdir/e2e/gate-marker.log`, observable from the host; its policy, including the button title, is the `archie` block on the server in `examples/plugins/.mcp.json`): a gated call must produce a `tool_call` approval request **without executing**, approving via the API must let the agent's retry execute **exactly once**, and the fixture's `allow`-tier tool must pass ungated. Same rationale as the egress check: the interception lives in the Claude CLI (`PreToolUse` under `bypassPermissions`), is version-coupled, and no unit test can notice the CLI silently ceasing to deliver MCP calls to hooks. A failure is a release blocker for anything relying on the gate.
+
+Prerequisite: the booted workdir includes the `gatecheck` example plugin (`npm run example:setup` links `examples/plugins`, which ships it). The check is self-driving over the HTTP API — no MCP session needed — and takes one model round-trip per phase (~2-5 min total).
+
 ## 4. Teardown
 
 ```bash
