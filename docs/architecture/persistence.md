@@ -94,6 +94,7 @@ base-36) provides uniqueness.
 ```typescript
 interface TaskMetadata {
   task_id: string;                              // e.g. "task-20251223-1712-a3f9k2"
+  visibility: TaskVisibility;                   // 'public' | 'private' — monotonic, see below
   task_owner: AgentName | null;                 // agent leading the task, or null
   participants: AgentName[];                    // all agents that have participated
   channels: Record<string, Channel>;            // active message delivery targets, keyed by channel ID
@@ -199,6 +200,26 @@ legacy metadata files where sessions were stored as bare session ID strings. The
 type TaskStatus = 'in_progress' | 'stopped' | 'completed';
 ```
 
+### TaskVisibility
+
+```typescript
+type TaskVisibility = 'public' | 'private';
+```
+
+A task's confidentiality class, and the field anything that reads a task's transcript out of its own context is expected to gate on. It is **monotonic**: a task may move public → private, never the reverse. `writeTaskMetadata` enforces that against the record on disk rather than trusting the in-memory object, so a detached `Task` instance that was loaded while the task was still public cannot restore public visibility by saving later.
+
+Where it comes from:
+
+| Origin | Visibility |
+|---|---|
+| Slack thread | the channel's live privacy at fetch time (`getChannelInfo().isPrivate`); a DM, a group DM, and an unreachable channel are all private |
+| CLI / operator API | `public` — the CLI is an operator surface with no channel to inherit from |
+| Trigger fire, message context | the triggering thread's visibility |
+| Trigger fire, schedule | the bound channel resolved live via `fetchChannelIsPrivate`, failing closed to private; a user-bound (DM) trigger is always private |
+| Legacy task with no field | `private`, except a task whose only channel is `cli:local`, which migrates to `public` by the CLI rule above. A task with no channels at all fails closed. |
+
+A Slack channel can be converted to private while a task is live. `taskVisibility` is recomputed on every thread fetch, so `Task.append` persists the downgrade **before** writing any of the newly-arrived content — nothing posted after the conversion is ever readable as public.
+
 ### Related types
 
 ```typescript
@@ -225,6 +246,8 @@ agents and external events.
 
 The `type` field is present for agent findings (discovery, decision, completion, blocker)
 and omitted for Slack messages and GitHub events.
+
+**An entry line is the only thing that carries attribution, so a body cannot be allowed to produce one.** `formatLogEntry` indents every continuation line of a multi-line body by two spaces and strips newlines out of the source field. Without that, a message whose text contained `[2026-01-01T00:00:00Z] [<@U_SOMEONE_ELSE:Name>] …` would read back as a separate entry attributed to a user who never wrote it. A reader therefore parses an entry as: a line starting at column zero with `[`, plus every following line that starts with two spaces.
 
 ### Entry types
 
@@ -307,7 +330,9 @@ debouncedSave(): void
 | Mode | Behavior |
 |---|---|
 | `debouncedSave()` (or `save(false)`) | If a save timer is already armed, returns. Otherwise arms a 500 ms timer that syncs sessions and writes `metadata.json` once it fires. |
-| `save(true)` (flush) | Syncs sessions and writes `metadata.json` synchronously via `writeFile`. Does not cancel a pending debounced timer (the next debounced fire is harmless — it just rewrites the same JSON). |
+| `save(true)` (flush) | Syncs sessions and writes `metadata.json` synchronously. Does not cancel a pending debounced timer (the next debounced fire is harmless — it just rewrites the same JSON). |
+
+Both modes go through `writeTaskMetadata` (`src/tasks/persistence.ts`), which is the only writer of `metadata.json`. It takes a per-task write lock, re-reads the persisted record inside it, merges `visibility` monotonically, writes a temporary file and `rename`s it over the target, and validates the task id against the canonical `task-YYYYMMDD-HHMM-<suffix>` shape plus path containment under `SESSIONS_DIR` before touching the filesystem. The lock is separate from the task-data lock below because `save()` is itself called from inside that one.
 
 Flush mode is used during `Task.stop()` and `Task.complete()` to guarantee the final
 status is persisted before the task instance is removed from `activeTasks`.

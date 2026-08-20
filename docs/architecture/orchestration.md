@@ -88,7 +88,7 @@ Slack webhook (POST /webhooks/slack)
         - findTaskByThread(threadId):
             existing task -> Task.get() + append() new messages + sendMessage(pm-agent, existingTask)
             no task, and (app_mention OR DM OR rootAuthorWasBot), and thread has >=1 visible message
-              -> Task.create() + append() + sendMessage(pm-agent, newTask)
+              -> Task.create(thread.taskVisibility) + append() + sendMessage(pm-agent, newTask)
             no task, reply in a human-started thread the bot didn't start -> ignore
         - shared-channel ephemeral warnings (per user, per thread)
         - fire-and-forget title generation (Haiku) on first message
@@ -481,7 +481,7 @@ type TaskStatus = 'in_progress' | 'stopped' | 'completed';
 
 | Transition | Trigger | Method |
 |---|---|---|
-| `-> in_progress` | New task created and first message sent | `Task.create()` + `task.append(thread)` + `task.sendMessage(...)` (`activate()` sets `metadata.status = 'in_progress'`) |
+| `-> in_progress` | New task created and first message sent | `Task.create(visibility)` + `task.append(thread)` + `task.sendMessage(...)` (`activate()` sets `metadata.status = 'in_progress'`) |
 | `-> in_progress` | Stopped task reactivated | `Task.get()` followed by `task.sendMessage(...)` — `activate()` flips status back to `in_progress` |
 | `-> stopped` | User cancels, edit mode request, research-budget exceeded, wall-clock timeout | `task.stop()` |
 | `-> completed` | PM calls `report_completion` | `task.complete()` |
@@ -493,6 +493,20 @@ Both `task.stop()` and `task.complete()`:
 4. Clean up shared clones for non-edit-mode tasks
 5. Remove the `:eyes:` reaction from the last processed Slack message in each linked channel
 6. Flush metadata to disk with the new `status`
+
+### The task-data boundary and durable completion
+
+Slack ingestion (`Task.append`) and `Task.complete()` both run inside `withTaskDataLock(taskId, …)` (`src/tasks/data-lock.ts`). The lock exists for readers, not for writers: anything that needs a coherent view of a task's metadata *and* its transcript together — a durable record of what the task actually said — takes the same lock instead of racing an in-flight append.
+
+`Task.complete()` is therefore ordered deliberately:
+
+1. Re-check `isActive` **inside** the lock. Two concurrent callers both pass the cheap pre-lock check; only the winner proceeds, so the irreversible teardown and the `task:completed` event happen exactly once.
+2. `await prepareTaskCompleted(taskId)` — the awaited completion listeners registered via `onTaskCompleted` (`src/system/event-bus.ts`). This is where work that must be durable *before* completion becomes irreversible goes.
+3. Only then flip `status` to `completed`, tear the agents down, and save.
+
+If step 2 rejects, the task stays active, stays in `activeTasks`, and stays `in_progress` — the callers (`scheduleIdleCheck`, the wall-clock timer) log and retry rather than losing the completion.
+
+Nothing registers a completion listener in this repo yet: the seam exists for consumers that must not observe a completed task before their own record of it is durable. A listener must not itself take the task-data lock — it already runs inside it — so a listener that needs to read the transcript should persist its intent here and do the reading afterwards, off the lock.
 
 ### Wall-clock timeout
 
