@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi, afterAll } from 'vitest';
-import { mkdir, writeFile, rm } from 'fs/promises';
+import { mkdir, writeFile, readFile, rm } from 'fs/promises';
 import { dirname } from 'path';
 
 const SESSIONS_ROOT = await vi.hoisted(async () => {
@@ -45,7 +45,7 @@ vi.mock('./task.js', () => ({
   activeTasks: new Map(),
 }));
 
-import { renderAttachmentsSuffix, renderEditForContext, loadMetadata, getMetadataPath } from '../persistence.js';
+import { renderAttachmentsSuffix, renderEditForContext, loadMetadata, getMetadataPath, writeTaskMetadata } from '../persistence.js';
 import { renderMessageBody } from '../../connectors/slack/message-body.js';
 import type { SlackFile } from '../../types/index.js';
 import type { TaskMetadata } from '../../types/task.js';
@@ -88,6 +88,45 @@ describe('renderAttachmentsSuffix â€” agreement with the inbound [Attachments: â
     expect(inbound).toBe('here you go\n  [Attachments: report.pdf]');
     expect(inbound).not.toBe(`here you go${renderAttachmentsSuffix(['report.pdf'])}`);
     expect(renderAttachmentsSuffix(['report.pdf'])).toBe('\n  [Attachments: report.pdf (report.pdf)]');
+  });
+});
+
+describe('writeTaskMetadata', () => {
+  it('prevents a concurrent stale public writer from restoring persisted public visibility', async () => {
+    const taskId = 'task-20260817-1200-visrace';
+    const path = getMetadataPath(taskId);
+    await mkdir(dirname(path), { recursive: true });
+    const base: TaskMetadata = {
+      task_id: taskId,
+      visibility: 'public',
+      task_owner: null,
+      participants: [],
+      channels: {},
+      default_channel: null,
+      agent_sessions: {},
+      repositories: {},
+      status: 'in_progress',
+      created_at: '2026-07-06T00:00:00.000Z',
+      updated_at: '2026-07-06T00:00:00.000Z',
+    };
+    await writeFile(path, JSON.stringify(base, null, 2));
+    const downgrade = { ...base, visibility: 'private' as const };
+    const stalePublic = { ...base, status: 'stopped' as const };
+
+    await Promise.all([
+      writeTaskMetadata(taskId, downgrade),
+      writeTaskMetadata(taskId, stalePublic),
+    ]);
+
+    const persisted = JSON.parse(await readFile(path, 'utf-8')) as TaskMetadata;
+    expect(persisted.visibility).toBe('private');
+    expect(stalePublic.visibility).toBe('private');
+  });
+
+  it('rejects malformed task IDs before constructing metadata paths', async () => {
+    await expect(
+      writeTaskMetadata('../escape', { task_id: '../escape', visibility: 'public' } as TaskMetadata),
+    ).rejects.toThrow('Invalid task ID');
   });
 });
 

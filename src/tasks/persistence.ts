@@ -5,7 +5,7 @@
  * appending to knowledge.log
  */
 
-import { mkdir, readdir, readFile, writeFile, appendFile } from 'fs/promises';
+import { mkdir, readdir, readFile, writeFile, appendFile, rename } from 'fs/promises';
 import { createReadStream, existsSync } from 'fs';
 import { createInterface } from 'readline';
 import { execFile } from 'child_process';
@@ -18,8 +18,10 @@ import { SESSIONS_DIR } from '../system/workdir.js';
 import { emitEvent, onEvent } from '../system/event-bus.js';
 import { logger } from '../system/logger.js';
 import { formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { createKeyedLock } from '../system/keyed-lock.js';
 
 const execFileAsync = promisify(execFile);
+const metadataWriteLock = createKeyedLock();
 
 /**
  * Ceiling on a scan's stdout. Only matching paths are printed, so this is ~150
@@ -225,6 +227,43 @@ export async function loadMetadata(taskId: string): Promise<TaskMetadata | null>
     logger.warn('persistence', `Failed to parse metadata for ${taskId}: ${err}`);
     return null;
   }
+}
+
+/**
+ * Replace one task metadata file under a dedicated write lock. Visibility is
+ * merged monotonically against the latest persisted record so a detached,
+ * stale public Task instance cannot overwrite a private downgrade.
+ */
+export async function writeTaskMetadata(
+  taskId: string,
+  metadata: TaskMetadata,
+): Promise<TaskMetadata> {
+  // Keep the literal allowlist beside the filesystem sinks for path analysis.
+  if (!/^task-\d{8}-\d{4}-[a-z0-9]+$/.test(taskId)) {
+    throw new Error('Invalid task ID');
+  }
+  const candidate = JSON.parse(JSON.stringify(metadata)) as TaskMetadata;
+
+  return metadataWriteLock(taskId, async () => {
+    const root = resolve(SESSIONS_DIR);
+    const path = resolve(getMetadataPath(taskId));
+    const rel = relative(root, path);
+    if (rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)) {
+      throw new Error('Task metadata path escapes sessions directory');
+    }
+    const persistedExists = existsSync(path);
+    const persisted = persistedExists ? await loadMetadata(taskId) : null;
+    const effectiveVisibility: TaskMetadata['visibility'] = persistedExists
+      ? persisted?.visibility === 'public' && candidate.visibility === 'public' ? 'public' : 'private'
+      : candidate.visibility === 'public' ? 'public' : 'private';
+    const effective = { ...candidate, visibility: effectiveVisibility };
+    const temporaryPath = `${path}.${process.pid}.tmp`;
+
+    await writeFile(temporaryPath, JSON.stringify(effective, null, 2));
+    await rename(temporaryPath, path);
+    metadata.visibility = effectiveVisibility;
+    return effective;
+  });
 }
 
 /**

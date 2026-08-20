@@ -38,7 +38,7 @@ import { Agent } from '../agents/agent.js';
 
 import {
   loadMetadata,
-  getMetadataPath,
+  writeTaskMetadata,
   appendAgentFinding,
   appendAgentMessage,
   appendMessageToUser,
@@ -233,7 +233,7 @@ export class Task {
       updated_at: new Date().toISOString(),
     };
 
-    await writeFile(getMetadataPath(taskId), JSON.stringify(metadata, null, 2));
+    await writeTaskMetadata(taskId, metadata);
     await writeFile(getKnowledgeLogPath(taskId), '');
 
     logger.system(`Created task ${taskId}`);
@@ -278,7 +278,7 @@ export class Task {
     // repo agent still resolves (a later plugin removal would otherwise make the
     // migration drop those entries). Only an active task ever re-saves on its own.
     if (didMigrateRepositories || didMigrateVisibility) {
-      await writeFile(getMetadataPath(taskId), JSON.stringify(metadata, null, 2));
+      await writeTaskMetadata(taskId, metadata);
       // Log once, here — the migration persisted, so it won't run again. (The
       // migrate fn stays silent: it runs on every load, incl. read-only
       // findTaskByPRNumber, so logging there would spam.)
@@ -1178,10 +1178,7 @@ export class Task {
     // saveLegacyTask expects TaskRuntimeState, but we need to bridge
     // For now, write directly
     if (flush) {
-      await writeFile(
-        getMetadataPath(this.taskId),
-        JSON.stringify(this.metadata, null, 2),
-      );
+      await writeTaskMetadata(this.taskId, this.metadata);
     } else {
       // Debounced — use the legacy saveTask by creating a compat shim
       this.debouncedSave();
@@ -1788,10 +1785,7 @@ export class Task {
           this.metadata.agent_sessions[agentName] = { ...agent.session };
         }
         this.metadata.updated_at = new Date().toISOString();
-        await writeFile(
-          getMetadataPath(this.taskId),
-          JSON.stringify(this.metadata, null, 2),
-        );
+        await writeTaskMetadata(this.taskId, this.metadata);
       } catch (err) {
         logger.error('task', `Failed to save task ${this.taskId}`, err);
       }
