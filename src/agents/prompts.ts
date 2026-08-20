@@ -14,7 +14,14 @@ export const AGENT_PROMPTS = {
   // silently complete the task without ever opening the log. Observed live: a
   // user @mentioned Archie and got no reply at all.
   newTask: 'New task created. Check knowledge.log for the request, then assign an owner.',
-  existingTask: 'New input received. Check knowledge.log for the update.',
+  // Deliberately NOT 'New input received' any more. That framing read as a work order, and the PM
+  // acted on it as one: woken by a reply that opened by addressing a colleague, it went straight from
+  // reading the log into four tool calls and then posted, uninvited, into two colleagues' exchange. The
+  // wording now says the two things that were missing — the activity may not be for the PM at all,
+  // and whether it is yours to answer is decided BEFORE what to say. It also stays true on the other
+  // path that uses this prompt (GitHub merge outcomes), which really are PM's to announce.
+  existingTask:
+    'New activity in a thread you are in — not necessarily a request for you. Check knowledge.log for what arrived, then decide whether it is yours to answer before you decide what to say.',
   recovery: 'Task was interrupted. Check knowledge.log for current state and continue where you left off.',
 
   // GitHub activity on work PM has already delegated — review comments, review
