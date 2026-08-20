@@ -81,15 +81,16 @@ Slack webhook (POST /webhooks/slack)
     --> routeSlackEvent()          [connectors/slack/events.ts]
         - discard own bot messages (matched by bot_id)
         - everything else -> triage (returned action; triage is the only non-discard route)
+    --> persist identifier-only ingress record
     --> handleSlackEvent()         [connectors/slack/events.ts]
-        - bail out if author is external/guest in a shared channel
-        - add :eyes: reaction (remove from previous message in same thread)
-        - fetchSlackThread() — full thread history; redaction is applied later, at render time
+        - bail out unless the current author is verified internal
+        - reconcile a checkpointed wake from task/log state when possible
         - findTaskByThread(threadId):
             existing task -> Task.get() + append() new messages + sendMessage(pm-agent, existingTask)
             no task, and (app_mention OR DM OR rootAuthorWasBot), and thread has >=1 visible message
-              -> Task.create() + append() + sendMessage(pm-agent, newTask)
+              -> Task.createForSlack() + append() + sendMessage(pm-agent, newTask)
             no task, reply in a human-started thread the bot didn't start -> ignore
+        - add :eyes: reaction (remove from previous message in same thread)
         - shared-channel ephemeral warnings (per user, per thread)
         - fire-and-forget title generation (Haiku) on first message
 ```
@@ -481,7 +482,7 @@ type TaskStatus = 'in_progress' | 'stopped' | 'completed';
 
 | Transition | Trigger | Method |
 |---|---|---|
-| `-> in_progress` | New task created and first message sent | `Task.create()` + `task.append(thread)` + `task.sendMessage(...)` (`activate()` sets `metadata.status = 'in_progress'`) |
+| `-> in_progress` | New task created and first message sent | `Task.createForSlack(thread)` persists an inert binding, then `task.append(thread)` + `task.sendMessage(...)` (`activate()` sets `metadata.status = 'in_progress'`) |
 | `-> in_progress` | Stopped task reactivated | `Task.get()` followed by `task.sendMessage(...)` — `activate()` flips status back to `in_progress` |
 | `-> stopped` | User cancels, edit mode request, research-budget exceeded, wall-clock timeout | `task.stop()` |
 | `-> completed` | PM calls `report_completion` | `task.complete()` |

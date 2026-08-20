@@ -163,7 +163,7 @@ describe('the Slack render path stays single', () => {
   it('does not re-decide redaction at call sites', () => {
     expect(
       unredactedRenderOffenders(sources),
-      `An inline \`redacted: false\` is a call site deciding for itself that a message need not be redacted. The question is answered once, by \`shouldRedact\` in message-body.ts, and the one sanctioned unredacted path is the named \`exploreBody\` — named so the decision is greppable and auditable. The pin path's unredacted render is the named \`pinBody\` inside the render module rather than an inline literal at its call site — pins are gated upstream by a two-principal trust check that DROPS external content before it can ever be rendered, and keeping that reasoning next to the render is what stops it being re-litigated per caller.`,
+      `An inline \`redacted: false\` is a call site deciding for itself that a message need not be redacted. Unredacted paths are named inside message-body.ts so each upstream trust decision stays greppable and auditable instead of being re-litigated per caller.`,
     ).toEqual([]);
   });
 });

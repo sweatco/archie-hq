@@ -38,7 +38,7 @@ To enable Socket Mode end-to-end, also flip `socket_mode_enabled: true` in `slac
 
 ### Lifecycle
 
-`mountSlackApp()` registers handlers immediately but does not begin accepting events. It returns a `{ start, stop }` lifecycle handle. `src/index.ts` calls `start()` only after `recoverActiveTasks()` and the reminder scheduler have finished, so an inbound event arriving during boot cannot race a recovery prompt and double-trigger an agent. `stop()` is invoked from the SIGINT/SIGTERM handler for a graceful Socket Mode disconnect before the HTTP server closes.
+`mountSlackApp()` registers handlers immediately but does not begin accepting events. It returns a `{ start, stop }` lifecycle handle. After ordinary task and scheduler recovery, `src/index.ts` calls `start()` to schedule durable replay and open Socket Mode, then opens the HTTP server. Per-thread serialization prevents a replayed record from racing a newly delivered event for the same thread. Shutdown ends long-lived API streams, closes the HTTP listener, and disconnects Socket Mode before waiting up to 30 seconds for active ingress work; unfinished records remain on disk for the next start.
 
 ### Bot Scopes
 
@@ -75,15 +75,22 @@ The server registers two Bolt event handlers:
 
    The `message` handler also branches on the **`message_changed`** subtype (a user editing a message) and routes it to `handleSlackEdit` — see [Message Edits](#message-edits) below.
 
-Both handlers run the same pipeline:
+Task-directed events run this pipeline:
 
 ```
 Slack webhook
   -> routeSlackEvent()  [discard own bot messages by bot_id]
-  -> handleSlackEvent() [inline, fire-and-forget]
+  -> persist { type, channel, user, ts, threadTs? }
+  -> refetch exact Slack message and thread
+  -> re-verify current actor
+  -> handleSlackEvent()
 ```
 
-Events are processed inline with no queue — the Bolt receiver acknowledges the webhook immediately and processing continues asynchronously. The shutdown flag short-circuits handlers during graceful shutdown. See `src/connectors/slack/events.ts`.
+The durable record contains identifiers only, never message text or other unverified event payload. A worker retries transient Slack/API failures with bounded exponential backoff and replays pending records after restart. Only the oldest pending record in a thread is eligible, so a retry cannot be overtaken; processing is capped at four threads concurrently. Each attempt owns its slot until it actually settles, and every settlement immediately admits another thread. This keeps one stalled attempt from blocking the other three slots without allowing a duplicate continuation; if all four underlying operations never settle, restart is the recovery boundary and their records remain durable. One unreadable record is retried sparsely without blocking valid peers. A verified external author or a deleted/replaced target is discarded as terminal; exhausted records remain as metadata-only dead records for diagnosis, outside the active scan. New tasks fetch history from the root, while existing tasks fetch only the exclusive interval after their persisted watermark through the triggering message. After five pages without the target, an exact refetch distinguishes a missing target from a genuinely long thread; verified long threads continue paginating so context is not truncated. The already verified current actor is reused within one attempt to avoid a second, inconsistent lookup.
+
+Before mutating a task, the worker checkpoints whether the record owes a new-task or existing-task wake. The record remains until that wake succeeds and the resulting active task state is flushed. If the transcript append reached disk before its watermark did, replay reconciles the structurally marked original message for that exact channel and thread, advances the watermark, and delivers the owed wake without requiring the Slack message to still exist. New tasks are persisted stopped and already bound to the Slack thread, so replay converges on one task and one transcript. Waking the agent is intentionally at-least-once: the durable boundary covers Slack acceptance and task binding, not an agent-message outbox.
+
+This recovery path covers app mentions, 1:1 DM messages, and real thread replies. Ambient top-level channel triggers and message edits keep their existing direct, best-effort path. Bolt still acknowledges transport before invoking the listener, leaving a small accepted gap between Slack's ACK and the durable write. The shutdown flag short-circuits new handlers during graceful shutdown. See `src/connectors/slack/events.ts`.
 
 ## Message Edits
 
@@ -99,13 +106,13 @@ When a user edits a message, Slack delivers a `message` event with subtype `mess
 When they hold, the edited payload goes through `rawMessageBody` — the same full inbound extraction every other path uses, so blocks, attachment cards, files and mention resolution all apply, not just the flat `text` field — and `task.appendSlackEdit` writes a **fresh** knowledge-log entry — the log is append-only, so edits are never mutations of the original line. The entry reuses the original message's `msg:<ts>` id and its body, built by the pure `renderEditForContext`, is the rendered new content tagged as an edit — so an edit that added an attachment card or a file shows them, where an earlier version logged only the flat text:
 
 ```
-@<U123:Dana> in slack:#<C456:deploys>:1700000000.000100 | msg:1700000000.000100
+@<U123:Dana> in slack:#<C456:deploys>:1700000000.000100 | msg:1700000000.000100 | edit
   [edited] deploy to prod
 ```
 
-The pre-edit text is deliberately **not** duplicated — the original message already sits in the log under the same `msg:<ts>` id, so the agent correlates the edit to it by id rather than us re-logging now-stale text.
+The pre-edit text is deliberately **not** duplicated — the original message sits in the log under the same `msg:<ts>` id and an `original` source marker, or follows under the task-data lock when ingress fetched just before the edit. The agent correlates the entries by id rather than us re-logging now-stale text. The structural `original`/`edit` markers also let crash recovery distinguish a real original whose text begins with `[edited]` from an edit entry. Legacy unmarked entries keep their prior conservative interpretation.
 
-Crucially, `appendSlackEdit` does **not** advance `last_processed_ts`: an edit reuses the original message's `ts`, so touching the watermark would cause genuinely new replies to be skipped. After logging, the task is woken with the standard `AGENT_PROMPTS.existingTask` ("new input received") prompt — the agent reads the edit from the log and decides whether the change is material, taking no action when it is merely cosmetic.
+Crucially, `appendSlackEdit` does **not** advance `last_processed_ts`: an edit reuses the original message's `ts`, so touching the watermark would cause genuinely new replies to be skipped. After logging, the task is woken with the standard `AGENT_PROMPTS.existingTask` ("new input received") prompt. If the original message is still awaiting its first append, the edit is logged under the task-data lock before the fetched original can follow; the structural markers preserve which text is current. The agent reads the edit from the log and decides whether the change is material, taking no action when it is merely cosmetic.
 
 ## Triage Agent (Disabled)
 
@@ -118,14 +125,16 @@ The Haiku-based triage agent in `src/system/triage.ts` is **currently disabled**
 ```
 Slack webhook
   -> routeSlackEvent()                       [drop own bot's messages]
+  -> checkpointed replay?                    [recover an owed wake from exact task/log state]
   -> External-author bail-out                [resolve user, skip if external/guest]
-  -> Eyes reaction (ack)                     [@mention/DM: add to current msg, remove from prev]
-  -> fetchSlackThread()                      [history + author resolution + shared flag + rootAuthorWasBot]
-  -> findTaskByThread(threadId):
-       found    -> Task.get() -> task.append(thread)
+  -> findTaskByThread(threadId)              [ordinary-event duplicate check]
+  -> fetchSlackThread()                      [new history interval + author resolution + shared flag]
+  -> route:
+       found    -> Eyes reaction (ack)        [@mention/DM only]
+                   -> Task.get() -> task.append(thread)
                    -> task.sendMessage(AGENT_PROMPTS.existingTask)
        not found, (app_mention OR DM OR rootAuthorWasBot) AND thread has >=1 visible message
-         -> Task.create(thread.taskVisibility) -> task.append(thread)
+         -> Eyes reaction (ack) -> Task.createForSlack(thread) -> task.append(thread)
                    (a reply to a bot-started thread is acked here, post-fetch)
                    -> task.sendMessage(AGENT_PROMPTS.newTask)
        not found, reply in a thread the bot didn't start -> ignore

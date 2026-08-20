@@ -26,6 +26,8 @@ vi.mock('../../connectors/slack/client.js', async (importOriginal) => {
   return {
     ...actual,
     isExternalUser: (user: { teamId?: string }) => user.teamId === 'T_OTHER',
+    classifySlackIngestAuthor: (user: { teamId?: string }) =>
+      user.teamId === 'T_OTHER' ? 'external' : 'internal',
   };
 });
 
@@ -42,7 +44,7 @@ vi.mock('../persistence.js', async (importOriginal) => {
   return { ...actual, downloadMessageFiles: downloadMock, appendSlackMessage: appendMock };
 });
 
-import { Task } from '../task.js';
+import { Task, activeTasks } from '../task.js';
 import type { TaskMetadata, SlackThread } from '../../types/task.js';
 import type { AgentDef } from '../../types/agent.js';
 
@@ -73,6 +75,7 @@ function threadWithFile(): SlackThread {
 
 describe('Task.append renders after the file download', () => {
   beforeEach(() => {
+    activeTasks.clear();
     downloadMock.mockReset();
     appendMock.mockReset();
     appendMock.mockResolvedValue(undefined);
@@ -84,8 +87,8 @@ describe('Task.append renders after the file download', () => {
   function newTask(): Task {
     const metadata = { channels: {}, agent_sessions: {} } as unknown as TaskMetadata;
     const task = new TaskCtor('t1', metadata, []);
-    // The debounced save writes to disk; this test is about the rendered body, not persistence.
-    (task as unknown as { debouncedSave: () => void }).debouncedSave = () => {};
+    activeTasks.set('t1', task);
+    task.save = vi.fn().mockResolvedValue(undefined);
     return task;
   }
 

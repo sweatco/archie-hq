@@ -45,7 +45,7 @@ vi.mock('module', async (importOriginal) => {
 vi.mock('../client.js', () => ({
   initSlackClient: vi.fn(),
   updateMessage: vi.fn().mockResolvedValue(undefined),
-  getBotUserId: vi.fn().mockReturnValue('U_BOT'),
+  getBotUserId: vi.fn().mockReturnValue('UBOT'),
   fetchSlackThread: vi.fn(),
   getBotId: vi.fn().mockReturnValue('B_OURS'),
   addReaction: vi.fn(),
@@ -76,6 +76,11 @@ vi.mock('../../../system/event-bus.js', () => ({
   emitEvent: vi.fn(),
 }));
 vi.mock('../../../system/workdir.js', () => ({ SESSIONS_DIR: '/tmp/sessions' }));
+vi.mock('../ingress.js', () => ({
+  enqueueSlackIngress: vi.fn().mockResolvedValue(undefined),
+  startSlackIngress: vi.fn().mockResolvedValue(undefined),
+  stopSlackIngress: vi.fn().mockResolvedValue(undefined),
+}));
 
 vi.mock('../../../tasks/task.js', () => ({
   Task: { get: vi.fn(), create: vi.fn() },
@@ -109,6 +114,7 @@ import { getChannelMessageTriggers, fireTrigger } from '../../../system/trigger-
 import { logger } from '../../../system/logger.js';
 import { Task } from '../../../tasks/task.js';
 import { findTaskByThread } from '../../../tasks/persistence.js';
+import { enqueueSlackIngress } from '../ingress.js';
 
 const CHANNEL = 'C0SWEEP';
 const DM = 'D0SWEEP';
@@ -165,7 +171,7 @@ beforeEach(async () => {
   vi.mocked(getChannelMessageTriggers).mockReturnValue([]);
   vi.mocked(findTaskByThread).mockResolvedValue(null);
   vi.mocked(isExternalUser).mockReturnValue(false);
-  vi.mocked(getBotUserId).mockReturnValue('U_BOT');
+  vi.mocked(getBotUserId).mockReturnValue('UBOT');
   // A thread that exists and carries one visible message — the ordinary case, so nothing is refused by the
   // content floor unless a row deliberately empties it.
   vi.mocked(fetchSlackThread).mockResolvedValue({
@@ -174,7 +180,7 @@ beforeEach(async () => {
     shared: false,
     currentMessageTs: '1700000000.000001',
     rootAuthorWasBot: false,
-    messages: [{ user: { id: 'U_DEV', username: 'dev', realName: 'A Dev' }, ownText: 'hi', ts: '1700000000.000001' }],
+    messages: [{ user: { id: 'UDEV', username: 'dev', realName: 'A Dev' }, ownText: 'hi', ts: '1700000000.000001' }],
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any);
   await mountSlackApp({} as Application, { slackBotToken: 'xoxb-test', slackAppToken: 'xapp-test' });
@@ -194,13 +200,13 @@ describe('the denylist admits these subtypes without anything downstream choking
     const label = subtype ?? '(no subtype)';
 
     it(`survives a top-level channel post: ${label}`, async () => {
-      await deliver({ type: 'message', ...(subtype ? { subtype } : {}), channel: CHANNEL, user: 'U_DEV', text: 'hello', ts: '1700000000.000100' });
+      await deliver({ type: 'message', ...(subtype ? { subtype } : {}), channel: CHANNEL, user: 'UDEV', text: 'hello', ts: '1700000000.000100' });
       // Nothing watches this channel, so an ambient post must not create a task.
       expect(vi.mocked(Task.create)).not.toHaveBeenCalled();
     });
 
     it(`survives a thread reply with no task following it: ${label}`, async () => {
-      await deliver({ type: 'message', ...(subtype ? { subtype } : {}), channel: CHANNEL, user: 'U_DEV', text: 'hello', ts: '1700000000.000200', thread_ts: '1700000000.000001' });
+      await deliver({ type: 'message', ...(subtype ? { subtype } : {}), channel: CHANNEL, user: 'UDEV', text: 'hello', ts: '1700000000.000200', thread_ts: '1700000000.000001' });
       expect(vi.mocked(Task.create)).not.toHaveBeenCalled();
     });
 
@@ -210,7 +216,7 @@ describe('the denylist admits these subtypes without anything downstream choking
     });
 
     it(`survives a nested message object: ${label}`, async () => {
-      await deliver({ type: 'message', ...(subtype ? { subtype } : {}), channel: CHANNEL, user: 'U_DEV', ts: '1700000000.000400', message: { ts: '1700000000.000400', user: 'U_DEV', text: 'nested' } });
+      await deliver({ type: 'message', ...(subtype ? { subtype } : {}), channel: CHANNEL, user: 'UDEV', ts: '1700000000.000400', message: { ts: '1700000000.000400', user: 'UDEV', text: 'nested' } });
       expect(vi.mocked(Task.create)).not.toHaveBeenCalled();
     });
   }
@@ -238,14 +244,14 @@ describe('a body-less DM cannot seed a task, whatever its subtype', () => {
     });
   }
 
-  it('still creates a task for a DM that carries a message', async () => {
+  it('queues a DM that carries a message for durable processing', async () => {
     vi.mocked(fetchSlackThread).mockResolvedValue({
       threadId: '1700000000.000901',
       channel: { id: DM, name: 'dm' },
       shared: false,
       currentMessageTs: '1700000000.000901',
       rootAuthorWasBot: false,
-      messages: [{ user: { id: 'U_DEV', username: 'dev', realName: 'A Dev' }, ownText: 'hello', ts: '1700000000.000901' }],
+      messages: [{ user: { id: 'UDEV', username: 'dev', realName: 'A Dev' }, ownText: 'hello', ts: '1700000000.000901' }],
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
     vi.mocked(Task.create).mockResolvedValue({
@@ -256,8 +262,11 @@ describe('a body-less DM cannot seed a task, whatever its subtype', () => {
       debouncedSave: vi.fn(),
     } as never);
 
-    await deliver({ type: 'message', channel: DM, user: 'U_DEV', text: 'hello', ts: '1700000000.000901' });
-    expect(vi.mocked(Task.create)).toHaveBeenCalledTimes(1);
+    await deliver({ type: 'message', channel: DM, user: 'UDEV', text: 'hello', ts: '1700000000.000901' });
+    expect(vi.mocked(enqueueSlackIngress)).toHaveBeenCalledWith({
+      type: 'message', channel: DM, user: 'UDEV', ts: '1700000000.000901',
+    });
+    expect(vi.mocked(Task.create)).not.toHaveBeenCalled();
   });
 });
 
@@ -265,7 +274,7 @@ describe('the denied subtypes are dropped before any thread fetch', () => {
   for (const subtype of DENIED_SUBTYPES) {
     it(`drops ${subtype} without fetching a thread`, async () => {
       // `message_changed` has its own handler and is expected to reach it, so only assert no task is created.
-      await deliver({ type: 'message', subtype, channel: CHANNEL, user: 'U_DEV', text: 'noise', ts: '1700000000.000500' });
+      await deliver({ type: 'message', subtype, channel: CHANNEL, user: 'UDEV', text: 'noise', ts: '1700000000.000500' });
       expect(vi.mocked(Task.create)).not.toHaveBeenCalled();
       if (subtype !== 'message_changed') {
         expect(vi.mocked(fetchSlackThread), `${subtype} should be refused before the thread fetch`).not.toHaveBeenCalled();

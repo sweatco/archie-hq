@@ -583,39 +583,43 @@ function decodeSlackEntities(text: string): string {
 async function fetchThreadHistory(
   channel: string,
   threadTs: string,
-  oldest?: string
+  oldest: string | undefined,
+  requiredTs: string,
 ): Promise<RawSlackMessage[]> {
   const client = getSlackClient();
 
   // `conversations.replies` returns oldest-first and pages, so ignoring
   // `next_cursor` would drop the NEWEST replies — including, on a long enough
-  // thread, the very message that triggered this fetch. Follow the cursor, with
-  // a page cap so a runaway thread can't stall the turn.
+  // thread, the very message that triggered this fetch. Task ingress is bounded
+  // by that message and follows pages until it is present.
   const raw: SlackHistoryMessage[] = [];
   let cursor: string | undefined;
   let page = 0;
+  let targetVerified = false;
   do {
     const result = await client.conversations.replies({
       channel,
       ts: threadTs,
       oldest,
-      inclusive: oldest ? false : true,
+      latest: requiredTs,
+      inclusive: true,
       cursor,
       limit: 1000,
     });
     raw.push(...(result.messages ?? []));
     cursor = result.response_metadata?.next_cursor || undefined;
     page += 1;
-    if (cursor && page >= THREAD_PAGE_LIMIT) {
-      logger.warn(
-        'Slack',
-        `Thread ${channel}:${threadTs} exceeds ${THREAD_PAGE_LIMIT} pages (${raw.length} messages) — older replies kept, newest truncated`,
-      );
-      break;
+    if (raw.some((message) => message.ts === requiredTs)) break;
+    if (cursor && page >= THREAD_PAGE_LIMIT && !targetVerified) {
+      targetVerified = await fetchExactThreadMessageRaw(channel, threadTs, requiredTs) !== null;
+      if (!targetVerified) throw new SlackIngressTargetError('target_missing');
     }
   } while (cursor);
 
-  return resolveRawMessages(raw, channel);
+  return resolveRawMessages(
+    oldest ? raw.filter((message) => message.ts !== oldest) : raw,
+    channel,
+  );
 }
 
 /** Max `conversations.replies` pages per thread fetch (1000 messages each). */
@@ -1428,8 +1432,13 @@ async function resolveRawMessages(
  * which messages to pass in (fetchSlackThread filters bot chatter; explore
  * reads pass everything).
  */
-async function resolveAuthorsAndMap(messages: RawSlackMessage[]): Promise<SlackThreadMessage[]> {
-  const authorIds = new Set(messages.filter((m) => m.user).map((m) => m.user));
+async function resolveAuthorsAndMap(
+  messages: RawSlackMessage[],
+  knownAuthors: ReadonlyMap<string, SlackAuthor> = new Map(),
+): Promise<SlackThreadMessage[]> {
+  const authorIds = new Set(
+    messages.filter((m) => m.user && !knownAuthors.has(m.user)).map((m) => m.user),
+  );
   const userInfoEntries = await Promise.all(
     Array.from(authorIds).map(async (uid): Promise<readonly [string, SlackAuthor]> => {
       try {
@@ -1450,7 +1459,7 @@ async function resolveAuthorsAndMap(messages: RawSlackMessage[]): Promise<SlackT
       }
     })
   );
-  const userInfoMap = new Map(userInfoEntries);
+  const userInfoMap = new Map([...knownAuthors, ...userInfoEntries]);
 
   return messages.map((msg) => {
     const author: SlackAuthor = msg.user
@@ -2110,6 +2119,7 @@ export async function fetchSlackFileBody(fileUrl: string): Promise<string> {
   const response = await fetch(fileUrl, {
     headers: { 'Authorization': `Bearer ${token}` },
     redirect: 'follow',
+    signal: AbortSignal.timeout(60_000),
   });
 
   if (!response.ok) {
@@ -2219,7 +2229,8 @@ export async function cleanSlackText(text: string, channelId?: string): Promise<
  */
 export async function downloadSlackFile(
   fileUrl: string,
-  destPath: string
+  destPath: string,
+  signal?: AbortSignal
 ): Promise<void> {
   const client = getSlackClient();
   const token = (client as unknown as { token: string }).token;
@@ -2231,6 +2242,7 @@ export async function downloadSlackFile(
       'Authorization': `Bearer ${token}`,
     },
     redirect: 'follow',
+    signal,
   });
 
   if (!response.ok) {
@@ -2266,8 +2278,57 @@ export async function downloadSlackFile(
   logger.slack(`Downloaded file to ${destPath} (${buffer.length} bytes, type: ${contentType})`);
 }
 
+export class SlackIngressTargetError extends Error {
+  constructor(readonly reason: 'target_missing' | 'author_mismatch') {
+    super(reason);
+    this.name = 'SlackIngressTargetError';
+  }
+}
+
+function isMissingSlackTarget(error: unknown): boolean {
+  const code = (error as { data?: { error?: unknown }; code?: unknown })?.data?.error
+    ?? (error as { code?: unknown })?.code;
+  return code === 'thread_not_found' || code === 'message_not_found';
+}
+
+async function translateMissingTarget<T>(operation: Promise<T>): Promise<T> {
+  try {
+    return await operation;
+  } catch (error) {
+    if (isMissingSlackTarget(error)) throw new SlackIngressTargetError('target_missing');
+    throw error;
+  }
+}
+
+async function fetchExactThreadMessage(
+  channelId: string,
+  threadTs: string,
+  messageTs: string,
+): Promise<RawSlackMessage | null> {
+  const raw = await fetchExactThreadMessageRaw(channelId, threadTs, messageTs);
+  if (!raw) return null;
+  const messages = await resolveRawMessages([raw], channelId);
+  return messages[0] ?? null;
+}
+
+async function fetchExactThreadMessageRaw(
+  channelId: string,
+  threadTs: string,
+  messageTs: string,
+): Promise<SlackHistoryMessage | null> {
+  const result = await getSlackClient().conversations.replies({
+    channel: channelId,
+    ts: threadTs,
+    oldest: messageTs,
+    latest: messageTs,
+    inclusive: true,
+    limit: 1,
+  });
+  return (result.messages ?? []).find((message) => message.ts === messageTs) ?? null;
+}
+
 /**
- * Fetch a complete Slack thread with all API work done in one place:
+ * Fetch a Slack thread through the triggering message with all API work done in one place:
  * channel info, thread history, user info resolution, bot message filtering.
  *
  * Returns a fully-resolved SlackThread ready for consumption by triage and Task.
@@ -2276,25 +2337,45 @@ export async function fetchSlackThread(
   channelId: string,
   threadTs: string,
   currentMessageTs: string,
+  currentActor?: SlackAuthor,
+  oldest?: string,
 ): Promise<SlackThread> {
-  const [channelInfo, rawMessages, shared] = await Promise.all([
-    fetchVerifiedChannelInfo(channelId),
-    fetchThreadHistory(channelId, threadTs),
-    isChannelShared(channelId),
-  ]);
+  const [channelInfo, fetchedMessages, shared] = await translateMissingTarget(
+    Promise.all([
+      fetchVerifiedChannelInfo(channelId),
+      fetchThreadHistory(channelId, threadTs, oldest, currentMessageTs),
+      isChannelShared(channelId),
+    ]),
+  );
+  const rawMessages = [...fetchedMessages];
+  let currentMessage = rawMessages.find((message) => message.ts === currentMessageTs);
+  if (currentMessage) {
+    rawMessages.splice(rawMessages.indexOf(currentMessage) + 1);
+  }
+  if (!currentMessage) {
+    currentMessage = await translateMissingTarget(
+      fetchExactThreadMessage(channelId, threadTs, currentMessageTs),
+    ) ?? undefined;
+    if (!currentMessage) throw new SlackIngressTargetError('target_missing');
+    rawMessages.push(currentMessage);
+    rawMessages.sort((a, b) => Number(a.ts) - Number(b.ts));
+  }
+  if (currentActor && currentMessage.user !== currentActor.id) {
+    throw new SlackIngressTargetError('author_mismatch');
+  }
 
   // Detect whether OUR bot authored the thread root, computed BEFORE filtering.
   // This is the signal the router uses to seed a task when a human replies to a
   // thread Archie itself started (see handleSlackEvent).
-  const root = rawMessages[0];
+  const root = rawMessages.find((message) => message.ts === threadTs);
   const rootAuthorWasBot =
     !!root && ((!!root.user && root.user === botUserId) || (!!root.botId && root.botId === botId));
 
   // Keep automation messages long enough for Task.append to make the same
   // chronological trust decision as it does for human authors. Archie's own
   // chatter is still dropped except for a root that seeded the task.
-  const visibleMessages = rawMessages.filter((msg, i) => {
-    const isRoot = i === 0;
+  const visibleMessages = rawMessages.filter((msg) => {
+    const isRoot = msg.ts === threadTs;
     if (msg.user) {
       if (msg.user === botUserId) return isRoot; // our own bot — keep only at root
       return true;
@@ -2307,7 +2388,8 @@ export async function fetchSlackThread(
     return false;
   });
 
-  const messages = await resolveAuthorsAndMap(visibleMessages);
+  const knownAuthors = currentActor ? new Map([[currentActor.id, currentActor]]) : undefined;
+  const messages = await resolveAuthorsAndMap(visibleMessages, knownAuthors);
 
   return {
     threadId: threadTs,

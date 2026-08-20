@@ -387,6 +387,7 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
   }
   const task = await Task.create(visibility);
   task.metadata.triggered_by = trigger.id;
+  if (context.kind === 'message') await task.save(true);
 
   // Wire delivery. A message fire ingests the triggering thread, which links it as the default channel and
   // posts nothing. A schedule fire has no thread, so the task is homed in the bound channel and its first

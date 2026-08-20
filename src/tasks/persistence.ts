@@ -183,7 +183,7 @@ export async function downloadMessageFiles(
       const localPath = join(attachmentsDir, `${file.id}-${file.name}`);
       // Prefer url_private_download (works with Bearer token) over url_private (requires browser session)
       const downloadUrl = file.url_private_download || file.url_private;
-      await downloadSlackFile(downloadUrl, localPath);
+      await downloadSlackFile(downloadUrl, localPath, AbortSignal.timeout(60_000));
 
       downloadedFiles.push({
         ...file,
@@ -314,7 +314,7 @@ export async function appendSlackMessage(
   // Stamp the Slack message timestamp (`ts`) into the source line as a stable
   // message id, so agents can target ANY message in the thread when reacting
   // (e.g. via `react_to_message`), not just the most recent one.
-  const msgIdSuffix = options?.ts ? ` | msg:${options.ts}` : '';
+  const msgIdSuffix = options?.ts ? ` | msg:${options.ts} | original` : '';
   const entry: LogEntry = {
     timestamp: new Date().toISOString(),
     source: `<@${userInfo.id}:${displayName}> in ${formatSlackChannelRef(channelInfo.id, channelInfo.name, threadId)}${msgIdSuffix}`,
@@ -365,7 +365,7 @@ export async function appendSlackEdit(
   const body = renderEditForContext(newText);
   const entry: LogEntry = {
     timestamp: new Date().toISOString(),
-    source: `<@${userInfo.id}:${userInfo.realName}> in ${formatSlackChannelRef(channelInfo.id, channelInfo.name, threadId)} | msg:${editedTs}`,
+    source: `<@${userInfo.id}:${userInfo.realName}> in ${formatSlackChannelRef(channelInfo.id, channelInfo.name, threadId)} | msg:${editedTs} | edit`,
     message: body,
   };
 
@@ -524,6 +524,34 @@ export async function readKnowledgeLog(taskId: string): Promise<string> {
   }
 
   return readFile(logPath, 'utf-8');
+}
+
+interface LoggedSlackMessages {
+  originalIds: Set<string>;
+  ambiguousLegacyEditIds: Set<string>;
+}
+
+export async function readLoggedSlackMessages(
+  taskId: string,
+  channelId: string,
+  threadId: string,
+): Promise<LoggedSlackMessages> {
+  const log = await readKnowledgeLog(taskId);
+  const sourceLine = /^\[[^\]\r\n]+\] \[(?:@<|<@).+ in slack:#<([A-Z0-9_]+):[^>\r\n]*>:(\d+\.\d+) \| msg:(\d+\.\d+)(?: \| (original|edit))?\] ([^\r\n]*)$/gm;
+  const originalIds = new Set<string>();
+  const ambiguousLegacyEditIds = new Set<string>();
+
+  for (const match of log.matchAll(sourceLine)) {
+    const [, loggedChannelId, loggedThreadId, messageId, kind, body] = match;
+    if (loggedChannelId !== channelId || loggedThreadId !== threadId || kind === 'edit') continue;
+    if (kind === 'original' || !body.startsWith('[edited] ')) {
+      originalIds.add(messageId);
+    } else {
+      ambiguousLegacyEditIds.add(messageId);
+    }
+  }
+
+  return { originalIds, ambiguousLegacyEditIds };
 }
 
 /**

@@ -51,8 +51,15 @@ vi.mock('../client.js', () => ({
   addReaction: vi.fn(),
   setSlackDryRun: vi.fn(),
   getUserInfo: vi.fn().mockResolvedValue({ name: 'dev', realName: 'A Dev', teamId: 'T_HOME' }),
+  classifySlackIdentity: vi.fn().mockReturnValue('internal'),
   isExternalUser: vi.fn().mockReturnValue(false),
   isChannelShared: vi.fn().mockResolvedValue(false),
+  fetchChannelIsPrivate: vi.fn().mockResolvedValue(false),
+  SlackIngressTargetError: class SlackIngressTargetError extends Error {
+    constructor(readonly reason: 'target_missing' | 'author_mismatch') {
+      super(reason);
+    }
+  },
   postEphemeral: vi.fn(),
   getSlackClient: vi.fn(),
   cleanSlackText: vi.fn((s: string) => s),
@@ -78,7 +85,7 @@ vi.mock('../../../system/event-bus.js', () => ({
 vi.mock('../../../system/workdir.js', () => ({ SESSIONS_DIR: '/tmp/sessions' }));
 
 vi.mock('../../../tasks/task.js', () => ({
-  Task: { get: vi.fn(), create: vi.fn() },
+  Task: { get: vi.fn(), create: vi.fn(), createForSlack: vi.fn() },
   activeTasks: new Map(),
 }));
 
@@ -319,12 +326,15 @@ describe('the content floor on task creation', () => {
   it('still creates a task for a DM that carries a message', async () => {
     const task = {
       metadata: { channels: {}, title: 'x' },
-      append: vi.fn().mockResolvedValue({ linkedNewThread: true }),
+      append: vi.fn().mockResolvedValue(true),
       ackMessage: vi.fn(),
       sendMessage: vi.fn().mockResolvedValue(undefined),
       debouncedSave: vi.fn(),
+      save: vi.fn().mockResolvedValue(undefined),
+      claimSlackIngress: vi.fn(),
     };
-    vi.mocked(Task.create).mockResolvedValue(task as never);
+    task.claimSlackIngress.mockResolvedValue(task);
+    vi.mocked(Task.createForSlack).mockResolvedValue(task as never);
     vi.mocked(fetchSlackThread).mockResolvedValue({
       threadId: '1700000000.001100',
       channel: { id: 'D0USER', name: 'dm' },
@@ -341,7 +351,7 @@ describe('the content floor on task creation', () => {
       ts: '1700000000.001100',
     });
 
-    expect(vi.mocked(Task.create)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(Task.createForSlack)).toHaveBeenCalledTimes(1);
   });
 });
 

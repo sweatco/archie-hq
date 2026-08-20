@@ -27,10 +27,23 @@ import {
   getSlackClient,
   fetchChannelIsPrivate,
   cleanSlackText,
+  SlackIngressTargetError,
 } from './client.js';
 import { ensureChannelCanvas } from './channel-canvas.js';
 import { ensureChannelPins } from './channel-pins.js';
-import { shouldCreateNewTask, shouldForwardMessageEvent, isAckableEvent } from './task-routing.js';
+import {
+  shouldCreateNewTask,
+  shouldForwardMessageEvent,
+  isAckableEvent,
+} from './task-routing.js';
+import {
+  enqueueSlackIngress,
+  startSlackIngress,
+  stopSlackIngress,
+  type SlackIngressOutcome,
+  type SlackIngressRecovery,
+  type SlackIngressRef,
+} from './ingress.js';
 import { Task } from '../../tasks/task.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
@@ -62,10 +75,8 @@ export interface SlackConfig {
 /**
  * Lifecycle handle returned by mountSlackApp.
  *
- * Mounting only registers handlers; `start()` opens the Socket Mode
- * WebSocket (no-op in HTTP mode, which is driven by the shared HTTP
- * server). Callers should defer `start()` until task recovery has
- * completed so startup-time events cannot race recovery.
+ * Mounting only registers handlers. After task recovery, `start()` schedules
+ * durable replay and opens Socket Mode; `stop()` closes both paths.
  */
 export interface SlackLifecycle {
   start: () => Promise<void>;
@@ -73,6 +84,38 @@ export interface SlackLifecycle {
 }
 
 let app: AppType | null = null;
+const pendingIngressWrites = new Set<Promise<void>>();
+const INGRESS_WRITE_DRAIN_MS = 30_000;
+
+async function persistSlackIngress(ref: SlackIngressRef): Promise<void> {
+  const write = enqueueSlackIngress(ref);
+  pendingIngressWrites.add(write);
+  try {
+    await write;
+  } finally {
+    pendingIngressWrites.delete(write);
+  }
+}
+
+async function waitForSlackIngressWrites(): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = await Promise.race([
+    (async () => {
+      while (pendingIngressWrites.size > 0) {
+        await Promise.allSettled([...pendingIngressWrites]);
+      }
+      return false;
+    })(),
+    new Promise<true>((resolve) => {
+      timeout = setTimeout(() => resolve(true), INGRESS_WRITE_DRAIN_MS);
+      timeout.unref?.();
+    }),
+  ]);
+  if (timeout) clearTimeout(timeout);
+  if (timedOut) {
+    logger.warn('Slack', 'Timed out waiting for Slack ingress writes during shutdown; durable records will replay on restart');
+  }
+}
 
 type SlackUserInfo = Awaited<ReturnType<typeof getUserInfo>>;
 
@@ -203,7 +246,7 @@ export async function mountSlackApp(
     receiver,
   });
 
-  // Handle app mentions - process inline
+  // Persist app mentions before processing.
   app!.event('app_mention', async ({ event }) => {
     if (getIsShuttingDown()) {
       logger.system('Ignoring Slack event during shutdown');
@@ -215,14 +258,13 @@ export async function mountSlackApp(
       return;
     }
 
-    handleSlackEvent({
+    await persistSlackIngress({
       type: event.type,
       channel: event.channel,
       user: event.user ?? '',
-      raw: event,
       ts: event.ts,
-      thread_ts: event.thread_ts,
-    }).catch((err: unknown) => logger.error('Server', 'Error processing Slack event', err));
+      ...(event.thread_ts ? { threadTs: event.thread_ts } : {}),
+    });
   });
 
   // Handle thread messages (replies without @mention) and DM messages
@@ -286,14 +328,26 @@ export async function mountSlackApp(
       return;
     }
 
-    handleSlackEvent({
-      type: event.type,
-      channel: event.channel,
-      user: event.user || '',
-      raw: event,
-      ts: event.ts,
-      thread_ts: event.thread_ts,
-    }).catch((err: unknown) => logger.error('Server', 'Error processing Slack event', err));
+    const isThreadReply = !!event.thread_ts && event.thread_ts !== event.ts;
+    if ((isDm || isThreadReply) && event.user) {
+      await persistSlackIngress({
+        type: 'message',
+        channel: event.channel,
+        user: event.user || '',
+        ts: event.ts,
+        ...(event.thread_ts ? { threadTs: event.thread_ts } : {}),
+      });
+    } else {
+      handleSlackEvent({
+        type: event.type,
+        channel: event.channel,
+        user: event.user || '',
+        raw: event,
+        text: event.text || '',
+        ts: event.ts,
+        thread_ts: event.thread_ts,
+      }).catch((err: unknown) => logger.error('Server', 'Error processing Slack event', err));
+    }
   });
 
   // Handle the bot itself being added to a channel — scan for an existing
@@ -557,19 +611,25 @@ export async function mountSlackApp(
     }
   });
 
-  // Return a lifecycle handle. start()/stop() are no-ops in HTTP mode —
-  // the shared HTTP server in src/index.ts drives the ExpressReceiver.
+  // Return a lifecycle handle. start() is a no-op in HTTP mode — the shared
+  // HTTP server in src/index.ts drives the ExpressReceiver.
   return {
     async start() {
+      await startSlackIngress(processSlackIngress);
       if (useSocketMode) {
         await app!.start();
         logger.plain('Slack: Socket Mode connected');
       }
     },
     async stop() {
-      if (useSocketMode && app) {
-        await app.stop();
-        logger.plain('Slack: Socket Mode disconnected');
+      try {
+        if (useSocketMode && app) {
+          await app.stop();
+          logger.plain('Slack: Socket Mode disconnected');
+        }
+      } finally {
+        await waitForSlackIngressWrites();
+        await stopSlackIngress();
       }
     },
   };
@@ -724,46 +784,97 @@ export async function handleSlackEvent(event: {
   raw?: unknown;
   ts: string;
   thread_ts?: string;
-}): Promise<void> {
+}, recovery?: SlackIngressRecovery): Promise<SlackIngressOutcome> {
   const threadId = event.thread_ts || event.ts;
   // Key under which this thread is (or will be) linked in task.metadata.channels.
   const channelKey = `slack:${event.channel}:${threadId}`;
+  let taskId: string | null = null;
+  let task: Task | null = null;
+  if (recovery?.wake) {
+    taskId = await findTaskByThread(threadId);
+    task = taskId ? await Task.get(taskId) : null;
+  }
+  let channel = task?.metadata.channels[channelKey];
+  const isAckable = isAckableEvent(event.type, event.channel);
+  let alreadyConsumed = channel?.type === 'slack' && channel.last_processed_ts >= event.ts;
+
+  if (recovery?.wake && task && !alreadyConsumed) {
+    alreadyConsumed = await task.reconcileLoggedSlackIngress(channelKey, event.ts);
+  }
+
+  if (alreadyConsumed) {
+    if (!recovery?.wake || !task) return { status: 'complete' };
+    await recovery.checkpoint(recovery.wake);
+    task = await task.claimSlackIngress();
+    if (isAckable) task.ackMessage(channelKey, event.ts);
+    await task.sendMessage(
+      recovery.wake === 'new' ? AGENT_PROMPTS.newTask : AGENT_PROMPTS.existingTask,
+    );
+    await task.save(true);
+    return { status: 'complete' };
+  }
 
   // ---- External-author bail-out --------------------------------------------
-  // Human-authored events proceed only for verified internal users. Authorless
-  // app posts are allowed only into the ambient channel-trigger path below,
-  // which performs its own workspace gate before rendering their content.
-  if (event.user) {
+  let currentActor: SlackAuthor | undefined;
+  if (!event.user) {
+    const ambientAuthorlessPost = !recovery
+      && event.type === 'message'
+      && !event.channel.startsWith('D')
+      && !event.thread_ts;
+    if (!ambientAuthorlessPost) {
+      logger.warn('Slack', 'Skipping task-directed event without an author');
+      return { status: 'terminal', reason: 'missing_author' };
+    }
+  } else {
+    let authorInfo: SlackUserInfo;
     try {
-      const authorInfo = await getUserInfo(event.user);
-      const identity = classifySlackIdentity(authorInfo);
-      if (identity !== 'internal') {
-        logger.system(`Skipping event from ${identity} user ${event.user}`);
-        return;
-      }
+      authorInfo = await getUserInfo(event.user);
     } catch (error) {
       logger.warn('Slack', `Failed to classify event author ${event.user}`, error);
-      return;
+      throw error;
     }
-  } else if (event.type !== 'message' || event.channel.startsWith('D') || event.thread_ts) {
-    logger.warn('Slack', 'Skipping task-directed event without an author');
-    return;
+    const identity = classifySlackIdentity(authorInfo);
+    if (identity === 'external') {
+      logger.system(`Skipping event from external user ${event.user}`);
+      return { status: 'terminal', reason: 'external_author' };
+    }
+    if (identity !== 'internal') {
+      throw new Error(`Slack author identity unresolved for ${event.user}`);
+    }
+    currentActor = {
+      id: event.user,
+      username: authorInfo.name,
+      realName: authorInfo.realName,
+      teamId: authorInfo.teamId,
+      isRestricted: authorInfo.isRestricted,
+      isUltraRestricted: authorInfo.isUltraRestricted,
+      isBot: authorInfo.isBot,
+      isAppUser: authorInfo.isAppUser,
+    };
+
+    if (!recovery?.wake) {
+      taskId = await findTaskByThread(threadId);
+      task = taskId ? await Task.get(taskId) : null;
+      channel = task?.metadata.channels[channelKey];
+      alreadyConsumed = channel?.type === 'slack' && channel.last_processed_ts >= event.ts;
+      if (alreadyConsumed) return { status: 'complete' };
+    }
   }
 
   // Resolve channel confidentiality before any ingress side effect. A failed
   // lookup must not be converted into a durable private classification for a
   // channel that may actually be public.
-  const thread = await fetchSlackThread(event.channel, threadId, event.ts);
-
-  // Instant acknowledgment — react before any LLM processing. Only @mentions
-  // and DM messages are acknowledged; plain thread replies in an engaged channel
-  // are not. Moving the ack (clearing it from the previously-acked message)
-  // and recording which message holds it is done via `task.ackMessage` once we
-  // have a task in hand — see below — so the bookkeeping survives follow-up
-  // messages.
-  const isAckable = isAckableEvent(event.type, event.channel);
-  if (isAckable) {
-    addReaction(event.channel, event.ts, 'eyes');
+  let thread: SlackThread;
+  try {
+    const oldest = channel?.type === 'slack' && channel.last_processed_ts !== '0'
+      ? channel.last_processed_ts
+      : undefined;
+    thread = await fetchSlackThread(event.channel, threadId, event.ts, currentActor, oldest);
+  } catch (error) {
+    if (error instanceof SlackIngressTargetError) {
+      return { status: 'terminal', reason: error.reason };
+    }
+    throw error;
   }
 
   const shared = thread.shared;
@@ -808,13 +919,11 @@ export async function handleSlackEvent(event: {
   //     logger.system('Triage: noop');
   //     break;
   // }
-  const taskId = await findTaskByThread(threadId);
-  if (taskId) {
+  if (taskId && task) {
     logger.system(`Processing #${thread.channel.name} (thread: ${threadId})`);
-    const task = await Task.get(taskId);
 
     // Check if channel is muted
-    const channel = task.metadata.channels[channelKey];
+    channel = task.metadata.channels[channelKey];
     if (channel?.type === 'slack' && channel.muted) {
       const isDm = event.channel.startsWith('D');
       if (event.type === 'app_mention' || isDm) {
@@ -826,23 +935,31 @@ export async function handleSlackEvent(event: {
       } else {
         // Channel is muted and no @mention — skip
         logger.system(`Skipping muted channel ${threadId}`);
-        return;
+        return { status: 'complete' };
       }
     }
 
+    const wake = recovery?.wake ?? 'existing';
+    if (isAckable) addReaction(event.channel, event.ts, 'eyes');
+    await recovery?.checkpoint(wake);
+    await sendSharedChannelWarnings(task, event.channel, threadId, thread, shared);
+
     // Thread reply to an existing task — route to it
-    if (!(await task.append(thread))) {
+    if (!(await task.append(thread, recovery?.wake !== undefined))) {
       logger.warn('Slack', `Stopped ingesting thread ${threadId} at an author whose identity could not be verified`);
-      return;
+      throw new Error(`Slack thread author identity unresolved at ${thread.currentMessageTs}`);
     }
+    task = await task.claimSlackIngress();
     if (isAckable) task.ackMessage(channelKey, event.ts);
     if (!task.metadata.title) {
       generateTitleAndSync(task, thread).catch((err) =>
         logger.warn('title-generator', `pipeline failed: ${err}`),
       );
     }
-    await sendSharedChannelWarnings(task, event.channel, threadId, thread, shared);
-    await task.sendMessage(AGENT_PROMPTS.existingTask);
+    await task.sendMessage(wake === 'new' ? AGENT_PROMPTS.newTask : AGENT_PROMPTS.existingTask);
+    await task.save(true);
+  } else if (recovery?.wake === 'existing') {
+    throw new Error(`Slack ingress lost its task for thread ${threadId}`);
   } else if (shouldCreateNewTask(event.type, event.channel, thread.rootAuthorWasBot) && thread.messages.length > 0) {
     logger.system(`Processing #${thread.channel.name} (thread: ${threadId})`);
 
@@ -854,22 +971,23 @@ export async function handleSlackEvent(event: {
     // The `thread.messages.length > 0` conjunct is a content floor on TASK CREATION specifically. Inverting the subtype gate to a denylist deliberately forwards subtypes nobody enumerated, which is what fixes the trigger arm, but this branch spends a PM turn: a payload with no author and no body (an assistant-container notice, a `tombstone`, a `bot_add`) otherwise reached `Task.create()` and woke the PM on an empty knowledge log. Checking the fetched thread rather than the subtype keeps that robust — any future subtype carrying nothing is refused for the same reason, with no list to maintain.
     //
     // It is deliberately NOT applied to the trigger branch below. That path renders from the raw event, not from the fetched thread, precisely because `fetchSlackThread` drops a message with neither a `user` nor a `botId` — gating it on `thread.messages` would reintroduce the very blindness this change removes.
-    const task = await Task.create(thread.taskVisibility);
-    if (!(await task.append(thread))) {
+    await recovery?.checkpoint('new');
+    if (isAckable || thread.rootAuthorWasBot) addReaction(event.channel, event.ts, 'eyes');
+    let task = await Task.createForSlack(thread);
+    await sendSharedChannelWarnings(task, event.channel, threadId, thread, shared);
+    if (!(await task.append(thread, recovery?.wake !== undefined))) {
       logger.warn('Slack', `Stopped ingesting new thread ${threadId} at an author whose identity could not be verified`);
-      return;
+      throw new Error(`Slack thread author identity unresolved at ${thread.currentMessageTs}`);
     }
-    // Ack the triggering message. For @mention/DM the :eyes: was already added
-    // before the thread fetch; for a reply to a bot-started thread, add it now.
-    if (!isAckable && thread.rootAuthorWasBot) addReaction(event.channel, event.ts, 'eyes');
+    task = await task.claimSlackIngress();
     if (isAckable || thread.rootAuthorWasBot) task.ackMessage(channelKey, event.ts);
     if (!task.metadata.title) {
       generateTitleAndSync(task, thread).catch((err) =>
         logger.warn('title-generator', `pipeline failed: ${err}`),
       );
     }
-    await sendSharedChannelWarnings(task, event.channel, threadId, thread, shared);
     await task.sendMessage(AGENT_PROMPTS.newTask);
+    await task.save(true);
   } else if (event.type === 'message' && !event.channel.startsWith('D') && !event.thread_ts) {
     // Ambient top-level channel message (no task, not an @mention, not a thread
     // reply) — the only place channel-message triggers fire. @mentions and DMs
@@ -877,6 +995,21 @@ export async function handleSlackEvent(event: {
     await dispatchChannelMessageTriggers(event, thread.channel.name, thread);
   }
   // Otherwise: a reply in a human-started thread the bot wasn't part of — ignore
+  return { status: 'complete' };
+}
+
+function processSlackIngress(
+  ref: SlackIngressRef,
+  recovery: SlackIngressRecovery,
+): Promise<SlackIngressOutcome> {
+  return handleSlackEvent({
+    type: ref.type,
+    channel: ref.channel,
+    user: ref.user,
+    text: '',
+    ts: ref.ts,
+    thread_ts: ref.threadTs,
+  }, recovery);
 }
 
 /**
@@ -1028,12 +1161,13 @@ export async function handleSlackEdit(event: any): Promise<void> {
     logger.system(`Skipping edit in muted channel ${threadId}`);
     return;
   }
-  const recorded = await task.appendSlackEdit(channelKey, author, editedTs, newText, sourceVisibility);
-  if (!recorded) return;
+  const target = await task.appendSlackEdit(channelKey, author, editedTs, newText, sourceVisibility);
+  if (!target) return;
 
-  const channelLabel = channel?.type === 'slack' ? channel.channel_name : channelId;
+  const targetChannel = target.metadata.channels[channelKey];
+  const channelLabel = targetChannel?.type === 'slack' ? targetChannel.channel_name : channelId;
   logger.system(`Processing edit in #${channelLabel} (msg: ${editedTs})`);
-  await task.sendMessage(AGENT_PROMPTS.existingTask);
+  await target.sendMessage(AGENT_PROMPTS.existingTask);
 }
 
 const SHARED_CHANNEL_WARNING_TEXT =
@@ -1069,7 +1203,7 @@ async function sendSharedChannelWarnings(
   ch.isShared = shared;
 
   if (!shared) {
-    task.debouncedSave();
+    await task.save(true);
     return;
   }
 
@@ -1087,9 +1221,8 @@ async function sendSharedChannelWarnings(
   for (const userId of toWarn) {
     await postEphemeral(channelId, userId, SHARED_CHANNEL_WARNING_TEXT, threadId);
     warned.add(userId);
-  }
-  if (toWarn.length > 0) {
     ch.warnedUsers = [...warned];
+    await task.save(true);
   }
 
   // Warning B — for each message that carries at least one externally-authored
@@ -1109,10 +1242,9 @@ async function sendSharedChannelWarnings(
   for (const userId of forwardersToNotify) {
     await postEphemeral(channelId, userId, FORWARD_NOTICE_TEXT, threadId);
     forwardNotified.add(userId);
-  }
-  if (forwardersToNotify.size > 0) {
     ch.forwardNotifiedUsers = [...forwardNotified];
+    await task.save(true);
   }
 
-  task.debouncedSave();
+  await task.save(true);
 }

@@ -6,7 +6,7 @@
  * The raw Slack JSON goes through the real extraction: only `@slack/web-api` is faked, following the mocked-`WebClient` pattern in `client.test.ts`, so nothing here is a hand-built `SlackThreadMessage` that could quietly disagree with what Slack actually sends. The module registry is reset per test so the client's channel/user/shared caches never leak across cases.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Trigger } from '../../../types/trigger.js';
 
 // One shared fake WebClient; methods are reconfigured per test. `WebClient` is used with `new`, so the mock implementation must be a regular (constructable) function that returns the shared fake.
@@ -107,7 +107,7 @@ function attachmentOnlyBotPost(over: Record<string, unknown> = {}): Record<strin
     subtype: 'bot_message',
     channel: CHANNEL,
     bot_id: THIRD_PARTY_BOT,
-    bot_profile: { name: 'Flag Janitor' },
+    bot_profile: { name: 'Flag Janitor', team_id: 'THOME' },
     text: '',
     attachments: [{ text: `${PHRASE}\n3 flags are past their removal date: android_paywall_v3, ios_streaks, web_referral` }],
     ts: FIXTURE_TS,
@@ -148,6 +148,7 @@ function makeTrigger(contains?: string): Trigger {
 beforeEach(() => {
   vi.clearAllMocks();
   sdk.lastPrompt = '';
+  process.env.SLACK_TRUSTED_AUTOMATION_IDS = THIRD_PARTY_BOT;
 
   slackApi.auth.test.mockResolvedValue({
     user_id: OUR_BOT_USER, bot_id: OUR_BOT_ID, team_id: 'THOME', url: 'https://acme.slack.com',
@@ -165,6 +166,10 @@ beforeEach(() => {
   slackApi.conversations.replies.mockResolvedValue({ messages: [attachmentOnlyBotPost()] });
   slackApi.conversations.history.mockResolvedValue({ messages: [attachmentOnlyBotPost()] });
   slackApi.pins.list.mockResolvedValue({ items: [] });
+});
+
+afterEach(() => {
+  delete process.env.SLACK_TRUSTED_AUTOMATION_IDS;
 });
 
 describe('an attachment-only bot post survives into every agent-facing entry point', () => {

@@ -52,6 +52,7 @@ vi.mock('../../../system/logger.js', () => ({
 }));
 
 import { mountApiRoutes } from '../routes.js';
+import { offEvent } from '../../../system/event-bus.js';
 
 let server: Server | undefined;
 
@@ -94,5 +95,32 @@ describe('PATCH /api/triggers/:id', () => {
       action: { prompt: 'operator replacement' },
       prompt_origin_visibility: 'public',
     }));
+  });
+});
+
+describe('GET /api/events/stream', () => {
+  it('closes active streams before the HTTP server shuts down', async () => {
+    const app = express();
+    const lifecycle = mountApiRoutes(app);
+    const runningServer = app.listen(0);
+    server = runningServer;
+    await new Promise<void>((resolve) => runningServer.once('listening', resolve));
+    const address = runningServer.address();
+    if (!address || typeof address === 'string') throw new Error('Expected TCP server');
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/events/stream`);
+    const reader = response.body!.getReader();
+    const first = await reader.read();
+    expect(new TextDecoder().decode(first.value)).toContain('"type":"connected"');
+
+    lifecycle.closeStreams();
+    const closed = new Promise<void>((resolve, reject) => {
+      runningServer.close((error?: Error) => error ? reject(error) : resolve());
+    });
+
+    await expect(reader.read()).resolves.toMatchObject({ done: true });
+    await expect(closed).resolves.toBeUndefined();
+    expect(offEvent).toHaveBeenCalledOnce();
+    server = undefined;
   });
 });

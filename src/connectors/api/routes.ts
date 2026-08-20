@@ -27,11 +27,16 @@ import { listTriggers, loadTrigger, saveTrigger, deleteTrigger, countActiveTrigg
 import { indexTrigger, deindexTrigger, announceTriggerChange, describeTrigger, MAX_TRIGGERS_PER_USER, MAX_TRIGGERS_PER_CHANNEL } from '../../system/trigger-scheduler.js';
 import type { Trigger } from '../../types/trigger.js';
 
+interface ApiLifecycle {
+  closeStreams(): void;
+}
+
 /**
  * Mount API routes on an existing Express app.
  */
-export function mountApiRoutes(app: Application): void {
+export function mountApiRoutes(app: Application): ApiLifecycle {
   const router = express.Router();
+  const streams = new Map<Response, () => void>();
   router.use(express.json());
 
   // ---- SSE: real-time event stream ----
@@ -61,10 +66,13 @@ export function mountApiRoutes(app: Application): void {
       res.write(': keepalive\n\n');
     }, 30_000);
 
-    req.on('close', () => {
+    const cleanup = () => {
+      if (!streams.delete(res)) return;
       clearInterval(keepalive);
       offEvent(listener);
-    });
+    };
+    streams.set(res, cleanup);
+    req.once('close', cleanup);
   });
 
   // ---- GET /tasks — list tasks ----
@@ -452,4 +460,12 @@ export function mountApiRoutes(app: Application): void {
 
   app.use('/api', router);
   logger.plain('API routes: /api/tasks, /api/triggers, /api/events/stream');
+  return {
+    closeStreams() {
+      for (const [res, cleanup] of streams) {
+        cleanup();
+        res.end();
+      }
+    },
+  };
 }

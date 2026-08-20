@@ -56,6 +56,8 @@ interface AppConfig {
   githubWebhookSecret?: string;
 }
 
+const HTTP_SHUTDOWN_DEADLINE_MS = 30_000;
+
 /**
  * Load configuration from environment
  */
@@ -218,7 +220,7 @@ async function main(): Promise<void> {
     });
 
     // Mount API routes (REST + SSE for CLI)
-    mountApiRoutes(app);
+    const apiLifecycle = mountApiRoutes(app);
 
     // Mount OAuth callback route (provider redirects land here)
     mountOAuthRoutes(app);
@@ -255,10 +257,10 @@ async function main(): Promise<void> {
     await recoverActiveTasks();
     await initReminderScheduler();
     await initTriggerScheduler();
-
-    // Now accept events: start the HTTP server and open the Socket Mode WebSocket.
-    await new Promise<void>((resolve) => server.listen(config.port, resolve));
     if (slackLifecycle) await slackLifecycle.start();
+
+    // Now accept HTTP events; Socket Mode was opened above after recovery.
+    await new Promise<void>((resolve) => server.listen(config.port, resolve));
 
     logger.plain(`Health check: GET /health`);
     logger.plain(`Archie server is running on port ${config.port}\n`);
@@ -267,6 +269,13 @@ async function main(): Promise<void> {
     const shutdown = async (signal: string) => {
       logger.plain(`\nReceived ${signal} signal`);
       setShuttingDown(true);
+      apiLifecycle.closeStreams();
+      const serverClosed = new Promise<void>((resolve) => server.close(() => resolve()));
+      const forceCloseTimer = setTimeout(() => {
+        logger.warn('index', 'Timed out draining HTTP connections during shutdown; forcing them closed');
+        server.closeAllConnections();
+      }, HTTP_SHUTDOWN_DEADLINE_MS);
+      void serverClosed.then(() => clearTimeout(forceCloseTimer));
       logger.system('Stopped accepting new webhooks');
       if (slackLifecycle) {
         try {
@@ -275,7 +284,7 @@ async function main(): Promise<void> {
           logger.error('index', 'Error stopping Slack receiver', err);
         }
       }
-      server.close();
+      await serverClosed;
       logger.plain('Server closed');
       process.exit(0);
     };

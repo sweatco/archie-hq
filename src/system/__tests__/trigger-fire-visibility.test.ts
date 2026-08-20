@@ -63,6 +63,7 @@ describe('fireTrigger task visibility', () => {
       metadata: {},
       append: vi.fn().mockResolvedValue(true),
       debouncedSave: vi.fn(),
+      save: vi.fn().mockResolvedValue(undefined),
       sendMessage: vi.fn().mockResolvedValue(undefined),
     }));
   });

@@ -109,9 +109,14 @@ export function messageBody(msg: SlackMessageParts & { user: SlackAuthor }, ctx:
 /**
  * Render a message read by an explore tool (`read_channel_history` / `read_thread`).
  *
- * Explore reads are deliberately never redacted: the agent asked to look at a channel, and redacting there would hand back a wall of placeholders instead of the content it went to read. This is the one sanctioned unredacted path, and it exists as a named function so the decision is greppable in a single place rather than scattered as inline `redacted: false` literals whose intent nobody can audit.
+ * Explore reads are deliberately never redacted: the agent asked to look at a channel, and redacting there would hand back a wall of placeholders instead of the content it went to read. This is a named function so the decision is greppable in a single place rather than scattered as inline `redacted: false` literals whose intent nobody can audit.
  */
 export function exploreBody(msg: SlackMessageParts): string {
+  return renderMessageBody(msg, { redacted: false });
+}
+
+/** Render an author already accepted by the stricter task-ingress trust gate. */
+export function trustedIngestBody(msg: SlackMessageParts): string {
   return renderMessageBody(msg, { redacted: false });
 }
 

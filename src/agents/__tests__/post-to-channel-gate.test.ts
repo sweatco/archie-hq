@@ -102,6 +102,7 @@ function makeTask(opts: { home?: boolean; originChannelId?: string } = {}): Task
     metadata: {
       channels,
       default_channel,
+      visibility: 'public',
       ...(opts.home ? { home_channel: { channel_id: 'CHOME', channel_name: 'ops-daily' } } : {}),
     },
     touch: vi.fn(), debouncedSave: vi.fn(), save: vi.fn().mockResolvedValue(undefined),

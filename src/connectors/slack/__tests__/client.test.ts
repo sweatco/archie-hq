@@ -484,6 +484,70 @@ describe('fetchSlackThread — pagination', () => {
     expect(thread.messages.map((m) => m.ownText)).toEqual(['first page', 'second page']);
     expect(slackApi.conversations.replies).toHaveBeenCalledTimes(2);
   });
+
+  it('continues beyond the ordinary cap until the triggering message', async () => {
+    for (let page = 0; page < 5; page += 1) {
+      slackApi.conversations.replies.mockResolvedValueOnce({
+        messages: [rawMsg({ ts: `71${page}.0`, user: 'UHUMAN', text: `page ${page}` })],
+        response_metadata: { next_cursor: `CURSOR${page + 1}` },
+      });
+    }
+    slackApi.conversations.replies.mockResolvedValueOnce({
+      messages: [rawMsg({ ts: '715.0', user: 'UHUMAN', text: 'target' })],
+    });
+    slackApi.conversations.replies.mockResolvedValueOnce({
+      messages: [
+        rawMsg({ ts: '715.0', user: 'UHUMAN', text: 'target' }),
+        rawMsg({ ts: '716.0', user: 'UHUMAN', text: 'later' }),
+      ],
+      response_metadata: { next_cursor: 'CURSOR6' },
+    });
+
+    const thread = await client.fetchSlackThread('C_long_page', '710.0', '715.0');
+
+    expect(slackApi.conversations.replies).toHaveBeenCalledTimes(7);
+    expect(slackApi.conversations.replies).toHaveBeenNthCalledWith(6, expect.objectContaining({
+      channel: 'C_long_page', ts: '710.0', oldest: '715.0', latest: '715.0', inclusive: true,
+    }));
+    expect(thread.messages.map((message) => message.ts)).toEqual([
+      '710.0', '711.0', '712.0', '713.0', '714.0', '715.0',
+    ]);
+  });
+
+  it('stops long pagination after an exact probe confirms the target is missing', async () => {
+    for (let page = 0; page < 5; page += 1) {
+      slackApi.conversations.replies.mockResolvedValueOnce({
+        messages: [rawMsg({ ts: `73${page}.0`, user: 'UHUMAN', text: `page ${page}` })],
+        response_metadata: { next_cursor: `CURSOR${page + 1}` },
+      });
+    }
+    slackApi.conversations.replies.mockResolvedValueOnce({ messages: [] });
+
+    await expect(client.fetchSlackThread('C_missing_long', '730.0', '799.0'))
+      .rejects.toMatchObject({ reason: 'target_missing' });
+
+    expect(slackApi.conversations.replies).toHaveBeenCalledTimes(6);
+    expect(slackApi.conversations.replies).toHaveBeenLastCalledWith(expect.objectContaining({
+      channel: 'C_missing_long', ts: '730.0', oldest: '799.0', latest: '799.0', inclusive: true,
+    }));
+  });
+
+  it('fetches only the unconsumed interval for an existing task', async () => {
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [
+        rawMsg({ ts: '721.5', user: BOT_USER, text: 'archie reply' }),
+        rawMsg({ ts: '722.0', user: 'UHUMAN', text: 'new reply' }),
+      ],
+    });
+
+    const thread = await client.fetchSlackThread('C_incremental', '720.0', '722.0', undefined, '721.0');
+
+    expect(thread.messages.map((message) => message.ts)).toEqual(['722.0']);
+    expect(thread.rootAuthorWasBot).toBe(false);
+    expect(slackApi.conversations.replies).toHaveBeenCalledWith(expect.objectContaining({
+      channel: 'C_incremental', ts: '720.0', oldest: '721.0', latest: '722.0', inclusive: true,
+    }));
+  });
 });
 
 /**
@@ -752,6 +816,57 @@ describe('fetchSlackThread — trusted automation', () => {
     const thread = await client.fetchSlackThread('C_retry', '902.0', '902.0');
 
     expect(client.classifySlackIngestAuthor(thread.messages[0].user)).toBe('unknown');
+  });
+
+  it('uses a verified current actor without resolving that author twice', async () => {
+    const actor = {
+      id: 'UVERIFIED', username: 'verified', realName: 'Verified User', teamId: 'THOME',
+    };
+    slackApi.users.info.mockRejectedValue(new Error('second lookup unavailable'));
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [rawMsg({ ts: '903.0', user: actor.id, text: 'use the verified actor' })],
+    });
+
+    const fetchWithActor = client.fetchSlackThread as unknown as (
+      channel: string, threadTs: string, messageTs: string, currentActor: typeof actor,
+    ) => ReturnType<typeof client.fetchSlackThread>;
+    const thread = await fetchWithActor('C_verified', '903.0', '903.0', actor);
+
+    expect(thread.messages[0].user).toEqual(actor);
+    expect(slackApi.users.info).not.toHaveBeenCalledWith({ user: actor.id });
+  });
+
+  it('fetches and validates the exact target when complete history omits it', async () => {
+    slackApi.conversations.replies
+      .mockResolvedValueOnce({ messages: [rawMsg({ ts: '910.0', user: 'UROOT', text: 'root' })] })
+      .mockResolvedValueOnce({ messages: [rawMsg({ ts: '999.0', user: 'UTARGET', text: 'target' })] });
+
+    const thread = await client.fetchSlackThread('C_long', '910.0', '999.0');
+    const calls = slackApi.conversations.replies.mock.calls.slice();
+    slackApi.conversations.replies.mockReset();
+
+    expect(thread.messages.map((message) => message.ts)).toContain('999.0');
+    expect(calls[1]?.[0]).toEqual(expect.objectContaining({
+      channel: 'C_long', ts: '910.0', oldest: '999.0', latest: '999.0', inclusive: true,
+    }));
+  });
+
+  it('marks an absent exact target as terminal', async () => {
+    slackApi.conversations.replies
+      .mockResolvedValueOnce({ messages: [rawMsg({ ts: '920.0', user: 'UROOT', text: 'root' })] })
+      .mockResolvedValueOnce({ messages: [] });
+
+    const result = client.fetchSlackThread('C_missing', '920.0', '999.0');
+    await expect(result).rejects.toMatchObject({ reason: 'target_missing' });
+    slackApi.conversations.replies.mockReset();
+  });
+
+  it('marks a deleted thread root as terminal', async () => {
+    slackApi.conversations.replies.mockRejectedValue({ data: { error: 'thread_not_found' } });
+
+    const result = client.fetchSlackThread('C_deleted', '930.0', '930.0');
+
+    await expect(result).rejects.toMatchObject({ reason: 'target_missing' });
   });
 });
 

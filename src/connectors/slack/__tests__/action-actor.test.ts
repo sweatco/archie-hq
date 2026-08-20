@@ -1,10 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createRequire } from 'node:module';
+import type { Application } from 'express';
 
 const { getUserInfo, classifySlackIdentity, postEphemeral, updateMessage } = vi.hoisted(() => ({
   getUserInfo: vi.fn(),
   classifySlackIdentity: vi.fn(),
   postEphemeral: vi.fn().mockResolvedValue(undefined),
   updateMessage: vi.fn().mockResolvedValue(undefined),
+}));
+const ingress = vi.hoisted(() => ({
+  stop: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../client.js', () => ({
@@ -29,7 +34,13 @@ vi.mock('../../../system/logger.js', () => ({
   logger: { warn: vi.fn(), system: vi.fn(), error: vi.fn(), server: vi.fn(), plain: vi.fn() },
 }));
 vi.mock('../channel-canvas.js', () => ({ ensureChannelCanvas: vi.fn() }));
+vi.mock('../channel-pins.js', () => ({ ensureChannelPins: vi.fn() }));
 vi.mock('../task-routing.js', () => ({ shouldCreateNewTask: vi.fn() }));
+vi.mock('../ingress.js', () => ({
+  enqueueSlackIngress: vi.fn().mockResolvedValue(undefined),
+  startSlackIngress: vi.fn().mockResolvedValue(undefined),
+  stopSlackIngress: ingress.stop,
+}));
 vi.mock('../../../tasks/persistence.js', () => ({ findTaskByThread: vi.fn() }));
 vi.mock('../../../system/trigger-scheduler.js', () => ({
   getChannelMessageTriggers: vi.fn(),
@@ -39,7 +50,11 @@ vi.mock('../../../system/trigger-scheduler.js', () => ({
 vi.mock('../../../tasks/title-generator.js', () => ({ generateTaskTitle: vi.fn() }));
 vi.mock('../title.js', () => ({ setAssistantThreadTitle: vi.fn() }));
 
-import { resolveInternalActionActor } from '../events.js';
+import { mountSlackApp, resolveInternalActionActor } from '../events.js';
+import { logger } from '../../../system/logger.js';
+
+const require = createRequire(import.meta.url);
+const { App } = require('@slack/bolt') as typeof import('@slack/bolt');
 
 describe('resolveInternalActionActor', () => {
   beforeEach(() => {
@@ -108,5 +123,22 @@ describe('resolveInternalActionActor', () => {
         expect.objectContaining({ block_id: 'external-actor-waiting' }),
       ]),
     );
+  });
+});
+
+describe('Slack lifecycle', () => {
+  it('stops durable ingress even when the Socket Mode receiver fails to stop', async () => {
+    const receiverError = new Error('receiver failed');
+    const stopReceiver = vi.spyOn(App.prototype, 'stop').mockRejectedValueOnce(receiverError);
+    const lifecycle = await mountSlackApp({} as Application, {
+      slackBotToken: 'xoxb-test',
+      slackAppToken: 'xapp-test',
+    });
+
+    await expect(lifecycle.stop()).rejects.toBe(receiverError);
+
+    expect(ingress.stop).toHaveBeenCalledOnce();
+    expect(logger.plain).not.toHaveBeenCalledWith('Slack: Socket Mode disconnected');
+    stopReceiver.mockRestore();
   });
 });

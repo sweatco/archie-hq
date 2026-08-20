@@ -2,7 +2,7 @@
  * Task Class
  *
  * The central unit of work. Owns agents, metadata, budgets, lifecycle.
- * Created via Task.create(thread) or Task.get(taskId).
+ * Created via Task.create(visibility), Task.createForSlack(thread), or Task.get(taskId).
  */
 
 import { mkdir, writeFile } from 'fs/promises';
@@ -52,6 +52,7 @@ import {
   getSharedPath,
   getMemoryPath,
   getKnowledgeLogPath,
+  readLoggedSlackMessages,
 } from './persistence.js';
 import { getIsShuttingDown } from '../system/shutdown.js';
 import { scheduleIdleCheck } from './recovery.js';
@@ -59,7 +60,7 @@ import { scanAgentDefs, getAgentDef, getVisiblePeerIdsForSender, synthesizeDynam
 import type { AttachedRepo } from '../types/task.js';
 import { syncPlugins } from '../system/plugin-sync.js';
 import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, classifySlackIngestAuthor, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
-import { renderMessageBody } from '../connectors/slack/message-body.js';
+import { renderMessageBody, trustedIngestBody } from '../connectors/slack/message-body.js';
 import { basename } from 'path';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
@@ -206,6 +207,35 @@ export class Task {
    * Task is inert until sendMessage() is called, which activates it.
    */
   static async create(visibility: TaskVisibility): Promise<Task> {
+    return Task.createPersisted(visibility, 'in_progress', {}, null);
+  }
+
+  static async createForSlack(thread: SlackThread): Promise<Task> {
+    const channelKey = `slack:${thread.channel.id}:${thread.threadId}`;
+    const url = buildThreadUrl(thread.channel.id, thread.threadId);
+    return Task.createPersisted(
+      thread.taskVisibility,
+      'stopped',
+      {
+        [channelKey]: {
+          type: 'slack',
+          thread_id: thread.threadId,
+          channel_id: thread.channel.id,
+          channel_name: thread.channel.name,
+          last_processed_ts: '0',
+          ...(url ? { url } : {}),
+        },
+      },
+      channelKey,
+    );
+  }
+
+  private static async createPersisted(
+    visibility: TaskVisibility,
+    status: TaskMetadata['status'],
+    channels: TaskMetadata['channels'],
+    defaultChannel: string | null,
+  ): Promise<Task> {
     await syncPlugins();
     await ensureSessionsDir();
 
@@ -226,11 +256,11 @@ export class Task {
       visibility,
       task_owner: null,
       participants: [],
-      channels: {},
-      default_channel: null,
+      channels,
+      default_channel: defaultChannel,
       agent_sessions: {},
       repositories: {},
-      status: 'in_progress',
+      status,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
@@ -346,11 +376,42 @@ export class Task {
    * If the thread is new, links it as a channel and appends all messages.
    * If already linked, appends only messages newer than last_processed_ts.
    */
-  async append(thread: SlackThread): Promise<boolean> {
-    return withTaskDataLock(this.taskId, async () => {
-      const target = await this.resolveTaskDataTarget();
-      return target.appendUnlocked(thread);
+  async append(thread: SlackThread, reconcileLog = false): Promise<boolean> {
+    return activationLock(this.taskId, () =>
+      withTaskDataLock(this.taskId, async () => {
+        const target = await this.resolveTaskDataTarget();
+        return target.appendUnlocked(thread, reconcileLog);
+      })
+    );
+  }
+
+  async claimSlackIngress(): Promise<Task> {
+    return activationLock(this.taskId, async () => {
+      const target = activeTasks.get(this.taskId) ?? this;
+      if (!target.isActive) target.activate();
+      return target;
     });
+  }
+
+  async reconcileLoggedSlackIngress(channelKey: string, messageTs: string): Promise<boolean> {
+    return activationLock(this.taskId, () =>
+      withTaskDataLock(this.taskId, async () => {
+        const target = await this.resolveTaskDataTarget();
+        const channel = target.metadata.channels[channelKey];
+        if (channel?.type !== 'slack') return false;
+        const logged = await readLoggedSlackMessages(
+          target.taskId,
+          channel.channel_id,
+          channel.thread_id,
+        );
+        if (!logged.originalIds.has(messageTs)) return false;
+        if (channel.last_processed_ts < messageTs) {
+          channel.last_processed_ts = messageTs;
+          await target.save(true);
+        }
+        return true;
+      })
+    );
   }
 
   /** Resolve mutable task data only after the per-task data lock is held. */
@@ -367,7 +428,7 @@ export class Task {
     return this;
   }
 
-  private async appendUnlocked(thread: SlackThread): Promise<boolean> {
+  private async appendUnlocked(thread: SlackThread, reconcileLog: boolean): Promise<boolean> {
     const channelId = `slack:${thread.channel.id}:${thread.threadId}`;
     const existing = this.metadata.channels[channelId] as SlackChannel | undefined;
 
@@ -382,9 +443,21 @@ export class Task {
       thread.taskVisibility,
       () => this.save(true),
     );
+    const loggedMessages = reconcileLog
+      ? await readLoggedSlackMessages(this.taskId, thread.channel.id, thread.threadId)
+      : { originalIds: new Set<string>(), ambiguousLegacyEditIds: new Set<string>() };
 
     // Only positively verified internal authors may enter task memory.
     const writeMessage = async (msg: typeof thread.messages[number]): Promise<boolean> => {
+      if (loggedMessages.originalIds.has(msg.ts)) return true;
+      if (
+        loggedMessages.ambiguousLegacyEditIds.has(msg.ts)
+        && !msg.files?.length
+        && !msg.attachments?.length
+        && !msg.reactions?.length
+      ) {
+        return true;
+      }
       const identity = classifySlackIngestAuthor(msg.user);
       // The event actor was checked separately before this thread was fetched.
       // If its identity cannot be reproduced here, do not turn that current
@@ -407,10 +480,11 @@ export class Task {
         // needs to open the file.
         await appendSlackMessage(
           this.taskId, thread.channel, thread.threadId, msg.user,
-          renderMessageBody({ ...msg, files: downloadedFiles }, { redacted: false }),
+          trustedIngestBody({ ...msg, files: downloadedFiles }),
           { ts: msg.ts },
         );
       }
+      loggedMessages.originalIds.add(msg.ts);
       return true;
     };
 
@@ -458,15 +532,16 @@ export class Task {
   }
 
   /**
-   * Record that a Slack message previously ingested into this task was edited.
+   * Record that a Slack message in a task-linked thread was edited.
    *
    * Writes a fresh knowledge-log entry (we never mutate prior entries) keyed to
-   * the original message via `msg:<ts>`, capturing the new text. The pre-edit
-   * text stays in the log under that same id, so the change is recoverable by
-   * correlation. Deliberately does NOT advance `last_processed_ts` — an edit
+   * the original message via `msg:<ts>`, capturing the new text. The original
+   * entry uses that same id and may follow when ingress fetched before the edit,
+   * so the change is recoverable by correlation. Deliberately does NOT advance
+   * `last_processed_ts` — an edit
    * reuses the original message's `ts`, so touching the watermark would skip
-   * genuinely new replies. Returns false when the thread isn't a linked Slack
-   * channel.
+   * genuinely new replies. Returns the canonical, activated task when recorded,
+   * or null when the thread isn't a linked Slack channel.
    */
   async appendSlackEdit(
     channelKey: string,
@@ -474,11 +549,18 @@ export class Task {
     editedTs: string,
     newText: string,
     sourceVisibility: TaskVisibility,
-  ): Promise<boolean> {
-    return withTaskDataLock(this.taskId, async () => {
-      const target = await this.resolveTaskDataTarget();
-      return target.appendSlackEditUnlocked(channelKey, author, editedTs, newText, sourceVisibility);
-    });
+  ): Promise<Task | null> {
+    return activationLock(this.taskId, () =>
+      withTaskDataLock(this.taskId, async () => {
+        const target = await this.resolveTaskDataTarget();
+        const recorded = await target.appendSlackEditUnlocked(
+          channelKey, author, editedTs, newText, sourceVisibility,
+        );
+        if (!recorded) return null;
+        if (!target.isActive) target.activate();
+        return target;
+      })
+    );
   }
 
   private async appendSlackEditUnlocked(

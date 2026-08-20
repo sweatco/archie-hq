@@ -25,6 +25,7 @@ const {
   appendSlackMessageMock,
   downloadMessageFilesMock,
   isChannelReachableMock,
+  fetchChannelIsPrivateMock,
   postSlackMessageMock,
   saveTriggerMock,
   ensureChannelCanvasMock,
@@ -34,6 +35,7 @@ const {
   appendSlackMessageMock: vi.fn(),
   downloadMessageFilesMock: vi.fn(),
   isChannelReachableMock: vi.fn(),
+  fetchChannelIsPrivateMock: vi.fn(),
   postSlackMessageMock: vi.fn(),
   saveTriggerMock: vi.fn(),
   ensureChannelCanvasMock: vi.fn(),
@@ -60,11 +62,14 @@ vi.mock('../../connectors/slack/client.js', async (importOriginal) => {
   return {
     ...actual,
     isChannelReachable: isChannelReachableMock,
+    fetchChannelIsPrivate: fetchChannelIsPrivateMock,
     postSlackMessage: postSlackMessageMock,
     // Without this the redaction case is a dead branch: `isExternalUser` fails open to false when the
     // Slack client was never initialised, so `shouldRedact` would say no and the case would assert the
     // ordinary path under a redacted-looking fixture.
     isExternalUser: (user: { teamId?: string }) => user.teamId === 'T_OTHER',
+    classifySlackIngestAuthor: (user: { teamId?: string }) =>
+      user.teamId === 'T_OTHER' ? 'external' : 'internal',
   };
 });
 
@@ -94,7 +99,7 @@ vi.mock('../logger.js', () => ({
 }));
 
 import { fireTrigger } from '../trigger-scheduler.js';
-import { Task } from '../../tasks/task.js';
+import { Task, activeTasks } from '../../tasks/task.js';
 
 // The constructor is private, and the real `Task.create` touches disk — the redaction case needs a real
 // instance without either, so it is built through the same cast `append-render-ordering.test.ts` uses.
@@ -133,6 +138,7 @@ function makeTrigger(over: Partial<Trigger> = {}): Trigger {
     binding: { type: 'channel', channel_id: CHANNEL, channel_name: CHANNEL_NAME },
     conditions: [{ type: 'channel_message', channel_id: CHANNEL }],
     action: { prompt: 'look into the failure' },
+    prompt_origin_visibility: 'public',
     summary: 'watch the deploy bot',
     ...over,
   };
@@ -157,6 +163,7 @@ function messageThread(over: Partial<SlackThread> = {}): SlackThread {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  activeTasks.delete('task-real');
   createdTasks = [];
   taskCreateMock.mockImplementation(async () => {
     const task = fakeTask(createdTasks.length + 1);
@@ -167,6 +174,7 @@ beforeEach(() => {
   downloadMessageFilesMock.mockImplementation(async (_taskId: string, files: Array<Record<string, unknown>>) =>
     files.map((f) => ({ ...f, localPath: '/sessions/t1/attachments/f.pdf' })));
   isChannelReachableMock.mockResolvedValue(true);
+  fetchChannelIsPrivateMock.mockResolvedValue(false);
   postSlackMessageMock.mockResolvedValue(undefined);
   saveTriggerMock.mockResolvedValue(undefined);
   ensureChannelCanvasMock.mockResolvedValue(undefined);
@@ -190,6 +198,19 @@ describe('a message fire ingests its thread', () => {
     expect(task.linkSlackThread).not.toHaveBeenCalled();
     // The thread carried the triggering message, so the ingestion floor stays out of the way.
     expect(appendSlackMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('persists trigger attribution before thread ingestion can reload the task', async () => {
+    const trigger = makeTrigger();
+
+    await fireTrigger(trigger, {
+      kind: 'message', thread: messageThread(), body: BODY, authorId: 'U_DEV', channelName: CHANNEL_NAME,
+    });
+
+    const task = createdTasks[0]!;
+    expect(task.metadata.triggered_by).toBe(trigger.id);
+    expect(task.save).toHaveBeenCalledWith(true);
+    expect(task.save.mock.invocationCallOrder[0]!).toBeLessThan(task.append.mock.invocationCallOrder[0]!);
   });
 
   it('seeds the agent with where to reply, not with the message text', async () => {
@@ -414,6 +435,7 @@ describe('a message fire ingests through the real Task.append', () => {
       agent_sessions: {},
     } as unknown as TaskMetadata;
     const task = new TaskCtor('task-real', metadata, []);
+    activeTasks.set(task.taskId, task);
     const stubbed = task as unknown as { debouncedSave: () => void; sendMessage: unknown; save: () => Promise<void> };
     stubbed.debouncedSave = () => {};
     stubbed.sendMessage = vi.fn().mockResolvedValue(undefined);
