@@ -7,8 +7,20 @@ vi.mock('../persistence.js', async (importOriginal) => {
   return { ...actual, appendSlackMessage: appendSlackMessageMock, downloadMessageFiles: vi.fn() };
 });
 
+// The Slack client is never initialised here, so the real predicate has no home
+// team and would redact every author — stand in for a verified home workspace.
+vi.mock('../../connectors/slack/client.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../connectors/slack/client.js')>();
+  return {
+    ...actual,
+    isTrustedIngestAuthor: (user: { teamId?: string; unclassified?: boolean }) =>
+      !user.unclassified && user.teamId === 'T_HOME',
+  };
+});
+
 import { Task } from '../task.js';
 import { withTaskDataLock } from '../data-lock.js';
+import { REDACTION_PLACEHOLDER } from '../../connectors/slack/message-body.js';
 import type { AgentDef } from '../../types/agent.js';
 import type { SlackThread, TaskMetadata } from '../../types/task.js';
 
@@ -81,5 +93,47 @@ describe('task data lock', () => {
     await holder;
     await appending;
     expect(order).toEqual(['snapshot', 'append']);
+  });
+
+  it('persists a public→private downgrade before writing content from a converted channel', async () => {
+    const writes: string[] = [];
+    appendSlackMessageMock.mockImplementation(async (
+      _taskId: string, _channel: unknown, _threadId: string, _author: unknown, body: string,
+    ) => { writes.push(body); });
+    const task = makeTask();
+    const saved: string[] = [];
+    (task as unknown as { save: (flush?: boolean) => Promise<void> }).save = async () => {
+      saved.push(task.metadata.visibility);
+    };
+
+    await task.append({ ...thread, taskVisibility: 'private' });
+
+    expect(task.metadata.visibility).toBe('private');
+    // The downgrade is durable before the first content write, not after it.
+    expect(saved[0]).toBe('private');
+    expect(writes).toHaveLength(1);
+  });
+
+  it('writes a verified author verbatim and redacts one it cannot verify', async () => {
+    const writes: string[] = [];
+    appendSlackMessageMock.mockImplementation(async (
+      _taskId: string, _channel: unknown, _threadId: string, _author: unknown, body: string,
+    ) => { writes.push(body); });
+    const task = makeTask();
+
+    await task.append({
+      ...thread,
+      currentMessageTs: '102.000',
+      messages: [
+        thread.messages[0],
+        {
+          user: { id: 'U2', username: 'ext', realName: 'Ext', unclassified: true },
+          ownText: 'secret from an unknown party',
+          ts: '102.000',
+        },
+      ],
+    });
+
+    expect(writes).toEqual(['hello', REDACTION_PLACEHOLDER]);
   });
 });

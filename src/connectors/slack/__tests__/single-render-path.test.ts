@@ -6,7 +6,7 @@
  * The raw Slack JSON goes through the real extraction: only `@slack/web-api` is faked, following the mocked-`WebClient` pattern in `client.test.ts`, so nothing here is a hand-built `SlackThreadMessage` that could quietly disagree with what Slack actually sends. The module registry is reset per test so the client's channel/user/shared caches never leak across cases.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Trigger } from '../../../types/trigger.js';
 
 // One shared fake WebClient; methods are reconfigured per test. `WebClient` is used with `new`, so the mock implementation must be a regular (constructable) function that returns the shared fake.
@@ -148,6 +148,10 @@ function makeTrigger(contains?: string): Trigger {
 beforeEach(() => {
   vi.clearAllMocks();
   sdk.lastPrompt = '';
+  // The janitor is an internal automation the workspace runs on purpose. Ingestion
+  // trusts an automation only when the operator allowlists it, so without this the
+  // fixture would (correctly) render as a redaction placeholder everywhere.
+  process.env.SLACK_TRUSTED_AUTOMATION_IDS = THIRD_PARTY_BOT;
 
   slackApi.auth.test.mockResolvedValue({
     user_id: OUR_BOT_USER, bot_id: OUR_BOT_ID, team_id: 'THOME', url: 'https://acme.slack.com',
@@ -167,6 +171,10 @@ beforeEach(() => {
   slackApi.pins.list.mockResolvedValue({ items: [] });
 });
 
+afterEach(() => {
+  delete process.env.SLACK_TRUSTED_AUTOMATION_IDS;
+});
+
 describe('an attachment-only bot post survives into every agent-facing entry point', () => {
   it('reaches task ingestion — the body written to the knowledge log carries the report headline', async () => {
     const { thread } = await fetchFixtureThread();
@@ -174,7 +182,7 @@ describe('an attachment-only bot post survives into every agent-facing entry poi
     const msg = thread.messages[0];
 
     // Asserted on `renderMessageBody` rather than through a real `Task.append`: `append` needs a session directory on disk and runs the file-download step before rendering, neither of which changes the text. These are the exact arguments `Task.append` passes (`src/tasks/task.ts`) — the fetched message's parts plus the redaction verdict from `shouldRedact` — so this is the string that would land in knowledge.log.
-    const body = renderMessageBody({ ...msg, files: undefined }, { redacted: shouldRedact(msg, thread) });
+    const body = renderMessageBody({ ...msg, files: undefined }, { redacted: shouldRedact(msg) });
 
     expect(body).toContain(PHRASE);
   });

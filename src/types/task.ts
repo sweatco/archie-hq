@@ -36,6 +36,10 @@ export interface SlackAuthor {
   teamId?: string;
   isRestricted?: boolean;
   isUltraRestricted?: boolean;
+  isBot?: boolean;
+  isAppUser?: boolean;
+  /** True when the identity lookup failed, so nothing about this author is known. */
+  unclassified?: boolean;
 }
 
 /** An emoji reaction present on a Slack message (snapshot at fetch time). */

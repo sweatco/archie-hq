@@ -925,7 +925,7 @@ async function handleSlackEdit(event: any): Promise<void> {
   if (!taskId) return;
 
   // External-author bail-out + author resolution in one (cached) lookup.
-  let authorInfo: Awaited<ReturnType<typeof getUserInfo>> | undefined;
+  let authorInfo: Awaited<ReturnType<typeof getUserInfo>>;
   try {
     authorInfo = await getUserInfo(msg.user);
     if (isExternalUser(authorInfo)) {
@@ -933,8 +933,11 @@ async function handleSlackEdit(event: any): Promise<void> {
       return;
     }
   } catch (error) {
-    // Fail open — if we can't classify, don't silently drop the edit.
-    logger.warn('Slack', `Failed to classify edit author ${msg.user}`, error);
+    // Fail closed: an edit rewrites text already in the transcript, so an
+    // unclassifiable editor is dropped rather than trusted. Slack redelivers
+    // nothing here, but the original entry stays intact and correct.
+    logger.warn('Slack', `Dropping edit from unclassifiable author ${msg.user}`, error);
+    return;
   }
 
   const task = await Task.get(taskId);

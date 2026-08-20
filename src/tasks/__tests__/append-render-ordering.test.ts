@@ -25,7 +25,9 @@ vi.mock('../../connectors/slack/client.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../connectors/slack/client.js')>();
   return {
     ...actual,
-    isExternalUser: (user: { teamId?: string }) => user.teamId === 'T_OTHER',
+    // The Slack client is never initialised here, so the real predicate has no
+    // home team and would redact every author — stand in for a verified one.
+    isTrustedIngestAuthor: (user: { teamId?: string }) => user.teamId !== 'T_OTHER',
   };
 });
 

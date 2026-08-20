@@ -20,6 +20,7 @@ import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { emitEvent } from './event-bus.js';
 import { logger } from './logger.js';
 import { postSlackMessage, isChannelReachable, fetchChannelIsPrivate } from '../connectors/slack/client.js';
+import { REDACTION_PLACEHOLDER } from '../connectors/slack/message-body.js';
 import { ensureChannelCanvas } from '../connectors/slack/channel-canvas.js';
 import { ensureChannelPins } from '../connectors/slack/channel-pins.js';
 
@@ -394,15 +395,19 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
     // The ingestion floor, deliberately narrow. `fetchSlackThread` drops any raw message that has neither a `user` nor a `botId`, so the very message that fired this trigger can be missing from the thread it was fetched from — in which case `append` walked an empty (or incomplete) message list and wrote no log entry for it, and a delegated agent, which sees only knowledge.log, would have no idea what was said. Writing it directly from the body dispatch already rendered is what closes that hole.
     //
     // It fires ONLY for that reason, which is what `!context.authorId` tests — no user id and no bot id, so there is no identity for the redaction policy to classify in the first place. The fetch filter also drops a bot post from another workspace, and while the dispatch-side gate that is supposed to catch those first derives the team the same way (`bot_profile.team_id || team`, on both sides), the two read DIFFERENT PAYLOADS — the inbound `message` event on one side, what `conversations.replies` returns for that same ts on the other — so a post the event gate let through can still be dropped by the fetch. Writing on *any* absence would re-admit exactly that content, unredacted, past the one policy every other write to this log goes through. An empty body is refused for the same reason in miniature: an entry with no text claims a message the log does not actually carry. The ts comes from `thread.threadId` rather than being passed in separately — dispatch fires only on TOP-LEVEL messages, so the thread's root IS the message that fired, and the condition reads as what it actually asks: did the fetched thread contain its own root? Nothing else is needed: `append` registers the channel, promotes `default_channel` and advances `last_processed_ts` even when `thread.messages` is empty — only the per-message loop is skipped — so the thread is already owned and a second link would be redundant.
+    // The body is written redacted, not verbatim: this branch exists precisely
+    // because the message carried no identity, and an author nothing can verify
+    // is not eligible to have its text stand in the transcript. The entry still
+    // records that a message fired here, under its `msg:<ts>` id.
     if (!context.authorId && context.body && !context.thread.messages.some((m) => m.ts === context.thread!.threadId)) {
       const author = 'unknown';
       await appendSlackMessage(
         task.taskId,
         { id: context.thread.channel.id, name: context.thread.channel.name },
         context.thread.threadId,
-        { id: author, username: author, realName: author },
-        context.body ?? '',
-        { ts: context.thread.threadId },
+        { id: author, username: author, realName: author, unclassified: true },
+        REDACTION_PLACEHOLDER,
+        { redacted: true, ts: context.thread.threadId },
       );
     }
 

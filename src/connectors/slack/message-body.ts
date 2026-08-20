@@ -5,7 +5,7 @@
  */
 
 import type { SlackFile, SlackAttachment, SlackReaction, SlackAuthor } from '../../types/index.js';
-import { isExternalUser, extractMessageContent } from './client.js';
+import { isTrustedIngestAuthor, extractMessageContent } from './client.js';
 
 /**
  * The exact text substituted for a redacted message body. Consumers that need to recognise a redacted body (e.g. deciding whether a transcript has usable content) must compare against this constant rather than re-declaring the literal, so the placeholder text stays a single fact.
@@ -45,7 +45,9 @@ export function renderMessageBody(
 
   let forwardedBlock = '';
   for (const att of parts.attachments ?? []) {
-    if (att.author && isExternalUser(att.author)) {
+    // An attachment whose author could not be resolved is labelled like an
+    // external one: unknown provenance must not read as the forwarder's words.
+    if (att.author && !isTrustedIngestAuthor(att.author)) {
       // Render the externally-authored attachment under a provenance label.
       // Only the first one gets the label block; subsequent ones (rare)
       // fold inline so the agent still sees them.
@@ -81,12 +83,12 @@ export function renderMessageBody(
 }
 
 /**
- * The single place the redaction question is answered: a message is redacted when the channel is shared with an external workspace (Slack Connect) *and* the message's author is external to the home team.
+ * The single place the redaction question is answered: a message is redacted unless its author is positively verified as a home-workspace human (or an allowlisted automation).
  *
- * Routing every path through this predicate is what lets the redaction rule change in one edit — no call site re-derives `shared && isExternalUser(...)` for itself.
+ * The verdict deliberately ignores whether the channel is currently shared. A transcript outlives that state, and a guest or a relay app in an ordinary channel is no more accountable for its content than a Slack Connect member in a shared one.
  */
-export function shouldRedact(msg: { user: SlackAuthor }, ctx: { shared: boolean }): boolean {
-  return ctx.shared && isExternalUser(msg.user);
+export function shouldRedact(msg: { user: SlackAuthor }): boolean {
+  return !isTrustedIngestAuthor(msg.user);
 }
 
 /**
@@ -94,8 +96,8 @@ export function shouldRedact(msg: { user: SlackAuthor }, ctx: { shared: boolean 
  *
  * The parameter is typed structurally rather than as `SlackThreadMessage` so this module keeps no dependency on the task types beyond the message-part shapes it actually reads.
  */
-export function messageBody(msg: SlackMessageParts & { user: SlackAuthor }, ctx: { shared: boolean }): string {
-  return renderMessageBody(msg, { redacted: shouldRedact(msg, ctx) });
+export function messageBody(msg: SlackMessageParts & { user: SlackAuthor }): string {
+  return renderMessageBody(msg, { redacted: shouldRedact(msg) });
 }
 
 /**

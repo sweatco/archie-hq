@@ -354,12 +354,20 @@ export class Task {
     const channelId = `slack:${thread.channel.id}:${thread.threadId}`;
     const existing = this.metadata.channels[channelId] as SlackChannel | undefined;
 
-    // Redaction policy: when the channel is shared and the message author is
-    // external, drop content and don't download files. Author info is logged.
+    // A channel can be converted to private mid-task, and `taskVisibility` is
+    // re-read on every fetch. Persist the downgrade BEFORE writing any content
+    // so nothing that arrives after the conversion is ever readable as public.
+    if (thread.taskVisibility === 'private' && this.metadata.visibility === 'public') {
+      this.metadata.visibility = 'private';
+      await this.save(true);
+    }
+
+    // Redaction policy: a message is redacted unless its author is a verified
+    // home-workspace party. Author info is logged either way.
     // The predicate lives in the shared render module so this call site cannot
     // drift from the other paths that ask the same question.
     const writeMessage = async (msg: typeof thread.messages[number]): Promise<void> => {
-      const redacted = shouldRedact(msg, thread);
+      const redacted = shouldRedact(msg);
       if (redacted) {
         // Skipping the download is load-bearing, not an optimisation: a redacted
         // message's files must never reach the task's attachments folder, since

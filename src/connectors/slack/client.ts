@@ -105,20 +105,31 @@ export function isSlackDryRun(): boolean {
  */
 export async function initSlackClient(token: string): Promise<void> {
   slackClient = new WebClient(token);
+  botUserId = null;
+  botId = null;
+  workspaceUrl = null;
+  homeTeamId = null;
 
-  // Fetch bot's user ID and bot ID for filtering bot messages
+  // Author trust is derived from the home team id, so an identity we could not
+  // establish is a boot failure, not a warning: without it every classification
+  // would fail closed and Archie would look healthy while ignoring Slack.
   try {
     const authResult = await slackClient.auth.test();
     botUserId = authResult.user_id as string;
     botId = authResult.bot_id as string | undefined ?? null;
     workspaceUrl = (authResult.url as string | undefined)?.replace(/\/$/, '') ?? null;
     homeTeamId = (authResult.team_id as string | undefined) ?? null;
-    logger.slack(`Bot user ID: ${botUserId}, bot ID: ${botId}, workspace: ${workspaceUrl}, home team: ${homeTeamId}`);
-    if (!homeTeamId) {
-      logger.warn('Slack', 'auth.test did not return team_id — external-user filtering will fail open (no filtering applied)');
+    if (!botUserId || !homeTeamId) {
+      throw new Error('auth.test did not return both user_id and team_id');
     }
+    logger.slack(`Bot user ID: ${botUserId}, bot ID: ${botId}, workspace: ${workspaceUrl}, home team: ${homeTeamId}`);
   } catch (error) {
-    logger.warn('Slack', 'Failed to get bot user ID', error);
+    slackClient = null;
+    botUserId = null;
+    botId = null;
+    workspaceUrl = null;
+    homeTeamId = null;
+    throw new Error(`Slack identity verification failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -1341,9 +1352,13 @@ async function resolveRawMessages(
           teamId: info.teamId,
           isRestricted: info.isRestricted,
           isUltraRestricted: info.isUltraRestricted,
+          isBot: info.isBot,
+          isAppUser: info.isAppUser,
         }];
       } catch {
-        return [uid, null];
+        // Keep the id: an unresolved forwarded author still needs its provenance
+        // label, which a null author would silently drop.
+        return [uid, { id: uid, username: uid, realName: uid, unclassified: true }];
       }
     })
   );
@@ -1426,9 +1441,11 @@ async function resolveAuthorsAndMap(messages: RawSlackMessage[]): Promise<SlackT
           teamId: info.teamId,
           isRestricted: info.isRestricted,
           isUltraRestricted: info.isUltraRestricted,
+          isBot: info.isBot,
+          isAppUser: info.isAppUser,
         }];
       } catch {
-        return [uid, { id: uid, username: uid, realName: uid }];
+        return [uid, { id: uid, username: uid, realName: uid, unclassified: true }];
       }
     })
   );
@@ -1571,6 +1588,8 @@ export async function getUserInfo(userId: string): Promise<{
   teamId?: string;
   isRestricted?: boolean;
   isUltraRestricted?: boolean;
+  isBot?: boolean;
+  isAppUser?: boolean;
 }> {
   const client = getSlackClient();
 
@@ -1583,6 +1602,8 @@ export async function getUserInfo(userId: string): Promise<{
     team_id?: string;
     is_restricted?: boolean;
     is_ultra_restricted?: boolean;
+    is_bot?: boolean;
+    is_app_user?: boolean;
   } | undefined;
 
   // External users (Slack Connect) often only populate the name under profile.*
@@ -1604,6 +1625,8 @@ export async function getUserInfo(userId: string): Promise<{
     teamId: user?.team_id,
     isRestricted: user?.is_restricted,
     isUltraRestricted: user?.is_ultra_restricted,
+    isBot: user?.is_bot,
+    isAppUser: user?.is_app_user,
   };
 }
 
@@ -1625,6 +1648,44 @@ export function isExternalUser(user: {
   if (user.isRestricted || user.isUltraRestricted) return true;
   if (user.teamId && user.teamId !== home) return true;
   return false;
+}
+
+/**
+ * Ids of automations whose posts are trusted as workspace speech (comma-separated).
+ * Without an entry here an app or bot author is redacted like any other
+ * unverified party, so a relay app cannot launder outside text into a task.
+ */
+function trustedAutomationIds(): Set<string> {
+  return new Set(
+    (process.env.SLACK_TRUSTED_AUTOMATION_IDS ?? '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean),
+  );
+}
+
+/**
+ * Whether an ingested message's author is trusted to have its content written
+ * verbatim into a task's transcript.
+ *
+ * Trust is a property of the author alone — never of the channel — because a
+ * transcript outlives the channel state it was captured in. Anything we cannot
+ * positively place inside the home workspace is untrusted: an unresolved
+ * lookup, a guest, another workspace's member, a message with no team id at
+ * all, and any bot or app user that is not explicitly allowlisted.
+ */
+export function isTrustedIngestAuthor(user: SlackAuthor): boolean {
+  const home = getHomeTeamId();
+  if (!home) return false;
+  // An allowlisted automation is trusted whatever shape its payload takes: a
+  // webhook bot post carries no team id at all, and the id itself comes from
+  // Slack, not from the message body.
+  if (trustedAutomationIds().has(user.id)) return true;
+  if (user.unclassified) return false;
+  if (user.isRestricted || user.isUltraRestricted) return false;
+  if (user.teamId !== home) return false;
+  if (user.isBot || user.isAppUser) return false;
+  return true;
 }
 
 // ---- Shared-channel detection (Slack Connect) -----------------------------

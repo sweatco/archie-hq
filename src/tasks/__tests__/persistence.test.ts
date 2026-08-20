@@ -16,10 +16,20 @@ const SESSIONS_ROOT = await vi.hoisted(async () => {
 });
 
 vi.mock('../../connectors/slack/client.js', () => ({
-  isExternalUser: (user: { teamId?: string; isRestricted?: boolean; isUltraRestricted?: boolean }) => {
-    if (user.isRestricted || user.isUltraRestricted) return true;
-    if (user.teamId && user.teamId !== 'T_HOME') return true;
-    return false;
+  isTrustedIngestAuthor: (user: {
+    id: string;
+    teamId?: string;
+    isRestricted?: boolean;
+    isUltraRestricted?: boolean;
+    isBot?: boolean;
+    isAppUser?: boolean;
+    unclassified?: boolean;
+  }) => {
+    if (user.unclassified) return false;
+    if (user.isRestricted || user.isUltraRestricted) return false;
+    if (user.teamId !== 'T_HOME') return false;
+    if (user.isBot || user.isAppUser) return user.id === 'U_TRUSTED_BOT';
+    return true;
   },
   formatSlackChannelRef: vi.fn(),
   formatSlackChannelDisplay: vi.fn(),

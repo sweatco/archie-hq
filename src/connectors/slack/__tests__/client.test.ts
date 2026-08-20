@@ -884,18 +884,16 @@ describe('resolvePeopleFromTranscript — titles are untrusted input', () => {
     expect(people.map(p => p.title)).toEqual(['', '']);
   });
 
-  it('withholds every title when the home team is unknown — fails closed', async () => {
-    // auth.test with no team_id is the fail-OPEN case for isExternalUser; titles
-    // must not inherit that leniency, since we cannot tell insider from outsider.
+  it('refuses to boot without a home team, so nothing runs unable to tell insider from outsider', async () => {
+    // Every author-trust decision reads the home team id. A client that came up
+    // without one would classify nobody, so this is a boot failure, not a warning.
     slackApi.auth.test.mockResolvedValue({ user_id: BOT_USER, bot_id: BOT_ID, url: 'https://acme.slack.com' });
     vi.resetModules();
     client = await import('../client.js');
-    await client.initSlackClient('xoxb-test');
-    slackApi.users.list.mockResolvedValue({ members: [member('UENG1', 'Nikita Sidorin', 'Backend Lead')] });
 
-    expect(await client.resolvePeopleFromTranscript('<@UENG1:Nikita>')).toEqual([
-      { id: 'UENG1', marker: '<@UENG1:Nikita>', title: '' },
-    ]);
+    await expect(client.initSlackClient('xoxb-test')).rejects.toThrow('Slack identity verification failed');
+    expect(client.getHomeTeamId()).toBeNull();
+    expect(client.getBotUserId()).toBeNull();
   });
 
   it('flattens newlines out of an internal title so it cannot forge a prompt section', async () => {

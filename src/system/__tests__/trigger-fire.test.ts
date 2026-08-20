@@ -64,10 +64,9 @@ vi.mock('../../connectors/slack/client.js', async (importOriginal) => {
     isChannelReachable: isChannelReachableMock,
     fetchChannelIsPrivate: fetchChannelIsPrivateMock,
     postSlackMessage: postSlackMessageMock,
-    // Without this the redaction case is a dead branch: `isExternalUser` fails open to false when the
-    // Slack client was never initialised, so `shouldRedact` would say no and the case would assert the
-    // ordinary path under a redacted-looking fixture.
-    isExternalUser: (user: { teamId?: string }) => user.teamId === 'T_OTHER',
+    // The Slack client is never initialised here, so the real predicate has no home team and would
+    // redact every author, making the ordinary path a dead branch. Stand in for a verified one.
+    isTrustedIngestAuthor: (user: { teamId?: string }) => user.teamId !== 'T_OTHER',
   };
 });
 
@@ -262,7 +261,7 @@ describe('a message fire ingests its thread', () => {
     }
   });
 
-  it('writes the rendered body itself when the fetched thread does not contain the triggering message', async () => {
+  it('records the missing triggering message redacted, since nothing can verify its author', async () => {
     // The shape `fetchSlackThread` returns for a payload with neither a `user` nor a `bot_id`: the thread
     // exists, but the message that fired the trigger was dropped from it. `authorId` is absent for the same
     // reason the fetch dropped the message — the dispatch reads `event.user || raw?.bot_id`, and neither was
@@ -284,9 +283,12 @@ describe('a message fire ingests its thread', () => {
     expect(call[0]).toBe('task-1');
     expect(call[1]).toEqual({ id: CHANNEL, name: CHANNEL_NAME });
     expect(call[2]).toBe(TRIGGER_TS);
-    expect(call[4]).toBe(BODY);
+    // The floor fires only for a payload that carried no identity at all, and an author nothing can
+    // verify is not eligible to have its text stand in the transcript. The entry still records that a
+    // message fired here.
+    expect(call[4]).toBe('[redacted: external participant in shared channel]');
     // The `msg:<ts>` id the log entry is keyed by — without it the entry cannot be reacted to or cited.
-    expect(call[5]).toEqual({ ts: TRIGGER_TS });
+    expect(call[5]).toEqual({ redacted: true, ts: TRIGGER_TS });
   });
 });
 
@@ -303,13 +305,13 @@ describe('the ingestion floor fires only for the shape the fetch filter drops', 
   /** The absent-message shape: the thread came back without the message that fired the trigger. */
   const emptyThread = () => messageThread({ messages: [] });
 
-  it('writes the body when there is no author, a body, a ts, and the thread lacks the message', async () => {
+  it('writes an entry when there is no author, a body, a ts, and the thread lacks the message', async () => {
     await fireTrigger(makeTrigger(), { ...floorCtx, thread: emptyThread() });
 
     expect(appendSlackMessageMock).toHaveBeenCalledTimes(1);
     const call = appendSlackMessageMock.mock.calls[0]!;
-    expect(call[4]).toBe(BODY);
-    expect(call[5]).toEqual({ ts: TRIGGER_TS });
+    expect(call[4]).toBe('[redacted: external participant in shared channel]');
+    expect(call[5]).toEqual({ redacted: true, ts: TRIGGER_TS });
   });
 
   // The one that matters: an identified author means the fetch dropped the message for some OTHER reason —
