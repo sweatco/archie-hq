@@ -62,7 +62,8 @@ import { renderMessageBody, shouldRedact } from '../connectors/slack/message-bod
 import { basename } from 'path';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
-import { emitEvent } from '../system/event-bus.js';
+import { emitEvent, prepareTaskCompleted } from '../system/event-bus.js';
+import { withTaskDataLock } from './data-lock.js';
 import { TaskStatusController, isStatusEnabled } from './status.js';
 import { setSlackThreadStatus } from '../connectors/slack/status.js';
 import { agentDomainLabel, deriveActivityFromEvent } from '../agents/activity.js';
@@ -346,6 +347,10 @@ export class Task {
    * Returns whether a new thread was linked.
    */
   async append(thread: SlackThread): Promise<{ linkedNewThread: boolean }> {
+    return withTaskDataLock(this.taskId, () => this.appendUnlocked(thread));
+  }
+
+  private async appendUnlocked(thread: SlackThread): Promise<{ linkedNewThread: boolean }> {
     const channelId = `slack:${thread.channel.id}:${thread.threadId}`;
     const existing = this.metadata.channels[channelId] as SlackChannel | undefined;
 
@@ -1077,34 +1082,47 @@ export class Task {
     // the final message. Best-effort; must never block teardown.
     await this.resurfacePrCards().catch((e) => logger.warn('task', 'PR card resurface failed on complete', e));
 
-    this.isActive = false;
-    activeTasks.delete(this.taskId);
-    this.clearTaskTimeout();
+    const completed = await withTaskDataLock(this.taskId, async () => {
+      if (!this.isActive) return false;
 
-    // Stop all queues. A parked or just-finished agent (session inactive) exits
-    // gracefully on its next queue pull — the resume-safe path the deferred
-    // teardown relies on (see spawn.ts: never .return() the generator), so do
-    // NOT abort it. But an agent still mid-turn keeps generating and hits
-    // "Stream closed" on every tool/hook control request, looping until maxTurns
-    // — stopping its queue can't end it, so hard-abort those. agent:inactive is
-    // emitted by the Stop hook / crash handler (or the aborted loop exiting).
-    for (const a of this.agentProcesses.values()) {
-      const midTurn = a.session.active;
-      a.queue.stop();
-      if (midTurn) a.handle?.abort();
-    }
+      // Persist the memory intent before any state transition that would make
+      // this task look safely parked. Extraction takes the same data lock for
+      // its snapshot, so it cannot observe the task before the completed status
+      // below is durable.
+      await prepareTaskCompleted(this.taskId);
 
-    // Clean up clones to free disk space (only when not in edit mode).
-    // RW clones (edit_allowed) are kept — they have branches, commits, PRs.
-    if (this.metadata.edit_allowed !== true) {
-      await this.cleanupClones();
-    }
+      this.isActive = false;
+      activeTasks.delete(this.taskId);
+      this.clearTaskTimeout();
 
-    this.clearAcks();
-    this.statusController.clear();
+      // Stop all queues. A parked or just-finished agent (session inactive) exits
+      // gracefully on its next queue pull — the resume-safe path the deferred
+      // teardown relies on (see spawn.ts: never .return() the generator), so do
+      // NOT abort it. But an agent still mid-turn keeps generating and hits
+      // "Stream closed" on every tool/hook control request, looping until maxTurns
+      // — stopping its queue can't end it, so hard-abort those. agent:inactive is
+      // emitted by the Stop hook / crash handler (or the aborted loop exiting).
+      for (const a of this.agentProcesses.values()) {
+        const midTurn = a.session.active;
+        a.queue.stop();
+        if (midTurn) a.handle?.abort();
+      }
 
-    this.metadata.status = 'completed';
-    await this.save(true);
+      // Clean up clones to free disk space (only when not in edit mode).
+      // RW clones (edit_allowed) are kept — they have branches, commits, PRs.
+      if (this.metadata.edit_allowed !== true) {
+        await this.cleanupClones();
+      }
+
+      this.clearAcks();
+      this.statusController.clear();
+
+      this.metadata.status = 'completed';
+      await this.save(true);
+      return true;
+    });
+
+    if (!completed) return;
 
     logger.system(`Task ${this.taskId} completed`);
     emitEvent('task:completed', this.taskId);
@@ -1761,7 +1779,13 @@ export class Task {
       await this.postToUser(msg).catch((err: unknown) =>
         logger.error('budget', 'Failed to post pause message', err),
       );
-      await this.complete();
+      await this.complete().catch((error) => {
+        logger.error(
+          'budget',
+          `Failed to complete task ${this.taskId} after wall-clock cap; will retry`,
+          error,
+        );
+      });
     }, 60_000);
   }
 
