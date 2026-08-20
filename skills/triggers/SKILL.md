@@ -36,6 +36,10 @@ When you have the details, propose the trigger. This posts an **Approve / Deny**
 
 Never describe a trigger as "set up" or "running" until it has actually been approved.
 
+**A proposal awaiting approval is still yours to manage.** It shows up in `list_triggers` marked *awaiting approval — not running*, and if the user asks for a change before they've clicked anything, **edit that proposal** (`update_trigger`) rather than proposing a second one. Editing re-posts a fresh Approve/Deny card with the new details. If they've changed their mind entirely, `delete_trigger` withdraws it. Only `status` is off-limits while pending, because approval is the user's call alone.
+
+Editing leaves the **earlier card in the thread** — Slack cards aren't retracted, so say which one is current ("ignore the card above — here's the updated one"). Both cards point at the same trigger, so the outcome is the same whichever they click, and neither can create a duplicate or revive the old details: approving twice is a no-op the second time, and a Deny that lands after approval is refused rather than tearing down a running automation. Withdrawing a proposal likewise leaves its buttons inert.
+
 ### Visibility & privacy — what you can see and manage
 
 You can only see and manage triggers that belong to the space the user is talking to you from:
@@ -64,4 +68,4 @@ Where that result lands depends on what fired it, and the fired task is told whi
 
 - **Setup confirmation**: once approved, confirm in one line what was set up and where it will deliver (e.g. "Done — I'll post a digest in #standup every weekday at 9am London time").
 - **Listing**: present visible triggers as a short list — what each does, where it delivers, whether it's active or paused.
-- **Revision**: if the user wants a change, edit or replace the trigger rather than stacking a second one. Rescheduling a trigger that had been paused (including a one-off that already fired) automatically re-enables it — the update tool tells you when that happened, so pass that on to the user ("done — rescheduled and back on for 4pm") rather than leaving them to wonder whether it's live.
+- **Revision**: if the user wants a change, edit the existing trigger rather than stacking a second one — this holds whether it's live or still awaiting approval. Rescheduling a trigger that had been paused (including a one-off that already fired) automatically re-enables it — the update tool tells you when that happened, so pass that on to the user ("done — rescheduled and back on for 4pm") rather than leaving them to wonder whether it's live.

@@ -45,6 +45,23 @@ export interface Trigger {
   /** Slack user ID who requested it */
   created_by: string;
   created_at: string;
+  /**
+   * Last time a still-`pending` proposal was edited. The boot-scan GC measures
+   * the pending TTL from this when set (see `rebuildFromDisk`), so revising a
+   * proposal renews its lifetime instead of leaving it to be reaped on the
+   * original clock mid-conversation.
+   */
+  updated_at?: string;
+  /**
+   * Task that proposed this trigger. While `pending`, management is scoped to
+   * this task: a proposal is an in-flight part of one conversation, not shared
+   * state. Without it, `triggerVisibleFrom` alone both over- and under-permits —
+   * a DM-created proposal bound to a private channel becomes invisible to the very
+   * DM that made it, while a public-bound one is editable (and approvable) from
+   * any other conversation. Absent on triggers proposed before this field existed;
+   * those fall back to binding visibility.
+   */
+  proposed_in_task?: string;
   /** Slack user ID who approved it (set when status flips pending → enabled) */
   approved_by?: string;
   binding: TriggerBinding;

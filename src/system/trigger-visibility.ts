@@ -42,3 +42,31 @@ export async function triggerVisibleFrom(
   if (!isPrivate) return true; // public-channel trigger — visible from any tier
   return origin.kind === 'channel' && origin.channelId === trigger.binding.channel_id;
 }
+
+/**
+ * Can `taskId` see and manage `trigger` while it is still `pending`?
+ *
+ * A proposal awaiting approval belongs to the conversation that made it, so
+ * binding visibility is the wrong test for it in both directions:
+ *
+ *  - Too strict: `propose_trigger` applies no visibility check, so a DM can
+ *    legitimately create a proposal bound to a private channel — which
+ *    `triggerVisibleFrom` then hides from that same DM, leaving the agent unable
+ *    to revise the proposal it just made. That is the dead zone we set out to
+ *    remove, reappearing in its likeliest case.
+ *  - Too loose: a proposal bound to a PUBLIC channel is visible from every
+ *    origin, so another conversation could rewrite its action prompt and approve
+ *    it while `created_by` still names the original requester.
+ *
+ * Ownership settles both. Proposals predating `proposed_in_task` have no owner
+ * recorded, so they fall back to binding visibility rather than becoming
+ * unmanageable.
+ */
+export function pendingTriggerOwnedBy(trigger: Trigger, taskId: string): boolean {
+  return trigger.proposed_in_task === taskId;
+}
+
+/** Does this pending proposal predate ownership tracking? */
+export function pendingTriggerIsLegacy(trigger: Trigger): boolean {
+  return trigger.proposed_in_task === undefined;
+}

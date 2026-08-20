@@ -127,6 +127,17 @@ export async function initTriggerScheduler(): Promise<void> {
 const PENDING_TTL_MS = 24 * 60 * 60_000;
 
 /**
+ * When a pending proposal's TTL clock starts. An edit renews it: proposals are
+ * now editable while pending, so measuring purely from `created_at` would reap a
+ * proposal that was revised minutes ago just because the original was made a day
+ * earlier — taking a freshly posted Approve/Deny card down with it. Exported for
+ * tests.
+ */
+export function pendingSince(trigger: Pick<Trigger, 'created_at' | 'updated_at'>): number {
+  return new Date(trigger.updated_at ?? trigger.created_at).getTime();
+}
+
+/**
  * Rebuild the in-memory index from disk (enabled triggers only). Also GC's
  * stale `pending` proposals — a proposal that was never approved/denied (e.g.
  * the process restarted before the user acted) would otherwise leave an inert
@@ -140,7 +151,7 @@ async function rebuildFromDisk(): Promise<void> {
     for (const trigger of await listTriggers()) {
       if (trigger.status === 'enabled') {
         indexTrigger(trigger);
-      } else if (trigger.status === 'pending' && now - new Date(trigger.created_at).getTime() > PENDING_TTL_MS) {
+      } else if (trigger.status === 'pending' && now - pendingSince(trigger) > PENDING_TTL_MS) {
         await deleteTrigger(trigger.id);
         logger.system(`Trigger ${trigger.id}: GC'd stale pending proposal`);
       }

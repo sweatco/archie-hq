@@ -24,6 +24,9 @@ function StatusIcon({ status }: { status: string }) {
   switch (status) {
     case 'enabled': return <Text color="green">[on]</Text>;
     case 'paused': return <Text color="yellow">[--]</Text>;
+    // A proposal awaiting the user's Approve/Deny. The list now returns these, so
+    // it needs its own glyph — falling through to [?] read as "unknown status".
+    case 'pending': return <Text color="cyan">[..]</Text>;
     default: return <Text color="gray">[?]</Text>;
   }
 }
@@ -65,8 +68,15 @@ export function TriggerList({ onBack, active, refreshTrigger }: TriggerListProps
       setCursor((c) => Math.min(triggers.length - 1, c + 1));
     } else if ((input === 'p' || input === 'P') && triggers[cursor]) {
       const t = triggers[cursor];
-      const next = t.status === 'enabled' ? 'paused' : 'enabled';
-      updateTrigger(t.id, { status: next }).then(load).catch((e: any) => setError(e.message));
+      // Pause/resume is meaningless on a proposal that was never approved, and the
+      // API rightly refuses it — so say that instead of surfacing a raw
+      // "Failed to update trigger: 409" from the fetch layer.
+      if (t.status === 'pending') {
+        setError('That proposal is still awaiting approval — approve or deny it in its thread, or press [d] to withdraw it.');
+      } else {
+        const next = t.status === 'enabled' ? 'paused' : 'enabled';
+        updateTrigger(t.id, { status: next }).then(load).catch((e: any) => setError(e.message));
+      }
     } else if ((input === 'd' || input === 'D') && triggers[cursor]) {
       deleteTrigger(triggers[cursor].id).then(() => {
         setCursor((c) => Math.max(0, c - 1));
@@ -107,6 +117,7 @@ export function TriggerList({ onBack, active, refreshTrigger }: TriggerListProps
       <Box marginBottom={1}>
         <Text bold>Triggers ({triggers.length})</Text>
         <Text dimColor>   [p] pause/resume  [d] delete  [r] refresh  [b] back</Text>
+        <Text dimColor>   [..] awaiting approval</Text>
       </Box>
       {visible.map((t, i) => {
         const selected = scrollTop + i === cursor;
