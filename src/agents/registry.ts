@@ -15,6 +15,7 @@ import { PLUGINS_DATA_DIR } from '../system/workdir.js';
 import { join } from 'path';
 import { logger } from '../system/logger.js';
 import { resolveSkillPaths } from './core-skills.js';
+import { deniedToolNames, type McpToolPolicy } from './tool-approval-gate.js';
 
 // ---- Module state ----
 
@@ -306,25 +307,33 @@ function checkCollision(agentId: string, pluginName: string, seen: Map<string, s
 /**
  * Resolve agent's mcpServers references against the root .mcp.json.
  *
- * Tool permission rules (all from agent frontmatter):
+ * Tool permission rules:
  * - No `tools` defined → wildcard for every MCP server (`mcp__<name>__*`)
  * - `tools` defined → use exactly what's listed (user adds wildcards explicitly if needed)
- * - `disallowedTools` → always applied on top
+ * - `disallowedTools` → always applied on top, and the servers' own `deny`-tier
+ *   tools are appended to it, so a tool disabled once in .mcp.json is withheld
+ *   from every agent that mounts the server rather than re-listed per agent
+ *
+ * The tool approval policy travels with the server, not the agent: whichever
+ * agents mount `tramline` all get its `archie` block. That is what makes the
+ * PM — whose servers resolve through this same function — covered by default.
  */
 function resolveAgentMcpServers(
   agent: PluginAgentDef,
   rootMcp: LoadedMcpConfig,
-): Pick<AgentDef, 'mcpServers' | 'mcpDescriptions' | 'tools' | 'disallowedTools'> {
-  const result: Pick<AgentDef, 'mcpServers' | 'mcpDescriptions' | 'tools' | 'disallowedTools'> = {};
+): Pick<AgentDef, 'mcpServers' | 'mcpDescriptions' | 'mcpPolicy' | 'tools' | 'disallowedTools'> {
+  const result: Pick<AgentDef, 'mcpServers' | 'mcpDescriptions' | 'mcpPolicy' | 'tools' | 'disallowedTools'> = {};
 
   if (agent.mcpServers && agent.mcpServers.length > 0) {
     const resolved: Record<string, any> = {};
     const descriptions: Record<string, string> = {};
+    const policy: McpToolPolicy = {};
     for (const name of agent.mcpServers) {
       const config = rootMcp.servers[name];
       if (config) {
         resolved[name] = config;
         if (rootMcp.descriptions[name]) descriptions[name] = rootMcp.descriptions[name];
+        if (rootMcp.policies[name]) policy[name] = rootMcp.policies[name];
       } else {
         logger.warn('registry', `Agent "${agent.key}" references MCP server "${name}" not found in root .mcp.json`);
       }
@@ -335,6 +344,9 @@ function resolveAgentMcpServers(
     if (Object.keys(descriptions).length > 0) {
       result.mcpDescriptions = descriptions;
     }
+    if (Object.keys(policy).length > 0) {
+      result.mcpPolicy = policy;
+    }
   }
 
   // Only pass tools when explicitly defined in agent frontmatter.
@@ -344,8 +356,15 @@ function resolveAgentMcpServers(
     result.tools = agent.tools;
   }
 
-  if (agent.disallowedTools && agent.disallowedTools.length > 0) {
-    result.disallowedTools = agent.disallowedTools;
+  // Frontmatter denials plus every `deny`-tier tool of the servers this agent
+  // mounts. Deduped: a plugin migrating to .mcp.json policies may still list a
+  // tool in both places for a while.
+  const disallowed = [
+    ...(agent.disallowedTools ?? []),
+    ...(result.mcpPolicy ? deniedToolNames(result.mcpPolicy) : []),
+  ];
+  if (disallowed.length > 0) {
+    result.disallowedTools = [...new Set(disallowed)];
   }
 
   return result;

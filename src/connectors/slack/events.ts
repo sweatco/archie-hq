@@ -429,6 +429,7 @@ export async function mountSlackApp(
   });
 
   registerMergeActionHandlers(app!);
+  registerToolApprovalHandlers(app!);
 
   // Handle trigger approval button
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -636,6 +637,94 @@ async function generateTitleAndSync(task: Task, thread: SlackThread): Promise<vo
   if (thread.channel.id.startsWith('D')) {
     await setAssistantThreadTitle(getSlackClient(), thread.channel.id, thread.threadId, title);
   }
+}
+
+/** Parse a tool-approval button value (`<taskId>|<digest>`). */
+function parseToolApprovalButtonValue(value: string): { taskId: string; digest: string } {
+  const pipe = value.indexOf('|');
+  if (pipe === -1) return { taskId: value, digest: '' };
+  return { taskId: value.slice(0, pipe), digest: value.slice(pipe + 1) };
+}
+
+const STALE_TOOL_APPROVAL_TEXT =
+  '⚠️ This approval prompt is stale — the pending request changed, expired, or was already resolved. ' +
+  'Nothing ran, and the task was not resumed — ping the thread if it is still needed.';
+
+/**
+ * Register the MCP tool-call approve/deny button handlers.
+ *
+ * Same shape and same trust model as the merge pair: any workspace member who
+ * can see the prompt may resolve it — identity is resolved for the audit
+ * finding only, and an external/guest clicker still resolves with their
+ * identity omitted, mirroring edit mode and merge. The Task method's atomic
+ * read-compare-clear on the digest is the single verification point.
+ *
+ * Exported for tests, which pass a fake Bolt app recording `.action`
+ * registrations; production registration happens in mountSlackApp.
+ */
+export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): void {
+  /** Resolve the clicker for attribution; never blocks resolution. */
+  const resolveApprover = async (userId: string | undefined): Promise<{ id: string; name: string } | undefined> => {
+    if (!userId) return undefined;
+    try {
+      const info = await getUserInfo(userId);
+      if (isExternalUser(info)) {
+        logger.system(`Tool-call approver ${userId} is external/guest — identity omitted from the finding`);
+        return undefined;
+      }
+      return { id: userId, name: info.realName };
+    } catch (error) {
+      logger.warn('Slack', `Failed to resolve tool-call approver ${userId}`, error);
+      return { id: userId, name: userId };
+    }
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  boltApp.action('approve_tool_call', async ({ action, ack, body }: any) => {
+    await ack();
+
+    const { taskId, digest } = parseToolApprovalButtonValue(String(action.value ?? ''));
+    const userId = body.user?.id || 'unknown';
+    logger.server(`Tool call approved by ${userId} for task ${taskId} (${digest})`);
+
+    try {
+      const approver = await resolveApprover(userId !== 'unknown' ? userId : undefined);
+      const task = await Task.get(taskId);
+      const disposition = await task.handleToolCallApproval(approver, digest);
+
+      if (body.channel?.id && body.message?.ts) {
+        const text = disposition === 'resolved'
+          ? `✅ *Tool call approved* by <@${userId}>`
+          : STALE_TOOL_APPROVAL_TEXT;
+        await updateMessage(body.channel.id, body.message.ts, text, []);
+      }
+    } catch (error) {
+      logger.error('Server', 'Error handling tool-call approval', error);
+    }
+  });
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  boltApp.action('deny_tool_call', async ({ action, ack, body }: any) => {
+    await ack();
+
+    const { taskId, digest } = parseToolApprovalButtonValue(String(action.value ?? ''));
+    const userId = body.user?.id || 'unknown';
+    logger.server(`Tool call denied by ${userId} for task ${taskId} (${digest})`);
+
+    try {
+      const task = await Task.get(taskId);
+      const disposition = await task.handleToolCallDenial(digest);
+
+      if (body.channel?.id && body.message?.ts) {
+        const text = disposition === 'resolved'
+          ? `❌ *Tool call denied* by <@${userId}>`
+          : STALE_TOOL_APPROVAL_TEXT;
+        await updateMessage(body.channel.id, body.message.ts, text, []);
+      }
+    } catch (error) {
+      logger.error('Server', 'Error handling tool-call denial', error);
+    }
+  });
 }
 
 // ============================================================================

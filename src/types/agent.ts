@@ -182,6 +182,15 @@ export interface AgentDef {
    */
   maxMode?: MaxModeSpec;
 
+  /**
+   * Tool approval policy for the MCP servers this agent mounts, resolved from
+   * each server's `archie` block in the plugins repo's `.mcp.json`. When
+   * present, a PreToolUse gate intercepts calls to those servers: `allow` tools
+   * pass ungated, `ask` tools require a per-call Slack approval, `deny` tools
+   * never run. See docs/architecture/tool-approvals.md.
+   */
+  mcpPolicy?: import('../agents/tool-approval-gate.js').McpToolPolicy;
+
   /** Maximum agentic turns before stopping (default: 100) */
   maxTurns?: number;
 

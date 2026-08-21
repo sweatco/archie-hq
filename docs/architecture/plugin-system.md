@@ -103,6 +103,11 @@ A plugin named `pm` is treated specially. Its `agents/pm.md` file provides:
 
 A single `.mcp.json` file at the plugins directory root (`$ARCHIE_WORKDIR/plugins/.mcp.json`) provides MCP server connection configs. Individual agents reference server names from this file via their frontmatter `mcpServers: [...]` field. Environment variables matching `${MCP_*}` are substituted at load time.
 
+A server entry may carry two Archie extensions, both parsed by `loadMcpJson` and **stripped before the config reaches the SDK** so a plugin authored for Archie stays a valid Claude plugin:
+
+- `description` — one human-readable line, surfaced in the PM's roster of what each teammate can reach.
+- `archie` — the tool approval policy for that server: `{ default, allow, ask, deny }`, each tier a list of bare tool names, plus an optional `titles` map giving the approver-facing button text for tools whose name is a bad button on its own. Because it lives with the server, every agent that mounts the server inherits it (the PM included), and `deny`-tier tools are appended to that agent's `disallowedTools`. A server without this block is unmanaged and behaves exactly as before the gate existed. A malformed block fails the load. See [Tool Approvals](tool-approvals.md).
+
 ## Plugin Loader
 
 The plugin loader (`src/system/plugin-loader.ts`) runs once at startup using synchronous filesystem reads. It scans every subdirectory of `PLUGINS_DIR` and produces a `LoadedPlugin[]` array consumed by downstream modules.

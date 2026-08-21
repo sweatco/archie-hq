@@ -86,7 +86,7 @@ export async function deleteTrigger(id: string): Promise<void> {
 
 export async function sendApproval(
   taskId: string,
-  type: 'edit_mode' | 'research_budget' | 'merge' | 'trigger' | 'max_mode',
+  type: 'edit_mode' | 'research_budget' | 'merge' | 'trigger' | 'max_mode' | 'tool_call',
   approve: boolean,
   identity?: { github: string; pr_number: number },
   ref?: string,

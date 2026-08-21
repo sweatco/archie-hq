@@ -12,6 +12,7 @@ import type { AgentDef } from '../types/agent.js';
 import { isPmAgent, isRepoAgent } from '../types/agent.js';
 import { modelDisplayLabel, resolveAgentModel, modelChangingAgentIds } from '../agents/model-label.js';
 import { prCardFingerprint, prCardTitlePlain } from '../system/pr-card-format.js';
+import { APPROVAL_TTL_MS, PENDING_APPROVAL_TTL_MS } from '../agents/tool-approval-gate.js';
 import { getGitHubClient } from '../connectors/github/client.js';
 import { createKeyedLock } from '../system/keyed-lock.js';
 
@@ -637,7 +638,7 @@ export class Task {
   async postInteractiveToUser(
     text: string,
     blocks: unknown[],
-    approvalType: 'edit_mode' | 'research_budget' | 'merge' | 'trigger' | 'max_mode',
+    approvalType: 'edit_mode' | 'research_budget' | 'merge' | 'trigger' | 'max_mode' | 'tool_call',
     channelKey?: string,
     context?: { github: string; pr_number: number },
     ref?: string,
@@ -1498,6 +1499,312 @@ export class Task {
 
     this.debouncedSave();
     await appendAgentFinding(this.taskId, 'system', 'Merge denied by user — PR not merged', 'decision');
+    await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+    return 'resolved';
+  }
+
+
+  // ---- MCP tool-call approvals ---------------------------------------------
+  // The gate itself lives in agents/tool-approval-gate.ts; this section owns
+  // the metadata invariants it depends on. See docs/architecture/tool-approvals.md.
+
+  /**
+   * Spend a grant for `digest`.
+   *
+   * **Synchronous read-compare-remove, no awaits.** The gate hook calls this on
+   * every gated tool call, so two calls with the same digest in one turn must
+   * not both find the grant — the splice has to land before anything can yield.
+   * (Same invariant as `handleMergeApproval`'s clear-before-awaits.)
+   *
+   * The *spend* is then flushed durably before the caller proceeds, which is
+   * why this returns a promise on the spend path. Durability is inverted for a
+   * single-use token: losing the grant write costs an extra approval prompt,
+   * but losing the spend write means a crash — after the tool call has already
+   * run — leaves the grant on disk, unexpired and spendable a second time. The
+   * splice above is what has to be synchronous; awaiting the write afterwards
+   * costs one fsync on a path that is about to make a network call anyway.
+   */
+  consumeToolApproval(digest: string): boolean | Promise<boolean> {
+    const grants = this.metadata.approved_tool_calls;
+    if (!grants || grants.length === 0) return false;
+
+    const now = Date.now();
+    const index = grants.findIndex((a) => a.digest === digest && Date.parse(a.expires_at) > now);
+    // Prune anything stale while we're here — an unspent grant is a standing
+    // permission, so it should not outlive its window on disk.
+    const live = grants.filter((a, i) => i !== index && Date.parse(a.expires_at) > now);
+
+    if (index === -1) {
+      if (live.length !== grants.length) {
+        this.metadata.approved_tool_calls = live;
+        this.debouncedSave();
+      }
+      return false;
+    }
+
+    this.metadata.approved_tool_calls = live;
+
+    // Record that the grant was actually *spent* — without this the audit trail
+    // stops at "approved" and nobody can tell from the thread whether the call
+    // ever ran. Fire-and-forget: a failed log write must not block the call.
+    const spent = grants[index];
+    void appendAgentFinding(
+      this.taskId,
+      'system',
+      `Gated tool call ran on approval ${spent.digest}: ${spent.server}:${spent.tool}` +
+        (spent.approved_by ? ` (approved by <@${spent.approved_by}>)` : ''),
+      'completion',
+    ).catch(() => {});
+
+    // A failed flush is not a reason to refuse a call a human approved — the
+    // cost of that write being lost is a possible replay, which is strictly
+    // less bad than denying an approved action. Log and proceed.
+    return this.save(true)
+      .catch((error) => logger.warn('task', `Failed to flush spent tool-call grant ${digest}`, error))
+      .then(() => true);
+  }
+
+  /**
+   * Post a tool-call approval request and park the task.
+   *
+   * One outstanding request per task: a second gated call while one is pending
+   * is refused rather than queued, so a human never faces a stack of approval
+   * buttons to clear. There is no supersede path for a *live* request —
+   * superseding would let an agent swap the call out from under a human who is
+   * mid-way through reading it. Instead the slot ages out
+   * (PENDING_APPROVAL_TTL_MS), and a failed Slack post clears it.
+   */
+  async requestToolApproval(
+    agentId: string,
+    request: { digest: string; server: string; tool: string; summary: string; heading: string },
+  ): Promise<'posted' | 'already-pending'> {
+    // A pending request goes stale: nobody clicked, and a prompt raised against
+    // state that is now hours old should not keep blocking every other call for
+    // the rest of the task's life, nor mint a fresh grant if someone finds it
+    // days later. Past its window it is discarded and this request replaces it.
+    const pending = this.metadata.pending_tool_approval;
+    const live = pending && Date.parse(pending.requested_at) > Date.now() - PENDING_APPROVAL_TTL_MS
+      ? pending
+      : undefined;
+    if (live && live.digest !== request.digest) return 'already-pending';
+    // Same digest already pending: the agent retried before the human answered.
+    // Re-arm the park — the previous teardown has already fired, so returning
+    // without arming would leave the agent running against a prompt nobody has
+    // answered, free to try something else.
+    //
+    // Only the *requester* re-arms. A grant is bound to the call, not to the
+    // agent, so a second agent can reach this with the same digest — and both
+    // resolution paths clear the teardown of `requested_by` alone, so arming
+    // anyone else leaves a deferred stop() nothing will cancel: it fires at that
+    // agent's turn end and tears the task down while the requester's retry is
+    // in flight. Tell the other agent to wait instead.
+    if (live && live.requested_by !== agentId) return 'already-pending';
+    if (live) {
+      this.suspendStatus();
+      this.agentProcesses.get(agentId as AgentName)?.deferTeardown(() => this.stop());
+      return 'posted';
+    }
+
+    this.metadata.pending_tool_approval = {
+      digest: request.digest,
+      server: request.server,
+      tool: request.tool,
+      summary: request.summary,
+      heading: request.heading,
+      requested_by: agentId,
+      requested_at: new Date().toISOString(),
+    };
+
+    // Audit prose, fire-and-forget like the spent-finding: an awaited write here
+    // is one more way to leave the slot set with no prompt behind it.
+    void appendAgentFinding(
+      this.taskId,
+      'system',
+      `Tool-call approval requested: ${request.server}:${request.tool} — ${request.heading}`,
+      'decision',
+    ).catch(() => {});
+
+    const buttonValue = `${this.taskId}|${request.digest}`;
+    const blocks = [
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: `*Approval needed:* ${request.summary}` },
+      },
+      {
+        type: 'context',
+        elements: [{
+          type: 'mrkdwn',
+          text: `Requested by \`${agentId}\` · approving runs this one call once`,
+        }],
+      },
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Approve' },
+            action_id: 'approve_tool_call',
+            value: buttonValue,
+            style: 'primary',
+          },
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Deny' },
+            action_id: 'deny_tool_call',
+            value: buttonValue,
+            style: 'danger',
+          },
+        ],
+      },
+    ];
+
+    try {
+      // Flush before posting: the resolution arrives on a *different* instance
+      // (the task is about to stop and be reloaded by the button handler), so
+      // the slot must be on disk before the park, not 500ms later.
+      await this.save(true);
+      await this.postInteractiveToUser(
+        `Approve tool call: ${request.heading}?`,
+        blocks,
+        'tool_call',
+        undefined,
+        undefined,
+        request.digest,
+      );
+    } catch (error) {
+      // The slot's presence means "a prompt exists in Slack" — the same-digest
+      // re-arm branch and the one-at-a-time refusal both key off it. Anything
+      // that fails between setting it and the prompt landing must therefore
+      // clear it, or the task spends an hour refusing every call and a retry
+      // parks it against a button nobody can see. This catch covers the flush
+      // as well as the post for that reason. Rethrow so the gate's fail-closed
+      // wrapper denies this attempt.
+      this.metadata.pending_tool_approval = undefined;
+      await this.save(true).catch((saveError) =>
+        logger.warn('task', `Failed to clear the pending tool-approval slot`, saveError),
+      );
+      throw error;
+    }
+
+    // Park: freeze the status so the wind-down doesn't resurface "working…",
+    // and defer the stop to turn-end so stopping the queue doesn't close the
+    // input stream under this in-flight hook.
+    this.suspendStatus();
+    this.agentProcesses.get(agentId as AgentName)?.deferTeardown(() => this.stop());
+    return 'posted';
+  }
+
+  /**
+   * Resolve a pending tool-call approval (approve side).
+   *
+   * Same synchronous read-compare-clear identity gate as
+   * {@link handleMergeApproval}: a click whose digest doesn't match the slot is
+   * a stale no-op and can never authorize the call currently pending. On match
+   * the grant is *stored*, not executed — the agent spends it by retrying its
+   * own call, which keeps the action running through the same audited MCP path
+   * as everything else.
+   */
+  async handleToolCallApproval(
+    approver: { id: string; name: string } | undefined,
+    expectedDigest: string,
+  ): Promise<'resolved' | 'stale'> {
+    const pending = this.metadata.pending_tool_approval;
+    if (!pending || pending.digest !== expectedDigest) {
+      logger.warn(
+        'task',
+        `Stale tool-call approval for ${expectedDigest} on task ${this.taskId} — ` +
+        `slot ${pending ? `holds ${pending.digest}` : 'is empty'}`,
+      );
+      return 'stale';
+    }
+    // The Slack message never expires on its own, so a prompt found days later
+    // would otherwise resolve and mint a fresh spendable grant against state the
+    // approver never saw. Bound the render→click interval, not just grant→spend.
+    if (Date.parse(pending.requested_at) <= Date.now() - PENDING_APPROVAL_TTL_MS) {
+      logger.warn(
+        'task',
+        `Expired tool-call approval for ${expectedDigest} on task ${this.taskId} — requested ${pending.requested_at}`,
+      );
+      this.metadata.pending_tool_approval = undefined;
+      await this.save(true);
+      await appendAgentFinding(
+        this.taskId,
+        'system',
+        `Tool-call approval expired unspent: ${pending.server}:${pending.tool} — ${pending.heading}`,
+        'decision',
+      );
+      return 'stale';
+    }
+    this.metadata.pending_tool_approval = undefined;
+
+    // Dedupe on digest so two prompts for the same call cannot become two
+    // grants: "cannot be spent twice" has to hold per *call*, not per grant.
+    const now = new Date();
+    this.metadata.approved_tool_calls = [
+      ...(this.metadata.approved_tool_calls ?? []).filter((a) => a.digest !== pending.digest),
+      {
+        digest: pending.digest,
+        server: pending.server,
+        tool: pending.tool,
+        approved_by: approver?.id,
+        approved_at: now.toISOString(),
+        expires_at: new Date(now.getTime() + APPROVAL_TTL_MS).toISOString(),
+      },
+    ];
+
+    // Cancel the park armed by the gate hook on the requesting agent —
+    // approval means "continue", so the deferred stop must not fire and tear
+    // down the task we just approved.
+    this.agentProcesses.get(pending.requested_by as AgentName)?.clearPendingTeardown();
+
+    // Durable, not debounced: the agent's retry reads this from a reloaded
+    // instance, so the grant has to be on disk before the reactivation below.
+    await this.save(true);
+
+    const bySuffix = approver?.name ? ` by ${approver.name}` : '';
+    await appendAgentFinding(
+      this.taskId,
+      'system',
+      `Tool call approved${bySuffix}: ${pending.server}:${pending.tool} — ${pending.heading}`,
+      'decision',
+    );
+    // Wake the agent that owns the grant: only a byte-identical retry from the
+    // requester spends it, and routing through the PM alone adds a
+    // re-delegation hop to the TTL clock.
+    const requester = (pending.requested_by || 'pm-agent') as AgentName;
+    emitEvent('approval:resolved', this.taskId, { type: 'tool_call', approve: true });
+    await this.sendMessage(AGENT_PROMPTS.existingTask, requester);
+    return 'resolved';
+  }
+
+  /**
+   * Resolve a pending tool-call approval (deny side). Same identity gate;
+   * clears the slot and grants nothing. No grant is ever stored on this path.
+   */
+  async handleToolCallDenial(expectedDigest: string): Promise<'resolved' | 'stale'> {
+    const pending = this.metadata.pending_tool_approval;
+    if (!pending || pending.digest !== expectedDigest) {
+      logger.warn(
+        'task',
+        `Stale tool-call denial for ${expectedDigest} on task ${this.taskId} — ` +
+        `slot ${pending ? `holds ${pending.digest}` : 'is empty'}`,
+      );
+      return 'stale';
+    }
+    this.metadata.pending_tool_approval = undefined;
+
+    this.agentProcesses.get(pending.requested_by as AgentName)?.clearPendingTeardown();
+
+    // Durable, matching the approve path: a denial lost to a crash in the
+    // debounce window would leave the slot set and block every later call.
+    await this.save(true);
+    await appendAgentFinding(
+      this.taskId,
+      'system',
+      `Tool call denied by user: ${pending.server}:${pending.tool} — ${pending.heading}`,
+      'decision',
+    );
+    emitEvent('approval:resolved', this.taskId, { type: 'tool_call', approve: false });
     await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
     return 'resolved';
   }

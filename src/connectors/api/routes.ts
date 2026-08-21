@@ -308,6 +308,27 @@ export function mountApiRoutes(app: Application): void {
         } else {
           await task.handleTriggerDenial(ref);
         }
+      } else if (type === 'tool_call') {
+        // Same trust model as every other gate's API path: reaching this route
+        // means operator access to the engine. `ref` carries the digest of the
+        // exact (server, tool, arguments) call being resolved — echoed from the
+        // approval event — and is verified against the pending slot inside the
+        // Task methods.
+        if (typeof ref !== 'string' || !ref) {
+          res.status(400).json({ error: 'tool_call approval requires ref (the call digest)' });
+          return;
+        }
+        const disposition = approve
+          ? await task.handleToolCallApproval(cleanApprover, ref)
+          : await task.handleToolCallDenial(ref);
+        if (disposition === 'stale') {
+          res.status(409).json({
+            ok: false,
+            stale: true,
+            error: `No pending tool-call approval for ${ref}`,
+          });
+          return;
+        }
       } else if (type === 'max_mode') {
         if (approve) {
           await task.handleMaxModeApproval(cleanApprover?.name);
