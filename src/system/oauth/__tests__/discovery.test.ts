@@ -1,9 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
+  classifyServerAuth,
+  discoverProtectedResource,
+  parseScopeParam,
   parseResourceMetadataParam,
   fetchProtectedResourceMetadata,
   fetchAuthServerMetadata,
+  resetServerAuthClassCache,
 } from '../discovery.js';
+
+function protectedResourceResponse(resource: string): Response {
+  return new Response(
+    JSON.stringify({ resource, authorization_servers: ['https://auth.example.com'] }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  );
+}
 
 describe('parseResourceMetadataParam', () => {
   it('extracts a quoted resource_metadata value', () => {
@@ -23,6 +34,13 @@ describe('parseResourceMetadataParam', () => {
   it('is case-insensitive on the param name', () => {
     expect(parseResourceMetadataParam('Bearer RESOURCE_METADATA="https://example.com/r"'))
       .toBe('https://example.com/r');
+  });
+});
+
+describe('parseScopeParam', () => {
+  it('parses and normalizes an insufficient-scope challenge', () => {
+    expect(parseScopeParam('Bearer error="insufficient_scope", scope="write read write"'))
+      .toEqual(['read', 'write']);
   });
 });
 
@@ -73,6 +91,124 @@ describe('fetchProtectedResourceMetadata', () => {
       'https://example.com/.well-known/oauth-protected-resource',
       'https://api.example.com/mcp',
     )).rejects.toThrow();
+  });
+});
+
+describe('discoverProtectedResource', () => {
+  let originalFetch: typeof fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    resetServerAuthClassCache();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    resetServerAuthClassCache();
+  });
+
+  it('uses path-specific RFC 9728 metadata before the root fallback', async () => {
+    const serverUrl = 'https://mcp.example.com/public/mcp?tenant=one';
+    const calls: string[] = [];
+    globalThis.fetch = vi.fn(async (url: string | URL) => {
+      const target = String(url);
+      calls.push(target);
+      if (target === serverUrl) return new Response('', { status: 200 });
+      if (target === 'https://mcp.example.com/.well-known/oauth-protected-resource/public/mcp') {
+        return protectedResourceResponse(serverUrl);
+      }
+      return new Response('', { status: 500 });
+    }) as typeof fetch;
+
+    const result = await discoverProtectedResource(serverUrl);
+
+    expect(result?.metadataUrl).toBe(
+      'https://mcp.example.com/.well-known/oauth-protected-resource/public/mcp',
+    );
+    expect(calls).toEqual([
+      serverUrl,
+      'https://mcp.example.com/.well-known/oauth-protected-resource/public/mcp',
+    ]);
+  });
+
+  it('falls back from missing path-specific metadata to root metadata', async () => {
+    const serverUrl = 'https://mcp.example.com/public/mcp';
+    const calls: string[] = [];
+    globalThis.fetch = vi.fn(async (url: string | URL) => {
+      const target = String(url);
+      calls.push(target);
+      if (target === serverUrl) return new Response('', { status: 200 });
+      if (target.endsWith('/.well-known/oauth-protected-resource/public/mcp')) {
+        return new Response('', { status: 404 });
+      }
+      return protectedResourceResponse(serverUrl);
+    }) as typeof fetch;
+
+    const result = await discoverProtectedResource(serverUrl);
+
+    expect(result?.metadataUrl).toBe('https://mcp.example.com/.well-known/oauth-protected-resource');
+    expect(calls).toEqual([
+      serverUrl,
+      'https://mcp.example.com/.well-known/oauth-protected-resource/public/mcp',
+      'https://mcp.example.com/.well-known/oauth-protected-resource',
+    ]);
+  });
+
+  it('uses an advertised metadata URL without trying constructed fallbacks', async () => {
+    const serverUrl = 'https://mcp.example.com/public/mcp';
+    const advertised = 'https://metadata.example.com/resource';
+    const calls: string[] = [];
+    globalThis.fetch = vi.fn(async (url: string | URL) => {
+      const target = String(url);
+      calls.push(target);
+      if (target === serverUrl) {
+        return new Response('', {
+          status: 401,
+          headers: { 'WWW-Authenticate': `Bearer resource_metadata="${advertised}"` },
+        });
+      }
+      return protectedResourceResponse(serverUrl);
+    }) as typeof fetch;
+
+    const result = await discoverProtectedResource(serverUrl);
+
+    expect(result?.metadataUrl).toBe(advertised);
+    expect(calls).toEqual([serverUrl, advertised]);
+  });
+
+  it('deduplicates concurrent discovery for the same normalized server URL', async () => {
+    const serverUrl = 'https://mcp.example.com/mcp';
+    let releaseProbe!: () => void;
+    const probeGate = new Promise<void>((resolve) => { releaseProbe = resolve; });
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      const target = String(url);
+      if (target === serverUrl) {
+        await probeGate;
+        return new Response('', { status: 200 });
+      }
+      return protectedResourceResponse(serverUrl);
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const first = discoverProtectedResource(serverUrl);
+    const second = discoverProtectedResource(serverUrl);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    releaseProbe();
+
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    expect(firstResult).toEqual(secondResult);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('classifies a protected response without usable metadata as unknown', async () => {
+    globalThis.fetch = vi.fn(async (url: string | URL) => {
+      if (String(url) === 'https://mcp.example.com/mcp') {
+        return new Response('', { status: 401 });
+      }
+      return new Response('', { status: 404 });
+    }) as typeof fetch;
+
+    await expect(classifyServerAuth('https://mcp.example.com/mcp')).resolves.toBe('unknown');
   });
 });
 

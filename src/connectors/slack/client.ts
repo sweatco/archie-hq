@@ -1708,7 +1708,7 @@ export async function postEphemeral(
  */
 export async function getChannelInfo(
   channelId: string,
-): Promise<{ id: string; name: string; isPrivate: boolean; isIm: boolean; imUserId?: string }> {
+): Promise<{ id: string; name: string; isPrivate: boolean; isIm: boolean; imUserId?: string; dmUserId?: string }> {
   const client = getSlackClient();
 
   try {
@@ -1723,8 +1723,20 @@ export async function getChannelInfo(
 
     // For DMs, resolve the other user's name instead of showing a raw ID
     if (isIm && channel?.user) {
-      const userInfo = await getUserInfo(channel.user);
-      return { id: channelId, name: `DM with ${userInfo.realName}`, isPrivate, isIm, imUserId: channel.user };
+      let userName = channel.user;
+      try {
+        userName = (await getUserInfo(channel.user)).realName;
+      } catch (error) {
+        logger.warn('Slack', `Failed to resolve display name for DM participant ${channel.user}`, error);
+      }
+      return {
+        id: channelId,
+        name: `DM with ${userName}`,
+        isPrivate,
+        isIm,
+        imUserId: channel.user,
+        dmUserId: channel.user,
+      };
     }
 
     return {
@@ -2563,4 +2575,3 @@ export async function findSlackChannels(query: string): Promise<SlackChannelInfo
     c.purpose.toLowerCase().includes(q)
   );
 }
-

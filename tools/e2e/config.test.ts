@@ -55,4 +55,10 @@ describe('resolveTimeoutSeconds — override chain', () => {
     expect(() => resolveTimeoutSeconds('-5', undefined, 600)).toThrow(/positive number/);
     expect(() => resolveTimeoutSeconds(undefined, 'soon', 600)).toThrow(/invalid timeout from env/);
   });
+
+  it('does not expose an invalid environment value in the error', () => {
+    expect(() => resolveTimeoutSeconds(undefined, 'sensitive-environment-value', 600)).toThrowError(
+      'invalid timeout from env (expected a positive number of seconds)',
+    );
+  });
 });

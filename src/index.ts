@@ -26,13 +26,14 @@ import type { Application, Request, Response } from 'express';
 import { mountSlackApp, type SlackLifecycle } from './connectors/slack/events.js';
 import { mountGitHubWebhook } from './connectors/github/events.js';
 import { mountApiRoutes } from './connectors/api/routes.js';
-import { mountOAuthRoutes } from './connectors/oauth/routes.js';
+import { mountOAuthRoutes, replayCompletedDmWakes } from './connectors/oauth/routes.js';
 import { getIsShuttingDown, setShuttingDown } from './system/shutdown.js';
 import { getActiveTaskIds } from './tasks/task.js';
 import { logger } from './system/logger.js';
-import { bootstrapWorkdir, cloneRepos, OAUTH_DIR, REPOS_DIR } from './system/workdir.js';
+import { bootstrapWorkdir, cloneRepos, REPOS_DIR } from './system/workdir.js';
 import { join } from 'path';
 import { validateMasterKey } from './system/secrets-vault.js';
+import { anyOAuthRecordExists } from './system/oauth/storage.js';
 import { initPlugins, getPlugins } from './system/plugin-loader.js';
 import { startContextProbe } from './system/context-probe.js';
 import { initRegistry, getAllAgentDefs } from './agents/registry.js';
@@ -99,9 +100,9 @@ async function main(): Promise<void> {
 
     // If any OAuth vault records exist (or the master key was provided),
     // validate it now so a misconfigured deployment fails fast instead of
-    // erroring at agent-spawn time.
-    const hasVaultRecords = readdirSync(OAUTH_DIR).some((name) => name.endsWith('.json'));
-    if (hasVaultRecords || process.env.ARCHIE_SECRETS_KEY) {
+    // erroring at agent-spawn time. Covers legacy shared records, per-user
+    // token records, and shared client registrations.
+    if ((await anyOAuthRecordExists()) || process.env.ARCHIE_SECRETS_KEY) {
       validateMasterKey();
     }
 
@@ -253,6 +254,7 @@ async function main(): Promise<void> {
     const server = http.createServer(app);
 
     await recoverActiveTasks();
+    await replayCompletedDmWakes();
     await initReminderScheduler();
     await initTriggerScheduler();
 

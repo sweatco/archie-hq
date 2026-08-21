@@ -14,7 +14,7 @@ import { promisify } from 'util';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { AgentName, FindingType, AttachedRepo, SlackThreadMessage } from '../types/task.js';
-import type { Task } from '../tasks/task.js';
+import { Task } from '../tasks/task.js';
 import type { Agent } from './agent.js';
 import { getVisiblePeerIdsForSender, findAgentDefsContainingRepo, synthesizeDynamicAgentDef, isAutoMergeRepo } from './registry.js';
 import { getGitHubClient, parseCheckRef, getArchieAttributionIdentity } from '../connectors/github/client.js';
@@ -699,6 +699,71 @@ function createRequestEditModeTool(agent: Agent, task: Task) {
       // doesn't close the input stream under an in-flight hook ("stream closed").
       agent.deferTeardown(() => task.stop());
       return { content: [{ type: 'text' as const, text: 'Edit mode request sent. Task paused pending user approval.' }] };
+    },
+  );
+}
+
+function createRequestMcpAuthTool(agent: Agent, task: Task) {
+  return tool(
+    'request_mcp_auth',
+    'Escalate an OAuth MCP server from shared credentials to the 1:1 DM participant after an authorization or permission failure. Reuses existing personal credentials or sends an authorization link, then restarts with personal access.',
+    {
+      server: z.string().describe('MCP server name from the configuration (e.g. "notion")'),
+      reason: z.string().optional().describe('One line on why access is needed — shown to the user on the authorization message'),
+      challenge_scopes: z.array(z.string()).optional().describe(
+        'Exact scope values from the failed MCP WWW-Authenticate challenge, when present',
+      ),
+    },
+    async (args) => {
+      const agentName = agent.def.id as AgentName;
+
+      // Already pausing this turn — skip a duplicate wall if the tool fires twice.
+      if (agent.pendingTeardown) {
+        return err('Task is already pausing; authorization was not started by this call.');
+      }
+
+      if (!task.getMcpOAuthUser()) {
+        return err('Per-user MCP OAuth is available only in a 1:1 Slack DM.');
+      }
+
+      logger.agentAction(agentName, 'Requesting MCP authorization', args.server);
+      task.touch();
+
+      let outcome: 'ready' | 'authorization_started' | 'authorization_pending';
+      try {
+        outcome = await task.requestMcpAuth(args.server, args.reason, args.challenge_scopes);
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e));
+      }
+
+      task.suspendStatus();
+
+      if (outcome === 'ready') {
+        agent.deferTeardown(async () => {
+          await task.stop();
+          // OAuth headers are fixed at agent spawn, so resume through a fresh task instance.
+          const resumedTask = await Task.get(task.taskId);
+          await resumedTask.sendMessage(
+            `Use the DM user's personal credentials for MCP server "${args.server}" and continue the task.`,
+            'pm-agent',
+          );
+        });
+        return ok(
+          `Existing personal authorization selected for "${args.server}". ` +
+          'The task will restart with the DM user\'s access.',
+        );
+      }
+
+      agent.deferTeardown(() => task.stop());
+      if (outcome === 'authorization_pending') {
+        return ok(
+          `Authorization for "${args.server}" is already pending. Task paused until the DM user finishes it.`,
+        );
+      }
+      return ok(
+        `Authorization link sent for "${args.server}". Task paused until the DM user authorizes — ` +
+        'the PM will continue with access afterwards.',
+      );
     },
   );
 }
@@ -2823,6 +2888,7 @@ export function createOrchestrationMcpServer(agent: Agent, task: Task) {
       createReportCompletionTool(agent, task),
       createRequestEditModeTool(agent, task),
       createRequestMaxModeTool(agent, task),
+      createRequestMcpAuthTool(agent, task),
       createGetAgentsStatusTool(agent, task),
       createGetTaskUsageTool(agent, task),
       createListAvailableReposTool(agent, task),

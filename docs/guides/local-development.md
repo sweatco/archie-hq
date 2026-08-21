@@ -89,11 +89,38 @@ ARCHIE_URL=http://localhost:3000 npm run cli   # override server URL
 For MCP servers that authenticate via OAuth, use the `oauth` subcommands. They run on the same host as the daemon (they share `SECRETS_DIR`) and require `ARCHIE_SECRETS_KEY` (and `ARCHIE_PUBLIC_URL` for `connect`).
 
 ```bash
-npm run oauth:connect <server-name>   # begin authorize flow
-npm run oauth:list                    # show connected servers
-npm run oauth:refresh <server-name>   # force-refresh a token
-npm run oauth:revoke  <server-name>   # delete a record
+npm run oauth:connect -- <server-name>                       # begin shared authorize flow
+npm run oauth:list                                          # show connected servers/users
+npm run oauth:refresh -- <server-name>                       # force-refresh a shared token
+npm run oauth:revoke -- <server-name>                        # delete the shared record
+npm run oauth:revoke -- <server-name> --user <slack-user-id> # delete one user's record
 ```
+
+OAuth endpoints require public HTTPS. For a local provider only, set
+`ARCHIE_OAUTH_ALLOW_INSECURE_LOOPBACK=1`; this exception accepts HTTP on
+`localhost` or a loopback IP and nowhere else.
+
+To verify the complete shared-to-personal DM flow against hosted Notion MCP,
+prepare two Notion pages with synthetic marker text: one accessible to operator
+identity A and one private to Slack identity B. Boot Archie through the E2E
+harness with an isolated secrets directory and run:
+
+```bash
+npm run e2e:oauth:notion -- \
+  --shared-page https://www.notion.so/... \
+  --shared-marker SHARED_MARKER_123 \
+  --personal-page https://www.notion.so/... \
+  --personal-marker PERSONAL_MARKER_456
+```
+
+The runner prints the two required human steps: authorize identity A in the
+browser, then send one nonce-tagged DM as identity B and approve the personal
+link there. It automatically verifies shared-first access, callback wake,
+restart persistence, forced refresh, targeted revoke, and the next personal
+re-prompt. It writes redacted evidence under `e2e-evidence/`. Hosted Notion MCP
+requires user OAuth consent, so this gate is deliberately opt-in rather than a
+default CI test. Use `--reuse-shared` only when the existing shared record is
+known to belong to identity A; otherwise use an isolated secrets directory.
 
 ### REST API
 

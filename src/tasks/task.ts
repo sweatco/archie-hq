@@ -52,12 +52,19 @@ import {
   getMemoryPath,
   getKnowledgeLogPath,
 } from './persistence.js';
+import { beginUserConnect, readMcpServerUrl } from '../system/oauth/connect.js';
+import { ensureFreshUserToken } from '../system/oauth/refresh.js';
+import {
+  deletePendingIfIncomplete,
+  findPendingUserAttempt,
+  readUserOAuthRecord,
+} from '../system/oauth/storage.js';
 import { getIsShuttingDown } from '../system/shutdown.js';
 import { scheduleIdleCheck } from './recovery.js';
 import { scanAgentDefs, getAgentDef, getVisiblePeerIdsForSender, synthesizeDynamicAgentDef } from '../agents/registry.js';
 import type { AttachedRepo } from '../types/task.js';
 import { syncPlugins } from '../system/plugin-sync.js';
-import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, isExternalUser, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
 import { renderMessageBody, shouldRedact } from '../connectors/slack/message-body.js';
 import { basename } from 'path';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
@@ -70,6 +77,7 @@ import { agentDomainLabel, deriveActivityFromEvent } from '../agents/activity.js
 // ---- Global state ----
 
 export const activeTasks = new Map<string, Task>();
+const terminatingTaskIds = new Set<string>();
 
 /**
  * Per-task serialization for PR-card writes. A PM turn-end (resurfacePrCards)
@@ -101,6 +109,8 @@ const cardLock = createKeyedLock();
  * onto it, so exactly one set of agents ever spawns.
  */
 const activationLock = createKeyedLock();
+const mcpAuthRequestLock = createKeyedLock();
+const MAX_MCP_REAUTH_ATTEMPTS = 2;
 
 /**
  * Per-task serialization for opening a task's own thread in its home channel.
@@ -377,6 +387,7 @@ export class Task {
         thread_id: thread.threadId,
         channel_id: thread.channel.id,
         channel_name: thread.channel.name,
+        dm_user_id: thread.channel.dmUserId,
         last_processed_ts: thread.currentMessageTs,
         url: buildThreadUrl(thread.channel.id, thread.threadId) ?? undefined,
       };
@@ -389,6 +400,8 @@ export class Task {
       this.debouncedSave();
       return { linkedNewThread: true };
     }
+
+    existing.dm_user_id ??= thread.channel.dmUserId;
 
     // Existing thread — only append messages newer than last_processed_ts
     const lastProcessedTs = existing.last_processed_ts;
@@ -1015,91 +1028,101 @@ export class Task {
    * Stop the task and clean up all agents.
    */
   async stop(): Promise<void> {
-    if (!this.isActive) {
+    if (!this.isActive || terminatingTaskIds.has(this.taskId)) {
       logger.system(`Task ${this.taskId} already stopped`);
       return;
     }
 
-    // PM has yielded the turn — (re)post any changed PR cards so they land under
-    // the final message. Best-effort; must never block teardown.
-    await this.resurfacePrCards().catch((e) => logger.warn('task', 'PR card resurface failed on stop', e));
+    terminatingTaskIds.add(this.taskId);
+    try {
+      // PM has yielded the turn — (re)post any changed PR cards so they land under
+      // the final message. Best-effort; must never block teardown.
+      await this.resurfacePrCards().catch((e) => logger.warn('task', 'PR card resurface failed on stop', e));
 
-    this.isActive = false;
-    activeTasks.delete(this.taskId);
-    this.clearTaskTimeout();
+      this.isActive = false;
+      activeTasks.delete(this.taskId);
+      this.clearTaskTimeout();
 
-    // Stop all queues. A parked or just-finished agent (session inactive) exits
-    // gracefully on its next queue pull — the resume-safe path the deferred
-    // teardown relies on (see spawn.ts: never .return() the generator), so do
-    // NOT abort it. But an agent still mid-turn keeps generating and hits
-    // "Stream closed" on every tool/hook control request, looping until maxTurns
-    // — stopping its queue can't end it, so hard-abort those. agent:inactive is
-    // emitted by the Stop hook / crash handler (or the aborted loop exiting).
-    for (const a of this.agentProcesses.values()) {
-      const midTurn = a.session.active;
-      a.queue.stop();
-      if (midTurn) a.handle?.abort();
+      // Stop all queues. A parked or just-finished agent (session inactive) exits
+      // gracefully on its next queue pull — the resume-safe path the deferred
+      // teardown relies on (see spawn.ts: never .return() the generator), so do
+      // NOT abort it. But an agent still mid-turn keeps generating and hits
+      // "Stream closed" on every tool/hook control request, looping until maxTurns
+      // — stopping its queue can't end it, so hard-abort those. agent:inactive is
+      // emitted by the Stop hook / crash handler (or the aborted loop exiting).
+      for (const a of this.agentProcesses.values()) {
+        const midTurn = a.session.active;
+        a.queue.stop();
+        if (midTurn) a.handle?.abort();
+      }
+
+      // Clean up clones to free disk space (only when not in edit mode)
+      if (this.metadata.edit_allowed !== true) {
+        await this.cleanupClones();
+      }
+
+      this.clearAcks();
+      this.statusController.clear();
+
+      this.metadata.status = 'stopped';
+      await this.save(true);
+    } finally {
+      terminatingTaskIds.delete(this.taskId);
+      emitEvent('task:stopped', this.taskId);
     }
-
-    // Clean up clones to free disk space (only when not in edit mode)
-    if (this.metadata.edit_allowed !== true) {
-      await this.cleanupClones();
-    }
-
-    this.clearAcks();
-    this.statusController.clear();
-
-    this.metadata.status = 'stopped';
-    await this.save(true);
 
     logger.system(`Task ${this.taskId} stopped`);
-    emitEvent('task:stopped', this.taskId);
   }
 
   /**
    * Complete the task.
    */
   async complete(): Promise<void> {
-    if (!this.isActive) {
+    if (!this.isActive || terminatingTaskIds.has(this.taskId)) {
       logger.system(`Task ${this.taskId} already completed/stopped`);
       return;
     }
 
-    // PM has yielded the turn — (re)post any changed PR cards so they land under
-    // the final message. Best-effort; must never block teardown.
-    await this.resurfacePrCards().catch((e) => logger.warn('task', 'PR card resurface failed on complete', e));
+    terminatingTaskIds.add(this.taskId);
+    try {
+      // PM has yielded the turn — (re)post any changed PR cards so they land under
+      // the final message. Best-effort; must never block teardown.
+      await this.resurfacePrCards().catch((e) => logger.warn('task', 'PR card resurface failed on complete', e));
 
-    this.isActive = false;
-    activeTasks.delete(this.taskId);
-    this.clearTaskTimeout();
+      this.isActive = false;
+      activeTasks.delete(this.taskId);
+      this.clearTaskTimeout();
 
-    // Stop all queues. A parked or just-finished agent (session inactive) exits
-    // gracefully on its next queue pull — the resume-safe path the deferred
-    // teardown relies on (see spawn.ts: never .return() the generator), so do
-    // NOT abort it. But an agent still mid-turn keeps generating and hits
-    // "Stream closed" on every tool/hook control request, looping until maxTurns
-    // — stopping its queue can't end it, so hard-abort those. agent:inactive is
-    // emitted by the Stop hook / crash handler (or the aborted loop exiting).
-    for (const a of this.agentProcesses.values()) {
-      const midTurn = a.session.active;
-      a.queue.stop();
-      if (midTurn) a.handle?.abort();
+      // Stop all queues. A parked or just-finished agent (session inactive) exits
+      // gracefully on its next queue pull — the resume-safe path the deferred
+      // teardown relies on (see spawn.ts: never .return() the generator), so do
+      // NOT abort it. But an agent still mid-turn keeps generating and hits
+      // "Stream closed" on every tool/hook control request, looping until maxTurns
+      // — stopping its queue can't end it, so hard-abort those. agent:inactive is
+      // emitted by the Stop hook / crash handler (or the aborted loop exiting).
+      for (const a of this.agentProcesses.values()) {
+        const midTurn = a.session.active;
+        a.queue.stop();
+        if (midTurn) a.handle?.abort();
+      }
+
+      // Clean up clones to free disk space (only when not in edit mode).
+      // RW clones (edit_allowed) are kept — they have branches, commits, PRs.
+      if (this.metadata.edit_allowed !== true) {
+        await this.cleanupClones();
+      }
+
+      this.clearAcks();
+      this.statusController.clear();
+
+      this.metadata.status = 'completed';
+      await this.save(true);
+    } finally {
+      terminatingTaskIds.delete(this.taskId);
+      emitEvent('task:completed', this.taskId);
     }
-
-    // Clean up clones to free disk space (only when not in edit mode).
-    // RW clones (edit_allowed) are kept — they have branches, commits, PRs.
-    if (this.metadata.edit_allowed !== true) {
-      await this.cleanupClones();
-    }
-
-    this.clearAcks();
-    this.statusController.clear();
-
-    this.metadata.status = 'completed';
-    await this.save(true);
 
     logger.system(`Task ${this.taskId} completed`);
-    emitEvent('task:completed', this.taskId);
   }
 
   /**
@@ -1625,6 +1648,107 @@ export class Task {
     await appendAgentFinding(this.taskId, 'system', `Trigger ${id} denied by user`, 'decision');
   }
 
+  // ---- Per-user MCP OAuth --------------------------------------------------
+
+  /** Per-user OAuth is available only to the task's default 1:1 Slack DM. */
+  getMcpOAuthUser(): string | null {
+    const key = this.metadata.default_channel;
+    const channel = key ? this.metadata.channels[key] : null;
+    if (channel?.type !== 'slack' || !channel.channel_id.startsWith('D')) return null;
+    return channel.dm_user_id ?? null;
+  }
+
+  /** Escalate one server to the DM participant, authorizing only when needed. */
+  async requestMcpAuth(
+    serverName: string,
+    reason?: string,
+    challengeScopes: readonly string[] = [],
+  ): Promise<'ready' | 'authorization_started' | 'authorization_pending'> {
+    const slackUserId = this.getMcpOAuthUser();
+    if (!slackUserId) throw new Error('Per-user MCP OAuth is available only in a 1:1 Slack DM.');
+    const serverUrl = readMcpServerUrl(serverName);
+
+    return mcpAuthRequestLock(`${this.taskId}:${slackUserId}:${serverName}`, async () => {
+      if (await findPendingUserAttempt(this.taskId, slackUserId, serverName)) {
+        return 'authorization_pending';
+      }
+
+      const personalServers = new Set(this.metadata.mcp_personal_oauth ?? []);
+      const alreadyPersonal = personalServers.has(serverName);
+      const userRecord = await readUserOAuthRecord(slackUserId, serverName);
+      const requiredScopes = [...new Set(challengeScopes.map((scope) => scope.trim()).filter(Boolean))].sort();
+
+      let personalCredentialsReady = false;
+      if (!alreadyPersonal && userRecord) {
+        try {
+          await ensureFreshUserToken(slackUserId, serverName, serverUrl);
+          personalCredentialsReady = requiredScopes.every((scope) => userRecord.scopes.includes(scope));
+        } catch {
+          personalCredentialsReady = false;
+        }
+      }
+
+      const selectPersonalCredentials = async (): Promise<void> => {
+        personalServers.add(serverName);
+        this.metadata.mcp_personal_oauth = [...personalServers];
+        await this.save(true);
+      };
+
+      if (personalCredentialsReady) {
+        await selectPersonalCredentials();
+        await appendAgentFinding(
+          this.taskId,
+          'system',
+          `MCP server "${serverName}" escalated to the DM user's existing credentials`,
+          'decision',
+        ).catch((err) => logger.warn('task', 'Failed to record MCP credential escalation', err));
+        return 'ready';
+      }
+
+      const forcedReauthorization = alreadyPersonal || Boolean(userRecord);
+      const attempts = this.metadata.mcp_oauth_reauth_attempts?.[serverName] ?? 0;
+      if (forcedReauthorization && attempts >= MAX_MCP_REAUTH_ATTEMPTS) {
+        throw new Error(
+          `Personal authorization for "${serverName}" still lacks access after ${attempts} attempts. ` +
+          'Treat this as a permanent permission failure instead of requesting another authorization.',
+        );
+      }
+
+      const requestedScopes = [...new Set([...(userRecord?.scopes ?? []), ...requiredScopes])].sort();
+      const { authorizeUrl, state } = await beginUserConnect({
+        serverName,
+        slackUserId,
+        taskId: this.taskId,
+        requestedScopes,
+      });
+
+      try {
+        await selectPersonalCredentials();
+        await this.postToUser(
+          `Authorize *${serverName}* for this DM${reason ? ` — ${reason}` : ''}:\n${authorizeUrl}\n\n` +
+          'This link is single-use and expires in 1 hour.',
+          'system',
+        );
+      } catch (err) {
+        await deletePendingIfIncomplete(state).catch(() => {});
+        throw err;
+      }
+
+      if (forcedReauthorization) {
+        this.metadata.mcp_oauth_reauth_attempts ??= {};
+        this.metadata.mcp_oauth_reauth_attempts[serverName] = attempts + 1;
+        await this.save(true).catch((err) => logger.warn('task', 'Failed to persist MCP reauthorization count', err));
+      }
+      await appendAgentFinding(
+        this.taskId,
+        'system',
+        `MCP authorization requested for "${serverName}"${reason ? ` — ${reason}` : ''}`,
+        'decision',
+      ).catch((err) => logger.warn('task', 'Failed to record MCP authorization request', err));
+      return 'authorization_started';
+    });
+  }
+
   // ---- Internal methods ----
 
   /**
@@ -1796,6 +1920,10 @@ export class Task {
 
 export function isTaskActive(taskId: string): boolean {
   return activeTasks.has(taskId);
+}
+
+export function isTaskTerminating(taskId: string): boolean {
+  return terminatingTaskIds.has(taskId);
 }
 
 export function getActiveTaskIds(): string[] {
