@@ -45,7 +45,7 @@ export function loadMasterKey(): Buffer {
   }
   if (buf.length !== KEY_BYTES) {
     throw new Error(
-      `ARCHIE_SECRETS_KEY must decode to ${KEY_BYTES} bytes; got ${buf.length}. ` +
+      `ARCHIE_SECRETS_KEY must decode to exactly ${KEY_BYTES} bytes. ` +
       'Use 32 random bytes encoded as base64.'
     );
   }
