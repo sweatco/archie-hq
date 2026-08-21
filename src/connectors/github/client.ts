@@ -27,6 +27,26 @@ import { logger } from '../../system/logger.js';
 const execAsync = promisify(exec);
 
 /**
+ * Narrow an Octokit resource id to `number`.
+ *
+ * `@octokit/openapi-types` v28 widened every GitHub integer id to
+ * `number | bigint` so the types can describe ids beyond 2^53. That widening
+ * is type-level only on this transport: these values reach us through
+ * `JSON.parse` of the REST response, and `JSON.parse` yields `number` for
+ * every JSON number — it never produces a `bigint`. So the narrowing is an
+ * identity operation at runtime, not a lossy cast.
+ *
+ * Kept as a named helper rather than inlined so the reasoning lives in one
+ * place: more of these surface as code touches new octokit fields, and the
+ * alternative (widening our own `id` fields to `number | bigint`) would be
+ * actively worse — these ids get JSON-serialized on the way to agents, and
+ * `JSON.stringify` throws on a bigint.
+ */
+function narrowGithubId(id: number | bigint): number {
+  return typeof id === 'bigint' ? Number(id) : id;
+}
+
+/**
  * Map legacy commit-status state (success/failure/pending/error) onto the
  * check_run-style conclusion vocabulary so consumers see one shape.
  */
@@ -765,7 +785,7 @@ export class GitHubClient {
     );
 
     return response.data.map((comment) => ({
-      id: comment.id,
+      id: narrowGithubId(comment.id),
       author: comment.user?.login || 'unknown',
       body: comment.body || '',
       createdAt: comment.created_at,
@@ -888,7 +908,7 @@ export class GitHubClient {
     const run = res.data;
 
     const report: CheckRunReport = {
-      id: run.id,
+      id: narrowGithubId(run.id),
       name: run.name,
       app: run.app?.slug || 'unknown',
       status: run.status,
