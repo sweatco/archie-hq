@@ -2,3 +2,6 @@
 # audit trail, not review material — mark them generated so GitHub collapses
 # them in PR diffs and reviewers see only the code expanded.
 openspec/changes/** linguist-generated=true
+
+# Stored unified diffs contain significant leading context markers.
+scripts/teamcity/*.patch -whitespace

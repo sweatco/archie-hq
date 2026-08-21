@@ -58,6 +58,7 @@ import { buildSandboxConfig, buildManagedNetworkPolicy, buildPackageManagerCache
 import { grantTriggerDataAccess, buildTriggerDataPromptSection } from './trigger-data.js';
 import { applyOAuthBindings } from '../system/oauth/inject.js';
 import { enrichPromptWithMemory, isMemoryEnabled, isInjectionEnabled } from '../memory/index.js';
+import { createRunnerToolsMcpServer, RUNNER_TOOL_NAMES, shouldAttachRunnerTools } from '../runners/tools.js';
 
 // ---- Prompt generation (per agent kind) ----
 
@@ -272,7 +273,7 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   const maxMode = metadata.max_mode === true;
   const model = resolveAgentModel(def, maxMode);
   const effort = resolveAgentEffort(def, maxMode);
-  const tools = def.tools;
+  const tools = def.tools ? [...def.tools] : undefined;
 
   const pluginPaths = def.pluginPath ? [def.pluginPath] : [];
   const pluginReadPaths = [...pluginPaths, ...(def.pluginDataPath ? [def.pluginDataPath] : [])];
@@ -532,6 +533,16 @@ Shared folder: ${sharedPath} [READ-ONLY]
     const allClonePaths = repoMounts.map((m) => m.clonePath);
     additionalDirectories = [...allClonePaths, ...additionalDirectories];
     mcpServers['repo-tools'] = createRepoToolsMcpServer(agent, task);
+
+    if (shouldAttachRunnerTools(def.id)) {
+      mcpServers['runner-tools'] = createRunnerToolsMcpServer(agent, task);
+      if (tools) {
+        for (const toolName of RUNNER_TOOL_NAMES) {
+          if (!tools.includes(toolName)) tools.push(toolName);
+        }
+      }
+      systemPrompt = `${systemPrompt}\n\nRemote runners are available through generic runner-tools. Sync the repository before executing commands. Give every logical command a stable UUID request_id and reuse it if the start result is uncertain. Persist the returned cursor and pass it as after_cursor when polling; if a poll result is uncertain, retry with the previous cursor. Continue polling while hasMore is true. Platform-specific workflows belong to repository skills.`;
+    }
 
     disallowedTools = [
       ...disallowedTools,

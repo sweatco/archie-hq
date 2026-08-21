@@ -1,0 +1,113 @@
+import { isIP } from 'node:net';
+import { resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { z } from 'zod';
+import type { LoadedRunnerConfig, RunnerConfig } from './types.js';
+
+const cidrSchema = z.string().refine((value) => {
+  const [address, prefix, extra] = value.split('/');
+  if (extra !== undefined || !address || prefix === undefined || !/^\d+$/.test(prefix)) return false;
+  const family = isIP(address);
+  const bits = Number(prefix);
+  return family === 4 && bits <= 32;
+}, 'Expected an IPv4 CIDR');
+
+export const runnerProfileSchema = z.object({
+  image: z.string().regex(/^[^\s@]+@sha256:[a-fA-F0-9]{64}$/, 'Runner images must be pinned by sha256 digest'),
+  os: z.enum(['darwin', 'linux']).default('darwin'),
+  cpu: z.number().int().min(1).max(64).default(4),
+  memoryMiB: z.number().int().min(1024).max(262144).default(8192),
+  diskGiB: z.number().int().min(10).max(2048).default(100),
+  username: z.string().regex(/^[a-z_][a-z0-9_-]{0,31}$/i).default('admin'),
+  passwordEnv: z.string().regex(/^[A-Z_][A-Z0-9_]*$/),
+  allowedAgents: z.array(z.string().min(1)).min(1),
+  labels: z.record(z.string(), z.string()).default({}),
+  resources: z.record(z.string(), z.number().int().nonnegative()).default({}),
+  networkMode: z.enum(['softnet', 'nat']).default('softnet'),
+  softnetAllow: z.array(cidrSchema).default([]),
+  readinessCommand: z.array(z.string()).min(1).optional(),
+  remoteWorkspaceRoot: z.string().refine(
+    (value) => value.startsWith('/') && !/^\/+$/u.test(value) && !/[\0-\x1f\x7f]/.test(value) && !value.split('/').includes('..'),
+    'Expected a non-root absolute guest path without traversal',
+  ).optional(),
+  leaseTtlMinutes: z.number().int().min(1).max(10080).default(120),
+  debugTtlMinutes: z.number().int().min(1).max(1440).default(30),
+  maxDebugTtlMinutes: z.number().int().min(1).max(1440).default(120),
+  execTimeoutSeconds: z.number().int().min(1).max(86400).default(3600),
+  provisionTimeoutSeconds: z.number().int().min(10).max(3600).default(900),
+  readinessTimeoutSeconds: z.number().int().min(1).max(1800).default(300),
+  maxExecWaitSeconds: z.number().int().min(1).max(120).default(30),
+  maxExecOutputBytes: z.number().int().min(1024).max(1073741824).default(10485760),
+  maxActiveExecSessions: z.number().int().min(1).max(64).default(4),
+  maxExecSessionHistory: z.number().int().min(1).max(1000).default(50),
+  maxUploadBytes: z.number().int().min(1024).max(10737418240).default(2147483648),
+  maxDownloadBytes: z.number().int().min(1024).max(10737418240).default(1073741824),
+}).strict().superRefine((profile, ctx) => {
+  if (profile.debugTtlMinutes > profile.maxDebugTtlMinutes) {
+    ctx.addIssue({ code: 'custom', path: ['debugTtlMinutes'], message: 'Must not exceed maxDebugTtlMinutes' });
+  }
+  if (new Set(profile.allowedAgents).size !== profile.allowedAgents.length) {
+    ctx.addIssue({ code: 'custom', path: ['allowedAgents'], message: 'Agent IDs must be unique' });
+  }
+  if (profile.networkMode === 'nat' && profile.softnetAllow.length > 0) {
+    ctx.addIssue({ code: 'custom', path: ['softnetAllow'], message: 'Must be empty when networkMode is nat' });
+  }
+});
+
+const orchardConfigSchema = z.object({
+  baseUrl: z.url().refine((value) => value.startsWith('http://') || value.startsWith('https://'), 'Expected an HTTP(S) URL'),
+  context: z.string().min(1),
+  allowInsecureHttp: z.boolean().default(false),
+}).strict().superRefine((orchard, ctx) => {
+  if (orchard.baseUrl.startsWith('http://') && !orchard.allowInsecureHttp) {
+    ctx.addIssue({ code: 'custom', path: ['baseUrl'], message: 'HTTP requires allowInsecureHttp=true and is only suitable for isolated development' });
+  }
+});
+
+export const runnerConfigSchema = z.object({
+  version: z.literal(1),
+  instanceId: z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/),
+  maxConcurrent: z.number().int().min(1).max(100).default(1),
+  orphanGraceMinutes: z.number().int().min(1).max(1440).default(30),
+  reaperIntervalSeconds: z.number().int().min(10).max(3600).default(60),
+  orchard: orchardConfigSchema,
+  profiles: z.record(z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/), runnerProfileSchema),
+}).strict().refine((config) => Object.keys(config.profiles).length > 0, {
+  path: ['profiles'],
+  message: 'At least one runner profile is required',
+});
+
+export async function loadRunnerConfig(env: NodeJS.ProcessEnv = process.env): Promise<LoadedRunnerConfig | null> {
+  const configPath = env.ARCHIE_RUNNERS_CONFIG;
+  if (!configPath) return null;
+
+  const raw = await readFile(resolve(configPath), 'utf8');
+  const parsed = runnerConfigSchema.parse(JSON.parse(raw)) as RunnerConfig;
+  parsed.orchard.baseUrl = parsed.orchard.baseUrl.replace(/\/+$/, '');
+
+  if (env.NODE_ENV === 'production') {
+    if (parsed.orchard.allowInsecureHttp) throw new Error('Production runner configuration requires HTTPS');
+    const natProfiles = Object.entries(parsed.profiles).filter(([, profile]) => profile.networkMode === 'nat').map(([name]) => name);
+    if (natProfiles.length > 0) throw new Error(`Production runner profiles require Softnet; NAT is configured for: ${natProfiles.join(', ')}`);
+  }
+
+  const serviceAccountName = env.ORCHARD_SERVICE_ACCOUNT_NAME;
+  const serviceAccountToken = env.ORCHARD_SERVICE_ACCOUNT_TOKEN;
+  if (!serviceAccountName || !serviceAccountToken) {
+    throw new Error('ORCHARD_SERVICE_ACCOUNT_NAME and ORCHARD_SERVICE_ACCOUNT_TOKEN are required when runners are enabled');
+  }
+
+  const guestPasswords: Record<string, string> = {};
+  for (const [name, profile] of Object.entries(parsed.profiles)) {
+    const password = env[profile.passwordEnv];
+    if (!password) throw new Error(`Runner profile "${name}" requires ${profile.passwordEnv}`);
+    guestPasswords[name] = password;
+  }
+
+  return { config: parsed, serviceAccountName, serviceAccountToken, guestPasswords };
+}
+
+export function profileWorkspaceRoot(profile: RunnerConfig['profiles'][string]): string {
+  if (profile.remoteWorkspaceRoot) return profile.remoteWorkspaceRoot.replace(/\/+$/, '');
+  return profile.os === 'darwin' ? `/Users/${profile.username}/archie` : `/home/${profile.username}/archie`;
+}
