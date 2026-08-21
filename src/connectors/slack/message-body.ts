@@ -9,6 +9,11 @@ import { isTrustedIngestAuthor, extractMessageContent } from './client.js';
 
 /**
  * The exact text substituted for a redacted message body. Consumers that need to recognise a redacted body (e.g. deciding whether a transcript has usable content) must compare against this constant rather than re-declaring the literal, so the placeholder text stays a single fact.
+ *
+ * The wording is historical: the rule is now author-only ("author not verified as
+ * workspace speech" — guests, unresolved lookups, un-allowlisted automations),
+ * but existing logs already carry this exact string, and a second placeholder in
+ * the corpus would force every reader to know both. The text stays.
  */
 export const REDACTION_PLACEHOLDER = '[redacted: external participant in shared channel]';
 

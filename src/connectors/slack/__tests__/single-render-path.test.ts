@@ -187,6 +187,24 @@ describe('an attachment-only bot post survives into every agent-facing entry poi
     expect(body).toContain(PHRASE);
   });
 
+  it('is redacted without an allowlist entry — even a home-team bot is an automation', async () => {
+    delete process.env.SLACK_TRUSTED_AUTOMATION_IDS;
+    const client = await loadClient();
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [attachmentOnlyBotPost({ bot_profile: { name: 'Flag Janitor', team_id: 'THOME' } })],
+    });
+    const { renderMessageBody, shouldRedact } = await import('../message-body.js');
+
+    const thread = await client.fetchSlackThread(CHANNEL, FIXTURE_TS, FIXTURE_TS);
+    const msg = thread.messages[0];
+    const body = renderMessageBody({ ...msg, files: undefined }, { redacted: shouldRedact(msg) });
+
+    // Carrying the home team id does not make an app a person: the allowlist
+    // is the only path to verbatim trust for a bot-authored post.
+    expect(msg.user.isBot).toBe(true);
+    expect(body).not.toContain(PHRASE);
+  });
+
   it('reaches an explore read — formatExploreMessages renders the card, not a blank line', async () => {
     const client = await loadClient();
     const { messages } = await client.fetchExploreThread(CHANNEL, FIXTURE_TS);

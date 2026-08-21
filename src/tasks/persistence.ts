@@ -251,11 +251,13 @@ export async function writeTaskMetadata(
     if (rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)) {
       throw new Error('Task metadata path escapes sessions directory');
     }
-    const persistedExists = existsSync(path);
-    const persisted = persistedExists ? await loadMetadata(taskId) : null;
-    const effectiveVisibility: TaskMetadata['visibility'] = persistedExists
-      ? persisted?.visibility === 'public' && candidate.visibility === 'public' ? 'public' : 'private'
-      : candidate.visibility === 'public' ? 'public' : 'private';
+    const persisted = existsSync(path) ? await loadMetadata(taskId) : null;
+    // A persisted 'private' is final; anything else — including a legacy record
+    // with no visibility at all — is not yet classified, so a migration or
+    // backfill can still establish 'public' once.
+    const effectiveVisibility: TaskMetadata['visibility'] =
+      persisted?.visibility === 'private' ? 'private'
+        : candidate.visibility === 'public' ? 'public' : 'private';
     const effective = { ...candidate, visibility: effectiveVisibility };
     const temporaryPath = `${path}.${process.pid}.tmp`;
 
@@ -269,10 +271,12 @@ export async function writeTaskMetadata(
 /**
  * Format a log entry for the shared knowledge log
  */
-/** Format a log entry so body continuations cannot mimic source lines. */
+/** Format a log entry so neither a body nor a source value can mimic entry structure. */
 function formatLogEntry(entry: LogEntry): string {
   const typeStr = entry.type ? ` [${entry.type}]` : '';
-  const safeSource = entry.source.replace(/[\r\n]+/g, ' ');
+  // Brackets delimit the source field itself, so a display name carrying them
+  // could forge a channel reference or msg:<ts> id inside the entry line.
+  const safeSource = entry.source.replace(/[[\]\r\n]+/g, ' ');
   const framedMessage = entry.message.replace(/\r\n?/g, '\n').replace(/\n/g, '\n  ');
   return `[${entry.timestamp}] [${safeSource}]${typeStr} ${framedMessage}\n`;
 }

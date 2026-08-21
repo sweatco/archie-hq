@@ -52,6 +52,10 @@ vi.mock('../client.js', () => ({
   setSlackDryRun: vi.fn(),
   getUserInfo: vi.fn().mockResolvedValue({ name: 'dev', realName: 'A Dev', teamId: 'T_HOME' }),
   isExternalUser: vi.fn().mockReturnValue(false),
+  isTrustedIngestAuthor: vi.fn().mockImplementation(
+    (u: { teamId?: string; isBot?: boolean; isAppUser?: boolean; unclassified?: boolean }) =>
+      !u.unclassified && !u.isBot && !u.isAppUser && u.teamId === 'T_HOME',
+  ),
   isChannelShared: vi.fn().mockResolvedValue(false),
   postEphemeral: vi.fn(),
   getSlackClient: vi.fn(),

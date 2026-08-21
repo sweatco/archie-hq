@@ -206,19 +206,19 @@ type TaskStatus = 'in_progress' | 'stopped' | 'completed';
 type TaskVisibility = 'public' | 'private';
 ```
 
-A task's confidentiality class, and the field anything that reads a task's transcript out of its own context is expected to gate on. It is **monotonic**: a task may move public → private, never the reverse. `writeTaskMetadata` enforces that against the record on disk rather than trusting the in-memory object, so a detached `Task` instance that was loaded while the task was still public cannot restore public visibility by saving later.
+A task's confidentiality class. It answers one question — *was the Slack conversation this task lives in public?* — and that is all it answers: a public task's transcript can still carry GitHub review bodies, quoted private-repo source, or agent-relayed channel content, and whether those belong in any wider surface is that surface's policy, not this field's. It is **monotonic**: a task may move public → private, never the reverse. `writeTaskMetadata` enforces that against the record on disk rather than trusting the in-memory object, so a detached `Task` instance that was loaded while the task was still public cannot restore public visibility by saving later. A record with **no** visibility on disk is *not yet classified* — not private — so the legacy migration below can establish `public` exactly once; a persisted `private` is final.
 
 Where it comes from:
 
 | Origin | Visibility |
 |---|---|
-| Slack thread | the channel's live privacy at fetch time (`getChannelInfo().isPrivate`); a DM, a group DM, and an unreachable channel are all private |
+| Slack thread | the channel's live privacy at fetch time (`getChannelInfo().isPrivate`); a DM, a group DM, and an unreachable channel are all private — but an unreachable lookup is flagged `privacyUnverified`, so it fails a *new* task closed without ever downgrading an established public one |
 | CLI / operator API | `public` — the CLI is an operator surface with no channel to inherit from |
 | Trigger fire, message context | the triggering thread's visibility |
 | Trigger fire, schedule | the bound channel resolved live via `fetchChannelIsPrivate`, failing closed to private; a user-bound (DM) trigger is always private |
 | Legacy task with no field | `private`, except a task whose only channel is `cli:local`, which migrates to `public` by the CLI rule above. A task with no channels at all fails closed. |
 
-A Slack channel can be converted to private while a task is live. `taskVisibility` is recomputed on every thread fetch, so `Task.append` persists the downgrade **before** writing any of the newly-arrived content — nothing posted after the conversion is ever readable as public.
+A Slack channel can be converted to private while a task is live. `taskVisibility` is recomputed on every thread fetch, so `Task.append` persists the downgrade **before** writing any of the newly-arrived content — nothing posted after the conversion is ever readable as public. A conversion after the *last* inbound message is caught at the other end: `Task.complete()` re-resolves every linked channel's privacy before tearing down. In both places a failed lookup means unknown, and unknown never becomes a persisted verdict in either direction.
 
 ### Related types
 
@@ -247,7 +247,9 @@ agents and external events.
 The `type` field is present for agent findings (discovery, decision, completion, blocker)
 and omitted for Slack messages and GitHub events.
 
-**An entry line is the only thing that carries attribution, so a body cannot be allowed to produce one.** `formatLogEntry` indents every continuation line of a multi-line body by two spaces and strips newlines out of the source field. Without that, a message whose text contained `[2026-01-01T00:00:00Z] [<@U_SOMEONE_ELSE:Name>] …` would read back as a separate entry attributed to a user who never wrote it. A reader therefore parses an entry as: a line starting at column zero with `[`, plus every following line that starts with two spaces.
+**An entry line is the only thing that carries attribution, so neither a body nor a source value can be allowed to produce or reshape one.** `formatLogEntry` indents every continuation line of a multi-line body by two spaces, and strips newlines *and brackets* out of the source field (brackets delimit the field itself, so a display name carrying `]` could otherwise forge a channel reference or `msg:<ts>` id). Without that, a message whose text contained `[2026-01-01T00:00:00Z] [<@U_SOMEONE_ELSE:Name>] …` would read back as a separate entry attributed to a user who never wrote it. A reader therefore parses an entry as: a line starting at column zero with `[`, plus every following line that starts with two spaces.
+
+This framing holds only for entries written from this change onward. Logs written earlier carry multi-line bodies with **unindented** continuations, so a reader applying the grammar above to an old log can misattribute a body line that happens to start with `[`. A reader that spans old logs must treat an entry-shaped line inside an existing task's history as untrusted until the corpus is rewritten or aged out.
 
 ### Entry types
 

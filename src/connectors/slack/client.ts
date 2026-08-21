@@ -1355,9 +1355,10 @@ async function resolveRawMessages(
           isBot: info.isBot,
           isAppUser: info.isAppUser,
         }];
-      } catch {
+      } catch (error) {
         // Keep the id: an unresolved forwarded author still needs its provenance
         // label, which a null author would silently drop.
+        logger.warn('Slack', `users.info failed for attachment author ${uid} — labelled external`, error);
         return [uid, { id: uid, username: uid, realName: uid, unclassified: true }];
       }
     })
@@ -1444,7 +1445,8 @@ async function resolveAuthorsAndMap(messages: RawSlackMessage[]): Promise<SlackT
           isBot: info.isBot,
           isAppUser: info.isAppUser,
         }];
-      } catch {
+      } catch (error) {
+        logger.warn('Slack', `users.info failed for ${uid} — author unclassified, content will be redacted`, error);
         return [uid, { id: uid, username: uid, realName: uid, unclassified: true }];
       }
     })
@@ -1454,7 +1456,9 @@ async function resolveAuthorsAndMap(messages: RawSlackMessage[]): Promise<SlackT
   return messages.map((msg) => {
     const author: SlackAuthor = msg.user
       ? userInfoMap.get(msg.user)!
-      : { id: msg.botId!, username: msg.botName || 'bot', realName: msg.botName || 'bot', teamId: msg.teamId };
+      // An author synthesised from a bot_id is by construction a bot, so the
+      // allowlist is the only path to verbatim trust for it.
+      : { id: msg.botId!, username: msg.botName || 'bot', realName: msg.botName || 'bot', teamId: msg.teamId, isBot: true as const };
     return {
       user: author,
       ownText: msg.ownText,
@@ -1769,7 +1773,7 @@ export async function postEphemeral(
  */
 export async function getChannelInfo(
   channelId: string,
-): Promise<{ id: string; name: string; isPrivate: boolean; isIm: boolean; imUserId?: string }> {
+): Promise<{ id: string; name: string; isPrivate: boolean; isIm: boolean; imUserId?: string; privacyUnverified?: true }> {
   const client = getSlackClient();
 
   try {
@@ -1796,17 +1800,19 @@ export async function getChannelInfo(
     };
   } catch (error) {
     logger.warn('Slack', `Failed to get channel info for ${channelId}`);
-    // Fail closed: an unreachable channel is treated as private, never public.
-    return { id: channelId, name: channelId, isPrivate: true, isIm: false };
+    // Fail closed: an unreachable channel is treated as private, never public —
+    // but flagged unverified, so callers never persist an irreversible verdict on it.
+    return { id: channelId, name: channelId, isPrivate: true, isIm: false, privacyUnverified: true };
   }
 }
 
 /**
  * Resolve a channel's current privacy, **throwing** on any API error rather than
- * swallowing it. Unlike `getChannelInfo` (which returns `isPrivate:false` on
- * failure), this lets callers that must fail *closed* — e.g. trigger visibility,
- * where an unresolvable channel must be treated as private, never public —
- * distinguish a genuine public channel from an unreachable one. A DM is private.
+ * swallowing it. Unlike `getChannelInfo` (which fails closed to `isPrivate:true`
+ * plus a `privacyUnverified` marker), the thrown error lets a caller distinguish
+ * "verified public" / "verified private" / "unknown" — e.g. trigger visibility
+ * treats unknown as private for the fired task, and the completion re-check
+ * treats unknown as no verdict at all. A DM is private.
  */
 export async function fetchChannelIsPrivate(channelId: string): Promise<boolean> {
   const client = getSlackClient();
@@ -2300,6 +2306,7 @@ export async function fetchSlackThread(
     channel: channelInfo,
     shared,
     taskVisibility: channelInfo.isPrivate ? 'private' : 'public',
+    ...(channelInfo.privacyUnverified ? { taskVisibilityUnverified: true as const } : {}),
     messages,
     currentMessageTs,
     rootAuthorWasBot,

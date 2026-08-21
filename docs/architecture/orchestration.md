@@ -494,19 +494,19 @@ Both `task.stop()` and `task.complete()`:
 5. Remove the `:eyes:` reaction from the last processed Slack message in each linked channel
 6. Flush metadata to disk with the new `status`
 
-### The task-data boundary and durable completion
+### The task-data boundary
 
-Slack ingestion (`Task.append`) and `Task.complete()` both run inside `withTaskDataLock(taskId, …)` (`src/tasks/data-lock.ts`). The lock exists for readers, not for writers: anything that needs a coherent view of a task's metadata *and* its transcript together — a durable record of what the task actually said — takes the same lock instead of racing an in-flight append.
+Slack ingestion (`Task.append`, `Task.appendSlackEdit`), `Task.stop()` and `Task.complete()` run inside `withTaskDataLock(taskId, …)` (`src/tasks/data-lock.ts`). What the lock actually serialises — and all it serialises — is the Slack write path against the two teardown transitions: an in-flight append (including its visibility downgrade and its watermark flush, both `save(true)` inside the lock) cannot interleave with a stop or completion, and two concurrent completions cannot both tear down. The other knowledge-log appenders (agent findings, agent/user messages, GitHub events, CLI messages) are lock-free single `appendFile` calls; a reader wanting a settled transcript takes the lock to keep Slack ingestion and teardown out, and tolerates line-appends from those sources.
 
-`Task.complete()` is therefore ordered deliberately:
+`Task.complete()` is ordered deliberately:
 
-1. Re-check `isActive` **inside** the lock. Two concurrent callers both pass the cheap pre-lock check; only the winner proceeds, so the irreversible teardown and the `task:completed` event happen exactly once.
-2. `await prepareTaskCompleted(taskId)` — the awaited completion listeners registered via `onTaskCompleted` (`src/system/event-bus.ts`). This is where work that must be durable *before* completion becomes irreversible goes.
-3. Only then flip `status` to `completed`, tear the agents down, and save.
+1. Re-check `isActive` **inside** the lock. Two concurrent callers both pass the cheap pre-lock check; only the winner proceeds, so the teardown and the `task:completed` event happen exactly once.
+2. If the task is still `public`, re-resolve every linked Slack channel's privacy live and downgrade before anything else — a channel converted to private after the last inbound message must not complete as public. A failed lookup is *unknown*, and unknown is never persisted as a verdict.
+3. Tear down, flip `status` to `completed`, save.
 
-If step 2 rejects, the task stays active, stays in `activeTasks`, and stays `in_progress` — the callers (`scheduleIdleCheck`, the wall-clock timer) log and retry rather than losing the completion.
+If anything in the locked section throws, `isActive` and the `activeTasks` registration are restored before the error propagates, so the callers (`scheduleIdleCheck`, the wall-clock timer) can retry the completion instead of stranding a half-completed task.
 
-Nothing registers a completion listener in this repo yet: the seam exists for consumers that must not observe a completed task before their own record of it is durable. A listener must not itself take the task-data lock — it already runs inside it — so a listener that needs to read the transcript should persist its intent here and do the reading afterwards, off the lock.
+There is deliberately no completion-listener seam in this repo. Completion here is a *park*, not a terminal event — a reply to the thread reactivates the task and it will complete again — so a durable "runs before completion" hook needs re-fire semantics (a cycle identity, an idempotency contract) that only its consumer can define. The memory runtime brings that seam with it.
 
 ### Wall-clock timeout
 

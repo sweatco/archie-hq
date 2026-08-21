@@ -22,6 +22,7 @@ import {
   setSlackDryRun,
   getUserInfo,
   isExternalUser,
+  isTrustedIngestAuthor,
   isChannelShared,
   postEphemeral,
   getSlackClient,
@@ -924,19 +925,27 @@ async function handleSlackEdit(event: any): Promise<void> {
   const taskId = await findTaskByThread(threadId);
   if (!taskId) return;
 
-  // External-author bail-out + author resolution in one (cached) lookup.
-  let authorInfo: Awaited<ReturnType<typeof getUserInfo>>;
+  // The edit rewrites text already in the transcript, so it is held to the
+  // same author-trust rule as ingestion — not the weaker isExternalUser gate.
+  let author: SlackAuthor;
   try {
-    authorInfo = await getUserInfo(msg.user);
-    if (isExternalUser(authorInfo)) {
-      logger.system(`Skipping edit from external/guest user ${msg.user}`);
-      return;
-    }
+    const authorInfo = await getUserInfo(msg.user);
+    author = {
+      id: msg.user,
+      username: authorInfo.name,
+      realName: authorInfo.realName,
+      teamId: authorInfo.teamId,
+      isRestricted: authorInfo.isRestricted,
+      isUltraRestricted: authorInfo.isUltraRestricted,
+      isBot: authorInfo.isBot,
+      isAppUser: authorInfo.isAppUser,
+    };
   } catch (error) {
-    // Fail closed: an edit rewrites text already in the transcript, so an
-    // unclassifiable editor is dropped rather than trusted. Slack redelivers
-    // nothing here, but the original entry stays intact and correct.
     logger.warn('Slack', `Dropping edit from unclassifiable author ${msg.user}`, error);
+    return;
+  }
+  if (!isTrustedIngestAuthor(author)) {
+    logger.system(`Skipping edit from untrusted author ${msg.user}`);
     return;
   }
 
@@ -958,14 +967,6 @@ async function handleSlackEdit(event: any): Promise<void> {
   // Only the new text is logged — the pre-edit text already lives in the log
   // under the same `msg:<ts>` id.
   const newText = await rawMessageBody(msg, channelId);
-  const author: SlackAuthor = {
-    id: msg.user,
-    username: authorInfo?.name ?? msg.user,
-    realName: authorInfo?.realName ?? msg.user,
-    teamId: authorInfo?.teamId,
-    isRestricted: authorInfo?.isRestricted,
-    isUltraRestricted: authorInfo?.isUltraRestricted,
-  };
 
   const recorded = await task.appendSlackEdit(channelKey, author, editedTs, newText);
   if (!recorded) return;

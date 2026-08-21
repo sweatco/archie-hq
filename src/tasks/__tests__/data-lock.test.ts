@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
-const { appendSlackMessageMock } = vi.hoisted(() => ({ appendSlackMessageMock: vi.fn() }));
+const { appendSlackMessageMock, fetchChannelIsPrivateMock } = vi.hoisted(() => ({
+  appendSlackMessageMock: vi.fn(),
+  fetchChannelIsPrivateMock: vi.fn(),
+}));
 
 vi.mock('../persistence.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../persistence.js')>();
@@ -15,6 +18,7 @@ vi.mock('../../connectors/slack/client.js', async (importOriginal) => {
     ...actual,
     isTrustedIngestAuthor: (user: { teamId?: string; unclassified?: boolean }) =>
       !user.unclassified && user.teamId === 'T_HOME',
+    fetchChannelIsPrivate: fetchChannelIsPrivateMock,
   };
 });
 
@@ -55,6 +59,7 @@ function makeTask(): Task {
     updated_at: '2026-08-20T00:00:00.000Z',
   }, []);
   (task as unknown as { debouncedSave: () => void }).debouncedSave = vi.fn();
+  (task as unknown as { save: (flush?: boolean) => Promise<void> }).save = vi.fn().mockResolvedValue(undefined);
   return task;
 }
 
@@ -112,6 +117,39 @@ describe('task data lock', () => {
     // The downgrade is durable before the first content write, not after it.
     expect(saved[0]).toBe('private');
     expect(writes).toHaveLength(1);
+  });
+
+  it('skips the mid-life downgrade when the privacy lookup was unverified', async () => {
+    appendSlackMessageMock.mockResolvedValue(undefined);
+    const task = makeTask();
+
+    await task.append({ ...thread, taskVisibility: 'private', taskVisibilityUnverified: true });
+
+    // A transient lookup failure is not a channel conversion — the monotonic
+    // field must not be irreversibly stripped on it.
+    expect(task.metadata.visibility).toBe('public');
+  });
+
+  it('downgrades at completion when a linked channel became private', async () => {
+    fetchChannelIsPrivateMock.mockResolvedValue(true);
+    const task = makeTask();
+    task.isActive = true;
+
+    await task.complete();
+
+    expect(task.metadata.visibility).toBe('private');
+  });
+
+  it('leaves visibility alone at completion when the privacy lookup fails', async () => {
+    fetchChannelIsPrivateMock.mockRejectedValue(new Error('channel_not_found'));
+    const task = makeTask();
+    task.isActive = true;
+
+    await task.complete();
+
+    // Unknown is not a verdict — the task keeps its class rather than being
+    // silently pulled from (or pushed into) memory by an infrastructure error.
+    expect(task.metadata.visibility).toBe('public');
   });
 
   it('writes a verified author verbatim and redacts one it cannot verify', async () => {

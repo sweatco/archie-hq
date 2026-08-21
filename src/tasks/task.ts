@@ -57,12 +57,12 @@ import { scheduleIdleCheck } from './recovery.js';
 import { scanAgentDefs, getAgentDef, getVisiblePeerIdsForSender, synthesizeDynamicAgentDef } from '../agents/registry.js';
 import type { AttachedRepo } from '../types/task.js';
 import { syncPlugins } from '../system/plugin-sync.js';
-import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, formatSlackChannelRef, formatSlackChannelDisplay, fetchChannelIsPrivate } from '../connectors/slack/client.js';
 import { renderMessageBody, shouldRedact } from '../connectors/slack/message-body.js';
 import { basename } from 'path';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
-import { emitEvent, prepareTaskCompleted } from '../system/event-bus.js';
+import { emitEvent } from '../system/event-bus.js';
 import { withTaskDataLock } from './data-lock.js';
 import { TaskStatusController, isStatusEnabled } from './status.js';
 import { setSlackThreadStatus } from '../connectors/slack/status.js';
@@ -357,7 +357,9 @@ export class Task {
     // A channel can be converted to private mid-task, and `taskVisibility` is
     // re-read on every fetch. Persist the downgrade BEFORE writing any content
     // so nothing that arrives after the conversion is ever readable as public.
-    if (thread.taskVisibility === 'private' && this.metadata.visibility === 'public') {
+    // An unverified lookup is not a conversion: a transient Slack error must
+    // not irreversibly strip an established public task of its class.
+    if (thread.taskVisibility === 'private' && !thread.taskVisibilityUnverified && this.metadata.visibility === 'public') {
       this.metadata.visibility = 'private';
       await this.save(true);
     }
@@ -407,7 +409,9 @@ export class Task {
         await writeMessage(msg);
       }
 
-      this.debouncedSave();
+      // Flushed inside the lock, not debounced: the channel link and watermark
+      // must describe the transcript that was just written.
+      await this.save(true);
       return { linkedNewThread: true };
     }
 
@@ -419,7 +423,7 @@ export class Task {
     }
 
     existing.last_processed_ts = thread.currentMessageTs;
-    this.debouncedSave();
+    await this.save(true);
     return { linkedNewThread: false };
   }
 
@@ -440,17 +444,19 @@ export class Task {
     editedTs: string,
     newText: string,
   ): Promise<boolean> {
-    const ch = this.metadata.channels[channelKey];
-    if (ch?.type !== 'slack') return false;
-    await appendSlackEdit(
-      this.taskId,
-      { id: ch.channel_id, name: ch.channel_name },
-      ch.thread_id,
-      author,
-      editedTs,
-      newText,
-    );
-    return true;
+    return withTaskDataLock(this.taskId, async () => {
+      const ch = this.metadata.channels[channelKey];
+      if (ch?.type !== 'slack') return false;
+      await appendSlackEdit(
+        this.taskId,
+        { id: ch.channel_id, name: ch.channel_name },
+        ch.thread_id,
+        author,
+        editedTs,
+        newText,
+      );
+      return true;
+    });
   }
 
   /**
@@ -1045,6 +1051,7 @@ export class Task {
     // the final message. Best-effort; must never block teardown.
     await this.resurfacePrCards().catch((e) => logger.warn('task', 'PR card resurface failed on stop', e));
 
+    await withTaskDataLock(this.taskId, async () => {
     this.isActive = false;
     activeTasks.delete(this.taskId);
     this.clearTaskTimeout();
@@ -1072,6 +1079,7 @@ export class Task {
 
     this.metadata.status = 'stopped';
     await this.save(true);
+    });
 
     logger.system(`Task ${this.taskId} stopped`);
     emitEvent('task:stopped', this.taskId);
@@ -1092,12 +1100,21 @@ export class Task {
 
     const completed = await withTaskDataLock(this.taskId, async () => {
       if (!this.isActive) return false;
+      try {
 
-      // Persist the memory intent before any state transition that would make
-      // this task look safely parked. Extraction takes the same data lock for
-      // its snapshot, so it cannot observe the task before the completed status
-      // below is durable.
-      await prepareTaskCompleted(this.taskId);
+      // The transcript is about to be judged by its visibility, and the only
+      // downgrade trigger so far was an inbound message — a channel converted
+      // to private AFTER the last message would otherwise complete as public.
+      // A failed lookup means unknown, and unknown never becomes a verdict.
+      if (this.metadata.visibility === 'public') {
+        for (const ch of Object.values(this.metadata.channels)) {
+          if (ch.type !== 'slack') continue;
+          if (await fetchChannelIsPrivate(ch.channel_id).catch(() => null) === true) {
+            this.metadata.visibility = 'private';
+            break;
+          }
+        }
+      }
 
       this.isActive = false;
       activeTasks.delete(this.taskId);
@@ -1128,6 +1145,14 @@ export class Task {
       this.metadata.status = 'completed';
       await this.save(true);
       return true;
+
+      } catch (error) {
+        // A failed teardown must stay retryable: scheduleIdleCheck and the
+        // wall-clock timer both gate their retry on isActive.
+        this.isActive = true;
+        activeTasks.set(this.taskId, this);
+        throw error;
+      }
     });
 
     if (!completed) return;

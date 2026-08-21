@@ -2359,8 +2359,9 @@ function makePrivacyResolver(): (channelId: string) => Promise<boolean> {
         // the bot was removed from and so dropped out of the workspace cache.
         // Resolve it live via the STRICT lookup that throws on error, and fail
         // closed on any error (treat as private) so a private channel is never
-        // leaked into a public/DM listing. getChannelInfo can't be used here —
-        // it swallows errors and returns isPrivate:false (i.e. fails open).
+        // leaked into a public/DM listing. getChannelInfo also fails closed now
+        // (isPrivate:true + privacyUnverified), but the thrown error is the
+        // cleaner signal here.
         return fetchChannelIsPrivate(channelId).catch(() => true);
       });
       cache.set(channelId, p);

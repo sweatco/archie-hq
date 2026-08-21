@@ -17,7 +17,7 @@ vi.mock('../../system/workdir.js', async (importOriginal) => ({
 import { createOrchestrationMcpServer } from '../../agents/tools.js';
 import { idleDecision, scheduleIdleCheck } from '../recovery.js';
 import { activeTasks, shouldClearCompletionIntent, Task } from '../task.js';
-import { offEvent, offTaskCompleted, onEvent, onTaskCompleted } from '../../system/event-bus.js';
+import { offEvent, onEvent } from '../../system/event-bus.js';
 import { logger } from '../../system/logger.js';
 import type { Agent } from '../../agents/agent.js';
 import type { AgentDef } from '../../types/agent.js';
@@ -132,11 +132,7 @@ describe('shouldClearCompletionIntent', () => {
 });
 
 describe('completion quiescence wiring', () => {
-  it('does not resolve graceful completion before durable subscribers finish', async () => {
-    let release!: () => void;
-    const durableIntent = new Promise<void>((resolve) => { release = resolve; });
-    const listener = vi.fn(() => durableIntent);
-    onTaskCompleted(listener);
+  it('stays retryable when the completion teardown fails', async () => {
     const task = new TaskCtor('task-20260817-1201-enqueue', {
       task_id: 'task-20260817-1201-enqueue',
       visibility: 'public',
@@ -153,56 +149,20 @@ describe('completion quiescence wiring', () => {
     }, []);
     task.isActive = true;
     activeTasks.set(task.taskId, task);
+    vi.spyOn(task, 'save').mockRejectedValue(new Error('disk full'));
 
-    let resolved = false;
-    const completion = task.complete().then(() => { resolved = true; });
-    await vi.waitFor(() => expect(listener).toHaveBeenCalledOnce());
-    expect(resolved).toBe(false);
+    await expect(task.complete()).rejects.toThrow('disk full');
+    // scheduleIdleCheck and the wall-clock timer gate their retry on isActive,
+    // so a failed teardown must leave the task active and registered.
     expect(task.isActive).toBe(true);
-    expect(task.metadata.status).toBe('in_progress');
-
-    release();
-    await expect(completion).resolves.toBeUndefined();
-    expect(resolved).toBe(true);
-    offTaskCompleted(listener);
-    activeTasks.delete(task.taskId);
-  });
-
-  it('keeps a task active and in progress when durable completion setup fails', async () => {
-    const listener = vi.fn(async () => { throw new Error('pending queue unavailable'); });
-    onTaskCompleted(listener);
-    const task = new TaskCtor('task-20260817-1201-enqueue', {
-      task_id: 'task-20260817-1201-enqueue',
-      visibility: 'public',
-      task_owner: null,
-      participants: [],
-      channels: {},
-      default_channel: null,
-      agent_sessions: {},
-      repositories: {},
-      edit_allowed: true,
-      status: 'in_progress',
-      created_at: '2026-08-15T12:00:00.000Z',
-      updated_at: '2026-08-15T12:00:00.000Z',
-    }, []);
-    task.isActive = true;
-    activeTasks.set(task.taskId, task);
-
-    await expect(task.complete()).rejects.toThrow('pending queue unavailable');
-    expect(task.isActive).toBe(true);
-    expect(task.metadata.status).toBe('in_progress');
     expect(activeTasks.get(task.taskId)).toBe(task);
-
-    offTaskCompleted(listener);
     activeTasks.delete(task.taskId);
   });
 
-  it('runs durable preparation, persistence, and completion publication once for concurrent callers', async () => {
+  it('runs persistence and completion publication once for concurrent callers', async () => {
     const taskId = 'task-20260817-1202-concurrent';
     await mkdir(join(SESSIONS_ROOT, taskId, 'shared'), { recursive: true });
-    const listener = vi.fn().mockResolvedValue(undefined);
     const events = vi.fn();
-    onTaskCompleted(listener);
     onEvent(events);
     const task = new TaskCtor(taskId, {
       task_id: taskId,
@@ -224,10 +184,8 @@ describe('completion quiescence wiring', () => {
 
     await Promise.all([task.complete(), task.complete()]);
 
-    expect(listener).toHaveBeenCalledOnce();
     expect(save).toHaveBeenCalledOnce();
     expect(events.mock.calls.filter(([event]) => event.type === 'task:completed')).toHaveLength(1);
-    offTaskCompleted(listener);
     offEvent(events);
     activeTasks.delete(taskId);
   });

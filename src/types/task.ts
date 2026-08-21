@@ -85,6 +85,8 @@ export interface SlackThread {
   shared: boolean;
   /** Visibility to assign if this thread creates a task. */
   taskVisibility: TaskVisibility;
+  /** Set when the channel lookup failed: 'private' above is fail-closed, not verified — never persist a downgrade on it. */
+  taskVisibilityUnverified?: true;
   messages: SlackThreadMessage[];  // bot messages excluded, EXCEPT the root when our bot started the thread
   currentMessageTs: string;
   /**

@@ -86,8 +86,8 @@ describe('Task.append renders after the file download', () => {
   function newTask(): Task {
     const metadata = { channels: {}, agent_sessions: {} } as unknown as TaskMetadata;
     const task = new TaskCtor('t1', metadata, []);
-    // The debounced save writes to disk; this test is about the rendered body, not persistence.
-    (task as unknown as { debouncedSave: () => void }).debouncedSave = () => {};
+    // The save writes to disk; this test is about the rendered body, not persistence.
+    (task as unknown as { save: (flush?: boolean) => Promise<void> }).save = async () => {};
     return task;
   }
 
