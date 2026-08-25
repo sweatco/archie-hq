@@ -8,7 +8,7 @@ Archie operates in two modes: **readonly** (the default) and **edit** (after hum
 
 ### Readonly Mode (Default)
 
-When a task starts, all repo agents operate in readonly mode. Their `cwd` is an agent workspace under `sessions/{taskId}/agents/{agentKey}`, and the repository is mounted as an additional directory at `sessions/{taskId}/repos/{repoKey}`. The repo path is mounted read-only by the OS sandbox (and read-only via filesystem-guard PreToolUse hooks for in-process tools), so `Write`, `Edit`, and write-to-repo Bash commands fail even though the tools are nominally available. PR/branch write MCP tools (`push_branch`, `create_pull_request`, `merge_pull_request`, `create_branch`, etc.) are explicitly listed in `disallowedTools`. Read tools, git read commands via `Bash`, the `fetch` and `switch_branch` MCP tools, and PR read tools (`list_prs`, `get_pr`, `get_pr_status`, `get_pr_reviews`, `get_pr_comments`, `get_review_threads`) all work.
+When a task starts, all repo agents operate in readonly mode. Their `cwd` is an agent workspace under `sessions/{taskId}/agents/{agentKey}`, and the repository is mounted as an additional directory at `sessions/{taskId}/repos/{repoKey}`. The OS sandbox denies writes to the repo path (the clone is in the sandbox's `denyWritePaths` and absent from `allowWritePaths`), and the filesystem-guard PreToolUse hooks deny them for in-process tools, so `Write`, `Edit`, and write-to-repo Bash commands fail even though the tools are nominally available. PR/branch write MCP tools (`push_branch`, `create_pull_request`, `merge_pull_request`, `create_branch`, etc.) are explicitly listed in `disallowedTools`. Read tools, git read commands via `Bash`, the `fetch` and `switch_branch` MCP tools, and PR read tools (`list_prs`, `get_pr`, `get_pr_status`, `get_pr_reviews`, `get_pr_comments`, `get_review_threads`) all work.
 
 In readonly mode the clone is checked out on the base branch (`{ type: 'base' }`). When the task stops or completes, the clone is removed by `cleanupClones()` to free disk space.
 
@@ -195,6 +195,8 @@ The full single allowed-tool list (set as `def.tools` on the repo agent definiti
 ### Effectively gated by the sandbox (registered everywhere, but only succeed in RW)
 - `Write`, `Edit` — blocked by `createFilesystemGuardHooks()` in RO; allowed in RW
 - `Bash` write-side commands against the clone (`git add`, `git commit`, `git rm`, `git restore`, `git merge`, `rm`, etc.) — blocked by the OS sandbox `denyWrite` on the clone path in RO; allowed in RW
+
+> **Diagnosing a repo write that fails: `EROFS` means two different things.** A sandbox-denied write surfaces to the agent as `EROFS` — "Read-only file system" — the *same* string the kernel gives for a genuinely read-only mount. This has already sent an investigation to `/proc/mounts`, where a repo clone normally shows several stacked entries whose topmost is `ro`. **That stacked shape is the steady state of a writable clone too, so mount-table ordering tells you nothing here.** The real write gate is the per-process sandbox above, computed once from `metadata.edit_allowed` in `spawnAgent` and never re-read. The reliable check is whether the *process* was built read-only, not what the mount table says: a repo agent whose `create_branch` is also denied is conclusive, since `disallowedTools` is set from the same snapshot and has no relationship to mounts. Remounting fixes nothing — the process has to be re-spawned.
 
 ## Branch Strategy
 
