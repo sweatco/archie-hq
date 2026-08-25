@@ -340,48 +340,67 @@ message is not blocked (advisory limit).
 
 ### Agent deactivation trigger
 
-When an agent finishes its turn, the SDK fires the Stop hook installed in
-`spawn.ts`, which calls `task.updateAgentState(agentName, false)`. That in turn
-calls `scheduleIdleCheck(task)` whenever `active` flips to `false`.
+When an agent finishes its turn, the SDK fires the Stop hook installed in `spawn.ts`, which calls `task.updateAgentState(agentName, false)`. That in turn calls `scheduleIdleCheck(task)` whenever `active` flips to `false`.
 
-Additionally, when an agent's background process exits (the `handle.running` promise
-resolves), the crash handler wired in `Agent.spawn()` (`src/agents/agent.ts`) calls
-`task.updateAgentState(agentName, false)`.
+Additionally, when an agent's background process exits (the `handle.running` promise resolves), the crash handler wired in `Agent.spawn()` (`src/agents/agent.ts`) calls `task.updateAgentState(agentName, false)`. A spawn that throws does the same, so a failed boot cannot leave an agent marked active forever — which would wedge quiescence and stop the task ever parking or recovering.
 
-### scheduleIdleCheck
+### scheduleIdleCheck and idleDecision
 
-A 3-second delay is applied before checking, to avoid racing with message delivery
-(another agent may be about to send a message that wakes this one).
+A 3-second delay is applied before checking, to avoid racing with message delivery (another agent may be about to send a message that wakes this one). There is no accumulating idle timer — every turn end re-arms a fresh 3-second check.
 
 ```typescript
-function scheduleIdleCheck(task: Task): void {
+export function scheduleIdleCheck(task: Task): void {
   setTimeout(async () => {
-    if (!task.isActive || getIsShuttingDown()) return;
-    const allInactive = checkAllAgentsInactive(task);
-    if (allInactive) {
+    if (getIsShuttingDown()) return;
+    const action = idleDecision(task);
+    if (action === 'complete') {
+      await task.complete();
+    } else if (action === 'recover') {
       await triggerRecovery(task);
     }
   }, 3000);
 }
 ```
 
-`checkAllAgentsInactive()` returns `true` only if `task.agentProcesses.size > 0`
-and every spawned agent's `session.active === false`.
+The decision itself lives in `idleDecision()`, a pure function (no timers or IO) so the three-way outcome is unit-testable. It returns:
+
+| Outcome | When |
+|---|---|
+| `'wait'` | The task is not active; **or** some agent has a `pendingTeardown`; **or** no agents are spawned; **or** some agent is still busy. |
+| `'complete'` | Quiescent **and** the PM signalled completion (`task.completionIntent`, set by `report_completion`). The idle check parks the task. |
+| `'recover'` | Quiescent but nobody parked — an agent went idle without reporting. A dropped ball. |
+
+Two of the `'wait'` conditions are load-bearing and easy to overlook:
+
+- **`pendingTeardown`** — a forced stop (`request_edit_mode`, `request_max_mode`, `merge_pull_request`, the research budget, the tool-approval gate) already called `task.stop()`, deferred to this turn's SDK `result` event. The Stop hook that arms the idle check fires *before* that event, and the gap can exceed the 3-second delay, so without this guard the check would "recover" an agent that `stop()` is about to orphan mid-turn.
+- **`backgroundTasks.size > 0`** — an agent is busy if its turn is active *or* it has an in-flight background task (a backgrounded wait, a subagent). The agent's turn ends while such a task is still running, so without this recovery would fire under a legitimate wait.
+
+Quiescence relies on agents being marked active at message *enqueue* (`Task.sendMessage` / the inter-agent tool path), so "all idle" faithfully means "no work in flight."
+
+Note what is **not** here: there is no per-agent "parked / awaiting an external answer" state. `pendingTeardown` is the only agent-level suppressor, it is not agent-settable, and every path that sets it also stops the whole task. An agent deliberately holding for a human decision is therefore indistinguishable from one that has hung. The supported way to wait on a user is for the specialist to report its blocker to the PM and stop, and for the PM to park the task with a turn-ending tool — `report_completion` is PM-only, and specialists have no turn-ending tool at all.
 
 ### Progressive recovery
 
+`triggerRecovery()` increments `task.recoveryAttempts` on every pass.
+
 | Attempt | Strategy | Action |
 |---|---|---|
-| 1-2 | **Reinforcement** | Nudge the lead agent (task owner or PM) by adding a prompt to its queue. If the agent process is dead (`agent.isRunning === false`), bump `recoveryAttempts` to 2 so the next idle check goes nuclear. |
+| 1-2 | **Reinforcement** | Nudge a live, idle agent by adding a prompt to its queue (see below). If no candidate is live, call `recoverTaskAgents(task)` instead of stalling. |
 | 3+ | **Nuclear** | Reset `recoveryAttempts` to 0, call `task.stop()`, reload the task from disk via `Task.get()`, and re-spawn agents via `recoverTaskAgents()`. |
+
+`recoveryAttempts` is **never reset by successful progress** — only by the nuclear branch. So a task that keeps going idle cycles nudge → nudge → nuclear → nudge → nudge → nuclear, until the separate wall-clock backstop parks it (`Task.startTaskTimeout`, polled every 60s, default 60 minutes).
 
 ### Reinforcement nudge
 
-The system reads `agent.isRunning` (which delegates to `handle.isRunning`) before
-nudging. If the SDK process is alive, it adds either `AGENT_PROMPTS.reinforcePM` or
-`AGENT_PROMPTS.reinforceAgent` to `agent.queue` and calls `agent.updateSession(true)`
-followed by `task.save()` so the active state is persisted. If the process is dead,
-it sets `task.recoveryAttempts = 2` to fast-track to nuclear on the next idle check.
+The nudge target is the **task owner first, then the PM** — `task.metadata.task_owner` (when set and not already the PM), falling back to `pm-agent`. The first candidate whose `agent.isRunning` is true receives `AGENT_PROMPTS.reinforcePM` or `AGENT_PROMPTS.reinforceAgent` on its queue, followed by `task.updateAgentState(target, true)`.
+
+`updateAgentState` (not `updateSession`) is deliberate: it emits `agent:active` and clears any stale `completionIntent` on a nudged PM, which would otherwise park the task on the next quiescence instead of re-deciding.
+
+The PM fallback is the whole point of the ordering. A message-driven resume only spawns the PM (`Task.get` → `sendMessage(pm)`), so a blind nudge at `task_owner` — often a specialist that was *not* re-spawned — used to hit no live process, leave `recoveryAttempts` short of nuclear, and silently stall until the wall-clock cap, because no new `agent:inactive` event ever re-armed the idle check. (Playstorm 2026-06-11 stall.)
+
+If no candidate is live at all, `recoverTaskAgents(task)` re-sends the recovery prompt to previously-active agents, falling back to the PM, which re-arms the lifecycle.
+
+> **Caveat — the nudge bypasses spawn-time reconciliation.** The nudge is appended straight to an existing agent's queue; it does not go through `Task.ensureAgentSpawned`, which is the only place a stale agent process is reconciled against current task state (notably the edit-mode check that re-spawns a repo agent which booted read-only). An agent kept alive purely by nudges is therefore never rebuilt. See [Edit Mode](edit-mode.md) for why a repo agent's write access cannot change without a fresh spawn.
 
 ---
 
