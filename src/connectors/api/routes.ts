@@ -304,9 +304,37 @@ export function mountApiRoutes(app: Application): void {
         // CLI echoes it from the approval event), so the right one resolves even
         // when several proposals are outstanding. Approver is the CLI operator.
         if (approve) {
-          await task.handleTriggerApproval('cli', ref);
+          const trigger = await task.handleTriggerApproval('cli', ref);
+          // Null means nothing was enabled — the proposal is gone, already live,
+          // or a cap was hit. Mirror the merge path's 409 rather than reporting a
+          // success the operator didn't get. (Approving an already-enabled trigger
+          // is a routine no-op now that an edit leaves an older prompt in place.)
+          if (!trigger) {
+            res.status(409).json({
+              ok: false,
+              stale: true,
+              error: `Trigger ${ref ?? '(none)'} was not enabled — it is already active, was withdrawn, or a trigger limit was reached.`,
+            });
+            return;
+          }
         } else {
-          await task.handleTriggerDenial(ref);
+          const result = await task.handleTriggerDenial(ref);
+          // A refused Deny (stale card for a trigger that is already approved)
+          // deletes nothing, so answering ok:true told the operator the opposite
+          // of what happened — the same false report that was fixed for the Slack
+          // card. docs/architecture/triggers.md promises the two surfaces resolve
+          // equivalently, so they must agree here too.
+          if (result.outcome !== 'withdrawn') {
+            res.status(409).json({
+              ok: false,
+              stale: true,
+              outcome: result.outcome,
+              error: result.outcome === 'already_live'
+                ? `Trigger ${ref ?? '(none)'} was not declined — it is already approved (currently ${result.status}). Pause or delete it instead.`
+                : `Trigger ${ref ?? '(none)'} was not declined — no such proposal is pending.`,
+            });
+            return;
+          }
         }
       } else if (type === 'tool_call') {
         // Same trust model as every other gate's API path: reaching this route
@@ -363,11 +391,14 @@ export function mountApiRoutes(app: Application): void {
     summary: describeTrigger(t),
   });
 
-  // GET /triggers — list all triggers with their bound channel
+  // GET /triggers — list all triggers with their bound channel.
+  // Pending proposals are included: this is the operator surface, which
+  // docs/architecture/triggers.md commits to full visibility with no bypass, and
+  // hiding them left an unapproved proposal impossible to inspect or withdraw
+  // from here. `status` distinguishes them.
   router.get('/triggers', async (_req: Request, res: Response) => {
     try {
       const triggers = (await listTriggers())
-        .filter((t) => t.status !== 'pending')
         .sort((a, b) => b.created_at.localeCompare(a.created_at));
       res.json({ triggers: triggers.map(shapeTrigger), total: triggers.length });
     } catch (error) {
@@ -376,11 +407,11 @@ export function mountApiRoutes(app: Application): void {
     }
   });
 
-  // GET /triggers/:id — trigger detail
+  // GET /triggers/:id — trigger detail (pending included, see GET /triggers)
   router.get('/triggers/:id', async (req: Request, res: Response) => {
     try {
       const trigger = await loadTrigger(req.params.id as string);
-      if (!trigger || trigger.status === 'pending') {
+      if (!trigger) {
         res.status(404).json({ error: 'Trigger not found' });
         return;
       }
@@ -397,8 +428,16 @@ export function mountApiRoutes(app: Application): void {
       const id = req.params.id as string;
       const { status, action_prompt } = req.body as { status?: 'paused' | 'enabled'; action_prompt?: string };
       const trigger = await loadTrigger(id);
-      if (!trigger || trigger.status === 'pending') {
+      if (!trigger) {
         res.status(404).json({ error: 'Trigger not found' });
+        return;
+      }
+      // A pending proposal is editable, but approval stays the user's act — the
+      // operator resolves it through /approve, not by flipping status here.
+      if (trigger.status === 'pending' && status) {
+        res.status(409).json({
+          error: 'Trigger is awaiting approval — resolve it via the approval prompt rather than setting status.',
+        });
         return;
       }
 
@@ -430,6 +469,32 @@ export function mountApiRoutes(app: Application): void {
       }
       if (!editedContent && !statusChange) {
         res.status(400).json({ error: 'Pass status or action_prompt to update.' });
+        return;
+      }
+
+      // Same guard the agent path carries: editing a pending proposal is a
+      // read-modify-write with no CAS, so a user Approve landing mid-flight would
+      // otherwise be undone by stamping the file back to `pending` with the
+      // operator's prompt. Re-read, bail if it moved, then apply to the fresh object.
+      if (trigger.status === 'pending') {
+        const current = await loadTrigger(id);
+        if (!current || current.status !== 'pending') {
+          res.status(409).json({
+            ok: false,
+            stale: true,
+            error: current
+              ? `Proposal was resolved while this edit was in flight — it is now ${current.status}, so nothing was changed.`
+              : 'Proposal was withdrawn while this edit was in flight, so nothing was changed.',
+          });
+          return;
+        }
+        if (editedContent) current.action.prompt = action_prompt as string;
+        // Editing renews the GC clock, exactly as the agent path does, so a revision
+        // isn't reaped on the original proposal's timer.
+        current.updated_at = new Date().toISOString();
+        await saveTrigger(current);
+        deindexTrigger(current.id);
+        res.json({ ok: true, trigger: shapeTrigger(current) });
         return;
       }
 

@@ -1899,10 +1899,15 @@ export class Task {
       const overUser = pending.created_by && pending.created_by !== 'unknown'
         && (await countActiveTriggers((t) => t.created_by === pending.created_by)) >= MAX_TRIGGERS_PER_USER;
       if (overChannel || overUser) {
-        await deleteTrigger(id);
-        if (this.metadata.pending_trigger_id === id) this.metadata.pending_trigger_id = undefined;
-        this.debouncedSave();
-        await appendAgentFinding(this.taskId, 'system', `Trigger ${id} not enabled — active-trigger cap reached`, 'decision');
+        // Leave the proposal PENDING rather than deleting it. Deleting made the
+        // refusal indistinguishable from a withdrawal — the caller re-reads, finds
+        // nothing, and tells the user the proposal "is no longer around", never that
+        // a cap was the reason. Keeping it also lets the user free a slot and approve
+        // the same proposal instead of asking for it again; the 24h GC still reaps it
+        // if they don't. `pending_trigger_id` stays for the same reason: nothing was
+        // resolved.
+        logger.warn('task', `Trigger ${id} not enabled — active-trigger cap reached (left pending)`);
+        await appendAgentFinding(this.taskId, 'system', `Trigger ${id} not enabled — active-trigger cap reached; proposal left awaiting approval`, 'decision');
         return null;
       }
     }
@@ -1921,15 +1926,53 @@ export class Task {
   /**
    * Deny the trigger this task proposed — delete the pending file. Shared by the
    * Slack `deny_trigger` button and the CLI `/approve` endpoint.
+   *
+   * Only a still-`pending` proposal is deleted. Approve/Deny cards are not
+   * retracted when they are superseded (an edited proposal re-posts a card, and
+   * a task can propose more than once), so an older card for a trigger that has
+   * since been approved stays clickable. Deleting unconditionally there would let
+   * a stale Deny destroy a live automation — and worse, remove its file while the
+   * scheduler kept firing it from the in-memory index until the next restart.
+   * Approval is idempotent for the same reason (`enableProposedTrigger` requires
+   * `pending`), so this makes denial match it. The outcome is returned so callers
+   * can report what actually happened instead of always claiming "declined".
    */
-  async handleTriggerDenial(triggerId?: string): Promise<void> {
+  async handleTriggerDenial(
+    triggerId?: string,
+  ): Promise<{ outcome: 'withdrawn' | 'not_found' } | { outcome: 'already_live'; status: import('../types/trigger.js').TriggerStatus }> {
     const id = triggerId ?? this.metadata.pending_trigger_id;
-    if (this.metadata.pending_trigger_id === id) this.metadata.pending_trigger_id = undefined;
-    this.debouncedSave();
-    if (!id) return;
-    const { deleteTrigger } = await import('../system/trigger-store.js');
+    if (!id) return { outcome: 'not_found' };
+    const { loadTrigger, deleteTrigger } = await import('../system/trigger-store.js');
+    const trigger = await loadTrigger(id);
+    if (!trigger) {
+      if (this.metadata.pending_trigger_id === id) {
+        this.metadata.pending_trigger_id = undefined;
+        this.debouncedSave();
+      }
+      return { outcome: 'not_found' };
+    }
+    if (trigger.status !== 'pending') {
+      // Refused, so nothing about the proposal changed — in particular do NOT
+      // clear `pending_trigger_id`. Clearing it here would strip the fallback
+      // target a later no-id Deny relies on, off the back of a click that was
+      // rejected. Record it: a click that tried to tear down a live automation
+      // belongs in the task's log even though it was blocked.
+      logger.warn('task', `Deny on trigger ${id} ignored — it is ${trigger.status}, not pending (stale approval card)`);
+      await appendAgentFinding(
+        this.taskId,
+        'system',
+        `Deny on trigger ${id} refused — already ${trigger.status}, not withdrawn (stale approval card)`,
+        'decision',
+      );
+      return { outcome: 'already_live', status: trigger.status };
+    }
     await deleteTrigger(id);
+    if (this.metadata.pending_trigger_id === id) {
+      this.metadata.pending_trigger_id = undefined;
+      this.debouncedSave();
+    }
     await appendAgentFinding(this.taskId, 'system', `Trigger ${id} denied by user`, 'decision');
+    return { outcome: 'withdrawn' };
   }
 
   // ---- Internal methods ----
