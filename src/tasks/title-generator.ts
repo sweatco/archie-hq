@@ -12,6 +12,7 @@ import { z, toJSONSchema } from 'zod';
 import type { SlackThread } from '../types/index.js';
 import { messageBody, shouldRedact, REDACTION_PLACEHOLDER } from '../connectors/slack/message-body.js';
 import { logger } from '../system/logger.js';
+import { buildModelGatewayEnv } from '../agents/model-gateway.js';
 
 const TitleSchema = z.object({
   title: z.string(),
@@ -102,6 +103,10 @@ Respond with JSON only.`;
           ...(process.env.NODE_USE_SYSTEM_CA ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA } : {}),
           ...(process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS } : {}),
           PATH: process.env.PATH,
+          // Model gateway: this call site passes a bare alias, so a global
+          // (full-takeover) gateway swap reaches it through the CLI's alias
+          // table. No-op unless ARCHIE_MODEL_GATEWAY_URL is set.
+          ...buildModelGatewayEnv('haiku'),
         },
         tools: [],
         maxTurns: 2,

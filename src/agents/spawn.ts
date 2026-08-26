@@ -21,6 +21,7 @@ import { isRepoAgent, isPmAgent } from '../types/agent.js';
 import { buildCommitAuthorEnv } from './commit-author.js';
 import { coreSkillPaths } from './core-skills.js';
 import { resolveAgentModel, resolveAgentEffort } from './model-label.js';
+import { buildModelGatewayEnv, isGatewayModelWithoutGateway } from './model-gateway.js';
 import {
   createBaseAgentMcpServer,
   createRepoToolsMcpServer,
@@ -274,6 +275,20 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   const model = resolveAgentModel(def, maxMode);
   const effort = resolveAgentEffort(def, maxMode);
   const tools = def.tools;
+  // Agents on a non-Anthropic model talk to a self-hosted Anthropic-format
+  // gateway instead of api.anthropic.com; every Claude agent is untouched (the
+  // spread below is empty for them). See model-gateway.ts.
+  const modelGatewayEnv = buildModelGatewayEnv(model);
+  // Non-empty env == this agent actually routes through the gateway. Drives the
+  // cost-recording decision at the `result` event below.
+  const routesThroughGateway = Object.keys(modelGatewayEnv).length > 0;
+  if (isGatewayModelWithoutGateway(model)) {
+    logger.warn(
+      def.id,
+      `model '${model}' names a non-Anthropic provider but ARCHIE_MODEL_GATEWAY_URL is unset — ` +
+        'the request will go to the Anthropic API and fail on an unknown model',
+    );
+  }
 
   const pluginPaths = def.pluginPath ? [def.pluginPath] : [];
   const pluginReadPaths = [...pluginPaths, ...(def.pluginDataPath ? [def.pluginDataPath] : [])];
@@ -735,6 +750,10 @@ Shared folder: ${sharedPath} [READ-ONLY]
       // through the in-process logging proxy so we can measure its real context
       // breakdown. No-op (key absent) when the probe is disabled or not listening.
       ...(getProbeBaseUrl() ? { ANTHROPIC_BASE_URL: getProbeBaseUrl()! } : {}),
+      // Model gateway (see model-gateway.ts). Spread AFTER the probe so an
+      // explicitly configured gateway wins over the debug proxy; empty for
+      // every agent on a Claude model.
+      ...modelGatewayEnv,
       ...(useClaudeDirs ? {
         CLAUDE_CONFIG_DIR: claudeConfigDir,
         CLAUDE_CODE_TMPDIR: claudeTmpDir,
@@ -956,7 +975,14 @@ Shared folder: ${sharedPath} [READ-ONLY]
                 session_id: event.session_id,
                 subtype: event.subtype,
                 num_turns: event.num_turns,
-                total_cost_usd: event.total_cost_usd,
+                // A gateway-routed agent's cost is NOT recorded: the SDK prices
+                // an unrecognised model with a first-party Claude rate card, so
+                // `total_cost_usd` arrives confidently wrong rather than absent.
+                // Persisting it would poison the cost column that task-usage.ts
+                // documents as the SDK's own figure. See model-gateway.ts.
+                ...(routesThroughGateway
+                  ? { cost_unavailable: true as const }
+                  : { total_cost_usd: event.total_cost_usd }),
                 modelUsage: (event as any).modelUsage,
                 usage: (event as any).usage,
               });

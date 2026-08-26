@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { z, toJSONSchema } from 'zod';
 import { logger } from '../../system/logger.js';
+import { buildModelGatewayEnv } from '../../agents/model-gateway.js';
 
 /** Pins at or below this length are indexed verbatim — no model call. */
 export const VERBATIM_MAX = 200;
@@ -117,6 +118,10 @@ Respond with JSON only.`;
           ...(process.env.NODE_USE_SYSTEM_CA ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA } : {}),
           ...(process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS } : {}),
           PATH: process.env.PATH,
+          // Model gateway: this call site passes a bare alias, so a global
+          // (full-takeover) gateway swap reaches it through the CLI's alias
+          // table. No-op unless ARCHIE_MODEL_GATEWAY_URL is set.
+          ...buildModelGatewayEnv('haiku'),
         },
         tools: [],
         maxTurns: 2,

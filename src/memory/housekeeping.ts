@@ -32,6 +32,7 @@ import { logger } from '../system/logger.js';
 import { recordHousekeepingNote } from './lifecycle.js';
 import { parseLastTouched as parseLastTouchedFromAnnotations, stripLastTouched as stripLastTouchedFromAnnotations, appendLastTouched as appendLastTouchedFromAnnotations } from './annotations.js';
 import type { EntityRecord } from './types.js';
+import { buildModelGatewayEnv } from '../agents/model-gateway.js';
 
 const TOUCHED_RE = /<!--\s*touched:\s*(\d{4}-\d{2}-\d{2})\s*-->/;
 const TRACE_DISTANCE_THRESHOLD = 0.4;
@@ -275,6 +276,10 @@ async function runHousekeeperAgent(fileContent: string): Promise<string> {
         ...(process.env.NODE_USE_SYSTEM_CA ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA } : {}),
         ...(process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS } : {}),
         PATH: process.env.PATH,
+        // Model gateway: this call site passes a bare alias, so a global
+        // (full-takeover) gateway swap reaches it through the CLI's alias
+        // table. No-op unless ARCHIE_MODEL_GATEWAY_URL is set.
+        ...buildModelGatewayEnv('sonnet'),
       },
       stderr: (data: string) => {
         logger.debug('memory', `housekeeping stderr: ${data.trim()}`);
