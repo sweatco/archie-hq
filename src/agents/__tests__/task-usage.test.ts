@@ -443,3 +443,86 @@ describe('SECURITY: taskId path-injection guard', () => {
     expect(report.cost).toBeUndefined();
   });
 });
+
+// =============================================================================
+// Gateway-routed turns — cost is EXCLUDED, never estimated and never $0.00.
+//
+// The SDK prices a model it does not recognise with a first-party Claude rate
+// card: measured live, an OpenAI model behind an Anthropic-format gateway came
+// back priced at Opus 5's rates (exact to the cent-fraction on two different
+// models, ~18x over list for gpt-4o-mini). spawn.ts therefore writes
+// `cost_unavailable: true` instead of that figure, and these tests pin the
+// read-side contract — including that "excluded" never degrades into "free".
+// =============================================================================
+
+describe('gateway-routed cost exclusion', () => {
+  it('reports cost unavailable — not $0.00 — when every turn ran on a gateway model', async () => {
+    const taskId = 'task-20260101-1200-gw1';
+    await writeTranscript(projectsDir(taskId, 'backend'), 'sess-1.jsonl', [
+      assistantLine({ id: 'g1', usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
+    ]);
+    await writeUsage(taskId, [
+      { query_nonce: 'G1', agentKey: 'backend', cost_unavailable: true },
+      { query_nonce: 'G2', agentKey: 'backend', cost_unavailable: true },
+    ]);
+
+    const report = await aggregateTaskUsage(taskId);
+    // The whole point: absent, so it renders "unavailable". A grand of 0 here
+    // would assert the task was free.
+    expect(report.cost).toBeUndefined();
+    expect(report.agents.find((a) => a.agentKey === 'backend')?.cost).toBeUndefined();
+    expect(report.costUnmeasuredTurns).toBe(2);
+    // Tokens are unaffected — only the dollar conversion is untrustworthy.
+    expect(report.grand.input_tokens).toBe(10);
+
+    const text = formatTaskUsageReport(report);
+    expect(text).toContain('Cost: unavailable');
+    expect(text).not.toContain('$0.00');
+    expect(text).toContain('gateway model the SDK cannot price');
+  });
+
+  it('a fabricated figure on a gateway record is ignored even if one is present', async () => {
+    const taskId = 'task-20260101-1200-gw2';
+    await writeTranscript(projectsDir(taskId, 'backend'), 'sess-1.jsonl', [
+      assistantLine({ id: 'g2', usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
+    ]);
+    // Defensive: an older record, or one written before the flag existed, may
+    // still carry the bogus number. The flag must win over the value.
+    await writeUsage(taskId, [
+      { query_nonce: 'G1', agentKey: 'backend', cost_unavailable: true, total_cost_usd: 0.19408 },
+    ]);
+
+    const report = await aggregateTaskUsage(taskId);
+    expect(report.cost).toBeUndefined();
+    expect(report.costUnmeasuredTurns).toBe(1);
+  });
+
+  it('a mixed task still reports the measurable agent, excluding only the gateway one', async () => {
+    const taskId = 'task-20260101-1200-gw3';
+    await writeTranscript(projectsDir(taskId, 'pm'), 'sess-1.jsonl', [
+      assistantLine({ id: 'm1', usage: { input_tokens: 4, output_tokens: 2, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
+    ]);
+    await writeTranscript(projectsDir(taskId, 'backend'), 'sess-1.jsonl', [
+      assistantLine({ id: 'm2', usage: { input_tokens: 6, output_tokens: 3, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
+    ]);
+    // PM on Claude (measured), backend on a gateway model (excluded) — the
+    // per-agent routing case, which is the one we actually intend to run.
+    await writeUsage(taskId, [
+      { query_nonce: 'P1', agentKey: 'pm', total_cost_usd: 0.30 },
+      { query_nonce: 'G1', agentKey: 'backend', cost_unavailable: true },
+    ]);
+
+    const report = await aggregateTaskUsage(taskId);
+    expect(report.cost?.grand).toBeCloseTo(0.30, 10);
+    // Counts only measurable records, so the gap disclosure stays honest.
+    expect(report.cost?.costRecordedTurns).toBe(1);
+    expect(report.costUnmeasuredTurns).toBe(1);
+    expect(report.agents.find((a) => a.agentKey === 'pm')?.cost).toBeCloseTo(0.30, 10);
+    expect(report.agents.find((a) => a.agentKey === 'backend')?.cost).toBeUndefined();
+
+    const text = formatTaskUsageReport(report);
+    expect(text).toContain('backend');
+    expect(text).toContain('cost: unavailable');
+    expect(text).toContain('gateway model the SDK cannot price');
+  });
+});

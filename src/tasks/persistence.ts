@@ -792,7 +792,20 @@ export interface TaskUsageRecord {
   session_id?: string;
   subtype: string;
   num_turns: number;
-  total_cost_usd: number;
+  /**
+   * Omitted when the SDK's figure cannot be trusted — see `cost_unavailable`.
+   * Absent means "not measured", never "cost nothing".
+   */
+  total_cost_usd?: number;
+  /**
+   * Set when this turn ran on a model the SDK cannot price, so no cost was
+   * recorded. The SDK prices any model it does not recognise with a first-party
+   * Claude rate card (measured: an OpenAI model behind a gateway came back
+   * priced at Opus 5's rates, ~18x over list for gpt-4o-mini), which is a
+   * confidently wrong number rather than a missing one. Read-time aggregation
+   * excludes these records instead of summing a fiction.
+   */
+  cost_unavailable?: true;
   modelUsage: Record<string, unknown>;
   usage: unknown;
 }
