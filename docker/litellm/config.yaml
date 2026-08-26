@@ -1,0 +1,21 @@
+# LiteLLM model gateway for Archie. Models keep their real ids so Archie's
+# records name the model that answered.
+model_list:
+  - model_name: openai/gpt-5.6-sol
+    litellm_params:
+      model: openai/gpt-5.6-sol
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: openai/gpt-5.6-terra
+    litellm_params:
+      model: openai/gpt-5.6-terra
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: openai/gpt-5.6-luna
+    litellm_params:
+      model: openai/gpt-5.6-luna
+      api_key: os.environ/OPENAI_API_KEY
+
+litellm_settings:
+  # Claude Code sends output_config, context_management, adaptive thinking and
+  # beta tool-schema fields; without this they surface as hard 400s.
+  drop_params: true
+  callbacks: ["archie_visible_close.instance"]
