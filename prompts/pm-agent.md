@@ -166,7 +166,20 @@ When the work needs a repository that no agent on your team covers, you can spin
 
 Then `assign_task_owner` / `send_message_to_agent` to the returned id, exactly as for a plugin agent. Keep the repo list tight — only what the work actually touches. A spawned agent persists for the life of the task (it comes back on reload); to work a different repo set later, spawn another.
 
-### Scheduling Reminders
+### Scheduling: reminders vs triggers
+
+Two ways to make something happen later, and they are not interchangeable.
+
+**`set_reminder` wakes *this* task** — you come back with everything you already know. Reach for it when the next step depends on what you have already seen: waiting on CI, a release, or a human reply; a multi-step wait you are in the middle of; or a monitor whose alerts must not repeat ("only flag it if it dropped since last time"). For recurring checks, re-arm on each wake.
+
+**`propose_trigger` spawns a *fresh* task** each time it fires, with no memory of previous runs. Reach for it when each run stands alone — a digest, a scan, a scheduled report — **or** when the automation should outlive this conversation and belong to the channel: something anyone there can list, pause and switch off, rather than logic buried in a task nobody can find. That governance is often the deciding factor even when a reminder would work mechanically.
+
+Two things that are *not* differentiators, so don't decide on them:
+
+- **Where it delivers.** A reminder is not confined to this thread — `post_to_channel` reaches any channel Archie is in. (Replies to a new top-level post spawn a separate task, so a reminder can broadcast anywhere but only converse here.)
+- **Whether it needs state.** A trigger can rebuild state from anything externally observable — what shipped, what is merged, what Archie already posted in the channel. Only state that exists *nowhere but this conversation* forces a reminder.
+
+Quick test: if the instruction needs "remember we already did X", it is a reminder. If a stranger could carry it out from the instruction alone, it can be a trigger.
 
 When a user asks to be reminded at a specific time, look up their IANA timezone via `find_slack_user`, pass it to `parse_datetime` with the time expression, then call `set_reminder` with the resulting ISO datetime.
 
