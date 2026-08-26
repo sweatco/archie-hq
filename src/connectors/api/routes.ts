@@ -19,6 +19,7 @@ import {
   loadMetadata,
   appendCliMessage,
   readEvents,
+  taskExistsOnDisk,
 } from '../../tasks/persistence.js';
 import { SESSIONS_DIR } from '../../system/workdir.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
@@ -26,6 +27,7 @@ import { logger } from '../../system/logger.js';
 import { listTriggers, loadTrigger, saveTrigger, deleteTrigger, countActiveTriggers } from '../../system/trigger-store.js';
 import { indexTrigger, deindexTrigger, announceTriggerChange, describeTrigger, MAX_TRIGGERS_PER_USER, MAX_TRIGGERS_PER_CHANNEL } from '../../system/trigger-scheduler.js';
 import type { Trigger } from '../../types/trigger.js';
+import { cancelReminder } from '../../system/reminder-scheduler.js';
 
 /**
  * Mount API routes on an existing Express app.
@@ -213,6 +215,43 @@ export function mountApiRoutes(app: Application): void {
     } catch (error) {
       logger.error('api', 'Failed to send message', error);
       res.status(500).json({ error: 'Failed to send message' });
+    }
+  });
+
+  // ---- DELETE /tasks/:id/reminder — operator off switch for a task's reminder ----
+
+  /**
+   * Cancel a task's pending reminder, recurring or one-shot.
+   *
+   * A recurring reminder is durable, restart-surviving, self-initiated work, and
+   * `cancel_reminder` is callable only by the agent itself — so without this the
+   * only way to stop one was to hope the PM chose to. That is not an acceptable
+   * off switch for something that re-activates a task indefinitely, so the
+   * operator gets a direct one. Idempotent: cancelling nothing is not an error.
+   */
+  router.delete('/tasks/:id/reminder', async (req: Request, res: Response) => {
+    try {
+      const taskId = req.params.id as string;
+      // Answer 404 for an unknown task, like GET /tasks/:id — `Task.get` throws for
+      // a missing task, which would otherwise surface as a 500 "Failed to cancel
+      // reminder" and read as a server fault rather than a bad id.
+      if (!taskExistsOnDisk(taskId)) {
+        res.status(404).json({ error: 'Task not found' });
+        return;
+      }
+      const task = await Task.get(taskId);
+      const existing = task.metadata.reminder;
+      if (!existing) {
+        res.json({ ok: true, cancelled: false });
+        return;
+      }
+      cancelReminder(task);
+      await task.save(true);
+      logger.system(`Reminder cancelled for ${taskId} by operator`);
+      res.json({ ok: true, cancelled: true, reminder: existing });
+    } catch (error) {
+      logger.error('api', 'Failed to cancel reminder', error);
+      res.status(500).json({ error: 'Failed to cancel reminder' });
     }
   });
 

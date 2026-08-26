@@ -67,7 +67,7 @@ One PM agent instance is spawned per task. It is the orchestrator: it receives a
 | `get_agents_status` | Check which agents are spawned and active |
 | `get_task_usage` | Report the current task's token usage (always) and SDK-reported cost when available, broken down per agent |
 | `mute_channel` | Disengage from one Slack channel/thread (the one named via `channel`, or the task's default channel) until the bot is @mentioned there again. DM channels cannot be muted |
-| `parse_datetime` / `set_reminder` / `cancel_reminder` | Schedule a reminder that wakes the task at an ISO datetime |
+| `parse_datetime` / `set_reminder` / `cancel_reminder` | Wake the task later — once at an ISO datetime, or on a repeating `cron` + `tz` schedule (optionally bounded by `until`), which the runtime re-arms itself. `cancel_reminder` clears either |
 | `list_available_repos` | List repos the GitHub App installation can reach (paginates `GET /installation/repositories`); tags repos a plugin specialist already covers. Cached per task. |
 | `spawn_repo_agent` | Create an on-demand repo agent bound to a chosen list of available repos (eager-mounted at spawn). Persists a `DynamicAgentSpec` to `metadata.dynamic_agents` and adds it to `task.team`. Rejects a repo already owned as a plugin specialist's primary. |
 

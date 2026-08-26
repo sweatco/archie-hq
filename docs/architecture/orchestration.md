@@ -21,7 +21,7 @@ How Archie routes messages, manages tasks, spawns agents, and recovers from fail
 | **Task Recovery** | `src/tasks/recovery.ts` | Startup recovery + idle detection + progressive recovery (reinforcement then nuclear restart) |
 | **Task Launch** | `src/tasks/launch.ts` | Launch a new background task from within an existing one |
 | **Event Bus** | `src/system/event-bus.ts` | Typed in-process EventEmitter for system events (task/agent/message/approval/reminder); SSE clients and JSONL persistence subscribe |
-| **Reminder Scheduler** | `src/system/reminder-scheduler.ts` | In-memory index of pending reminders backed by metadata; 1-minute interval fires due reminders by reactivating tasks |
+| **Reminder Scheduler** | `src/system/reminder-scheduler.ts` | In-memory index of pending reminders backed by metadata; 1-minute interval fires due reminders by reactivating tasks. A recurring reminder (`cron`) is re-armed from its cron after each fire — resolved on the live `Task` instance and flushed before reactivation — instead of being cleared; `until` bounds it |
 | **Shutdown** | `src/system/shutdown.ts` | Process-wide `isShuttingDown` flag; tasks suppress deactivation writes during shutdown so recovery sees the correct pre-shutdown state |
 | **Message Queue** | `src/agents/message-queue.ts` | Per-agent async producer-consumer queues with replay support |
 | **MCP Tools** | `src/agents/tools.ts` | Custom MCP tool definitions exposed to agents via the Claude Agent SDK |
@@ -264,7 +264,7 @@ Tools are defined in `src/agents/tools.ts` and exposed via MCP servers created p
 | `get_agents_status` | Return active/idle status of all spawned agents |
 | `get_task_usage` | Report the current task's total token usage (always) and SDK-reported cost when available, with a per-agent breakdown. See [Persistence › Usage & cost accounting](persistence.md#usage--cost-accounting) |
 | `mute_channel` | Stop processing a Slack channel/thread until the bot is @mentioned there again. Takes optional `channel` key; defaults to the task's `default_channel`. DM channels cannot be muted |
-| `parse_datetime` / `set_reminder` / `cancel_reminder` | Schedule/cancel reactivation of the task at a future time (via `src/system/reminder-scheduler.ts`) |
+| `parse_datetime` / `set_reminder` / `cancel_reminder` | Schedule/cancel reactivation of the task at a future time — one-shot `datetime` or recurring `cron` + `tz` (optionally bounded by `until`), via `src/system/reminder-scheduler.ts`. Operators can also cancel via `DELETE /api/tasks/:id/reminder` |
 
 Outbound posting flow: PM-style tools (`post_to_user`, `post_files_to_user`,
 `postInteractiveToUser`) call directly into the Slack client in
