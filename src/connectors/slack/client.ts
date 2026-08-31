@@ -415,6 +415,13 @@ export function buildPrCardBlocks(card: PrCardData): unknown[] {
 }
 
 /**
+ * Ids Slack has rejected as `user_not_found`, so we stop re-asking on every
+ * thread read. Only permanent failures land here — caching a rate limit would
+ * permanently stop resolving a real person.
+ */
+const unresolvableUserIds = new Set<string>();
+
+/**
  * Helper: Fetch user, group, and channel info for all mentions in messages
  * Returns maps that can be used to replace IDs with names
  */
@@ -453,11 +460,21 @@ async function fetchMentionInfo(
   if (userIds.size > 0) {
     await Promise.all(
       Array.from(userIds).map(async (userId) => {
+        if (unresolvableUserIds.has(userId)) return;
         try {
           const info = await getUserInfo(userId);
           userInfoMap.set(userId, info);
         } catch (error) {
-          logger.warn('Slack', `Failed to get user info for ${userId}`);
+          const code = (error as { data?: { error?: string } } | undefined)?.data?.error;
+          if (code === 'user_not_found') {
+            unresolvableUserIds.add(userId);
+            logger.debug(
+              'Slack',
+              `Mention <@${userId}> is not a Slack user — leaving it as written and not asking again`
+            );
+          } else {
+            logger.warn('Slack', `Failed to get user info for ${userId}`, error);
+          }
         }
       })
     );
