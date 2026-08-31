@@ -502,7 +502,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
       await configureGitIdentity(clonePath);
       // Every spawn, not just fresh clones: clones outlive the change that added this, and the
       // artifacts appear while the agent works rather than at setup. See excludeSandboxArtifacts.
-      await excludeSandboxArtifacts(clonePath);
+      await excludeSandboxArtifacts(clonePath, WORKDIR);
       repoMounts.push({
         github: att.github,
         clonePath,

@@ -252,6 +252,17 @@ const SANDBOX_ARTIFACT_PATTERNS = [
 const EXCLUDE_HEADER = '# --- Archie: Claude Code sandbox artifacts (managed) ---';
 const EXCLUDE_FOOTER = '# --- end Archie ---';
 
+
+/**
+ * True when `child` is `parent` itself or sits beneath it. Both sides must already be canonical
+ * (`fs.realpath`), because a plain string prefix test is defeated by a `..` segment or a symlink.
+ */
+function isInside(parent: string, child: string): boolean {
+  const p = path.resolve(parent);
+  const c = path.resolve(child);
+  return c === p || c.startsWith(p + path.sep);
+}
+
 /**
  * Ensure a clone's `.git/info/exclude` hides the sandbox artifacts described above.
  *
@@ -259,11 +270,33 @@ const EXCLUDE_FOOTER = '# --- end Archie ---';
  * place, so repeat calls neither duplicate it nor disturb anything else in the file. Called for
  * existing clones as well as fresh ones, because clones outlive the change that introduced this.
  *
- * Best-effort. A clone we cannot write this into is not a reason to fail a spawn — the agent still
- * works, it just keeps the untracked noise — so failures are logged and swallowed.
+ * `clonePath` is TREATED AS UNTRUSTED, and `allowedRoot` is the anchor that makes that safe. The
+ * path reaches here from an agent's repo attachment, which for a PM-spawned dynamic agent derives
+ * from a `owner/name` identifier that ultimately came from a human's message — so it is exactly the
+ * "user-provided value" CodeQL flags (js/path-injection, alerts 133-135). Unchecked, this function
+ * is an arbitrary-file-overwrite primitive: every `..` in that identifier moves the destination of
+ * a `writeFile` up a directory. Four things have to hold before anything is written, each
+ * canonicalised first so neither `..` nor a symlink can slip past a string comparison:
+ *
+ *   1. the clone resolves to a real existing path inside `allowedRoot`;
+ *   2. its `.git` is a real directory that lives inside the clone (not a file, not a link out);
+ *   3. `.git/info` likewise resolves inside `.git`, after creation;
+ *   4. `.git/info/exclude` is not itself a symlink — `writeFile` would follow it and write through.
+ *
+ * Failing any of them logs and returns rather than writing. `allowedRoot` is passed in rather than
+ * imported from `system/workdir.js` because that module imports this one, and the import would
+ * cycle; it also lets the tests anchor to a temp dir.
+ *
+ * A TOCTOU window remains between the checks and the write — inherent without `openat2`, and
+ * acceptable here: everything inside `allowedRoot` is already Archie-managed, and the alternative
+ * primitive it would yield is one this same process could obtain directly.
+ *
+ * Best-effort throughout. A clone we cannot write this into is not a reason to fail a spawn — the
+ * agent still works, it just keeps the untracked noise — so failures are logged and swallowed.
  */
-export async function excludeSandboxArtifacts(clonePath: string): Promise<void> {
-  const excludePath = path.join(clonePath, '.git', 'info', 'exclude');
+export async function excludeSandboxArtifacts(clonePath: string, allowedRoot: string): Promise<void> {
+  const refuse = (reason: string) =>
+    logger.warn('task', `Refusing to write sandbox-artifact excludes for ${clonePath}: ${reason}`);
 
   const block = [
     EXCLUDE_HEADER,
@@ -276,11 +309,54 @@ export async function excludeSandboxArtifacts(clonePath: string): Promise<void> 
   ].join('\n');
 
   try {
+    // (1) The clone must be a real existing path anchored under the managed root.
+    const rootReal = await fs.realpath(allowedRoot);
+    let cloneReal: string;
+    try {
+      cloneReal = await fs.realpath(clonePath);
+    } catch {
+      return refuse('path does not exist');
+    }
+    if (!isInside(rootReal, cloneReal)) {
+      return refuse(`resolves to ${cloneReal}, outside ${rootReal}`);
+    }
+
+    // (2) It must actually be a git clone, with `.git` a real directory inside it.
+    let gitReal: string;
+    try {
+      gitReal = await fs.realpath(path.join(cloneReal, '.git'));
+    } catch {
+      return refuse('no .git directory');
+    }
+    if (!isInside(cloneReal, gitReal) || !(await fs.lstat(gitReal)).isDirectory()) {
+      return refuse('.git is not a directory inside the clone');
+    }
+
+    // (3) `.git/info` must resolve inside `.git` — checked after creation, so a pre-existing
+    //     symlink pointing elsewhere is caught rather than followed.
+    const infoDir = path.join(gitReal, 'info');
+    await fs.mkdir(infoDir, { recursive: true });
+    const infoReal = await fs.realpath(infoDir);
+    if (!isInside(gitReal, infoReal)) {
+      return refuse(`.git/info resolves to ${infoReal}, outside ${gitReal}`);
+    }
+
+    const excludePath = path.join(infoReal, 'exclude');
+
+    // (4) Never write through a symlink.
+    try {
+      if ((await fs.lstat(excludePath)).isSymbolicLink()) {
+        return refuse('.git/info/exclude is a symlink');
+      }
+    } catch {
+      // Absent — it gets created below.
+    }
+
     let existing = '';
     try {
       existing = await fs.readFile(excludePath, 'utf8');
     } catch {
-      // No exclude file yet (or no .git/info) — created below.
+      // No exclude file yet — created below.
     }
 
     const start = existing.indexOf(EXCLUDE_HEADER);
@@ -292,14 +368,12 @@ export async function excludeSandboxArtifacts(clonePath: string): Promise<void> 
     } else {
       const endMarker = existing.indexOf(EXCLUDE_FOOTER, start);
       const end = endMarker === -1 ? existing.length : endMarker + EXCLUDE_FOOTER.length;
-      const current = existing.slice(start, end);
-      if (current === block) return; // already correct — no write, no log
+      if (existing.slice(start, end) === block) return; // already correct — no write, no log
       next = existing.slice(0, start) + block + existing.slice(end);
     }
 
-    await fs.mkdir(path.dirname(excludePath), { recursive: true });
     await fs.writeFile(excludePath, next);
-    logger.system(`Excluded Claude Code sandbox artifacts in ${clonePath}`);
+    logger.system(`Excluded Claude Code sandbox artifacts in ${cloneReal}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
     logger.warn('task', `Could not write sandbox-artifact excludes for ${clonePath}: ${message}`);
