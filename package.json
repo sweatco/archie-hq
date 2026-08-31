@@ -12,6 +12,7 @@
     "start": "node dist/index.js",
     "lint": "eslint src/**/*.ts",
     "typecheck": "tsc --noEmit",
+    "typecheck:tools": "tsc -p tsconfig.tools.json",
     "cli": "tsx src/cli/index.tsx",
     "example:setup": "mkdir -p workdir && ln -sfn ../examples/plugins workdir/plugins && echo 'Linked examples/plugins -> workdir/plugins (leave ARCHIE_PLUGINS unset to use it).'",
     "oauth": "tsx src/cli/oauth.ts",
