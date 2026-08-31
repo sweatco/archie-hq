@@ -211,3 +211,97 @@ export async function removeClone(clonePath: string): Promise<void> {
   await fs.rm(clonePath, { recursive: true, force: true });
   logger.system(`Removed clone at ${clonePath}`);
 }
+
+// ---- Sandbox artifact exclusion ----
+
+/**
+ * Harness-owned paths that Claude Code materialises inside whatever directory it works in.
+ *
+ * When a repo agent works in its clone, the CLI hardens that directory: it read-only-binds some
+ * paths and mounts `/dev/null` over others it expects to own. Those `/dev/null` mounts leave
+ * CHARACTER DEVICES behind as untracked entries in the working tree of a customer's repository —
+ * where a routine `git add -A` will happily commit them.
+ *
+ * Only `.claude/*` entries are listed. The root-level artifacts (`.bashrc`, `.gitconfig`,
+ * `.mcp.json`, `CLAUDE.md`, …) appear in an agent's *workspace* but were not observed leaking into
+ * a clone, and several of them are legitimate repository content, so excluding them would risk
+ * hiding a file an agent was legitimately asked to add.
+ *
+ * Two properties make this safe:
+ *   - Exclusion does NOT affect TRACKED files. A repo that already commits `.claude/settings.json`
+ *     (sweatcoin-mobile does) keeps diffing it normally; only untracked entries are hidden.
+ *   - `.git/info/exclude` is local to the clone and never committed, so nothing reaches the repo.
+ *
+ * The residual risk is narrow and called out in the written header: an agent asked to CREATE one of
+ * these exact paths in a repo that does not already track it would find it ignored. The comment
+ * written into the file says how to undo that.
+ */
+const SANDBOX_ARTIFACT_PATTERNS = [
+  '/.claude/settings.json',
+  '/.claude/settings.local.json',
+  '/.claude/launch.json',
+  '/.claude/loop.md',
+  '/.claude/scheduled_tasks.json',
+  '/.claude/hooks',
+  '/.claude/workflows',
+  '/.claude/routines',
+  '/.claude/output-styles',
+  '/.claude/.cc-writes',
+];
+
+const EXCLUDE_HEADER = '# --- Archie: Claude Code sandbox artifacts (managed) ---';
+const EXCLUDE_FOOTER = '# --- end Archie ---';
+
+/**
+ * Ensure a clone's `.git/info/exclude` hides the sandbox artifacts described above.
+ *
+ * Idempotent, and safe to call on every spawn: the managed block is delimited and rewritten in
+ * place, so repeat calls neither duplicate it nor disturb anything else in the file. Called for
+ * existing clones as well as fresh ones, because clones outlive the change that introduced this.
+ *
+ * Best-effort. A clone we cannot write this into is not a reason to fail a spawn — the agent still
+ * works, it just keeps the untracked noise — so failures are logged and swallowed.
+ */
+export async function excludeSandboxArtifacts(clonePath: string): Promise<void> {
+  const excludePath = path.join(clonePath, '.git', 'info', 'exclude');
+
+  const block = [
+    EXCLUDE_HEADER,
+    '# Claude Code mounts /dev/null over these paths while an agent works here, leaving character',
+    '# devices behind as untracked files. Without this block `git add -A` commits them into the repo.',
+    '# Local to this clone; never committed. Tracked files are unaffected — exclusion only hides',
+    '# untracked entries. If an agent genuinely needs to ADD one of these paths, delete its line.',
+    ...SANDBOX_ARTIFACT_PATTERNS,
+    EXCLUDE_FOOTER,
+  ].join('\n');
+
+  try {
+    let existing = '';
+    try {
+      existing = await fs.readFile(excludePath, 'utf8');
+    } catch {
+      // No exclude file yet (or no .git/info) — created below.
+    }
+
+    const start = existing.indexOf(EXCLUDE_HEADER);
+    let next: string;
+    if (start === -1) {
+      next = existing.length > 0 && !existing.endsWith('\n')
+        ? `${existing}\n${block}\n`
+        : `${existing}${block}\n`;
+    } else {
+      const endMarker = existing.indexOf(EXCLUDE_FOOTER, start);
+      const end = endMarker === -1 ? existing.length : endMarker + EXCLUDE_FOOTER.length;
+      const current = existing.slice(start, end);
+      if (current === block) return; // already correct — no write, no log
+      next = existing.slice(0, start) + block + existing.slice(end);
+    }
+
+    await fs.mkdir(path.dirname(excludePath), { recursive: true });
+    await fs.writeFile(excludePath, next);
+    logger.system(`Excluded Claude Code sandbox artifacts in ${clonePath}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    logger.warn('task', `Could not write sandbox-artifact excludes for ${clonePath}: ${message}`);
+  }
+}
