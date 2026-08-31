@@ -317,9 +317,17 @@ export async function excludeSandboxArtifacts(clonePath: string, allowedRoot: st
     //     it is better regardless: a syntactically escaping path is now refused without so much as
     //     a stat, so not even path existence leaks. Every fs call below uses `cloneLexical` or a
     //     value derived from it — the raw argument is never passed to the filesystem.
+    //
+    //     Written as an INLINE `path.resolve` + `startsWith` comparison rather than a call to
+    //     `isInside` below, deliberately. The logic is identical, but CodeQL's js/path-injection
+    //     recognises a normalise-then-prefix-compare guard applied directly to the tainted value
+    //     and does not follow the same test through a boolean-returning helper — which is why
+    //     alerts 136 and 137 kept landing on whichever `fs` call came first. This is the shape the
+    //     analysis can see; the duplication with `isInside` is the price and is worth paying, since
+    //     the alternative is a suppressed alert on the surface every repo agent shares.
     const rootLexical = path.resolve(allowedRoot);
     const cloneLexical = path.resolve(clonePath);
-    if (!isInside(rootLexical, cloneLexical)) {
+    if (cloneLexical !== rootLexical && !cloneLexical.startsWith(rootLexical + path.sep)) {
       return refuse(`resolves to ${cloneLexical}, outside ${rootLexical}`);
     }
 
