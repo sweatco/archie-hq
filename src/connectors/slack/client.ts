@@ -1948,7 +1948,7 @@ export async function classifySlackMemoryScope(
     }
 
     if (channel.is_private || channel.is_mpim) {
-      return { kind: 'channel', channel_id: channelId };
+      return { kind: 'private_channel', channel_id: channelId };
     }
     return { kind: 'public', channel_id: channelId };
   } catch (error) {

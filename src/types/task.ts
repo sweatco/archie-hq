@@ -6,13 +6,13 @@ export type TaskStatus = 'in_progress' | 'stopped' | 'completed';
 
 export type TaskMemoryScope =
   | { kind: 'public'; channel_id: string }
-  | { kind: 'channel'; channel_id: string }
+  | { kind: 'private_channel'; channel_id: string }
   | { kind: 'user'; user_id: string; channel_id: string }
   | { kind: 'none'; channel_id: string };
 
 export type SlackMemoryClassification =
   | { kind: 'public'; channel_id: string }
-  | { kind: 'channel'; channel_id: string }
+  | { kind: 'private_channel'; channel_id: string }
   | { kind: 'user'; user_id: string }
   | { kind: 'none' };
 

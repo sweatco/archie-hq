@@ -248,7 +248,7 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
   });
 
   it.each([
-    ['private channel', 'C07PRIVATE', { kind: 'channel' }, join('private', 'channels', 'C07PRIVATE.md')],
+    ['private channel', 'C07PRIVATE', { kind: 'private_channel' }, join('private', 'channels', 'C07PRIVATE.md')],
     ['internal DM', 'D07DANA001', { kind: 'user', user_id: 'U07DANA001' }, join('private', 'users', 'U07DANA001.md')],
   ])('writes a summary-only outcome for an internal %s', async (_label, channelId, memoryScope, relativePath) => {
     await writeFile(
@@ -259,7 +259,7 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     vi.mocked(classifySlackMemoryScope).mockResolvedValue(
       'user_id' in memoryScope
         ? { kind: 'user', user_id: memoryScope.user_id }
-        : { kind: 'channel', channel_id: channelId },
+        : { kind: 'private_channel', channel_id: channelId },
     );
 
     handleTaskCompleted(TASK_ID);

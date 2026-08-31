@@ -120,7 +120,7 @@ async function processExtraction(taskId: string): Promise<void> {
     return;
   }
 
-  if (scope.kind === 'channel' || scope.kind === 'user') {
+  if (scope.kind === 'private_channel' || scope.kind === 'user') {
     const outcome = await runExtraction({
       userMemory: '',
       entityIndex: '',

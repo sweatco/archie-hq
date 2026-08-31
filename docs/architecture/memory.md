@@ -108,8 +108,6 @@ Reads use the fixed task scope and fresh Slack conversation membership. Both pos
 
 Automatic profile and entity housekeeping runs inside Archie on the serialized extraction queue. It respects the configured caps, staleness window, no-new-facts checks, and `ARCHIE_MEMORY_HOUSEKEEPING`.
 
-The standalone `scripts/memory-housekeeping.ts` command refuses scoped-v1 stores because it cannot authenticate the active Slack workspace or join the runtime queue. Use automatic in-process housekeeping.
-
 ## Feature flags
 
 | Variable | Default | Effect |

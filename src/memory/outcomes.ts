@@ -54,7 +54,7 @@ export async function readPrivateOutcomes(path: string): Promise<PrivateOutcome[
 }
 
 export async function writePrivateOutcome(
-  scope: { kind: 'channel'; channel_id: string } | { kind: 'user'; user_id: string },
+  scope: { kind: 'private_channel'; channel_id: string } | { kind: 'user'; user_id: string },
   outcome: PrivateOutcome,
 ): Promise<boolean> {
   if (!isAllowedTaskId(outcome.task_id)) return false;
@@ -63,7 +63,7 @@ export async function writePrivateOutcome(
   const summary = sanitizeOutcomeSummary(outcome.summary);
   if (!Number.isFinite(createdAtMs) || !Number.isFinite(recordedAtMs) || !summary) return false;
 
-  const path = scope.kind === 'channel'
+  const path = scope.kind === 'private_channel'
     ? getChannelPrivatePath(scope.channel_id)
     : getUserPrivatePath(scope.user_id);
   const existing = await readPrivateOutcomes(path);

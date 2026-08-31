@@ -103,7 +103,7 @@ describe('classifySlackMemoryScope', () => {
     });
 
     await expect(client.classifySlackMemoryScope('G1')).resolves.toEqual({
-      kind: 'channel', channel_id: 'G1',
+      kind: 'private_channel', channel_id: 'G1',
     });
   });
 
@@ -160,7 +160,7 @@ describe('classifySlackMemoryScope', () => {
         is_shared: false, is_ext_shared: false, is_pending_ext_shared: false,
       },
     });
-    await expect(client.classifySlackMemoryScope('G1')).resolves.toEqual({ kind: 'channel', channel_id: 'G1' });
+    await expect(client.classifySlackMemoryScope('G1')).resolves.toEqual({ kind: 'private_channel', channel_id: 'G1' });
   });
 
   it('walks all member pages before allowing public memory', async () => {

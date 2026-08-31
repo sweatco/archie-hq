@@ -70,7 +70,3 @@ npx vitest run src/memory/__tests__/ --testTimeout=10000
 npm run typecheck
 npm run build
 ```
-
-The standalone `memory:housekeeping` command deliberately refuses a scoped store because
-it cannot authenticate the workspace or join the runtime write queue. Scoped public
-profiles are housekept automatically in-process.

@@ -106,7 +106,7 @@ describe('memory tools', () => {
     state.outcomes = [{ task_id: 'task-shared', created_at: '2026-08-31T12:00:00.000Z', summary: 'Private payments decision' }];
     state.profiles = new Map([['U07AUTHOR1', 'Prefers concise payments updates']]);
     state.classify.mockReset();
-    state.classify.mockResolvedValue({ kind: 'channel' });
+    state.classify.mockResolvedValue({ kind: 'private_channel' });
     state.listEntities.mockReset();
     state.listEntities.mockImplementation(async () => state.entities);
     state.readActivity.mockReset();
@@ -203,7 +203,7 @@ describe('memory tools', () => {
 
   it('narrows a public task to the same channel when it becomes private', async () => {
     state.metadata = metadata();
-    state.classify.mockResolvedValue({ kind: 'channel' });
+    state.classify.mockResolvedValue({ kind: 'private_channel' });
     const task = fakeTask();
 
     const output = textOf(await handlers(task).read_task_summary!({ task_id: 'task-shared' }));

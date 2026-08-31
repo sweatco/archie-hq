@@ -21,7 +21,7 @@ describe('memory destination', () => {
   it('authorizes a safe live classification only for the exact destination', () => {
     const destination = { channel_id: 'C1' };
     expect(isAuthorizedMemoryScope(destination, scopeForSlackChannel({ kind: 'public', channel_id: 'C1' }, 'C1'))).toBe(true);
-    expect(isAuthorizedMemoryScope(destination, scopeForSlackChannel({ kind: 'channel', channel_id: 'C1' }, 'C1'))).toBe(true);
+    expect(isAuthorizedMemoryScope(destination, scopeForSlackChannel({ kind: 'private_channel', channel_id: 'C1' }, 'C1'))).toBe(true);
     expect(isAuthorizedMemoryScope(destination, scopeForSlackChannel({ kind: 'none' }, 'C1'))).toBe(false);
     expect(isAuthorizedMemoryScope(destination, scopeForSlackChannel({ kind: 'public', channel_id: 'C2' }, 'C2'))).toBe(false);
   });

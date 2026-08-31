@@ -64,7 +64,7 @@ export async function authorizeTaskMemory(task: Task): Promise<AuthorizedMemory 
     destination.channel_id,
   );
   if (!isAuthorizedMemoryScope(destination, scope)) return null;
-  if (scope.kind === 'channel') {
+  if (scope.kind === 'private_channel') {
     return { metadata, allowPublic: true, privatePath: getChannelPrivatePath(scope.channel_id) };
   }
   if (scope.kind === 'user') {

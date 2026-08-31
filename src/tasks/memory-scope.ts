@@ -6,7 +6,7 @@ export function scopeForSlackChannel(
 ): TaskMemoryScope {
   switch (scope.kind) {
     case 'user': return { kind: 'user', user_id: scope.user_id, channel_id: channelId };
-    case 'channel': return { kind: 'channel', channel_id: channelId };
+    case 'private_channel': return { kind: 'private_channel', channel_id: channelId };
     case 'public': return { kind: 'public', channel_id: channelId };
     case 'none': return { kind: 'none', channel_id: channelId };
   }
