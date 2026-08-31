@@ -113,7 +113,6 @@ import {
   planStatusChange,
   indexTrigger,
   deindexTrigger,
-  authorizeTriggerMemoryBinding,
   announceTriggerChange,
   describeTrigger,
   triggerWhat,
@@ -125,7 +124,6 @@ import {
 } from '../system/trigger-scheduler.js';
 import { emitEvent } from '../system/event-bus.js';
 import { triggerVisibleFrom, type TriggerOrigin } from '../system/trigger-visibility.js';
-import { joinMemoryExposureScope } from '../tasks/memory-scope.js';
 
 // Re-export branch state helpers for consumers that import from tools.ts
 export { hydrateBranchState, findBranchStateByPR };
@@ -409,9 +407,9 @@ function createPostToUserTool(agent: Agent, task: Task) {
   return tool(
     'post_to_user',
     'Send a message to the user in this task. Without target, posts to the default channel — wherever this task already lives (use that almost always). ' +
-    'Use target.channel only to reach another thread ALREADY linked to this task. ' +
+    'Use target.channel only to reach another thread already linked to this task in the same Slack audience. ' +
     'If this task lives in a channel thread, bring someone in by @mentioning them in that thread. ' +
-    'To say something in a channel that is NOT part of this task (exploration/outreach), use `post_to_channel` — it deliberately does not link to this task. ' +
+    'Use `post_to_channel` for a separate top-level post in this task\'s own channel. ' +
     'A muted channel is refused. ' +
     'To attach files, send the message first, then call `post_files_to_user` with the same target.',
     {
@@ -537,7 +535,7 @@ function createListChannelsTool(_agent: Agent, task: Task) {
     'list_channels',
     "List the channels you can read for THIS task — every PUBLIC channel Archie has been added to, plus this task's own channel if it happens to be a private channel or DM. " +
     'Use this to discover where you can explore instead of guessing channel names. It never lists other private channels or DMs. ' +
-    '(Posting is broader — see post_to_channel — but reading is limited to this list.)',
+    'Reading public channels does not change where this task may post.',
     {},
     async () => {
       try {
@@ -1064,10 +1062,10 @@ const NON_MANDATES = new Set([
 function createPostToChannelTool(_agent: Agent, task: Task) {
   return tool(
     'post_to_channel',
-    'Post a message into any channel Archie is a member of, WITHOUT linking it to this task — for chiming in while exploring, or escalating somewhere (e.g. a private management channel). ' +
-    "Works in PUBLIC and PRIVATE channels Archie has been invited to (DMs are not allowed, and neither is a channel muted for this task). Unlike reading, posting is NOT limited to this task's channel — escalating outward is a valid use. " +
+    'Post a message in this task\'s own Slack channel without linking the new message to the task. ' +
+    'The destination must match the task audience; use a separate task to post elsewhere. DMs and muted channels are not allowed. ' +
     'Fire-and-forget: it does not become a touchpoint of this task, and any reply is invisible to you here. If a human replies to a NEW top-level message you post, that reply starts its OWN fresh task; a reply inside someone else\'s existing thread never does. ' +
-    "GUARDRAIL: only post where a human in this task asked you to — the required `mandate` arg is where you quote them, and without one you report to your requester instead and let them route it. Keep it short and match what you post to the destination's audience — never relay private or sensitive task content into a broader or unrelated channel. " +
+    'Only post when a human in this task asked you to; quote that request in `mandate`. ' +
     'Pass a channel ID; optionally `thread_ts` to reply in an existing thread. To talk to the user about THIS task, use post_to_user instead. ' +
     'A task started by a trigger has to post its result to the user first — that is what opens its own thread — so this tool is unavailable until then.',
     {
@@ -1085,12 +1083,11 @@ function createPostToChannelTool(_agent: Agent, task: Task) {
       //
       // This outranks the DM and mandate checks deliberately. Both of those describe something wrong with *this call* (wrong kind of target, no one asked for it), and answering them first would send the agent off to fix the wrong problem — hunting for a mandate quote, or picking a different channel — when the real answer is that nothing may be posted anywhere yet. The sequencing message is the only one that points at the fix.
       //
-      // There is deliberately NO branch here comparing the target to the task's own channel. Once a channel is open, post_to_channel behaves exactly as it always has for every destination, including the task's home channel: the task can then be replied to in its own thread, so an unlinked post beside it is a normal, recoverable thing to do rather than a dead end.
       if (task.metadata.home_channel && !task.metadata.default_channel) {
         return ok(
           'Nothing was posted. This task has no channel of its own yet — post the result with `post_to_user` first, which opens this task\'s thread in ' +
           `#${task.metadata.home_channel.channel_name}. ` +
-          '`post_to_channel` is available for other channels after that.',
+          '`post_to_channel` is available in that channel after that.',
         );
       }
       const dm = rejectDmTarget(args.channel);
@@ -2417,9 +2414,8 @@ function buildConditions(raw: RawCondition[], defaultTz: string): { conditions: 
 }
 
 async function authorizeTriggerBinding(task: Task, binding: TriggerBinding): Promise<string | null> {
-  if (binding.type !== 'channel') return null;
   try {
-    await task.prepareMemoryDelivery(binding.channel_id);
+    await task.prepareTriggerDelivery(binding);
     return null;
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
@@ -2427,19 +2423,7 @@ async function authorizeTriggerBinding(task: Task, binding: TriggerBinding): Pro
 }
 
 async function authorizeTriggerChange(task: Task, trigger: Trigger): Promise<string | null> {
-  const deliveryError = await authorizeTriggerBinding(task, trigger.binding);
-  if (deliveryError) return deliveryError;
-  return await authorizeTriggerMemoryBinding(trigger)
-    ? null
-    : 'delivery blocked: trigger content is incompatible with the live delivery audience';
-}
-
-function carryTaskMemoryExposure(task: Task, trigger: Trigger): void {
-  if (task.metadata.memory_exposed !== true) return;
-  trigger.memory_exposure_scope = joinMemoryExposureScope(
-    trigger.memory_exposure_scope,
-    task.metadata.memory_exposure_scope ?? { kind: 'none' },
-  );
+  return authorizeTriggerBinding(task, trigger.binding);
 }
 
 function createProposeTriggerTool(agent: Agent, task: Task) {
@@ -2508,7 +2492,6 @@ function createProposeTriggerTool(agent: Agent, task: Task) {
         action: { prompt: args.action_prompt },
         summary: args.summary,
       };
-      carryTaskMemoryExposure(task, trigger);
       await saveTrigger(trigger);
       task.metadata.pending_trigger_id = trigger.id;
       task.debouncedSave();
@@ -2627,15 +2610,13 @@ function createUpdateTriggerTool(_agent: Agent, task: Task) {
       if (args.summary) candidate.summary = args.summary;
       if (nextConditions) candidate.conditions = nextConditions;
       if (plan.target !== 'unchanged') candidate.status = plan.target;
-      if (editedContent) carryTaskMemoryExposure(task, candidate);
-
       if (statusChange === 'paused') {
         trigger.status = 'paused';
         await saveTrigger(trigger);
         deindexTrigger(trigger.id);
         emitEvent('trigger:paused', task.taskId, { trigger_id: trigger.id });
 
-        const deliveryError = await authorizeTriggerChange(task, candidate);
+        const deliveryError = editedContent ? await authorizeTriggerChange(task, candidate) : null;
         if (deliveryError) {
           if (editedContent) {
             return ok(`Trigger ${trigger.id} paused. Requested edits were rejected: ${deliveryError}`);
@@ -2647,7 +2628,7 @@ function createUpdateTriggerTool(_agent: Agent, task: Task) {
           await announceTriggerChange(trigger, 'paused');
         }
       } else {
-        const deliveryError = await authorizeTriggerChange(task, candidate);
+        const deliveryError = editedContent ? await authorizeTriggerChange(task, candidate) : null;
         if (deliveryError) return err(`Trigger not updated: ${deliveryError}`);
         await saveTrigger(candidate);
         if (candidate.status === 'enabled') indexTrigger(candidate);
@@ -2693,10 +2674,7 @@ function createDeleteTriggerTool(_agent: Agent, task: Task) {
       deindexTrigger(trigger.id);
       await deleteTrigger(trigger.id);
       emitEvent('trigger:deleted', task.taskId, { trigger_id: trigger.id });
-      if (trigger.status !== 'pending') {
-        const deliveryError = await authorizeTriggerBinding(task, trigger.binding);
-        if (!deliveryError) await announceTriggerChange(trigger, 'deleted');
-      }
+      if (trigger.status !== 'pending') await announceTriggerChange(trigger, 'deleted');
       return ok(`Trigger ${trigger.id} deleted.`);
     },
   );

@@ -9,6 +9,7 @@ import { mkdir, writeFile } from 'fs/promises';
 import type { AgentName, SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, BranchState, TaskMemoryScope } from '../types/task.js';
 import { CLI_CHANNEL_KEY } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
+import type { TriggerBinding } from '../types/trigger.js';
 import { isPmAgent, isRepoAgent } from '../types/agent.js';
 import { modelDisplayLabel, resolveAgentModel, modelChangingAgentIds } from '../agents/model-label.js';
 import { prCardFingerprint, prCardTitlePlain } from '../system/pr-card-format.js';
@@ -68,7 +69,7 @@ import { emitEvent } from '../system/event-bus.js';
 import { TaskStatusController, isStatusEnabled } from './status.js';
 import { setSlackThreadStatus } from '../connectors/slack/status.js';
 import { agentDomainLabel, deriveActivityFromEvent } from '../agents/activity.js';
-import { isMemoryDeliveryCompatible, joinMemoryScope, type ClassifiedMemoryScope } from './memory-scope.js';
+import { deriveMemoryDestination, isAuthorizedMemoryScope, scopeForSlackChannel } from './memory-scope.js';
 import { isMemoryReady } from '../memory/paths.js';
 
 // ---- Global state ----
@@ -194,7 +195,11 @@ export class Task {
     // Ensure channels/default_channel exist on metadata
     metadata.channels ??= {};
     metadata.default_channel ??= null;
-    metadata.memory_scope ??= { kind: 'none' };
+    metadata.memory_destination ??= deriveMemoryDestination(
+      metadata.channels,
+      metadata.default_channel,
+      metadata.home_channel?.channel_id,
+    );
     metadata.memory_authors ??= {};
 
     this.metadata = metadata;
@@ -229,7 +234,6 @@ export class Task {
       participants: [],
       channels: {},
       default_channel: null,
-      memory_scope: { kind: 'unclassified' },
       memory_authors: {},
       agent_sessions: {},
       repositories: {},
@@ -355,11 +359,15 @@ export class Task {
   async append(thread: SlackThread): Promise<{ linkedNewThread: boolean }> {
     const channelId = `slack:${thread.channel.id}:${thread.threadId}`;
     const existing = this.metadata.channels[channelId] as SlackChannel | undefined;
+    this.setMemoryDestination(thread.channel.id);
     if (isMemoryReady()) {
-      this.applyMemoryScope(await classifySlackMemoryScope(thread.channel.id));
-      for (const message of thread.messages) this.recordMemoryAuthor(message.user);
-    } else {
-      this.applyMemoryScope({ kind: 'none' });
+      const memoryScope = scopeForSlackChannel(
+        await classifySlackMemoryScope(thread.channel.id),
+        thread.channel.id,
+      );
+      if (isAuthorizedMemoryScope(this.metadata.memory_destination, memoryScope)) {
+        for (const message of thread.messages) this.recordMemoryAuthor(message.user);
+      }
     }
     await this.save(true);
 
@@ -443,11 +451,15 @@ export class Task {
   ): Promise<boolean> {
     const ch = this.metadata.channels[channelKey];
     if (ch?.type !== 'slack') return false;
+    this.setMemoryDestination(ch.channel_id);
     if (isMemoryReady()) {
-      this.applyMemoryScope(await classifySlackMemoryScope(ch.channel_id));
-      this.recordMemoryAuthor(author);
-    } else {
-      this.applyMemoryScope({ kind: 'none' });
+      const memoryScope = scopeForSlackChannel(
+        await classifySlackMemoryScope(ch.channel_id),
+        ch.channel_id,
+      );
+      if (isAuthorizedMemoryScope(this.metadata.memory_destination, memoryScope)) {
+        this.recordMemoryAuthor(author);
+      }
     }
     await this.save(true);
     await appendSlackEdit(
@@ -462,23 +474,62 @@ export class Task {
     return true;
   }
 
-  applyMemoryScope(scope: ClassifiedMemoryScope): TaskMemoryScope {
-    this.metadata.memory_scope = joinMemoryScope(this.metadata.memory_scope, scope);
-    return this.metadata.memory_scope;
+  setMemoryDestination(channelId: string): void {
+    const current = this.metadata.memory_destination;
+    if (current && current.channel_id !== channelId) {
+      throw new Error('this task belongs to a different Slack destination');
+    }
+    if (!current) {
+      const derived = deriveMemoryDestination(
+        this.metadata.channels,
+        this.metadata.default_channel,
+        this.metadata.home_channel?.channel_id,
+      );
+      if (derived && derived.channel_id !== channelId) {
+        throw new Error('this task belongs to a different Slack destination');
+      }
+      const hasSlackHistory = Object.values(this.metadata.channels).some((channel) => channel.type === 'slack');
+      if (!derived && hasSlackHistory) {
+        throw new Error('this task has no unambiguous Slack destination');
+      }
+      this.metadata.memory_destination = { channel_id: channelId };
+    }
   }
 
   async prepareMemoryDelivery(channelId: string): Promise<TaskMemoryScope> {
-    if (!isMemoryReady()) return this.metadata.memory_scope ?? { kind: 'none' };
-    const destination = await classifySlackMemoryScope(channelId);
-    this.applyMemoryScope(destination);
-    await this.save(true);
-    if (
-      this.metadata.memory_exposed === true
-      && !isMemoryDeliveryCompatible(this.metadata.memory_exposure_scope ?? { kind: 'none' }, destination)
-    ) {
-      throw new Error('delivery blocked: destination is incompatible with memory already available to this task');
+    const destination = this.metadata.memory_destination;
+    if (!destination || destination.channel_id !== channelId) {
+      throw new Error('delivery blocked: this task belongs to a different Slack destination');
     }
-    return this.metadata.memory_scope!;
+    if (!isMemoryReady()) return { kind: 'none', channel_id: channelId };
+    const scope = scopeForSlackChannel(await classifySlackMemoryScope(channelId), channelId);
+    if (!isAuthorizedMemoryScope(destination, scope)) {
+      throw new Error('delivery blocked: Slack destination is not currently safe');
+    }
+    return scope;
+  }
+
+  async prepareTriggerDelivery(binding: TriggerBinding): Promise<void> {
+    if (binding.type === 'channel') {
+      await this.prepareMemoryDelivery(binding.channel_id);
+      return;
+    }
+    const destination = this.metadata.memory_destination;
+    if (!destination) throw new Error('delivery blocked: this task has no Slack destination');
+    const scope = await this.prepareMemoryDelivery(destination.channel_id);
+    if (scope.kind !== 'user' || scope.user_id !== binding.user_id) {
+      throw new Error('delivery blocked: trigger belongs to a different Slack destination');
+    }
+  }
+
+  async updateSlackMessageSafely(
+    channelId: string,
+    messageTs: string,
+    text: string,
+    blocks: unknown[],
+  ): Promise<void> {
+    await this.prepareMemoryDelivery(channelId);
+    await updateMessage(channelId, messageTs, text, blocks);
   }
 
   private recordMemoryAuthor(author: SlackAuthor): void {
@@ -963,10 +1014,15 @@ export class Task {
    * channels (e.g. CLI-only tasks), where the CLI shows the status instead.
    */
   private pushSlackStatus(status: string): void {
-    for (const ch of Object.values(this.metadata.channels)) {
-      if (ch.type !== 'slack' || ch.muted) continue;
-      void setSlackThreadStatus(ch.channel_id, ch.thread_id, status);
-    }
+    const destination = this.metadata.memory_destination;
+    if (!destination) return;
+    void this.prepareMemoryDelivery(destination.channel_id)
+      .then(() => Promise.all(
+        Object.values(this.metadata.channels)
+          .filter((ch): ch is SlackChannel => ch.type === 'slack' && !ch.muted && ch.channel_id === destination.channel_id)
+          .map((ch) => setSlackThreadStatus(ch.channel_id, ch.thread_id, status)),
+      ))
+      .catch((error) => logger.warn('task', `Slack status suppressed for ${this.taskId}: ${error}`));
   }
 
   /**
@@ -1951,18 +2007,22 @@ export class Task {
       return null;
     }
     const { loadTrigger, enableProposedTrigger, deleteTrigger, countActiveTriggers } = await import('../system/trigger-store.js');
-    const { indexTrigger, announceTriggerChange, authorizeTriggerMemoryBinding, MAX_TRIGGERS_PER_USER, MAX_TRIGGERS_PER_CHANNEL } = await import('../system/trigger-scheduler.js');
+    const { indexTrigger, announceTriggerChange, MAX_TRIGGERS_PER_USER, MAX_TRIGGERS_PER_CHANNEL } = await import('../system/trigger-scheduler.js');
 
     // Re-check caps at approval: pending proposals don't count toward the caps,
     // so approving several proposed while under the limit could otherwise blow
     // past it. Refuse (delete the pending file) if enabling would exceed a cap.
     const pending = await loadTrigger(id);
     if (pending && pending.status === 'pending') {
-      if (!(await authorizeTriggerMemoryBinding(pending))) {
-        await deleteTrigger(id);
-        if (this.metadata.pending_trigger_id === id) this.metadata.pending_trigger_id = undefined;
-        this.debouncedSave();
-        await appendAgentFinding(this.taskId, 'system', `Trigger ${id} not enabled — memory exposure is incompatible with its live delivery audience`, 'decision');
+      try {
+        await this.prepareTriggerDelivery(pending.binding);
+      } catch (error) {
+        await appendAgentFinding(
+          this.taskId,
+          'system',
+          `Trigger ${id} not enabled — ${error instanceof Error ? error.message : String(error)}`,
+          'decision',
+        );
         return null;
       }
       const overChannel = pending.binding.type === 'channel'

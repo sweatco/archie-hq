@@ -85,10 +85,15 @@ function makeTask(originChannelId?: string, opts: { muted?: boolean } = {}): Tas
     };
     default_channel = key;
   }
+  let audience = originChannelId;
   return {
     taskId: 'task-1', metadata: { channels, default_channel },
     touch: vi.fn(), debouncedSave: vi.fn(), save: vi.fn().mockResolvedValue(undefined),
-    prepareMemoryDelivery: vi.fn().mockResolvedValue({ kind: 'public', channel_id: null }),
+    prepareMemoryDelivery: vi.fn(async (channelId: string) => {
+      audience ??= channelId;
+      if (audience !== channelId) throw new Error('delivery blocked: this task belongs to a different Slack audience');
+      return { kind: 'public', channel_id: audience };
+    }),
     // post_to_user / post_files_to_user route through the Task, not the Slack
     // client directly — stub them so the mute guard can be observed as "the
     // delivery call never happened".
@@ -170,7 +175,7 @@ describe('post_to_channel handler', () => {
     expect(out).toContain('/invite @Archie');
   });
 
-  it('does not post when memory audience composition blocks the destination', async () => {
+  it('does not post when the fixed task audience blocks the destination', async () => {
     const task = makeTask();
     vi.mocked(task.prepareMemoryDelivery).mockRejectedValue(new Error('delivery blocked: incompatible memory audience'));
     const post = getHandler('post_to_channel', task);
@@ -248,14 +253,14 @@ describe('post_to_channel handler', () => {
     });
   });
 
-  it('still posts to a different channel when only one channel is muted', async () => {
+  it('still rejects a different channel when the task channel is muted', async () => {
     postSlackMessage.mockResolvedValue('1.5');
     const post = getHandler('post_to_channel', makeTask('C123', { muted: true }));
 
     const out = await textOf(await post({ channel: 'C999', message: 'unrelated', mandate: 'Sergei: "can you flag this in that channel"' }));
 
-    expect(postSlackMessage).toHaveBeenCalled();
-    expect(out).not.toMatch(/muted/i);
+    expect(postSlackMessage).not.toHaveBeenCalled();
+    expect(out).toMatch(/different Slack audience/i);
   });
 });
 
@@ -435,8 +440,7 @@ describe('post_to_channel — destination brief preflight', () => {
     expect((task.metadata as { briefed_channels?: string[] }).briefed_channels).toEqual(['C123']);
   });
 
-  // A different destination is a different brief.
-  it('still briefs a second, different channel', async () => {
+  it('blocks a second, different channel before loading its brief', async () => {
     buildOtherChannelContextSection.mockResolvedValue(BRIEF);
     const task = makeTask();
     const post = getHandler('post_to_channel', task);
@@ -444,8 +448,8 @@ describe('post_to_channel — destination brief preflight', () => {
     await post({ channel: 'C123', message: 'a', mandate: MANDATE });
     const other = await textOf(await post({ channel: 'C999', message: 'b', mandate: MANDATE }));
 
-    expect(other).toMatch(/not posted yet/i);
-    expect((task.metadata as { briefed_channels?: string[] }).briefed_channels).toEqual(['C123', 'C999']);
+    expect(other).toMatch(/different Slack audience/i);
+    expect((task.metadata as { briefed_channels?: string[] }).briefed_channels).toEqual(['C123']);
   });
 
   it('applies to thread replies', async () => {

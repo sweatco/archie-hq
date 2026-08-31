@@ -66,7 +66,7 @@ import type { Application, Request, Response } from 'express';
 import { registerMergeActionHandlers } from '../slack/events.js';
 import { mountApiRoutes } from '../api/routes.js';
 import { Task } from '../../tasks/task.js';
-import { getUserInfo, isExternalUser, updateMessage } from '../slack/client.js';
+import { getUserInfo, isExternalUser } from '../slack/client.js';
 import { emitEvent } from '../../system/event-bus.js';
 
 const EXPECTED = { github: 'org/backend', pr_number: 42 };
@@ -75,12 +75,14 @@ const BUTTON_VALUE = 'task-123|org/backend#42';
 type FakeTask = {
   handleMergeApproval: ReturnType<typeof vi.fn>;
   handleMergeDenial: ReturnType<typeof vi.fn>;
+  updateSlackMessageSafely: ReturnType<typeof vi.fn>;
 };
 
 function makeFakeTask(): FakeTask {
   return {
     handleMergeApproval: vi.fn().mockResolvedValue('resolved'),
     handleMergeDenial: vi.fn().mockResolvedValue('resolved'),
+    updateSlackMessageSafely: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -153,7 +155,7 @@ describe('merge approval — Slack button and API route resolve identically (AC8
     const [slackApprover, slackExpected] = task.handleMergeApproval.mock.calls[0]!;
     expect(slackApprover).toEqual({ id: 'U1', name: 'Dana', email: 'dana@example.com' });
     expect(slackExpected).toEqual(EXPECTED);
-    expect(vi.mocked(updateMessage)).toHaveBeenCalledWith(
+    expect(task.updateSlackMessageSafely).toHaveBeenCalledWith(
       'C1', '111.222', expect.stringContaining('Merge approved'), [],
     );
 
@@ -177,7 +179,7 @@ describe('merge approval — Slack button and API route resolve identically (AC8
 
     expect(task.handleMergeDenial).toHaveBeenCalledTimes(1);
     expect(task.handleMergeDenial.mock.calls[0]![0]).toEqual(EXPECTED);
-    expect(vi.mocked(updateMessage)).toHaveBeenCalledWith(
+    expect(task.updateSlackMessageSafely).toHaveBeenCalledWith(
       'C1', '111.222', expect.stringContaining('Merge denied'), [],
     );
 
@@ -203,10 +205,10 @@ describe('merge approval — Slack button and API route resolve identically (AC8
     expect(task.handleMergeApproval).toHaveBeenCalledWith(
       expect.anything(), { github: 'org/backend', pr_number: 7 },
     );
-    expect(vi.mocked(updateMessage)).toHaveBeenCalledWith(
+    expect(task.updateSlackMessageSafely).toHaveBeenCalledWith(
       'C1', '111.222', expect.stringContaining('stale'), [],
     );
-    expect(vi.mocked(updateMessage)).not.toHaveBeenCalledWith(
+    expect(task.updateSlackMessageSafely).not.toHaveBeenCalledWith(
       'C1', '111.222', expect.stringContaining('Merge approved'), [],
     );
   });

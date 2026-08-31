@@ -7,7 +7,7 @@
 
 import { WebClient } from '@slack/web-api';
 import type { SlackThreadRef, SlackFile, SlackThread, SlackThreadMessage, SlackAuthor, SlackAttachment, SlackReaction } from '../../types/index.js';
-import type { PrCardData, TaskMemoryScope } from '../../types/task.js';
+import type { PrCardData, SlackMemoryClassification } from '../../types/task.js';
 import { prCardSubtitle, SLACK_PR_CARD_EMOJI } from '../../system/pr-card-format.js';
 import { isMemoryReady } from '../../memory/paths.js';
 
@@ -1895,7 +1895,7 @@ function isTrustedMemoryChannelMember(user: MemoryMemberTrust): boolean {
 
 export async function classifySlackMemoryScope(
   channelId: string,
-): Promise<Exclude<TaskMemoryScope, { kind: 'unclassified' }>> {
+): Promise<SlackMemoryClassification> {
   try {
     if (!isMemoryReady() || !getHomeTeamId()) return { kind: 'none' };
 

@@ -30,7 +30,6 @@ import {
 } from './tools.js';
 import { createFileBridgeMcpServer, shouldAttachFileBridge } from './mcp-file-bridge.js';
 import { createToolApprovalHooks, mcpToolName } from './tool-approval-gate.js';
-import { createMemoryEgressGuardHooks } from './memory-egress-guard.js';
 import { hydrateBranchState } from '../connectors/github/branch-state.js';
 import { taskBranchName } from '../connectors/github/branch-naming.js';
 import { createResearchMcpServer, createResearchPostToolHook, createResearchDefenseTagHook } from '../mcp/research-tools.js';
@@ -65,7 +64,6 @@ import { isInjectionEnabled, isMemoryToolsEnabled } from '../memory/paths.js';
 import {
   authorizeTaskMemory,
   createMemoryMcpServer,
-  markTaskMemoryExposed,
   shouldAttachMemoryTools,
 } from '../memory/tools.js';
 
@@ -123,17 +121,9 @@ async function generatePluginAgentPrompt(agent: Agent, task: Task): Promise<stri
 
 // ---- Plugin agent workspace setup ----
 
-export function selectPluginHooks(
-  pluginHooks: Record<string, any> | undefined,
-  memoryAuthorized: boolean,
-): Record<string, any> | undefined {
-  return memoryAuthorized ? undefined : pluginHooks;
-}
-
 async function setupAgentWorkspace(
   taskId: string,
   agent: Agent,
-  memoryAuthorized: boolean,
 ): Promise<string> {
   const agentWorkspace = join(getTaskPath(taskId), 'agents', agent.def.key);
   await mkdir(agentWorkspace, { recursive: true });
@@ -176,7 +166,7 @@ async function setupAgentWorkspace(
       sessionUrl: false,
     },
   };
-  const pluginHooks = selectPluginHooks(agent.def.pluginHooks, memoryAuthorized);
+  const pluginHooks = agent.def.pluginHooks;
   if (pluginHooks) settings.hooks = pluginHooks;
   await writeFile(settingsPath, JSON.stringify(settings, null, 2));
   logger.agent(
@@ -263,7 +253,7 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   // tool set, and the same base filesystem boundaries. Repo access and the PM
   // coordinator role are layered on top of this.
 
-  const workspace = await setupAgentWorkspace(taskId, agent, memoryAuthorization !== null);
+  const workspace = await setupAgentWorkspace(taskId, agent);
   const cwd = workspace;
   // Default non-PM agents to sonnet with the 1M context window. The `[1m]`
   // suffix is how the SDK enables it (it strips the suffix and adds the
@@ -667,7 +657,6 @@ Shared folder: ${sharedPath} [READ-ONLY]
   if (memoryAuthors) {
     const enrichedPrompt = await enrichPromptWithMemory(systemPrompt, memoryAuthors, memorySelectors);
     if (enrichedPrompt !== systemPrompt) {
-      await markTaskMemoryExposed(task);
       systemPrompt = enrichedPrompt;
     }
   }
@@ -775,9 +764,6 @@ Shared folder: ${sharedPath} [READ-ONLY]
     hooks: {
       PreToolUse: [
         ...createFilesystemGuardHooks(sandboxOpts),
-        ...createMemoryEgressGuardHooks({
-          getMetadata: () => task.metadata,
-        }),
         // MCP tool approval gate (docs/architecture/tool-approvals.md): attached
         // only when one of this agent's servers declares a policy, so agents
         // whose servers are all unmanaged are untouched. The port reads live

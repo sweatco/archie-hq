@@ -20,38 +20,22 @@ import { emitEvent, onEvent } from '../system/event-bus.js';
 import { logger } from '../system/logger.js';
 import { formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
 import { createKeyedLock } from '../system/keyed-lock.js';
-import { joinMemoryExposureScope, joinMemoryScope } from './memory-scope.js';
-import type { TaskMemoryScope } from '../types/task.js';
 
 const execFileAsync = promisify(execFile);
 const metadataLock = createKeyedLock();
-
-function mergePersistedMemoryScope(
-  persisted: TaskMemoryScope | undefined,
-  pending: TaskMemoryScope | undefined,
-): TaskMemoryScope {
-  const left = persisted ?? { kind: 'none' };
-  const right = pending ?? { kind: 'none' };
-  if (left.kind === 'unclassified') return right;
-  if (right.kind === 'unclassified') return left;
-  return joinMemoryScope(left, right);
-}
 
 export function reconcilePersistedMemoryMetadata(
   persisted: TaskMetadata,
   pending: TaskMetadata,
 ): void {
-  pending.memory_scope = mergePersistedMemoryScope(persisted.memory_scope, pending.memory_scope);
-  if (persisted.memory_exposed === true && pending.memory_exposed !== true) {
-    pending.memory_exposed = true;
-    pending.memory_exposure_scope = persisted.memory_exposure_scope ?? { kind: 'none' };
-  } else if (persisted.memory_exposed === true && pending.memory_exposed === true) {
-    pending.memory_exposure_scope = pending.memory_exposure_scope
-      ? joinMemoryExposureScope(persisted.memory_exposure_scope, pending.memory_exposure_scope)
-      : persisted.memory_exposure_scope ?? { kind: 'none' };
-  } else if (pending.memory_exposed === true && !pending.memory_exposure_scope) {
-    pending.memory_exposure_scope = { kind: 'none' };
+  if (
+    persisted.memory_destination
+    && pending.memory_destination
+    && persisted.memory_destination.channel_id !== pending.memory_destination.channel_id
+  ) {
+    throw new Error('task metadata has conflicting Slack destinations');
   }
+  pending.memory_destination ??= persisted.memory_destination;
   pending.memory_authors = {
     ...(persisted.memory_authors ?? {}),
     ...(pending.memory_authors ?? {}),

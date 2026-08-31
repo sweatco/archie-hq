@@ -86,6 +86,7 @@ vi.mock('../../tasks/persistence.js', () => ({
 
 vi.mock('../../connectors/slack/client.js', () => ({
   postSlackMessage: vi.fn().mockResolvedValue(undefined),
+  classifySlackMemoryScope: vi.fn().mockResolvedValue({ kind: 'public' }),
 }));
 
 // ============================================================================
@@ -120,10 +121,10 @@ vi.mock('../extractor.js', async (importOriginal) => {
 // Import the module under test and mocked modules (after mocks are set up)
 // ============================================================================
 
-import { handleTaskCompleted, rescheduleTaskCompleted, extractUsernames, selectRelatedTasksByEntity } from '../lifecycle.js';
+import { handleTaskCompleted, rescheduleTaskCompleted, selectRelatedTasksByEntity } from '../lifecycle.js';
 import { enqueuePending, readPending } from '../pending-queue.js';
 import { runExtraction } from '../extractor.js';
-import { postSlackMessage } from '../../connectors/slack/client.js';
+import { classifySlackMemoryScope, postSlackMessage } from '../../connectors/slack/client.js';
 
 // ============================================================================
 // Test data
@@ -153,7 +154,7 @@ const METADATA = {
   status: 'completed',
   created_at: '2026-04-10T10:00:00Z',
   updated_at: '2026-04-10T10:30:00Z',
-  memory_scope: { kind: 'public', channel_id: 'C1' },
+  memory_destination: { channel_id: 'C1' },
   memory_authors: { [USER_DANA]: 'Dana Lee' },
 };
 
@@ -196,6 +197,8 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     );
 
     vi.mocked(postSlackMessage).mockClear();
+    vi.mocked(classifySlackMemoryScope).mockReset();
+    vi.mocked(classifySlackMemoryScope).mockResolvedValue({ kind: 'public', channel_id: 'C1' });
     vi.mocked(runExtraction).mockClear();
     vi.mocked(runExtraction).mockResolvedValue({
       user_updates: {
@@ -234,11 +237,7 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
   });
 
   it('skips non-public tasks before extraction', async () => {
-    await writeFile(
-      join(sessionsDir, TASK_ID, 'shared', 'metadata.json'),
-      JSON.stringify({ ...METADATA, memory_scope: { kind: 'none' } }),
-      'utf-8',
-    );
+    vi.mocked(classifySlackMemoryScope).mockResolvedValue({ kind: 'none' });
 
     handleTaskCompleted(TASK_ID);
     await drain();
@@ -249,13 +248,18 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
   });
 
   it.each([
-    ['private channel', { kind: 'channel', channel_id: 'C07PRIVATE' }, join('private', 'channels', 'C07PRIVATE.md')],
-    ['internal DM', { kind: 'user', user_id: 'U07DANA001' }, join('private', 'users', 'U07DANA001.md')],
-  ])('writes a summary-only outcome for an internal %s', async (_label, memoryScope, relativePath) => {
+    ['private channel', 'C07PRIVATE', { kind: 'channel' }, join('private', 'channels', 'C07PRIVATE.md')],
+    ['internal DM', 'D07DANA001', { kind: 'user', user_id: 'U07DANA001' }, join('private', 'users', 'U07DANA001.md')],
+  ])('writes a summary-only outcome for an internal %s', async (_label, channelId, memoryScope, relativePath) => {
     await writeFile(
       join(sessionsDir, TASK_ID, 'shared', 'metadata.json'),
-      JSON.stringify({ ...METADATA, memory_scope: memoryScope }),
+      JSON.stringify({ ...METADATA, memory_destination: { channel_id: channelId } }, null, 2),
       'utf-8',
+    );
+    vi.mocked(classifySlackMemoryScope).mockResolvedValue(
+      'user_id' in memoryScope
+        ? { kind: 'user', user_id: memoryScope.user_id }
+        : { kind: 'channel', channel_id: channelId },
     );
 
     handleTaskCompleted(TASK_ID);
@@ -528,67 +532,5 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
 
     const related = await selectRelatedTasksByEntity(['payment-service'], 'task-B', []);
     expect(related.map((r) => r.taskId)).toEqual(['task-A']);
-  });
-});
-
-// ============================================================================
-// extractUsernames unit tests
-// ============================================================================
-
-describe('extractUsernames(transcript)', () => {
-  it('returns raw Slack IDs with display names', () => {
-    const log = `[@<${USER_DANA}:Dana Lee>] hello\n[@<${USER_ALICE}:Alice Smith>] hi`;
-    const refs = extractUsernames(log);
-    expect(refs).toHaveLength(2);
-    expect(refs[0]).toEqual({ userId: USER_DANA, displayName: 'Dana Lee' });
-    expect(refs[1]).toEqual({ userId: USER_ALICE, displayName: 'Alice Smith' });
-  });
-
-  it('matches the production log format with channel context after the mention', () => {
-    // Real-world log lines have additional context between the mention's `>`
-    // and the outer bracket's `]`, e.g.:
-    //   `[@<U03RQQTE1EF:Riley Quinn> in slack:#<D0AUZLR6ZJQ:DM with Riley Quinn>:179...]`
-    const log =
-      '[2026-05-28T17:18:38.189Z] [@<U03RQQTE1EF:Riley Quinn> in slack:#<D0AUZLR6ZJQ:DM with Riley Quinn>:1779988687.863119] Hey Archie';
-    const refs = extractUsernames(log);
-    expect(refs).toHaveLength(1);
-    expect(refs[0]).toEqual({ userId: 'U03RQQTE1EF', displayName: 'Riley Quinn' });
-  });
-
-  it('does not treat channel references (#<…:…>) as user mentions', () => {
-    // The `#<D…:…>` channel reference uses the same UID:Name shape but lacks
-    // the `@` prefix, so it must not be picked up as a user mention.
-    const log = '[@<U07ABC123:Alex> in slack:#<D0AUZLR6ZJQ:DM with Riley>:1779988687] msg';
-    const refs = extractUsernames(log);
-    expect(refs).toHaveLength(1);
-    expect(refs[0].userId).toBe('U07ABC123');
-  });
-
-  it('deduplicates by user ID', () => {
-    const log = `[@<${USER_DANA}:Dana Lee>] one\n[@<${USER_DANA}:Dana L.>] two`;
-    const refs = extractUsernames(log);
-    expect(refs).toHaveLength(1);
-    expect(refs[0].userId).toBe(USER_DANA);
-  });
-
-  it('matches the Slack-native <@UID:Name> bracket order (new producer format)', () => {
-    const log = `[<@${USER_DANA}:Dana Lee>] hello\n[<@${USER_ALICE}:Alice Smith> in slack:#<D0X:DM>:1] hi`;
-    const refs = extractUsernames(log);
-    expect(refs).toHaveLength(2);
-    expect(refs[0]).toEqual({ userId: USER_DANA, displayName: 'Dana Lee' });
-    expect(refs[1]).toEqual({ userId: USER_ALICE, displayName: 'Alice Smith' });
-  });
-
-  it('dedupes across both bracket orders (old @< logs + new <@ logs)', () => {
-    const log = `[@<${USER_DANA}:Dana Lee>] old-format\n[<@${USER_DANA}:Dana Lee>] new-format`;
-    const refs = extractUsernames(log);
-    expect(refs).toHaveLength(1);
-    expect(refs[0].userId).toBe(USER_DANA);
-  });
-
-  it('ignores malformed mentions', () => {
-    const log = '[@<u1:Dana>] short ID\n[@<NOTAVALID:Bob>] non-Slack prefix';
-    const refs = extractUsernames(log);
-    expect(refs).toHaveLength(0);
   });
 });

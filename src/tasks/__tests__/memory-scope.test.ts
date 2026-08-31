@@ -1,45 +1,28 @@
 import { describe, expect, it } from 'vitest';
-import { joinMemoryScope, type ClassifiedMemoryScope } from '../memory-scope.js';
-import type { TaskMemoryScope } from '../../types/task.js';
+import { deriveMemoryDestination, isAuthorizedMemoryScope, scopeForSlackChannel } from '../memory-scope.js';
 
-const publicC = { kind: 'public', channel_id: 'C1' } as const;
-const publicOther = { kind: 'public', channel_id: 'C2' } as const;
-const privateC = { kind: 'channel', channel_id: 'C1' } as const;
-const privateOther = { kind: 'channel', channel_id: 'C2' } as const;
-const userU = { kind: 'user', user_id: 'U000001' } as const;
-const userOther = { kind: 'user', user_id: 'U000002' } as const;
-
-describe('joinMemoryScope', () => {
-  it.each<[TaskMemoryScope | undefined, ClassifiedMemoryScope, TaskMemoryScope]>([
-    [undefined, publicC, { kind: 'none' }],
-    [{ kind: 'unclassified' }, publicC, publicC],
-    [{ kind: 'unclassified' }, privateC, privateC],
-    [{ kind: 'unclassified' }, userU, userU],
-    [{ kind: 'unclassified' }, { kind: 'none' }, { kind: 'none' }],
-    [{ kind: 'none' }, publicC, { kind: 'none' }],
-    [publicC, { kind: 'none' }, { kind: 'none' }],
-    [publicC, publicC, publicC],
-    [publicC, publicOther, { kind: 'public', channel_id: null }],
-    [{ kind: 'public', channel_id: null }, publicC, { kind: 'public', channel_id: null }],
-    [publicC, privateC, privateC],
-    [publicC, privateOther, { kind: 'none' }],
-    [privateC, publicC, privateC],
-    [privateC, publicOther, { kind: 'none' }],
-    [privateC, privateC, privateC],
-    [privateC, privateOther, { kind: 'none' }],
-    [userU, userU, userU],
-    [userU, userOther, { kind: 'none' }],
-    [userU, publicC, { kind: 'none' }],
-    [userU, privateC, { kind: 'none' }],
-    [privateC, userU, { kind: 'none' }],
-  ])('joins %j with %j to %j', (current, incoming, expected) => {
-    expect(joinMemoryScope(current, incoming)).toEqual(expected);
+describe('memory destination', () => {
+  it('derives only one deterministic Slack destination', () => {
+    expect(deriveMemoryDestination({ a: { type: 'slack', channel_id: 'C1' } })).toEqual({ channel_id: 'C1' });
+    expect(deriveMemoryDestination({
+      a: { type: 'slack', channel_id: 'C1' },
+      b: { type: 'slack', channel_id: 'C2' },
+    }, 'a')).toEqual({ channel_id: 'C1' });
+    expect(deriveMemoryDestination({
+      a: { type: 'slack', channel_id: 'C1' },
+    }, 'a', 'C2')).toEqual({ channel_id: 'C2' });
+    expect(deriveMemoryDestination({
+      a: { type: 'slack', channel_id: 'C1' },
+      b: { type: 'slack', channel_id: 'C2' },
+    })).toBeUndefined();
+    expect(deriveMemoryDestination({ a: { type: 'cli' } })).toBeUndefined();
   });
 
-  it('never widens after collapsing to none', () => {
-    const audiences: ClassifiedMemoryScope[] = [publicC, privateC, userU, { kind: 'none' }];
-    for (const incoming of audiences) {
-      expect(joinMemoryScope({ kind: 'none' }, incoming)).toEqual({ kind: 'none' });
-    }
+  it('authorizes a safe live classification only for the exact destination', () => {
+    const destination = { channel_id: 'C1' };
+    expect(isAuthorizedMemoryScope(destination, scopeForSlackChannel({ kind: 'public', channel_id: 'C1' }, 'C1'))).toBe(true);
+    expect(isAuthorizedMemoryScope(destination, scopeForSlackChannel({ kind: 'channel', channel_id: 'C1' }, 'C1'))).toBe(true);
+    expect(isAuthorizedMemoryScope(destination, scopeForSlackChannel({ kind: 'none' }, 'C1'))).toBe(false);
+    expect(isAuthorizedMemoryScope(destination, scopeForSlackChannel({ kind: 'public', channel_id: 'C2' }, 'C2'))).toBe(false);
   });
 });

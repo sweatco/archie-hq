@@ -2,29 +2,31 @@
 
 Archie stores durable knowledge under `WORKDIR/memory/`. Scoped memory is bound to one authenticated Slack workspace and separates organization-wide facts from private channel and DM outcomes.
 
-The implementation lives in `src/memory/`. Slack audience classification is in `src/connectors/slack/client.ts`; task scope composition and delivery checks are in `src/tasks/`.
+The implementation lives in `src/memory/`. Slack audience classification is in `src/connectors/slack/client.ts`; task destination checks are in `src/tasks/`.
 
 ## Safety model
 
 Memory access is derived from Slack API data, never from transcript text or model output.
 
-- New tasks start with `memory_scope: unclassified`.
-- Internal public channels produce public scope.
-- Internal private channels and MPIMs produce an exact channel scope.
-- An internal DM produces an exact partner-user scope.
-- Slack Connect, pending external sharing, restricted guests, external users, missing provenance, and lookup failures produce `none`.
-- Multiple compatible public channels remain public. Distinct private audiences, mixed private/public audiences, and outsider-visible audiences collapse to `none`.
-- Legacy tasks without a scope receive no memory.
+- The first Slack channel fixes `memory_destination.channel_id` for the task. It never changes.
+- Legacy tasks derive the destination from their home channel, default Slack thread, or one unambiguous linked Slack channel. Ambiguous tasks fail closed instead of binding to the next attempted post.
+- Internal public channels produce public authorization.
+- Internal private channels and MPIMs produce exact-channel authorization.
+- An internal DM produces authorization for that channel's current partner-user vault.
+- Slack Connect, pending external sharing, restricted guests, external users, missing provenance, and lookup failures deny memory authorization.
+- Public and private tasks can deliver only to their fixed channel. A DM task can deliver only to its fixed DM channel. Use a separate task for another destination.
+- Public/private conversion changes the live memory available at that same destination; it does not mutate task metadata.
+- When the scoped store is unavailable or `ARCHIE_MEMORY=false`, the destination restriction remains but normal Slack and trigger delivery does not depend on memory authorization.
 
 Slack message authors are resolved by the host. Only internal, non-restricted human `U…` or `W…` IDs are stored in `memory_authors`. Body mentions, source-looking text, bot IDs, and CLI fallback IDs cannot authorize profile reads or writes.
 
-Private memory is local to its exact audience. It is never injected into prompts and never copied into the public corpus. Private tool reads reclassify the current Slack audience at invocation time. Prompt injection also refreshes the current audience before reading.
+Private memory is local to its exact audience. It is never injected into prompts and never copied into the public corpus. Memory reads, extraction writes, and task-authored Slack deliveries reclassify the fixed destination before proceeding while memory is active.
 
-When memory content reaches an agent, Archie persists `memory_exposed: true` plus the exposure sensitivity (`internal`, exact channel, exact user, or `none`). Later delivery must be compatible with that sensitivity, regardless of whether exposure came from prompt injection or a tool call. Failed attempts remain blocked on retry.
+The task destination is the privacy boundary. A public task reads public memory. A private-channel task reads public memory plus that channel's outcomes. A DM task reads public memory plus that user's outcomes. Because the destination cannot change, Archie does not track which individual memory results reached the agent.
 
-After exposure, the host tool hook is deny-by-default. It permits only exact audited built-in and in-process tool identities. Bash, research, file bridging, repository remotes, plugin MCP servers, unknown tools, and read-only-annotated external tools are blocked. Slack posts, files, reactions, trigger changes, and other allowed delivery paths still perform their live audience checks.
+Task messages, files, explicit reactions, status updates, approval cards, PR cards, and `post_to_channel` share the same destination check. Transport acknowledgements and trigger lifecycle announcements carry no task memory and remain outside the task output path.
 
-Triggers created or edited after memory exposure persist the composed exposure sensitivity with their content. Approval and every future fire reauthorize the live binding. An incompatible approval is refused; an enabled trigger whose audience becomes incompatible is paused. A fired task inherits the trigger exposure before its first agent prompt is assembled.
+Trigger proposals and content edits must target the authoring task's destination. Pausing, resuming, and deleting a visible trigger do not copy task context. A fired trigger creates a fresh task whose memory scope comes from its live Slack destination; no creator-task memory state is propagated. Existing triggers need no migration.
 
 ## Workspace binding and startup
 
@@ -78,7 +80,7 @@ Public tasks:
 
 Private channel and DM tasks run summary-only extraction and write one sanitized outcome to the exact audience vault. They do not read public profiles for extraction or write public profiles, entities, task summaries, activity rows, or related-task data.
 
-Tasks scoped `none`, `unclassified`, or missing a scope return before reading the transcript.
+Tasks with no destination or a denied live authorization return before reading the transcript.
 
 Task summaries, activity summaries, private outcomes, profile updates, entity fields, and extraction domains are validated before persistence. Secret-shaped and instruction-shaped content is dropped rather than truncated into another artifact.
 
@@ -86,7 +88,7 @@ Task summaries, activity summaries, private outcomes, profile updates, entity fi
 
 ### Prompt injection
 
-`ARCHIE_MEMORY_INJECT=true` enables bounded public context injection. Before reading the store, spawn-time authorization reclassifies every current Slack audience and persists any narrowing or fail-closed result.
+`ARCHIE_MEMORY_INJECT=true` enables bounded public context injection. Before reading the store, spawn-time authorization reclassifies the fixed task destination.
 
 Eligible agents receive public entity context, public activity, and public profiles for structured task authors. They never receive private rolling outcomes through prompt injection.
 
@@ -100,7 +102,7 @@ Eligible agents receive public entity context, public activity, and public profi
 
 Tool results are XML-escaped, labelled as untrusted evidence, and bounded to 8,000 characters. Entity and task identifiers are validated before memory file access. Tools never open task transcripts or mutate memory content.
 
-Private reads use current in-memory task metadata and fresh Slack conversation membership. Both positive and negative `users.info` trust results are cached for 60 seconds. Slack `user_change` and `team_join` events increment that user's trust generation, invalidate the cached result, and prevent an older in-flight lookup from being reused or repopulating the cache. Lookup errors fail closed. Channel membership accepts internal non-restricted humans plus Archie's exact authenticated bot user; third-party bot and app users are rejected.
+Reads use the fixed task scope and fresh Slack conversation membership. Both positive and negative `users.info` trust results are cached for 60 seconds. Slack `user_change` and `team_join` events invalidate that user's result. Lookup errors fail closed. Channel membership accepts internal non-restricted humans plus Archie's exact authenticated bot user; third-party bot and app users are rejected.
 
 ## Housekeeping
 

@@ -1,69 +1,41 @@
-import type { TaskMemoryExposureScope, TaskMemoryScope } from '../types/task.js';
+import type { SlackMemoryClassification, TaskMemoryDestination, TaskMemoryScope } from '../types/task.js';
 
-export type ClassifiedMemoryScope = Exclude<TaskMemoryScope, { kind: 'unclassified' }>;
-
-export function joinMemoryScope(
-  current: TaskMemoryScope | undefined,
-  incoming: ClassifiedMemoryScope,
+export function scopeForSlackChannel(
+  scope: SlackMemoryClassification,
+  channelId: string,
 ): TaskMemoryScope {
-  if (!current) return { kind: 'none' };
-  if (current.kind === 'unclassified') return incoming;
-  if (current.kind === 'none' || incoming.kind === 'none') return { kind: 'none' };
-
-  if (current.kind === 'public' && incoming.kind === 'public') {
-    return {
-      kind: 'public',
-      channel_id: current.channel_id === incoming.channel_id ? current.channel_id : null,
-    };
+  switch (scope.kind) {
+    case 'user': return { kind: 'user', user_id: scope.user_id, channel_id: channelId };
+    case 'channel': return { kind: 'channel', channel_id: channelId };
+    case 'public': return { kind: 'public', channel_id: channelId };
+    case 'none': return { kind: 'none', channel_id: channelId };
   }
-
-  if (current.kind === 'channel' && incoming.kind === 'channel') {
-    return current.channel_id === incoming.channel_id ? current : { kind: 'none' };
-  }
-
-  if (current.kind === 'user' && incoming.kind === 'user') {
-    return current.user_id === incoming.user_id ? current : { kind: 'none' };
-  }
-
-  if (current.kind === 'public' && incoming.kind === 'channel') {
-    return current.channel_id === incoming.channel_id ? incoming : { kind: 'none' };
-  }
-
-  if (current.kind === 'channel' && incoming.kind === 'public') {
-    return current.channel_id === incoming.channel_id ? current : { kind: 'none' };
-  }
-
-  return { kind: 'none' };
 }
 
-export function joinMemoryExposureScope(
-  current: TaskMemoryExposureScope | undefined,
-  incoming: TaskMemoryExposureScope,
-): TaskMemoryExposureScope {
-  if (!current) return incoming;
-  if (current.kind === 'none' || incoming.kind === 'none') return { kind: 'none' };
-  if (current.kind === 'internal') return incoming;
-  if (incoming.kind === 'internal') return current;
-  if (current.kind === 'channel' && incoming.kind === 'channel') {
-    return current.channel_id === incoming.channel_id ? current : { kind: 'none' };
+export function deriveMemoryDestination(
+  channels: Record<string, { type: string; channel_id?: string }>,
+  defaultChannelKey?: string | null,
+  homeChannelId?: string,
+): TaskMemoryDestination | undefined {
+  if (homeChannelId) return { channel_id: homeChannelId };
+  if (defaultChannelKey) {
+    const channel = channels[defaultChannelKey];
+    if (channel?.type === 'slack' && channel.channel_id) {
+      return { channel_id: channel.channel_id };
+    }
   }
-  if (current.kind === 'user' && incoming.kind === 'user') {
-    return current.user_id === incoming.user_id ? current : { kind: 'none' };
+  const ids = new Set<string>();
+  for (const channel of Object.values(channels)) {
+    if (channel.type === 'slack' && channel.channel_id) ids.add(channel.channel_id);
   }
-  return { kind: 'none' };
+  return ids.size === 1 ? { channel_id: [...ids][0]! } : undefined;
 }
 
-export function isMemoryDeliveryCompatible(
-  exposure: TaskMemoryExposureScope,
-  destination: ClassifiedMemoryScope,
+export function isAuthorizedMemoryScope(
+  destination: TaskMemoryDestination | undefined,
+  scope: TaskMemoryScope,
 ): boolean {
-  if (destination.kind === 'none') return false;
-  if (exposure.kind === 'internal') return true;
-  if (exposure.kind === 'channel') {
-    return destination.kind === 'channel' && destination.channel_id === exposure.channel_id;
-  }
-  if (exposure.kind === 'user') {
-    return destination.kind === 'user' && destination.user_id === exposure.user_id;
-  }
-  return false;
+  return !!destination
+    && scope.kind !== 'none'
+    && scope.channel_id === destination.channel_id;
 }

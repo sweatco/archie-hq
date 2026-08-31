@@ -49,7 +49,7 @@ vi.mock('../../system/logger.js', () => ({
 import { createMemoryMcpServer, shouldAttachMemoryTools } from '../tools.js';
 import type { Task } from '../../tasks/task.js';
 
-function metadata(scope: TaskMetadata['memory_scope'] = { kind: 'channel', channel_id: 'C07PRIVATE' }): TaskMetadata {
+function metadata(destination: TaskMetadata['memory_destination'] | null = { channel_id: 'C07PRIVATE' }): TaskMetadata {
   return {
     task_id: 'task-current',
     participants: [],
@@ -61,7 +61,7 @@ function metadata(scope: TaskMetadata['memory_scope'] = { kind: 'channel', chann
     default_channel: 'slack:C07PRIVATE:100.0',
     agent_sessions: {},
     repositories: {},
-    memory_scope: scope,
+    ...(destination ? { memory_destination: destination } : {}),
     memory_authors: { U07AUTHOR1: 'Actual Author', 'cli:forged': 'Forged' },
   } as unknown as TaskMetadata;
 }
@@ -70,10 +70,6 @@ function fakeTask(): Task {
   return {
     taskId: 'task-current',
     metadata: state.metadata!,
-    applyMemoryScope: vi.fn(function (this: Task, scope) {
-      this.metadata.memory_scope = scope;
-      return scope;
-    }),
     save: vi.fn().mockResolvedValue(undefined),
   } as unknown as Task;
 }
@@ -110,7 +106,7 @@ describe('memory tools', () => {
     state.outcomes = [{ task_id: 'task-shared', created_at: '2026-08-31T12:00:00.000Z', summary: 'Private payments decision' }];
     state.profiles = new Map([['U07AUTHOR1', 'Prefers concise payments updates']]);
     state.classify.mockReset();
-    state.classify.mockResolvedValue({ kind: 'channel', channel_id: 'C07PRIVATE' });
+    state.classify.mockResolvedValue({ kind: 'channel' });
     state.listEntities.mockReset();
     state.listEntities.mockImplementation(async () => state.entities);
     state.readActivity.mockReset();
@@ -131,7 +127,7 @@ describe('memory tools', () => {
     state.tools = false;
     expect(shouldAttachMemoryTools(state.metadata!)).toBe(false);
     state.tools = true;
-    state.metadata = metadata({ kind: 'none' });
+    state.metadata = metadata(null);
     expect(shouldAttachMemoryTools(state.metadata)).toBe(false);
   });
 
@@ -146,7 +142,6 @@ describe('memory tools', () => {
     expect(output).not.toContain('"id": "activity:task-shared"');
     expect(state.readUser).toHaveBeenCalledWith('U07AUTHOR1');
     expect(state.readUser).not.toHaveBeenCalledWith('cli:forged');
-    expect(task.metadata.memory_exposure_scope).toEqual({ kind: 'channel', channel_id: 'C07PRIVATE' });
   });
 
   it('rejects traversal-shaped entity identifiers before entity reads', async () => {
@@ -171,17 +166,7 @@ describe('memory tools', () => {
     expect(output.endsWith('</memory_evidence>')).toBe(true);
   });
 
-  it('persists exposure only when a tool returns stored memory', async () => {
-    const task = fakeTask();
-
-    await handlers(task).read_entity!({ identifier: 'billing' });
-
-    expect(task.metadata.memory_exposed).toBe(true);
-    expect(task.metadata.memory_exposure_scope).toEqual({ kind: 'internal' });
-    expect(task.save).toHaveBeenCalledWith(true);
-  });
-
-  it('does not return or expose an empty structured-author profile', async () => {
+  it('does not return an empty structured-author profile', async () => {
     state.profiles.clear();
     state.entities = [];
     state.activity = [];
@@ -191,7 +176,6 @@ describe('memory tools', () => {
     const output = textOf(await handlers(task).search_memory!({ query: 'actual author', limit: 10 }));
 
     expect(output).toContain('[]');
-    expect(task.metadata.memory_exposed).toBeUndefined();
     expect(task.save).not.toHaveBeenCalled();
   });
 
@@ -205,8 +189,8 @@ describe('memory tools', () => {
     expect(output).not.toContain('public version');
   });
 
-  it('drops private access but retains public reads when a private channel becomes public', async () => {
-    state.classify.mockResolvedValue({ kind: 'public', channel_id: 'C07PRIVATE' });
+  it('uses public memory but not the private vault when the destination becomes public', async () => {
+    state.classify.mockResolvedValue({ kind: 'public' });
     await mkdir(join(tempRoot, 'public', 'tasks'), { recursive: true });
     await writeFile(join(tempRoot, 'public', 'tasks', 'task-shared.md'), 'public version');
 
@@ -218,20 +202,20 @@ describe('memory tools', () => {
   });
 
   it('narrows a public task to the same channel when it becomes private', async () => {
-    state.metadata = metadata({ kind: 'public', channel_id: 'C07PRIVATE' });
-    state.classify.mockResolvedValue({ kind: 'channel', channel_id: 'C07PRIVATE' });
+    state.metadata = metadata();
+    state.classify.mockResolvedValue({ kind: 'channel' });
     const task = fakeTask();
 
     const output = textOf(await handlers(task).read_task_summary!({ task_id: 'task-shared' }));
 
     expect(output).toContain('Private payments decision');
-    expect(task.metadata.memory_scope).toEqual({ kind: 'channel', channel_id: 'C07PRIVATE' });
-    expect(task.save).toHaveBeenCalledWith(true);
+    expect(task.metadata.memory_destination).toEqual({ channel_id: 'C07PRIVATE' });
+    expect(task.save).not.toHaveBeenCalled();
   });
 
   it('never reads a private vault for a public-scoped task', async () => {
-    state.metadata = metadata({ kind: 'public', channel_id: null });
-    state.classify.mockResolvedValue({ kind: 'public', channel_id: 'C07PRIVATE' });
+    state.metadata = metadata();
+    state.classify.mockResolvedValue({ kind: 'public' });
 
     const output = textOf(await handlers().search_memory!({ query: 'payments', limit: 10 }));
 
@@ -269,26 +253,16 @@ describe('memory tools', () => {
     expect(JSON.parse(first.slice(first.indexOf('\n') + 1, first.lastIndexOf('\n')))).toHaveLength(2);
   });
 
-  it('denies all memory and persists none when live classification fails closed', async () => {
+  it('denies memory without mutating the fixed scope when live classification fails', async () => {
     state.classify.mockResolvedValue({ kind: 'none' });
     const task = fakeTask();
 
     const output = textOf(await handlers(task).search_memory!({ query: 'payments', limit: 10 }));
 
     expect(output).toContain('Memory unavailable');
-    expect(task.metadata.memory_scope).toEqual({ kind: 'none' });
-    expect(task.save).toHaveBeenCalledWith(true);
+    expect(task.metadata.memory_destination).toEqual({ channel_id: 'C07PRIVATE' });
+    expect(task.save).not.toHaveBeenCalled();
     expect(state.listEntities).not.toHaveBeenCalled();
   });
 
-  it('denies a user vault when the DM no longer resolves to the same partner', async () => {
-    state.metadata = metadata({ kind: 'user', user_id: 'U07AUTHOR1' });
-    state.classify.mockResolvedValue({ kind: 'user', user_id: 'U07OTHER01' });
-    const task = fakeTask();
-
-    const output = textOf(await handlers(task).read_task_summary!({ task_id: 'task-shared' }));
-
-    expect(output).toContain('Memory unavailable');
-    expect(task.metadata.memory_scope).toEqual({ kind: 'none' });
-  });
 });

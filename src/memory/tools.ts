@@ -2,9 +2,9 @@ import { readFile } from 'fs/promises';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { Task } from '../tasks/task.js';
-import type { TaskMemoryExposureScope, TaskMetadata, TaskMemoryScope } from '../types/task.js';
+import type { TaskMetadata } from '../types/task.js';
 import { classifySlackMemoryScope } from '../connectors/slack/client.js';
-import { joinMemoryExposureScope, joinMemoryScope } from '../tasks/memory-scope.js';
+import { isAuthorizedMemoryScope, scopeForSlackChannel } from '../tasks/memory-scope.js';
 import { listEntities, serializeEntity } from './entities.js';
 import { readActivity } from './activity.js';
 import { readUser } from './store.js';
@@ -18,7 +18,6 @@ import {
   isMemoryReady,
   isMemoryToolsEnabled,
 } from './paths.js';
-import { logger } from '../system/logger.js';
 
 interface AuthorizedMemory {
   metadata: TaskMetadata;
@@ -55,95 +54,28 @@ function result(content: string) {
   return { content: [{ type: 'text' as const, text: envelope(content) }] };
 }
 
-function slackAudienceIds(metadata: TaskMetadata): string[] {
-  const ids = new Set<string>();
-  for (const channel of Object.values(metadata.channels ?? {})) {
-    if (channel.type === 'slack') ids.add(channel.channel_id);
-  }
-  if (metadata.home_channel?.channel_id) ids.add(metadata.home_channel.channel_id);
-  return [...ids].sort();
-}
-
-async function classifyCurrentAudience(
-  metadata: TaskMetadata,
-): Promise<Exclude<TaskMemoryScope, { kind: 'unclassified' }>> {
-  let scope: TaskMemoryScope = { kind: 'unclassified' };
-  for (const channelId of slackAudienceIds(metadata)) {
-    scope = joinMemoryScope(scope, await classifySlackMemoryScope(channelId));
-  }
-  return scope.kind === 'unclassified' ? { kind: 'none' } : scope;
-}
-
-async function denyTaskMemory(task: Task): Promise<void> {
-  task.applyMemoryScope({ kind: 'none' });
-  await task.save(true).catch((error) => logger.warn('memory', 'Failed to persist denied memory scope', error));
-}
-
-async function persistScope(task: Task, scope: TaskMemoryScope): Promise<void> {
-  task.metadata.memory_scope = scope;
-  await task.save(true);
-}
-
 export async function authorizeTaskMemory(task: Task): Promise<AuthorizedMemory | null> {
   if (!isMemoryReady()) return null;
   const metadata = task.metadata;
-  const expected = metadata.memory_scope;
-  if (!expected || expected.kind === 'unclassified' || expected.kind === 'none') return null;
-
-  const current = await classifyCurrentAudience(metadata);
-  if (expected.kind === 'public') {
-    const joined = joinMemoryScope(expected, current);
-    if (joined.kind === 'none') {
-      await denyTaskMemory(task);
-      return null;
-    }
-    if (joined.kind === 'channel') {
-      await persistScope(task, joined);
-      return { metadata, allowPublic: true, privatePath: getChannelPrivatePath(joined.channel_id) };
-    }
-    return joined.kind === 'public' ? { metadata, allowPublic: true } : null;
+  const destination = metadata.memory_destination;
+  if (!destination) return null;
+  const scope = scopeForSlackChannel(
+    await classifySlackMemoryScope(destination.channel_id),
+    destination.channel_id,
+  );
+  if (!isAuthorizedMemoryScope(destination, scope)) return null;
+  if (scope.kind === 'channel') {
+    return { metadata, allowPublic: true, privatePath: getChannelPrivatePath(scope.channel_id) };
   }
-
-  if (expected.kind === 'channel') {
-    if (current.kind === 'channel' && current.channel_id === expected.channel_id) {
-      return { metadata, allowPublic: true, privatePath: getChannelPrivatePath(expected.channel_id) };
-    }
-    if (current.kind === 'public') return { metadata, allowPublic: true };
-    await denyTaskMemory(task);
-    return null;
+  if (scope.kind === 'user') {
+    return { metadata, allowPublic: true, privatePath: getUserPrivatePath(scope.user_id) };
   }
-
-  if (current.kind === 'user' && current.user_id === expected.user_id) {
-    return { metadata, allowPublic: true, privatePath: getUserPrivatePath(expected.user_id) };
-  }
-  await denyTaskMemory(task);
-  return null;
+  return { metadata, allowPublic: true };
 }
 
 async function authorizeMemory(task: Task): Promise<AuthorizedMemory | null> {
   if (!isMemoryToolsEnabled()) return null;
   return authorizeTaskMemory(task);
-}
-
-export async function markTaskMemoryExposed(
-  task: Task,
-  exposure: TaskMemoryExposureScope = { kind: 'internal' },
-): Promise<void> {
-  const joined = joinMemoryExposureScope(task.metadata.memory_exposure_scope, exposure);
-  if (
-    task.metadata.memory_exposed === true
-    && JSON.stringify(task.metadata.memory_exposure_scope) === JSON.stringify(joined)
-  ) return;
-  task.metadata.memory_exposed = true;
-  task.metadata.memory_exposure_scope = joined;
-  await task.save(true);
-}
-
-function privateExposure(auth: AuthorizedMemory): TaskMemoryExposureScope {
-  const scope = auth.metadata.memory_scope;
-  if (scope?.kind === 'channel') return scope;
-  if (scope?.kind === 'user') return scope;
-  return { kind: 'none' };
 }
 
 function queryTokens(query: string): string[] {
@@ -166,7 +98,7 @@ async function buildSearchHits(auth: AuthorizedMemory, tokens: string[]): Promis
       const score = scoreText(text, tokens, 'private');
       if (score > 0) hits.push({
         id: `private:${outcome.task_id}`, kind: 'private', text: outcome.summary,
-        taskId: outcome.task_id, recency: outcome.created_at, score,
+        taskId: outcome.task_id, recency: outcome.recorded_at ?? outcome.created_at, score,
       });
     }
   }
@@ -216,12 +148,6 @@ async function searchMemory(task: Task, query: string, limit: number) {
   const tokens = queryTokens(query);
   if (tokens.length === 0) return result('Query must contain at least one lexical token.');
   const hits = rankHits(await buildSearchHits(auth, tokens), limit);
-  if (hits.length > 0) {
-    await markTaskMemoryExposed(
-      task,
-      hits.some((hit) => hit.kind === 'private') ? privateExposure(auth) : { kind: 'internal' },
-    );
-  }
   return result(JSON.stringify(hits.map(({ score: _score, ...hit }) => hit), null, 2));
 }
 
@@ -236,7 +162,6 @@ async function readEntityMemory(task: Task, identifier: string) {
   const entity = (await listEntities()).find((record) =>
     record.entity === lower || record.aliases.some((alias) => alias.toLowerCase() === lower)
   );
-  if (entity) await markTaskMemoryExposed(task);
   return result(entity ? serializeEntity(entity) : 'Entity not found.');
 }
 
@@ -251,13 +176,11 @@ async function readTaskSummaryMemory(task: Task, taskId: string) {
   if (auth.privatePath) {
     const local = privateOutcomeForTask(await readPrivateOutcomes(auth.privatePath), taskId);
     if (local) {
-      await markTaskMemoryExposed(task, privateExposure(auth));
       return result(JSON.stringify(local, null, 2));
     }
   }
   try {
     const summary = await readFile(getSummaryPath(taskId), 'utf-8');
-    await markTaskMemoryExposed(task);
     return result(summary);
   } catch {
     return result('Task summary not found.');
@@ -265,12 +188,9 @@ async function readTaskSummaryMemory(task: Task, taskId: string) {
 }
 
 export function shouldAttachMemoryTools(metadata: TaskMetadata): boolean {
-  const scope = metadata.memory_scope;
   return isMemoryReady()
     && isMemoryToolsEnabled()
-    && !!scope
-    && scope.kind !== 'unclassified'
-    && scope.kind !== 'none';
+    && !!metadata.memory_destination;
 }
 
 export function createMemoryMcpServer(task: Task) {

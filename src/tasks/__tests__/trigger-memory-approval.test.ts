@@ -5,19 +5,16 @@ import type { Trigger } from '../../types/trigger.js';
 
 const state = vi.hoisted(() => ({
   trigger: null as Trigger | null,
-  authorize: vi.fn(),
   enable: vi.fn(),
-  remove: vi.fn(),
 }));
 
 vi.mock('../../system/trigger-store.js', () => ({
   loadTrigger: vi.fn(async () => state.trigger),
   enableProposedTrigger: state.enable,
-  deleteTrigger: state.remove,
+  deleteTrigger: vi.fn(),
   countActiveTriggers: vi.fn().mockResolvedValue(0),
 }));
 vi.mock('../../system/trigger-scheduler.js', () => ({
-  authorizeTriggerMemoryBinding: state.authorize,
   indexTrigger: vi.fn(),
   announceTriggerChange: vi.fn(),
   MAX_TRIGGERS_PER_USER: 20,
@@ -44,38 +41,37 @@ function pendingTrigger(): Trigger {
     created_at: '2026-08-31T00:00:00.000Z',
     binding: { type: 'channel', channel_id: 'C07PRIVATE1', channel_name: 'private' },
     conditions: [{ type: 'schedule', tz: 'UTC', next_run_at: '2026-09-01T00:00:00.000Z' }],
-    action: { prompt: 'Use remembered context.' },
-    memory_exposure_scope: { kind: 'channel', channel_id: 'C07PRIVATE1' },
+    action: { prompt: 'Use the task context.' },
   };
 }
 
 function task(): Task {
-  return new TaskCtor('task-20260831-0000-approve1', {
+  const value = new TaskCtor('task-20260831-0000-approve1', {
     task_id: 'task-20260831-0000-approve1', task_owner: null, participants: [],
-    channels: {}, default_channel: null, agent_sessions: {}, repositories: {},
-    status: 'in_progress', pending_trigger_id: 'trg-20260831-0000-abc123',
+    channels: {}, default_channel: null, memory_destination: { channel_id: 'C07PRIVATE1' },
+    agent_sessions: {}, repositories: {}, status: 'in_progress',
+    pending_trigger_id: 'trg-20260831-0000-abc123',
     created_at: '2026-08-31T00:00:00.000Z', updated_at: '2026-08-31T00:00:00.000Z',
   }, []);
+  vi.spyOn(value, 'prepareTriggerDelivery');
+  return value;
 }
 
-describe('trigger memory approval', () => {
+describe('trigger approval destination check', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.useFakeTimers();
     state.trigger = pendingTrigger();
-    state.authorize.mockResolvedValue(false);
+    state.enable.mockResolvedValue(state.trigger);
   });
 
-  it('refuses and removes a pending trigger whose audience changed during approval delay', async () => {
+  it('keeps a pending trigger disabled when its live destination is unsafe', async () => {
     const value = task();
+    vi.mocked(value.prepareTriggerDelivery).mockRejectedValue(new Error('delivery blocked'));
 
     await expect(value.handleTriggerApproval('U07APPROVER')).resolves.toBeNull();
 
-    expect(state.authorize).toHaveBeenCalledWith(state.trigger);
+    expect(value.prepareTriggerDelivery).toHaveBeenCalledWith(state.trigger!.binding);
     expect(state.enable).not.toHaveBeenCalled();
-    expect(state.remove).toHaveBeenCalledWith('trg-20260831-0000-abc123');
-    expect(value.metadata.pending_trigger_id).toBeUndefined();
-    vi.clearAllTimers();
-    vi.useRealTimers();
+    expect(value.metadata.pending_trigger_id).toBe(state.trigger!.id);
   });
 });

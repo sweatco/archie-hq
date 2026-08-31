@@ -5,17 +5,20 @@
 export type TaskStatus = 'in_progress' | 'stopped' | 'completed';
 
 export type TaskMemoryScope =
-  | { kind: 'unclassified' }
-  | { kind: 'public'; channel_id: string | null }
+  | { kind: 'public'; channel_id: string }
+  | { kind: 'channel'; channel_id: string }
+  | { kind: 'user'; user_id: string; channel_id: string }
+  | { kind: 'none'; channel_id: string };
+
+export type SlackMemoryClassification =
+  | { kind: 'public'; channel_id: string }
   | { kind: 'channel'; channel_id: string }
   | { kind: 'user'; user_id: string }
   | { kind: 'none' };
 
-export type TaskMemoryExposureScope =
-  | { kind: 'internal' }
-  | { kind: 'channel'; channel_id: string }
-  | { kind: 'user'; user_id: string }
-  | { kind: 'none' };
+export interface TaskMemoryDestination {
+  channel_id: string;
+}
 
 /** Core agent names - repo agents can be any string ending in '-agent' */
 export type CoreAgentName = 'pm-agent' | 'triage-agent';
@@ -303,10 +306,9 @@ export interface TaskMetadata {
    * It answers two questions for a task that has no thread yet: where the task opens its own thread (its first user-facing agent message becomes that thread's root), and whose standing context applies before that thread exists.
    */
   home_channel?: { channel_id: string; channel_name: string };
-  memory_scope?: TaskMemoryScope;
+  /** Immutable Slack destination. Live memory authorization is never persisted. */
+  memory_destination?: TaskMemoryDestination;
   memory_authors?: Record<string, string>;
-  memory_exposed?: boolean;
-  memory_exposure_scope?: TaskMemoryExposureScope;
   title?: string;                      // AI-generated one-line summary; absent on pre-feature tasks
   slack_threads?: SlackThreadRef[];    // Legacy — only present on old tasks loaded from disk, removed after migration
   agent_sessions: Record<string, AgentSessionState | string>; // union handles legacy string values on disk

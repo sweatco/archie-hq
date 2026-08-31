@@ -31,7 +31,7 @@ vi.mock('../../connectors/slack/client.js', async (importOriginal) => {
   return {
     ...actual,
     isExternalUser: (user: { teamId?: string }) => user.teamId === 'T_OTHER',
-    classifySlackMemoryScope: vi.fn().mockResolvedValue({ kind: 'public', channel_id: 'C1' }),
+    classifySlackMemoryScope: vi.fn().mockResolvedValue({ kind: 'public' }),
     getBotUserId: () => 'U07ARCHIE1',
     isInternalMemoryUser: (user: { teamId?: string; isRestricted?: boolean; isUltraRestricted?: boolean }) =>
       user.teamId !== 'T_OTHER' && !user.isRestricted && !user.isUltraRestricted,
@@ -96,7 +96,6 @@ describe('Task.append renders after the file download', () => {
     const metadata = {
       channels: {},
       agent_sessions: {},
-      memory_scope: { kind: 'unclassified' },
       memory_authors: {},
     } as unknown as TaskMetadata;
     const task = new TaskCtor('t1', metadata, []);
@@ -165,7 +164,7 @@ describe('Task.append renders after the file download', () => {
 
     await task.append(thread);
 
-    expect(task.metadata.memory_scope).toEqual({ kind: 'public', channel_id: 'C1' });
+    expect(task.metadata.memory_destination).toEqual({ channel_id: 'C1' });
     expect(task.metadata.memory_authors).toEqual({ U07RAMIN01: 'Ramin M' });
     expect(task.metadata.memory_authors).not.toHaveProperty('U07FORGED1');
   });

@@ -10,9 +10,6 @@ import { dirname } from 'path';
 import {
   isMemoryReady,
   getSummaryPath,
-  isAllowedUserId,
-  isSlackUserId,
-  isFallbackUserId,
   isMemoryHumanUserId,
 } from './paths.js';
 import { readUser, applyUserUpdatesWithIdentity } from './store.js';
@@ -33,6 +30,8 @@ import { logger } from '../system/logger.js';
 import type { ExtractionResult, UserRef, ActivityEntry, MemoryUpdate, EntityUpdate } from './types.js';
 import type { TaskMetadata } from '../types/task.js';
 import { writePrivateOutcome } from './outcomes.js';
+import { classifySlackMemoryScope } from '../connectors/slack/client.js';
+import { isAuthorizedMemoryScope, scopeForSlackChannel } from '../tasks/memory-scope.js';
 
 // ============================================================================
 // Housekeeping note queue (consumed by buildSummaryMarkdown)
@@ -106,8 +105,14 @@ async function processExtraction(taskId: string): Promise<void> {
     return;
   }
 
-  const scope = metadata.memory_scope;
-  if (!scope || scope.kind === 'unclassified' || scope.kind === 'none') return;
+  const destination = metadata.memory_destination;
+  if (!destination) return;
+  const classify = async () => scopeForSlackChannel(
+    await classifySlackMemoryScope(destination.channel_id),
+    destination.channel_id,
+  );
+  const scope = await classify();
+  if (!isAuthorizedMemoryScope(destination, scope)) return;
 
   const transcript = await readKnowledgeLog(taskId);
   if (!transcript.trim()) {
@@ -127,9 +132,16 @@ async function processExtraction(taskId: string): Promise<void> {
       transcript,
     }, new Set());
     if (!outcome) return;
+    const current = await classify();
+    if (
+      !isAuthorizedMemoryScope(destination, current)
+      || current.kind !== scope.kind
+      || (scope.kind === 'user' && current.kind === 'user' && current.user_id !== scope.user_id)
+    ) return;
     await writePrivateOutcome(scope, {
       task_id: taskId,
       created_at: metadata.created_at,
+      recorded_at: new Date().toISOString(),
       summary: outcome.task_summary,
     });
     return;
@@ -172,6 +184,8 @@ async function processExtraction(taskId: string): Promise<void> {
     logger.warn('memory', `processExtraction: extraction returned null for ${taskId}`);
     return;
   }
+  const current = await classify();
+  if (!isAuthorizedMemoryScope(destination, current) || current.kind !== 'public') return;
 
   // Apply per-user updates. Use the identity-aware writer so first-touch
   // user files get YAML frontmatter (slack_user_id + display_name + aliases).
@@ -267,65 +281,6 @@ async function processExtraction(taskId: string): Promise<void> {
   await trimActivity(50);
 
   logger.system(`[memory] Extraction complete for ${taskId}`);
-}
-
-// ============================================================================
-// User identifier parsing
-// ============================================================================
-
-// Match a `<UID:Display Name>` user-mention component wherever it appears,
-// accepting BOTH bracket orders: the internal `@<UID:Name>` and the Slack-native
-// `<@UID:Name>` the model tends to produce (and that producers now emit — see
-// restoreMentions in the Slack client). Production log lines often carry extra
-// context inside the same outer brackets, e.g.:
-//   `[<@U03RQQTE1EF:Riley Quinn> in slack:#<D0AUZLR6ZJQ:DM with Riley Quinn>:...]`
-// so we anchor on the `@<`/`<@` prefix, not the surrounding `[...]`. The `@`
-// adjacent to the UID is what distinguishes a user mention from a channel
-// reference like `#<D0AUZLR6ZJQ:DM with Riley Quinn>` (same `<UID:Name>` shape,
-// but `#<` prefix). Non-Slack-shaped IDs are filtered later by isSlackUserId.
-const MENTION_RE = /(?:@<|<@)([A-Z][A-Z0-9]{6,}):([^>]+)>/g;
-
-/**
- * Parse all Slack-mention markers from a transcript and return one record
- * per unique user. The raw Slack ID is the canonical filename identifier;
- * the display name is retained for prompt labels and YAML frontmatter.
- *
- * Channel references like `#<D0AUZLR6ZJQ:DM with Riley Quinn>` do NOT match
- * because they lack the `@` prefix. User IDs whose prefix is not Slack-shaped
- * (`U`/`W`/`B`/`T`) are filtered out by `isSlackUserId`.
- */
-export function extractUsernames(transcript: string): UserRef[] {
-  const seen = new Map<string, string>();
-  let match: RegExpExecArray | null;
-  const re = new RegExp(MENTION_RE.source, 'g');
-  while ((match = re.exec(transcript)) !== null) {
-    const userId = match[1];
-    const displayName = match[2].trim();
-    if (isSlackUserId(userId) && !seen.has(userId)) {
-      seen.set(userId, displayName || userId);
-    }
-  }
-  return Array.from(seen, ([userId, displayName]) => ({ userId, displayName }));
-}
-
-/**
- * Return the first Slack-mention user in the transcript, or null when none.
- */
-export function extractRequestingUser(transcript: string): UserRef | null {
-  const refs = extractUsernames(transcript);
-  return refs[0] ?? null;
-}
-
-/**
- * Resolve a non-Slack fallback identifier for a task whose transcript has
- * no Slack mentions. Examples: `cli:<sessionId>`, `cli:<taskId>`. The
- * fallback uses a prefix the Slack namespace cannot produce.
- */
-export function resolveFallbackId(metadata: TaskMetadata): UserRef {
-  const taskId = metadata.task_id;
-  // Future: pull a richer sessionId from CLI channel metadata when one is available.
-  const fallbackId = `cli:${taskId}`;
-  return { userId: fallbackId, displayName: `cli session (${taskId})` };
 }
 
 // ============================================================================

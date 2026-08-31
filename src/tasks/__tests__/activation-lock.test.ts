@@ -141,31 +141,27 @@ describe('Task activation lock (double-spawn guard)', () => {
     expect(activeTasks.get(TASK_ID)).toBe(b);
   });
 
-  it('reconciles stale scope, exposure, and authors before choosing the spawned instance', async () => {
+  it('reconciles the fixed destination and authors before choosing the spawned instance', async () => {
     const staleA = new TaskCtor(TASK_ID, {
       ...metadata(TASK_ID),
-      memory_scope: { kind: 'public', channel_id: 'C07PUBLIC1' },
+      memory_destination: { channel_id: 'C07PUBLIC1' },
       memory_authors: { U07PERSON1: 'One' },
     }, [pmDef()]);
     const staleB = new TaskCtor(TASK_ID, {
       ...metadata(TASK_ID),
-      memory_scope: { kind: 'public', channel_id: 'C07PUBLIC1' },
+      memory_destination: { channel_id: 'C07PUBLIC1' },
       memory_authors: { U07PERSON2: 'Two' },
     }, [pmDef()]);
     loadMetadataMock.mockResolvedValue({
       ...metadata(TASK_ID),
-      memory_scope: { kind: 'channel', channel_id: 'C07PUBLIC1' },
-      memory_exposed: true,
-      memory_exposure_scope: { kind: 'channel', channel_id: 'C07PUBLIC1' },
+      memory_destination: { channel_id: 'C07PUBLIC1' },
       memory_authors: { U07PERSON3: 'Three' },
     });
 
     await Promise.all([staleA.sendMessage('from-a'), staleB.sendMessage('from-b')]);
 
     const canonical = activeTasks.get(TASK_ID)!;
-    expect(canonical.metadata.memory_scope).toEqual({ kind: 'channel', channel_id: 'C07PUBLIC1' });
-    expect(canonical.metadata.memory_exposed).toBe(true);
-    expect(canonical.metadata.memory_exposure_scope).toEqual({ kind: 'channel', channel_id: 'C07PUBLIC1' });
+    expect(canonical.metadata.memory_destination).toEqual({ channel_id: 'C07PUBLIC1' });
     expect(canonical.metadata.memory_authors).toEqual(expect.objectContaining({
       U07PERSON3: 'Three',
     }));

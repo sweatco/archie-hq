@@ -46,7 +46,6 @@ function metadata(taskId: string): TaskMetadata {
     participants: [],
     channels: {},
     default_channel: null,
-    memory_scope: { kind: 'unclassified' },
     memory_authors: {},
     agent_sessions: {},
     repositories: {},
@@ -86,58 +85,26 @@ describe('task metadata memory persistence', () => {
     await mkdir(SESSIONS_ROOT, { recursive: true });
     memoryReady = true;
     classifyMock.mockReset();
-    classifyMock.mockResolvedValue({ kind: 'public', channel_id: 'C07PUBLIC1' });
+    classifyMock.mockResolvedValue({ kind: 'public' });
   });
 
   afterAll(async () => {
     await rm(SESSIONS_ROOT, { recursive: true, force: true });
   });
 
-  it('keeps the narrowest scope when stale Task instances save concurrently', async () => {
+  it('keeps the immutable destination when stale Task instances save concurrently', async () => {
     const taskId = 'task-20260831-0000-scope1';
     await seed(taskId, metadata(taskId));
     const publicTask = new TaskCtor(taskId, metadata(taskId), []);
     const noneTask = new TaskCtor(taskId, metadata(taskId), []);
-    publicTask.metadata.memory_scope = { kind: 'public', channel_id: 'C07PUBLIC1' };
-    noneTask.metadata.memory_scope = { kind: 'none' };
+    publicTask.metadata.memory_destination = { channel_id: 'C07PUBLIC1' };
+    noneTask.metadata.memory_destination = { channel_id: 'C07PUBLIC1' };
 
     await Promise.all([noneTask.save(true), publicTask.save(true)]);
 
     const persisted = JSON.parse(await readFile(getMetadataPath(taskId), 'utf-8')) as TaskMetadata;
-    expect(persisted.memory_scope).toEqual({ kind: 'none' });
+    expect(persisted.memory_destination).toEqual({ channel_id: 'C07PUBLIC1' });
     expect((await readdir(dirname(getMetadataPath(taskId)))).filter((name) => name.includes('.tmp'))).toEqual([]);
-  });
-
-  it('does not widen a persisted private exposure through a stale save', async () => {
-    const taskId = 'task-20260831-0000-expose1';
-    const initial = metadata(taskId);
-    initial.memory_scope = { kind: 'channel', channel_id: 'C07PRIVATE1' };
-    initial.memory_exposed = true;
-    initial.memory_exposure_scope = { kind: 'channel', channel_id: 'C07PRIVATE1' };
-    await seed(taskId, initial);
-    const stale = metadata(taskId);
-    stale.memory_scope = { kind: 'channel', channel_id: 'C07PRIVATE1' };
-    stale.memory_exposed = true;
-    stale.memory_exposure_scope = { kind: 'internal' };
-
-    await new TaskCtor(taskId, stale, []).save(true);
-
-    const persisted = JSON.parse(await readFile(getMetadataPath(taskId), 'utf-8')) as TaskMetadata;
-    expect(persisted.memory_exposure_scope).toEqual({ kind: 'channel', channel_id: 'C07PRIVATE1' });
-  });
-
-  it('preserves persisted exposure fields when a stale writer never observed them', async () => {
-    const taskId = 'task-20260831-0000-expose2';
-    const exposed = metadata(taskId);
-    exposed.memory_exposed = true;
-    exposed.memory_exposure_scope = { kind: 'channel', channel_id: 'C07PRIVATE1' };
-    await seed(taskId, exposed);
-
-    await new TaskCtor(taskId, metadata(taskId), []).save(true);
-
-    const persisted = JSON.parse(await readFile(getMetadataPath(taskId), 'utf-8')) as TaskMetadata;
-    expect(persisted.memory_exposed).toBe(true);
-    expect(persisted.memory_exposure_scope).toEqual({ kind: 'channel', channel_id: 'C07PRIVATE1' });
   });
 
   it('merges memory authors from stale writers under the metadata lock', async () => {
@@ -157,7 +124,7 @@ describe('task metadata memory persistence', () => {
     expect(persisted.memory_authors).toEqual({ U07PERSON1: 'One', U07PERSON2: 'Two' });
   });
 
-  it('persists none before unready ingestion and cannot widen after restart', async () => {
+  it('persists the inbound destination and keeps it after restart', async () => {
     const taskId = 'task-20260831-0000-restart1';
     await seed(taskId, metadata(taskId));
     memoryReady = false;
@@ -165,14 +132,14 @@ describe('task metadata memory persistence', () => {
 
     await firstProcess.append(thread('1.0'));
     const afterFirstIngest = JSON.parse(await readFile(getMetadataPath(taskId), 'utf-8')) as TaskMetadata;
-    expect(afterFirstIngest.memory_scope).toEqual({ kind: 'none' });
+    expect(afterFirstIngest.memory_destination).toEqual({ channel_id: 'C07PUBLIC1' });
 
     memoryReady = true;
     const restarted = new TaskCtor(taskId, afterFirstIngest, []);
     await restarted.append(thread('2.0'));
 
-    expect(restarted.metadata.memory_scope).toEqual({ kind: 'none' });
+    expect(restarted.metadata.memory_destination).toEqual({ channel_id: 'C07PUBLIC1' });
     const afterRestart = JSON.parse(await readFile(getMetadataPath(taskId), 'utf-8')) as TaskMetadata;
-    expect(afterRestart.memory_scope).toEqual({ kind: 'none' });
+    expect(afterRestart.memory_destination).toEqual({ channel_id: 'C07PUBLIC1' });
   });
 });

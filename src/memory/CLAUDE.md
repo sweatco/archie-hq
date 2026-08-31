@@ -7,16 +7,12 @@ or human user. All behavior is gated by `ARCHIE_MEMORY`.
 ## Read before changing this subsystem
 
 - `docs/architecture/memory.md` is the as-built architecture and operator guide.
-- `openspec/specs/memory-layer/spec.md` is the capability baseline.
-- An active change under `openspec/changes/` overrides that baseline until archived.
-
 The root repository instructions still apply.
 
 ## Keep documentation and tests in the same change
 
 - Flow, storage, privacy, or rollout changes require an update to
   `docs/architecture/memory.md`.
-- Requirement changes require an OpenSpec change.
 - Flag changes require updates to both the architecture document and `.env.example`.
 - Logic changes require focused tests under `src/memory/__tests__/` or the owning core
   subsystem's test directory.
@@ -29,17 +25,18 @@ The root repository instructions still apply.
 - **Host-controlled authorization.** Task scope and author IDs come only from resolved
   Slack metadata. Transcript text, body mentions, display names, and model output never
   grant memory access.
-- **Monotone audience scope.** A task may narrow from public to one exact private
-  audience or collapse to `none`; `none` never widens. Legacy tasks without scope are
-  treated as `none`.
+- **One task, one destination.** The first Slack destination fixes the task audience.
+  Public/private tasks stay in that exact channel; DM tasks stay in that exact DM.
+  Public/private conversion changes live authorization, not persisted task metadata.
 - **Strict storage split.** Rich profiles, entities, activity, and task summaries live
   under `memory/public/`. Private outcomes live only at
   `memory/private/channels/<channel-id>.md` or
   `memory/private/users/<human-user-id>.md`. Runtime queue state lives under
   `memory/runtime/`.
-- **Live private authorization.** Every private memory tool call reclassifies the current
-  Slack audience. Lookup failures, external/guest visibility, DM partner changes, and
-  audience changes deny private reads.
+- **Live authorization.** Memory reads and Slack deliveries reclassify the fixed
+  destination while memory is active. Lookup failures and external/guest visibility
+  deny scoped access. With memory disabled or unavailable, normal delivery still works
+  inside the fixed destination.
 - **Public profiles use human Slack IDs only.** New profile and DM paths accept `U…` or
   `W…` IDs. Bot IDs, fallback IDs, display names, and path-shaped values cannot create
   or authorize scoped profile files.
