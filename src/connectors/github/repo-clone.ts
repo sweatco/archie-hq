@@ -309,19 +309,35 @@ export async function excludeSandboxArtifacts(clonePath: string, allowedRoot: st
   ].join('\n');
 
   try {
-    // (1) The clone must be a real existing path anchored under the managed root.
+    // (1) LEXICAL containment first, before the untrusted string touches the filesystem at all.
+    //     `path.resolve` collapses `..` and makes the value absolute; the containment test then
+    //     rejects anything outside the managed root. Doing this before any fs call is what makes
+    //     the guard legible to static analysis (CodeQL's js/path-injection recognises
+    //     resolve-then-prefix-check as a sanitiser, but cannot follow a realpath round-trip), and
+    //     it is better regardless: a syntactically escaping path is now refused without so much as
+    //     a stat, so not even path existence leaks. Every fs call below uses `cloneLexical` or a
+    //     value derived from it — the raw argument is never passed to the filesystem.
+    const rootLexical = path.resolve(allowedRoot);
+    const cloneLexical = path.resolve(clonePath);
+    if (!isInside(rootLexical, cloneLexical)) {
+      return refuse(`resolves to ${cloneLexical}, outside ${rootLexical}`);
+    }
+
+    // (2) CANONICAL containment second. Lexical resolution cannot see symlinks, so a link inside
+    //     the root pointing out would pass step 1 — realpath is what catches it. Both are needed:
+    //     step 1 for what the analyser can follow, step 2 for what the filesystem actually does.
     const rootReal = await fs.realpath(allowedRoot);
     let cloneReal: string;
     try {
-      cloneReal = await fs.realpath(clonePath);
+      cloneReal = await fs.realpath(cloneLexical);
     } catch {
       return refuse('path does not exist');
     }
     if (!isInside(rootReal, cloneReal)) {
-      return refuse(`resolves to ${cloneReal}, outside ${rootReal}`);
+      return refuse(`resolves through a symlink to ${cloneReal}, outside ${rootReal}`);
     }
 
-    // (2) It must actually be a git clone, with `.git` a real directory inside it.
+    // (3) It must actually be a git clone, with `.git` a real directory inside it.
     let gitReal: string;
     try {
       gitReal = await fs.realpath(path.join(cloneReal, '.git'));
@@ -332,7 +348,7 @@ export async function excludeSandboxArtifacts(clonePath: string, allowedRoot: st
       return refuse('.git is not a directory inside the clone');
     }
 
-    // (3) `.git/info` must resolve inside `.git` — checked after creation, so a pre-existing
+    // (4) `.git/info` must resolve inside `.git` — checked after creation, so a pre-existing
     //     symlink pointing elsewhere is caught rather than followed.
     const infoDir = path.join(gitReal, 'info');
     await fs.mkdir(infoDir, { recursive: true });
@@ -343,7 +359,7 @@ export async function excludeSandboxArtifacts(clonePath: string, allowedRoot: st
 
     const excludePath = path.join(infoReal, 'exclude');
 
-    // (4) Never write through a symlink.
+    // (5) Never write through a symlink.
     try {
       if ((await fs.lstat(excludePath)).isSymbolicLink()) {
         return refuse('.git/info/exclude is a symlink');

@@ -228,3 +228,33 @@ describe('excludeSandboxArtifacts path containment', () => {
     expect(await isIgnored('.claude/settings.local.json')).toBe(true);
   });
 });
+
+// ---- Lexical rejection happens before any filesystem access (CodeQL alert 136) ----
+
+describe('excludeSandboxArtifacts lexical pre-check', () => {
+  it('rejects a syntactically escaping path without touching the filesystem', async () => {
+    // The point of ordering the lexical check first: a path that escapes the root on its face is
+    // refused before any stat, so the function cannot be used even as a path-existence oracle.
+    // Asserted by giving it a path that does not exist AND escapes — the old realpath-first order
+    // would have reported "path does not exist" (a filesystem answer). It must now be refused on
+    // containment grounds alone, which is observable as: nothing is created anywhere.
+    const allowedRoot = path.join(tmpDir, 'allowed');
+    await fs.mkdir(allowedRoot, { recursive: true });
+    const escaping = path.join(allowedRoot, '..', 'nope', 'also-missing');
+
+    await expect(excludeSandboxArtifacts(escaping, allowedRoot)).resolves.toBeUndefined();
+    await expect(fs.stat(path.join(tmpDir, 'nope'))).rejects.toThrow();
+  });
+
+  it('rejects a relative path that resolves outside the root', async () => {
+    const outside = path.join(tmpDir, 'outside');
+    await fs.mkdir(path.join(outside, '.git', 'info'), { recursive: true });
+    await fs.writeFile(path.join(outside, '.git', 'info', 'exclude'), 'ORIGINAL');
+    const allowedRoot = path.join(tmpDir, 'allowed');
+    await fs.mkdir(allowedRoot, { recursive: true });
+
+    await excludeSandboxArtifacts(`${allowedRoot}/../outside`, allowedRoot);
+
+    expect(await fs.readFile(path.join(outside, '.git', 'info', 'exclude'), 'utf8')).toBe('ORIGINAL');
+  });
+});
