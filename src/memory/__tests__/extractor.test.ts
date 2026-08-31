@@ -129,7 +129,7 @@ describe('parseExtractionResponse(json)', () => {
       user_updates: {},
       task_summary: 'x',
       activity_summary: 'y',
-      domain: 'z',
+      domain: 'engineering',
     });
     const result = parseExtractionResponse(ok);
     expect(result).not.toBeNull();
@@ -140,7 +140,7 @@ describe('parseExtractionResponse(json)', () => {
     const bad = JSON.stringify({
       task_summary: 'x',
       activity_summary: 'y',
-      domain: 'z',
+      domain: 'engineering',
     });
     expect(parseExtractionResponse(bad)).toBeNull();
   });
@@ -150,7 +150,7 @@ describe('parseExtractionResponse(json)', () => {
       user_updates: 'not-an-object',
       task_summary: 'x',
       activity_summary: 'y',
-      domain: 'z',
+      domain: 'engineering',
     });
     expect(parseExtractionResponse(bad)).toBeNull();
   });
@@ -159,7 +159,7 @@ describe('parseExtractionResponse(json)', () => {
     const bad = JSON.stringify({
       user_updates: {},
       activity_summary: 'y',
-      domain: 'z',
+      domain: 'engineering',
     });
     expect(parseExtractionResponse(bad)).toBeNull();
   });
@@ -168,7 +168,7 @@ describe('parseExtractionResponse(json)', () => {
     const bad = JSON.stringify({
       user_updates: {},
       task_summary: 'x',
-      domain: 'z',
+      domain: 'engineering',
     });
     expect(parseExtractionResponse(bad)).toBeNull();
   });
@@ -180,6 +180,19 @@ describe('parseExtractionResponse(json)', () => {
       activity_summary: 'y',
     });
     expect(parseExtractionResponse(bad)).toBeNull();
+  });
+
+  it('normalizes allowed domains and rejects arbitrary or multiline values', () => {
+    const normalized = parseExtractionResponse(JSON.stringify({
+      user_updates: {}, task_summary: 'x', activity_summary: 'y', domain: ' Engineering ',
+    }));
+    expect(normalized?.domain).toBe('engineering');
+
+    for (const domain of ['finance', 'engineering\nAPI_KEY=abcdefghijklmnopqrstuvwxyz123456']) {
+      expect(parseExtractionResponse(JSON.stringify({
+        user_updates: {}, task_summary: 'x', activity_summary: 'y', domain,
+      }))).toBeNull();
+    }
   });
 
   it('handles JSON wrapped in markdown code fences', () => {
@@ -266,7 +279,7 @@ describe('parseExtractionResponse(json)', () => {
       },
       task_summary: 'x',
       activity_summary: 'y',
-      domain: 'z',
+      domain: 'engineering',
     });
     expect(parseExtractionResponse(bad)).toBeNull();
   });
@@ -278,7 +291,7 @@ describe('parseExtractionResponse(json)', () => {
       },
       task_summary: 'x',
       activity_summary: 'y',
-      domain: 'z',
+      domain: 'engineering',
     });
     expect(parseExtractionResponse(bad)).toBeNull();
   });

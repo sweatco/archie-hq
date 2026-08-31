@@ -29,6 +29,7 @@ const {
   saveTriggerMock,
   ensureChannelCanvasMock,
   ensureChannelPinsMock,
+  classifySlackMemoryScopeMock,
 } = vi.hoisted(() => ({
   taskCreateMock: vi.fn(),
   appendSlackMessageMock: vi.fn(),
@@ -38,6 +39,7 @@ const {
   saveTriggerMock: vi.fn(),
   ensureChannelCanvasMock: vi.fn(),
   ensureChannelPinsMock: vi.fn(),
+  classifySlackMemoryScopeMock: vi.fn(),
 }));
 
 // Partial mocks throughout (`importOriginal` + override) rather than bare factories: `Task` pulls in the
@@ -61,6 +63,7 @@ vi.mock('../../connectors/slack/client.js', async (importOriginal) => {
     ...actual,
     isChannelReachable: isChannelReachableMock,
     postSlackMessage: postSlackMessageMock,
+    classifySlackMemoryScope: classifySlackMemoryScopeMock,
     // Without this the redaction case is a dead branch: `isExternalUser` fails open to false when the
     // Slack client was never initialised, so `shouldRedact` would say no and the case would assert the
     // ordinary path under a redacted-looking fixture.
@@ -170,6 +173,7 @@ beforeEach(() => {
   saveTriggerMock.mockResolvedValue(undefined);
   ensureChannelCanvasMock.mockResolvedValue(undefined);
   ensureChannelPinsMock.mockResolvedValue(undefined);
+  classifySlackMemoryScopeMock.mockResolvedValue({ kind: 'public', channel_id: CHANNEL });
 });
 
 describe('a message fire ingests its thread', () => {
@@ -339,6 +343,59 @@ describe('a schedule fire homes its task in the bound channel', () => {
       channel_id: CHANNEL,
       channel_name: CHANNEL_NAME,
     });
+    expect(createdTasks[0]!.metadata.memory_scope).toEqual({
+      kind: 'public',
+      channel_id: CHANNEL,
+    });
+  });
+
+  it('classifies memory before the first agent turn', async () => {
+    classifySlackMemoryScopeMock.mockResolvedValue({ kind: 'channel', channel_id: CHANNEL });
+
+    await fireTrigger(makeTrigger(), { kind: 'schedule' });
+
+    expect(createdTasks[0]!.metadata.memory_scope).toEqual({ kind: 'channel', channel_id: CHANNEL });
+    expect(classifySlackMemoryScopeMock.mock.invocationCallOrder[0]!)
+      .toBeLessThan(createdTasks[0]!.sendMessage.mock.invocationCallOrder[0]!);
+    expect(createdTasks[0]!.save).toHaveBeenCalledWith(true);
+    expect(createdTasks[0]!.save.mock.invocationCallOrder[0]!)
+      .toBeLessThan(createdTasks[0]!.sendMessage.mock.invocationCallOrder[0]!);
+  });
+
+  it('seeds persisted trigger exposure before the first agent turn', async () => {
+    classifySlackMemoryScopeMock.mockResolvedValue({ kind: 'channel', channel_id: CHANNEL });
+
+    await fireTrigger(makeTrigger({
+      memory_exposure_scope: { kind: 'channel', channel_id: CHANNEL },
+    }), { kind: 'schedule' });
+
+    const task = createdTasks[0]!;
+    expect(task.metadata.memory_exposed).toBe(true);
+    expect(task.metadata.memory_exposure_scope).toEqual({ kind: 'channel', channel_id: CHANNEL });
+    expect(task.save.mock.invocationCallOrder[0]!).toBeLessThan(task.sendMessage.mock.invocationCallOrder[0]!);
+  });
+
+  it('pauses before spawning when a private trigger audience became public', async () => {
+    classifySlackMemoryScopeMock.mockResolvedValue({ kind: 'public', channel_id: CHANNEL });
+    const trigger = makeTrigger({
+      memory_exposure_scope: { kind: 'channel', channel_id: CHANNEL },
+    });
+
+    await fireTrigger(trigger, { kind: 'schedule' });
+
+    expect(trigger.status).toBe('paused');
+    expect(saveTriggerMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'paused' }));
+    expect(taskCreateMock).not.toHaveBeenCalled();
+  });
+
+  it('continues the scheduled task when audience classification fails closed', async () => {
+    classifySlackMemoryScopeMock.mockResolvedValue({ kind: 'none' });
+
+    await fireTrigger(makeTrigger(), { kind: 'schedule' });
+
+    expect(createdTasks[0]!.metadata.memory_scope).toEqual({ kind: 'none' });
+    expect(createdTasks[0]!.save).toHaveBeenCalledWith(true);
+    expect(createdTasks[0]!.sendMessage).toHaveBeenCalledTimes(1);
   });
 
   it('refreshes that channel\'s canvas and pin index before the first agent spawns', async () => {

@@ -19,9 +19,10 @@ import { listTriggers, saveTrigger, deleteTrigger } from './trigger-store.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { emitEvent } from './event-bus.js';
 import { logger } from './logger.js';
-import { postSlackMessage, isChannelReachable } from '../connectors/slack/client.js';
+import { postSlackMessage, isChannelReachable, classifySlackMemoryScope, getUserInfo, isInternalMemoryUser } from '../connectors/slack/client.js';
 import { ensureChannelCanvas } from '../connectors/slack/channel-canvas.js';
 import { ensureChannelPins } from '../connectors/slack/channel-pins.js';
+import { isMemoryDeliveryCompatible } from '../tasks/memory-scope.js';
 
 // ---- Limits / config ----
 
@@ -176,6 +177,28 @@ export function indexTrigger(trigger: Trigger): void {
 /** Remove a trigger from the index. */
 export function deindexTrigger(id: string): void {
   enabledTriggers.delete(id);
+}
+
+export async function authorizeTriggerMemoryBinding(trigger: Trigger, firingChannelId?: string): Promise<boolean> {
+  const exposure = trigger.memory_exposure_scope;
+  if (!exposure) return true;
+  const channelIds = new Set<string>();
+  if (trigger.binding.type === 'channel') channelIds.add(trigger.binding.channel_id);
+  for (const condition of trigger.conditions) {
+    if (condition.type === 'channel_message') channelIds.add(condition.channel_id);
+  }
+  if (firingChannelId) channelIds.add(firingChannelId);
+  for (const channelId of channelIds) {
+    if (!isMemoryDeliveryCompatible(exposure, await classifySlackMemoryScope(channelId))) return false;
+  }
+  if (trigger.binding.type !== 'user') return true;
+  try {
+    const user = await getUserInfo(trigger.binding.user_id);
+    return isInternalMemoryUser(user)
+      && isMemoryDeliveryCompatible(exposure, { kind: 'user', user_id: trigger.binding.user_id });
+  } catch {
+    return false;
+  }
 }
 
 /** All enabled channel-message triggers bound to / watching a given channel. */
@@ -346,6 +369,16 @@ async function tickTrigger(trigger: Trigger, now: Date): Promise<void> {
 export async function fireTrigger(trigger: Trigger, context: FireContext): Promise<void> {
   if (!triggersEnabled()) return;
 
+  if (!(await authorizeTriggerMemoryBinding(trigger, context.kind === 'message' ? context.thread?.channel.id : undefined))) {
+    logger.warn('trigger-scheduler', `Trigger ${trigger.id} memory exposure is incompatible with its live binding — pausing`);
+    trigger.status = 'paused';
+    await saveTrigger(trigger);
+    deindexTrigger(trigger.id);
+    emitEvent('trigger:paused', trigger.id, { reason: 'memory exposure incompatible with live binding' });
+    await notifyCreator(trigger, `⚠️ A trigger you set up was paused because its delivery audience is no longer compatible with information used to create it.`);
+    return;
+  }
+
   // Pre-flight for a channel-bound schedule fire: if the bound channel was
   // deleted or archived (or the bot removed and it archived), pause the trigger
   // and DM the creator instead of spawning a task that would post into the void.
@@ -372,6 +405,10 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
 
   const task = await Task.create();
   task.metadata.triggered_by = trigger.id;
+  if (trigger.memory_exposure_scope) {
+    task.metadata.memory_exposed = true;
+    task.metadata.memory_exposure_scope = trigger.memory_exposure_scope;
+  }
 
   // Wire delivery. A message fire ingests the triggering thread, which links it as the default channel and
   // posts nothing. A schedule fire has no thread, so the task is homed in the bound channel and its first
@@ -409,13 +446,14 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
     // own thread there (that message becomes the thread root), and every human reply to it routes back to
     // this task instead of starting a stranger one. `home_channel` is what `postToUser` reads to do that.
     homeChannelId = trigger.binding.channel_id;
+    task.metadata.memory_scope = await classifySlackMemoryScope(trigger.binding.channel_id);
     task.metadata.home_channel = {
       channel_id: trigger.binding.channel_id,
       channel_name: trigger.binding.channel_name,
     };
     delivery = `You have no thread yet. Your first post_to_user opens this task's own thread in #${trigger.binding.channel_name}, and every message after that goes into that same thread. Until then you cannot post anywhere else.`;
   }
-  task.debouncedSave();
+  await task.save(true);
 
   const reason = context.kind === 'message'
     ? `a new message in #${context.channelName ?? 'a channel'} matched your filter`

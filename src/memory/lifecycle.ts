@@ -8,23 +8,31 @@
 import { writeFile, mkdir } from 'fs/promises';
 import { dirname } from 'path';
 import {
-  isMemoryEnabled,
+  isMemoryReady,
   getSummaryPath,
   isAllowedUserId,
   isSlackUserId,
   isFallbackUserId,
+  isMemoryHumanUserId,
 } from './paths.js';
 import { readUser, applyUserUpdatesWithIdentity } from './store.js';
 import { runExtraction } from './extractor.js';
 import { applyEntityUpdate, readEntity } from './entities.js';
 import { rebuildIndex, readIndexMarkdown } from './entity-index.js';
 import { appendActivity, trimActivity, readActivity } from './activity.js';
-import { sanitizeTaskSummary } from './sanitize.js';
+import {
+  sanitizeEntityObservation,
+  sanitizeEntityRelation,
+  sanitizeEntitySummary,
+  sanitizeTaskSummary,
+  sanitizeUpdate,
+} from './sanitize.js';
 import { enqueuePending, dequeuePending } from './pending-queue.js';
 import { loadMetadata, readKnowledgeLog } from '../tasks/persistence.js';
 import { logger } from '../system/logger.js';
-import type { ExtractionResult, UserRef, ActivityEntry, MemoryUpdate } from './types.js';
+import type { ExtractionResult, UserRef, ActivityEntry, MemoryUpdate, EntityUpdate } from './types.js';
 import type { TaskMetadata } from '../types/task.js';
+import { writePrivateOutcome } from './outcomes.js';
 
 // ============================================================================
 // Housekeeping note queue (consumed by buildSummaryMarkdown)
@@ -64,7 +72,7 @@ let extractionQueue: Promise<void> = Promise.resolve();
  * Extractions are serialized to avoid concurrent writes to shared memory files.
  */
 export function handleTaskCompleted(taskId: string): void {
-  if (!isMemoryEnabled()) return;
+  if (!isMemoryReady()) return;
   // Persist the intent to extract before scheduling. If the process exits
   // before processExtraction completes, the next startup will find the entry
   // and re-schedule.
@@ -80,7 +88,7 @@ export function handleTaskCompleted(taskId: string): void {
  * — the entry is already in pending-extractions.md so we only want to drain.
  */
 export function rescheduleTaskCompleted(taskId: string): void {
-  if (!isMemoryEnabled()) return;
+  if (!isMemoryReady()) return;
   extractionQueue = extractionQueue
     .then(() => processExtraction(taskId))
     .then(() => dequeuePending(taskId))
@@ -98,17 +106,38 @@ async function processExtraction(taskId: string): Promise<void> {
     return;
   }
 
+  const scope = metadata.memory_scope;
+  if (!scope || scope.kind === 'unclassified' || scope.kind === 'none') return;
+
   const transcript = await readKnowledgeLog(taskId);
   if (!transcript.trim()) {
     logger.warn('memory', `processExtraction: empty transcript for ${taskId}`);
     return;
   }
 
-  // Identify involved users — Slack mentions if present, else a deterministic fallback.
-  let users = extractUsernames(transcript);
-  if (users.length === 0) {
-    users = [resolveFallbackId(metadata)];
+  if (scope.kind === 'channel' || scope.kind === 'user') {
+    const outcome = await runExtraction({
+      userMemory: '',
+      entityIndex: '',
+      taskId,
+      participants: metadata.participants.join(', '),
+      taskOwner: metadata.task_owner ?? '',
+      status: metadata.status,
+      createdAt: metadata.created_at,
+      transcript,
+    }, new Set());
+    if (!outcome) return;
+    await writePrivateOutcome(scope, {
+      task_id: taskId,
+      created_at: metadata.created_at,
+      summary: outcome.task_summary,
+    });
+    return;
   }
+
+  const users = Object.entries(metadata.memory_authors ?? {})
+    .filter(([userId]) => isMemoryHumanUserId(userId))
+    .map(([userId, displayName]) => ({ userId, displayName }));
 
   // Load existing memory for ALL involved users in parallel.
   const entityIndex = await readIndexMarkdown();
@@ -148,10 +177,15 @@ async function processExtraction(taskId: string): Promise<void> {
   // user files get YAML frontmatter (slack_user_id + display_name + aliases).
   const housekeepingTargets = new Set<string>();
   const displayNameById = new Map(users.map((u) => [u.userId, u.displayName]));
+  const appliedUserUpdates: Record<string, MemoryUpdate[]> = {};
   for (const [userId, updates] of Object.entries(result.user_updates)) {
-    if (updates.length > 0) {
+    const safeUpdates = updates
+      .map((update) => sanitizeUpdate(update))
+      .filter((update): update is MemoryUpdate => update !== null);
+    if (safeUpdates.length > 0) {
       const displayName = displayNameById.get(userId) ?? userId;
-      const userCapExceeded = await applyUserUpdatesWithIdentity(userId, displayName, updates);
+      const userCapExceeded = await applyUserUpdatesWithIdentity(userId, displayName, safeUpdates);
+      appliedUserUpdates[userId] = safeUpdates;
       if (userCapExceeded) housekeepingTargets.add(userId);
     }
   }
@@ -159,10 +193,21 @@ async function processExtraction(taskId: string): Promise<void> {
   // Apply entity updates (resolve-or-create; sanitizer runs inside entities.ts).
   // Each applied update auto-adds a `touched_by [[taskId]]` edge.
   const touchedEntities: string[] = [];
+  const appliedEntityUpdates: EntityUpdate[] = [];
   for (const update of result.entity_updates) {
     const applied = await applyEntityUpdate(update, taskId);
     if (!applied) continue;
     touchedEntities.push(applied.slug);
+    appliedEntityUpdates.push({
+      slug: applied.slug,
+      ...(sanitizeEntitySummary(update.summary) ? { summary: sanitizeEntitySummary(update.summary)! } : {}),
+      observations: (update.observations ?? [])
+        .map((observation) => sanitizeEntityObservation(observation))
+        .filter((observation) => observation !== null),
+      relations: (update.relations ?? [])
+        .map((relation) => sanitizeEntityRelation(relation))
+        .filter((relation) => relation !== null),
+    });
     if (applied.capExceeded) housekeepingTargets.add('entities');
   }
   // Rebuild the derived index whenever entities changed.
@@ -191,7 +236,24 @@ async function processExtraction(taskId: string): Promise<void> {
   if (related.length === 0) {
     related = selectRelatedTasks(result.activity_summary, result.domain, activityIndex, taskId);
   }
-  await writeSummary(taskId, metadata, result, users, activityIndex, related);
+  const safeTaskSummary = sanitizeTaskSummary(result.task_summary);
+  if (safeTaskSummary) {
+    await writeSummary(
+      taskId,
+      metadata,
+      {
+        ...result,
+        task_summary: safeTaskSummary,
+        user_updates: appliedUserUpdates,
+        entity_updates: appliedEntityUpdates,
+      },
+      users,
+      activityIndex,
+      related,
+    );
+  } else {
+    logger.warn('memory', `dropped task summary for ${taskId} (sanitizer rejected)`);
+  }
 
   // Append to recent activity, then trim.
   const requestingUser = users[0]?.userId ?? 'cli';
@@ -309,7 +371,8 @@ export function buildSummaryMarkdown(
   housekeepingNotes: string[] = [],
   related?: ActivityEntry[]
 ): string {
-  const safeSummary = sanitizeTaskSummary(result.task_summary) ?? result.task_summary.slice(0, 2000);
+  const safeSummary = sanitizeTaskSummary(result.task_summary);
+  if (!safeSummary) throw new Error('buildSummaryMarkdown: unsafe task summary');
   const lines: string[] = ['---'];
   lines.push(`task_id: ${taskId}`);
   lines.push(`status: ${metadata.status}`);

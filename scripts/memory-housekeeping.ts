@@ -12,8 +12,6 @@
  * via the same in-process extraction queue.
  */
 
-import { runHousekeeping } from '../src/memory/housekeeping.js';
-
 function parseArgs(argv: string[]): { target: string } {
   for (let i = 0; i < argv.length; i++) {
     if ((argv[i] === '--target' || argv[i] === '-t') && argv[i + 1]) {
@@ -25,9 +23,9 @@ function parseArgs(argv: string[]): { target: string } {
 
 async function main() {
   const { target } = parseArgs(process.argv.slice(2));
-  console.log(`[memory-housekeeping] running with target=${target}`);
-  await runHousekeeping(target);
-  console.log('[memory-housekeeping] done');
+  throw new Error(
+    `standalone housekeeping is disabled for scoped memory (requested target=${target}); run housekeeping inside the authenticated Archie process`,
+  );
 }
 
 main().catch((err) => {

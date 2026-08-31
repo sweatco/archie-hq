@@ -1,70 +1,79 @@
 # Memory Layer — CLAUDE.md
 
-`src/memory/` is a self-contained, ejectable subsystem that gives agents persistent
-cross-task knowledge: organizational facts, user preferences, a rolling activity index,
-and per-task summaries. Gated entirely by the `ARCHIE_MEMORY` flag.
+`src/memory/` is Archie's file-based, workspace-bound memory subsystem. It keeps a
+global public corpus plus compact private outcomes for one exact internal Slack channel
+or human user. All behavior is gated by `ARCHIE_MEMORY`.
 
-## Read these before changing anything here
+## Read before changing this subsystem
 
-- **`docs/architecture/memory.md`** — the as-built design (source of truth): two-path
-  read/write flow, component map, storage formats, flags, and the 5-step ejection recipe.
-- **`openspec/specs/memory-layer/spec.md`** — the capability spec with numbered
-  requirements. The code must satisfy it.
+- `docs/architecture/memory.md` is the as-built architecture and operator guide.
+- `openspec/specs/memory-layer/spec.md` is the capability baseline.
+- An active change under `openspec/changes/` overrides that baseline until archived.
 
-The root `CLAUDE.md` rules (logging, git workflow, dev setup) apply here too — this file
-only adds what's specific to the memory layer.
+The root repository instructions still apply.
 
-## Keep the docs in sync — in the same change, not "later"
+## Keep documentation and tests in the same change
 
-When you change behavior in `src/memory/`, update the docs in the **same commit**:
+- Flow, storage, privacy, or rollout changes require an update to
+  `docs/architecture/memory.md`.
+- Requirement changes require an OpenSpec change.
+- Flag changes require updates to both the architecture document and `.env.example`.
+- Logic changes require focused tests under `src/memory/__tests__/` or the owning core
+  subsystem's test directory.
 
-- Flow / storage / behavior changed → update `docs/architecture/memory.md`.
-  **Delete the stale prose; don't bolt on a "now it also…" note.** A doc that contradicts
-  the code is worse than no doc.
-- What the layer *must* do changed → update `openspec/specs/memory-layer/spec.md`.
-- Added / renamed / removed a flag → update the flags table in `memory.md` **and**
-  `.env.example`.
-- Any logic change → add or update a test under `src/memory/__tests__/`.
+## Invariants
 
-If you're unsure whether a change is big enough to document: it is.
+- **Workspace-bound store.** `memory/.scoped-v1.json` binds the store to the authenticated
+  Slack team. Missing identity, mismatched identity, malformed metadata, and non-empty
+  legacy stores fail closed for memory without stopping Archie or its triggers.
+- **Host-controlled authorization.** Task scope and author IDs come only from resolved
+  Slack metadata. Transcript text, body mentions, display names, and model output never
+  grant memory access.
+- **Monotone audience scope.** A task may narrow from public to one exact private
+  audience or collapse to `none`; `none` never widens. Legacy tasks without scope are
+  treated as `none`.
+- **Strict storage split.** Rich profiles, entities, activity, and task summaries live
+  under `memory/public/`. Private outcomes live only at
+  `memory/private/channels/<channel-id>.md` or
+  `memory/private/users/<human-user-id>.md`. Runtime queue state lives under
+  `memory/runtime/`.
+- **Live private authorization.** Every private memory tool call reclassifies the current
+  Slack audience. Lookup failures, external/guest visibility, DM partner changes, and
+  audience changes deny private reads.
+- **Public profiles use human Slack IDs only.** New profile and DM paths accept `U…` or
+  `W…` IDs. Bot IDs, fallback IDs, display names, and path-shaped values cannot create
+  or authorize scoped profile files.
+- **Model output is untrusted.** Extraction output passes through `sanitize.ts` before
+  persistence. Memory tool responses are escaped, marked as untrusted evidence, and
+  size-bounded.
+- **Writes are serialized.** Extraction, rolling-outcome replacement, pending recovery,
+  and automatic housekeeping use the lifecycle queue. Do not add an independent writer
+  to scoped memory.
+- **Flags are independent and default safe.** `ARCHIE_MEMORY=false` disables every seam.
+  `ARCHIE_MEMORY_INJECT` and `ARCHIE_MEMORY_TOOLS` independently gate public prompt
+  injection and read-only tools; both default off.
+- **No migration or external dependency.** Scoped v1 remains Markdown/JSON on disk. An
+  operator backs up or wipes an old store instead of migrating it.
 
-## Invariants — don't break these
+## Load-bearing files
 
-- **One coupling, two seams.** `src/memory/` imports freely from core. Core imports *from*
-  memory in exactly two places — `initMemory()` in `src/index.ts` and
-  `enrichPromptWithMemory()` / `isMemoryEnabled()` in `src/agents/spawn.ts`. Keep it that
-  way; a third seam breaks one-step ejection.
-- **Stays ejectable.** No database, no migrations, no new external service, no memory types
-  leaking into core. If a change adds coupling or a new persistence backend, fix the
-  "Ejection" section of `memory.md` to match — or reconsider the change.
-- **Flag-safe.** With `ARCHIE_MEMORY=false`, `initMemory` / `enrichPromptWithMemory` /
-  `handleTaskCompleted` must all no-op. Never add a path that runs when the flag is off.
-- **Model output is untrusted.** Everything the extraction/housekeeping side-agents emit
-  passes through `sanitize.ts` before it touches a file; transcripts are a prompt-injection
-  surface. Don't persist extracted content unsanitized. The side-agents run `maxTurns: 1`,
-  `allowedTools: []`, minimal env — don't loosen that.
-- **User files are keyed by Slack ID** (`U…/W…/B…/T…`) or a `cli:` / `local:` fallback,
-  never by display name. Always go through the `paths.ts` guards (`getUserPath`,
-  `isAllowedUserId`); never hand-build a memory path.
-- **Writes are serialized.** Extraction and housekeeping share one sequential queue in
-  `lifecycle.ts`. Don't write `org.md` / `users/*.md` / `recent-activity.md` outside it —
-  concurrent task completions will corrupt the files.
-
-## Files that carry those invariants
-
-The full annotated map is in `memory.md` → "Components". The load-bearing ones:
-
-- `paths.ts` — path resolution, ID guards, flag accessors. Change flags/IDs here.
-- `sanitize.ts` — the trust boundary for all model output.
-- `lifecycle.ts` — the sequential write queue + extraction pipeline.
-- `store.ts` — `applyUpdate` add / update / skip-unmatched semantics.
-- Prompts live in `prompts/memory-extractor.md` and `prompts/memory-housekeeper.md`.
+- `paths.ts` — scoped paths, identifier guards, readiness, and flags.
+- `index.ts` — workspace marker initialization and completion-listener registration.
+- `lifecycle.ts` — serialized public/private extraction routing.
+- `outcomes.ts` — atomic, bounded private rolling files.
+- `task-authors.ts` — structured-author filtering.
+- `tools.ts` — read-only MCP tools and live authorization.
+- `sanitize.ts` — persistence trust boundary.
+- `context.ts` — public-only prompt injection.
 
 ## Verify
 
 ```bash
+npx vitest run src/memory/__tests__/ --testTimeout=10000
 npm run typecheck
-npx vitest run src/memory/__tests__/      # or: npm test  (whole suite)
+npm run build
 ```
 
-Manual consolidation pass: `npm run memory:housekeeping -- --target <org|all|U…>`.
+The standalone `memory:housekeeping` command deliberately refuses a scoped store because
+it cannot authenticate the workspace or join the runtime write queue. Scoped public
+profiles are housekept automatically in-process.

@@ -107,6 +107,7 @@ function makeTask(opts: { home?: boolean; originChannelId?: string } = {}): Task
     touch: vi.fn(), debouncedSave: vi.fn(), save: vi.fn().mockResolvedValue(undefined),
     postToUser: vi.fn().mockResolvedValue(null),
     postFilesToUser: vi.fn().mockResolvedValue(undefined),
+    prepareMemoryDelivery: vi.fn().mockResolvedValue({ kind: 'public', channel_id: null }),
     resurfacePrCards: vi.fn().mockResolvedValue(undefined),
     suspendStatus: vi.fn(),
     setCompletionIntent: vi.fn(),
@@ -320,5 +321,16 @@ describe('propose_trigger refuses a binding that is not a channel', () => {
 
     expect(out).not.toMatch(/has to deliver to a channel/i);
     expect(task.metadata.pending_trigger_id).toBeDefined();
+    expect(task.prepareMemoryDelivery).toHaveBeenCalledWith('C0123456789');
+  });
+
+  it('leaves the trigger unchanged when memory delivery authorization blocks', async () => {
+    const task = makeTask();
+    vi.mocked(task.prepareMemoryDelivery).mockRejectedValue(new Error('delivery blocked'));
+
+    const out = textOf(await getOrchestrationHandler('propose_trigger', task)(args('C0123456789')));
+
+    expect(out).toContain('Trigger not created');
+    expect(task.metadata.pending_trigger_id).toBeUndefined();
   });
 });

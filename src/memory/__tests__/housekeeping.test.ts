@@ -23,6 +23,7 @@ import { parseLastTouched, stripLastTouched, appendLastTouched } from '../annota
 let entitiesDir = '/tmp/fake-entities';
 
 vi.mock('../paths.js', () => ({
+  isMemoryReady: () => true,
   isHousekeepingEnabled: () => true,
   getUserPath: (id: string) => `/tmp/fake-user-${id}.md`,
   getUsersDir: () => '/tmp/fake-users',

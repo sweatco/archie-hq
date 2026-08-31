@@ -1,0 +1,71 @@
+{
+  "schema": "archie-e2e-evidence/v1",
+  "scenario": "lookup-failure-continuity",
+  "ac_ids": [
+    "conversation-lookup-fails",
+    "scheduled-binding-classified-before-start"
+  ],
+  "started_at": "2026-08-31T03:33:24Z",
+  "finished_at": "2026-08-31T03:33:28Z",
+  "environment": {
+    "base_url": "http://localhost:3457",
+    "git_branch": "detached-main",
+    "git_commit": "a528a9be4f9ad631cf8dad5f788574010cb34df5-dirty"
+  },
+  "nonce": "SMV1-LOOKUP-FAILURE-SEAM-484JMU",
+  "task_id": "task-20260831-0315-nmh0i6",
+  "terminal_state": "completed",
+  "assertions": [
+    {
+      "id": "classification-fails-closed",
+      "description": "Missing members and conversations.info errors return scope none.",
+      "expected": "Classifier resolves none instead of throwing.",
+      "observed": "Focused client test 'fails closed on missing members or lookup errors' passed.",
+      "pass": true
+    },
+    {
+      "id": "trigger-continuity",
+      "description": "A scheduled trigger continues after classification resolves none.",
+      "expected": "Scope is saved as none and the first agent turn is sent.",
+      "observed": "New trigger-fire regression test passed: save(true) occurred and sendMessage was called once with memory_scope=none.",
+      "pass": true
+    },
+    {
+      "id": "tool-continuity",
+      "description": "Live authorization failure denies memory without failing the task.",
+      "expected": "No memory exposure and empty authorized result.",
+      "observed": "Memory-tools test 'denies all memory and persists none when live classification fails closed' passed.",
+      "pass": true
+    },
+    {
+      "id": "no-query-leak",
+      "description": "Failure logging identifies the audience lookup without logging query or private content.",
+      "expected": "Only channel ID/error class is logged by classifier.",
+      "observed": "Production warning template is 'Failed to classify memory audience for <channel>'; tool query/content is not interpolated.",
+      "pass": true
+    }
+  ],
+  "excerpts": {
+    "knowledge_log": [
+      "Lookup failures are injected at the Slack client and memory-tool seams; live service delivery is independently attested by task-20260831-0315-nmh0i6."
+    ],
+    "events": [
+      {
+        "type": "test",
+        "name": "client lookup failure",
+        "result": "pass"
+      },
+      {
+        "type": "test",
+        "name": "scheduled trigger continues with scope none",
+        "result": "pass"
+      },
+      {
+        "type": "test",
+        "name": "memory tools deny on live reauthorization failure",
+        "result": "pass"
+      }
+    ]
+  },
+  "result": "pass"
+}

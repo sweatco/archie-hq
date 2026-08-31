@@ -4,6 +4,19 @@
 
 export type TaskStatus = 'in_progress' | 'stopped' | 'completed';
 
+export type TaskMemoryScope =
+  | { kind: 'unclassified' }
+  | { kind: 'public'; channel_id: string | null }
+  | { kind: 'channel'; channel_id: string }
+  | { kind: 'user'; user_id: string }
+  | { kind: 'none' };
+
+export type TaskMemoryExposureScope =
+  | { kind: 'internal' }
+  | { kind: 'channel'; channel_id: string }
+  | { kind: 'user'; user_id: string }
+  | { kind: 'none' };
+
 /** Core agent names - repo agents can be any string ending in '-agent' */
 export type CoreAgentName = 'pm-agent' | 'triage-agent';
 
@@ -33,6 +46,8 @@ export interface SlackAuthor {
   teamId?: string;
   isRestricted?: boolean;
   isUltraRestricted?: boolean;
+  isBot?: boolean;
+  isAppUser?: boolean;
 }
 
 /** An emoji reaction present on a Slack message (snapshot at fetch time). */
@@ -288,6 +303,10 @@ export interface TaskMetadata {
    * It answers two questions for a task that has no thread yet: where the task opens its own thread (its first user-facing agent message becomes that thread's root), and whose standing context applies before that thread exists.
    */
   home_channel?: { channel_id: string; channel_name: string };
+  memory_scope?: TaskMemoryScope;
+  memory_authors?: Record<string, string>;
+  memory_exposed?: boolean;
+  memory_exposure_scope?: TaskMemoryExposureScope;
   title?: string;                      // AI-generated one-line summary; absent on pre-feature tasks
   slack_threads?: SlackThreadRef[];    // Legacy — only present on old tasks loaded from disk, removed after migration
   agent_sessions: Record<string, AgentSessionState | string>; // union handles legacy string values on disk
@@ -432,4 +451,3 @@ export interface SlackAttachment {
   /** Text content of the attachment (forwarded message body, unfurled preview, etc.). */
   text: string;
 }
-

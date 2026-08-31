@@ -7,8 +7,9 @@
 
 import { WebClient } from '@slack/web-api';
 import type { SlackThreadRef, SlackFile, SlackThread, SlackThreadMessage, SlackAuthor, SlackAttachment, SlackReaction } from '../../types/index.js';
-import type { PrCardData } from '../../types/task.js';
+import type { PrCardData, TaskMemoryScope } from '../../types/task.js';
 import { prCardSubtitle, SLACK_PR_CARD_EMOJI } from '../../system/pr-card-format.js';
+import { isMemoryReady } from '../../memory/paths.js';
 
 /**
  * Internal raw shape produced by `fetchThreadHistory`. Carries the unresolved
@@ -105,6 +106,7 @@ export function isSlackDryRun(): boolean {
  */
 export async function initSlackClient(token: string): Promise<void> {
   slackClient = new WebClient(token);
+  memoryMemberTrustCache.clear();
 
   // Fetch bot's user ID and bot ID for filtering bot messages
   try {
@@ -1358,6 +1360,8 @@ async function resolveRawMessages(
           teamId: info.teamId,
           isRestricted: info.isRestricted,
           isUltraRestricted: info.isUltraRestricted,
+          isBot: info.isBot,
+          isAppUser: info.isAppUser,
         }];
       } catch {
         return [uid, null];
@@ -1443,6 +1447,8 @@ async function resolveAuthorsAndMap(messages: RawSlackMessage[]): Promise<SlackT
           teamId: info.teamId,
           isRestricted: info.isRestricted,
           isUltraRestricted: info.isUltraRestricted,
+          isBot: info.isBot,
+          isAppUser: info.isAppUser,
         }];
       } catch {
         return [uid, { id: uid, username: uid, realName: uid }];
@@ -1588,6 +1594,8 @@ export async function getUserInfo(userId: string): Promise<{
   teamId?: string;
   isRestricted?: boolean;
   isUltraRestricted?: boolean;
+  isBot?: boolean;
+  isAppUser?: boolean;
 }> {
   const client = getSlackClient();
 
@@ -1600,6 +1608,8 @@ export async function getUserInfo(userId: string): Promise<{
     team_id?: string;
     is_restricted?: boolean;
     is_ultra_restricted?: boolean;
+    is_bot?: boolean;
+    is_app_user?: boolean;
   } | undefined;
 
   // External users (Slack Connect) often only populate the name under profile.*
@@ -1621,6 +1631,8 @@ export async function getUserInfo(userId: string): Promise<{
     teamId: user?.team_id,
     isRestricted: user?.is_restricted,
     isUltraRestricted: user?.is_ultra_restricted,
+    isBot: user?.is_bot,
+    isAppUser: user?.is_app_user,
   };
 }
 
@@ -1642,6 +1654,22 @@ export function isExternalUser(user: {
   if (user.isRestricted || user.isUltraRestricted) return true;
   if (user.teamId && user.teamId !== home) return true;
   return false;
+}
+
+export function isInternalMemoryUser(user: {
+  teamId?: string;
+  isRestricted?: boolean;
+  isUltraRestricted?: boolean;
+  isBot?: boolean;
+  isAppUser?: boolean;
+}): boolean {
+  const home = getHomeTeamId();
+  return !!home
+    && user.teamId === home
+    && user.isRestricted === false
+    && user.isUltraRestricted === false
+    && user.isBot === false
+    && user.isAppUser === false;
 }
 
 // ---- Shared-channel detection (Slack Connect) -----------------------------
@@ -1768,6 +1796,165 @@ export async function fetchChannelIsPrivate(channelId: string): Promise<boolean>
   const result = await client.conversations.info({ channel: channelId });
   const channel = result.channel as { is_im?: boolean; is_private?: boolean } | undefined;
   return channel?.is_im === true || channel?.is_private === true;
+}
+
+async function fetchConversationMemberIds(channelId: string): Promise<string[]> {
+  const client = getSlackClient();
+  const members: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const result = await client.conversations.members({ channel: channelId, limit: 200, cursor });
+    members.push(...((result.members as string[] | undefined) ?? []));
+    cursor = result.response_metadata?.next_cursor || undefined;
+  } while (cursor);
+  return members;
+}
+
+interface MemoryMemberTrust {
+  teamId: string;
+  isRestricted: false;
+  isUltraRestricted: false;
+}
+
+const MEMORY_MEMBER_TRUST_TTL_MS = 60_000;
+const MEMORY_MEMBER_LOOKUP_CONCURRENCY = 8;
+const memoryMemberTrustCache = new Map<string, {
+  value: MemoryMemberTrust | null;
+  expiresAt: number;
+}>();
+const memoryMemberTrustGeneration = new Map<string, number>();
+const memoryMemberTrustInFlight = new Map<string, {
+  generation: number;
+  promise: Promise<MemoryMemberTrust | null>;
+}>();
+const memoryMemberLookupWaiters: Array<() => void> = [];
+let activeMemoryMemberLookups = 0;
+
+export function invalidateMemoryMemberTrust(userId: string): void {
+  memoryMemberTrustCache.delete(userId);
+  memoryMemberTrustGeneration.set(userId, (memoryMemberTrustGeneration.get(userId) ?? 0) + 1);
+}
+
+async function fetchMemoryMemberTrust(userId: string): Promise<MemoryMemberTrust | null> {
+  const cached = memoryMemberTrustCache.get(userId);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+  const generation = memoryMemberTrustGeneration.get(userId) ?? 0;
+  const pending = memoryMemberTrustInFlight.get(userId);
+  if (pending?.generation === generation) return pending.promise;
+
+  const lookup = (async () => {
+    if (activeMemoryMemberLookups >= MEMORY_MEMBER_LOOKUP_CONCURRENCY) {
+      await new Promise<void>((resolve) => memoryMemberLookupWaiters.push(resolve));
+    }
+    activeMemoryMemberLookups += 1;
+    try {
+      const result = await getSlackClient().users.info({ user: userId });
+      const user = result.user as {
+        team_id?: string;
+        is_restricted?: boolean;
+        is_ultra_restricted?: boolean;
+        is_bot?: boolean;
+        is_app_user?: boolean;
+        deleted?: boolean;
+      } | undefined;
+      const value = user
+        && user.team_id
+        && user.is_restricted === false
+        && user.is_ultra_restricted === false
+        && typeof user.is_bot === 'boolean'
+        && typeof user.is_app_user === 'boolean'
+        && user.deleted !== true
+        && ((user.is_bot === false && user.is_app_user === false) || userId === getBotUserId())
+        ? { teamId: user.team_id, isRestricted: false as const, isUltraRestricted: false as const }
+        : null;
+      if ((memoryMemberTrustGeneration.get(userId) ?? 0) !== generation) return null;
+      memoryMemberTrustCache.set(userId, { value, expiresAt: Date.now() + MEMORY_MEMBER_TRUST_TTL_MS });
+      return value;
+    } finally {
+      activeMemoryMemberLookups -= 1;
+      memoryMemberLookupWaiters.shift()?.();
+    }
+  })();
+  const inFlight = { generation, promise: lookup };
+  memoryMemberTrustInFlight.set(userId, inFlight);
+  try {
+    return await lookup;
+  } finally {
+    if (memoryMemberTrustInFlight.get(userId) === inFlight) memoryMemberTrustInFlight.delete(userId);
+  }
+}
+
+function isTrustedMemoryChannelMember(user: MemoryMemberTrust): boolean {
+  const home = getHomeTeamId();
+  return !!home
+    && user.teamId === home
+    && user.isRestricted === false
+    && user.isUltraRestricted === false;
+}
+
+export async function classifySlackMemoryScope(
+  channelId: string,
+): Promise<Exclude<TaskMemoryScope, { kind: 'unclassified' }>> {
+  try {
+    if (!isMemoryReady() || !getHomeTeamId()) return { kind: 'none' };
+
+    const result = await getSlackClient().conversations.info({ channel: channelId });
+    const channel = result.channel as {
+      id?: string;
+      is_im?: boolean;
+      is_mpim?: boolean;
+      is_private?: boolean;
+      is_shared?: boolean;
+      is_ext_shared?: boolean;
+      is_pending_ext_shared?: boolean;
+      connected_team_ids?: string[];
+      user?: string;
+    } | undefined;
+    if (!channel) return { kind: 'none' };
+
+    if (channel.is_im === true) {
+      if (!channel.user) return { kind: 'none' };
+      const user = await getUserInfo(channel.user);
+      return isInternalMemoryUser(user)
+        ? { kind: 'user', user_id: channel.user }
+        : { kind: 'none' };
+    }
+
+    if (
+      typeof channel.is_im !== 'boolean'
+      || typeof channel.is_mpim !== 'boolean'
+      || typeof channel.is_private !== 'boolean'
+      || typeof channel.is_shared !== 'boolean'
+      || typeof channel.is_ext_shared !== 'boolean'
+      || typeof channel.is_pending_ext_shared !== 'boolean'
+      || (channel.connected_team_ids !== undefined && !Array.isArray(channel.connected_team_ids))
+    ) return { kind: 'none' };
+
+    if (
+      channel.is_shared
+      || channel.is_ext_shared
+      || channel.is_pending_ext_shared
+      || (channel.connected_team_ids?.length ?? 0) > 1
+    ) {
+      return { kind: 'none' };
+    }
+
+    const memberIds = await fetchConversationMemberIds(channelId);
+    if (memberIds.length === 0) return { kind: 'none' };
+    const members = await Promise.all(memberIds.map((id) => fetchMemoryMemberTrust(id)));
+    if (members.some((member) => !member || !isTrustedMemoryChannelMember(member))) {
+      return { kind: 'none' };
+    }
+
+    if (channel.is_private || channel.is_mpim) {
+      return { kind: 'channel', channel_id: channelId };
+    }
+    return { kind: 'public', channel_id: channelId };
+  } catch (error) {
+    logger.warn('Slack', `Failed to classify memory audience for ${channelId}`, error);
+    return { kind: 'none' };
+  }
 }
 
 // ---- Channel canvas tabs + file reads (project-context canvases) ----------
@@ -2580,4 +2767,3 @@ export async function findSlackChannels(query: string): Promise<SlackChannelInfo
     c.purpose.toLowerCase().includes(q)
   );
 }
-

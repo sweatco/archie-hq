@@ -6,7 +6,7 @@
  */
 
 import { mkdir, writeFile } from 'fs/promises';
-import type { AgentName, SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, BranchState } from '../types/task.js';
+import type { AgentName, SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, BranchState, TaskMemoryScope } from '../types/task.js';
 import { CLI_CHANNEL_KEY } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
 import { isPmAgent, isRepoAgent } from '../types/agent.js';
@@ -39,7 +39,6 @@ import { Agent } from '../agents/agent.js';
 
 import {
   loadMetadata,
-  getMetadataPath,
   appendAgentFinding,
   appendAgentMessage,
   appendMessageToUser,
@@ -52,13 +51,15 @@ import {
   getSharedPath,
   getMemoryPath,
   getKnowledgeLogPath,
+  persistTaskMetadata,
+  reconcilePersistedMemoryMetadata,
 } from './persistence.js';
 import { getIsShuttingDown } from '../system/shutdown.js';
 import { scheduleIdleCheck } from './recovery.js';
 import { scanAgentDefs, getAgentDef, getVisiblePeerIdsForSender, synthesizeDynamicAgentDef } from '../agents/registry.js';
 import type { AttachedRepo } from '../types/task.js';
 import { syncPlugins } from '../system/plugin-sync.js';
-import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, formatSlackChannelRef, formatSlackChannelDisplay, classifySlackMemoryScope, getBotUserId, isInternalMemoryUser } from '../connectors/slack/client.js';
 import { renderMessageBody, shouldRedact } from '../connectors/slack/message-body.js';
 import { basename } from 'path';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
@@ -67,6 +68,8 @@ import { emitEvent } from '../system/event-bus.js';
 import { TaskStatusController, isStatusEnabled } from './status.js';
 import { setSlackThreadStatus } from '../connectors/slack/status.js';
 import { agentDomainLabel, deriveActivityFromEvent } from '../agents/activity.js';
+import { isMemoryDeliveryCompatible, joinMemoryScope, type ClassifiedMemoryScope } from './memory-scope.js';
+import { isMemoryReady } from '../memory/paths.js';
 
 // ---- Global state ----
 
@@ -191,6 +194,8 @@ export class Task {
     // Ensure channels/default_channel exist on metadata
     metadata.channels ??= {};
     metadata.default_channel ??= null;
+    metadata.memory_scope ??= { kind: 'none' };
+    metadata.memory_authors ??= {};
 
     this.metadata = metadata;
   }
@@ -224,6 +229,8 @@ export class Task {
       participants: [],
       channels: {},
       default_channel: null,
+      memory_scope: { kind: 'unclassified' },
+      memory_authors: {},
       agent_sessions: {},
       repositories: {},
       status: 'in_progress',
@@ -231,7 +238,7 @@ export class Task {
       updated_at: new Date().toISOString(),
     };
 
-    await writeFile(getMetadataPath(taskId), JSON.stringify(metadata, null, 2));
+    await persistTaskMetadata(taskId, metadata);
     await writeFile(getKnowledgeLogPath(taskId), '');
 
     logger.system(`Created task ${taskId}`);
@@ -275,7 +282,7 @@ export class Task {
     // repo agent still resolves (a later plugin removal would otherwise make the
     // migration drop those entries). Only an active task ever re-saves on its own.
     if (didMigrate) {
-      await writeFile(getMetadataPath(taskId), JSON.stringify(metadata, null, 2));
+      await persistTaskMetadata(taskId, metadata);
       // Log once, here — the migration persisted, so it won't run again. (The
       // migrate fn stays silent: it runs on every load, incl. read-only
       // findTaskByPRNumber, so logging there would spam.)
@@ -305,9 +312,16 @@ export class Task {
     // activated (registered itself in activeTasks), this routes the message onto
     // that instance rather than activating and spawning a duplicate; otherwise
     // `this` is the first in and becomes canonical. See `activationLock`.
-    await activationLock(this.taskId, () =>
-      (activeTasks.get(this.taskId) ?? this).deliver(message, agentName),
-    );
+    await activationLock(this.taskId, async () => {
+      const active = activeTasks.get(this.taskId);
+      if (active) {
+        await active.deliver(message, agentName);
+        return;
+      }
+      const persisted = await loadMetadata(this.taskId);
+      if (persisted) reconcilePersistedMemoryMetadata(persisted, this.metadata);
+      await this.deliver(message, agentName);
+    });
   }
 
   /**
@@ -341,6 +355,13 @@ export class Task {
   async append(thread: SlackThread): Promise<{ linkedNewThread: boolean }> {
     const channelId = `slack:${thread.channel.id}:${thread.threadId}`;
     const existing = this.metadata.channels[channelId] as SlackChannel | undefined;
+    if (isMemoryReady()) {
+      this.applyMemoryScope(await classifySlackMemoryScope(thread.channel.id));
+      for (const message of thread.messages) this.recordMemoryAuthor(message.user);
+    } else {
+      this.applyMemoryScope({ kind: 'none' });
+    }
+    await this.save(true);
 
     // Redaction policy: when the channel is shared and the message author is
     // external, drop content and don't download files. Author info is logged.
@@ -422,6 +443,13 @@ export class Task {
   ): Promise<boolean> {
     const ch = this.metadata.channels[channelKey];
     if (ch?.type !== 'slack') return false;
+    if (isMemoryReady()) {
+      this.applyMemoryScope(await classifySlackMemoryScope(ch.channel_id));
+      this.recordMemoryAuthor(author);
+    } else {
+      this.applyMemoryScope({ kind: 'none' });
+    }
+    await this.save(true);
     await appendSlackEdit(
       this.taskId,
       { id: ch.channel_id, name: ch.channel_name },
@@ -430,7 +458,36 @@ export class Task {
       editedTs,
       newText,
     );
+    this.debouncedSave();
     return true;
+  }
+
+  applyMemoryScope(scope: ClassifiedMemoryScope): TaskMemoryScope {
+    this.metadata.memory_scope = joinMemoryScope(this.metadata.memory_scope, scope);
+    return this.metadata.memory_scope;
+  }
+
+  async prepareMemoryDelivery(channelId: string): Promise<TaskMemoryScope> {
+    if (!isMemoryReady()) return this.metadata.memory_scope ?? { kind: 'none' };
+    const destination = await classifySlackMemoryScope(channelId);
+    this.applyMemoryScope(destination);
+    await this.save(true);
+    if (
+      this.metadata.memory_exposed === true
+      && !isMemoryDeliveryCompatible(this.metadata.memory_exposure_scope ?? { kind: 'none' }, destination)
+    ) {
+      throw new Error('delivery blocked: destination is incompatible with memory already available to this task');
+    }
+    return this.metadata.memory_scope!;
+  }
+
+  private recordMemoryAuthor(author: SlackAuthor): void {
+    if (author.id === getBotUserId()) return;
+    if (!/^[UW][A-Z0-9]{6,}$/.test(author.id)) return;
+    if (author.isBot !== false || author.isAppUser !== false) return;
+    if (!isInternalMemoryUser(author)) return;
+    this.metadata.memory_authors ??= {};
+    this.metadata.memory_authors[author.id] = author.realName || author.username || author.id;
   }
 
   /**
@@ -469,6 +526,7 @@ export class Task {
     if (target?.channel) {
       const ch = this.metadata.channels[target.channel];
       if (ch?.type === 'slack') {
+        await this.prepareMemoryDelivery(ch.channel_id);
         await postSlackMessage({ channel: ch.channel_id, threadTs: ch.thread_id, text: message, footer });
         this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch, footer);
       }
@@ -494,6 +552,7 @@ export class Task {
       return null;
     }
     if (defaultCh.type === 'slack') {
+      await this.prepareMemoryDelivery(defaultCh.channel_id);
       await postSlackMessage({ channel: defaultCh.channel_id, threadTs: defaultCh.thread_id, text: message, footer });
       this.logOutgoingMessage(sender, message, Task.formatSlackDest(defaultCh).display, defaultCh, footer);
     } else if (defaultCh.type === 'cli') {
@@ -526,6 +585,7 @@ export class Task {
     if (existing) {
       const [key, ch] = existing;
       this.metadata.default_channel = key;
+      await this.prepareMemoryDelivery(ch.channel_id);
       await postSlackMessage({ channel: ch.channel_id, threadTs: ch.thread_id, text: message, footer });
       this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch, footer);
       await this.save(true);
@@ -533,6 +593,7 @@ export class Task {
     }
 
     // No threadTs — this is a new top-level post in the channel, and its ts becomes the thread root.
+    await this.prepareMemoryDelivery(home.channel_id);
     const ts = await postSlackMessage({ channel: home.channel_id, text: message, footer });
     if (!ts) {
       // Dry-run mode returns undefined without ever reaching Slack, so there is no thread to link to.
@@ -577,6 +638,7 @@ export class Task {
       return;
     }
     if (target.type === 'slack') {
+      await this.prepareMemoryDelivery(target.channel_id);
       await postSlackFiles({ channel: target.channel_id, threadTs: target.thread_id, files });
       this.logFilesUpload(sender, filePaths, Task.formatSlackDest(target).display, target);
     } else if (target.type === 'cli') {
@@ -657,6 +719,7 @@ export class Task {
 
     const ch = this.resolveSlackChannel(channelKey);
     if (ch) {
+      await this.prepareMemoryDelivery(ch.channel_id);
       await postInteractiveToThreads([{
         thread_id: ch.thread_id,
         channel_id: ch.channel_id,
@@ -816,6 +879,7 @@ export class Task {
           // failed repost doesn't diverge the CLI (which renders off the event).
           let slackRef = state.pr_card?.slack;
           if (slack) {
+            await this.prepareMemoryDelivery(slack.channel_id);
             if (slackRef?.ts) await deleteMessage(slackRef.channel_id, slackRef.ts);
             const ts = await postInteractiveToThread(slack.channel_id, slack.thread_id, prCardTitlePlain(card), buildPrCardBlocks(card));
             slackRef = ts ? { ts, channel_id: slack.channel_id, thread_id: slack.thread_id } : undefined;
@@ -859,6 +923,7 @@ export class Task {
         const slackRef = target.state.pr_card.slack;
         logger.system(`PR card ${github}#${prNumber}: updating in place (${target.state.pr_card.fingerprint} → ${fingerprint}), slack=${slackRef?.ts ? 'yes' : 'no'}`);
         if (slackRef?.ts) {
+          await this.prepareMemoryDelivery(slackRef.channel_id);
           await updateMessage(slackRef.channel_id, slackRef.ts, prCardTitlePlain(card), buildPrCardBlocks(card));
         }
         emitEvent('pr_card', this.taskId, { action: 'update', cardId: `${github}#${prNumber}`, ...card });
@@ -955,6 +1020,7 @@ export class Task {
       logger.warn('task', `reactToMessage on task ${this.taskId}: ${channelKey ? `channel ${channelKey} not linked` : 'no default channel'} — reaction dropped`);
       return false;
     }
+    await this.prepareMemoryDelivery(ch.channel_id);
     await addReaction(ch.channel_id, messageTs, emoji);
     return true;
   }
@@ -969,6 +1035,7 @@ export class Task {
       logger.warn('task', `unreactFromMessage on task ${this.taskId}: ${channelKey ? `channel ${channelKey} not linked` : 'no default channel'} — reaction removal dropped`);
       return false;
     }
+    await this.prepareMemoryDelivery(ch.channel_id);
     await removeReaction(ch.channel_id, messageTs, emoji);
     return true;
   }
@@ -1171,10 +1238,7 @@ export class Task {
     // saveLegacyTask expects TaskRuntimeState, but we need to bridge
     // For now, write directly
     if (flush) {
-      await writeFile(
-        getMetadataPath(this.taskId),
-        JSON.stringify(this.metadata, null, 2),
-      );
+      await persistTaskMetadata(this.taskId, this.metadata);
     } else {
       // Debounced — use the legacy saveTask by creating a compat shim
       this.debouncedSave();
@@ -1887,13 +1951,20 @@ export class Task {
       return null;
     }
     const { loadTrigger, enableProposedTrigger, deleteTrigger, countActiveTriggers } = await import('../system/trigger-store.js');
-    const { indexTrigger, announceTriggerChange, MAX_TRIGGERS_PER_USER, MAX_TRIGGERS_PER_CHANNEL } = await import('../system/trigger-scheduler.js');
+    const { indexTrigger, announceTriggerChange, authorizeTriggerMemoryBinding, MAX_TRIGGERS_PER_USER, MAX_TRIGGERS_PER_CHANNEL } = await import('../system/trigger-scheduler.js');
 
     // Re-check caps at approval: pending proposals don't count toward the caps,
     // so approving several proposed while under the limit could otherwise blow
     // past it. Refuse (delete the pending file) if enabling would exceed a cap.
     const pending = await loadTrigger(id);
     if (pending && pending.status === 'pending') {
+      if (!(await authorizeTriggerMemoryBinding(pending))) {
+        await deleteTrigger(id);
+        if (this.metadata.pending_trigger_id === id) this.metadata.pending_trigger_id = undefined;
+        this.debouncedSave();
+        await appendAgentFinding(this.taskId, 'system', `Trigger ${id} not enabled — memory exposure is incompatible with its live delivery audience`, 'decision');
+        return null;
+      }
       const overChannel = pending.binding.type === 'channel'
         && (await countActiveTriggers((t) => t.binding.type === 'channel' && t.binding.channel_id === (pending.binding as { channel_id: string }).channel_id)) >= MAX_TRIGGERS_PER_CHANNEL;
       const overUser = pending.created_by && pending.created_by !== 'unknown'
@@ -2087,10 +2158,7 @@ export class Task {
           this.metadata.agent_sessions[agentName] = { ...agent.session };
         }
         this.metadata.updated_at = new Date().toISOString();
-        await writeFile(
-          getMetadataPath(this.taskId),
-          JSON.stringify(this.metadata, null, 2),
-        );
+        await persistTaskMetadata(this.taskId, this.metadata);
       } catch (err) {
         logger.error('task', `Failed to save task ${this.taskId}`, err);
       }

@@ -1,0 +1,77 @@
+{
+  "schema": "archie-e2e-evidence/v1",
+  "scenario": "tools-off-public-trigger",
+  "ac_ids": [
+    "scheduled-binding-classified-before-start",
+    "tools-default-off"
+  ],
+  "started_at": "2026-08-31T03:11:56Z",
+  "finished_at": "2026-08-31T03:15:59Z",
+  "environment": {
+    "base_url": "http://localhost:3457",
+    "git_branch": "detached-main",
+    "git_commit": "a528a9be4f9ad631cf8dad5f788574010cb34df5-dirty"
+  },
+  "nonce": "SMV1-TRIG-TOOLS-OFF-484JMU",
+  "task_id": "task-20260831-0315-nmh0i6",
+  "terminal_state": "completed",
+  "assertions": [
+    {
+      "id": "trigger-delivered",
+      "description": "An approved channel-bound one-off trigger starts and delivers normally.",
+      "expected": "Trigger fires once and posts the nonce in #archie-test-channel.",
+      "observed": "trg-20260831-0312-4r02dc fired at 03:15:32Z; task completed and posted the nonce in Slack thread 1788146149.405469.",
+      "pass": true
+    },
+    {
+      "id": "scope-before-agent",
+      "description": "The trigger task persists the live channel audience before work starts.",
+      "expected": "memory_scope is public for C0BL50N2600.",
+      "observed": "metadata.memory_scope={kind:public,channel_id:C0BL50N2600}; home_channel names archie-test-channel.",
+      "pass": true
+    },
+    {
+      "id": "public-only-write",
+      "description": "Completion writes public summary/activity and no channel-private outcome.",
+      "expected": "Public task summary and activity exist; channels/C0BL50N2600/private.md is absent.",
+      "observed": "public/tasks/task-20260831-0315-nmh0i6.md and public/recent-activity.md exist; no channel-private file was present.",
+      "pass": true
+    },
+    {
+      "id": "tools-off",
+      "description": "The memory MCP is not registered when ARCHIE_MEMORY_TOOLS=false.",
+      "expected": "No memory-tools connection in the spawned PM log.",
+      "observed": "Flags were memory=true, injection=false, tools=false; PM connected agent/research/comms/orchestration/scheduling only.",
+      "pass": true
+    }
+  ],
+  "excerpts": {
+    "knowledge_log": [
+      "[2026-08-31T03:15:49.468Z] [pm-agent in slack:#<C0BL50N2600:archie-test-channel>:1788146149.405469] Scoped memory trigger delivered SMV1-TRIG-TOOLS-OFF-484JMU"
+    ],
+    "events": [
+      {
+        "type": "flags",
+        "memory": true,
+        "injection": false,
+        "tools": false
+      },
+      {
+        "type": "trigger",
+        "id": "trg-20260831-0312-4r02dc",
+        "status": "paused",
+        "last_fired_at": "2026-08-31T03:15:32.210Z"
+      },
+      {
+        "type": "scoped_store",
+        "files": [
+          ".scoped-v1.json",
+          "public/tasks/task-20260831-0315-nmh0i6.md",
+          "public/recent-activity.md",
+          "runtime/pending-extractions.md"
+        ]
+      }
+    ]
+  },
+  "result": "pass"
+}

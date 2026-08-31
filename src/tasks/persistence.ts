@@ -5,8 +5,9 @@
  * appending to knowledge.log
  */
 
-import { mkdir, readdir, readFile, writeFile, appendFile } from 'fs/promises';
+import { mkdir, readdir, readFile, rename, unlink, writeFile, appendFile } from 'fs/promises';
 import { createReadStream, existsSync } from 'fs';
+import { randomUUID } from 'crypto';
 import { createInterface } from 'readline';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -18,8 +19,44 @@ import { SESSIONS_DIR } from '../system/workdir.js';
 import { emitEvent, onEvent } from '../system/event-bus.js';
 import { logger } from '../system/logger.js';
 import { formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { createKeyedLock } from '../system/keyed-lock.js';
+import { joinMemoryExposureScope, joinMemoryScope } from './memory-scope.js';
+import type { TaskMemoryScope } from '../types/task.js';
 
 const execFileAsync = promisify(execFile);
+const metadataLock = createKeyedLock();
+
+function mergePersistedMemoryScope(
+  persisted: TaskMemoryScope | undefined,
+  pending: TaskMemoryScope | undefined,
+): TaskMemoryScope {
+  const left = persisted ?? { kind: 'none' };
+  const right = pending ?? { kind: 'none' };
+  if (left.kind === 'unclassified') return right;
+  if (right.kind === 'unclassified') return left;
+  return joinMemoryScope(left, right);
+}
+
+export function reconcilePersistedMemoryMetadata(
+  persisted: TaskMetadata,
+  pending: TaskMetadata,
+): void {
+  pending.memory_scope = mergePersistedMemoryScope(persisted.memory_scope, pending.memory_scope);
+  if (persisted.memory_exposed === true && pending.memory_exposed !== true) {
+    pending.memory_exposed = true;
+    pending.memory_exposure_scope = persisted.memory_exposure_scope ?? { kind: 'none' };
+  } else if (persisted.memory_exposed === true && pending.memory_exposed === true) {
+    pending.memory_exposure_scope = pending.memory_exposure_scope
+      ? joinMemoryExposureScope(persisted.memory_exposure_scope, pending.memory_exposure_scope)
+      : persisted.memory_exposure_scope ?? { kind: 'none' };
+  } else if (pending.memory_exposed === true && !pending.memory_exposure_scope) {
+    pending.memory_exposure_scope = { kind: 'none' };
+  }
+  pending.memory_authors = {
+    ...(persisted.memory_authors ?? {}),
+    ...(pending.memory_authors ?? {}),
+  };
+}
 
 /**
  * Ceiling on a scan's stdout. Only matching paths are printed, so this is ~150
@@ -225,6 +262,32 @@ export async function loadMetadata(taskId: string): Promise<TaskMetadata | null>
     logger.warn('persistence', `Failed to parse metadata for ${taskId}: ${err}`);
     return null;
   }
+}
+
+export async function persistTaskMetadata(taskId: string, metadata: TaskMetadata): Promise<void> {
+  await metadataLock(taskId, async () => {
+    const path = getMetadataPath(taskId);
+    let persisted: TaskMetadata | undefined;
+    try {
+      persisted = JSON.parse(await readFile(path, 'utf-8')) as TaskMetadata;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+
+    if (persisted) {
+      reconcilePersistedMemoryMetadata(persisted, metadata);
+    }
+
+    const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(tempPath, JSON.stringify(metadata, null, 2));
+      await rename(tempPath, path);
+    } finally {
+      await unlink(tempPath).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      });
+    }
+  });
 }
 
 /**

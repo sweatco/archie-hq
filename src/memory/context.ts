@@ -10,7 +10,7 @@ import { existsSync } from 'fs';
 import { readUser } from './store.js';
 import { listEntities, serializeEntity } from './entities.js';
 import { readIndexMarkdown, renderIndex, selectEntities } from './entity-index.js';
-import { isMemoryEnabled, isInjectionEnabled, getRecentActivityPath } from './paths.js';
+import { isMemoryReady, isInjectionEnabled, getRecentActivityPath } from './paths.js';
 import { logger } from '../system/logger.js';
 import type { UserRef, EntityRecord } from './types.js';
 
@@ -37,6 +37,8 @@ export async function buildMemoryContext(
   users: UserRef[] | string[],
   selectors: MemorySelectors = {},
 ): Promise<string> {
+  if (!isMemoryReady()) return '';
+
   const blocks: string[] = [];
 
   // Per-user preferences
@@ -110,7 +112,7 @@ export async function enrichPromptWithMemory(
   users: UserRef[] | string[],
   selectors: MemorySelectors = {},
 ): Promise<string> {
-  if (!isMemoryEnabled()) {
+  if (!isMemoryReady()) {
     return systemPrompt;
   }
 

@@ -1,0 +1,64 @@
+{
+  "schema": "archie-e2e-evidence/v1",
+  "scenario": "outsider-visible-no-memory",
+  "ac_ids": [
+    "outsider-visible-audience-disables-memory"
+  ],
+  "started_at": "2026-08-31T03:32:43Z",
+  "finished_at": "2026-08-31T03:33:28Z",
+  "environment": {
+    "base_url": "http://localhost:3457",
+    "git_branch": "detached-main",
+    "git_commit": "a528a9be4f9ad631cf8dad5f788574010cb34df5-dirty"
+  },
+  "nonce": "SMV1-OUTSIDER-SEAM-484JMU",
+  "task_id": "task-20260831-0315-nmh0i6",
+  "terminal_state": "completed",
+  "assertions": [
+    {
+      "id": "fixture-availability",
+      "description": "A bot-visible Slack Connect or restricted-guest fixture is resolved before claiming live coverage.",
+      "expected": "Use a real fixture if available; otherwise record seam coverage.",
+      "observed": "No bot-visible private/Slack Connect/restricted-guest fixture was available. ext-sweat-brightestminds reported is_shared=false and is_ext_shared=false, so it was not substituted.",
+      "pass": true
+    },
+    {
+      "id": "outsider-classifiers",
+      "description": "Slack Connect, restricted, ultra-restricted, and foreign members classify as none.",
+      "expected": "Every outsider-visible fixture returns none before member/private memory access.",
+      "observed": "Focused classifier run passed five cases: Slack Connect, restricted guest, ultra-restricted guest, foreign-workspace member, and bot-user DM.",
+      "pass": true
+    },
+    {
+      "id": "no-tools-or-injection",
+      "description": "None-scoped tasks receive no memory reads or MCP tools.",
+      "expected": "No injection, tool registration, transcript extraction, or artifact.",
+      "observed": "Unit seams assert none-scoped tool omission and extraction early return; live normal delivery remained covered by completed scheduled and Slack tasks.",
+      "pass": true
+    }
+  ],
+  "excerpts": {
+    "knowledge_log": [
+      "Live Slack Connect/restricted guest verification unavailable: no safe bot-visible fixture; ordinary public channels were not used as substitutes."
+    ],
+    "events": [
+      {
+        "type": "classifier_test",
+        "cases": [
+          "Slack Connect",
+          "restricted guest",
+          "ultra-restricted guest",
+          "foreign workspace member",
+          "internal bot-user DM"
+        ],
+        "passed": 5
+      },
+      {
+        "type": "live_delivery_reference",
+        "task_id": "task-20260831-0315-nmh0i6",
+        "status": "completed"
+      }
+    ]
+  },
+  "result": "pass"
+}

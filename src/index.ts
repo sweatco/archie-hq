@@ -44,6 +44,7 @@ import { initEventPersistence } from './tasks/persistence.js';
 import { initReminderScheduler } from './system/reminder-scheduler.js';
 import { initTriggerScheduler } from './system/trigger-scheduler.js';
 import { initMemory } from './memory/index.js';
+import { getHomeTeamId } from './connectors/slack/client.js';
 
 /**
  * Application configuration
@@ -109,7 +110,6 @@ async function main(): Promise<void> {
     initPlugins();
     initRegistry();
     initEventPersistence();
-    await initMemory();
 
     // DEBUG: start the context-probe logging proxy (no-op when disabled). Must
     // be before any agent spawns so getProbeBaseUrl() is live at spawn time.
@@ -247,6 +247,8 @@ async function main(): Promise<void> {
     } else {
       logger.plain('Slack App not configured — running in CLI-only mode');
     }
+
+    await initMemory(getHomeTeamId());
 
     // Create the HTTP server but DO NOT listen yet — recover first so a Slack
     // event arriving on startup cannot reach a task before its agent is respawned.

@@ -9,6 +9,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { logger } from '../system/logger.js';
 import type { ExtractionResult, MemoryUpdate, EntityUpdate } from './types.js';
+import { isAllowedDomain } from './sanitize.js';
 
 // ============================================================================
 // Types
@@ -178,6 +179,8 @@ export function parseExtractionResponse(
   if (typeof obj.task_summary !== 'string') return null;
   if (typeof obj.activity_summary !== 'string') return null;
   if (typeof obj.domain !== 'string') return null;
+  const domain = obj.domain.trim().toLowerCase();
+  if (!isAllowedDomain(domain)) return null;
 
   // Validate user_updates is a plain object (not array, not null)
   if (typeof obj.user_updates !== 'object' || obj.user_updates === null || Array.isArray(obj.user_updates)) return null;
@@ -201,7 +204,7 @@ export function parseExtractionResponse(
     entity_updates: parseEntityUpdates(obj.entity_updates),
     task_summary: obj.task_summary,
     activity_summary: obj.activity_summary,
-    domain: obj.domain,
+    domain,
   };
 }
 

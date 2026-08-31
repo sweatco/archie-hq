@@ -26,6 +26,7 @@ import {
   postEphemeral,
   getSlackClient,
   cleanSlackText,
+  invalidateMemoryMemberTrust,
 } from './client.js';
 import { ensureChannelCanvas } from './channel-canvas.js';
 import { ensureChannelPins } from './channel-pins.js';
@@ -232,6 +233,13 @@ export async function mountSlackApp(
     Promise.all([ensureChannelCanvas(event.channel), ensureChannelPins(event.channel)]).catch((err: unknown) =>
       logger.error('Server', 'Error scanning channel context on channel join', err));
   });
+
+  for (const eventName of ['user_change', 'team_join']) {
+    app!.event(eventName, async ({ event }: { event: any }) => {
+      const userId = event.user?.id;
+      if (typeof userId === 'string') invalidateMemoryMemberTrust(userId);
+    });
+  }
 
   // Handle edit mode approval button
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -456,9 +464,14 @@ export async function mountSlackApp(
         trigger = await task.handleTriggerApproval(userId, triggerId);
       } else {
         logger.warn('Server', `approve_trigger: no task found for thread ${threadId}; enabling trigger directly`);
-        const { enableProposedTrigger } = await import('../../system/trigger-store.js');
-        const { indexTrigger, announceTriggerChange } = await import('../../system/trigger-scheduler.js');
-        trigger = await enableProposedTrigger(triggerId, userId);
+        const { enableProposedTrigger, loadTrigger, deleteTrigger } = await import('../../system/trigger-store.js');
+        const { indexTrigger, announceTriggerChange, authorizeTriggerMemoryBinding } = await import('../../system/trigger-scheduler.js');
+        const pending = await loadTrigger(triggerId);
+        if (pending && await authorizeTriggerMemoryBinding(pending)) {
+          trigger = await enableProposedTrigger(triggerId, userId);
+        } else if (pending) {
+          await deleteTrigger(triggerId);
+        }
         if (trigger) { indexTrigger(trigger); await announceTriggerChange(trigger, 'enabled'); }
       }
       if (body.channel?.id && body.message?.ts) {
@@ -1051,6 +1064,8 @@ async function handleSlackEdit(event: any): Promise<void> {
     teamId: authorInfo?.teamId,
     isRestricted: authorInfo?.isRestricted,
     isUltraRestricted: authorInfo?.isUltraRestricted,
+    isBot: authorInfo?.isBot,
+    isAppUser: authorInfo?.isAppUser,
   };
 
   const recorded = await task.appendSlackEdit(channelKey, author, editedTs, newText);
@@ -1141,4 +1156,3 @@ async function sendSharedChannelWarnings(
 
   task.debouncedSave();
 }
-

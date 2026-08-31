@@ -113,6 +113,7 @@ import {
   planStatusChange,
   indexTrigger,
   deindexTrigger,
+  authorizeTriggerMemoryBinding,
   announceTriggerChange,
   describeTrigger,
   triggerWhat,
@@ -124,6 +125,7 @@ import {
 } from '../system/trigger-scheduler.js';
 import { emitEvent } from '../system/event-bus.js';
 import { triggerVisibleFrom, type TriggerOrigin } from '../system/trigger-visibility.js';
+import { joinMemoryExposureScope } from '../tasks/memory-scope.js';
 
 // Re-export branch state helpers for consumers that import from tools.ts
 export { hydrateBranchState, findBranchStateByPR };
@@ -1120,6 +1122,7 @@ function createPostToChannelTool(_agent: Agent, task: Task) {
         // The prefix check above rejects 1:1 DMs/user ids; this rejects group DMs
         // (mpims), which share the ambiguous `G…` prefix with private channels.
         await assertPostableChannel(args.channel);
+        await task.prepareMemoryDelivery(args.channel);
 
         // Preflight: a channel's standing brief governs what gets said in it, and
         // this agent has never seen the destination's — its own context is for the
@@ -2413,6 +2416,32 @@ function buildConditions(raw: RawCondition[], defaultTz: string): { conditions: 
   return { conditions };
 }
 
+async function authorizeTriggerBinding(task: Task, binding: TriggerBinding): Promise<string | null> {
+  if (binding.type !== 'channel') return null;
+  try {
+    await task.prepareMemoryDelivery(binding.channel_id);
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function authorizeTriggerChange(task: Task, trigger: Trigger): Promise<string | null> {
+  const deliveryError = await authorizeTriggerBinding(task, trigger.binding);
+  if (deliveryError) return deliveryError;
+  return await authorizeTriggerMemoryBinding(trigger)
+    ? null
+    : 'delivery blocked: trigger content is incompatible with the live delivery audience';
+}
+
+function carryTaskMemoryExposure(task: Task, trigger: Trigger): void {
+  if (task.metadata.memory_exposed !== true) return;
+  trigger.memory_exposure_scope = joinMemoryExposureScope(
+    trigger.memory_exposure_scope,
+    task.metadata.memory_exposure_scope ?? { kind: 'none' },
+  );
+}
+
 function createProposeTriggerTool(agent: Agent, task: Task) {
   return tool(
     'propose_trigger',
@@ -2466,6 +2495,9 @@ function createProposeTriggerTool(agent: Agent, task: Task) {
         }
       }
 
+      const deliveryError = await authorizeTriggerBinding(task, binding);
+      if (deliveryError) return err(`Trigger not created: ${deliveryError}`);
+
       const trigger: Trigger = {
         id: generateTriggerId(),
         status: 'pending',
@@ -2476,6 +2508,7 @@ function createProposeTriggerTool(agent: Agent, task: Task) {
         action: { prompt: args.action_prompt },
         summary: args.summary,
       };
+      carryTaskMemoryExposure(task, trigger);
       await saveTrigger(trigger);
       task.metadata.pending_trigger_id = trigger.id;
       task.debouncedSave();
@@ -2554,15 +2587,12 @@ function createUpdateTriggerTool(_agent: Agent, task: Task) {
       }
 
       const editedContent = Boolean(args.action_prompt || args.conditions || args.summary);
-      let statusChange: 'paused' | 'resumed' | null = null;
-
-      if (args.action_prompt) trigger.action.prompt = args.action_prompt;
-      if (args.summary) trigger.summary = args.summary;
+      let nextConditions: TriggerCondition[] | undefined;
       if (args.conditions) {
         const defaultTz = trigger.conditions.find((c): c is Extract<TriggerCondition, { type: 'schedule' }> => c.type === 'schedule')?.tz || 'UTC';
         const built = buildConditions(args.conditions, defaultTz);
         if ('error' in built) return ok(`Could not update the trigger: ${built.error}`);
-        trigger.conditions = built.conditions;
+        nextConditions = built.conditions;
       }
       // Decide the target state (auto-resume a rescheduled paused trigger, etc.)
       // via the pure planner, then apply the cap check for any (re-)enable.
@@ -2585,33 +2615,60 @@ function createUpdateTriggerTool(_agent: Agent, task: Task) {
           if (perUser >= MAX_TRIGGERS_PER_USER) return ok(`Can't enable — you're already at the maximum of ${MAX_TRIGGERS_PER_USER} active triggers.`);
         }
       }
-      if (plan.target !== 'unchanged') {
-        trigger.status = plan.target;
-        statusChange = plan.statusChange;
-      }
-
+      const statusChange = plan.statusChange;
       if (!editedContent && !statusChange) return ok('Nothing to update — pass status, action_prompt, summary, or conditions.');
 
-      await saveTrigger(trigger);
-      if (trigger.status === 'enabled') indexTrigger(trigger);
-      else deindexTrigger(trigger.id);
+      const candidate: Trigger = {
+        ...trigger,
+        action: { ...trigger.action },
+        conditions: [...trigger.conditions],
+      };
+      if (args.action_prompt) candidate.action.prompt = args.action_prompt;
+      if (args.summary) candidate.summary = args.summary;
+      if (nextConditions) candidate.conditions = nextConditions;
+      if (plan.target !== 'unchanged') candidate.status = plan.target;
+      if (editedContent) carryTaskMemoryExposure(task, candidate);
 
-      if (statusChange === 'paused') emitEvent('trigger:paused', task.taskId, { trigger_id: trigger.id });
-      else if (statusChange === 'resumed') emitEvent('trigger:resumed', task.taskId, { trigger_id: trigger.id });
+      if (statusChange === 'paused') {
+        trigger.status = 'paused';
+        await saveTrigger(trigger);
+        deindexTrigger(trigger.id);
+        emitEvent('trigger:paused', task.taskId, { trigger_id: trigger.id });
 
-      await announceTriggerChange(trigger, editedContent ? 'edited' : statusChange!);
+        const deliveryError = await authorizeTriggerChange(task, candidate);
+        if (deliveryError) {
+          if (editedContent) {
+            return ok(`Trigger ${trigger.id} paused. Requested edits were rejected: ${deliveryError}`);
+          }
+        } else if (editedContent) {
+          await saveTrigger(candidate);
+          await announceTriggerChange(candidate, 'edited');
+        } else {
+          await announceTriggerChange(trigger, 'paused');
+        }
+      } else {
+        const deliveryError = await authorizeTriggerChange(task, candidate);
+        if (deliveryError) return err(`Trigger not updated: ${deliveryError}`);
+        await saveTrigger(candidate);
+        if (candidate.status === 'enabled') indexTrigger(candidate);
+        else deindexTrigger(candidate.id);
+        if (statusChange === 'resumed') emitEvent('trigger:resumed', task.taskId, { trigger_id: candidate.id });
+        await announceTriggerChange(candidate, editedContent ? 'edited' : statusChange!);
+      }
+
+      const updated = statusChange === 'paused' && !editedContent ? trigger : candidate;
 
       // Report state back so the PM can relay it — especially the auto-resume,
       // which the user didn't explicitly ask for and should be told about.
       const verb = editedContent ? 'updated' : (statusChange === 'paused' ? 'paused' : 'resumed');
-      let msg = `Trigger ${trigger.id} ${verb}.`;
+      let msg = `Trigger ${updated.id} ${verb}.`;
       if (statusChange === 'resumed') {
         msg += autoResume
-          ? ` It had been paused, so I re-enabled it — it's now active and will run ${triggerWhen(trigger)}.`
-          : ` It's now active and will run ${triggerWhen(trigger)}.`;
-      } else if (trigger.status === 'enabled' && editedContent) {
-        msg += ` It's active and will run ${triggerWhen(trigger)}.`;
-      } else if (trigger.status === 'paused') {
+          ? ` It had been paused, so I re-enabled it — it's now active and will run ${triggerWhen(updated)}.`
+          : ` It's now active and will run ${triggerWhen(updated)}.`;
+      } else if (updated.status === 'enabled' && editedContent) {
+        msg += ` It's active and will run ${triggerWhen(updated)}.`;
+      } else if (updated.status === 'paused') {
         msg += ` It's paused and won't run until it's resumed.`;
       }
       return ok(msg);
@@ -2636,7 +2693,10 @@ function createDeleteTriggerTool(_agent: Agent, task: Task) {
       deindexTrigger(trigger.id);
       await deleteTrigger(trigger.id);
       emitEvent('trigger:deleted', task.taskId, { trigger_id: trigger.id });
-      if (trigger.status !== 'pending') await announceTriggerChange(trigger, 'deleted');
+      if (trigger.status !== 'pending') {
+        const deliveryError = await authorizeTriggerBinding(task, trigger.binding);
+        if (!deliveryError) await announceTriggerChange(trigger, 'deleted');
+      }
       return ok(`Trigger ${trigger.id} deleted.`);
     },
   );

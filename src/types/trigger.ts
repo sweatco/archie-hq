@@ -52,6 +52,8 @@ export interface Trigger {
   conditions: TriggerCondition[];
   /** PM instruction seeded into the spawned task when fired (internal — not shown to users). */
   action: { prompt: string };
+  /** Sensitivity of memory-derived trigger content. Absent means no memory had reached the authoring task. */
+  memory_exposure_scope?: import('./task.js').TaskMemoryExposureScope;
   /**
    * Short, user-facing one-liner describing what the trigger does (e.g. "Daily
    * summary of #bot-test"). Shown in approval prompts, announcements, and

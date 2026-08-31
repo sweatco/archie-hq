@@ -1,0 +1,82 @@
+{
+  "schema": "archie-e2e-evidence/v1",
+  "scenario": "public-recall",
+  "ac_ids": [
+    "search-returns-deterministic-scoped-hits",
+    "public-task-writes-rich-summary"
+  ],
+  "started_at": "2026-08-31T03:18:04Z",
+  "finished_at": "2026-08-31T03:21:42Z",
+  "environment": {
+    "base_url": "http://localhost:3457",
+    "git_branch": "detached-main",
+    "git_commit": "a528a9be4f9ad631cf8dad5f788574010cb34df5-dirty"
+  },
+  "nonce": "SMV1-PUBLIC-RECALL-484JMU",
+  "task_id": "task-20260831-0321-1xnvuy",
+  "terminal_state": "completed",
+  "assertions": [
+    {
+      "id": "hookdeck-ingress",
+      "description": "Nonce-tagged Slack roots traverse the configured Hookdeck source into this instance.",
+      "expected": "Hookdeck accepts both events and Archie creates public-scoped tasks.",
+      "observed": "Seed request req_IOQxiv30jDxYC6kAZR4b and recall request req_0X5n5lOUw15mtpE3gFqn were accepted; tasks 0320-2hbz97 and 0321-1xnvuy were public-scoped.",
+      "pass": true
+    },
+    {
+      "id": "public-extraction",
+      "description": "The seed fact is persisted only in the public corpus.",
+      "expected": "Public summary contains the amber fact and no C0BL50N2600 private file exists.",
+      "observed": "public/tasks/task-20260831-0320-2hbz97.md contains SMV1-PUBLIC-FACT-484JMU and amber; no channel-private file existed.",
+      "pass": true
+    },
+    {
+      "id": "tool-recall",
+      "description": "A second public task retrieves the fact through memory tools.",
+      "expected": "search_memory and read_task_summary return the stored fact; Slack reply says amber.",
+      "observed": "Container log records search_memory then read_task_summary(task-20260831-0320-2hbz97); reply was Amber and metadata exposure scope was internal.",
+      "pass": true
+    },
+    {
+      "id": "structured-author-limit",
+      "description": "Synthetic E2E ingress does not falsely claim a structured human author.",
+      "expected": "Author assertion is delegated to host-resolved integration tests because the real Slack root is bot-authored.",
+      "observed": "memory_authors remained empty for the synthetic event; append-render-ordering tests cover host-resolved internal authors and forged-marker rejection.",
+      "pass": true
+    }
+  ],
+  "excerpts": {
+    "knowledge_log": [
+      "[2026-08-31T03:20:12.319Z] Store this harmless durable test fact: SMV1-PUBLIC-FACT-484JMU has color amber.",
+      "[2026-08-31T03:21:37.127Z] **Amber** — that's the stored color for launch codename SMV1-PUBLIC-FACT-484JMU.",
+      "Memory evidence was used: task-20260831-0320-2hbz97."
+    ],
+    "events": [
+      {
+        "type": "flags",
+        "memory": true,
+        "injection": false,
+        "tools": true
+      },
+      {
+        "type": "memory_tool",
+        "tool": "search_memory",
+        "query": "SMV1-PUBLIC-FACT-484JMU launch codename color"
+      },
+      {
+        "type": "memory_tool",
+        "tool": "read_task_summary",
+        "task_id": "task-20260831-0320-2hbz97"
+      },
+      {
+        "type": "scoped_store",
+        "files": [
+          "public/tasks/task-20260831-0320-2hbz97.md",
+          "public/tasks/task-20260831-0321-1xnvuy.md",
+          "public/recent-activity.md"
+        ]
+      }
+    ]
+  },
+  "result": "pass"
+}
