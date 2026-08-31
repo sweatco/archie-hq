@@ -1,4 +1,4 @@
-# Scoped memory architecture
+# Memory Layer
 
 Archie stores durable knowledge under `WORKDIR/memory/`. Scoped memory is bound to one authenticated Slack workspace and separates organization-wide facts from private channel and DM outcomes.
 
