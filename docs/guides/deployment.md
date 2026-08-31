@@ -60,7 +60,7 @@ Continuous integration runs via GitHub Actions: on every push and pull request i
 
 Building and publishing the production container image also runs via GitHub Actions. `.github/workflows/docker-publish.yml` runs on pushes to `main` and via manual `workflow_dispatch`, builds `Dockerfile.prod` with Docker Buildx, and publishes to GitHub Container Registry as `ghcr.io/<owner>/<repo>:main-<commit-sha>`.
 
-Deployment to the VM remains operator-driven: the operator pulls the published image tag on the host, restarts the service, and verifies health via `GET /health`.
+Deployment to the VM is the Jenkins job `sweatcoin-archie-hq-production-deploy`, defined in the [sweatcoin-infrastructure](https://github.com/sweatco/sweatcoin-infrastructure) repo, which runs the Ansible playbook `apps/archie-hq/deploy-production.yml`.
 
 ## Docker Configuration
 
@@ -70,12 +70,13 @@ Deployment to the VM remains operator-driven: the operator pulls the published i
 
 ## Systemd Service
 
-The application runs as a systemd service on the VM:
+The application runs as a systemd service on the VM. The unit is **generated** by Ansible from `apps/archie-hq/templates/etc/systemd/system/archie-hq.service` in the infrastructure repo, so editing it on the host is overwritten by the next deploy — change the template. Roughly:
 
 ```ini
 [Service]
 Type=simple
 ExecStart=/usr/bin/docker run --name archie-app \
+  --init \
   --env-file /etc/archie/archie.env \
   -p 3000:3000 \
   --cap-add SYS_ADMIN \
@@ -90,6 +91,8 @@ ExecStart=/usr/bin/docker run --name archie-app \
 Restart=always
 RestartSec=10
 ```
+
+`--init` is required: the entrypoint execs `gosu`, so without it Node runs as PID 1 and never reaps the orphaned bwrap/socat/git processes every agent run leaves behind. They accumulate as zombies until the container hits its `pids` limit and can no longer fork — this took production down on 2026-08-28 (18,631 zombies against a ceiling of 18,707). Restarts reset the count, so frequent deploys masked it for months.
 
 ### Docker Capabilities (Required)
 
