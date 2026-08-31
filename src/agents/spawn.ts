@@ -556,7 +556,23 @@ Shared folder: ${sharedPath} [READ-ONLY]
     // Repo agents extend the base sandbox with every attached clone (RW in edit
     // mode) plus per-repo read-only/protected paths.
     const readOnlyPaths = [sharedPath, ...repoMounts.map((m) => m.baseObjectsPath), ...pluginReadPaths, ...coreSkillReadPaths];
-    const cloneGitHeads = repoMounts.map((m) => join(m.clonePath, '.git', 'HEAD'));
+    // `<clone>/.git/HEAD` used to be denied here (39a5756, "prevent branch switching"). It is not
+    // denied any more, because a path-level lock on that one file cannot tell the operation it was
+    // meant to stop from the ones it also stopped. Everything that moves HEAD writes the same file:
+    // `git checkout` and `git switch`, yes, but equally `git rebase` (which detaches HEAD to replay
+    // each commit), `git cherry-pick`, and `git bisect`. So the guard made rebase and every
+    // detached-HEAD operation structurally impossible for every repo agent, on every repo.
+    //
+    // Worse, it was porous in the direction that matters and load-bearing in the direction that
+    // does not: `git reset --hard` only moves a *branch ref*, never HEAD, so it sailed straight
+    // through — and agents that could not rebase were pushed toward exactly that, the more
+    // destructive command, to get the same result. Observed live on task-20260708-1144-wvnrnz,
+    // where rebase was impossible and `reset --hard` had to be authorised twice in its place.
+    //
+    // The real risk behind the original commit was never the file: it was `push_branch` taking the
+    // branch NAME from metadata while pushing whatever HEAD resolves to, so a checkout behind the
+    // engine's back publishes one branch's commits under another branch's name. That is now checked
+    // where it actually happens — see the HEAD/metadata reconciliation in createPushBranchTool.
     sandboxOpts = {
       cwd,
       denyReadPaths: [WORKDIR],
@@ -567,7 +583,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
         ? [workspace, CACHES_DIR, ...allClonePaths, ...claudeWriteDirs]
         : [workspace, CACHES_DIR, ...claudeWriteDirs],
       denyWritePaths: editAllowed
-        ? [...readOnlyPaths, ...protectedWorkspaceFiles, ...cloneGitHeads]
+        ? [...readOnlyPaths, ...protectedWorkspaceFiles]
         : [...allClonePaths, ...readOnlyPaths],
       // In edit mode, repo build sandboxes may reach the trusted package
       // registries so agents can run installs / regenerate lockfiles. Read-only

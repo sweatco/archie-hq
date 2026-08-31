@@ -5,7 +5,14 @@
  * success paths) by calling handlers directly — no LLM, no MCP transport.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { execFile as pushGuardExecFileCb } from 'child_process';
+import { promisify as pushGuardPromisify } from 'util';
+import { promises as fsPromises } from 'fs';
+import { join as pathJoin } from 'path';
+import { tmpdir as osTmpdir } from 'os';
+
+const pushGuardExecFile = pushGuardPromisify(pushGuardExecFileCb);
 import {
   createRepoToolsMcpServer,
   createCommsMcpServer,
@@ -772,5 +779,121 @@ describe('PR attribution', () => {
     await tool({ pr_number: 42, title: 'New title' }, {});
 
     expect(mockGitHubClient.updatePR.mock.calls[0][2].body).toBeUndefined();
+  });
+});
+
+// ---- push_branch: HEAD / metadata reconciliation ----
+//
+// Run against REAL git repos rather than a mocked shell. The whole point of the guard is that
+// `git push HEAD:<branch>` takes its commits from HEAD and its destination from metadata, so a test
+// that stubs out git cannot show the two drifting apart — the drift IS the bug.
+//
+// Replaces the sandbox's old write-deny on `<clone>/.git/HEAD`, which prevented the mis-push by
+// making HEAD immovable and, in doing so, made `git rebase`, `cherry-pick` and `bisect` impossible
+// for every repo agent.
+
+describe('push_branch HEAD/metadata reconciliation', () => {
+  let tmpDir: string;
+  let clonePath: string;
+  let originPath: string;
+
+  async function git(cwd: string, args: string[]): Promise<string> {
+    const { stdout } = await pushGuardExecFile('git', args, { cwd });
+    return stdout.trim();
+  }
+
+  /** A clone with `main` and `feature/task-123`, checked out on the feature branch, pushable to a real bare origin. */
+  async function makeRealClone() {
+    tmpDir = await fsPromises.mkdtemp(pathJoin(osTmpdir(), 'archie-push-guard-'));
+    originPath = pathJoin(tmpDir, 'origin.git');
+    clonePath = pathJoin(tmpDir, 'clone');
+
+    await pushGuardExecFile('git', ['init', '--bare', '-b', 'main', originPath]);
+    await pushGuardExecFile('git', ['init', '-b', 'main', clonePath]);
+    await git(clonePath, ['config', 'user.email', 'test@example.com']);
+    await git(clonePath, ['config', 'user.name', 'Test']);
+    await git(clonePath, ['commit', '--allow-empty', '-m', 'base']);
+    await git(clonePath, ['remote', 'add', 'origin', originPath]);
+    await git(clonePath, ['push', '-u', 'origin', 'main']);
+    await git(clonePath, ['checkout', '-b', 'feature/task-123']);
+    await git(clonePath, ['commit', '--allow-empty', '-m', 'work']);
+  }
+
+  function taskOnRealClone() {
+    return makeTask({
+      repositories: {
+        'backend-agent': [
+          {
+            github: 'org/backend',
+            clone_path: clonePath,
+            current_branch: 'feature/task-123',
+            branch_states: { 'feature/task-123': { base_branch: 'main' } },
+          },
+        ],
+      },
+    } as any);
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    await makeRealClone();
+  });
+
+  afterEach(async () => {
+    await fsPromises.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('refuses to push when HEAD is on a different branch than metadata records', async () => {
+    // The exact drift the old .git/HEAD deny existed to prevent: a checkout behind the engine's
+    // back would otherwise publish `sidequest` commits under the name `feature/task-123`.
+    await git(clonePath, ['checkout', '-b', 'sidequest']);
+    await git(clonePath, ['commit', '--allow-empty', '-m', 'unrelated work']);
+
+    const tool = getRepoTool(makeAgent(), taskOnRealClone(), 'push_branch');
+    const result = await tool({}, {});
+
+    expect(result.content[0].text).toMatch(/refusing to push/i);
+    expect(result.content[0].text).toContain('sidequest');
+    expect(result.content[0].text).toContain('feature/task-123');
+    expect(result.content[0].text).toMatch(/switch_branch/);
+
+    // Nothing reached the remote.
+    const remoteBranches = await git(originPath, ['branch', '--format=%(refname:short)']);
+    expect(remoteBranches.split('\n')).not.toContain('feature/task-123');
+  });
+
+  it('refuses to push while HEAD is detached, and says how to get out of it', async () => {
+    // Mid-rebase / mid-cherry-pick. Previously unreachable, because HEAD could never detach.
+    const sha = await git(clonePath, ['rev-parse', 'HEAD']);
+    await git(clonePath, ['checkout', '--detach', sha]);
+
+    const tool = getRepoTool(makeAgent(), taskOnRealClone(), 'push_branch');
+    const result = await tool({}, {});
+
+    expect(result.content[0].text).toMatch(/detached/i);
+    expect(result.content[0].text).toContain('feature/task-123');
+  });
+
+  it('pushes normally when HEAD and metadata agree', async () => {
+    const tool = getRepoTool(makeAgent(), taskOnRealClone(), 'push_branch');
+    const result = await tool({}, {});
+
+    expect(result.content[0].text).toMatch(/successfully pushed/i);
+    const remoteBranches = await git(originPath, ['branch', '--format=%(refname:short)']);
+    expect(remoteBranches.split('\n')).toContain('feature/task-123');
+  });
+
+  it('still pushes when HEAD moved via rebase — the case the old .git/HEAD deny made impossible', async () => {
+    // A real rebase detaches HEAD to replay each commit, then reattaches. The sandbox deny made
+    // this fail outright; the guard only cares where HEAD ends up.
+    await git(clonePath, ['checkout', 'main']);
+    await git(clonePath, ['commit', '--allow-empty', '-m', 'main moved on']);
+    await git(clonePath, ['checkout', 'feature/task-123']);
+    await git(clonePath, ['rebase', 'main']);
+
+    const tool = getRepoTool(makeAgent(), taskOnRealClone(), 'push_branch');
+    const result = await tool({}, {});
+
+    expect(result.content[0].text).toMatch(/successfully pushed/i);
   });
 });
