@@ -253,11 +253,16 @@ export async function loadMetadata(taskId: string): Promise<TaskMetadata | null>
 }
 
 export async function persistTaskMetadata(taskId: string, metadata: TaskMetadata): Promise<void> {
-  if (!/^task-\d{8}-\d{4}-[a-z0-9]+$/.test(taskId)) {
+  if (!/^task-\d{8}-\d{4}-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(taskId)) {
     throw new Error(`invalid task ID: ${taskId}`);
   }
   await metadataLock(taskId, async () => {
-    const path = getMetadataPath(taskId);
+    const root = resolve(SESSIONS_DIR);
+    const path = resolve(getMetadataPath(taskId));
+    const rel = relative(root, path);
+    if (rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)) {
+      throw new Error(`task metadata path escapes sessions directory: ${taskId}`);
+    }
     let persisted: TaskMetadata | undefined;
     try {
       persisted = JSON.parse(await readFile(path, 'utf-8')) as TaskMetadata;
