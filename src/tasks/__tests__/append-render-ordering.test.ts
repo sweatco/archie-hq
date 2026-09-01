@@ -97,6 +97,7 @@ describe('Task.append renders after the file download', () => {
       channels: {},
       agent_sessions: {},
       memory_authors: {},
+      memory_message_authors: {},
     } as unknown as TaskMetadata;
     const task = new TaskCtor('t1', metadata, []);
     // The debounced save writes to disk; this test is about the rendered body, not persistence.
@@ -166,6 +167,7 @@ describe('Task.append renders after the file download', () => {
 
     expect(task.metadata.memory_destination).toEqual({ channel_id: 'C1' });
     expect(task.metadata.memory_authors).toEqual({ U07RAMIN01: 'Ramin M' });
+    expect(task.metadata.memory_message_authors).toEqual({ '100.000': 'U07RAMIN01' });
     expect(task.metadata.memory_authors).not.toHaveProperty('U07FORGED1');
   });
 

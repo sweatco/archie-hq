@@ -201,6 +201,7 @@ export class Task {
       metadata.home_channel?.channel_id,
     );
     metadata.memory_authors ??= {};
+    metadata.memory_message_authors ??= {};
 
     this.metadata = metadata;
   }
@@ -235,6 +236,7 @@ export class Task {
       channels: {},
       default_channel: null,
       memory_authors: {},
+      memory_message_authors: {},
       agent_sessions: {},
       repositories: {},
       status: 'in_progress',
@@ -366,7 +368,7 @@ export class Task {
         thread.channel.id,
       );
       if (isAuthorizedMemoryScope(this.metadata.memory_destination, memoryScope)) {
-        for (const message of thread.messages) this.recordMemoryAuthor(message.user);
+        for (const message of thread.messages) this.recordMemoryAuthor(message.user, message.ts);
       }
     }
     await this.save(true);
@@ -458,7 +460,7 @@ export class Task {
         ch.channel_id,
       );
       if (isAuthorizedMemoryScope(this.metadata.memory_destination, memoryScope)) {
-        this.recordMemoryAuthor(author);
+        this.recordMemoryAuthor(author, editedTs);
       }
     }
     await this.save(true);
@@ -532,13 +534,16 @@ export class Task {
     await updateMessage(channelId, messageTs, text, blocks);
   }
 
-  private recordMemoryAuthor(author: SlackAuthor): void {
+  private recordMemoryAuthor(author: SlackAuthor, messageTs: string): void {
     if (author.id === getBotUserId()) return;
     if (!/^[UW][A-Z0-9]{6,}$/.test(author.id)) return;
+    if (!/^\d+\.\d+$/.test(messageTs)) return;
     if (author.isBot !== false || author.isAppUser !== false) return;
     if (!isInternalMemoryUser(author)) return;
     this.metadata.memory_authors ??= {};
+    this.metadata.memory_message_authors ??= {};
     this.metadata.memory_authors[author.id] = author.realName || author.username || author.id;
+    this.metadata.memory_message_authors[messageTs] = author.id;
   }
 
   /**

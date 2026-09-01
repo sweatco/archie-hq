@@ -309,6 +309,7 @@ export interface TaskMetadata {
   /** Immutable Slack destination. Live memory authorization is never persisted. */
   memory_destination?: TaskMemoryDestination;
   memory_authors?: Record<string, string>;
+  memory_message_authors?: Record<string, string>;
   title?: string;                      // AI-generated one-line summary; absent on pre-feature tasks
   slack_threads?: SlackThreadRef[];    // Legacy — only present on old tasks loaded from disk, removed after migration
   agent_sessions: Record<string, AgentSessionState | string>; // union handles legacy string values on disk

@@ -40,6 +40,10 @@ export function reconcilePersistedMemoryMetadata(
     ...(persisted.memory_authors ?? {}),
     ...(pending.memory_authors ?? {}),
   };
+  pending.memory_message_authors = {
+    ...(persisted.memory_message_authors ?? {}),
+    ...(pending.memory_message_authors ?? {}),
+  };
 }
 
 /**

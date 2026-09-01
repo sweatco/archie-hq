@@ -119,6 +119,7 @@ function isValidUpdate(u: unknown): u is MemoryUpdate {
   const obj = u as Record<string, unknown>;
   if (obj.action !== 'add' && obj.action !== 'update') return false;
   if (typeof obj.content !== 'string') return false;
+  if (obj.source_message_ts !== undefined && typeof obj.source_message_ts !== 'string') return false;
   return true;
 }
 

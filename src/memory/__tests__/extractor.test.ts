@@ -119,6 +119,17 @@ describe('parseExtractionResponse(json)', () => {
     expect(result!.domain).toBe('engineering');
   });
 
+  it('preserves an optional Slack source timestamp on profile updates', () => {
+    const response = JSON.stringify({
+      ...JSON.parse(validResponse),
+      user_updates: {
+        alice: [{ action: 'add', content: 'Prefers concise updates', source_message_ts: '1700000000.123456' }],
+      },
+    });
+    expect(parseExtractionResponse(response)?.user_updates.alice[0].source_message_ts)
+      .toBe('1700000000.123456');
+  });
+
   it('returns null for invalid JSON', () => {
     const result = parseExtractionResponse('not valid json {{{');
     expect(result).toBeNull();
@@ -292,6 +303,14 @@ describe('parseExtractionResponse(json)', () => {
       task_summary: 'x',
       activity_summary: 'y',
       domain: 'engineering',
+    });
+    expect(parseExtractionResponse(bad)).toBeNull();
+  });
+
+  it('rejects a non-string profile source timestamp', () => {
+    const bad = JSON.stringify({
+      user_updates: { alice: [{ action: 'add', content: 'x', source_message_ts: 123 }] },
+      task_summary: 'x', activity_summary: 'y', domain: 'engineering',
     });
     expect(parseExtractionResponse(bad)).toBeNull();
   });

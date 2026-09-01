@@ -17,17 +17,11 @@ import { runExtraction } from './extractor.js';
 import { applyEntityUpdate, readEntity } from './entities.js';
 import { rebuildIndex, readIndexMarkdown } from './entity-index.js';
 import { appendActivity, trimActivity, readActivity } from './activity.js';
-import {
-  sanitizeEntityObservation,
-  sanitizeEntityRelation,
-  sanitizeEntitySummary,
-  sanitizeTaskSummary,
-  sanitizeUpdate,
-} from './sanitize.js';
+import { sanitizeTaskSummary } from './sanitize.js';
 import { enqueuePending, dequeuePending } from './pending-queue.js';
 import { loadMetadata, readKnowledgeLog } from '../tasks/persistence.js';
 import { logger } from '../system/logger.js';
-import type { ExtractionResult, UserRef, ActivityEntry, MemoryUpdate, EntityUpdate } from './types.js';
+import type { ExtractionResult, UserRef, ActivityEntry, MemoryUpdate } from './types.js';
 import type { TaskMetadata } from '../types/task.js';
 import { writePrivateOutcome } from './outcomes.js';
 import { classifySlackMemoryScope } from '../connectors/slack/client.js';
@@ -72,9 +66,7 @@ let extractionQueue: Promise<void> = Promise.resolve();
  */
 export function handleTaskCompleted(taskId: string): void {
   if (!isMemoryReady()) return;
-  // Persist the intent to extract before scheduling. If the process exits
-  // before processExtraction completes, the next startup will find the entry
-  // and re-schedule.
+  // Once enqueuePending completes, a restart can recover unfinished extraction.
   extractionQueue = extractionQueue
     .then(() => enqueuePending(taskId))
     .then(() => processExtraction(taskId))
@@ -193,39 +185,28 @@ async function processExtraction(taskId: string): Promise<void> {
   const displayNameById = new Map(users.map((u) => [u.userId, u.displayName]));
   const appliedUserUpdates: Record<string, MemoryUpdate[]> = {};
   for (const [userId, updates] of Object.entries(result.user_updates)) {
-    const safeUpdates = updates
-      .map((update) => sanitizeUpdate(update))
-      .filter((update): update is MemoryUpdate => update !== null);
-    if (safeUpdates.length > 0) {
+    const attributedUpdates = updates.filter((update) =>
+      metadata.memory_message_authors?.[update.source_message_ts ?? ''] === userId
+    );
+    if (attributedUpdates.length > 0) {
       const displayName = displayNameById.get(userId) ?? userId;
-      const userCapExceeded = await applyUserUpdatesWithIdentity(userId, displayName, safeUpdates);
-      appliedUserUpdates[userId] = safeUpdates;
-      if (userCapExceeded) housekeepingTargets.add(userId);
+      const applied = await applyUserUpdatesWithIdentity(userId, displayName, attributedUpdates);
+      if (applied.appliedUpdates.length > 0) appliedUserUpdates[userId] = applied.appliedUpdates;
+      if (applied.capExceeded) housekeepingTargets.add(userId);
     }
   }
 
   // Apply entity updates (resolve-or-create; sanitizer runs inside entities.ts).
   // Each applied update auto-adds a `touched_by [[taskId]]` edge.
-  const touchedEntities: string[] = [];
-  const appliedEntityUpdates: EntityUpdate[] = [];
+  const touchedEntities = new Set<string>();
   for (const update of result.entity_updates) {
     const applied = await applyEntityUpdate(update, taskId);
     if (!applied) continue;
-    touchedEntities.push(applied.slug);
-    appliedEntityUpdates.push({
-      slug: applied.slug,
-      ...(sanitizeEntitySummary(update.summary) ? { summary: sanitizeEntitySummary(update.summary)! } : {}),
-      observations: (update.observations ?? [])
-        .map((observation) => sanitizeEntityObservation(observation))
-        .filter((observation) => observation !== null),
-      relations: (update.relations ?? [])
-        .map((relation) => sanitizeEntityRelation(relation))
-        .filter((relation) => relation !== null),
-    });
+    touchedEntities.add(applied.slug);
     if (applied.capExceeded) housekeepingTargets.add('entities');
   }
   // Rebuild the derived index whenever entities changed.
-  if (touchedEntities.length > 0) {
+  if (touchedEntities.size > 0) {
     await rebuildIndex();
   }
 
@@ -246,7 +227,8 @@ async function processExtraction(taskId: string): Promise<void> {
   const activityIndex = await readActivity();
   // Related tasks: prefer tasks that share an entity with this one; fall back
   // to lexical similarity over the activity index when there's no entity overlap.
-  let related = await selectRelatedTasksByEntity(touchedEntities, taskId, activityIndex);
+  const touchedEntitySlugs = [...touchedEntities];
+  let related = await selectRelatedTasksByEntity(touchedEntitySlugs, taskId, activityIndex);
   if (related.length === 0) {
     related = selectRelatedTasks(result.activity_summary, result.domain, activityIndex, taskId);
   }
@@ -259,7 +241,7 @@ async function processExtraction(taskId: string): Promise<void> {
         ...result,
         task_summary: safeTaskSummary,
         user_updates: appliedUserUpdates,
-        entity_updates: appliedEntityUpdates,
+        entity_updates: touchedEntitySlugs.map((slug) => ({ slug })),
       },
       users,
       activityIndex,
@@ -427,13 +409,9 @@ function renderMemoryUpdates(result: ExtractionResult, housekeepingNotes: string
     lines.push('');
   }
 
-  // Entity pages are the home for organizational knowledge (org.md is retired),
-  // so the diff renders each touched entity as its own group.
-  for (const e of result.entity_updates) {
-    lines.push(`### entities/${e.slug}.md`, '');
-    if (e.summary) lines.push(`- **summary** ${e.summary}`);
-    for (const o of e.observations ?? []) lines.push(`- **[${o.category}]** ${o.text}`);
-    for (const r of e.relations ?? []) lines.push(`- **${r.type}** [[${r.target}]]`);
+  if (hasEntity) {
+    lines.push('### Entities', '');
+    for (const e of result.entity_updates) lines.push(`- [[${e.slug}]]`);
     lines.push('');
   }
 

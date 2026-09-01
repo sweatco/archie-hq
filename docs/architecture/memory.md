@@ -18,13 +18,15 @@ Memory access is derived from Slack API data, never from transcript text or mode
 - Public/private conversion changes the live memory available at that same destination; it does not mutate task metadata.
 - When the scoped store is unavailable or `ARCHIE_MEMORY=false`, the destination restriction remains but normal Slack and trigger delivery does not depend on memory authorization.
 
-Slack message authors are resolved by the host. Only internal, non-restricted human `U…` or `W…` IDs are stored in `memory_authors`. Body mentions, source-looking text, bot IDs, and CLI fallback IDs cannot authorize profile reads or writes.
+Slack message authors are resolved by the host. Only internal, non-restricted human `U…` or `W…` IDs are stored in `memory_authors`. `memory_message_authors` separately maps each ingested Slack timestamp to that author ID. A profile update is accepted only when its `source_message_ts` maps to the profile owner. Body mentions, quoted text, model output, bot IDs, and CLI fallback IDs cannot authorize profile reads or writes.
 
 Private memory is local to its exact audience. It is never injected into prompts and never copied into the public corpus. Memory reads, extraction writes, and task-authored Slack deliveries reclassify the fixed destination before proceeding while memory is active.
 
 The task destination is the privacy boundary. A public task reads public memory. A private-channel task reads public memory plus that channel's outcomes. A DM task reads public memory plus that user's outcomes. Because the destination cannot change, Archie does not track which individual memory results reached the agent.
 
 Task messages, files, explicit reactions, status updates, approval cards, PR cards, and `post_to_channel` share the same destination check. Transport acknowledgements and trigger lifecycle announcements carry no task memory and remain outside the task output path.
+
+This boundary covers Archie-managed Slack output. Repository writes, GitHub operations, plugins, and other external tools are not Slack destinations and are not classified by this memory layer.
 
 Trigger proposals and content edits must target the authoring task's destination. Pausing, resuming, and deleting a visible trigger do not copy task context. A fired trigger creates a fresh task whose memory scope comes from its live Slack destination; no creator-task memory state is propagated. Existing triggers need no migration.
 
@@ -63,7 +65,29 @@ WORKDIR/memory/
 
 `private/channels/<id>.md` and `private/users/<id>.md` are rolling, summary-only outcome files. Each keeps at most 50 newest-first entries, deduplicated by task ID and written atomically.
 
-`runtime/pending-extractions.md` makes completion extraction recoverable after restart.
+`runtime/pending-extractions.md` recovers extraction after its task ID has been enqueued. A process exit between the completion event and that asynchronous enqueue can still lose extraction; task execution itself is unaffected.
+
+## Working flow
+
+1. Ingest fixes the task's Slack destination and records trusted message authorship before transcript content is appended.
+2. Agent spawn reauthorizes that destination and optionally reads its allowed public/private memory.
+3. Task output may return only to the fixed Slack destination.
+4. Completion reauthorizes once before reading the transcript and again before persisting extractor output.
+5. Public extraction updates the shared corpus; private extraction writes only one exact-audience outcome.
+
+| Destination | Read | Completion writes |
+|---|---|---|
+| Internal public channel | Public corpus | Public profiles, entities, task summary, activity |
+| Internal private channel / MPIM | Public corpus + exact channel outcomes | Exact channel outcome only |
+| Internal DM | Public corpus + exact user outcomes | Exact user outcome only |
+| External, restricted, unknown, or lookup failure | None | None |
+
+Minimal durable formats:
+
+- Public profiles are Markdown sections and bullets under `public/users/<user-id>.md`.
+- Entity pages contain frontmatter, one summary, at most 30 newest observations, and typed relations.
+- Private vault files contain at most 50 task outcomes; they do not contain public profile/entity updates.
+- Public task summaries report only profile updates that actually changed a file and the slugs of entities successfully touched.
 
 ## Extraction
 
@@ -74,9 +98,10 @@ Public tasks:
 1. Load profiles only for structured internal task authors.
 2. Load the public entity index.
 3. Run the extractor against the task transcript.
-4. Apply sanitized profile and entity updates.
-5. Write a rich public task summary containing only sanitized, applied update projections.
-6. Append a sanitized public activity row and retain the newest 50.
+4. Apply a profile update only when its cited Slack message belongs to that profile owner; legacy tasks without the timestamp map can still extract entities and summaries.
+5. Apply sanitized entity updates, retaining at most 30 observations per entity.
+6. Write a rich public task summary containing only store-confirmed profile changes and successfully touched entity slugs.
+7. Append a sanitized public activity row and retain the newest 50.
 
 Private channel and DM tasks run summary-only extraction and write one sanitized outcome to the exact audience vault. They do not read public profiles for extraction or write public profiles, entities, task summaries, activity rows, or related-task data.
 

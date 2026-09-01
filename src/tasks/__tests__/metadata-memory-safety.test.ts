@@ -47,6 +47,7 @@ function metadata(taskId: string): TaskMetadata {
     channels: {},
     default_channel: null,
     memory_authors: {},
+    memory_message_authors: {},
     agent_sessions: {},
     repositories: {},
     status: 'in_progress',
@@ -114,6 +115,8 @@ describe('task metadata memory persistence', () => {
     const second = metadata(taskId);
     first.memory_authors = { U07PERSON1: 'One' };
     second.memory_authors = { U07PERSON2: 'Two' };
+    first.memory_message_authors = { '1.0': 'U07PERSON1' };
+    second.memory_message_authors = { '2.0': 'U07PERSON2' };
 
     await Promise.all([
       new TaskCtor(taskId, first, []).save(true),
@@ -122,6 +125,7 @@ describe('task metadata memory persistence', () => {
 
     const persisted = JSON.parse(await readFile(getMetadataPath(taskId), 'utf-8')) as TaskMetadata;
     expect(persisted.memory_authors).toEqual({ U07PERSON1: 'One', U07PERSON2: 'Two' });
+    expect(persisted.memory_message_authors).toEqual({ '1.0': 'U07PERSON1', '2.0': 'U07PERSON2' });
   });
 
   it('persists the inbound destination and keeps it after restart', async () => {

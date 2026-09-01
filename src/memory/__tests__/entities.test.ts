@@ -94,6 +94,20 @@ describe('entity store', () => {
       expect(await readEntity('payment-service')).toEqual(REC);
     });
 
+    it('keeps only the newest 30 observations', async () => {
+      await writeEntity({
+        ...REC,
+        observations: Array.from({ length: 35 }, (_, i) => ({
+          category: 'fact' as const,
+          text: `fact ${i}`,
+        })),
+      });
+      const observations = (await readEntity('payment-service'))!.observations;
+      expect(observations).toHaveLength(30);
+      expect(observations[0].text).toBe('fact 5');
+      expect(observations.at(-1)?.text).toBe('fact 34');
+    });
+
     it('readEntity returns null for a missing entity', async () => {
       expect(await readEntity('nope')).toBeNull();
     });
