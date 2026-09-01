@@ -253,6 +253,9 @@ export async function loadMetadata(taskId: string): Promise<TaskMetadata | null>
 }
 
 export async function persistTaskMetadata(taskId: string, metadata: TaskMetadata): Promise<void> {
+  if (!/^task-\d{8}-\d{4}-[a-z0-9]+$/.test(taskId)) {
+    throw new Error(`invalid task ID: ${taskId}`);
+  }
   await metadataLock(taskId, async () => {
     const path = getMetadataPath(taskId);
     let persisted: TaskMetadata | undefined;

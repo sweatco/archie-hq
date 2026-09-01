@@ -35,7 +35,7 @@ vi.mock('../../system/logger.js', () => ({
 }));
 
 import { Task } from '../task.js';
-import { getKnowledgeLogPath, getMetadataPath } from '../persistence.js';
+import { getKnowledgeLogPath, getMetadataPath, persistTaskMetadata } from '../persistence.js';
 
 const TaskCtor = Task as unknown as new (taskId: string, metadata: TaskMetadata, team: AgentDef[]) => Task;
 
@@ -91,6 +91,13 @@ describe('task metadata memory persistence', () => {
 
   afterAll(async () => {
     await rm(SESSIONS_ROOT, { recursive: true, force: true });
+  });
+
+  it('rejects unsafe task IDs before writing metadata', async () => {
+    const unsafe = '../outside';
+
+    await expect(persistTaskMetadata(unsafe, metadata(unsafe))).rejects.toThrow('invalid task ID');
+    expect(await readdir(SESSIONS_ROOT)).toEqual([]);
   });
 
   it('keeps the immutable destination when stale Task instances save concurrently', async () => {
