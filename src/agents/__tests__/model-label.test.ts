@@ -19,6 +19,7 @@ describe('modelDisplayLabel', () => {
     expect(modelDisplayLabel('claude-opus-4-8')).toBe('Opus 4.8');
     expect(modelDisplayLabel('claude-sonnet-5')).toBe('Sonnet 5');
     expect(modelDisplayLabel('claude-fable-5')).toBe('Fable 5');
+    expect(modelDisplayLabel('claude-fable-5-1')).toBe('Fable 5.1');
     expect(modelDisplayLabel('claude-haiku-4-5')).toBe('Haiku 4.5');
   });
 
@@ -94,14 +95,14 @@ describe('resolveAgentModel', () => {
   });
 
   it('max mode: an explicit frontmatter maxMode.model wins for any agent', () => {
-    expect(resolveAgentModel(def({ model: 'opus', repo, maxMode: { model: 'claude-fable-5' } }), true)).toBe('claude-fable-5');
-    expect(resolveAgentModel(def({ maxMode: { model: 'claude-fable-5' } }), true)).toBe('claude-fable-5'); // generic too
-    expect(resolveAgentModel(def({ model: 'opus', repo, maxMode: { model: 'claude-fable-5' } }), false)).toBe('opus'); // off → ignored
+    expect(resolveAgentModel(def({ model: 'opus', repo, maxMode: { model: 'claude-fable-5-1' } }), true)).toBe('claude-fable-5-1');
+    expect(resolveAgentModel(def({ maxMode: { model: 'claude-fable-5-1' } }), true)).toBe('claude-fable-5-1'); // generic too
+    expect(resolveAgentModel(def({ model: 'opus', repo, maxMode: { model: 'claude-fable-5-1' } }), false)).toBe('opus'); // off → ignored
   });
 
   it('max mode: ARCHIE_MAX_MODE_MODEL is a fallback for repo/dynamic agents only', () => {
-    vi.stubEnv('ARCHIE_MAX_MODE_MODEL', 'claude-fable-5');
-    expect(resolveAgentModel(def({ model: 'opus', repo }), true)).toBe('claude-fable-5'); // repo picks up env
+    vi.stubEnv('ARCHIE_MAX_MODE_MODEL', 'claude-fable-5-1');
+    expect(resolveAgentModel(def({ model: 'opus', repo }), true)).toBe('claude-fable-5-1'); // repo picks up env
     expect(resolveAgentModel(def({ isPm: false }), true)).toBe('sonnet[1m]');              // generic unaffected
     expect(resolveAgentModel(def({ isPm: true }), true)).toBe('opus');                     // PM unaffected
     expect(resolveAgentModel(def({ repo, maxMode: { model: 'claude-opus-4-8' } }), true)).toBe('claude-opus-4-8'); // frontmatter wins
@@ -154,7 +155,7 @@ describe('modelChangingAgentIds', () => {
   it('selects only non-PM agents whose model changes under max mode', () => {
     const team = [
       def({ id: 'pm-agent', isPm: true }),                                                    // PM — excluded
-      def({ id: 'backend-agent', model: 'opus', repo, maxMode: { model: 'claude-fable-5' } }), // model swap → included
+      def({ id: 'backend-agent', model: 'opus', repo, maxMode: { model: 'claude-fable-5-1' } }), // model swap → included
       def({ id: 'infra-agent', model: 'opus', repo }),                                        // repo, effort-only default → NOT included
       def({ id: 'copywriter-agent' }),                                                        // generic, unchanged → NOT included
     ];
@@ -162,7 +163,7 @@ describe('modelChangingAgentIds', () => {
   });
 
   it('includes repo/dynamic agents that swap via env, but not generic agents or the PM', () => {
-    vi.stubEnv('ARCHIE_MAX_MODE_MODEL', 'claude-fable-5');
+    vi.stubEnv('ARCHIE_MAX_MODE_MODEL', 'claude-fable-5-1');
     const team = [
       def({ id: 'dyn-agent', model: 'opus', repo }), // repo/dynamic → env swap → included
       def({ id: 'copywriter-agent' }),               // generic → env doesn't apply → NOT included
