@@ -37,12 +37,12 @@ After Slack `auth.test`, initialization validates `WORKDIR/memory/.scoped-v1.jso
 - An absent or empty memory directory is initialized for that team.
 - A matching marker enables memory and registers the completion listener once.
 - A mismatched marker disables all memory reads and writes.
-- A non-empty unmarked directory is treated as legacy data and disables memory.
+- A non-empty unmarked directory is wiped in place and initialized as a fresh scoped store.
 - Missing team identity disables memory.
 
 Memory initialization failure does not stop Slack events, task recovery, or scheduled triggers.
 
-There is no automatic migration. Back up or remove the old memory directory, then restart Archie to initialize scoped v1.
+There is no automatic migration. Back up the old memory directory before the first scoped-v1 startup if its contents must be retained; unmarked contents are otherwise discarded.
 
 ## Storage layout
 
@@ -156,6 +156,8 @@ To reset memory:
 1. Stop Archie.
 2. Move `WORKDIR/memory/` to a backup outside `WORKDIR` or remove it if no backup is required.
 3. Start Archie and verify that `.scoped-v1.json` contains the expected Slack team ID.
+
+Startup performs the same reset automatically when the memory directory is non-empty but has no scoped-v1 marker.
 
 To roll back immediately, set `ARCHIE_MEMORY=false` and restart. Core task routing, Slack delivery, and scheduled triggers continue without memory. The store remains on disk and no database or external-service cleanup is required.
 

@@ -651,11 +651,12 @@ Shared folder: ${sharedPath} [READ-ONLY]
     : isRepoAgent(def)
       ? { repo: def.repo!.primary, taskTitle }
       : { plugin: def.pluginName, taskTitle };
-  const memoryAuthors = memoryAuthorization
-    ? getAuthorizedMemoryAuthors(metadata)
-    : null;
-  if (memoryAuthors) {
-    const enrichedPrompt = await enrichPromptWithMemory(systemPrompt, memoryAuthors, memorySelectors);
+  if (memoryAuthorization) {
+    const enrichedPrompt = await enrichPromptWithMemory(
+      systemPrompt,
+      getAuthorizedMemoryAuthors(metadata),
+      memorySelectors,
+    );
     if (enrichedPrompt !== systemPrompt) {
       systemPrompt = enrichedPrompt;
     }

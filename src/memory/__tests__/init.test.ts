@@ -150,14 +150,14 @@ describe('scoped memory initialization', () => {
     await expect(readFile(join(memoryDir, fresh), 'utf-8')).resolves.toBe('in flight');
   });
 
-  it('does not remove a near-match marker temp name', async () => {
+  it('wipes a near-match marker temp name as part of an unmarked store reset', async () => {
     const memoryDir = join(tempRoot, 'memory');
     await mkdir(memoryDir, { recursive: true });
     await writeFile(join(memoryDir, '.scoped-v1.json.123.tmp.bak'), 'keep');
     const memory = await loadMemory();
 
-    await expect(memory.initMemory('TWORKSPACE')).resolves.toBe(false);
-    await expect(readFile(join(memoryDir, '.scoped-v1.json.123.tmp.bak'), 'utf-8')).resolves.toBe('keep');
+    await expect(memory.initMemory('TWORKSPACE')).resolves.toBe(true);
+    await expect(readFile(join(memoryDir, '.scoped-v1.json.123.tmp.bak'), 'utf-8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('fails closed on workspace mismatch without changing existing data', async () => {
@@ -173,16 +173,17 @@ describe('scoped memory initialization', () => {
     expect(onEventMock).not.toHaveBeenCalled();
   });
 
-  it('fails closed on a non-empty unmarked legacy store', async () => {
+  it('wipes and initializes a non-empty unmarked legacy store', async () => {
     const memoryDir = join(tempRoot, 'memory');
     await mkdir(memoryDir, { recursive: true });
     await writeFile(join(memoryDir, 'legacy.md'), 'old memory');
     const memory = await loadMemory();
 
-    await expect(memory.initMemory('TWORKSPACE')).resolves.toBe(false);
-    await expect(readFile(join(memoryDir, 'legacy.md'), 'utf-8')).resolves.toBe('old memory');
-    expect(memory.isMemoryReady()).toBe(false);
-    expect(onEventMock).not.toHaveBeenCalled();
+    await expect(memory.initMemory('TWORKSPACE')).resolves.toBe(true);
+    await expect(readFile(join(memoryDir, 'legacy.md'), 'utf-8')).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(join(memoryDir, '.scoped-v1.json'), 'utf-8')).resolves.toContain('TWORKSPACE');
+    expect(memory.isMemoryReady()).toBe(true);
+    expect(onEventMock).toHaveBeenCalledTimes(1);
   });
 
   it('does not initialize without an authenticated workspace', async () => {

@@ -26,4 +26,8 @@ describe('getAuthorizedMemoryAuthors', () => {
 
     expect(result).toEqual([{ userId: 'U07AUTHOR1', displayName: 'Actual Author' }]);
   });
+
+  it('returns an empty profile list when the authorized task has no trusted human author', () => {
+    expect(getAuthorizedMemoryAuthors(metadata({ memory_authors: {} }))).toEqual([]);
+  });
 });

@@ -8,7 +8,7 @@
  * Ejection: delete this file + src/memory/ directory + remove the initMemory() call from src/index.ts.
  */
 
-import { link, mkdir, readFile, readdir, stat, unlink, writeFile } from 'fs/promises';
+import { link, mkdir, readFile, readdir, rm, stat, unlink, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { onEvent } from '../system/event-bus.js';
@@ -74,9 +74,8 @@ async function initializeMemory(teamId: string | null): Promise<boolean> {
     const remainingEntries = entries.filter((entry) => !MARKER_TEMP_RE.test(entry));
     const hasMarker = remainingEntries.includes('.scoped-v1.json');
     if (remainingEntries.length > 0 && !hasMarker) {
-      setMemoryReady(false);
-      logger.warn('memory', 'Memory layer disabled: non-empty legacy store has no scoped-v1 marker');
-      return false;
+      logger.warn('memory', 'Resetting non-empty unmarked memory store');
+      await Promise.all(remainingEntries.map((entry) => rm(`${memoryDir}/${entry}`, { recursive: true, force: true })));
     }
 
     if (!hasMarker) {

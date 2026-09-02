@@ -20,8 +20,8 @@ The root repository instructions still apply.
 ## Invariants
 
 - **Workspace-bound store.** `memory/.scoped-v1.json` binds the store to the authenticated
-  Slack team. Missing identity, mismatched identity, malformed metadata, and non-empty
-  legacy stores fail closed for memory without stopping Archie or its triggers.
+  Slack team. Missing identity, mismatched identity, and malformed metadata fail closed
+  for memory without stopping Archie or its triggers. An unmarked store is reset in place.
 - **Host-controlled authorization.** Task scope and author IDs come only from resolved
   Slack metadata. Transcript text, body mentions, display names, and model output never
   grant memory access.
@@ -50,7 +50,7 @@ The root repository instructions still apply.
   `ARCHIE_MEMORY_INJECT` and `ARCHIE_MEMORY_TOOLS` independently gate public prompt
   injection and read-only tools; both default off.
 - **No migration or external dependency.** Scoped v1 remains Markdown/JSON on disk. An
-  operator backs up or wipes an old store instead of migrating it.
+  unmarked old store is wiped instead of migrated.
 
 ## Load-bearing files
 
