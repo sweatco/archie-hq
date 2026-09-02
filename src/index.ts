@@ -27,6 +27,8 @@ import { mountSlackApp, type SlackLifecycle } from './connectors/slack/events.js
 import { mountGitHubWebhook } from './connectors/github/events.js';
 import { mountApiRoutes } from './connectors/api/routes.js';
 import { mountOAuthRoutes } from './connectors/oauth/routes.js';
+import { mountRecallConnector, type RecallLifecycle } from './connectors/recall/index.js';
+import type { ModelProviderName, TtsProviderName } from './voice/types.js';
 import { getIsShuttingDown, setShuttingDown } from './system/shutdown.js';
 import { getActiveTaskIds } from './tasks/task.js';
 import { logger } from './system/logger.js';
@@ -54,6 +56,63 @@ interface AppConfig {
   slackAppToken?: string;
   port: number;
   githubWebhookSecret?: string;
+  recallApiKey?: string;
+  recallRegion?: string;
+  deepgramApiKey?: string;
+  publicUrl?: string;
+  voiceBotName: string;
+  voiceModelProvider?: ModelProviderName;
+  cerebrasApiKey?: string;
+  deepgramHost?: string;
+  voiceLanguageHints?: string;
+  voiceTtsProvider?: TtsProviderName;
+  sonioxApiKey?: string;
+  sonioxHost?: string;
+  sonioxVoice?: string;
+}
+
+/**
+ * Parse `ARCHIE_VOICE_MODEL_PROVIDER`. An unrecognised value is a typo rather
+ * than an instruction, so it is reported and ignored — silently reading
+ * `cerebrus` as "Anthropic" would look exactly like the switch working.
+ */
+function parseModelProvider(raw: string | undefined): ModelProviderName | undefined {
+  if (raw === undefined || raw.trim().length === 0) {
+    return undefined;
+  }
+  const value = raw.trim().toLowerCase();
+  if (value === 'anthropic' || value === 'cerebras') {
+    return value;
+  } else {
+    logger.warn(
+      'index',
+      `ARCHIE_VOICE_MODEL_PROVIDER="${raw}" is not a known provider — using anthropic`,
+    );
+    return undefined;
+  }
+}
+
+/**
+ * Parse `ARCHIE_VOICE_TTS_PROVIDER`. Same shape and same reasoning as
+ * `parseModelProvider`: an unrecognised value is a typo rather than an
+ * instruction, and reading `soniix` silently as "Deepgram" would look exactly
+ * like the switch working — except here the symptom is the bot speaking Russian
+ * in English phonetics, which is the failure the switch exists to fix.
+ */
+function parseTtsProvider(raw: string | undefined): TtsProviderName | undefined {
+  if (raw === undefined || raw.trim().length === 0) {
+    return undefined;
+  }
+  const value = raw.trim().toLowerCase();
+  if (value === 'deepgram' || value === 'soniox') {
+    return value;
+  } else {
+    logger.warn(
+      'index',
+      `ARCHIE_VOICE_TTS_PROVIDER="${raw}" is not a known provider — using deepgram`,
+    );
+    return undefined;
+  }
 }
 
 /**
@@ -76,6 +135,33 @@ function loadConfig(): AppConfig {
     slackAppToken,
     port,
     githubWebhookSecret,
+    recallApiKey: process.env.RECALL_API_KEY,
+    // Recall regions are separate deployments with separate credentials, so this
+    // default is not merely a location: a key issued for eu-central-1 does not
+    // work here, and the connector fails to create a bot rather than creating one
+    // in the wrong place. The dev config uses eu-central-1.
+    // Recall regions are separate deployments with separate credentials, so this
+    // is not merely a location: a key issued for one region does not authenticate
+    // against another. eu-central-1 is the default because that is where the key
+    // this connector was built against lives, and because our engine sits on every
+    // hop of the audio path — participant audio up to Deepgram, the turn boundary
+    // back, synthesised speech out — so a region far from the meeting is paid four
+    // times over. Override it to match whatever key a deployment actually holds.
+    recallRegion: process.env.RECALL_REGION || 'eu-central-1',
+    deepgramApiKey: process.env.DEEPGRAM_API_KEY,
+    publicUrl: process.env.ARCHIE_PUBLIC_URL?.replace(/\/+$/, ''),
+    voiceBotName: process.env.ARCHIE_VOICE_BOT_NAME || 'Archie',
+    voiceModelProvider: parseModelProvider(process.env.ARCHIE_VOICE_MODEL_PROVIDER),
+    cerebrasApiKey: process.env.CEREBRAS_API_KEY,
+    deepgramHost: process.env.DEEPGRAM_HOST,
+    // Passed through verbatim: `src/voice/deepgram.ts` splits and normalises it,
+    // and an absent or empty value there means "send no hint", which is Flux's own
+    // auto-detect behaviour. No default list — see `VoiceConfig.languageHints`.
+    voiceLanguageHints: process.env.ARCHIE_VOICE_LANGUAGE_HINTS,
+    voiceTtsProvider: parseTtsProvider(process.env.ARCHIE_VOICE_TTS_PROVIDER),
+    sonioxApiKey: process.env.SONIOX_API_KEY,
+    sonioxHost: process.env.SONIOX_HOST,
+    sonioxVoice: process.env.SONIOX_VOICE,
   };
 }
 
@@ -248,9 +334,44 @@ async function main(): Promise<void> {
       logger.plain('Slack App not configured — running in CLI-only mode');
     }
 
+    // Mount the Recall connector (if configured), which carries voice into a
+    // Zoom/Meet/Teams room. Needs a Recall key for the meeting transport, a
+    // Deepgram key for speech, and a public URL because Recall dials back into us
+    // over WebSocket and loads our page as the bot's camera.
+    //
+    // The two halves of the config are nested rather than flattened, and the
+    // nesting is the boundary: the top level is Recall's, `voice` is the medium's
+    // and is what a second connector would supply identically.
+    let recallLifecycle: RecallLifecycle | null = null;
+    if (config.recallApiKey && config.deepgramApiKey && config.publicUrl) {
+      recallLifecycle = mountRecallConnector(app, {
+        recallApiKey: config.recallApiKey,
+        recallRegion: config.recallRegion!,
+        publicUrl: config.publicUrl,
+        voice: {
+          deepgramApiKey: config.deepgramApiKey,
+          anthropicApiKey: process.env.ANTHROPIC_API_KEY!,
+          botName: config.voiceBotName,
+          modelProvider: config.voiceModelProvider,
+          cerebrasApiKey: config.cerebrasApiKey,
+          deepgramHost: config.deepgramHost,
+          languageHints: config.voiceLanguageHints,
+          ttsProvider: config.voiceTtsProvider,
+          sonioxApiKey: config.sonioxApiKey,
+          sonioxHost: config.sonioxHost,
+          sonioxVoice: config.sonioxVoice,
+        },
+      });
+    } else {
+      logger.plain(
+        'Voice participant not configured — disabled (needs RECALL_API_KEY, DEEPGRAM_API_KEY, ARCHIE_PUBLIC_URL)',
+      );
+    }
+
     // Create the HTTP server but DO NOT listen yet — recover first so a Slack
     // event arriving on startup cannot reach a task before its agent is respawned.
     const server = http.createServer(app);
+    if (recallLifecycle) recallLifecycle.attach(server);
 
     await recoverActiveTasks();
     await initReminderScheduler();
@@ -273,6 +394,13 @@ async function main(): Promise<void> {
           await slackLifecycle.stop();
         } catch (err) {
           logger.error('index', 'Error stopping Slack receiver', err);
+        }
+      }
+      if (recallLifecycle) {
+        try {
+          await recallLifecycle.stop();
+        } catch (err) {
+          logger.error('index', 'Error stopping Recall connector', err);
         }
       }
       server.close();
