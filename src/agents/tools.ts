@@ -124,6 +124,7 @@ import {
 } from '../system/trigger-scheduler.js';
 import { emitEvent } from '../system/event-bus.js';
 import { triggerVisibleFrom, type TriggerOrigin } from '../system/trigger-visibility.js';
+import { isSlackAuthorId, isAppAuthorId } from '../system/trigger-match.js';
 
 // Re-export branch state helpers for consumers that import from tools.ts
 export { hydrateBranchState, findBranchStateByPR };
@@ -2308,7 +2309,7 @@ const triggerConditionObject = z.object({
   tz: z.string().optional().describe('IANA timezone, e.g. "America/New_York". Defaults to the requesting user\'s timezone.'),
   channel_id: z.string().optional().describe('Channel to watch (required for channel_message).'),
   contains: z.string().optional().describe('Only fire when the new message contains this substring (channel_message).'),
-  from_user: z.string().optional().describe('Only fire for messages from this Slack user ID (channel_message).'),
+  from_user: z.string().optional().describe('Only fire for messages from this author (channel_message). A person\'s user id (`U…`), or — for a report posted by an app, bot or incoming webhook — that app\'s bot id (`B…`), which is the id that appears as the author of its messages. Not a name or @handle.'),
 });
 
 type RawCondition = z.infer<typeof triggerConditionObject>;
@@ -2403,7 +2404,15 @@ function buildConditions(raw: RawCondition[], defaultTz: string): { conditions: 
       if (!c.channel_id) return { error: 'A channel_message condition needs `channel_id`.' };
       const match: { contains?: string; from_user?: string } = {};
       if (c.contains) match.contains = c.contains;
-      if (c.from_user) match.from_user = c.from_user;
+      if (c.from_user) {
+        // Refuse an author filter that cannot name any author. Without this
+        // check the trigger is accepted, announced, and listed as active — and
+        // then never fires, which is indistinguishable from "nobody posted".
+        if (!isSlackAuthorId(c.from_user)) {
+          return { error: `"${c.from_user}" is not a Slack author id. Use the person's user id (\`U…\`) or, for a report posted by an app or webhook, the app's bot id (\`B…\`) — that is the id shown in the author of the message you want to watch for. A name or @handle will not match anything.` };
+        }
+        match.from_user = c.from_user;
+      }
       conditions.push({ type: 'channel_message', channel_id: c.channel_id, ...(Object.keys(match).length ? { match } : {}) });
     } else {
       return { error: `Unknown condition type "${(c as { type: string }).type}".` };
@@ -2529,7 +2538,7 @@ function createProposeTriggerTool(agent: Agent, task: Task) {
 function createListTriggersTool(_agent: Agent, task: Task) {
   return tool(
     'list_triggers',
-    'List the triggers visible from this conversation (per privacy rules). Returns everything visible — filter or narrow it yourself when the user asks for "the ones in this channel", "just the schedules", etc.',
+    'List the triggers visible from this conversation (per privacy rules), one summary line each. Returns everything visible — filter or narrow it yourself when the user asks for "the ones in this channel", "just the schedules", etc. These lines are summaries, not the stored rule: call `get_trigger` for the exact conditions, filters and action prompt before answering a question about what one watches, and always before editing one.',
     {},
     async () => {
       const all = (await listTriggers()).filter((t) => t.status !== 'pending');
@@ -2550,16 +2559,96 @@ function createListTriggersTool(_agent: Agent, task: Task) {
   );
 }
 
+/** Render one stored condition in full — every field the matcher actually reads. */
+function detailCondition(c: TriggerCondition, index: number): string {
+  const head = `  ${index + 1}. `;
+  if (c.type === 'schedule') {
+    const lines = [
+      `${head}${c.cron ? 'a recurring schedule' : 'a one-off schedule'}`,
+      `       cron: ${c.cron ?? '(none — fires once)'}`,
+      `       timezone: ${c.tz}`,
+      `       next run: ${c.next_run_at}`,
+    ];
+    return lines.join('\n');
+  }
+  const lines = [`${head}a new top-level message in <#${c.channel_id}> (${c.channel_id})`];
+  if (c.match?.contains) lines.push(`       body contains (case-insensitive): "${c.match.contains}"`);
+  else lines.push('       body filter: none — any message in that channel');
+  if (c.match?.from_user) {
+    const kind = isAppAuthorId(c.match.from_user)
+      ? 'an app/bot id, matched against the message\'s bot_id'
+      : 'a user id, matched against the message\'s author';
+    lines.push(`       author is: ${c.match.from_user} (${kind})`);
+  } else {
+    lines.push('       author filter: none — anyone in that channel');
+  }
+  return lines.join('\n');
+}
+
+/**
+ * `get_trigger` — the full stored record of one visible trigger.
+ *
+ * This exists because `list_triggers` renders a deliberately short one-liner,
+ * and an agent that can only read the one-liner cannot manage what it can
+ * already delete: it cannot say which sender is filtered, cannot quote the
+ * instruction that runs, and — since `update_trigger` REPLACES the condition
+ * list wholesale — cannot edit one condition without silently dropping the
+ * filters it never saw. Visibility is the gate on WHICH triggers an agent may
+ * touch; withholding fields from a trigger that already passed that gate
+ * protects nobody, since the same agent may rewrite or delete it outright.
+ */
+function createGetTriggerTool(_agent: Agent, task: Task) {
+  return tool(
+    'get_trigger',
+    'Read one trigger in full: every condition exactly as stored (watched channel, keyword filter, author id), the internal action prompt it runs, and its status/binding/history. Use this before editing a trigger — `update_trigger` replaces the whole condition list, so you need to see what is there — and whenever the user asks what a trigger actually watches or does.',
+    {
+      id: z.string().describe('Trigger ID (from list_triggers).'),
+    },
+    async (args) => {
+      const trigger = await loadTrigger(args.id);
+      if (!trigger || trigger.status === 'pending') return ok(`No trigger ${args.id} found.`);
+      const origin = await resolveTriggerOrigin(task);
+      if (!(await triggerVisibleFrom(trigger, origin, makePrivacyResolver()))) {
+        return ok(`Trigger ${args.id} isn't visible from here, so it can't be read from this conversation.`);
+      }
+
+      const where = trigger.binding.type === 'channel'
+        ? `#${trigger.binding.channel_name} (${trigger.binding.channel_id})`
+        : `a DM with <@${trigger.binding.user_id}>`;
+      const by = trigger.created_by && trigger.created_by !== 'unknown' ? `<@${trigger.created_by}>` : 'unknown';
+
+      const lines = [
+        `Trigger ${trigger.id} — ${trigger.status}`,
+        `Name shown to users: ${trigger.summary?.trim() || '(none set — listings fall back to a clip of the action prompt)'}`,
+        `Delivers to: ${where}`,
+        `Created by ${by} at ${trigger.created_at}${trigger.approved_by ? `; approved by <@${trigger.approved_by}>` : ''}`,
+        `Last fired: ${trigger.last_fired_at ?? 'never'}`,
+        '',
+        `Fires when ANY of these match (${trigger.conditions.length}):`,
+        ...trigger.conditions.map((c, i) => detailCondition(c, i)),
+        '',
+        'Action prompt — the internal instruction seeded to a fresh PM task on every fire. It is working text, not a user-facing description: explain it in your own words rather than pasting it into Slack.',
+        '<<<',
+        trigger.action.prompt,
+        '>>>',
+        '',
+        'To change it, use `update_trigger`. `conditions` REPLACES the whole list above — restate every condition and every filter you want to keep, or it is dropped.',
+      ];
+      return ok(lines.join('\n'));
+    },
+  );
+}
+
 function createUpdateTriggerTool(_agent: Agent, task: Task) {
   return tool(
     'update_trigger',
-    'Pause, resume, or edit an existing trigger. You can only manage triggers visible from this conversation. Posts a one-line change notice to the trigger\'s bound channel.',
+    'Pause, resume, or edit an existing trigger. Read it with `get_trigger` first — `conditions` replaces the whole list, so editing blind silently drops filters. You can only manage triggers visible from this conversation. Posts a one-line change notice to the trigger\'s bound channel.',
     {
       id: z.string().describe('Trigger ID (from list_triggers).'),
       status: z.enum(['paused', 'enabled']).optional().describe('"paused" to pause, "enabled" to resume.'),
       action_prompt: z.string().optional().describe('Replace the internal instruction run when the trigger fires (not shown to the user).'),
       summary: z.string().optional().describe('Replace the short, friendly user-facing name. Update this whenever you change action_prompt so the notices stay accurate.'),
-      conditions: z.array(triggerConditionObject).optional().describe('Replace the conditions entirely (same shape as propose_trigger).'),
+      conditions: z.array(triggerConditionObject).optional().describe('REPLACES the condition list entirely (same shape as propose_trigger) — anything you leave out is dropped, including a keyword or author filter you never saw. Call `get_trigger` first and restate every condition you want to keep.'),
     },
     async (args) => {
       const trigger = await loadTrigger(args.id);
@@ -2867,6 +2956,7 @@ export function createOrchestrationMcpServer(agent: Agent, task: Task) {
       createSpawnRepoAgentTool(agent, task),
       createProposeTriggerTool(agent, task),
       createListTriggersTool(agent, task),
+      createGetTriggerTool(agent, task),
       createUpdateTriggerTool(agent, task),
       createDeleteTriggerTool(agent, task),
     ],

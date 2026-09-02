@@ -140,7 +140,7 @@ export interface AgentPmDef {
  * the task has max mode approved; see resolveAgentModel / resolveAgentEffort.
  */
 export interface MaxModeSpec {
-  /** Model to run on in max mode (e.g. 'claude-fable-5'). Omit to keep the normal model. */
+  /** Model to run on in max mode (e.g. 'claude-fable-5-1'). Omit to keep the normal model. */
   model?: string;
   /** Reasoning effort in max mode. Omit to use the default (repo/dynamic → 'max'). */
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';

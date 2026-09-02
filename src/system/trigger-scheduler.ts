@@ -19,6 +19,7 @@ import { listTriggers, saveTrigger, deleteTrigger } from './trigger-store.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { emitEvent } from './event-bus.js';
 import { logger } from './logger.js';
+import { isAppAuthorId } from './trigger-match.js';
 import { postSlackMessage, isChannelReachable } from '../connectors/slack/client.js';
 import { ensureChannelCanvas } from '../connectors/slack/channel-canvas.js';
 import { ensureChannelPins } from '../connectors/slack/channel-pins.js';
@@ -579,15 +580,32 @@ function describeOneOff(iso: string, tz: string): string {
   }
 }
 
-/** Plain-English "when" clause for a single condition. */
-function describeCondition(c: TriggerCondition): string {
+/**
+ * Plain-English "when" clause for a single condition.
+ *
+ * An author filter is rendered as WHO, not as "from a specific person". Two
+ * readers need it: a human seeing the change notice in the bound channel — the
+ * one place the "no silent changes" rule reaches them, and the place someone
+ * being watched finds out — and the agent, which cannot manage what a listing
+ * refuses to name. A `U…` renders as a mention on purpose (a config change is
+ * exactly when the watched person should hear about it); a `B…` cannot be
+ * mentioned at all, so an app is named by its id.
+ *
+ * The watched channel is named only when it differs from the delivery binding,
+ * which is the case a listing is otherwise unable to express — in the common
+ * watch-here-deliver-here trigger it would just be noise.
+ */
+function describeCondition(c: TriggerCondition, bindingChannelId?: string): string {
   if (c.type === 'schedule') {
     return c.cron ? describeSchedule(c.cron, c.tz) : describeOneOff(c.next_run_at, c.tz);
   }
+  const where = c.channel_id === bindingChannelId ? '' : ` in <#${c.channel_id}>`;
   const filters: string[] = [];
   if (c.match?.contains) filters.push(`mentioning "${c.match.contains}"`);
-  if (c.match?.from_user) filters.push('from a specific person');
-  return `on a new message${filters.length ? ' ' + filters.join(' ') : ''}`;
+  if (c.match?.from_user) {
+    filters.push(isAppAuthorId(c.match.from_user) ? `from the app \`${c.match.from_user}\`` : `from <@${c.match.from_user}>`);
+  }
+  return `on a new message${where}${filters.length ? ' ' + filters.join(' ') : ''}`;
 }
 
 /** First sentence / clipped form of the internal prompt — fallback when no summary was set. */
@@ -605,7 +623,8 @@ export function triggerWhat(trigger: Trigger): string {
 
 /** WHEN it runs, across all conditions ("every day at 9:00 AM" / "on a new message …"). */
 export function triggerWhen(trigger: Trigger): string {
-  return trigger.conditions.map(describeCondition).join(' or ');
+  const bound = trigger.binding.type === 'channel' ? trigger.binding.channel_id : undefined;
+  return trigger.conditions.map((c) => describeCondition(c, bound)).join(' or ');
 }
 
 /** WHERE results are delivered ("#general" / "a DM"). */

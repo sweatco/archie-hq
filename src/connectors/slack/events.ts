@@ -37,7 +37,7 @@ import { getIsShuttingDown } from '../../system/shutdown.js';
 import { findTaskByThread } from '../../tasks/persistence.js';
 import { rawMessageBody } from './message-body.js';
 import { getChannelMessageTriggers, fireTrigger, triggerWhat } from '../../system/trigger-scheduler.js';
-import type { Trigger } from '../../types/trigger.js';
+import { messageMatchesTrigger } from '../../system/trigger-match.js';
 import { generateTaskTitle } from '../../tasks/title-generator.js';
 import { setAssistantThreadTitle } from './title.js';
 import type { SlackThread, SlackAuthor } from '../../types/task.js';
@@ -889,6 +889,8 @@ export async function handleSlackEvent(event: {
  * The filter is matched against the *rendered* body — the same text an agent would be shown — not against the raw event's top-level `text`. That distinction is the whole point: a webhook or app post carries an empty `text` with all of its content in `attachments`/`blocks`, so matching the raw field made every such post invisible to `contains` filters. `rawMessageBody` runs the payload through the full inbound extraction, so blocks, attachment cards and files all become matchable.
  *
  * There is deliberately no fallback to the raw text and no re-fetch of the message by `ts`: a fallback would silently restore the original bug on exactly the payloads it was meant to fix, and a thread re-fetch can't see a message that has neither a `user` nor a `botId` anyway. If extraction yields an empty body, an empty body is what the filter sees.
+ *
+ * The author filter is matched the same way — against the author the payload actually carries, which for an app post is a `bot_id` and no `user` at all. The decision itself lives in `system/trigger-match.ts`; the only thing done here is assembling both ids, and the assembled pair is what `fireTrigger` is handed too, so the id that decided the fire is the id the fired task is told about.
  */
 async function dispatchChannelMessageTriggers(
   event: { channel: string; user: string; ts: string; raw: unknown },
@@ -919,22 +921,19 @@ async function dispatchChannelMessageTriggers(
   // read) so it is not free.
   const body = await rawMessageBody(event.raw, event.channel);
 
-  const matches = (trigger: Trigger): boolean =>
-    trigger.conditions.some((c) => {
-      if (c.type !== 'channel_message' || c.channel_id !== event.channel) return false;
-      if (c.match?.contains && !body.toLowerCase().includes(c.match.contains.toLowerCase())) return false;
-      if (c.match?.from_user && event.user !== c.match.from_user) return false;
-      return true;
-    });
+  // The author, as BOTH ids the payload can carry. An app post routinely has a
+  // `bot_id` and no `user`, so an author filter tested against `event.user`
+  // alone can never match one — see `trigger-match.ts` for why that mattered.
+  const author = { userId: event.user || undefined, botId: raw?.bot_id };
 
   for (const trigger of triggers) {
-    if (!matches(trigger)) continue;
+    if (!messageMatchesTrigger(trigger, { channelId: event.channel, body, author })) continue;
     try {
       await fireTrigger(trigger, {
         kind: 'message',
         thread,
         body,
-        authorId: event.user || raw?.bot_id || undefined,
+        authorId: author.userId || author.botId,
         channelName,
       });
     } catch (err) {

@@ -115,14 +115,18 @@ import { findTaskByThread } from '../../../tasks/persistence.js';
 
 const CHANNEL = 'C0WATCHED';
 
-function makeTrigger(contains?: string): Trigger {
+function makeTrigger(contains?: string, from_user?: string): Trigger {
   return {
     id: 'trg-20260818-1200-abc123',
     status: 'enabled',
     created_by: 'U_DEV',
     created_at: '2026-08-18T12:00:00.000Z',
     binding: { type: 'channel', channel_id: CHANNEL, channel_name: 'watched' },
-    conditions: [{ type: 'channel_message', channel_id: CHANNEL, ...(contains ? { match: { contains } } : {}) }],
+    conditions: [{
+      type: 'channel_message',
+      channel_id: CHANNEL,
+      ...(contains || from_user ? { match: { ...(contains ? { contains } : {}), ...(from_user ? { from_user } : {}) } } : {}),
+    }],
     action: { prompt: 'look into it' },
     summary: 'watch the deploy bot',
   };
@@ -240,6 +244,78 @@ describe('channel-message trigger dispatch matches the rendered body', () => {
 
     expect(vi.mocked(fireTrigger)).not.toHaveBeenCalled();
     expect(vi.mocked(extractMessageContent)).not.toHaveBeenCalled();
+  });
+});
+
+describe('the author filter matches the author the payload actually carries', () => {
+  // The regression. An app posting through an incoming webhook carries a `bot_id` and NO `user`, and the
+  // author id Archie shows an agent for such a post — in the knowledge log, in `read_channel_history` — is
+  // that `B…`. A filter naming it was therefore the natural thing to write, and it was compared against
+  // `event.user` alone, so it matched nothing: the trigger was approved, announced, listed as active, and
+  // never fired once.
+  it('fires on a `B…` filter when the app post has a bot_id and no user', async () => {
+    vi.mocked(getChannelMessageTriggers).mockReturnValue([makeTrigger('expired feature flags report', 'B_REPORTER')]);
+
+    await deliverAmbientPost({
+      type: 'message',
+      subtype: 'bot_message',
+      channel: CHANNEL,
+      bot_id: 'B_REPORTER',
+      text: '',
+      attachments: [{ text: 'Expired Feature Flags Report — 253.0.0 | Total: 200 flags' }],
+      ts: '1700000000.000700',
+    });
+
+    expect(vi.mocked(fireTrigger)).toHaveBeenCalledTimes(1);
+    // The id that decided the fire is the id the fired task is told about, so a seed naming the author
+    // cannot disagree with the filter that matched.
+    expect(vi.mocked(fireTrigger).mock.calls[0][1].authorId).toBe('B_REPORTER');
+  });
+
+  // The discriminator. Matching on "is a bot post at all" would pass the case above just as well, and would
+  // fire this trigger on every other app in the channel.
+  it('does not fire when a different app posts matching text', async () => {
+    vi.mocked(getChannelMessageTriggers).mockReturnValue([makeTrigger('expired feature flags report', 'B_REPORTER')]);
+
+    await deliverAmbientPost({
+      type: 'message',
+      subtype: 'bot_message',
+      channel: CHANNEL,
+      bot_id: 'B_SOMEONE_ELSE',
+      text: '',
+      attachments: [{ text: 'Expired Feature Flags Report — forwarded by another integration' }],
+      ts: '1700000000.000710',
+    });
+
+    expect(vi.mocked(fireTrigger)).not.toHaveBeenCalled();
+  });
+
+  it('still matches a human `U…` filter, which is the form that always worked', async () => {
+    vi.mocked(getChannelMessageTriggers).mockReturnValue([makeTrigger('deploy failed', 'U_DEV')]);
+
+    await deliverAmbientPost({
+      type: 'message',
+      channel: CHANNEL,
+      user: 'U_DEV',
+      text: 'the deploy failed again',
+      ts: '1700000000.000720',
+    });
+
+    expect(vi.mocked(fireTrigger)).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fire when a different person posts matching text', async () => {
+    vi.mocked(getChannelMessageTriggers).mockReturnValue([makeTrigger('deploy failed', 'U_DEV')]);
+
+    await deliverAmbientPost({
+      type: 'message',
+      channel: CHANNEL,
+      user: 'U_OTHER',
+      text: 'the deploy failed again',
+      ts: '1700000000.000730',
+    });
+
+    expect(vi.mocked(fireTrigger)).not.toHaveBeenCalled();
   });
 });
 

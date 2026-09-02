@@ -10,7 +10,7 @@ You are setting up or managing a **trigger** — a persistent rule that makes Ar
 ### Two kinds of trigger
 
 - **Schedule** — fires on a repeating cadence (hourly, daily, weekdays, weekly at a time) or **once** at a future moment.
-- **Channel-message** — fires when a new top-level message is posted in a watched channel, optionally only when the message contains some text or comes from a specific person.
+- **Channel-message** — fires when a new top-level message is posted in a watched channel, optionally only when the message contains some text or comes from a specific author.
 
 Each trigger **delivers** its result to a **channel** (Archie posts there). Delivering to a person's DM is a planned follow-up and isn't supported yet — set triggers up to post in a channel.
 
@@ -26,6 +26,8 @@ Don't propose a trigger until you have:
 2. **When / what to watch** —
    - Schedule: the cadence or the one-off time, **and the timezone** (confirm it if you're not sure — "9am" is meaningless without one).
    - Channel-message: which channel, and any filter (a keyword, a specific sender).
+
+     A sender filter is an **id**, never a name or an @handle. Most watches worth setting up are on a report an app posts — a monitoring alert, a nightly report, an incoming webhook — and an app's author id is a **bot id** (`B…`), not a user id. Both forms work; use whichever the message's author actually is. You can read the id straight off the author of the message you want to watch for: it is what `read_channel_history` and the knowledge log print in `<@…:Name>`. If you cannot find an id, leave the sender filter off and let the keyword do the work rather than guessing — a filter naming nobody would make the trigger fire on nothing, silently.
 3. **Where to deliver** — which channel to post the result in. Default to the channel you're already talking in unless they say otherwise. (DM delivery isn't supported yet; if someone asks for a DM, explain it'll post to a channel for now.)
 
 If anything is missing or ambiguous, ask in Slack before proposing.
@@ -44,7 +46,9 @@ You can only see and manage triggers that belong to the space the user is talkin
 - From a **private channel**: that channel's triggers, plus public ones.
 - From a **DM**: that person's own DM triggers, plus public ones.
 
-A private channel's or a DM's triggers are never visible from anywhere else. When someone asks "what's set up here", list everything you can see and narrow it conversationally if they want just one channel or just the schedules. When they ask to pause, resume, edit, or delete one, do it by its id — anything you can see, you can manage. One warning worth giving before you delete: a trigger keeps a directory that its runs use to carry work forward, and deleting the trigger deletes that too. If the automation has been running a while, say so and offer to pause it instead.
+A private channel's or a DM's triggers are never visible from anywhere else. When someone asks "what's set up here", list everything you can see and narrow it conversationally if they want just one channel or just the schedules. When they ask to pause, resume, edit, or delete one, do it by its id — anything you can see, you can manage.
+
+**Listing gives you one summary line per trigger; `get_trigger` gives you the rule.** Read the trigger before you answer a question about what it watches, and always before you edit one. Two reasons, both of which have bitten: the summary says a sender is filtered without saying who, so answering from it means telling the user you cannot see something you can; and an edit that passes `conditions` **replaces the whole list**, so anything you did not restate — a keyword, a sender — is dropped without a word. Read first, then restate everything you mean to keep. One warning worth giving before you delete: a trigger keeps a directory that its runs use to carry work forward, and deleting the trigger deletes that too. If the automation has been running a while, say so and offer to pause it instead.
 
 ### Changes are announced; firing is not
 
