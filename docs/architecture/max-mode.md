@@ -8,7 +8,7 @@ Like edit mode, max mode exists because the upgrade has a real cost: premium mod
 
 When a task has max mode approved (`metadata.max_mode === true`), every agent's model and reasoning effort are re-resolved at spawn time by `resolveAgentModel` / `resolveAgentEffort` (`src/agents/model-label.ts`):
 
-- **Model** — unchanged unless the agent opts in. An agent swaps models only when it declares `metadata.archie.maxMode.model` in its frontmatter (e.g. the engineering repo agents pin `claude-fable-5`), or — for repo/dynamic agents without their own `maxMode` — when the deployment sets `ARCHIE_MAX_MODE_MODEL`.
+- **Model** — unchanged unless the agent opts in. An agent swaps models only when it declares `metadata.archie.maxMode.model` in its frontmatter (e.g. the engineering repo agents pin `claude-fable-5-1`), or — for repo/dynamic agents without their own `maxMode` — when the deployment sets `ARCHIE_MAX_MODE_MODEL`.
 - **Effort** — repo/dynamic agents default to `max` reasoning effort (the built-in "increase accuracy" default). An explicit `maxMode.effort` wins; `ARCHIE_MAX_MODE_EFFORT` overrides the default for repo/dynamic agents. Generic plugin agents and the PM keep their normal effort unless they set `maxMode.effort` explicitly.
 
 ### Resolution order
@@ -35,7 +35,7 @@ Generic plugin agents and the PM are therefore unchanged by default — max mode
 metadata:
   archie:
     maxMode:
-      model: claude-fable-5   # optional — swap to this model when max mode is approved
+      model: claude-fable-5-1 # optional — swap to this model when max mode is approved
       effort: max             # optional — reasoning effort when max mode is approved
 ```
 
@@ -45,7 +45,7 @@ Both fields are optional; an empty or invalid spec is dropped and behaves as uns
 
 | Env var | Applies to | Effect |
 | --- | --- | --- |
-| `ARCHIE_MAX_MODE_MODEL` | repo/dynamic agents without a frontmatter `maxMode.model` | Model to swap to in max mode (e.g. `claude-fable-5`) |
+| `ARCHIE_MAX_MODE_MODEL` | repo/dynamic agents without a frontmatter `maxMode.model` | Model to swap to in max mode (e.g. `claude-fable-5-1`) |
 | `ARCHIE_MAX_MODE_EFFORT` | repo/dynamic agents without a frontmatter `maxMode.effort` | Reasoning effort in max mode (`low`…`max`) |
 
 The env vars exist mainly for **dynamic agents** — PM-spawned repo agents synthesized at runtime (`synthesizeDynamicAgentDef` in `src/agents/registry.ts`), which have no frontmatter file to edit. They never affect generic plugin agents or the PM, and a per-agent frontmatter `maxMode` always takes precedence.
@@ -75,7 +75,7 @@ To make the switch correct-by-construction, `handleMaxModeApproval` forces a fre
 
 ## Where it surfaces
 
-- The grey message footer (`collectModelsUsed` in `src/tasks/task.ts`) reflects a model swap — e.g. it shows `Fable 5` once a Fable-swapping agent runs in max mode. An effort-only change is not shown (the footer lists models, not effort).
+- The grey message footer (`collectModelsUsed` in `src/tasks/task.ts`) reflects a model swap — e.g. it shows `Fable 5.1` once a Fable-swapping agent runs in max mode. An effort-only change is not shown (the footer lists models, not effort).
 - Each agent's `system/init` log line (`Model: …`) shows the model it actually spawned on.
 
 ## Related
