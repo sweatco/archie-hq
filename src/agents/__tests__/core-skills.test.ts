@@ -46,13 +46,14 @@ afterAll(() => {
 });
 
 describe('CORE_SKILL_MOUNTS', () => {
-  it('mounts all five core skills on the PM and trigger-task alone on the other tracks', () => {
+  it('mounts all six core skills on the PM and trigger-task alone on the other tracks', () => {
     expect(CORE_SKILL_MOUNTS.pm).toEqual([
       'channel-canvas',
       'self-awareness',
       'thread-conduct',
       'triggers',
       'trigger-task',
+      'recall-meetings',
     ]);
     expect(CORE_SKILL_MOUNTS.repo).toEqual(['trigger-task']);
     expect(CORE_SKILL_MOUNTS.plain).toEqual(['trigger-task']);
@@ -82,6 +83,7 @@ describe('resolveSkillPaths', () => {
       join(REPO_SKILLS_DIR, 'thread-conduct'),
       join(REPO_SKILLS_DIR, 'triggers'),
       join(REPO_SKILLS_DIR, 'trigger-task'),
+      join(REPO_SKILLS_DIR, 'recall-meetings'),
     ]);
   });
 
@@ -102,7 +104,7 @@ describe('resolveSkillPaths', () => {
     const triggers = paths.filter((p) => basename(p) === 'triggers');
     expect(triggers).toEqual([join(collidingDir, 'triggers')]);
     expect(paths).not.toContain(join(REPO_SKILLS_DIR, 'triggers'));
-    // The other four core skills still mount.
+    // The other five core skills still mount.
     expect(paths.map((p) => basename(p))).toEqual([
       'triggers',
       'zeta-skill',
@@ -110,6 +112,7 @@ describe('resolveSkillPaths', () => {
       'self-awareness',
       'thread-conduct',
       'trigger-task',
+      'recall-meetings',
     ]);
   });
 
