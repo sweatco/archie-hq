@@ -11,7 +11,7 @@ import { createInterface } from 'readline';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { join, resolve, relative, isAbsolute, sep } from 'path';
-import type { TaskMetadata, LogEntry, FindingType, SlackFile, SlackAuthor } from '../types/index.js';
+import type { TaskMetadata, LogEntry, FindingType, SlackFile, SlackAuthor, MeetingMetadata, MeetingCapabilities } from '../types/index.js';
 import type { SystemEvent } from '../system/event-bus.js';
 import { activeTasks } from './task.js';
 import { SESSIONS_DIR } from '../system/workdir.js';
@@ -153,6 +153,142 @@ export function getAttachmentsPath(taskId: string): string {
  */
 export function getArtifactsPath(taskId: string): string {
   return join(getSharedPath(taskId), 'artifacts');
+}
+
+/**
+ * Get the path to a voice meeting's own folder.
+ *
+ * One folder per MEETING, not one per task: `sessionId` is the same id that
+ * keys the meeting's `recall:<sessionId>` channel key (see `recallChannelKey`
+ * in `src/voice/task-binding.ts`), so the folder and the channel key are
+ * built from the same value and can never drift apart — no separate lookup
+ * table maps one to the other. A task that hosts several meetings over its
+ * life gets one sibling folder per meeting here, rather than every meeting's
+ * speech landing in one shared file behind an artificial boundary line.
+ */
+export function getMeetingPath(taskId: string, sessionId: string): string {
+  return join(getSharedPath(taskId), 'recall', sessionId);
+}
+
+/**
+ * Get the path to a meeting's transcript — what the room heard, in its own
+ * file inside that meeting's own folder (see `getMeetingPath`).
+ *
+ * Deliberately its own file, NOT `knowledge.log`: the PM reads knowledge.log
+ * whole at the start of every turn, and room speech from a live voice
+ * meeting is both high-volume and untrusted (it is a transcript of whatever
+ * the room's open microphone picked up, unattributed and unverified).
+ * Putting it there would mean every PM turn scans it unconditionally;
+ * keeping it here means an agent greps it on demand instead, the same way it
+ * would open any other file in its workspace.
+ */
+export function getMeetingTranscriptPath(taskId: string, sessionId: string): string {
+  return join(getMeetingPath(taskId, sessionId), 'transcript.log');
+}
+
+/**
+ * Get the path to a meeting's exchange log — what Archie's voice and the PM
+ * said to each other about this meeting, both directions, in its own file
+ * alongside the transcript (see `getMeetingPath` and `appendMeetingExchange`).
+ */
+export function getMeetingExchangeLogPath(taskId: string, sessionId: string): string {
+  return join(getMeetingPath(taskId, sessionId), 'exchange.log');
+}
+
+/**
+ * Get the path to a meeting's chat log — what Archie posted into the **meeting's
+ * own chat**, in its own file alongside the transcript (see `getMeetingPath` and
+ * `appendMeetingChat`).
+ *
+ * **This file exists because nothing else records these lines at all.** The
+ * `CHAT:` half of a spoken answer leaves through the transport's chat channel
+ * (Recall's `send_chat_message`) and is persisted nowhere in the task: not in
+ * `transcript.log` (nothing said it), not in `exchange.log` (that is the consult
+ * trail with the PM), not in `knowledge.log` or `events.jsonl` (the voice
+ * medium's own writing never reaches either). Its only other trace is the
+ * activation log under `voice-logs/`, which is a measurement corpus outside the
+ * task folder, not the meeting's record.
+ *
+ * Named for what it holds rather than for a channel: `chat.log` beside
+ * `transcript.log` and `exchange.log`, three files each owning one kind of
+ * content. Kept out of `transcript.log` deliberately — Archie must never come to
+ * believe it *said* what it only *wrote*, which is the same distinction the live
+ * prompt keeps in separate blocks (`parseReply` in
+ * `src/voice/comprehension.ts` has the reasoning).
+ */
+export function getMeetingChatLogPath(taskId: string, sessionId: string): string {
+  return join(getMeetingPath(taskId, sessionId), 'chat.log');
+}
+
+/**
+ * Get the path to a meeting's own metadata file — see `MeetingMetadata` in
+ * `src/types/task.ts` for what it holds and why, and `writeMeetingMetadata`
+ * below for how it gets there.
+ */
+export function getMeetingMetadataPath(taskId: string, sessionId: string): string {
+  return join(getMeetingPath(taskId, sessionId), 'metadata.json');
+}
+
+/**
+ * Get the path to a meeting's capability record — the `<capabilities>` block
+ * the model was given for this meeting, in its own file alongside the
+ * transcript. See `MeetingCapabilities` in `src/types/task.ts` for what it
+ * holds and why nothing else on disk holds it.
+ *
+ * `.json` rather than `.log` like three of its four neighbours, for one
+ * reason: the block is multi-line prose, and `formatLogEntry`'s
+ * `[ISO] [source] message` shape can only keep one entry on one line by
+ * collapsing those newlines to spaces (`sanitizeTranscriptField`). That would
+ * destroy the block's own line shape — and "the block was the wrong shape" is
+ * precisely one of the things this file exists to let a reader check. So it
+ * takes `metadata.json`'s form instead: a whole-file JSON snapshot.
+ */
+export function getMeetingCapabilitiesPath(taskId: string, sessionId: string): string {
+  return join(getMeetingPath(taskId, sessionId), 'capabilities.json');
+}
+
+/**
+ * Write a meeting's metadata file whole — the same write model as the task's
+ * own `shared/metadata.json` (`Task.save`): a full overwrite, no lock, no
+ * partial patch, and no read-modify-write against whatever is already there.
+ * Called twice per meeting — see `MeetingMetadata`'s own doc for why the
+ * second call's caller (`completeMeetingMetadata` in
+ * `src/voice/task-binding.ts`) is the one responsible for carrying every
+ * field forward, not this function.
+ *
+ * Deliberately plain, like `appendMeetingTranscript` and its siblings above:
+ * this can reject, and the caller decides what a failure means rather than
+ * this function guessing on its behalf.
+ */
+export async function writeMeetingMetadata(
+  taskId: string,
+  sessionId: string,
+  metadata: MeetingMetadata,
+): Promise<void> {
+  await mkdir(getMeetingPath(taskId, sessionId), { recursive: true });
+  await writeFile(getMeetingMetadataPath(taskId, sessionId), JSON.stringify(metadata, null, 2));
+}
+
+/**
+ * Write a meeting's capability record whole — the same write model as
+ * `writeMeetingMetadata` above, minus that function's one complication: this
+ * file has a single writer that runs exactly once per meeting, so there is
+ * nothing to carry forward and no second call to disagree with.
+ *
+ * Deliberately plain, like every other writer here: this can reject, and the
+ * caller decides what a failure means rather than this function guessing on its
+ * behalf. That matters more than usual for this one — `recordMeetingCapabilities`
+ * in `src/voice/task-binding.ts` is the caller, and a rejection is the only
+ * thing that lets it tell "nothing was written" apart from "there was nothing to
+ * write".
+ */
+export async function writeMeetingCapabilities(
+  taskId: string,
+  sessionId: string,
+  capabilities: MeetingCapabilities,
+): Promise<void> {
+  await mkdir(getMeetingPath(taskId, sessionId), { recursive: true });
+  await writeFile(getMeetingCapabilitiesPath(taskId, sessionId), JSON.stringify(capabilities, null, 2));
 }
 
 /**
@@ -472,6 +608,152 @@ export async function appendCliMessage(
 
   await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
   emitEvent('message', taskId, { from: 'cli', to: 'pm-agent', message });
+}
+
+/**
+ * Strip characters that could forge a new line out of a value bound for
+ * `formatLogEntry`, which interpolates `source` and `message` into
+ * `[ISO] [source] message\n` with no escaping of its own. A raw `\n` (or any
+ * other control character) in either would write what a line-based reader
+ * sees as a second, independently attributed entry right after it.
+ *
+ * Mirrors `sanitizeForLog` in `src/voice/meeting.ts`, which already does this
+ * for a participant's display name before it ever reaches `speaker` below.
+ * Applied again here, at the point of writing, so `message` — an ASR
+ * transcript, or Archie's own generated speech, neither of which this
+ * codebase can verify any more than a self-reported name (see
+ * `getMeetingTranscriptPath`'s own doc, and `AGENT_PROMPTS.voiceQuestion`) —
+ * gets the same guarantee regardless of what a caller passes in, and so that
+ * `speaker` stays covered even for a caller that does not already sanitise
+ * it. Deliberately narrow: only control characters and the two Unicode line
+ * separators some consumers treat the same way are touched, so ordinary
+ * punctuation, non-Latin scripts and emoji in real text survive untouched.
+ */
+function sanitizeTranscriptField(value: string): string {
+  return value.replace(/[\p{Cc}\u2028\u2029]+/gu, ' ').trim();
+}
+
+/**
+ * Append one finalised line of meeting speech — Archie's own turns included —
+ * to this meeting's own transcript file (see `getMeetingTranscriptPath`).
+ * Reuses `formatLogEntry` with `type` omitted, which already renders exactly
+ * `[ISO] [source] message` — here `speaker` fills the `source` slot a
+ * transcript line has no other use for.
+ *
+ * A meeting's folder does not exist until its first line does, so this
+ * creates it (recursively, so a second call for the same meeting is
+ * harmless) before appending. The very first call for a meeting is expected
+ * to be its own header line — the conventional speaker `'meeting'` naming
+ * the URL just joined, the same way `startMeeting` in
+ * `src/connectors/recall/index.ts` already does — which now serves as this
+ * file's opening line rather than a boundary between meetings sharing one
+ * file, since each meeting has its own.
+ */
+export async function appendMeetingTranscript(
+  taskId: string,
+  sessionId: string,
+  speaker: string,
+  text: string,
+): Promise<void> {
+  const entry: LogEntry = {
+    timestamp: new Date().toISOString(),
+    source: sanitizeTranscriptField(speaker),
+    message: sanitizeTranscriptField(text),
+  };
+  await mkdir(getMeetingPath(taskId, sessionId), { recursive: true });
+  await appendFile(getMeetingTranscriptPath(taskId, sessionId), formatLogEntry(entry));
+}
+
+/**
+ * Append one line of the exchange between Archie's voice and the PM about
+ * this meeting, to this meeting's own exchange log (see
+ * `getMeetingExchangeLogPath`) — a question when it is asked, an answer when
+ * it arrives, both through this one function so the file reads as a single
+ * two-party conversation: no correlation ids, no `Q:`/`A:` markup, nothing to
+ * reconstruct. `speaker` is the caller's label for whichever party is
+ * speaking on this line — the two call sites use `'voice'` for a question
+ * the room's agent put to the PM (`src/voice/task-binding.ts`) and
+ * `'pm-agent'` for the PM's own answer arriving back
+ * (`src/connectors/recall/channel-delivery.ts`). Sanitised exactly like
+ * `appendMeetingTranscript`'s fields: a consult question is derived from
+ * room speech and a PM answer is model output, neither more verifiable than
+ * the transcript itself.
+ *
+ * The model's own prompt renders this same exchange differently, with
+ * correlation ids carried in `Meeting`'s own in-memory `consults` array
+ * (`src/voice/meeting.ts`) — that is a rendering concern for the prompt, kept
+ * deliberately separate from this durable, storage-only format.
+ */
+export async function appendMeetingExchange(
+  taskId: string,
+  sessionId: string,
+  speaker: string,
+  message: string,
+): Promise<void> {
+  const entry: LogEntry = {
+    timestamp: new Date().toISOString(),
+    source: sanitizeTranscriptField(speaker),
+    message: sanitizeTranscriptField(message),
+  };
+  await mkdir(getMeetingPath(taskId, sessionId), { recursive: true });
+  await appendFile(getMeetingExchangeLogPath(taskId, sessionId), formatLogEntry(entry));
+}
+
+/**
+ * Append one line Archie posted into the meeting's own chat — see
+ * `getMeetingChatLogPath` for why this file has to exist. Written at the moment
+ * the line is posted, since there is no later moment it could be recovered from.
+ *
+ * Same shape as `appendMeetingTranscript` and `appendMeetingExchange`, sanitised
+ * identically: this is model output bound for a room, no more verifiable than
+ * the transcript beside it.
+ */
+export async function appendMeetingChat(
+  taskId: string,
+  sessionId: string,
+  speaker: string,
+  message: string,
+): Promise<void> {
+  const entry: LogEntry = {
+    timestamp: new Date().toISOString(),
+    source: sanitizeTranscriptField(speaker),
+    message: sanitizeTranscriptField(message),
+  };
+  await mkdir(getMeetingPath(taskId, sessionId), { recursive: true });
+  await appendFile(getMeetingChatLogPath(taskId, sessionId), formatLogEntry(entry));
+}
+
+/**
+ * Append a voice-meeting event to the knowledge log — the ninth appender of
+ * the same shape as the eight above, formatted by the same `formatLogEntry`
+ * with `source` fixed to `'voice'`. Covers the three facts worth keeping
+ * outside the meeting itself: started, a question put to the PM, ended. NOT
+ * the room's speech itself, which is high-volume and belongs in this
+ * meeting's own transcript instead — see `appendMeetingTranscript`.
+ *
+ * Emits the same `'message'` event every other inbound appender in this file
+ * emits — `appendCliMessage` is the clearest sibling — so a live CLI/SSE
+ * observer sees voice activity too. This was previously the one appender of
+ * the nine that stayed silent on the event bus, which is why voice activity
+ * used to be invisible to a live view.
+ */
+export async function appendMeetingEvent(
+  taskId: string,
+  message: string,
+): Promise<void> {
+  // Sanitised for the same reason the transcript's fields are: a consult
+  // question is model output derived from room speech, so a newline in it
+  // would write what reads as a second, well-formed log line under whatever
+  // source it chose — into the file every agent reads at the start of a turn.
+  const sanitized = sanitizeTranscriptField(message);
+  const entry: LogEntry = {
+    timestamp: new Date().toISOString(),
+    source: 'voice',
+    message: sanitized,
+  };
+
+  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
+  emitEvent('message', taskId, { from: 'voice', to: 'pm-agent', message: sanitized });
 }
 
 /**

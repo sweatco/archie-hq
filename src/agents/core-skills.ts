@@ -33,7 +33,7 @@ export type AgentTrack = 'pm' | 'repo' | 'plain';
  * Content limit: a PM-voiced skill instructs tools attached only inside the `isPmAgent(def)` branch of `spawnAgent` — `post_to_channel`, `mute_channel`, `read_thread`, `fetch_slack_reference`, `report_completion` — so giving one a new audience needs prompt and tool work too, not just a line here. A skill on `repo` or `plain` has to be written for that audience from the start: track-neutral, naming no MCP tool, assuming no channel and no users.
  */
 export const CORE_SKILL_MOUNTS: Record<AgentTrack, string[]> = {
-  pm: ['channel-canvas', 'self-awareness', 'thread-conduct', 'triggers', 'trigger-task'],
+  pm: ['channel-canvas', 'self-awareness', 'thread-conduct', 'triggers', 'trigger-task', 'recall-meetings'],
   repo: ['trigger-task'],
   plain: ['trigger-task'],
 };

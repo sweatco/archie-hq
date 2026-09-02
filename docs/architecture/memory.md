@@ -276,8 +276,6 @@ links:
   slack:
     - channel_id: C0123
       thread_id: "1700000000.000100"
-  github:
-    - url: https://github.com/acme/api/pull/42
   cli:
 users:
   - id: U07ABC123

@@ -45,7 +45,7 @@ It had access to `Glob`, `Grep`, and `Read` to search `sessions/` for matching t
 
 **Source**: `src/agents/agent.ts`, `src/agents/spawn.ts`, `src/agents/tools.ts` (`createPMAgentMcpServer`)
 
-One PM agent instance is spawned per task. It is the orchestrator: it receives all external input (from connectors), delegates work to specialist agents, communicates with users (Slack, CLI, GitHub), and manages the task lifecycle.
+One PM agent instance is spawned per task. It is the orchestrator: it receives all external input (from connectors), delegates work to specialist agents, communicates with users (Slack, CLI), and manages the task lifecycle.
 
 **Model**: Opus by default (`def.model || 'opus'` in `spawn.ts`). Overridable through the `pm` plugin overlay's frontmatter, which can also set `effort` and `maxTurns`.
 
@@ -54,7 +54,7 @@ One PM agent instance is spawned per task. It is the orchestrator: it receives a
 | Tool | Purpose |
 |---|---|
 | `send_message_to_agent` | Send instructions/questions to any agent |
-| `post_to_user` | Send a message to the user. Routes to the default linked channel or an existing linked thread (`target.channel`). The Slack/CLI/GitHub specifics live in `Task.postToUser`, so the PM never picks a transport directly. The PM cannot open new DMs, and cannot choose to open a new task-linked thread — it stays where the task lives (in a channel thread, `@mention` people there; in a DM, stay 1:1). The one exception is not a choice it makes: a trigger-fired task with no thread yet has a `home_channel` set by the scheduler from its approved binding, and the PM's first message there becomes that task's thread. |
+| `post_to_user` | Send a message to the user. Routes to the default linked channel or an existing linked thread (`target.channel`). The Slack/CLI specifics live in `Task.postToUser`, so the PM never picks a transport directly. The PM cannot open new DMs, and cannot choose to open a new task-linked thread — it stays where the task lives (in a channel thread, `@mention` people there; in a DM, stay 1:1). The one exception is not a choice it makes: a trigger-fired task with no thread yet has a `home_channel` set by the scheduler from its approved binding, and the PM's first message there becomes that task's thread. |
 | `post_files_to_user` | Upload files to an already-linked thread (default channel or `channel` key). Does not open new destinations. |
 | `share_artifact` | Publish an immutable, deduped snapshot of a file under `<task>/shared/artifacts/` for inter-agent sharing. |
 | `find_slack_user` / `find_slack_channel` | Look up Slack user/channel IDs and metadata (e.g. a channel ID before reading or posting to it). |
@@ -381,7 +381,7 @@ export const AGENT_PROMPTS = {
 When the PM receives a new task:
 
 1. Loads the relevant domain skill via the `Skill` tool
-2. Acknowledges the request via `post_to_user` (routed to whichever channel the requester is on — Slack, CLI, GitHub)
+2. Acknowledges the request via `post_to_user` (routed to whichever channel the requester is on — Slack or CLI)
 3. Calls `assign_task_owner(agent)` to designate the lead agent
 4. Calls `send_message_to_agent(agent, message)` with the delegation message starting with "You are the task owner for this request."
 

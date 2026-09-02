@@ -28,6 +28,8 @@ import {
   createOrchestrationMcpServer,
   createSchedulingMcpServer,
 } from './tools.js';
+import { getRegisteredConnectorPmTools } from './connector-tools.js';
+import { renderChannel } from './channel-render.js';
 import { createFileBridgeMcpServer, shouldAttachFileBridge } from './mcp-file-bridge.js';
 import { createToolApprovalHooks, mcpToolName } from './tool-approval-gate.js';
 import { hydrateBranchState } from '../connectors/github/branch-state.js';
@@ -346,15 +348,6 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     systemPrompt = await generatePMPrompt(task);
 
     const channelEntries = Object.entries(metadata.channels);
-    const renderChannel = (id: string, ch: typeof metadata.channels[string]): string => {
-      if (ch.type === 'slack') {
-        const name = ch.channel_name || ch.channel_id;
-        return name.startsWith('DM with ') ? name : `#${name}`;
-      }
-      if (ch.type === 'cli') return 'CLI session';
-      if (ch.type === 'github') return `PR ${ch.repo}#${ch.pr_number}`;
-      return id;
-    };
     const contextLines = [
       `Task: ${taskId}`,
       `Status: ${metadata.status}`,
@@ -420,6 +413,12 @@ Shared folder: ${sharedPath} [READ-ONLY]
     mcpServers['comms-tools'] = createCommsMcpServer(agent, task);
     mcpServers['orchestration-tools'] = createOrchestrationMcpServer(agent, task);
     mcpServers['scheduling-tools'] = createSchedulingMcpServer(agent, task);
+    // Whatever a mounted connector registered for the PM (e.g. Recall's
+    // `recall-tools`, holding `join_recall_meeting`) — never named here, so a
+    // deployment where nothing registered anything hands the PM nothing extra.
+    for (const [name, factory] of getRegisteredConnectorPmTools()) {
+      mcpServers[name] = factory(agent, task);
+    }
   } else if (isRepoAgent(def)) {
     // ---- Repo access attached ----
     const editAllowed = metadata.edit_allowed === true;

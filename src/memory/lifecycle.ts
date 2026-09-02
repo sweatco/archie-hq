@@ -327,10 +327,6 @@ export function buildSummaryMarkdown(
     lines.push(`      thread_id: "${l.thread_id}"`);
     if (l.url) lines.push(`      url: ${l.url}`);
   }
-  lines.push('  github:');
-  for (const l of links.github) {
-    lines.push(`    - url: ${l.url}`);
-  }
   lines.push('  cli:');
   for (const l of links.cli) {
     lines.push(`    - session_id: ${l.session_id}`);
@@ -364,24 +360,17 @@ export function buildSummaryMarkdown(
 
 interface LinksBlock {
   slack: Array<{ channel_id: string; thread_id: string; url?: string }>;
-  github: Array<{ url: string }>;
   cli: Array<{ session_id: string }>;
 }
 
 function buildLinksBlock(metadata: TaskMetadata): LinksBlock {
-  const block: LinksBlock = { slack: [], github: [], cli: [] };
+  const block: LinksBlock = { slack: [], cli: [] };
   for (const channel of Object.values(metadata.channels)) {
     if (channel.type === 'slack') {
       block.slack.push({
         channel_id: channel.channel_id,
         thread_id: channel.thread_id,
       });
-    } else if (channel.type === 'github') {
-      const repo = (channel as { repo?: string }).repo;
-      const prNum = (channel as { pr_number?: number }).pr_number;
-      if (repo && prNum) {
-        block.github.push({ url: `https://github.com/${repo}/pull/${prNum}` });
-      }
     } else if (channel.type === 'cli') {
       block.cli.push({ session_id: metadata.task_id });
     }
