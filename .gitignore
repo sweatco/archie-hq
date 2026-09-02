@@ -56,7 +56,13 @@ temp/
 # Local E2E evidence (Forge Stage 4 targets qa-evidence/ explicitly instead)
 e2e-evidence/
 
+# voice-cases harness run output (see tools/voice-cases/README.md) — logs are
+# already covered by *.log above, this covers the graded result JSON
+tools/voice-cases/results/
+
 # Local data snapshots pulled by scripts/pull-remote-data.sh
 archie-data-*
 *.partial.*
 secrets/extra-ca.crt
+*.bak
+workdir.pre-e2e/
