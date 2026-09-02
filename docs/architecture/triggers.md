@@ -158,6 +158,22 @@ So a message that both mentions Archie and matches a trigger creates a direct ta
 
 External and guest *humans* are filtered upstream by the author bail-out in `handleSlackEvent`, so they can never fire a trigger. That bail-out is `event.user`-gated and therefore never classifies an **app** post, which carries no `user` — so `dispatchChannelMessageTriggers` gates app posts on the bot's own team itself, dropping one from a foreign workspace before it is rendered or matched. This mirrors the rule thread ingestion and the pin index already draw: drop a bot from a foreign team, keep internal bots.
 
+**The author filter matches the author the payload carries, which for an app is a bot id.** A Slack message's author is not always a user id: an app posting through an incoming webhook (or with `as_user: false`) carries a `bot_id` and no `user` at all, while an app calling `chat.postMessage` with a bot token carries both. So `from_user` is tested against **both** ids, in `messageMatchesTrigger` (`src/system/trigger-match.ts`), and the id that decided the fire is the id handed to `fireTrigger` as `authorId` — one derivation, so the seed cannot name an author the filter did not match on.
+
+This is a correction, and the shape of the bug is worth keeping. The matcher used to compare `from_user` against `event.user` alone. Everything else in the codebase already knew better — `fetchSlackThread` keeps `botId` and renders the author line as `<@B…:Name>`, dispatch's own foreign-app gate reads `bot_id`, `fireTrigger` took `event.user || raw.bot_id` — so an agent reading a channel's history was *shown* the `B…` id as the author and had every reason to write it into the filter. A live trigger did exactly that: it watched #sweatcoin-mobile for an "Expired Feature Flags Report" from `B0A9ZRW2TS9`, was approved, announced and listed as active, and fired zero times across six weeks of reports. Nothing was broken enough to log: the message was routed, rendered and matched against the keyword; only the author comparison silently failed. **A filter that cannot match is indistinguishable from a channel where nothing was posted**, which is why the fix is paired with a validator rather than left to the matcher alone.
+
+`propose_trigger` and `update_trigger` therefore refuse a `from_user` that is not shaped like an author id (`U…`, `W…`, `B…`) — a name, an @handle, or a channel id pasted into the wrong field is rejected at creation with a message saying where to find the right id, instead of producing a trigger that is announced and inert. The validator is deliberately a shape check and not a lookup: resolving the id against Slack would fail closed on an app the bot cannot see, and a trigger refused because of a transient API error is worse than one refused for being unmatchable.
+
+Rendering follows the same principle. `describeCondition` used to say "from a specific person", which told neither the human reading the change notice nor the agent managing the trigger anything they could act on. It now names the author — a `U…` as a mention (a config change is exactly when the watched person should hear about it), a `B…` as its id, since an app cannot be mentioned — and names the watched channel when it differs from the delivery binding, the one case a listing could not otherwise express.
+
+## Reading a trigger
+
+`list_triggers` renders one summary line per trigger — `<when> → <what>`, deliberately short, because the common ask is "what's set up here". `get_trigger(id)` returns the stored record: every condition as stored (watched channel id, keyword, author id and what kind of id it is), the full internal `action.prompt`, the binding, and who created and approved it.
+
+The split exists because an agent that can only read the summary cannot manage what it is already allowed to delete. It cannot say which sender is filtered, cannot quote the instruction that runs — and, since `update_trigger` **replaces the condition list wholesale**, cannot edit one condition without silently dropping the filters it never saw. Visibility (below) is the gate on *which* triggers an agent may touch; withholding fields from a trigger that has already passed that gate protects nobody, because the same agent may rewrite or delete it outright. `get_trigger` is gated by exactly the same `triggerVisibleFrom` check as the rest of the surface, and refuses a `pending` proposal like `list_triggers` and `update_trigger` do, so the read tool cannot become the one way to see one.
+
+The action prompt is returned in full rather than clipped. Clipping it is what made the summary insufficient in the first place, and a prompt long enough to be a problem here is already seeded into a PM turn on every fire, so it is bounded by construction.
+
 ## Confirmation gate (channel-agnostic)
 
 Trigger creation reuses the edit-mode approval mechanism, which is already channel-agnostic:
@@ -208,7 +224,8 @@ Every **configuration change** — created/enabled, edited, paused/resumed, dele
 | `src/agents/trigger-data.ts` | The two pure pieces of the persistent directory: the sandbox grant, and the prompt block that announces the path and lists its contents |
 | `src/system/trigger-scheduler.ts` | In-memory index, 60s tick, cron math, `fireTrigger`, announcements |
 | `src/system/trigger-visibility.ts` | Pure visibility decision (privacy injected) |
-| `src/agents/tools.ts` | PM tools: `propose_trigger`, `list_triggers`, `update_trigger`, `delete_trigger` |
+| `src/system/trigger-match.ts` | Pure channel-message match decision — author-id shape, the `contains`/`from_user` predicate |
+| `src/agents/tools.ts` | PM tools: `propose_trigger`, `list_triggers`, `get_trigger`, `update_trigger`, `delete_trigger` |
 | `src/tasks/task.ts` | `handleTriggerApproval` / `handleTriggerDenial`; `openHomeThread` (opens and adopts the task's own thread in its home channel) and `linkSlackThread` |
 | `src/connectors/slack/channel-ids.ts` | `taskSlackChannelLabels` / `taskSlackChannelIds` — the one derivation of which channels a task's standing context and capabilities cover, home channel included |
 | `src/connectors/slack/events.ts` | Approve/Deny buttons + channel-message dispatch hook |
