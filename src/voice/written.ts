@@ -14,7 +14,7 @@ import type { WrittenLine } from './types.js';
 
 const LOG = 'voice-written';
 
-// Chars kept, most recent first, oldest dropped. 24,000 ≈ 6.1k tokens ≈ SPEAKING_WINDOW_MS's ~1hr; meeting.ts's TRANSCRIPT_WINDOW_MS counts this into its budget — keep both in sync.
+// Chars kept, most recent first, oldest dropped. 24,000 ≈ 6.1k tokens ≈ TRANSCRIPT_WINDOW_MS's ~1hr; meeting.ts's TRANSCRIPT_WINDOW_MS counts this into its budget — keep both in sync.
 const MAX_EXCHANGE_CHARS = 24_000;
 
 // = every inbound appender's `to` in persistence.ts (appendSlackMessage, appendSlackEdit, appendGitHubEvent, appendCliMessage, appendMeetingEvent).

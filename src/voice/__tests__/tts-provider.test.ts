@@ -327,7 +327,7 @@ describe('the Soniox socket', () => {
   });
 
   it('reports a refused stream as incomplete rather than as silence', async () => {
-    // A real constraint: 3 concurrent TTS streams per org. Must arrive through `incomplete` — `settleAnswer` already knows how to settle a truncated debt.
+    // A real constraint: 3 concurrent TTS streams per org. Must arrive through `incomplete` — `answerRoom` already knows how to settle a truncated debt.
     const { socket, stream, session } = speakOn(onSoniox, ['Done.']);
     socket.say({
       stream_id: 's1',

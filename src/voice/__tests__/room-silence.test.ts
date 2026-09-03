@@ -1620,7 +1620,7 @@ describe('meeting room silence', () => {
     await meeting.stop();
   });
 
-  // `thought` reaches the row via `recordAnswer` or `answerRoom`'s `silence` branch; absence records nothing, not `''`.
+  // `thought` reaches the row via `answerRoom` or `answerRoom`'s `silence` branch; absence records nothing, not `''`.
 
   it('records the thought on the row for a spoken answer, and leaves it off a plain one', async () => {
     reset();
@@ -2296,7 +2296,7 @@ describe('meeting standing context', () => {
 /**
  * Archie's own posts into the meeting chat — the `CHAT:` half of an answer.
  *
- * Two properties: `settleAnswer` files only `answer.speech` as an utterance, not the chat text; these lines reach nothing else, so the `chat` row is their only record.
+ * Two properties: `answerRoom` files only `answer.speech` as an utterance, not the chat text; these lines reach nothing else, so the `chat` row is their only record.
  */
 describe('meeting chat posts — Archie own written lines', () => {
   it('files a CHAT: detail to the written channel and not to the transcript', async () => {

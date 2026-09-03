@@ -1,4 +1,3 @@
-
 import { logger } from '../system/logger.js';
 // Aliased on import -- `Response` is also a global here (undici's).
 import {
@@ -27,35 +26,21 @@ import type {
 
 const LOG = 'voice-meeting';
 
-// 3h backstop, well within Cerebras' 131,072-token context -- a meeting's full context (transcript, prompt, written exchange) measures ~40k tokens (~31%) worst case.
+// 3h backstop, well within Cerebras' 131,072-token context -- a meeting's full context measures ~40k tokens worst case. The speaking call reads this same window: widening it is ~free, since time-to-first-byte is flat against input size (+2.3ms per 1000 tokens, R² = 0.000 across 156 samples).
 const TRANSCRIPT_WINDOW_MS = 3 * 60 * 60 * 1000;
-
-// Short, unlike SPEAKING_WINDOW_MS: widening it only adds chances to catch the name in an unaimed sentence and misfire -- voice-addressing.md treats false positives as the worst outcome.
+// Short, unlike the speaking window: widening it only adds chances to catch the name in an unaimed sentence and misfire, which voice-addressing.md treats as the worst outcome.
 const ADDRESSING_WINDOW_MS = 60 * 1000;
-
-// = TRANSCRIPT_WINDOW_MS: costs ~nothing extra -- time-to-first-byte is flat against input size (+2.3ms per 1000 tokens, R² = 0.000 across 156 samples).
-const SPEAKING_WINDOW_MS = TRANSCRIPT_WINDOW_MS;
-
-
 const RETRY_FLOOR_MS = 2 * 1000;
-
 const FOLLOW_UP_GRACE_MS = 10 * 1000;
-
-// Fires after the follow-up window closes, not on the boundary tick (`isFollowUpAnchor`'s `>=` still reads it as live) -- else the engagement tile sticks green for the rest of the meeting, the bug `setEngaged` fixes.
+// Timers fire after their window closes, not on the boundary tick (`>=` still reads that as live) -- else the engagement tile sticks green for the rest of the meeting.
 const LAPSE_MARGIN_MS = 50;
-
-// Zoom issues a new participant id on rejoin -- without reaping, a reconnect or blip leaves the old stream open, billed by Deepgram for silence.
+// Zoom issues a new participant id on rejoin -- without reaping, a reconnect leaves the old stream open, billed by Deepgram for silence.
 const STREAM_IDLE_MS = 2 * 60 * 1000;
-
 const STREAM_REAP_INTERVAL_MS = 30 * 1000;
-
-// Flux's `eot_timeout_ms` defaults to 5000ms, so a feed still delivering audio resolves its turn within ~5s -- 10s of total silence can only mean a dead connection, never a live pause.
-// Needed because `isTurnOpen()` clears only on an EndOfTurn event and an idle Flux connection sends none -- measured: 20 minutes silent, still reporting `Connected`.
+// Flux's `eot_timeout_ms` defaults to 5000ms, so a feed still delivering audio resolves its turn within ~5s; 10s of silence can only mean a dead connection. Needed because `isTurnOpen()` clears only on an EndOfTurn event, and an idle Flux connection sends none -- measured at 20 minutes silent, still reporting `Connected`.
 const FLOOR_LIVENESS_MS = 10 * 1000;
-
 const REOPEN_BACKOFF_MS = 15 * 1000;
-
-// `openTurnStream` fails asynchronously, so a rejected key or blocked host shows as a stream dying right after every open -- without this floor, that reconnects at packet rate, tens per second per speaker.
+// `openTurnStream` fails asynchronously, so a rejected key shows as a stream dying right after every open -- without this floor, that reconnects at packet rate.
 const REOPEN_MIN_INTERVAL_MS = 2 * 1000;
 
 // Matching is whole-token (see `matchTrigger`): a prefix like `arch` is harmless (never fires on `architecture`), but a real word like `art`/`archive` would fire constantly -- check any addition against that.
@@ -81,40 +66,21 @@ function tokenize(text: string): string[] {
     .filter((token) => token.length > 0);
 }
 
-function containsSequence(haystack: readonly string[], needle: readonly string[]): boolean {
-  if (needle.length === 0 || needle.length > haystack.length) {
-    return false;
-  }
-  for (let i = 0; i <= haystack.length - needle.length; i++) {
-    let matchedAll = true;
-    for (let j = 0; j < needle.length; j++) {
-      if (haystack[i + j] !== needle[j]) {
-        matchedAll = false;
-        break;
-      }
-    }
-    if (matchedAll) {
-      return true;
-    }
-  }
-  return false;
+// A token holds only letters and digits, so space-delimiting both sides turns `includes` into an exact whole-token sequence match: `darchie` and `a r c h i e` both miss.
+function spaced(text: string): string {
+  return ` ${tokenize(text).join(' ')} `;
 }
 
-interface CompiledPhrase {
-  raw: string;
-  tokens: string[];
-}
+const compiledPhrases = new WeakMap<readonly string[], { raw: string; phrase: string }[]>();
 
-const compiledPhrases = new WeakMap<readonly string[], CompiledPhrase[]>();
-
-function compilePhrases(phrases: readonly string[]): CompiledPhrase[] {
+function compilePhrases(phrases: readonly string[]): { raw: string; phrase: string }[] {
   const cached = compiledPhrases.get(phrases);
-  if (cached) {
+  if (cached !== undefined) {
     return cached;
   }
   const built = phrases
-    .map((raw) => ({ raw, tokens: tokenize(raw) }))
-    .filter((phrase) => phrase.tokens.length > 0);
+    .map((raw) => ({ raw, phrase: spaced(raw) }))
+    .filter((variant) => variant.phrase.trim().length > 0);
   compiledPhrases.set(phrases, built);
   return built;
 }
@@ -123,19 +89,25 @@ export function matchTrigger(
   text: string,
   variants: readonly string[] = TRIGGER_VARIANTS,
 ): string | null {
-  const tokens = tokenize(text);
+  const haystack = spaced(text);
   for (const variant of compilePhrases(variants)) {
-    if (containsSequence(tokens, variant.tokens)) {
+    if (haystack.includes(variant.phrase)) {
       return variant.raw;
     }
   }
   return null;
 }
 
-// Exported rather than folded into `isSelf` below -- a connector needs this same check before any `Meeting` exists to ask it.
+const BOT_KEY = spaced(BOT_NAME);
+
+// Exported rather than folded into the meeting -- a connector needs this same check before any `Meeting` exists to ask it.
 export function isArchie(name: string | null): boolean {
-  if (name === null) return false;
-  return tokenize(name).join(' ') === tokenize(BOT_NAME).join(' ');
+  return name !== null && spaced(name) === BOT_KEY;
+}
+
+// Strips control chars and the two Unicode line separators -- uncaught, either could forge a second attributed line (persistence.ts's `formatLogEntry` doesn't escape) or a line/closing tag inside the prompt block a name renders into.
+function sanitizeForLog(value: string): string {
+  return value.replace(/[\p{Cc}\u2028\u2029]+/gu, ' ').trim();
 }
 
 // One speaking decision's row, built field by field as the turn settles and recorded once, in `decide()`'s `finally`.
@@ -144,6 +116,8 @@ type TurnRecord = Extract<MeetingRow, { type: 'turn' }>;
 // One addressing decision's row. Recorded the moment its tier settles -- never held for the decision behind it, which may never run at all.
 type GateRecord = Extract<MeetingRow, { type: 'gate' }>;
 
+type TimerKind = 'follow-up' | 'retry' | 'floor';
+
 interface ParticipantState {
   id: string;
   name: string;
@@ -151,6 +125,13 @@ interface ParticipantState {
   reopenAfter: number;
   lastAudioAt: number;
   staleFloorLogged: boolean;
+}
+
+interface Consult {
+  id: string;
+  question: string;
+  // Holds a real PM answer, or (if `routeConsult` refuses to send it) a parenthesised note that it never left -- same field, so a refused question doesn't read to the model as still pending.
+  answer?: string;
 }
 
 export interface Meeting {
@@ -174,79 +155,56 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
 
   const transcript: Utterance[] = [];
   const participants = new Map<string, ParticipantState>();
-
-  const selfByName = new Map<string, boolean>();
-
-  interface Consult {
-    id: string;
-    at: number;
-    question: string;
-    // Holds a real PM answer, or (if `routeConsult` refuses to send it) a parenthesised note that it never left -- same field, so a refused question doesn't read to the model as still pending.
-    answer?: string;
-    answeredAt?: number;
-  }
   const consults: Consult[] = [];
-  let consultSeq = 0;
-  let lastConsultAnswerAt = 0;
-
-  let roster: RosterEntry[] = [];
-  let capabilities = '';
-  const chatPosts: WrittenLine[] = [];
-
-  let owes = false;
-
-  // Not `transcript.length`: that shrinks as the window slides, not a reliable freshness marker across an await.
-  let transcriptRevision = 0;
-
-  let deciding = false;
-
-  // A second handle on the same fact as `deciding` -- `stop()` awaits the last turn finishing, which a boolean can't answer.
-  let turnChain: Promise<void> = Promise.resolve();
-
-  // Lets `stop()` reach into a turn already awaiting a model call or synthesis; set only while one is in flight.
-  let abandonTurn: ((why: string) => void) | null = null;
-
-  let cutRevision = 0;
-
-  let followUpTimer: NodeJS.Timeout | null = null;
-
-  let retryAfter = 0;
-  let retryTimer: NodeJS.Timeout | null = null;
-
-  let floorTimer: NodeJS.Timeout | null = null;
-
-  let voiceFailureAnnounced = false;
+  // What a turn is decided against besides the transcript: who is in the room, what Archie wrote rather than said, and what it can go find out.
+  const standing = { roster: [] as RosterEntry[], chat: [] as WrittenLine[], capabilities: '' };
+  // One fact in three parts: whether Archie owes the room, the earliest a retry may run, and when a consult answer last raised the debt (see `clearOwed`).
+  const owe = { standing: false, notBefore: 0, answeredAt: 0 };
+  // Monotonic markers, not lengths: `transcript` shrinks as the window slides, so its length is no freshness marker across an await.
+  const revision = { transcript: 0, cut: 0 };
+  // The one in-flight turn: whether a decision is running, a handle `stop()` can await, and a way into one already awaiting a model call or synthesis.
+  const turn = { deciding: false, chain: Promise.resolve(), abandon: null as ((why: string) => void) | null };
+  const timers = new Map<TimerKind, NodeJS.Timeout>();
+  // Opened eagerly so its connection cost isn't paid in front of the first word; `session` is null only if opening threw -- then every answer goes through `answerWithoutVoice`.
+  const voice: { session: SpeechSession | null; failureAnnounced: boolean } = { session: null, failureAnnounced: false };
   let stopped = false;
 
-  // Opened eagerly so its connection cost isn't paid in front of the first word; null only if opening threw -- then every answer goes through `answerWithoutVoice`.
-  let speech: SpeechSession | null = null;
   try {
-    speech = createSonioxSpeechSession(cfg);
+    voice.session = createSonioxSpeechSession(cfg);
   } catch (err) {
     logger.error(LOG, 'Could not open the speech session — nothing can be spoken', err);
   }
 
-
-  function newGateRow(speaker: string, candidate: string, tier: GateRecord['tier']): GateRecord {
-    return { at: new Date().toISOString(), type: 'gate', speaker, candidate, tier, addressed: false };
+  // One scheduler for the three timers a meeting arms; each kind holds at most one. `restart` is what a fresh answer does to the follow-up window.
+  function arm(kind: TimerKind, delayMs: number, run: () => void, restart = false): void {
+    if (restart) {
+      clearTimeout(timers.get(kind));
+      timers.delete(kind);
+    }
+    if (!timers.has(kind)) {
+      const timer = setTimeout(() => {
+        timers.delete(kind);
+        run();
+      }, delayMs);
+      timer.unref();
+      timers.set(kind, timer);
+    }
   }
 
   function recordTiming(row: TurnRecord, key: keyof MeetingTurnTimings, ms: number): void {
     row.timings = { ...row.timings, [key]: ms };
   }
 
-  // `null` means no sentence was confirmed heard, which `speech: ''` says exactly.
-  function recordHeard(row: TurnRecord, heard: string | null): void {
-    row.speech = heard ?? '';
+  function newGateRow(speaker: string, candidate: string, tier: GateRecord['tier']): GateRecord {
+    return { at: new Date().toISOString(), type: 'gate', speaker, candidate, tier, addressed: false };
   }
-
 
   function addUtterance(speaker: string, text: string): void {
     const at = Date.now();
     transcript.push({ at, speaker, text });
-    transcriptRevision++;
+    revision.transcript++;
     record({ at: new Date(at).toISOString(), type: 'utterance', speaker, text });
-    retryAfter = 0;
+    owe.notBefore = 0;
     const cutoff = at - TRANSCRIPT_WINDOW_MS;
     while (transcript.length > 0 && transcript[0].at < cutoff) {
       transcript.shift();
@@ -261,75 +219,48 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       .join('\n');
   }
 
-  // Copied, not referenced: the snapshot outlives the model call it was built for, and a roster replaced mid-call mustn't change what was already sent.
-  function speakingContext(exchange: readonly WrittenLine[]): SpeakingContext {
-    const context: SpeakingContext = {};
-    if (roster.length > 0) {
-      context.participants = [...roster];
-    }
-    const written = [...exchange, ...chatPosts];
-    if (written.length > 0) {
-      context.written = written;
-    }
-    if (capabilities.length > 0) {
-      context.capabilities = capabilities;
-    }
-    return context;
-  }
-
-  function isFollowUpAnchor(utterance: Utterance | undefined, graceMs: number): boolean {
+  // `-1` asks whether our own line is the latest one (the follow-up window is live); `-2`, whether the room replied straight after it.
+  function spokeWithinGrace(offset: -1 | -2): boolean {
+    const utterance = transcript.at(offset);
     return (
       utterance !== undefined &&
       utterance.speaker === BOT_NAME &&
-      utterance.at >= Date.now() - graceMs
+      utterance.at >= Date.now() - FOLLOW_UP_GRACE_MS
     );
-  }
-
-  function spokeLastWithin(graceMs: number): boolean {
-    return isFollowUpAnchor(transcript.at(-2), graceMs);
-  }
-
-  function followUpWindowLive(): boolean {
-    return isFollowUpAnchor(transcript.at(-1), FOLLOW_UP_GRACE_MS);
-  }
-
-  function noteOwnAnswer(text: string): void {
-    addUtterance(BOT_NAME, text);
-    if (followUpTimer !== null) {
-      clearTimeout(followUpTimer);
-    }
-    followUpTimer = setTimeout(() => {
-      followUpTimer = null;
-      applyEngagement();
-    }, FOLLOW_UP_GRACE_MS + LAPSE_MARGIN_MS);
-    followUpTimer.unref();
-  }
-
-  // `roomSpokeSince` must be read before `addUtterance` runs -- that bumps `transcriptRevision` itself, our own line included.
-  function fileConfirmedLine(text: string, revision: number): void {
-    const roomSpokeSince = transcriptRevision !== revision;
-    addUtterance(BOT_NAME, text);
-    if (!roomSpokeSince) {
-      retryAfter = Date.now() + RETRY_FLOOR_MS;
-    }
-  }
-
-  // The only record of these lines: they leave through the transport's chat channel, reaching neither the room's speech nor knowledge.log. The `chat` row below isn't a convenience copy -- without it, they're gone.
-  function noteOwnChat(chat: string | undefined): void {
-    if (chat !== undefined) {
-      const text = sanitizeForLog(chat);
-      if (text.length > 0) {
-        chatPosts.push({ speaker: BOT_NAME, text });
-        record({ at: new Date().toISOString(), type: 'chat', speaker: BOT_NAME, text });
-      }
-    }
   }
 
   // Not called on barge-in -- being cut off doesn't settle the debt, so the tile keeps showing Archie is still on the hook.
   function applyEngagement(): void {
-    sink.setEngaged(!stopped && (owes || followUpWindowLive()));
+    sink.setEngaged(!stopped && (owe.standing || spokeWithinGrace(-1)));
   }
 
+  function noteOwnAnswer(text: string): void {
+    addUtterance(BOT_NAME, text);
+    arm('follow-up', FOLLOW_UP_GRACE_MS + LAPSE_MARGIN_MS, applyEngagement, true);
+  }
+
+  // The revision must be read before `addUtterance` runs -- that bumps it itself, our own line included.
+  function fileConfirmedLine(text: string | null, asOf: number): void {
+    if (text === null) {
+      return;
+    }
+    const roomSpokeSince = revision.transcript !== asOf;
+    addUtterance(BOT_NAME, text);
+    if (!roomSpokeSince) {
+      owe.notBefore = Date.now() + RETRY_FLOOR_MS;
+    }
+  }
+
+  // The only record of these lines: they leave through the transport's chat channel, reaching neither the room's speech nor knowledge.log. The `chat` row isn't a convenience copy -- without it, they're gone.
+  function noteOwnChat(chat: string | undefined): void {
+    if (chat !== undefined) {
+      const text = sanitizeForLog(chat);
+      if (text.length > 0) {
+        standing.chat.push({ speaker: BOT_NAME, text });
+        record({ at: new Date().toISOString(), type: 'chat', speaker: BOT_NAME, text });
+      }
+    }
+  }
 
   // A stream that throws counts as not holding the floor -- a broken connection must not veto Archie speaking for the rest of the meeting.
   function anyTurnOpen(): boolean {
@@ -337,16 +268,17 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     for (const state of participants.values()) {
       if (state.stream !== null) {
         try {
-          if (!state.stream.isTurnOpen()) {
-          } else if (state.lastAudioAt >= liveSince) {
-            return true;
-          } else if (!state.staleFloorLogged) {
-            state.staleFloorLogged = true;
-            logger.warn(
-              LOG,
-              `${state.name} (#${state.id}) has an open turn but has sent no audio for ` +
-              `${Math.round((Date.now() - state.lastAudioAt) / 1000)}s — ignoring their claim on the floor`,
-            );
+          if (state.stream.isTurnOpen()) {
+            if (state.lastAudioAt >= liveSince) {
+              return true;
+            } else if (!state.staleFloorLogged) {
+              state.staleFloorLogged = true;
+              logger.warn(
+                LOG,
+                `${state.name} (#${state.id}) has an open turn but has sent no audio for ` +
+                `${Math.round((Date.now() - state.lastAudioAt) / 1000)}s — ignoring their claim on the floor`,
+              );
+            }
           }
         } catch (err) {
           logger.warn(LOG, `Could not read ${state.name}'s turn state — assuming silence`, err);
@@ -357,49 +289,31 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
   }
 
   // Load-bearing, not defensive: with the settle delay gone, this check and the identical one on the first audio chunk are all that stops Archie talking over somebody.
-  function roomMovedOn(revision: number): boolean {
-    return transcriptRevision !== revision || anyTurnOpen();
+  function roomMovedOn(asOf: number): boolean {
+    return revision.transcript !== asOf || anyTurnOpen();
   }
 
   function maybeDecide(): void {
-    if (!owes || stopped) {
-    } else if (anyTurnOpen()) {
-      scheduleFloorCheck();
-    } else if (deciding) {
-    } else if (Date.now() < retryAfter) {
-      scheduleRetry(retryAfter - Date.now());
+    if (!owe.standing || stopped) {
+      return;
+    }
+    if (anyTurnOpen()) {
+      // The one poll in an otherwise event-driven design -- a stuck participant's audio simply stops, firing no turn-end event to return here.
+      arm('floor', FLOOR_LIVENESS_MS + LAPSE_MARGIN_MS, maybeDecide);
+    } else if (turn.deciding) {
+      // The decision in flight comes back through here when it settles.
+    } else if (Date.now() < owe.notBefore) {
+      arm('retry', owe.notBefore - Date.now(), maybeDecide);
     } else {
-      turnChain = decide().catch((err) => {
+      turn.chain = decide().catch((err) => {
         logger.error(LOG, 'The speaking decision rejected unexpectedly', err);
       });
     }
   }
 
-  // The one poll in an otherwise event-driven design -- a stuck participant's audio simply stops, firing no turn-end event to return here.
-  function scheduleFloorCheck(): void {
-    if (floorTimer === null) {
-      floorTimer = setTimeout(() => {
-        floorTimer = null;
-        maybeDecide();
-      }, FLOOR_LIVENESS_MS + LAPSE_MARGIN_MS);
-      floorTimer.unref();
-    }
-  }
-
-  function scheduleRetry(delayMs: number): void {
-    if (retryTimer === null) {
-      retryTimer = setTimeout(() => {
-        retryTimer = null;
-        maybeDecide();
-      }, delayMs);
-      retryTimer.unref();
-    }
-  }
-
-
   function setOwed(why: string): void {
-    if (!owes) {
-      owes = true;
+    if (!owe.standing) {
+      owe.standing = true;
       logger.debug(LOG, `Archie owes the room a response — ${why}`);
     }
     // Runs even when the flag was already set -- the addressing gate's verdict often lands after the turn end that would have triggered a decision; skipping this loses that activation silently.
@@ -407,10 +321,10 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     maybeDecide();
   }
 
-  // Compares against `lastConsultAnswerAt` rather than clearing unconditionally -- a consult answer raises the debt without touching `transcriptRevision` or opening a turn, so an unrelated in-flight `decide()` must not discard it on settling.
+  // Compares against the last consult answer rather than clearing unconditionally -- an answer raises the debt without touching the transcript or opening a turn, so an unrelated in-flight decision must not discard it on settling.
   function clearOwed(askedAt: number): void {
-    if (lastConsultAnswerAt <= askedAt) {
-      owes = false;
+    if (owe.answeredAt <= askedAt) {
+      owe.standing = false;
     }
   }
 
@@ -423,7 +337,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       row.addressed = true;
       record(row);
       setOwed(`${speaker} said the name`);
-    } else if (spokeLastWithin(FOLLOW_UP_GRACE_MS)) {
+    } else if (spokeWithinGrace(-2)) {
       const row = newGateRow(speaker, text, 'follow-up');
       row.addressed = true;
       record(row);
@@ -453,57 +367,44 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     }
   }
 
-
   function nextConsultId(): string {
-    consultSeq += 1;
     // meetingOrdinal first -- collision-proof across concurrent meetings. Kept short to round-trip cleanly through a model's reply.
-    return `m${meetingOrdinal}c${consultSeq}`;
+    return `m${meetingOrdinal}c${consults.length + 1}`;
   }
 
-  // Invariant: at most one consult outstanding, so an answer can only pair with one question -- no id needed on the seam. A refused question (`routeConsult`) records pre-answered, so it doesn't block the next.
+  // Invariant: at most one consult outstanding, so an answer can only pair with one question -- no id needed on the seam. A refused question records pre-answered, so it doesn't block the next.
   function outstandingConsult(): Consult | undefined {
     return consults.find((c) => c.answer === undefined);
   }
 
-  function consultOf(decision: Decision): string | undefined {
-    if (decision.outcome === 'speak') {
-      return decision.response.pm;
-    } else if (decision.outcome === 'silence') {
-      return decision.pm;
-    } else {
+  function routeConsult(question: string | undefined): string | undefined {
+    if (question === undefined) {
       return undefined;
     }
-  }
-
-  function routeConsult(question: string | undefined): string | undefined {
-    let dropped: string | undefined;
     const blocking = outstandingConsult();
-    if (question === undefined) {
-    } else if (stopped) {
+    if (stopped) {
       logger.debug(LOG, `The meeting has stopped — dropped a PM: question: ${question}`);
-      dropped = 'the meeting had stopped';
+      return 'the meeting had stopped';
     } else if (host === undefined) {
       logger.debug(LOG, `No host on this meeting — dropped a PM: question: ${question}`);
-      dropped = 'this meeting has no host to ask';
+      return 'this meeting has no host to ask';
     } else if (blocking !== undefined) {
-      // No consult id here -- the speaking prompt has no rule for an unspeakable string like "m1c1"; the only rule that fits sends it to the room's chat.
+      // No consult id in the note -- the speaking prompt has no rule for an unspeakable string like "m1c1"; the only rule that fits sends it to the room's chat.
       consults.push({
         id: nextConsultId(),
-        at: Date.now(),
         question,
         answer: '(not sent — an earlier question was still unanswered, so nothing is on its way for this one)',
-        answeredAt: Date.now(),
       });
       logger.warn(LOG, `A question is already outstanding (${blocking.id}) — did not ask a second: ${question}`);
-      dropped = `${blocking.id} was still outstanding`;
+      return `${blocking.id} was still outstanding`;
     } else {
       const id = nextConsultId();
-      consults.push({ id, at: Date.now(), question });
+      consults.push({ id, question });
       record({ at: new Date().toISOString(), type: 'consult', id, question });
       host.noteEvent(`consult: ${question} — recall/${sessionId}/meeting.jsonl`);
       host.consult(id, question);
+      return undefined;
     }
-    return dropped;
   }
 
   function routeLeave(): void {
@@ -517,16 +418,35 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     }
   }
 
+  // Voice failed, so the answer goes out in writing instead -- still an error row: the room got text where it was owed speech.
+  function answerWithoutVoice(row: TurnRecord, answer: SpokenResponse, why: string, askedAt: number): void {
+    row.verdict = 'error';
+    row.speech = '';
+    clearOwed(askedAt);
+    row.error = `${why} — answered in the meeting chat instead`;
+    noteOwnAnswer(answer.speech);
+    if (!voice.failureAnnounced) {
+      voice.failureAnnounced = true;
+      logger.error(LOG, 'Cannot speak — falling back to the meeting chat');
+      if (!stopped) {
+        void sendChat("I can hear you, but my voice isn't working right now — I'll answer here instead.");
+      }
+    }
+    if (!stopped) {
+      void sendChat(answer.chat === undefined ? answer.speech : `${answer.speech}\n\n${answer.chat}`);
+    }
+    noteOwnChat(answer.chat);
+  }
 
   async function decide(): Promise<void> {
-    deciding = true;
+    turn.deciding = true;
     const askedAt = Date.now();
-    const revision = transcriptRevision;
-    const speakingWindow = transcriptSince(SPEAKING_WINDOW_MS);
+    const asOf = revision.transcript;
+    const window = transcriptSince(TRANSCRIPT_WINDOW_MS);
     // 'suppressed' is the safe default, not proof the room heard nothing -- a turn cut off mid-answer settles here too. `speech` is what was actually heard.
     const row: TurnRecord = { at: new Date().toISOString(), type: 'turn', verdict: 'suppressed' };
     try {
-      await answerRoom(row, speakingWindow, askedAt, revision);
+      await answerRoom(row, window, askedAt, asOf);
     } catch (err) {
       // Drops the debt rather than retrying -- a fault paired with a standing flag is an unbounded loop of failing model calls.
       clearOwed(askedAt);
@@ -534,9 +454,9 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       row.error = `the speaking decision threw: ${String(err)}`;
       logger.error(LOG, 'The speaking decision threw', err);
     } finally {
-      deciding = false;
-      if (owes && transcriptRevision === revision && lastConsultAnswerAt <= askedAt) {
-        retryAfter = Date.now() + RETRY_FLOOR_MS;
+      turn.deciding = false;
+      if (owe.standing && revision.transcript === asOf && owe.answeredAt <= askedAt) {
+        owe.notBefore = Date.now() + RETRY_FLOOR_MS;
       }
       record(row);
       applyEngagement();
@@ -544,30 +464,9 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     }
   }
 
-  function recordAnswer(row: TurnRecord, answer: SpokenResponse): void {
-    row.answer = answer.speech;
-    if (answer.chat !== undefined) {
-      row.chat = answer.chat;
-    }
-    if (answer.pm !== undefined) {
-      row.pm = answer.pm;
-    }
-    if (answer.leave === true) {
-      row.leave = true;
-    }
-    if (answer.thought !== undefined) {
-      row.thought = answer.thought;
-    }
-  }
-
   // The floor is ~935ms, not ~700ms (once assumed for token-by-token streaming): ~620ms time-to-first-byte, plus text arrives in ~313ms quanta, and the first delta (3-10 chars) is too short for a sentence to complete.
-  async function answerRoom(
-    row: TurnRecord,
-    speakingWindow: string,
-    askedAt: number,
-    revision: number,
-  ): Promise<void> {
-    const cutAtStart = cutRevision;
+  async function answerRoom(row: TurnRecord, window: string, askedAt: number, asOf: number): Promise<void> {
+    const cutAtStart = revision.cut;
     let stream: SpeechStream | null = null;
     let heardAnything = false;
     let abandoned: string | null = null;
@@ -580,10 +479,9 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     // Asked for here, awaited later: the turn must reach the speaking call in the same tick, and the sink answers with the count as of this call anyway.
     const playedBaseline = sink.played();
 
-    const confirmedHeardPrefix = async (): Promise<string | null> => {
+    const confirmedPrefix = async (): Promise<string | null> => {
       const [baseline, now] = await Promise.all([playedBaseline, sink.played()]);
-      const confirmed = now - baseline;
-      const heard = sentenceOffsets.filter((s) => s.endOffset <= confirmed);
+      const heard = sentenceOffsets.filter((s) => s.endOffset <= now - baseline);
       return heard.length === 0 ? null : heard.map((s) => s.text).join(' ');
     };
 
@@ -601,9 +499,11 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
 
     const onPcm = (pcm: Buffer): void => {
       if (abandoned !== null) {
-      } else if (cutRevision !== cutAtStart) {
+        return;
+      }
+      if (revision.cut !== cutAtStart) {
         abandon('cut off by somebody starting to speak');
-      } else if (!heardAnything && roomMovedOn(revision)) {
+      } else if (!heardAnything && roomMovedOn(asOf)) {
         abandon('the room took the floor before the first word of the answer');
       } else {
         if (!heardAnything) {
@@ -617,7 +517,9 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
 
     const haveSentence = (text: string): void => {
       if (abandoned !== null) {
-      } else if (cutRevision !== cutAtStart) {
+        return;
+      }
+      if (revision.cut !== cutAtStart) {
         abandon('cut off by somebody starting to speak');
       } else {
         if (firstSayAt === null) {
@@ -633,33 +535,44 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       }
     };
 
-    abandonTurn = abandon;
+    turn.abandon = abandon;
 
     try {
-      if (speech !== null) {
-        stream = speech.speak(onPcm);
+      if (voice.session !== null) {
+        stream = voice.session.speak(onPcm);
       }
 
-      const exchange = consults.map((c) => ({ id: c.id, question: c.question, answer: c.answer }));
-      // Must stay synchronous: `speakingContext` takes the exchange rather than reading it, so an unbound meeting reaches the speaking call in the same tick -- pinned by two tests in room-silence.test.ts ("no delay in front of the decision").
-      const context =
-        host === undefined ? speakingContext([]) : speakingContext(await host.readWrittenExchange());
+      const trail = consults.map((c) => ({ id: c.id, question: c.question, answer: c.answer }));
+      // The `await` is never evaluated without a host, so an unbound meeting reaches the speaking call in the same tick -- pinned by two tests in room-silence.test.ts ("no delay in front of the decision").
+      const written = [...(host === undefined ? [] : await host.readWrittenExchange()), ...standing.chat];
+      const context: SpeakingContext = {};
+      if (standing.roster.length > 0) {
+        // Copied, not referenced: the snapshot outlives the model call it was built for, and a roster replaced mid-call mustn't change what was already sent.
+        context.participants = [...standing.roster];
+      }
+      if (written.length > 0) {
+        context.written = written;
+      }
+      if (standing.capabilities.length > 0) {
+        context.capabilities = standing.capabilities;
+      }
 
       const startedAt = Date.now();
       decision = await decideResponse(cfg, {
-        transcript: speakingWindow,
+        transcript: window,
         onSentence: stream === null ? undefined : haveSentence,
-        consults: exchange,
+        consults: trail,
         context,
       });
       recordTiming(row, 'decideMs', Date.now() - startedAt);
-      consult = consultOf(decision);
 
       if (decision.outcome === 'silence') {
+        consult = decision.pm;
         abandon('the model decided to say nothing');
         clearOwed(askedAt);
         row.verdict = 'suppressed';
-        recordHeard(row, await confirmedHeardPrefix());
+        // `null` means no sentence was confirmed heard, which `speech: ''` says exactly.
+        row.speech = (await confirmedPrefix()) ?? '';
         if (decision.pm !== undefined) {
           row.pm = decision.pm;
         }
@@ -668,23 +581,42 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
         }
         logger.debug(LOG, 'Decided to say nothing');
       } else if (decision.outcome === 'failed') {
-        abandon(`the decision failed: ${decision.why}`);
-        settleFailure(
-          row,
-          decision.why,
-          decision.handedOver,
-          heardAnything,
-          askedAt,
-          revision,
-          await confirmedHeardPrefix(),
-        );
+        const { why, handedOver } = decision;
+        abandon(`the decision failed: ${why}`);
+        const heard = heardAnything;
+        const prefix = await confirmedPrefix();
+        row.verdict = 'error';
+        row.speech = prefix ?? '';
+        if (heard) {
+          row.error = `spoke part of the answer, then the decision failed: ${why}`;
+          logger.warn(LOG, `The decision failed after ${handedOver} sentence(s) had been spoken — ${why}`);
+          fileConfirmedLine(prefix, asOf);
+        } else {
+          clearOwed(askedAt);
+          row.error = `the decision failed: ${why}`;
+          logger.debug(LOG, `Said nothing — the decision failed: ${why}`);
+        }
       } else {
         const answer = decision.response;
-        recordAnswer(row, answer);
+        consult = answer.pm;
+        row.answer = answer.speech;
+        if (answer.chat !== undefined) {
+          row.chat = answer.chat;
+        }
+        if (answer.pm !== undefined) {
+          row.pm = answer.pm;
+        }
+        if (answer.leave === true) {
+          row.leave = true;
+        }
+        if (answer.thought !== undefined) {
+          row.thought = answer.thought;
+        }
+
         if (stream === null) {
           answerWithoutVoice(row, answer, 'there is no speech session to say it with', askedAt);
         } else {
-          if (!heardAnything && roomMovedOn(revision)) {
+          if (!heardAnything && roomMovedOn(asOf)) {
             abandon('the room moved on while we were deciding');
           }
           const result = await stream.end();
@@ -694,16 +626,36 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
           if (result.msToFirstByte !== null) {
             recordTiming(row, 'ttfbMs', result.msToFirstByte);
           }
-          settleAnswer(
-            row,
-            answer,
-            heardAnything,
-            abandoned,
-            result.incomplete,
-            askedAt,
-            revision,
-            await confirmedHeardPrefix(),
-          );
+          const partial = abandoned ?? result.incomplete;
+          const heard = heardAnything;
+          const prefix = await confirmedPrefix();
+          if (heard && partial !== null) {
+            row.error = `spoke part of the answer, then ${partial}`;
+            logger.debug(LOG, `Interrupted mid-answer — ${partial}`);
+            row.speech = prefix ?? '';
+            fileConfirmedLine(prefix, asOf);
+          } else if (heard) {
+            clearOwed(askedAt);
+            row.verdict = 'addressed';
+            // Reads `answer.speech` directly, not the sink's watermark -- the room reports what it has rendered at intervals, so `played()` can lag a sentence behind at the moment the round closes.
+            row.speech = answer.speech;
+            noteOwnAnswer(answer.speech);
+            // Not awaited -- audio is already playing, and the room shouldn't wait on the chat channel before the next decision can run. Dropped once stopped: a post after teardown reaches a room that has dispersed.
+            if (answer.chat !== undefined && !stopped) {
+              void sendChat(answer.chat);
+            }
+            noteOwnChat(answer.chat);
+            logger.debug(LOG, `Said: ${answer.speech}`);
+            if (answer.leave === true) {
+              // Only reachable here -- the farewell must be confirmed delivered in full before the meeting may act on it.
+              routeLeave();
+            }
+          } else if (abandoned !== null) {
+            row.error = `${abandoned} — reconsidering now`;
+            row.speech = '';
+          } else {
+            answerWithoutVoice(row, answer, result.incomplete ?? 'synthesis produced no audio', askedAt);
+          }
         }
       }
     } catch (err) {
@@ -716,14 +668,14 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
         if (heardAnything) {
           row.error = `spoke part of the answer, then speaking threw: ${String(err)}`;
           if (row.speech === undefined) {
-            recordHeard(row, await confirmedHeardPrefix());
+            row.speech = (await confirmedPrefix()) ?? '';
           }
         } else {
           answerWithoutVoice(row, answer, `speaking threw: ${String(err)}`, askedAt);
         }
       }
     } finally {
-      abandonTurn = null;
+      turn.abandon = null;
       // The one place this turn's PM: question routes -- exactly once, whatever became of the speech (full, cut short, chat fallback, or a throw). Wrapped: a throw here would replace decide()'s own error, the only report that a turn broke.
       try {
         const dropped = routeConsult(consult);
@@ -736,117 +688,11 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     }
   }
 
-  function settleFailure(
-    row: TurnRecord,
-    why: string,
-    handedOver: number,
-    heardAnything: boolean,
-    askedAt: number,
-    revision: number,
-    confirmedPrefix: string | null,
-  ): void {
-    row.verdict = 'error';
-    recordHeard(row, confirmedPrefix);
-    if (heardAnything) {
-      row.error = `spoke part of the answer, then the decision failed: ${why}`;
-      logger.warn(LOG, `The decision failed after ${handedOver} sentence(s) had been spoken — ${why}`);
-      if (confirmedPrefix !== null) {
-        fileConfirmedLine(confirmedPrefix, revision);
-      }
-    } else {
-      clearOwed(askedAt);
-      row.error = `the decision failed: ${why}`;
-      logger.debug(LOG, `Said nothing — the decision failed: ${why}`);
-    }
-  }
-
-  function settleAnswer(
-    row: TurnRecord,
-    answer: SpokenResponse,
-    heardAnything: boolean,
-    abandoned: string | null,
-    truncated: string | null,
-    askedAt: number,
-    revision: number,
-    confirmedPrefix: string | null,
-  ): void {
-    const partial = abandoned ?? truncated;
-    if (heardAnything && partial !== null) {
-      row.error = `spoke part of the answer, then ${partial}`;
-      logger.debug(LOG, `Interrupted mid-answer — ${partial}`);
-      recordHeard(row, confirmedPrefix);
-      if (confirmedPrefix !== null) {
-        fileConfirmedLine(confirmedPrefix, revision);
-      }
-    } else if (heardAnything) {
-      clearOwed(askedAt);
-      row.verdict = 'addressed';
-      // Reads `answer.speech` directly, not the sink's watermark -- the room reports what it has rendered at intervals, so `played()` can lag a sentence behind at the moment the round closes.
-      recordHeard(row, answer.speech);
-      noteOwnAnswer(answer.speech);
-      // Not awaited -- audio is already playing, and the room shouldn't wait on the chat channel before the next decision can run. Dropped once stopped: a post after teardown reaches a room that has dispersed.
-      if (answer.chat !== undefined && !stopped) {
-        void sendChat(answer.chat);
-      }
-      noteOwnChat(answer.chat);
-      logger.debug(LOG, `Said: ${answer.speech}`);
-      if (answer.leave === true) {
-        // Only reachable here -- the farewell must be confirmed delivered in full before the meeting may act on it.
-        routeLeave();
-      }
-    } else if (abandoned !== null) {
-      row.error = `${abandoned} — reconsidering now`;
-      recordHeard(row, '');
-    } else {
-      answerWithoutVoice(row, answer, truncated ?? 'synthesis produced no audio', askedAt);
-    }
-  }
-
-  // Voice failed, so the answer goes out in writing instead -- still an error row: the room got text where it was owed speech.
-  function answerWithoutVoice(row: TurnRecord, answer: SpokenResponse, why: string, askedAt: number): void {
-    row.verdict = 'error';
-    recordHeard(row, '');
-    clearOwed(askedAt);
-    row.error = `${why} — answered in the meeting chat instead`;
-    noteOwnAnswer(answer.speech);
-    announceVoiceUnavailableOnce();
-    if (!stopped) {
-      void sendChat(chatFallbackText(answer));
-    }
-    noteOwnChat(answer.chat);
-  }
-
-  function chatFallbackText(answer: SpokenResponse): string {
-    if (answer.chat === undefined) {
-      return answer.speech;
-    } else {
-      return `${answer.speech}\n\n${answer.chat}`;
-    }
-  }
-
-
-  function handleTurnEvent(state: ParticipantState, event: TurnEvent): void {
-    if (event.kind === 'start') {
-      onTurnStart(state);
-    } else {
-      onTurnEnd(state, event.transcript);
-    }
-  }
-
-  // Unconditional, unclassified -- no judgement on whether they were talking to us. `owes` stays untouched: barge-in doesn't settle the debt.
-  function onTurnStart(state: ParticipantState): void {
-    if (sink.isSpeaking()) {
-      logger.debug(LOG, `${state.name} started speaking over us — cutting`);
-      cutRevision++;
-      sink.cut();
-    }
-  }
-
   function onTurnEnd(state: ParticipantState, text: string): void {
     const spoken = text.trim();
     if (spoken.length > 0 && !stopped) {
       addUtterance(state.name, spoken);
-      if (owes) {
+      if (owe.standing) {
         // Recorded even though this turn triggers no decision of its own -- otherwise nothing says the turn was heard while a response was already owed.
         const row = newGateRow(state.name, spoken, 'already-owed');
         row.addressed = true;
@@ -858,31 +704,9 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     maybeDecide();
   }
 
-
-  // Strips control chars and the two Unicode line separators -- uncaught, either could forge a second attributed line (persistence.ts's `formatLogEntry` doesn't escape) or a line/closing tag inside the prompt block a name renders into.
-  function sanitizeForLog(value: string): string {
-    return value.replace(/[\p{Cc}\u2028\u2029]+/gu, ' ').trim();
-  }
-
   function displayName(participant: Participant): string {
     const name = sanitizeForLog(participant.name?.trim() ?? '');
     return name.length > 0 ? name : `participant ${participant.id}`;
-  }
-
-  // Guards against a transport leaking our own audio back -- a self-sustaining loop of transcribing, cutting off, and answering ourselves. Cached per name: runs on every inbound packet, tens per second per speaker.
-  function isSelf(participant: Participant): boolean {
-    if (participant.name === null) {
-      return false;
-    } else {
-      const cached = selfByName.get(participant.name);
-      if (cached === undefined) {
-        const verdict = isArchie(participant.name);
-        selfByName.set(participant.name, verdict);
-        return verdict;
-      } else {
-        return cached;
-      }
-    }
   }
 
   function openStreamFor(state: ParticipantState): TurnStream | null {
@@ -892,7 +716,16 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
         // Catches its own faults -- runs inside deepgram's socket handlers, and a throw here would unwind into that socket.
         onEvent: (event: TurnEvent) => {
           try {
-            handleTurnEvent(state, event);
+            if (event.kind === 'start') {
+              // Unconditional, unclassified -- no judgement on whether they were talking to us. The debt stays untouched: barge-in doesn't settle it.
+              if (sink.isSpeaking()) {
+                logger.debug(LOG, `${state.name} started speaking over us — cutting`);
+                revision.cut++;
+                sink.cut();
+              }
+            } else {
+              onTurnEnd(state, event.transcript);
+            }
           } catch (err) {
             logger.error(LOG, `Failed to handle a turn event from ${state.name}`, err);
           }
@@ -968,18 +801,6 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     return state;
   }
 
-
-  function announceVoiceUnavailableOnce(): void {
-    if (!voiceFailureAnnounced) {
-      voiceFailureAnnounced = true;
-      logger.error(LOG, 'Cannot speak — falling back to the meeting chat');
-      if (!stopped) {
-        void sendChat("I can hear you, but my voice isn't working right now — I'll answer here instead.");
-      }
-    }
-  }
-
-
   // Explicit, not assumed -- relying on the sink's own default state is how the engagement tile ends up stuck green (see setEngaged).
   applyEngagement();
 
@@ -993,14 +814,13 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
   return {
     sessionId,
     onAudio(participant: Participant, pcm: Buffer): void {
-      if (stopped || isSelf(participant)) {
+      // The self check guards against a transport leaking our own audio back -- a self-sustaining loop of transcribing, cutting off, and answering ourselves.
+      if (stopped || isArchie(participant.name)) {
         return;
       }
       const state = ensureParticipant(participant);
       state.lastAudioAt = Date.now();
-      if (state.staleFloorLogged) {
-        state.staleFloorLogged = false;
-      }
+      state.staleFloorLogged = false;
       if (state.stream !== null) {
         try {
           state.stream.write(pcm);
@@ -1016,7 +836,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       if (stopped) {
         return;
       }
-      roster = participants.map((p) => ({
+      standing.roster = participants.map((p) => ({
         name: p.name === null ? null : sanitizeForLog(p.name),
         is_host: p.is_host,
         joined_at: p.joined_at,
@@ -1024,7 +844,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       }));
       logger.debug(
         LOG,
-        `Roster updated: ${roster.filter((p) => p.left_at === null).length} of ${roster.length} still in the room`,
+        `Roster updated: ${standing.roster.filter((p) => p.left_at === null).length} of ${standing.roster.length} still in the room`,
       );
     },
 
@@ -1032,11 +852,11 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       if (stopped) {
         return;
       }
-      capabilities = summary.trim();
-      if (capabilities.length === 0) {
+      standing.capabilities = summary.trim();
+      if (standing.capabilities.length === 0) {
         logger.warn(LOG, 'No capability summary for this meeting — running without one');
       } else {
-        logger.debug(LOG, `Capability summary loaded: ${capabilities.length} chars`);
+        logger.debug(LOG, `Capability summary loaded: ${standing.capabilities.length} chars`);
       }
     },
 
@@ -1047,8 +867,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
         return { ok: false };
       }
       consult.answer = text;
-      consult.answeredAt = Date.now();
-      lastConsultAnswerAt = Date.now();
+      owe.answeredAt = Date.now();
       record({ at: new Date().toISOString(), type: 'answer', id: consult.id, text, from });
       setOwed(`the PM answered consult ${consult.id}`);
       return { ok: true, id: consult.id };
@@ -1056,19 +875,11 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
 
     async stop(): Promise<void> {
       stopped = true;
-      owes = false;
-      if (followUpTimer !== null) {
-        clearTimeout(followUpTimer);
-        followUpTimer = null;
+      owe.standing = false;
+      for (const timer of timers.values()) {
+        clearTimeout(timer);
       }
-      if (retryTimer !== null) {
-        clearTimeout(retryTimer);
-        retryTimer = null;
-      }
-      if (floorTimer !== null) {
-        clearTimeout(floorTimer);
-        floorTimer = null;
-      }
+      timers.clear();
       applyEngagement();
       clearInterval(reaper);
 
@@ -1077,23 +888,23 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       }
       participants.clear();
 
-      // Must run before `speech.close()` below -- closing with no `why` reads like a full delivery, filing an `utterance` row and posting CHAT:/LEAVE:/PM: as if the room were still there.
-      abandonTurn?.('the meeting was torn down');
+      // Must run before `close()` below -- closing with no `why` reads like a full delivery, filing an `utterance` row and posting CHAT:/LEAVE:/PM: as if the room were still there.
+      turn.abandon?.('the meeting was torn down');
 
-      if (speech !== null) {
+      if (voice.session !== null) {
         try {
-          speech.close();
+          voice.session.close();
         } catch (err) {
           logger.warn(LOG, 'Closing the speech session failed', err);
         }
-        speech = null;
+        voice.session = null;
       }
 
       sink.cut();
       sink.setEnabled(false);
 
       // Waits out the in-flight turn so its row is handed to the transport before teardown reads final state; the transport owns getting it to disk.
-      await turnChain;
+      await turn.chain;
 
       logger.system(`Voice meeting stopped for session ${sessionId}`);
     },
