@@ -167,7 +167,10 @@ export function getArtifactsPath(taskId: string): string {
  * speech landing in one shared file behind an artificial boundary line.
  */
 export function getMeetingPath(taskId: string, sessionId: string): string {
-  return join(getSharedPath(taskId), 'recall', sessionId);
+  // `sessionId` reaches us from the Recall API, so it must not escape the meeting folder. The substitution is the one `src/voice/meeting.ts` applies to the same value for the voice-log filename, so a dotted id maps identically in both places; a real bot id is a UUID and passes through unchanged. `taskId` needs no guard — `isSafeTaskId` already enforces a single path segment.
+  // The all-dots case needs its own arm: `.` survives the character class, and `join` then RESOLVES a `..` segment rather than treating it as a name, collapsing the `recall` directory instead of nesting under it.
+  const segment = sessionId.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return join(getSharedPath(taskId), 'recall', /^\.+$/.test(segment) ? '_' : segment);
 }
 
 /**

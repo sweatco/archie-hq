@@ -6,7 +6,7 @@
 
 import { describe, it, expect, vi, afterAll } from 'vitest';
 import { mkdir, writeFile, readFile, rm } from 'fs/promises';
-import { dirname, join } from 'path';
+import { dirname, join, relative, sep } from 'path';
 
 const SESSIONS_ROOT = await vi.hoisted(async () => {
   const { mkdtempSync } = await import('node:fs');
@@ -248,6 +248,21 @@ describe('getMeetingPath — the folder mirrors the recall:<sessionId> channel k
     expect(getMeetingTranscriptPath(taskId, sessionId)).toBe(join(meetingPath, 'transcript.log'));
     expect(getMeetingExchangeLogPath(taskId, sessionId)).toBe(join(meetingPath, 'exchange.log'));
     expect(getMeetingChatLogPath(taskId, sessionId)).toBe(join(meetingPath, 'chat.log'));
+  });
+
+  // `sessionId` arrives from the Recall API, so it is not ours to trust. The control matters as much as the traversal case: a real bot id is a UUID, and a guard that mangled those would move every meeting folder on disk.
+  it('keeps a session id from escaping the meeting folder, and leaves a real one alone', () => {
+    const taskId = 'task-traversal';
+    const sharedRoot = getSharedPath(taskId);
+
+    for (const hostile of ['../../../../etc/cron.d/x', '..', 'a/b', 'a:b']) {
+      const escaped = getMeetingPath(taskId, hostile);
+      expect(relative(sharedRoot, escaped).startsWith('..')).toBe(false);
+      expect(escaped.startsWith(join(sharedRoot, 'recall') + sep)).toBe(true);
+    }
+
+    const uuid = '8e8e9fac-66aa-40b7-89bc-f33a97f7cda4';
+    expect(getMeetingPath(taskId, uuid)).toBe(join(sharedRoot, 'recall', uuid));
   });
 });
 
