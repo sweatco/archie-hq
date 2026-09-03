@@ -9,6 +9,7 @@
 import { readEvents } from '../tasks/persistence.js';
 import { activeTasks } from '../tasks/task.js';
 import { logger } from '../system/logger.js';
+import { BOT_NAME } from './types.js';
 import type { WrittenLine } from './types.js';
 
 const LOG = 'voice-written';
@@ -55,7 +56,6 @@ function isInternalSender(from: string, agentIds: ReadonlySet<string>): boolean 
 // `destination: recall:<sessionId>` on the outbound case is the PM answering a consult, already rendered by meeting.ts — skip it or the text appears twice.
 export function renderWrittenLine(
   data: WrittenEventData,
-  botName: string,
   agentIds: ReadonlySet<string> = new Set(),
 ): WrittenLine | null {
   const from = typeof data.from === 'string' ? data.from.trim() : '';
@@ -70,7 +70,7 @@ export function renderWrittenLine(
     if (destination.startsWith('recall:')) {
       return null;
     }
-    return { speaker: botName, text };
+    return { speaker: BOT_NAME, text };
   } else if (to === INBOUND_TO && from.length > 0 && !isInternalSender(from, agentIds)) {
     // 'cli' has no real operator identity to show — a made-up name would be worse than a plain label.
     return { speaker: from === 'cli' ? 'a teammate' : renderBody(from), text };
@@ -89,7 +89,7 @@ function agentIdsFor(taskId: string): ReadonlySet<string> {
 }
 
 // Never rejects — MeetingHost.readWrittenExchange (types.ts) requires it. Every failure resolves to [].
-export async function readWrittenExchange(taskId: string, botName: string): Promise<WrittenLine[]> {
+export async function readWrittenExchange(taskId: string): Promise<WrittenLine[]> {
   try {
     const { events } = await readEvents(taskId);
     const agentIds = agentIdsFor(taskId);
@@ -98,7 +98,7 @@ export async function readWrittenExchange(taskId: string, botName: string): Prom
       if (event.type !== 'message') {
         continue;
       }
-      const line = renderWrittenLine(event.data as WrittenEventData, botName, agentIds);
+      const line = renderWrittenLine(event.data as WrittenEventData, agentIds);
       if (line !== null) {
         rendered.push(line);
       }

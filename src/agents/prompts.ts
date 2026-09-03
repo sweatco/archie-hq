@@ -63,10 +63,4 @@ Your turn must end with:
 - send_message_to_agent: Report your findings to the requesting agent
 
 Read knowledge.log to see what was requested, complete your work, then report back.`,
-
-  // The voice agent is mid-meeting and needs something only the PM can supply to answer a question it was asked. Neither the question nor the channel key to answer through is knowable ahead of time, so those are what this wake-up carries; everything about how to answer — plainly, nothing appended, the voice agent's own call on how to narrate it — is the `recall-meetings` skill's job, not this string's.
-  voiceQuestion: (channelKey: string, question: string) => `The voice agent is in a live meeting and needs something from you. They asked: "${question}"\n\nAnswer through channel key "${channelKey}". Load the \`recall-meetings\` skill for how to answer and what belongs in it.`,
-
-  // The connector's teardown fires this once a meeting ends (`endMeeting` in `src/voice/connector.ts`, which every teardown path funnels through). Says plainly that nothing posted now reaches anyone — a meeting-bound task otherwise reads like a Slack thread, where replying after the fact is completely ordinary, and this one is not that. The transcript path is the one fact about this occasion the wake-up alone can supply; what a finished meeting owes the task, and how to deliver it, is the `recall-meetings` skill's job, not this string's.
-  meetingEnded: (transcriptPath: string) => `The voice meeting on this task has ended and the room has dispersed — nothing you post now reaches anyone there. Its transcript is at ${transcriptPath}.\n\nLoad the \`recall-meetings\` skill for what a summary here should contain and how to deliver it.`,
 };

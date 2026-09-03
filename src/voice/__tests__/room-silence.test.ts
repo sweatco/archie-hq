@@ -260,10 +260,12 @@ vi.mock('../comprehension.js', () => {
 });
 
 const cfg: VoiceConfig = {
+  recallApiKey: 'recall-key',
+  recallRegion: 'eu-central-1',
   deepgramApiKey: 'd',
-  botName: 'Archie',
-  cerebrasApiKey: 'cerebras-key',
   sonioxApiKey: 'soniox-key',
+  cerebrasApiKey: 'cerebras-key',
+  publicUrl: 'https://archie.example',
 };
 
 /** `confirmLagBytes`: recent bytes withheld from "confirmed". */
@@ -1705,8 +1707,8 @@ describe('meeting room silence', () => {
 
   it('sanitises a display name carrying a newline before it reaches the persisted transcript', async () => {
     // `appendMeetingTranscript` (persistence.ts) writes `[timestamp] [source] message`, unescaped.
-    // An unescaped newline in a display name forges a second log entry (Zoom names are unverifiable — see `AGENT_PROMPTS.voiceQuestion`).
-    // Read verbatim later by a trusted agent (`AGENT_PROMPTS.meetingEnded`).
+    // An unescaped newline in a display name forges a second log entry (Zoom names are unverifiable — see `prompts/voice-wakeup-question.md`).
+    // Read verbatim later by a trusted agent (`prompts/voice-wakeup-ended.md`).
     reset();
     const host = fakeHost();
     const evil = {
@@ -1753,7 +1755,7 @@ describe('meeting room silence', () => {
     await meeting.stop();
   });
 
-  // Correlation is by channel, not id (`AGENT_PROMPTS.voiceQuestion`; `recall/channel-delivery.ts`).
+  // Correlation is by channel, not id (`prompts/voice-wakeup-question.md`; `recall/channel-delivery.ts`).
   // A cap of one outstanding question means any confirmed message has exactly one to answer.
   it('answers the one outstanding consult, with no id in the call at all', async () => {
     reset();

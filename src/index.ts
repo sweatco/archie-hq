@@ -59,13 +59,8 @@ interface AppConfig {
   recallRegion?: string;
   deepgramApiKey?: string;
   publicUrl?: string;
-  voiceBotName: string;
   cerebrasApiKey?: string;
-  deepgramHost?: string;
-  voiceLanguageHints?: string;
   sonioxApiKey?: string;
-  sonioxHost?: string;
-  sonioxVoice?: string;
 }
 
 /**
@@ -103,16 +98,8 @@ function loadConfig(): AppConfig {
     recallRegion: process.env.RECALL_REGION || 'eu-central-1',
     deepgramApiKey: process.env.DEEPGRAM_API_KEY,
     publicUrl: process.env.ARCHIE_PUBLIC_URL?.replace(/\/+$/, ''),
-    voiceBotName: process.env.ARCHIE_VOICE_BOT_NAME || 'Archie',
     cerebrasApiKey: process.env.CEREBRAS_API_KEY,
-    deepgramHost: process.env.DEEPGRAM_HOST,
-    // Passed through verbatim: `src/voice/deepgram.ts` splits and normalises it,
-    // and an absent or empty value there means "send no hint", which is Flux's own
-    // auto-detect behaviour. No default list — see `VoiceConfig.languageHints`.
-    voiceLanguageHints: process.env.ARCHIE_VOICE_LANGUAGE_HINTS,
     sonioxApiKey: process.env.SONIOX_API_KEY,
-    sonioxHost: process.env.SONIOX_HOST,
-    sonioxVoice: process.env.SONIOX_VOICE,
   };
 }
 
@@ -289,11 +276,8 @@ async function main(): Promise<void> {
     // Zoom/Meet/Teams room. Needs a Recall key for the meeting transport, a
     // Deepgram key for listening, a Soniox key for speaking, a Cerebras key for
     // comprehension, and a public URL because Recall dials back into us over
-    // WebSocket and loads our page as the bot's camera.
-    //
-    // The two halves of the config are nested rather than flattened, and the
-    // nesting is the boundary: the top level is Recall's, `voice` is the medium's
-    // and is what a second connector would supply identically.
+    // WebSocket and loads our page as the bot's camera. Credentials are the whole
+    // config: the vendors and their settings are fixed in `src/voice/`.
     let recallLifecycle: RecallLifecycle | null = null;
     if (
       config.recallApiKey &&
@@ -305,17 +289,10 @@ async function main(): Promise<void> {
       recallLifecycle = mountRecallConnector(app, {
         recallApiKey: config.recallApiKey,
         recallRegion: config.recallRegion!,
+        deepgramApiKey: config.deepgramApiKey,
+        sonioxApiKey: config.sonioxApiKey,
+        cerebrasApiKey: config.cerebrasApiKey,
         publicUrl: config.publicUrl,
-        voice: {
-          deepgramApiKey: config.deepgramApiKey,
-          botName: config.voiceBotName,
-          cerebrasApiKey: config.cerebrasApiKey,
-          deepgramHost: config.deepgramHost,
-          languageHints: config.voiceLanguageHints,
-          sonioxApiKey: config.sonioxApiKey,
-          sonioxHost: config.sonioxHost,
-          sonioxVoice: config.sonioxVoice,
-        },
       });
     } else {
       logger.plain(

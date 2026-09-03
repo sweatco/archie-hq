@@ -19,10 +19,11 @@ const require = createRequire(import.meta.url);
 const express = require('express');
 
 import { logger } from '../system/logger.js';
-import { createRecallClient, type RecallConfig } from './recall.js';
+import { createRecallClient } from './recall.js';
 import { createAudioOutHub, renderPage } from './audio-out.js';
 import { createMeeting, isArchie, type Meeting } from './meeting.js';
 import { buildCapabilitySummary } from './capabilities.js';
+import { BOT_NAME } from './types.js';
 import type { MeetingHost, Participant, VoiceConfig, VoiceTransport } from './types.js';
 import {
   createTaskHost,
@@ -121,15 +122,7 @@ const TERMINAL_BOT_STATUSES = new Set(['call_ended', 'done', 'fatal']);
  */
 const STATUS_POLL_MS = 30_000;
 
-export function mountRecallConnector(app: Application, cfg: RecallConfig): RecallLifecycle {
-  /** Adds our API key to `foreignSecrets` so voice's log scrubber can redact it — no other way to learn it. */
-  const voice: VoiceConfig = {
-    ...cfg.voice,
-    foreignSecrets: [...(cfg.voice.foreignSecrets ?? []), cfg.recallApiKey],
-  };
-  /** Must match the wake word — see {@link VoiceConfig.botName}. */
-  const botName = voice.botName;
-
+export function mountRecallConnector(app: Application, cfg: VoiceConfig): RecallLifecycle {
   const recall = createRecallClient(cfg);
   const audioOut = createAudioOutHub();
   const live = new Map<string, LiveMeeting>();
@@ -145,7 +138,7 @@ export function mountRecallConnector(app: Application, cfg: RecallConfig): Recal
   router.get('/page/:pageId', (req: Request, res: Response) => {
     const pageId = req.params.pageId as string;
     const wsUrl = `${cfg.publicUrl.replace(/^http/, 'ws')}/api/voice/out/${pageId}`;
-    res.type('html').send(renderPage(pageId, wsUrl, botName));
+    res.type('html').send(renderPage(pageId, wsUrl));
   });
 
   /**
@@ -161,12 +154,12 @@ export function mountRecallConnector(app: Application, cfg: RecallConfig): Recal
       const pageId = randomUUID();
       const botId = await recall.createBot({
         meetingUrl,
-        botName,
+        botName: BOT_NAME,
         audioWsUrl: `${cfg.publicUrl.replace(/^http/, 'ws')}/api/voice/audio`,
         pageUrl: `${cfg.publicUrl}/api/voice/page/${pageId}`,
       });
 
-      const host = taskId === undefined ? undefined : createTaskHost(taskId, botId, botName, endMeeting);
+      const host = taskId === undefined ? undefined : createTaskHost(taskId, botId, endMeeting);
 
       const transport: VoiceTransport = {
         // bot id, not page id: it outlives every socket in the call — the stable key for the activation log.
@@ -174,7 +167,7 @@ export function mountRecallConnector(app: Application, cfg: RecallConfig): Recal
         sink: audioOut.sinkFor(pageId),
         sendChat: (text) => recall.sendChat(botId, text),
       };
-      const meeting = createMeeting(voice, transport, host);
+      const meeting = createMeeting(cfg, transport, host);
       // Best-effort; teardown may find a more authoritative time in Recall's own status_changes ledger.
       const joinedAt = new Date().toISOString();
       const binding =
@@ -201,7 +194,7 @@ export function mountRecallConnector(app: Application, cfg: RecallConfig): Recal
         // 'meeting' is a reserved speaker name — no participant can be named that.
         binding.host.recordUtterance('meeting', `started — bot ${botId} joined ${meetingUrl}`);
         // Deliberately unawaited — awaiting would hold this live meeting behind the model's latency; caught so a throw here can't crash the process (no unhandledRejection handler).
-        void buildCapabilitySummary(voice, binding.taskId).then((summary) => {
+        void buildCapabilitySummary(cfg, binding.taskId).then((summary) => {
           meeting.setCapabilities(summary);
           recordMeetingCapabilities(binding.taskId, botId, summary);
         })
@@ -376,7 +369,7 @@ export function mountRecallConnector(app: Application, cfg: RecallConfig): Recal
       const raw64 = typeof d.buffer === 'string' ? d.buffer : '';
       const participant = parseParticipant(d.participant);
       // Belt-and-suspenders: Recall excludes our audio by default, but a slip-through would fire barge-in on it.
-      if (raw64.length > 0 && !isArchie(participant.name, botName)) {
+      if (raw64.length > 0 && !isArchie(participant.name)) {
         entry.meeting.onAudio(participant, Buffer.from(raw64, 'base64'));
       }
     } else if (m.event === 'participant_events.join') {
@@ -425,7 +418,7 @@ export function mountRecallConnector(app: Application, cfg: RecallConfig): Recal
 
   /** Replaces, not duplicates, a repeat `.join` for the id — a malformed/duplicate event can't invent a second occupant. */
   function handleParticipantJoin(entry: LiveMeeting, participant: Participant): void {
-    if (isArchie(participant.name, botName)) return;
+    if (isArchie(participant.name)) return;
     entry.participants.set(participant.id, {
       name: participant.name,
       isHost: participant.isHost,
@@ -442,7 +435,7 @@ export function mountRecallConnector(app: Application, cfg: RecallConfig): Recal
    * Records only: whether the room has emptied is Recall's call, not this roster's (`everyone_left_timeout` in `recall.ts`).
    */
   function handleParticipantLeave(entry: LiveMeeting, participant: Participant): void {
-    if (isArchie(participant.name, botName)) return;
+    if (isArchie(participant.name)) return;
     const now = new Date().toISOString();
     const existing = entry.participants.get(participant.id);
     if (existing) {
@@ -488,7 +481,7 @@ export function mountRecallConnector(app: Application, cfg: RecallConfig): Recal
       void recall
         .sendChat(
           entry.botId,
-          `Hi, I'm ${botName}. I'm listening to this meeting — say my name and I'll chime in.`,
+          `Hi, I'm ${BOT_NAME}. I'm listening to this meeting — say my name and I'll chime in.`,
         )
         .catch((error) => logger.warn('voice', `Greeting failed for ${entry.botId}`, error));
     }

@@ -1,40 +1,27 @@
 /**
- * Shared types for voice — the contract between the conversation and the transport that carries it.
+ * Shared types for voice — the contract between the conversation and the transport that carries it — plus the one name Archie answers to.
  *
- * Types only, no logic, no imports from sibling modules.
+ * No logic, no imports from sibling modules.
  */
 
+/** The name Archie joins under, is addressed by, and introduces itself as. One constant because the join name, the trigger variants and the prompts must agree; separate knobs are separate ways for them to disagree. */
+export const BOT_NAME = 'Archie';
+
 /**
- * What the medium needs for a conversation, resolved from env at startup, handed down by the connector. Excludes connector detail (vendor, region, callback URL).
+ * Every credential the voice stack holds, resolved from env at startup in `index.ts`. All required — the connector does not mount without them.
  *
- * The three keys are all required — the connector does not mount without them.
+ * Credentials only: the vendors and their settings are fixed in `deepgram.ts`, `soniox.ts` and `comprehension.ts`. One flat object, so each module's log scrubber can redact every key the process holds rather than only its own — an echoed request isn't choosy about headers.
  */
 export interface VoiceConfig {
+  recallApiKey: string;
+  recallRegion: string;
   deepgramApiKey: string;
-  /**
-   * The name Archie answers to and introduces itself by.
-   *
-   * Must match the connector's display name, or the bot stays silent when addressed by the name people see.
-   */
-  botName: string;
-  /** Serves both comprehension calls; see comprehension.ts. */
-  cerebrasApiKey: string;
-  // No scheme, e.g. `api.eu.deepgram.com`. Absent means `api.deepgram.com` (default in deepgram.ts).
-  deepgramHost?: string;
-  /**
-   * Comma-separated codes, e.g. `en,ru`, bias Flux instead of guessing; absent sends no hint.
-   *
-   * No default list — a bad guess can fail the whole language, not merely degrade it.
-   */
-  languageHints?: string;
   /** Speaks every answer; see soniox.ts. */
   sonioxApiKey: string;
-  // No scheme, e.g. `tts-rt.eu.soniox.com`. Absent means the US endpoint — the only region the key authenticates against.
-  sonioxHost?: string;
-  // Absent means the stock voice. A cloned voice needs its UUID — its display name gets `400 Invalid voice`.
-  sonioxVoice?: string;
-  /** Credentials held elsewhere, so deepgram.ts/soniox.ts scrubbers redact them too — every credential the process holds, not just their own (an echoed request isn't choosy about headers). Absent means the fields above are the whole set. */
-  foreignSecrets?: string[];
+  /** Serves both comprehension calls; see comprehension.ts. */
+  cerebrasApiKey: string;
+  /** e.g. https://x.ngrok-free.app, no trailing slash — Recall dials back in for both audio directions. */
+  publicUrl: string;
 }
 
 /** Who an inbound audio packet came from. Only `id` and `name` are read; `email`/`isHost` ride along unused. A transport that can't separate speakers passes the same `Participant` every time. */

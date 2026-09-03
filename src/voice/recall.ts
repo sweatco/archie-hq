@@ -8,16 +8,6 @@ import type { VoiceConfig } from './types.js';
 
 const MAX_ERROR_BODY = 500;
 
-/** Recall config plus the voice sub-config `index.ts` builds meetings with. */
-export interface RecallConfig {
-  recallApiKey: string;
-  recallRegion: string;
-  /** e.g. https://x.ngrok-free.app, no trailing slash — Recall dials back in for both audio directions. */
-  publicUrl: string;
-  /** Handed down to `createMeeting` untouched, apart from the key added in `index.ts`. */
-  voice: VoiceConfig;
-}
-
 /** Node's `fetch` has no default timeout — without this, a hung connection could hang forever. */
 const REQUEST_TIMEOUT_MS = 15_000;
 
@@ -58,21 +48,15 @@ interface RecallResponse {
   body: string;
 }
 
-export function createRecallClient(cfg: RecallConfig): RecallClient {
+export function createRecallClient(cfg: VoiceConfig): RecallClient {
   const baseUrl = `https://${cfg.recallRegion}.recall.ai/api/v1`;
 
   /**
-   * Every credential in the process, not just Recall's; includes `cfg.voice`.
+   * Every credential in the process, not just Recall's.
    * Longest first: overlapping pairs still fully redact. Short values excluded — splitting on `''` marks every character.
    */
-  const secrets = [
-    cfg.recallApiKey,
-    cfg.voice.deepgramApiKey,
-    cfg.voice.cerebrasApiKey,
-    cfg.voice.sonioxApiKey,
-    ...(cfg.voice.foreignSecrets ?? []),
-  ]
-    .filter((secret): secret is string => typeof secret === 'string' && secret.length >= 8)
+  const secrets = [cfg.recallApiKey, cfg.deepgramApiKey, cfg.cerebrasApiKey, cfg.sonioxApiKey]
+    .filter((secret) => secret.length >= 8)
     .sort((a, b) => b.length - a.length);
 
   /** Some upstreams echo headers into 4xx bodies, leaking the token — verbatim otherwise, the only diagnostic record. */

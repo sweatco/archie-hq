@@ -2,7 +2,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { logger } from '../../system/logger.js';
 import type { AudioSink, MeetingHost, Participant, VoiceConfig, VoiceTransport } from '../types.js';
-import type { RecallConfig } from '../recall.js';
 import { getChannelDeliverer, getChannelRenderer } from '../../tasks/channel-delivery.js';
 import { getRegisteredConnectorPmTools } from '../../agents/connector-tools.js';
 import { deliverToRecallChannel, renderRecallChannel } from '../channel-delivery.js';
@@ -138,8 +137,6 @@ vi.mock('../meeting.js', async (importOriginal) => {
 interface FakeHost extends MeetingHost {
   taskId: string;
   sessionId: string;
-  /** The bot name the host was built with (see "binding a meeting to a task"). */
-  botName: string;
   utterances: Array<{ speaker: string; text: string }>;
   // Meeting-chat lines — the chat.log half of the host.
   chatLines: Array<{ speaker: string; text: string }>;
@@ -201,13 +198,11 @@ vi.mock('../task-binding.js', () => ({
   createTaskHost: (
     taskId: string,
     sessionId: string,
-    botName: string,
     end: (sessionId: string) => Promise<void>,
   ): FakeHost => {
     const host: FakeHost = {
       taskId,
       sessionId,
-      botName,
       utterances: [],
       chatLines: [],
       events: [],
@@ -330,8 +325,8 @@ vi.mock('../audio-out.js', () => ({
       hub.disposed.push(pageId);
     },
   }),
-  renderPage: (pageId: string, wsUrl: string, botName: string) =>
-    `<!doctype html><title>${botName}</title><!--${pageId}|${wsUrl}-->`,
+  renderPage: (pageId: string, wsUrl: string) =>
+    `<!doctype html><!--${pageId}|${wsUrl}-->`,
 }));
 
 // Recall's REST API, faked at `fetch` only — the client itself is real, so URLs asserted here are the ones it would really call.
@@ -449,22 +444,19 @@ function request(router: Handler, method: string, url: string, body?: unknown): 
 
 const RECALL_KEY = 'recall-secret-key-44444';
 
-function config(over: Partial<RecallConfig> = {}): RecallConfig {
+function config(over: Partial<VoiceConfig> = {}): VoiceConfig {
   return {
     recallApiKey: RECALL_KEY,
     recallRegion: 'eu-central-1',
+    deepgramApiKey: 'deepgram-secret-key-0000',
+    sonioxApiKey: 'soniox-secret-key-33333',
+    cerebrasApiKey: 'cerebras-secret-key-2222',
     publicUrl: 'https://archie.example',
-    voice: {
-      deepgramApiKey: 'deepgram-secret-key-0000',
-      botName: 'Archie',
-      cerebrasApiKey: 'cerebras-secret-key-2222',
-      sonioxApiKey: 'soniox-secret-key-33333',
-    },
     ...over,
   };
 }
 
-async function mount(over: Partial<RecallConfig> = {}) {
+async function mount(over: Partial<VoiceConfig> = {}) {
   const { mountRecallConnector } = await import('../connector.js');
   const { app, router } = fakeApp();
   const lifecycle = mountRecallConnector(app as never, config(over));
@@ -512,7 +504,7 @@ function attach(lifecycle: { attach: (server: never) => void }) {
 }
 
 // The one socket carrying both audio_separate_raw.data and the two participant events — module scope since both audio-frame and participant-event tests need it.
-async function withAudioSocket(over: Partial<RecallConfig> = {}) {
+async function withAudioSocket(over: Partial<VoiceConfig> = {}) {
   const mounted = await mount(over);
   const onUpgrade = attach(mounted.lifecycle);
   onUpgrade({ url: '/api/voice/audio' }, { destroy: vi.fn() }, Buffer.alloc(0));
@@ -656,19 +648,17 @@ describe('recall mount — the transport it assembles', () => {
     ]);
   });
 
-  it('hands the medium its own key as a foreign secret, keeping any already there', async () => {
-    // The medium's log scrubbers redact every credential it holds — ours is the one they'd have no other way to learn.
+  it('hands the medium every credential the process holds, the Recall key included', async () => {
+    // The medium's log scrubbers redact each of these; the Recall key is one they'd have no other way to learn.
     botIds.push('bot-secrets');
-    const { router } = await mount({
-      voice: { ...config().voice, foreignSecrets: ['an-earlier-secret-000'] },
-    });
+    const { router } = await mount();
 
     const { spawned: made } = await startMeeting(router);
 
-    expect(made.cfg.foreignSecrets).toEqual(['an-earlier-secret-000', RECALL_KEY]);
-    // Nothing else about the connector leaks across — the medium gets the voice half, not the Recall half.
-    expect(made.cfg).not.toHaveProperty('recallApiKey');
-    expect(made.cfg).not.toHaveProperty('publicUrl');
+    expect(made.cfg.recallApiKey).toBe(RECALL_KEY);
+    expect(made.cfg.deepgramApiKey).toBe('deepgram-secret-key-0000');
+    expect(made.cfg.sonioxApiKey).toBe('soniox-secret-key-33333');
+    expect(made.cfg.cerebrasApiKey).toBe('cerebras-secret-key-2222');
   });
 
   it('derives both dial-back URLs from publicUrl, switching http for ws', async () => {
@@ -904,8 +894,6 @@ describe('recall mount — binding a meeting to a task', () => {
     expect(hosts[0].taskId).toBe('task-1');
     // createTaskHost gets the bot id too — it's what lets the wake-up prompt and the durable channel record agree on the same key.
     expect(hosts[0].sessionId).toBe('bot-bound');
-    // Display name is what readWrittenExchange renders every line as — must match the join name and trigger, or a mismatched host adds a second colleague to the written block.
-    expect(hosts[0].botName).toBe(made.cfg.botName);
     // The exact same host object createTaskHost returned, not a look-alike.
     expect(made.host).toBe(hosts[0]);
     expect(hosts[0].utterances).toEqual([

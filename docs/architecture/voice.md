@@ -25,7 +25,8 @@ src/voice/
     soniox.ts           Soniox: speaking
     written.ts          the task's written exchange, as a turn sees it
     capabilities.ts     what Archie can find out, summarised once at join
-    types.ts            VoiceTransport, AudioSink, Participant, MeetingHost, RosterEntry, WrittenLine
+    types.ts            VoiceTransport, AudioSink, Participant, MeetingHost, RosterEntry, WrittenLine,
+                        plus VoiceConfig and BOT_NAME — the whole configuration surface
 
   Recall — Zoom, Meet and Teams via Recall.ai — which is what implements that transport:
     connector.ts        the mount: the HTTP and WebSocket routes, the live-meeting map, the teardown funnel
@@ -48,7 +49,7 @@ It is called `recall` rather than `zoom` deliberately. Recall reaches Meet and T
 
 **`Participant.id` is an opaque string, not Recall's own integer.** It was typed as a number once, with the conversation keying its per-speaker state on it, which a SIP leg or an SDK with opaque string ids could not have satisfied without inventing one. Recall's integers are stringified where its frames are parsed, and the type carries the rule: compare it and key on it, never parse or order by it. The Recall side has its own tests, too (`src/voice/__tests__/` covers the client, the output hub and the mount), which nothing did while every test exercised conversation code; the properties they pin are the ones that cost a live meeting, `output_media` in the create body first among them.
 
-The connector is optional and config-gated: it mounts only when `RECALL_API_KEY`, `DEEPGRAM_API_KEY`, `SONIOX_API_KEY`, `CEREBRAS_API_KEY` and `ARCHIE_PUBLIC_URL` are all set, in the same conditional-mount style as Slack and GitHub, and costs nothing to leave off. Registration is what makes that gating reach all the way to the PM's tool surface, not just the HTTP routes: a deployment where this function never runs never calls `registerConnectorPmTools`, so the PM in that deployment never sees `join_recall_meeting` at all — absent, rather than present and answering "not configured" at call time. `mountRecallConnector` runs synchronously to completion in `main()` before task recovery (and therefore before any agent can spawn) reaches the first line that could use it, so there is no boot-order window where the tool exists for some spawns and not others.
+The connector is optional and config-gated: it mounts only when `RECALL_API_KEY`, `DEEPGRAM_API_KEY`, `SONIOX_API_KEY`, `CEREBRAS_API_KEY` and `ARCHIE_PUBLIC_URL` are all set, in the same conditional-mount style as Slack and GitHub, and costs nothing to leave off. Those, plus `RECALL_REGION`, are the whole configuration surface: `VoiceConfig` (`types.ts`) is one flat object of credentials, handed to `mountRecallConnector` and passed down unchanged, so each module's log scrubber can redact every key the process holds rather than only its own. Everything else about the stack is fixed in code — Deepgram Flux listens with hints `en,ru`, Cerebras `gemma-4-31b` decides what to say, Soniox `tts-rt-v2` speaks it in the voice `Adrian`, and the bot answers to `BOT_NAME` — because this deployment runs one stack and tunes it once; a knob per vendor setting was an env surface nobody moved and one more way for the join name, the wake word and the prompts to disagree. Registration is what makes that gating reach all the way to the PM's tool surface, not just the HTTP routes: a deployment where this function never runs never calls `registerConnectorPmTools`, so the PM in that deployment never sees `join_recall_meeting` at all — absent, rather than present and answering "not configured" at call time. `mountRecallConnector` runs synchronously to completion in `main()` before task recovery (and therefore before any agent can spawn) reaches the first line that could use it, so there is no boot-order window where the tool exists for some spawns and not others.
 
 ## One meeting, one task
 
@@ -188,7 +189,7 @@ The PM's side of the exchange is not a fourth event of that kind, but it does la
 
 **What to do about a finished meeting is the PM's business.** The reasonable default is a written summary — saved to a file, published as an immutable artifact, and delivered to the task's durable channel as a file rather than pasted into a chat message. What a summary should contain, what it should leave out, and how to deliver it is a skill's judgement (`recall-meetings`), not code in this module — keeping that judgement there means it can change without touching any of this. The connector should never summarise; it reports and keeps the record.
 
-A PM woken by a finished meeting is in a different position from one woken by a Slack message — it has a transcript to read and a room that has already dispersed — so its wake-up prompt differs from the ordinary one.
+A PM woken by a finished meeting is in a different position from one woken by a Slack message — it has a transcript to read and a room that has already dispersed — so its wake-up prompt differs from the ordinary one. Both of voice's wake-ups are model-facing prose, so they live where the other prompts do — `prompts/voice-wakeup-question.md` and `prompts/voice-wakeup-ended.md`, loaded at their call sites in `task-binding.ts` — rather than as template strings in `AGENT_PROMPTS`, which holds the one-line triggers.
 
 ## Open questions
 

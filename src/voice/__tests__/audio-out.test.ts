@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WebSocket } from 'ws';
 import { logger } from '../../system/logger.js';
 import { createAudioOutHub, renderPage } from '../audio-out.js';
+import { BOT_NAME } from '../types.js';
 
 /** PCM16 mono 24kHz: 48 bytes per millisecond. */
 const BYTES_PER_MS = 48;
@@ -487,17 +488,18 @@ describe('audio out — the page socket', () => {
 });
 
 describe('audio out — the page as text', () => {
-  it('carries the socket url and the bot name it was given, HTML-escaped', async () => {
+  it('carries the socket url and the bot name, HTML-escaping the id it was handed', async () => {
     // Never rendered — see the file header. This is a string assertion.
-    const html = renderPage('page-1', 'wss://archie.example/api/voice/out/page-1', 'Ar<chie>');
+    const html = renderPage('pa<ge>-1', 'wss://archie.example/api/voice/out/page-1');
 
     expect(html).toContain('wss://archie.example/api/voice/out/page-1');
-    expect(html).toContain('Ar&lt;chie&gt;');
-    expect(html).not.toContain('<chie>');
+    expect(html).toContain(BOT_NAME);
+    expect(html).toContain('pa&lt;ge&gt;-1');
+    expect(html).not.toContain('<ge>');
   });
 
   it('cannot be escaped out of its own script literal', async () => {
-    const html = renderPage('page-2', 'wss://x/</script><script>alert(1)</script>', 'Archie');
+    const html = renderPage('page-2', 'wss://x/</script><script>alert(1)</script>');
 
     expect(html).not.toContain('</script><script>');
   });

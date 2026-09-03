@@ -13,6 +13,7 @@ import {
 } from './comprehension.js';
 import { openTurnStream, type TurnEvent, type TurnStream } from './deepgram.js';
 import { createSonioxSpeechSession } from './soniox.js';
+import { BOT_NAME } from './types.js';
 import type {
   ActivationLog,
   MeetingHost,
@@ -133,22 +134,10 @@ export function matchTrigger(
   return null;
 }
 
-// Adds the configured bot name to the curated list unless already covered, so renaming the bot doesn't silently disarm the trigger. A one-character name is skipped -- too much ordinary speech to be a wake word.
-function variantsFor(botName: string): readonly string[] {
-  const own = tokenize(botName);
-  const alreadyCovered =
-    own.length === 0 || own[0].length < 2 || matchTrigger(botName) !== null;
-  if (alreadyCovered) {
-    return TRIGGER_VARIANTS;
-  } else {
-    return [...TRIGGER_VARIANTS, own.join(' ')];
-  }
-}
-
 // Exported rather than folded into `isSelf` below -- a connector needs this same check before any `Meeting` exists to ask it.
-export function isArchie(name: string | null, botName: string): boolean {
+export function isArchie(name: string | null): boolean {
   if (name === null) return false;
-  return tokenize(name).join(' ') === tokenize(botName).join(' ');
+  return tokenize(name).join(' ') === tokenize(BOT_NAME).join(' ');
 }
 
 // Rows are appended in settle order, not `at` order -- sort by `at` to read a meeting back in sequence.
@@ -199,7 +188,6 @@ let meetingSeq = 0;
 
 export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?: MeetingHost): Meeting {
   const { sessionId, sink, sendChat } = transport;
-  const variants = variantsFor(cfg.botName);
   // Captured before anything else per-meeting; see nextConsultId for why order matters.
   const meetingOrdinal = ++meetingSeq;
 
@@ -368,7 +356,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
   function isFollowUpAnchor(utterance: Utterance | undefined, graceMs: number): boolean {
     return (
       utterance !== undefined &&
-      utterance.speaker === cfg.botName &&
+      utterance.speaker === BOT_NAME &&
       utterance.at >= Date.now() - graceMs
     );
   }
@@ -382,7 +370,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
   }
 
   function noteOwnAnswer(text: string): void {
-    addUtterance(cfg.botName, text);
+    addUtterance(BOT_NAME, text);
     if (followUpTimer !== null) {
       clearTimeout(followUpTimer);
     }
@@ -396,7 +384,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
   // `roomSpokeSince` must be read before `addUtterance` runs -- that bumps `transcriptRevision` itself, our own line included.
   function fileConfirmedLine(text: string, revision: number): void {
     const roomSpokeSince = transcriptRevision !== revision;
-    addUtterance(cfg.botName, text);
+    addUtterance(BOT_NAME, text);
     if (!roomSpokeSince) {
       retryAfter = Date.now() + RETRY_FLOOR_MS;
     }
@@ -407,8 +395,8 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     if (chat !== undefined) {
       const text = sanitizeForLog(chat);
       if (text.length > 0) {
-        chatPosts.push({ speaker: cfg.botName, text });
-        host?.recordChat(cfg.botName, text);
+        chatPosts.push({ speaker: BOT_NAME, text });
+        host?.recordChat(BOT_NAME, text);
       }
     }
   }
@@ -503,7 +491,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
   }
 
   function decideOwing(speaker: string, text: string): void {
-    const matched = matchTrigger(text, variants);
+    const matched = matchTrigger(text);
     if (matched !== null) {
       const row = newJudgedRow(speaker, text, 'name');
       row.matched = matched;
@@ -605,7 +593,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       logger.debug(LOG, 'No host on this meeting — dropped a LEAVE: request');
     } else {
       logger.system(
-        `Voice meeting ${sessionId} is ending — ${cfg.botName} asked to leave and its farewell was delivered in full`,
+        `Voice meeting ${sessionId} is ending — ${BOT_NAME} asked to leave and its farewell was delivered in full`,
       );
       host.leaveMeeting();
     }
@@ -639,7 +627,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
 
   // `verdict` resets to 'suppressed' even though the addressing gate may have left it 'addressed' -- on the merged row this means what the room got, not what the gate concluded, so a half-dead decision must read as the bot staying quiet.
   function adoptTurnRow(speakingWindow: string): TurnRow {
-    const row = pendingTurnRow ?? newTurnRow(cfg.botName);
+    const row = pendingTurnRow ?? newTurnRow(BOT_NAME);
     pendingTurnRow = null;
     row.kind = 'response';
     row.window = speakingWindow;
@@ -975,7 +963,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     } else {
       const cached = selfByName.get(participant.name);
       if (cached === undefined) {
-        const verdict = isArchie(participant.name, cfg.botName);
+        const verdict = isArchie(participant.name);
         selfByName.set(participant.name, verdict);
         return verdict;
       } else {
@@ -1149,7 +1137,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
   reaper.unref();
 
   logger.system(
-    `Voice meeting ready for session ${sessionId} — ${variants.length} trigger variants, ` +
+    `Voice meeting ready for session ${sessionId} — ${TRIGGER_VARIANTS.length} trigger variants, ` +
     `activation log at ${logPath}`,
   );
 

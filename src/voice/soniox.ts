@@ -23,22 +23,12 @@ import type { SpeechResult, SpeechSession, SpeechStream, VoiceConfig } from './t
 
 const LOG = 'voice-soniox';
 
-/** Soniox's US endpoint, the default. Key is US-only — EU/JP 401 it; regions are separate deployments, separate credentials. Set `SONIOX_HOST` (+`DEEPGRAM_HOST`) once an EU key exists — EU measured faster from Europe (socket-open, round-trip). */
-const DEFAULT_SONIOX_HOST = 'tts-rt.soniox.com';
+/** Soniox's US endpoint. The key is US-only — EU/JP 401 it; regions are separate deployments with separate credentials. */
+const SONIOX_URL = 'wss://tts-rt.soniox.com/tts-websocket';
 
 /** Voice approved by a native Russian speaker, incl. mixed Russian/English terms. This voice id isn't language-specific — language is a separate mandatory field, so one voice answers both. Test both languages before changing either. */
 const TTS_MODEL = 'tts-rt-v2';
 const TTS_VOICE = 'Adrian';
-
-/** Cloned voices need a UUID, not the console name — a name like `Egor` returns `400 Invalid voice` (undocumented, measured). */
-function sonioxVoice(cfg: VoiceConfig): string {
-  const voice = cfg.sonioxVoice?.trim();
-  if (voice === undefined || voice === '') {
-    return TTS_VOICE;
-  } else {
-    return voice;
-  }
-}
 
 /**
  * Raw little-endian PCM16 mono 24kHz, no container — measured headerless across 603 chunks (no RIFF/WAVE/Ogg/MPEG magic). Pinned in the start frame, asserted in a test: a mismatch is the request's fault, not the decoder's.
@@ -54,15 +44,6 @@ const KEEPALIVE_MS = 15_000;
 
 const LIMIT_EXCEEDED = 429;
 
-function sonioxHost(cfg: VoiceConfig): string {
-  const host = cfg.sonioxHost?.trim();
-  if (host === undefined || host.length === 0) {
-    return DEFAULT_SONIOX_HOST;
-  } else {
-    return host;
-  }
-}
-
 /** Consumer callbacks run inside socket handlers, where a throw would be fatal. */
 function guarded(label: string, fn: () => void): void {
   try {
@@ -72,16 +53,12 @@ function guarded(label: string, fn: () => void): void {
   }
 }
 
-/** Soniox's key travels in the message body (not a header, unlike Deepgram) — an error frame echoing the request could leak it; scrub before truncating, or a key splits mid-cut. Secrets: {@link VoiceConfig.foreignSecrets}. */
+/** Soniox's key travels in the message body (not a header, unlike Deepgram) — an error frame echoing the request could leak it; scrub before truncating, or a key splits mid-cut. Every key on the config, not only Soniox's: an echoed request isn't choosy about what it echoes. */
 function safeForLog(text: string, cfg: VoiceConfig, max = 300): string {
   let safe = text;
-  for (const secret of [
-    cfg.sonioxApiKey,
-    cfg.deepgramApiKey,
-    ...(cfg.foreignSecrets ?? []),
-  ]) {
+  for (const secret of [cfg.sonioxApiKey, cfg.deepgramApiKey, cfg.cerebrasApiKey, cfg.recallApiKey]) {
     // Length floor: splitting on '' would mark every character.
-    if (secret !== undefined && secret.length >= 8) {
+    if (secret.length >= 8) {
       safe = safe.split(secret).join('[redacted]');
     }
   }
@@ -140,8 +117,6 @@ interface Round {
 }
 
 export function createSonioxSpeechSession(cfg: VoiceConfig): SpeechSession {
-  const url = `wss://${sonioxHost(cfg)}/tts-websocket`;
-
   let link: WebSocket | null = null;
   let state: LinkState = 'idle';
   let closed = false;
@@ -248,7 +223,7 @@ export function createSonioxSpeechSession(cfg: VoiceConfig): SpeechSession {
     send({
       api_key: cfg.sonioxApiKey,
       model: TTS_MODEL,
-      voice: sonioxVoice(cfg),
+      voice: TTS_VOICE,
       language: next.language,
       audio_format: AUDIO_FORMAT,
       sample_rate: SAMPLE_RATE,
@@ -326,7 +301,7 @@ export function createSonioxSpeechSession(cfg: VoiceConfig): SpeechSession {
     if (closed) return;
 
     const startedAt = Date.now();
-    const ws = new WebSocket(url);
+    const ws = new WebSocket(SONIOX_URL);
     link = ws;
     state = 'connecting';
 

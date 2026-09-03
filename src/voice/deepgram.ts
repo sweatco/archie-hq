@@ -11,23 +11,11 @@ import WebSocket from 'ws';
 import { logger } from '../system/logger.js';
 import type { VoiceConfig } from './types.js';
 
-/**
- * Deepgram's default global endpoint; `DEEPGRAM_HOST` overrides.
- *
- * Don't default to EU unconfirmed — engine location is unresearched, and recording colleagues there is a privacy call, not just latency.
- */
-const DEFAULT_DEEPGRAM_HOST = 'api.deepgram.com';
+/** Deepgram's global endpoint. Not EU: engine location is unresearched, and recording colleagues there is a privacy call, not just latency. */
+const FLUX_URL = 'wss://api.deepgram.com/v2/listen';
 
-function deepgramHost(cfg: VoiceConfig): string {
-  const host = cfg.deepgramHost?.trim();
-  if (host === undefined || host.length === 0) {
-    return DEFAULT_DEEPGRAM_HOST;
-  } else {
-    return host;
-  }
-}
-
-const fluxUrl = (cfg: VoiceConfig): string => `wss://${deepgramHost(cfg)}/v2/listen`;
+/** The languages this deployment's meetings are held in. */
+const LANGUAGE_HINTS = ['en', 'ru'];
 
 /** Flux v2 has no `KeepAlive`; a ping holds an idle stream open (measured 20min zero-audio, no server close). */
 const PING_MS = 20_000;
@@ -44,12 +32,12 @@ function guarded(label: string, fn: () => void): void {
   }
 }
 
-/** Token's in a header; an upstream echoing headers into an error body could leak it — scrub before truncating, or a key splits mid-cut. Secrets: {@link VoiceConfig.foreignSecrets}. */
+/** Token's in a header; an upstream echoing headers into an error body could leak it — scrub before truncating, or a key splits mid-cut. Every key on the config, not only Deepgram's: an echoed request isn't choosy about headers. */
 function safeForLog(text: string, cfg: VoiceConfig, max = 500): string {
   let safe = text;
-  for (const secret of [cfg.deepgramApiKey, ...(cfg.foreignSecrets ?? [])]) {
+  for (const secret of [cfg.deepgramApiKey, cfg.sonioxApiKey, cfg.cerebrasApiKey, cfg.recallApiKey]) {
     // Length floor: splitting on '' would mark every character.
-    if (secret !== undefined && secret.length >= 8) {
+    if (secret.length >= 8) {
       safe = safe.split(secret).join('[redacted]');
     }
   }
@@ -78,16 +66,6 @@ interface FluxMessage {
 }
 
 /**
- * Empty means Flux auto-detects. Deepgram rejects empty `language_hint` outright (HTTP 400 `INVALID_QUERY_PARAMETER`) — filtering empties is load-bearing, or a trailing comma kills every socket. Whitespace trimmed: people write "en, ru".
- */
-function languageHints(cfg: VoiceConfig): string[] {
-  return (cfg.languageHints ?? '')
-    .split(',')
-    .map((code) => code.trim())
-    .filter((code) => code.length > 0);
-}
-
-/**
  * `flux-general-multi` auto-detects when unhinted, and can misdetect an utterance's whole language (not per-word). `language_hint` narrows candidates; Deepgram documents hinted accuracy ≈ monolingual models.
  *
  * **MUST be a repeated key** (`language_hint=en&language_hint=ru`, verified on the wire) — comma-joined (`en,ru`) is silently echoed back as one bogus code, disabling detection and dropping capitalization/punctuation.
@@ -96,14 +74,14 @@ function languageHints(cfg: VoiceConfig): string[] {
  *
  * PRIVACY — DO NOT REMOVE `mip_opt_out`: this bot records colleagues who never agreed to Deepgram's Model Improvement Program.
  */
-function fluxParams(cfg: VoiceConfig): URLSearchParams {
+function fluxParams(): URLSearchParams {
   const params = new URLSearchParams({
     model: 'flux-general-multi',
     encoding: 'linear16',
     sample_rate: '16000',
     mip_opt_out: 'true',
   });
-  for (const code of languageHints(cfg)) {
+  for (const code of LANGUAGE_HINTS) {
     params.append('language_hint', code);
   }
   return params;
@@ -116,7 +94,7 @@ export function openTurnStream(
     onEvent: (e: TurnEvent) => void;
   },
 ): TurnStream {
-  const url = `${fluxUrl(cfg)}?${fluxParams(cfg).toString()}`;
+  const url = `${FLUX_URL}?${fluxParams().toString()}`;
 
   let socket: WebSocket | null = null;
   let ping: NodeJS.Timeout | null = null;

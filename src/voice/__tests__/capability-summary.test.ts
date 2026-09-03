@@ -16,10 +16,12 @@ import { summariseCapabilities } from '../comprehension.js';
 import type { VoiceConfig } from '../types.js';
 
 const cfg: VoiceConfig = {
+  recallApiKey: 'recall-key',
+  recallRegion: 'eu-central-1',
   deepgramApiKey: 'd',
-  botName: 'Archie',
-  cerebrasApiKey: 'cerebras-key',
   sonioxApiKey: 'soniox-key',
+  cerebrasApiKey: 'cerebras-key',
+  publicUrl: 'https://archie.example',
 };
 
 const SKILLS = [

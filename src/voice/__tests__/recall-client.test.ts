@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { logger } from '../../system/logger.js';
-import { createRecallClient, type RecallConfig } from '../recall.js';
+import { createRecallClient } from '../recall.js';
 import type { VoiceConfig } from '../types.js';
 
 interface Call {
@@ -42,19 +42,14 @@ function fakeFetch(url: string | URL, init?: RequestInit): Promise<Response> {
 }
 
 // Clears the scrubber's 8-char floor; mutually non-overlapping so no leak is mistaken for another's.
-const voice: VoiceConfig = {
-  deepgramApiKey: 'deepgram-secret-key-0000',
-  botName: 'Archie',
-  cerebrasApiKey: 'cerebras-secret-key-2222',
-  sonioxApiKey: 'soniox-secret-key-33333',
-};
-
-function config(over: Partial<RecallConfig> = {}): RecallConfig {
+function config(over: Partial<VoiceConfig> = {}): VoiceConfig {
   return {
     recallApiKey: 'recall-secret-key-44444',
     recallRegion: 'eu-central-1',
+    deepgramApiKey: 'deepgram-secret-key-0000',
+    sonioxApiKey: 'soniox-secret-key-33333',
+    cerebrasApiKey: 'cerebras-secret-key-2222',
     publicUrl: 'https://archie.example',
-    voice,
     ...over,
   };
 }
@@ -266,26 +261,13 @@ describe('recall client — credential redaction', () => {
     }
   });
 
-  it('honours foreignSecrets, the vendor-neutral slot for a key it cannot name', async () => {
-    // Ignoring this slot would leak exactly the credentials nobody enumerated — every credential a future connector adds.
-    replies.push({ status: 400, body: '{"echo":"a-future-vendor-key-9999"}' });
-    const client = createRecallClient(
-      config({ voice: { ...voice, foreignSecrets: ['a-future-vendor-key-9999'] } }),
-    );
-
-    const failure = await client.createBot(joinOpts).catch((err: unknown) => String(err));
-
-    expect(failure).not.toContain('a-future-vendor-key-9999');
-    expect(failure).toContain('[redacted]');
-  });
-
   it('redacts an overlapping pair completely', async () => {
     // Longest first, or scrubbing the short key first leaves the long one's tail in the log.
     const long = 'shared-prefix-and-a-tail';
     const short = 'shared-prefix-a';
     replies.push({ status: 400, body: JSON.stringify({ echo: long }) });
     const client = createRecallClient(
-      config({ recallApiKey: short, voice: { ...voice, foreignSecrets: [long] } }),
+      config({ recallApiKey: short, deepgramApiKey: long }),
     );
 
     const failure = await client.createBot(joinOpts).catch((err: unknown) => String(err));
@@ -297,7 +279,7 @@ describe('recall client — credential redaction', () => {
     // Splitting on '' inserts the marker between every character, destroying the account of what went wrong.
     replies.push({ status: 400, body: '{"detail":"Enter a valid URL."}' });
     const client = createRecallClient(
-      config({ recallApiKey: '', voice: { ...voice, foreignSecrets: ['', 'abc'] } }),
+      config({ recallApiKey: '', deepgramApiKey: 'abc', sonioxApiKey: '', cerebrasApiKey: 'xy' }),
     );
 
     const failure = await client.createBot(joinOpts).catch((err: unknown) => String(err));

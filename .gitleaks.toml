@@ -33,14 +33,14 @@ regexes = [
   '''AKIAIOSFODNN7EXAMPLE''',
   '''sk-abcdefghijklmnopqrstuv''',
   '''sk-abc123def456ghi789jkl012''',
-  # Recall connector config fixtures (src/voice/__tests__/connector-mount.test.ts).
-  # Deliberately secret-shaped: one of those tests asserts that a foreign key is
-  # redacted before it reaches a log, so a fixture that did not look like a key
-  # would not exercise the redaction. Listed by value rather than by path so a
-  # genuine credential pasted into that file is still caught. Only the anthropic
-  # one currently trips the generic-api-key rule (the others fall under its
-  # entropy threshold) — all four are listed so a threshold change cannot
-  # reopen this.
+  # Voice config fixtures (src/voice/__tests__/recall-client.test.ts and
+  # connector-mount.test.ts). Deliberately secret-shaped: those tests assert that
+  # every credential the process holds is redacted before it reaches a log, so a
+  # fixture that did not look like a key would not exercise the redaction. Listed
+  # by value rather than by path so a genuine credential pasted into either file
+  # is still caught. Only the anthropic one currently trips the generic-api-key
+  # rule (the others fall under its entropy threshold) — all four are listed so a
+  # threshold change cannot reopen this.
   '''recall-secret-key-44444''',
   '''deepgram-secret-key-0000''',
   '''anthropic-secret-key-111''',

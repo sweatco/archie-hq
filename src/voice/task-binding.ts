@@ -22,7 +22,7 @@ import {
   writeMeetingCapabilities,
 } from '../tasks/persistence.js';
 import type { LiveMeetingParticipant, MeetingMetadata } from '../types/task.js';
-import { AGENT_PROMPTS } from '../agents/prompts.js';
+import { loadPrompt } from '../utils/prompt-loader.js';
 import { logger } from '../system/logger.js';
 
 const LOG = 'voice-task-binding';
@@ -66,14 +66,13 @@ export function recallChannelKey(sessionId: string): string {
 }
 
 /**
- * botName is only needed by readWrittenExchange (renders each agent's line under Archie's name). No `Meeting` param — must exist before `createMeeting` returns one to register. `consult` reaches the live meeting via `getLiveMeeting(taskId)`, not a captured reference: safe, firing well after registration.
+ * No `Meeting` param — must exist before `createMeeting` returns one to register. `consult` reaches the live meeting via `getLiveMeeting(taskId)`, not a captured reference: safe, firing well after registration.
  *
  * `endMeeting` is the connector's own teardown funnel, passed in rather than imported — this module is what the connector builds meetings out of.
  */
 export function createTaskHost(
   taskId: string,
   sessionId: string,
-  botName: string,
   endMeeting: (sessionId: string) => Promise<void>,
 ): MeetingHost {
   return {
@@ -91,7 +90,7 @@ export function createTaskHost(
 
     readWrittenExchange(): Promise<WrittenLine[]> {
       // Never rejects (see written.ts) — a catch here would only hide it if that stopped being true.
-      return readWrittenExchange(taskId, botName);
+      return readWrittenExchange(taskId);
     },
 
     noteEvent(text: string): void {
@@ -123,7 +122,8 @@ export function createTaskHost(
 async function deliverConsultToPm(taskId: string, sessionId: string, channelKey: string, id: string, question: string): Promise<void> {
   try {
     const task = await Task.get(taskId);
-    await task.sendMessage(AGENT_PROMPTS.voiceQuestion(channelKey, question), 'pm-agent');
+    const prompt = await loadPrompt('voice-wakeup-question', { CHANNEL_KEY: channelKey, QUESTION: question });
+    await task.sendMessage(prompt, 'pm-agent');
   } catch (err) {
     logger.warn(LOG, `Could not put consult ${id} to the PM for task ${taskId} — answering it myself`, err);
     const failureNotice = 'The team could not be reached — there is no answer to this one.';
@@ -304,7 +304,10 @@ export function notifyMeetingEnded(taskId: string, sessionId: string): void {
   void (async () => {
     try {
       const task = await Task.get(taskId);
-      await task.sendMessage(AGENT_PROMPTS.meetingEnded(getMeetingTranscriptPath(taskId, sessionId)), 'pm-agent');
+      const prompt = await loadPrompt('voice-wakeup-ended', {
+        TRANSCRIPT_PATH: getMeetingTranscriptPath(taskId, sessionId),
+      });
+      await task.sendMessage(prompt, 'pm-agent');
     } catch (err) {
       logger.warn(LOG, `Could not wake the PM about the ended meeting for ${taskId}`, err);
     }

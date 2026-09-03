@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { matchTrigger, TRIGGER_VARIANTS } from '../meeting.js';
+import { isArchie, matchTrigger, TRIGGER_VARIANTS } from '../meeting.js';
+import { BOT_NAME } from '../types.js';
 
 // Targets Cyrillic near-misses sharing phonemes with Арчи/Archie.
 describe('matchTrigger', () => {
@@ -64,11 +65,6 @@ describe('matchTrigger', () => {
     expect(matchTrigger('a r c h i e')).toBeNull();
   });
 
-  it('honours a configured bot name so renaming cannot disarm the trigger', () => {
-    expect(matchTrigger('can you look at this, Jarvis', ['jarvis'])).not.toBeNull();
-    expect(matchTrigger('hey Archie', ['jarvis'])).toBeNull();
-  });
-
   it('returns which variant matched, for the activation log', () => {
     expect(matchTrigger('hey Archie')).toBe('archie');
     expect(matchTrigger('Арчи, привет')).toBe('арчи');
@@ -79,5 +75,23 @@ describe('matchTrigger', () => {
     for (const variant of TRIGGER_VARIANTS) {
       expect(commonWords).not.toContain(variant);
     }
+  });
+
+  it('covers the name the bot joins under, so the join name is also the wake word', () => {
+    // Nothing else pins the two together now that the name is one constant rather than a knob adding itself to the list.
+    expect(matchTrigger(BOT_NAME)).not.toBeNull();
+  });
+});
+
+describe('isArchie', () => {
+  it('recognises our own participant, whatever the transport capitalises it as', () => {
+    expect(isArchie(BOT_NAME)).toBe(true);
+    expect(isArchie('  ARCHIE ')).toBe(true);
+  });
+
+  it('does not claim a colleague, or an unnamed participant', () => {
+    expect(isArchie('Archie Test')).toBe(false);
+    expect(isArchie('Ann')).toBe(false);
+    expect(isArchie(null)).toBe(false);
   });
 });

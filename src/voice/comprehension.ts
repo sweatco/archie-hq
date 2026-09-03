@@ -13,6 +13,7 @@
 
 import { logger } from '../system/logger.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
+import { BOT_NAME } from './types.js';
 import type { RosterEntry, VoiceConfig, WrittenLine } from './types.js';
 
 const LOG = 'voice-comprehension';
@@ -131,7 +132,7 @@ export async function wasAddressed(
   const startedAt = Date.now();
   let system: string;
   try {
-    system = await loadPrompt('voice-addressing', { BOT_NAME: cfg.botName });
+    system = await loadPrompt('voice-addressing', { BOT_NAME });
   } catch (error) {
     logger.error(LOG, 'Could not load prompts/voice-addressing.md', error);
     return false;
@@ -202,7 +203,7 @@ export async function decideResponse(
   const startedAt = Date.now();
   let prompt: string;
   try {
-    prompt = await loadPrompt('voice-speaking', { BOT_NAME: cfg.botName });
+    prompt = await loadPrompt('voice-speaking', { BOT_NAME });
   } catch (error) {
     logger.error(LOG, 'Could not load prompts/voice-speaking.md', error);
     return { outcome: 'failed', why: 'the speaking prompt could not be loaded', handedOver: 0 };
@@ -414,7 +415,7 @@ export async function summariseCapabilities(
   const startedAt = Date.now();
   let system: string;
   try {
-    system = await loadPrompt('voice-capabilities', { BOT_NAME: cfg.botName });
+    system = await loadPrompt('voice-capabilities', { BOT_NAME });
   } catch (error) {
     logger.error(LOG, 'Could not load prompts/voice-capabilities.md — the meeting runs with no capability block', error);
     return '';

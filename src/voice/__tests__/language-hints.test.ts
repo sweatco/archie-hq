@@ -28,10 +28,12 @@ import { openTurnStream } from '../deepgram.js';
 import type { VoiceConfig } from '../types.js';
 
 const base: VoiceConfig = {
+  recallApiKey: 'recall-key',
+  recallRegion: 'eu-central-1',
   deepgramApiKey: 'dg-key',
-  botName: 'Archie',
-  cerebrasApiKey: 'cerebras-key',
   sonioxApiKey: 'soniox-key',
+  cerebrasApiKey: 'cerebras-key',
+  publicUrl: 'https://archie.example',
 };
 
 function dial(cfg: VoiceConfig): { flux: string } {
@@ -45,10 +47,6 @@ function hintsOn(url: string): string[] {
   return new URLSearchParams(url.slice(url.indexOf('?') + 1)).getAll('language_hint');
 }
 
-/** Flux URL before this option existed; nothing may perturb it. */
-const BASELINE_FLUX =
-  'wss://api.deepgram.com/v2/listen?model=flux-general-multi&encoding=linear16&sample_rate=16000&mip_opt_out=true';
-
 beforeEach(() => {
   dialled.length = 0;
 });
@@ -58,77 +56,25 @@ afterEach(() => {
 });
 
 describe('Flux language hints', () => {
-  it('sends no hint at all by default, preserving the URL exactly', () => {
+  it('dials the global endpoint with the whole fixed query, byte for byte', () => {
     const { flux } = dial(base);
-    expect(flux).toBe(BASELINE_FLUX);
-    expect(flux).not.toContain('language_hint');
-    expect(hintsOn(flux)).toEqual([]);
-  });
-
-  it('sends one repeated key per language, in the configured order', () => {
-    // Deepgram honours only repeated keys; asserted as a parsed list, since comma-joined is silently accepted but ignored.
-    const { flux } = dial({ ...base, languageHints: 'en,ru' });
-    expect(hintsOn(flux)).toEqual(['en', 'ru']);
-    expect(flux).toBe(`${BASELINE_FLUX}&language_hint=en&language_hint=ru`);
-  });
-
-  it('does not collapse the list into a single comma-joined value', () => {
-    // Separate test: `en%2Cru` is silently accepted, so only checking the raw encoding catches the breakage.
-    const { flux } = dial({ ...base, languageHints: 'en,ru' });
-    expect(flux).not.toContain('language_hint=en%2Cru');
-    expect(flux).not.toContain('language_hint=en,ru');
-    expect(hintsOn(flux)).toHaveLength(2);
-  });
-
-  it('carries a single language, and a list of several', () => {
-    expect(hintsOn(dial({ ...base, languageHints: 'ru' }).flux)).toEqual(['ru']);
-    dialled.length = 0;
-    expect(hintsOn(dial({ ...base, languageHints: 'en,es,ja' }).flux)).toEqual(['en', 'es', 'ja']);
-  });
-
-  it('treats an empty or whitespace value as no opinion at all', () => {
-    // Guards against `ARCHIE_VOICE_LANGUAGE_HINTS=` in .env producing a malformed query.
-    for (const hints of ['', '   ', ',', ' , , ']) {
-      dialled.length = 0;
-      const { flux } = dial({ ...base, languageHints: hints });
-      expect(flux, `hints=${JSON.stringify(hints)}`).toBe(BASELINE_FLUX);
-    }
-  });
-
-  it('never sends an empty code, which Deepgram rejects with a 400', () => {
-    // Not cosmetic: empty `language_hint` gets a live 400 (INVALID_QUERY_PARAMETER), indistinguishable from a bad API key.
-    for (const hints of ['en,ru,', ',en,ru', 'en,,ru', 'en, ,ru']) {
-      dialled.length = 0;
-      const { flux } = dial({ ...base, languageHints: hints });
-      expect(hintsOn(flux), `hints=${JSON.stringify(hints)}`).not.toContain('');
-      expect(flux, `hints=${JSON.stringify(hints)}`).not.toContain('language_hint=&');
-      expect(flux.endsWith('language_hint='), `hints=${JSON.stringify(hints)}`).toBe(false);
-    }
-  });
-
-  it('trims whitespace around codes, since `en, ru` is what a person writes', () => {
-    expect(hintsOn(dial({ ...base, languageHints: ' en , ru ' }).flux)).toEqual(['en', 'ru']);
-  });
-
-  it('keeps the model-improvement opt-out on, hinted or not', () => {
-    // Separate from the exact-URL tests so a dropped opt-out fails on its own.
-    for (const hints of [undefined, '', 'en,ru']) {
-      dialled.length = 0;
-      const { flux } = dial({ ...base, languageHints: hints });
-      expect(flux, `hints=${JSON.stringify(hints)}`).toContain('mip_opt_out=true');
-    }
-  });
-
-  it('composes with a configured host rather than replacing either', () => {
-    // Guards one knob's implementation from quietly dropping the other, invisible to the tests above.
-    const { flux } = dial({
-      ...base,
-      deepgramHost: 'api.eu.deepgram.com',
-      languageHints: 'en,ru',
-    });
     expect(flux).toBe(
-      'wss://api.eu.deepgram.com/v2/listen?model=flux-general-multi&encoding=linear16' +
+      'wss://api.deepgram.com/v2/listen?model=flux-general-multi&encoding=linear16' +
         '&sample_rate=16000&mip_opt_out=true&language_hint=en&language_hint=ru',
     );
+  });
+
+  it('sends one repeated key per language rather than a comma-joined value', () => {
+    // Deepgram honours only repeated keys; `en%2Cru` is silently accepted and then ignored, so both forms are checked.
+    const { flux } = dial(base);
+    expect(hintsOn(flux)).toEqual(['en', 'ru']);
+    expect(flux).not.toContain('language_hint=en%2Cru');
+    expect(flux).not.toContain('language_hint=en,ru');
+  });
+
+  it('keeps the model-improvement opt-out on', () => {
+    // Separate from the exact-URL test so a dropped opt-out fails on its own.
+    const { flux } = dial(base);
+    expect(flux).toContain('mip_opt_out=true');
   });
 });

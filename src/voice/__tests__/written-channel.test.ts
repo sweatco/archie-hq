@@ -10,13 +10,11 @@ vi.mock('../../tasks/task.js', () => ({ activeTasks: liveTasks }));
 
 import { logger } from '../../system/logger.js';
 import { renderWrittenLine, readWrittenExchange, type WrittenEventData } from '../written.js';
-
-const BOT = 'Archie';
 /** The canonical set, as `agentIdsFor` builds it from a task's team. */
 const TEAM = new Set(['pm-agent', 'mobile-agent', 'backend-agent']);
 
 function render(data: WrittenEventData, agentIds: ReadonlySet<string> = TEAM) {
-  return renderWrittenLine(data, BOT, agentIds);
+  return renderWrittenLine(data, agentIds);
 }
 
 // From a real task's events.jsonl; covers every (from, to, destination) it produced.
@@ -103,10 +101,6 @@ describe('renderWrittenLine — what is kept', () => {
     expect(render({ from: 'data-analyst-agent', to: 'user', destination: '#bot-test', message: 'DAU is 4.1m.' })?.speaker).toBe('Archie');
   });
 
-  it('honours a configured bot name rather than hard-coding Archie', () => {
-    expect(renderWrittenLine({ from: 'pm-agent', to: 'user', message: 'привет' }, 'Арчи', TEAM)?.speaker).toBe('Арчи');
-  });
-
   it('labels a CLI message plainly rather than inventing a name for the operator', () => {
     // CLI has no identity; a name would be fabricated, and this may be read aloud.
     expect(render({ from: 'cli', to: 'pm-agent', message: 'Can you join the standup?' })).toEqual({
@@ -164,7 +158,7 @@ describe('renderWrittenLine — what is dropped', () => {
 
   it('falls back to the -agent naming convention when the team could not be loaded', () => {
     // Documented fallback, not a second source of truth; roster is canonical.
-    expect(renderWrittenLine({ from: 'mobile-agent', to: 'pm-agent', message: 'verbatim contents' }, BOT, new Set())).toBeNull();
+    expect(renderWrittenLine({ from: 'mobile-agent', to: 'pm-agent', message: 'verbatim contents' }, new Set())).toBeNull();
   });
 
   it('drops a line whose body was only markup, since there is nothing left to read', () => {
@@ -225,7 +219,7 @@ describe('readWrittenExchange', () => {
   it('renders a real event log down to just its written conversation, in order', async () => {
     withEvents(REAL_EVENTS);
 
-    expect(await readWrittenExchange('task-live', BOT)).toEqual([
+    expect(await readWrittenExchange('task-live')).toEqual([
       { speaker: 'Egor Khmelev', text: 'Hey Archie Test how are you doing? [Reactions: :eyes:]' },
       { speaker: 'Archie', text: 'Doing well, thanks Egor Khmelev — all systems up and ready.' },
     ]);
@@ -233,21 +227,21 @@ describe('readWrittenExchange', () => {
 
   it('writes nothing anywhere — there is no file and no cache to keep honest', async () => {
     withEvents(REAL_EVENTS);
-    await readWrittenExchange('task-live', BOT);
-    await readWrittenExchange('task-live', BOT);
+    await readWrittenExchange('task-live');
+    await readWrittenExchange('task-live');
     // Two reads, two turns; caching would go stale the moment someone posts mid-meeting.
     expect(readEvents).toHaveBeenCalledTimes(2);
   });
 
   it('picks up a message that arrived after the meeting started', async () => {
     withEvents(REAL_EVENTS);
-    const first = await readWrittenExchange('task-live', BOT);
+    const first = await readWrittenExchange('task-live');
 
     readEvents.mockResolvedValue({
       events: [...REAL_EVENTS, { type: 'message', data: { from: 'Egor Khmelev', to: 'pm-agent', message: 'one more thing' } }],
       total: REAL_EVENTS.length + 1,
     });
-    const second = await readWrittenExchange('task-live', BOT);
+    const second = await readWrittenExchange('task-live');
 
     expect(second.length).toBe(first.length + 1);
     expect(second[second.length - 1]).toEqual({ speaker: 'Egor Khmelev', text: 'one more thing' });
@@ -260,7 +254,7 @@ describe('readWrittenExchange', () => {
       ['pm-agent', 'explorer-a3f9-agent'],
     );
 
-    expect(await readWrittenExchange('task-live', BOT)).toEqual([]);
+    expect(await readWrittenExchange('task-live')).toEqual([]);
   });
 
   it('is empty for a task whose log holds no written conversation', async () => {
@@ -269,7 +263,7 @@ describe('readWrittenExchange', () => {
       { type: 'message', data: { from: 'voice', to: 'pm-agent', message: 'meeting started — recall/abc/' } },
     ]);
 
-    expect(await readWrittenExchange('task-live', BOT)).toEqual([]);
+    expect(await readWrittenExchange('task-live')).toEqual([]);
   });
 
   it('drops the oldest lines rather than the newest once the budget is spent', async () => {
@@ -281,7 +275,7 @@ describe('readWrittenExchange', () => {
       })),
     );
 
-    const lines = await readWrittenExchange('task-live', BOT);
+    const lines = await readWrittenExchange('task-live');
 
     expect(lines.length).toBeGreaterThan(0);
     expect(lines.length).toBeLessThan(400);
@@ -295,7 +289,7 @@ describe('readWrittenExchange', () => {
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
     readEvents.mockRejectedValue(new Error('EACCES: permission denied'));
 
-    await expect(readWrittenExchange('task-fail', BOT)).resolves.toEqual([]);
+    await expect(readWrittenExchange('task-fail')).resolves.toEqual([]);
     expect(warn.mock.calls.some((c) => String(c[1]).includes('task-fail'))).toBe(true);
   });
 
@@ -308,6 +302,6 @@ describe('readWrittenExchange', () => {
       total: 2,
     });
 
-    expect(await readWrittenExchange('task-not-live', BOT)).toEqual([{ speaker: 'Ann', text: 'can you join?' }]);
+    expect(await readWrittenExchange('task-not-live')).toEqual([{ speaker: 'Ann', text: 'can you join?' }]);
   });
 });

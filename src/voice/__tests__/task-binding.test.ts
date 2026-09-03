@@ -32,7 +32,7 @@ const { readWrittenExchange } = vi.hoisted(() => ({ readWrittenExchange: vi.fn()
 vi.mock('../written.js', () => ({ readWrittenExchange }));
 
 import { logger } from '../../system/logger.js';
-import { AGENT_PROMPTS } from '../../agents/prompts.js';
+import { loadPrompt } from '../../utils/prompt-loader.js';
 import type { Meeting } from '../meeting.js';
 import {
   createTaskHost,
@@ -79,7 +79,7 @@ describe('createTaskHost', () => {
   describe('recordUtterance / noteEvent', () => {
     it('records a finalised utterance via appendMeetingTranscript, scoped to this meeting', () => {
       appendMeetingTranscript.mockResolvedValue(undefined);
-      const host = createTaskHost('task-utter', 'sess-utter', 'Archie', noopEnd);
+      const host = createTaskHost('task-utter', 'sess-utter', noopEnd);
 
       host.recordUtterance('Ann', 'when did it ship?');
 
@@ -88,7 +88,7 @@ describe('createTaskHost', () => {
 
     it('records an event via appendMeetingEvent, not the transcript', () => {
       appendMeetingEvent.mockResolvedValue(undefined);
-      const host = createTaskHost('task-event', 'sess-event', 'Archie', noopEnd);
+      const host = createTaskHost('task-event', 'sess-event', noopEnd);
 
       host.noteEvent('meeting started');
 
@@ -99,7 +99,7 @@ describe('createTaskHost', () => {
     it('does not take down the meeting when the underlying appender rejects, and logs', async () => {
       const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
       appendMeetingTranscript.mockRejectedValue(new Error('disk is full'));
-      const host = createTaskHost('task-reject', 'sess-reject', 'Archie', noopEnd);
+      const host = createTaskHost('task-reject', 'sess-reject', noopEnd);
 
       expect(() => host.recordUtterance('Ann', 'hello')).not.toThrow();
       await drain();
@@ -113,7 +113,7 @@ describe('createTaskHost', () => {
     it('records a meeting-chat line via appendMeetingChat, never the transcript', async () => {
       // A line lands in exactly one file — chat filed as an utterance would have Archie believe it said what it wrote.
       appendMeetingChat.mockResolvedValue(undefined);
-      const host = createTaskHost('task-written', 'sess-written', 'Archie', noopEnd);
+      const host = createTaskHost('task-written', 'sess-written', noopEnd);
 
       host.recordChat('Archie', 'commit 4f2a91c, deployed 12:03 UTC');
 
@@ -124,7 +124,7 @@ describe('createTaskHost', () => {
     it('does not take down the meeting when appendMeetingChat rejects', async () => {
       const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
       appendMeetingChat.mockRejectedValue(new Error('ENOSPC'));
-      const host = createTaskHost('task-written-reject', 'sess-written-reject', 'Archie', noopEnd);
+      const host = createTaskHost('task-written-reject', 'sess-written-reject', noopEnd);
 
       expect(() => host.recordChat('Archie', 'commit 4f2a91c')).not.toThrow();
       await drain();
@@ -132,19 +132,18 @@ describe('createTaskHost', () => {
       expect(warn.mock.calls.some((c) => String(c[1]).includes('task-written-reject'))).toBe(true);
     });
 
-    it('delegates readWrittenExchange with this task and the bot name', async () => {
-      // The bot name is why createTaskHost takes one — every agent's written line renders as Archie's name, and only the connector knows it.
+    it('delegates readWrittenExchange with this task', async () => {
       readWrittenExchange.mockResolvedValue([{ speaker: 'Ann', text: 'can you join?' }]);
-      const host = createTaskHost('task-exchange-read', 'sess-exchange-read', 'Арчи', noopEnd);
+      const host = createTaskHost('task-exchange-read', 'sess-exchange-read', noopEnd);
 
       await expect(host.readWrittenExchange()).resolves.toEqual([{ speaker: 'Ann', text: 'can you join?' }]);
-      expect(readWrittenExchange).toHaveBeenCalledWith('task-exchange-read', 'Арчи');
+      expect(readWrittenExchange).toHaveBeenCalledWith('task-exchange-read');
     });
 
     it('does the same for noteEvent when appendMeetingEvent rejects', async () => {
       const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
       appendMeetingEvent.mockRejectedValue(new Error('ENOENT'));
-      const host = createTaskHost('task-reject-2', 'sess-reject-2', 'Archie', noopEnd);
+      const host = createTaskHost('task-reject-2', 'sess-reject-2', noopEnd);
 
       expect(() => host.noteEvent('meeting ended')).not.toThrow();
       await drain();
@@ -162,13 +161,16 @@ describe('createTaskHost', () => {
       const meeting = fakeMeeting();
       registerLiveMeeting('task-ok', meeting);
 
-      const host = createTaskHost('task-ok', 'sess-ok', 'Archie', noopEnd);
+      const host = createTaskHost('task-ok', 'sess-ok', noopEnd);
       expect(() => host.consult('c1', 'what is the deploy status?')).not.toThrow();
       await drain();
 
       expect(taskGet).toHaveBeenCalledWith('task-ok');
       expect(sendMessage).toHaveBeenCalledWith(
-        AGENT_PROMPTS.voiceQuestion('recall:sess-ok', 'what is the deploy status?'),
+        await loadPrompt('voice-wakeup-question', {
+          CHANNEL_KEY: 'recall:sess-ok',
+          QUESTION: 'what is the deploy status?',
+        }),
         'pm-agent',
       );
       expect(meeting.deliverConsultAnswer).not.toHaveBeenCalled();
@@ -188,7 +190,7 @@ describe('createTaskHost', () => {
       const meeting = fakeMeeting();
       registerLiveMeeting('task-gone', meeting);
 
-      const host = createTaskHost('task-gone', 'sess-gone', 'Archie', noopEnd);
+      const host = createTaskHost('task-gone', 'sess-gone', noopEnd);
       expect(() => host.consult('c-42', 'are we still shipping today?')).not.toThrow();
       await drain();
 
@@ -213,7 +215,7 @@ describe('createTaskHost', () => {
       const meeting = fakeMeeting();
       registerLiveMeeting('task-dangling', meeting);
 
-      const host = createTaskHost('task-dangling', 'sess-dangling', 'Archie', noopEnd);
+      const host = createTaskHost('task-dangling', 'sess-dangling', noopEnd);
       host.consult('c-99', 'is the deploy still on track?');
       await drain();
 
@@ -237,7 +239,7 @@ describe('createTaskHost', () => {
       appendMeetingExchange.mockResolvedValue(undefined);
       vi.spyOn(logger, 'warn').mockImplementation(() => {});
 
-      const host = createTaskHost('task-nobody', 'sess-nobody', 'Archie', noopEnd); // never registered
+      const host = createTaskHost('task-nobody', 'sess-nobody', noopEnd); // never registered
       expect(() => host.consult('c1', 'anyone there?')).not.toThrow();
       await expect(drain()).resolves.toBeUndefined();
     });
@@ -248,7 +250,7 @@ describe('createTaskHost', () => {
       // Sync void by contract (types.ts): it fires from the audio loop, so it must not await teardown.
       let resolveEnd!: () => void;
       const end = vi.fn(() => new Promise<void>((resolve) => { resolveEnd = resolve; }));
-      const host = createTaskHost('task-leave', 'sess-leave', 'Archie', end);
+      const host = createTaskHost('task-leave', 'sess-leave', end);
 
       expect(host.leaveMeeting()).toBeUndefined();
 
@@ -260,7 +262,7 @@ describe('createTaskHost', () => {
     it('swallows a teardown that rejects, and logs — a failed leave must not kill the process', async () => {
       const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
       const end = vi.fn().mockRejectedValue(new Error('Recall is unreachable'));
-      const host = createTaskHost('task-leave-fails', 'sess-leave-fails', 'Archie', end);
+      const host = createTaskHost('task-leave-fails', 'sess-leave-fails', end);
 
       expect(() => host.leaveMeeting()).not.toThrow();
       await drain();
@@ -302,15 +304,17 @@ describe('the meeting slot', () => {
   });
 });
 
-describe('AGENT_PROMPTS.meetingEnded', () => {
-  it('names the transcript file it is handing over', () => {
-    const text = AGENT_PROMPTS.meetingEnded('/workdir/tasks/task-1/shared/meeting-transcript.log');
+describe('the meeting-ended wake-up', () => {
+  it('names the transcript file it is handing over', async () => {
+    const text = await loadPrompt('voice-wakeup-ended', {
+      TRANSCRIPT_PATH: '/workdir/tasks/task-1/shared/meeting-transcript.log',
+    });
 
     expect(text).toContain('/workdir/tasks/task-1/shared/meeting-transcript.log');
   });
 
-  it('still says plainly that the room has dispersed and nothing posted now reaches it', () => {
-    const text = AGENT_PROMPTS.meetingEnded('/path/to/transcript.log');
+  it('still says plainly that the room has dispersed and nothing posted now reaches it', async () => {
+    const text = await loadPrompt('voice-wakeup-ended', { TRANSCRIPT_PATH: '/path/to/transcript.log' });
 
     expect(text).toMatch(/dispersed/i);
     expect(text).toMatch(/nothing you post now reaches/i);
@@ -319,7 +323,7 @@ describe('AGENT_PROMPTS.meetingEnded', () => {
 
 describe('notifyMeetingEnded', () => {
   // Pins sessionId, not just taskId, reaching the transcript path — else the wake-up could point at the wrong meeting's file on a multi-meeting task.
-  it('wakes the PM with meetingEnded, pointing at this meeting\'s own transcript path', async () => {
+  it('wakes the PM with the ended wake-up, pointing at this meeting\'s own transcript path', async () => {
     const sendMessage = vi.fn().mockResolvedValue(undefined);
     taskGet.mockResolvedValue({ sendMessage });
 
@@ -329,7 +333,7 @@ describe('notifyMeetingEnded', () => {
     expect(taskGet).toHaveBeenCalledWith('task-ended');
     expect(getMeetingTranscriptPath).toHaveBeenCalledWith('task-ended', 'sess-ended');
     expect(sendMessage).toHaveBeenCalledWith(
-      AGENT_PROMPTS.meetingEnded('/mock/task-ended/sess-ended/transcript.log'),
+      await loadPrompt('voice-wakeup-ended', { TRANSCRIPT_PATH: '/mock/task-ended/sess-ended/transcript.log' }),
       'pm-agent',
     );
   });

@@ -625,7 +625,7 @@ export async function appendCliMessage(
  * Applied again here, at the point of writing, so `message` — an ASR
  * transcript, or Archie's own generated speech, neither of which this
  * codebase can verify any more than a self-reported name (see
- * `getMeetingTranscriptPath`'s own doc, and `AGENT_PROMPTS.voiceQuestion`) —
+ * `getMeetingTranscriptPath`'s own doc, and `prompts/voice-wakeup-question.md`) —
  * gets the same guarantee regardless of what a caller passes in, and so that
  * `speaker` stays covered even for a caller that does not already sanitise
  * it. Deliberately narrow: only control characters and the two Unicode line

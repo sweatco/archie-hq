@@ -6,6 +6,7 @@
 
 import type { RawData, WebSocket } from 'ws';
 import { logger } from '../system/logger.js';
+import { BOT_NAME } from './types.js';
 import type { AudioSink } from './types.js';
 
 const SAMPLE_RATE = 24000;
@@ -493,17 +494,14 @@ function scriptLiteral(value: string): string {
   return JSON.stringify(value).replace(/</g, '\\u003c');
 }
 
-/**
- * The Output Media page: Recall renders this as the bot's camera and mic.
- * `botName` is optional only because the hub's callers don't all carry the config — pass `cfg.botName` when at hand; it's what the room sees on the bot's video tile.
- */
-export function renderPage(botId: string, wsUrl: string, botName = 'Archie'): string {
+/** The Output Media page: Recall renders this as the bot's camera and mic. */
+export function renderPage(botId: string, wsUrl: string): string {
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>${escapeHtml(botName)} · voice</title>
+<title>${escapeHtml(BOT_NAME)} · voice</title>
 <style>
   html, body {
     margin: 0;
@@ -543,7 +541,7 @@ export function renderPage(botId: string, wsUrl: string, botName = 'Archie'): st
 <body>
   <div class="tile">
     <div class="dot" id="dot"></div>
-    <div class="name">${escapeHtml(botName)}</div>
+    <div class="name">${escapeHtml(BOT_NAME)}</div>
     <div class="id">${escapeHtml(botId)}</div>
   </div>
 <script>
