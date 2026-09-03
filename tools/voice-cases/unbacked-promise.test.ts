@@ -1,15 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { unbackedPromiseCheck, gradeDefect } from './defect.mjs';
 import { DCASES } from './dcases.mjs';
-import { parseReply, stripThinkBlocks } from './emitter.mjs';
+import { parseReply } from './emitter.mjs';
 
 /** compare.mjs's rehydrate() row shape. */
 function reply(raw: string) {
-  const { visible } = stripThinkBlocks(raw, true);
+  const parsed = parseReply(raw);
   return {
     text: raw,
-    parsed: parseReply(raw),
-    thinkingLeak: /<\/?think>/i.test(visible),
+    parsed,
+    thinkingLeak: /<\/?think>/i.test(parsed.silent === true ? raw : parsed.speech),
     regionShrank: false,
   };
 }
@@ -208,9 +208,13 @@ describe('gradeDefect — what backs a promise', () => {
     expect(promiseFails(D2D_RU, 'Ни у кого в комнате этого нет, и у меня тоже.')).toEqual([]);
   });
 
-  it('a promise inside a <think> block is never graded — it was never spoken', () => {
+  it('a promise inside a <think> block IS graded now — that block is spoken', () => {
+    // The inversion native reasoning brings. Production's reasoning arrives on its own channel and nothing strips the content channel, so a literal `<think>` block is text a room hears,
+    // and a promise inside one is a promise the room was made. This case used to assert the opposite, on a production that stripped the tags before anything read them.
     const raw = `<think>${OBSERVED_BASELINE}</think>\nNobody here has that, and neither do I.`;
-    expect(promiseFails(D2F, raw)).toEqual([]);
+    expect(promiseFails(D2F, raw)).toHaveLength(1);
+    // And the tag itself is its own failure, on top of the promise.
+    expect(gradeDefect(D2F, reply(raw), []).fails).toContain('PROTOCOL: thinking tags leaked into the spoken text');
   });
 
   it('outside D2 it is advisory: recorded in info, never a failure', () => {

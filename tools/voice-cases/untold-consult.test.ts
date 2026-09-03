@@ -1,11 +1,11 @@
 // routeConsult always runs in answerRoom's finally, even if the answer was discarded pre-audio (a barge-in).
 // The transcript gets only what the sink confirms — that branch writes nothing, so the room is never told.
 import { describe, it, expect } from 'vitest';
-import type { TriageVerdict } from '../../src/voice/comprehension.js';
-import { gradeDefect } from './defect.mjs';
+import { gradeDefect, internalIdLeakCheck } from './defect.mjs';
 import { DCASES } from './dcases.mjs';
-import { deriveVerdict, verdictContradictions, verdictTally } from './context-arm.mjs';
-import { parseReply, stripThinkBlocks } from './emitter.mjs';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { parseReply } from './emitter.mjs';
 
 type Consult = { id: string; question: string; answer?: string };
 type Case = {
@@ -23,11 +23,11 @@ type Case = {
 
 /** compare.mjs's rehydrate() row shape. */
 function reply(raw: string) {
-  const { visible } = stripThinkBlocks(raw, true);
+  const parsed = parseReply(raw);
   return {
     text: raw,
-    parsed: parseReply(raw),
-    thinkingLeak: /<\/?think>/i.test(visible),
+    parsed,
+    thinkingLeak: /<\/?think>/i.test(parsed.silent === true ? raw : parsed.speech),
     regionShrank: false,
   };
 }
@@ -296,59 +296,6 @@ describe('D10 is not D6, and the same sentence proves it', () => {
   });
 });
 
-describe('the `<situation>` verdict, pinned by id', () => {
-  it('all four derive `elsewhere`', () => {
-    // Subject-guard path: an outstanding consult the turn isn't about.
-    // pending claims the just-asked question is unanswered — false here, and itself the sentence these fixtures require.
-    // room would claim everything needed is already in front of Archie — an argument against saying anything.
-    // Pinned by id, not a family loop, like context-arm.test.ts pins one case per family.
-    for (const c of D10) {
-      expect(deriveVerdict(c), c.id).toEqual({ where: 'elsewhere' });
-      expect(verdictContradictions(c, deriveVerdict(c)), c.id).toEqual([]);
-    }
-    // The D6 twins are untouched, including D6a's own pin.
-    for (const c of [D6A, D6B, D6C]) {
-      expect(deriveVerdict(c), c.id).toEqual({ where: 'elsewhere' });
-    }
-  });
-
-  it('the suite\'s distribution moved by exactly these four', () => {
-    // The figure the full arm's banner prints.
-    // Four elsewhere added to the three D6 cases already there; nothing else should move.
-    expect(verdictTally('full', DCASES)).toEqual({ room: 19, outside: 10, pending: 5, elsewhere: 7 });
-  });
-
-  it('`mustSay` spelled as `must` would refuse all four at derivation time', () => {
-    // What this field name prevents: both groups match their own transcript (room says "weather"/"readme").
-    // must-named reads as an in-room answer to transcriptSources, so the third contradiction refuses anything but room.
-    // Run as a mutation, not described — a later edit reads straight past a comment claiming it's deliberate.
-    for (const c of D10) {
-      const mis = { ...c, must: c.mustSay } as Case;
-      expect(() => deriveVerdict(mis), c.id).toThrow(/declares the answer is in its own transcript/);
-      expect(() => deriveVerdict(mis), c.id).toThrow(/`must`/);
-    }
-  });
-
-  it('a `mustSay` group that its own transcript does not satisfy changes nothing', () => {
-    // The other direction: mustSay isn't read by the verdict machinery, so derivation ignores its content.
-    // This frees the groups to be phrased for matching a reply, not satisfying the transcript.
-    for (const c of D10) {
-      const drifted = { ...c, mustSay: [[/nothing a reply would ever say/i]] } as Case;
-      expect(deriveVerdict(drifted), c.id).toEqual({ where: 'elsewhere' });
-    }
-  });
-
-  it('an override could still send `pending`, so the guard is the rule and no fixture overrides', () => {
-    // pending is tempting — a consult is genuinely pending — but false of this turn, which is about the weather.
-    // verdictContradictions doesn't refuse it: the second check only fires when nothing is outstanding, which isn't true here.
-    // What keeps pending away: turnIsAboutTheConsult derives elsewhere first; no D10 fixture carries a triage override.
-    // Both are pinned; the first assertion is worthless without the second.
-    const forced = { ...D10A, triage: { where: 'pending' } as TriageVerdict };
-    expect(deriveVerdict(forced)).toEqual({ where: 'pending' });
-    expect('triage' in D10A).toBe(false);
-  });
-});
-
 describe('the mustSay groups', () => {
   const allPatterns: [string, RegExp][] = D10.flatMap((c) =>
     (c.mustSay as RegExp[][]).flatMap((g) => g.map((re) => [c.id, re] as [string, RegExp])),
@@ -426,5 +373,72 @@ describe('the mustSay groups', () => {
         expect(g.some((re) => re.test(s)), `${c.id} group ${group} on "${s}"`).toBe(true);
       }
     }
+  });
+});
+
+// `internalIdLeakCheck` lived beside the triage grader, the only thing that ever called it, and production removed the gate that grader measured. The detector is kept — see its doc in
+// defect.mjs for why the class it catches is real and why wiring it into `gradeDefect` is a rubric decision rather than a refactor — and it is tested here, in the file about the families
+// whose `<consults>` blocks actually put one of those ids in front of the model. An untested detector and an uncalled one are two different problems; this file fixes the first.
+describe('internalIdLeakCheck — the id class MACHINERY\'s word lists miss', () => {
+  const withConsult = (DCASES as { id: string; consults?: { id: string; question: string; answer?: string }[] }[])
+    .find((c) => (c.consults ?? []).length > 0);
+  const consults = withConsult?.consults ?? [];
+  const declaredId = String(consults[0]?.id ?? '');
+
+  it('the fixtures really do carry an id of production\'s own shape', () => {
+    // Otherwise every assertion below is about a string this suite never sends.
+    expect(declaredId).toMatch(/^m\d{1,4}c\d{1,4}$/);
+  });
+
+  it('fires on a leak and stays silent on a clean sentence, in English and in Russian', () => {
+    // The Russian half is the arrangement an ASCII-only bound gets wrong: an ASCII id inside Cyrillic prose.
+    expect(internalIdLeakCheck(`Let me go and find that out under ${declaredId}.`, consults))
+      .toEqual([`consult-id:${declaredId}`]);
+    expect(internalIdLeakCheck('Let me go and find that out.', consults)).toEqual([]);
+    expect(internalIdLeakCheck(`Сейчас узнаю, это по ${declaredId}.`, consults))
+      .toEqual([`consult-id:${declaredId}`]);
+    expect(internalIdLeakCheck('Сейчас узнаю.', consults)).toEqual([]);
+  });
+
+  it('catches an id no row declared, by production\'s shape', () => {
+    // Backstop tier: m<digits>c<digits> matches whether or not a fixture filed that consult; reported as id-shape to tell an invented id from a rendered one.
+    expect(internalIdLeakCheck('Let me check on m13c4 and come back.', undefined)).toEqual(['id-shape:m13c4']);
+    expect(internalIdLeakCheck('Сейчас посмотрю по m13c4.', [])).toEqual(['id-shape:m13c4']);
+    // One entry per leaked token, never one per tier, so a single slip is reported once.
+    expect(internalIdLeakCheck(`by ${declaredId}`, consults)).toHaveLength(1);
+  });
+
+  it('is bounded for Unicode, and \\b would be wrong in the direction that exists here', () => {
+    // Read off the shipped source, not retyped — a copy in the assertion would pass while the shipped pattern rots.
+    const shipped = String(
+      fs
+        .readFileSync(fileURLToPath(new URL('./defect.mjs', import.meta.url)), 'utf8')
+        .match(/const CONSULT_ID_SHAPE = (\/.+\/[a-z]*)/)?.[1],
+    );
+    expect(shipped).toContain('\\p{L}');
+    expect(shipped).not.toContain('\\b');
+    expect(shipped).not.toContain('\\w');
+    // A Cyrillic letter glued to the id: \b sees a boundary between в and m (both non-word to it) and fires on a non-id word — the shipped bound doesn't.
+    // Asserted, not argued — "mostly works" is exactly how a silently dead detector looks.
+    expect('вm1c1 в отчёте'.match(/\bm1c1\b/gi)).not.toBeNull();
+    expect(internalIdLeakCheck('вm1c1 в отчёте', [{ id: 'm1c1', question: 'q' }])).toEqual([]);
+    expect(internalIdLeakCheck('в m1c1 в отчёте', [{ id: 'm1c1', question: 'q' }])).toHaveLength(1);
+  });
+
+  it('stays silent on the sentences these fixtures require a reply to say', () => {
+    // The must-NOT-fire half, on real text rather than invented: a false positive here would fail a reply behaving exactly as D10 demands.
+    for (const sentence of [
+      "I have asked about the first line of the readme and I will tell you as soon as I hear back.",
+      'Я уже спросил про первую строку из ридми и скажу, как только узнаю.',
+    ]) {
+      expect({ sentence, hits: internalIdLeakCheck(sentence, consults) }).toMatchObject({ hits: [] });
+    }
+  });
+
+  it('is, as of this commit, called by nothing that grades a row', () => {
+    // Asserted rather than left in a comment, because the comment is the thing a later reader skips. When somebody wires it into gradeDefect, this test is what tells them to delete it.
+    const driver = fs.readFileSync(fileURLToPath(new URL('./defect.mjs', import.meta.url)), 'utf8');
+    const inGrader = driver.slice(driver.indexOf('export function gradeDefect'));
+    expect(inGrader).not.toContain('internalIdLeakCheck(');
   });
 });

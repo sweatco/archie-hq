@@ -8,7 +8,7 @@
 export const POOL_ENV = 'POOL';
 export const MIN_GAP_ENV = 'MIN_GAP_MS';
 
-// fallback = each driver's historical constant (5 defect.mjs, 3 turns.mjs, 4 triage.mjs): unset POOL matches prior runs. Malformed input throws, not defaults — POOL=o (letter o) would silently bill wrong concurrency, unlabeled.
+// fallback = each driver's historical constant (5 defect.mjs, 3 turns.mjs): unset POOL matches prior runs. Malformed input throws, not defaults — POOL=o (letter o) would silently bill wrong concurrency, unlabeled.
 export function poolSize(fallback) {
   const raw = process.env[POOL_ENV];
   if (raw === undefined || raw.trim() === '') return fallback;

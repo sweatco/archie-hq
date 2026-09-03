@@ -6,7 +6,7 @@ import { gradeDefect, exampleIdentifiers } from './defect.mjs';
 import { DCASES } from './dcases.mjs';
 import { TCASES, findTurn, pseudoCasesForTurn, turnId } from './tcases.mjs';
 import { gradeTurn } from './turns.mjs';
-import { parseReply, SentenceEmitter, stripThinkBlocks } from './emitter.mjs';
+import { parseReply, SentenceEmitter } from './emitter.mjs';
 import { accountRows, dropReason, printSampleReport } from './sampling.mjs';
 
 function rehydrate(row) {
@@ -14,13 +14,13 @@ function rehydrate(row) {
   const em = new SentenceEmitter((s) => sentences.push({ text: s }));
   em.push(row.raw ?? '');
   em.finish();
-  // Same fix as providers.mjs's runCall: the tag name was wrong (`thinking` vs. the real `think`), checked on raw text where a well-formed block is now expected, not a leak.
-  const { visible: afterThink } = stripThinkBlocks(row.raw ?? '', true);
+  // The same reading providers.mjs takes live: a literal tag in the spoken half, on the text as stored. A row collected under the strip arm was stored already stripped, so this asks the same question of both arms.
+  const parsed = parseReply(row.raw ?? '');
   return {
     text: row.raw ?? '',
-    parsed: parseReply(row.raw ?? ''),
+    parsed,
     sentences,
-    thinkingLeak: /<\/?think>/i.test(afterThink),
+    thinkingLeak: /<\/?think>/i.test(parsed.silent === true ? (row.raw ?? '') : parsed.speech),
     regionShrank: em.regionShrank,
   };
 }
@@ -29,7 +29,7 @@ function rehydrate(row) {
  * Re-grades stored rows and accounts for the ones that cannot be graded.
  *
  * Exported, taking rows not filenames, so the two-arm report's arithmetic is
- * testable against canned rows before a campaign — as turns.mjs/triage.mjs do.
+ * testable against canned rows before a campaign — as turns.mjs does.
  *
  * Two drop kinds, both previously silent:
  *   - a row carrying `error`: no reply text to re-grade; grading it as a

@@ -3,15 +3,15 @@ import { gradeDefect, STALL_GENERIC_EN, STALL_GENERIC_RU } from './defect.mjs';
 import { DCASES } from './dcases.mjs';
 import { TCASES, pseudoCasesForTurn } from './tcases.mjs';
 import { gradeTurn } from './turns.mjs';
-import { parseReply, stripThinkBlocks } from './emitter.mjs';
+import { parseReply } from './emitter.mjs';
 
 /** compare.mjs's rehydrate() row shape. */
 function reply(raw: string) {
-  const { visible } = stripThinkBlocks(raw, true);
+  const parsed = parseReply(raw);
   return {
     text: raw,
-    parsed: parseReply(raw),
-    thinkingLeak: /<\/?think>/i.test(visible),
+    parsed,
+    thinkingLeak: /<\/?think>/i.test(parsed.silent === true ? raw : parsed.speech),
     regionShrank: false,
   };
 }

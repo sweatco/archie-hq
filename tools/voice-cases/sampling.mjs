@@ -1,7 +1,7 @@
 /**
  * Sample accounting: rows graded, dropped, why, plus a banner for a materially incomplete arm. Skipping an errored row is correct (ungradeable) — doing so invisibly was the defect this fixes.
  * Two claims: state graded/dropped/reason in one line always, even at zero drops (silence reads as "nothing checked"); past a threshold, add a banner (INCOMPLETE_FRACTION).
- * Pure: no model calls or file reads, rows in, numbers/strings out — compare.mjs, defect.mjs, quality.mjs, turns.mjs and triage.mjs report the same shape from it.
+ * Pure: no model calls or file reads, rows in, numbers/strings out — compare.mjs, defect.mjs, quality.mjs and turns.mjs report the same shape from it.
  */
 
 /**
@@ -141,7 +141,7 @@ function bannerLines(label, acct) {
   ];
 }
 
-// Returned, not printed, so a test can read these lines without capturing a stream — same reason turns.mjs/triage.mjs return rows instead of running live.
+// Returned, not printed, so a test can read these lines without capturing a stream — same reason turns.mjs returns rows instead of running live.
 // `tally`: pacing.mjs's transportTally() for a driver that just called; absent offline (e.g. compare.mjs), untouched by the wire.
 export function sampleReportLines(label, acct, { tally } = {}) {
   const lines = [];

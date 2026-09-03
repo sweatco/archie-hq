@@ -17,8 +17,6 @@ import {
 import { accountRows } from './sampling.mjs';
 import { gradeDefect, exampleIdentifiers } from './defect.mjs';
 import { DCASES } from './dcases.mjs';
-import { runTriage } from './triage.mjs';
-import { TRIAGE_CASES } from './triage-cases.mjs';
 
 const CANDIDATE = 'cerebras-gemma-4-31b';
 
@@ -349,36 +347,9 @@ describe('concurrency is settable, and defaults to what the drivers always used'
     }
   });
 
-  it('is respected by a driver: runTriage runs POOL calls at a time', async () => {
-    const cases = (TRIAGE_CASES as { id: string }[]).slice(0, 6);
-    const reply = JSON.stringify({ where: 'room' });
-
-    const concurrencyOf = async (): Promise<number> => {
-      let live = 0;
-      let peak = 0;
-      const rows = await runTriage(cases, {
-        sys: 'sys',
-        call: async () => {
-          live++;
-          peak = Math.max(peak, live);
-          await Promise.resolve();
-          live--;
-          return { text: reply, complete: 100 };
-        },
-      });
-      expect(rows).toHaveLength(cases.length);
-      return peak;
-    };
-
-    // The historical default, unset.
-    expect(await concurrencyOf()).toBe(4);
-    process.env[POOL_ENV] = '2';
-    expect(await concurrencyOf()).toBe(2);
-    process.env[POOL_ENV] = '6';
-    expect(await concurrencyOf()).toBe(6);
-  });
-
-  // defect.mjs/turns.mjs pools are read as source text (isMain import bills a campaign), per triage.test.ts.
+  // There is no longer a driver here whose transport can be injected *and* whose runner pools: the triage arm was that driver, and production removed the call it measured.
+  // What replaced this assertion is the pair below — the constant is gone from each driver's source, and the fallback is the value every stored run used — plus poolSize's own coverage above.
+  // defect.mjs/turns.mjs pools are read as source text: importing either fires a billed campaign (isMain).
   // What matters: the hardcoded constant is gone, and the fallback matches every stored run's value.
   it('leaves defect.mjs and turns.mjs defaulting to their own historical values', () => {
     const read = (f: string) => fs.readFileSync(fileURLToPath(new URL(f, import.meta.url)), 'utf8');
@@ -388,7 +359,6 @@ describe('concurrency is settable, and defaults to what the drivers always used'
     const turns = read('./turns.mjs');
     expect(turns).toContain('poolSize(3)');
     expect(turns).not.toMatch(/const POOL = 3/);
-    expect(read('./triage.mjs')).toContain('poolSize(4)');
   });
 });
 

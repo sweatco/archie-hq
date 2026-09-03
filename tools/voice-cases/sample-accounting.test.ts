@@ -12,7 +12,6 @@ import {
 } from './sampling.mjs';
 import { regradeRows } from './compare.mjs';
 import { printReport } from './turns.mjs';
-import { printTriageReport } from './triage.mjs';
 import { DCASES } from './dcases.mjs';
 import { TCASES, turnId } from './tcases.mjs';
 
@@ -274,22 +273,10 @@ describe('the drivers say the same thing at the end of a run', () => {
     expect(out).toMatch(new RegExp(`${turnId(chain, 0)}\\s+1/1`));
   });
 
-  it('triage.mjs states how many rows it dropped under its placement table', () => {
-    const rows = [
-      { case: 'TGa', expect: 'room', length: 'long', ru: false, rep: 0, what: 'x', fails: [], where: 'room', preamble: '', raw: '{}', ttft: 100, elapsedMs: 300, inputTokens: 9000, outputTokens: 12 },
-      { case: 'TGb', expect: 'room', length: 'short', ru: false, rep: 0, what: 'y', fails: [], where: 'room', preamble: '', raw: '{}', ttft: 100, elapsedMs: 300, inputTokens: 900, outputTokens: 12 },
-      { case: 'TGc', expect: 'outside', length: 'short', ru: true, rep: 0, error: RATE_LIMIT_ERROR },
-    ];
-    const out = capturedBoth(() => printTriageReport(rows, { arm: 'test', candidate: 'stub' }));
-    expect(out).toContain('2/3 rows graded, 1 dropped (33.3%) — rate-limit 1');
-    expect(out).toContain('INCOMPLETE SAMPLE');
-    expect(out).toContain('overall');
-  });
-
-  // defect.mjs/quality.mjs fire a billed campaign if imported (isMain); reads source text instead, like triage.test.ts for constants.
+  // defect.mjs/quality.mjs fire a billed campaign if imported (isMain); reads source text instead.
   it('every report site is wired to the same accounting', () => {
     const read = (f: string) => fs.readFileSync(fileURLToPath(new URL(f, import.meta.url)), 'utf8');
-    for (const f of ['./defect.mjs', './quality.mjs', './turns.mjs', './triage.mjs', './compare.mjs']) {
+    for (const f of ['./defect.mjs', './quality.mjs', './turns.mjs', './compare.mjs']) {
       expect(read(f)).toContain('printSampleReport(');
     }
     // Checks the new expression is present, not that the old one is absent.

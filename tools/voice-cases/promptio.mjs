@@ -1,19 +1,13 @@
 // Loads the real prompt and frames both request halves as decideResponse() does; voice-speaking.md is read, never written.
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { assembleSpeakingRequest, buildSpeakingUserMessage } from '../../src/voice/comprehension.ts';
+import { buildSpeakingUserMessage } from '../../src/voice/comprehension.ts';
 
 const PROMPT = fileURLToPath(new URL('../../prompts/voice-speaking.md', import.meta.url));
-const TRIAGE_PROMPT = fileURLToPath(new URL('../../prompts/voice-triage.md', import.meta.url));
 
 // Lets before/after arms interleave via PROMPT_FILE without editing the real prompt file. Defaults to it.
 export function promptPath() {
   return process.env.PROMPT_FILE || PROMPT;
-}
-
-// Separate from PROMPT_FILE — triage and speaking are different production calls, varied one at a time by a campaign.
-export function triagePromptPath() {
-  return process.env.TRIAGE_PROMPT_FILE || TRIAGE_PROMPT;
 }
 
 // Throws on a leftover {{VAR}}, diverging from production's loadPrompt — see the thrown message for why.
@@ -32,10 +26,9 @@ export function filledPrompt(path = promptPath()) {
   return filled;
 }
 
-// Both halves come from production's assembler (same fix as userMsg below): `guidance-first` sends the whole file; `data-first` sends only the opening role statement, guidance arriving at userMsg's end. See SpeakingPlacement in comprehension.ts.
-// The empty transcript isn't a stand-in — the system half doesn't depend on the conversation, so any transcript yields the same string.
+// The whole filled prompt, as decideResponse sends it: `loadPrompt('voice-speaking', ...)` straight into the system message, with no splitting and no placement switch — production dropped both.
 export function system() {
-  return assembleSpeakingRequest({ prompt: filledPrompt(), transcript: '' }).system;
+  return filledPrompt();
 }
 
 // Pinned, not computed — production builds these from live data (join/leave events, the knowledge log, a capabilities call) a fixture can't reproduce; pinning keeps future runs matching stored rows.
@@ -171,17 +164,8 @@ export const FIXED_CONTEXT = {
 };
 
 // The real production assembly, imported rather than reproduced — user-message.test.ts pins this delegation byte-for-byte.
-// `context`/`triage` default to undefined, not FIXED_CONTEXT — every row in results/ predates them, so defaulting them on would silently invalidate that corpus. context-arm.mjs opts a case in to either.
-export function userMsg(transcript, consults, context, triage) {
-  return assembleSpeakingRequest({ prompt: filledPrompt(), transcript, consults, context, triage }).user;
-}
-
-export function triageSystem() {
-  return filledPrompt(triagePromptPath());
-}
-
-// Deliberately calls buildSpeakingUserMessage directly, not through userMsg/assembleSpeakingRequest — the one thing here that's easy to "fix" into a bug.
-// userMsg adds two things the gate must never receive: data-first's guidance, and a <situation> block (the gate's own output). Triage/speaking must send byte-identical user messages to be comparable.
-export function triageUserMsg(transcript, consults, context) {
+// `context` defaults to undefined, not FIXED_CONTEXT — every row in results/ predates it, so defaulting it on would silently invalidate that corpus. context-arm.mjs opts a case in.
+// Three arguments and no more: production's speaking call is one call taking exactly these, with no triage verdict to carry any more.
+export function userMsg(transcript, consults, context) {
   return buildSpeakingUserMessage(transcript, consults, context);
 }

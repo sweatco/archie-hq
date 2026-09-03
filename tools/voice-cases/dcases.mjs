@@ -13,7 +13,7 @@
  *   D10 untold-consult — D6's fixtures, acknowledgement removed: outstanding, unmentioned (production reaches this routinely — comment below). Graded opposite to D6: mention required.
  *                       (D9 is not missing: it is `tcases.mjs`'s multi-turn suite, which reuses these same kinds per turn.)
  *
- * One optional field belongs to one arm, not construction: `triage`. The full-context arm sends every case a `<situation>` block with the triage gate's derived verdict; `triage` overrides it when wrong (`null`: fail-safe, no block). Five cases override today, each saying why.
+ * Every field here is construction, not arm: the full-context arm adds standing blocks and nothing per-case. Five fixtures used to carry a `triage` override for the `<situation>` block the full arm sent on top of those blocks — production sends no such block any more, and an override of something nothing renders is a claim no run can check, so they are gone.
  */
 
 import { LONG, longTranscript } from './long-transcripts.mjs';
@@ -54,8 +54,6 @@ export const DCASES = [
       'Dmitry: Archie, which migration was it and what did it drop?',
     ].join('\n'),
     ru: false,
-    // Overrides FAMILY_VERDICT's D1 rule (`room`): nobody remembers which migration, so `room` would invite the example's identifiers as though supplied. `outside` is true and harmless.
-    triage: { where: 'outside' },
   },
   {
     id: 'D1d-banner-colour',
@@ -67,8 +65,6 @@ export const DCASES = [
       'Dmitry: Archie, where does the banner colour come from and which commit moved it?',
     ].join('\n'),
     ru: false,
-    // Same override as D1c, same reason: the room has nothing, so `room` would falsely invite the replacement example's identifiers.
-    triage: { where: 'outside' },
   },
 
   // ---------------- D2: fabricated specifics ----------------
@@ -92,8 +88,6 @@ export const DCASES = [
       'Anna: С вторника, кажется. Archie, who owns the nightly export job and how long has it been failing?',
     ].join('\n'),
     ru: false,
-    // Overrides FAMILY_VERDICT's D2 rule (`outside`): both halves were answered aloud a line or two up — only a value is missing. D4d-en-owner asks the same, over the same facts, and grades `room`.
-    triage: { where: 'room' },
   },
   {
     id: 'D2b-explicit-chat',
@@ -106,8 +100,6 @@ export const DCASES = [
       'Dmitry: Archie, summarise it and put the details in the chat so we can pick it up after the call.',
     ].join('\n'),
     ru: false,
-    // Same reason as D2a: the room said what's being summarised — `outside` would falsely claim nobody present supplied it.
-    triage: { where: 'room' },
   },
   {
     id: 'D2c-give-me-figures',
@@ -130,8 +122,6 @@ export const DCASES = [
       'Дмитрий: Арчи, подведи итог и скинь детали в чат, разберём после звонка.',
     ].join('\n'),
     ru: true,
-    // The Russian mirror of D2b, and overridden for the same reason.
-    triage: { where: 'room' },
   },
   {
     id: 'D2e-first-failure',
@@ -519,7 +509,7 @@ const WHEREABOUTS_ANSWERED_RU = [
 ];
 
 // Reuses the fixture's own `subject`, plus terms only a reply reaches for. From stored rows: three D6c replies said "первую строку из ридми" (/readme/i matches nothing — transliterated), and an observed nag named the repository with no `строк`/`readme` in it.
-// Loosening this group is safe in a way loosening `subject` isn't: `subject` is what turnIsAboutTheConsult tests against the room's last line — a bare `строк`/`repo` there would flip all four D10 cases to `pending`, which deriveVerdict's guard exists to prevent.
+// Loosening this group is safe in a way loosening `subject` isn't: `subject` is what pendingNagCheck's third tier anchors on, so a bare `строк`/`repo` in it would fire that tier on any reply mentioning the repository at all.
 const README_MENTION_EN = [...README_SUBJECT_EN, /\brepo\b/i];
 const README_MENTION_RU = [
   ...README_SUBJECT_RU,

@@ -987,7 +987,7 @@ const RU_MUST = [
 const EN_AT = { start: 7, middle: 241, end: 485 };
 const RU_AT = { start: 7, middle: 213, end: 419 };
 
-// Every variant this module builds. `absent` is the same meeting with no answer said — the triage arm's control, and what the fixture tests measure the filler against.
+// Every variant this module builds. `absent` is the same meeting with no answer said — a control kept for the position triple's sake, and what the fixture tests measure the filler against.
 export const POSITIONS = ['start', 'middle', 'end', 'absent'];
 
 export const LONG = {
@@ -1008,7 +1008,7 @@ export function longTranscript(lang, position) {
   return lines.join('\n');
 }
 
-// The filler plus the ask, nothing spliced in — the triage arm's `outside` control, and what each variant collapses to with its supplying line removed (how the test proves the three differ in exactly that line). LONG[lang].filler (no ask) is what `must` is checked against.
+// The filler plus the ask, nothing spliced in — the control the three positions are read against, and what each variant collapses to with its supplying line removed (how the test proves the three differ in exactly that line). LONG[lang].filler (no ask) is what `must` is checked against.
 export function fillerOnly(lang) {
   return longTranscript(lang, 'absent');
 }

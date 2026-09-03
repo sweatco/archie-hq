@@ -1,26 +1,32 @@
-import { afterAll, beforeEach, describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
-  assembleSpeakingRequest,
   buildSpeakingUserMessage,
-  SPEAKING_CONTEXT_FIELDS,
   type SpeakingContext,
-  type TriageVerdict,
 } from '../../src/voice/comprehension.js';
 import { FIXED_CONTEXT, filledPrompt, promptPath, system, userMsg } from './promptio.mjs';
 import { DCASES } from './dcases.mjs';
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 type Consult = { id: string; question: string; answer?: string };
 
-// Clears/restores env so an ambient ARCHIE_VOICE_PROMPT_PLACEMENT can't leak in.
-const AMBIENT_PLACEMENT = process.env.ARCHIE_VOICE_PROMPT_PLACEMENT;
-beforeEach(() => {
-  delete process.env.ARCHIE_VOICE_PROMPT_PLACEMENT;
-});
-afterAll(() => {
-  if (AMBIENT_PLACEMENT === undefined) delete process.env.ARCHIE_VOICE_PROMPT_PLACEMENT;
-  else process.env.ARCHIE_VOICE_PROMPT_PLACEMENT = AMBIENT_PLACEMENT;
-});
+/**
+ * The fields `SpeakingContext` declares, read out of comprehension.ts's own source.
+ *
+ * Production used to export this list (`SPEAKING_CONTEXT_FIELDS`, exhaustive by a compile-time check) and does not any more, so it is read rather than copied: a copy would go stale in exactly
+ * the direction that matters — a block production fills that this arm omits renders in every live room and in no measurement of one, and a hand-written list would go on claiming otherwise.
+ * Read from the interface body between its braces, taking each `name?:` at one level of indentation; doc comments and nested shapes carry no such line.
+ */
+function speakingContextFields(): string[] {
+  const source = fs.readFileSync(
+    fileURLToPath(new URL('../../src/voice/comprehension.ts', import.meta.url)),
+    'utf8',
+  );
+  const at = source.indexOf('export interface SpeakingContext {');
+  if (at === -1) throw new Error('SpeakingContext is no longer declared in comprehension.ts under that name');
+  const body = source.slice(at, source.indexOf('\n}', at));
+  return [...body.matchAll(/^  (\w+)\?:/gm)].map((m) => m[1]).sort();
+}
 
 /** Verbatim, unrefactored snapshot of the deleted hand-written copy: avoids a vacuous comparison. */
 function OLD_CONSTRUCTION(transcript: string, consults?: Consult[]): string {
@@ -103,8 +109,9 @@ describe('the harness renders every standing block production does', () => {
   });
 
   it('pins a value for every field of SpeakingContext, so none can go unmeasured', () => {
-    // SPEAKING_CONTEXT_FIELDS is production's list (tsc checks exhaustiveness at declaration); pinned here too since tsconfig.json's src/** include skips this dir.
-    expect(Object.keys(FIXED_CONTEXT).sort()).toEqual([...SPEAKING_CONTEXT_FIELDS].sort());
+    // Production's own declaration, read out of its source; see speakingContextFields above for why it is read and not copied.
+    expect(speakingContextFields()).toEqual(['capabilities', 'participants', 'written']);
+    expect(Object.keys(FIXED_CONTEXT).sort()).toEqual(speakingContextFields());
 
     const rendered = userMsg(t, undefined, FIXED_CONTEXT as SpeakingContext);
     expect(rendered).toContain('<participants>');
@@ -115,29 +122,6 @@ describe('the harness renders every standing block production does', () => {
     expect(rendered).toContain('Ann Petrova (host)');
   });
 
-  it('renders the triage verdict production renders, for every one of the four', () => {
-    // <situation> is the triage verdict, not a SpeakingContext field — outside the check above.
-    for (const where of ['room', 'outside', 'pending', 'elsewhere'] as const) {
-      const triage = { where };
-      expect(userMsg(t, PENDING.consults, FIXED_CONTEXT as SpeakingContext, triage)).toBe(
-        assembleSpeakingRequest({
-          prompt: filledPrompt(),
-          transcript: t,
-          consults: PENDING.consults,
-          context: FIXED_CONTEXT as SpeakingContext,
-          triage,
-          placement: 'guidance-first',
-        }).user,
-      );
-      expect(userMsg(t, PENDING.consults, FIXED_CONTEXT as SpeakingContext, triage)).toContain('<situation>');
-    }
-    // No verdict: unchanged from stored rows, same reasoning as the blocks above.
-    expect(userMsg(t, PENDING.consults, FIXED_CONTEXT as SpeakingContext)).not.toContain('<situation>');
-    expect(userMsg(t, PENDING.consults, FIXED_CONTEXT as SpeakingContext, null)).toBe(
-      userMsg(t, PENDING.consults, FIXED_CONTEXT as SpeakingContext),
-    );
-  });
-
   it('the pinned values are fixed, not derived from a live system', () => {
     expect(userMsg(t, undefined, FIXED_CONTEXT as SpeakingContext)).toBe(
       userMsg(t, undefined, FIXED_CONTEXT as SpeakingContext),
@@ -145,82 +129,14 @@ describe('the harness renders every standing block production does', () => {
   });
 });
 
-describe('placement arms — the harness sends production bytes under both', () => {
-  const t = PENDING.transcript;
-  const ctx = FIXED_CONTEXT as SpeakingContext;
-
-  function production(placement: 'guidance-first' | 'data-first', triage?: TriageVerdict | null) {
-    return assembleSpeakingRequest({
-      prompt: filledPrompt(),
-      transcript: t,
-      consults: PENDING.consults,
-      context: ctx,
-      triage,
-      placement,
-    });
-  }
-
-  it('is byte-identical to production under the default arm', () => {
-    process.env.ARCHIE_VOICE_PROMPT_PLACEMENT = 'guidance-first';
-    const expected = production('guidance-first');
-    expect(system()).toBe(expected.system);
-    expect(userMsg(t, PENDING.consults, ctx)).toBe(expected.user);
-    expect(system()).toBe(filledPrompt());
-    expect(userMsg(t, PENDING.consults, ctx)).toBe(buildSpeakingUserMessage(t, PENDING.consults, ctx));
-  });
-
-  it('is byte-identical to production under the data-first arm', () => {
-    process.env.ARCHIE_VOICE_PROMPT_PLACEMENT = 'data-first';
-    const expected = production('data-first');
-    expect(system()).toBe(expected.system);
-    expect(userMsg(t, PENDING.consults, ctx)).toBe(expected.user);
-  });
-
-  it('is byte-identical to production under both arms with a triage verdict present', () => {
-    for (const where of ['room', 'outside', 'pending', 'elsewhere'] as const) {
-      const triage: TriageVerdict = { where };
-      for (const arm of ['guidance-first', 'data-first'] as const) {
-        process.env.ARCHIE_VOICE_PROMPT_PLACEMENT = arm;
-        const expected = production(arm, triage);
-        expect(system()).toBe(expected.system);
-        expect(userMsg(t, PENDING.consults, ctx, triage)).toBe(expected.user);
-      }
-    }
-  });
-
-  it('puts the verdict in the data half of both arms, never in the guidance', () => {
-    const triage: TriageVerdict = { where: 'pending' };
-    process.env.ARCHIE_VOICE_PROMPT_PLACEMENT = 'data-first';
-    const moved = { system: system(), user: userMsg(t, PENDING.consults, ctx, triage) };
-    expect(moved.user.indexOf('</situation>')).toBeLessThan(moved.user.indexOf('## '));
-    expect(moved.system).not.toContain('<situation>');
-    process.env.ARCHIE_VOICE_PROMPT_PLACEMENT = 'guidance-first';
-    expect(system()).not.toContain('<situation>');
-    expect(userMsg(t, PENDING.consults, ctx, triage).includes('<situation>')).toBe(true);
-    expect(moved.user.startsWith(userMsg(t, PENDING.consults, ctx, triage))).toBe(true);
-  });
-
-  it('actually moves the guidance, so neither arm can pass as the other', () => {
-    // Guards against a no-op placement passing the identity tests above.
-    process.env.ARCHIE_VOICE_PROMPT_PLACEMENT = 'data-first';
-    const moved = { system: system(), user: userMsg(t, PENDING.consults, ctx) };
-    process.env.ARCHIE_VOICE_PROMPT_PLACEMENT = 'guidance-first';
-    const today = { system: system(), user: userMsg(t, PENDING.consults, ctx) };
-
-    expect(moved.system).not.toBe(today.system);
-    expect(moved.system.length).toBeLessThan(today.system.length);
-    expect(moved.user.length).toBeGreaterThan(today.user.length);
-    expect(moved.user.startsWith(today.user)).toBe(true);
-    expect(moved.user.indexOf('</capabilities>')).toBeLessThan(moved.user.indexOf('## '));
-    // Approximate: moving blocks trims seam whitespace, so lengths match within a few characters.
-    expect(moved.system.length + moved.user.length).toBeGreaterThanOrEqual(
-      today.system.length + today.user.length - 4,
-    );
-    expect(moved.user).not.toContain(today.system);
-  });
-});
-
 describe('the harness system prompt', () => {
+  it('is the whole filled prompt, which is what decideResponse sends', () => {
+    // One call, one system message: the prompt goes in whole, with no splitting and no placement switch — production removed both, so a harness that still split one would measure a request no room sends.
+    expect(system()).toBe(filledPrompt());
+    expect(system()).not.toContain('<transcript>');
+    expect(system()).not.toContain('<situation>');
+  });
+
   it('substitutes every prompt variable the real prompt carries', () => {
     // loadPrompt passes {{FOO}} through unsubstituted; system() throws so a missing var isn't silently measured.
     expect(() => system()).not.toThrow();

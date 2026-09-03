@@ -9,7 +9,7 @@ import { runCall } from './providers.mjs';
 import { gradeDefect, exampleIdentifiers } from './defect.mjs';
 import { TCASES, pseudoCasesForTurn, consultsAt, turnId } from './tcases.mjs';
 import { system, userMsg, promptPath } from './promptio.mjs';
-import { parseReply, stripThinkBlocks } from './emitter.mjs';
+import { parseReply } from './emitter.mjs';
 import { RETRY, minGapMs, poolSize, transportTally } from './pacing.mjs';
 import { accountRows, printSampleReport } from './sampling.mjs';
 
@@ -20,12 +20,12 @@ export const BOT_NAME = 'Archie';
 // `regionShrank` false here for the same reason emitter.mjs hardcodes it.
 export function replyFromRaw(raw, extra = {}) {
   const text = raw ?? '';
-  const { visible } = stripThinkBlocks(text, true);
+  const parsed = parseReply(text);
   return {
     text,
-    parsed: parseReply(text),
-    // Checked against the post-strip region: a well-formed <think> block is expected, so a surviving tag is the leak.
-    thinkingLeak: /<\/?think>/i.test(visible),
+    parsed,
+    // A literal tag in what the room hears: nothing strips one any more, so it is spoken. Stored rows collected under the strip arm arrive here already stripped.
+    thinkingLeak: /<\/?think>/i.test(parsed.silent === true ? text : parsed.speech),
     regionShrank: false,
     ...extra,
   };

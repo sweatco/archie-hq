@@ -1,15 +1,13 @@
 // Defect driver + detectors. Writes results/defect-<arm>[-<context arm>]-<candidate>.json.
-// CONTEXT_ARM controls how much of production's request each case sends — bare (default, byte-identical to every stored row), full, or full-noverdict. See context-arm.mjs.
+// CONTEXT_ARM controls how much of production's request each case sends — bare (default, byte-identical to every stored row) or full. See context-arm.mjs.
 // Detectors are mechanical and print what they flagged, so the rubric can be audited against raw text.
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { runCall } from './providers.mjs';
+import { runCall, stripThinkEnabled } from './providers.mjs';
 import { DCASES } from './dcases.mjs';
 import { system, userMsg, promptPath } from './promptio.mjs';
-import {
-  CONTEXT_ARM_ENV, armContext, armFileTag, armVerdict, resolveContextArm, verdictTally,
-} from './context-arm.mjs';
-import { TAIL_MARKERS, stripThinkBlocks } from './emitter.mjs';
+import { CONTEXT_ARM_ENV, armContext, armFileTag, resolveContextArm } from './context-arm.mjs';
+import { TAIL_MARKERS } from './emitter.mjs';
 import { RETRY, minGapMs, poolSize, transportTally } from './pacing.mjs';
 import { accountRows, printSampleReport } from './sampling.mjs';
 
@@ -175,10 +173,16 @@ export function machineryLeakCheck(speech) {
 // Internal consult ids (`m<meeting>c<consult>`) are the class MACHINERY_EN/RU miss — consultsBlock renders every <consults> entry starting with one, unstripped.
 // Two tiers: (1) the row's own `consults` id, matched literally (covers a renamed id); (2) production's `m<digits>c<digits>` shape as backstop.
 // Bounded with (?<![\p{L}\p{N}])/(?![\p{L}\p{N}]), never \b: ASCII, so \b would mostly work — but fails the opposite way from MACHINERY_RU, wrongly splitting a Cyrillic-adjacent id ("вm1c1"). The Unicode bound doesn't.
-// triage.test.ts reads this constant's source directly and asserts it stays \p{L}-bounded — do not revert to \b or \w.
+// untold-consult.test.ts reads this constant's source directly and asserts it stays \p{L}-bounded — do not revert to \b or \w.
 const CONSULT_ID_SHAPE = /(?<![\p{L}\p{N}])m\d{1,4}c\d{1,4}(?![\p{L}\p{N}])/giu;
 
 // `consult-id:` when a row declared the id, `id-shape:` when only the shape caught it — never both, so a single slip is reported once.
+//
+// **Nothing in this suite calls it today, and that is a gap, not a design.** Its only caller was the triage grader, and production removed the gate that call measured, so the detector went
+// with its driver. It is kept rather than deleted because the class it catches is real and unaddressed: `consultsBlock` renders every `<consults>` entry starting with the id production filed
+// that consult under, so every D6/D7/D8/D10 fixture puts an `m1c1` in front of the model, and a reply that reads one out has said it to a room. `gradeDefect`'s MACHINERY line checks
+// `machineryLeakCheck` alone, which does not cover ids. Wiring this in beside it is a rubric widening — the kind this directory does deliberately and never as a side effect of a refactor —
+// so it is left to whoever measures it. Until then, treat "no id leak was reported" as "nothing looked", which is what an uncalled check always means.
 export function internalIdLeakCheck(speech, consults) {
   const hits = [];
   const seen = new Set();
@@ -440,12 +444,12 @@ export function gradeDefect(c, m, ids) {
 
   if (silent) fails.push('PROTOCOL: SILENCE while somebody was waiting');
   if (p.chatOnly) fails.push('PROTOCOL: CHAT: line with nothing spoken');
-  if (m.thinkingLeak) fails.push('PROTOCOL: thinking tags leaked');
+  // A literal <think> in what the room hears. Never a stripped block: with native reasoning nothing removes the tag, so it is spoken; under the strip arm it is one the strip could not pair.
+  if (m.thinkingLeak) fails.push('PROTOCOL: thinking tags leaked into the spoken text');
   if (m.regionShrank) fails.push('PROTOCOL: speech region shrank');
   if (!silent) {
-    // Think blocks removed first, as parseReply does it: a reasoning trace isn't the room's problem and must never be graded as if spoken.
-    const { visible } = stripThinkBlocks(raw, true);
-    const lines = visible.split(/\r?\n/);
+    // Read straight off the reply: production's reasoning never reaches this channel, and the one arm whose prompt puts it there has already had it removed on the wire (providers.mjs).
+    const lines = raw.split(/\r?\n/);
     // Either tail marker ends the spoken region, so a PM: line is never scanned as spoken even when the reply never posts to chat.
     const marker = lines.findIndex((l) => {
       const t = l.trimStart();
@@ -595,12 +599,9 @@ if (isMain) {
   console.log(`arm=${arm} candidate=${candidate} reps=${reps} cases=${cases.length}`);
   // Printed before anything is billed: the hazard this arm guards against is
   // a run that looks like one arm but is another, so the banner states the
-  // arm, the size it adds per case, and the verdicts derived.
+  // arm and the size it adds per case.
   const ctxChars = userMsg('', undefined, armContext(ctxArm)).length - userMsg('').length;
-  console.log(
-    `context=${ctxArm} (+${ctxChars} chars of standing blocks per case) ` +
-    `verdicts=${JSON.stringify(verdictTally(ctxArm, cases))}\n`,
-  );
+  console.log(`context=${ctxArm} (+${ctxChars} chars of standing blocks per case) strip-think=${stripThinkEnabled()}\n`);
 
   const jobs = [];
   for (const c of cases) for (let r = 0; r < reps; r++) jobs.push({ c, r });
@@ -618,13 +619,12 @@ if (isMain) {
         const i = next++;
         if (i >= jobs.length) return;
         const { c, r } = jobs[i];
-        // Both trailing arguments are the whole arm — undefined on `bare`,
+        // The trailing argument is the whole arm — undefined on `bare`,
         // making this call byte-identical to the two-argument one every
         // stored row was collected under (context-arm.test.ts).
-        const verdict = armVerdict(ctxArm, c);
         const m = await runCall(candidate, {
           system: sys,
-          user: userMsg(c.transcript, c.consults, armContext(ctxArm), verdict),
+          user: userMsg(c.transcript, c.consults, armContext(ctxArm)),
         });
         if (m.error) { out.push({ case: c.id, kind: c.kind, rep: r, context: ctxArm, error: m.error }); continue; }
         const g = gradeDefect(c, m, ids);
@@ -634,13 +634,21 @@ if (isMain) {
           firstSentence: m.sentences[0]?.text ?? '', firstSentenceChars: (m.sentences[0]?.text ?? '').length,
           ttft: m.ttft, firstSentenceAt: m.firstSentence, complete: m.complete,
           inputTokens: m.inputTokens, outputTokens: m.outputTokens, sentences: m.sentences.length,
+          // The reasoning channel: tokens as the provider billed them (0 for a
+          // candidate that asks for none, null when it asked and the usage
+          // frame never said), how much text came back on it, and when it
+          // started. `finishReason` is how a reply that ran into the token cap
+          // tells a reader it was cut off rather than finished.
+          reasoningTokens: m.reasoningTokens, reasoningChars: m.reasoningChars,
+          reasoningAt: m.reasoningAt, finishReason: m.finishReason,
+          // Under the strip arm, how much of the content channel was a `<think>` block
+          // and never spoken. Zero on an arm that strips nothing, which is also how a
+          // reader tells "the prompt asked for tags and the model declined" from "the
+          // tags were removed" — the two look identical in `raw` and are not the same fact.
+          thoughtChars: m.thought.length,
           // What this row was sent with, so a file can never be read as the
-          // other arm's. Three meaningful values: the verdict's name on
-          // `full`; `null` on the fail-safe arm (production's own value for
-          // a gate that produced nothing); and, since `JSON.stringify` drops
-          // an undefined property, no field at all on `bare`. "Sent nothing"
-          // and "sent the fail-safe" must not share a spelling.
-          context: ctxArm, verdict: verdict === undefined ? undefined : (verdict?.where ?? null),
+          // other arm's.
+          context: ctxArm, strippedThink: m.strippedThink,
         });
         process.stderr.write('.');
       }

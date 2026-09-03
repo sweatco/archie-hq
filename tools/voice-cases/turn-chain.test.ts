@@ -124,9 +124,8 @@ describe('the chain runs production\'s own steps between turns', () => {
     expect(sent[1].indexOf(D9A.turns[0].room[0])).toBeLessThan(sent[1].indexOf(D9A.turns[1].room[0]));
   });
 
-  it('only the spoken half reaches the next turn — never CHAT:, never PM:, never <think>', async () => {
+  it('only the spoken half reaches the next turn — never CHAT:, never PM:', async () => {
     const raw = [
-      '<think>The account manager is probably Marina Kelso.</think>',
       'It did finish, but it took twice as long as usual.',
       'CHAT: nightly export finished at 04:12, runtime 2h11m (usually ~1h).',
       'PM: Who is our account manager on the payments contract now?',
@@ -138,8 +137,6 @@ describe('the chain runs production\'s own steps between turns', () => {
     expect(next).not.toContain('04:12');
     expect(next).not.toContain('runtime');
     expect(next).not.toContain('account manager on the payments contract now');
-    expect(next).not.toContain('<think>');
-    expect(next).not.toContain('Marina Kelso');
     // That text is the fixture's declared consult question (via consultsAt), not this reply's PM: line being routed.
     // runChain reads m.parsed.pm into the row and nowhere else; a chain's consult state is a pure function of tcases.mjs.
     // The two strings match only because the canned reply was written to match the fixture, easy to misread as contradictory.
@@ -150,17 +147,23 @@ describe('the chain runs production\'s own steps between turns', () => {
     expect(rows[1].pm).toContain('account manager');
   });
 
-  it('a <think> block never reaches the grader as speech', async () => {
-    // Holds markdown and a machinery leak — both hard failures if graded as spoken.
-    // No example identifier on purpose: leakCheck scans the whole raw reply, so one here would be contamination by design.
+  it('a <think> block IS graded as speech, and files into the next turn as spoken', async () => {
+    // The inversion native reasoning brings: production streams its reasoning on a channel of its own and strips nothing from the content channel, so a literal `<think>` block written there is
+    // read out to the room, word for word, markdown and all. This used to be the case that proved such a block was invisible to the grader; the same fixture now proves it is not.
+    // The block holds markdown and a machinery leak precisely because both are hard failures once spoken — three failures, not zero.
     const raw = [
       '<think>**Plan**: ask the backend team whether the account manager changed.</think>',
       'Thursday morning.',
     ].join('\n');
     const { rows, sent } = await canned(D9A, [CLEAN_EN[0], CLEAN_EN[1], raw]);
-    expect(failsOf(rows, 3)).toEqual([]);
-    expect(rows[2].speech).toBe('Thursday morning.');
-    expect(transcriptOf(sent[3])).not.toContain('backend team');
+    const fails = failsOf(rows, 3);
+    expect(fails).toContain('PROTOCOL: thinking tags leaked into the spoken text');
+    expect(fails.join(' ')).toContain('markdown in speech');
+    expect(fails.join(' ')).toContain('MACHINERY');
+    expect(rows[2].speech).toContain('Thursday morning.');
+    expect(rows[2].speech).toContain('think');
+    // And it goes on to the next turn as Archie's own line, because that is what the room heard.
+    expect(transcriptOf(sent[3])).toContain('backend team');
   });
 
   it('a silent reply files nothing, and is a failure of its own', async () => {

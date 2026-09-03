@@ -1,12 +1,12 @@
 // Quality driver + deterministic grader. Writes results/quality[-<context arm>]-<candidate>.json and prints every reply for manual read.
-// CONTEXT_ARM works as in defect.mjs, but only `bare` (default) and `full-noverdict` are available — see the driver below for why these fixtures have no derived verdict.
+// CONTEXT_ARM works as in defect.mjs: `bare` (default) or `full`.
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { runCall } from './providers.mjs';
 import { CASES, LEAK_PATTERNS } from './cases.mjs';
 import { system, userMsg } from './promptio.mjs';
-import { CONTEXT_ARM_ENV, armContext, armFileTag, armVerdict, resolveContextArm } from './context-arm.mjs';
-import { TAIL_MARKERS, stripThinkBlocks } from './emitter.mjs';
+import { CONTEXT_ARM_ENV, armContext, armFileTag, resolveContextArm } from './context-arm.mjs';
+import { TAIL_MARKERS } from './emitter.mjs';
 import { minGapMs, transportTally } from './pacing.mjs';
 import { accountRows, printSampleReport } from './sampling.mjs';
 
@@ -28,13 +28,13 @@ function cyrillicShare(s) {
   return cyr.length / letters.length;
 }
 
-// spokenRaw bounds the spoken region as parseReply does: think stripped, cut at the first tail marker (PM: or CHAT:), so a PM-only reply's PM: line isn't scanned as spoken.
+// spokenRaw bounds the spoken region as parseReply does: cut at the first tail marker (PM: or CHAT:), so a PM-only reply's PM: line isn't scanned as spoken.
+// No think-stripping: reasoning arrives on its own channel now, and the arm whose prompt asks for tags has had them removed on the wire (providers.mjs).
 // chatRaw stays keyed on CHAT: — unused beyond this destructure, kept correct for later readers.
 function splitRaw(raw) {
-  const { visible } = stripThinkBlocks(raw, true);
-  const lines = visible.split(/\r?\n/);
+  const lines = raw.split(/\r?\n/);
   const tailStart = lines.findIndex((l) => TAIL_MARKERS.some((mk) => l.trimStart().startsWith(mk)));
-  const spokenRaw = tailStart === -1 ? visible : lines.slice(0, tailStart).join('\n');
+  const spokenRaw = tailStart === -1 ? raw : lines.slice(0, tailStart).join('\n');
   const chatLine = lines.findIndex((l) => l.trimStart().startsWith('CHAT:'));
   const chatRaw = chatLine === -1 ? '' : [lines[chatLine].trimStart().slice(5), ...lines.slice(chatLine + 1)].join('\n');
   return { spokenRaw, chatRaw };
@@ -44,9 +44,8 @@ export function grade(c, m) {
   const e = c.expect;
   const raw = m.text;
   const { spokenRaw, chatRaw } = splitRaw(raw);
-  // rawVisible (think-stripped) feeds checks scanning the whole reply, not just speech — reasoning routinely uses those checks' words in text the room never hears.
-  // noLeak/LEAK_PATTERNS stays on raw: whether leaked prose in unspoken reasoning should count is an open question this fix doesn't answer.
-  const { visible: rawVisible } = stripThinkBlocks(raw, true);
+  // The whole reply, for checks that scan more than the spoken half. Identical to `raw` — kept as its own name because the two were once different strings and the checks below say which they mean.
+  const rawVisible = raw;
   const parsed = m.parsed;
   const silent = parsed.silent === true;
   const speech = silent ? '' : parsed.speech;
@@ -66,6 +65,7 @@ export function grade(c, m) {
   if (parsed.chatOnly) fails.push('PROTOCOL: CHAT: line with nothing spoken (whole turn discarded)');
   if (e.chat === 'required' && !silent && chat.length === 0) fails.push('PROTOCOL: no CHAT: line where detail demanded one');
   if (e.chat === 'forbidden' && chat.length > 0) fails.push('PROTOCOL: unnecessary CHAT: line');
+  // Native reasoning does not remove the tag, so a literal one on the content channel is read out to the room.
   if (m.thinkingLeak) fails.push('PROTOCOL: <think> tags leaked into the spoken text');
   if (m.regionShrank) fails.push('PROTOCOL: speech region shrank (emitter gating tripped)');
   // Checked against rawVisible, not raw — a silence decision's reasoning legitimately contains the word "silence" in text the room never hears, which raw would flag every time.
@@ -121,16 +121,10 @@ if (isMain) {
   const sys = system();
   const out = [];
 
-  // full-noverdict, not full: C cases lack fields for deriveVerdict, so full would invent a verdict; full-noverdict is production's real fail-safe path, not a fallback.
-  // userMsg's 2nd arg is hardcoded undefined on both arms (no C case has consults) — fixing only one arm would add a second difference between bare/full-noverdict.
+  // Both arms are available here now. `full` used to be refused because it sent a per-case triage verdict cases.mjs declares nothing to derive — production sends no such block any more,
+  // so `full` is the standing blocks and nothing else, which these fixtures can be sent as readily as dcases.mjs's.
+  // userMsg's 2nd arg is hardcoded undefined on both arms (no C case has consults) — fixing only one arm would add a second difference between them.
   const ctxArm = resolveContextArm(process.env[CONTEXT_ARM_ENV]);
-  if (ctxArm === 'full') {
-    throw new Error(
-      'CONTEXT_ARM=full needs a per-case triage verdict, and cases.mjs declares nothing to ' +
-      'derive one from. Use full-noverdict here (production\'s fail-safe path), or run the ' +
-      'full arm against dcases.mjs through defect.mjs.',
-    );
-  }
   // Serial by construction, so there's no pool to size — MIN_GAP_MS is the only pacing knob that applies.
   console.log(`candidate=${candidate} reps=${reps} context=${ctxArm} min-gap=${minGapMs()}ms`);
 
@@ -139,7 +133,7 @@ if (isMain) {
     for (let r = 0; r < reps; r++) {
       const m = await runCall(candidate, {
         system: sys,
-        user: userMsg(c.transcript, undefined, armContext(ctxArm), armVerdict(ctxArm, c)),
+        user: userMsg(c.transcript, undefined, armContext(ctxArm)),
       });
       if (m.error) {
         console.log(`\n### ${c.id} rep${r} :: ERROR ${m.error}`);

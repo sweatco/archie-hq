@@ -1,12 +1,13 @@
 // Harness shim over comprehension.ts's reply-parsing logic.
+// Content only, with no think-stripping anywhere in it: production's reasoning arrives on its own channel now, so a `<think>` tag reaching the content channel is text the room would hear
+// and must be graded as such, not quietly removed. The one arm that still needs a strip (a prompt that asks for the tags) does it on the wire, in providers.mjs, before anything here sees the text.
 import {
   parseReply as decide,
-  stripThinkBlocks,
   SentenceEmitter as RealSentenceEmitter,
   TAIL_MARKERS,
 } from '../../src/voice/comprehension.ts';
 
-export { TAIL_MARKERS, stripThinkBlocks };
+export { TAIL_MARKERS };
 
 // Flattens decide()'s Decision; `thought`/`leave` dropped, unused.
 export function parseReply(raw) {
@@ -26,8 +27,7 @@ export function parseReply(raw) {
 // True if CHAT: had content, speech didn't (parseReply won't say).
 // Checks spokenSource.trim().length === 0, not toSpeech() — they disagree only on markdown noise.
 function hadUnspokenChat(raw) {
-  const { visible } = stripThinkBlocks(raw, true);
-  const lines = visible.split(/\r?\n/);
+  const lines = raw.split(/\r?\n/);
   const tailStart = lines.findIndex((l) => TAIL_MARKERS.some((mk) => l.trimStart().startsWith(mk)));
   if (tailStart === -1) return false;
   if (lines.slice(0, tailStart).join('\n').trim().length > 0) return false;
