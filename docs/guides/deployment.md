@@ -132,6 +132,67 @@ The container runs as user `archie` (non-root). The Claude Agent SDK's `bypassPe
 
 On restart, the application automatically recovers in-progress tasks via `recoverActiveTasks()` in `src/tasks/recovery.ts`.
 
+## Model Gateway (optional, off by default)
+
+Agents can run on non-Anthropic models through a self-hosted, Anthropic-format gateway (LiteLLM). The whole feature is gated on `ARCHIE_MODEL_GATEWAY_URL`: unset, `buildModelGatewayEnv()` returns nothing, every `query()` call site is unchanged, and agents talk to `api.anthropic.com` exactly as before. Nothing in `Dockerfile.prod` references the gateway.
+
+### Enabling it
+
+Add to `/etc/archie/archie.env`:
+
+```bash
+ARCHIE_MODEL_GATEWAY_URL=http://litellm:4000
+ARCHIE_MODEL_GATEWAY_TOKEN=<gateway client key>
+ARCHIE_MODEL_GATEWAY_ALIAS_OPUS=openai/gpt-5.6-sol
+ARCHIE_MODEL_GATEWAY_ALIAS_SONNET=openai/gpt-5.6-terra
+ARCHIE_MODEL_GATEWAY_ALIAS_HAIKU=openai/gpt-5.6-luna
+ARCHIE_MODEL_GATEWAY_CONTEXT_TOKENS=922000
+ARCHIE_MODEL_GATEWAY_MAX_OUTPUT_TOKENS=128000
+```
+
+Setting all three `ALIAS_*` variables routes every agent. Omit them to route only agents whose own model names a non-Anthropic provider, leaving the PM on Claude.
+
+The CLI does not know a gateway model's limits — it assumes 200K context and caps output at 32000. Declare the upstream's real numbers (a bare integer, or `model=tokens,model=tokens` for mixed tiers); the gateway's `GET /model/info` reports them.
+
+**Disabling:** remove `ARCHIE_MODEL_GATEWAY_URL` and restart Archie. It takes effect on the next agent spawn; the gateway container can keep running, Archie simply ignores it.
+
+### Running the gateway container
+
+Build and publish the image (it bakes in the config and the streaming hook, so no bind mounts are needed):
+
+```bash
+docker build -t <registry>/archie-model-gateway:<tag> docker/litellm
+```
+
+The default Docker bridge has **no DNS between containers**, so `http://litellm:4000` will not resolve with two plain `docker run` containers. Pick one:
+
+1. **User-defined network** (preferred). `docker network create archie`, then add `--network archie --network-alias litellm` to the gateway and `--network archie` to Archie's `ExecStart`. Requires editing Archie's unit.
+2. **Share Archie's network namespace** (no change to Archie's unit). Run the gateway with `--network container:archie-app` and set `ARCHIE_MODEL_GATEWAY_URL=http://127.0.0.1:4000`. The gateway must start after Archie and dies with it, so add `After=`/`BindsTo=` on Archie's unit.
+3. **Off-box gateway.** Point the URL at another host; no topology change at all.
+
+Gateway unit for option 1:
+
+```ini
+[Service]
+Type=simple
+ExecStart=/usr/bin/docker run --name archie-model-gateway \
+  --network archie --network-alias litellm \
+  -e OPENAI_API_KEY=<provider key> \
+  -e LITELLM_MASTER_KEY=<gateway client key, matches ARCHIE_MODEL_GATEWAY_TOKEN> \
+  <registry>/archie-model-gateway:<tag>
+Restart=always
+RestartSec=10
+```
+
+Give it only these two variables. It does not need — and must not be handed — Archie's env file, which holds the Slack tokens, GitHub App key, and MCP credentials.
+
+### Caveats
+
+- **Cost is not reported for gateway-routed turns.** The SDK prices any model it does not recognise with a first-party Claude rate card, so its figure is wrong rather than missing (measured: an OpenAI model came back priced at Opus 5's rates). Those turns record `cost_unavailable` and are excluded from cost totals; token counts are unaffected.
+- **Version coupling.** The streaming hook in `docker/litellm/` depends on `/v1/messages` reaching LiteLLM's `async_post_call_streaming_iterator_hook` as raw SSE. Pin the base image and re-run a live task after any bump.
+- **`unrecognized_model` diagnostic** appears once per spawn because model ids keep their real provider-prefixed names. That is log noise, not a failure — the alternative (serving the upstream under Claude's ids) hides which model actually answered.
+- **Local development** uses the `model-gateway` Compose profile, so `npm run docker:dev` does not start the gateway. Note a plain `docker compose down` does **not** stop a profile-gated container; use `COMPOSE_PROFILES=model-gateway docker compose down`.
+
 ## Monitoring
 
 ### Health Check

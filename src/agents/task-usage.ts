@@ -73,12 +73,23 @@ export interface TaskUsageReport {
   /** Distinct main-agent `end_turn` turns (drives the cost gap disclosure). */
   transcriptTurns: number;
   agents: AgentUsage[];
-  /** SDK-reported cost, present only when usage.jsonl exists. */
+  /**
+   * SDK-reported cost, present only when at least one turn was actually
+   * measurable. Absent when usage.jsonl is missing AND when every record in it
+   * is unmeasurable (a task whose only agent ran on a gateway model) — a
+   * `grand: 0` there would assert the task was free.
+   */
   cost?: {
     grand: number;
-    /** Total usage.jsonl record count. */
+    /** Measurable usage.jsonl record count (excludes gateway-routed turns). */
     costRecordedTurns: number;
   };
+  /**
+   * Turns deliberately excluded from cost because their model cannot be priced
+   * (gateway-routed). Distinguishes "we declined to guess" from "never logged"
+   * in the gap disclosure. Optional so existing report fixtures stay valid.
+   */
+  costUnmeasuredTurns?: number;
 }
 
 /** Minimal shape of the fields we read from a usage.jsonl record. */
@@ -86,6 +97,13 @@ interface UsageRecordLite {
   query_nonce?: string;
   agentKey?: string;
   total_cost_usd?: number;
+  /**
+   * Written by spawn.ts for a gateway-routed turn, whose SDK cost figure is
+   * fabricated from a first-party rate card. Such records are excluded here
+   * rather than reduced, so they can never contribute a number — nor a `0`,
+   * which would read as "cost nothing".
+   */
+  cost_unavailable?: boolean;
 }
 
 /** Reduces all usage records sharing one query_nonce to a single cost. */
@@ -259,7 +277,15 @@ async function collectTokens(taskId: string): Promise<{
 async function collectCost(
   taskId: string,
   reduce: NonceReducer,
-): Promise<{ grand: number; perAgent: Map<string, number>; costRecordedTurns: number } | undefined> {
+): Promise<
+  | {
+      grand: number;
+      perAgent: Map<string, number>;
+      costRecordedTurns: number;
+      costUnmeasuredTurns: number;
+    }
+  | undefined
+> {
   // (a) INLINE allowlist barrier: reject an unsafe taskId before a path is
   // built — an unsafe id reports no cost (undefined), like a missing file.
   if (!/^task-\d{8}-\d{4}-[a-z0-9]+$/.test(taskId)) return undefined;
@@ -290,11 +316,17 @@ async function collectCost(
     // File vanished/unreadable after the existsSync check — treat as empty.
   }
 
+  // Drop unmeasurable records BEFORE grouping. Reducing them would yield 0 for
+  // their nonce and register the agent in `perAgent` with a $0.00 cost —
+  // asserting "free" for exactly the turns whose price we refuse to guess.
+  const unmeasured = records.filter((r) => r.cost_unavailable === true).length;
+  const measured = records.filter((r) => r.cost_unavailable !== true);
+
   // Group by query_nonce; a record missing one is its own singleton group
   // (defensive only — this greenfield file always carries a nonce).
   const groups = new Map<string, UsageRecordLite[]>();
   let singleton = 0;
-  for (const r of records) {
+  for (const r of measured) {
     const nonce = typeof r.query_nonce === 'string' && r.query_nonce
       ? r.query_nonce
       : `__no-nonce-${singleton++}`;
@@ -314,7 +346,7 @@ async function collectCost(
     perAgent.set(agentKey, (perAgent.get(agentKey) ?? 0) + cost);
   }
 
-  return { grand, perAgent, costRecordedTurns: records.length };
+  return { grand, perAgent, costRecordedTurns: measured.length, costUnmeasuredTurns: unmeasured };
 }
 
 /**
@@ -356,7 +388,14 @@ export async function aggregateTaskUsage(
     grand,
     transcriptTurns,
     agents,
-    cost: cost ? { grand: cost.grand, costRecordedTurns: cost.costRecordedTurns } : undefined,
+    // `costRecordedTurns > 0` and not merely `cost` — usage.jsonl can exist yet
+    // hold nothing measurable, and reporting `$0.0000` there would be the same
+    // false "free" assertion the per-agent branch above guards against.
+    cost:
+      cost && cost.costRecordedTurns > 0
+        ? { grand: cost.grand, costRecordedTurns: cost.costRecordedTurns }
+        : undefined,
+    costUnmeasuredTurns: cost?.costUnmeasuredTurns ?? 0,
   };
 }
 
@@ -417,11 +456,18 @@ export function formatTaskUsageReport(report: TaskUsageReport): string {
   }
 
   const recordedTurns = report.cost?.costRecordedTurns ?? 0;
+  const unmeasured = report.costUnmeasuredTurns ?? 0;
   if (recordedTurns < report.transcriptTurns) {
     lines.push('');
     lines.push(
       `Cost covers ${recordedTurns} of ${report.transcriptTurns} turns; ` +
         'the rest predate cost logging or ended without a result event — excluded.',
+    );
+  }
+  if (unmeasured > 0) {
+    lines.push(
+      `${unmeasured} turn(s) ran on a gateway model the SDK cannot price, so their ` +
+        'cost is excluded rather than estimated — token counts above still include them.',
     );
   }
 

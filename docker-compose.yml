@@ -13,9 +13,46 @@
 #
 # ngrok (in separate terminal):
 #   ngrok http 3000
-#   Then update Slack app URL to: https://xxxx.ngrok.io/slack/events
+#   Then update Slack app Request URL to: https://xxxx.ngrok.io/webhooks/slack
+#   (the runtime logs the live path at boot: "Slack webhook: POST /webhooks/slack")
 
 services:
+  # Model gateway: speaks the Anthropic Messages API and translates to whichever
+  # upstream serves the requested model, so agents can run on non-Claude models
+  # with no change to the spawned CLI. Inert unless ARCHIE_MODEL_GATEWAY_URL is
+  # set — archie talks to api.anthropic.com directly when it is unset.
+  #
+  # Reachable from archie as http://litellm:4000. Do NOT use
+  # host.docker.internal: measured unreachable from a container on this host.
+  #
+  # Pinned deliberately: the streaming hook in docker/litellm relies on
+  # /v1/messages reaching async_post_call_streaming_iterator_hook as raw SSE.
+  # Re-run a live task after changing this tag.
+  litellm:
+    # Never starts unless the profile is active, so a plain `docker compose up`
+    # runs archie alone and this is inert for anyone not experimenting. Enable
+    # with COMPOSE_PROFILES=model-gateway in .env (or --profile model-gateway).
+    profiles: ["model-gateway"]
+    # Same image production runs — config and hook baked in, no bind mounts.
+    build:
+      context: ./docker/litellm
+    image: archie-model-gateway:local
+    # The arm64 LiteLLM base crashes on start (SIGILL) on Apple Silicon; the
+    # amd64 one runs fine under emulation and is native on amd64 hosts.
+    platform: linux/amd64
+    restart: unless-stopped
+    # Only the two variables the gateway needs — NOT env_file: .env, which would
+    # hand it every Slack and GitHub secret Archie holds.
+    environment:
+      # Empty defaults, not `:?` — compose interpolates inactive-profile
+      # services too, so a required-variable form would break `up` for
+      # every deployment that is not running the gateway.
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-}
+    # Not published to the host: only archie needs to reach it.
+    expose:
+      - "4000"
+
   archie:
     build:
       context: .

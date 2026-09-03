@@ -15,6 +15,7 @@ import { messageBody } from "../connectors/slack/message-body.js";
 import { SESSIONS_DIR } from "./workdir.js";
 import { processAgentEventForLogging, logger } from "./logger.js";
 import { loadPrompt } from "../utils/prompt-loader.js";
+import { buildModelGatewayEnv } from '../agents/model-gateway.js';
 
 /**
  * Slack triage schema - allows Slack-specific actions
@@ -63,6 +64,10 @@ async function runTriage<T extends z.ZodType>(
         ...(process.env.NODE_USE_SYSTEM_CA ? { NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA } : {}),
         ...(process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS } : {}),
         PATH: process.env.PATH,
+        // Model gateway: this call site passes a bare alias, so a global
+        // (full-takeover) gateway swap reaches it through the CLI's alias
+        // table. No-op unless ARCHIE_MODEL_GATEWAY_URL is set.
+        ...buildModelGatewayEnv('haiku'),
       },
       allowedTools: ["Glob", "Grep", "Read"],
       outputFormat: {
