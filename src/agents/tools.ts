@@ -1239,6 +1239,42 @@ function createPushBranchTool(agent: Agent, task: Task) {
         return err('No branch to push');
       }
 
+      // The push below is `HEAD:<branch>` — the commits come from wherever HEAD resolves, the
+      // destination ref comes from metadata. Those are two different sources of truth, and if they
+      // have drifted we would publish one branch's history under another branch's name, silently.
+      //
+      // This used to be prevented by denying writes to `<clone>/.git/HEAD` in the sandbox, which
+      // also made `git rebase`, `cherry-pick` and `bisect` impossible (they all detach HEAD). The
+      // deny is gone; the check lives here instead, where the mismatch would actually do damage.
+      // Refuse rather than reconcile: silently retargeting the push would paper over a divergence
+      // the engine's branch-state tracking still has wrong, and `switch_branch` is what keeps that
+      // tracking honest.
+      let headBranch: string;
+      try {
+        const { stdout } = await execAsync('git rev-parse --abbrev-ref HEAD', {
+          cwd: attached.clone_path!,
+        });
+        headBranch = stdout.trim();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return err(`Could not determine the current branch before pushing: ${message}`);
+      }
+
+      if (headBranch === 'HEAD') {
+        return err(
+          `HEAD is detached in ${resolved.github} — refusing to push. This is normal mid-rebase or ` +
+            `mid-cherry-pick: finish the operation (or abort it) so HEAD is back on ${branch}, then push again.`,
+        );
+      }
+
+      if (headBranch !== branch) {
+        return err(
+          `Refusing to push: the clone for ${resolved.github} is on '${headBranch}', but the tracked ` +
+            `branch is '${branch}', so this push would publish '${headBranch}' commits as '${branch}'. ` +
+            `Use switch_branch to move between branches so the engine's branch state stays accurate.`,
+        );
+      }
+
       try {
         const forceFlag = force ? '--force-with-lease ' : '';
         await execAsync(`git push ${forceFlag}-u origin HEAD:${branch}`, { cwd: attached.clone_path! });
