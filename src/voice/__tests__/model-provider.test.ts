@@ -1,4 +1,4 @@
-// Split is at the wire only. Silence bias, hold-back, Decision: shared code from live failures, re-exercised per provider, not assumed.
+// The Cerebras wire, and the shared behaviour over it: silence bias, hold-back, Decision — all from live failures, exercised against the real frame shapes rather than assumed.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../utils/prompt-loader.js', () => ({
@@ -9,19 +9,12 @@ import { logger } from '../../system/logger.js';
 import { decideResponse, wasAddressed } from '../comprehension.js';
 import type { VoiceConfig } from '../types.js';
 
-const base: VoiceConfig = {
-  deepgramApiKey: 'd',
-  anthropicApiKey: 'anthropic-key',
-  botName: 'Archie',
-};
-
-const onAnthropic: VoiceConfig = base;
 const onCerebras: VoiceConfig = {
-  ...base,
-  modelProvider: 'cerebras',
+  deepgramApiKey: 'd',
+  botName: 'Archie',
   cerebrasApiKey: 'csk-test',
+  sonioxApiKey: 'sx-test-key-long-enough',
 };
-const cerebrasWithoutKey: VoiceConfig = { ...base, modelProvider: 'cerebras' };
 
 const encoder = new TextEncoder();
 
@@ -33,11 +26,6 @@ function cerebrasDelta(text: string): string {
     object: 'chat.completion.chunk',
   };
   return `data: ${JSON.stringify(event)}\n\n`;
-}
-
-function anthropicDelta(text: string): string {
-  const event = { type: 'content_block_delta', delta: { type: 'text_delta', text } };
-  return `data: ${JSON.stringify(event)}\n`;
 }
 
 interface SeenCall {
@@ -128,31 +116,16 @@ afterEach(() => {
   seen.length = 0;
 });
 
-describe('provider selection', () => {
-  it('calls Anthropic when the config says nothing about a provider', async () => {
-    stubJson({ content: [{ type: 'text', text: '{"addressed": true}' }] });
-    expect(await gate(onAnthropic)).toBe(true);
-
-    expect(seen.length).toBe(1);
-    expect(seen[0].url).toBe('https://api.anthropic.com/v1/messages');
-    expect(seen[0].headers['x-api-key']).toBe('anthropic-key');
-    expect(seen[0].headers['anthropic-version']).toBe('2023-06-01');
-    // Top-level `system` — the Messages API's shape, not a message.
-    expect(seen[0].body.system).toBe('SYSTEM PROMPT');
-    expect(seen[0].body.messages).toEqual([{ role: 'user', content: expect.any(String) }]);
-    expect(seen[0].body.max_tokens).toBe(64);
-  });
-
-  it('calls Cerebras when the config selects it, with the system prompt as a message', async () => {
+describe('the request Cerebras is sent', () => {
+  it('carries the key, the model and the system prompt as a message', async () => {
     stubJson({ choices: [{ message: { content: '{"addressed": true}' } }] });
     expect(await gate(onCerebras)).toBe(true);
 
     expect(seen.length).toBe(1);
     expect(seen[0].url).toBe('https://api.cerebras.ai/v1/chat/completions');
     expect(seen[0].headers.authorization).toBe('Bearer csk-test');
-    // Sending an Anthropic key header to Cerebras would leak a credential to a host with no business seeing it.
-    expect(seen[0].headers['x-api-key']).toBeUndefined();
     expect(seen[0].body.model).toBe('gemma-4-31b');
+    // A message with the system role, not a top-level field — the OpenAI-compatible shape.
     expect(seen[0].body.system).toBeUndefined();
     expect(seen[0].body.messages).toEqual([
       { role: 'system', content: 'SYSTEM PROMPT' },
@@ -162,17 +135,8 @@ describe('provider selection', () => {
     expect(seen[0].body.max_completion_tokens).toBe(64);
   });
 
-  it('falls back to Anthropic when Cerebras is named without a key', async () => {
-    // Falling back to Anthropic beats going silent for the rest of the meeting.
-    stubJson({ content: [{ type: 'text', text: '{"addressed": true}' }] });
-    expect(await gate(cerebrasWithoutKey)).toBe(true);
-
-    expect(seen[0].url).toBe('https://api.anthropic.com/v1/messages');
-    expect(seen[0].headers.authorization).toBeUndefined();
-  });
-
-  it('keeps both model calls on the same provider', async () => {
-    // Splitting the two calls across providers would make the log's latency figures unreadable — a slow turn could be either call.
+  it('keeps both model calls on the one endpoint', async () => {
+    // Splitting the two calls would make the log's latency figures unreadable — a slow turn could be either call.
     stubJson({ choices: [{ message: { content: '{"addressed": false}' } }] });
     await gate(onCerebras);
     const gateUrl = seen[0].url;
@@ -218,7 +182,7 @@ describe('the addressing gate on Cerebras', () => {
     stubJson({ choices: [{ message: { content: '{"addressed": false}' } }] });
     expect(await gate(onCerebras)).toBe(false);
 
-    // Cerebras gives a real HTTP status for every failure provoked, even streaming — Anthropic can bury one in a 200.
+    // Cerebras gives a real HTTP status for every failure provoked, even streaming.
     stubJson({ message: 'Model does not exist', code: 'model_not_found' }, 404);
     expect(await gate(onCerebras)).toBe(false);
   });
@@ -430,7 +394,7 @@ describe('the speaking decision on Cerebras', () => {
     await settle();
     expect(sentences).toEqual(['The deploy finished at noon.']);
 
-    // Mid-stream death is identical on both providers, keeping `failed` provider-independent; must not read as `silence`, losing words already heard.
+    // A mid-stream death must not read as `silence`, losing words already heard.
     reply.fail('socket hung up');
     const decision = await pending;
 
@@ -442,13 +406,13 @@ describe('the speaking decision on Cerebras', () => {
     }
   });
 
-  it('reports a non-200 as failed, naming the provider', async () => {
+  it('reports a non-200 as failed, naming the vendor', async () => {
     stubJson({ message: 'Wrong API Key', code: 'wrong_api_key' }, 401);
     const decision = await speak(onCerebras);
 
     expect(decision.outcome).toBe('failed');
     if (decision.outcome === 'failed') {
-      // Naming the provider in `why` lets a run of failures read as a provider problem, not a prompt one.
+      // Naming the vendor in `why` lets a run of failures read as a vendor problem, not a prompt one.
       expect(decision.why).toBe('cerebras returned 401');
       expect(decision.handedOver).toBe(0);
     }
@@ -489,7 +453,7 @@ describe('the speaking decision on Cerebras', () => {
 
   it('logs an in-band error frame, which is the only way it is observable', async () => {
     // Never observed (every provoked Cerebras failure came back as an HTTP status), but OpenAI-compatible streams permit an in-band error frame.
-    // Can't change the outcome (no `choices` means no text, already a failure); the branch's whole effect is the log line asserted here — mirrors Anthropic's.
+    // Can't change the outcome (no `choices` means no text, already a failure); the branch's whole effect is the log line asserted here.
     const errors = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
     const reply = openStream(cerebrasDelta);
     const pending = speak(onCerebras);
@@ -506,37 +470,5 @@ describe('the speaking decision on Cerebras', () => {
           String(call[1]).includes('upstream overloaded'),
       ),
     ).toBe(true);
-  });
-});
-
-describe('the speaking decision on Anthropic', () => {
-  it('still reads its own frame shape, unchanged', async () => {
-    // Point of the split: adding Cerebras must not disturb Anthropic — the default path keeps working as before.
-    const reply = openStream(anthropicDelta);
-    const sentences: string[] = [];
-    const pending = speak(onAnthropic, (t) => sentences.push(t));
-
-    reply.push('The migration ran after it.');
-    await settle();
-    reply.close();
-
-    expect(sentences).toEqual(['The migration ran after it.']);
-    expect(await pending).toEqual({
-      outcome: 'speak',
-      response: { speech: 'The migration ran after it.' },
-    });
-    expect(seen[0].url).toBe('https://api.anthropic.com/v1/messages');
-  });
-
-  it('does not read a Cerebras-shaped frame as text', async () => {
-    // Two parsers stay separate, not one trying both shapes: accepting either would hide a provider misconfiguration instead of failing.
-    const reply = openStream(cerebrasDelta);
-    const pending = speak(onAnthropic);
-
-    reply.push('The migration ran after it.');
-    await settle();
-    reply.close();
-
-    expect((await pending).outcome).toBe('failed');
   });
 });

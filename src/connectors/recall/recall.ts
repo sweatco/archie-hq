@@ -65,7 +65,6 @@ export function createRecallClient(cfg: RecallConfig): RecallClient {
   const secrets = [
     cfg.recallApiKey,
     cfg.voice.deepgramApiKey,
-    cfg.voice.anthropicApiKey,
     cfg.voice.cerebrasApiKey,
     cfg.voice.sonioxApiKey,
     ...(cfg.voice.foreignSecrets ?? []),

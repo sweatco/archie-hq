@@ -4,30 +4,21 @@
  * Types only, no logic, no imports from sibling modules or `src/connectors/`: voice knows a transport exists, never which one.
  */
 
-/** Always the same provider for both comprehension calls — keeps activation-log latency comparable. */
-export type ModelProviderName = 'anthropic' | 'cerebras';
-
-/** Synthesizer for the answer's audio — a separate axis from {@link ModelProviderName} (comprehension vs. language support). See `speech.ts`. */
-export type TtsProviderName = 'deepgram' | 'soniox';
-
 /**
  * What the medium needs for a conversation, resolved from env at startup, handed down by the connector. Excludes connector detail (vendor, region, callback URL).
  *
- * `anthropicApiKey` is always set — the engine refuses to start without it.
+ * The three keys are all required — the connector does not mount without them.
  */
 export interface VoiceConfig {
   deepgramApiKey: string;
-  anthropicApiKey: string;
   /**
    * The name Archie answers to and introduces itself by.
    *
    * Must match the connector's display name, or the bot stays silent when addressed by the name people see.
    */
   botName: string;
-  // Absent means `anthropic` — comprehension.ts falls back if the named provider has no key.
-  modelProvider?: ModelProviderName;
-  /** Required when `modelProvider` is `cerebras`; ignored otherwise. */
-  cerebrasApiKey?: string;
+  /** Serves both comprehension calls; see comprehension.ts. */
+  cerebrasApiKey: string;
   // No scheme, e.g. `api.eu.deepgram.com`. Absent means `api.deepgram.com` (default in deepgram.ts).
   deepgramHost?: string;
   /**
@@ -36,10 +27,8 @@ export interface VoiceConfig {
    * No default list — a bad guess can fail the whole language, not merely degrade it.
    */
   languageHints?: string;
-  // Absent means `deepgram` — speech.ts falls back if the named provider has no key.
-  ttsProvider?: TtsProviderName;
-  /** Required when `ttsProvider` is `soniox`; ignored otherwise. */
-  sonioxApiKey?: string;
+  /** Speaks every answer; see soniox.ts. */
+  sonioxApiKey: string;
   // No scheme, e.g. `tts-rt.eu.soniox.com`. Absent means the US endpoint — the only region the key authenticates against.
   sonioxHost?: string;
   // Absent means the stock voice. A cloned voice needs its UUID — its display name gets `400 Invalid voice`.
@@ -105,10 +94,6 @@ export interface ActivationLog {
    * Absent for a candidate recorded before any decision path.
    */
   tier?: 'name' | 'follow-up' | 'model' | 'already-owed';
-  // Disambiguates a latency/quality change: provider swap vs. prompt edit. Absent before this field existed.
-  provider?: ModelProviderName;
-  // Same reasoning as `provider` — synthesizers differ in voice and time-to-first-byte.
-  tts?: TtsProviderName;
   /** Which variant matched, when the `name` tier decided. */
   matched?: string;
   verdict: 'addressed' | 'suppressed' | 'error';
@@ -130,15 +115,15 @@ export interface SpeechResult {
 
 /** One answer being spoken. Text may arrive in pieces as the model writes it. */
 export interface SpeechStream {
-  /** Push a complete sentence or clause; may repeat. `onSentenceComplete` fires once this sentence's audio is fully handed to `onPcm` — synthesis, not room-heard ({@link AudioSink.playedBytes} measures that). Optional: only Soniox supports it (one stream per sentence) — Aura's single socket coalesces flushes with no per-sentence identity and never calls this; handle the absence. */
-  say(text: string, onSentenceComplete?: () => void): void;
+  /** Push a complete sentence or clause; may repeat. `onSentenceComplete` fires once this sentence's audio is fully handed to `onPcm` — synthesis, not room-heard ({@link AudioSink.playedBytes} measures that). Required: the caller anchors an interrupted answer's record on it, so a synthesizer that cannot report per-sentence completion cannot implement this interface. */
+  say(text: string, onSentenceComplete: () => void): void;
   /** No more text coming; resolves when all audio has been delivered. */
   end(): Promise<SpeechResult>;
   /** Abandon: stop the synthesizer generating and stop delivering audio. */
   abort(): void;
 }
 
-/** The meeting's connection to whichever synthesizer is configured. Everything above this has exactly one implementation; see speech.ts. */
+/** The meeting's connection to the synthesizer; see soniox.ts. */
 export interface SpeechSession {
   // Only one answer in flight — a second abandons the first, so an unfinished stream can't wedge the socket.
   speak(onPcm: (pcm: Buffer) => void): SpeechStream;
@@ -166,7 +151,7 @@ export interface AudioSink {
 }
 
 /**
- * What a transport supplies: a name, somewhere for speech, and (if any) text. `meeting.ts` never learns how it's connected. Recall's implementation: `src/connectors/recall/index.ts`. ASR and synthesis are a separate seam (`deepgram.ts`, `speech.ts`).
+ * What a transport supplies: a name, somewhere for speech, and (if any) text. `meeting.ts` never learns how it's connected. Recall's implementation: `src/connectors/recall/index.ts`. ASR and synthesis are a separate seam (`deepgram.ts`, `soniox.ts`).
  *
  * Audio flows in through `Meeting.onAudio`, not pulled — the transport calls the meeting, never the reverse. One participant is the simplest case: a telephone stream is a single speaker — room silence with N=1.
  */

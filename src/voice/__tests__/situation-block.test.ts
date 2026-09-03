@@ -324,18 +324,24 @@ describe('where the block sits, under both arms', () => {
 });
 
 describe('the triage gate cannot be given a verdict — structurally, not by convention', () => {
-  const cfg: VoiceConfig = { deepgramApiKey: 'd', anthropicApiKey: 'a', botName: 'Archie' };
+  const cfg: VoiceConfig = {
+    deepgramApiKey: 'd',
+    botName: 'Archie',
+    cerebrasApiKey: 'cerebras-key',
+    sonioxApiKey: 'soniox-key',
+  };
   const seen: { user: string }[] = [];
 
   beforeEach(() => {
     vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
       const body = JSON.parse(String(init.body)) as { messages: { content: string }[] };
-      seen.push({ user: body.messages[0].content });
+      // messages[0] is the system prompt; the user half is second.
+      seen.push({ user: body.messages[1].content });
       return {
         ok: true,
         status: 200,
         async json() {
-          return { content: [{ type: 'text', text: '{"where": "pending"}' }] };
+          return { choices: [{ message: { content: '{"where": "pending"}' } }] };
         },
         async text() {
           return '';

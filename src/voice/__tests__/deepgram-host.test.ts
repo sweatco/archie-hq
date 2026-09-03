@@ -24,22 +24,21 @@ vi.mock('ws', () => {
   return { default: FakeSocket, WebSocket: FakeSocket };
 });
 
-import { createSpeechSession, openTurnStream } from '../deepgram.js';
+import { openTurnStream } from '../deepgram.js';
 import type { VoiceConfig } from '../types.js';
 
 const base: VoiceConfig = {
   deepgramApiKey: 'dg-key',
-  anthropicApiKey: 'a',
   botName: 'Archie',
+  cerebrasApiKey: 'cerebras-key',
+  sonioxApiKey: 'soniox-key',
 };
 
-function dial(cfg: VoiceConfig): { flux: string; speak: string } {
+function dial(cfg: VoiceConfig): { flux: string } {
   const stream = openTurnStream(cfg, { label: 'Ann', onEvent: () => undefined });
-  const speech = createSpeechSession(cfg);
-  const [flux, speak] = dialled;
+  const [flux] = dialled;
   stream.close();
-  speech.close();
-  return { flux, speak };
+  return { flux };
 }
 
 beforeEach(() => {
@@ -51,24 +50,18 @@ afterEach(() => {
 });
 
 describe('the Deepgram host', () => {
-  it('defaults to the global endpoint, preserving the URLs exactly', () => {
+  it('defaults to the global endpoint, preserving the URL exactly', () => {
     // An unset host must not change where audio goes.
-    const { flux, speak } = dial(base);
+    const { flux } = dial(base);
     expect(flux).toBe(
       'wss://api.deepgram.com/v2/listen?model=flux-general-multi&encoding=linear16&sample_rate=16000&mip_opt_out=true',
     );
-    expect(speak).toBe(
-      'wss://api.deepgram.com/v1/speak?model=aura-2-orion-en&encoding=linear16&sample_rate=24000&mip_opt_out=true',
-    );
   });
 
-  it('moves both sockets together when a host is configured', () => {
-    const { flux, speak } = dial({ ...base, deepgramHost: 'api.eu.deepgram.com' });
+  it('moves the socket when a host is configured', () => {
+    const { flux } = dial({ ...base, deepgramHost: 'api.eu.deepgram.com' });
     expect(flux).toBe(
       'wss://api.eu.deepgram.com/v2/listen?model=flux-general-multi&encoding=linear16&sample_rate=16000&mip_opt_out=true',
-    );
-    expect(speak).toBe(
-      'wss://api.eu.deepgram.com/v1/speak?model=aura-2-orion-en&encoding=linear16&sample_rate=24000&mip_opt_out=true',
     );
   });
 
@@ -76,9 +69,8 @@ describe('the Deepgram host', () => {
     // Separate from the exact-URL test so a dropped opt-out fails on its own.
     for (const host of [undefined, 'api.eu.deepgram.com']) {
       dialled.length = 0;
-      const { flux, speak } = dial({ ...base, deepgramHost: host });
+      const { flux } = dial({ ...base, deepgramHost: host });
       expect(flux).toContain('mip_opt_out=true');
-      expect(speak).toContain('mip_opt_out=true');
     }
   });
 
@@ -86,9 +78,8 @@ describe('the Deepgram host', () => {
     // Prevents `DEEPGRAM_HOST=` in .env producing `wss:///v2/listen`.
     for (const host of ['', '   ']) {
       dialled.length = 0;
-      const { flux, speak } = dial({ ...base, deepgramHost: host });
+      const { flux } = dial({ ...base, deepgramHost: host });
       expect(flux).toContain('wss://api.deepgram.com/v2/listen');
-      expect(speak).toContain('wss://api.deepgram.com/v1/speak');
     }
   });
 

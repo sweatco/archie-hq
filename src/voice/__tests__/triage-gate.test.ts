@@ -18,15 +18,9 @@ import type { VoiceConfig } from '../types.js';
 
 const cfg: VoiceConfig = {
   deepgramApiKey: 'd',
-  anthropicApiKey: 'anthropic-key',
   botName: 'Archie',
-};
-
-/** The other provider — proves the one deadline really is one deadline. */
-const cerebrasCfg: VoiceConfig = {
-  ...cfg,
-  modelProvider: 'cerebras',
   cerebrasApiKey: 'cerebras-key',
+  sonioxApiKey: 'soniox-key',
 };
 
 const TRANSCRIPT = [
@@ -47,7 +41,7 @@ function stubReply(text: string): void {
       ok: true,
       status: 200,
       async json() {
-        return { content: [{ type: 'text', text }] };
+        return { choices: [{ message: { content: text } }] };
       },
       async text() {
         return text;
@@ -66,7 +60,7 @@ function stubStatus(status: number): void {
         return {};
       },
       async text() {
-        return '{"error":{"type":"authentication_error"}}';
+        return '{"message":"Wrong API Key","code":"wrong_api_key"}';
       },
     };
   });
@@ -78,25 +72,6 @@ function stubThrow(name: string, message: string): void {
     const error = new Error(message);
     error.name = name;
     throw error;
-  });
-}
-
-function stubReplyFromEither(text: string): void {
-  vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
-    seen.push({ url, body: JSON.parse(String(init.body)) as Record<string, unknown> });
-    const payload = url.includes('cerebras')
-      ? { choices: [{ message: { content: text } }] }
-      : { content: [{ type: 'text', text }] };
-    return {
-      ok: true,
-      status: 200,
-      async json() {
-        return payload;
-      },
-      async text() {
-        return text;
-      },
-    };
   });
 }
 
@@ -282,14 +257,14 @@ describe('the triage gate', () => {
     expect(await triage(consults)).toEqual({ where: 'pending' });
 
     expect(seen.length).toBe(1);
-    expect(seen[0].url).toBe('https://api.anthropic.com/v1/messages');
-    expect(seen[0].body.system).toBe('TRIAGE PROMPT');
+    expect(seen[0].url).toBe('https://api.cerebras.ai/v1/chat/completions');
     expect(seen[0].body.messages).toEqual([
+      { role: 'system', content: 'TRIAGE PROMPT' },
       { role: 'user', content: buildSpeakingUserMessage(TRANSCRIPT, consults) },
     ]);
     // A verdict is a few dozen tokens of JSON, unusable until complete — asked for whole, not streamed.
     expect(seen[0].body.stream).toBe(false);
-    expect(seen[0].body.max_tokens).toBe(96);
+    expect(seen[0].body.max_completion_tokens).toBe(96);
     expect(seen[0].body.temperature).toBe(0);
   });
 });
@@ -304,19 +279,6 @@ describe('the deadline, and what lapsing it produces', () => {
     stubReply('{"where": "room"}');
     expect(await triage()).toEqual({ where: 'room' });
     expect(deadline.asked).toEqual([1500]);
-  });
-
-  it('is the same 1500ms whichever provider serves the call', async () => {
-    // One shared deadline is deliberate — Anthropic's ~620ms floor (the only measured half) sets it; a second constant would mean inventing Cerebras's.
-    const deadline = stubDeadline();
-    stubReplyFromEither('{"where": "room"}');
-    expect(await runTriageGate(cerebrasCfg, { transcript: TRANSCRIPT })).toEqual({ where: 'room' });
-    expect(await runTriageGate(cfg, { transcript: TRANSCRIPT })).toEqual({ where: 'room' });
-    expect(seen.map((call) => call.url)).toEqual([
-      'https://api.cerebras.ai/v1/chat/completions',
-      'https://api.anthropic.com/v1/messages',
-    ]);
-    expect(deadline.asked).toEqual([1500, 1500]);
   });
 
   it('is null when that deadline is what ends the request, and does not throw', async () => {

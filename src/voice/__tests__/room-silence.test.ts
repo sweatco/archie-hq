@@ -29,14 +29,11 @@ let synthCalls = 0;
 const synthTexts: string[] = [];
 let synthChunks = 1;
 let synthChunkGapMs = 0;
-/** Stands in for Aura's per-flush time-to-first-byte. */
+/** Stands in for the synthesizer's time-to-first-byte. */
 let synthFirstChunkDelayMs = 0;
 let synthSilent = false;
 /** `incomplete`: null when finished, else a reason string. */
 let synthIncomplete: string | null = null;
-/** Soniox reports per-sentence completion; Aura's coalesced flushes may report none. */
-/** Defaults true — tests not exercising this knob assume it. */
-let synthReportsSentences = true;
 /** Answers given up on at the source. See `abort`, deepgram.ts. */
 let synthAborts = 0;
 let speechClosed = false;
@@ -122,11 +119,8 @@ vi.mock('../deepgram.js', () => ({
   },
 }));
 
-vi.mock('../speech.js', () => ({
-  // Mirrors the real resolver's default.
-  // Fallback tested in tts-provider.test.ts.
-  ttsProviderName: (c: { ttsProvider?: string }) => c.ttsProvider ?? 'deepgram',
-  createSpeechSession: () => ({
+vi.mock('../soniox.js', () => ({
+  createSonioxSpeechSession: () => ({
     speak(onPcm: (pcm: Buffer) => void) {
       synthCalls++;
       let aborted = false;
@@ -148,7 +142,7 @@ vi.mock('../speech.js', () => ({
       }
 
       return {
-        say(text: string, onSentenceComplete?: () => void) {
+        say(text: string, onSentenceComplete: () => void) {
           synthTexts.push(text);
           if (!aborted && !synthSilent) {
             inFlight++;
@@ -156,8 +150,8 @@ vi.mock('../speech.js', () => ({
               deliver(synthChunks, synthFirstChunkDelayMs, synthChunkGapMs)
                 .then(() => {
                   // Mirrors Soniox's `terminated`: never fires for an aborted or watchdog-settled sentence.
-                  if (!aborted && synthIncomplete === null && synthReportsSentences) {
-                    onSentenceComplete?.();
+                  if (!aborted && synthIncomplete === null) {
+                    onSentenceComplete();
                   }
                 })
                 .finally(() => {
@@ -226,7 +220,7 @@ vi.mock('../comprehension.js', () => {
     if (answer !== null && answer.fail === true) {
       return {
         outcome: 'failed',
-        why: 'the Anthropic stream failed — TimeoutError: aborted due to timeout',
+        why: 'the cerebras stream failed — TimeoutError: aborted due to timeout',
         handedOver,
       };
     } else if (silent) {
@@ -250,8 +244,6 @@ vi.mock('../comprehension.js', () => {
   }
 
   return {
-    // Mirrors the real resolver's default; tested in model-provider.test.ts.
-    modelProviderName: (c: { modelProvider?: string }) => c.modelProvider ?? 'anthropic',
     wasAddressed: async () => {
       gateCalls++;
       if (gateDelayMs > 0) {
@@ -302,8 +294,9 @@ vi.mock('../comprehension.js', () => {
 
 const cfg: VoiceConfig = {
   deepgramApiKey: 'd',
-  anthropicApiKey: 'a',
   botName: 'Archie',
+  cerebrasApiKey: 'cerebras-key',
+  sonioxApiKey: 'soniox-key',
 };
 
 /** `confirmLagBytes`: recent bytes withheld from "confirmed". */
@@ -363,7 +356,6 @@ function reset(): void {
   synthFirstChunkDelayMs = 0;
   synthSilent = false;
   synthIncomplete = null;
-  synthReportsSentences = true;
   synthAborts = 0;
   speechClosed = false;
   gateCalls = 0;
@@ -759,7 +751,7 @@ describe('meeting room silence', () => {
 
   it('stays silent when the floor is taken during time-to-first-audio', async () => {
     reset();
-    // Models Aura's real time-to-first-byte.
+    // Models the synthesizer's real time-to-first-byte.
     synthFirstChunkDelayMs = 300;
     decideQueue.push({ speech: 'It was the connection pool.' });
     const { meeting, sink } = await makeMeeting('bot-ttfb');
@@ -931,7 +923,7 @@ describe('meeting room silence', () => {
     b.emit({ kind: 'end', transcript: 'actually, the other one' });
 
     await sleep(1200);
-    // 'stale' reached Aura already streaming — stopped at the source, not just dropped.
+    // 'stale' reached the synthesizer already streaming — stopped at the source, not just dropped.
     expect(decideCalls).toBe(2);
     expect(synthTexts).toEqual(['stale', 'fresh']);
     expect(synthAborts).toBe(1);
@@ -1045,89 +1037,6 @@ describe('meeting room silence', () => {
     expect(candidates[0].verdict).toBe('suppressed');
     expect(candidates[0].candidate).toBe('the архитектура review is on Thursday');
     expect(typeof (candidates[0].timings as Record<string, number>).gateMs).toBe('number');
-    await meeting.stop();
-  });
-
-  it('records which provider served every row, candidates included', async () => {
-    reset();
-    decideQueue.push({ speech: 'Six hours.' });
-    const { meeting } = await makeMeeting('bot-provider', { modelProvider: 'cerebras' });
-    const a = speakerFor(meeting, ann);
-
-    // Suppressed first: an answered turn is one row, no separate candidate row.
-    a.emit({ kind: 'start' });
-    a.emit({ kind: 'end', transcript: 'the review is on Thursday' });
-    await sleep(SETTLED);
-
-    a.emit({ kind: 'start' });
-    a.emit({ kind: 'end', transcript: 'Archie, how long did it take?' });
-    await sleep(SETTLED);
-
-    const written = rows('bot-provider');
-    expect(written.map((r) => r.kind)).toEqual(['candidate', 'response']);
-    expect(written.map((r) => r.provider)).toEqual(written.map(() => 'cerebras'));
-    await meeting.stop();
-  });
-
-  it('records the default provider when the config names none', async () => {
-    reset();
-    decideQueue.push({ speech: 'Noon.' });
-    const { meeting } = await makeMeeting('bot-provider-default');
-    const a = speakerFor(meeting, ann);
-
-    a.emit({ kind: 'start' });
-    a.emit({ kind: 'end', transcript: 'Archie, when did it finish?' });
-    await sleep(SETTLED);
-
-    expect(rows('bot-provider-default').map((r) => r.provider)).toEqual(['anthropic']);
-    await meeting.stop();
-  });
-
-  it('records which synthesizer spoke every row, candidates included', async () => {
-    reset();
-    decideQueue.push({ speech: 'Six hours.' });
-    const { meeting } = await makeMeeting('bot-tts', { ttsProvider: 'soniox' });
-    const a = speakerFor(meeting, ann);
-
-    // Suppressed first, then answered.
-    a.emit({ kind: 'start' });
-    a.emit({ kind: 'end', transcript: 'the review is on Thursday' });
-    await sleep(SETTLED);
-
-    a.emit({ kind: 'start' });
-    a.emit({ kind: 'end', transcript: 'Archie, how long did it take?' });
-    await sleep(SETTLED);
-
-    const written = rows('bot-tts');
-    expect(written.map((r) => r.kind)).toEqual(['candidate', 'response']);
-    expect(written.map((r) => r.tts)).toEqual(written.map(() => 'soniox'));
-    await meeting.stop();
-  });
-
-  it('records the default synthesizer when the config names none', async () => {
-    reset();
-    decideQueue.push({ speech: 'Noon.' });
-    const { meeting } = await makeMeeting('bot-tts-default');
-    const a = speakerFor(meeting, ann);
-
-    a.emit({ kind: 'start' });
-    a.emit({ kind: 'end', transcript: 'Archie, when did it finish?' });
-    await sleep(SETTLED);
-
-    expect(rows('bot-tts-default').map((r) => r.tts)).toEqual(['deepgram']);
-    await meeting.stop();
-  });
-
-  it('names the synthesizer in the startup line', async () => {
-    reset();
-    const system = vi.spyOn(logger, 'system').mockImplementation(() => undefined);
-    const { meeting } = await makeMeeting('bot-startup-line', { ttsProvider: 'soniox' });
-    expect(
-      system.mock.calls.some(
-        (call) => String(call[0]).includes('bot-startup-line') && String(call[0]).includes('soniox speech'),
-      ),
-    ).toBe(true);
-    system.mockRestore();
     await meeting.stop();
   });
 
@@ -2201,7 +2110,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'end', transcript: 'go on' });
     await sleep(SETTLED);
     const window = String(rows('bot-unconfirmed').filter((r) => r.kind === 'response')[1].window);
-    // Cannot measure at all (Deepgram/Aura): nothing recovered or claimed.
+    // Cannot measure at all (the sink reports no playedBytes): nothing recovered or claimed.
     expect(window).not.toContain('pool ran dry');
     expect(window).not.toContain('recovered fully');
     await meeting.stop();
@@ -2702,43 +2611,6 @@ describe('meeting room silence', () => {
     const stale = rows('bot-preamble-stale').filter((r) => r.kind === 'response')[0];
     expect(stale.verdict).not.toBe('addressed');
     expect(String(stale.error)).toContain('the room moved on while we were deciding');
-    await meeting.stop();
-  });
-
-  it('still speaks the answer behind a preamble when the synthesizer reports no sentence boundaries', async () => {
-    reset();
-    // Deliberate degradation, pinned so it isn't "fixed" away: Aura's coalesced flushes never report completion, so "still playing" is indistinguishable from "will never say".
-    // Reading that as "still playing" would arm the stale-answer guard across the whole answer, discarding mid-heard answers — barge-in's job, not this guard's.
-    // So on Aura the gap stays open, as before this guard existed; only Soniox (reports completion) gets it closed — same shape as `playedBytes` being unavailable.
-    synthReportsSentences = false;
-    triageVerdict = { where: 'outside', preamble: 'Let me find out.' };
-    synthFirstChunkDelayMs = 20;
-    decideDelayMs = 200;
-    decideQueue.push({ speech: 'Marina owns it now.' });
-    const host = fakeHost();
-    const { meeting, sink } = await makeMeeting('bot-preamble-no-boundaries', {}, { host });
-    const a = speakerFor(meeting, ann);
-    const b = speakerFor(meeting, bob);
-
-    a.emit({ kind: 'start' });
-    a.emit({ kind: 'end', transcript: 'Archie, who owns billing now?' });
-    await sleep(60);
-    expect(sink.played.length).toBe(1);
-
-    // Here the answer is NOT dropped — the point of the Aura fallback.
-    sink.speaking = false;
-    b.emit({ kind: 'start' });
-    b.emit({ kind: 'end', transcript: 'actually, never mind that' });
-
-    await sleep(400);
-    expect(sink.played.length).toBe(2);
-    // The transcript here reflects full delivery, not partial (that's `confirmedHeardPrefix`).
-    expect(host.utterances).toEqual([
-      { speaker: 'Ann', text: 'Archie, who owns billing now?' },
-      { speaker: 'Bob', text: 'actually, never mind that' },
-      { speaker: 'Archie', text: 'Let me find out.' },
-      { speaker: 'Archie', text: 'Marina owns it now.' },
-    ]);
     await meeting.stop();
   });
 });

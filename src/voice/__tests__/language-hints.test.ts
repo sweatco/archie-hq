@@ -24,22 +24,21 @@ vi.mock('ws', () => {
   return { default: FakeSocket, WebSocket: FakeSocket };
 });
 
-import { createSpeechSession, openTurnStream } from '../deepgram.js';
+import { openTurnStream } from '../deepgram.js';
 import type { VoiceConfig } from '../types.js';
 
 const base: VoiceConfig = {
   deepgramApiKey: 'dg-key',
-  anthropicApiKey: 'a',
   botName: 'Archie',
+  cerebrasApiKey: 'cerebras-key',
+  sonioxApiKey: 'soniox-key',
 };
 
-function dial(cfg: VoiceConfig): { flux: string; speak: string } {
+function dial(cfg: VoiceConfig): { flux: string } {
   const stream = openTurnStream(cfg, { label: 'Ann', onEvent: () => undefined });
-  const speech = createSpeechSession(cfg);
-  const [flux, speak] = dialled;
+  const [flux] = dialled;
   stream.close();
-  speech.close();
-  return { flux, speak };
+  return { flux };
 }
 
 function hintsOn(url: string): string[] {
@@ -111,22 +110,12 @@ describe('Flux language hints', () => {
     expect(hintsOn(dial({ ...base, languageHints: ' en , ru ' }).flux)).toEqual(['en', 'ru']);
   });
 
-  it('keeps hints off the Aura speak URL, where they do not belong', () => {
-    // /v1/speak accepts `language_hint` (101, ignored) — a leak would be invisible at runtime but for this test.
-    const { speak } = dial({ ...base, languageHints: 'en,ru' });
-    expect(speak).not.toContain('language_hint');
-    expect(speak).toBe(
-      'wss://api.deepgram.com/v1/speak?model=aura-2-orion-en&encoding=linear16&sample_rate=24000&mip_opt_out=true',
-    );
-  });
-
   it('keeps the model-improvement opt-out on, hinted or not', () => {
     // Separate from the exact-URL tests so a dropped opt-out fails on its own.
     for (const hints of [undefined, '', 'en,ru']) {
       dialled.length = 0;
-      const { flux, speak } = dial({ ...base, languageHints: hints });
+      const { flux } = dial({ ...base, languageHints: hints });
       expect(flux, `hints=${JSON.stringify(hints)}`).toContain('mip_opt_out=true');
-      expect(speak, `hints=${JSON.stringify(hints)}`).toContain('mip_opt_out=true');
     }
   });
 

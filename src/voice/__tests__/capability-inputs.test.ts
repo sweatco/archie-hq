@@ -20,7 +20,12 @@ import { logger } from '../../system/logger.js';
 import { buildCapabilitySummary } from '../capabilities.js';
 import type { VoiceConfig } from '../types.js';
 
-const cfg: VoiceConfig = { deepgramApiKey: 'd', anthropicApiKey: 'k', botName: 'Archie' };
+const cfg: VoiceConfig = {
+  deepgramApiKey: 'd',
+  botName: 'Archie',
+  cerebrasApiKey: 'cerebras-key',
+  sonioxApiKey: 'soniox-key',
+};
 const SKILLS_DIR = join(WORK, 'plugins', 'pm', 'skills');
 
 const sentUserMessages: string[] = [];
@@ -28,12 +33,13 @@ const sentUserMessages: string[] = [];
 function stubModel(reply = '- Look up numbers in the analytics warehouse'): void {
   vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
     const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
-    sentUserMessages.push(body.messages[0].content);
+    // messages[0] is the system prompt; the user half is second.
+    sentUserMessages.push(body.messages[1].content);
     return {
       ok: true,
       status: 200,
       async json() {
-        return { content: [{ type: 'text', text: reply }] };
+        return { choices: [{ message: { content: reply } }] };
       },
       async text() {
         return reply;

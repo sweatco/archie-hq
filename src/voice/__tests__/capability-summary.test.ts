@@ -15,7 +15,12 @@ import { logger } from '../../system/logger.js';
 import { summariseCapabilities } from '../comprehension.js';
 import type { VoiceConfig } from '../types.js';
 
-const cfg: VoiceConfig = { deepgramApiKey: 'd', anthropicApiKey: 'anthropic-key', botName: 'Archie' };
+const cfg: VoiceConfig = {
+  deepgramApiKey: 'd',
+  botName: 'Archie',
+  cerebrasApiKey: 'cerebras-key',
+  sonioxApiKey: 'soniox-key',
+};
 
 const SKILLS = [
   'Weekly app stability / crash WBR report. Use when someone asks for the app stability report. The data-analyst-agent owns the analysis end to end.',
@@ -37,7 +42,7 @@ function stubReply(text: string): void {
       ok: true,
       status: 200,
       async json() {
-        return { content: [{ type: 'text', text }] };
+        return { choices: [{ message: { content: text } }] };
       },
       async text() {
         return text;
@@ -54,7 +59,7 @@ function stubStatus(status: number): void {
       return {};
     },
     async text() {
-      return '{"error":{"type":"rate_limit_error"}}';
+      return '{"message":"rate limit exceeded","code":"rate_limit_exceeded"}';
     },
   }));
 }
@@ -88,8 +93,9 @@ describe('summariseCapabilities — what it sends', () => {
     await summarise();
 
     expect(seen).toHaveLength(1);
-    expect(seen[0].body.system).toBe('CAPABILITIES PROMPT');
-    const user = String((seen[0].body.messages as Array<{ content: string }>)[0].content);
+    const messages = seen[0].body.messages as Array<{ role: string; content: string }>;
+    expect(messages[0]).toEqual({ role: 'system', content: 'CAPABILITIES PROMPT' });
+    const user = String(messages[1].content);
     expect(user).toBe(
       [
         '<skills>',
@@ -113,14 +119,14 @@ describe('summariseCapabilities — what it sends', () => {
     await summarise();
     expect(seen[0].body.stream).toBe(false);
     expect(seen[0].body.temperature).toBe(0);
-    expect(seen[0].body.max_tokens).toBe(900);
+    expect(seen[0].body.max_completion_tokens).toBe(900);
   });
 
   it('says (none) rather than dropping a source a deployment does not have', async () => {
     // (none) flags an empty source as intentional; omitting the tag wouldn't.
     stubReply('- read the code');
     await summarise({ teamExpertise: '', pmIntegrations: '  ' });
-    const user = String((seen[0].body.messages as Array<{ content: string }>)[0].content);
+    const user = String((seen[0].body.messages as Array<{ content: string }>)[1].content);
     expect(user).toContain('<team>\n(none)\n</team>');
     expect(user).toContain('<integrations>\n(none)\n</integrations>');
   });

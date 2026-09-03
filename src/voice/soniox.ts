@@ -1,9 +1,9 @@
 /**
  * Soniox: speech out, and nothing else.
  *
- * Exists because Aura-2 has no Russian voice — Soniox `tts-rt-v2` speaks one voice across 64 languages, so it answers in both English and Russian.
+ * Chosen because Deepgram's Aura-2 has no Russian voice — Soniox `tts-rt-v2` speaks one voice across 64 languages, so it answers in both English and Russian.
  *
- * Only wire-level concerns differ from Aura (URL, auth, framing, chunk decoding); sentence emission, barge-in policy and output gating are shared elsewhere. Implements {@link SpeechSession}; knows nothing about meetings.
+ * Wire-level concerns only: URL, auth, framing, chunk decoding. Sentence emission, barge-in policy and output gating live above it. Implements {@link SpeechSession}; knows nothing about meetings.
  *
  * Never throws: audio-path failures (bad key, dropped socket, bad frame) log instead of killing the engine.
  *
@@ -13,7 +13,7 @@
  *  3. **No warm idle socket** — see {@link ensureLink}.
  * So: one stream per sentence starts audio early without risking a wedge; see {@link Round.queue} for why sentences are then serialised.
  *
- * **KNOWN QUIRK, NOT HANDLED: square brackets** — Soniox's inline audio-tag syntax; bracketed content in ordinary text is silently deleted, no error. Low exposure (only prose is spoken, not `CHAT:` ids/hashes). Fix in `prompts/voice-speaking.md`, not here — check Aura's brackets too, or fixing one vendor breaks the other.
+ * **KNOWN QUIRK, NOT HANDLED: square brackets** — Soniox's inline audio-tag syntax; bracketed content in ordinary text is silently deleted, no error. Low exposure (only prose is spoken, not `CHAT:` ids/hashes). Fix in `prompts/voice-speaking.md`, not here.
  */
 
 import WebSocket from 'ws';
@@ -26,7 +26,7 @@ const LOG = 'voice-soniox';
 /** Soniox's US endpoint, the default. Key is US-only — EU/JP 401 it; regions are separate deployments, separate credentials. Set `SONIOX_HOST` (+`DEEPGRAM_HOST`) once an EU key exists — EU measured faster from Europe (socket-open, round-trip). */
 const DEFAULT_SONIOX_HOST = 'tts-rt.soniox.com';
 
-/** Voice approved by a native Russian speaker, incl. mixed Russian/English terms. Unlike Aura's `aura-2-orion-en`, this voice id isn't language-specific — language is a separate mandatory field, so one voice answers both. Test both languages before changing either. */
+/** Voice approved by a native Russian speaker, incl. mixed Russian/English terms. This voice id isn't language-specific — language is a separate mandatory field, so one voice answers both. Test both languages before changing either. */
 const TTS_MODEL = 'tts-rt-v2';
 const TTS_VOICE = 'Adrian';
 
@@ -41,12 +41,12 @@ function sonioxVoice(cfg: VoiceConfig): string {
 }
 
 /**
- * Raw little-endian PCM16 mono 24kHz, no container — measured headerless across 603 chunks (no RIFF/WAVE/Ogg/MPEG magic), unlike Aura's default `wav` (header strip needed). Pinned in the start frame, asserted in a test: a mismatch is the request's fault, not the decoder's.
+ * Raw little-endian PCM16 mono 24kHz, no container — measured headerless across 603 chunks (no RIFF/WAVE/Ogg/MPEG magic). Pinned in the start frame, asserted in a test: a mismatch is the request's fault, not the decoder's.
  */
 const AUDIO_FORMAT = 'pcm_s16le';
 const SAMPLE_RATE = 24000;
 
-/** Watchdog on progress, not total length — same value and reasoning as the Aura path. */
+/** Watchdog on progress, not total length: a stalled answer settles, a merely long one doesn't. */
 const AUDIO_WATCHDOG_MS = 6_000;
 
 /** Measured: once a stream has run, keepalives extend idle survival to 182s (vs 42s without) — headroom between sentences. Doesn't buy a warm socket at meeting start — see {@link ensureLink}. */
@@ -78,7 +78,6 @@ function safeForLog(text: string, cfg: VoiceConfig, max = 300): string {
   for (const secret of [
     cfg.sonioxApiKey,
     cfg.deepgramApiKey,
-    cfg.anthropicApiKey,
     ...(cfg.foreignSecrets ?? []),
   ]) {
     // Length floor: splitting on '' would mark every character.
@@ -92,7 +91,7 @@ function safeForLog(text: string, cfg: VoiceConfig, max = 300): string {
 /**
  * ISO 639-1 only, never omitted — omitted, `null`, `""` all reject as "Missing language"; BCP 47 forms like `en-US` are invalid too. Exactly two valid values.
  *
- * Choice is load-bearing: mixed Russian-with-English sent as `en` was judged non-native (accent 3/5) — the same failure that got Aura rejected for Russian; sent as `ru`, judged native.
+ * Choice is load-bearing: mixed Russian-with-English sent as `en` was judged non-native (accent 3/5); sent as `ru`, judged native.
  *
  * **Presence, not proportion:** any Cyrillic means Russian. Never a character count or majority vote — "Проблема в rate limiter." has 12 Latin vs 8 Cyrillic chars; a count would pick English and mangle the sentence.
  */
@@ -116,8 +115,8 @@ interface Utterance {
   id: string;
   text: string;
   language: string;
-  /** `say`'s `onSentenceComplete`: fires when this stream reports `terminated` (see {@link handleMessage}). Only `meeting.ts` passes this, for Soniox. */
-  onComplete?: () => void;
+  /** `say`'s `onSentenceComplete`: fires when this stream reports `terminated` (see {@link handleMessage}). */
+  onComplete: () => void;
 }
 
 type LinkState = 'idle' | 'connecting' | 'ready' | 'dead';
@@ -164,7 +163,7 @@ export function createSonioxSpeechSession(cfg: VoiceConfig): SpeechSession {
   }
 
   /**
-   * No warm socket — measured, not chosen: an unconfigured connection closes at ~10.4s regardless of keepalives, so Aura's "open, keep hot" shape doesn't exist here; an early connect is just dead by the first question.
+   * No warm socket — measured, not chosen: an unconfigured connection closes at ~10.4s regardless of keepalives, so an "open at session start, keep hot" shape doesn't exist here; an early connect is just dead by the first question.
    * Free substitute: `speak()` starts the connect; `meeting.ts` calls it before the model call, so the ~310ms handshake hides under the model's ~900ms-to-first-sentence. Once a stream runs, the socket holds (182s idle, keepalives) for reuse.
    */
   function ensureLink(): void {
@@ -217,7 +216,7 @@ export function createSonioxSpeechSession(cfg: VoiceConfig): SpeechSession {
 
   /**
    * `why`: set only when synthesis stopped early (stall, lost socket, rejection) — surfaces via {@link SpeechResult.incomplete}, so the caller knows the room heard less than the transcript says.
-   * `abort`/`close` settle with no `why` (matches Aura): the caller's own stop, already tracked.
+   * `abort`/`close` settle with no `why`: the caller's own stop, already tracked.
    */
   function settleRound(r: Round, why?: string): void {
     if (r.settled) return;
@@ -285,7 +284,7 @@ export function createSonioxSpeechSession(cfg: VoiceConfig): SpeechSession {
     }
 
     const r = round;
-    // Audio accepted only for the stream on the wire — that check alone makes barge-in safe without replacing the socket, unlike Aura. Cancel is a true discard: at most one non-active chunk arrives after (29-51ms, in flight), owned by nobody.
+    // Audio accepted only for the stream on the wire — that check alone makes barge-in safe without replacing the socket. Cancel is a true discard: at most one non-active chunk arrives after (29-51ms, in flight), owned by nobody.
     const active = r === null || r.settled ? null : r.active;
     const mine = active !== null && msg.stream_id === active.id;
 
@@ -316,7 +315,7 @@ export function createSonioxSpeechSession(cfg: VoiceConfig): SpeechSession {
       const finished = r.active;
       r.active = null;
       r.watchdog = stopTimer(r.watchdog);
-      if (finished !== null && finished.onComplete !== undefined) {
+      if (finished !== null) {
         guarded('sentence complete', finished.onComplete);
       }
       pump(r);
@@ -429,8 +428,8 @@ export function createSonioxSpeechSession(cfg: VoiceConfig): SpeechSession {
       ensureLink();
 
       return {
-        say(text: string, onSentenceComplete?: () => void): void {
-          // Sent as-is (matches Aura): the sentence emitter already sanitized it; a second pass here is just another place to get it wrong.
+        say(text: string, onSentenceComplete: () => void): void {
+          // Sent as-is: the sentence emitter already sanitized it; a second pass here is just another place to get it wrong.
           const spoken = text.trim();
           if (spoken.length === 0 || r.settled) return;
 
@@ -499,8 +498,8 @@ export function createSonioxSpeechSession(cfg: VoiceConfig): SpeechSession {
   }
 
   /**
-   * `cancel` stops the server generating, not just stops us playing — measured 105ms to termination (vs 139-152ms on Aura).
-   * Socket kept, deliberately, unlike Aura's replace-on-barge-in: there a stale flush could leak onto the next answer, but a cancelled stream's id is never active again — a straggler can't reach it, saving a handshake per barge-in.
+   * `cancel` stops the server generating, not just stops us playing — measured 105ms to termination.
+   * Socket kept rather than replaced: a cancelled stream's id is never active again, so a straggler can't reach the next answer, saving a handshake per barge-in.
    */
   function abortRound(r: Round): void {
     if (r.settled) return;

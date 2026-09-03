@@ -1,4 +1,4 @@
-// Split is at the wire only. Hold-back, CHAT:, Decision, bias-to-silence: shared code from live failures, re-exercised per synthesizer, not assumed.
+// The Soniox wire, and the shared speaking path over it: hold-back, CHAT:, Decision, bias-to-silence — all from live failures, exercised end to end rather than assumed.
 // Audio is Buffers of counted bytes, never a device — ws is stubbed; nothing here opens a socket, reaches a vendor, or makes a sound.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -108,24 +108,16 @@ vi.mock('ws', () => {
   return { default: FakeSocket, WebSocket: FakeSocket };
 });
 
-import { logger } from '../../system/logger.js';
 import { decideResponse } from '../comprehension.js';
-import { createSpeechSession, ttsProviderName } from '../speech.js';
+import { createSonioxSpeechSession } from '../soniox.js';
 import type { SpeechStream, VoiceConfig } from '../types.js';
 
-const base: VoiceConfig = {
-  deepgramApiKey: 'dg-key',
-  anthropicApiKey: 'anthropic-key',
-  botName: 'Archie',
-};
-
-const onDeepgram: VoiceConfig = base;
 const onSoniox: VoiceConfig = {
-  ...base,
-  ttsProvider: 'soniox',
+  deepgramApiKey: 'dg-key',
+  botName: 'Archie',
+  cerebrasApiKey: 'cerebras-key',
   sonioxApiKey: 'sx-test-key-long-enough',
 };
-const sonioxWithoutKey: VoiceConfig = { ...base, ttsProvider: 'soniox' };
 
 function latest(): DrivenSocket {
   const socket = sockets[sockets.length - 1];
@@ -135,10 +127,10 @@ function latest(): DrivenSocket {
 
 function speakOn(cfg: VoiceConfig, sentences: string[]) {
   const played: Buffer[] = [];
-  const session = createSpeechSession(cfg);
+  const session = createSonioxSpeechSession(cfg);
   const stream = session.speak((pcm) => played.push(pcm));
   latest().handshake();
-  for (const sentence of sentences) stream.say(sentence);
+  for (const sentence of sentences) stream.say(sentence, () => undefined);
   return { session, stream, socket: latest(), played };
 }
 
@@ -157,19 +149,8 @@ afterEach(() => {
   sockets.length = 0;
 });
 
-describe('choosing the synthesizer', () => {
-  it('stays on Deepgram when the config says nothing, dialling the Aura URL', () => {
-    // Exact match: a config with no opinion must reach the same endpoint it did before the knob existed.
-    expect(ttsProviderName(onDeepgram)).toBe('deepgram');
-    const session = createSpeechSession(onDeepgram);
-    expect(latest().url).toBe(
-      'wss://api.deepgram.com/v1/speak?model=aura-2-orion-en&encoding=linear16&sample_rate=24000&mip_opt_out=true',
-    );
-    session.close();
-  });
-
-  it('dials Soniox when the config selects it, with the approved model and voice', () => {
-    expect(ttsProviderName(onSoniox)).toBe('soniox');
+describe('the Soniox connection', () => {
+  it('dials Soniox with the approved model and voice, and nothing else', () => {
     const { socket, session } = speakOn(onSoniox, ['Done.']);
     expect(socket.url).toBe('wss://tts-rt.soniox.com/tts-websocket');
     // A native speaker approved this pairing, including a Russian sentence carrying English technical terms.
@@ -179,47 +160,9 @@ describe('choosing the synthesizer', () => {
     expect(socket.startFrames[0].audio_format).toBe('pcm_s16le');
     expect(socket.startFrames[0].sample_rate).toBe(24000);
     expect(socket.startFrames[0].api_key).toBe('sx-test-key-long-enough');
+    // Deepgram's socket is the listening one; nothing here may open a synthesis socket against it.
+    expect(sockets.some((sk) => new URL(sk.url).pathname === '/v1/speak')).toBe(false);
     session.close();
-  });
-
-  it('falls back to Deepgram when Soniox is named without a key, and says so', () => {
-    // A bot on the old voice beats going silent for the rest of the meeting.
-    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
-    expect(ttsProviderName(sonioxWithoutKey)).toBe('deepgram');
-    const session = createSpeechSession(sonioxWithoutKey);
-    expect(latest().url).toContain('api.deepgram.com');
-    expect(
-      warn.mock.calls.some((call) => String(call[1]).includes('SONIOX_API_KEY is not set')),
-    ).toBe(true);
-    session.close();
-  });
-
-  it('treats a whitespace-only key as no key at all', () => {
-    // `SONIOX_API_KEY=` in .env arrives empty; a stray space is the same mistake — neither authenticates at Soniox.
-    expect(ttsProviderName({ ...base, ttsProvider: 'soniox', sonioxApiKey: '   ' })).toBe(
-      'deepgram',
-    );
-  });
-
-  it('warns and defaults on a name that is not a synthesizer at all', () => {
-    // A connector hands down a whole VoiceConfig from its caller, so the guard must sit at the decision, not just the env parse.
-    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
-    const typo = { ...base, ttsProvider: 'soniix' } as unknown as VoiceConfig;
-    expect(ttsProviderName(typo)).toBe('deepgram');
-    expect(
-      warn.mock.calls.some((call) => String(call[1]).includes('not a known voice synthesizer')),
-    ).toBe(true);
-  });
-
-  it('never opens a Soniox socket on the Deepgram path', () => {
-    // "Untouched" includes not paying for a Soniox connection it doesn't use.
-    const session = createSpeechSession(onDeepgram);
-    const stream = session.speak(() => undefined);
-    stream.say('The deploy finished at noon.');
-    stream.abort();
-    session.close();
-    // Anchored on the parsed hostname rather than a substring of the URL: `includes('deepgram.com')` also accepts a host that merely contains it, so it would pass on a Soniox URL carrying that string anywhere — which is the whole thing this test denies.
-    expect(sockets.every((s) => /(^|\.)deepgram\.com$/.test(new URL(s.url).hostname))).toBe(true);
   });
 });
 
@@ -237,7 +180,7 @@ describe('the language Soniox is told to speak', () => {
   });
 
   it('asks for Russian for Russian carrying English technical terms', () => {
-    // Sent as `en`, a native speaker judged this non-native (English L1, accent 3/5) — the failure that got the prior synthesizer rejected; as `ru`, native.
+    // Sent as `en`, a native speaker judged this non-native (English L1, accent 3/5); as `ru`, native.
     const { socket, session } = speakOn(onSoniox, [
       'Проблема в rate limiter на API gateway, он отдавал 429.',
     ]);
@@ -300,7 +243,7 @@ describe('the Soniox text frame', () => {
 describe('the Soniox socket', () => {
   it('does not connect until there is an answer to speak', () => {
     // Streamless connections close at ~10.4s regardless of keepalives (measured); `speak()` runs the handshake before the model call, so a meeting-start socket wouldn't die before the first question.
-    const session = createSpeechSession(onSoniox);
+    const session = createSonioxSpeechSession(onSoniox);
     expect(sockets.length).toBe(0);
     session.speak(() => undefined);
     expect(sockets.length).toBe(1);
@@ -356,18 +299,18 @@ describe('the Soniox socket', () => {
   });
 
   it('never lets a cancelled stream leak into the next answer', async () => {
-    // Barge-in stays safe without replacing the socket (unlike Aura, where a stale flush confirmation would truncate the next answer): audio is bound to `stream_id`, so a straggler can't reach it.
+    // Barge-in stays safe without replacing the socket: audio is bound to `stream_id`, so a straggler can't reach it.
     const played: Buffer[] = [];
-    const session = createSpeechSession(onSoniox);
+    const session = createSonioxSpeechSession(onSoniox);
     const first = session.speak(() => played.push(Buffer.alloc(1)));
     latest().handshake();
-    first.say('Interrupted.');
+    first.say('Interrupted.', () => undefined);
     const socket = latest();
     first.abort();
 
     const second: Buffer[] = [];
     const next = session.speak((pcm) => second.push(pcm));
-    next.say('The room asked again.');
+    next.say('The room asked again.', () => undefined);
 
     socket.audio('s1', 999);
     expect(second).toEqual([]);
@@ -410,13 +353,13 @@ describe('the Soniox socket', () => {
 
   it('survives the idle close between two questions without failing an answer', async () => {
     // The ~182s idle close lands in the quiet between questions far more often than during one — failing there breaks a quiet meeting, so the next sentence just reconnects.
-    const session = createSpeechSession(onSoniox);
+    const session = createSonioxSpeechSession(onSoniox);
     const stream = session.speak(() => undefined);
     const first = latest();
     first.handshake();
     first.serverClose();
 
-    stream.say('Still here.');
+    stream.say('Still here.', () => undefined);
     const second = latest();
     expect(second).not.toBe(first);
     second.handshake();
@@ -445,8 +388,8 @@ describe('the Soniox socket', () => {
 
 const encoder = new TextEncoder();
 
-function anthropicDelta(text: string): string {
-  const event = { type: 'content_block_delta', delta: { type: 'text_delta', text } };
+function cerebrasDelta(text: string): string {
+  const event = { choices: [{ delta: { content: text }, index: 0 }] };
   return `data: ${JSON.stringify(event)}\n`;
 }
 
@@ -460,7 +403,7 @@ function openStream() {
   vi.stubGlobal('fetch', async () => ({ ok: true, status: 200, body, text: async () => '' }));
   return {
     push(text: string): void {
-      controller?.enqueue(encoder.encode(anthropicDelta(text)));
+      controller?.enqueue(encoder.encode(cerebrasDelta(text)));
     },
     fail(why: string): void {
       controller?.error(new Error(why));
@@ -482,13 +425,13 @@ async function settle(): Promise<void> {
 function decideInto(stream: SpeechStream) {
   return decideResponse(onSoniox, {
     transcript: 'Ann: Archie, what happened with the deploy?',
-    onSentence: (text) => stream.say(text),
+    onSentence: (text) => stream.say(text, () => undefined),
   });
 }
 
 describe('the shared speaking path, on Soniox', () => {
   it('never puts the SILENCE token on the wire, one character at a time', async () => {
-    const session = createSpeechSession(onSoniox);
+    const session = createSonioxSpeechSession(onSoniox);
     const stream = session.speak(() => undefined);
     latest().handshake();
 
@@ -509,7 +452,7 @@ describe('the shared speaking path, on Soniox', () => {
   });
 
   it('never puts the CHAT payload on the wire, one character at a time', async () => {
-    const session = createSpeechSession(onSoniox);
+    const session = createSonioxSpeechSession(onSoniox);
     const stream = session.speak(() => undefined);
     latest().handshake();
     const socket = latest();
@@ -537,7 +480,7 @@ describe('the shared speaking path, on Soniox', () => {
   });
 
   it('speaks: the sentence reaches the wire while the reply is still being written', async () => {
-    const session = createSpeechSession(onSoniox);
+    const session = createSonioxSpeechSession(onSoniox);
     const stream = session.speak(() => undefined);
     latest().handshake();
     const socket = latest();
@@ -559,7 +502,7 @@ describe('the shared speaking path, on Soniox', () => {
 
   it('reports a stream that died mid-reply as failed, not as silence', async () => {
     // Recording a mid-stream death as "decided to say nothing" discharges the debt and loses the words already heard.
-    const session = createSpeechSession(onSoniox);
+    const session = createSonioxSpeechSession(onSoniox);
     const stream = session.speak(() => undefined);
     latest().handshake();
     const socket = latest();

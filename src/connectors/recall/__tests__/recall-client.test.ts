@@ -44,7 +44,6 @@ function fakeFetch(url: string | URL, init?: RequestInit): Promise<Response> {
 // Clears the scrubber's 8-char floor; mutually non-overlapping so no leak is mistaken for another's.
 const voice: VoiceConfig = {
   deepgramApiKey: 'deepgram-secret-key-0000',
-  anthropicApiKey: 'anthropic-secret-key-111',
   botName: 'Archie',
   cerebrasApiKey: 'cerebras-secret-key-2222',
   sonioxApiKey: 'soniox-secret-key-33333',
@@ -234,7 +233,6 @@ describe('recall client — credential redaction', () => {
         echo: {
           authorization: 'Token recall-secret-key-44444',
           deepgram: 'deepgram-secret-key-0000',
-          anthropic: 'anthropic-secret-key-111',
           soniox: 'soniox-secret-key-33333',
           cerebras: 'cerebras-secret-key-2222',
         },
@@ -248,7 +246,6 @@ describe('recall client — credential redaction', () => {
     for (const secret of [
       'recall-secret-key-44444',
       'deepgram-secret-key-0000',
-      'anthropic-secret-key-111',
       'soniox-secret-key-33333',
       'cerebras-secret-key-2222',
     ]) {

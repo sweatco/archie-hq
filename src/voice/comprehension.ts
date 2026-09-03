@@ -9,17 +9,13 @@
  *
  *  1. **Every failure biases to silence.** Timeout, bad status, unparseable reply, missing prompt file all resolve to `false` / `null` / `''`; none throws.
  *  2. **The prompts are the contract, not this file.** Reasoning lives in `prompts/voice-addressing.md`, `prompts/voice-triage.md`, `prompts/voice-speaking.md`, `prompts/voice-capabilities.md`; this module only loads, frames, and parses. No prompt prose in TypeScript.
- *
- * Two providers ({@link ModelProvider}), Anthropic default and fallback, selected by config.
  */
 
 import { logger } from '../system/logger.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
-import type { ModelProviderName, RosterEntry, VoiceConfig, WrittenLine } from './types.js';
+import type { RosterEntry, VoiceConfig, WrittenLine } from './types.js';
 
 const LOG = 'voice-comprehension';
-
-const ANTHROPIC_VERSION = '2023-06-01';
 
 /** How much of a failing response body reaches the log. */
 const MAX_ERROR_BODY = 500;
@@ -31,7 +27,7 @@ const ADDRESSING_MAX_TOKENS = 64;
 /**
  * A guard against a hung socket, not a latency budget — every ms of this call is silence before Archie's first word.
  *
- * 1500ms clears the two measured bounds by ~250ms: admission latency (slow mode ~1150ms) plus generation (capped at {@link TRIAGE_MAX_TOKENS}, ≤103ms). Same deadline for both providers.
+ * 1500ms clears the two measured bounds by ~250ms: admission latency (slow mode ~1150ms) plus generation (capped at {@link TRIAGE_MAX_TOKENS}, ≤103ms).
  *
  * Copied in `tools/voice-cases/triage.mjs` as `PRODUCTION_TRIAGE_DEADLINE_MS`; `triage.test.ts` reads this source and fails on drift.
  */
@@ -172,8 +168,7 @@ export async function wasAddressed(
     '</utterance>',
   ].join('\n');
 
-  const provider = modelProvider(cfg);
-  const raw = await callModel(provider, {
+  const raw = await callModel({
     cfg,
     label: 'addressing',
     system,
@@ -190,7 +185,7 @@ export async function wasAddressed(
   const addressed = parseAddressed(raw);
   logger.debug(
     LOG,
-    `Addressing gate: ${addressed ? 'ADDRESSED' : 'not addressed'} in ${elapsed}ms via ${provider.name}`
+    `Addressing gate: ${addressed ? 'ADDRESSED' : 'not addressed'} in ${elapsed}ms`
   );
   return addressed;
 }
@@ -240,8 +235,7 @@ export async function runTriageGate(
     return null;
   }
 
-  const provider = modelProvider(cfg);
-  const raw = await callModel(provider, {
+  const raw = await callModel({
     cfg,
     label: 'triage',
     system,
@@ -255,7 +249,7 @@ export async function runTriageGate(
     // callModel already logged the cause; this is the consequence.
     logger.warn(
       LOG,
-      `Triage gate: no verdict in ${elapsed}ms via ${provider.name} — this turn runs exactly as it would with no triage at all`
+      `Triage gate: no verdict in ${elapsed}ms — this turn runs exactly as it would with no triage at all`
     );
     return null;
   }
@@ -264,7 +258,7 @@ export async function runTriageGate(
   if (verdict === null) {
     logger.warn(
       LOG,
-      `Triage gate: unusable reply in ${elapsed}ms via ${provider.name}, so this turn runs exactly as it would with no triage at all: ${raw.slice(0, 120)}`
+      `Triage gate: unusable reply in ${elapsed}ms, so this turn runs exactly as it would with no triage at all: ${raw.slice(0, 120)}`
     );
     return null;
   }
@@ -272,7 +266,7 @@ export async function runTriageGate(
   const withPreamble = verdict.preamble === undefined ? '' : ' with a preamble';
   logger.debug(
     LOG,
-    `Triage gate: ${verdict.where}${withPreamble} in ${elapsed}ms via ${provider.name}`
+    `Triage gate: ${verdict.where}${withPreamble} in ${elapsed}ms`
   );
   return verdict;
 }
@@ -333,9 +327,7 @@ export async function decideResponse(
 
   const emitter = opts.onSentence === undefined ? null : new SentenceEmitter(opts.onSentence);
   let firstSentenceAt: number | null = null;
-  const provider = modelProvider(cfg);
   const streamed = await streamModel(
-    provider,
     {
       cfg,
       label: 'speaking',
@@ -443,7 +435,7 @@ export type SpeakingPlacement = 'guidance-first' | 'data-first';
 const PLACEMENT_ENV = 'ARCHIE_VOICE_PROMPT_PLACEMENT';
 
 /**
- * Which arm is selected. An unrecognised value is a typo, not an instruction — reported and ignored, same treatment `parseModelProvider` gives `ARCHIE_VOICE_MODEL_PROVIDER` in `index.ts`: silently reading `data_first` as "default" would look like the switch working while a run collected against the wrong arm.
+ * Which arm is selected. An unrecognised value is a typo, not an instruction — reported and ignored: silently reading `data_first` as "default" would look like the switch working while a run collected against the wrong arm.
  *
  * Pure in its argument; only its caller, {@link assembleSpeakingRequest}, reads the environment.
  */
@@ -708,8 +700,7 @@ export async function summariseCapabilities(
     '</integrations>',
   ].join('\n');
 
-  const provider = modelProvider(cfg);
-  const raw = await callModel(provider, {
+  const raw = await callModel({
     cfg,
     label: 'capabilities',
     system,
@@ -723,7 +714,7 @@ export async function summariseCapabilities(
     // callModel already logged the cause; this line is the consequence.
     logger.warn(
       LOG,
-      `No capability summary after ${elapsed}ms via ${provider.name} — this meeting runs with no capability block, exactly as it would before this call existed`,
+      `No capability summary after ${elapsed}ms — this meeting runs with no capability block, exactly as it would before this call existed`,
     );
     return '';
   }
@@ -731,7 +722,7 @@ export async function summariseCapabilities(
   const summary = raw.trim();
   logger.debug(
     LOG,
-    `Capability summary: ${summary.length} chars from ${skills.length} skill description(s) in ${elapsed}ms via ${provider.name}`,
+    `Capability summary: ${summary.length} chars from ${skills.length} skill description(s) in ${elapsed}ms`,
   );
   return summary;
 }
@@ -1076,7 +1067,7 @@ function parseAddressed(raw: string): boolean {
  *
  * Braces are located rather than the whole string parsed, same reason as {@link parseAddressed}: bare JSON can arrive wrapped in a code fence. A `where` outside {@link TRIAGE_WHERE} is rejected, not coerced — rounding to the nearest verdict would put a guess where a fail-safe belongs.
  *
- * Logging is the caller's — it has the elapsed time and provider.
+ * Logging is the caller's — it has the elapsed time.
  */
 function parseTriage(raw: string): TriageVerdict | null {
   const open = raw.indexOf('{');
@@ -1134,7 +1125,7 @@ function toSpeech(text: string): string {
     .trim();
 }
 
-/** Common request arguments for both model calls, whoever serves them. */
+/** Common request arguments for every model call. */
 interface ModelCall {
   cfg: VoiceConfig;
   label: string;
@@ -1144,194 +1135,85 @@ interface ModelCall {
   timeoutMs: number;
 }
 
-/** Everything that differs between the two providers, nothing that doesn't — shared behaviour above (bias to silence, {@link SentenceEmitter}'s hold-back, timeouts, the sanitiser, {@link Decision}'s three arms) stays shared, not reimplemented per provider. */
-interface ModelProvider {
-  readonly name: ModelProviderName;
-  readonly model: string;
-  readonly url: string;
-  /** Auth, and whatever else the provider requires on every request. */
-  headers(cfg: VoiceConfig): Record<string, string>;
-  /** The provider-shaped request body. */
-  body(args: ModelCall, stream: boolean): Record<string, unknown>;
-  /** Text out of a non-streaming reply. Empty when the reply carried none. */
-  textFrom(payload: unknown): string;
-  /** Text out of one SSE `data:` payload, prefix stripped. Null for every non-text frame (keep-alives, role/usage frames, end-of-stream sentinels, any later frame type) — both providers' versioning policies require these be ignored, not treated as a failure. */
-  deltaFrom(payload: string): string | null;
-}
-
 /**
- * Claude Haiku 4.5 via the Anthropic Messages API. Default and fallback — the Cerebras account reaches only two models, with no in-provider fallback of its own.
- *
- * No `cache_control` here. Claude Haiku 4.5 needs a cacheable prefix of at least 4,096 tokens (Sonnet 5: 1,024, Opus 5: 512); below that, uncached with no error — a silent failure. The prefix here, `voice-speaking.md`'s system prompt, sits under that floor.
- *
- * Measured: a 4,828-token cache read gave ~818ms time-to-first-byte vs. ~640ms uncached — no latency gained, some cost. Time-to-first-token is flat with input size (+2.3ms/1000 tokens, R²=0.000, n=156).
- */
-const ANTHROPIC: ModelProvider = {
-  name: 'anthropic',
-  model: 'claude-haiku-4-5-20251001',
-  url: 'https://api.anthropic.com/v1/messages',
-
-  headers: (cfg) => ({
-    'content-type': 'application/json',
-    'x-api-key': cfg.anthropicApiKey,
-    'anthropic-version': ANTHROPIC_VERSION,
-  }),
-
-  body: (args, stream) => ({
-    model: ANTHROPIC.model,
-    max_tokens: args.maxTokens,
-    // Both calls judge a fixed transcript, not write creatively — a reproducible answer is easier to debug from the activation log.
-    temperature: 0,
-    stream,
-    // Top-level, not a message: that is the Messages API's shape.
-    system: args.system,
-    messages: [{ role: 'user', content: args.user }],
-  }),
-
-  textFrom: (payload) => {
-    const reply = payload as { content?: Array<{ type?: string; text?: string }> };
-    return (reply.content ?? [])
-      .filter((block) => block?.type === 'text')
-      .map((block) => block.text ?? '')
-      .join('')
-      .trim();
-  },
-
-  deltaFrom: (payload) => {
-    let event: {
-      type?: string;
-      delta?: { type?: string; text?: string };
-      error?: { type?: string; message?: string };
-    };
-    try {
-      event = JSON.parse(payload) as typeof event;
-    } catch {
-      return null; // One unreadable frame is not worth losing the answer over.
-    }
-
-    if (event.type === 'error') {
-      // An in-band `error` event arrives on a 200 — the only place an Anthropic overload surfaces. Null means no text, which the reader turns into a failure.
-      logger.error(
-        LOG,
-        `Anthropic stream error: ${event.error?.type ?? 'unknown'} ${event.error?.message ?? ''}`.trim()
-      );
-      return null;
-    }
-    if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
-      return event.delta.text ?? null;
-    }
-    return null;
-  },
-};
-
-/**
- * Cerebras `gemma-4-31b` over their OpenAI-compatible endpoint. Faster, cheaper alternative to Anthropic, selected by config.
+ * Cerebras `gemma-4-31b` over their OpenAI-compatible endpoint.
  *
  * Measured on the wire:
  *
- *  - Errors are a real HTTP status, never in-band (opposite Anthropic's 200-with-`error`-event) — `response.ok` catches every shape; the in-band branch below exists for symmetry, unfired.
- *  - Error body is flat — `{message, type, param, code}` — vs. Anthropic's nested `error`.
+ *  - Errors are a real HTTP status, never in-band — `response.ok` catches every shape; the in-band branch in {@link deltaFrom} exists because an OpenAI-compatible stream may carry one, unfired.
+ *  - Error body is flat: `{message, type, param, code}`.
  *  - `stream: true` sends an empty role frame, a final `delta: {}` with `finish_reason`, a usage-only frame, then `data: [DONE]` — all four fall through to null.
- *  - Mid-stream death: fetch or reader rejects, same as Anthropic — `failed` in {@link Decision} is provider-independent.
  *  - Server time is ~5ms of a 190ms call; latency is network, not the request body.
  */
-const CEREBRAS: ModelProvider = {
-  name: 'cerebras',
-  model: 'gemma-4-31b',
-  url: 'https://api.cerebras.ai/v1/chat/completions',
+const MODEL = 'gemma-4-31b';
+const MODEL_URL = 'https://api.cerebras.ai/v1/chat/completions';
 
-  headers: (cfg) => ({
+/** Named in the log lines and in {@link StreamOutcome}'s `why`, so a run of failures reads as a vendor problem rather than a prompt one. */
+const VENDOR = 'cerebras';
+
+function requestHeaders(cfg: VoiceConfig): Record<string, string> {
+  return {
     'content-type': 'application/json',
-    // Empty, not absent, when unset — can't happen: the resolver refuses to select this provider without a key.
-    authorization: `Bearer ${cfg.cerebrasApiKey ?? ''}`,
-  }),
+    authorization: `Bearer ${cfg.cerebrasApiKey}`,
+  };
+}
 
-  body: (args, stream) => ({
-    model: CEREBRAS.model,
+function requestBody(args: ModelCall, stream: boolean): Record<string, unknown> {
+  return {
+    model: MODEL,
     // Both names accepted, behave identically (verified); this is current, `max_tokens` is the deprecated alias.
     max_completion_tokens: args.maxTokens,
+    // Both calls judge a fixed transcript, not write creatively — a reproducible answer is easier to debug from the activation log.
     temperature: 0,
     stream,
-    // A message with the system role, not a top-level field. Same prompt text.
+    // A message with the system role, not a top-level field.
     messages: [
       { role: 'system', content: args.system },
       { role: 'user', content: args.user },
     ],
-  }),
+  };
+}
 
-  textFrom: (payload) => {
-    const reply = payload as { choices?: Array<{ message?: { content?: string } }> };
-    return (reply.choices ?? [])
-      .map((choice) => choice?.message?.content ?? '')
-      .join('')
-      .trim();
-  },
+/** Text out of a non-streaming reply. Empty when the reply carried none. */
+function textFrom(payload: unknown): string {
+  const reply = payload as { choices?: Array<{ message?: { content?: string } }> };
+  return (reply.choices ?? [])
+    .map((choice) => choice?.message?.content ?? '')
+    .join('')
+    .trim();
+}
 
-  deltaFrom: (payload) => {
-    // The documented end-of-stream sentinel, not JSON. Checked before the parse so it's a known frame, not an unreadable one.
-    if (payload === '[DONE]') {
-      return null;
-    }
-
-    let event: {
-      choices?: Array<{ delta?: { content?: string } }>;
-      message?: string;
-      code?: string;
-    };
-    try {
-      event = JSON.parse(payload) as typeof event;
-    } catch {
-      return null;
-    }
-
-    if (event.choices === undefined && typeof event.message === 'string') {
-      // Never observed — every provoked error came back as an HTTP status — but an OpenAI-compatible stream may carry one; noticing costs one branch. Null means no text, read as a failure.
-      logger.error(LOG, `Cerebras stream error: ${event.code ?? 'unknown'} ${event.message}`.trim());
-      return null;
-    }
-    return event.choices?.[0]?.delta?.content ?? null;
-  },
-};
-
-/** Warned once per process, so a misconfiguration says so without repeating. */
-let providerFallbackWarned = false;
-
-/**
- * Which provider serves this meeting's calls — the one decision, so a caller can't disagree with the row it writes to the activation log.
- *
- * Absent means Anthropic, today's default. A provider named without its key falls back rather than failing every call, and the warning says which happened.
- */
-function modelProvider(cfg: VoiceConfig): ModelProvider {
-  if (cfg.modelProvider !== 'cerebras') {
-    return ANTHROPIC;
-  } else if ((cfg.cerebrasApiKey ?? '').length > 0) {
-    return CEREBRAS;
-  } else {
-    if (!providerFallbackWarned) {
-      providerFallbackWarned = true;
-      logger.warn(
-        LOG,
-        'CEREBRAS_API_KEY is not set, so the voice model provider stays on Anthropic',
-      );
-    }
-    return ANTHROPIC;
+/** Text out of one SSE `data:` payload, prefix stripped. Null for every non-text frame (keep-alives, role/usage frames, the end-of-stream sentinel, any later frame type) — Cerebras's versioning policy requires these be ignored, not treated as a failure. */
+function deltaFrom(payload: string): string | null {
+  // The documented end-of-stream sentinel, not JSON. Checked before the parse so it's a known frame, not an unreadable one.
+  if (payload === '[DONE]') {
+    return null;
   }
+
+  let event: {
+    choices?: Array<{ delta?: { content?: string } }>;
+    message?: string;
+    code?: string;
+  };
+  try {
+    event = JSON.parse(payload) as typeof event;
+  } catch {
+    return null; // One unreadable frame is not worth losing the answer over.
+  }
+
+  if (event.choices === undefined && typeof event.message === 'string') {
+    // Never observed — every provoked error came back as an HTTP status — but an OpenAI-compatible stream may carry one; noticing costs one branch. Null means no text, read as a failure.
+    logger.error(LOG, `Cerebras stream error: ${event.code ?? 'unknown'} ${event.message}`.trim());
+    return null;
+  }
+  return event.choices?.[0]?.delta?.content ?? null;
 }
 
-/** The provider's name, for the activation log. See {@link ActivationLog.provider}. */
-export function modelProviderName(cfg: VoiceConfig): ModelProviderName {
-  return modelProvider(cfg).name;
-}
-
-function modelRequest(
-  provider: ModelProvider,
-  args: ModelCall,
-  stream: boolean,
-): RequestInit {
+function modelRequest(args: ModelCall, stream: boolean): RequestInit {
   return {
     method: 'POST',
-    headers: provider.headers(args.cfg),
-    body: JSON.stringify(provider.body(args, stream)),
+    headers: requestHeaders(args.cfg),
+    body: JSON.stringify(requestBody(args, stream)),
     signal: AbortSignal.timeout(args.timeoutMs),
   };
 }
@@ -1339,7 +1221,7 @@ function modelRequest(
 /**
  * Either the whole reply, or why it never arrived.
  *
- * The reason travels rather than being logged and dropped: it ends up in the activation-log row. "The decision failed" and "anthropic returned 529" are the same event to the room but very different ones to the corpus — naming the provider lets a run of failures read as a provider problem, not a prompt one.
+ * The reason travels rather than being logged and dropped: it ends up in the activation-log row. "The decision failed" and "cerebras returned 529" are the same event to the room but very different ones to the corpus — naming the vendor lets a run of failures read as a vendor problem, not a prompt one.
  */
 type StreamOutcome =
   | { ok: true; text: string }
@@ -1360,19 +1242,18 @@ function describeError(error: unknown): string {
  *
  * A sentence handed over the moment it's complete moves first-sound off the tail of full generation and onto the tail of the first sentence.
  *
- * On Cerebras that overlap nearly vanishes — the whole reply lands ~55ms after the first token — but this stays streaming on both providers: {@link SentenceEmitter} is a correctness mechanism, not a latency one, withholding the silence token and chat payload from speech structurally. A non-streaming path would bypass that reasoning.
+ * On Cerebras that overlap nearly vanishes — the whole reply lands ~55ms after the first token — but this stays streaming regardless: {@link SentenceEmitter} is a correctness mechanism, not a latency one, withholding the silence token and chat payload from speech structurally. A non-streaming path would bypass that reasoning.
  *
  * Never throws and never logs the API key.
  */
 async function streamModel(
-  provider: ModelProvider,
   args: ModelCall,
   onDelta: (text: string) => void,
 ): Promise<StreamOutcome> {
-  const who = provider.name;
+  const who = VENDOR;
   try {
-    const response = await fetch(provider.url, modelRequest(provider, args, true));
-    // Where all but one failure shape lands on both providers; see the in-band branch in each `deltaFrom` for Anthropic's exception.
+    const response = await fetch(MODEL_URL, modelRequest(args, true));
+    // Where every failure shape lands; see the in-band branch in {@link deltaFrom} for the one an OpenAI-compatible stream could carry instead.
     if (!response.ok) {
       const body = (await response.text().catch(() => '')).slice(0, MAX_ERROR_BODY);
       logger.error(LOG, `${args.label}: ${who} returned ${response.status} — ${body}`);
@@ -1396,7 +1277,7 @@ async function streamModel(
         buffer += decoder.decode(value, { stream: true });
         let cut = buffer.indexOf('\n');
         while (cut !== -1) {
-          const delta = dataFrameFrom(provider, buffer.slice(0, cut));
+          const delta = dataFrameFrom(buffer.slice(0, cut));
           buffer = buffer.slice(cut + 1);
           if (delta !== null) {
             text += delta;
@@ -1422,10 +1303,8 @@ async function streamModel(
   }
 }
 
-/**
- * Unwrap one SSE line to its `data:` payload and ask the provider what text is in it, if any. Framing is shared — measurably the same on both providers; see {@link ModelProvider}.
- */
-function dataFrameFrom(provider: ModelProvider, line: string): string | null {
+/** Unwrap one SSE line to its `data:` payload and ask {@link deltaFrom} what text is in it, if any. */
+function dataFrameFrom(line: string): string | null {
   const trimmed = line.trimEnd();
   if (!trimmed.startsWith('data:')) {
     return null;
@@ -1434,7 +1313,7 @@ function dataFrameFrom(provider: ModelProvider, line: string): string | null {
   if (payload.length === 0) {
     return null;
   }
-  return provider.deltaFrom(payload);
+  return deltaFrom(payload);
 }
 
 /**
@@ -1444,14 +1323,14 @@ function dataFrameFrom(provider: ModelProvider, line: string): string | null {
  *
  * Never throws and never logs the API key.
  */
-async function callModel(provider: ModelProvider, args: ModelCall): Promise<string | null> {
-  const who = provider.name;
+async function callModel(args: ModelCall): Promise<string | null> {
+  const who = VENDOR;
   try {
-    const response = await fetch(provider.url, modelRequest(provider, args, false));
+    const response = await fetch(MODEL_URL, modelRequest(args, false));
 
     if (response.ok) {
       // Parsing the body can throw on a truncated or non-JSON 200; the catch below turns that into the same "no" as everything else — the bias this whole module is built around.
-      const text = provider.textFrom(await response.json());
+      const text = textFrom(await response.json());
       if (text.length === 0) {
         logger.warn(LOG, `${args.label}: ${who} returned no text content`);
         return null;

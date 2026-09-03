@@ -9,15 +9,16 @@ import { decideResponse } from '../comprehension.js';
 
 const cfg = {
   deepgramApiKey: 'd',
-  anthropicApiKey: 'a',
   botName: 'Archie',
+  cerebrasApiKey: 'cerebras-key',
+  sonioxApiKey: 'soniox-key',
 };
 
 const encoder = new TextEncoder();
 
-/** One `content_block_delta` frame, newline-terminated per SSE. */
+/** One `chat.completion.chunk` frame, newline-terminated per SSE. */
 function sseDelta(text: string): string {
-  const event = { type: 'content_block_delta', delta: { type: 'text_delta', text } };
+  const event = { choices: [{ delta: { content: text }, index: 0 }] };
   return `data: ${JSON.stringify(event)}\n`;
 }
 

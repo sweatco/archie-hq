@@ -438,8 +438,9 @@ function config(over: Partial<RecallConfig> = {}): RecallConfig {
     publicUrl: 'https://archie.example',
     voice: {
       deepgramApiKey: 'deepgram-secret-key-0000',
-      anthropicApiKey: 'anthropic-secret-key-111',
       botName: 'Archie',
+      cerebrasApiKey: 'cerebras-secret-key-2222',
+      sonioxApiKey: 'soniox-secret-key-33333',
     },
     ...over,
   };

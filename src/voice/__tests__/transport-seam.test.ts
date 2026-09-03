@@ -57,9 +57,8 @@ vi.mock('../deepgram.js', () => ({
   },
 }));
 
-vi.mock('../speech.js', () => ({
-  ttsProviderName: () => 'deepgram',
-  createSpeechSession: () => ({
+vi.mock('../soniox.js', () => ({
+  createSonioxSpeechSession: () => ({
     speak(onPcm: (pcm: Buffer) => void) {
       let aborted = false;
       let bytes = 0;
@@ -103,7 +102,6 @@ vi.mock('../comprehension.js', () => {
     (speech.match(/[^.!?]+[.!?]*/g) ?? []).map((s) => s.trim()).filter((s) => s.length > 0);
 
   return {
-    modelProviderName: () => 'anthropic',
     wasAddressed: async () => false,
     // Null verdict mirrors the gate's fail-safe — transport here, gate wiring in room-silence.test.ts.
     runTriageGate: async () => null,
@@ -127,8 +125,9 @@ vi.mock('../comprehension.js', () => {
 
 const cfg: VoiceConfig = {
   deepgramApiKey: 'd',
-  anthropicApiKey: 'a',
   botName: 'Archie',
+  cerebrasApiKey: 'cerebras-key',
+  sonioxApiKey: 'soniox-key',
 };
 
 // Typed as AudioSink, not cast: omitting setEngaged is checked against the real contract.

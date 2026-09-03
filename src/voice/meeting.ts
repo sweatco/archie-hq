@@ -6,7 +6,6 @@ import { WORKDIR } from '../system/workdir.js';
 // Aliased on import -- `Response` is also a global here (undici's).
 import {
   decideResponse,
-  modelProviderName,
   runTriageGate,
   wasAddressed,
   type Decision,
@@ -15,16 +14,14 @@ import {
   type TriageVerdict,
 } from './comprehension.js';
 import { openTurnStream, type TurnEvent, type TurnStream } from './deepgram.js';
-import { createSpeechSession, ttsProviderName } from './speech.js';
+import { createSonioxSpeechSession } from './soniox.js';
 import type {
   ActivationLog,
   MeetingHost,
-  ModelProviderName,
   Participant,
   RosterEntry,
   SpeechSession,
   SpeechStream,
-  TtsProviderName,
   Utterance,
   VoiceConfig,
   VoiceTransport,
@@ -33,7 +30,7 @@ import type {
 
 const LOG = 'voice-meeting';
 
-// 3h backstop, well within Cerebras' 131,072-token context (the narrowest configured provider) -- a meeting's full context (transcript, prompt, written exchange) measures ~40k tokens (~31%) worst case.
+// 3h backstop, well within Cerebras' 131,072-token context -- a meeting's full context (transcript, prompt, written exchange) measures ~40k tokens (~31%) worst case.
 const TRANSCRIPT_WINDOW_MS = 3 * 60 * 60 * 1000;
 
 // Short, unlike SPEAKING_WINDOW_MS: widening it only adds chances to catch the name in an unaimed sentence and misfire -- voice-addressing.md treats false positives as the worst outcome.
@@ -159,11 +156,9 @@ export function isArchie(name: string | null, botName: string): boolean {
 // Rows are appended in settle order, not `at` order -- sort by `at` to read a meeting back in sequence.
 // `kind` is 'response' for a full speaking decision, 'candidate' when the addressing gate alone settled it. Optional fields are omitted, not empty, so presence is directly countable across the corpus.
 // A few (`pmDropped`, `speechUnconfirmed`, `preambleDropped`) are reason strings, not booleans, for the same reason -- nothing branches on their text; they're for whoever reads the log.
-interface TurnRow extends Omit<ActivationLog, 'candidate' | 'provider' | 'tts'> {
+interface TurnRow extends Omit<ActivationLog, 'candidate'> {
   kind: 'candidate' | 'response';
   candidate?: string;
-  provider: ModelProviderName;
-  tts: TtsProviderName;
   window?: string;
   // `suppressed` is the safe default, not proof the room heard nothing -- a turn cut off mid-answer defaults here too. See `speech` for what was actually heard.
   verdict: 'addressed' | 'suppressed' | 'error';
@@ -214,8 +209,6 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
   const variants = variantsFor(cfg.botName);
   // Captured before anything else per-meeting; see nextConsultId for why order matters.
   const meetingOrdinal = ++meetingSeq;
-  const provider = modelProviderName(cfg);
-  const tts = ttsProviderName(cfg);
 
   // Sanitised because this becomes a filename -- the transport supplies sessionId (Recall's is a UUID), but a path separator from an API response must not escape the log dir.
   const logDir = join(WORKDIR, 'voice-logs');
@@ -255,9 +248,6 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
   // Lets `stop()` reach into a turn already awaiting a model call or synthesis; set only while one is in flight.
   let abandonTurn: ((why: string) => void) | null = null;
 
-  // Soniox reports each sentence's completion; Aura structurally cannot. Tracks whether this meeting's synthesizer does, so `answerHeard` knows whether to trust that signal.
-  let sentenceBoundariesReported = false;
-
   let cutRevision = 0;
 
   let followUpTimer: NodeJS.Timeout | null = null;
@@ -279,7 +269,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
   // Opened eagerly so its connection cost isn't paid in front of the first word; null only if opening threw -- then every answer goes through `answerWithoutVoice`.
   let speech: SpeechSession | null = null;
   try {
-    speech = createSpeechSession(cfg);
+    speech = createSonioxSpeechSession(cfg);
   } catch (err) {
     logger.error(LOG, 'Could not open the speech session — nothing can be spoken', err);
   }
@@ -312,8 +302,6 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       at: new Date().toISOString(),
       sessionId,
       speaker,
-      provider,
-      tts,
       verdict: 'suppressed',
     };
   }
@@ -727,17 +715,8 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     let preambleHandedOver = false;
     let preambleEndOffset: number | null = null;
 
-    const answerHeard = (): boolean => {
-      if (!heardAnything) {
-        return false;
-      } else if (!preambleHandedOver) {
-        return true;
-      } else if (preambleEndOffset !== null) {
-        return pcmSentToSink > preambleEndOffset;
-      } else {
-        return !sentenceBoundariesReported;
-      }
-    };
+    const answerHeard = (): boolean =>
+      heardAnything && (!preambleHandedOver || (preambleEndOffset !== null && pcmSentToSink > preambleEndOffset));
 
     // `abort()` stops the synthesizer server-side, not just local playback -- otherwise audio keeps arriving until the sink's post-cut suppression gives up (Recall's `MAX_SUPPRESSION_MS`, audio-out.ts), and Archie resumes mid-word over someone else.
     const abandon = (why: string): void => {
@@ -778,7 +757,6 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
         try {
           stream?.say(text, () => {
             sentenceOffsets.push({ text, endOffset: pcmSentToSink });
-            sentenceBoundariesReported = true;
             onComplete?.();
           });
         } catch (err) {
@@ -1249,7 +1227,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
 
   logger.system(
     `Voice meeting ready for session ${sessionId} — ${variants.length} trigger variants, ` +
-    `${provider} comprehension, ${tts} speech, activation log at ${logPath}`,
+    `activation log at ${logPath}`,
   );
 
   return {
