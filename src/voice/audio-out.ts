@@ -1,7 +1,7 @@
 /**
  * Audio out — synthesized speech into the meeting. Recall renders a webpage as the bot's camera/mic; this module owns both: the server-side hub (queues, cuts playback) and the page HTML (`renderPage`).
  * PCM16 mono 24 kHz throughout — what Deepgram's TTS returns; no resampling anywhere.
- * Two rules gate the room, both by dropping bytes: the output gate (`AudioSink.setEnabled`) and post-barge-in suppression (stops a killed utterance resuming mid-word after `cut()`).
+ * One rule gates the room by dropping bytes: the output gate (`AudioSink.setEnabled`). What the room actually heard is never inferred here — the page's worklet counts the samples it renders and reports them back.
  */
 
 import type { RawData, WebSocket } from 'ws';
@@ -11,7 +11,7 @@ import type { AudioSink } from './types.js';
 
 const SAMPLE_RATE = 24000;
 
-/** Bytes of PCM16 mono 24 kHz per millisecond — the conversion `isSpeaking` runs on. */
+/** Bytes of PCM16 mono 24 kHz per millisecond — how the queue cap below and its drop line are stated in time. */
 const BYTES_PER_MS = (SAMPLE_RATE * 2) / 1000;
 
 /** `ws`'s `readyState` for OPEN, inlined to keep this module's `ws` dependency type-only — the hub never constructs a socket, only receives one. */
@@ -31,20 +31,11 @@ function engagedFrame(engaged: boolean): string {
 /** Cap on audio held while the page socket is down (~10s) — long enough for output media to start, short enough a page that never connects won't grow the heap forever. */
 const MAX_PENDING_BYTES = 10_000 * BYTES_PER_MS;
 
-/**
- * Grace period on the playback cursor: handed-over audio is still in the page's buffer, then Zoom's pipeline (~140ms round trip) — accounting reaches sentence-end slightly early.
- * `isSpeaking` gates barge-in — over-reporting leaves it armed too long (`cut()` on nothing is a no-op); under-reporting drops a real interruption. Errs high.
- */
-const PIPELINE_TAIL_MS = 200;
+/** Samples the worklet renders between reports (~170ms at 24 kHz) — the resolution of `isSpeaking` and of `played()` mid-utterance. A stop is reported at once, so the one reading that decides a record is exact. */
+const REPORT_SAMPLES = 4096;
 
-/**
- * Quiet gap ending post-cut suppression: TTS streams near-continuously, so a frame this late after the last drop is a new turn (nothing arrives sooner — that costs an LLM round trip + TTS startup).
- * Covers what `setEngaged(true)` can't: a barge-in answered by a follow-up turn with no engagement transition to un-suppress on.
- */
-const TURN_GAP_MS = 500;
-
-/** Absolute ceiling on suppression, in case neither other signal (engagement, the gap above) fires and the bot stays mute all meeting — speaking late beats never speaking. */
-const MAX_SUPPRESSION_MS = 5_000;
+/** How long `played()` waits for the exact count a stop asked the page for. Past it the last known count stands: under-counting is the safe direction, and no turn may hang on a page that has gone quiet. */
+const REPORT_TIMEOUT_MS = 500;
 
 export interface AudioOutHub {
   /** WS path the page connects to: /api/voice/out/:botId */
@@ -53,43 +44,26 @@ export interface AudioOutHub {
   dispose(botId: string): void;
 }
 
-/** Per-bot state: one output page, one playback cursor. */
+/** Per-bot state: one output page, and what it last said it had played. */
 interface OutChannel {
   socket: WebSocket | null;
   /** PCM queued while no page socket is open, oldest first. */
   pending: Buffer[];
   pendingBytes: number;
-  /** Wall-clock ms by which everything sent so far finishes playing. */
-  playbackDoneAt: number;
   /** The output gate. Closed until a meeting is live; see `setEnabled`. */
   enabled: boolean;
   /** Whether Archie owes the room something — the tile's green. See `setEngaged`. */
   engaged: boolean;
-  /** Bytes the closed gate has dropped, for one line when it next opens. */
-  closedDropBytes: number;
-  /** True between a `cut()` and the start of the next agent turn. */
-  suppressed: boolean;
-  /** When this suppression window opened — the ceiling is measured from here. */
-  suppressedSince: number;
-  /** Last frame dropped by it — the quiet gap is measured from here. */
-  lastDropAt: number;
-  /** Bytes it has swallowed, for one summary line when it closes. */
-  droppedBytes: number;
-  /**
-   * Cumulative PCM bytes handed to the socket, behind `AudioSink.playedBytes()`. Excludes `closedDropBytes`/`droppedBytes` — never reached the room, the over-claim `playedBytes()` exists to retire.
-   * Never decremented, even by `cut()` — see `silencedBytes`.
-   */
-  bytesSent: number;
-  /**
-   * Of `bytesSent`, how many are in the current uninterrupted run — reset to just this chunk whenever a send finds playback already caught up (incl. the first send after a `cut()`).
-   * Scopes `cut()` to the run it's ending, so silencing a short run can't reach an earlier, already-finished one.
-   */
-  currentRunBytes: number;
-  /**
-   * Of `bytesSent`, bytes `cut()` proved will never be heard: the still-unconfirmed tail when `STOP_FRAME` went out, frozen since the reset below erases the cursor `playedBytes()` would read it from.
-   * Only ever grows.
-   */
-  silencedBytes: number;
+  /** What pages before this one played. Each page counts from zero, so a reconnect opens a new epoch instead of continuing the old count. */
+  epochBase: number;
+  /** The current page's own last report: PCM bytes it has rendered into the room. */
+  lastPlayed: number;
+  /** Whether that report said sound was still coming out. */
+  playing: boolean;
+  /** A stop is out and the exact count answering it hasn't arrived — `played()` waits for it. */
+  awaitingReport: boolean;
+  /** `played()` calls parked on that report. */
+  waiting: Array<() => void>;
 }
 
 export function createAudioOutHub(): AudioOutHub {
@@ -103,19 +77,15 @@ export function createAudioOutHub(): AudioOutHub {
         socket: null,
         pending: [],
         pendingBytes: 0,
-        playbackDoneAt: 0,
         // Closed by default: a sink nobody has opened must never reach the room.
         enabled: false,
         // Grey by default: nothing is expected of Archie until it is named.
         engaged: false,
-        closedDropBytes: 0,
-        suppressed: false,
-        suppressedSince: 0,
-        lastDropAt: 0,
-        droppedBytes: 0,
-        bytesSent: 0,
-        currentRunBytes: 0,
-        silencedBytes: 0,
+        epochBase: 0,
+        lastPlayed: 0,
+        playing: false,
+        awaitingReport: false,
+        waiting: [],
       };
       channels.set(botId, channel);
     }
@@ -128,15 +98,22 @@ export function createAudioOutHub(): AudioOutHub {
     }
   }
 
-  function endSuppression(botId: string, channel: OutChannel, reason: string): void {
-    if (channel.suppressed) {
-      channel.suppressed = false;
-      logger.system(
-        `Voice: barge-in suppression for bot ${botId} ended (${reason}) after dropping ` +
-        `${Math.round(channel.droppedBytes / BYTES_PER_MS)}ms of agent audio`
-      );
-      channel.droppedBytes = 0;
+  /** Hands every parked `played()` the count it was waiting for. */
+  function settleWaiting(channel: OutChannel): void {
+    const parked = channel.waiting;
+    channel.waiting = [];
+    for (const resume of parked) {
+      resume();
     }
+  }
+
+  /** Banks the outgoing page's count. The next page counts from zero, holds none of its predecessor's buffer, and will never answer a stop the old one was sent. */
+  function startEpoch(channel: OutChannel): void {
+    channel.epochBase += channel.lastPlayed;
+    channel.lastPlayed = 0;
+    channel.playing = false;
+    channel.awaitingReport = false;
+    settleWaiting(channel);
   }
 
   function enqueue(botId: string, pcm: Buffer): void {
@@ -144,31 +121,11 @@ export function createAudioOutHub(): AudioOutHub {
 
     // Output gate, checked first: drops, not queues — a replayed stale answer is worse than none.
     if (!channel.enabled) {
-      channel.closedDropBytes += pcm.length;
       return;
-    }
-
-    if (channel.suppressed) {
-      const now = Date.now();
-      if (now - channel.lastDropAt >= TURN_GAP_MS) {
-        endSuppression(botId, channel, 'quiet gap, so this frame starts a new turn');
-      } else if (now - channel.suppressedSince >= MAX_SUPPRESSION_MS) {
-        endSuppression(botId, channel, 'ceiling reached');
-      } else {
-        // Not counted into `playbackDoneAt`: `isSpeaking()` must read false while silent, or the brain keeps firing `cut()` at ordinary side-talk, re-arming this forever.
-        channel.lastDropAt = now;
-        channel.droppedBytes += pcm.length;
-        return;
-      }
     }
 
     if (channel.socket && channel.socket.readyState === WS_OPEN) {
       channel.socket.send(pcm);
-      channel.currentRunBytes =
-        Date.now() > channel.playbackDoneAt ? pcm.length : channel.currentRunBytes + pcm.length;
-      channel.bytesSent += pcm.length;
-      // The page plays chunks back to back — a single advancing cursor models that exactly.
-      channel.playbackDoneAt = Math.max(Date.now(), channel.playbackDoneAt) + pcm.length / BYTES_PER_MS;
     } else {
       channel.pending.push(pcm);
       channel.pendingBytes += pcm.length;
@@ -203,25 +160,14 @@ export function createAudioOutHub(): AudioOutHub {
 
   function cut(botId: string): void {
     const channel = channelFor(botId);
-    // Freezes the still-unconfirmed tail — see `playedBytes` for why.
-    channel.silencedBytes += unconfirmedTailBytes(channel, Date.now());
     channel.pending = [];
     channel.pendingBytes = 0;
-    channel.playbackDoneAt = 0;
     if (channel.socket && channel.socket.readyState === WS_OPEN) {
-      // The page silences inside one audio quantum of receiving this.
+      // The page silences inside one audio quantum of receiving this, and answers it with an exact played count.
       channel.socket.send(STOP_FRAME);
+      channel.awaitingReport = true;
     }
-
-    // Silencing the page is only half a barge-in: the Voice Agent keeps handing us the rest of the utterance — without suppression, the next frame resumes it mid-word.
-    // A second cut in the same window mustn't restart the ceiling, or side-talk could hold the bot mute indefinitely.
-    const now = Date.now();
-    if (!channel.suppressed) {
-      channel.suppressed = true;
-      channel.suppressedSince = now;
-      channel.droppedBytes = 0;
-    }
-    channel.lastDropAt = now;
+    // Nothing here suppresses what arrives next: a killed utterance's later chunks never reach `play()` — `meeting.ts` returns before `safePlay` once the turn is abandoned — and its synthesizer is stopped server-side.
   }
 
   /** The coarse "there's a meeting" switch — opened once Recall attaches to our page. See {@link AudioSink.setEnabled}. */
@@ -231,20 +177,12 @@ export function createAudioOutHub(): AudioOutHub {
       // Transition only; re-opening an open gate does nothing.
       if (!channel.enabled) {
         channel.enabled = true;
-        const dropped = Math.round(channel.closedDropBytes / BYTES_PER_MS);
-        channel.closedDropBytes = 0;
-        logger.system(
-          `Voice: output gate opened for bot ${botId}` +
-          (dropped > 0 ? ` (the closed gate had dropped ${dropped}ms of agent audio)` : '')
-        );
+        logger.system(`Voice: output gate opened for bot ${botId}`);
       }
     } else {
       // Closing must silence the room now, not drain the queue — exactly what a barge-in does; reuse it.
       cut(botId);
       channel.enabled = false;
-      // The suppression `cut()` just armed guards one killed utterance; with the gate shut it guards nothing — carrying it forward would open the next exchange muted.
-      channel.suppressed = false;
-      channel.droppedBytes = 0;
       logger.system(`Voice: output gate closed for bot ${botId}`);
       // Nothing can be spoken through a shut gate, so any engagement it was showing is a claim we can no longer honour.
       setEngaged(botId, false);
@@ -262,11 +200,6 @@ export function createAudioOutHub(): AudioOutHub {
       sendEngaged(channel, engaged);
       logger.system(`Voice: bot ${botId} is ${engaged ? 'engaged with' : 'disengaged from'} the room`);
     }
-    if (engaged) {
-      // Being addressed means a fresh turn is coming — the precise un-suppress boundary a barge-in needs, no inference or timer.
-      // Runs even without a transition: re-engaging mid-exchange is still a new turn.
-      endSuppression(botId, channel, 'engaged with the room');
-    }
   }
 
   function isSpeaking(botId: string): boolean {
@@ -274,30 +207,38 @@ export function createAudioOutHub(): AudioOutHub {
     if (!channel) {
       return false;
     }
-    return channel.pendingBytes > 0 || Date.now() < channel.playbackDoneAt + PIPELINE_TAIL_MS;
+    return channel.pendingBytes > 0 || channel.playing;
   }
 
   /**
-   * Of the current run's bytes, how many aren't yet certainly past `PIPELINE_TAIL_MS` — same margin `isSpeaking` adds for "still speaking," here read as "not yet confirmed played."
-   * Clamped to `currentRunBytes`: the margin can outweigh a run shorter than it.
+   * `AudioSink.played()` — what the page says it rendered, plus what pages before it rendered.
+   * Waiting on an outstanding stop report is what makes the one reading that decides a record exact: the page counts to the sample it silenced at, and answers the stop with that number.
    */
-  function unconfirmedTailBytes(channel: OutChannel, atTime: number): number {
-    const raw = Math.max(0, channel.playbackDoneAt - atTime + PIPELINE_TAIL_MS) * BYTES_PER_MS;
-    return Math.min(channel.currentRunBytes, raw);
-  }
-
-  /**
-   * `AudioSink.playedBytes()` — like `isSpeaking`, same cursor/margin, but reversed: `isSpeaking` adds it (spurious `cut()`s are free); this subtracts it, since crediting an unheard byte is the defect this method retires.
-   *
-   * `silencedBytes` makes this hold across a `cut()`: resetting `playbackDoneAt` to 0 is correct for `isSpeaking` (must go false at once), but naively read here it'd credit the just-silenced tail as finished, since "unconfirmed" against a reset cursor is always ~0.
-   * `cut()` freezes that tail into `silencedBytes` first, so it stays excluded rather than credited the instant the cursor resets.
-   */
-  function playedBytes(botId: string): number {
+  function played(botId: string): Promise<number> {
     const channel = channels.get(botId);
     if (!channel) {
-      return 0;
+      return Promise.resolve(0);
     }
-    return channel.bytesSent - channel.silencedBytes - unconfirmedTailBytes(channel, Date.now());
+    const total = (): number => channel.epochBase + channel.lastPlayed;
+    if (!channel.awaitingReport) {
+      return Promise.resolve(total());
+    }
+    return new Promise<number>((resolve) => {
+      let settled = false;
+      // Past the timeout the last known count stands — under-counting is safe, and a page that has gone quiet must not hold a turn open.
+      const finish = (): void => {
+        if (!settled) {
+          settled = true;
+          resolve(total());
+        }
+      };
+      const giveUp = setTimeout(finish, REPORT_TIMEOUT_MS);
+      giveUp.unref();
+      channel.waiting.push(() => {
+        clearTimeout(giveUp);
+        finish();
+      });
+    });
   }
 
   return {
@@ -308,6 +249,8 @@ export function createAudioOutHub(): AudioOutHub {
       if (previous && previous !== ws) {
         // Page reconnected (retries on a drop, or Recall reloads it) — old socket is dead weight; close it, one page per bot.
         previous.close();
+        // Its own close event is skipped below (the channel no longer points at it), so bank its count here instead.
+        startEpoch(channel);
       }
 
       ws.on('message', (data: RawData, isBinary: boolean) => {
@@ -315,18 +258,27 @@ export function createAudioOutHub(): AudioOutHub {
           // The page is a sink; binary back means something upstream is confused about this socket's direction.
           logger.warn('Voice', `Ignoring unexpected binary frame from bot ${botId}'s output page`);
         } else {
-          // Status frames only: the page reports AudioContext state on connect — quickest way to spot a context stuck suspended in headless Chrome (silence, no other symptom).
-          logger.system(`Voice: output page ${botId} → ${String(data).slice(0, 200)}`);
+          const text = String(data);
+          const report = playedFrame(text);
+          // A report from a socket we have already replaced would land in the live page's epoch and credit its bytes twice.
+          if (report === null || channel.socket !== ws) {
+            // Status frames: the page reports AudioContext state on connect — quickest way to spot a context stuck suspended in headless Chrome (silence, no other symptom).
+            logger.system(`Voice: output page ${botId} → ${text.slice(0, 200)}`);
+          } else if (typeof report.bytes !== 'number' || !Number.isFinite(report.bytes)) {
+            logger.warn('Voice', `Ignoring a played frame with no usable byte count from bot ${botId}'s output page: ${text.slice(0, 200)}`);
+          } else {
+            channel.lastPlayed = report.bytes;
+            channel.playing = report.playing === true;
+            channel.awaitingReport = false;
+            settleWaiting(channel);
+          }
         }
       });
 
       ws.on('close', () => {
         if (channel.socket === ws) {
           channel.socket = null;
-          // Same freeze as `cut()`, and for the same reason — see `playedBytes`.
-          channel.silencedBytes += unconfirmedTailBytes(channel, Date.now());
-          // With no page, nothing plays; leaving the cursor in the future keeps `isSpeaking()` lying until it expires.
-          channel.playbackDoneAt = 0;
+          startEpoch(channel);
         }
         logger.system(`Voice: output page for bot ${botId} disconnected`);
       });
@@ -349,7 +301,7 @@ export function createAudioOutHub(): AudioOutHub {
           setEnabled: (open: boolean) => setEnabled(botId, open),
           setEngaged: (engaged: boolean) => setEngaged(botId, engaged),
           isSpeaking: () => isSpeaking(botId),
-          playedBytes: () => playedBytes(botId),
+          played: () => played(botId),
         };
         sinks.set(botId, sink);
       }
@@ -370,6 +322,22 @@ export function createAudioOutHub(): AudioOutHub {
   };
 }
 
+/** The fields of a `played` frame, or null if this text isn't one. Unvalidated: the caller decides what an unusable count deserves. */
+function playedFrame(text: string): { bytes: unknown; playing: unknown } | null {
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof parsed === 'object' && parsed !== null && (parsed as { type?: unknown }).type === 'played') {
+    const frame = parsed as { bytes?: unknown; playing?: unknown };
+    return { bytes: frame.bytes, playing: frame.playing };
+  } else {
+    return null;
+  }
+}
+
 /**
  * The AudioWorklet feeding the speakers, as source text loaded from a blob URL — the page must be self-contained.
  * Worklet, not scheduled `AudioBufferSourceNode`s: TTS chunks are contiguous samples, so a sample ring plays seamlessly by construction, and barge-in drops the queue on the audio thread itself — no main-thread scheduling matches that.
@@ -384,6 +352,9 @@ const PREBUFFER_SAMPLES = 1440;   // 60ms at 24kHz
 // long with data waiting.
 const ARM_TIMEOUT_SAMPLES = 6000; // 250ms at 24kHz
 
+// Rendered samples between reports while playing.
+const REPORT_SAMPLES = ${REPORT_SAMPLES};
+
 class PcmQueueProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
@@ -395,6 +366,8 @@ class PcmQueueProcessor extends AudioWorkletProcessor {
     this.gain = 0;        // declick envelope, travels 0..1 in one quantum
     this.last = 0;        // last raw sample, held while the envelope decays
     this.playing = false;
+    this.played = 0;      // samples taken from the ring and rendered, ever
+    this.reported = 0;    // this.played as of the last report
 
     this.port.onmessage = (event) => {
       const msg = event.data;
@@ -410,11 +383,20 @@ class PcmQueueProcessor extends AudioWorkletProcessor {
         this.queued = 0;
         this.armed = false;
         this.waited = 0;
+        // The ring is gone, so this count is final for the utterance just killed — and it is the one a record gets filed on.
+        this.playing = false;
+        this.report();
       } else if (msg.pcm) {
         this.chunks.push(msg.pcm);
         this.queued += msg.pcm.length;
       }
     };
+  }
+
+  // Counts samples that actually left for the output, never the silence this node renders while idle.
+  report() {
+    this.reported = this.played;
+    this.port.postMessage({ type: 'played', played: this.played * 2, playing: this.playing });
   }
 
   process(inputs, outputs) {
@@ -442,6 +424,7 @@ class PcmQueueProcessor extends AudioWorkletProcessor {
         this.last = chunk[this.read];
         this.read++;
         this.queued--;
+        this.played++;
         if (this.read >= chunk.length) {
           this.chunks.shift();
           this.read = 0;
@@ -465,10 +448,11 @@ class PcmQueueProcessor extends AudioWorkletProcessor {
       this.armed = false;
     }
 
+    // Every change of state, the drain to idle included, plus enough of a drip while playing that the server is never far behind the room.
     const playing = this.queued > 0 || this.gain > 0;
-    if (playing !== this.playing) {
+    if (playing !== this.playing || this.played - this.reported >= REPORT_SAMPLES) {
       this.playing = playing;
-      this.port.postMessage({ type: 'playing', playing: playing });
+      this.report();
     }
 
     // Always keep the node alive. It renders silence when idle, which keeps
@@ -605,8 +589,14 @@ export function renderPage(botId: string, wsUrl: string): string {
         numberOfOutputs: 1,
         outputChannelCount: [1]
       });
+      // The worklet is the only thing that knows what the room actually heard;
+      // every report it makes goes straight up the socket.
       node.port.onmessage = function (event) {
-        if (event.data && event.data.type === 'playing') { playing = !!event.data.playing; render(); }
+        if (event.data && event.data.type === 'played') {
+          playing = !!event.data.playing;
+          render();
+          report({ type: 'played', bytes: event.data.played, playing: playing });
+        }
       };
       node.connect(ctx.destination);
       ready = true;

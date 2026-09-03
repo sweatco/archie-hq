@@ -153,7 +153,7 @@ export interface SpeechResult {
 
 /** One answer being spoken. Text may arrive in pieces as the model writes it. */
 export interface SpeechStream {
-  /** Push a complete sentence or clause; may repeat. `onSentenceComplete` fires once this sentence's audio is fully handed to `onPcm` — synthesis, not room-heard ({@link AudioSink.playedBytes} measures that). Required: the caller anchors an interrupted answer's record on it, so a synthesizer that cannot report per-sentence completion cannot implement this interface. */
+  /** Push a complete sentence or clause; may repeat. `onSentenceComplete` fires once this sentence's audio is fully handed to `onPcm` — synthesis, not room-heard ({@link AudioSink.played} measures that). Required: the caller anchors an interrupted answer's record on it, so a synthesizer that cannot report per-sentence completion cannot implement this interface. */
   say(text: string, onSentenceComplete: () => void): void;
   /** No more text coming; resolves when all audio has been delivered. */
   end(): Promise<SpeechResult>;
@@ -179,10 +179,10 @@ export interface AudioSink {
   setEnabled(open: boolean): void;
   /** Paints the video tile: green while Archie is engaged — addressed-and-undischarged, or just-spoke with the follow-up window still open — grey otherwise. Distinct from `setEnabled` (opens once for the whole meeting, no per-turn state). Never reroute into speech or chat. */
   setEngaged(engaged: boolean): void;
-  /** True while audio is queued or playing. */
+  /** True while audio is queued or playing, from the room's own end rather than an estimate: up to one report interval stale mid-utterance, exact after a `cut()`, which the page answers with a report. */
   isSpeaking(): boolean;
-  /** Cumulative PCM bytes, in `play()`'s stream, certainly already heard. Monotonic, never reset by `cut()` — diff two reads, don't trust one. Conservative: counts only once past the pipeline tail. Under-counting is safe, over-counting isn't — opposite bias from {@link isSpeaking}. */
-  playedBytes(): number;
+  /** Cumulative PCM bytes, in `play()`'s stream, the room is confirmed to have heard — counted by whatever renders the audio, not inferred from what was sent. Monotonic, never reset by `cut()` — diff two reads, don't trust one. Resolves at once unless a `cut()`'s exact count is still outstanding, and never waits longer than half a second for it: under-counting is safe, over-counting isn't — opposite bias from {@link isSpeaking}. */
+  played(): Promise<number>;
 }
 
 /**

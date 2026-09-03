@@ -157,7 +157,7 @@ function plainSink() {
       state.engaged = engaged;
     },
     isSpeaking: () => state.speaking,
-    playedBytes: () => state.sentBytes,
+    played: async () => state.sentBytes,
   };
   return { sink, state };
 }

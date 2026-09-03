@@ -280,7 +280,7 @@ vi.mock('../audio-out.js', () => ({
         },
         setEngaged: () => {},
         isSpeaking: () => false,
-        playedBytes: () => 0,
+        played: async () => 0,
       };
       hub.sinks.set(pageId, sink);
       return sink;

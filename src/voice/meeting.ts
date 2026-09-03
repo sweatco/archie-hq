@@ -586,15 +586,22 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
 
     let pcmSentToSink = 0;
     const sentenceOffsets: { text: string; endOffset: number }[] = [];
-    const playedBytesBaseline = sink.playedBytes();
+    // Asked for here, awaited later: the turn must reach the speaking call in the same tick, and the sink answers with the count as of this call anyway.
+    const playedBaseline = safePlayed();
 
-    const confirmedHeardPrefix = (): string | null => {
-      const confirmed = sink.playedBytes() - playedBytesBaseline;
-      const heard = sentenceOffsets.filter((s) => s.endOffset <= confirmed);
-      return heard.length === 0 ? null : heard.map((s) => s.text).join(' ');
+    const confirmedHeardPrefix = async (): Promise<string | null> => {
+      const [baseline, now] = await Promise.all([playedBaseline, safePlayed()]);
+      if (baseline === null || now === null) {
+        // A sink that cannot say what the room heard confirms nothing -- crediting a sentence to a broken watermark is the one bias this must never make.
+        return null;
+      } else {
+        const confirmed = now - baseline;
+        const heard = sentenceOffsets.filter((s) => s.endOffset <= confirmed);
+        return heard.length === 0 ? null : heard.map((s) => s.text).join(' ');
+      }
     };
 
-    // `abort()` stops the synthesizer server-side, not just local playback -- otherwise audio keeps arriving until the sink's post-cut suppression gives up (Recall's `MAX_SUPPRESSION_MS`, audio-out.ts), and Archie resumes mid-word over someone else.
+    // `abort()` stops the synthesizer server-side, not just this turn's delivery: `onPcm` already drops whatever arrives once the turn is abandoned, but audio the room will never hear should not be generated at all.
     const abandon = (why: string): void => {
       if (abandoned === null) {
         abandoned = why;
@@ -666,7 +673,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
         abandon('the model decided to say nothing');
         clearOwed(askedAt);
         row.verdict = 'suppressed';
-        recordHeard(row, confirmedHeardPrefix());
+        recordHeard(row, await confirmedHeardPrefix());
         if (decision.pm !== undefined) {
           row.pm = decision.pm;
         }
@@ -683,7 +690,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
           heardAnything,
           askedAt,
           revision,
-          confirmedHeardPrefix(),
+          await confirmedHeardPrefix(),
         );
       } else {
         const answer = decision.response;
@@ -709,7 +716,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
             result.incomplete,
             askedAt,
             revision,
-            confirmedHeardPrefix(),
+            await confirmedHeardPrefix(),
           );
         }
       }
@@ -723,7 +730,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
         if (heardAnything) {
           row.error = `spoke part of the answer, then speaking threw: ${String(err)}`;
           if (row.speech === undefined) {
-            recordHeard(row, confirmedHeardPrefix());
+            recordHeard(row, await confirmedHeardPrefix());
           }
         } else {
           answerWithoutVoice(row, answer, `speaking threw: ${String(err)}`, askedAt);
@@ -788,7 +795,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     } else if (heardAnything) {
       clearOwed(askedAt);
       row.verdict = 'addressed';
-      // Reads `answer.speech` directly, not the sink's watermark -- `playedBytes` is conservative by contract and can lag a sentence behind at the moment the round closes.
+      // Reads `answer.speech` directly, not the sink's watermark -- the room reports what it has rendered at intervals, so `played()` can lag a sentence behind at the moment the round closes.
       recordHeard(row, answer.speech);
       noteOwnAnswer(answer.speech);
       if (answer.chat !== undefined) {
@@ -989,6 +996,16 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       sink.play(pcm);
     } catch (err) {
       logger.error(LOG, 'Pushing speech to the output sink failed', err);
+    }
+  }
+
+  // `null`, not 0: a sink that cannot answer knows nothing, which is not the same as having heard nothing.
+  async function safePlayed(): Promise<number | null> {
+    try {
+      return await sink.played();
+    } catch (err) {
+      logger.warn(LOG, 'Asking the output sink what the room has heard failed', err);
+      return null;
     }
   }
 

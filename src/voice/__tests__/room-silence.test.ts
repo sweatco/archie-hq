@@ -272,7 +272,7 @@ const cfg: VoiceConfig = {
 function fakeSink(opts: { confirmLagBytes?: number } = {}) {
   const lag = opts.confirmLagBytes ?? 0;
   const sink = {
-    played: [] as Buffer[],
+    chunks: [] as Buffer[],
     playedAt: [] as number[],
     cuts: 0,
     enabled: true,
@@ -280,7 +280,7 @@ function fakeSink(opts: { confirmLagBytes?: number } = {}) {
     speaking: false,
     sentBytes: 0,
     play(pcm: Buffer) {
-      this.played.push(pcm);
+      this.chunks.push(pcm);
       this.playedAt.push(Date.now());
       this.speaking = true;
       this.sentBytes += pcm.length;
@@ -298,7 +298,7 @@ function fakeSink(opts: { confirmLagBytes?: number } = {}) {
     isSpeaking() {
       return this.speaking;
     },
-    playedBytes(): number {
+    async played(): Promise<number> {
       return Math.max(0, this.sentBytes - lag);
     },
   };
@@ -472,11 +472,11 @@ describe('meeting room silence', () => {
     await sleep(SETTLED);
     expect(decideCalls).toBe(1);
     expect(synthTexts).toEqual(['Deploy finished at noon.']);
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
 
     await sleep(200);
     expect(decideCalls).toBe(1);
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
     await meeting.stop();
   });
 
@@ -493,7 +493,7 @@ describe('meeting room silence', () => {
     expect(decideCalls).toBe(1);
 
     await sleep(20);
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
 
     const response = turns('bot-eager')[0];
     expect(response.timings!.speakMs).toBeLessThan(100);
@@ -518,7 +518,7 @@ describe('meeting room silence', () => {
     await sleep(180);
     // No response row yet — written once the decision resolves, not when audio starts.
     expect(synthTexts).toEqual(['The deploy finished at noon.']);
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
     expect(turns('bot-streaming').length).toBe(0);
 
     await sleep(600);
@@ -526,7 +526,7 @@ describe('meeting room silence', () => {
       'The deploy finished at noon.',
       'The migration ran straight after it.',
     ]);
-    expect(sink.played.length).toBe(2);
+    expect(sink.chunks.length).toBe(2);
     expect(sink.playedAt[0]).toBeLessThan(decideResolvedAt);
 
     const timings = turns('bot-streaming')[0].timings!;
@@ -554,7 +554,7 @@ describe('meeting room silence', () => {
     expect(synthCalls).toBe(1);
     expect(synthTexts).toEqual([]);
     expect(synthAborts).toBe(1);
-    expect(sink.played.length).toBe(0);
+    expect(sink.chunks.length).toBe(0);
     await meeting.stop();
   });
 
@@ -571,11 +571,11 @@ describe('meeting room silence', () => {
 
     await sleep(300);
     expect(decideCalls).toBe(0);
-    expect(sink.played.length).toBe(0);
+    expect(sink.chunks.length).toBe(0);
 
     b.emit({ kind: 'end', transcript: 'anyway' });
     await sleep(SETTLED);
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
 
     // Settle order: Ann's turn is judged by name, Bob's answerless one is still recorded (`already-owed`), and the one decision they produced is its own row.
     expect(gates('bot-floor').map((r) => r.tier)).toEqual(['name', 'already-owed']);
@@ -600,11 +600,11 @@ describe('meeting room silence', () => {
 
       await vi.advanceTimersByTimeAsync(100);
       expect(decideCalls).toBe(0);
-      expect(sink.played.length).toBe(0);
+      expect(sink.chunks.length).toBe(0);
 
       await vi.advanceTimersByTimeAsync(11_000);
       expect(decideCalls).toBe(1);
-      expect(sink.played.length).toBe(1);
+      expect(sink.chunks.length).toBe(1);
       await meeting.stop();
     } finally {
       vi.useRealTimers();
@@ -631,7 +631,7 @@ describe('meeting room silence', () => {
       await vi.advanceTimersByTimeAsync(100);
 
       expect(decideCalls).toBe(0);
-      expect(sink.played.length).toBe(0);
+      expect(sink.chunks.length).toBe(0);
       await meeting.stop();
     } finally {
       vi.useRealTimers();
@@ -647,7 +647,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'start' });
     a.emit({ kind: 'end', transcript: 'Archie, status?' });
     await sleep(SETTLED);
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
     expect(sink.speaking).toBe(true);
 
       a.emit({ kind: 'start' });
@@ -673,16 +673,16 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'start' });
     a.emit({ kind: 'end', transcript: 'Archie, explain the outage' });
     await sleep(150); // a chunk or two have played
-    expect(sink.played.length).toBeGreaterThan(0);
+    expect(sink.chunks.length).toBeGreaterThan(0);
 
     a.emit({ kind: 'start' });
     expect(sink.cuts).toBe(1);
-    const playedAtCut = sink.played.length;
+    const playedAtCut = sink.chunks.length;
 
-    // Post-cut suppression isn't forever (`answerRoom`, meeting.ts).
+    // Nothing more reaches the sink: `onPcm` drops everything once the turn is abandoned (`answerRoom`, meeting.ts).
     await sleep(600);
-    expect(sink.played.length).toBe(playedAtCut);
-    expect(sink.played.length).toBeLessThan(6);
+    expect(sink.chunks.length).toBe(playedAtCut);
+    expect(sink.chunks.length).toBeLessThan(6);
     // Stopped at the source (`synthAborts`), not just dropped on arrival.
     expect(synthAborts).toBe(1);
 
@@ -711,7 +711,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'start' });
     a.emit({ kind: 'end', transcript: 'Archie, explain the outage' });
     await sleep(120);
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
 
     a.emit({ kind: 'start' });
     expect(sink.cuts).toBe(1);
@@ -720,7 +720,7 @@ describe('meeting room silence', () => {
     // Comprehension still writes later sentences — meeting.ts stops forwarding to `say()`.
     expect(synthTexts).toEqual(['The pool ran dry.']);
     expect(synthAborts).toBe(1);
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
     const responses = turns('bot-cut-generating');
     expect(String(responses[0].error)).toContain('cut off');
     await meeting.stop();
@@ -745,7 +745,7 @@ describe('meeting room silence', () => {
 
     await sleep(400);
     expect(synthCalls).toBe(1);
-    expect(sink.played.length).toBe(0);
+    expect(sink.chunks.length).toBe(0);
     expect(synthAborts).toBe(1);
     const responses = turns('bot-ttfb');
     expect(String(responses[0].error)).toContain('before the first word');
@@ -753,7 +753,7 @@ describe('meeting room silence', () => {
     decideQueue.push({ speech: 'The connection pool, as I was saying.' });
     b.emit({ kind: 'end', transcript: 'sorry, carry on' });
     await sleep(SETTLED + synthFirstChunkDelayMs);
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
     await meeting.stop();
   });
 
@@ -774,7 +774,7 @@ describe('meeting room silence', () => {
     b.emit({ kind: 'start' });
 
     await sleep(600);
-    expect(sink.played.length).toBe(0);
+    expect(sink.chunks.length).toBe(0);
     // Comprehension still writes it — meeting.ts stops forwarding to `say()`.
     expect(synthTexts).toEqual(['It was the connection pool.']);
     expect(synthAborts).toBe(1);
@@ -860,7 +860,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'end', transcript: 'Archie, what happened to the deploy?' });
     await sleep(SETTLED);
 
-    expect(sink.played.length).toBe(0);
+    expect(sink.chunks.length).toBe(0);
     // chat[0]: "voice is down" notice. chat[1]: the answer as text.
     expect(chat.length).toBe(2);
     expect(chat[1]).toContain('It rolled back at ten.');
@@ -898,7 +898,7 @@ describe('meeting room silence', () => {
     expect(decideCalls).toBe(2);
     expect(synthTexts).toEqual(['stale', 'fresh']);
     expect(synthAborts).toBe(1);
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
     const responses = turns('bot-stale');
     expect(responses.length).toBe(2);
     expect(responses[0].verdict).toBe('suppressed');
@@ -979,7 +979,7 @@ describe('meeting room silence', () => {
       a.emit({ kind: 'start' });
       a.emit({ kind: 'end', transcript: 'Archie, when did it land?' });
       await vi.advanceTimersByTimeAsync(50);
-      expect(sink.played.length).toBe(1);
+      expect(sink.chunks.length).toBe(1);
       expect(sink.engaged).toBe(true);
 
       await vi.advanceTimersByTimeAsync(11_000);
@@ -1000,7 +1000,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'end', transcript: 'the архитектура review is on Thursday' });
     await sleep(SETTLED);
 
-    expect(sink.played.length).toBe(0);
+    expect(sink.chunks.length).toBe(0);
     expect(decideCalls).toBe(0);
     const candidates = gates('bot-suppressed');
     expect(candidates.length).toBe(1);
@@ -1025,7 +1025,7 @@ describe('meeting room silence', () => {
     await sleep(SETTLED);
 
     expect(gateCalls).toBe(1);
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
     await meeting.stop();
   });
 
@@ -1040,7 +1040,7 @@ describe('meeting room silence', () => {
     await sleep(300);
 
     expect(decideCalls).toBe(1);
-    expect(sink.played.length).toBe(0);
+    expect(sink.chunks.length).toBe(0);
     const responses = turns('bot-silence');
     expect(responses[0].verdict).toBe('suppressed');
     await meeting.stop();
@@ -1062,7 +1062,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'end', transcript: 'Archie, what happened with the deploy?' });
     await sleep(400);
 
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
     const responses = turns('bot-decide-failed');
     expect(responses[0].verdict).toBe('error');
     expect(String(responses[0].error)).toContain('spoke part of the answer');
@@ -1077,7 +1077,7 @@ describe('meeting room silence', () => {
     await sleep(SETTLED);
     expect(gateCalls).toBe(0);
     expect(decideCalls).toBe(2);
-    expect(sink.played.length).toBe(2);
+    expect(sink.chunks.length).toBe(2);
     await meeting.stop();
   });
 
@@ -1116,7 +1116,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'end', transcript: 'Archie, how long did the migration take?' });
     await sleep(SETTLED);
 
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
     const responses = turns('bot-stalled');
     expect(responses[0].verdict).not.toBe('addressed');
     expect(String(responses[0].error)).toContain('stalled');
@@ -1177,7 +1177,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'start' });
     a.emit({ kind: 'end', transcript: 'Archie, what caused it?' });
     await sleep(60);
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
 
     // Bob's turn carries no transcript — no new line, so the retry floor still applies.
     b.emit({ kind: 'start' });
@@ -1209,7 +1209,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'start' });
     a.emit({ kind: 'end', transcript: 'Archie, what caused it?' });
     await sleep(60);
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
 
     await meeting.stop();
 
@@ -1254,7 +1254,8 @@ describe('meeting room silence', () => {
       isSpeaking(): boolean {
         throw new Error('probe down');
       },
-      playedBytes(): number {
+      // Throws rather than rejects: the harsher of the two, and both must be caught.
+      played(): Promise<number> {
         throw new Error('watermark down');
       },
     };
@@ -1297,7 +1298,7 @@ describe('meeting room silence', () => {
     second.emit({ kind: 'start' });
     second.emit({ kind: 'end', transcript: 'Archie, are you still with us?' });
     await sleep(SETTLED);
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
     await meeting.stop();
   });
 
@@ -1341,7 +1342,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'end', transcript: 'Archie, what version?' });
     await sleep(SETTLED);
 
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
     expect(synthTexts).toEqual(['Sure, one moment.']);
     expect(chat).toEqual([]);
     const responses = turns('bot-consult-no-host');
@@ -1361,7 +1362,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'end', transcript: 'Archie, check with the PM about the deploy' });
     await sleep(SETTLED);
 
-    expect(sink.played.length).toBe(0);
+    expect(sink.chunks.length).toBe(0);
     expect(synthTexts).toEqual([]);
     expect(chat).toEqual([]);
     expect(host.consults.length).toBe(1);
@@ -1383,7 +1384,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'end', transcript: 'Archie, is QA blocked?' });
     await sleep(SETTLED);
 
-    expect(sink.played.length).toBe(0);
+    expect(sink.chunks.length).toBe(0);
     expect(chat).toEqual([]);
     expect(host.consults.length).toBe(1);
     expect(host.consults[0].question).toBe('is QA still blocked?');
@@ -1400,7 +1401,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'start' });
     a.emit({ kind: 'end', transcript: 'Archie, check the deploy status' });
     await sleep(SETTLED);
-    expect(sink.played.length).toBe(0);
+    expect(sink.chunks.length).toBe(0);
     expect(sink.engaged).toBe(false);
     expect(host.consults.length).toBe(1);
     const consultId = host.consults[0].id;
@@ -1410,7 +1411,7 @@ describe('meeting room silence', () => {
     expect(meeting.deliverConsultAnswer('finished at noon')).toEqual({ ok: true, id: consultId });
     await sleep(SETTLED);
 
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
     expect(synthTexts).toEqual(['The deploy finished at noon.']);
     expect(lastConsultsSeen).toEqual([
       { id: consultId, question: 'what is the deploy status?', answer: 'finished at noon' },
@@ -1429,7 +1430,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'end', transcript: 'Archie, anything on the deploy?' });
     await sleep(SETTLED);
 
-    expect(sink.played.length).toBe(0);
+    expect(sink.chunks.length).toBe(0);
     expect(host.consults.length).toBe(0);
     await meeting.stop();
   });
@@ -1446,7 +1447,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'start' });
     a.emit({ kind: 'end', transcript: 'Archie, what severity is this?' });
     await sleep(SETTLED);
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
     expect(host.consults.length).toBe(1);
 
     decideQueue.push({ speech: 'Still nothing new.' });
@@ -1471,7 +1472,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'start' });
     a.emit({ kind: 'end', transcript: 'Archie, check with the PM about the deploy' });
     await sleep(SETTLED);
-    expect(sink.played.length).toBe(0);
+    expect(sink.chunks.length).toBe(0);
     expect(host.consults.length).toBe(1);
 
     // Named — settles on the free tier, not the model gate.
@@ -1500,7 +1501,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'end', transcript: 'Archie, what happened to the deploy?' });
     await sleep(SETTLED);
 
-    expect(sink.played.length).toBe(0);
+    expect(sink.chunks.length).toBe(0);
     expect(chat.length).toBe(2); // chat[0]: voice-unavailable notice; chat[1]: the answer
     // One consult though two settle functions ran — `answerRoom`'s `finally` routes it once.
     expect(host.consults.length).toBe(1);
@@ -1528,7 +1529,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'start' });
     a.emit({ kind: 'end', transcript: 'Archie, explain the outage' });
     await sleep(120);
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
 
     a.emit({ kind: 'start' });
     expect(sink.cuts).toBe(1);
@@ -1563,7 +1564,7 @@ describe('meeting room silence', () => {
     await sleep(800);
 
     // Two aborts: the discarded stale answer, then the silent re-decision's stream.
-    expect(sink.played.length).toBe(0);
+    expect(sink.chunks.length).toBe(0);
     expect(synthAborts).toBe(2);
     const responses = turns('bot-consult-discarded');
     expect(String(responses[0].error)).toContain('moved on');
@@ -1592,7 +1593,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'start' });
     a.emit({ kind: 'end', transcript: 'Archie, who owns billing?' });
     await sleep(120);
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
 
     a.emit({ kind: 'start' });
     a.emit({ kind: 'end', transcript: 'sorry, go on' });
@@ -1628,7 +1629,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'end', transcript: 'Archie, what happened to the deploy?' });
     await sleep(SETTLED);
 
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
     const responses = turns('bot-consult-settle-threw');
     expect(String(responses[0].error)).toContain('speaking threw');
     expect(host.consults.length).toBe(1);
@@ -1646,7 +1647,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'end', transcript: 'Archie, what version?' });
     await sleep(SETTLED);
 
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
     const responses = turns('bot-consult-row-no-host');
     expect(responses[0].pm).toBe('What version are we on?');
     await meeting.stop();
@@ -1666,7 +1667,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'start' });
     a.emit({ kind: 'end', transcript: 'Archie, what happened?' });
     await sleep(SETTLED);
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
 
     decideQueue.push({ speech: 'Still nothing new.' });
     a.emit({ kind: 'start' });
@@ -1689,7 +1690,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'start' });
     a.emit({ kind: 'end', transcript: 'Archie, any update?' });
     await sleep(SETTLED);
-    expect(sink.played.length).toBe(0);
+    expect(sink.chunks.length).toBe(0);
 
     decideQueue.push(null);
     a.emit({ kind: 'start' });
@@ -1927,7 +1928,7 @@ describe('meeting room silence', () => {
     expect(host.consults[0].question).toBe('is the pool resized yet?');
     expect(responses[0].pm_dropped).toBeUndefined();
 
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
     expect(responses[1].pm).toBe('who owns the pool config?');
     expect(String(responses[1].pm_dropped)).toContain(host.consults[0].id);
     await meeting.stop();
@@ -2004,8 +2005,8 @@ describe('meeting room silence', () => {
     decideQueue.push({ speech: 'The severity was SEV-2.' });
     expect(meeting.deliverConsultAnswer('SEV-2, customer-facing')).toEqual({ ok: true, id: consultId });
     await sleep(SETTLED);
-    expect(sink.played.length).toBe(2);
-    const playedAfterFirstAnswer = sink.played.length;
+    expect(sink.chunks.length).toBe(2);
+    const playedAfterFirstAnswer = sink.chunks.length;
     const decideCallsAfterFirstAnswer = decideCalls;
 
     // Canary: a spurious third decide() would leave this text in synthTexts.
@@ -2015,7 +2016,7 @@ describe('meeting room silence', () => {
     expect(result).toEqual({ ok: false });
     await sleep(SETTLED);
     expect(decideCalls).toBe(decideCallsAfterFirstAnswer);
-    expect(sink.played.length).toBe(playedAfterFirstAnswer);
+    expect(sink.chunks.length).toBe(playedAfterFirstAnswer);
     expect(synthTexts).not.toContain('This must never be spoken.');
     await meeting.stop();
   });
@@ -2037,7 +2038,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'start' });
     a.emit({ kind: 'end', transcript: 'Archie, explain the outage' });
     await sleep(250); // sentences 1 and 2 landed; the third is not due until 400
-    expect(sink.played.length).toBe(2);
+    expect(sink.chunks.length).toBe(2);
 
     a.emit({ kind: 'start' });
     expect(sink.cuts).toBe(1);
@@ -2074,11 +2075,11 @@ describe('meeting room silence', () => {
     // Handed to the synthesizer, not yet heard — departure waits for the room to hear it.
     await sleep(40);
     expect(synthTexts).toEqual(["Alright, I'll drop off now — take care."]);
-    expect(sink.played.length).toBe(0);
+    expect(sink.chunks.length).toBe(0);
     expect(host.left).toBe(0);
 
     await sleep(150);
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
     expect(host.left).toBe(1);
     const responses = turns('bot-leave-clean');
     expect(responses[0].verdict).toBe('addressed');
@@ -2117,7 +2118,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'end', transcript: 'Archie, can you leave the call?' });
     await sleep(SETTLED);
 
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
     expect(synthTexts).toEqual(["I'll head out now, thanks all."]);
     expect(chat).toEqual([]);
     const responses = turns('bot-leave-no-host');
@@ -2128,7 +2129,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'start' });
     a.emit({ kind: 'end', transcript: 'Archie, are you still there?' });
     await sleep(SETTLED);
-    expect(sink.played.length).toBe(2);
+    expect(sink.chunks.length).toBe(2);
     await meeting.stop();
   });
 });
@@ -2471,7 +2472,7 @@ describe('meeting gate and turn rows', () => {
     a.emit({ kind: 'start' });
     a.emit({ kind: 'end', transcript: 'Archie, who owns billing now?' });
     await sleep(SETTLED + 60);
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
 
     const written = turns('log-chat');
     expect(written).toHaveLength(1);
@@ -2499,7 +2500,7 @@ describe('meeting gate and turn rows', () => {
     a.emit({ kind: 'start' });
     a.emit({ kind: 'end', transcript: 'Archie, explain the outage' });
     await sleep(250);
-    expect(sink.played.length).toBe(2);
+    expect(sink.chunks.length).toBe(2);
 
     a.emit({ kind: 'start' });
     expect(sink.cuts).toBe(1);
@@ -2531,7 +2532,7 @@ describe('meeting gate and turn rows', () => {
     b.emit({ kind: 'end', transcript: 'actually, the other one' });
     await sleep(1200);
 
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
     const dropped = turns('log-abandoned')[0];
     // `speech: ''` confidently claims nothing reached the room, rather than leaving it unknown.
     expect(dropped.speech).toBe('');
@@ -2550,7 +2551,7 @@ describe('meeting gate and turn rows', () => {
     a.emit({ kind: 'end', transcript: 'Archie, anything for us?' });
     await sleep(SETTLED);
 
-    expect(sink.played.length).toBe(0);
+    expect(sink.chunks.length).toBe(0);
     const written = turns('log-silence');
     expect(written).toHaveLength(1);
     expect(written[0].verdict).toBe('suppressed');
@@ -2569,7 +2570,7 @@ describe('meeting gate and turn rows', () => {
     a.emit({ kind: 'end', transcript: 'Archie, what broke?' });
     await sleep(SETTLED);
 
-    expect(sink.played.length).toBe(0);
+    expect(sink.chunks.length).toBe(0);
     const written = turns('log-failed');
     expect(written).toHaveLength(1);
     expect(written[0].verdict).toBe('error');
@@ -2589,7 +2590,7 @@ describe('meeting gate and turn rows', () => {
     a.emit({ kind: 'end', transcript: 'Archie, what happened to the deploy?' });
     await sleep(SETTLED);
 
-    expect(sink.played.length).toBe(0);
+    expect(sink.chunks.length).toBe(0);
     expect(chat.some((text) => text.includes('It rolled back at ten.'))).toBe(true);
     const written = turns('log-chat-fallback');
     expect(written).toHaveLength(1);
@@ -2651,7 +2652,7 @@ describe('meeting gate and turn rows', () => {
     a.emit({ kind: 'end', transcript: 'Archie, what happened to the deploy?' });
     await sleep(SETTLED);
 
-    expect(sink.played.length).toBe(1);
+    expect(sink.chunks.length).toBe(1);
     const row = turns('log-settle-threw')[0];
     expect(row.speech).toBe('It rolled back at ten.');
     expect(String(row.error)).toContain('speaking threw');
