@@ -68,22 +68,7 @@ let lastConsultsSeen: { id: string; question: string; answer?: string }[] | unde
 let lastWindowSeen: string | undefined;
 /** Most recent `decideResponse` context: roster, written channel, capability summary. */
 let lastContextSeen: Record<string, unknown> | undefined;
-/** Whether an unanswered `PM:` question blocks the next — `meeting.ts`'s cap. */
-/** Pinned in situation-block.test.ts; here we just check it travels. */
-let lastConsultBlockedSeen: boolean | undefined;
 const decideQueue: Array<Decision | null> = [];
-
-/** Null is the fail-safe default; tests leaving this unset guard "null changes nothing". */
-let triageVerdict: { where: string; preamble?: string } | null = null;
-let triageCalls = 0;
-let triageDelayMs = 0;
-let lastTriageArgs:
-  | {
-      transcript: string;
-      consults?: { id: string; question: string; answer?: string }[];
-      context?: Record<string, unknown>;
-    }
-  | undefined;
 
 vi.mock('../deepgram.js', () => ({
   openTurnStream: (
@@ -251,22 +236,6 @@ vi.mock('../comprehension.js', () => {
       }
       return gateVerdict;
     },
-    // Async like the real gate — costs a microtask.
-    runTriageGate: async (
-      _cfg: unknown,
-      opts: {
-        transcript: string;
-        consults?: { id: string; question: string; answer?: string }[];
-        context?: Record<string, unknown>;
-      },
-    ) => {
-      triageCalls++;
-      lastTriageArgs = opts;
-      if (triageDelayMs > 0) {
-        await wait(triageDelayMs);
-      }
-      return triageVerdict;
-    },
     decideResponse: async (
       _cfg: unknown,
       opts: {
@@ -274,7 +243,6 @@ vi.mock('../comprehension.js', () => {
         onSentence?: (text: string) => void;
         consults?: { id: string; question: string; answer?: string }[];
         context?: Record<string, unknown>;
-        consultBlocked?: boolean;
       },
     ) => {
       decideCalls++;
@@ -282,7 +250,6 @@ vi.mock('../comprehension.js', () => {
       lastConsultsSeen = opts.consults;
       lastWindowSeen = opts.transcript;
       lastContextSeen = opts.context;
-      lastConsultBlockedSeen = opts.consultBlocked;
       try {
         return await generate(opts.onSentence);
       } finally {
@@ -362,11 +329,6 @@ function reset(): void {
   lastConsultsSeen = undefined;
   lastWindowSeen = undefined;
   lastContextSeen = undefined;
-  lastConsultBlockedSeen = undefined;
-  triageVerdict = null;
-  triageCalls = 0;
-  triageDelayMs = 0;
-  lastTriageArgs = undefined;
 }
 
 const ann = { id: '1', name: 'Ann', email: null, isHost: true };
@@ -502,10 +464,7 @@ describe('meeting room silence', () => {
     a.emit({ kind: 'start' });
     a.emit({ kind: 'end', transcript: 'Archie, is the job green?' });
 
-    // Synchronous behind the triage gate (no host, no exchange-read microtask); tests absence of a timer, not of an await.
-    expect(triageCalls).toBe(1);
-    expect(decideCalls).toBe(0);
-    await sleep(0);
+    // Synchronous (no host, no exchange-read microtask); tests absence of a timer, not of an await.
     expect(decideCalls).toBe(1);
 
     await sleep(20);
@@ -1177,8 +1136,6 @@ describe('meeting room silence', () => {
     // New information drops the floor; retry runs synchronously off turn end.
     a.emit({ kind: 'start' });
     a.emit({ kind: 'end', transcript: 'go on' });
-    expect(triageCalls).toBe(2);
-    await sleep(0);
     expect(decideCalls).toBe(2);
 
     await sleep(SETTLED);
@@ -2153,433 +2110,10 @@ describe('meeting room silence', () => {
     expect(sink.played.length).toBe(2);
     await meeting.stop();
   });
-
-  it('says the preamble at once and files it, so the answer behind it continues rather than restarting', async () => {
-    reset();
-    triageVerdict = { where: 'outside', preamble: 'Let me find out.' };
-    // Generation takes a while — the silence a preamble fills.
-    decideDelayMs = 60;
-    decideQueue.push({ speech: 'Marina owns it now.' });
-    const host = fakeHost();
-    const { meeting, sink } = await makeMeeting('bot-triage-outside', {}, { host });
-    const a = speakerFor(meeting, ann);
-
-    a.emit({ kind: 'start' });
-    a.emit({ kind: 'end', transcript: 'Archie, who owns billing now?' });
-
-    await sleep(30);
-    expect(decideCalls).toBe(1);
-    expect(synthTexts).toEqual(['Let me find out.']);
-    expect(sink.played.length).toBe(1);
-
-    await sleep(SETTLED + 60);
-    // One `speak()` for the whole turn — the floor, barge-in, and watermark all apply to the preamble too.
-    expect(synthCalls).toBe(1);
-    expect(synthTexts).toEqual(['Let me find out.', 'Marina owns it now.']);
-    expect(sink.played.length).toBe(2);
-
-    // Filed before the speaking call runs — its window reflects the transcript then.
-    expect(lastWindowSeen).toContain('Archie: Let me find out.');
-    // The gate ran before the preamble existed — its window is untouched by it.
-    expect(lastTriageArgs?.transcript).not.toContain('Archie:');
-    expect(host.utterances).toEqual([
-      { speaker: 'Ann', text: 'Archie, who owns billing now?' },
-      { speaker: 'Archie', text: 'Let me find out.' },
-      { speaker: 'Archie', text: 'Marina owns it now.' },
-    ]);
-
-    // Nothing outstanding, so the preamble's promise held (`lastConsultBlockedSeen` is the flag read).
-    expect(lastConsultBlockedSeen).toBe(false);
-
-    const response = rows('bot-triage-outside').filter((r) => r.kind === 'response')[0];
-    expect(response.verdict).toBe('addressed');
-    expect(response.triage).toBe('outside');
-    // Recorded apart from `answer`, which stays only what the speaking call decided.
-    expect(response.preamble).toBe('Let me find out.');
-    expect(response.answer).toBe('Marina owns it now.');
-    // The gate's cost is latency in front of the room, so the row carries it.
-    expect(typeof (response.timings as Record<string, number>).triageMs).toBe('number');
-    await meeting.stop();
-  });
-
-  it('leaves the turn exactly as it was when the gate produces no verdict', async () => {
-    reset();
-    // `triageVerdict` stays null — same fail-safe as a failed call or timeout, deliberately near-identical to the first test (same queue, assertions, row).
-    decideQueue.push({ speech: 'Deploy finished at noon.' });
-    const host = fakeHost();
-    const { meeting, sink } = await makeMeeting('bot-triage-null', {}, { host });
-    const a = speakerFor(meeting, ann);
-
-    a.emit({ kind: 'start' });
-    a.emit({ kind: 'end', transcript: 'Archie, did the deploy finish?' });
-    await sleep(SETTLED);
-
-    expect(triageCalls).toBe(1);
-    expect(synthTexts).toEqual(['Deploy finished at noon.']);
-    expect(sink.played.length).toBe(1);
-    expect(lastWindowSeen).toBe('Ann: Archie, did the deploy finish?');
-    expect(host.utterances).toEqual([
-      { speaker: 'Ann', text: 'Archie, did the deploy finish?' },
-      { speaker: 'Archie', text: 'Deploy finished at noon.' },
-    ]);
-
-    const response = rows('bot-triage-null').filter((r) => r.kind === 'response')[0];
-    expect(response.verdict).toBe('addressed');
-    expect(response.answer).toBe('Deploy finished at noon.');
-    expect(response.window).toBe('Ann: Archie, did the deploy finish?');
-    // Absent, not a fifth verdict — reads as ungraded.
-    expect(response.triage).toBeUndefined();
-    expect(response.preamble).toBeUndefined();
-
-    await sleep(200);
-    expect(decideCalls).toBe(1);
-    expect(sink.played.length).toBe(1);
-    await meeting.stop();
-  });
-
-  it('records a verdict other than outside and speaks nothing extra, preamble or not', async () => {
-    for (const where of ['room', 'pending', 'elsewhere'] as const) {
-      reset();
-      // Contradicts the prompt (a preamble on non-`outside`) — proves the code keys off the verdict.
-      triageVerdict = { where, preamble: 'Let me find out.' };
-      decideQueue.push({ speech: 'Marina owns it now.' });
-      const { meeting, sink } = await makeMeeting(`bot-triage-${where}`);
-      const a = speakerFor(meeting, ann);
-
-      a.emit({ kind: 'start' });
-      a.emit({ kind: 'end', transcript: 'Archie, who owns billing now?' });
-      await sleep(SETTLED);
-
-      expect(synthTexts).toEqual(['Marina owns it now.']);
-      expect(sink.played.length).toBe(1);
-      expect(lastWindowSeen).toBe('Ann: Archie, who owns billing now?');
-
-      const response = rows(`bot-triage-${where}`).filter((r) => r.kind === 'response')[0];
-      expect(response.triage).toBe(where);
-      expect(response.preamble).toBeUndefined();
-      await meeting.stop();
-    }
-  });
-
-  it('speaks nothing extra when an outside verdict carries no sentence', async () => {
-    reset();
-    triageVerdict = { where: 'outside' };
-    decideQueue.push({ speech: 'Marina owns it now.' });
-    const { meeting, sink } = await makeMeeting('bot-triage-no-preamble');
-    const a = speakerFor(meeting, ann);
-
-    a.emit({ kind: 'start' });
-    a.emit({ kind: 'end', transcript: 'Archie, who owns billing now?' });
-    await sleep(SETTLED);
-
-    expect(synthTexts).toEqual(['Marina owns it now.']);
-    expect(sink.played.length).toBe(1);
-    expect(lastWindowSeen).toBe('Ann: Archie, who owns billing now?');
-    const response = rows('bot-triage-no-preamble').filter((r) => r.kind === 'response')[0];
-    expect(response.triage).toBe('outside');
-    expect(response.preamble).toBeUndefined();
-    await meeting.stop();
-  });
-
-  it('makes no promise aloud to go and find out while a question is already out, and answers anyway', async () => {
-    reset();
-    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
-    const host = fakeHost();
-    decideQueue.push({ speech: 'Checking the version.', pm: 'What version are we on?' });
-    const { meeting, sink } = await makeMeeting('bot-preamble-consult-cap', {}, { host });
-    const a = speakerFor(meeting, ann);
-
-    a.emit({ kind: 'start' });
-    a.emit({ kind: 'end', transcript: 'Archie, what version are we on?' });
-    await sleep(SETTLED);
-    expect(host.consults).toHaveLength(1);
-    const firstId = host.consults[0].id;
-
-    // A different subject makes `outside` reachable; `pending` needs the *same* question (voice-triage.md).
-    triageVerdict = { where: 'outside', preamble: 'Let me go and find that out.' };
-    decideQueue.push({ speech: 'Checking QA too.', pm: 'Is QA blocked?' });
-    a.emit({ kind: 'end', transcript: 'and is QA blocked?' });
-    await sleep(SETTLED);
-
-    // The room was never told anything was coming.
-    expect(synthTexts).toEqual(['Checking the version.', 'Checking QA too.']);
-    expect(sink.played.length).toBe(2);
-
-    // The speaking call still ran — only the spoken promise was withheld.
-    expect(decideCalls).toBe(2);
-    // Told why, so it doesn't re-promise — rendered sentence pinned in situation-block.test.ts.
-    expect(lastConsultBlockedSeen).toBe(true);
-
-    expect(lastWindowSeen).not.toContain('Let me go and find that out.');
-    expect(host.utterances).toEqual([
-      { speaker: 'Ann', text: 'Archie, what version are we on?' },
-      { speaker: 'Archie', text: 'Checking the version.' },
-      { speaker: 'Ann', text: 'and is QA blocked?' },
-      { speaker: 'Archie', text: 'Checking QA too.' },
-    ]);
-
-    expect(host.consults).toHaveLength(1);
-    const responses = rows('bot-preamble-consult-cap').filter((r) => r.kind === 'response');
-    expect(responses).toHaveLength(2);
-    expect(String(responses[1].pmDropped)).toContain(firstId);
-    // `preambleDropped` names what blocked it, for the corpus.
-    expect(responses[1].triage).toBe('outside');
-    expect(responses[1].preamble).toBeUndefined();
-    expect(String(responses[1].preambleDropped)).toContain(firstId);
-
-    // Log half: for a live-meeting watcher.
-    expect(
-      warn.mock.calls.some(
-        (c) =>
-          String(c[1]).includes('did not say a preamble') &&
-          String(c[1]).includes('Let me go and find that out.'),
-      ),
-    ).toBe(true);
-    warn.mockRestore();
-    await meeting.stop();
-  });
-
-  it('tells a preamble spoken, one never supplied and one withheld apart on the row', async () => {
-    // `preamble` is absent whether unsaid or cap-swallowed — a reason field tells the two apart.
-    reset();
-    triageVerdict = { where: 'outside', preamble: 'Let me find out.' };
-    decideQueue.push({ speech: 'Marina owns it now.' });
-    const spoken = await makeMeeting('row-preamble-spoken');
-    const spokenAnn = speakerFor(spoken.meeting, ann);
-    spokenAnn.emit({ kind: 'start' });
-    spokenAnn.emit({ kind: 'end', transcript: 'Archie, who owns billing now?' });
-    await sleep(SETTLED);
-    await spoken.meeting.stop();
-
-    reset();
-    triageVerdict = { where: 'outside' };
-    decideQueue.push({ speech: 'Marina owns it now.' });
-    const none = await makeMeeting('row-preamble-none');
-    const noneAnn = speakerFor(none.meeting, ann);
-    noneAnn.emit({ kind: 'start' });
-    noneAnn.emit({ kind: 'end', transcript: 'Archie, who owns billing now?' });
-    await sleep(SETTLED);
-    await none.meeting.stop();
-
-    reset();
-    const host = fakeHost();
-    decideQueue.push({ speech: 'Checking the version.', pm: 'What version are we on?' });
-    const withheld = await makeMeeting('row-preamble-withheld', {}, { host });
-    const withheldAnn = speakerFor(withheld.meeting, ann);
-    withheldAnn.emit({ kind: 'start' });
-    withheldAnn.emit({ kind: 'end', transcript: 'Archie, what version are we on?' });
-    await sleep(SETTLED);
-    triageVerdict = { where: 'outside', preamble: 'Let me find out.' };
-    decideQueue.push({ speech: 'Nothing back on the version yet.' });
-    withheldAnn.emit({ kind: 'end', transcript: 'and is QA blocked?' });
-    await sleep(SETTLED);
-    await withheld.meeting.stop();
-
-    const spokenRow = rows('row-preamble-spoken').filter((r) => r.kind === 'response')[0];
-    const noneRow = rows('row-preamble-none').filter((r) => r.kind === 'response')[0];
-    const withheldRow = rows('row-preamble-withheld').filter((r) => r.kind === 'response')[1];
-
-    expect([spokenRow.triage, noneRow.triage, withheldRow.triage]).toEqual([
-      'outside',
-      'outside',
-      'outside',
-    ]);
-    // Said: the sentence, no reason.
-    expect(spokenRow.preamble).toBe('Let me find out.');
-    expect(spokenRow.preambleDropped).toBeUndefined();
-    // Never supplied: nothing to say.
-    expect(noneRow.preamble).toBeUndefined();
-    expect(noneRow.preambleDropped).toBeUndefined();
-    // Withheld: no sentence, but a reason — no `PM:` tail means `pmDropped` is absent too.
-    expect(withheldRow.preamble).toBeUndefined();
-    expect(withheldRow.pmDropped).toBeUndefined();
-    expect(typeof withheldRow.preambleDropped).toBe('string');
-    // The point: the two absences are no longer indistinguishable.
-    expect(withheldRow.preambleDropped).not.toEqual(noneRow.preambleDropped);
-  });
-
-  it('hands the gate the same context the answer gets, consult exchange included', async () => {
-    reset();
-    const host = fakeHost();
-    decideQueue.push({ speech: 'Checking on that.', pm: 'who owns billing now?' });
-    const { meeting } = await makeMeeting('bot-triage-context', {}, { host });
-    const a = speakerFor(meeting, ann);
-
-    a.emit({ kind: 'start' });
-    a.emit({ kind: 'end', transcript: 'Archie, who owns billing now?' });
-    await sleep(SETTLED);
-    expect(lastTriageArgs?.consults).toEqual([]);
-    expect(host.consults.length).toBe(1);
-
-    decideQueue.push({ speech: 'Marina owns it now.' });
-    expect(meeting.deliverConsultAnswer('Marina, since April')).toEqual({
-      ok: true,
-      id: host.consults[0].id,
-    });
-    await sleep(SETTLED);
-
-    // `pending` vs `outside` is the gate's job, needing the same exchange snapshot as the answer call.
-    expect(lastTriageArgs?.consults).toEqual([
-      { id: host.consults[0].id, question: 'who owns billing now?', answer: 'Marina, since April' },
-    ]);
-    expect(lastTriageArgs?.consults).toEqual(lastConsultsSeen);
-    expect(lastTriageArgs?.transcript).toBe(lastWindowSeen);
-    await meeting.stop();
-  });
-
-  it('does not speak the preamble when the room took the floor while the gate was thinking', async () => {
-    reset();
-    triageDelayMs = 60;
-    triageVerdict = { where: 'outside', preamble: 'Let me find out.' };
-    decideQueue.push({ speech: 'Marina owns it now.' });
-    const { meeting, sink } = await makeMeeting('bot-triage-stale');
-    const a = speakerFor(meeting, ann);
-    const b = speakerFor(meeting, bob);
-
-    a.emit({ kind: 'start' });
-    a.emit({ kind: 'end', transcript: 'Archie, who owns billing now?' });
-    b.emit({ kind: 'start' });
-
-    await sleep(SETTLED + 100);
-
-    // A preamble is *sound* — the floor governs it like any sentence.
-    expect(synthTexts).not.toContain('Let me find out.');
-    expect(sink.played.length).toBe(0);
-    // Nothing filed either — a stray line would make a stale window look fresh.
-    expect(lastWindowSeen).not.toContain('Archie:');
-
-    // The verdict is still recorded — said and acted-on are different facts.
-    const response = rows('bot-triage-stale').filter((r) => r.kind === 'response')[0];
-    expect(response.triage).toBe('outside');
-    expect(response.preamble).toBeUndefined();
-    await meeting.stop();
-  });
-
-  it('files no preamble the room never heard, and no later turn sees one', async () => {
-    reset();
-    triageVerdict = { where: 'outside', preamble: 'Let me find out.' };
-    // Nothing queued in that gap — the sink isn't speaking, so this isn't a cut.
-    synthFirstChunkDelayMs = 40;
-    decideDelayMs = 100;
-    decideQueue.push({ speech: 'Marina owns it now.' });
-    const host = fakeHost();
-    const { meeting, sink } = await makeMeeting('bot-preamble-unheard', {}, { host });
-    const a = speakerFor(meeting, ann);
-    const b = speakerFor(meeting, bob);
-
-    a.emit({ kind: 'start' });
-    a.emit({ kind: 'end', transcript: 'Archie, who owns billing now?' });
-    await sleep(10);
-    expect(synthTexts).toEqual(['Let me find out.']);
-    expect(sink.played.length).toBe(0);
-
-    // Barge-in can't help (no audio to cut) — this guard alone stops a phantom sentence.
-    b.emit({ kind: 'start' });
-    expect(sink.cuts).toBe(0);
-
-    await sleep(SETTLED + 120);
-    expect(sink.played.length).toBe(0);
-    // Not a byte heard — the transcript has only the room's line.
-    expect(host.utterances).toEqual([{ speaker: 'Ann', text: 'Archie, who owns billing now?' }]);
-
-    // The row records what the gate produced and what was handed over.
-    const response = rows('bot-preamble-unheard').filter((r) => r.kind === 'response')[0];
-    expect(response.preamble).toBe('Let me find out.');
-    expect(String(response.error)).toContain('before the first word');
-
-    // The harm outlives the turn: the next window carries a phantom line (voice-speaking.md continues from it).
-    triageVerdict = null;
-    decideQueue.push({ speech: 'Marina owns it now.' });
-    b.emit({ kind: 'end', transcript: 'sorry, carry on' });
-    await sleep(SETTLED + 120);
-    expect(lastWindowSeen).toBe(
-      'Ann: Archie, who owns billing now?\nBob: sorry, carry on',
-    );
-    await meeting.stop();
-  });
-
-  it('drops the answer when the room takes the floor after the preamble was heard', async () => {
-    reset();
-    triageVerdict = { where: 'outside', preamble: 'Let me find out.' };
-    synthFirstChunkDelayMs = 20;
-    // Models the real gap between preamble draining and the answer's first sentence — ~800ms live.
-    decideDelayMs = 200;
-    decideQueue.push({ speech: 'Marina owns it now.', sentenceAt: [120] });
-    const host = fakeHost();
-    const { meeting, sink } = await makeMeeting('bot-preamble-gap', {}, { host });
-    const a = speakerFor(meeting, ann);
-    const b = speakerFor(meeting, bob);
-
-    a.emit({ kind: 'start' });
-    a.emit({ kind: 'end', transcript: 'Archie, who owns billing now?' });
-    await sleep(60);
-    expect(sink.played.length).toBe(1);
-
-    // `sink.speaking = false` forces the drained state — barge-in has nothing to cut.
-    sink.speaking = false;
-    b.emit({ kind: 'start' });
-    expect(sink.cuts).toBe(0);
-
-    await sleep(400);
-    // Never heard, so it's dropped — a heard preamble doesn't count as the answer heard.
-    expect(synthTexts).toEqual(['Let me find out.', 'Marina owns it now.']);
-    expect(sink.played.length).toBe(1);
-    expect(synthAborts).toBe(1);
-    expect(host.utterances).toEqual([
-      { speaker: 'Ann', text: 'Archie, who owns billing now?' },
-      { speaker: 'Archie', text: 'Let me find out.' },
-    ]);
-    const response = rows('bot-preamble-gap').filter((r) => r.kind === 'response')[0];
-    expect(response.verdict).not.toBe('addressed');
-    await meeting.stop();
-  });
-
-  it('throws away an answer a whole turn landed on top of, preamble or not', async () => {
-    reset();
-    triageVerdict = { where: 'outside', preamble: 'Let me find out.' };
-    synthFirstChunkDelayMs = 20;
-    decideDelayMs = 200;
-    decideQueue.push({ speech: 'Marina owns it now.' });
-    const host = fakeHost();
-    const { meeting, sink } = await makeMeeting('bot-preamble-stale', {}, { host });
-    const a = speakerFor(meeting, ann);
-    const b = speakerFor(meeting, bob);
-
-    a.emit({ kind: 'start' });
-    a.emit({ kind: 'end', transcript: 'Archie, who owns billing now?' });
-    await sleep(60);
-    expect(sink.played.length).toBe(1);
-
-    // Bob's turn finishes before our answer resolves — nothing cuts us; the room just moved on.
-    sink.speaking = false;
-    b.emit({ kind: 'start' });
-    b.emit({ kind: 'end', transcript: 'actually, never mind that' });
-    expect(sink.cuts).toBe(0);
-    triageVerdict = null;
-    decideQueue.push({ speech: 'Nothing to report, then.' });
-
-    await sleep(500);
-    expect(synthTexts).toEqual([
-      'Let me find out.',
-      'Marina owns it now.',
-      'Nothing to report, then.',
-    ]);
-    expect(sink.played.length).toBe(2); // the preamble, then the fresh answer
-    expect(host.utterances).toEqual([
-      { speaker: 'Ann', text: 'Archie, who owns billing now?' },
-      { speaker: 'Bob', text: 'actually, never mind that' },
-      { speaker: 'Archie', text: 'Let me find out.' },
-      { speaker: 'Archie', text: 'Nothing to report, then.' },
-    ]);
-    const stale = rows('bot-preamble-stale').filter((r) => r.kind === 'response')[0];
-    expect(stale.verdict).not.toBe('addressed');
-    expect(String(stale.error)).toContain('the room moved on while we were deciding');
-    await meeting.stop();
-  });
 });
 
 /**
- * Roster, written history, and plugin summary come from outside — nothing here derives them, and this block pins that they reach both model calls, unchanged and identically.
+ * Roster, written history, and plugin summary come from outside — nothing here derives them, and this block pins that they reach the speaking call unchanged.
  *
  * The absent-not-empty rule is pinned in shared-context.test.ts; here: an untold meeting gets no context fields.
  */
@@ -2601,7 +2135,7 @@ describe('meeting standing context', () => {
     await sleep(SETTLED);
   }
 
-  it('hands the roster to both the gate and the speaking call, identically', async () => {
+  it('hands the roster to the speaking call', async () => {
     reset();
     decideQueue.push({ speech: 'Ann and Mary.' });
     const { meeting } = await makeMeeting('bot-ctx-roster');
@@ -2610,8 +2144,6 @@ describe('meeting standing context', () => {
     await oneTurn(meeting);
 
     expect(lastContextSeen?.participants).toEqual(roster);
-    // `.toBe`, not `.toEqual`: same object, proving identity.
-    expect(lastTriageArgs?.context).toBe(lastContextSeen);
     await meeting.stop();
   });
 
@@ -2659,7 +2191,7 @@ describe('meeting standing context', () => {
     await meeting.stop();
   });
 
-  it('hands the capability summary to both calls, once set', async () => {
+  it('hands the capability summary to the speaking call, once set', async () => {
     reset();
     decideQueue.push({ speech: 'I can check that.' });
     const { meeting } = await makeMeeting('bot-ctx-caps');
@@ -2668,7 +2200,6 @@ describe('meeting standing context', () => {
     await oneTurn(meeting, 'Archie, can you get me DAU?');
 
     expect(lastContextSeen?.capabilities).toBe('- Look up numbers in the analytics warehouse');
-    expect(lastTriageArgs?.context).toBe(lastContextSeen);
     await meeting.stop();
   });
 
@@ -2688,7 +2219,7 @@ describe('meeting standing context', () => {
     await meeting.stop();
   });
 
-  it('pulls the task written exchange from the host and hands it to both calls', async () => {
+  it('pulls the task written exchange from the host and hands it to the speaking call', async () => {
     reset();
     decideQueue.push({ speech: 'Bob owns it.' });
     const host = fakeHost();
@@ -2701,7 +2232,6 @@ describe('meeting standing context', () => {
     await oneTurn(meeting, 'Archie, who owns billing?');
 
     expect(lastContextSeen?.written).toEqual(host.exchange);
-    expect(lastTriageArgs?.context).toBe(lastContextSeen);
     await meeting.stop();
   });
 
@@ -2745,7 +2275,7 @@ describe('meeting standing context', () => {
     await meeting.stop();
   });
 
-  it('reaches the triage gate on the very next tick with a host, never on a timer', async () => {
+  it('reaches the speaking call on the very next tick with a host, never on a timer', async () => {
     // The other half of "no delay": one tick for the event-log read is the whole cost.
     reset();
     decideQueue.push({ speech: 'Bob owns it.' });
@@ -2756,9 +2286,9 @@ describe('meeting standing context', () => {
     a.emit({ kind: 'start' });
     a.emit({ kind: 'end', transcript: 'Archie, who owns billing?' });
 
-    expect(triageCalls).toBe(0); // one local read stands in front of it
+    expect(decideCalls).toBe(0); // one local read stands in front of it
     await sleep(0);
-    expect(triageCalls).toBe(1);
+    expect(decideCalls).toBe(1);
     expect(host.exchangeReads).toBe(1);
 
     await sleep(SETTLED);
@@ -2787,7 +2317,6 @@ describe('meeting standing context', () => {
 
     // Absent, not empty (pinned against the renderer in shared-context.test.ts).
     expect(lastContextSeen).toEqual({});
-    expect(lastTriageArgs?.context).toEqual({});
     await meeting.stop();
   });
 });
@@ -2908,28 +2437,23 @@ describe('meeting activation log', () => {
     await meeting.stop();
   });
 
-  it('carries the triage verdict, the preamble and what the room heard on one row', async () => {
+  it('carries the written detail and what the room heard on one row', async () => {
     reset();
-    // Most moving parts at once: verdict, preamble, answer, written detail — all on one row.
-    triageVerdict = { where: 'outside', preamble: 'Let me look that up.' };
     decideQueue.push({ speech: 'Marina owns it now.', chat: 'billing-owner.md' });
-    const { meeting, sink } = await makeMeeting('log-preamble');
+    const { meeting, sink } = await makeMeeting('log-chat');
     const a = speakerFor(meeting, ann);
 
     a.emit({ kind: 'start' });
     a.emit({ kind: 'end', transcript: 'Archie, who owns billing now?' });
     await sleep(SETTLED + 60);
-    expect(sink.played.length).toBe(2);
+    expect(sink.played.length).toBe(1);
 
-    const written = rows('log-preamble');
+    const written = rows('log-chat');
     expect(written).toHaveLength(1);
     const row = written[0];
-    expect(row.triage).toBe('outside');
-    expect(row.preamble).toBe('Let me look that up.');
+    // The `CHAT:` half is on the row beside the spoken half, never folded into it.
     expect(row.chat).toBe('billing-owner.md');
-    // Both sentences, in order heard — the preamble counts as heard, though it isn't the answer.
-    expect(row.speech).toBe('Let me look that up. Marina owns it now.');
-    // `answer` stays only what the speaking call decided.
+    expect(row.speech).toBe('Marina owns it now.');
     expect(row.answer).toBe('Marina owns it now.');
     await meeting.stop();
   });

@@ -6,12 +6,10 @@ import { WORKDIR } from '../system/workdir.js';
 // Aliased on import -- `Response` is also a global here (undici's).
 import {
   decideResponse,
-  runTriageGate,
   wasAddressed,
   type Decision,
   type Response as SpokenResponse,
   type SpeakingContext,
-  type TriageVerdict,
 } from './comprehension.js';
 import { openTurnStream, type TurnEvent, type TurnStream } from './deepgram.js';
 import { createSonioxSpeechSession } from './soniox.js';
@@ -155,7 +153,7 @@ export function isArchie(name: string | null, botName: string): boolean {
 
 // Rows are appended in settle order, not `at` order -- sort by `at` to read a meeting back in sequence.
 // `kind` is 'response' for a full speaking decision, 'candidate' when the addressing gate alone settled it. Optional fields are omitted, not empty, so presence is directly countable across the corpus.
-// A few (`pmDropped`, `preambleDropped`) are reason strings, not booleans, for the same reason -- nothing branches on their text; they're for whoever reads the log.
+// `pmDropped` is a reason string, not a boolean, for the same reason -- nothing branches on its text; it's for whoever reads the log.
 interface TurnRow extends Omit<ActivationLog, 'candidate'> {
   kind: 'candidate' | 'response';
   candidate?: string;
@@ -164,17 +162,14 @@ interface TurnRow extends Omit<ActivationLog, 'candidate'> {
   verdict: 'addressed' | 'suppressed' | 'error';
   // The whole of what the model decided to say, regardless of delivery -- an answer barged in on after four words records the same string here as one delivered whole. `speech` below is what the room actually heard.
   answer?: string;
-  // What the room actually heard, preamble included. Empty string claims nothing was heard, not a gap; absent means the turn never got as far as settling one way or the other.
+  // What the room actually heard. Empty string claims nothing was heard, not a gap; absent means the turn never got as far as settling one way or the other.
   speech?: string;
   chat?: string;
   pm?: string;
   pmDropped?: string;
   leave?: boolean;
-  triage?: TriageVerdict['where'];
-  preamble?: string;
-  preambleDropped?: string;
   thought?: string;
-  // Keys set via `recordTiming`: `triageMs` (triage gate), `decideMs` (model call choosing what to say), `ttfbMs` (first synthesis byte), `synthMs` (first sentence to last chunk), `speakMs` (turn-end to first sound, the felt latency), `gateMs` (addressing gate, `model` tier only).
+  // Keys set via `recordTiming`: `decideMs` (model call choosing what to say), `ttfbMs` (first synthesis byte), `synthMs` (first sentence to last chunk), `speakMs` (turn-end to first sound, the felt latency), `gateMs` (addressing gate, `model` tier only).
   timings?: Record<string, number>;
   error?: string;
 }
@@ -337,11 +332,6 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     }
   }
 
-  function withOwnLine(window: string, text: string): string {
-    const line = `${cfg.botName}: ${text}`;
-    return window.length === 0 ? line : `${window}\n${line}`;
-  }
-
   function transcriptSince(windowMs: number): string {
     const cutoff = Date.now() - windowMs;
     return transcript
@@ -350,7 +340,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       .join('\n');
   }
 
-  // Copied, not referenced: `answerRoom` makes two model calls a beat apart -- a participant joining between them shouldn't leave the two calls reasoning about different rooms.
+  // Copied, not referenced: the snapshot outlives the model call it was built for, and a roster replaced mid-call mustn't change what was already sent.
   function speakingContext(exchange: readonly WrittenLine[]): SpeakingContext {
     const context: SpeakingContext = {};
     if (roster.length > 0) {
@@ -698,12 +688,6 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       return heard.length === 0 ? null : heard.map((s) => s.text).join(' ');
     };
 
-    let preambleHandedOver = false;
-    let preambleEndOffset: number | null = null;
-
-    const answerHeard = (): boolean =>
-      heardAnything && (!preambleHandedOver || (preambleEndOffset !== null && pcmSentToSink > preambleEndOffset));
-
     // `abort()` stops the synthesizer server-side, not just local playback -- otherwise audio keeps arriving until the sink's post-cut suppression gives up (Recall's `MAX_SUPPRESSION_MS`, audio-out.ts), and Archie resumes mid-word over someone else.
     const abandon = (why: string): void => {
       if (abandoned === null) {
@@ -720,7 +704,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       if (abandoned !== null) {
       } else if (cutRevision !== cutAtStart) {
         abandon('cut off by somebody starting to speak');
-      } else if (!answerHeard() && roomMovedOn(revision)) {
+      } else if (!heardAnything && roomMovedOn(revision)) {
         abandon('the room took the floor before the first word of the answer');
       } else {
         if (!heardAnything) {
@@ -732,7 +716,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       }
     };
 
-    const haveSentence = (text: string, onComplete?: () => void): void => {
+    const haveSentence = (text: string): void => {
       if (abandoned !== null) {
       } else if (cutRevision !== cutAtStart) {
         abandon('cut off by somebody starting to speak');
@@ -743,7 +727,6 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
         try {
           stream?.say(text, () => {
             sentenceOffsets.push({ text, endOffset: pcmSentToSink });
-            onComplete?.();
           });
         } catch (err) {
           logger.warn(LOG, 'Handing a sentence to the speech stream failed', err);
@@ -759,37 +742,9 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       }
 
       const exchange = consults.map((c) => ({ id: c.id, question: c.question, answer: c.answer }));
-      // Must stay synchronous: `speakingContext` takes the exchange rather than reading it, so an unbound meeting reaches the triage gate in the same tick -- pinned by two tests in room-silence.test.ts ("no delay in front of the decision").
+      // Must stay synchronous: `speakingContext` takes the exchange rather than reading it, so an unbound meeting reaches the speaking call in the same tick -- pinned by two tests in room-silence.test.ts ("no delay in front of the decision").
       const context =
         host === undefined ? speakingContext([]) : speakingContext(await safeReadWrittenExchange());
-
-      const triagedAt = Date.now();
-      const triage = await runTriageGate(cfg, { transcript: speakingWindow, consults: exchange, context });
-      recordTiming(row, 'triageMs', Date.now() - triagedAt);
-      if (triage !== null) {
-        row.triage = triage.where;
-      }
-
-      const blockingConsult = outstandingConsult();
-      const consultBlocked = blockingConsult !== undefined;
-
-      const preamble = triage?.where === 'outside' ? triage.preamble : undefined;
-      if (preamble === undefined) {
-      } else if (consultBlocked) {
-        row.preambleDropped = `${blockingConsult.id} was still outstanding, so nothing could have been sent for this turn`;
-        logger.warn(
-          LOG,
-          `A question is already outstanding (${blockingConsult.id}) — did not say a preamble promising to go and find out: ${preamble}`,
-        );
-      } else if (stream !== null && !roomMovedOn(revision)) {
-        preambleHandedOver = true;
-        haveSentence(preamble, () => {
-          preambleEndOffset = pcmSentToSink;
-        });
-        row.preamble = preamble;
-        speakingWindow = withOwnLine(speakingWindow, preamble);
-        row.window = speakingWindow;
-      }
 
       const startedAt = Date.now();
       decision = await decideResponse(cfg, {
@@ -797,8 +752,6 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
         onSentence: stream === null ? undefined : haveSentence,
         consults: exchange,
         context,
-        triage,
-        consultBlocked,
       });
       recordTiming(row, 'decideMs', Date.now() - startedAt);
       consult = consultOf(decision);
@@ -832,7 +785,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
         if (stream === null) {
           answerWithoutVoice(row, answer, 'there is no speech session to say it with', askedAt);
         } else {
-          if (!answerHeard() && roomMovedOn(revision)) {
+          if (!heardAnything && roomMovedOn(revision)) {
             abandon('the room moved on while we were deciding');
           }
           const result = await stream.end();
@@ -846,7 +799,6 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
             row,
             answer,
             heardAnything,
-            preambleHandedOver ? (preamble ?? null) : null,
             abandoned,
             result.incomplete,
             askedAt,
@@ -913,7 +865,6 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     row: TurnRow,
     answer: SpokenResponse,
     heardAnything: boolean,
-    preamble: string | null,
     abandoned: string | null,
     truncated: string | null,
     askedAt: number,
@@ -932,10 +883,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       clearOwed(askedAt);
       row.verdict = 'addressed';
       // Reads `answer.speech` directly, not the sink's watermark -- `playedBytes` is conservative by contract and can lag a sentence behind at the moment the round closes.
-      recordHeard(row, preamble === null ? answer.speech : `${preamble} ${answer.speech}`);
-      if (preamble !== null) {
-        addUtterance(cfg.botName, preamble);
-      }
+      recordHeard(row, answer.speech);
       noteOwnAnswer(answer.speech);
       if (answer.chat !== undefined) {
         // Not awaited -- audio is already playing, and the room shouldn't wait on the chat channel before the next decision can run.

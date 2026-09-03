@@ -1,14 +1,14 @@
 /**
- * comprehension.ts — decides whether Archie speaks, where the answer comes from, and what it says aloud versus posts to chat.
+ * comprehension.ts — decides whether Archie speaks, what it says aloud, and what it posts to chat instead.
  *
  * *When* to speak lives in `meeting.ts`; *what the conversation means* lives here, in the model.
  *
- * {@link runTriageGate} and {@link decideResponse} share {@link buildSpeakingUserMessage}, reasoning over the same window. {@link summariseCapabilities} runs once at join, not part of a turn.
+ * {@link decideResponse} frames its request with {@link buildSpeakingUserMessage}. {@link summariseCapabilities} runs once at join, not part of a turn.
  *
  * Two rules:
  *
  *  1. **Every failure biases to silence.** Timeout, bad status, unparseable reply, missing prompt file all resolve to `false` / `null` / `''`; none throws.
- *  2. **The prompts are the contract, not this file.** Reasoning lives in `prompts/voice-addressing.md`, `prompts/voice-triage.md`, `prompts/voice-speaking.md`, `prompts/voice-capabilities.md`; this module only loads, frames, and parses. No prompt prose in TypeScript.
+ *  2. **The prompts are the contract, not this file.** Reasoning lives in `prompts/voice-addressing.md`, `prompts/voice-speaking.md`, `prompts/voice-capabilities.md`; this module only loads, frames, and parses. No prompt prose in TypeScript.
  */
 
 import { logger } from '../system/logger.js';
@@ -23,18 +23,6 @@ const MAX_ERROR_BODY = 500;
 /** Runs on every candidate turn: a verdict not back in five seconds has lost its turn. */
 const ADDRESSING_TIMEOUT_MS = 5_000;
 const ADDRESSING_MAX_TOKENS = 64;
-
-/**
- * A guard against a hung socket, not a latency budget — every ms of this call is silence before Archie's first word.
- *
- * 1500ms clears the two measured bounds by ~250ms: admission latency (slow mode ~1150ms) plus generation (capped at {@link TRIAGE_MAX_TOKENS}, ≤103ms).
- *
- * Copied in `tools/voice-cases/triage.mjs` as `PRODUCTION_TRIAGE_DEADLINE_MS`; `triage.test.ts` reads this source and fails on drift.
- */
-const TRIAGE_TIMEOUT_MS = 1500;
-
-/** `{"where": "outside", "preamble": "..."}`, a few dozen tokens. Roomy: Russian tokenizes heavier than English, and a reply cut mid-string is unparseable, losing the whole verdict. */
-const TRIAGE_MAX_TOKENS = 96;
 
 /** Speaking has no deadline — if the room never goes quiet, Archie never speaks. Only stops a hung connection holding the owe flag open. `SPEAKING_MAX_TOKENS` is headroom, not a target: `voice-speaking.md` sets no length cap. */
 const SPEAKING_TIMEOUT_MS = 15_000;
@@ -191,94 +179,11 @@ export async function wasAddressed(
 }
 
 /**
- * The four places an answer can come from, per `voice-triage.md` — the whole of what {@link parseTriage} accepts. One array, not a hand-repeated union, same reason as {@link TAIL_MARKERS}: a fifth verdict must fail to compile, not get forgotten in the parser or in {@link SITUATION}.
- */
-const TRIAGE_WHERE = ['room', 'outside', 'pending', 'elsewhere'] as const;
-
-/**
- * Where the answer to what was just asked has to come from — never the answer itself.
- *
- * `preamble` rides only on `outside` — one sentence Archie says aloud *now* while it looks. Already sanitised ({@link toSpeech}), never empty when present.
- */
-export interface TriageVerdict {
-  where: (typeof TRIAGE_WHERE)[number];
-  /** One short sentence to say aloud while the answer is fetched. Absent on every other verdict, and on an `outside` reply that carried none. */
-  preamble?: string;
-}
-
-/**
- * Decides where the answer has to come from — never what it is. A third call, between the addressing gate and the speaking call.
- *
- * `null` is the fail-safe: call failed, timed out, or came back unreadable — the caller does exactly what it did before this gate existed. Not a fifth verdict — a bug here must never mute Archie or skip a consult — logged as degraded-but-recovered.
- */
-export async function runTriageGate(
-  cfg: VoiceConfig,
-  opts: {
-    transcript: string;
-    /** The consult exchange so far, rendered exactly as the speaking call renders it — tells `pending` from `outside`. See {@link decideResponse}. */
-    consults?: { id: string; question: string; answer?: string }[];
-    /** The rest of the turn's context, rendered exactly as the speaking call renders it — see {@link SpeakingContext}. `meeting.ts` hands both calls the same snapshot. */
-    context?: SpeakingContext;
-  },
-): Promise<TriageVerdict | null> {
-  const transcript = opts.transcript.trim();
-  if (transcript.length === 0) {
-    return null; // Nothing to place; not worth a round trip.
-  }
-
-  const startedAt = Date.now();
-  let system: string;
-  try {
-    system = await loadPrompt('voice-triage', { BOT_NAME: cfg.botName });
-  } catch (error) {
-    logger.error(LOG, 'Could not load prompts/voice-triage.md', error);
-    return null;
-  }
-
-  const raw = await callModel({
-    cfg,
-    label: 'triage',
-    system,
-    user: buildSpeakingUserMessage(transcript, opts.consults, opts.context),
-    maxTokens: TRIAGE_MAX_TOKENS,
-    timeoutMs: TRIAGE_TIMEOUT_MS,
-  });
-
-  const elapsed = Date.now() - startedAt;
-  if (raw === null) {
-    // callModel already logged the cause; this is the consequence.
-    logger.warn(
-      LOG,
-      `Triage gate: no verdict in ${elapsed}ms — this turn runs exactly as it would with no triage at all`
-    );
-    return null;
-  }
-
-  const verdict = parseTriage(raw);
-  if (verdict === null) {
-    logger.warn(
-      LOG,
-      `Triage gate: unusable reply in ${elapsed}ms, so this turn runs exactly as it would with no triage at all: ${raw.slice(0, 120)}`
-    );
-    return null;
-  }
-
-  const withPreamble = verdict.preamble === undefined ? '' : ' with a preamble';
-  logger.debug(
-    LOG,
-    `Triage gate: ${verdict.where}${withPreamble} in ${elapsed}ms`
-  );
-  return verdict;
-}
-
-/**
  * The window → what to say. See {@link Decision}: `silence` and `failed` are deliberately not the same answer.
  *
  * Called when the room has gone quiet and the bot owes it a response — the whole conversation since being addressed goes in, and the model decides what the room settled on, which can come back as `silence`.
  *
  * A reply may carry trailing `CHAT:`, `PM:`, `LEAVE:` lines and `<think>...</think>` blocks — see {@link Response}, {@link parseReply}. `onSentence` fires per complete sentence, sanitised spoken text only, before the rest is written.
- *
- * `triage` is this turn's verdict from the gate ahead, passed in rather than recomputed. Only one sentence of fact reaches the model, not the verdict name — see {@link SITUATION}.
  */
 export async function decideResponse(
   cfg: VoiceConfig,
@@ -290,14 +195,6 @@ export async function decideResponse(
     consults?: { id: string; question: string; answer?: string }[];
     /** The rest of the turn's context — see {@link SpeakingContext}. Every field omits its block entirely rather than rendering it empty, same as `consults`. */
     context?: SpeakingContext;
-    /** What {@link runTriageGate} said about this turn, passed straight through. Null (the gate's fail-safe) and absent render nothing — a turn with no verdict sends exactly what it sent before the gate existed. */
-    triage?: TriageVerdict | null;
-    /**
-     * True when a question of this meeting's is already out and unanswered, so any `PM:` line this reply writes is refused — `routeConsult` in `meeting.ts` owns that cap.
-     *
-     * Not on {@link SpeakingContext}: that bag goes to the triage gate unchanged. Absent is false. See {@link CONSULT_BLOCKED_SITUATION}.
-     */
-    consultBlocked?: boolean;
   }
 ): Promise<Decision> {
   const transcript = opts.transcript.trim();
@@ -315,24 +212,14 @@ export async function decideResponse(
     return { outcome: 'failed', why: 'the speaking prompt could not be loaded', handedOver: 0 };
   }
 
-  // Which half carries the guidance is a live experiment arm, defaulting to what production has always sent — see {@link SpeakingPlacement}.
-  const { system, user } = assembleSpeakingRequest({
-    prompt,
-    transcript,
-    consults: opts.consults,
-    context: opts.context,
-    triage: opts.triage,
-    consultBlocked: opts.consultBlocked,
-  });
-
   const emitter = opts.onSentence === undefined ? null : new SentenceEmitter(opts.onSentence);
   let firstSentenceAt: number | null = null;
   const streamed = await streamModel(
     {
       cfg,
       label: 'speaking',
-      system,
-      user,
+      system: prompt,
+      user: buildSpeakingUserMessage(transcript, opts.consults, opts.context),
       maxTokens: SPEAKING_MAX_TOKENS,
       timeoutMs: SPEAKING_TIMEOUT_MS,
     },
@@ -382,11 +269,9 @@ export async function decideResponse(
 }
 
 /**
- * Everything about the meeting that isn't the transcript or consult exchange — standing facts a turn is decided against, not the moment it's decided in. Snapshotted once per turn by `meeting.ts`, handed identically to both calls.
+ * Everything about the meeting that isn't the transcript or consult exchange — standing facts a turn is decided against, not the moment it's decided in. Snapshotted once per turn by `meeting.ts`.
  *
  * Every field is optional and renders nothing when empty — never an empty block. See {@link consultsBlock}: an empty `<participants></participants>` claims nobody is in the room; an absent block is silence.
- *
- * The triage verdict isn't a field here: this object goes to both calls unchanged — the wrong home for the one thing only the speaking call may see. See {@link situationBlock}.
  */
 export interface SpeakingContext {
   /**
@@ -410,161 +295,7 @@ export interface SpeakingContext {
 }
 
 /**
- * Every field of {@link SpeakingContext} as a value, not just a type — lets the case harness (`tools/voice-cases/`) pin fixed values and assert full coverage, so an unpinned field fails a test.
- *
- * The `Unpinned` assertion below is the other half: `tsc` fails if {@link SpeakingContext} grows a field this array doesn't name — a fourth block can't be added on one side only. Do not "tidy" either away.
- */
-export const SPEAKING_CONTEXT_FIELDS = ['participants', 'written', 'capabilities'] as const;
-type UnlistedContextField = Exclude<keyof Required<SpeakingContext>, (typeof SPEAKING_CONTEXT_FIELDS)[number]>;
-// Type-level assertion, no runtime effect: `never` on the left means every field is listed.
-const _everyContextFieldIsListed: [UnlistedContextField] extends [never] ? true : never = true;
-void _everyContextFieldIsListed;
-
-/**
- * Where the guidance sits relative to the data it reasons over — an arm to measure, not a setting to tune.
- *
- * `guidance-first` (production's default): all of `voice-speaking.md` as system, then transcript and standing blocks as user. `data-first`: only the opening statement of role as system; everything from the first `## ` heading moved to the end of the user message.
- *
- * The guidance's own words must not change while measuring — moved, never rewritten. {@link splitSpeakingPrompt} cuts at a heading for the same reason: no second copy of the prose to keep in step.
- *
- * `data-first`'s system message is one sentence, so no cacheable prefix exists under it. The triage gate is untouched by either arm: {@link buildSpeakingUserMessage}, shared by both calls, never carries speaking guidance.
- */
-export type SpeakingPlacement = 'guidance-first' | 'data-first';
-
-/** Environment variable selecting the arm, read per request — the harness runs both arms as separate processes, so a deployment sets one variable rather than changing code. */
-const PLACEMENT_ENV = 'ARCHIE_VOICE_PROMPT_PLACEMENT';
-
-/**
- * Which arm is selected. An unrecognised value is a typo, not an instruction — reported and ignored: silently reading `data_first` as "default" would look like the switch working while a run collected against the wrong arm.
- *
- * Pure in its argument; only its caller, {@link assembleSpeakingRequest}, reads the environment.
- */
-export function resolveSpeakingPlacement(raw: string | undefined): SpeakingPlacement {
-  const value = (raw ?? '').trim().toLowerCase();
-  if (value.length === 0 || value === 'guidance-first') {
-    return 'guidance-first';
-  } else if (value === 'data-first') {
-    return 'data-first';
-  } else {
-    logger.warn(
-      LOG,
-      `${PLACEMENT_ENV}="${raw}" is not a known placement — using guidance-first, which is what production sends`
-    );
-    return 'guidance-first';
-  }
-}
-
-/**
- * Cut the speaking prompt into its opening statement of role and everything after, at the first `## ` heading.
- *
- * A structural seam, not a delimiter added to the file — neither arm can drift from the other via an edit to one copy of the prose.
- *
- * No heading means no seam: `guidance` comes back empty, and {@link assembleSpeakingRequest} sends both arms identically instead of an empty guidance block — a measurement of nothing, so it's logged.
- */
-export function splitSpeakingPrompt(prompt: string): { role: string; guidance: string } {
-  const lines = prompt.split(/\r?\n/);
-  const firstHeading = lines.findIndex((line) => line.startsWith('## '));
-  if (firstHeading === -1) {
-    return { role: prompt.trim(), guidance: '' };
-  }
-  return {
-    role: lines.slice(0, firstHeading).join('\n').trim(),
-    guidance: lines.slice(firstHeading).join('\n').trim(),
-  };
-}
-
-/**
- * What each triage verdict means, as one statement of fact about this turn, in the second person — sentences, not verdict names (the model was never taught the names), and none an instruction: each states what's true and stops.
- *
- * Worded to stay true even when the verdict is wrong — only two claim shapes are safe: "you do not have X" (the transcript can refute it) and "you need not do X" (not doing something always satisfies it).
- *
- * A `Record` over {@link TRIAGE_WHERE}'s union, not a lookup with a fallback, so a fifth verdict fails to compile rather than silently rendering nothing.
- *
- * **Every string is pinned byte-for-byte in `situation-block.test.ts`.** Editing one is a prompt edit; re-run the case suite, don't trust a single case that moves.
- */
-const SITUATION: Record<TriageVerdict['where'], string> = {
-  room: 'Whatever there is to go on is already in front of you, and what you have just been asked does not have to be looked up anywhere.',
-  outside: 'Nobody here has supplied what you have just been asked, and it is something you can go and find out.',
-  pending:
-    'What you have just been asked is already one of the questions you have out, and nothing has come back yet.',
-  elsewhere:
-    'Nobody here has supplied what you have just been asked, and nothing you could go and find out would settle it.',
-};
-
-/**
- * The one situation that is not a verdict: a question of this meeting's is already out and unanswered, so `meeting.ts` refuses whatever `PM:` line this turn writes — see `routeConsult` for the cap.
- *
- * Not a fifth row of {@link SITUATION} — true or false independent of where the gate placed the answer: a modifier on one of the four, not a verdict {@link parseTriage} would accept.
- *
- * Replaces the `outside` line specifically: `outside` ends "it is something you can go and find out", false when no question can leave the room. `pending`/`room`/`elsewhere` are untouched: already true, or nothing was going out anyway.
- *
- * Pinned byte-for-byte in `situation-block.test.ts` beside the four SITUATION strings.
- */
-const CONSULT_BLOCKED_SITUATION =
-  'A question is already out and has not come back, so a second one cannot leave this room yet — answer from what is already here, or say plainly that you are still waiting on the first.';
-
-/**
- * Render the turn's triage verdict as its own block, or nothing. Absent for a null or missing verdict — the absence, not an empty block, is the fail-safe.
- *
- * Called only from {@link assembleSpeakingRequest}: the gate frames its own request with {@link buildSpeakingUserMessage} directly (no verdict parameter), so a verdict block there is structurally impossible.
- *
- * `consultBlocked` picks which line renders, never whether the block does — can't resurrect a block a null verdict suppressed. See {@link CONSULT_BLOCKED_SITUATION}.
- */
-function situationBlock(triage: TriageVerdict | null | undefined, consultBlocked: boolean): string[] {
-  if (triage === undefined || triage === null) {
-    return [];
-  }
-  // Only `outside` claims something can be gone and found out, so only `outside` is the line to replace.
-  const line =
-    consultBlocked && triage.where === 'outside' ? CONSULT_BLOCKED_SITUATION : SITUATION[triage.where];
-  return ['', '<situation>', line, '</situation>'];
-}
-
-/**
- * The two halves of one speaking request, assembled for the selected arm. See {@link SpeakingPlacement}.
- *
- * `prompt` arrives already loaded and substituted — the caller's job (production via `loadPrompt`; `tools/voice-cases/promptio.mjs` hard-fails on an unsubstituted variable) — so both arms can be pinned byte-for-byte in a test.
- *
- * `<situation>` is appended here, not in the shared builder: it keeps a verdict off the gate's own message ({@link situationBlock}) and is a fact about this turn, not the meeting. Lands after every standing block, before the guidance under `data-first` — nearest the answer, where a short sentence is worth most.
- */
-export function assembleSpeakingRequest(args: {
-  prompt: string;
-  transcript: string;
-  consults?: { id: string; question: string; answer?: string }[];
-  context?: SpeakingContext;
-  /** This turn's triage verdict, or null/absent when the gate produced none. Renders {@link SITUATION}'s one line for the verdict, nothing at all when there isn't one. */
-  triage?: TriageVerdict | null;
-  /** Whether a question of this meeting's is already out and unanswered, so a `PM:` line this reply writes can't leave the room. Renders {@link CONSULT_BLOCKED_SITUATION} in place of `outside`; absent is false, byte-for-byte identical to before this existed. */
-  consultBlocked?: boolean;
-  /** Overrides the environment. For tests and for a harness that runs both arms in one process. */
-  placement?: SpeakingPlacement;
-}): { system: string; user: string } {
-  const placement = args.placement ?? resolveSpeakingPlacement(process.env[PLACEMENT_ENV]);
-  const user = [
-    buildSpeakingUserMessage(args.transcript, args.consults, args.context),
-    ...situationBlock(args.triage, args.consultBlocked === true),
-  ].join('\n');
-  if (placement === 'guidance-first') {
-    return { system: args.prompt, user };
-  } else {
-    const { role, guidance } = splitSpeakingPrompt(args.prompt);
-    if (guidance.length === 0) {
-      logger.warn(
-        LOG,
-        'The data-first arm found no `## ` heading in the speaking prompt, so there is no guidance to move — this request is byte-identical to guidance-first'
-      );
-      return { system: args.prompt, user };
-    }
-    return { system: role, user: `${user}\n\n${guidance}` };
-  }
-}
-
-/**
- * Assembles the shared user half: the room's transcript, then every standing block with content. Everything both calls send, nothing either sends alone.
- *
- * Placement-independent: under `data-first`, {@link assembleSpeakingRequest} appends the guidance after this returns, never here — the triage gate sends the same bytes under both arms.
- *
- * Never grows a triage-verdict parameter — a verdict block here would be the gate reading its own answer back. `<situation>` is rendered by {@link assembleSpeakingRequest} instead, which the gate can't call.
+ * Assembles the user half of the speaking request: the room's transcript, then every standing block with content.
  *
  * Block order runs moment-outward: `<transcript>`/`<consults>` (now), `<written>` (may predate the meeting), `<participants>` (current), `<capabilities>` (fixed) — an older meeting renders byte-for-byte as before.
  *
@@ -1060,43 +791,6 @@ function parseAddressed(raw: string): boolean {
     logger.warn(LOG, `Addressing reply was not valid JSON: ${raw.slice(0, 120)}`);
     return false;
   }
-}
-
-/**
- * Extract the verdict from the triage reply, or null if there isn't one.
- *
- * Braces are located rather than the whole string parsed, same reason as {@link parseAddressed}: bare JSON can arrive wrapped in a code fence. A `where` outside {@link TRIAGE_WHERE} is rejected, not coerced — rounding to the nearest verdict would put a guess where a fail-safe belongs.
- *
- * Logging is the caller's — it has the elapsed time.
- */
-function parseTriage(raw: string): TriageVerdict | null {
-  const open = raw.indexOf('{');
-  const close = raw.lastIndexOf('}');
-  if (open === -1 || close <= open) {
-    return null;
-  }
-
-  let parsed: { where?: unknown; preamble?: unknown };
-  try {
-    parsed = JSON.parse(raw.slice(open, close + 1)) as typeof parsed;
-  } catch {
-    return null;
-  }
-
-  const where = TRIAGE_WHERE.find((known) => known === parsed.where);
-  if (where === undefined) {
-    return null;
-  }
-
-  const verdict: TriageVerdict = { where };
-  if (typeof parsed.preamble === 'string') {
-    // Sanitised here, not at the call site — the one place that knows this is bound for speech: an asterisk reads aloud as "star". Absent, not empty, when nothing's left, so `preamble !== undefined` means "there's something to say".
-    const preamble = toSpeech(parsed.preamble);
-    if (preamble.length > 0) {
-      verdict.preamble = preamble;
-    }
-  }
-  return verdict;
 }
 
 /**

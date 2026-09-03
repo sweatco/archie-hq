@@ -103,8 +103,6 @@ vi.mock('../comprehension.js', () => {
 
   return {
     wasAddressed: async () => false,
-    // Null verdict mirrors the gate's fail-safe — transport here, gate wiring in room-silence.test.ts.
-    runTriageGate: async () => null,
     decideResponse: async (
       _cfg: unknown,
       opts: { transcript: string; onSentence?: (text: string) => void },
