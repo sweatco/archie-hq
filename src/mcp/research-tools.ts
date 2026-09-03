@@ -37,7 +37,13 @@ export interface ResearchToolCallbacks {
 // Preset Classification (Haiku)
 // ============================================================================
 
-export const PERPLEXITY_PRESETS = ['fast', 'low', 'medium'] as const;
+// `xhigh` and `wide-research` are deliberately excluded. `xhigh` answers out of
+// its own sandbox rather than the web — measured at zero citations and $1.54
+// for a single query — which defeats a tool whose output is a sourced report.
+// `wide-research` is asynchronous: it returns a job handle that has to be
+// polled, and its results arrive as downloadable files rather than in the
+// response body.
+export const PERPLEXITY_PRESETS = ['fast', 'low', 'medium', 'high'] as const;
 export type PerplexityPreset = typeof PERPLEXITY_PRESETS[number];
 
 const PresetSchema = z.object({
@@ -51,12 +57,16 @@ const PresetSchema = z.object({
 const rawPresetSchema = toJSONSchema(PresetSchema) as Record<string, unknown>;
 const { $schema: _dropSchema, ...presetJsonSchema } = rawPresetSchema;
 
-const CLASSIFIER_SYSTEM_PROMPT = `You are a research query classifier. Analyze the query and select the most appropriate Perplexity search preset.
+const CLASSIFIER_SYSTEM_PROMPT = `You are a research query classifier. Pick the Perplexity preset that fits the query.
 
-Presets:
-- fast: Simple factual lookups, definitions, single-entity queries, quick answers
-- low: Multi-faceted questions, comparisons, current events, moderate research
-- medium: Comprehensive analysis, market research, technical deep-dives, broad strategic topics
+The presets are a cost ladder, listed cheapest first. Pick the cheapest one that can actually answer the query: depth you do not need is wasted money, and the top rung costs roughly eighty times the bottom one.
+
+- fast: One search, no follow-up reading. A single fact, a definition, a version number, a release date, a yes or no. Use when one good source settles it.
+- low: A few searches, and it can open the pages it finds. Comparisons between named options, current events, recent changes, "how is X usually done". Use when the answer needs several sources reconciled but no real investigation.
+- medium: Many rounds of searching and page reading on the same question. Use when the answer has to be built by chaining evidence across sources: technical deep-dives, landscape surveys, trade-off analyses.
+- high: The broadest search coverage and the strongest reasoning, at roughly eight times the cost of medium. Use only when the query is open-ended and consequential enough that completeness beats both latency and cost: architecture or vendor decisions, security analyses, anything where a missed consideration is expensive.
+
+When two presets both look defensible, pick the cheaper one.
 
 Respond with JSON only.`;
 
@@ -134,6 +144,19 @@ interface PerplexityResponse {
 export async function callPerplexity(preset: PerplexityPreset, input: string): Promise<PerplexityResponse> {
   const apiKey = process.env.PERPLEXITY_API_KEY!;
 
+  // Send the preset and the input, nothing else. Each preset carries its own
+  // tuned model, step budget, reasoning effort, output ceiling and tool set,
+  // and any field sent alongside a preset overrides that default.
+  //
+  // Do not pin a model here. The `fast` tier rejects Anthropic models outright
+  // (HTTP 400 "invalid request", with no cap value accepted), which is what
+  // broke every query classified as simple. `high` also differs from `medium`
+  // only in model, so pinning one silently turns them into the same request.
+  //
+  // `max_output_tokens` is required only for Anthropic models, so it stays
+  // absent unless PERPLEXITY_MAX_OUTPUT_TOKENS is set to cap report length.
+  const maxOutputTokens = Number(process.env.PERPLEXITY_MAX_OUTPUT_TOKENS) || undefined;
+
   const response = await fetch('https://api.perplexity.ai/v1/agent', {
     method: 'POST',
     headers: {
@@ -142,15 +165,9 @@ export async function callPerplexity(preset: PerplexityPreset, input: string): P
     },
     body: JSON.stringify({
       preset,
-      model: 'anthropic/claude-sonnet-4-6',
       input,
       stream: false,
-      // Anthropic models proxied through Perplexity require an explicit output
-      // cap — without it the backend rejects the request with
-      // "max_output_tokens is required when using Anthropic models" and returns
-      // an empty report. Set to the Sonnet output ceiling so we don't truncate
-      // long research reports; overridable via env.
-      max_output_tokens: Number(process.env.PERPLEXITY_MAX_OUTPUT_TOKENS) || 64000,
+      ...(maxOutputTokens ? { max_output_tokens: maxOutputTokens } : {}),
     }),
   });
 
