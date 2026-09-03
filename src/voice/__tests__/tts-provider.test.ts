@@ -218,7 +218,8 @@ describe('choosing the synthesizer', () => {
     stream.say('The deploy finished at noon.');
     stream.abort();
     session.close();
-    expect(sockets.every((s) => s.url.includes('deepgram.com'))).toBe(true);
+    // Anchored on the parsed hostname rather than a substring of the URL: `includes('deepgram.com')` also accepts a host that merely contains it, so it would pass on a Soniox URL carrying that string anywhere — which is the whole thing this test denies.
+    expect(sockets.every((s) => /(^|\.)deepgram\.com$/.test(new URL(s.url).hostname))).toBe(true);
   });
 });
 
