@@ -46,7 +46,7 @@ function createJoinRecallMeetingTool(agent: Agent, task: Task, ops: MeetingOps) 
 /**
  * PM-only counterpart to `join_recall_meeting`, same failure discipline. No args: one task, one live
  * meeting ("One meeting, one task", `docs/architecture/voice.md`). Unlike `join`, awaits full teardown —
- * by "left the meeting," metadata is complete and the channel is marked ended.
+ * by "left the meeting," the record is closed and the channel is marked ended.
  */
 function createLeaveRecallMeetingTool(agent: Agent, task: Task, ops: MeetingOps) {
   return tool(

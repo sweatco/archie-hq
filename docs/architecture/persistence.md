@@ -40,9 +40,7 @@ ${ARCHIE_WORKDIR}/sessions/
         {basename}.{8hex}.{ext}            # content-hash-deduped per basename+ext
       recall/                              # one subfolder per voice meeting, named for its `recall:{session_id}` channel key
         {session_id}/
-          transcript.log                    # what the room heard
-          exchange.log                      # what Archie's voice and the PM said to each other about it
-          metadata.json                     # facts about the occasion — platform, when Archie joined/it ended, the roster; written at start and completed at teardown
+          meeting.jsonl                     # the whole meeting, one JSON row per line: what was said, who came and went, what was asked
     agents/
       {agentKey}/                          # Per-agent workspace (PM and plugin agents)
         .claude/
@@ -73,15 +71,13 @@ All paths below are rooted at `SESSIONS_DIR` (`${ARCHIE_WORKDIR}/sessions`).
 | `getEventsLogPath(taskId)` | `{SESSIONS_DIR}/{taskId}/shared/events.jsonl` |
 | `getUsageLogPath(taskId)` | `{SESSIONS_DIR}/{taskId}/shared/usage.jsonl` |
 | `getMeetingPath(taskId, sessionId)` | `{SESSIONS_DIR}/{taskId}/shared/recall/{sessionId}` |
-| `getMeetingTranscriptPath(taskId, sessionId)` | `{SESSIONS_DIR}/{taskId}/shared/recall/{sessionId}/transcript.log` |
-| `getMeetingExchangeLogPath(taskId, sessionId)` | `{SESSIONS_DIR}/{taskId}/shared/recall/{sessionId}/exchange.log` |
-| `getMeetingMetadataPath(taskId, sessionId)` | `{SESSIONS_DIR}/{taskId}/shared/recall/{sessionId}/metadata.json` |
+| `getMeetingRecordPath(taskId, sessionId)` | `{SESSIONS_DIR}/{taskId}/shared/recall/{sessionId}/meeting.jsonl` |
 
 Per-agent workspaces (`{taskId}/agents/{agentKey}/`) and SDK runtime dirs
 (`{taskId}/claude/{agentKey}/{session,tmp}`) are created in `src/agents/spawn.ts`,
 not in `persistence.ts`.
 
-One meeting, one subfolder — `sessionId` is the same id that keys the meeting's `recall:{session_id}` entry in `channels` (see `RecallChannel` below), so the folder and the channel key are built from the same value and cannot drift apart. See [Voice](./voice.md) for `appendMeetingTranscript` and `appendMeetingExchange`, the appenders that write these two files, and why they live beside the helpers above rather than in the Recall connector.
+One meeting, one subfolder — `sessionId` is the same id that keys the meeting's `recall:{session_id}` entry in `channels` (see `RecallChannel` below), so the folder and the channel key are built from the same value and cannot drift apart. See [Voice](./voice.md) for `appendMeetingRow`, the one appender that writes that file, and why it lives beside the helpers above rather than in the Recall connector.
 
 ### Task ID format
 
@@ -157,39 +153,27 @@ A GitHub PR conversation is not represented as a channel. GitHub state for a tas
 
 `CliChannel` is the CLI/REST-SSE surface's own channel kind, linked once per task via `linkCliChannel()`; like `SlackChannel`, it is handled directly wherever it can be the task's default channel. `RecallChannel` is a live voice meeting (Zoom, Meet or Teams) that the Recall connector bound to a task; see [Voice](./voice.md) for what it represents and why the record is permanent even after the meeting ends. Unlike Slack and CLI, a `RecallChannel` is never the default channel, and always dispatches through the channel-delivery seam (`src/tasks/channel-delivery.ts`) instead of a hand-written branch — the same seam any future channel kind plugs a deliverer into rather than growing another branch in `Task.postToUser`.
 
-### MeetingMetadata
+### The meeting record
 
-A second, meeting-scoped metadata file — not part of `TaskMetadata` above, and not keyed into `channels`, but a schema worth documenting alongside it since it is the same kind of fact-snapshot for a narrower scope: one voice meeting rather than the whole task. Lives at `shared/recall/{sessionId}/metadata.json` (see `getMeetingMetadataPath` under Path helpers above).
+A voice meeting's whole record is one append-only file, `shared/recall/{sessionId}/meeting.jsonl` (see `getMeetingRecordPath` under Path helpers above), written by `appendMeetingRow` — one JSON object per line, in the order things settled. It is not part of `TaskMetadata` and not keyed into `channels`; it is documented here because it is the other durable shape a task carries.
 
 ```typescript
-interface MeetingParticipant {
-  name: string | null;
-  is_host: boolean | null;
-}
-
-interface LiveMeetingParticipant {
-  name: string | null;
-  is_host: boolean | null;
-  joined_at: string | null;         // when this join was recorded; null if only a later leave was ever seen for them
-  left_at: string | null;           // null while still present, or if no leave was ever seen either
-}
-
-interface MeetingMetadata {
-  session_id: string;               // Recall's bot id — also the folder name
-  url: string;                      // the plain URL string handed to Recall
-  platform: string | null;          // Recall's structured read of `url` (`zoom`, `google_meet`, `microsoft_teams`, `microsoft_teams_live`, `webex`, `goto_meeting`) — null until the teardown fetch supplies it
-  title: string | null;             // the meeting's own title, when the platform supplies one (Teams and Webex never do) — null is the ordinary state, not an error
-  archie_joined_at: string;         // when Archie (the bot) joined — never "when the meeting started"
-  meeting_ended_at: string | null;  // Recall's own `call_ended` time if the teardown fetch reached it, else the local wall clock when teardown began; null only while the meeting is still open
-  duration_seconds: number | null;  // meeting_ended_at minus archie_joined_at — Recall's own schema has no duration field
-  participants: MeetingParticipant[] | null;    // Recall's own final roster: presence, not speech, populated once at teardown; null until fetched, if the fetch failed, or if Recall never produced one
-  live_participants: LiveMeetingParticipant[];  // this connector's own roster, accumulated live from join/leave events from the moment the first participant joins; always an array, never null
-}
+// src/voice/types.ts — one union member per kind of line.
+type MeetingRow =
+  | { at: string; type: 'started'; url: string; bot_id: string }
+  | { at: string; type: 'details'; platform: string | null; title: string | null }
+  | { at: string; type: 'capabilities'; text: string }
+  | { at: string; type: 'join' | 'leave'; participant: { id: string; name: string | null; is_host: boolean | null } }
+  | { at: string; type: 'utterance'; speaker: string; text: string }
+  | { at: string; type: 'chat'; speaker: string; text: string }
+  | { at: string; type: 'consult'; id: string; question: string }
+  | { at: string; type: 'answer'; id: string; text: string; from: 'pm-agent' | 'system' }
+  | { at: string; type: 'gate'; speaker: string; candidate: string; tier: 'name' | 'follow-up' | 'model' | 'already-owed'; matched?: string; addressed: boolean; gate_ms?: number; error?: string }
+  | { at: string; type: 'turn'; verdict: 'addressed' | 'suppressed' | 'error'; answer?: string; speech?: string; chat?: string; pm?: string; pm_dropped?: string; leave?: boolean; thought?: string; error?: string; timings?: { decideMs?: number; ttfbMs?: number; synthMs?: number; speakMs?: number } }
+  | { at: string; type: 'ended'; call_ended_at: string | null };
 ```
 
-Most fields are written whole, twice, by `src/voice/task-binding.ts` via `writeMeetingMetadata` (see [Voice](./voice.md)): once at meeting start (`writeMeetingMetadataStart`, with only `session_id`/`url`/`archie_joined_at` known), once more at teardown (`completeMeetingMetadata`, with whatever the connector's best-effort fetch against Recall's own API found). `live_participants` is the one exception: it is written again on every participant join and leave in between (`updateMeetingParticipantsLive`), re-asserting whatever the other fields already hold rather than reading the file back first — the file has no partial-patch form, so every write is a full replacement and each caller is responsible for carrying every field forward, not just its own. A `null` field always means "not known" — whether that is because the teardown fetch has not run yet, because it failed, or because the platform never supplies that fact at all; all three look the same on purpose, so nothing here is ever guessed in place of a value the fetch could not supply. `email` is deliberately not one of the fields on `MeetingParticipant`: Recall only ever populates it for a calendar-dispatched bot, and every bot here joins from a raw meeting URL, so it would always be `null` — a field that can never carry a value should not be modelled as one that might.
-
-`participants` and `live_participants` answer different questions about the same roster and are allowed to disagree. `participants` is Recall's own deduplicated final view, populated once at teardown, with no timestamps at all. `live_participants` is this connector's own presence-over-time record, accumulated from `participant_events.join`/`.leave` arriving on the same realtime socket that already carries audio; an entry is closed rather than removed on leave, so someone who left part-way through the meeting still shows when they arrived and when they went. Reconciling the two into one list would mean inventing a rule for which one wins when they differ — a network blip producing two `.join`s this connector sees as two entries but Recall's own dedup collapses into one, for instance — so both are kept: a reader who wants "was X ever here" can check either, and a reader who wants "when" has only `live_participants` to check. Archie itself is filtered out of `live_participants` the same way it is absent from `participants` — the bot is not a fact about who else was in the room, and already has its own `archie_joined_at` above.
+Two writers, one file: the Recall connector writes what a meeting *is* (`started`, `details`, `capabilities`, `join`, `leave`, `ended`), the conversation writes what it *did* (`utterance`, `chat`, `consult`, `answer`, `gate`, `turn`) and reaches this file only through `VoiceTransport.record`, never by name. Appends are serialised per meeting by the connector, so rows cannot interleave and the order on disk is the order they settled. A field that is not known is omitted rather than written as `null`; the two nullable fields above are the exceptions, where "asked and got nothing" is itself the fact. Derived views are the reader's job — the transcript is `type == "utterance"`, the roster is `join`/`leave`, the consult trail is `consult`/`answer` paired by `id`. See [Voice](./voice.md) for why this is one file rather than the several it replaced.
 
 ### SlackThreadRef (legacy)
 
@@ -292,7 +276,7 @@ The `type` field is present for agent findings (discovery, decision, completion,
 | `cli` | `appendCliMessage()` | `[2025-01-15T10:35:00Z] [cli] Any update on the login fix?` |
 | `{fromAgent}` | `appendAgentMessage()` — an inter-agent message; the recipient is folded into the message as `→ {toAgent}: ...` | `[2025-01-15T10:36:00Z] [pm-agent] → backend-agent: Please investigate the login bug` |
 | `{agentName}` | `appendArtifactShared()` — always `[artifact]` typed | `[2025-01-15T10:37:00Z] [backend-agent] [artifact] shared artifact: shared/artifacts/schema.a1b2c3d4.sql — proposed migration` |
-| `voice` | `appendMeetingEvent()` — a meeting starting or ending, or a PM consult being asked; not the room's speech, which lives in that meeting's own `transcript.log` | `[2025-01-15T10:38:00Z] [voice] meeting started — joining https://zoom.us/j/1234567890` |
+| `voice` | `appendMeetingEvent()` — a meeting starting or ending, or a PM consult being asked; not the room's speech, which lives in that meeting's own `meeting.jsonl` | `[2025-01-15T10:38:00Z] [voice] meeting started — recall/bot-abc123/` |
 
 ### Slack message format
 

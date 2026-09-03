@@ -12,16 +12,7 @@ import type { Meeting } from './meeting.js';
 import type { MeetingHost, WrittenLine } from './types.js';
 import { readWrittenExchange } from './written.js';
 import { Task } from '../tasks/task.js';
-import {
-  appendMeetingEvent,
-  appendMeetingExchange,
-  appendMeetingTranscript,
-  appendMeetingChat,
-  getMeetingTranscriptPath,
-  writeMeetingMetadata,
-  writeMeetingCapabilities,
-} from '../tasks/persistence.js';
-import type { LiveMeetingParticipant, MeetingMetadata } from '../types/task.js';
+import { appendMeetingEvent, getMeetingRecordPath } from '../tasks/persistence.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { logger } from '../system/logger.js';
 
@@ -76,18 +67,6 @@ export function createTaskHost(
   endMeeting: (sessionId: string) => Promise<void>,
 ): MeetingHost {
   return {
-    recordUtterance(speaker: string, text: string): void {
-      appendMeetingTranscript(taskId, sessionId, speaker, text).catch((err) => {
-        logger.warn(LOG, `Could not record meeting utterance for ${taskId}`, err);
-      });
-    },
-
-    recordChat(speaker: string, text: string): void {
-      appendMeetingChat(taskId, sessionId, speaker, text).catch((err) => {
-        logger.warn(LOG, `Could not record a meeting chat line for ${taskId}`, err);
-      });
-    },
-
     readWrittenExchange(): Promise<WrittenLine[]> {
       // Never rejects (see written.ts) — a catch here would only hide it if that stopped being true.
       return readWrittenExchange(taskId);
@@ -100,11 +79,8 @@ export function createTaskHost(
     },
 
     consult(id: string, question: string): void {
-      // 'voice' is the asked half of this meeting's exchange log; channel-delivery.ts writes the answered half as 'pm-agent'.
-      appendMeetingExchange(taskId, sessionId, 'voice', question).catch((err) => {
-        logger.warn(LOG, `Could not record the question for consult ${id} on task ${taskId}`, err);
-      });
-      void deliverConsultToPm(taskId, sessionId, recallChannelKey(sessionId), id, question);
+      // The question's own `consult` row is written by `routeConsult` (meeting.ts) before this runs; this method only carries it to the PM.
+      void deliverConsultToPm(taskId, recallChannelKey(sessionId), id, question);
     },
 
     leaveMeeting(): void {
@@ -117,20 +93,19 @@ export function createTaskHost(
 }
 
 /**
- * The async body behind `consult`: wakes the PM via `post_to_user` at `channelKey` (`id` only in the logs). No `noteEvent` — `routeConsult` (meeting.ts) already did. On failure, self-answers via `deliverConsultAnswer` with a "could not be reached" notice; FIFO makes an id unnecessary. No PM turn for `deliverToRecallChannel`, so this writes exchange.log's "answered" half itself, as `'system'` not `'pm-agent'`.
+ * The async body behind `consult`: wakes the PM via `post_to_user` at `channelKey` (`id` only in the logs). No `noteEvent` — `routeConsult` (meeting.ts) already did. On failure, self-answers via `deliverConsultAnswer` with a "could not be reached" notice, labelled `'system'` so the record does not imply the PM ever answered; a cap of one outstanding question makes an id unnecessary here.
  */
-async function deliverConsultToPm(taskId: string, sessionId: string, channelKey: string, id: string, question: string): Promise<void> {
+async function deliverConsultToPm(taskId: string, channelKey: string, id: string, question: string): Promise<void> {
   try {
     const task = await Task.get(taskId);
     const prompt = await loadPrompt('voice-wakeup-question', { CHANNEL_KEY: channelKey, QUESTION: question });
     await task.sendMessage(prompt, 'pm-agent');
   } catch (err) {
     logger.warn(LOG, `Could not put consult ${id} to the PM for task ${taskId} — answering it myself`, err);
-    const failureNotice = 'The team could not be reached — there is no answer to this one.';
-    getLiveMeeting(taskId)?.deliverConsultAnswer(failureNotice);
-    appendMeetingExchange(taskId, sessionId, 'system', failureNotice).catch((err2) => {
-      logger.warn(LOG, `Could not record the failure notice for consult ${id} on task ${taskId}`, err2);
-    });
+    getLiveMeeting(taskId)?.deliverConsultAnswer(
+      'The team could not be reached — there is no answer to this one.',
+      'system',
+    );
   }
 }
 
@@ -164,137 +139,8 @@ export async function endRecallChannel(taskId: string, sessionId: string): Promi
   }
 }
 
-// MeetingMetadata: src/types/task.ts; reaches disk via writeMeetingMetadata (persistence.ts).
-
-// Fields only the teardown fetch can supply stay null until completeMeetingMetadata fills them in — same awaited-but-swallowed pattern as linkRecallChannel.
-export async function writeMeetingMetadataStart(
-  taskId: string,
-  sessionId: string,
-  url: string,
-  archieJoinedAt: string,
-): Promise<void> {
-  try {
-    await writeMeetingMetadata(taskId, sessionId, {
-      session_id: sessionId,
-      url,
-      platform: null,
-      title: null,
-      archie_joined_at: archieJoinedAt,
-      meeting_ended_at: null,
-      duration_seconds: null,
-      participants: null,
-      // [] not null: unlike the other fields, not a fetch that could fail — in-memory state from the first write on.
-      live_participants: [],
-    });
-  } catch (err) {
-    logger.warn(LOG, `Could not write the initial meeting metadata for ${taskId}`, err);
-  }
-}
-
-// Other fields are re-asserted as writeMeetingMetadataStart left them (non-null only after completeMeetingMetadata's teardown write). Not a read-modify-write: metadata.json has no lock; reading first adds another race.
-export async function updateMeetingParticipantsLive(
-  taskId: string,
-  sessionId: string,
-  url: string,
-  archieJoinedAt: string,
-  liveParticipants: LiveMeetingParticipant[],
-): Promise<void> {
-  try {
-    await writeMeetingMetadata(taskId, sessionId, {
-      session_id: sessionId,
-      url,
-      platform: null,
-      title: null,
-      archie_joined_at: archieJoinedAt,
-      meeting_ended_at: null,
-      duration_seconds: null,
-      participants: null,
-      live_participants: liveParticipants,
-    });
-  } catch (err) {
-    logger.warn(LOG, `Could not update the live participant roster for ${taskId}`, err);
-  }
-}
-
 /**
- * `info` is connector-agnostic (bare platform string, `{name, isHost}` pairs) — `connector.ts` normalizes Recall's raw shape first.
- *
- * Best-effort, may be empty; unfielded values stay `null`, never guessed. `info.liveParticipants` carries forward verbatim, never rewritten to close `left_at: null` — an unheard departure is invented, which this file refuses.
- */
-export async function completeMeetingMetadata(
-  taskId: string,
-  sessionId: string,
-  info: {
-    url: string;
-    archieJoinedAt: string;
-    platform: string | null;
-    title: string | null;
-    meetingEndedAt: string | null;
-    participants: Array<{ name: string | null; isHost: boolean | null }> | null;
-    liveParticipants: LiveMeetingParticipant[];
-  },
-): Promise<void> {
-  const meetingEndedAt = info.meetingEndedAt ?? new Date().toISOString();
-  const joinedMs = Date.parse(info.archieJoinedAt);
-  const endedMs = Date.parse(meetingEndedAt);
-  // A negative span just means the two clocks disagree — null beats a nonsensical duration.
-  const durationSeconds =
-    Number.isFinite(joinedMs) && Number.isFinite(endedMs) && endedMs >= joinedMs
-      ? Math.round((endedMs - joinedMs) / 1000)
-      : null;
-  try {
-    await writeMeetingMetadata(taskId, sessionId, {
-      session_id: sessionId,
-      url: info.url,
-      platform: info.platform,
-      title: info.title,
-      archie_joined_at: info.archieJoinedAt,
-      meeting_ended_at: meetingEndedAt,
-      duration_seconds: durationSeconds,
-      participants: info.participants?.map((p) => ({ name: p.name, is_host: p.isHost })) ?? null,
-      live_participants: info.liveParticipants,
-    });
-  } catch (err) {
-    logger.warn(LOG, `Could not complete the meeting metadata for ${taskId}`, err);
-  }
-}
-
-// MeetingCapabilities: src/types/task.ts.
-
-/**
- * Sync void, fire-and-forget, like `MeetingHost` — called from `startMeeting`'s un-awaited `.then()` (`connector.ts`), so a failed write can't stop a meeting.
- *
- * Three outcomes, kept apart on disk and in the log:
- *
- *  - **Written.** File exists, holds it; `debug` says how big and where.
- *  - **No block.** File exists saying `outcome: 'empty'` — fail-safe, not re-logged since `setCapabilities` (meeting.ts) already warns for this.
- *  - **Write failed.** No file, `warn` naming the meeting — distinct from a pre-record build, which also leaves no file but says nothing.
- */
-export function recordMeetingCapabilities(taskId: string, sessionId: string, summary: string): void {
-  // Trimmed to match byte-for-byte what setCapabilities sends the model, so a whitespace-only summary records as empty, not a block of spaces.
-  const text = summary.trim();
-  const outcome = text.length > 0 ? 'summarised' : 'empty';
-  writeMeetingCapabilities(taskId, sessionId, {
-    session_id: sessionId,
-    outcome,
-    summary: text,
-    captured_at: new Date().toISOString(),
-  })
-    .then(() => {
-      if (outcome === 'summarised') {
-        logger.debug(LOG, `Recorded the capability block for ${taskId} — ${text.length} chars in recall/${sessionId}/capabilities.json`);
-      } else {
-        logger.debug(LOG, `Recorded an empty capability block for ${taskId} in recall/${sessionId}/capabilities.json — this meeting ran without one`);
-      }
-    })
-    .catch((err) => {
-      logger.warn(LOG, `Could not record the capability block for ${taskId} — nothing on disk will say what this meeting was told it could do`, err);
-    });
-}
-
-
-/**
- * `connector.ts` calls this from `endMeeting`, the funnel every teardown path (status poll, DELETE route, shutdown) runs through. `sessionId` matters too: the transcript lives under that meeting's own folder, not one file per task.
+ * `connector.ts` calls this from `endMeeting`, the funnel every teardown path (status poll, DELETE route, shutdown) runs through. `sessionId` matters too: the record lives under that meeting's own folder, not one file per task.
  *
  * Not a `MeetingHost` method — those run inside the audio loop; this fires once, afterwards, from teardown, the one place that knows the meeting is gone.
  *
@@ -305,7 +151,7 @@ export function notifyMeetingEnded(taskId: string, sessionId: string): void {
     try {
       const task = await Task.get(taskId);
       const prompt = await loadPrompt('voice-wakeup-ended', {
-        TRANSCRIPT_PATH: getMeetingTranscriptPath(taskId, sessionId),
+        RECORD_PATH: getMeetingRecordPath(taskId, sessionId),
       });
       await task.sendMessage(prompt, 'pm-agent');
     } catch (err) {

@@ -10,7 +10,9 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { appendFile, mkdir } from 'node:fs/promises';
 import type { IncomingMessage, Server } from 'node:http';
+import { join } from 'node:path';
 import type { Application, Request, Response } from 'express';
 import { createRequire } from 'module';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -19,12 +21,13 @@ const require = createRequire(import.meta.url);
 const express = require('express');
 
 import { logger } from '../system/logger.js';
+import { WORKDIR } from '../system/workdir.js';
 import { createRecallClient } from './recall.js';
 import { createAudioOutHub, renderPage } from './audio-out.js';
 import { createMeeting, isArchie, type Meeting } from './meeting.js';
 import { buildCapabilitySummary } from './capabilities.js';
 import { BOT_NAME } from './types.js';
-import type { MeetingHost, Participant, VoiceConfig, VoiceTransport } from './types.js';
+import type { MeetingHost, MeetingRow, MeetingRowParticipant, Participant, RosterEntry, VoiceConfig, VoiceTransport } from './types.js';
 import {
   createTaskHost,
   registerLiveMeeting,
@@ -35,12 +38,8 @@ import {
   notifyMeetingEnded,
   linkRecallChannel,
   endRecallChannel,
-  writeMeetingMetadataStart,
-  updateMeetingParticipantsLive,
-  completeMeetingMetadata,
-  recordMeetingCapabilities,
 } from './task-binding.js';
-import type { LiveMeetingParticipant } from '../types/task.js';
+import { appendMeetingRow } from '../tasks/persistence.js';
 import { registerChannelDeliverer } from '../tasks/channel-delivery.js';
 import { deliverToRecallChannel, renderRecallChannel } from './channel-delivery.js';
 import { registerConnectorPmTools } from '../agents/connector-tools.js';
@@ -56,7 +55,7 @@ export type StartMeetingResult = { ok: true; botId: string } | { ok: false; reas
 
 export type StopMeetingResult = { ok: true } | { ok: false; reason: string };
 
-/** Mirrors `LiveMeetingParticipant` (`src/types/task.ts`) in camelCase; `snapshotLiveParticipants` converts back. */
+/** Mirrors `RosterEntry` (`src/voice/types.ts`) in camelCase; `snapshotLiveParticipants` converts back. */
 interface LiveParticipantState {
   name: string | null;
   isHost: boolean | null;
@@ -70,10 +69,14 @@ interface LiveMeeting {
   pageId: string;
   meeting: Meeting;
   greeted: boolean;
-  /** Absent for the manual, unbound entry point. `url`/`joinedAt` cached here so metadata.json's teardown write skips a second round trip. */
-  binding?: { taskId: string; host: MeetingHost; url: string; joinedAt: string };
+  /** This meeting's own row writer, the same one its transport carries — teardown records `ended` through it after the `Meeting` is gone. */
+  record: (row: MeetingRow) => void;
+  /** Absent for the manual, unbound entry point. */
+  binding?: { taskId: string; host: MeetingHost };
   /** Keyed by Recall's opaque participant id — a rejoin gets a fresh id, a new entry, not resumed. Humans only: `isArchie` filters our join/leave. */
   participants: Map<string, LiveParticipantState>;
+  /** The last (platform, title) pair a `details` row recorded, so the poll appends one only when it changes. */
+  details?: { platform: string | null; title: string | null };
 }
 
 /** Requires the `/` after `prefix` — otherwise `/api/voice/outsider` would parse as page id "sider". */
@@ -94,6 +97,35 @@ function participantId(raw: unknown): string {
   } else {
     return 'unknown';
   }
+}
+
+/** Where an unbound meeting's rows land: no task folder to write into, but a manual test should still leave a record. Sanitised because this becomes a filename — a path separator from an API response must not escape the directory. */
+function unboundRecordPath(sessionId: string): string {
+  return join(WORKDIR, 'voice-logs', `${sessionId.replace(/[^a-zA-Z0-9._-]/g, '_')}.jsonl`);
+}
+
+/**
+ * This meeting's row writer, the whole of `VoiceTransport.record`.
+ *
+ * One chain per meeting, so two rows settling at once cannot interleave; rows are fire-and-forget from the audio path, so a rejection is logged and never handed back — no global `unhandledRejection` handler exists in `src/`.
+ */
+function createRecorder(sessionId: string, taskId: string | undefined): (row: MeetingRow) => void {
+  let chain: Promise<void> = Promise.resolve();
+  return (row: MeetingRow): void => {
+    chain = chain
+      .then(async () => {
+        if (taskId === undefined) {
+          const path = unboundRecordPath(sessionId);
+          await mkdir(join(WORKDIR, 'voice-logs'), { recursive: true });
+          await appendFile(path, `${JSON.stringify(row)}\n`, 'utf8');
+        } else {
+          await appendMeetingRow(taskId, sessionId, row);
+        }
+      })
+      .catch((error) => {
+        logger.warn('voice', `Could not record a "${row.type}" row for meeting ${sessionId}`, error);
+      });
+  };
 }
 
 /** Parse Recall's participant object, shared by the audio path and both participant-event handlers. */
@@ -117,7 +149,7 @@ function parseParticipant(raw: unknown): Participant {
 const TERMINAL_BOT_STATUSES = new Set(['call_ended', 'done', 'fatal']);
 
 /**
- * How often we ask Recall whether each live bot is still in its call. Recall decides the ending — it pulls the bot out on `everyone_left_timeout` (see `recall.ts`) or on a fatal error; this poll is how the engine finds out and releases the Deepgram sockets, Meeting closure and metadata write behind it.
+ * How often we ask Recall whether each live bot is still in its call. Recall decides the ending — it pulls the bot out on `everyone_left_timeout` (see `recall.ts`) or on a fatal error; this poll is how the engine finds out and releases the Deepgram sockets, Meeting closure and closing `ended` row behind it.
  * Recall's own ledger lags its audio by a few seconds (observed: socket closed 11:44:40, `call_ended` landed 11:44:43), so a 30s tick costs at most that plus one interval.
  */
 const STATUS_POLL_MS = 30_000;
@@ -160,25 +192,25 @@ export function mountRecallConnector(app: Application, cfg: VoiceConfig): Recall
       });
 
       const host = taskId === undefined ? undefined : createTaskHost(taskId, botId, endMeeting);
+      const record = createRecorder(botId, taskId);
 
       const transport: VoiceTransport = {
-        // bot id, not page id: it outlives every socket in the call — the stable key for the activation log.
+        // bot id, not page id: it outlives every socket in the call — the stable key for this meeting's own record.
         sessionId: botId,
         sink: audioOut.sinkFor(pageId),
         sendChat: (text) => recall.sendChat(botId, text),
+        record,
       };
+      // The record's opening line, carrying the URL nothing else in it repeats.
+      record({ at: new Date().toISOString(), type: 'started', url: meetingUrl, bot_id: botId });
       const meeting = createMeeting(cfg, transport, host);
-      // Best-effort; teardown may find a more authoritative time in Recall's own status_changes ledger.
-      const joinedAt = new Date().toISOString();
-      const binding =
-        taskId !== undefined && host !== undefined
-          ? { taskId, host, url: meetingUrl, joinedAt }
-          : undefined;
+      const binding = taskId !== undefined && host !== undefined ? { taskId, host } : undefined;
       live.set(botId, {
         botId,
         pageId,
         meeting,
         greeted: false,
+        record,
         binding,
         participants: new Map(),
       });
@@ -187,16 +219,13 @@ export function mountRecallConnector(app: Application, cfg: VoiceConfig): Recall
         registerLiveMeeting(binding.taskId, meeting);
         // Kept on the task after the meeting ends; awaited since there's no hot-path latency here.
         await linkRecallChannel(binding.taskId, botId, meetingUrl);
-        // metadata.json's first write, with whatever is known this early.
-        await writeMeetingMetadataStart(binding.taskId, botId, meetingUrl, joinedAt);
         // Points at the record, not the URL — knowledge.log is an index the PM reads every turn.
         binding.host.noteEvent(`meeting started — recall/${botId}/`);
-        // 'meeting' is a reserved speaker name — no participant can be named that.
-        binding.host.recordUtterance('meeting', `started — bot ${botId} joined ${meetingUrl}`);
         // Deliberately unawaited — awaiting would hold this live meeting behind the model's latency; caught so a throw here can't crash the process (no unhandledRejection handler).
         void buildCapabilitySummary(cfg, binding.taskId).then((summary) => {
           meeting.setCapabilities(summary);
-          recordMeetingCapabilities(binding.taskId, botId, summary);
+          // Trimmed to match byte-for-byte what `setCapabilities` sends the model, so a whitespace-only summary records as the empty block the meeting actually ran with.
+          record({ at: new Date().toISOString(), type: 'capabilities', text: summary.trim() });
         })
         .catch((error) => {
           logger.warn(
@@ -268,44 +297,12 @@ export function mountRecallConnector(app: Application, cfg: VoiceConfig): Recall
   app.use('/api/voice', router);
 
   /**
-   * Never throws — resolves, honestly partial on failure, so `endMeeting` can't hang or throw into shutdown.
-   * Participants fetch has its own try/catch: bot-details succeeding doesn't mean Recall's roster is ready yet.
-   */
-  async function fetchTeardownDetails(botId: string): Promise<{
-    platform: string | null;
-    title: string | null;
-    meetingEndedAt: string | null;
-    participants: Array<{ name: string | null; isHost: boolean | null }> | null;
-  }> {
-    let platform: string | null = null;
-    let title: string | null = null;
-    let meetingEndedAt: string | null = null;
-    let participants: Array<{ name: string | null; isHost: boolean | null }> | null = null;
-    try {
-      const bot = await recall.getBotDetails(botId);
-      platform = bot.platform;
-      title = bot.title;
-      // `call_ended`, not `done`: wants the moment the call ended; `done` marks Recall's later post-processing.
-      const ended = bot.statusChanges.find((s) => s.code === 'call_ended');
-      if (ended) meetingEndedAt = ended.createdAt;
-      if (bot.participantsDownloadUrl) {
-        try {
-          participants = await recall.fetchParticipants(bot.participantsDownloadUrl);
-        } catch (error) {
-          logger.warn('voice', `Could not download the participant roster for bot ${botId}`, error);
-        }
-      }
-    } catch (error) {
-      logger.warn('voice', `Could not fetch bot details for ${botId} — meeting metadata will stay partial`, error);
-    }
-    return { platform, title, meetingEndedAt, participants };
-  }
-
-  /**
    * The single teardown funnel: the explicit routes (a spoken `LEAVE:`, `leave_recall_meeting`, `DELETE /meetings/:botId`, shutdown) and the status poll all come through here.
    * The `live.delete` above the first `await` is what makes that safe — whichever route arrives first, the rest find nothing to do.
+   *
+   * `callEndedAt` is Recall's own `call_ended` timestamp, which only the status poll has already read; every other route ends the meeting without asking, and records that honestly as `null`.
    */
-  async function endMeeting(botId: string): Promise<void> {
+  async function endMeeting(botId: string, callEndedAt?: string): Promise<void> {
     const entry = live.get(botId);
     live.delete(botId);
     if (entry) {
@@ -321,17 +318,11 @@ export function mountRecallConnector(app: Application, cfg: VoiceConfig): Recall
         logger.error('voice', `Error stopping meeting ${botId}`, error);
       }
       audioOut.dispose(entry.pageId);
+      // After `stop()`, so the writer's chain puts it behind whatever the last turn recorded.
+      entry.record({ at: new Date().toISOString(), type: 'ended', call_ended_at: callEndedAt ?? null });
       if (entry.binding !== undefined) {
         entry.binding.host.noteEvent(`meeting ended — recall/${botId}/`);
-        // Safe to await — never throws (unlike `notifyMeetingEnded` below).
-        const details = await fetchTeardownDetails(botId);
-        await completeMeetingMetadata(entry.binding.taskId, botId, {
-          url: entry.binding.url,
-          archieJoinedAt: entry.binding.joinedAt,
-          ...details,
-          liveParticipants: snapshotLiveParticipants(entry),
-        });
-        // Fire-and-forget — an awaited wake-up that hung would hang `stop()`'s whole batch. After the metadata write, so the PM finds it already finished.
+        // Fire-and-forget — an awaited wake-up that hung would hang `stop()`'s whole batch.
         notifyMeetingEnded(entry.binding.taskId, botId);
       }
     }
@@ -380,8 +371,8 @@ export function mountRecallConnector(app: Application, cfg: VoiceConfig): Recall
     // Anything else is ignored (see the "ignores frames it cannot place" test).
   }
 
-  /** The persisted shape of a meeting's live-accumulated roster, in join order. */
-  function snapshotLiveParticipants(entry: LiveMeeting): LiveMeetingParticipant[] {
+  /** This meeting's live-accumulated roster, in join order, as the conversation takes it. */
+  function snapshotLiveParticipants(entry: LiveMeeting): RosterEntry[] {
     return [...entry.participants.values()].map((p) => ({
       name: p.name,
       is_host: p.isHost,
@@ -390,22 +381,9 @@ export function mountRecallConnector(app: Application, cfg: VoiceConfig): Recall
     }));
   }
 
-  /** Push this meeting's live roster to its metadata.json. No-op for an unbound meeting — no task to write to. */
-  function persistLiveParticipants(entry: LiveMeeting): void {
-    if (entry.binding === undefined) return;
-    void updateMeetingParticipantsLive(
-      entry.binding.taskId,
-      entry.botId,
-      entry.binding.url,
-      entry.binding.joinedAt,
-      snapshotLiveParticipants(entry),
-    );
-  }
-
   /**
    * `meeting.ts`'s map only sees who's spoken (`onAudio`); Recall omits muted participants, so this join/leave roster shows the agent four in the room, three muted.
-   * Same shape as `snapshotLiveParticipants`'s output (`RosterEntry`, `src/voice/types.ts`) by design — one shaping function, not two.
-   * Runs for an unbound meeting too.
+   * The roster the model sees is in memory only — the record keeps the `join`/`leave` rows it was built from, and a reader reconstructs presence from those.
    */
   function pushLiveParticipants(entry: LiveMeeting): void {
     try {
@@ -414,6 +392,11 @@ export function mountRecallConnector(app: Application, cfg: VoiceConfig): Recall
       // Must not throw — runs from the audio socket handler; losing the roster costs context, not voice.
       logger.warn('voice', `Could not hand the roster to meeting ${entry.botId}`, error);
     }
+  }
+
+  /** The row shape for a join or a leave; Recall's own participant id rides along, so a rejoin under a fresh id reads as the separate visit it is. */
+  function participantRow(participant: Participant): MeetingRowParticipant {
+    return { id: participant.id, name: participant.name, is_host: participant.isHost };
   }
 
   /** Replaces, not duplicates, a repeat `.join` for the id — a malformed/duplicate event can't invent a second occupant. */
@@ -425,12 +408,12 @@ export function mountRecallConnector(app: Application, cfg: VoiceConfig): Recall
       joinedAt: new Date().toISOString(),
       leftAt: null,
     });
-    persistLiveParticipants(entry);
+    entry.record({ at: new Date().toISOString(), type: 'join', participant: participantRow(participant) });
     pushLiveParticipants(entry);
   }
 
   /**
-   * Closes the entry (`LiveParticipantState`) rather than removing it, so a departure keeps both of its timestamps. An orphaned leave — one with no join this connector ever witnessed — is still recorded, with `joinedAt: null`.
+   * Closes the entry (`LiveParticipantState`) rather than removing it, so the in-memory roster keeps a departure's both timestamps. An orphaned leave — one with no join this connector ever witnessed — is still recorded, with `joinedAt: null`.
    *
    * Records only: whether the room has emptied is Recall's call, not this roster's (`everyone_left_timeout` in `recall.ts`).
    */
@@ -448,28 +431,37 @@ export function mountRecallConnector(app: Application, cfg: VoiceConfig): Recall
         leftAt: now,
       });
     }
-    persistLiveParticipants(entry);
+    entry.record({ at: now, type: 'leave', participant: participantRow(participant) });
     pushLiveParticipants(entry);
   }
 
+  /** Recall produces a title asynchronously once the bot is in the call, so a row goes down only when the pair actually changes — usually one on the first tick and at most one more when the title lands. */
+  function recordDetails(entry: LiveMeeting, platform: string | null, title: string | null): void {
+    if (entry.details?.platform === platform && entry.details?.title === title) return;
+    entry.details = { platform, title };
+    entry.record({ at: new Date().toISOString(), type: 'details', platform, title });
+  }
+
   /**
-   * One tick of the status poll: asks Recall about each live bot and ends the meetings it reports out of the call.
+   * One tick of the status poll: asks Recall about each live bot, records what it says the occasion is, and ends the meetings it reports out of the call.
    * A failed GET leaves that meeting live — a network error is not an ending, and the next tick asks again.
    */
   async function pollBotStatuses(): Promise<void> {
     for (const entry of [...live.values()]) {
-      let codes: string[];
+      let bot: Awaited<ReturnType<typeof recall.getBotDetails>>;
       try {
-        codes = (await recall.getBotDetails(entry.botId)).statusChanges.map((s) => s.code);
+        bot = await recall.getBotDetails(entry.botId);
       } catch (error) {
         logger.warn('voice', `Could not ask Recall whether bot ${entry.botId} is still in its call — leaving the meeting live`, error);
         continue;
       }
+      recordDetails(entry, bot.platform, bot.title);
       // Checks ANY terminal code, not just the last — a bot never rejoins, so a later non-terminal entry (post-processing, breakout room) can't un-terminal it.
-      const terminal = codes.find((code) => TERMINAL_BOT_STATUSES.has(code));
+      const terminal = bot.statusChanges.find((s) => TERMINAL_BOT_STATUSES.has(s.code));
       if (terminal !== undefined) {
-        logger.system(`Voice: bot ${entry.botId} — Recall reports "${terminal}", ending the meeting`);
-        await endMeeting(entry.botId);
+        logger.system(`Voice: bot ${entry.botId} — Recall reports "${terminal.code}", ending the meeting`);
+        // `call_ended`, not `done`: the moment the call ended, where `done` marks Recall's later post-processing. Absent for a `fatal` with no `call_ended` before it.
+        await endMeeting(entry.botId, bot.statusChanges.find((s) => s.code === 'call_ended')?.createdAt);
       }
     }
   }

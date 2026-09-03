@@ -3,7 +3,7 @@
  *
  * Reads `shared/events.jsonl` fresh every turn via {@link readEvents}, no cache: microseconds against the ~620ms call it precedes; a cache could miss a mid-meeting message.
  *
- * Not a Slack API call — CLI tasks have no Slack thread, so the event log covers both. Doesn't cover in-call chat: that's `MeetingHost.recordChat` into `chat.log`, not `events.jsonl`; `meeting.ts` combines both.
+ * Not a Slack API call — CLI tasks have no Slack thread, so the event log covers both. Doesn't cover in-call chat: that's the meeting record's own `chat` rows, not `events.jsonl`; `meeting.ts` combines both.
  */
 
 import { readEvents } from '../tasks/persistence.js';

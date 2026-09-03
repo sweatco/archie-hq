@@ -146,11 +146,11 @@ describe('renderWrittenLine — what is dropped', () => {
 
   it('drops the voice lifecycle index — the meeting own content is the transcript block', () => {
     expect(render({ from: 'voice', to: 'pm-agent', message: 'meeting started — recall/abc/' })).toBeNull();
-    expect(render({ from: 'voice', to: 'pm-agent', message: 'consult m1c1 — recall/abc/exchange.log' })).toBeNull();
+    expect(render({ from: 'voice', to: 'pm-agent', message: 'consult m1c1 — recall/abc/meeting.jsonl' })).toBeNull();
   });
 
   it('drops a previous meeting consult answer, which never reached a room in writing', () => {
-    // Consults render from exchange.log; keeping this duplicates and misattributes a private answer.
+    // Consults render from the meeting's own consult trail; keeping this duplicates and misattributes a private answer.
     expect(
       render({ from: 'pm-agent', to: 'user', destination: 'recall:8130d64c', message: 'The first line is: # Sweatcoin React Native' }),
     ).toBeNull();

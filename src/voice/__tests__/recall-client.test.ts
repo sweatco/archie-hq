@@ -324,8 +324,8 @@ describe('recall client — chat', () => {
   });
 });
 
-describe('recall client — bot details (the teardown fetch)', () => {
-  it('GETs the bot with Token auth, and reads platform, status changes, the title and the participants url out of it', async () => {
+describe('recall client — bot details (the status poll fetch)', () => {
+  it('GETs the bot with Token auth, and reads platform, status changes and the title out of it', async () => {
     replies.push({
       status: 200,
       body: JSON.stringify({
@@ -337,6 +337,7 @@ describe('recall client — bot details (the teardown fetch)', () => {
         recordings: [
           {
             media_shortcuts: {
+              // Recall's own roster rides here too and is deliberately not read: the record's join/leave rows are ours, built live off the realtime socket.
               participant_events: { data: { participants_download_url: 'https://participants.example/roster/1' } },
               meeting_metadata: { data: { title: 'Sprint planning' } },
             },
@@ -358,7 +359,6 @@ describe('recall client — bot details (the teardown fetch)', () => {
         { code: 'joining_call', createdAt: '2026-08-29T10:00:00.000Z' },
         { code: 'call_ended', createdAt: '2026-08-29T10:45:00.000Z' },
       ],
-      participantsDownloadUrl: 'https://participants.example/roster/1',
     });
   });
 
@@ -372,7 +372,6 @@ describe('recall client — bot details (the teardown fetch)', () => {
       platform: null,
       title: null,
       statusChanges: [],
-      participantsDownloadUrl: null,
     });
   });
 
@@ -420,68 +419,6 @@ describe('recall client — bot details (the teardown fetch)', () => {
 
     const failure = await client.getBotDetails('bot-14').catch((err: unknown) => String(err));
     expect(failure).not.toContain('recall-secret-key-44444');
-    expect(failure).toContain('[redacted]');
-  });
-});
-
-describe('recall client — participants download', () => {
-  const PARTICIPANTS_URL = 'https://participants.example/roster/1';
-
-  it('GETs the presigned url directly, with no Authorization header and no Recall base url', async () => {
-    replies.push({
-      status: 200,
-      body: JSON.stringify([
-        { id: 1, name: 'Ann', is_host: true, platform: 'zoom', extra_data: {}, email: null },
-      ]),
-    });
-    const client = createRecallClient(config());
-
-    const participants = await client.fetchParticipants(PARTICIPANTS_URL);
-
-    expect(calls[0].url).toBe(PARTICIPANTS_URL);
-    expect(calls[0].headers.Authorization).toBeUndefined();
-    expect(participants).toEqual([{ name: 'Ann', isHost: true }]);
-  });
-
-  it('keeps a participant who was never host and never named at all, and drops Recall-internal fields we do not persist', async () => {
-    replies.push({
-      status: 200,
-      // No is_host, no name — roster is presence, not attendance quality; a thin record is still a record.
-      body: JSON.stringify([
-        { id: 2, name: null, is_host: null, platform: 'phone', extra_data: { foo: 'bar' }, email: null },
-      ]),
-    });
-    const client = createRecallClient(config());
-
-    const participants = await client.fetchParticipants(PARTICIPANTS_URL);
-
-    expect(participants).toEqual([{ name: null, isHost: null }]);
-  });
-
-  it('rejects a non-2xx download', async () => {
-    replies.push({ status: 403, body: '{"detail":"expired"}' });
-    const client = createRecallClient(config());
-
-    const failure = await client.fetchParticipants(PARTICIPANTS_URL).catch((err: unknown) => String(err));
-    expect(failure).toContain('HTTP 403');
-  });
-
-  it('rejects a body that is not a JSON array', async () => {
-    replies.push({ status: 200, body: JSON.stringify({ not: 'an array' }) });
-    const client = createRecallClient(config());
-
-    await expect(client.fetchParticipants(PARTICIPANTS_URL)).rejects.toThrow(/did not return an array/);
-  });
-
-  it('scrubs every credential the process holds out of a failed download body too', async () => {
-    replies.push({
-      status: 500,
-      body: JSON.stringify({ echo: 'deepgram-secret-key-0000' }),
-    });
-    const client = createRecallClient(config());
-
-    const failure = await client.fetchParticipants(PARTICIPANTS_URL).catch((err: unknown) => String(err));
-    expect(failure).not.toContain('deepgram-secret-key-0000');
     expect(failure).toContain('[redacted]');
   });
 });

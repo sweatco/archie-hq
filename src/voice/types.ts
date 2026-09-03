@@ -42,7 +42,7 @@ export interface Utterance {
 }
 
 /**
- * One person the transport reports as in the room, whether or not they've made a sound. Not built from `onAudio` alone — a muted participant sends no audio; comes from a transport with join/leave events, via {@link Meeting.updateParticipants}. Snake_case: matches Recall's `metadata.json` shape (`LiveMeetingParticipant` in `src/types/task.ts`) — no reshaping needed.
+ * One person the transport reports as in the room, whether or not they've made a sound. Not built from `onAudio` alone — a muted participant sends no audio; comes from a transport with join/leave events, via {@link Meeting.updateParticipants}. Snake_case, like the meeting record's own fields.
  *
  * `null` means "not reported"; `left_at === null` means still in the room.
  */
@@ -54,7 +54,7 @@ export interface RosterEntry {
 }
 
 /**
- * One line of the written channel: reached Archie or the room in writing, not aloud. Two sources: the task's written exchange ({@link MeetingHost.readWrittenExchange}) and Archie's own chat posts ({@link MeetingHost.recordChat}). Separate from {@link Utterance} — Archie must never believe it *said* what it only *wrote* (`parseReply` in `comprehension.ts` keeps `CHAT:` out of the spoken transcript). No timestamp: nothing windows this channel.
+ * One line of the written channel: reached Archie or the room in writing, not aloud. Two sources: the task's written exchange ({@link MeetingHost.readWrittenExchange}) and Archie's own chat posts (the `chat` rows of the meeting record). Separate from {@link Utterance} — Archie must never believe it *said* what it only *wrote* (`parseReply` in `comprehension.ts` keeps `CHAT:` out of the spoken transcript). No timestamp: nothing windows this channel.
  */
 export interface WrittenLine {
   /** Plain rendered display name, no mention syntax or ids. Every agent renders as Archie; one Archie per room. */
@@ -62,32 +62,83 @@ export interface WrittenLine {
   text: string;
 }
 
+/** Who joined or left, as the meeting record keeps them. Snake_case, like every other field on a row. */
+export interface MeetingRowParticipant {
+  id: string;
+  name: string | null;
+  is_host: boolean | null;
+}
 
-/** One row in the activation log. Every trigger candidate is logged, suppressed or not. */
-export interface ActivationLog {
-  at: string;
-  // = VoiceTransport.sessionId, the log filename. Older rows spell it `botId` — same id.
-  sessionId: string;
-  speaker: string;
-  /** The completed turn under consideration. */
-  candidate: string;
+/**
+ * One line of a meeting's record — the single append-only `meeting.jsonl` in that meeting's own folder, one JSON object per line, appended in settle order.
+ *
+ * The transport carries every row ({@link VoiceTransport.record}), so the conversation writes to no file of its own and the connector decides where a meeting's record lands. A field that is not known is omitted rather than written as `null`; the two `| null` fields below are the exceptions, where "asked and got nothing" is the fact worth recording.
+ *
+ * Derived views are the reader's job: the transcript is the `utterance` rows, the roster the `join`/`leave` rows, the consult trail the `consult`/`answer` pairs.
+ */
+export type MeetingRow =
+  /** The bot was created and is on its way into the call. */
+  | { at: string; type: 'started'; url: string; bot_id: string }
   /**
-   * Which tier decided:
-   * `name` — a trigger variant matched, no model call.
-   * `follow-up` — bot spoke last, this arrived shortly after.
-   * `model` — neither free tier fired; `wasAddressed` was asked.
-   * `already-owed` — response already owed, no tier ran; logged for the window the answer formed from.
-   *
-   * Absent for a candidate recorded before any decision path.
+   * What Recall says the occasion is, as the status poll learns it. Appended whenever the pair changes, since Recall produces a title asynchronously once the bot is in the call — the last such row is the current answer, and no row at all means Recall never supplied either.
    */
-  tier?: 'name' | 'follow-up' | 'model' | 'already-owed';
-  /** Which variant matched, when the `name` tier decided. */
-  matched?: string;
-  verdict: 'addressed' | 'suppressed' | 'error';
-  /** What was spoken, once the response is known. */
-  answer?: string;
-  timings?: Record<string, number>;
-  error?: string;
+  | { at: string; type: 'details'; platform: string | null; title: string | null }
+  /** The `<capabilities>` block this meeting's model calls were given, verbatim; `''` when the summariser produced none. */
+  | { at: string; type: 'capabilities'; text: string }
+  | { at: string; type: 'join'; participant: MeetingRowParticipant }
+  | { at: string; type: 'leave'; participant: MeetingRowParticipant }
+  /** One finalised line the room heard, Archie's own turns included. */
+  | { at: string; type: 'utterance'; speaker: string; text: string }
+  /** One line Archie posted into the meeting's own chat rather than saying aloud. Nothing else records these. */
+  | { at: string; type: 'chat'; speaker: string; text: string }
+  /** A question left for the PM. Only a question that actually went out gets a row; a refused one shows as `pm_dropped` on its turn. */
+  | { at: string; type: 'consult'; id: string; question: string }
+  /** What came back on that question — from the PM, or `'system'` for the self-answer when the team could not be reached. */
+  | { at: string; type: 'answer'; id: string; text: string; from: 'pm-agent' | 'system' }
+  /**
+   * How one candidate turn was judged. `tier` is which one decided: `name` (a trigger variant matched, no model call), `follow-up` (the bot spoke last and this arrived shortly after), `model` (neither free tier fired, so `wasAddressed` was asked), `already-owed` (a response was owed already, so no tier ran).
+   */
+  | {
+      at: string;
+      type: 'gate';
+      speaker: string;
+      candidate: string;
+      tier: 'name' | 'follow-up' | 'model' | 'already-owed';
+      /** Which variant matched, when the `name` tier decided. */
+      matched?: string;
+      addressed: boolean;
+      gate_ms?: number;
+      error?: string;
+    }
+  /**
+   * How one speaking decision settled. Its own row, never merged with the `gate` row that led to it: a turn can be judged and never reach a decision at all.
+   *
+   * `answer` is the whole of what the model decided to say, whatever became of it; `speech` is what the room is confirmed to have heard — `''` claims nothing was, which is a stronger statement than the field being absent.
+   */
+  | {
+      at: string;
+      type: 'turn';
+      verdict: 'addressed' | 'suppressed' | 'error';
+      answer?: string;
+      speech?: string;
+      chat?: string;
+      pm?: string;
+      /** Why a `PM:` question never left — a reason string, so the escalation rate does not count questions nobody was asked. */
+      pm_dropped?: string;
+      leave?: boolean;
+      thought?: string;
+      error?: string;
+      timings?: MeetingTurnTimings;
+    }
+  /** Recall's own `call_ended` timestamp when the poll saw one; `null` for an ending nobody asked Recall about. */
+  | { at: string; type: 'ended'; call_ended_at: string | null };
+
+/** `decideMs`: the model call choosing what to say. `ttfbMs`: the first synthesis byte. `synthMs`: first sentence to last chunk. `speakMs`: turn end to first sound, the latency the room feels. */
+export interface MeetingTurnTimings {
+  decideMs?: number;
+  ttfbMs?: number;
+  synthMs?: number;
+  speakMs?: number;
 }
 
 /** What one answer's synthesis produced. Reported by both synthesizers. */
@@ -140,26 +191,24 @@ export interface AudioSink {
  * Audio flows in through `Meeting.onAudio`, not pulled — the transport calls the meeting, never the reverse. One participant is the simplest case: a telephone stream is a single speaker — room silence with N=1.
  */
 export interface VoiceTransport {
-  // Stable id: names the log lines and the activation log. Opaque — a transport may reuse whatever handle it has (Recall passes its bot id).
+  // Stable id: names the log lines and the meeting's own record. Opaque — a transport may reuse whatever handle it has (Recall passes its bot id).
   sessionId: string;
   /** Where the bot's speech goes. */
   sink: AudioSink;
   /** Post text into the meeting's chat: detail an answer won't speak (identifiers, hashes, paths, figures), and, on voice failure, the answer itself. */
   sendChat: (text: string) => Promise<void>;
+  /** Append one line to this meeting's record. Sync void, never throws: it is called from the audio path, and the transport owns both the destination and the serialisation. */
+  record: (row: MeetingRow) => void;
 }
 
 /**
- * How a meeting reaches the rest of Archie. Absent for an unbound meeting — the manual POST entry point still works, unrecorded.
+ * How a meeting reaches the rest of Archie. Absent for an unbound meeting — the manual POST entry point still works, with no task to reach (its record still lands, through the transport).
  *
  * Every method: sync void, never throws or rejects — the caller is Flux's end-of-turn reaction (~300ms), too fast for a disk write. No global `unhandledRejection` handler exists in `src/`; one uncaught rejection kills every other task and meeting.
  *
  * {@link MeetingHost.readWrittenExchange} is the exception: a pull, so it returns a promise. Called only from the model-and-speech turn, never end-of-turn, and must still never reject.
  */
 export interface MeetingHost {
-  /** One finalised line of what the room heard. Archie's own turns included. */
-  recordUtterance(speaker: string, text: string): void;
-  /** One line Archie posted into the meeting's chat — see {@link WrittenLine}. Separate from `recordUtterance` (different files: `transcript.log`, `chat.log`). The only record: a `CHAT:` reply lives nowhere else — not the transcript, `exchange.log`, `knowledge.log`, or `events.jsonl`. Without this, it's gone. */
-  recordChat(speaker: string, text: string): void;
   /** The task's written exchange — Slack thread, or CLI conversation if none — as {@link WrittenLine}s, oldest first. Read fresh every turn, the only async method here: a cache could go stale silently, and one read costs microseconds against the model call it precedes. Safe because it's called only from `answerRoom`, already mid-async — never the audio path the other methods answer on. Resolves to an empty array on failure, never rejects. */
   readWrittenExchange(): Promise<WrittenLine[]>;
   /** A fact worth keeping outside the meeting: started, ended, question asked. */
@@ -170,6 +219,6 @@ export interface MeetingHost {
    * answer on that id — never leave it silent.
    */
   consult(id: string, question: string): void;
-  /** Archie decided to leave; the farewell has already been spoken in full — see `routeLeave`, the only caller. The host arranges the actual end on its own schedule, not inline. No arguments: id and task are closed over by `createTaskHost` (`task-binding.ts`); the farewell is already in the transcript (`recordUtterance` runs first). No host: dropped with a debug line — the unbound manual-entry meeting stays on the call. */
+  /** Archie decided to leave; the farewell has already been spoken in full — see `routeLeave`, the only caller. The host arranges the actual end on its own schedule, not inline. No arguments: id and task are closed over by `createTaskHost` (`task-binding.ts`); the farewell is already in the record as an `utterance` row. No host: dropped with a debug line — the unbound manual-entry meeting stays on the call. */
   leaveMeeting(): void;
 }

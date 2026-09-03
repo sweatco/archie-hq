@@ -1,8 +1,5 @@
 
-import { appendFile, mkdir } from 'fs/promises';
-import { join } from 'path';
 import { logger } from '../system/logger.js';
-import { WORKDIR } from '../system/workdir.js';
 // Aliased on import -- `Response` is also a global here (undici's).
 import {
   decideResponse,
@@ -15,8 +12,9 @@ import { openTurnStream, type TurnEvent, type TurnStream } from './deepgram.js';
 import { createSonioxSpeechSession } from './soniox.js';
 import { BOT_NAME } from './types.js';
 import type {
-  ActivationLog,
   MeetingHost,
+  MeetingRow,
+  MeetingTurnTimings,
   Participant,
   RosterEntry,
   SpeechSession,
@@ -140,28 +138,11 @@ export function isArchie(name: string | null): boolean {
   return tokenize(name).join(' ') === tokenize(BOT_NAME).join(' ');
 }
 
-// Rows are appended in settle order, not `at` order -- sort by `at` to read a meeting back in sequence.
-// `kind` is 'response' for a full speaking decision, 'candidate' when the addressing gate alone settled it. Optional fields are omitted, not empty, so presence is directly countable across the corpus.
-// `pmDropped` is a reason string, not a boolean, for the same reason -- nothing branches on its text; it's for whoever reads the log.
-interface TurnRow extends Omit<ActivationLog, 'candidate'> {
-  kind: 'candidate' | 'response';
-  candidate?: string;
-  window?: string;
-  // `suppressed` is the safe default, not proof the room heard nothing -- a turn cut off mid-answer defaults here too. See `speech` for what was actually heard.
-  verdict: 'addressed' | 'suppressed' | 'error';
-  // The whole of what the model decided to say, regardless of delivery -- an answer barged in on after four words records the same string here as one delivered whole. `speech` below is what the room actually heard.
-  answer?: string;
-  // What the room actually heard. Empty string claims nothing was heard, not a gap; absent means the turn never got as far as settling one way or the other.
-  speech?: string;
-  chat?: string;
-  pm?: string;
-  pmDropped?: string;
-  leave?: boolean;
-  thought?: string;
-  // Keys set via `recordTiming`: `decideMs` (model call choosing what to say), `ttfbMs` (first synthesis byte), `synthMs` (first sentence to last chunk), `speakMs` (turn-end to first sound, the felt latency), `gateMs` (addressing gate, `model` tier only).
-  timings?: Record<string, number>;
-  error?: string;
-}
+// One speaking decision's row, built field by field as the turn settles and recorded once, in `decide()`'s `finally`.
+type TurnRecord = Extract<MeetingRow, { type: 'turn' }>;
+
+// One addressing decision's row. Recorded the moment its tier settles -- never held for the decision behind it, which may never run at all.
+type GateRecord = Extract<MeetingRow, { type: 'gate' }>;
 
 interface ParticipantState {
   id: string;
@@ -179,7 +160,7 @@ export interface Meeting {
   // Inbound only: Recall sends no audio for a muted participant, so `onAudio`-only state can't see the whole room. Whole roster each call, not a delta, so a transport missing one event self-corrects on the next.
   updateParticipants(participants: readonly RosterEntry[]): void;
   setCapabilities(summary: string): void;
-  deliverConsultAnswer(text: string): { ok: true; id: string } | { ok: false };
+  deliverConsultAnswer(text: string, from?: 'pm-agent' | 'system'): { ok: true; id: string } | { ok: false };
   // Await before finalising anything else -- a turn mid-answer holds a model call, and this waits it out (bounded by its own timeout, ~15s worst case).
   stop(): Promise<void>;
 }
@@ -187,13 +168,9 @@ export interface Meeting {
 let meetingSeq = 0;
 
 export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?: MeetingHost): Meeting {
-  const { sessionId, sink, sendChat } = transport;
+  const { sessionId, sink, sendChat, record } = transport;
   // Captured before anything else per-meeting; see nextConsultId for why order matters.
   const meetingOrdinal = ++meetingSeq;
-
-  // Sanitised because this becomes a filename -- the transport supplies sessionId (Recall's is a UUID), but a path separator from an API response must not escape the log dir.
-  const logDir = join(WORKDIR, 'voice-logs');
-  const logPath = join(logDir, `${sessionId.replace(/[^a-zA-Z0-9._-]/g, '_')}.jsonl`);
 
   const transcript: Utterance[] = [];
   const participants = new Map<string, ParticipantState>();
@@ -241,12 +218,6 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
   let voiceFailureAnnounced = false;
   let stopped = false;
 
-  /** Serialises activation-log appends so concurrent rows cannot interleave. */
-  let logChain: Promise<void> = Promise.resolve();
-
-  // Holds one judged turn's row until the speaking decision adopts it, merging the gate's half with the decision's half into one corpus row. At most one is ever held; every exit path writes it first: `adoptTurnRow`, `holdForDecision`, `stop()`'s teardown flush.
-  let pendingTurnRow: TurnRow | null = null;
-
   // Opened eagerly so its connection cost isn't paid in front of the first word; null only if opening threw -- then every answer goes through `answerWithoutVoice`.
   let speech: SpeechSession | null = null;
   try {
@@ -256,54 +227,16 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
   }
 
 
-  // Stringified synchronously, before chaining onto `logChain` -- the row is still being mutated by its turn, and a captured reference in the async continuation would let a later mutation rewrite a row already declared written.
-  function writeActivation(row: TurnRow): void {
-    const line = `${JSON.stringify(row)}\n`;
-    logChain = logChain
-      .then(async () => {
-        await mkdir(logDir, { recursive: true });
-        await appendFile(logPath, line, 'utf8');
-      })
-      .catch((err) => {
-        logger.warn(LOG, `Could not append to the activation log at ${logPath}`, err);
-      });
+  function newGateRow(speaker: string, candidate: string, tier: GateRecord['tier']): GateRecord {
+    return { at: new Date().toISOString(), type: 'gate', speaker, candidate, tier, addressed: false };
   }
 
-  // Call before `setOwed`, never after -- it can run the whole decision synchronously, so a late row is one the decision already went without.
-  function holdForDecision(row: TurnRow): void {
-    if (pendingTurnRow !== null) {
-      writeActivation(pendingTurnRow);
-    }
-    pendingTurnRow = row;
-  }
-
-  function newTurnRow(speaker: string): TurnRow {
-    return {
-      kind: 'candidate',
-      at: new Date().toISOString(),
-      sessionId,
-      speaker,
-      verdict: 'suppressed',
-    };
-  }
-
-  function newJudgedRow(
-    speaker: string,
-    candidate: string,
-    tier: ActivationLog['tier'],
-  ): TurnRow {
-    const row = newTurnRow(speaker);
-    row.candidate = candidate;
-    row.tier = tier;
-    return row;
-  }
-
-  function recordTiming(row: TurnRow, key: string, ms: number): void {
+  function recordTiming(row: TurnRecord, key: keyof MeetingTurnTimings, ms: number): void {
     row.timings = { ...row.timings, [key]: ms };
   }
 
   // `null` means no sentence was confirmed heard, which `speech: ''` says exactly.
-  function recordHeard(row: TurnRow, heard: string | null): void {
+  function recordHeard(row: TurnRecord, heard: string | null): void {
     row.speech = heard ?? '';
   }
 
@@ -312,7 +245,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     const at = Date.now();
     transcript.push({ at, speaker, text });
     transcriptRevision++;
-    host?.recordUtterance(speaker, text);
+    record({ at: new Date(at).toISOString(), type: 'utterance', speaker, text });
     retryAfter = 0;
     const cutoff = at - TRANSCRIPT_WINDOW_MS;
     while (transcript.length > 0 && transcript[0].at < cutoff) {
@@ -390,13 +323,13 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     }
   }
 
-  // The only record of these lines: they leave through the transport's chat channel, reaching no file the task owns otherwise (not transcript.log, exchange.log, knowledge.log). `host.recordChat` below isn't a convenience copy -- without it, they're gone.
+  // The only record of these lines: they leave through the transport's chat channel, reaching neither the room's speech nor knowledge.log. The `chat` row below isn't a convenience copy -- without it, they're gone.
   function noteOwnChat(chat: string | undefined): void {
     if (chat !== undefined) {
       const text = sanitizeForLog(chat);
       if (text.length > 0) {
         chatPosts.push({ speaker: BOT_NAME, text });
-        host?.recordChat(BOT_NAME, text);
+        record({ at: new Date().toISOString(), type: 'chat', speaker: BOT_NAME, text });
       }
     }
   }
@@ -490,48 +423,41 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     }
   }
 
+  // The row is recorded before `setOwed`, never after -- that can run the whole decision synchronously, and the record reads in settle order.
   function decideOwing(speaker: string, text: string): void {
     const matched = matchTrigger(text);
     if (matched !== null) {
-      const row = newJudgedRow(speaker, text, 'name');
+      const row = newGateRow(speaker, text, 'name');
       row.matched = matched;
-      row.verdict = 'addressed';
-      holdForDecision(row);
+      row.addressed = true;
+      record(row);
       setOwed(`${speaker} said the name`);
     } else if (spokeLastWithin(FOLLOW_UP_GRACE_MS)) {
-      const row = newJudgedRow(speaker, text, 'follow-up');
-      row.verdict = 'addressed';
-      holdForDecision(row);
+      const row = newGateRow(speaker, text, 'follow-up');
+      row.addressed = true;
+      record(row);
       setOwed(`${speaker} replied straight after our own turn`);
     } else {
-      void runAddressingGate(newJudgedRow(speaker, text, 'model'), text);
+      void runAddressingGate(newGateRow(speaker, text, 'model'), text);
     }
   }
 
-  async function runAddressingGate(row: TurnRow, text: string): Promise<void> {
+  async function runAddressingGate(row: GateRecord, text: string): Promise<void> {
     const startedAt = Date.now();
-    let held = false;
     try {
       const addressed = await wasAddressed(cfg, {
         transcript: transcriptSince(ADDRESSING_WINDOW_MS),
         utterance: text,
       });
-      recordTiming(row, 'gateMs', Date.now() - startedAt);
-      if (addressed) {
-        row.verdict = 'addressed';
-        held = true;
-        holdForDecision(row);
-        setOwed(`the addressing gate said yes to ${row.speaker}`);
-      } else {
-        row.verdict = 'suppressed';
-      }
+      row.gate_ms = Date.now() - startedAt;
+      row.addressed = addressed;
     } catch (err) {
-      row.verdict = 'error';
       row.error = `the addressing gate threw: ${String(err)}`;
       logger.error(LOG, 'The addressing gate threw', err);
     } finally {
-      if (!held) {
-        writeActivation(row);
+      record(row);
+      if (row.addressed) {
+        setOwed(`the addressing gate said yes to ${row.speaker}`);
       }
     }
   }
@@ -582,7 +508,8 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     } else {
       const id = nextConsultId();
       consults.push({ id, at: Date.now(), question });
-      host.noteEvent(`consult: ${question} — recall/${sessionId}/exchange.log`);
+      record({ at: new Date().toISOString(), type: 'consult', id, question });
+      host.noteEvent(`consult: ${question} — recall/${sessionId}/meeting.jsonl`);
       host.consult(id, question);
     }
     return dropped;
@@ -605,7 +532,8 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     const askedAt = Date.now();
     const revision = transcriptRevision;
     const speakingWindow = transcriptSince(SPEAKING_WINDOW_MS);
-    const row = adoptTurnRow(speakingWindow);
+    // 'suppressed' is the safe default, not proof the room heard nothing -- a turn cut off mid-answer settles here too. `speech` is what was actually heard.
+    const row: TurnRecord = { at: new Date().toISOString(), type: 'turn', verdict: 'suppressed' };
     try {
       await answerRoom(row, speakingWindow, askedAt, revision);
     } catch (err) {
@@ -619,23 +547,13 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       if (owes && transcriptRevision === revision && lastConsultAnswerAt <= askedAt) {
         retryAfter = Date.now() + RETRY_FLOOR_MS;
       }
-      writeActivation(row);
+      record(row);
       applyEngagement();
       maybeDecide();
     }
   }
 
-  // `verdict` resets to 'suppressed' even though the addressing gate may have left it 'addressed' -- on the merged row this means what the room got, not what the gate concluded, so a half-dead decision must read as the bot staying quiet.
-  function adoptTurnRow(speakingWindow: string): TurnRow {
-    const row = pendingTurnRow ?? newTurnRow(BOT_NAME);
-    pendingTurnRow = null;
-    row.kind = 'response';
-    row.window = speakingWindow;
-    row.verdict = 'suppressed';
-    return row;
-  }
-
-  function recordAnswer(row: TurnRow, answer: SpokenResponse): void {
+  function recordAnswer(row: TurnRecord, answer: SpokenResponse): void {
     row.answer = answer.speech;
     if (answer.chat !== undefined) {
       row.chat = answer.chat;
@@ -653,7 +571,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
 
   // The floor is ~935ms, not ~700ms (once assumed for token-by-token streaming): ~620ms time-to-first-byte, plus text arrives in ~313ms quanta, and the first delta (3-10 chars) is too short for a sentence to complete.
   async function answerRoom(
-    row: TurnRow,
+    row: TurnRecord,
     speakingWindow: string,
     askedAt: number,
     revision: number,
@@ -817,7 +735,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       try {
         const dropped = routeConsult(consult);
         if (dropped !== undefined) {
-          row.pmDropped = dropped;
+          row.pm_dropped = dropped;
         }
       } catch (err) {
         logger.error(LOG, `Routing a PM: question threw — it may never have been asked: ${consult}`, err);
@@ -826,7 +744,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
   }
 
   function settleFailure(
-    row: TurnRow,
+    row: TurnRecord,
     why: string,
     handedOver: number,
     heardAnything: boolean,
@@ -850,7 +768,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
   }
 
   function settleAnswer(
-    row: TurnRow,
+    row: TurnRecord,
     answer: SpokenResponse,
     heardAnything: boolean,
     abandoned: string | null,
@@ -892,7 +810,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
   }
 
   // Voice failed, so the answer goes out in writing instead -- still an error row: the room got text where it was owed speech.
-  function answerWithoutVoice(row: TurnRow, answer: SpokenResponse, why: string, askedAt: number): void {
+  function answerWithoutVoice(row: TurnRecord, answer: SpokenResponse, why: string, askedAt: number): void {
     row.verdict = 'error';
     recordHeard(row, '');
     clearOwed(askedAt);
@@ -934,10 +852,10 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     if (spoken.length > 0 && !stopped) {
       addUtterance(state.name, spoken);
       if (owes) {
-        // Written even though this turn triggers no decision -- otherwise it's the one record lost if the pending answer never lands.
-        const row = newJudgedRow(state.name, spoken, 'already-owed');
-        row.verdict = 'addressed';
-        writeActivation(row);
+        // Recorded even though this turn triggers no decision of its own -- otherwise nothing says the turn was heard while a response was already owed.
+        const row = newGateRow(state.name, spoken, 'already-owed');
+        row.addressed = true;
+        record(row);
       } else {
         decideOwing(state.name, spoken);
       }
@@ -1137,8 +1055,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
   reaper.unref();
 
   logger.system(
-    `Voice meeting ready for session ${sessionId} — ${TRIGGER_VARIANTS.length} trigger variants, ` +
-    `activation log at ${logPath}`,
+    `Voice meeting ready for session ${sessionId} — ${TRIGGER_VARIANTS.length} trigger variants`,
   );
 
   return {
@@ -1191,7 +1108,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       }
     },
 
-    deliverConsultAnswer(text: string): { ok: true; id: string } | { ok: false } {
+    deliverConsultAnswer(text: string, from: 'pm-agent' | 'system' = 'pm-agent'): { ok: true; id: string } | { ok: false } {
       // `stopped` matters here: teardown (`endMeeting`, voice/connector.ts) awaits this meeting's streams before unregistering it; a reply landing in that window must not raise the debt again.
       const consult = stopped ? undefined : outstandingConsult();
       if (consult === undefined) {
@@ -1200,6 +1117,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       consult.answer = text;
       consult.answeredAt = Date.now();
       lastConsultAnswerAt = Date.now();
+      record({ at: new Date().toISOString(), type: 'answer', id: consult.id, text, from });
       setOwed(`the PM answered consult ${consult.id}`);
       return { ok: true, id: consult.id };
     },
@@ -1227,7 +1145,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       }
       participants.clear();
 
-      // Must run before `speech.close()` below -- closing with no `why` reads like a full delivery, filing it to transcript.log and posting CHAT:/LEAVE:/PM: as if the room were still there.
+      // Must run before `speech.close()` below -- closing with no `why` reads like a full delivery, filing an `utterance` row and posting CHAT:/LEAVE:/PM: as if the room were still there.
       abandonTurn?.('the meeting was torn down');
 
       if (speech !== null) {
@@ -1242,15 +1160,9 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       safeCut();
       safeSetSinkEnabled(false);
 
+      // Waits out the in-flight turn so its row is handed to the transport before teardown reads final state; the transport owns getting it to disk.
       await turnChain;
 
-      // After `turnChain` -- a decision still in flight may already have adopted this row.
-      if (pendingTurnRow !== null) {
-        writeActivation(pendingTurnRow);
-        pendingTurnRow = null;
-      }
-
-      await logChain;
       logger.system(`Voice meeting stopped for session ${sessionId}`);
     },
   };

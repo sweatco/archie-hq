@@ -1,7 +1,14 @@
 // `createMeeting` is a spy: transport captured whole, sink comparable by identity — the only witness against two meetings crossing wires and still looking healthy.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, existsSync, readFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { logger } from '../../system/logger.js';
-import type { AudioSink, MeetingHost, Participant, VoiceConfig, VoiceTransport } from '../types.js';
+import type { AudioSink, MeetingHost, MeetingRow, Participant, VoiceConfig, VoiceTransport } from '../types.js';
+
+// An unbound meeting's rows go to `WORKDIR/voice-logs/` on real disk; point that at a scratch dir before the connector's module graph reads it.
+const WORK = mkdtempSync(join(tmpdir(), 'voice-connector-'));
+process.env.ARCHIE_WORKDIR = WORK;
 import { getChannelDeliverer, getChannelRenderer } from '../../tasks/channel-delivery.js';
 import { getRegisteredConnectorPmTools } from '../../agents/connector-tools.js';
 import { deliverToRecallChannel, renderRecallChannel } from '../channel-delivery.js';
@@ -86,7 +93,7 @@ interface Spawned {
   host?: MeetingHost;
   audio: Array<{ participant: Participant; bytes: number }>;
   stopped: number;
-  // Every roster pushed into the conversation; metadata.json can't stand in. Separate from liveParticipantCalls: the defect was reaching the file, never the prompt.
+  // Every roster pushed into the conversation; the record's join/leave rows can't stand in. Separate from those rows: the defect was reaching the file, never the prompt.
   rosters: RosterRecord[][];
   capabilities: string[];
 }
@@ -137,9 +144,6 @@ vi.mock('../meeting.js', async (importOriginal) => {
 interface FakeHost extends MeetingHost {
   taskId: string;
   sessionId: string;
-  utterances: Array<{ speaker: string; text: string }>;
-  // Meeting-chat lines — the chat.log half of the host.
-  chatLines: Array<{ speaker: string; text: string }>;
   events: string[];
   /** The connector's teardown funnel, as handed to `createTaskHost` — `leaveMeeting` below calls it, the way the real host does. */
   end: (sessionId: string) => Promise<void>;
@@ -155,35 +159,8 @@ const meetingEndedCalls: Array<{ taskId: string; sessionId: string }> = [];
 /** Every `linkRecallChannel` / `endRecallChannel` call, in order — the durable half of the seam ("binding a meeting to a task" below). */
 const linkCalls: Array<{ taskId: string; sessionId: string; url: string }> = [];
 const endCalls: Array<{ taskId: string; sessionId: string }> = [];
-/** Every `writeMeetingMetadataStart` call — see the "meeting metadata" describe block. */
-const metadataStartCalls: Array<{ taskId: string; sessionId: string; url: string; archieJoinedAt: string }> = [];
-interface LiveParticipantRecord {
-  name: string | null;
-  is_host: boolean | null;
-  joined_at: string | null;
-  left_at: string | null;
-}
-/** Every `updateMeetingParticipantsLive` call, in order — see the "live participants" describe block. */
-const liveParticipantCalls: Array<{
-  taskId: string;
-  sessionId: string;
-  url: string;
-  archieJoinedAt: string;
-  liveParticipants: LiveParticipantRecord[];
-}> = [];
-interface MetadataEndInfo {
-  url: string;
-  archieJoinedAt: string;
-  platform: string | null;
-  title: string | null;
-  meetingEndedAt: string | null;
-  participants: Array<{ name: string | null; isHost: boolean | null }> | null;
-  liveParticipants: LiveParticipantRecord[];
-}
-/** Every `completeMeetingMetadata` call — see the "meeting metadata" describe block. */
-const metadataEndCalls: Array<{ taskId: string; sessionId: string; info: MetadataEndInfo }> = [];
-/** Every `recordMeetingCapabilities` call — see the "capability summary" describe block. */
-const capabilityRecords: Array<{ taskId: string; sessionId: string; summary: string }> = [];
+/** Every row the connector wrote into a task's own meeting record, in order — see `rowsFor` below. */
+const recordedRows: Array<{ taskId: string; sessionId: string; row: MeetingRow }> = [];
 /** Every `createRecallPmToolsServer` build, so a test can reach the `ops` the mount closed over (see `opsOf`). */
 const pmToolsBuilds: MeetingOps[] = [];
 
@@ -203,17 +180,9 @@ vi.mock('../task-binding.js', () => ({
     const host: FakeHost = {
       taskId,
       sessionId,
-      utterances: [],
-      chatLines: [],
       events: [],
       end,
       leaveCalls: 0,
-      recordUtterance: (speaker: string, text: string) => {
-        host.utterances.push({ speaker, text });
-      },
-      recordChat: (speaker: string, text: string) => {
-        host.chatLines.push({ speaker, text });
-      },
       readWrittenExchange: async () => [],
       noteEvent: (text: string) => {
         host.events.push(text);
@@ -253,26 +222,24 @@ vi.mock('../task-binding.js', () => ({
   endRecallChannel: async (taskId: string, sessionId: string) => {
     endCalls.push({ taskId, sessionId });
   },
-  writeMeetingMetadataStart: async (taskId: string, sessionId: string, url: string, archieJoinedAt: string) => {
-    metadataStartCalls.push({ taskId, sessionId, url, archieJoinedAt });
-  },
-  updateMeetingParticipantsLive: async (
-    taskId: string,
-    sessionId: string,
-    url: string,
-    archieJoinedAt: string,
-    liveParticipants: LiveParticipantRecord[],
-  ) => {
-    liveParticipantCalls.push({ taskId, sessionId, url, archieJoinedAt, liveParticipants });
-  },
-  completeMeetingMetadata: async (taskId: string, sessionId: string, info: MetadataEndInfo) => {
-    metadataEndCalls.push({ taskId, sessionId, info });
-  },
-  // Sync void, matching the real module — the connector calls it from an un-awaited `.then()`; a promise-shaped mock here would pass a test the real path couldn't.
-  recordMeetingCapabilities: (taskId: string, sessionId: string, summary: string): void => {
-    capabilityRecords.push({ taskId, sessionId, summary });
+}));
+
+// The one writer into a task's meeting record. Async like the real one, so the connector's own serialising chain is exercised rather than bypassed.
+vi.mock('../../tasks/persistence.js', () => ({
+  appendMeetingRow: async (taskId: string, sessionId: string, row: MeetingRow) => {
+    recordedRows.push({ taskId, sessionId, row });
   },
 }));
+
+/** This meeting's rows, in the order the connector's chain wrote them. */
+function rowsFor(sessionId: string): MeetingRow[] {
+  return recordedRows.filter((r) => r.sessionId === sessionId).map((r) => r.row);
+}
+
+/** …narrowed to one type, since most assertions are about one kind of row. */
+function rowsOfType<T extends MeetingRow['type']>(sessionId: string, type: T): Array<Extract<MeetingRow, { type: T }>> {
+  return rowsFor(sessionId).filter((r): r is Extract<MeetingRow, { type: T }> => r.type === type);
+}
 
 // Capability summary spy (behaviour: capabilities.ts, src/voice/__tests__/): pins right task asked, result handed to the meeting, join NOT held behind that call.
 // No spy for the written exchange: pulled through the host per turn (MeetingHost.readWrittenExchange), not pushed at join — connector's role ends at building the host.
@@ -561,12 +528,18 @@ function participantEventFrame(
   });
 }
 
-// Lets a fire-and-forget `void endMeeting(...)` settle: awaits 5 mocked calls in sequence (endRecallChannel, meeting.stop(), teardown fetch, completeMeetingMetadata, recall.leave), each one microtask tick.
-// Unlike persistLiveParticipants (synchronous push, no internal await — see "live participants" below, no flush needed).
-// Plain Promise.resolve() draining, not a real timer — works whether or not a test also has vi.useFakeTimers() active.
+// Lets a fire-and-forget `void endMeeting(...)` settle, and the recorder's own promise chain along with it: each mocked call in sequence costs one microtask tick.
+// Plain Promise.resolve() draining, not a real timer — works whether or not a test also has vi.useFakeTimers() active. A real file (an unbound meeting's record) needs `waitForFile` instead.
 async function flushMicrotasks(rounds = 20): Promise<void> {
   for (let i = 0; i < rounds; i++) {
     await Promise.resolve();
+  }
+}
+
+/** Waits for a real file to appear: an unbound meeting's rows go through `fs`, which no amount of microtask draining reaches. */
+async function waitForFile(path: string): Promise<void> {
+  for (let i = 0; i < 100 && !existsSync(path); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
 
@@ -581,11 +554,8 @@ beforeEach(() => {
   meetingEndedCalls.length = 0;
   linkCalls.length = 0;
   endCalls.length = 0;
-  metadataStartCalls.length = 0;
-  liveParticipantCalls.length = 0;
-  metadataEndCalls.length = 0;
+  recordedRows.length = 0;
   capabilityCalls.length = 0;
-  capabilityRecords.length = 0;
   capabilityResult = Promise.resolve('');
   pmToolsBuilds.length = 0;
   botDetailsReplies.length = 0;
@@ -884,11 +854,12 @@ describe('recall mount — shutdown', () => {
 });
 
 describe('recall mount — binding a meeting to a task', () => {
-  it('builds a host, records the transcript header line and notes the started event', async () => {
+  it('builds a host, opens the record with a started row and notes the started event', async () => {
     botIds.push('bot-bound');
     const { router } = await mount();
 
     const { spawned: made } = await startMeeting(router, 'https://zoom.us/j/bound', 'task-1');
+    await flushMicrotasks();
 
     expect(hosts).toHaveLength(1);
     expect(hosts[0].taskId).toBe('task-1');
@@ -896,9 +867,11 @@ describe('recall mount — binding a meeting to a task', () => {
     expect(hosts[0].sessionId).toBe('bot-bound');
     // The exact same host object createTaskHost returned, not a look-alike.
     expect(made.host).toBe(hosts[0]);
-    expect(hosts[0].utterances).toEqual([
-      { speaker: 'meeting', text: expect.stringContaining('bot-bound') },
-    ]);
+    // The record's first row, carrying the meeting URL no other row repeats.
+    expect(rowsFor('bot-bound')[0]).toEqual(
+      { at: expect.any(String), type: 'started', url: 'https://zoom.us/j/bound', bot_id: 'bot-bound' },
+    );
+    expect(recordedRows[0].taskId).toBe('task-1');
     expect(hosts[0].events.some((e) => /started/.test(e))).toBe(true);
     expect(registry.has('task-1')).toBe(true);
     // The durable half of the seam: linked before the meeting reports success.
@@ -930,6 +903,9 @@ describe('recall mount — binding a meeting to a task', () => {
     expect(made.host).toBeUndefined();
     expect(registry.size).toBe(0);
     expect(linkCalls).toEqual([]);
+    // Its transport still carries a recorder — an unbound meeting records into `voice-logs/`, not into a task it does not have.
+    expect(typeof made.transport.record).toBe('function');
+    expect(recordedRows).toEqual([]);
   });
 
   it('refuses a second meeting posted directly for a task_id already live', async () => {
@@ -1016,143 +992,202 @@ describe('recall mount — waking the PM when a meeting ends', () => {
   });
 });
 
-describe('recall mount — meeting metadata', () => {
-  it('writes the initial metadata at start, with what is known then', async () => {
-    botIds.push('bot-meta-start');
+describe('recall mount — the record a meeting leaves', () => {
+  it('opens the record the moment the bot exists, whether or not there is a task', async () => {
+    botIds.push('bot-rec-start');
     const { router } = await mount();
 
-    const before = Date.now();
-    await startMeeting(router, 'https://zoom.us/j/meta-start', 'task-meta-start');
-    const after = Date.now();
+    await startMeeting(router, 'https://zoom.us/j/rec-start', 'task-rec-start');
+    await flushMicrotasks();
 
-    expect(metadataStartCalls).toHaveLength(1);
-    const call = metadataStartCalls[0];
-    expect(call.taskId).toBe('task-meta-start');
-    expect(call.sessionId).toBe('bot-meta-start');
-    expect(call.url).toBe('https://zoom.us/j/meta-start');
-    const joinedMs = Date.parse(call.archieJoinedAt);
-    expect(joinedMs).toBeGreaterThanOrEqual(before);
-    expect(joinedMs).toBeLessThanOrEqual(after);
+    expect(rowsOfType('bot-rec-start', 'started')).toEqual([
+      { at: expect.any(String), type: 'started', url: 'https://zoom.us/j/rec-start', bot_id: 'bot-rec-start' },
+    ]);
   });
 
-  it('never writes metadata at all for an unbound meeting', async () => {
-    botIds.push('bot-meta-unbound');
+  it('writes an unbound meeting\'s record to voice-logs instead of a task folder', async () => {
+    // The manual POST entry point has no task to write into, and a manual test should still leave something to read.
+    botIds.push('bot-rec-unbound');
     const { router } = await mount();
 
-    await startMeeting(router, 'https://zoom.us/j/meta-unbound');
+    await startMeeting(router, 'https://zoom.us/j/rec-unbound');
+    await flushMicrotasks();
 
-    expect(metadataStartCalls).toEqual([]);
+    expect(recordedRows).toEqual([]);
+    const path = join(WORK, 'voice-logs', 'bot-rec-unbound.jsonl');
+    await waitForFile(path);
+    expect(existsSync(path)).toBe(true);
+    const first = JSON.parse(readFileSync(path, 'utf8').split('\n')[0]) as MeetingRow;
+    expect(first).toEqual({
+      at: expect.any(String),
+      type: 'started',
+      url: 'https://zoom.us/j/rec-unbound',
+      bot_id: 'bot-rec-unbound',
+    });
   });
 
-  it('completes the metadata at teardown with what the Recall fetch found, including a participant who never spoke', async () => {
-    botIds.push('bot-meta-end');
+  it('records what Recall says the occasion is, the first time the poll asks', async () => {
+    vi.useFakeTimers();
+    botIds.push('bot-rec-details');
+    botDetailsReplies.push({
+      status: 200,
+      body: JSON.stringify({
+        meeting_url: { platform: 'zoom' },
+        status_changes: [{ code: 'in_call_recording', created_at: '2026-08-29T10:00:00.000Z' }],
+        recordings: [{ media_shortcuts: { meeting_metadata: { data: { title: 'Sprint planning' } } } }],
+      }),
+    });
+    const mounted = await mount();
+    attach(mounted.lifecycle);
+    await startMeeting(mounted.router, 'https://zoom.us/j/rec-details', 'task-rec-details');
+
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    await flushMicrotasks();
+
+    expect(rowsOfType('bot-rec-details', 'details')).toEqual([
+      { at: expect.any(String), type: 'details', platform: 'zoom', title: 'Sprint planning' },
+    ]);
+  });
+
+  it('records the same pair once, however many ticks report it', async () => {
+    // Recall answers every tick; a row per tick would bury the meeting's own content under its own bookkeeping.
+    vi.useFakeTimers();
+    botIds.push('bot-rec-details-same');
+    const reply = {
+      status: 200,
+      body: JSON.stringify({
+        meeting_url: { platform: 'zoom' },
+        status_changes: [{ code: 'in_call_recording', created_at: '2026-08-29T10:00:00.000Z' }],
+        recordings: [{ media_shortcuts: { meeting_metadata: { data: { title: 'Sprint planning' } } } }],
+      }),
+    };
+    botDetailsReplies.push(reply, { ...reply });
+    const mounted = await mount();
+    attach(mounted.lifecycle);
+    await startMeeting(mounted.router, 'https://zoom.us/j/rec-details-same', 'task-rec-details-same');
+
+    await vi.advanceTimersByTimeAsync(2 * POLL_MS);
+    await flushMicrotasks();
+
+    expect(rowsOfType('bot-rec-details-same', 'details')).toHaveLength(1);
+  });
+
+  it('records a second details row when the title arrives later', async () => {
+    // Recall produces the title asynchronously once the bot is in the call, so the first tick usually has only the platform.
+    vi.useFakeTimers();
+    botIds.push('bot-rec-details-late');
+    botDetailsReplies.push(
+      {
+        status: 200,
+        body: JSON.stringify({
+          meeting_url: { platform: 'zoom' },
+          status_changes: [{ code: 'joining_call', created_at: '2026-08-29T10:00:00.000Z' }],
+        }),
+      },
+      {
+        status: 200,
+        body: JSON.stringify({
+          meeting_url: { platform: 'zoom' },
+          status_changes: [{ code: 'in_call_recording', created_at: '2026-08-29T10:00:30.000Z' }],
+          recordings: [{ media_shortcuts: { meeting_metadata: { data: { title: 'Sprint planning' } } } }],
+        }),
+      },
+    );
+    const mounted = await mount();
+    attach(mounted.lifecycle);
+    await startMeeting(mounted.router, 'https://zoom.us/j/rec-details-late', 'task-rec-details-late');
+
+    await vi.advanceTimersByTimeAsync(2 * POLL_MS);
+    await flushMicrotasks();
+
+    // The reader takes the last one; both are kept so a title that only ever half-arrives is visible as that.
+    expect(rowsOfType('bot-rec-details-late', 'details')).toEqual([
+      { at: expect.any(String), type: 'details', platform: 'zoom', title: null },
+      { at: expect.any(String), type: 'details', platform: 'zoom', title: 'Sprint planning' },
+    ]);
+  });
+
+  it("closes the record with Recall's own call_ended time when the poll is what found the ending", async () => {
+    vi.useFakeTimers();
+    botIds.push('bot-rec-ended');
     botDetailsReplies.push({
       status: 200,
       body: JSON.stringify({
         meeting_url: { platform: 'zoom' },
         status_changes: [
-          { code: 'joining_call', created_at: '2026-08-29T10:00:00.000Z' },
-          { code: 'call_ended', created_at: '2026-08-29T10:45:00.000Z' },
-          { code: 'done', created_at: '2026-08-29T10:45:30.000Z' },
-        ],
-        recordings: [
-          {
-            media_shortcuts: {
-              participant_events: { data: { participants_download_url: 'https://participants.example/roster/1' } },
-              meeting_metadata: { data: { title: 'Sprint planning' } },
-            },
-          },
+          { code: 'in_call_recording', created_at: '2026-09-02T11:40:00.000Z' },
+          { code: 'call_ended', created_at: '2026-09-02T11:44:43.000Z' },
+          // `done` marks Recall's own later post-processing, not when the call ended.
+          { code: 'done', created_at: '2026-09-02T11:45:10.000Z' },
         ],
       }),
     });
-    participantsReplies.push({
-      status: 200,
-      // "Ghost" never triggers an audio frame — roster is presence, not speech, and must include them anyway.
-      body: JSON.stringify([
-        { id: 1, name: 'Ann', is_host: true, platform: 'zoom', extra_data: {}, email: null },
-        { id: 2, name: 'Ghost', is_host: false, platform: 'zoom', extra_data: {}, email: null },
-      ]),
-    });
-    const { router } = await mount();
-    const { botId } = await startMeeting(router, 'https://zoom.us/j/meta-end', 'task-meta-end');
+    const mounted = await mount();
+    attach(mounted.lifecycle);
+    await startMeeting(mounted.router, 'https://zoom.us/j/rec-ended', 'task-rec-ended');
 
-    await request(router, 'DELETE', `/meetings/${botId}`);
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    await flushMicrotasks();
 
-    expect(metadataEndCalls).toHaveLength(1);
-    const { taskId, sessionId, info } = metadataEndCalls[0];
-    expect(taskId).toBe('task-meta-end');
-    expect(sessionId).toBe(botId);
-    // Carried forward from the start write, not re-derived.
-    expect(info.url).toBe('https://zoom.us/j/meta-end');
-    expect(info.platform).toBe('zoom');
-    expect(info.title).toBe('Sprint planning');
-    expect(info.meetingEndedAt).toBe('2026-08-29T10:45:00.000Z');
-    expect(info.participants).toEqual([
-      { name: 'Ann', isHost: true },
-      { name: 'Ghost', isHost: false },
+    expect(rowsOfType('bot-rec-ended', 'ended')).toEqual([
+      { at: expect.any(String), type: 'ended', call_ended_at: '2026-09-02T11:44:43.000Z' },
     ]);
   });
 
-  it('still completes the metadata, honestly, when the whole teardown fetch fails', async () => {
-    botIds.push('bot-meta-fail');
-    botDetailsReplies.push({ status: 500, body: '{"detail":"upstream exploded"}' });
+  it('says null rather than guessing when nobody asked Recall when the call ended', async () => {
+    // The DELETE route, a spoken LEAVE:, `leave_recall_meeting` and shutdown all end the meeting without a fetch — there is no time to report.
+    botIds.push('bot-rec-ended-null');
     const { router } = await mount();
-    const { botId } = await startMeeting(router, 'https://zoom.us/j/meta-fail', 'task-meta-fail');
+    const { botId } = await startMeeting(router, 'https://zoom.us/j/rec-ended-null', 'task-rec-ended-null');
 
     await request(router, 'DELETE', `/meetings/${botId}`);
+    await flushMicrotasks();
 
-    expect(metadataEndCalls).toHaveLength(1);
-    const { info } = metadataEndCalls[0];
-    // Nothing guessed in place of what the fetch could not supply.
-    expect(info.platform).toBeNull();
-    expect(info.title).toBeNull();
-    expect(info.meetingEndedAt).toBeNull();
-    expect(info.participants).toBeNull();
-    // What the start write already knew is still there.
-    expect(info.url).toBe('https://zoom.us/j/meta-fail');
-    expect(info.archieJoinedAt.length).toBeGreaterThan(0);
-    // The fetch failing did not throw into the rest of teardown.
-    expect(meetingEndedCalls).toEqual([{ taskId: 'task-meta-fail', sessionId: botId }]);
+    expect(rowsOfType('bot-rec-ended-null', 'ended')).toEqual([
+      { at: expect.any(String), type: 'ended', call_ended_at: null },
+    ]);
   });
 
-  it('keeps the platform and ended time even when only the participants download fails', async () => {
-    botIds.push('bot-meta-partial');
-    botDetailsReplies.push({
-      status: 200,
-      body: JSON.stringify({
-        meeting_url: { platform: 'google_meet' },
-        status_changes: [{ code: 'call_ended', created_at: '2026-08-29T11:00:00.000Z' }],
-        recordings: [
-          {
-            media_shortcuts: {
-              participant_events: { data: { participants_download_url: 'https://participants.example/roster/2' } },
-            },
-          },
-        ],
-      }),
-    });
-    participantsReplies.push({ status: 500, body: '{"detail":"gone"}' });
+  it('closes the record last, after the conversation has stopped', async () => {
+    botIds.push('bot-rec-order');
     const { router } = await mount();
-    const { botId } = await startMeeting(router, 'https://zoom.us/j/meta-partial', 'task-meta-partial');
+    const { botId } = await startMeeting(router, 'https://zoom.us/j/rec-order', 'task-rec-order');
 
     await request(router, 'DELETE', `/meetings/${botId}`);
+    await flushMicrotasks();
 
-    const { info } = metadataEndCalls[0];
-    expect(info.platform).toBe('google_meet');
-    expect(info.meetingEndedAt).toBe('2026-08-29T11:00:00.000Z');
-    // Title was never in the response at all — absent is normal, not an error.
-    expect(info.title).toBeNull();
-    expect(info.participants).toBeNull();
+    // A row settling in the last turn must not land behind the ending; the connector's own chain is what orders them.
+    expect(rowsFor('bot-rec-order').map((r) => r.type)).toEqual(['started', 'capabilities', 'ended']);
   });
 
-  it('never completes metadata for an unbound meeting either', async () => {
-    botIds.push('bot-meta-unbound-end');
+  it('records the capability block, once, with the same text handed to the model', async () => {
+    // Held only in the meeting's closure, shaping every later model call — without it, wrong/empty/malformed/ignored are indistinguishable.
+    botIds.push('bot-rec-caps');
+    capabilityResult = Promise.resolve('- Look up numbers in the analytics warehouse');
     const { router } = await mount();
-    const { botId } = await startMeeting(router, 'https://zoom.us/j/meta-unbound-end');
 
-    await request(router, 'DELETE', `/meetings/${botId}`);
+    const { spawned: made } = await startMeeting(router, 'https://zoom.us/j/rec-caps', 'task-rec-caps');
+    await flushMicrotasks();
 
-    expect(metadataEndCalls).toEqual([]);
+    expect(rowsOfType('bot-rec-caps', 'capabilities')).toEqual([
+      { at: expect.any(String), type: 'capabilities', text: '- Look up numbers in the analytics warehouse' },
+    ]);
+    // What the meeting was told and what was written down cannot be allowed to drift.
+    expect(rowsOfType('bot-rec-caps', 'capabilities')[0].text).toBe(made.capabilities[0]);
+  });
+
+  it('records an empty block as such rather than leaving no row — the empty case is a finding, not an absence', async () => {
+    botIds.push('bot-rec-caps-empty');
+    capabilityResult = Promise.resolve('   \n\t ');
+    const { router } = await mount();
+
+    await startMeeting(router, 'https://zoom.us/j/rec-caps-empty', 'task-rec-caps-empty');
+    await flushMicrotasks();
+
+    // Trimmed, because trimmed is what the model got: a whitespace-only summary reaches the prompt as no block at all.
+    expect(rowsOfType('bot-rec-caps-empty', 'capabilities')).toEqual([
+      { at: expect.any(String), type: 'capabilities', text: '' },
+    ]);
   });
 
   it('points the started/ended knowledge-log lines at the meeting folder rather than carrying the url', async () => {
@@ -1172,7 +1207,8 @@ describe('recall mount — meeting metadata', () => {
   });
 });
 
-describe('recall mount — live participants', () => {
+
+describe('recall mount — join and leave rows', () => {
   it('records a join before any audio, so someone who never speaks still appears', async () => {
     botIds.push('bot-join-only');
     const { router, ws } = await withAudioSocket();
@@ -1182,50 +1218,50 @@ describe('recall mount — live participants', () => {
       'message',
       Buffer.from(participantEventFrame(botId, 'join', { id: 11, name: 'Ghost', is_host: false, platform: 'zoom', extra_data: {}, email: null })),
     );
+    await flushMicrotasks();
 
-    expect(liveParticipantCalls).toHaveLength(1);
-    const call = liveParticipantCalls[0];
-    expect(call.taskId).toBe('task-join-only');
-    expect(call.sessionId).toBe(botId);
-    expect(call.liveParticipants).toHaveLength(1);
-    const [ghost] = call.liveParticipants;
-    expect(ghost.name).toBe('Ghost');
-    expect(ghost.is_host).toBe(false);
-    expect(ghost.left_at).toBeNull();
-    expect(typeof ghost.joined_at).toBe('string');
+    expect(rowsOfType(botId, 'join')).toEqual([
+      {
+        at: expect.any(String),
+        type: 'join',
+        // Recall's own opaque id rides along, so a rejoin under a fresh id reads as the separate visit it is; `platform`/`extra_data`/`email` are Recall-internal and dropped.
+        participant: { id: '11', name: 'Ghost', is_host: false },
+      },
+    ]);
+    expect(recordedRows[recordedRows.length - 1].taskId).toBe('task-join-only');
   });
 
-  it('records a leave, closing the entry rather than removing it — history preserved', async () => {
+  it('records a leave as its own row — presence is the pair, not a mutated entry', async () => {
     botIds.push('bot-join-leave');
     const { router, ws } = await withAudioSocket();
     const { botId } = await startMeeting(router, 'https://zoom.us/j/join-leave', 'task-join-leave');
 
     ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 21, name: 'Ann', is_host: true })));
     ws.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 21, name: 'Ann', is_host: true })));
+    await flushMicrotasks();
 
-    // Two writes, one per event — the roster still holds one entry, now closed rather than gone.
-    expect(liveParticipantCalls).toHaveLength(2);
-    const last = liveParticipantCalls[liveParticipantCalls.length - 1];
-    expect(last.liveParticipants).toHaveLength(1);
-    expect(last.liveParticipants[0].name).toBe('Ann');
-    expect(last.liveParticipants[0].joined_at).not.toBeNull();
-    expect(last.liveParticipants[0].left_at).not.toBeNull();
+    expect(rowsFor(botId).filter((r) => r.type === 'join' || r.type === 'leave')).toEqual([
+      { at: expect.any(String), type: 'join', participant: { id: '21', name: 'Ann', is_host: true } },
+      { at: expect.any(String), type: 'leave', participant: { id: '21', name: 'Ann', is_host: true } },
+    ]);
   });
 
   it('records a leave for somebody it never saw join, rather than dropping it', async () => {
-    // An orphaned leave is all Recall sent — the departure is real and recorded; only the arrival is unknown.
+    // An orphaned leave is all Recall sent — the departure is real and recorded; only the arrival is unknown, which the absent `join` row says.
     botIds.push('bot-orphan-leave');
     const { router, ws } = await withAudioSocket();
     const { botId } = await startMeeting(router, 'https://zoom.us/j/orphan-leave', 'task-orphan-leave');
 
     ws.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 42, name: 'Mystery', is_host: null })));
+    await flushMicrotasks();
 
-    expect(liveParticipantCalls[0].liveParticipants).toEqual([
-      { name: 'Mystery', is_host: null, joined_at: null, left_at: expect.any(String) },
+    expect(rowsOfType(botId, 'join')).toEqual([]);
+    expect(rowsOfType(botId, 'leave')).toEqual([
+      { at: expect.any(String), type: 'leave', participant: { id: '42', name: 'Mystery', is_host: null } },
     ]);
   });
 
-  it('accumulates a full roster across several joins and leaves, in join order', async () => {
+  it('keeps every visit, in the order it happened', async () => {
     botIds.push('bot-roster');
     const { router, ws } = await withAudioSocket();
     const { botId } = await startMeeting(router, 'https://zoom.us/j/roster', 'task-roster');
@@ -1233,22 +1269,25 @@ describe('recall mount — live participants', () => {
     ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
     ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 2, name: 'Bob', is_host: false })));
     ws.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 1, name: 'Ann', is_host: true })));
+    await flushMicrotasks();
 
-    const last = liveParticipantCalls[liveParticipantCalls.length - 1];
-    expect(last.liveParticipants.map((p) => p.name)).toEqual(['Ann', 'Bob']);
-    expect(last.liveParticipants[0].left_at).not.toBeNull(); // Ann left
-    expect(last.liveParticipants[1].left_at).toBeNull(); // Bob still present
+    expect(rowsFor(botId).filter((r) => r.type === 'join' || r.type === 'leave').map((r) => [r.type, (r as { participant: { name: string | null } }).participant.name])).toEqual([
+      ['join', 'Ann'],
+      ['join', 'Bob'],
+      ['leave', 'Ann'],
+    ]);
   });
 
-  it('never adds Archie itself to the roster, on join or leave', async () => {
+  it('never records Archie itself, on join or leave', async () => {
     botIds.push('bot-self-roster');
     const { router, ws } = await withAudioSocket();
     const { botId } = await startMeeting(router, 'https://zoom.us/j/self-roster', 'task-self-roster');
 
     ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 99, name: 'Archie', is_host: false })));
     ws.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 99, name: 'Archie', is_host: false })));
+    await flushMicrotasks();
 
-    expect(liveParticipantCalls).toEqual([]);
+    expect(rowsFor(botId).filter((r) => r.type === 'join' || r.type === 'leave')).toEqual([]);
   });
 
   it('matches Archie by name case- and punctuation-insensitively, the same standard the medium uses for turn attribution', async () => {
@@ -1259,21 +1298,28 @@ describe('recall mount — live participants', () => {
     // Neither exact-equals "Archie" — a plain === (the audio path's older check) would have missed both.
     ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 5, name: 'Archie!', is_host: false })));
     ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 6, name: '  archie ', is_host: false })));
+    await flushMicrotasks();
 
-    expect(liveParticipantCalls).toEqual([]);
+    expect(rowsOfType(botId, 'join')).toEqual([]);
   });
 
-  it('writes nothing for an unbound meeting — there is no task to write to', async () => {
+  it("records into an unbound meeting's own file, not into any task", async () => {
     botIds.push('bot-unbound-roster');
     const { router, ws } = await withAudioSocket();
     const { botId } = await startMeeting(router, 'https://zoom.us/j/unbound-roster'); // no task_id
 
     ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
+    await flushMicrotasks();
 
-    expect(liveParticipantCalls).toEqual([]);
+    expect(recordedRows).toEqual([]);
+    const path = join(WORK, 'voice-logs', `${botId}.jsonl`);
+    await waitForFile(path);
+    const written = readFileSync(path, 'utf8');
+    expect(written).toContain('"type":"join"');
+    expect(written).toContain('Ann');
   });
 
-  it('keeps two concurrent meetings\' rosters from crossing wires', async () => {
+  it("keeps two concurrent meetings' rows from crossing wires", async () => {
     botIds.push('bot-roster-a', 'bot-roster-b');
     const { router, ws } = await withAudioSocket();
     const a = await startMeeting(router, 'https://zoom.us/j/a', 'task-roster-a');
@@ -1281,19 +1327,21 @@ describe('recall mount — live participants', () => {
 
     ws.fire('message', Buffer.from(participantEventFrame(a.botId, 'join', { id: 1, name: 'Ann', is_host: true })));
     ws.fire('message', Buffer.from(participantEventFrame(b.botId, 'join', { id: 1, name: 'Bob', is_host: true })));
+    await flushMicrotasks();
 
-    const aCalls = liveParticipantCalls.filter((c) => c.taskId === 'task-roster-a');
-    const bCalls = liveParticipantCalls.filter((c) => c.taskId === 'task-roster-b');
-    expect(aCalls).toHaveLength(1);
-    expect(bCalls).toHaveLength(1);
-    expect(aCalls[0].liveParticipants[0].name).toBe('Ann');
-    expect(bCalls[0].liveParticipants[0].name).toBe('Bob');
+    expect(rowsOfType(a.botId, 'join').map((r) => r.participant.name)).toEqual(['Ann']);
+    expect(rowsOfType(b.botId, 'join').map((r) => r.participant.name)).toEqual(['Bob']);
+    // Each meeting's rows reach its own task's folder, not the other's.
+    expect(new Set(recordedRows.filter((r) => r.sessionId === a.botId).map((r) => r.taskId))).toEqual(
+      new Set(['task-roster-a']),
+    );
   });
 });
 
+
 describe('recall mount — the roster the conversation gets', () => {
-  // meeting.ts builds its participant map from onAudio alone; Recall sends nothing for a muted participant — metadata.json could show four, live prompt one.
-  it('pushes the roster into the conversation on a join, not only into metadata', async () => {
+  // meeting.ts builds its participant map from onAudio alone; Recall sends nothing for a muted participant — the record could show four, live prompt one.
+  it('pushes the roster into the conversation on a join, not only into the record', async () => {
     botIds.push('bot-ctx-join');
     const { router, ws } = await withAudioSocket();
     const { botId, spawned: made } = await startMeeting(router, 'https://zoom.us/j/ctx-join', 'task-ctx-join');
@@ -1304,8 +1352,9 @@ describe('recall mount — the roster the conversation gets', () => {
     expect(made.rosters[0]).toHaveLength(1);
     expect(made.rosters[0][0].name).toBe('Muted Mary');
     expect(made.rosters[0][0].left_at).toBeNull();
-    // The same snapshot went both ways, so the two destinations can never disagree about who is in the room.
-    expect(made.rosters[0]).toEqual(liveParticipantCalls[0].liveParticipants);
+    // Built from the same event as the `join` row, so the roster the model sees and the record a reader rebuilds cannot disagree about who arrived.
+    await flushMicrotasks();
+    expect(rowsOfType(botId, 'join').map((r) => r.participant.name)).toEqual(['Muted Mary']);
   });
 
   it('pushes it again on a leave, with the departure marked', async () => {
@@ -1324,15 +1373,14 @@ describe('recall mount — the roster the conversation gets', () => {
     expect(last[1].left_at).toBeNull();
   });
 
-  it('pushes it for an UNBOUND meeting too — no task to write to, but still a room to talk to', async () => {
-    // The one place this seam deliberately differs from `persistLiveParticipants`.
+  it('pushes it for an UNBOUND meeting too — no task to reach, but still a room to talk to', async () => {
     botIds.push('bot-ctx-unbound');
     const { router, ws } = await withAudioSocket();
     const { botId, spawned: made } = await startMeeting(router, 'https://zoom.us/j/ctx-unbound'); // no task_id
 
     ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
 
-    expect(liveParticipantCalls).toEqual([]);
+    expect(recordedRows).toEqual([]);
     expect(made.rosters).toHaveLength(1);
     expect(made.rosters[0][0].name).toBe('Ann');
   });
@@ -1363,8 +1411,9 @@ describe('recall mount — the roster the conversation gets', () => {
     expect(() =>
       ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true }))),
     ).not.toThrow();
-    // The persistence half still ran, so one failure did not cost the other.
-    expect(liveParticipantCalls).toHaveLength(1);
+    // The record still got its row, so one failure did not cost the other.
+    await flushMicrotasks();
+    expect(rowsOfType(botId, 'join')).toHaveLength(1);
     expect(warn).toHaveBeenCalled();
   });
 });
@@ -1382,23 +1431,6 @@ describe('recall mount — the capability summary', () => {
     expect(made.capabilities).toEqual(['- Look up numbers in the analytics warehouse']);
   });
 
-  it('records the block alongside the meeting, once, with the same text handed to the model', async () => {
-    // Held only in the meeting's closure, shaping every later model call — without it, wrong/empty/malformed/ignored are indistinguishable.
-    botIds.push('bot-caps-record');
-    capabilityResult = Promise.resolve('- Look up numbers in the analytics warehouse');
-    const { router } = await mount();
-
-    const { spawned: made } = await startMeeting(router, 'https://zoom.us/j/caps-record', 'task-caps-record');
-    await flushMicrotasks();
-
-    // Keyed on the bot id, like every other file in the meeting's folder.
-    expect(capabilityRecords).toEqual([
-      { taskId: 'task-caps-record', sessionId: 'bot-caps-record', summary: '- Look up numbers in the analytics warehouse' },
-    ]);
-    // What the meeting was told and what was written down cannot be allowed to drift.
-    expect(capabilityRecords[0].summary).toBe(made.capabilities[0]);
-  });
-
   it('does NOT hold the join behind the capability model call', async () => {
     // A model call in front of a join would put the room's first impression behind a provider's latency, and a hung one would stop the join.
     botIds.push('bot-caps-slow');
@@ -1410,16 +1442,16 @@ describe('recall mount — the capability summary', () => {
 
     const { reply, spawned: made } = await startMeeting(router, 'https://zoom.us/j/caps-slow', 'task-caps-slow');
 
-    // Nothing recorded either — the write rides inside the same pending `.then()` as the handoff, not a separate earlier step.
+    // Nothing recorded either — the row rides inside the same pending `.then()` as the handoff, not a separate earlier step.
     expect(reply.code).toBe(201);
     expect(made.capabilities).toEqual([]);
-    expect(capabilityRecords).toEqual([]);
+    expect(rowsOfType('bot-caps-slow', 'capabilities')).toEqual([]);
 
     release('- Read the code in the team repositories');
     await flushMicrotasks();
     expect(made.capabilities).toEqual(['- Read the code in the team repositories']);
-    expect(capabilityRecords).toEqual([
-      { taskId: 'task-caps-slow', sessionId: 'bot-caps-slow', summary: '- Read the code in the team repositories' },
+    expect(rowsOfType('bot-caps-slow', 'capabilities')).toEqual([
+      { at: expect.any(String), type: 'capabilities', text: '- Read the code in the team repositories' },
     ]);
   });
 
@@ -1433,8 +1465,8 @@ describe('recall mount — the capability summary', () => {
 
     expect(made.capabilities).toEqual(['']);
     // Recorded, not skipped — "the summariser returned nothing" is a real outcome, and must not reach disk as an absence that could equally mean the write failed.
-    expect(capabilityRecords).toEqual([
-      { taskId: 'task-caps-empty', sessionId: 'bot-caps-empty', summary: '' },
+    expect(rowsOfType('bot-caps-empty', 'capabilities')).toEqual([
+      { at: expect.any(String), type: 'capabilities', text: '' },
     ]);
   });
 
@@ -1478,8 +1510,8 @@ describe('recall mount — the capability summary', () => {
       ).toBe(true);
       // The join itself was never at risk, which is the point of the `void`.
       expect(reply.code).toBe(201);
-      // The record rides after the handoff in the same continuation — losing the handoff loses it too, deliberately, since recording must never delay the block.
-      expect(capabilityRecords).toEqual([]);
+      // The row rides after the handoff in the same continuation — losing the handoff loses it too, deliberately, since recording must never delay the block.
+      expect(rowsOfType('bot-caps-throw', 'capabilities')).toEqual([]);
     } finally {
       process.off('unhandledRejection', onUnhandled);
     }
@@ -1497,8 +1529,8 @@ describe('recall mount — the capability summary', () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(made.capabilities).toEqual(['- Look up numbers in the analytics warehouse']);
-    expect(capabilityRecords).toEqual([
-      { taskId: 'task-caps-ok', sessionId: 'bot-caps-ok', summary: '- Look up numbers in the analytics warehouse' },
+    expect(rowsOfType('bot-caps-ok', 'capabilities')).toEqual([
+      { at: expect.any(String), type: 'capabilities', text: '- Look up numbers in the analytics warehouse' },
     ]);
     expect(
       warn.mock.calls.filter(([, message]) => typeof message === 'string' && message.includes('capability')),
@@ -1513,8 +1545,8 @@ describe('recall mount — the capability summary', () => {
 
     expect(capabilityCalls).toEqual([]);
     expect(made.capabilities).toEqual([]);
-    // Nothing to record it in either — an unbound meeting has no task folder, so both calls sit inside the same binding branch.
-    expect(capabilityRecords).toEqual([]);
+    // Nothing to record either — an unbound meeting has no task to summarise, so the call and the row sit inside the same binding branch.
+    expect(rowsOfType(made.transport.sessionId, 'capabilities')).toEqual([]);
   });
 });
 
@@ -1766,8 +1798,7 @@ describe('recall mount — Recall ends the meeting, the poll finds out', () => {
     expect(made.stopped).toBe(0);
     expect(meetingEndedCalls).toEqual([]);
     // The departure is still recorded, which is all a leave event is for now.
-    const last = liveParticipantCalls[liveParticipantCalls.length - 1];
-    expect(last.liveParticipants[0].left_at).not.toBeNull();
+    expect(rowsOfType(botId, 'leave')).toHaveLength(1);
   });
 
   it('does not end the meeting when the audio socket closes — a blip and an ending look identical there', async () => {
@@ -1816,17 +1847,16 @@ describe('recall mount — Recall ends the meeting, the poll finds out', () => {
   it("still records Recall's own end time on this path, not the moment the poll noticed", async () => {
     vi.useFakeTimers();
     botIds.push('bot-poll-end-time');
-    botDetailsReplies.push(
-      // The poll, then teardown's own fetch, in that order — the poll is what triggers the teardown.
-      ledger('in_call_recording', 'call_ended'),
-      {
-        status: 200,
-        body: JSON.stringify({
-          meeting_url: { platform: 'zoom' },
-          status_changes: [{ code: 'call_ended', created_at: '2026-09-02T11:44:43.000Z' }],
-        }),
-      },
-    );
+    botDetailsReplies.push({
+      status: 200,
+      body: JSON.stringify({
+        meeting_url: { platform: 'zoom' },
+        status_changes: [
+          { code: 'in_call_recording', created_at: '2026-09-02T11:40:00.000Z' },
+          { code: 'call_ended', created_at: '2026-09-02T11:44:43.000Z' },
+        ],
+      }),
+    });
     const mounted = await mount();
     attach(mounted.lifecycle);
     await startMeeting(mounted.router, 'https://zoom.us/j/poll-end-time', 'task-poll-end-time');
@@ -1834,13 +1864,17 @@ describe('recall mount — Recall ends the meeting, the poll finds out', () => {
     await vi.advanceTimersByTimeAsync(POLL_MS);
     await flushMicrotasks();
 
-    expect(metadataEndCalls).toHaveLength(1);
-    // Recall's ledger value, not the instant teardown happened to run — that's the fact the field names.
-    expect(metadataEndCalls[0].info.meetingEndedAt).toBe('2026-09-02T11:44:43.000Z');
-    expect(metadataEndCalls[0].info.platform).toBe('zoom');
+    // The one read the poll already made carries the ending forward — no second fetch at teardown, so nothing can disagree with it.
+    expect(botDetailGets('bot-poll-end-time')).toHaveLength(1);
+    expect(rowsOfType('bot-poll-end-time', 'ended')).toEqual([
+      { at: expect.any(String), type: 'ended', call_ended_at: '2026-09-02T11:44:43.000Z' },
+    ]);
+    expect(rowsOfType('bot-poll-end-time', 'details')).toEqual([
+      { at: expect.any(String), type: 'details', platform: 'zoom', title: null },
+    ]);
   });
 
-  it('carries the live roster forward into the final teardown metadata, unmodified', async () => {
+  it('leaves the join and leave rows alone at teardown, inventing no departure nobody witnessed', async () => {
     vi.useFakeTimers();
     botIds.push('bot-poll-roster');
     botDetailsReplies.push(ledger('call_ended'));
@@ -1851,11 +1885,10 @@ describe('recall mount — Recall ends the meeting, the poll finds out', () => {
     await vi.advanceTimersByTimeAsync(POLL_MS);
     await flushMicrotasks();
 
-    expect(metadataEndCalls).toHaveLength(1);
-    // Never rewritten to close `left_at` — Recall pulled the bot out, which says nothing about when Ann left.
-    expect(metadataEndCalls[0].info.liveParticipants).toEqual([
-      { name: 'Ann', is_host: true, joined_at: expect.any(String), left_at: null },
-    ]);
+    // Recall pulled the bot out, which says nothing about when Ann left — so no `leave` row is written on her behalf.
+    expect(rowsOfType(botId, 'join')).toHaveLength(1);
+    expect(rowsOfType(botId, 'leave')).toEqual([]);
+    expect(rowsOfType(botId, 'ended')).toHaveLength(1);
   });
 });
 

@@ -83,7 +83,7 @@ export interface Response {
   /** Present and `true` when the reply carried a `LEAVE:` marker. Unlike `pm`, doesn't survive a reply with nothing spoken — see {@link parseReply}. Not permission to leave itself: `meeting.ts`'s `routeLeave` acts on it only once the speech above has fully reached the room. */
   leave?: boolean;
   /**
-   * The model's own reasoning for this turn, returned on its own channel rather than in the reply text, trimmed. Absent when it reasoned about nothing. Never spoken or posted — for the activation log (`recordAnswer` in `meeting.ts`).
+   * The model's own reasoning for this turn, returned on its own channel rather than in the reply text, trimmed. Absent when it reasoned about nothing. Never spoken or posted — for the meeting record's `turn` row (`recordAnswer` in `meeting.ts`).
    *
    * Survives even when nothing is spoken, like `pm` (see {@link Decision.silence}): a silent turn's reasoning is worth keeping too.
    */
@@ -109,7 +109,7 @@ export type Decision =
     }
   | {
       outcome: 'failed';
-      /** Why, for the activation log. Never contains the API key. */
+      /** Why, for the meeting record's `turn` row. Never contains the API key. */
       why: string;
       /** Sentences already handed to `onSentence` before the failure. Non-zero means the room may have heard part of an answer — different from saying nothing at all. */
       handedOver: number;
@@ -792,7 +792,7 @@ function requestBody(args: ModelCall, stream: boolean): Record<string, unknown> 
     model: MODEL,
     // Both names accepted, behave identically (verified); this is current, `max_tokens` is the deprecated alias.
     max_completion_tokens: args.maxTokens,
-    // Both calls judge a fixed transcript, not write creatively — a reproducible answer is easier to debug from the activation log.
+    // Both calls judge a fixed transcript, not write creatively — a reproducible answer is easier to debug from the meeting record.
     temperature: 0,
     stream,
     // A message with the system role, not a top-level field.
@@ -874,7 +874,7 @@ function modelRequest(args: ModelCall, stream: boolean): RequestInit {
 /**
  * Either the whole reply, or why it never arrived.
  *
- * The reason travels rather than being logged and dropped: it ends up in the activation-log row. "The decision failed" and "cerebras returned 529" are the same event to the room but very different ones to the corpus — naming the vendor lets a run of failures read as a vendor problem, not a prompt one.
+ * The reason travels rather than being logged and dropped: it ends up on the meeting record's `turn` row. "The decision failed" and "cerebras returned 529" are the same event to the room but very different ones to the corpus — naming the vendor lets a run of failures read as a vendor problem, not a prompt one.
  */
 type StreamOutcome =
   | { ok: true; text: string; reasoning: string }

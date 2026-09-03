@@ -1,11 +1,11 @@
-// VoiceTransport is the whole of what meeting.ts sees: a session id, a sink and a chat channel, nothing about Recall.
+// VoiceTransport is the whole of what meeting.ts sees: a session id, a sink, a chat channel and somewhere to record, nothing about Recall.
 // room-silence.test.ts runs the same conversation against the connector's own sink shape; twins are named below.
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, readFileSync, existsSync } from 'fs';
+import { mkdtempSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { logger } from '../../system/logger.js';
-import type { AudioSink, VoiceConfig, VoiceTransport } from '../types.js';
+import type { AudioSink, MeetingRow, VoiceConfig, VoiceTransport } from '../types.js';
 
 const WORK = mkdtempSync(join(tmpdir(), 'voice-transport-'));
 process.env.ARCHIE_WORKDIR = WORK;
@@ -197,15 +197,6 @@ async function makeMeeting(transport: VoiceTransport) {
   return meeting;
 }
 
-function rows(sessionId: string): Array<Record<string, unknown>> {
-  const path = join(WORK, 'voice-logs', `${sessionId}.jsonl`);
-  if (!existsSync(path)) return [];
-  return readFileSync(path, 'utf8')
-    .split('\n')
-    .filter((l) => l.length > 0)
-    .map((l) => JSON.parse(l) as Record<string, unknown>);
-}
-
 function speakerFor(meeting: { onAudio(p: typeof ann, pcm: Buffer): void }) {
   const before = streams.length;
   meeting.onAudio(ann, Buffer.alloc(320));
@@ -213,16 +204,20 @@ function speakerFor(meeting: { onAudio(p: typeof ann, pcm: Buffer): void }) {
 }
 
 describe('voice transport seam', () => {
-  it('runs a whole conversation on nothing but a session id, a sink and a chat channel', async () => {
+  it('runs a whole conversation on nothing but a session id, a sink, a chat channel and a recorder', async () => {
     reset();
     decideQueue.push({ speech: 'It shipped on Tuesday.' });
     const posted: string[] = [];
+    const recorded: MeetingRow[] = [];
     const { sink, state } = plainSink();
     const meeting = await makeMeeting({
       sessionId: 'seam-basic',
       sink,
       sendChat: async (text: string) => {
         posted.push(text);
+      },
+      record: (row) => {
+        recorded.push(row);
       },
     });
 
@@ -236,10 +231,9 @@ describe('voice transport seam', () => {
     expect(synthTexts).toEqual(['It shipped on Tuesday.']);
     expect(posted).toEqual([]);
 
-    // Session id is the log's whole identity — nothing else reaches it.
-    const written = rows('seam-basic');
-    expect(written.length).toBeGreaterThan(0);
-    expect(new Set(written.map((r) => r.sessionId))).toEqual(new Set(['seam-basic']));
+    // The record travels through the transport and nowhere else: the whole turn is here, and the conversation opened no file of its own.
+    expect(recorded.map((r) => r.type)).toEqual(['utterance', 'gate', 'utterance', 'turn']);
+    expect(existsSync(join(WORK, 'voice-logs'))).toBe(false);
   });
 
   it('treats a lone participant as the whole room', async () => {
@@ -247,7 +241,7 @@ describe('voice transport seam', () => {
     // First answer is discarded — floor retaken mid-decision re-asks from scratch.
     decideQueue.push({ speech: 'Still here.' }, { speech: 'Still here.' });
     const { sink, state } = plainSink();
-    const meeting = await makeMeeting({ sessionId: 'seam-solo', sink, sendChat: async () => {} });
+    const meeting = await makeMeeting({ sessionId: 'seam-solo', sink, sendChat: async () => {}, record: () => {} });
 
     // No per-participant separation on a media stream; this speaker's turn state is the floor.
     const a = speakerFor(meeting);
@@ -271,7 +265,7 @@ describe('voice transport seam', () => {
     decideQueue.push({ speech: 'Green across the board.' });
     const { sink, state } = plainSink();
     // Construction publishes engagement before a word is spoken; every later stage (flag, decision, follow-up) publishes again.
-    const meeting = await makeMeeting({ sessionId: 'seam-tile', sink, sendChat: async () => {} });
+    const meeting = await makeMeeting({ sessionId: 'seam-tile', sink, sendChat: async () => {}, record: () => {} });
 
     const a = speakerFor(meeting);
     a.emit({ kind: 'start' });

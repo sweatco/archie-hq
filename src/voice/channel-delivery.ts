@@ -6,7 +6,6 @@
  * Comparing session ids stops a stale answer from landing in a later meeting on the same task.
  */
 import type { ChannelDeliverer, ChannelRenderer } from '../tasks/channel-delivery.js';
-import { appendMeetingExchange } from '../tasks/persistence.js';
 import { getLiveMeeting } from './task-binding.js';
 import { logger } from '../system/logger.js';
 
@@ -24,16 +23,10 @@ export const deliverToRecallChannel: ChannelDeliverer = async ({ task, channel, 
     return { delivered: false, note: 'That meeting has ended — the room has already dispersed. Post to the thread instead.' };
   }
 
+  // Records its own `answer` row on the way in — nothing here writes to the meeting's record.
   const result = meeting.deliverConsultAnswer(message);
   if (!result.ok) {
     return { delivered: false, note: 'There is nothing outstanding to answer in this meeting right now.' };
-  }
-  // "Answered" half of this exchange log — "asked" half is written from `task-binding.ts` when the question goes out.
-  // Wrapped, not just awaited: a disk hiccup mustn't turn a delivered answer into a throw — this deliverer must never throw.
-  try {
-    await appendMeetingExchange(task.taskId, channel.session_id, 'pm-agent', message);
-  } catch (err) {
-    logger.warn(LOG, `Could not record the exchange for task ${task.taskId}`, err);
   }
   return { delivered: true, note: 'Delivered — it will be spoken aloud to the room.' };
 };

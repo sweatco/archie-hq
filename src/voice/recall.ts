@@ -1,5 +1,5 @@
 /**
- * Recall.ai REST client: bot lifecycle (join/chat/leave) plus best-effort teardown read for `MeetingMetadata`.
+ * Recall.ai REST client: bot lifecycle (join/chat/leave) plus the status-poll read behind the `details` and `ended` rows of a meeting's record.
  * No audio here — inbound via the realtime WebSocket, outbound via the output-media page.
  */
 
@@ -14,7 +14,7 @@ const REQUEST_TIMEOUT_MS = 15_000;
 // How long Recall lets the room stand empty before pulling the bot out. Not the 2s default: Zoom issues a fresh participant id on rejoin, so a reconnect reads as an empty room.
 const EVERYONE_LEFT_TIMEOUT_S = 60;
 
-/** Teardown's picks from `GET /api/v1/bot/{id}/`'s larger bot object. */
+/** The status poll's picks from `GET /api/v1/bot/{id}/`'s larger bot object. */
 export interface RecallBotDetails {
   /** `meeting_url.platform`: Recall's parse of the URL sent; `null` if absent. */
   platform: string | null;
@@ -22,8 +22,6 @@ export interface RecallBotDetails {
   title: string | null;
   /** `status_changes[]` verbatim, oldest first: the bot's lifecycle ledger; malformed entries are dropped. */
   statusChanges: Array<{ code: string; createdAt: string }>;
-  /** `recordings[0].media_shortcuts.participant_events.data.participants_download_url`; `null` until Recall generates the roster (async). */
-  participantsDownloadUrl: string | null;
 }
 
 export interface RecallClient {
@@ -32,13 +30,6 @@ export interface RecallClient {
   leave(botId: string): Promise<void>;
   /** `GET /api/v1/bot/{id}/`; throws on non-2xx or a bad body — caller interprets it. */
   getBotDetails(botId: string): Promise<RecallBotDetails>;
-  /**
-   * Follows `participantsDownloadUrl`, parses the roster: wire has `{id, name, is_host, platform, extra_data, email}`,
-   * but only `name`/`is_host` return — rest is Recall-internal; `email` is always null for a raw-URL join.
-   *
-   * URL is pre-signed, cross-host, unauthenticated — bypasses this client's `baseUrl`-rooted `post`/`get` helpers.
-   */
-  fetchParticipants(url: string): Promise<Array<{ name: string | null; isHost: boolean | null }>>;
 }
 
 /** A successful HTTP exchange; a rejection arrives as a thrown Error instead. */
@@ -180,13 +171,12 @@ export function createRecallClient(cfg: VoiceConfig): RecallClient {
         throw new Error(`Recall GET /bot/${botId}/ returned a body that was not JSON`);
       }
 
-      // `unknown`-guarded: an absent or misnested field becomes "unknown," not a thrown error — teardown must degrade, not fail.
+      // `unknown`-guarded: an absent or misnested field becomes "unknown," not a thrown error — the poll must degrade, not fail.
       const bot = parsed as {
         meeting_url?: { platform?: unknown } | null;
         status_changes?: Array<{ code?: unknown; created_at?: unknown }> | null;
         recordings?: Array<{
           media_shortcuts?: {
-            participant_events?: { data?: { participants_download_url?: unknown } } | null;
             meeting_metadata?: { data?: { title?: unknown } } | null;
           } | null;
         }> | null;
@@ -202,9 +192,7 @@ export function createRecallClient(cfg: VoiceConfig): RecallClient {
         : [];
 
       // recordings[0]: we always request one recording_config, so nothing to pick if a second appeared.
-      const shortcuts = bot.recordings?.[0]?.media_shortcuts;
-      const participantsDownloadUrl = shortcuts?.participant_events?.data?.participants_download_url;
-      const title = shortcuts?.meeting_metadata?.data?.title;
+      const title = bot.recordings?.[0]?.media_shortcuts?.meeting_metadata?.data?.title;
 
       logger.system(`Recall: fetched bot details for ${botId} (${statusChanges.length} status change(s))`);
 
@@ -212,36 +200,7 @@ export function createRecallClient(cfg: VoiceConfig): RecallClient {
         platform: typeof bot.meeting_url?.platform === 'string' ? bot.meeting_url.platform : null,
         title: typeof title === 'string' ? title : null,
         statusChanges,
-        participantsDownloadUrl: typeof participantsDownloadUrl === 'string' ? participantsDownloadUrl : null,
       };
-    },
-
-    async fetchParticipants(url: string): Promise<Array<{ name: string | null; isHost: boolean | null }>> {
-      const response = await fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-      const text = redact(await response.text().catch(() => ''));
-      if (!response.ok) {
-        throw new Error(`Recall participants download failed: HTTP ${response.status} ${text.slice(0, MAX_ERROR_BODY)}`);
-      }
-
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        throw new Error('Recall participants download returned a body that was not JSON');
-      }
-      if (!Array.isArray(parsed)) {
-        throw new Error('Recall participants download did not return an array');
-      }
-
-      logger.system(`Recall: downloaded ${parsed.length} participant record(s)`);
-
-      return parsed.map((entry) => {
-        const p = (entry ?? {}) as Record<string, unknown>;
-        return {
-          name: typeof p.name === 'string' ? p.name : null,
-          isHost: typeof p.is_host === 'boolean' ? p.is_host : null,
-        };
-      });
     },
   };
 }
