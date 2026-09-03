@@ -8,8 +8,8 @@
 #
 #   ./campaign3.sh <candidate> <runs> <armA-name> <armA-prompt> <armB-name> <armB-prompt>
 #
-# <candidate> is a key from providers.mjs's CANDIDATES map, e.g. haiku-4.5 (the
-# Anthropic production default) or cerebras-gemma-4-31b. Per-run logs land in
+# <candidate> is a key from providers.mjs's CANDIDATES map, e.g. cerebras-gemma-4-31b (what
+# production runs) or haiku-4.5 (a comparison arm). Per-run logs land in
 # logs/defect-<arm>-r<n>.log and logs/quality-<arm>-r<n>.log; per-run graded
 # quality rows land in results/quality-<arm>-r<n>.json. defect.mjs writes its own
 # results/defect-<arm>-<candidate>.json per invocation, already named by arm.

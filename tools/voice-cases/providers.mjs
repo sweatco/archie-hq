@@ -1,5 +1,5 @@
 // Raw fetch on purpose: production calls each provider with bare fetch + manual SSE, so this harness measures that exact path, not an SDK's.
-// Wire shapes copy comprehension.ts's ANTHROPIC/CEREBRAS objects, differences preserved: system as a field vs. a message, max_tokens vs. max_completion_tokens, clean close vs. explicit [DONE].
+// Wire shapes: Cerebras copies comprehension.ts's request; Anthropic keeps the Messages API differences: system as a field vs. a message, max_tokens vs. max_completion_tokens, clean close vs. explicit [DONE].
 // Adds rate-limit survival production lacks: runCall retries a 429 with Retry-After honoured and bounded backoff (pacing.mjs) — a live meeting can't wait 40s, so production's own retry story differs.
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
