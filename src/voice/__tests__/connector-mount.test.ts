@@ -1470,55 +1470,8 @@ describe('recall mount — the capability summary', () => {
     ]);
   });
 
-  it('survives a handoff that throws, instead of taking the whole process down with it', async () => {
-    // Deliberately un-awaited (see above); a throw has nowhere to go. No global `unhandledRejection` handler exists in src/, so in production it kills every task and meeting.
-    // The listener below is the detector, not the fix — registering one here also stops Node acting on the rejection, which is why its absence in src/ is the hazard.
-    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
-    const escaped: unknown[] = [];
-    const onUnhandled = (reason: unknown): void => {
-      escaped.push(reason);
-    };
-    process.on('unhandledRejection', onUnhandled);
-    try {
-      botIds.push('bot-caps-throw');
-      // Left pending so the throwing recorder installs before the summary lands — a resolved promise would hand it over during the join.
-      let release: (summary: string) => void = () => {};
-      capabilityResult = new Promise<string>((resolve) => {
-        release = resolve;
-      });
-      const { router } = await mount();
-
-      const { reply, spawned: made } = await startMeeting(router, 'https://zoom.us/j/caps-throw', 'task-caps-throw');
-      // Closest stand-in for setCapabilities failing — same trick the roster test above uses for updateParticipants.
-      (made as unknown as { capabilities: unknown }).capabilities = {
-        push() {
-          throw new Error('the medium exploded');
-        },
-      };
-
-      release('- Look up numbers in the analytics warehouse');
-      await flushMicrotasks();
-      // A full event-loop turn, not just microtasks — Node emits unhandledRejection only after microtasks drain, so draining alone would prove nothing.
-      await new Promise((resolve) => setImmediate(resolve));
-
-      expect(escaped).toEqual([]);
-      // Distinct from the empty-summary warning in meeting.ts and the failed-write warning in task-binding.ts — two different faults.
-      expect(
-        warn.mock.calls.some(
-          ([, message]) => typeof message === 'string' && message.includes('threw instead of landing'),
-        ),
-      ).toBe(true);
-      // The join itself was never at risk, which is the point of the `void`.
-      expect(reply.code).toBe(201);
-      // The row rides after the handoff in the same continuation — losing the handoff loses it too, deliberately, since recording must never delay the block.
-      expect(rowsOfType('bot-caps-throw', 'capabilities')).toEqual([]);
-    } finally {
-      process.off('unhandledRejection', onUnhandled);
-    }
-  });
-
   it('stays quiet about a failed handoff when the handoff worked', async () => {
-    // Control for the test above: a catch broad enough to fire on the happy path would log "no capability block" for a meeting that has one, letting an over-broad fix pass.
+    // A summary that lands must draw no capability warning at all — that wording belongs to a meeting running without a block.
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     botIds.push('bot-caps-ok');
     capabilityResult = Promise.resolve('- Look up numbers in the analytics warehouse');

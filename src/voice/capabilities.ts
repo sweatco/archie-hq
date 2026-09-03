@@ -1,7 +1,7 @@
 /**
  * capabilities.ts — gathers PM skill/team descriptions, summarises them (`summariseCapabilities`, comprehension.ts) into a voice-safe blurb, once per meeting.
  *
- * Every failure resolves to '', never throws.
+ * Every failure resolves to '' — the meeting must run whether or not it gets a capability block.
  */
 
 import { readdir, readFile } from 'fs/promises';
@@ -74,7 +74,6 @@ export async function buildCapabilitySummary(cfg: VoiceConfig, taskId: string): 
       pmIntegrations: self.pmIntegrations,
     });
   } catch (err) {
-    // Backstop: the calls above catch their own errors, but an unhandled rejection here takes down every other task and meeting.
     logger.warn(LOG, `Could not build the capability summary for task ${taskId} — this meeting runs without one`, err);
     return '';
   }

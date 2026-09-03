@@ -184,8 +184,8 @@ describe('buildCapabilitySummary — failing safe', () => {
     await expect(buildCapabilitySummary(cfg, 'task-modelfail')).resolves.toBe('');
   });
 
-  it('never rejects, whatever happens underneath', async () => {
-    // An unhandled rejection here takes down every task and meeting.
+  it('resolves to an empty summary, whatever happens underneath', async () => {
+    // The connector hands whatever this resolves to straight to the meeting, so a rejection would leave it with no capability block and no record of why.
     vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
     vi.spyOn(logger, 'error').mockImplementation(() => undefined);
     writeSkill('one', '---\ndescription: A thing.\n---\n');

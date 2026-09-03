@@ -29,6 +29,7 @@ import { mountApiRoutes } from './connectors/api/routes.js';
 import { mountOAuthRoutes } from './connectors/oauth/routes.js';
 import { mountRecallConnector, type RecallLifecycle } from './voice/connector.js';
 import { getIsShuttingDown, setShuttingDown } from './system/shutdown.js';
+import { installUnhandledRejectionLogger } from './system/process-errors.js';
 import { getActiveTaskIds } from './tasks/task.js';
 import { logger } from './system/logger.js';
 import { bootstrapWorkdir, cloneRepos, OAUTH_DIR, REPOS_DIR } from './system/workdir.js';
@@ -84,17 +85,8 @@ function loadConfig(): AppConfig {
     port,
     githubWebhookSecret,
     recallApiKey: process.env.RECALL_API_KEY,
-    // Recall regions are separate deployments with separate credentials, so this
-    // default is not merely a location: a key issued for eu-central-1 does not
-    // work here, and the connector fails to create a bot rather than creating one
-    // in the wrong place. The dev config uses eu-central-1.
-    // Recall regions are separate deployments with separate credentials, so this
-    // is not merely a location: a key issued for one region does not authenticate
-    // against another. eu-central-1 is the default because that is where the key
-    // this connector was built against lives, and because our engine sits on every
-    // hop of the audio path — participant audio up to Deepgram, the turn boundary
-    // back, synthesised speech out — so a region far from the meeting is paid four
-    // times over. Override it to match whatever key a deployment actually holds.
+    // Recall regions are separate deployments with separate credentials: a key issued for one region
+    // does not authenticate against another, so override this to match the key a deployment holds.
     recallRegion: process.env.RECALL_REGION || 'eu-central-1',
     deepgramApiKey: process.env.DEEPGRAM_API_KEY,
     publicUrl: process.env.ARCHIE_PUBLIC_URL?.replace(/\/+$/, ''),
@@ -107,6 +99,8 @@ function loadConfig(): AppConfig {
  * Main function
  */
 async function main(): Promise<void> {
+  installUnhandledRejectionLogger();
+
   logger.plain('Archie - Autonomous Responsive and Collaborative Hyper Intelligent Employee');
   logger.plain('===========================================================================');
   logger.plain('');

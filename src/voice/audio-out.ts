@@ -167,7 +167,7 @@ export function createAudioOutHub(): AudioOutHub {
       channel.socket.send(STOP_FRAME);
       channel.awaitingReport = true;
     }
-    // Nothing here suppresses what arrives next: a killed utterance's later chunks never reach `play()` — `meeting.ts` returns before `safePlay` once the turn is abandoned — and its synthesizer is stopped server-side.
+    // Nothing here suppresses what arrives next: a killed utterance's later chunks never reach `play()` — `meeting.ts`'s `onPcm` returns before the sink once the turn is abandoned — and its synthesizer is stopped server-side.
   }
 
   /** The coarse "there's a meeting" switch — opened once Recall attaches to our page. See {@link AudioSink.setEnabled}. */

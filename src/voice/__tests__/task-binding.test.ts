@@ -1,4 +1,3 @@
-// No global `unhandledRejection` handler exists in `src/` (MeetingHost's doc, `../types.ts`) — appenders must swallow and log, never escape, or it kills every task and meeting.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const { appendMeetingEvent, appendMeetingRow, getMeetingRecordPath } = vi.hoisted(() => ({
@@ -85,17 +84,6 @@ describe('createTaskHost', () => {
 
       await expect(host.readWrittenExchange()).resolves.toEqual([{ speaker: 'Ann', text: 'can you join?' }]);
       expect(readWrittenExchange).toHaveBeenCalledWith('task-exchange-read');
-    });
-
-    it('does not take down the meeting when appendMeetingEvent rejects, and logs the task by name', async () => {
-      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
-      appendMeetingEvent.mockRejectedValue(new Error('ENOENT'));
-      const host = createTaskHost('task-reject-2', 'sess-reject-2', noopEnd);
-
-      expect(() => host.noteEvent('meeting ended')).not.toThrow();
-      await drain();
-
-      expect(warn).toHaveBeenCalled();
     });
   });
 
@@ -193,17 +181,6 @@ describe('createTaskHost', () => {
       resolveEnd();
       await drain();
     });
-
-    it('swallows a teardown that rejects, and logs — a failed leave must not kill the process', async () => {
-      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
-      const end = vi.fn().mockRejectedValue(new Error('Recall is unreachable'));
-      const host = createTaskHost('task-leave-fails', 'sess-leave-fails', end);
-
-      expect(() => host.leaveMeeting()).not.toThrow();
-      await drain();
-
-      expect(warn.mock.calls.some((c) => String(c[1]).includes('sess-leave-fails'))).toBe(true);
-    });
   });
 });
 
@@ -271,16 +248,6 @@ describe('notifyMeetingEnded', () => {
       await loadPrompt('voice-wakeup-ended', { RECORD_PATH: '/mock/task-ended/sess-ended/meeting.jsonl' }),
       'pm-agent',
     );
-  });
-
-  it('does not throw when the task cannot be loaded, and logs', async () => {
-    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
-    taskGet.mockRejectedValue(new Error('task-ended-gone not found'));
-
-    expect(() => notifyMeetingEnded('task-ended-gone', 'sess-ended-gone')).not.toThrow();
-    await drain();
-
-    expect(warn).toHaveBeenCalled();
   });
 });
 

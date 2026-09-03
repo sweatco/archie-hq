@@ -277,15 +277,6 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     return context;
   }
 
-  async function safeReadWrittenExchange(): Promise<WrittenLine[]> {
-    try {
-      return (await host?.readWrittenExchange()) ?? [];
-    } catch (err) {
-      logger.warn(LOG, 'Reading the task written exchange failed — this turn runs without it', err);
-      return [];
-    }
-  }
-
   function isFollowUpAnchor(utterance: Utterance | undefined, graceMs: number): boolean {
     return (
       utterance !== undefined &&
@@ -336,7 +327,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
 
   // Not called on barge-in -- being cut off doesn't settle the debt, so the tile keeps showing Archie is still on the hook.
   function applyEngagement(): void {
-    safeSetEngaged(!stopped && (owes || followUpWindowLive()));
+    sink.setEngaged(!stopped && (owes || followUpWindowLive()));
   }
 
 
@@ -587,18 +578,13 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     let pcmSentToSink = 0;
     const sentenceOffsets: { text: string; endOffset: number }[] = [];
     // Asked for here, awaited later: the turn must reach the speaking call in the same tick, and the sink answers with the count as of this call anyway.
-    const playedBaseline = safePlayed();
+    const playedBaseline = sink.played();
 
     const confirmedHeardPrefix = async (): Promise<string | null> => {
-      const [baseline, now] = await Promise.all([playedBaseline, safePlayed()]);
-      if (baseline === null || now === null) {
-        // A sink that cannot say what the room heard confirms nothing -- crediting a sentence to a broken watermark is the one bias this must never make.
-        return null;
-      } else {
-        const confirmed = now - baseline;
-        const heard = sentenceOffsets.filter((s) => s.endOffset <= confirmed);
-        return heard.length === 0 ? null : heard.map((s) => s.text).join(' ');
-      }
+      const [baseline, now] = await Promise.all([playedBaseline, sink.played()]);
+      const confirmed = now - baseline;
+      const heard = sentenceOffsets.filter((s) => s.endOffset <= confirmed);
+      return heard.length === 0 ? null : heard.map((s) => s.text).join(' ');
     };
 
     // `abort()` stops the synthesizer server-side, not just this turn's delivery: `onPcm` already drops whatever arrives once the turn is abandoned, but audio the room will never hear should not be generated at all.
@@ -625,7 +611,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
           recordTiming(row, 'speakMs', Date.now() - askedAt);
         }
         pcmSentToSink += pcm.length;
-        safePlay(pcm);
+        sink.play(pcm);
       }
     };
 
@@ -657,7 +643,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       const exchange = consults.map((c) => ({ id: c.id, question: c.question, answer: c.answer }));
       // Must stay synchronous: `speakingContext` takes the exchange rather than reading it, so an unbound meeting reaches the speaking call in the same tick -- pinned by two tests in room-silence.test.ts ("no delay in front of the decision").
       const context =
-        host === undefined ? speakingContext([]) : speakingContext(await safeReadWrittenExchange());
+        host === undefined ? speakingContext([]) : speakingContext(await host.readWrittenExchange());
 
       const startedAt = Date.now();
       decision = await decideResponse(cfg, {
@@ -798,9 +784,9 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       // Reads `answer.speech` directly, not the sink's watermark -- the room reports what it has rendered at intervals, so `played()` can lag a sentence behind at the moment the round closes.
       recordHeard(row, answer.speech);
       noteOwnAnswer(answer.speech);
-      if (answer.chat !== undefined) {
-        // Not awaited -- audio is already playing, and the room shouldn't wait on the chat channel before the next decision can run.
-        void safeSendChat(answer.chat);
+      // Not awaited -- audio is already playing, and the room shouldn't wait on the chat channel before the next decision can run. Dropped once stopped: a post after teardown reaches a room that has dispersed.
+      if (answer.chat !== undefined && !stopped) {
+        void sendChat(answer.chat);
       }
       noteOwnChat(answer.chat);
       logger.debug(LOG, `Said: ${answer.speech}`);
@@ -824,7 +810,9 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     row.error = `${why} — answered in the meeting chat instead`;
     noteOwnAnswer(answer.speech);
     announceVoiceUnavailableOnce();
-    void safeSendChat(chatFallbackText(answer));
+    if (!stopped) {
+      void sendChat(chatFallbackText(answer));
+    }
     noteOwnChat(answer.chat);
   }
 
@@ -847,10 +835,10 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
 
   // Unconditional, unclassified -- no judgement on whether they were talking to us. `owes` stays untouched: barge-in doesn't settle the debt.
   function onTurnStart(state: ParticipantState): void {
-    if (safeIsSpeaking()) {
+    if (sink.isSpeaking()) {
       logger.debug(LOG, `${state.name} started speaking over us — cutting`);
       cutRevision++;
-      safeCut();
+      sink.cut();
     }
   }
 
@@ -917,16 +905,6 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     }
   }
 
-  // Unlike `isTurnOpen` and `isSpeaking`, a throw here counts as *alive* -- assuming death would replace a working stream on every audio packet.
-  function safeIsAlive(stream: TurnStream, name: string): boolean {
-    try {
-      return stream.isAlive();
-    } catch (err) {
-      logger.warn(LOG, `Could not read whether ${name}'s turn stream is alive`, err);
-      return true;
-    }
-  }
-
   function closeStream(state: ParticipantState): void {
     if (state.stream !== null) {
       const stream = state.stream;
@@ -977,7 +955,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       }
     }
     // A stream can die silently under us (socket drop, Deepgram rejecting the key) -- `write()` on a dead stream swallows audio: one participant goes permanently unheard while the rest transcribe normally, harder to notice than the bot going quiet.
-    if (state.stream !== null && !safeIsAlive(state.stream, state.name)) {
+    if (state.stream !== null && !state.stream.isAlive()) {
       logger.warn(LOG, `The turn stream for ${state.name} died — reopening`);
       closeStream(state);
       maybeDecide();
@@ -991,76 +969,13 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
   }
 
 
-  function safePlay(pcm: Buffer): void {
-    try {
-      sink.play(pcm);
-    } catch (err) {
-      logger.error(LOG, 'Pushing speech to the output sink failed', err);
-    }
-  }
-
-  // `null`, not 0: a sink that cannot answer knows nothing, which is not the same as having heard nothing.
-  async function safePlayed(): Promise<number | null> {
-    try {
-      return await sink.played();
-    } catch (err) {
-      logger.warn(LOG, 'Asking the output sink what the room has heard failed', err);
-      return null;
-    }
-  }
-
-  function safeIsSpeaking(): boolean {
-    try {
-      return sink.isSpeaking();
-    } catch (err) {
-      logger.warn(LOG, 'Asking the output sink whether it is speaking failed', err);
-      return false;
-    }
-  }
-
-  function safeCut(): void {
-    try {
-      sink.cut();
-    } catch (err) {
-      logger.warn(LOG, 'Cutting queued audio failed', err);
-    }
-  }
-
-  function safeSetEngaged(engaged: boolean): void {
-    try {
-      sink.setEngaged(engaged);
-    } catch (err) {
-      logger.error(LOG, `Setting the tile to ${engaged ? 'engaged' : 'disengaged'} failed`, err);
-    }
-  }
-
-  function safeSetSinkEnabled(open: boolean): void {
-    try {
-      sink.setEnabled(open);
-    } catch (err) {
-      logger.error(LOG, `Setting the output sink to ${open ? 'enabled' : 'disabled'} failed`, err);
-    }
-  }
-
-  async function safeSendChat(text: string): Promise<void> {
-    if (stopped) {
-      logger.debug(LOG, `The meeting has stopped — dropped ${text.length} chars of text`);
-    } else {
-      try {
-        await sendChat(text);
-      } catch (err) {
-        logger.error(LOG, 'Sending the meeting chat message failed', err);
-      }
-    }
-  }
-
   function announceVoiceUnavailableOnce(): void {
     if (!voiceFailureAnnounced) {
       voiceFailureAnnounced = true;
       logger.error(LOG, 'Cannot speak — falling back to the meeting chat');
-      void safeSendChat(
-        "I can hear you, but my voice isn't working right now — I'll answer here instead.",
-      );
+      if (!stopped) {
+        void sendChat("I can hear you, but my voice isn't working right now — I'll answer here instead.");
+      }
     }
   }
 
@@ -1174,8 +1089,8 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
         speech = null;
       }
 
-      safeCut();
-      safeSetSinkEnabled(false);
+      sink.cut();
+      sink.setEnabled(false);
 
       // Waits out the in-flight turn so its row is handed to the transport before teardown reads final state; the transport owns getting it to disk.
       await turnChain;

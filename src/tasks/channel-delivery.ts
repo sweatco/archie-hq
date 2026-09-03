@@ -17,15 +17,9 @@ export interface ChannelDeliveryOutcome {
   note?: string;
 }
 
-/**
- * Never throws — `postToUser` doesn't wrap the call; a rejection would be unhandled.
- * Never assigns `Task.metadata.default_channel`; only Slack's `??=` sites do.
- * `undefined` only if nothing could be reported (e.g. `deliverToRecallChannel`'s defensive branch) —
- * a real attempt always returns a full outcome.
- */
+// Never assigns `Task.metadata.default_channel`; only Slack's `??=` sites do. `undefined` means nothing could be reported at all — a real attempt returns a full outcome.
 export type ChannelDeliverer = (ctx: ChannelDeliveryContext) => Promise<ChannelDeliveryOutcome | undefined>;
 
-// Never throws — synchronous, no I/O, given only the channel record in hand.
 export type ChannelRenderer = (channel: Channel) => string;
 
 interface ChannelRegistration {

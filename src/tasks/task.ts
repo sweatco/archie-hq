@@ -461,13 +461,8 @@ export class Task {
    * UNLESS `target.channel` names a channel of a kind this method does not
    * natively handle (anything but `slack`) — then a registered deliverer (see
    * `channel-delivery.js`) may return a note of its own to relay verbatim, and
-   * that note is returned here instead. The two meanings never collide: a new
-   * channel key can only come back when there was no target at all, and a
-   * seam note can only come back when there was one, because `default_channel`
-   * is never a kind the seam handles (see the invariant on `PostTarget`'s
-   * callers) — so a caller can tell which is which from whether it passed
-   * `target.channel` in the first place, without this return type saying so
-   * itself.
+   * that note is returned here instead. A seam note only ever comes back when
+   * `target.channel` was given, so it cannot be mistaken for a new channel key.
    */
   async postToUser(message: string, agentName?: string, target?: PostTarget): Promise<string | null> {
     const sender = agentName || 'system';
@@ -520,34 +515,9 @@ export class Task {
   }
 
   /**
-   * Dispatch a message to `ch` through the delivery seam — `channel-delivery.js`'s
-   * registry, which any channel kind after Slack/CLI plugs a deliverer into
-   * instead of growing another branch here. This method is the entire extent
-   * of what `Task` knows about such a kind: look up a function by `ch.type`
-   * and hand the message over. Nothing registered (a connector not mounted in
-   * this deployment) is a silent no-op, same as an unresolved target already
-   * is — and, like an unresolved target, nothing is logged, because nothing
-   * was actually attempted. Never throws on the deliverer's behalf — a
-   * deliverer that fails reports that in its own returned outcome; this
-   * method does not wrap the call in its own try/catch, so a deliverer that
-   * violates its own no-throw contract propagates like any other tool-call
-   * failure.
+   * Hand a message to whatever deliverer `channel-delivery.js` has registered for `ch.type`; a kind with none registered is a silent no-op.
    *
-   * A delivered message is appended to `knowledge.log` exactly like a Slack
-   * or CLI post — gated on the deliverer's own `delivered` flag, never on
-   * `note`'s wording, so a failed delivery (the meeting already ended, say)
-   * cannot end up logged as having reached someone who never heard it. The
-   * destination recorded is `channelKey` itself — the same map key
-   * `postToUser` resolved `ch` from — rather than anything rendered by the
-   * kind's own `ChannelRenderer`: that renderer answers "what does this
-   * channel look like right now" for the PM's live context block (and, for a
-   * `RecallChannel`, folds in a live/ended status that can go stale), which
-   * is the wrong thing to freeze into a log line describing what a past
-   * message's destination *was* — permanently and regardless of what became
-   * of the channel afterward. The raw key needs no such renderer to exist,
-   * so this holds even for a kind nothing is registered to render, and, like
-   * a Slack log destination, it stays unique across every channel this task
-   * has ever had of that kind — never just a kind-level label.
+   * The `knowledge.log` append is gated on the deliverer's own `delivered` flag, never on `note`'s wording, and records `channelKey` itself so the line says what the destination *was* rather than what the channel looks like now.
    */
   private async deliverThroughSeam(ch: Channel, channelKey: string, message: string, sender: string): Promise<string | undefined> {
     const deliverer = getChannelDeliverer(ch.type);

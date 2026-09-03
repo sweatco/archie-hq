@@ -6,20 +6,13 @@
  * Comparing session ids stops a stale answer from landing in a later meeting on the same task.
  */
 import type { ChannelDeliverer, ChannelRenderer } from '../tasks/channel-delivery.js';
+import type { RecallChannel } from '../types/task.js';
 import { getLiveMeeting } from './task-binding.js';
-import { logger } from '../system/logger.js';
 
-const LOG = 'recall-channel-delivery';
-
+// The registry dispatches by kind, so the record handed to either function below is always this kind's.
 export const deliverToRecallChannel: ChannelDeliverer = async ({ task, channel, message }) => {
-  if (channel.type !== 'recall') {
-    // Defensive only — registry never calls a deliverer with another kind's channel.
-    logger.warn(LOG, `deliverToRecallChannel invoked with a non-recall channel (${channel.type}) on task ${task.taskId}`);
-    return undefined;
-  }
-
   const meeting = getLiveMeeting(task.taskId);
-  if (!meeting || meeting.sessionId !== channel.session_id) {
+  if (!meeting || meeting.sessionId !== (channel as RecallChannel).session_id) {
     return { delivered: false, note: 'That meeting has ended — the room has already dispersed. Post to the thread instead.' };
   }
 
@@ -32,11 +25,5 @@ export const deliverToRecallChannel: ChannelDeliverer = async ({ task, channel, 
 };
 
 /** Kept post-meeting, so a task with several shows each in the PM's context. */
-export const renderRecallChannel: ChannelRenderer = (channel) => {
-  if (channel.type !== 'recall') {
-    // Defensive only, as above — registry never calls a renderer with a different kind's channel.
-    logger.warn(LOG, `renderRecallChannel invoked with a non-recall channel (${channel.type})`);
-    return channel.type;
-  }
-  return channel.ended ? 'Meeting (ended)' : 'Meeting (live)';
-};
+export const renderRecallChannel: ChannelRenderer = (channel) =>
+  (channel as RecallChannel).ended ? 'Meeting (ended)' : 'Meeting (live)';

@@ -4,8 +4,6 @@
  * The live registry is in-memory, process-local: the audio loop, sockets, `Meeting` closure can't survive a restart.
  *
  * The durable channel record (`RecallChannel` in metadata.json) links active at start, ends at stop, never removed. No lock — can go stale post-crash (`ended: false`); harmless: its only reader (channel-delivery.ts) checks the live registry.
- *
- * Every `MeetingHost` method built here is sync void, swallows failures: no global `unhandledRejection` handler exists in `src/`, so one uncaught rejection kills every other task and meeting. (Exceptions and per-method contracts: see types.ts.)
  */
 
 import type { Meeting } from './meeting.js';
@@ -68,14 +66,11 @@ export function createTaskHost(
 ): MeetingHost {
   return {
     readWrittenExchange(): Promise<WrittenLine[]> {
-      // Never rejects (see written.ts) — a catch here would only hide it if that stopped being true.
       return readWrittenExchange(taskId);
     },
 
     noteEvent(text: string): void {
-      appendMeetingEvent(taskId, text).catch((err) => {
-        logger.warn(LOG, `Could not record meeting event for ${taskId}`, err);
-      });
+      void appendMeetingEvent(taskId, text);
     },
 
     consult(id: string, question: string): void {
@@ -85,9 +80,7 @@ export function createTaskHost(
 
     leaveMeeting(): void {
       // Same teardown funnel as the status poll, DELETE route, process shutdown.
-      void endMeeting(sessionId).catch((err) => {
-        logger.warn(LOG, `Could not end meeting ${sessionId} for task ${taskId} after a LEAVE: request`, err);
-      });
+      void endMeeting(sessionId);
     },
   };
 }
@@ -148,14 +141,10 @@ export async function endRecallChannel(taskId: string, sessionId: string): Promi
  */
 export function notifyMeetingEnded(taskId: string, sessionId: string): void {
   void (async () => {
-    try {
-      const task = await Task.get(taskId);
-      const prompt = await loadPrompt('voice-wakeup-ended', {
-        RECORD_PATH: getMeetingRecordPath(taskId, sessionId),
-      });
-      await task.sendMessage(prompt, 'pm-agent');
-    } catch (err) {
-      logger.warn(LOG, `Could not wake the PM about the ended meeting for ${taskId}`, err);
-    }
+    const task = await Task.get(taskId);
+    const prompt = await loadPrompt('voice-wakeup-ended', {
+      RECORD_PATH: getMeetingRecordPath(taskId, sessionId),
+    });
+    await task.sendMessage(prompt, 'pm-agent');
   })();
 }

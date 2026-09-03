@@ -197,19 +197,17 @@ export interface VoiceTransport {
   sink: AudioSink;
   /** Post text into the meeting's chat: detail an answer won't speak (identifiers, hashes, paths, figures), and, on voice failure, the answer itself. */
   sendChat: (text: string) => Promise<void>;
-  /** Append one line to this meeting's record. Sync void, never throws: it is called from the audio path, and the transport owns both the destination and the serialisation. */
+  /** Append one line to this meeting's record. Sync void: it is called from the audio path, and the transport owns both the destination and the serialisation. */
   record: (row: MeetingRow) => void;
 }
 
 /**
  * How a meeting reaches the rest of Archie. Absent for an unbound meeting — the manual POST entry point still works, with no task to reach (its record still lands, through the transport).
  *
- * Every method: sync void, never throws or rejects — the caller is Flux's end-of-turn reaction (~300ms), too fast for a disk write. No global `unhandledRejection` handler exists in `src/`; one uncaught rejection kills every other task and meeting.
- *
- * {@link MeetingHost.readWrittenExchange} is the exception: a pull, so it returns a promise. Called only from the model-and-speech turn, never end-of-turn, and must still never reject.
+ * Every method but {@link MeetingHost.readWrittenExchange} is sync void: the caller is Flux's end-of-turn reaction (~300ms), too fast to wait on a disk write.
  */
 export interface MeetingHost {
-  /** The task's written exchange — Slack thread, or CLI conversation if none — as {@link WrittenLine}s, oldest first. Read fresh every turn, the only async method here: a cache could go stale silently, and one read costs microseconds against the model call it precedes. Safe because it's called only from `answerRoom`, already mid-async — never the audio path the other methods answer on. Resolves to an empty array on failure, never rejects. */
+  /** The task's written exchange — Slack thread, or CLI conversation if none — as {@link WrittenLine}s, oldest first. Read fresh every turn, the only async method here: a cache could go stale silently, and one read costs microseconds against the model call it precedes. Called only from `answerRoom`, already mid-async — never the audio path the other methods answer on. Resolves to an empty array on failure, so a turn runs without it (see written.ts). */
   readWrittenExchange(): Promise<WrittenLine[]>;
   /** A fact worth keeping outside the meeting: started, ended, question asked. */
   noteEvent(text: string): void;

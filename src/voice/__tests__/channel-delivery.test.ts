@@ -7,15 +7,10 @@ vi.mock('../task-binding.js', () => ({
   getLiveMeeting: (taskId: string) => liveMeetings.get(taskId),
 }));
 
-vi.mock('../../system/logger.js', () => ({
-  logger: { warn: vi.fn(), error: vi.fn(), system: vi.fn(), debug: vi.fn() },
-}));
-
 // The one writer into a meeting's record; nothing on this deliverer's path may reach it.
 const { appendMeetingRow } = vi.hoisted(() => ({ appendMeetingRow: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../../tasks/persistence.js', () => ({ appendMeetingRow }));
 
-import { logger } from '../../system/logger.js';
 import { deliverToRecallChannel, renderRecallChannel } from '../channel-delivery.js';
 import type { Meeting } from '../meeting.js';
 import type { RecallChannel } from '../../types/task.js';
@@ -121,18 +116,6 @@ describe('deliverToRecallChannel', () => {
     expect(outcome?.note).toMatch(/dispersed/i);
     expect(newerMeeting.deliverConsultAnswer).not.toHaveBeenCalled();
   });
-
-  it('never throws and logs instead, if it is ever handed a non-recall channel (defensive only)', async () => {
-    const outcome = await deliverToRecallChannel({
-      task: fakeTask('task-1'),
-      channel: { type: 'cli', id: 'cli:local' },
-      message: 'x',
-      sender: 'pm-agent',
-    });
-
-    expect(outcome).toBeUndefined();
-    expect(logger.warn).toHaveBeenCalled();
-  });
 });
 
 // Unlike delivery, rendering reads only the channel record, not the live registry — no "meeting not live" case.
@@ -143,12 +126,5 @@ describe('renderRecallChannel', () => {
 
   it('renders an ended meeting, still — the record is kept, not removed', () => {
     expect(renderRecallChannel(fakeChannel({ ended: true }))).toBe('Meeting (ended)');
-  });
-
-  it('never throws and logs instead, if it is ever handed a non-recall channel (defensive only)', () => {
-    const rendered = renderRecallChannel({ type: 'cli', id: 'cli:local' });
-
-    expect(rendered).toBe('cli');
-    expect(logger.warn).toHaveBeenCalled();
   });
 });

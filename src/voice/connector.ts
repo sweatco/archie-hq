@@ -107,7 +107,7 @@ function unboundRecordPath(sessionId: string): string {
 /**
  * This meeting's row writer, the whole of `VoiceTransport.record`.
  *
- * One chain per meeting, so two rows settling at once cannot interleave; rows are fire-and-forget from the audio path, so a rejection is logged and never handed back — no global `unhandledRejection` handler exists in `src/`.
+ * One chain per meeting, so two rows settling at once cannot interleave. The `catch` is what puts the chain back in a resolved state: without it, one failed append would skip every row after it.
  */
 function createRecorder(sessionId: string, taskId: string | undefined): (row: MeetingRow) => void {
   let chain: Promise<void> = Promise.resolve();
@@ -221,18 +221,11 @@ export function mountRecallConnector(app: Application, cfg: VoiceConfig): Recall
         await linkRecallChannel(binding.taskId, botId, meetingUrl);
         // Points at the record, not the URL — knowledge.log is an index the PM reads every turn.
         binding.host.noteEvent(`meeting started — recall/${botId}/`);
-        // Deliberately unawaited — awaiting would hold this live meeting behind the model's latency; caught so a throw here can't crash the process (no unhandledRejection handler).
+        // Deliberately unawaited — awaiting would hold this live meeting behind the model's latency.
         void buildCapabilitySummary(cfg, binding.taskId).then((summary) => {
           meeting.setCapabilities(summary);
           // Trimmed to match byte-for-byte what `setCapabilities` sends the model, so a whitespace-only summary records as the empty block the meeting actually ran with.
           record({ at: new Date().toISOString(), type: 'capabilities', text: summary.trim() });
-        })
-        .catch((error) => {
-          logger.warn(
-            'voice',
-            `The capability summary for ${binding.taskId} threw instead of landing — this meeting will run with no capability block, and none was recorded either`,
-            error,
-          );
         });
       }
 
@@ -470,12 +463,10 @@ export function mountRecallConnector(app: Application, cfg: VoiceConfig): Recall
   function greetOnce(entry: LiveMeeting): void {
     if (!entry.greeted) {
       entry.greeted = true;
-      void recall
-        .sendChat(
-          entry.botId,
-          `Hi, I'm ${BOT_NAME}. I'm listening to this meeting — say my name and I'll chime in.`,
-        )
-        .catch((error) => logger.warn('voice', `Greeting failed for ${entry.botId}`, error));
+      void recall.sendChat(
+        entry.botId,
+        `Hi, I'm ${BOT_NAME}. I'm listening to this meeting — say my name and I'll chime in.`,
+      );
     }
   }
 

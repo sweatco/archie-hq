@@ -88,7 +88,7 @@ function agentIdsFor(taskId: string): ReadonlySet<string> {
   return new Set(team.map((def) => def.id));
 }
 
-// Never rejects — MeetingHost.readWrittenExchange (types.ts) requires it. Every failure resolves to [].
+// Every failure resolves to [] — the meeting's turn must run whether or not the exchange can be read.
 export async function readWrittenExchange(taskId: string): Promise<WrittenLine[]> {
   try {
     const { events } = await readEvents(taskId);

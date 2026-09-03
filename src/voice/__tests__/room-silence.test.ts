@@ -343,8 +343,6 @@ function fakeHost(): MeetingHost & {
   exchange: { speaker: string; text: string }[];
   /** No cache on read: count equals turns taken. */
   exchangeReads: number;
-  /** Forces the read to reject — costs only the block, not the answer. */
-  exchangeThrows: boolean;
   events: string[];
   left: number;
 } {
@@ -352,14 +350,10 @@ function fakeHost(): MeetingHost & {
     consults: [],
     exchange: [],
     exchangeReads: 0,
-    exchangeThrows: false,
     events: [],
     left: 0,
     async readWrittenExchange() {
       this.exchangeReads++;
-      if (this.exchangeThrows) {
-        throw new Error('the event log is unreadable');
-      }
       return this.exchange;
     },
     noteEvent(text: string) {
@@ -1234,47 +1228,20 @@ describe('meeting room silence', () => {
     expect(utterances('bot-stop-midanswer')).toHaveLength(2);
   });
 
-  it('survives a throwing sink and a throwing stream write', async () => {
+  it('survives a throwing stream write, and reopens the stream behind it', async () => {
     reset();
     decideQueue.push({ speech: 'Fine.' });
-    const { createMeeting } = await import('../meeting.js');
-    const hostile = {
-      play() {
-        throw new Error('sink down');
-      },
-      cut() {
-        throw new Error('cut down');
-      },
-      setEnabled() {
-        throw new Error('gate down');
-      },
-      setEngaged() {
-        throw new Error('tile down');
-      },
-      isSpeaking(): boolean {
-        throw new Error('probe down');
-      },
-      // Throws rather than rejects: the harsher of the two, and both must be caught.
-      played(): Promise<number> {
-        throw new Error('watermark down');
-      },
-    };
-    const meeting = createMeeting(cfg, {
-      sessionId: 'bot-hostile',
-      sink: hostile,
-      sendChat: async () => {
-        throw new Error('chat down');
-      },
-      record: () => {},
-    });
+    const { meeting, sink } = await makeMeeting('bot-write-throws');
     const a = speakerFor(meeting, ann);
     a.writeThrows = true;
     expect(() => meeting.onAudio(ann, Buffer.alloc(320))).not.toThrow();
+    expect(a.closed).toBe(true);
 
     a.emit({ kind: 'start' });
     a.emit({ kind: 'end', transcript: 'Archie, anything?' });
     await sleep(SETTLED);
-    await expect(meeting.stop()).resolves.toBeUndefined();
+    expect(sink.chunks.length).toBe(1);
+    await meeting.stop();
   });
 
   it('reopens a participant stream that died server-side', async () => {
@@ -2277,23 +2244,6 @@ describe('meeting standing context', () => {
 
     expect(host.exchangeReads).toBe(2);
     expect(lastContextSeen?.written).toEqual(host.exchange);
-    await meeting.stop();
-  });
-
-  it('runs the turn without the exchange when the pull rejects, rather than losing the answer', async () => {
-    // `readWrittenExchange` never rejects by contract — a rejection reaches `answerRoom`, which drops the debt.
-    reset();
-    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
-    decideQueue.push({ speech: 'Bob owns it.' });
-    const host = fakeHost();
-    host.exchangeThrows = true;
-    const { meeting } = await makeMeeting('bot-ctx-throw', {}, { host });
-
-    await oneTurn(meeting, 'Archie, who owns billing?');
-
-    expect(synthTexts).toEqual(['Bob owns it.']);
-    expect(lastContextSeen?.written).toBeUndefined();
-    expect(warn.mock.calls.some((c) => String(c[1]).includes('written exchange'))).toBe(true);
     await meeting.stop();
   });
 

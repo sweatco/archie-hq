@@ -8,7 +8,6 @@ export function renderChannel(id: string, ch: Channel): string {
   }
   if (ch.type === 'cli') return 'CLI session';
   const render = getChannelRenderer(ch.type);
-  // A record can outlive its connector's registration (e.g. unconfigured after a restart);
-  // falls back to the raw id rather than fabricate a status like "ended" or "live".
+  // A record outlives its connector's registration, so an unmounted kind renders as its raw id rather than a fabricated "live"/"ended".
   return render ? render(ch) : id;
 }
