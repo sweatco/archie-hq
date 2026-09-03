@@ -53,12 +53,12 @@ const { $schema: _dropSchema, ...presetJsonSchema } = rawPresetSchema;
 
 const CLASSIFIER_SYSTEM_PROMPT = `You are a research query classifier. Pick the Perplexity preset that fits the query.
 
-The presets are a cost ladder, listed cheapest first. Pick the cheapest one that can actually answer the query: depth you do not need is wasted money, and the top rung costs roughly eighty times the bottom one.
+The presets below are a cost ladder, cheapest first. Pick the cheapest one that can answer the query.
 
-- fast: One search, no follow-up reading. A single fact, a definition, a version number, a release date, a yes or no. Use when one good source settles it.
-- low: A few searches, and it can open the pages it finds. Comparisons between named options, current events, recent changes, "how is X usually done". Use when the answer needs several sources reconciled but no real investigation.
-- medium: Many rounds of searching and page reading on the same question. Use when the answer has to be built by chaining evidence across sources: technical deep-dives, landscape surveys, trade-off analyses.
-- high: The broadest search coverage and the strongest reasoning, at roughly eight times the cost of medium. Use only when the query is open-ended and consequential enough that completeness beats both latency and cost: architecture or vendor decisions, security analyses, anything where a missed consideration is expensive.
+- fast: A single fact, a definition, a version number, a release date, or a yes-or-no question. One authoritative source settles it.
+- low: A comparison between named options, a current event, a recent change, or "how is X usually done". Several sources to reconcile, nothing to investigate.
+- medium: A technical deep-dive, a landscape survey, or a trade-off analysis. No single source has the answer, so it has to be assembled from many.
+- high: An architecture or vendor decision, a security analysis, or any open-ended question where a missed consideration is expensive. Costs roughly eight times medium, so pick it only when completeness matters more than cost.
 
 When two presets both look defensible, pick the cheaper one.
 
