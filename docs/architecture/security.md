@@ -91,7 +91,9 @@ Repo agents work in `git clone --shared` repositories instead of git worktrees. 
 
 This provides true filesystem isolation: agents cannot see or modify each other's git state, and the sandbox only needs to grant read access to `baseRepo/.git/objects` rather than the entire base repository. Multiple agents can check out the same branch simultaneously.
 
-Git identity is configured on each clone at spawn time. Bwrap sandbox artifacts (`.bashrc`, `.gitmodules`, etc.) are excluded via `.git/info/exclude`.
+Git identity is configured on each clone at spawn time, alongside a managed block in the clone's `.git/info/exclude` (`excludeSandboxArtifacts`, `src/connectors/github/repo-clone.ts`). That block exists because Claude Code hardens whatever directory an agent works in: it mounts `/dev/null` over the harness paths it expects to own, which leaves **character devices** behind as untracked entries in the working tree of a customer's repository, where a routine `git add -A` would commit them. Only the `.claude/*` entries observed leaking into a clone are listed, and only untracked ones are affected — exclusion never touches a tracked file, so a repo that legitimately commits `.claude/settings.json` keeps diffing it normally.
+
+The wider read-only surface inside a clone is **not** ours and is not fixed by the above. `.claude/**`, `.git/config`, `.git/config.lock`, `.git/config.worktree` and `.git/hooks` are read-only because of that same Claude Code hardening, applied downstream of everything `buildSandboxConfig` passes; none of those names appear in this codebase or in the pinned Agent SDK package. Two consequences bite in practice: a repo whose tree contains anything under `.claude/` cannot be checked out, merged or rebased by its own agent (it fails part-way with `EROFS`), and `git sparse-checkout` cannot run at all, since it persists `core.sparseCheckout` into the read-only `.git/config`. `<clone>/.git/HEAD` used to be denied by us on top of this and no longer is — see `push_branch` for where that protection moved and why.
 
 **Source:** `src/connectors/github/repo-clone.ts`
 

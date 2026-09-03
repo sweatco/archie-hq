@@ -46,7 +46,7 @@ import { ensureTriggerDataDir } from '../system/trigger-store.js';
 import {
   createRecoverableInputGenerator,
 } from './message-queue.js';
-import { setupSharedClone, cloneExists, type CloneCheckout } from '../connectors/github/repo-clone.js';
+import { setupSharedClone, cloneExists, type CloneCheckout, excludeSandboxArtifacts } from '../connectors/github/repo-clone.js';
 import { configureGitIdentity, getArchieAttributionIdentity } from '../connectors/github/client.js';
 import { buildChannelCanvasPromptSection } from '../connectors/slack/channel-canvas.js';
 import { buildChannelPinsPromptSection } from '../connectors/slack/channel-pins.js';
@@ -500,6 +500,9 @@ Shared folder: ${sharedPath} [READ-ONLY]
       }
 
       await configureGitIdentity(clonePath);
+      // Every spawn, not just fresh clones: clones outlive the change that added this, and the
+      // artifacts appear while the agent works rather than at setup. See excludeSandboxArtifacts.
+      await excludeSandboxArtifacts(clonePath, WORKDIR);
       repoMounts.push({
         github: att.github,
         clonePath,

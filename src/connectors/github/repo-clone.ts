@@ -211,3 +211,195 @@ export async function removeClone(clonePath: string): Promise<void> {
   await fs.rm(clonePath, { recursive: true, force: true });
   logger.system(`Removed clone at ${clonePath}`);
 }
+
+// ---- Sandbox artifact exclusion ----
+
+/**
+ * Harness-owned paths that Claude Code materialises inside whatever directory it works in.
+ *
+ * When a repo agent works in its clone, the CLI hardens that directory: it read-only-binds some
+ * paths and mounts `/dev/null` over others it expects to own. Those `/dev/null` mounts leave
+ * CHARACTER DEVICES behind as untracked entries in the working tree of a customer's repository —
+ * where a routine `git add -A` will happily commit them.
+ *
+ * Only `.claude/*` entries are listed. The root-level artifacts (`.bashrc`, `.gitconfig`,
+ * `.mcp.json`, `CLAUDE.md`, …) appear in an agent's *workspace* but were not observed leaking into
+ * a clone, and several of them are legitimate repository content, so excluding them would risk
+ * hiding a file an agent was legitimately asked to add.
+ *
+ * Two properties make this safe:
+ *   - Exclusion does NOT affect TRACKED files. A repo that already commits `.claude/settings.json`
+ *     (sweatcoin-mobile does) keeps diffing it normally; only untracked entries are hidden.
+ *   - `.git/info/exclude` is local to the clone and never committed, so nothing reaches the repo.
+ *
+ * The residual risk is narrow and called out in the written header: an agent asked to CREATE one of
+ * these exact paths in a repo that does not already track it would find it ignored. The comment
+ * written into the file says how to undo that.
+ */
+const SANDBOX_ARTIFACT_PATTERNS = [
+  '/.claude/settings.json',
+  '/.claude/settings.local.json',
+  '/.claude/launch.json',
+  '/.claude/loop.md',
+  '/.claude/scheduled_tasks.json',
+  '/.claude/hooks',
+  '/.claude/workflows',
+  '/.claude/routines',
+  '/.claude/output-styles',
+  '/.claude/.cc-writes',
+];
+
+const EXCLUDE_HEADER = '# --- Archie: Claude Code sandbox artifacts (managed) ---';
+const EXCLUDE_FOOTER = '# --- end Archie ---';
+
+
+/**
+ * True when `child` is `parent` itself or sits beneath it. Both sides must already be canonical
+ * (`fs.realpath`), because a plain string prefix test is defeated by a `..` segment or a symlink.
+ */
+function isInside(parent: string, child: string): boolean {
+  const p = path.resolve(parent);
+  const c = path.resolve(child);
+  return c === p || c.startsWith(p + path.sep);
+}
+
+/**
+ * Ensure a clone's `.git/info/exclude` hides the sandbox artifacts described above.
+ *
+ * Idempotent, and safe to call on every spawn: the managed block is delimited and rewritten in
+ * place, so repeat calls neither duplicate it nor disturb anything else in the file. Called for
+ * existing clones as well as fresh ones, because clones outlive the change that introduced this.
+ *
+ * `clonePath` is TREATED AS UNTRUSTED, and `allowedRoot` is the anchor that makes that safe. The
+ * path reaches here from an agent's repo attachment, which for a PM-spawned dynamic agent derives
+ * from a `owner/name` identifier that ultimately came from a human's message — so it is exactly the
+ * "user-provided value" CodeQL flags (js/path-injection, alerts 133-135). Unchecked, this function
+ * is an arbitrary-file-overwrite primitive: every `..` in that identifier moves the destination of
+ * a `writeFile` up a directory. Four things have to hold before anything is written, each
+ * canonicalised first so neither `..` nor a symlink can slip past a string comparison:
+ *
+ *   1. the clone resolves to a real existing path inside `allowedRoot`;
+ *   2. its `.git` is a real directory that lives inside the clone (not a file, not a link out);
+ *   3. `.git/info` likewise resolves inside `.git`, after creation;
+ *   4. `.git/info/exclude` is not itself a symlink — `writeFile` would follow it and write through.
+ *
+ * Failing any of them logs and returns rather than writing. `allowedRoot` is passed in rather than
+ * imported from `system/workdir.js` because that module imports this one, and the import would
+ * cycle; it also lets the tests anchor to a temp dir.
+ *
+ * A TOCTOU window remains between the checks and the write — inherent without `openat2`, and
+ * acceptable here: everything inside `allowedRoot` is already Archie-managed, and the alternative
+ * primitive it would yield is one this same process could obtain directly.
+ *
+ * Best-effort throughout. A clone we cannot write this into is not a reason to fail a spawn — the
+ * agent still works, it just keeps the untracked noise — so failures are logged and swallowed.
+ */
+export async function excludeSandboxArtifacts(clonePath: string, allowedRoot: string): Promise<void> {
+  const refuse = (reason: string) =>
+    logger.warn('task', `Refusing to write sandbox-artifact excludes for ${clonePath}: ${reason}`);
+
+  const block = [
+    EXCLUDE_HEADER,
+    '# Claude Code mounts /dev/null over these paths while an agent works here, leaving character',
+    '# devices behind as untracked files. Without this block `git add -A` commits them into the repo.',
+    '# Local to this clone; never committed. Tracked files are unaffected — exclusion only hides',
+    '# untracked entries. If an agent genuinely needs to ADD one of these paths, delete its line.',
+    ...SANDBOX_ARTIFACT_PATTERNS,
+    EXCLUDE_FOOTER,
+  ].join('\n');
+
+  try {
+    // (1) LEXICAL containment first, before the untrusted string touches the filesystem at all.
+    //     `path.resolve` collapses `..` and makes the value absolute; the containment test then
+    //     rejects anything outside the managed root. Doing this before any fs call is what makes
+    //     the guard legible to static analysis (CodeQL's js/path-injection recognises
+    //     resolve-then-prefix-check as a sanitiser, but cannot follow a realpath round-trip), and
+    //     it is better regardless: a syntactically escaping path is now refused without so much as
+    //     a stat, so not even path existence leaks. Every fs call below uses `cloneLexical` or a
+    //     value derived from it — the raw argument is never passed to the filesystem.
+    //
+    //     Written as an INLINE `path.resolve` + `startsWith` comparison rather than a call to
+    //     `isInside` below, deliberately. The logic is identical, but CodeQL's js/path-injection
+    //     recognises a normalise-then-prefix-compare guard applied directly to the tainted value
+    //     and does not follow the same test through a boolean-returning helper — which is why
+    //     alerts 136 and 137 kept landing on whichever `fs` call came first. This is the shape the
+    //     analysis can see; the duplication with `isInside` is the price and is worth paying, since
+    //     the alternative is a suppressed alert on the surface every repo agent shares.
+    const rootLexical = path.resolve(allowedRoot);
+    const cloneLexical = path.resolve(clonePath);
+    if (cloneLexical !== rootLexical && !cloneLexical.startsWith(rootLexical + path.sep)) {
+      return refuse(`resolves to ${cloneLexical}, outside ${rootLexical}`);
+    }
+
+    // (2) CANONICAL containment second. Lexical resolution cannot see symlinks, so a link inside
+    //     the root pointing out would pass step 1 — realpath is what catches it. Both are needed:
+    //     step 1 for what the analyser can follow, step 2 for what the filesystem actually does.
+    const rootReal = await fs.realpath(allowedRoot);
+    let cloneReal: string;
+    try {
+      cloneReal = await fs.realpath(cloneLexical);
+    } catch {
+      return refuse('path does not exist');
+    }
+    if (!isInside(rootReal, cloneReal)) {
+      return refuse(`resolves through a symlink to ${cloneReal}, outside ${rootReal}`);
+    }
+
+    // (3) It must actually be a git clone, with `.git` a real directory inside it.
+    let gitReal: string;
+    try {
+      gitReal = await fs.realpath(path.join(cloneReal, '.git'));
+    } catch {
+      return refuse('no .git directory');
+    }
+    if (!isInside(cloneReal, gitReal) || !(await fs.lstat(gitReal)).isDirectory()) {
+      return refuse('.git is not a directory inside the clone');
+    }
+
+    // (4) `.git/info` must resolve inside `.git` — checked after creation, so a pre-existing
+    //     symlink pointing elsewhere is caught rather than followed.
+    const infoDir = path.join(gitReal, 'info');
+    await fs.mkdir(infoDir, { recursive: true });
+    const infoReal = await fs.realpath(infoDir);
+    if (!isInside(gitReal, infoReal)) {
+      return refuse(`.git/info resolves to ${infoReal}, outside ${gitReal}`);
+    }
+
+    const excludePath = path.join(infoReal, 'exclude');
+
+    // (5) Never write through a symlink.
+    try {
+      if ((await fs.lstat(excludePath)).isSymbolicLink()) {
+        return refuse('.git/info/exclude is a symlink');
+      }
+    } catch {
+      // Absent — it gets created below.
+    }
+
+    let existing = '';
+    try {
+      existing = await fs.readFile(excludePath, 'utf8');
+    } catch {
+      // No exclude file yet — created below.
+    }
+
+    const start = existing.indexOf(EXCLUDE_HEADER);
+    let next: string;
+    if (start === -1) {
+      next = existing.length > 0 && !existing.endsWith('\n')
+        ? `${existing}\n${block}\n`
+        : `${existing}${block}\n`;
+    } else {
+      const endMarker = existing.indexOf(EXCLUDE_FOOTER, start);
+      const end = endMarker === -1 ? existing.length : endMarker + EXCLUDE_FOOTER.length;
+      if (existing.slice(start, end) === block) return; // already correct — no write, no log
+      next = existing.slice(0, start) + block + existing.slice(end);
+    }
+
+    await fs.writeFile(excludePath, next);
+    logger.system(`Excluded Claude Code sandbox artifacts in ${cloneReal}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    logger.warn('task', `Could not write sandbox-artifact excludes for ${clonePath}: ${message}`);
+  }
+}
