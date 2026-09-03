@@ -37,7 +37,7 @@ Calling Agent
   v
 web_research MCP tool
   |
-  ├── 1. classifyPreset (Haiku) → fast-search / pro-search / deep-research
+  ├── 1. classifyPreset (Haiku) → fast / low / medium
   |
   ├── 2. callPerplexity (Agent API) → output_text + citations
   |
@@ -48,11 +48,13 @@ web_research MCP tool
 
 A Haiku model classifies the query using the same `query()` + `outputFormat: json_schema` pattern as triage (`src/system/triage.ts`):
 
-- **fast-search**: Simple factual lookups, definitions, single-entity queries
-- **pro-search**: Multi-faceted questions, comparisons, current events
-- **deep-research**: Comprehensive analysis, market research, technical deep-dives
+- **fast**: Simple factual lookups, definitions, single-entity queries
+- **low**: Multi-faceted questions, comparisons, current events
+- **medium**: Comprehensive analysis, market research, technical deep-dives
 
-Falls back to `pro-search` on any classification failure.
+Falls back to `low` on any classification failure. These are Perplexity's current
+tier-based preset names; they replaced `fast-search`, `pro-search`, and
+`deep-research`, respectively.
 
 ### Step 2: Perplexity Agent API
 

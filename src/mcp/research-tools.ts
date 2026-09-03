@@ -37,23 +37,26 @@ export interface ResearchToolCallbacks {
 // Preset Classification (Haiku)
 // ============================================================================
 
+export const PERPLEXITY_PRESETS = ['fast', 'low', 'medium'] as const;
+export type PerplexityPreset = typeof PERPLEXITY_PRESETS[number];
+
 const PresetSchema = z.object({
-  preset: z.enum(['fast-search', 'pro-search', 'deep-research']),
+  preset: z.enum(PERPLEXITY_PRESETS),
   reasoning: z.string(),
 });
 
 // Mirror the title-generator pattern: strip the JSON Schema dialect URL
 // ($schema) — the SDK's structured-output validator rejects it, which caused
-// classification to silently fail and always fall back to pro-search.
+// classification to silently fail and always use the fallback preset.
 const rawPresetSchema = toJSONSchema(PresetSchema) as Record<string, unknown>;
 const { $schema: _dropSchema, ...presetJsonSchema } = rawPresetSchema;
 
 const CLASSIFIER_SYSTEM_PROMPT = `You are a research query classifier. Analyze the query and select the most appropriate Perplexity search preset.
 
 Presets:
-- fast-search: Simple factual lookups, definitions, single-entity queries, quick answers
-- pro-search: Multi-faceted questions, comparisons, current events, moderate research
-- deep-research: Comprehensive analysis, market research, technical deep-dives, broad strategic topics
+- fast: Simple factual lookups, definitions, single-entity queries, quick answers
+- low: Multi-faceted questions, comparisons, current events, moderate research
+- medium: Comprehensive analysis, market research, technical deep-dives, broad strategic topics
 
 Respond with JSON only.`;
 
@@ -61,9 +64,9 @@ Respond with JSON only.`;
  * Classify query complexity to select the right Perplexity preset.
  * Uses Haiku with structured JSON output (same lean shape as the title
  * generator, which is the proven-working one-shot pattern).
- * Falls back to pro-search on any failure.
+ * Falls back to low on any failure.
  */
-async function classifyPreset(topic: string, context?: string): Promise<string> {
+async function classifyPreset(topic: string, context?: string): Promise<PerplexityPreset> {
   const prompt = `Classify this research query and select the appropriate Perplexity preset.
 
 Research topic: ${topic}${context ? `\nContext: ${context}` : ''}
@@ -109,10 +112,10 @@ Respond with JSON only.`;
       }
     }
 
-    return result?.preset ?? 'pro-search';
+    return result?.preset ?? 'low';
   } catch (error) {
-    logger.warn('research', 'Preset classification failed, defaulting to pro-search', error);
-    return 'pro-search';
+    logger.warn('research', 'Preset classification failed, defaulting to low', error);
+    return 'low';
   }
 }
 
@@ -128,7 +131,7 @@ interface PerplexityResponse {
 /**
  * Call Perplexity Agent API with the selected preset.
  */
-async function callPerplexity(preset: string, input: string): Promise<PerplexityResponse> {
+export async function callPerplexity(preset: PerplexityPreset, input: string): Promise<PerplexityResponse> {
   const apiKey = process.env.PERPLEXITY_API_KEY!;
 
   const response = await fetch('https://api.perplexity.ai/v1/agent', {
@@ -146,7 +149,7 @@ async function callPerplexity(preset: string, input: string): Promise<Perplexity
       // cap — without it the backend rejects the request with
       // "max_output_tokens is required when using Anthropic models" and returns
       // an empty report. Set to the Sonnet output ceiling so we don't truncate
-      // long deep-research reports; overridable via env.
+      // long research reports; overridable via env.
       max_output_tokens: Number(process.env.PERPLEXITY_MAX_OUTPUT_TOKENS) || 64000,
     }),
   });
