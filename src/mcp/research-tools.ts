@@ -37,12 +37,8 @@ export interface ResearchToolCallbacks {
 // Preset Classification (Haiku)
 // ============================================================================
 
-// `xhigh` and `wide-research` are deliberately excluded. `xhigh` answers out of
-// its own sandbox rather than the web — measured at zero citations and $1.54
-// for a single query — which defeats a tool whose output is a sourced report.
-// `wide-research` is asynchronous: it returns a job handle that has to be
-// polled, and its results arrive as downloadable files rather than in the
-// response body.
+// `xhigh` answers from its own sandbox and returns no citations.
+// `wide-research` is async and delivers results as files.
 export const PERPLEXITY_PRESETS = ['fast', 'low', 'medium', 'high'] as const;
 export type PerplexityPreset = typeof PERPLEXITY_PRESETS[number];
 
@@ -51,9 +47,7 @@ const PresetSchema = z.object({
   reasoning: z.string(),
 });
 
-// Mirror the title-generator pattern: strip the JSON Schema dialect URL
-// ($schema) — the SDK's structured-output validator rejects it, which caused
-// classification to silently fail and always use the fallback preset.
+// The SDK's structured-output validator rejects the $schema dialect URL.
 const rawPresetSchema = toJSONSchema(PresetSchema) as Record<string, unknown>;
 const { $schema: _dropSchema, ...presetJsonSchema } = rawPresetSchema;
 
@@ -144,19 +138,8 @@ interface PerplexityResponse {
 export async function callPerplexity(preset: PerplexityPreset, input: string): Promise<PerplexityResponse> {
   const apiKey = process.env.PERPLEXITY_API_KEY!;
 
-  // Send the preset and the input, nothing else. Each preset carries its own
-  // tuned model, step budget, reasoning effort, output ceiling and tool set,
-  // and any field sent alongside a preset overrides that default.
-  //
-  // Do not pin a model here. The `fast` tier rejects Anthropic models outright
-  // (HTTP 400 "invalid request", with no cap value accepted), which is what
-  // broke every query classified as simple. `high` also differs from `medium`
-  // only in model, so pinning one silently turns them into the same request.
-  //
-  // `max_output_tokens` is required only for Anthropic models, so it stays
-  // absent unless PERPLEXITY_MAX_OUTPUT_TOKENS is set to cap report length.
-  const maxOutputTokens = Number(process.env.PERPLEXITY_MAX_OUTPUT_TOKENS) || undefined;
-
+  // Overriding the preset's model makes `fast` return HTTP 400, and makes
+  // `high` identical to `medium`.
   const response = await fetch('https://api.perplexity.ai/v1/agent', {
     method: 'POST',
     headers: {
@@ -167,7 +150,6 @@ export async function callPerplexity(preset: PerplexityPreset, input: string): P
       preset,
       input,
       stream: false,
-      ...(maxOutputTokens ? { max_output_tokens: maxOutputTokens } : {}),
     }),
   });
 

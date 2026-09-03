@@ -7,19 +7,15 @@ function okResponse(payload: unknown) {
 
 describe('Perplexity Agent API integration', () => {
   const originalApiKey = process.env.PERPLEXITY_API_KEY;
-  const originalMaxOutputTokens = process.env.PERPLEXITY_MAX_OUTPUT_TOKENS;
 
   beforeEach(() => {
     process.env.PERPLEXITY_API_KEY = 'test-key';
-    delete process.env.PERPLEXITY_MAX_OUTPUT_TOKENS;
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
     if (originalApiKey === undefined) delete process.env.PERPLEXITY_API_KEY;
     else process.env.PERPLEXITY_API_KEY = originalApiKey;
-    if (originalMaxOutputTokens === undefined) delete process.env.PERPLEXITY_MAX_OUTPUT_TOKENS;
-    else process.env.PERPLEXITY_MAX_OUTPUT_TOKENS = originalMaxOutputTokens;
   });
 
   it('exposes the four search tiers, and not the sandbox or collection presets', () => {
@@ -28,55 +24,21 @@ describe('Perplexity Agent API integration', () => {
     expect(PERPLEXITY_PRESETS).not.toContain('wide-research');
   });
 
-  // Pinning a model is what broke the `fast` tier, which rejects Anthropic
-  // models with HTTP 400 regardless of the output cap. The request must carry
-  // the preset and nothing that overrides it.
-  it('sends only the preset and input, with no model override', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(okResponse({
-      output_text: 'Answer',
-      citations: ['https://example.com/source'],
-    }));
-    vi.stubGlobal('fetch', fetchMock);
-
-    await callPerplexity('fast', 'What changed?');
-
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('https://api.perplexity.ai/v1/agent');
-    const body = JSON.parse(init.body as string);
-    expect(body).toEqual({ preset: 'fast', input: 'What changed?', stream: false });
-    expect(body).not.toHaveProperty('model');
-    expect(body).not.toHaveProperty('max_output_tokens');
-  });
-
-  it('sends every tier without a model override', async () => {
+  it('sends every tier with no fields that override the preset', async () => {
     for (const preset of PERPLEXITY_PRESETS) {
       const fetchMock = vi.fn().mockResolvedValue(okResponse({ output_text: 'x', citations: [] }));
       vi.stubGlobal('fetch', fetchMock);
 
       await callPerplexity(preset, 'q');
 
-      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-      const body = JSON.parse(init.body as string);
-      expect(body.preset).toBe(preset);
-      expect(body).not.toHaveProperty('model');
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('https://api.perplexity.ai/v1/agent');
+      expect(JSON.parse(init.body as string)).toEqual({ preset, input: 'q', stream: false });
     }
   });
 
-  it('caps output length only when PERPLEXITY_MAX_OUTPUT_TOKENS is set', async () => {
-    process.env.PERPLEXITY_MAX_OUTPUT_TOKENS = '16384';
-    const fetchMock = vi.fn().mockResolvedValue(okResponse({ output_text: 'x', citations: [] }));
-    vi.stubGlobal('fetch', fetchMock);
-
-    await callPerplexity('medium', 'q');
-
-    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(init.body as string).max_output_tokens).toBe(16384);
-  });
-
-  // Shape observed from the live Agent API: citations arrive both as
-  // `search_results` items and as `url_citation` annotations on the message.
-  it('parses text and dedupes citations from the live response envelope', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(okResponse({
+  it('parses text and dedupes citations from the response envelope', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse({
       output: [
         {
           type: 'search_results',
@@ -99,8 +61,7 @@ describe('Perplexity Agent API integration', () => {
           ],
         },
       ],
-    }));
-    vi.stubGlobal('fetch', fetchMock);
+    })));
 
     const result = await callPerplexity('high', 'q');
 
@@ -110,6 +71,18 @@ describe('Perplexity Agent API integration', () => {
       'https://example.com/b',
       'https://example.com/c',
     ]);
+  });
+
+  it('falls back to the top-level text and citations', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse({
+      output_text: 'Answer',
+      citations: ['https://example.com/source'],
+    })));
+
+    await expect(callPerplexity('low', 'q')).resolves.toEqual({
+      output_text: 'Answer',
+      citations: ['https://example.com/source'],
+    });
   });
 
   it('surfaces the status and body when the Agent API rejects the request', async () => {

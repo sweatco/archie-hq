@@ -172,7 +172,6 @@ See [Bedrock Guardrails Setup Guide](../guides/bedrock-guardrails-setup.md) for 
 ## Environment Variables
 
 - `PERPLEXITY_API_KEY`: Required for the Perplexity Agent API
-- `PERPLEXITY_MAX_OUTPUT_TOKENS`: Optional — caps report length. Unset by default, which lets each preset use its own output ceiling
 - `ANTHROPIC_API_KEY`: Required for the Haiku preset classifier
 - `BEDROCK_GUARDRAIL_ID`: Optional — enables input/output scanning
 - `BEDROCK_GUARDRAIL_VERSION`: Optional — defaults to `DRAFT`
