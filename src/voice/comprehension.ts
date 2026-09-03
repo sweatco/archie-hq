@@ -24,9 +24,13 @@ const MAX_ERROR_BODY = 500;
 const ADDRESSING_TIMEOUT_MS = 5_000;
 const ADDRESSING_MAX_TOKENS = 64;
 
-/** Speaking has no deadline — if the room never goes quiet, Archie never speaks. Only stops a hung connection holding the owe flag open. `SPEAKING_MAX_TOKENS` is headroom, not a target: `voice-speaking.md` sets no length cap. */
+/**
+ * Speaking has no deadline — if the room never goes quiet, Archie never speaks. Only stops a hung connection holding the owe flag open.
+ *
+ * `SPEAKING_MAX_TOKENS` is headroom, not a target: `voice-speaking.md` sets no length cap. It has to cover a reasoning pass *and* the answer behind it, since native reasoning tokens are billed and capped as completion tokens — a cap the reasoning alone can reach truncates the spoken answer.
+ */
 const SPEAKING_TIMEOUT_MS = 15_000;
-const SPEAKING_MAX_TOKENS = 600;
+const SPEAKING_MAX_TOKENS = 2000;
 
 /**
  * Runs once, at join, with nobody waiting — the room owes nothing until somebody says the name — so this deadline can be generous, only stopping a hung connection from leaving the promise pending.
@@ -64,14 +68,6 @@ function markerOf(line: string): TailMarker | null {
 }
 
 /**
- * Tags around reasoning the agent chooses not to speak — see {@link Response.thought} for the content, {@link stripThinkBlocks} for how it's found.
- *
- * Unlike TAIL_MARKERS, not line-anchored: opens/closes mid-line, can bracket a single word, and speech resumes once closed. Optional, never forced — see `voice-speaking.md`.
- */
-const THINK_OPEN = '<think>';
-const THINK_CLOSE = '</think>';
-
-/**
  * What to say, and optionally what to post.
  *
  * Shadows the global `Response` (this module calls `fetch` too) — no conflict today, but a future annotated fetch result should use `globalThis.Response`.
@@ -86,7 +82,7 @@ export interface Response {
   /** Present and `true` when the reply carried a `LEAVE:` marker. Unlike `pm`, doesn't survive a reply with nothing spoken — see {@link parseReply}. Not permission to leave itself: `meeting.ts`'s `routeLeave` acts on it only once the speech above has fully reached the room. */
   leave?: boolean;
   /**
-   * Concatenated `<think>...</think>` block content, in order, joined by blank lines. Absent when none. Never spoken or posted — for the activation log (`recordAnswer` in `meeting.ts`).
+   * The model's own reasoning for this turn, returned on its own channel rather than in the reply text, trimmed. Absent when it reasoned about nothing. Never spoken or posted — for the activation log (`recordAnswer` in `meeting.ts`).
    *
    * Survives even when nothing is spoken, like `pm` (see {@link Decision.silence}): a silent turn's reasoning is worth keeping too.
    */
@@ -107,7 +103,7 @@ export type Decision =
       outcome: 'silence';
       /** A `PM:` question riding on a reply with nothing spoken — survives when `CHAT:` and `LEAVE:` don't, see {@link parseReply}. Fire-and-forget, same as {@link Response.pm}. Absent for ordinary silence. */
       pm?: string;
-      /** Reasoning behind the silence, when the reply carried a `<think>` block — same shape as {@link Response.thought}. Absent when the reply carried no block. */
+      /** Reasoning behind the silence, when the model produced any — same shape as {@link Response.thought}. Absent when it reasoned about nothing. */
       thought?: string;
     }
   | {
@@ -183,7 +179,7 @@ export async function wasAddressed(
  *
  * Called when the room has gone quiet and the bot owes it a response — the whole conversation since being addressed goes in, and the model decides what the room settled on, which can come back as `silence`.
  *
- * A reply may carry trailing `CHAT:`, `PM:`, `LEAVE:` lines and `<think>...</think>` blocks — see {@link Response}, {@link parseReply}. `onSentence` fires per complete sentence, sanitised spoken text only, before the rest is written.
+ * A reply may carry trailing `CHAT:`, `PM:`, `LEAVE:` lines — see {@link Response}, {@link parseReply}. The model's reasoning arrives on its own channel, never in the reply text, and lands on the decision as `thought`. `onSentence` fires per complete sentence, sanitised spoken text only, before the rest is written.
  */
 export async function decideResponse(
   cfg: VoiceConfig,
@@ -222,6 +218,7 @@ export async function decideResponse(
       user: buildSpeakingUserMessage(transcript, opts.consults, opts.context),
       maxTokens: SPEAKING_MAX_TOKENS,
       timeoutMs: SPEAKING_TIMEOUT_MS,
+      reasoning: true,
     },
     (delta) => {
       const before = emitter?.emitted ?? 0;
@@ -245,7 +242,11 @@ export async function decideResponse(
 
   // Parsed before the emitter flushes, so a reply that's nothing can never have its tail spoken — gating already prevents it; this ordering makes it impossible, not just unlikely.
   const decided = parseReply(streamed.text);
+  const thought = streamed.reasoning.trim();
   if (decided.outcome === 'silence') {
+    if (thought.length > 0) {
+      decided.thought = thought;
+    }
     if ((emitter?.emitted ?? 0) > 0) {
       // Gating bug: something was spoken for a reply that resolves to silence.
       logger.error(
@@ -257,6 +258,9 @@ export async function decideResponse(
     logger.debug(LOG, `Decided to say nothing in ${elapsed}ms${pmNote}`);
     return decided;
   } else {
+    if (thought.length > 0) {
+      decided.response.thought = thought;
+    }
     emitter?.finish();
     const detail = decided.response.chat === undefined ? '' : ` plus ${decided.response.chat.length} chars of chat`;
     const first = firstSentenceAt === null ? '' : `, first sentence at ${firstSentenceAt}ms`;
@@ -471,21 +475,16 @@ type ParsedReply = Extract<Decision, { outcome: 'speak' | 'silence' }>;
  *  - `PM:` survives — fire-and-forget, never reaches the room.
  *  - `CHAT:`/`LEAVE:` don't — nothing to attach to with no speech (`LEAVE:` via `routeLeave`). Discarded, `CHAT:` with a warning.
  *
- * `<think>...</think>` blocks strip first ({@link stripThinkBlocks}) so a marker inside one isn't mistaken for real.
+ * Reasoning never reaches here: it arrives on its own channel and {@link decideResponse} attaches it to whichever arm this returns.
  *
- * Exported with {@link stripThinkBlocks}, {@link SentenceEmitter} so `tools/voice-cases/` shares this parser.
+ * Exported with {@link SentenceEmitter} so `tools/voice-cases/` shares this parser.
  */
 export function parseReply(raw: string): ParsedReply {
-  const { visible, thought, unclosed } = stripThinkBlocks(raw, true);
-  if (unclosed) {
-    logger.warn(LOG, 'Speaking reply carried an unclosed <think> block — discarding the remainder');
-  }
-
-  const lines = visible.split(/\r?\n/);
+  const lines = raw.split(/\r?\n/);
   // The first line starting with a known marker ends the spoken region; everything from there splits into one section per marker.
   const tailStart = lines.findIndex((line) => markerOf(line) !== null);
 
-  const spokenSource = tailStart === -1 ? visible : lines.slice(0, tailStart).join('\n');
+  const spokenSource = tailStart === -1 ? raw : lines.slice(0, tailStart).join('\n');
   const sections = tailStart === -1 ? new Map<TailMarker, string>() : splitMarkerSections(lines.slice(tailStart));
 
   const speech = toSpeech(spokenSource);
@@ -506,9 +505,6 @@ export function parseReply(raw: string): ParsedReply {
     if (pm.length > 0) {
       silence.pm = pm;
     }
-    if (thought.length > 0) {
-      silence.thought = thought;
-    }
     return silence;
   }
 
@@ -522,9 +518,6 @@ export function parseReply(raw: string): ParsedReply {
   }
   if (leave) {
     response.leave = true;
-  }
-  if (thought.length > 0) {
-    response.thought = thought;
   }
   return { outcome: 'speak', response };
 }
@@ -557,63 +550,6 @@ function splitMarkerSections(tailLines: string[]): Map<TailMarker, string> {
   }
   flush();
   return sections;
-}
-
-/**
- * Removes every `<think>...</think>` block from `text` — returns what's left as speech, the removed content concatenated (for {@link Response.thought}), and whether an opening tag was left dangling.
- *
- * Pure, side-effect free: logging is the caller's, so {@link parseReply} warns once despite `SentenceEmitter` rerunning this on the same text as the stream closes.
- *
- * `final` (more text possible or not) flips two verdicts:
- *
- *  - Mid-stream: a trailing partial opening tag (`<thi`, one char from `<think>`) is held out of `visible`; same for a block opened but not yet closed.
- *  - Final: a partial tag was never completing — kept as text. An unclosed block is discarded, with everything after it.
- *
- * Blocks don't nest — the first `</think>` closes the opening tag.
- *
- * Exported for the case harness — see {@link parseReply}'s doc.
- */
-export function stripThinkBlocks(
-  text: string,
-  final: boolean,
-): { visible: string; thought: string; unclosed: boolean } {
-  let visible = '';
-  const thoughts: string[] = [];
-  let cursor = 0;
-  let unclosed = false;
-
-  for (;;) {
-    const openAt = text.indexOf(THINK_OPEN, cursor);
-    if (openAt === -1) {
-      // No more complete opening tags. What's left might still end in a partial one a later delta could complete.
-      const rest = text.slice(cursor);
-      const risky = final ? 0 : partialOpenTagAtEnd(rest);
-      visible += risky > 0 ? rest.slice(0, rest.length - risky) : rest;
-      break;
-    }
-    visible += text.slice(cursor, openAt);
-    const closeAt = text.indexOf(THINK_CLOSE, openAt + THINK_OPEN.length);
-    if (closeAt === -1) {
-      unclosed = final;
-      break;
-    }
-    thoughts.push(text.slice(openAt + THINK_OPEN.length, closeAt));
-    cursor = closeAt + THINK_CLOSE.length;
-  }
-
-  return { visible, thought: thoughts.join('\n\n'), unclosed };
-}
-
-/**
- * Length of a trailing run of `text` that's a genuine prefix of `<think>` — zero if not. `<thi` may be one delta from a real opening tag, unsafe to hand over as speech; `<xyz` is safe. Longest match wins — a complete `<think>` is found by {@link stripThinkBlocks}'s own `indexOf` first.
- */
-function partialOpenTagAtEnd(text: string): number {
-  for (let len = Math.min(text.length, THINK_OPEN.length - 1); len > 0; len--) {
-    if (text.endsWith(THINK_OPEN.slice(0, len))) {
-      return len;
-    }
-  }
-  return 0;
 }
 
 /**
@@ -654,11 +590,10 @@ function looksUnfinished(text: string): boolean {
 /**
  * Turns a reply arriving token by token into complete sentences, handing each out the moment it's whole so speech can start before generation ends.
  *
- * Three things never escape through here, held back structurally, not filtered afterward:
+ * Two things never escape through here, held back structurally, not filtered afterward:
  *
  *  - **The `SILENCE` token** ({@link isSilenceToken}) — unrecognisable from a prefix, so nothing emits while the text so far could still become it.
  *  - **A tail marker's payload** (`CHAT:`, `PM:`, `LEAVE:` — {@link TAIL_MARKERS}) — a line is withheld while it could still open one: a partial marker (`CHA`) or a complete one whose line hasn't ended.
- *  - **A `<think>...</think>` block** ({@link stripThinkBlocks}, called every drain) — can open/close anywhere, so a partial opening tag and an unclosed block's inside are held back until resolved.
  *
  * Exported for the case harness — see {@link parseReply}'s doc.
  */
@@ -687,18 +622,15 @@ export class SentenceEmitter {
   }
 
   private drain(final: boolean): void {
-    // Removed first, same reason `parseReply` does: a marker-looking line inside one must never be mistaken for real, and nothing inside counts toward the silence check below.
-    const { visible } = stripThinkBlocks(this.raw, final);
-
     // Order matters: the region must be computed first — the marker is what tells us speech is complete ahead of the stream ending.
-    const region = this.speechRegion(visible, final);
+    const region = this.speechRegion(this.raw, final);
     const settled = final || this.closed;
 
     if (settled) {
       if (isSilenceToken(region)) {
         return;
       }
-    } else if (SILENCE_TOKEN.startsWith(normaliseForSilence(visible))) {
+    } else if (SILENCE_TOKEN.startsWith(normaliseForSilence(this.raw))) {
       return; // Still capable of turning out to be the silence token.
     }
 
@@ -733,12 +665,12 @@ export class SentenceEmitter {
   }
 
   /**
-   * The part of the reply that is definitely speech and won't be revised. Takes `visible`, already stripped of `<think>` blocks.
+   * The part of the reply that is definitely speech and won't be revised.
    *
    * Sets {@link closed} when a marker turns up, so the last spoken sentence goes out on the marker rather than waiting for the stream to finish. The first line with *any* known marker ends the region; `parseReply` splits the tail by marker once whole.
    */
-  private speechRegion(visible: string, final: boolean): string {
-    const lines = visible.split('\n');
+  private speechRegion(text: string, final: boolean): string {
+    const lines = text.split('\n');
     // Mid-stream the final element is still being written, so it is not settled.
     const settledCount = final ? lines.length : lines.length - 1;
 
@@ -827,6 +759,8 @@ interface ModelCall {
   user: string;
   maxTokens: number;
   timeoutMs: number;
+  /** Ask for the model's native reasoning, which comes back on its own channel. Only the speaking call does; the others send no such field at all. */
+  reasoning?: boolean;
 }
 
 /**
@@ -853,7 +787,7 @@ function requestHeaders(cfg: VoiceConfig): Record<string, string> {
 }
 
 function requestBody(args: ModelCall, stream: boolean): Record<string, unknown> {
-  return {
+  const body: Record<string, unknown> = {
     model: MODEL,
     // Both names accepted, behave identically (verified); this is current, `max_tokens` is the deprecated alias.
     max_completion_tokens: args.maxTokens,
@@ -866,6 +800,11 @@ function requestBody(args: ModelCall, stream: boolean): Record<string, unknown> 
       { role: 'user', content: args.user },
     ],
   };
+  if (args.reasoning === true) {
+    // An on switch, not a dial: gemma defaults to `none`, and `low`/`medium`/`high` are currently equivalent once enabled.
+    body.reasoning_effort = 'medium';
+  }
+  return body;
 }
 
 /** Text out of a non-streaming reply. Empty when the reply carried none. */
@@ -877,15 +816,21 @@ function textFrom(payload: unknown): string {
     .trim();
 }
 
-/** Text out of one SSE `data:` payload, prefix stripped. Null for every non-text frame (keep-alives, role/usage frames, the end-of-stream sentinel, any later frame type) — Cerebras's versioning policy requires these be ignored, not treated as a failure. */
-function deltaFrom(payload: string): string | null {
+/** What one streamed frame carries: `text` is what the room hears, `reasoning` is what it never does. Either, or both. */
+interface StreamDelta {
+  text?: string;
+  reasoning?: string;
+}
+
+/** The content and reasoning out of one SSE `data:` payload, prefix stripped. Null for every frame carrying neither (keep-alives, role/usage frames, the end-of-stream sentinel, any later frame type) — Cerebras's versioning policy requires these be ignored, not treated as a failure. */
+function deltaFrom(payload: string): StreamDelta | null {
   // The documented end-of-stream sentinel, not JSON. Checked before the parse so it's a known frame, not an unreadable one.
   if (payload === '[DONE]') {
     return null;
   }
 
   let event: {
-    choices?: Array<{ delta?: { content?: string } }>;
+    choices?: Array<{ delta?: { content?: string; reasoning?: string } }>;
     message?: string;
     code?: string;
   };
@@ -900,7 +845,20 @@ function deltaFrom(payload: string): string | null {
     logger.error(LOG, `Cerebras stream error: ${event.code ?? 'unknown'} ${event.message}`.trim());
     return null;
   }
-  return event.choices?.[0]?.delta?.content ?? null;
+
+  const delta = event.choices?.[0]?.delta;
+  const frame: StreamDelta = {};
+  if (typeof delta?.content === 'string') {
+    frame.text = delta.content;
+  }
+  if (typeof delta?.reasoning === 'string') {
+    frame.reasoning = delta.reasoning;
+  }
+  if (frame.text === undefined && frame.reasoning === undefined) {
+    return null;
+  } else {
+    return frame;
+  }
 }
 
 function modelRequest(args: ModelCall, stream: boolean): RequestInit {
@@ -918,7 +876,7 @@ function modelRequest(args: ModelCall, stream: boolean): RequestInit {
  * The reason travels rather than being logged and dropped: it ends up in the activation-log row. "The decision failed" and "cerebras returned 529" are the same event to the room but very different ones to the corpus — naming the vendor lets a run of failures read as a vendor problem, not a prompt one.
  */
 type StreamOutcome =
-  | { ok: true; text: string }
+  | { ok: true; text: string; reasoning: string }
   | { ok: false; why: string };
 
 /** A failure worth putting in a log row: the class, then the detail. */
@@ -932,7 +890,9 @@ function describeError(error: unknown): string {
 }
 
 /**
- * Stream a reply, handing each delta to `onDelta` as it lands. Returns the complete text, or why it failed.
+ * Stream a reply, handing each content delta to `onText` as it lands. Returns the complete text and whatever reasoning came alongside it, or why it failed.
+ *
+ * Reasoning deltas are accumulated here and never handed on: nothing downstream may speak them, and the whole of it arrives before the first content token anyway.
  *
  * A sentence handed over the moment it's complete moves first-sound off the tail of full generation and onto the tail of the first sentence.
  *
@@ -942,7 +902,7 @@ function describeError(error: unknown): string {
  */
 async function streamModel(
   args: ModelCall,
-  onDelta: (text: string) => void,
+  onText: (text: string) => void,
 ): Promise<StreamOutcome> {
   const who = VENDOR;
   try {
@@ -962,6 +922,7 @@ async function streamModel(
     const decoder = new TextDecoder();
     let buffer = '';
     let text = '';
+    let reasoning = '';
     try {
       for (;;) {
         const { done, value } = await reader.read();
@@ -971,11 +932,16 @@ async function streamModel(
         buffer += decoder.decode(value, { stream: true });
         let cut = buffer.indexOf('\n');
         while (cut !== -1) {
-          const delta = dataFrameFrom(buffer.slice(0, cut));
+          const frame = dataFrameFrom(buffer.slice(0, cut));
           buffer = buffer.slice(cut + 1);
-          if (delta !== null) {
-            text += delta;
-            onDelta(delta);
+          if (frame !== null) {
+            if (frame.reasoning !== undefined) {
+              reasoning += frame.reasoning;
+            }
+            if (frame.text !== undefined) {
+              text += frame.text;
+              onText(frame.text);
+            }
           }
           cut = buffer.indexOf('\n');
         }
@@ -985,10 +951,11 @@ async function streamModel(
     }
 
     if (text.trim().length === 0) {
+      // Reasoning with no answer behind it is the same failure as an empty stream: there is nothing to say.
       logger.warn(LOG, `${args.label}: the ${who} stream carried no text`);
       return { ok: false, why: `${who} streamed no text` };
     } else {
-      return { ok: true, text };
+      return { ok: true, text, reasoning };
     }
   } catch (error) {
     // The one failure that can land *after* deltas were handed on: a timeout or dropped connection mid-reply. See {@link Decision}.
@@ -997,8 +964,8 @@ async function streamModel(
   }
 }
 
-/** Unwrap one SSE line to its `data:` payload and ask {@link deltaFrom} what text is in it, if any. */
-function dataFrameFrom(line: string): string | null {
+/** Unwrap one SSE line to its `data:` payload and ask {@link deltaFrom} what is in it, if anything. */
+function dataFrameFrom(line: string): StreamDelta | null {
   const trimmed = line.trimEnd();
   if (!trimmed.startsWith('data:')) {
     return null;

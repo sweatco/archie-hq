@@ -135,6 +135,24 @@ describe('the request Cerebras is sent', () => {
     expect(seen[0].body.max_completion_tokens).toBe(64);
   });
 
+  it('asks for native reasoning on the speaking call and on nothing else', async () => {
+    stubJson({ choices: [{ message: { content: '{"addressed": true}' } }] });
+    await gate(onCerebras);
+    // Absent, not `none`: the gate's request has to stay byte-for-byte what it was before reasoning existed anywhere here.
+    expect('reasoning_effort' in seen[0].body).toBe(false);
+
+    const reply = openStream(cerebrasDelta);
+    const pending = speak(onCerebras);
+    reply.push('Done.');
+    await settle();
+    reply.close();
+    await pending;
+
+    expect(seen[1].body.reasoning_effort).toBe('medium');
+    // Reasoning tokens are spent out of this cap, so it has to clear a whole reasoning pass and the answer behind it.
+    expect(seen[1].body.max_completion_tokens).toBe(2000);
+  });
+
   it('keeps both model calls on the one endpoint', async () => {
     // Splitting the two calls would make the log's latency figures unreadable — a slow turn could be either call.
     stubJson({ choices: [{ message: { content: '{"addressed": false}' } }] });

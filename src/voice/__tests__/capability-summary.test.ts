@@ -122,6 +122,13 @@ describe('summariseCapabilities — what it sends', () => {
     expect(seen[0].body.max_completion_tokens).toBe(900);
   });
 
+  it('asks for no reasoning at all — the key is absent, not set to a low effort', async () => {
+    // Rewriting a deployment's own self-description is not a call worth deliberating over, and reasoning tokens would come out of this same cap.
+    stubReply('- read the code');
+    await summarise();
+    expect('reasoning_effort' in seen[0].body).toBe(false);
+  });
+
   it('says (none) rather than dropping a source a deployment does not have', async () => {
     // (none) flags an empty source as intentional; omitting the tag wouldn't.
     stubReply('- read the code');

@@ -48,7 +48,7 @@ interface Decision {
   pm?: string;
   /** A `LEAVE:` marker. */
   leave?: boolean;
-  /** A `<think>` block's content. */
+  /** The model's own native reasoning for the turn. */
   thought?: string;
   sentenceAt?: number[];
   fail?: boolean;

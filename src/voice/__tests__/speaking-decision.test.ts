@@ -4,7 +4,6 @@ vi.mock('../../utils/prompt-loader.js', () => ({
   loadPrompt: async () => 'SYSTEM PROMPT',
 }));
 
-import { logger } from '../../system/logger.js';
 import { decideResponse } from '../comprehension.js';
 
 const cfg = {
@@ -22,6 +21,12 @@ function sseDelta(text: string): string {
   return `data: ${JSON.stringify(event)}\n`;
 }
 
+/** The same frame carrying native reasoning instead of content — a separate field, never mixed into the text. */
+function sseReasoning(text: string): string {
+  const event = { choices: [{ delta: { reasoning: text }, index: 0 }] };
+  return `data: ${JSON.stringify(event)}\n`;
+}
+
 // Stub stands in for `fetch` only; the real SSE reader runs over a real stream — the only way timing assertions mean anything.
 function openReply() {
   let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
@@ -34,6 +39,9 @@ function openReply() {
   return {
     push(text: string): void {
       controller?.enqueue(encoder.encode(sseDelta(text)));
+    },
+    think(text: string): void {
+      controller?.enqueue(encoder.encode(sseReasoning(text)));
     },
     fail(why: string): void {
       controller?.error(new Error(why));
@@ -247,76 +255,49 @@ describe('the speaking decision', () => {
     expect(sentences).toEqual([]);
   });
 
-  // <think> can appear anywhere, not just the start — the agent may say something short first ("let me check") while reasoning plays.
-  // Both parsers share `stripThinkBlocks`, like `markerOf` for CHAT:/PM:/LEAVE: — checked for agreement here too.
+  // Reasoning arrives on its own field, wholly ahead of the first content token — nothing in the spoken text has to be recognised or removed.
 
-  it('never speaks what is inside a think block, and joins the text around it into one utterance', async () => {
+  it('never hands a reasoning frame to the synthesizer, and carries it on the spoken decision instead', async () => {
     const reply = openReply();
     const sentences: string[] = [];
     const pending = start((text) => sentences.push(text));
 
-    const text = 'Let me check. <think>I bet it is Ann but should verify</think>It was John who deployed it.';
-    for (const ch of text) {
+    for (const ch of 'I bet it is Ann but should verify. ') {
+      reply.think(ch);
+      await settle();
+      // Reasoning is not speech at any length: no prefix of it may reach the room.
+      expect(sentences).toEqual([]);
+    }
+
+    for (const ch of 'It was John who deployed it.') {
       reply.push(ch);
       await settle();
     }
     reply.close();
     const decision = await pending;
 
-    // Must act like it isn't there — no gap, boundary, or trace of the reasoning in streamed or final speech.
-    expect(sentences).toEqual(['Let me check.', 'It was John who deployed it.']);
+    expect(sentences).toEqual(['It was John who deployed it.']);
     expect(decision).toEqual({
       outcome: 'speak',
       response: {
-        speech: 'Let me check. It was John who deployed it.',
-        thought: 'I bet it is Ann but should verify',
+        speech: 'It was John who deployed it.',
+        thought: 'I bet it is Ann but should verify.',
       },
     });
   });
 
-  it('does not leak a partial <think> opening tag while more of it could still arrive', async () => {
+  it('does not let a marker-looking line in the reasoning open a section', async () => {
     const reply = openReply();
     const sentences: string[] = [];
     const pending = start((text) => sentences.push(text));
 
-    for (const ch of 'Let me check. <thi') {
-      reply.push(ch);
-      await settle();
-    }
-    // A partial `<thi` might be one character from a real `<think>`; must never leak, like a partial CHAT:/PM:/LEAVE: line.
-    expect(sentences).toEqual(['Let me check.']);
-
-    for (const ch of 'nk>a guess, but which one</think> Here it is.') {
-      reply.push(ch);
-      await settle();
-    }
+    reply.think('maybe I should use CHAT: for this');
+    reply.push('Sure, here is the summary.');
+    await settle();
     reply.close();
     const decision = await pending;
 
-    expect(sentences).toEqual(['Let me check.', 'Here it is.']);
-    expect(decision).toEqual({
-      outcome: 'speak',
-      response: {
-        speech: 'Let me check. Here it is.',
-        thought: 'a guess, but which one',
-      },
-    });
-  });
-
-  it('does not let a marker-looking line inside a think block open a section', async () => {
-    const reply = openReply();
-    const sentences: string[] = [];
-    const pending = start((text) => sentences.push(text));
-
-    const text = '<think>maybe I should use CHAT: for this</think>Sure, here is the summary.';
-    for (const ch of text) {
-      reply.push(ch);
-      await settle();
-    }
-    reply.close();
-    const decision = await pending;
-
-    // A marker-looking line inside the block must never open a section.
+    // Markers are looked for in the spoken text alone — the reasoning channel never reaches the parser.
     expect(decision).toEqual({
       outcome: 'speak',
       response: {
@@ -327,36 +308,31 @@ describe('the speaking decision', () => {
     expect(sentences).toEqual(['Sure, here is the summary.']);
   });
 
-  it('discards an unclosed think block at the end of the reply, with a warning, instead of speaking it', async () => {
-    const warnings = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+  it('reports reasoning with no answer behind it as failed, not as silence', async () => {
     const reply = openReply();
     const sentences: string[] = [];
     const pending = start((text) => sentences.push(text));
 
-    const text = "Here's what I found. <think>but wait, the numbers do not add up, let me reconsider";
-    for (const ch of text) {
-      reply.push(ch);
-      await settle();
-    }
+    reply.think('there is not enough in the transcript to answer this yet');
+    await settle();
     reply.close();
     const decision = await pending;
 
-    // Half-formed reasoning aloud is worse than a shorter answer — dangling block dropped outright, not carried onto `thought`.
-    expect(sentences).toEqual(["Here's what I found."]);
-    expect(decision).toEqual({
-      outcome: 'speak',
-      response: { speech: "Here's what I found." },
-    });
-    expect(warnings.mock.calls.some((call) => String(call[1]).includes('unclosed <think>'))).toBe(true);
+    // A turn that thought and then said nothing at all ran out; choosing silence is a spoken `SILENCE`, and the two must not read the same.
+    expect(decision.outcome).toBe('failed');
+    if (decision.outcome === 'failed') {
+      expect(decision.handedOver).toBe(0);
+    }
+    expect(sentences).toEqual([]);
   });
 
-  it('resolves to silence, with a warning, when the whole reply is an unclosed think block', async () => {
-    const warnings = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+  it('still delivers a PM: question when the reply is reasoning and that line alone, and keeps the thought too', async () => {
     const reply = openReply();
     const sentences: string[] = [];
     const pending = start((text) => sentences.push(text));
 
-    for (const ch of '<think>I am not actually sure this is even the right question') {
+    reply.think('I should ask the PM before guessing');
+    for (const ch of 'PM: is the sprint scope still frozen?') {
       reply.push(ch);
       await settle();
       expect(sentences).toEqual([]);
@@ -364,18 +340,22 @@ describe('the speaking decision', () => {
     reply.close();
     const decision = await pending;
 
-    // Unclosed means discarded — no `thought` carried either, unlike the closed-block cases below.
-    expect(decision).toEqual({ outcome: 'silence' });
+    // PM: is fire-and-forget, surviving an empty spoken region — reasoning in front must not change that (parseReply's doc).
+    expect(decision).toEqual({
+      outcome: 'silence',
+      pm: 'is the sprint scope still frozen?',
+      thought: 'I should ask the PM before guessing',
+    });
     expect(sentences).toEqual([]);
-    expect(warnings.mock.calls.some((call) => String(call[1]).includes('unclosed <think>'))).toBe(true);
   });
 
-  it('carries the thought onto a silence outcome when the reply is only a (closed) think block', async () => {
+  it('keeps the thought on a decision to say nothing at all', async () => {
     const reply = openReply();
     const sentences: string[] = [];
     const pending = start((text) => sentences.push(text));
 
-    for (const ch of '<think>there is not enough in the transcript to answer this yet</think>') {
+    reply.think('nothing has changed since last time');
+    for (const ch of 'SILENCE') {
       reply.push(ch);
       await settle();
       expect(sentences).toEqual([]);
@@ -386,61 +366,19 @@ describe('the speaking decision', () => {
     // Unlike CHAT:/LEAVE:, thought survives nothing spoken — `Decision.silence`'s own field, like `pm`'s.
     expect(decision).toEqual({
       outcome: 'silence',
-      thought: 'there is not enough in the transcript to answer this yet',
-    });
-    expect(sentences).toEqual([]);
-  });
-
-  it('still delivers a PM: question when the only thing before it is a think block, and keeps the thought too', async () => {
-    const reply = openReply();
-    const sentences: string[] = [];
-    const pending = start((text) => sentences.push(text));
-
-    const text = '<think>I should ask the PM before guessing</think>PM: is the sprint scope still frozen?';
-    for (const ch of text) {
-      reply.push(ch);
-      await settle();
-      expect(sentences).toEqual([]);
-    }
-    reply.close();
-    const decision = await pending;
-
-    // PM: is fire-and-forget, surviving an empty spoken region — a think block in front must not change that (parseReply's doc).
-    expect(decision).toEqual({
-      outcome: 'silence',
-      pm: 'is the sprint scope still frozen?',
-      thought: 'I should ask the PM before guessing',
-    });
-    expect(sentences).toEqual([]);
-  });
-
-  it('keeps withholding correctly for a SILENCE token that follows a closed think block, and still keeps the thought', async () => {
-    const reply = openReply();
-    const sentences: string[] = [];
-    const pending = start((text) => sentences.push(text));
-
-    for (const ch of '<think>nothing has changed since last time</think>SILENCE') {
-      reply.push(ch);
-      await settle();
-      expect(sentences).toEqual([]);
-    }
-    reply.close();
-    const decision = await pending;
-
-    expect(decision).toEqual({
-      outcome: 'silence',
       thought: 'nothing has changed since last time',
     });
     expect(sentences).toEqual([]);
   });
 
-  it('agrees between the streamed sentences and the final parse when a think block sits among CHAT/PM/LEAVE', async () => {
+  it('agrees between the streamed sentences and the final parse when reasoning precedes CHAT/PM/LEAVE', async () => {
     const reply = openReply();
     const sentences: string[] = [];
     const pending = start((text) => sentences.push(text));
 
+    reply.think('could be either Ann or John');
     const text = [
-      'Let me check. <think>could be either Ann or John</think>It was John.',
+      'Let me check. It was John.',
       'CHAT: confirmed via commit 1a2b3c4',
       'PM: should we notify customer success?',
       'LEAVE:',
