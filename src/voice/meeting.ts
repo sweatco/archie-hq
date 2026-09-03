@@ -155,7 +155,7 @@ export function isArchie(name: string | null, botName: string): boolean {
 
 // Rows are appended in settle order, not `at` order -- sort by `at` to read a meeting back in sequence.
 // `kind` is 'response' for a full speaking decision, 'candidate' when the addressing gate alone settled it. Optional fields are omitted, not empty, so presence is directly countable across the corpus.
-// A few (`pmDropped`, `speechUnconfirmed`, `preambleDropped`) are reason strings, not booleans, for the same reason -- nothing branches on their text; they're for whoever reads the log.
+// A few (`pmDropped`, `preambleDropped`) are reason strings, not booleans, for the same reason -- nothing branches on their text; they're for whoever reads the log.
 interface TurnRow extends Omit<ActivationLog, 'candidate'> {
   kind: 'candidate' | 'response';
   candidate?: string;
@@ -164,10 +164,8 @@ interface TurnRow extends Omit<ActivationLog, 'candidate'> {
   verdict: 'addressed' | 'suppressed' | 'error';
   // The whole of what the model decided to say, regardless of delivery -- an answer barged in on after four words records the same string here as one delivered whole. `speech` below is what the room actually heard.
   answer?: string;
-  // What the room actually heard, preamble included. Empty string claims nothing was heard, not a gap -- see `speechUnconfirmed` for when delivery couldn't be measured.
+  // What the room actually heard, preamble included. Empty string claims nothing was heard, not a gap; absent means the turn never got as far as settling one way or the other.
   speech?: string;
-  // Set only when `speech` can't be trusted to be complete -- the sink gave no `playedBytes` to measure delivery against.
-  speechUnconfirmed?: string;
   chat?: string;
   pm?: string;
   pmDropped?: string;
@@ -191,7 +189,7 @@ interface ParticipantState {
 }
 
 export interface Meeting {
-  // Recall's bot id. A channel deliverer checks it against a `RecallChannel`'s `session_id` before delivering (connectors/recall/channel-delivery.ts) -- that check, not this field alone, stops a stale channel reaching a different meeting live on the same task.
+  // Recall's bot id. A channel deliverer checks it against a `RecallChannel`'s `session_id` before delivering (voice/channel-delivery.ts) -- that check, not this field alone, stops a stale channel reaching a different meeting live on the same task.
   readonly sessionId: string;
   onAudio(p: Participant, pcm: Buffer): void;
   // Inbound only: Recall sends no audio for a muted participant, so `onAudio`-only state can't see the whole room. Whole roster each call, not a delta, so a transport missing one event self-corrects on the next.
@@ -321,12 +319,9 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     row.timings = { ...row.timings, [key]: ms };
   }
 
-  function recordHeard(row: TurnRow, heard: string | null, heardAnything: boolean): void {
+  // `null` means no sentence was confirmed heard, which `speech: ''` says exactly.
+  function recordHeard(row: TurnRow, heard: string | null): void {
     row.speech = heard ?? '';
-    if (heardAnything && row.speech.length === 0) {
-      row.speechUnconfirmed =
-        'the room heard part of this turn, but nothing could report how much of it landed';
-    }
   }
 
 
@@ -419,9 +414,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
 
   // The only record of these lines: they leave through the transport's chat channel, reaching no file the task owns otherwise (not transcript.log, exchange.log, knowledge.log). `host.recordChat` below isn't a convenience copy -- without it, they're gone.
   function noteOwnChat(chat: string | undefined): void {
-    if (chat === undefined) {
-    } else if (sendChat === undefined) {
-    } else {
+    if (chat !== undefined) {
       const text = sanitizeForLog(chat);
       if (text.length > 0) {
         chatPosts.push({ speaker: cfg.botName, text });
@@ -648,9 +641,6 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       if (owes && transcriptRevision === revision && lastConsultAnswerAt <= askedAt) {
         retryAfter = Date.now() + RETRY_FLOOR_MS;
       }
-      if (row.speech === undefined) {
-        recordHeard(row, null, true);
-      }
       writeActivation(row);
       applyEngagement();
       maybeDecide();
@@ -700,14 +690,10 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
 
     let pcmSentToSink = 0;
     const sentenceOffsets: { text: string; endOffset: number }[] = [];
-    const playedBytesBaseline = sink.playedBytes?.();
+    const playedBytesBaseline = sink.playedBytes();
 
     const confirmedHeardPrefix = (): string | null => {
-      const now = sink.playedBytes?.();
-      if (now === undefined || playedBytesBaseline === undefined) {
-        return null;
-      }
-      const confirmed = now - playedBytesBaseline;
+      const confirmed = sink.playedBytes() - playedBytesBaseline;
       const heard = sentenceOffsets.filter((s) => s.endOffset <= confirmed);
       return heard.length === 0 ? null : heard.map((s) => s.text).join(' ');
     };
@@ -821,7 +807,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
         abandon('the model decided to say nothing');
         clearOwed(askedAt);
         row.verdict = 'suppressed';
-        recordHeard(row, confirmedHeardPrefix(), heardAnything);
+        recordHeard(row, confirmedHeardPrefix());
         if (decision.pm !== undefined) {
           row.pm = decision.pm;
         }
@@ -879,7 +865,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
         if (heardAnything) {
           row.error = `spoke part of the answer, then speaking threw: ${String(err)}`;
           if (row.speech === undefined) {
-            recordHeard(row, confirmedHeardPrefix(), true);
+            recordHeard(row, confirmedHeardPrefix());
           }
         } else {
           answerWithoutVoice(row, answer, `speaking threw: ${String(err)}`, askedAt);
@@ -909,7 +895,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     confirmedPrefix: string | null,
   ): void {
     row.verdict = 'error';
-    recordHeard(row, confirmedPrefix, heardAnything);
+    recordHeard(row, confirmedPrefix);
     if (heardAnything) {
       row.error = `spoke part of the answer, then the decision failed: ${why}`;
       logger.warn(LOG, `The decision failed after ${handedOver} sentence(s) had been spoken — ${why}`);
@@ -938,7 +924,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     if (heardAnything && partial !== null) {
       row.error = `spoke part of the answer, then ${partial}`;
       logger.debug(LOG, `Interrupted mid-answer — ${partial}`);
-      recordHeard(row, confirmedPrefix, heardAnything);
+      recordHeard(row, confirmedPrefix);
       if (confirmedPrefix !== null) {
         fileConfirmedLine(confirmedPrefix, revision);
       }
@@ -946,7 +932,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       clearOwed(askedAt);
       row.verdict = 'addressed';
       // Reads `answer.speech` directly, not the sink's watermark -- `playedBytes` is conservative by contract and can lag a sentence behind at the moment the round closes.
-      recordHeard(row, preamble === null ? answer.speech : `${preamble} ${answer.speech}`, true);
+      recordHeard(row, preamble === null ? answer.speech : `${preamble} ${answer.speech}`);
       if (preamble !== null) {
         addUtterance(cfg.botName, preamble);
       }
@@ -963,26 +949,21 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       }
     } else if (abandoned !== null) {
       row.error = `${abandoned} — reconsidering now`;
-      recordHeard(row, '', false);
+      recordHeard(row, '');
     } else {
       answerWithoutVoice(row, answer, truncated ?? 'synthesis produced no audio', askedAt);
     }
   }
 
-  // The one place a missing chat channel is fatal, not lossy -- with no voice and no channel, the answer reaches nobody.
+  // Voice failed, so the answer goes out in writing instead -- still an error row: the room got text where it was owed speech.
   function answerWithoutVoice(row: TurnRow, answer: SpokenResponse, why: string, askedAt: number): void {
     row.verdict = 'error';
-    recordHeard(row, '', false);
+    recordHeard(row, '');
     clearOwed(askedAt);
-    if (sendChat === undefined) {
-      row.error = `${why} — and this transport has no chat channel, so nothing was delivered`;
-      logger.error(LOG, `Could not speak and cannot write — the answer was lost: ${why}`);
-    } else {
-      row.error = `${why} — answered in the meeting chat instead`;
-      noteOwnAnswer(answer.speech);
-      announceVoiceUnavailableOnce();
-      void safeSendChat(chatFallbackText(answer));
-    }
+    row.error = `${why} — answered in the meeting chat instead`;
+    noteOwnAnswer(answer.speech);
+    announceVoiceUnavailableOnce();
+    void safeSendChat(chatFallbackText(answer));
     noteOwnChat(answer.chat);
   }
 
@@ -1175,13 +1156,10 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
   }
 
   function safeSetEngaged(engaged: boolean): void {
-    if (sink.setEngaged === undefined) {
-    } else {
-      try {
-        sink.setEngaged(engaged);
-      } catch (err) {
-        logger.error(LOG, `Setting the tile to ${engaged ? 'engaged' : 'disengaged'} failed`, err);
-      }
+    try {
+      sink.setEngaged(engaged);
+    } catch (err) {
+      logger.error(LOG, `Setting the tile to ${engaged ? 'engaged' : 'disengaged'} failed`, err);
     }
   }
 
@@ -1193,12 +1171,9 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     }
   }
 
-  // A transport with no chat channel drops the text rather than speaking it: the channel carries content deliberately kept out of speech (identifiers, hashes, exact figures) -- speaking it would defeat the channel's purpose.
   async function safeSendChat(text: string): Promise<void> {
     if (stopped) {
       logger.debug(LOG, `The meeting has stopped — dropped ${text.length} chars of text`);
-    } else if (sendChat === undefined) {
-      logger.debug(LOG, `No chat channel on this transport — dropped ${text.length} chars of text`);
     } else {
       try {
         await sendChat(text);
@@ -1281,7 +1256,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     },
 
     deliverConsultAnswer(text: string): { ok: true; id: string } | { ok: false } {
-      // `stopped` matters here: teardown (`endMeeting`, connectors/recall/index.ts) awaits this meeting's streams before unregistering it; a reply landing in that window must not raise the debt again.
+      // `stopped` matters here: teardown (`endMeeting`, voice/connector.ts) awaits this meeting's streams before unregistering it; a reply landing in that window must not raise the debt again.
       const consult = stopped ? undefined : outstandingConsult();
       if (consult === undefined) {
         return { ok: false };

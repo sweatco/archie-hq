@@ -61,7 +61,7 @@ function newTask(meta: TaskMetadata): Task {
 }
 
 // A kind `task.ts` never heard of — proves the seam is generic, not special-cased for `recall`
-// (pinned separately: src/connectors/recall/__tests__/channel-delivery.test.ts).
+// (pinned separately: src/voice/__tests__/channel-delivery.test.ts).
 const MADE_UP = 'made-up-kind' as ChannelType;
 
 describe('registerChannelDeliverer / getChannelDeliverer', () => {

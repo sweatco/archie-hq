@@ -1,6 +1,6 @@
 /**
  * Recall connector — Archie as an ordinary meeting participant (Zoom, Meet, Teams via Recall.ai).
- * Implements {@link VoiceTransport} for `src/voice/`.
+ * Implements {@link VoiceTransport} for the conversation in `meeting.ts`.
  *
  * Three HTTP/WS paths on the engine's own server:
  *   /api/voice/audio        — per-participant audio; join/leave events ride the same socket.
@@ -18,20 +18,19 @@ import { WebSocketServer, type WebSocket } from 'ws';
 const require = createRequire(import.meta.url);
 const express = require('express');
 
-import { logger } from '../../system/logger.js';
+import { logger } from '../system/logger.js';
 import { createRecallClient, type RecallConfig } from './recall.js';
 import { createAudioOutHub, renderPage } from './audio-out.js';
-import { createMeeting, isArchie, type Meeting } from '../../voice/meeting.js';
-import { buildCapabilitySummary } from '../../voice/capabilities.js';
-import type { MeetingHost, Participant, VoiceConfig, VoiceTransport } from '../../voice/types.js';
+import { createMeeting, isArchie, type Meeting } from './meeting.js';
+import { buildCapabilitySummary } from './capabilities.js';
+import type { MeetingHost, Participant, VoiceConfig, VoiceTransport } from './types.js';
 import {
   createTaskHost,
   registerLiveMeeting,
   unregisterLiveMeeting,
   reserveMeetingSlot,
   releaseMeetingSlot,
-  setMeetingStarter,
-  setMeetingStopper,
+  getLiveMeeting,
   notifyMeetingEnded,
   linkRecallChannel,
   endRecallChannel,
@@ -39,19 +38,22 @@ import {
   updateMeetingParticipantsLive,
   completeMeetingMetadata,
   recordMeetingCapabilities,
-  type StartMeetingResult,
-} from '../../voice/task-binding.js';
-import type { LiveMeetingParticipant } from '../../types/task.js';
-import { registerChannelDeliverer } from '../../tasks/channel-delivery.js';
+} from './task-binding.js';
+import type { LiveMeetingParticipant } from '../types/task.js';
+import { registerChannelDeliverer } from '../tasks/channel-delivery.js';
 import { deliverToRecallChannel, renderRecallChannel } from './channel-delivery.js';
-import { registerConnectorPmTools } from '../../agents/connector-tools.js';
-import { createRecallPmToolsServer } from './pm-tools.js';
+import { registerConnectorPmTools } from '../agents/connector-tools.js';
+import { createRecallPmToolsServer, type MeetingOps } from './pm-tools.js';
 
 export interface RecallLifecycle {
   /** Call once the HTTP server exists. */
   attach(server: Server): void;
   stop(): Promise<void>;
 }
+
+export type StartMeetingResult = { ok: true; botId: string } | { ok: false; reason: string };
+
+export type StopMeetingResult = { ok: true } | { ok: false; reason: string };
 
 /** Mirrors `LiveMeetingParticipant` (`src/types/task.ts`) in camelCase; `snapshotLiveParticipants` converts back. */
 interface LiveParticipantState {
@@ -67,16 +69,10 @@ interface LiveMeeting {
   pageId: string;
   meeting: Meeting;
   greeted: boolean;
-  /** Wall-clock ms of the most recent audio frame, for idle teardown. */
-  lastAudioAt: number;
   /** Absent for the manual, unbound entry point. `url`/`joinedAt` cached here so metadata.json's teardown write skips a second round trip. */
   binding?: { taskId: string; host: MeetingHost; url: string; joinedAt: string };
   /** Keyed by Recall's opaque participant id — a rejoin gets a fresh id, a new entry, not resumed. Humans only: `isArchie` filters our join/leave. */
   participants: Map<string, LiveParticipantState>;
-  /** Armed empty-room teardown ({@link EMPTY_ROOM_GRACE_MS}) or null — at most one per meeting. */
-  emptyRoomTimer: NodeJS.Timeout | null;
-  /** Pending socket-close question ({@link SOCKET_CLOSE_SETTLE_MS}) or null — at most one per meeting. */
-  socketCloseCheck: NodeJS.Timeout | null;
 }
 
 /** Requires the `/` after `prefix` — otherwise `/api/voice/outsider` would parse as page id "sider". */
@@ -111,34 +107,19 @@ function parseParticipant(raw: unknown): Participant {
 }
 
 /**
- * On Zoom, a rejoin gets a fresh id: `leave(id1)` then `join(id2)` — indistinguishable from empty until the second event.
- * 45s covers a dropped connection (~30-45s reconnect) and a deliberate rejoin; tearing down early speaks the summary into a still-live room.
- * See `handleParticipantLeave`.
- */
-const EMPTY_ROOM_GRACE_MS = 45 * 1000;
-
-/**
  * Statuses (`status_changes[].code`, bare — no `bot.` prefix, unlike webhook names) proving no more audio can reach this bot:
  *   - `call_ended` — bot left the call; ordinary end.
  *   - `done` — shutdown complete; always follows `call_ended`.
  *   - `fatal` — bot errored out; terminal even mid-meeting, since Archie can't return without a fresh join.
- * Closed "certainly out" set on purpose: an unfamiliar code falls through to other teardown paths — late, never a wrong early one.
+ * Closed "certainly out" set on purpose: an unfamiliar code leaves the meeting live — late, never a wrong early ending.
  */
 const TERMINAL_BOT_STATUSES = new Set(['call_ended', 'done', 'fatal']);
 
 /**
- * Recall's status ledger lags its own audio — observed live: socket closed at 11:44:40, `call_ended` landed at 11:44:43.
- * 10s is ~3x that lag, still well inside {@link IDLE_TEARDOWN_MS}; skipped if audio resumes first.
+ * How often we ask Recall whether each live bot is still in its call. Recall decides the ending — it pulls the bot out on `everyone_left_timeout` (see `recall.ts`) or on a fatal error; this poll is how the engine finds out and releases the Deepgram sockets, Meeting closure and metadata write behind it.
+ * Recall's own ledger lags its audio by a few seconds (observed: socket closed 11:44:40, `call_ended` landed 11:44:43), so a 30s tick costs at most that plus one interval.
  */
-const SOCKET_CLOSE_SETTLE_MS = 10 * 1000;
-
-/**
- * Backstop for what neither `.leave` nor a socket-close answer catches: an idle room with no `.leave`/close, or a failed/inconclusive close check.
- * Without it, an idle Deepgram socket bills forever.
- * Safe against double-firing: `endMeeting` deletes from `live` synchronously before its first `await` — whichever route wins, the rest find nothing to do.
- */
-const IDLE_TEARDOWN_MS = 3 * 60 * 1000;
-const IDLE_SWEEP_MS = 30 * 1000;
+const STATUS_POLL_MS = 30_000;
 
 export function mountRecallConnector(app: Application, cfg: RecallConfig): RecallLifecycle {
   /** Adds our API key to `foreignSecrets` so voice's log scrubber can redact it — no other way to learn it. */
@@ -153,7 +134,9 @@ export function mountRecallConnector(app: Application, cfg: RecallConfig): Recal
   const audioOut = createAudioOutHub();
   const live = new Map<string, LiveMeeting>();
   const audioSockets = new Set<WebSocket>();
-  let idleSweep: NodeJS.Timeout | null = null;
+  let statusPoll: NodeJS.Timeout | null = null;
+  // One tick at a time: a slow round of GETs must not stack with the next tick's.
+  let polling = false;
 
   const router = express.Router();
   router.use(express.json());
@@ -183,7 +166,7 @@ export function mountRecallConnector(app: Application, cfg: RecallConfig): Recal
         pageUrl: `${cfg.publicUrl}/api/voice/page/${pageId}`,
       });
 
-      const host = taskId === undefined ? undefined : createTaskHost(taskId, botId, botName);
+      const host = taskId === undefined ? undefined : createTaskHost(taskId, botId, botName, endMeeting);
 
       const transport: VoiceTransport = {
         // bot id, not page id: it outlives every socket in the call — the stable key for the activation log.
@@ -203,11 +186,8 @@ export function mountRecallConnector(app: Application, cfg: RecallConfig): Recal
         pageId,
         meeting,
         greeted: false,
-        lastAudioAt: Date.now(),
         binding,
         participants: new Map(),
-        emptyRoomTimer: null,
-        socketCloseCheck: null,
       });
 
       if (binding !== undefined) {
@@ -266,13 +246,25 @@ export function mountRecallConnector(app: Application, cfg: RecallConfig): Recal
     res.status(201).json({ bot_id: result.botId });
   });
 
-  // Lets `join_recall_meeting` reach this connector without a direct import from `src/agents/`.
-  setMeetingStarter((taskId, meetingUrl) => startMeeting(meetingUrl, taskId));
-  setMeetingStopper(endMeeting);
+  /** `leave_recall_meeting` names a task, not a bot; the live registry is what turns one into the other. */
+  async function stopForTask(taskId: string): Promise<StopMeetingResult> {
+    const meeting = getLiveMeeting(taskId);
+    if (meeting === undefined) {
+      return { ok: false, reason: 'No meeting is live on this task.' };
+    }
+    // Awaited to completion, unlike MeetingHost.leaveMeeting: a PM tool can afford to say "ended" only once it is.
+    await endMeeting(meeting.sessionId);
+    return { ok: true };
+  }
+
+  const ops: MeetingOps = {
+    start: (taskId, meetingUrl) => startMeeting(meetingUrl, taskId),
+    stop: stopForTask,
+  };
 
   // Registered at mount, not always: if Recall isn't configured, the PM never sees these tools rather than sees them fail.
   registerChannelDeliverer('recall', deliverToRecallChannel, renderRecallChannel);
-  registerConnectorPmTools('recall-tools', createRecallPmToolsServer);
+  registerConnectorPmTools('recall-tools', (agent, task) => createRecallPmToolsServer(agent, task, ops));
 
   router.delete('/meetings/:botId', async (req: Request, res: Response) => {
     const botId = req.params.botId as string;
@@ -316,29 +308,14 @@ export function mountRecallConnector(app: Application, cfg: RecallConfig): Recal
     return { platform, title, meetingEndedAt, participants };
   }
 
-  function cancelEmptyRoomTeardown(entry: LiveMeeting, because: string): void {
-    if (entry.emptyRoomTimer !== null) {
-      clearTimeout(entry.emptyRoomTimer);
-      entry.emptyRoomTimer = null;
-      logger.system(`Voice: bot ${entry.botId} — ${because}, standing down the pending empty-room teardown`);
-    }
-  }
-
-  function cancelSocketCloseCheck(entry: LiveMeeting, because: string): void {
-    if (entry.socketCloseCheck !== null) {
-      clearTimeout(entry.socketCloseCheck);
-      entry.socketCloseCheck = null;
-      logger.system(`Voice: bot ${entry.botId} — ${because}, dropping the pending socket-close question`);
-    }
-  }
-
+  /**
+   * The single teardown funnel: the explicit routes (a spoken `LEAVE:`, `leave_recall_meeting`, `DELETE /meetings/:botId`, shutdown) and the status poll all come through here.
+   * The `live.delete` above the first `await` is what makes that safe — whichever route arrives first, the rest find nothing to do.
+   */
   async function endMeeting(botId: string): Promise<void> {
     const entry = live.get(botId);
     live.delete(botId);
     if (entry) {
-      // Before any `await`: an armed timer would still fire — harmless, a redundant leave_call to Recall.
-      cancelEmptyRoomTeardown(entry, 'the meeting is ending');
-      cancelSocketCloseCheck(entry, 'the meeting is ending');
       if (entry.binding !== undefined) {
         // Before `stop()`, not after — else a channel post could reach a meeting only looking live mid-stop().
         unregisterLiveMeeting(entry.binding.taskId);
@@ -375,16 +352,14 @@ export function mountRecallConnector(app: Application, cfg: RecallConfig): Recal
   /**
    * Recall's envelope, verified live (shared by audio + both participant events — see `events` in `recall.ts`):
    *   { event, data: { bot: { id }, data: { participant, buffer?, timestamp } } }
-   * Parsed here so `meeting.ts` never sees the wire shape.
-   *
-   * Returns the bot this message belonged to (the socket then knows which meeting it carries — see `connection`), or `null` if unparseable, unattributed, or untracked.
+   * Parsed here so `meeting.ts` never sees the wire shape. A frame that is unparseable, unattributed or for a bot no longer live is dropped.
    */
-  function handleAudioMessage(raw: string): string | null {
+  function handleAudioMessage(raw: string): void {
     let msg: unknown;
     try {
       msg = JSON.parse(raw);
     } catch {
-      return null;
+      return;
     }
     const m = msg as {
       event?: string;
@@ -393,13 +368,11 @@ export function mountRecallConnector(app: Application, cfg: RecallConfig): Recal
 
     const botId = m.data?.bot?.id;
     const entry = botId ? live.get(botId) : undefined;
-    if (!entry) return null;
+    if (!entry) return;
 
     const d = m.data?.data ?? {};
 
     if (m.event === 'audio_separate_raw.data') {
-      entry.lastAudioAt = Date.now();
-
       const raw64 = typeof d.buffer === 'string' ? d.buffer : '';
       const participant = parseParticipant(d.participant);
       // Belt-and-suspenders: Recall excludes our audio by default, but a slip-through would fire barge-in on it.
@@ -412,7 +385,6 @@ export function mountRecallConnector(app: Application, cfg: RecallConfig): Recal
       handleParticipantLeave(entry, parseParticipant(d.participant));
     }
     // Anything else is ignored (see the "ignores frames it cannot place" test).
-    return entry.botId;
   }
 
   /** The persisted shape of a meeting's live-accumulated roster, in join order. */
@@ -451,10 +423,7 @@ export function mountRecallConnector(app: Application, cfg: RecallConfig): Recal
     }
   }
 
-  /**
-   * Replaces, not duplicates, a repeat `.join` for the id — a malformed/duplicate event can't invent a second occupant.
-   * Disarms the empty-room timer (see `EMPTY_ROOM_GRACE_MS`): a join is that grace period's rejoin half.
-   */
+  /** Replaces, not duplicates, a repeat `.join` for the id — a malformed/duplicate event can't invent a second occupant. */
   function handleParticipantJoin(entry: LiveMeeting, participant: Participant): void {
     if (isArchie(participant.name, botName)) return;
     entry.participants.set(participant.id, {
@@ -463,16 +432,14 @@ export function mountRecallConnector(app: Application, cfg: RecallConfig): Recal
       joinedAt: new Date().toISOString(),
       leftAt: null,
     });
-    cancelEmptyRoomTeardown(entry, 'somebody joined');
     persistLiveParticipants(entry);
     pushLiveParticipants(entry);
   }
 
   /**
-   * Closes the entry (`LiveParticipantState`); once empty, arms the empty-room teardown (`EMPTY_ROOM_GRACE_MS`) instead of tearing down immediately.
+   * Closes the entry (`LiveParticipantState`) rather than removing it, so a departure keeps both of its timestamps. An orphaned leave — one with no join this connector ever witnessed — is still recorded, with `joinedAt: null`.
    *
-   * `everWitnessedAJoin` needs a real `.join` (`joinedAt !== null`), stricter than "roster non-empty": an orphaned leave alone can populate the roster on a meeting's first event without meaning "the room emptied."
-   * Such a leave is still recorded (`joinedAt: null`), and still counts toward `stillPresent` once a real join happens elsewhere.
+   * Records only: whether the room has emptied is Recall's call, not this roster's (`everyone_left_timeout` in `recall.ts`).
    */
   function handleParticipantLeave(entry: LiveMeeting, participant: Participant): void {
     if (isArchie(participant.name, botName)) return;
@@ -490,96 +457,27 @@ export function mountRecallConnector(app: Application, cfg: RecallConfig): Recal
     }
     persistLiveParticipants(entry);
     pushLiveParticipants(entry);
-
-    const everWitnessedAJoin = [...entry.participants.values()].some((p) => p.joinedAt !== null);
-    const stillPresent = [...entry.participants.values()].some((p) => p.leftAt === null);
-    if (everWitnessedAJoin && !stillPresent && entry.emptyRoomTimer === null) {
-      logger.system(
-        `Voice: bot ${entry.botId} — last participant left, ending the meeting in ` +
-        `${EMPTY_ROOM_GRACE_MS / 1000}s unless somebody rejoins`,
-      );
-      const timer = setTimeout(() => {
-        // Cleared before teardown — endMeeting must not be handed an already-fired timer handle.
-        entry.emptyRoomTimer = null;
-        logger.system(`Voice: bot ${entry.botId} — the room stayed empty, ending the meeting`);
-        void endMeeting(entry.botId);
-      }, EMPTY_ROOM_GRACE_MS);
-      // unref'd — must not keep the process alive on its own.
-      timer.unref();
-      entry.emptyRoomTimer = timer;
-    }
   }
 
   /**
-   * Audio socket closing is ambiguous — network blip vs. real end look identical — so this asks Recall rather than deciding locally.
-   * Necessary since Recall doesn't always send `.leave` — one observed departure left `left_at: null`, no leave event, no armed timer; only the idle sweep caught it, minutes late.
+   * One tick of the status poll: asks Recall about each live bot and ends the meetings it reports out of the call.
+   * A failed GET leaves that meeting live — a network error is not an ending, and the next tick asks again.
    */
-  function handleAudioSocketClose(botId: string | null): void {
-    const entry = botId === null ? undefined : live.get(botId);
-    if (botId === null) {
-      // No frame arrived — Recall opens the socket before the bot is admitted; ordinary, not a lost meeting.
-      logger.system('Voice: Recall audio socket closed before it carried any meeting');
-    } else if (entry === undefined) {
-      // Ordinary during shutdown — `stop()` ends every meeting before closing sockets.
-      logger.system(`Voice: Recall audio socket closed for bot ${botId}, which is no longer live`);
-    } else if (entry.socketCloseCheck !== null) {
-      // A close storm (several drops in a row) asks once, not once per close.
-      logger.system(`Voice: Recall audio socket closed for bot ${botId} — a question is already pending`);
-    } else {
-      logger.system(
-        `Voice: Recall audio socket closed for bot ${botId} — asking Recall what happened in ` +
-        `${SOCKET_CLOSE_SETTLE_MS / 1000}s`,
-      );
-      const closedAt = Date.now();
-      const timer = setTimeout(() => {
-        // Cleared before the ask — same reason as the grace timer: don't hand endMeeting a spent handle.
-        entry.socketCloseCheck = null;
-        void askWhetherWeAreStillInTheCall(entry.botId, closedAt);
-      }, SOCKET_CLOSE_SETTLE_MS);
-      // unref'd, same reason.
-      timer.unref();
-      entry.socketCloseCheck = timer;
-    }
-  }
-
-  /** Second half of `handleAudioSocketClose`. Never throws; ends the meeting only on a terminal status. */
-  async function askWhetherWeAreStillInTheCall(botId: string, closedAt: number): Promise<void> {
-    const entry = live.get(botId);
-    if (entry === undefined) {
-      return; // ended by another route while we waited — nothing to ask about
-    }
-    if (entry.lastAudioAt > closedAt) {
-      logger.system(`Voice: bot ${botId} — audio resumed after the socket closed, so nothing to ask`);
-      return;
-    }
-
-    let codes: string[];
-    try {
-      codes = (await recall.getBotDetails(botId)).statusChanges.map((s) => s.code);
-    } catch (error) {
-      // Loud on purpose: if this fetch fails, the idle sweep still ends the meeting minutes later — this log is the only trace of why it didn't end here.
-      logger.warn(
-        'voice',
-        `Could not ask Recall whether bot ${botId} is still in the call — leaving the meeting live ` +
-        `for the idle sweep to reach`,
-        error,
-      );
-      return;
-    }
-
-    // Checks ANY terminal code, not just the last — a bot never rejoins, so a later non-terminal entry (post-processing, breakout room) can't un-terminal it.
-    const terminal = codes.find((code) => TERMINAL_BOT_STATUSES.has(code));
-    if (terminal === undefined) {
-      logger.system(
-        `Voice: bot ${botId} — Recall still has it in the call (latest status ` +
-        `"${codes[codes.length - 1] ?? 'none'}"), so the closed socket was a blip`,
-      );
-    } else if (!live.has(botId)) {
-      // Ended by another route while the GET was in flight; no `await` between this check and the call below — can't race further.
-      logger.system(`Voice: bot ${botId} — Recall reports "${terminal}", but the meeting has already ended`);
-    } else {
-      logger.system(`Voice: bot ${botId} — Recall reports "${terminal}", ending the meeting now`);
-      await endMeeting(botId);
+  async function pollBotStatuses(): Promise<void> {
+    for (const entry of [...live.values()]) {
+      let codes: string[];
+      try {
+        codes = (await recall.getBotDetails(entry.botId)).statusChanges.map((s) => s.code);
+      } catch (error) {
+        logger.warn('voice', `Could not ask Recall whether bot ${entry.botId} is still in its call — leaving the meeting live`, error);
+        continue;
+      }
+      // Checks ANY terminal code, not just the last — a bot never rejoins, so a later non-terminal entry (post-processing, breakout room) can't un-terminal it.
+      const terminal = codes.find((code) => TERMINAL_BOT_STATUSES.has(code));
+      if (terminal !== undefined) {
+        logger.system(`Voice: bot ${entry.botId} — Recall reports "${terminal}", ending the meeting`);
+        await endMeeting(entry.botId);
+      }
     }
   }
 
@@ -609,19 +507,18 @@ export function mountRecallConnector(app: Application, cfg: RecallConfig): Recal
   audioWss.on('connection', (ws: WebSocket) => {
     logger.system('Voice: Recall audio socket open');
     audioSockets.add(ws);
-    /** Learned from frames — close carries no bot id (Recall assigns it only once handed the URL); otherwise a close means asking every live meeting. */
-    let carrying: string | null = null;
     ws.on('message', (data) => {
       // A throw here would take down the process, so the audio path is sealed.
       try {
-        carrying = handleAudioMessage(data.toString()) ?? carrying;
+        handleAudioMessage(data.toString());
       } catch (error) {
         logger.error('voice', 'Audio handling failed', error);
       }
     });
+    // A close says nothing about the call: a blip and a real ending look identical here, and the socket carries no bot id anyway. The status poll is what decides.
     ws.on('close', () => {
       audioSockets.delete(ws);
-      handleAudioSocketClose(carrying);
+      logger.system('Voice: Recall audio socket closed');
     });
   });
 
@@ -653,24 +550,24 @@ export function mountRecallConnector(app: Application, cfg: RecallConfig): Recal
         }
       });
 
-      idleSweep = setInterval(() => {
-        const cutoff = Date.now() - IDLE_TEARDOWN_MS;
-        for (const entry of [...live.values()]) {
-          if (entry.lastAudioAt < cutoff) {
-            logger.system(`Voice: bot ${entry.botId} idle, tearing down`);
-            void endMeeting(entry.botId);
-          }
+      statusPoll = setInterval(() => {
+        if (!polling) {
+          polling = true;
+          void pollBotStatuses().finally(() => {
+            polling = false;
+          });
         }
-      }, IDLE_SWEEP_MS);
-      idleSweep.unref();
+      }, STATUS_POLL_MS);
+      // unref'd — must not keep the process alive on its own.
+      statusPoll.unref();
 
       logger.plain('Voice participant ready — POST /api/voice/meetings { meeting_url }');
     },
 
     async stop(): Promise<void> {
-      if (idleSweep) {
-        clearInterval(idleSweep);
-        idleSweep = null;
+      if (statusPoll) {
+        clearInterval(statusPoll);
+        statusPoll = null;
       }
       await Promise.all([...live.keys()].map((botId) => endMeeting(botId)));
       // close() only stops accepting NEW sockets; established ones outlive it.

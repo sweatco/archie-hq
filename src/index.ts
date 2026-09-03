@@ -27,7 +27,7 @@ import { mountSlackApp, type SlackLifecycle } from './connectors/slack/events.js
 import { mountGitHubWebhook } from './connectors/github/events.js';
 import { mountApiRoutes } from './connectors/api/routes.js';
 import { mountOAuthRoutes } from './connectors/oauth/routes.js';
-import { mountRecallConnector, type RecallLifecycle } from './connectors/recall/index.js';
+import { mountRecallConnector, type RecallLifecycle } from './voice/connector.js';
 import { getIsShuttingDown, setShuttingDown } from './system/shutdown.js';
 import { getActiveTaskIds } from './tasks/task.js';
 import { logger } from './system/logger.js';

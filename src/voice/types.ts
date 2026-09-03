@@ -1,7 +1,7 @@
 /**
- * Shared types for voice — the contract between the medium and whichever connector carries it.
+ * Shared types for voice — the contract between the conversation and the transport that carries it.
  *
- * Types only, no logic, no imports from sibling modules or `src/connectors/`: voice knows a transport exists, never which one.
+ * Types only, no logic, no imports from sibling modules.
  */
 
 /**
@@ -131,10 +131,7 @@ export interface SpeechSession {
   close(): void;
 }
 
-/**
- * Sink for audio going into the meeting, supplied by the transport. Recall's
- * implementation is `src/connectors/recall/audio-out.ts`.
- */
+/** Sink for audio going into the meeting, supplied by the transport; implemented in `audio-out.ts`. */
 export interface AudioSink {
   /** Queue PCM16 mono 24kHz for playback in the meeting. Ignored while disabled. */
   play(pcm: Buffer): void;
@@ -142,16 +139,16 @@ export interface AudioSink {
   cut(): void;
   /** Output gate: whether anything we produce may reach the meeting. Defaults closed; only the transport opens it, once it has a live meeting (Recall does so on browser-attach). Conversation closes it only on teardown. Not what decides when the bot talks — that's room silence in meeting.ts, the coarser gate underneath it. */
   setEnabled(open: boolean): void;
-  /** Whether Archie is engaged — the video tile: addressed-and-undischarged, or just-spoke with the follow-up window still open; grey otherwise. Distinct from `setEnabled` (opens once for the whole meeting, no per-turn state). Optional — a phone transport has no video cue for it. Never reroute into speech or chat. */
-  setEngaged?(engaged: boolean): void;
+  /** Paints the video tile: green while Archie is engaged — addressed-and-undischarged, or just-spoke with the follow-up window still open — grey otherwise. Distinct from `setEnabled` (opens once for the whole meeting, no per-turn state). Never reroute into speech or chat. */
+  setEngaged(engaged: boolean): void;
   /** True while audio is queued or playing. */
   isSpeaking(): boolean;
-  /** Cumulative PCM bytes, in `play()`'s stream, certainly already heard. Monotonic, never reset by `cut()` — diff two reads, don't trust one. Absent if the transport can't measure it. Conservative: counts only once past the pipeline tail. Under-counting is safe, over-counting isn't — opposite bias from {@link isSpeaking}. */
-  playedBytes?(): number;
+  /** Cumulative PCM bytes, in `play()`'s stream, certainly already heard. Monotonic, never reset by `cut()` — diff two reads, don't trust one. Conservative: counts only once past the pipeline tail. Under-counting is safe, over-counting isn't — opposite bias from {@link isSpeaking}. */
+  playedBytes(): number;
 }
 
 /**
- * What a transport supplies: a name, somewhere for speech, and (if any) text. `meeting.ts` never learns how it's connected. Recall's implementation: `src/connectors/recall/index.ts`. ASR and synthesis are a separate seam (`deepgram.ts`, `soniox.ts`).
+ * What a transport supplies: a name, somewhere for speech, and somewhere for text. `meeting.ts` never learns how it's connected — Recall's implementation is `connector.ts`. ASR and synthesis are a separate seam (`deepgram.ts`, `soniox.ts`).
  *
  * Audio flows in through `Meeting.onAudio`, not pulled — the transport calls the meeting, never the reverse. One participant is the simplest case: a telephone stream is a single speaker — room silence with N=1.
  */
@@ -160,8 +157,8 @@ export interface VoiceTransport {
   sessionId: string;
   /** Where the bot's speech goes. */
   sink: AudioSink;
-  /** Post text into the meeting: detail an answer won't speak (identifiers, hashes, paths, figures), and, on voice failure, the answer itself. Absent means no text channel — `meeting.ts` decides what happens then (`safeSendChat`, `answerWithoutVoice`). */
-  sendChat?: (text: string) => Promise<void>;
+  /** Post text into the meeting's chat: detail an answer won't speak (identifiers, hashes, paths, figures), and, on voice failure, the answer itself. */
+  sendChat: (text: string) => Promise<void>;
 }
 
 /**

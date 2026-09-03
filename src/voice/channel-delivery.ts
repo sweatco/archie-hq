@@ -5,10 +5,10 @@
  * Records aren't removed at meeting end — a multi-meeting task carries one `recall` channel per meeting. `getLiveMeeting` alone (by taskId) finds whatever's live *now*: for an old key, that's nothing or a **different** meeting.
  * Comparing session ids stops a stale answer from landing in a later meeting on the same task.
  */
-import type { ChannelDeliverer, ChannelRenderer } from '../../tasks/channel-delivery.js';
-import { appendMeetingExchange } from '../../tasks/persistence.js';
-import { getLiveMeeting } from '../../voice/task-binding.js';
-import { logger } from '../../system/logger.js';
+import type { ChannelDeliverer, ChannelRenderer } from '../tasks/channel-delivery.js';
+import { appendMeetingExchange } from '../tasks/persistence.js';
+import { getLiveMeeting } from './task-binding.js';
+import { logger } from '../system/logger.js';
 
 const LOG = 'recall-channel-delivery';
 

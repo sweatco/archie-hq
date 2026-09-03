@@ -3,23 +3,23 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 
 const { liveMeetings } = vi.hoisted(() => ({ liveMeetings: new Map<string, unknown>() }));
 
-vi.mock('../../../voice/task-binding.js', () => ({
+vi.mock('../task-binding.js', () => ({
   getLiveMeeting: (taskId: string) => liveMeetings.get(taskId),
 }));
 
-vi.mock('../../../system/logger.js', () => ({
+vi.mock('../../system/logger.js', () => ({
   logger: { warn: vi.fn(), error: vi.fn(), system: vi.fn(), debug: vi.fn() },
 }));
 
 // clearAllMocks() clears call history, not implementation; stays resolved by default.
 const { appendMeetingExchange } = vi.hoisted(() => ({ appendMeetingExchange: vi.fn().mockResolvedValue(undefined) }));
-vi.mock('../../../tasks/persistence.js', () => ({ appendMeetingExchange }));
+vi.mock('../../tasks/persistence.js', () => ({ appendMeetingExchange }));
 
-import { logger } from '../../../system/logger.js';
+import { logger } from '../../system/logger.js';
 import { deliverToRecallChannel, renderRecallChannel } from '../channel-delivery.js';
-import type { Meeting } from '../../../voice/meeting.js';
-import type { RecallChannel } from '../../../types/task.js';
-import type { Task } from '../../../tasks/task.js';
+import type { Meeting } from '../meeting.js';
+import type { RecallChannel } from '../../types/task.js';
+import type { Task } from '../../tasks/task.js';
 
 function fakeMeeting(sessionId: string, overrides: Partial<Meeting> = {}): Meeting {
   return {

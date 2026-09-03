@@ -1,12 +1,12 @@
 // `createMeeting` is a spy: transport captured whole, sink comparable by identity — the only witness against two meetings crossing wires and still looking healthy.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { logger } from '../../../system/logger.js';
-import type { AudioSink, MeetingHost, Participant, VoiceConfig, VoiceTransport } from '../../../voice/types.js';
+import { logger } from '../../system/logger.js';
+import type { AudioSink, MeetingHost, Participant, VoiceConfig, VoiceTransport } from '../types.js';
 import type { RecallConfig } from '../recall.js';
-import { getChannelDeliverer, getChannelRenderer } from '../../../tasks/channel-delivery.js';
-import { getRegisteredConnectorPmTools } from '../../../agents/connector-tools.js';
+import { getChannelDeliverer, getChannelRenderer } from '../../tasks/channel-delivery.js';
+import { getRegisteredConnectorPmTools } from '../../agents/connector-tools.js';
 import { deliverToRecallChannel, renderRecallChannel } from '../channel-delivery.js';
-import { createRecallPmToolsServer } from '../pm-tools.js';
+import type { MeetingOps } from '../pm-tools.js';
 
 // Hoisted because `vi.mock`'s factory runs before imports.
 const wsHarness = vi.hoisted(() => {
@@ -98,8 +98,8 @@ const spawned: Spawned[] = [];
 const teardownOrder: string[] = [];
 
 // isArchie is left real (shared name-matching logic with the medium) since roster/teardown tests exist to exercise it; faking it would test a stand-in, not what ships.
-vi.mock('../../../voice/meeting.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../../voice/meeting.js')>();
+vi.mock('../meeting.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../meeting.js')>();
   return {
     ...actual,
     createMeeting: (cfg: VoiceConfig, transport: VoiceTransport, host?: MeetingHost) => {
@@ -114,6 +114,8 @@ vi.mock('../../../voice/meeting.js', async (importOriginal) => {
       };
       spawned.push(record);
       return {
+        // The real Meeting carries it too; `stopForTask` reads it off the live registry to find the bot a task's meeting is on.
+        sessionId: transport.sessionId,
         onAudio(participant: Participant, pcm: Buffer) {
           record.audio.push({ participant, bytes: pcm.length });
         },
@@ -142,6 +144,8 @@ interface FakeHost extends MeetingHost {
   // Meeting-chat lines — the chat.log half of the host.
   chatLines: Array<{ speaker: string; text: string }>;
   events: string[];
+  /** The connector's teardown funnel, as handed to `createTaskHost` — `leaveMeeting` below calls it, the way the real host does. */
+  end: (sessionId: string) => Promise<void>;
   leaveCalls: number;
 }
 
@@ -183,12 +187,23 @@ interface MetadataEndInfo {
 const metadataEndCalls: Array<{ taskId: string; sessionId: string; info: MetadataEndInfo }> = [];
 /** Every `recordMeetingCapabilities` call — see the "capability summary" describe block. */
 const capabilityRecords: Array<{ taskId: string; sessionId: string; summary: string }> = [];
-type StartResult = { ok: true; botId: string } | { ok: false; reason: string };
-let registeredStarter: ((taskId: string, meetingUrl: string) => Promise<StartResult>) | null = null;
-let registeredStopper: ((sessionId: string) => Promise<void>) | null = null;
+/** Every `createRecallPmToolsServer` build, so a test can reach the `ops` the mount closed over (see `opsOf`). */
+const pmToolsBuilds: MeetingOps[] = [];
 
-vi.mock('../../../voice/task-binding.js', () => ({
-  createTaskHost: (taskId: string, sessionId: string, botName: string): FakeHost => {
+vi.mock('../pm-tools.js', () => ({
+  createRecallPmToolsServer: (_agent: unknown, _task: unknown, ops: MeetingOps) => {
+    pmToolsBuilds.push(ops);
+    return { name: 'recall-tools-stub' };
+  },
+}));
+
+vi.mock('../task-binding.js', () => ({
+  createTaskHost: (
+    taskId: string,
+    sessionId: string,
+    botName: string,
+    end: (sessionId: string) => Promise<void>,
+  ): FakeHost => {
     const host: FakeHost = {
       taskId,
       sessionId,
@@ -196,6 +211,7 @@ vi.mock('../../../voice/task-binding.js', () => ({
       utterances: [],
       chatLines: [],
       events: [],
+      end,
       leaveCalls: 0,
       recordUtterance: (speaker: string, text: string) => {
         host.utterances.push({ speaker, text });
@@ -210,6 +226,7 @@ vi.mock('../../../voice/task-binding.js', () => ({
       consult: () => {},
       leaveMeeting: () => {
         host.leaveCalls++;
+        void end(sessionId);
       },
     };
     hosts.push(host);
@@ -231,12 +248,6 @@ vi.mock('../../../voice/task-binding.js', () => ({
   },
   releaseMeetingSlot: (taskId: string) => {
     reserved.delete(taskId);
-  },
-  setMeetingStarter: (fn: (taskId: string, meetingUrl: string) => Promise<StartResult>) => {
-    registeredStarter = fn;
-  },
-  setMeetingStopper: (fn: (sessionId: string) => Promise<void>) => {
-    registeredStopper = fn;
   },
   notifyMeetingEnded: (taskId: string, sessionId: string) => {
     meetingEndedCalls.push({ taskId, sessionId });
@@ -275,7 +286,7 @@ const capabilityCalls: Array<{ taskId: string }> = [];
 // Left resolved by default; a test swaps in a pending promise to prove the join doesn't wait on it.
 let capabilityResult: Promise<string> = Promise.resolve('');
 
-vi.mock('../../../voice/capabilities.js', () => ({
+vi.mock('../capabilities.js', () => ({
   buildCapabilitySummary: (_cfg: VoiceConfig, taskId: string) => {
     capabilityCalls.push({ taskId });
     return capabilityResult;
@@ -294,20 +305,22 @@ const hub: HubLog = { sinks: new Map(), pageSockets: [], disposed: [] };
 vi.mock('../audio-out.js', () => ({
   createAudioOutHub: () => ({
     sinkFor(pageId: string) {
-      let sink = hub.sinks.get(pageId);
-      if (!sink) {
-        sink = {
-          enabled: false,
-          play: () => {},
-          cut: () => {},
-          setEnabled(open: boolean) {
-            sink!.enabled = open;
-          },
-          setEngaged: () => {},
-          isSpeaking: () => false,
-        };
-        hub.sinks.set(pageId, sink);
+      const existing = hub.sinks.get(pageId);
+      if (existing !== undefined) {
+        return existing;
       }
+      const sink: AudioSink & { enabled: boolean } = {
+        enabled: false,
+        play: () => {},
+        cut: () => {},
+        setEnabled(open: boolean) {
+          sink.enabled = open;
+        },
+        setEngaged: () => {},
+        isSpeaking: () => false,
+        playedBytes: () => 0,
+      };
+      hub.sinks.set(pageId, sink);
       return sink;
     },
     handlePageSocket(pageId: string) {
@@ -334,10 +347,13 @@ let createFails: number | null = null;
 const botDetailsReplies: Array<{ status: number; body: string }> = [];
 /** Queued replies for the presigned participants download, oldest first. Same empty-is-benign fallback as above. */
 const participantsReplies: Array<{ status: number; body: string }> = [];
+/** While set, a bot-details GET waits on this before answering — lets a test hold one poll tick open. */
+let botDetailsHold: Promise<void> | null = null;
 
 function fakeFetch(url: string | URL, init?: RequestInit): Promise<Response> {
   const path = String(url);
   const method = init?.method ?? 'GET';
+  let held: Promise<void> | null = null;
   const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as Record<
     string,
     unknown
@@ -354,16 +370,18 @@ function fakeFetch(url: string | URL, init?: RequestInit): Promise<Response> {
   } else if (method === 'GET' && /\/api\/v1\/bot\/[^/]+\/$/.test(path)) {
     // Never matches `/leave_call/` or `/send_chat_message/` — their trailing segment has more than the slash-free suffix this regex requires.
     reply = botDetailsReplies.shift() ?? { status: 200, body: '{}' };
+    held = botDetailsHold;
   } else if (method === 'GET' && path.startsWith('https://participants.example/')) {
     reply = participantsReplies.shift() ?? { status: 200, body: '[]' };
   } else {
     reply = { status: 200, body: '{}' };
   }
-  return Promise.resolve({
+  const response = {
     ok: reply.status >= 200 && reply.status < 300,
     status: reply.status,
     text: () => Promise.resolve(reply.body),
-  } as Response);
+  } as Response;
+  return held === null ? Promise.resolve(response) : held.then(() => response);
 }
 
 type Handler = (req: unknown, res: unknown, next: (err?: unknown) => void) => void;
@@ -447,11 +465,24 @@ function config(over: Partial<RecallConfig> = {}): RecallConfig {
 }
 
 async function mount(over: Partial<RecallConfig> = {}) {
-  const { mountRecallConnector } = await import('../index.js');
+  const { mountRecallConnector } = await import('../connector.js');
   const { app, router } = fakeApp();
   const lifecycle = mountRecallConnector(app as never, config(over));
   const [audioWss, pageWss] = wsHarness.servers;
   return { lifecycle, router: router(), audioWss, pageWss };
+}
+
+/**
+ * The `ops` this mount handed the PM-tools factory — `join_recall_meeting`/`leave_recall_meeting` are the only callers, so this is how a test reaches them.
+ * Builds a server to get at them, the way `spawn.ts` would; the factory is registered process-wide, so call this straight after `mount()`.
+ */
+function opsOf(): MeetingOps {
+  const factory = getRegisteredConnectorPmTools().get('recall-tools');
+  if (factory === undefined) throw new Error('no recall-tools factory was registered');
+  factory({} as never, {} as never);
+  const ops = pmToolsBuilds[pmToolsBuilds.length - 1];
+  if (ops === undefined) throw new Error('the registered factory built no server');
+  return ops;
 }
 
 // Matched by identity, not a tag — an equal-looking sink that isn't *the* one the hub minted is exactly the bug this catches.
@@ -538,7 +569,7 @@ function participantEventFrame(
   });
 }
 
-// Lets `handleParticipantLeave`'s fire-and-forget `void endMeeting(...)` settle: awaits 5 mocked calls in sequence (endRecallChannel, meeting.stop(), teardown fetch, completeMeetingMetadata, recall.leave), each one microtask tick.
+// Lets a fire-and-forget `void endMeeting(...)` settle: awaits 5 mocked calls in sequence (endRecallChannel, meeting.stop(), teardown fetch, completeMeetingMetadata, recall.leave), each one microtask tick.
 // Unlike persistLiveParticipants (synchronous push, no internal await — see "live participants" below, no flush needed).
 // Plain Promise.resolve() draining, not a real timer — works whether or not a test also has vi.useFakeTimers() active.
 async function flushMicrotasks(rounds = 20): Promise<void> {
@@ -564,8 +595,9 @@ beforeEach(() => {
   capabilityCalls.length = 0;
   capabilityRecords.length = 0;
   capabilityResult = Promise.resolve('');
-  registeredStarter = null;
+  pmToolsBuilds.length = 0;
   botDetailsReplies.length = 0;
+  botDetailsHold = null;
   participantsReplies.length = 0;
   hub.sinks.clear();
   hub.pageSockets.length = 0;
@@ -599,7 +631,7 @@ describe('recall mount — the transport it assembles', () => {
     expect(pageOf(made.transport.sink)).toBe(pageId);
 
     http.length = 0;
-    await made.transport.sendChat?.('It shipped on Tuesday.');
+    await made.transport.sendChat('It shipped on Tuesday.');
     expect(http[0].url).toBe('https://eu-central-1.recall.ai/api/v1/bot/bot-alpha/send_chat_message/');
   });
 
@@ -616,8 +648,8 @@ describe('recall mount — the transport it assembles', () => {
     expect(pageOf(two.spawned.transport.sink)).toBe(two.pageId);
 
     http.length = 0;
-    await one.spawned.transport.sendChat?.('for one');
-    await two.spawned.transport.sendChat?.('for two');
+    await one.spawned.transport.sendChat('for one');
+    await two.spawned.transport.sendChat('for two');
     expect(http.map((c) => c.url)).toEqual([
       'https://eu-central-1.recall.ai/api/v1/bot/bot-one/send_chat_message/',
       'https://eu-central-1.recall.ai/api/v1/bot/bot-two/send_chat_message/',
@@ -836,48 +868,7 @@ describe('recall mount — inbound audio', () => {
   });
 });
 
-describe('recall mount — idle teardown', () => {
-  it('tears down a meeting that has gone quiet and leaves a live one alone', async () => {
-    // Without this sweep, every Deepgram socket the meeting opened stays alive on its own keepalive, billing for the life of the process — meeting.stop() closes them.
-    vi.useFakeTimers();
-    botIds.push('bot-live', 'bot-stale');
-    const mounted = await mount();
-    const onUpgrade = attach(mounted.lifecycle);
-    onUpgrade({ url: '/api/voice/audio' }, { destroy: vi.fn() }, Buffer.alloc(0));
-    const socket = lastSocket();
-
-    const alive = await startMeeting(mounted.router, 'https://zoom.us/j/alive');
-    const stale = await startMeeting(mounted.router, 'https://zoom.us/j/stale');
-
-    // Two minutes in, both are inside the three-minute window.
-    await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
-    expect(alive.spawned.stopped).toBe(0);
-    expect(stale.spawned.stopped).toBe(0);
-
-    socket.fire('message', Buffer.from(audioFrame('bot-live', { id: 1, name: 'Ann' })));
-
-    await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
-    expect(stale.spawned.stopped).toBe(1);
-    expect(alive.spawned.stopped).toBe(0);
-    expect(hub.disposed).toEqual([stale.pageId]);
-  });
-
-  it('stops sweeping once the connector is stopped', async () => {
-    vi.useFakeTimers();
-    botIds.push('bot-sweep');
-    const { router, lifecycle } = await mount();
-    attach(lifecycle);
-    const meeting = await startMeeting(router);
-
-    // The sweep is the only timer this connector owns, so the count shows it's running directly — a surviving interval leaves no trace otherwise.
-    expect(vi.getTimerCount()).toBe(1);
-
-    await lifecycle.stop();
-
-    expect(meeting.spawned.stopped).toBe(1);
-    expect(vi.getTimerCount()).toBe(0);
-  });
-
+describe('recall mount — shutdown', () => {
   it('ends every live meeting and closes both socket servers on stop', async () => {
     botIds.push('bot-x', 'bot-y');
     const { router, lifecycle, audioWss, pageWss } = await mount();
@@ -978,17 +969,31 @@ describe('recall mount — waking the PM when a meeting ends', () => {
     expect(meetingEndedCalls).toEqual([{ taskId: 'task-del', sessionId: 'bot-del' }]);
   });
 
-  it('wakes it exactly once via the idle sweep', async () => {
+  it('wakes it exactly once via the status poll', async () => {
     vi.useFakeTimers();
-    botIds.push('bot-idle');
+    botIds.push('bot-poll-wake');
+    botDetailsReplies.push(ledger('in_call_recording', 'call_ended'));
     const mounted = await mount();
     attach(mounted.lifecycle);
-    await startMeeting(mounted.router, 'https://zoom.us/j/idle', 'task-idle');
+    await startMeeting(mounted.router, 'https://zoom.us/j/poll-wake', 'task-poll-wake');
 
-    // Past the three-minute idle window plus one more sweep tick.
-    await vi.advanceTimersByTimeAsync(4 * 60 * 1000);
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    await flushMicrotasks();
 
-    expect(meetingEndedCalls).toEqual([{ taskId: 'task-idle', sessionId: 'bot-idle' }]);
+    expect(meetingEndedCalls).toEqual([{ taskId: 'task-poll-wake', sessionId: 'bot-poll-wake' }]);
+  });
+
+  it('wakes it exactly once via a spoken LEAVE:', async () => {
+    botIds.push('bot-spoken-leave');
+    const { router } = await mount();
+    await startMeeting(router, 'https://zoom.us/j/spoken-leave', 'task-spoken-leave');
+
+    // What the room's own `LEAVE:` reaches, once the farewell has been spoken: MeetingHost.leaveMeeting, built over this connector's endMeeting.
+    hosts[0].leaveMeeting();
+    await flushMicrotasks();
+
+    expect(meetingEndedCalls).toEqual([{ taskId: 'task-spoken-leave', sessionId: 'bot-spoken-leave' }]);
+    expect(spawned[0].stopped).toBe(1);
   });
 
   it('wakes it exactly once via process shutdown', async () => {
@@ -1217,6 +1222,19 @@ describe('recall mount — live participants', () => {
     expect(last.liveParticipants[0].name).toBe('Ann');
     expect(last.liveParticipants[0].joined_at).not.toBeNull();
     expect(last.liveParticipants[0].left_at).not.toBeNull();
+  });
+
+  it('records a leave for somebody it never saw join, rather than dropping it', async () => {
+    // An orphaned leave is all Recall sent — the departure is real and recorded; only the arrival is unknown.
+    botIds.push('bot-orphan-leave');
+    const { router, ws } = await withAudioSocket();
+    const { botId } = await startMeeting(router, 'https://zoom.us/j/orphan-leave', 'task-orphan-leave');
+
+    ws.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 42, name: 'Mystery', is_host: null })));
+
+    expect(liveParticipantCalls[0].liveParticipants).toEqual([
+      { name: 'Mystery', is_host: null, joined_at: null, left_at: expect.any(String) },
+    ]);
   });
 
   it('accumulates a full roster across several joins and leaves, in join order', async () => {
@@ -1512,296 +1530,10 @@ describe('recall mount — the capability summary', () => {
   });
 });
 
-// Literal, not imported from index.ts's EMPTY_ROOM_GRACE_MS — importing would pass for any value, zero included, which is the bug this block exists to catch. This number is the contract.
-const GRACE_MS = 45 * 1000;
+// Literal, not imported from connector.ts's STATUS_POLL_MS — importing would pass for any value, zero included, which is the bug this block exists to catch. This number is the contract.
+const POLL_MS = 30 * 1000;
 
-describe('recall mount — the meeting ends once the room has STAYED empty', () => {
-  // Zoom issues a new id on rejoin: reconnect = leave(id1) then join(id2). In a two-person room that gap looks empty — tearing down there ends a live meeting and wakes the PM mid-conversation.
-
-  it('does not end when the last human leaves — not yet', async () => {
-    vi.useFakeTimers();
-    botIds.push('bot-empty-not-yet');
-    const { router, ws } = await withAudioSocket();
-    const { botId, spawned: made } = await startMeeting(router, 'https://zoom.us/j/empty-not-yet', 'task-empty-not-yet');
-
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 1, name: 'Ann', is_host: true })));
-    await flushMicrotasks();
-
-    // One second short of the grace period — still nothing, and the PM hasn't been told the room dispersed.
-    await vi.advanceTimersByTimeAsync(GRACE_MS - 1000);
-    await flushMicrotasks();
-
-    expect(made.stopped).toBe(0);
-    expect(meetingEndedCalls).toEqual([]);
-  });
-
-  it('ends it once the grace period passes with nobody coming back', async () => {
-    vi.useFakeTimers();
-    botIds.push('bot-empty-then');
-    const { router, ws } = await withAudioSocket();
-    const { botId, spawned: made } = await startMeeting(router, 'https://zoom.us/j/empty-then', 'task-empty-then');
-
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 1, name: 'Ann', is_host: true })));
-    await flushMicrotasks();
-
-    await vi.advanceTimersByTimeAsync(GRACE_MS);
-    await flushMicrotasks();
-
-    expect(made.stopped).toBe(1);
-    expect(meetingEndedCalls).toEqual([{ taskId: 'task-empty-then', sessionId: botId }]);
-    // Grace timer, not idle sweep: nothing at GRACE_MS-1000, ended at GRACE_MS — a 1s window the sweep (30s ticks, 3min cutoff) can't produce.
-  });
-
-  it('does NOT end when somebody rejoins inside the grace period — Zoom gives them a new id', async () => {
-    vi.useFakeTimers();
-    botIds.push('bot-rejoin');
-    const { router, ws } = await withAudioSocket();
-    const { botId, spawned: made } = await startMeeting(router, 'https://zoom.us/j/rejoin', 'task-rejoin');
-
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 1, name: 'Ann', is_host: true })));
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(8 * 1000);
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 2, name: 'Ann', is_host: true })));
-    await flushMicrotasks();
-
-    // Well past both the original armed teardown's fire time and a fresh grace period counted from the rejoin.
-    await vi.advanceTimersByTimeAsync(2 * GRACE_MS);
-    await flushMicrotasks();
-
-    expect(made.stopped).toBe(0);
-    // The worst consequence avoided: no premature "room dispersed" wake-up, no meeting summary landing in Slack mid-meeting.
-    expect(meetingEndedCalls).toEqual([]);
-    // Ann is in the room, under both ids — the old one closed, the new one open.
-    const roster = made.rosters[made.rosters.length - 1];
-    expect(roster.map((p) => p.left_at === null)).toEqual([false, true]);
-  });
-
-  it('gives a rejoiner who leaves again the full grace period over, not the remainder of the first', async () => {
-    vi.useFakeTimers();
-    botIds.push('bot-rejoin-releave');
-    const { router, ws } = await withAudioSocket();
-    const { botId, spawned: made } = await startMeeting(router, 'https://zoom.us/j/rejoin-releave', 'task-rejoin-releave');
-
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 1, name: 'Ann', is_host: true })));
-    await vi.advanceTimersByTimeAsync(40 * 1000); // deep into the first grace period
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 2, name: 'Ann', is_host: true })));
-    await vi.advanceTimersByTimeAsync(5 * 1000);
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 2, name: 'Ann', is_host: true })));
-    await flushMicrotasks();
-
-    // First timer cancelled outright, not re-evaluated on expiry — else this departure inherits the first period's remainder, and the meeting would have ended by now.
-    await vi.advanceTimersByTimeAsync(GRACE_MS - 1000);
-    await flushMicrotasks();
-    expect(made.stopped).toBe(0);
-
-    await vi.advanceTimersByTimeAsync(1000);
-    await flushMicrotasks();
-    expect(made.stopped).toBe(1);
-    expect(meetingEndedCalls).toEqual([{ taskId: 'task-rejoin-releave', sessionId: botId }]);
-  });
-
-  it('does not end while Archie is alone at the start — zero participants is not the end', async () => {
-    botIds.push('bot-alone');
-    const { router } = await withAudioSocket();
-    const { spawned: made } = await startMeeting(router, 'https://zoom.us/j/alone', 'task-alone');
-
-    await flushMicrotasks();
-
-    // Nothing has joined or left at all — the state every meeting starts in.
-    expect(made.stopped).toBe(0);
-  });
-
-  it("does not end on Archie's own leave event, even before any human has joined", async () => {
-    vi.useFakeTimers();
-    botIds.push('bot-self-leave');
-    const { router, ws } = await withAudioSocket();
-    const { botId, spawned: made } = await startMeeting(router, 'https://zoom.us/j/self-leave', 'task-self-leave');
-
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 1, name: 'Archie', is_host: false })));
-    await flushMicrotasks();
-
-    // Nothing armed, not just nothing done synchronously — the whole grace period passes and the meeting is still here.
-    await vi.advanceTimersByTimeAsync(GRACE_MS);
-    await flushMicrotasks();
-
-    expect(made.stopped).toBe(0);
-    expect(meetingEndedCalls).toEqual([]);
-  });
-
-  it('does not end on an orphaned leave — one with no join this connector ever witnessed', async () => {
-    vi.useFakeTimers();
-    botIds.push('bot-orphan-leave');
-    const { router, ws } = await withAudioSocket();
-    const { botId, spawned: made } = await startMeeting(router, 'https://zoom.us/j/orphan-leave', 'task-orphan-leave');
-
-    // A leave for someone never seen joining doesn't prove the room is empty — it could hold others never witnessed arriving either.
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 42, name: 'Mystery', is_host: null })));
-    await flushMicrotasks();
-
-    // No teardown armed either — the grace period passes and it is still live.
-    await vi.advanceTimersByTimeAsync(GRACE_MS);
-    await flushMicrotasks();
-
-    expect(made.stopped).toBe(0);
-    expect(meetingEndedCalls).toEqual([]);
-    // Still recorded, though — their departure is not silently lost.
-    expect(liveParticipantCalls[0].liveParticipants).toEqual([
-      { name: 'Mystery', is_host: null, joined_at: null, left_at: expect.any(String) },
-    ]);
-  });
-
-  it('keeps the room open until the SECOND of two humans leaves', async () => {
-    vi.useFakeTimers();
-    botIds.push('bot-two-humans');
-    const { router, ws } = await withAudioSocket();
-    const { botId, spawned: made } = await startMeeting(router, 'https://zoom.us/j/two-humans', 'task-two-humans');
-
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 2, name: 'Bob', is_host: false })));
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 1, name: 'Ann', is_host: true })));
-    await flushMicrotasks();
-
-    expect(made.stopped).toBe(0); // Bob is still there
-
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 2, name: 'Bob', is_host: false })));
-    await flushMicrotasks();
-    expect(made.stopped).toBe(0); // and still not yet — the grace period runs
-
-    await vi.advanceTimersByTimeAsync(GRACE_MS);
-    await flushMicrotasks();
-
-    expect(made.stopped).toBe(1);
-    expect(meetingEndedCalls).toEqual([{ taskId: 'task-two-humans', sessionId: botId }]);
-  });
-
-  it('arms nothing at all while other people are still in the room', async () => {
-    // The arming decision is about the room, not the person who left — a busy meeting with people coming and going must never carry a pending teardown.
-    vi.useFakeTimers();
-    botIds.push('bot-crowd');
-    const { router, ws } = await withAudioSocket();
-    const { botId, spawned: made } = await startMeeting(router, 'https://zoom.us/j/crowd', 'task-crowd');
-
-    for (const id of [1, 2, 3]) {
-      ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id, name: `P${id}`, is_host: id === 1 })));
-    }
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 2, name: 'P2', is_host: false })));
-    await flushMicrotasks();
-
-    // Same reading as "stops sweeping once the connector is stopped" — a grace timer here would show up as a second one.
-    expect(vi.getTimerCount()).toBe(1);
-
-    await vi.advanceTimersByTimeAsync(2 * GRACE_MS);
-    await flushMicrotasks();
-
-    expect(made.stopped).toBe(0);
-    expect(meetingEndedCalls).toEqual([]);
-  });
-
-  it('arms ONE teardown however many leaves arrive, and the idle sweep afterwards finds nothing left to do', async () => {
-    vi.useFakeTimers();
-    botIds.push('bot-double-teardown');
-    const { router, ws } = await withAudioSocket();
-    const { botId, spawned: made } = await startMeeting(router, 'https://zoom.us/j/double-teardown', 'task-double-teardown');
-
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 1, name: 'Ann', is_host: true })));
-    await flushMicrotasks();
-
-    // Stray duplicate leaves, trusted no further than handleAudioMessage elsewhere. Still `live` in the grace period, so these DO reach handleParticipantLeave again.
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 1, name: 'Ann', is_host: true })));
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 1, name: 'Ann', is_host: true })));
-    await flushMicrotasks();
-
-    // Three leaves, but only the idle sweep plus a single grace timer are pending — not three teardowns queued up.
-    expect(vi.getTimerCount()).toBe(2);
-
-    await vi.advanceTimersByTimeAsync(GRACE_MS);
-    await flushMicrotasks();
-    expect(made.stopped).toBe(1);
-    expect(meetingEndedCalls).toEqual([{ taskId: 'task-double-teardown', sessionId: botId }]);
-
-    // The idle sweep, now a backstop with nothing to find — must not tear this meeting down twice, nor wake the PM again.
-    await vi.advanceTimersByTimeAsync(4 * 60 * 1000);
-    expect(made.stopped).toBe(1);
-    expect(meetingEndedCalls).toEqual([{ taskId: 'task-double-teardown', sessionId: botId }]);
-  });
-
-  it('stands the armed teardown down when the meeting ends by another route, rather than firing at a dead meeting', async () => {
-    // DELETE stands for any explicit ending (LEAVE:, leave_recall_meeting, shutdown) — same funnel; armed, the timer would endMeeting a gone meeting, waking the PM twice.
-    vi.useFakeTimers();
-    botIds.push('bot-cancel-on-end');
-    const { router, ws } = await withAudioSocket();
-    const { botId, spawned: made } = await startMeeting(router, 'https://zoom.us/j/cancel-on-end', 'task-cancel-on-end');
-
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 1, name: 'Ann', is_host: true })));
-    await flushMicrotasks();
-    expect(vi.getTimerCount()).toBe(2); // idle sweep + the armed teardown
-
-    await request(router, 'DELETE', `/meetings/${botId}`);
-    await flushMicrotasks();
-
-    expect(made.stopped).toBe(1);
-    // Disarmed: the idle sweep is the only timer left.
-    expect(vi.getTimerCount()).toBe(1);
-
-    await vi.advanceTimersByTimeAsync(GRACE_MS + 4 * 60 * 1000);
-    await flushMicrotasks();
-
-    expect(made.stopped).toBe(1);
-    expect(meetingEndedCalls).toEqual([{ taskId: 'task-cancel-on-end', sessionId: botId }]);
-    // And no second `leave_call` at Recall from a timer firing into the void.
-    expect(http.filter((c) => c.url.endsWith(`/bot/${botId}/leave_call/`))).toHaveLength(1);
-  });
-
-  it("still records the meeting's end time from Recall's own status ledger, not the moment the room emptied", async () => {
-    vi.useFakeTimers();
-    botIds.push('bot-recorded-end-time');
-    botDetailsReplies.push({
-      status: 200,
-      body: JSON.stringify({
-        status_changes: [{ code: 'call_ended', created_at: '2026-08-29T09:00:00.000Z' }],
-      }),
-    });
-    const { router, ws } = await withAudioSocket();
-    const { botId } = await startMeeting(router, 'https://zoom.us/j/recorded-end-time', 'task-recorded-end-time');
-
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 1, name: 'Ann', is_host: true })));
-    await vi.advanceTimersByTimeAsync(GRACE_MS);
-    await flushMicrotasks();
-
-    expect(metadataEndCalls).toHaveLength(1);
-    // Not "now" (this test's wall-clock moment) — Recall's ledger value exactly, even though the room was detected empty 45s earlier.
-    expect(metadataEndCalls[0].info.meetingEndedAt).toBe('2026-08-29T09:00:00.000Z');
-  });
-
-  it('carries the live roster forward into the final teardown metadata, unmodified', async () => {
-    vi.useFakeTimers();
-    botIds.push('bot-final-roster');
-    const { router, ws } = await withAudioSocket();
-    const { botId } = await startMeeting(router, 'https://zoom.us/j/final-roster', 'task-final-roster');
-
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 1, name: 'Ann', is_host: true })));
-    await vi.advanceTimersByTimeAsync(GRACE_MS);
-    await flushMicrotasks();
-
-    expect(metadataEndCalls).toHaveLength(1);
-    expect(metadataEndCalls[0].info.liveParticipants).toEqual([
-      { name: 'Ann', is_host: true, joined_at: expect.any(String), left_at: expect.any(String) },
-    ]);
-  });
-});
-
-// A literal for the same reason as GRACE_MS — this value is the contract, making a missed ending cost 10 seconds instead of 3.5 minutes.
-const SETTLE_MS = 10 * 1000;
-
-// Bare codes (call_ended), not bot.-prefixed webhook names — the shape askWhetherWeAreStillInTheCall reads.
+// Bare codes (call_ended), not bot.-prefixed webhook names — the shape `pollBotStatuses` reads.
 function ledger(...codes: string[]): { status: number; body: string } {
   return {
     status: 200,
@@ -1814,7 +1546,7 @@ function ledger(...codes: string[]): { status: number; body: string } {
   };
 }
 
-// Socket-close question and teardown fetch share this URL, so counting *questions* needs an unbound meeting or a pre-teardown baseline — each test below says which.
+// The poll and the teardown fetch share this URL, so counting *polls* needs an unbound meeting or a pre-teardown baseline — each test below says which.
 function botDetailGets(botId: string): HttpCall[] {
   return http.filter((c) => c.url.endsWith(`/api/v1/bot/${botId}/`));
 }
@@ -1824,206 +1556,40 @@ function leaveCalls(botId: string): HttpCall[] {
   return http.filter((c) => c.url.endsWith(`/bot/${botId}/leave_call/`));
 }
 
-describe('recall mount — the audio socket closing is a question, not an answer', () => {
-  // Recall can stop delivering audio with no leave event ever sent, so the grace period never arms — without this path, only the slower idle sweep would catch it.
-  // Must NOT tear down on socket close: "audio stopped" is equally true of an ended call and a 2s wobble. Close triggers a question; only Recall's answer ends anything.
+describe('recall mount — Recall ends the meeting, the poll finds out', () => {
+  // Nothing here infers an ending: Recall pulls the bot out itself once the room has been empty for `everyone_left_timeout` (recall.ts), and this poll only reads the ledger that says so.
+  // Wrong permissively is how Archie vanishes from a live room; wrong the other way costs one poll interval.
 
-  it('ends the meeting as soon as Recall says the call is over, with no leave event ever arriving', async () => {
+  it('ends the meeting once Recall reports it out of the call, and only once', async () => {
     vi.useFakeTimers();
-    botIds.push('bot-close-ended');
+    botIds.push('bot-poll-ended');
+    // Answers the poll; teardown's own fetch falls through to the default reply.
     botDetailsReplies.push(ledger('joining_call', 'in_call_recording', 'call_ended'));
-    const { router, ws } = await withAudioSocket();
+    const mounted = await mount();
+    attach(mounted.lifecycle);
     const { botId, spawned: made } = await startMeeting(
-      router,
-      'https://zoom.us/j/close-ended',
-      'task-close-ended',
+      mounted.router,
+      'https://zoom.us/j/poll-ended',
+      'task-poll-ended',
     );
 
-    // This frame is also how the socket learns its meeting — Recall assigns the bot id after we hand over the URL, so every audio socket arrives before that's known.
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
-    await flushMicrotasks();
-    ws.fire('close');
-
-    await vi.advanceTimersByTimeAsync(SETTLE_MS);
+    await vi.advanceTimersByTimeAsync(POLL_MS);
     await flushMicrotasks();
 
     expect(made.stopped).toBe(1);
-    expect(meetingEndedCalls).toEqual([{ taskId: 'task-close-ended', sessionId: botId }]);
-    expect(vi.getTimerCount()).toBe(1);
-    // Why this path, not the grace period: our own roster still has Ann in the room, since the leave event never came.
-    expect(metadataEndCalls[0].info.liveParticipants).toEqual([
-      { name: 'Ann', is_host: true, joined_at: expect.any(String), left_at: null },
-    ]);
-  });
-
-  it('does nothing when Recall says the bot is still in the call, and the meeting carries on afterwards', async () => {
-    vi.useFakeTimers();
-    botIds.push('bot-close-blip');
-    botDetailsReplies.push(ledger('joining_call', 'in_call_recording'));
-    const { router, ws, onUpgrade } = await withAudioSocket();
-    const { botId, spawned: made } = await startMeeting(
-      router,
-      'https://zoom.us/j/close-blip',
-      'task-close-blip',
-    );
-
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
-    ws.fire('close');
-    await vi.advanceTimersByTimeAsync(SETTLE_MS);
-    await flushMicrotasks();
-
-    // A blip doesn't make Recall report call_ended, so nothing ends — the PM isn't told the room dispersed while Ann is still in it.
-    expect(made.stopped).toBe(0);
-    expect(meetingEndedCalls).toEqual([]);
-
-    // Genuinely intact, not merely un-torn-down — audio flows again on the new socket.
-    onUpgrade({ url: '/api/voice/audio' }, { destroy: vi.fn() }, Buffer.alloc(0));
-    const reconnected = lastSocket();
-    reconnected.fire('message', Buffer.from(audioFrame(botId, { id: 1, name: 'Ann' })));
-    expect(made.audio).toHaveLength(1);
-
-    // The ordinary ending still works from here, through the grace period, on the socket that replaced the one that closed.
-    reconnected.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 1, name: 'Ann', is_host: true })));
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(GRACE_MS);
-    await flushMicrotasks();
-
-    expect(made.stopped).toBe(1);
-    expect(meetingEndedCalls).toEqual([{ taskId: 'task-close-blip', sessionId: botId }]);
-  });
-
-  it('leaves the meeting alone and says so loudly when the question itself fails, then lets the sweep have it', async () => {
-    vi.useFakeTimers();
-    const warns = vi.spyOn(logger, 'warn').mockImplementation(() => {});
-    botIds.push('bot-close-ask-fails');
-    botDetailsReplies.push({ status: 500, body: '{"detail":"upstream exploded"}' });
-    const { router, ws } = await withAudioSocket();
-    const { botId, spawned: made } = await startMeeting(
-      router,
-      'https://zoom.us/j/close-ask-fails',
-      'task-close-ask-fails',
-    );
-
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
-    ws.fire('close');
-    await vi.advanceTimersByTimeAsync(SETTLE_MS);
-    await flushMicrotasks();
-
-    // A network error must never be read as an ending.
-    expect(made.stopped).toBe(0);
-    expect(meetingEndedCalls).toEqual([]);
-    // Visible because this is the one branch where a real ending can be missed — the log line explains a teardown that later came from the sweep instead of here.
-    expect(
-      warns.mock.calls.some(
-        ([prefix, message]) =>
-          prefix === 'voice' && String(message).includes(botId) && /idle sweep/.test(String(message)),
-      ),
-    ).toBe(true);
-
-    // Nor is the meeting wedged open: the backstop underneath is untouched.
-    await vi.advanceTimersByTimeAsync(4 * 60 * 1000);
-    await flushMicrotasks();
-    expect(made.stopped).toBe(1);
-    expect(meetingEndedCalls).toEqual([{ taskId: 'task-close-ask-fails', sessionId: botId }]);
-  });
-
-  it('asks once however many times the socket closes, and tears down once', async () => {
-    vi.useFakeTimers();
-    botIds.push('bot-close-storm');
-    botDetailsReplies.push(ledger('in_call_recording', 'call_ended'));
-    const { router, ws } = await withAudioSocket();
-    // Unbound on purpose: no task means no teardown metadata fetch, so every bot-details GET here is a question — "asked once" is a count, not an inference.
-    const { botId, spawned: made } = await startMeeting(router, 'https://zoom.us/j/close-storm');
-
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
-    // Three closes in a row — a flapping connection, or Recall retrying.
-    ws.fire('close');
-    ws.fire('close');
-    ws.fire('close');
-
-    // One question pending, plus the sweep — not three questions, and not three teardowns queued up.
-    expect(vi.getTimerCount()).toBe(2);
-
-    await vi.advanceTimersByTimeAsync(SETTLE_MS);
-    await flushMicrotasks();
-
-    expect(botDetailGets(botId)).toHaveLength(1);
-    expect(made.stopped).toBe(1);
+    expect(meetingEndedCalls).toEqual([{ taskId: 'task-poll-ended', sessionId: botId }]);
     expect(leaveCalls(botId)).toHaveLength(1);
-  });
 
-  it('wakes the PM once when the question and an armed grace timer both point at the same ending', async () => {
-    vi.useFakeTimers();
-    botIds.push('bot-close-vs-grace');
-    botDetailsReplies.push(ledger('in_call_recording', 'call_ended'));
-    const { router, ws } = await withAudioSocket();
-    const { botId, spawned: made } = await startMeeting(
-      router,
-      'https://zoom.us/j/close-vs-grace',
-      'task-close-vs-grace',
-    );
-
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 1, name: 'Ann', is_host: true })));
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(1000);
-    ws.fire('close');
-    await flushMicrotasks();
-    expect(vi.getTimerCount()).toBe(3); // sweep + grace + question
-
-    // The question comes due first — ten seconds beats forty-five.
-    await vi.advanceTimersByTimeAsync(SETTLE_MS);
-    await flushMicrotasks();
-
-    expect(made.stopped).toBe(1);
-    expect(meetingEndedCalls).toEqual([{ taskId: 'task-close-vs-grace', sessionId: botId }]);
-    // The grace timer was stood down as the meeting ended, not left to fire at a gone meeting — only the sweep remains.
-    expect(vi.getTimerCount()).toBe(1);
-
-    // Well past where it would have fired, and past the sweep too.
-    await vi.advanceTimersByTimeAsync(GRACE_MS + 4 * 60 * 1000);
+    // Later ticks find nothing to end: `endMeeting` deletes from `live` before its first await, so no route can end a meeting twice.
+    await vi.advanceTimersByTimeAsync(3 * POLL_MS);
     await flushMicrotasks();
     expect(made.stopped).toBe(1);
-    expect(meetingEndedCalls).toHaveLength(1);
-    expect(leaveCalls(botId)).toHaveLength(1);
-  });
-
-  it('drops a pending question when the grace timer gets there first, rather than asking about a dead meeting', async () => {
-    vi.useFakeTimers();
-    botIds.push('bot-grace-vs-close');
-    const { router, ws } = await withAudioSocket();
-    const { botId, spawned: made } = await startMeeting(
-      router,
-      'https://zoom.us/j/grace-vs-close',
-      'task-grace-vs-close',
-    );
-
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 1, name: 'Ann', is_host: true })));
-    await flushMicrotasks();
-    // Socket dies at 40s, its question comes due at 50s — 5s after the grace period ends the meeting at 45s. The race, run the other way round from the test above.
-    await vi.advanceTimersByTimeAsync(40 * 1000);
-    ws.fire('close');
-    await flushMicrotasks();
-
-    await vi.advanceTimersByTimeAsync(5 * 1000);
-    await flushMicrotasks();
-    expect(made.stopped).toBe(1);
-    // The question went with the meeting; the sweep is the only timer left.
-    expect(vi.getTimerCount()).toBe(1);
-
-    // The only bot-details GET so far is teardown's; nothing added when the dropped question's moment passes.
-    const duringTeardown = botDetailGets(botId).length;
-    await vi.advanceTimersByTimeAsync(SETTLE_MS);
-    await flushMicrotasks();
-    expect(botDetailGets(botId)).toHaveLength(duringTeardown);
     expect(meetingEndedCalls).toHaveLength(1);
     expect(leaveCalls(botId)).toHaveLength(1);
   });
 
   // Recall: call_ended="left call", done="shut down" (after leaving), fatal="error causing shutdown" — Archie's out in all three; returns only via another join_recall_meeting.
   // Closed over "certainly out", not open over "certainly in" — Recall may add codes without notice, so a new code (last row) must default to NOT ending the meeting.
-  // Wrong permissively is how Archie vanishes from a live room; wrong the other way only costs the delay this path removes.
   it.each([
     ['call_ended', true],
     ['done', true],
@@ -2039,12 +1605,11 @@ describe('recall mount — the audio socket closing is a question, not an answer
     vi.useFakeTimers();
     botIds.push(`bot-status-${code}`);
     botDetailsReplies.push(ledger(code));
-    const { router, ws } = await withAudioSocket();
-    const { botId, spawned: made } = await startMeeting(router, `https://zoom.us/j/status-${code}`);
+    const mounted = await mount();
+    attach(mounted.lifecycle);
+    const { spawned: made } = await startMeeting(mounted.router, `https://zoom.us/j/status-${code}`);
 
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
-    ws.fire('close');
-    await vi.advanceTimersByTimeAsync(SETTLE_MS);
+    await vi.advanceTimersByTimeAsync(POLL_MS);
     await flushMicrotasks();
 
     expect(made.stopped).toBe(endsIt ? 1 : 0);
@@ -2055,12 +1620,11 @@ describe('recall mount — the audio socket closing is a question, not an answer
     vi.useFakeTimers();
     botIds.push('bot-trailing-ledger');
     botDetailsReplies.push(ledger('in_call_recording', 'call_ended', 'done'));
-    const { router, ws } = await withAudioSocket();
-    const { botId, spawned: made } = await startMeeting(router, 'https://zoom.us/j/trailing-ledger');
+    const mounted = await mount();
+    attach(mounted.lifecycle);
+    const { spawned: made } = await startMeeting(mounted.router, 'https://zoom.us/j/trailing-ledger');
 
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
-    ws.fire('close');
-    await vi.advanceTimersByTimeAsync(SETTLE_MS);
+    await vi.advanceTimersByTimeAsync(POLL_MS);
     await flushMicrotasks();
 
     expect(made.stopped).toBe(1);
@@ -2070,120 +1634,202 @@ describe('recall mount — the audio socket closing is a question, not an answer
     vi.useFakeTimers();
     botIds.push('bot-empty-ledger');
     botDetailsReplies.push(ledger());
-    const { router, ws } = await withAudioSocket();
-    const { botId, spawned: made } = await startMeeting(router, 'https://zoom.us/j/empty-ledger');
+    const mounted = await mount();
+    attach(mounted.lifecycle);
+    const { spawned: made } = await startMeeting(mounted.router, 'https://zoom.us/j/empty-ledger');
 
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
-    ws.fire('close');
-    await vi.advanceTimersByTimeAsync(SETTLE_MS);
+    await vi.advanceTimersByTimeAsync(POLL_MS);
     await flushMicrotasks();
 
     // Nothing known isn't the same as nothing happening — only one of those readings can end a live meeting by mistake.
     expect(made.stopped).toBe(0);
   });
 
-  it('skips the question outright when audio comes back while it waits', async () => {
+  it('leaves a meeting Recall still has in the call alone, and it carries on afterwards', async () => {
     vi.useFakeTimers();
-    botIds.push('bot-audio-back');
-    // Queued and deliberately never consumed — it would end the meeting if asked, which is what makes this an assertion about the skip, not the answer.
-    botDetailsReplies.push(ledger('call_ended'));
-    const { router, ws, onUpgrade } = await withAudioSocket();
+    botIds.push('bot-poll-live');
+    botDetailsReplies.push(ledger('joining_call', 'in_call_recording'));
+    const { router, ws, lifecycle } = await withAudioSocket();
     const { botId, spawned: made } = await startMeeting(
       router,
-      'https://zoom.us/j/audio-back',
-      'task-audio-back',
+      'https://zoom.us/j/poll-live',
+      'task-poll-live',
     );
 
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
-    ws.fire('close');
-    await vi.advanceTimersByTimeAsync(2000);
-    onUpgrade({ url: '/api/voice/audio' }, { destroy: vi.fn() }, Buffer.alloc(0));
-    lastSocket().fire('message', Buffer.from(audioFrame(botId, { id: 1, name: 'Ann' })));
-
-    await vi.advanceTimersByTimeAsync(SETTLE_MS);
+    await vi.advanceTimersByTimeAsync(POLL_MS);
     await flushMicrotasks();
 
-    // A reconnect is proof on its own — the API call is never made.
-    expect(botDetailGets(botId)).toHaveLength(0);
+    expect(made.stopped).toBe(0);
+    // The worst consequence avoided: no premature "room dispersed" wake-up while Ann is still in it.
+    expect(meetingEndedCalls).toEqual([]);
+
+    // Genuinely intact, not merely un-torn-down — audio still reaches the conversation.
+    ws.fire('message', Buffer.from(audioFrame(botId, { id: 1, name: 'Ann' })));
+    expect(made.audio).toHaveLength(1);
+    await lifecycle.stop();
+  });
+
+  it('leaves the meeting live and says so loudly when the poll itself fails', async () => {
+    vi.useFakeTimers();
+    const warns = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    botIds.push('bot-poll-fails');
+    botDetailsReplies.push({ status: 500, body: '{"detail":"upstream exploded"}' });
+    const mounted = await mount();
+    attach(mounted.lifecycle);
+    const { botId, spawned: made } = await startMeeting(
+      mounted.router,
+      'https://zoom.us/j/poll-fails',
+      'task-poll-fails',
+    );
+
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    await flushMicrotasks();
+
+    // A network error must never be read as an ending.
     expect(made.stopped).toBe(0);
     expect(meetingEndedCalls).toEqual([]);
-  });
+    expect(
+      warns.mock.calls.some(
+        ([prefix, message]) => prefix === 'voice' && String(message).includes(botId),
+      ),
+    ).toBe(true);
 
-  it('asks nothing when the socket that closed never carried a meeting', async () => {
-    vi.useFakeTimers();
-    botIds.push('bot-untouched');
-    const { router, ws } = await withAudioSocket();
-    const { botId, spawned: made } = await startMeeting(
-      router,
-      'https://zoom.us/j/untouched',
-      'task-untouched',
-    );
-
-    // Recall opens the audio socket before the bot is admitted, so a socket closing with nothing delivered is ordinary — no bot id to ask about.
-    ws.fire('close');
-    await vi.advanceTimersByTimeAsync(SETTLE_MS);
+    // And the next tick asks again — one failed answer doesn't retire the poll.
+    botDetailsReplies.push(ledger('call_ended'));
+    await vi.advanceTimersByTimeAsync(POLL_MS);
     await flushMicrotasks();
-
-    expect(botDetailGets(botId)).toHaveLength(0);
-    expect(made.stopped).toBe(0);
-    expect(vi.getTimerCount()).toBe(1); // nothing armed by that close
-  });
-
-  it('asks nothing about a meeting that has already ended, and sends no second leave', async () => {
-    vi.useFakeTimers();
-    botIds.push('bot-close-after-end');
-    const { router, ws } = await withAudioSocket();
-    const { botId, spawned: made } = await startMeeting(
-      router,
-      'https://zoom.us/j/close-after-end',
-      'task-close-after-end',
-    );
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
-
-    await request(router, 'DELETE', `/meetings/${botId}`);
-    await flushMicrotasks();
-    const duringTeardown = botDetailGets(botId).length;
-
-    // The socket dies on the way out, the ordinary shutdown order — stop() ends every meeting first, only then closes sockets.
-    ws.fire('close');
-    await vi.advanceTimersByTimeAsync(SETTLE_MS);
-    await flushMicrotasks();
-
-    expect(botDetailGets(botId)).toHaveLength(duringTeardown);
     expect(made.stopped).toBe(1);
-    expect(leaveCalls(botId)).toHaveLength(1);
+    expect(meetingEndedCalls).toEqual([{ taskId: 'task-poll-fails', sessionId: botId }]);
   });
 
-  it('still ends through the idle sweep when the answer was "in the call" and the socket never came back', async () => {
-    // The composition the three mechanisms promise: this is a third, faster route for what the other two miss, removing neither.
+  it('polls every live meeting, ending only the one Recall reports out', async () => {
     vi.useFakeTimers();
-    botIds.push('bot-never-back');
+    botIds.push('bot-poll-a', 'bot-poll-b');
+    // Queued in the order the tick walks `live`: the first meeting started is asked about first.
+    botDetailsReplies.push(ledger('in_call_recording'), ledger('call_ended'));
+    const mounted = await mount();
+    attach(mounted.lifecycle);
+    const a = await startMeeting(mounted.router, 'https://zoom.us/j/poll-a', 'task-poll-a');
+    const b = await startMeeting(mounted.router, 'https://zoom.us/j/poll-b', 'task-poll-b');
+
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    await flushMicrotasks();
+
+    // Both asked about — the tick doesn't stop at the first meeting, either to end it or to leave it.
+    expect(botDetailGets('bot-poll-a')).toHaveLength(1);
+    expect(botDetailGets('bot-poll-b').length).toBeGreaterThanOrEqual(1);
+    expect(a.spawned.stopped).toBe(0);
+    expect(b.spawned.stopped).toBe(1);
+    expect(meetingEndedCalls).toEqual([{ taskId: 'task-poll-b', sessionId: 'bot-poll-b' }]);
+  });
+
+  it('does nothing on a tick that finds the previous one still in flight', async () => {
+    vi.useFakeTimers();
+    botIds.push('bot-poll-slow');
+    let release!: () => void;
+    botDetailsHold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    botDetailsReplies.push(ledger('in_call_recording'), ledger('in_call_recording'));
+    const mounted = await mount();
+    attach(mounted.lifecycle);
+    // Unbound on purpose: no task means no teardown metadata fetch, so every bot-details GET here is a poll — "asked once" is a count, not an inference.
+    const { botId } = await startMeeting(mounted.router, 'https://zoom.us/j/poll-slow');
+
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    await flushMicrotasks();
+    expect(botDetailGets(botId)).toHaveLength(1);
+
+    // Three more ticks come due while that answer is still outstanding; not one of them asks again.
+    await vi.advanceTimersByTimeAsync(3 * POLL_MS);
+    await flushMicrotasks();
+    expect(botDetailGets(botId)).toHaveLength(1);
+
+    botDetailsHold = null;
+    release();
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    await flushMicrotasks();
+    expect(botDetailGets(botId)).toHaveLength(2);
+  });
+
+  it('does not end the meeting when the last human leaves — that call is Recall\'s', async () => {
+    // Zoom issues a new participant id on rejoin, so `leave(id1)` then `join(id2)` is indistinguishable from an empty room here. Recall's own `everyone_left_timeout` is what waits that out.
+    vi.useFakeTimers();
+    botIds.push('bot-last-leaves');
+    botDetailsReplies.push(ledger('in_call_recording'), ledger('in_call_recording'));
+    const { router, ws } = await withAudioSocket();
+    const { botId, spawned: made } = await startMeeting(
+      router,
+      'https://zoom.us/j/last-leaves',
+      'task-last-leaves',
+    );
+
+    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
+    ws.fire('message', Buffer.from(participantEventFrame(botId, 'leave', { id: 1, name: 'Ann', is_host: true })));
+    await flushMicrotasks();
+
+    // Nothing armed by that leave — the poll is the only timer this connector owns.
+    expect(vi.getTimerCount()).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(2 * POLL_MS);
+    await flushMicrotasks();
+
+    expect(made.stopped).toBe(0);
+    expect(meetingEndedCalls).toEqual([]);
+    // The departure is still recorded, which is all a leave event is for now.
+    const last = liveParticipantCalls[liveParticipantCalls.length - 1];
+    expect(last.liveParticipants[0].left_at).not.toBeNull();
+  });
+
+  it('does not end the meeting when the audio socket closes — a blip and an ending look identical there', async () => {
+    vi.useFakeTimers();
+    botIds.push('bot-socket-close');
     botDetailsReplies.push(ledger('in_call_recording'));
-    const { router, ws } = await withAudioSocket();
+    const { router, ws, onUpgrade, lifecycle } = await withAudioSocket();
     const { botId, spawned: made } = await startMeeting(
       router,
-      'https://zoom.us/j/never-back',
-      'task-never-back',
+      'https://zoom.us/j/socket-close',
+      'task-socket-close',
     );
 
     ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
     ws.fire('close');
-    await vi.advanceTimersByTimeAsync(SETTLE_MS);
+    await flushMicrotasks();
+    // Nothing armed, nothing asked on the spot — and the poll's own answer keeps it live.
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(POLL_MS);
     await flushMicrotasks();
     expect(made.stopped).toBe(0);
 
-    await vi.advanceTimersByTimeAsync(4 * 60 * 1000);
-    await flushMicrotasks();
-
-    expect(made.stopped).toBe(1);
-    expect(meetingEndedCalls).toEqual([{ taskId: 'task-never-back', sessionId: botId }]);
+    // Audio flows again on the socket that replaced it.
+    onUpgrade({ url: '/api/voice/audio' }, { destroy: vi.fn() }, Buffer.alloc(0));
+    lastSocket().fire('message', Buffer.from(audioFrame(botId, { id: 1, name: 'Ann' })));
+    expect(made.audio).toHaveLength(1);
+    await lifecycle.stop();
   });
 
-  it("records Recall's own end time on this path too, not the moment the socket died", async () => {
+  it('stops polling once the connector is stopped', async () => {
     vi.useFakeTimers();
-    botIds.push('bot-close-end-time');
+    botIds.push('bot-poll-stop');
+    const { router, lifecycle } = await mount();
+    attach(lifecycle);
+    const meeting = await startMeeting(router);
+
+    // The poll is the only timer this connector owns, so the count shows it running directly — a surviving interval leaves no trace otherwise.
+    expect(vi.getTimerCount()).toBe(1);
+
+    await lifecycle.stop();
+
+    expect(meeting.spawned.stopped).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("still records Recall's own end time on this path, not the moment the poll noticed", async () => {
+    vi.useFakeTimers();
+    botIds.push('bot-poll-end-time');
     botDetailsReplies.push(
-      // The question, then teardown's own fetch, in that order — the question is what triggers the teardown.
+      // The poll, then teardown's own fetch, in that order — the poll is what triggers the teardown.
       ledger('in_call_recording', 'call_ended'),
       {
         status: 200,
@@ -2193,32 +1839,44 @@ describe('recall mount — the audio socket closing is a question, not an answer
         }),
       },
     );
-    const { router, ws } = await withAudioSocket();
-    const { botId } = await startMeeting(
-      router,
-      'https://zoom.us/j/close-end-time',
-      'task-close-end-time',
-    );
+    const mounted = await mount();
+    attach(mounted.lifecycle);
+    await startMeeting(mounted.router, 'https://zoom.us/j/poll-end-time', 'task-poll-end-time');
 
-    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
-    ws.fire('close');
-    await vi.advanceTimersByTimeAsync(SETTLE_MS);
+    await vi.advanceTimersByTimeAsync(POLL_MS);
     await flushMicrotasks();
 
     expect(metadataEndCalls).toHaveLength(1);
-    // Recall's ledger value (11:44:43), not the socket close moments earlier, and not the instant teardown happened to run — that's the fact the field names.
+    // Recall's ledger value, not the instant teardown happened to run — that's the fact the field names.
     expect(metadataEndCalls[0].info.meetingEndedAt).toBe('2026-09-02T11:44:43.000Z');
     expect(metadataEndCalls[0].info.platform).toBe('zoom');
   });
+
+  it('carries the live roster forward into the final teardown metadata, unmodified', async () => {
+    vi.useFakeTimers();
+    botIds.push('bot-poll-roster');
+    botDetailsReplies.push(ledger('call_ended'));
+    const { router, ws } = await withAudioSocket();
+    const { botId } = await startMeeting(router, 'https://zoom.us/j/poll-roster', 'task-poll-roster');
+
+    ws.fire('message', Buffer.from(participantEventFrame(botId, 'join', { id: 1, name: 'Ann', is_host: true })));
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    await flushMicrotasks();
+
+    expect(metadataEndCalls).toHaveLength(1);
+    // Never rewritten to close `left_at` — Recall pulled the bot out, which says nothing about when Ann left.
+    expect(metadataEndCalls[0].info.liveParticipants).toEqual([
+      { name: 'Ann', is_host: true, joined_at: expect.any(String), left_at: null },
+    ]);
+  });
 });
 
-describe('recall mount — the starter hook', () => {
-  it('lets join_recall_meeting reach a real, task-bound meeting', async () => {
+describe('recall mount — what join_recall_meeting reaches', () => {
+  it('starts a real, task-bound meeting', async () => {
     botIds.push('bot-starter');
     await mount();
-    expect(registeredStarter).not.toBeNull();
 
-    const result = await registeredStarter!('task-starter', 'https://zoom.us/j/starter');
+    const result = await opsOf().start('task-starter', 'https://zoom.us/j/starter');
 
     expect(result).toEqual({ ok: true, botId: 'bot-starter' });
     expect(hosts.some((h) => h.taskId === 'task-starter')).toBe(true);
@@ -2229,27 +1887,29 @@ describe('recall mount — the starter hook', () => {
   it('refuses a second join on a task that already has one live', async () => {
     botIds.push('bot-starter-1', 'bot-starter-2');
     await mount();
+    const ops = opsOf();
 
-    const first = await registeredStarter!('task-dup', 'https://zoom.us/j/1');
-    const second = await registeredStarter!('task-dup', 'https://zoom.us/j/2');
+    const first = await ops.start('task-dup', 'https://zoom.us/j/1');
+    const second = await ops.start('task-dup', 'https://zoom.us/j/2');
 
     expect(first).toEqual({ ok: true, botId: 'bot-starter-1' });
     expect(second.ok).toBe(false);
     expect((second as { ok: false; reason: string }).reason).toMatch(/already live/i);
-    // The refused attempt never reached the medium at all.
+    // The refused attempt never reached the conversation at all.
     expect(hosts.filter((h) => h.taskId === 'task-dup')).toHaveLength(1);
     expect(spawned).toHaveLength(1);
   });
 
   it('reserves the task slot before creating a bot, so two overlapping joins cannot both succeed', async () => {
     // Unlike the sequential case above, these race — the shape a retried tool call, or a double join_recall_meeting emission, produces.
-    // An async function runs synchronously to its first await, so calling the starter twice back to back beats the second's check to the reservation — no fake timers.
+    // An async function runs synchronously to its first await, so calling start twice back to back beats the second's check to the reservation — no fake timers.
     botIds.push('bot-race-1', 'bot-race-2');
     await mount();
+    const ops = opsOf();
 
     const [first, second] = await Promise.all([
-      registeredStarter!('task-race', 'https://zoom.us/j/race-1'),
-      registeredStarter!('task-race', 'https://zoom.us/j/race-2'),
+      ops.start('task-race', 'https://zoom.us/j/race-1'),
+      ops.start('task-race', 'https://zoom.us/j/race-2'),
     ]);
 
     const results = [first, second];
@@ -2264,51 +1924,61 @@ describe('recall mount — the starter hook', () => {
   it('releases the reservation when bot creation fails, so the task can try again', async () => {
     createFails = 500;
     await mount();
+    const ops = opsOf();
 
-    const failed = await registeredStarter!('task-retry', 'https://zoom.us/j/1');
+    const failed = await ops.start('task-retry', 'https://zoom.us/j/1');
     expect(failed.ok).toBe(false);
 
     botIds.push('bot-retry-ok');
-    const retried = await registeredStarter!('task-retry', 'https://zoom.us/j/2');
+    const retried = await ops.start('task-retry', 'https://zoom.us/j/2');
 
     expect(retried).toEqual({ ok: true, botId: 'bot-retry-ok' });
   });
 });
 
-describe('recall mount — the stopper hook', () => {
-  it('registers a stopper that reaches the same meeting a LEAVE: request names', async () => {
+describe('recall mount — what leave_recall_meeting reaches', () => {
+  it("ends the meeting live on the task it names, by that meeting's own bot id", async () => {
     botIds.push('bot-leave');
     await mount();
-    expect(registeredStopper).not.toBeNull();
+    const ops = opsOf();
+    expect(await ops.start('task-leave', 'https://zoom.us/j/leave')).toEqual({ ok: true, botId: 'bot-leave' });
 
-    const started = await registeredStarter!('task-leave', 'https://zoom.us/j/leave');
-    expect(started).toEqual({ ok: true, botId: 'bot-leave' });
+    expect(await ops.stop('task-leave')).toEqual({ ok: true });
 
-    await registeredStopper!('bot-leave');
-
-    // The same endMeeting funnel the DELETE route and idle sweep already use ("ends the meeting the path names" above, for DELETE).
+    // The same endMeeting funnel the DELETE route and the status poll use ("ends the meeting the path names" above, for DELETE).
     expect(spawned.find((m) => m.transport.sessionId === 'bot-leave')?.stopped).toBe(1);
     expect(registry.has('task-leave')).toBe(false);
     expect(http.map((c) => c.url)).toContain('https://eu-central-1.recall.ai/api/v1/bot/bot-leave/leave_call/');
   });
 
-  it('leaves a meeting nothing else is tearing down alone', async () => {
+  it('leaves a meeting live on another task alone', async () => {
     botIds.push('bot-leave-keep', 'bot-leave-drop');
     await mount();
-    await registeredStarter!('task-leave-keep', 'https://zoom.us/j/keep');
-    await registeredStarter!('task-leave-drop', 'https://zoom.us/j/drop');
+    const ops = opsOf();
+    await ops.start('task-leave-keep', 'https://zoom.us/j/keep');
+    await ops.start('task-leave-drop', 'https://zoom.us/j/drop');
 
-    await registeredStopper!('bot-leave-drop');
+    await ops.stop('task-leave-drop');
 
     expect(spawned.find((m) => m.transport.sessionId === 'bot-leave-drop')?.stopped).toBe(1);
     expect(spawned.find((m) => m.transport.sessionId === 'bot-leave-keep')?.stopped).toBe(0);
     expect(registry.has('task-leave-drop')).toBe(false);
     expect(registry.has('task-leave-keep')).toBe(true);
   });
+
+  it('fails plainly, never a silent no-op, when no meeting is live on the task', async () => {
+    await mount();
+
+    expect(await opsOf().stop('task-nothing-live')).toEqual({
+      ok: false,
+      reason: 'No meeting is live on this task.',
+    });
+    expect(http).toEqual([]);
+  });
 });
 
-describe('recall mount — the other two seams a connector plugs into', () => {
-  // Like the starter hook: registered once, at mount, into a registry task.ts/spawn.ts read generically, never naming Recall — makes "no mount, no tool" true.
+describe('recall mount — the two seams a connector plugs into', () => {
+  // Registered once, at mount, into registries task.ts/spawn.ts read generically, never naming Recall — makes "no mount, no tool" true.
   // See src/agents/__tests__/connector-tools.test.ts for the absent-until-registered half — earlier tests here already mounted the connector, same worker.
   it('registers the real recall channel deliverer under the "recall" kind', async () => {
     await mount();
@@ -2320,8 +1990,17 @@ describe('recall mount — the other two seams a connector plugs into', () => {
     expect(getChannelRenderer('recall')).toBe(renderRecallChannel);
   });
 
-  it('registers the real recall PM-tools factory under "recall-tools"', async () => {
+  it('registers a PM-tools factory under "recall-tools", built over this mount\'s own start and stop', async () => {
+    botIds.push('bot-tools-wired');
     await mount();
-    expect(getRegisteredConnectorPmTools().get('recall-tools')).toBe(createRecallPmToolsServer);
+
+    // Identity is no longer the assertion: the factory is a closure over `ops`, so what matters is that the tools it builds reach this connector.
+    const ops = opsOf();
+    expect(await ops.start('task-tools-wired', 'https://zoom.us/j/tools-wired')).toEqual({
+      ok: true,
+      botId: 'bot-tools-wired',
+    });
+    expect(await ops.stop('task-tools-wired')).toEqual({ ok: true });
+    expect(spawned.find((m) => m.transport.sessionId === 'bot-tools-wired')?.stopped).toBe(1);
   });
 });

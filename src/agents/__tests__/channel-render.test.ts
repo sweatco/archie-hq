@@ -46,5 +46,5 @@ describe('renderChannel', () => {
   });
 
   // Registry is a process-wide Map, not reset between test files in a worker — a "recall unregistered"
-  // case here would be order-dependent. Pinned in src/connectors/recall/__tests__ instead.
+  // case here would be order-dependent. Pinned in src/voice/__tests__ instead.
 });

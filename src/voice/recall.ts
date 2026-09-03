@@ -3,8 +3,8 @@
  * No audio here — inbound via the realtime WebSocket, outbound via the output-media page.
  */
 
-import { logger } from '../../system/logger.js';
-import type { VoiceConfig } from '../../voice/types.js';
+import { logger } from '../system/logger.js';
+import type { VoiceConfig } from './types.js';
 
 const MAX_ERROR_BODY = 500;
 
@@ -20,6 +20,9 @@ export interface RecallConfig {
 
 /** Node's `fetch` has no default timeout — without this, a hung connection could hang forever. */
 const REQUEST_TIMEOUT_MS = 15_000;
+
+// How long Recall lets the room stand empty before pulling the bot out. Not the 2s default: Zoom issues a fresh participant id on rejoin, so a reconnect reads as an empty room.
+const EVERYONE_LEFT_TIMEOUT_S = 60;
 
 /** Teardown's picks from `GET /api/v1/bot/{id}/`'s larger bot object. */
 export interface RecallBotDetails {
@@ -136,6 +139,9 @@ export function createRecallClient(cfg: RecallConfig): RecallClient {
         // URL carries a session id we minted; Recall only assigns the bot id in this request's response.
         output_media: {
           camera: { kind: 'webpage', config: { url: opts.pageUrl } },
+        },
+        automatic_leave: {
+          everyone_left_timeout: { timeout: EVERYONE_LEFT_TIMEOUT_S },
         },
         recording_config: {
           // Per-participant, not `audio_mixed_raw`: each gets its own turn detector — attribution and turn boundaries arrive together.

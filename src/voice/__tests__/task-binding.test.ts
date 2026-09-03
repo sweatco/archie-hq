@@ -40,7 +40,6 @@ import {
   unregisterLiveMeeting,
   reserveMeetingSlot,
   releaseMeetingSlot,
-  startMeetingForTask,
   recallChannelKey,
   linkRecallChannel,
   endRecallChannel,
@@ -49,8 +48,6 @@ import {
   updateMeetingParticipantsLive,
   completeMeetingMetadata,
   recordMeetingCapabilities,
-  stopMeetingForTask,
-  setMeetingStopper,
 } from '../task-binding.js';
 import type { TaskMetadata } from '../../types/task.js';
 
@@ -61,6 +58,9 @@ function fakeMeeting(): Meeting {
     stop: vi.fn().mockResolvedValue(undefined),
   } as unknown as Meeting;
 }
+
+/** The connector's teardown funnel, for the tests that aren't about `leaveMeeting`. */
+const noopEnd = async (): Promise<void> => {};
 
 // Lets queued microtasks (the host's un-awaited `.catch()` chains) settle before assertions run.
 const drain = () => new Promise((r) => setTimeout(r, 10));
@@ -79,7 +79,7 @@ describe('createTaskHost', () => {
   describe('recordUtterance / noteEvent', () => {
     it('records a finalised utterance via appendMeetingTranscript, scoped to this meeting', () => {
       appendMeetingTranscript.mockResolvedValue(undefined);
-      const host = createTaskHost('task-utter', 'sess-utter', 'Archie');
+      const host = createTaskHost('task-utter', 'sess-utter', 'Archie', noopEnd);
 
       host.recordUtterance('Ann', 'when did it ship?');
 
@@ -88,7 +88,7 @@ describe('createTaskHost', () => {
 
     it('records an event via appendMeetingEvent, not the transcript', () => {
       appendMeetingEvent.mockResolvedValue(undefined);
-      const host = createTaskHost('task-event', 'sess-event', 'Archie');
+      const host = createTaskHost('task-event', 'sess-event', 'Archie', noopEnd);
 
       host.noteEvent('meeting started');
 
@@ -99,7 +99,7 @@ describe('createTaskHost', () => {
     it('does not take down the meeting when the underlying appender rejects, and logs', async () => {
       const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
       appendMeetingTranscript.mockRejectedValue(new Error('disk is full'));
-      const host = createTaskHost('task-reject', 'sess-reject', 'Archie');
+      const host = createTaskHost('task-reject', 'sess-reject', 'Archie', noopEnd);
 
       expect(() => host.recordUtterance('Ann', 'hello')).not.toThrow();
       await drain();
@@ -113,7 +113,7 @@ describe('createTaskHost', () => {
     it('records a meeting-chat line via appendMeetingChat, never the transcript', async () => {
       // A line lands in exactly one file — chat filed as an utterance would have Archie believe it said what it wrote.
       appendMeetingChat.mockResolvedValue(undefined);
-      const host = createTaskHost('task-written', 'sess-written', 'Archie');
+      const host = createTaskHost('task-written', 'sess-written', 'Archie', noopEnd);
 
       host.recordChat('Archie', 'commit 4f2a91c, deployed 12:03 UTC');
 
@@ -124,7 +124,7 @@ describe('createTaskHost', () => {
     it('does not take down the meeting when appendMeetingChat rejects', async () => {
       const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
       appendMeetingChat.mockRejectedValue(new Error('ENOSPC'));
-      const host = createTaskHost('task-written-reject', 'sess-written-reject', 'Archie');
+      const host = createTaskHost('task-written-reject', 'sess-written-reject', 'Archie', noopEnd);
 
       expect(() => host.recordChat('Archie', 'commit 4f2a91c')).not.toThrow();
       await drain();
@@ -135,7 +135,7 @@ describe('createTaskHost', () => {
     it('delegates readWrittenExchange with this task and the bot name', async () => {
       // The bot name is why createTaskHost takes one — every agent's written line renders as Archie's name, and only the connector knows it.
       readWrittenExchange.mockResolvedValue([{ speaker: 'Ann', text: 'can you join?' }]);
-      const host = createTaskHost('task-exchange-read', 'sess-exchange-read', 'Арчи');
+      const host = createTaskHost('task-exchange-read', 'sess-exchange-read', 'Арчи', noopEnd);
 
       await expect(host.readWrittenExchange()).resolves.toEqual([{ speaker: 'Ann', text: 'can you join?' }]);
       expect(readWrittenExchange).toHaveBeenCalledWith('task-exchange-read', 'Арчи');
@@ -144,7 +144,7 @@ describe('createTaskHost', () => {
     it('does the same for noteEvent when appendMeetingEvent rejects', async () => {
       const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
       appendMeetingEvent.mockRejectedValue(new Error('ENOENT'));
-      const host = createTaskHost('task-reject-2', 'sess-reject-2', 'Archie');
+      const host = createTaskHost('task-reject-2', 'sess-reject-2', 'Archie', noopEnd);
 
       expect(() => host.noteEvent('meeting ended')).not.toThrow();
       await drain();
@@ -162,7 +162,7 @@ describe('createTaskHost', () => {
       const meeting = fakeMeeting();
       registerLiveMeeting('task-ok', meeting);
 
-      const host = createTaskHost('task-ok', 'sess-ok', 'Archie');
+      const host = createTaskHost('task-ok', 'sess-ok', 'Archie', noopEnd);
       expect(() => host.consult('c1', 'what is the deploy status?')).not.toThrow();
       await drain();
 
@@ -188,7 +188,7 @@ describe('createTaskHost', () => {
       const meeting = fakeMeeting();
       registerLiveMeeting('task-gone', meeting);
 
-      const host = createTaskHost('task-gone', 'sess-gone', 'Archie');
+      const host = createTaskHost('task-gone', 'sess-gone', 'Archie', noopEnd);
       expect(() => host.consult('c-42', 'are we still shipping today?')).not.toThrow();
       await drain();
 
@@ -213,7 +213,7 @@ describe('createTaskHost', () => {
       const meeting = fakeMeeting();
       registerLiveMeeting('task-dangling', meeting);
 
-      const host = createTaskHost('task-dangling', 'sess-dangling', 'Archie');
+      const host = createTaskHost('task-dangling', 'sess-dangling', 'Archie', noopEnd);
       host.consult('c-99', 'is the deploy still on track?');
       await drain();
 
@@ -237,87 +237,68 @@ describe('createTaskHost', () => {
       appendMeetingExchange.mockResolvedValue(undefined);
       vi.spyOn(logger, 'warn').mockImplementation(() => {});
 
-      const host = createTaskHost('task-nobody', 'sess-nobody', 'Archie'); // never registered
+      const host = createTaskHost('task-nobody', 'sess-nobody', 'Archie', noopEnd); // never registered
       expect(() => host.consult('c1', 'anyone there?')).not.toThrow();
       await expect(drain()).resolves.toBeUndefined();
     });
   });
+
+  describe('leaveMeeting', () => {
+    it("hands the connector's teardown this meeting's own sessionId, without waiting for it", async () => {
+      // Sync void by contract (types.ts): it fires from the audio loop, so it must not await teardown.
+      let resolveEnd!: () => void;
+      const end = vi.fn(() => new Promise<void>((resolve) => { resolveEnd = resolve; }));
+      const host = createTaskHost('task-leave', 'sess-leave', 'Archie', end);
+
+      expect(host.leaveMeeting()).toBeUndefined();
+
+      expect(end).toHaveBeenCalledWith('sess-leave');
+      resolveEnd();
+      await drain();
+    });
+
+    it('swallows a teardown that rejects, and logs — a failed leave must not kill the process', async () => {
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      const end = vi.fn().mockRejectedValue(new Error('Recall is unreachable'));
+      const host = createTaskHost('task-leave-fails', 'sess-leave-fails', 'Archie', end);
+
+      expect(() => host.leaveMeeting()).not.toThrow();
+      await drain();
+
+      expect(warn.mock.calls.some((c) => String(c[1]).includes('sess-leave-fails'))).toBe(true);
+    });
+  });
 });
 
-describe('startMeetingForTask', () => {
-  it('reports no connector mounted when nothing ever registered a starter', async () => {
-    const result = await startMeetingForTask('task-x', 'https://zoom.us/j/123');
+describe('the meeting slot', () => {
+  // Closes a window in the connector's `startMeeting`: bot creation under way with no Meeting registered yet must read busy, or two close join_recall_meeting calls both create a bot.
+  it('refuses a reservation while a meeting is live on the task', () => {
+    registerLiveMeeting('task-already', fakeMeeting());
 
-    expect(result).toEqual({ ok: false, reason: expect.stringMatching(/connector/i) });
-  });
-
-  it('reports a meeting already live rather than starting a second one', async () => {
-    const meeting = fakeMeeting();
-    registerLiveMeeting('task-already', meeting);
-
-    const result = await startMeetingForTask('task-already', 'https://zoom.us/j/456');
-
-    expect(result.ok).toBe(false);
-    expect((result as { ok: false; reason: string }).reason).toMatch(/already live/i);
+    expect(reserveMeetingSlot('task-already')).toBe(false);
 
     unregisterLiveMeeting('task-already');
   });
 
-  // Closes a window in `startMeeting`: bot creation under way with no Meeting registered yet must read busy, or two close join_recall_meeting calls both create a bot.
-  it('reports busy for a task whose slot is only reserved, not yet a live meeting', async () => {
+  it('refuses a second reservation on a task whose slot is only reserved, not yet live', () => {
     expect(reserveMeetingSlot('task-reserved')).toBe(true);
 
-    const result = await startMeetingForTask('task-reserved', 'https://zoom.us/j/789');
-
-    expect(result.ok).toBe(false);
-    expect((result as { ok: false; reason: string }).reason).toMatch(/already live/i);
+    expect(reserveMeetingSlot('task-reserved')).toBe(false);
 
     releaseMeetingSlot('task-reserved');
-  });
-});
-
-describe('stopMeetingForTask', () => {
-  afterEach(() => {
-    unregisterLiveMeeting('task-stop-nothing-live');
-    unregisterLiveMeeting('task-stop-no-stopper');
-    unregisterLiveMeeting('task-stop-ok');
+    // Released, so a failed creation cannot strand the task.
+    expect(reserveMeetingSlot('task-reserved')).toBe(true);
+    releaseMeetingSlot('task-reserved');
   });
 
-  it('reports no live meeting rather than a silent no-op', async () => {
-    const result = await stopMeetingForTask('task-stop-nothing-live');
+  it('frees the reservation as the meeting goes live, so the two never both hold the slot', () => {
+    expect(reserveMeetingSlot('task-handover')).toBe(true);
+    registerLiveMeeting('task-handover', fakeMeeting());
 
-    expect(result).toEqual({ ok: false, reason: expect.stringMatching(/no meeting is live/i) });
-  });
+    unregisterLiveMeeting('task-handover');
 
-  // Must run before anything calls `setMeetingStopper` — module-level `stopper` has no reset between tests.
-  // Same reason as startMeetingForTask's "no connector mounted" test: must run before `starter` is set — nothing before this point does, keeping both safe.
-  it('reports no connector mounted when a meeting is live but nothing ever registered a stopper', async () => {
-    registerLiveMeeting('task-stop-no-stopper', fakeMeeting());
-
-    const result = await stopMeetingForTask('task-stop-no-stopper');
-
-    expect(result).toEqual({ ok: false, reason: expect.stringMatching(/connector/i) });
-  });
-
-  it("calls the registered stopper with the live meeting's own sessionId, and reports success only once it resolves", async () => {
-    const meeting = { ...fakeMeeting(), sessionId: 'sess-stop-ok' } as Meeting;
-    registerLiveMeeting('task-stop-ok', meeting);
-    let resolveStop!: () => void;
-    const stop = vi.fn(() => new Promise<void>((resolve) => { resolveStop = resolve; }));
-    setMeetingStopper(stop);
-
-    const pending = stopMeetingForTask('task-stop-ok');
-    // Awaits the stopper, unlike MeetingHost.leaveMeeting (can't — see its contract in types.ts); a PM tool has no such constraint, so "ended" waits for teardown.
-    let settled = false;
-    void pending.then(() => { settled = true; });
-    await Promise.resolve();
-    expect(settled).toBe(false);
-
-    resolveStop();
-    const result = await pending;
-
-    expect(stop).toHaveBeenCalledWith('sess-stop-ok');
-    expect(result).toEqual({ ok: true });
+    expect(reserveMeetingSlot('task-handover')).toBe(true);
+    releaseMeetingSlot('task-handover');
   });
 });
 

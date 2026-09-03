@@ -60,12 +60,6 @@ export function releaseMeetingSlot(taskId: string): void {
   reservedTaskIds.delete(taskId);
 }
 
-// Read-only peek, unlike reserveMeetingSlot — never claims the slot. Used for startMeetingForTask's fast-fail check, ahead of the starter's atomic reserve-or-fail.
-export function isMeetingSlotBusy(taskId: string): boolean {
-  return liveMeetings.has(taskId) || reservedTaskIds.has(taskId);
-}
-
-
 // Sole source of this format string — linkRecallChannel and consult must never disagree on the exact value.
 export function recallChannelKey(sessionId: string): string {
   return `recall:${sessionId}`;
@@ -73,8 +67,15 @@ export function recallChannelKey(sessionId: string): string {
 
 /**
  * botName is only needed by readWrittenExchange (renders each agent's line under Archie's name). No `Meeting` param — must exist before `createMeeting` returns one to register. `consult` reaches the live meeting via `getLiveMeeting(taskId)`, not a captured reference: safe, firing well after registration.
+ *
+ * `endMeeting` is the connector's own teardown funnel, passed in rather than imported — this module is what the connector builds meetings out of.
  */
-export function createTaskHost(taskId: string, sessionId: string, botName: string): MeetingHost {
+export function createTaskHost(
+  taskId: string,
+  sessionId: string,
+  botName: string,
+  endMeeting: (sessionId: string) => Promise<void>,
+): MeetingHost {
   return {
     recordUtterance(speaker: string, text: string): void {
       appendMeetingTranscript(taskId, sessionId, speaker, text).catch((err) => {
@@ -108,12 +109,8 @@ export function createTaskHost(taskId: string, sessionId: string, botName: strin
     },
 
     leaveMeeting(): void {
-      // Same teardown funnel as the idle sweep, DELETE route, process shutdown. `stopper` should always be set (registered at mount) — a live meeting is the wrong place to discover that broke.
-      if (!stopper) {
-        logger.warn(LOG, `LEAVE: spoken for task ${taskId}, but no stopper is registered — the bot stays on the call`);
-        return;
-      }
-      void stopper(sessionId).catch((err) => {
+      // Same teardown funnel as the status poll, DELETE route, process shutdown.
+      void endMeeting(sessionId).catch((err) => {
         logger.warn(LOG, `Could not end meeting ${sessionId} for task ${taskId} after a LEAVE: request`, err);
       });
     },
@@ -220,7 +217,7 @@ export async function updateMeetingParticipantsLive(
 }
 
 /**
- * `info` is connector-agnostic (bare platform string, `{name, isHost}` pairs) — `recall/index.ts` normalizes Recall's raw shape first.
+ * `info` is connector-agnostic (bare platform string, `{name, isHost}` pairs) — `connector.ts` normalizes Recall's raw shape first.
  *
  * Best-effort, may be empty; unfielded values stay `null`, never guessed. `info.liveParticipants` carries forward verbatim, never rewritten to close `left_at: null` — an unheard departure is invented, which this file refuses.
  */
@@ -265,7 +262,7 @@ export async function completeMeetingMetadata(
 // MeetingCapabilities: src/types/task.ts.
 
 /**
- * Sync void, fire-and-forget, like `MeetingHost` — called from `startMeeting`'s un-awaited `.then()` (`recall/index.ts`), so a failed write can't stop a meeting.
+ * Sync void, fire-and-forget, like `MeetingHost` — called from `startMeeting`'s un-awaited `.then()` (`connector.ts`), so a failed write can't stop a meeting.
  *
  * Three outcomes, kept apart on disk and in the log:
  *
@@ -296,55 +293,8 @@ export function recordMeetingCapabilities(taskId: string, sessionId: string, sum
 }
 
 
-export type StartMeetingResult = { ok: true; botId: string } | { ok: false; reason: string };
-
-export type MeetingStarter = (taskId: string, meetingUrl: string) => Promise<StartMeetingResult>;
-
-let starter: MeetingStarter | null = null;
-
-export function setMeetingStarter(fn: MeetingStarter): void {
-  starter = fn;
-}
-
-// These two checks are a fast-fail peek only — the starter's real reserve-or-fail must be atomic under concurrent calls, since peek and reserve aren't one step.
-export async function startMeetingForTask(taskId: string, meetingUrl: string): Promise<StartMeetingResult> {
-  if (isMeetingSlotBusy(taskId)) {
-    return { ok: false, reason: 'A meeting is already live on this task.' };
-  }
-  if (!starter) {
-    return { ok: false, reason: 'The voice connector is not mounted in this deployment.' };
-  }
-  return starter(taskId, meetingUrl);
-}
-
-
-export type MeetingStopper = (sessionId: string) => Promise<void>;
-
-let stopper: MeetingStopper | null = null;
-
-// Indirection (a registered function pointer), not a direct import: neither a PM tool starting a meeting nor MeetingHost.leaveMeeting ending one may import the connector's module.
-export function setMeetingStopper(fn: MeetingStopper): void {
-  stopper = fn;
-}
-
-export type StopMeetingResult = { ok: true } | { ok: false; reason: string };
-
-// Different from MeetingHost.leaveMeeting (only fires after the farewell is spoken, fire-and-forget): a direct PM request, no farewell, awaited to completion — returns "ended" instead of racing the task's next action.
-export async function stopMeetingForTask(taskId: string): Promise<StopMeetingResult> {
-  const meeting = getLiveMeeting(taskId);
-  if (!meeting) {
-    return { ok: false, reason: 'No meeting is live on this task.' };
-  }
-  if (!stopper) {
-    return { ok: false, reason: 'The voice connector is not mounted in this deployment.' };
-  }
-  await stopper(meeting.sessionId);
-  return { ok: true };
-}
-
-
 /**
- * `recall/index.ts` calls this from `endMeeting`, the funnel every teardown path (idle sweep, DELETE route, shutdown) runs through. `sessionId` matters too: the transcript lives under that meeting's own folder, not one file per task.
+ * `connector.ts` calls this from `endMeeting`, the funnel every teardown path (status poll, DELETE route, shutdown) runs through. `sessionId` matters too: the transcript lives under that meeting's own folder, not one file per task.
  *
  * Not a `MeetingHost` method — those run inside the audio loop; this fires once, afterwards, from teardown, the one place that knows the meeting is gone.
  *

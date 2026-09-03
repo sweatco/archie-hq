@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { logger } from '../../../system/logger.js';
+import { logger } from '../../system/logger.js';
 import { createRecallClient, type RecallConfig } from '../recall.js';
-import type { VoiceConfig } from '../../../voice/types.js';
+import type { VoiceConfig } from '../types.js';
 
 interface Call {
   url: string;
@@ -94,6 +94,19 @@ describe('recall client — bot creation', () => {
     expect(calls[0].url).toBe('https://eu-central-1.recall.ai/api/v1/bot/');
     expect(calls[0].body.output_media).toEqual({
       camera: { kind: 'webpage', config: { url: joinOpts.pageUrl } },
+    });
+  });
+
+  it('asks Recall to pull the bot out sixty seconds after the room empties, not on its two-second default', async () => {
+    // Recall's own ending is the only one the engine acts on now, so this value *is* the empty-room grace period (docs/architecture/voice.md).
+    // The 2s default reads a Zoom rejoin — a leave and then a join under a fresh participant id — as an empty room.
+    replies.push({ status: 201, body: JSON.stringify({ id: 'bot-leave-timeout' }) });
+    const client = createRecallClient(config());
+
+    await client.createBot(joinOpts);
+
+    expect(calls[0].body.automatic_leave).toEqual({
+      everyone_left_timeout: { timeout: 60 },
     });
   });
 

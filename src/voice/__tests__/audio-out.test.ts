@@ -2,7 +2,7 @@
 // The output page itself must NEVER be rendered: it opens a real AudioContext connected to `destination` with no user gesture, which is how verifying it once interrupted a live Zoom call. renderPage is only ever asserted on as a string.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WebSocket } from 'ws';
-import { logger } from '../../../system/logger.js';
+import { logger } from '../../system/logger.js';
 import { createAudioOutHub, renderPage } from '../audio-out.js';
 
 /** PCM16 mono 24kHz: 48 bytes per millisecond. */
@@ -74,7 +74,7 @@ describe('audio out — the output gate', () => {
     hub.handlePageSocket('bot-2', page);
     const sink = hub.sinkFor('bot-2');
     sink.setEnabled(true);
-    sink.setEngaged?.(true);
+    sink.setEngaged(true);
 
     sink.setEnabled(false);
 
@@ -183,7 +183,7 @@ describe('audio out — barge-in', () => {
     sink.play(audio(20));
     expect(pcmFrames(page).length).toBe(0);
 
-    sink.setEngaged?.(true);
+    sink.setEngaged(true);
     vi.advanceTimersByTime(50);
     sink.play(audio(20));
     expect(pcmFrames(page).length).toBe(1);
@@ -247,17 +247,17 @@ describe('audio out — the playback cursor', () => {
 
     // None of the 5000ms handed to the socket had cleared the pipeline tail — the room never heard it.
     // A close handler zeroing the cursor with no freeze (like cut()) would instantly credit the whole chunk — feeding a barge-in line for unheard audio.
-    expect(sink.playedBytes?.()).toBe(0);
+    expect(sink.playedBytes()).toBe(0);
 
     // Freeze must hold: real time passing must not un-silence unheard audio — the same property cut() is held to below.
     vi.advanceTimersByTime(10_000);
-    expect(sink.playedBytes?.()).toBe(0);
+    expect(sink.playedBytes()).toBe(0);
   });
 });
 
 describe('audio out — playedBytes, the conservative watermark', () => {
   it('is zero for a bot it has never heard of', async () => {
-    expect(createAudioOutHub().sinkFor('bot-played-unknown').playedBytes?.()).toBe(0);
+    expect(createAudioOutHub().sinkFor('bot-played-unknown').playedBytes()).toBe(0);
   });
 
   it('credits nothing until a chunk clears its own pipeline tail, then all of it', async () => {
@@ -270,15 +270,15 @@ describe('audio out — playedBytes, the conservative watermark', () => {
     sink.setEnabled(true);
 
     sink.play(audio(1000));
-    expect(sink.playedBytes?.()).toBe(0);
+    expect(sink.playedBytes()).toBe(0);
 
     // Still inside the 1000ms of audio plus the 200ms pipeline tail.
     vi.advanceTimersByTime(1_100);
-    expect(sink.playedBytes?.()).toBeGreaterThan(0);
-    expect(sink.playedBytes?.()).toBeLessThan(1000 * BYTES_PER_MS);
+    expect(sink.playedBytes()).toBeGreaterThan(0);
+    expect(sink.playedBytes()).toBeLessThan(1000 * BYTES_PER_MS);
 
     vi.advanceTimersByTime(200);
-    expect(sink.playedBytes?.()).toBe(1000 * BYTES_PER_MS);
+    expect(sink.playedBytes()).toBe(1000 * BYTES_PER_MS);
   });
 
   it('never regresses across a cut, and never credits the tail a cut silenced', async () => {
@@ -292,16 +292,16 @@ describe('audio out — playedBytes, the conservative watermark', () => {
 
     sink.play(audio(100));
     vi.advanceTimersByTime(30); // barge-in 30ms into a 100ms sentence
-    const before = sink.playedBytes?.();
+    const before = sink.playedBytes();
     sink.cut();
-    const justAfter = sink.playedBytes?.();
+    const justAfter = sink.playedBytes();
 
     expect(before).toBe(0);
     expect(justAfter).toBe(before); // frozen, not jumped to bytesSent
 
     // Well beyond when the killed sentence would have finished naturally — the reading must still exclude it.
     vi.advanceTimersByTime(5_000);
-    expect(sink.playedBytes?.()).toBe(justAfter);
+    expect(sink.playedBytes()).toBe(justAfter);
   });
 
   it('credits audio sent after a cut on its own terms, never crediting the tail the cut silenced', async () => {
@@ -315,15 +315,15 @@ describe('audio out — playedBytes, the conservative watermark', () => {
     sink.play(audio(100)); // cut long before its own tail clears
     vi.advanceTimersByTime(30);
     sink.cut();
-    const frozen = sink.playedBytes?.() ?? -1;
+    const frozen = sink.playedBytes() ?? -1;
 
     // setEngaged marks a genuine next turn, not the tail just killed — else post-barge-in suppression swallows it too, confounding the test.
-    sink.setEngaged?.(true);
+    sink.setEngaged(true);
     vi.advanceTimersByTime(50);
     sink.play(audio(50)); // a fresh run, unrelated to the one just silenced
     vi.advanceTimersByTime(50 + 200 + 10); // past its own audio plus the tail
 
-    expect(sink.playedBytes?.()).toBe(frozen + 50 * BYTES_PER_MS);
+    expect(sink.playedBytes()).toBe(frozen + 50 * BYTES_PER_MS);
   });
 
   it('does not count audio the closed gate drops', async () => {
@@ -335,11 +335,11 @@ describe('audio out — playedBytes, the conservative watermark', () => {
     sink.play(audio(1000));
 
     vi.advanceTimersByTime(5_000);
-    expect(sink.playedBytes?.()).toBe(0);
+    expect(sink.playedBytes()).toBe(0);
 
     // Opening the gate afterwards doesn't retroactively credit the drop — it was never queued, nothing left to play.
     sink.setEnabled(true);
-    expect(sink.playedBytes?.()).toBe(0);
+    expect(sink.playedBytes()).toBe(0);
   });
 
   it('does not count audio the post-barge-in suppression drops', async () => {
@@ -355,7 +355,7 @@ describe('audio out — playedBytes, the conservative watermark', () => {
     sink.play(audio(200));
 
     vi.advanceTimersByTime(5_000);
-    expect(sink.playedBytes?.()).toBe(0);
+    expect(sink.playedBytes()).toBe(0);
   });
 
   it('is monotonic across an ordinary cut with nothing in flight, an idempotent no-op', async () => {
@@ -368,12 +368,12 @@ describe('audio out — playedBytes, the conservative watermark', () => {
 
     sink.play(audio(100));
     vi.advanceTimersByTime(500); // well past 100ms + the tail: fully confirmed
-    const played = sink.playedBytes?.();
+    const played = sink.playedBytes();
     expect(played).toBe(100 * BYTES_PER_MS);
 
     sink.cut(); // nothing queued or in flight — must not claw back confirmed credit
 
-    expect(sink.playedBytes?.()).toBe(played);
+    expect(sink.playedBytes()).toBe(played);
   });
 });
 
@@ -413,7 +413,7 @@ describe('audio out — the page socket', () => {
     const hub = createAudioOutHub();
     const sink = hub.sinkFor('bot-13');
     sink.setEnabled(true);
-    sink.setEngaged?.(true);
+    sink.setEngaged(true);
 
     const page = fakePage();
     hub.handlePageSocket('bot-13', page);
@@ -428,10 +428,10 @@ describe('audio out — the page socket', () => {
     hub.handlePageSocket('bot-14', page);
     const sink = hub.sinkFor('bot-14');
 
-    sink.setEngaged?.(true);
-    sink.setEngaged?.(true);
-    sink.setEngaged?.(true);
-    sink.setEngaged?.(false);
+    sink.setEngaged(true);
+    sink.setEngaged(true);
+    sink.setEngaged(true);
+    sink.setEngaged(false);
 
     expect(textFrames(page).filter((f) => f.type === 'engaged')).toEqual([
       { type: 'engaged', engaged: false },

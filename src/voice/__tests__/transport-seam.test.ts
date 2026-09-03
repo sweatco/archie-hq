@@ -1,5 +1,5 @@
-// Thin end of VoiceTransport: no chat channel, no setEngaged — a phone call over a media stream.
-// room-silence.test.ts runs this same conversation on the fuller Recall transport; twins are named below.
+// VoiceTransport is the whole of what meeting.ts sees: a session id, a sink and a chat channel, nothing about Recall.
+// room-silence.test.ts runs the same conversation against the connector's own sink shape; twins are named below.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, readFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
@@ -130,18 +130,21 @@ const cfg: VoiceConfig = {
   sonioxApiKey: 'soniox-key',
 };
 
-// Typed as AudioSink, not cast: omitting setEngaged is checked against the real contract.
-function audioOnlySink() {
+// Typed as AudioSink, not cast: the seam is checked against the real contract, nothing more of it implemented than that.
+function plainSink() {
   const state = {
     played: [] as Buffer[],
     cuts: 0,
     enabled: true,
+    engaged: false,
     speaking: false,
+    sentBytes: 0,
   };
   const sink: AudioSink = {
     play(pcm: Buffer) {
       state.played.push(pcm);
       state.speaking = true;
+      state.sentBytes += pcm.length;
     },
     cut() {
       state.cuts++;
@@ -150,7 +153,11 @@ function audioOnlySink() {
     setEnabled(open: boolean) {
       state.enabled = open;
     },
+    setEngaged(engaged: boolean) {
+      state.engaged = engaged;
+    },
     isSpeaking: () => state.speaking,
+    playedBytes: () => state.sentBytes,
   };
   return { sink, state };
 }
@@ -210,7 +217,7 @@ describe('voice transport seam', () => {
     reset();
     decideQueue.push({ speech: 'It shipped on Tuesday.' });
     const posted: string[] = [];
-    const { sink, state } = audioOnlySink();
+    const { sink, state } = plainSink();
     const meeting = await makeMeeting({
       sessionId: 'seam-basic',
       sink,
@@ -239,8 +246,8 @@ describe('voice transport seam', () => {
     reset();
     // First answer is discarded — floor retaken mid-decision re-asks from scratch.
     decideQueue.push({ speech: 'Still here.' }, { speech: 'Still here.' });
-    const { sink, state } = audioOnlySink();
-    const meeting = await makeMeeting({ sessionId: 'seam-solo', sink });
+    const { sink, state } = plainSink();
+    const meeting = await makeMeeting({ sessionId: 'seam-solo', sink, sendChat: async () => {} });
 
     // No per-participant separation on a media stream; this speaker's turn state is the floor.
     const a = speakerFor(meeting);
@@ -258,95 +265,25 @@ describe('voice transport seam', () => {
     expect(state.played.length).toBeGreaterThan(0);
   });
 
-  it('drops the CHAT detail when the transport has no chat channel, and still records the answer', async () => {
-    reset();
-    const errors = vi.spyOn(logger, 'error').mockImplementation(() => {});
-    decideQueue.push({ speech: 'It failed on the schema change.', chat: 'commit a3f91c4' });
-    const { sink, state } = audioOnlySink();
-    const meeting = await makeMeeting({ sessionId: 'seam-nochat', sink });
-
-    const a = speakerFor(meeting);
-    a.emit({ kind: 'start' });
-    a.emit({ kind: 'end', transcript: 'Archie, why did the job fail?' });
-    await sleep(SETTLED);
-
-    // Comprehension withholds CHAT upstream; guards against a future "helpfully read it aloud instead".
-    expect(state.played.length).toBeGreaterThan(0);
-    expect(synthTexts).toEqual(['It failed on the schema change.']);
-    expect(synthTexts.join(' ')).not.toContain('a3f91c4');
-
-    // Missing chat channel is a transport property, not a fault; no error logged.
-    expect(errors).not.toHaveBeenCalled();
-
-    // Recorded as answered — the room heard an answer.
-    const responses = rows('seam-nochat').filter((r) => r.kind === 'response');
-    expect(responses.length).toBe(1);
-    expect(responses[0].verdict).toBe('addressed');
-    expect(responses[0].answer).toBe('It failed on the schema change.');
-
-    // Transcript carries only what was said aloud.
-    // Twin: "posts a CHAT payload without speaking it" (room-silence.test.ts).
-    decideQueue.push(null);
-    a.emit({ kind: 'start' });
-    a.emit({ kind: 'end', transcript: 'Archie, and when did that land?' });
-    await sleep(SETTLED);
-    const later = rows('seam-nochat').filter((r) => r.kind === 'response');
-    expect(String(later[1].window)).toContain('Archie: It failed on the schema change.');
-    expect(String(later[1].window)).not.toContain('a3f91c4');
-  });
-
-  it('does not claim to have answered when it can neither speak nor write', async () => {
-    reset();
-    const errors = vi.spyOn(logger, 'error').mockImplementation(() => {});
-    synthSilent = true;
-    decideQueue.push({ speech: 'It rolled back at ten.' });
-    const { sink, state } = audioOnlySink();
-    const meeting = await makeMeeting({ sessionId: 'seam-mute', sink });
-
-    const a = speakerFor(meeting);
-    a.emit({ kind: 'start' });
-    a.emit({ kind: 'end', transcript: 'Archie, what happened to the deploy?' });
-    await sleep(SETTLED);
-
-    expect(state.played.length).toBe(0);
-    // Falls back to chat (twin: "answers in chat when synthesis produces no audio", room-silence.test.ts).
-    // Without one there's no second route, hence the error.
-    const responses = rows('seam-mute').filter((r) => r.kind === 'response');
-    expect(responses[0].verdict).toBe('error');
-    expect(String(responses[0].error)).toContain('no chat channel');
-    expect(errors).toHaveBeenCalled();
-
-    // Must not record words the room never got, or the next decision thinks it's answered.
-    decideQueue.push(null);
-    a.emit({ kind: 'start' });
-    a.emit({ kind: 'end', transcript: 'Archie, are you there?' });
-    await sleep(SETTLED);
-    const later = rows('seam-mute').filter((r) => r.kind === 'response');
-    expect(String(later[1].window)).not.toContain('It rolled back at ten.');
-
-    // Debt dropped, not stuck failing — second turn judged fresh (`name`, not `already-owed`).
-    const tiers = rows('seam-mute')
-      .filter((r) => r.kind === 'response')
-      .map((r) => r.tier);
-    expect(tiers).toEqual(['name', 'name']);
-  });
-
-  it('is unharmed by a sink with no setEngaged', async () => {
+  it('publishes engagement through the whole turn without faulting', async () => {
     reset();
     const errors = vi.spyOn(logger, 'error').mockImplementation(() => {});
     decideQueue.push({ speech: 'Green across the board.' });
-    const { sink, state } = audioOnlySink();
-    // Construction publishes engagement; an unguarded setEngaged would throw before speaking.
-    const meeting = await makeMeeting({ sessionId: 'seam-notile', sink });
+    const { sink, state } = plainSink();
+    // Construction publishes engagement before a word is spoken; every later stage (flag, decision, follow-up) publishes again.
+    const meeting = await makeMeeting({ sessionId: 'seam-tile', sink, sendChat: async () => {} });
 
     const a = speakerFor(meeting);
     a.emit({ kind: 'start' });
     a.emit({ kind: 'end', transcript: 'Archie, how do the checks look?' });
     await sleep(SETTLED);
 
-    // Engagement changes at every stage (flag, decision, follow-up); none may fault.
     expect(state.played.length).toBeGreaterThan(0);
+    // Green: it just spoke, so the follow-up window is still open.
+    expect(state.engaged).toBe(true);
     expect(errors).not.toHaveBeenCalled();
     await expect(meeting.stop()).resolves.toBeUndefined();
+    // Teardown disengages — a tile left green outlives the meeting.
+    expect(state.engaged).toBe(false);
   });
 });

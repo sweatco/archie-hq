@@ -5,8 +5,8 @@
  */
 
 import type { RawData, WebSocket } from 'ws';
-import { logger } from '../../system/logger.js';
-import type { AudioSink } from '../../voice/types.js';
+import { logger } from '../system/logger.js';
+import type { AudioSink } from './types.js';
 
 const SAMPLE_RATE = 24000;
 

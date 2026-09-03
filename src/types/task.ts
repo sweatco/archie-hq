@@ -142,7 +142,7 @@ export const CLI_CHANNEL_KEY = 'cli:local' as const;
  * alone, so a deliverer reaching it for a *stale* channel key must compare
  * this field against the live meeting's own `sessionId` to tell "no meeting
  * live" apart from "a different, later meeting is live now" — see
- * `src/connectors/recall/channel-delivery.ts`.
+ * `src/voice/channel-delivery.ts`.
  *
  * The record itself is permanent, exactly like a `SlackChannel`: linked and
  * `ended: false` when the meeting starts, flipped to `ended: true` when it

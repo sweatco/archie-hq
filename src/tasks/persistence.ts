@@ -648,7 +648,7 @@ function sanitizeTranscriptField(value: string): string {
  * harmless) before appending. The very first call for a meeting is expected
  * to be its own header line — the conventional speaker `'meeting'` naming
  * the URL just joined, the same way `startMeeting` in
- * `src/connectors/recall/index.ts` already does — which now serves as this
+ * `src/voice/connector.ts` already does — which now serves as this
  * file's opening line rather than a boundary between meetings sharing one
  * file, since each meeting has its own.
  */
@@ -677,7 +677,7 @@ export async function appendMeetingTranscript(
  * speaking on this line — the two call sites use `'voice'` for a question
  * the room's agent put to the PM (`src/voice/task-binding.ts`) and
  * `'pm-agent'` for the PM's own answer arriving back
- * (`src/connectors/recall/channel-delivery.ts`). Sanitised exactly like
+ * (`src/voice/channel-delivery.ts`). Sanitised exactly like
  * `appendMeetingTranscript`'s fields: a consult question is derived from
  * room speech and a PM answer is model output, neither more verifiable than
  * the transcript itself.
