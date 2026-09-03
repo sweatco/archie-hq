@@ -59,11 +59,15 @@ function stubStream(frames: Frame[]) {
 }
 
 const AMBIENT_STRIP = process.env[STRIP_THINK_ENV];
+const AMBIENT_KEY = process.env.CEREBRAS_API_KEY;
 beforeEach(() => {
   delete process.env[STRIP_THINK_ENV];
+  // The adapter resolves a key before sending, even into a stubbed fetch; CI has no .env.
+  process.env.CEREBRAS_API_KEY ??= 'stub-key-never-sent';
   lastBody = {};
 });
 afterEach(() => {
+  if (AMBIENT_KEY === undefined) delete process.env.CEREBRAS_API_KEY;
   vi.unstubAllGlobals();
   if (AMBIENT_STRIP === undefined) delete process.env[STRIP_THINK_ENV];
   else process.env[STRIP_THINK_ENV] = AMBIENT_STRIP;
