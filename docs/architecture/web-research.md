@@ -37,7 +37,7 @@ Calling Agent
   v
 web_research MCP tool
   |
-  ├── 1. classifyPreset (Haiku) → fast-search / pro-search / deep-research
+  ├── 1. classifyPreset (Haiku) → fast / low / medium / high
   |
   ├── 2. callPerplexity (Agent API) → output_text + citations
   |
@@ -46,21 +46,27 @@ web_research MCP tool
 
 ### Step 1: Preset Classification
 
-A Haiku model classifies the query using the same `query()` + `outputFormat: json_schema` pattern as triage (`src/system/triage.ts`):
+A Haiku model classifies the query using the same `query()` + `outputFormat: json_schema` pattern as triage (`src/system/triage.ts`). The presets are a cost ladder, and the classifier is told to pick the cheapest rung that can answer the query:
 
-- **fast-search**: Simple factual lookups, definitions, single-entity queries
-- **pro-search**: Multi-faceted questions, comparisons, current events
-- **deep-research**: Comprehensive analysis, market research, technical deep-dives
+| Preset | Shape of the work | Model Perplexity selects | Observed cost on one research query |
+|---|---|---|---|
+| `fast` | One search, no follow-up reading | `openai/gpt-5.6-luna` | $0.003 |
+| `low` | A few searches, can open pages it finds | `openai/gpt-5.6-luna` | $0.003 |
+| `medium` | Many rounds of search and page reading | `openai/gpt-5.6-luna` | $0.035 |
+| `high` | Broadest coverage, strongest reasoning | `openai/gpt-5.6-sol` | $0.280 |
 
-Falls back to `pro-search` on any classification failure.
+Falls back to `low` on any classification failure. These are Perplexity's tier-based preset names, which replaced `fast-search`, `pro-search`, `deep-research`, `advanced-deep-research` and `ultra`. The legacy names still resolve as aliases, so they are not the reason a request fails.
+
+Two further presets exist and are deliberately not offered to the classifier. `xhigh` answers out of its own sandbox rather than the web, measured at zero citations and $1.54 for a single query, which defeats a tool whose output is a sourced report. `wide-research` is asynchronous: it returns a job handle to poll and delivers results as downloadable files rather than in the response body.
 
 ### Step 2: Perplexity Agent API
 
 A single `fetch()` call to `https://api.perplexity.ai/v1/agent` with:
 - `preset`: From step 1
-- `model`: `anthropic/claude-sonnet-4-6`
 - `input`: The research topic + optional context
 - `stream: false`
+
+No `model` is sent. Each preset carries its own tuned model, step budget, reasoning effort, output ceiling and tool set, and any field sent alongside a preset overrides that default. Pinning a model is therefore actively harmful here: the `fast` tier rejects Anthropic models outright with HTTP 400 `invalid request`, and `high` differs from `medium` only in model, so pinning one collapses the two into the same request.
 
 The Agent API follows the OpenAI Responses API format: the response's `output` array is parsed for `message` items (extracting `output_text` blocks and `url_citation` annotations) and `search_results` items (extracting result URLs). Top-level `output_text` and `citations` fields are used as a fallback. Citations are deduped before being returned.
 

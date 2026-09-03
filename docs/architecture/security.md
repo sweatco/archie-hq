@@ -181,7 +181,7 @@ This hook is wired on every agent's `PostToolUse` array alongside the persistenc
 
 ### Preset Classifier Subagent
 
-The tool spawns one nested `query()` call to a Haiku classifier (`classifyPreset`) that picks a Perplexity preset (`fast-search` / `pro-search` / `deep-research`). This subagent runs with `allowedTools: []` — it has no tools at all, only structured JSON output. There is no researcher subagent with web tools, no report-writer subagent, and no "sandwich defense" PreToolUse hooks (the historical sandwich defense has been removed; outbound prompt injection is now handled by Bedrock Guardrails plus the defense-tag wrapper above).
+The tool spawns one nested `query()` call to a Haiku classifier (`classifyPreset`) that picks a Perplexity preset (`fast` / `low` / `medium` / `high`). This subagent runs with `allowedTools: []` — it has no tools at all, only structured JSON output. There is no researcher subagent with web tools, no report-writer subagent, and no "sandwich defense" PreToolUse hooks (the historical sandwich defense has been removed; outbound prompt injection is now handled by Bedrock Guardrails plus the defense-tag wrapper above).
 
 **Source:** `src/mcp/research-tools.ts` (`classifyPreset`)
 
