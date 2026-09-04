@@ -761,7 +761,8 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
           if (result.msToFirstByte !== null) {
             recordTiming(row, 'ttfbMs', result.msToFirstByte);
           }
-          const partial = abandoned ?? result.incomplete;
+          // The cut check is the third arm because a barge-in landing after the last chunk and last sentence were handed over sets no `abandoned` and leaves `result.incomplete` null: `sink.cut()` still dropped the queued tail, so without it the turn records as spoken in full. `leaveOnceHeard` reads `revision.cut` directly for the same reason.
+          const partial = abandoned ?? result.incomplete ?? (revision.cut === cutAtStart ? null : 'somebody took the floor after the last of it had been handed over');
           const heard = heardAnything;
           const prefix = await confirmedPrefix();
           if (heard && partial !== null) {
