@@ -42,6 +42,8 @@ const FLOOR_LIVENESS_MS = 10 * 1000;
 const REOPEN_BACKOFF_MS = 15 * 1000;
 // `openTurnStream` fails asynchronously, so a rejected key shows as a stream dying right after every open -- without this floor, that reconnects at packet rate.
 const REOPEN_MIN_INTERVAL_MS = 2 * 1000;
+// 24 kHz x 2 bytes = 48,000 bytes/s at the ~16.7 chars/s the speaking prompt itself assumes ("a hundred characters is roughly six seconds"). Only used for a turn that completed no sentence of its own to measure.
+const DEFAULT_BYTES_PER_CHAR = 2_900;
 
 // Matching is whole-token (see `matchTrigger`): a prefix like `arch` is harmless (never fires on `architecture`), but a real word like `art`/`archive` would fire constantly -- check any addition against that.
 export const TRIGGER_VARIANTS: readonly string[] = [
@@ -108,6 +110,42 @@ export function isArchie(name: string | null): boolean {
 // Strips control chars and the two Unicode line separators -- uncaught, either could forge a second attributed line (persistence.ts's `formatLogEntry` doesn't escape) or a line/closing tag inside the prompt block a name renders into.
 function sanitizeForLog(value: string): string {
   return value.replace(/[\p{Cc}\u2028\u2029]+/gu, ' ').trim();
+}
+
+/** A sentence whose audio the synthesizer reported fully handed over, and the turn-relative byte count at that moment. */
+type SentenceEnd = { text: string; endOffset: number };
+
+// The mean of this turn's own rates, so the estimate rides the voice that is actually speaking rather than a nominal one.
+function bytesPerChar(completed: readonly SentenceEnd[]): number {
+  let rates = 0;
+  let counted = 0;
+  let previousEnd = 0;
+  for (const sentence of completed) {
+    if (sentence.text.length > 0) {
+      rates += (sentence.endOffset - previousEnd) / sentence.text.length;
+      counted++;
+    }
+    previousEnd = sentence.endOffset;
+  }
+  return counted === 0 ? DEFAULT_BYTES_PER_CHAR : rates / counted;
+}
+
+/** The words of the sentence being spoken when the room cut in, em-dashed to mark the cut; null when not even one whole word landed. */
+function heardPartOf(text: string, start: number, end: number, confirmed: number): string | null {
+  if (end <= start) {
+    return null;
+  }
+  const fraction = Math.min(1, Math.max(0, (confirmed - start) / (end - start)));
+  const heardChars = Math.floor(fraction * text.length);
+  // Back to the nearest word boundary at or before that point -- crediting a word the room never heard is the one bias this must never make, and half a word is unreadable anyway.
+  let boundary = heardChars === text.length ? heardChars : -1;
+  for (let i = heardChars; boundary < 0 && i >= 0; i--) {
+    if (/\s/.test(text[i])) {
+      boundary = i;
+    }
+  }
+  const words = boundary < 0 ? '' : text.slice(0, boundary).trimEnd();
+  return words.length === 0 ? null : `${words}—`;
 }
 
 // One speaking decision's row, built field by field as the turn settles and recorded once, in `decide()`'s `finally`.
@@ -475,14 +513,30 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     let consult: string | undefined;
 
     let pcmSentToSink = 0;
-    const sentenceOffsets: { text: string; endOffset: number }[] = [];
+    const sentenceOffsets: SentenceEnd[] = [];
+    // Soniox serializes its per-sentence streams, so completion order is handed order: index i of one lines up with index i of the other.
+    const handedSentences: string[] = [];
     // Asked for here, awaited later: the turn must reach the speaking call in the same tick, and the sink answers with the count as of this call anyway.
     const playedBaseline = sink.played();
 
     const confirmedPrefix = async (): Promise<string | null> => {
       const [baseline, now] = await Promise.all([playedBaseline, sink.played()]);
-      const heard = sentenceOffsets.filter((s) => s.endOffset <= now - baseline);
-      return heard.length === 0 ? null : heard.map((s) => s.text).join(' ');
+      const confirmed = now - baseline;
+      const heard = sentenceOffsets.filter((s) => s.endOffset <= confirmed);
+      const spoken = heard.map((s) => s.text);
+      const cutSentence = handedSentences[heard.length];
+      if (cutSentence !== undefined) {
+        const start = heard.length === 0 ? 0 : heard[heard.length - 1].endOffset;
+        const own = sentenceOffsets[heard.length];
+        // Exact when this sentence's own audio had all arrived; otherwise how long it was going to be, at this turn's measured speech rate.
+        const end =
+          own === undefined ? start + cutSentence.length * bytesPerChar(sentenceOffsets) : own.endOffset;
+        const partial = heardPartOf(cutSentence, start, end, confirmed);
+        if (partial !== null) {
+          spoken.push(partial);
+        }
+      }
+      return spoken.length === 0 ? null : spoken.join(' ');
     };
 
     // `abort()` stops the synthesizer server-side, not just this turn's delivery: `onPcm` already drops whatever arrives once the turn is abandoned, but audio the room will never hear should not be generated at all.
@@ -525,11 +579,14 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
         if (firstSayAt === null) {
           firstSayAt = Date.now();
         }
+        // Noted before `say`, so a completion can never land ahead of the sentence it belongs to; popped again if the hand-over itself failed, since nothing will be spoken of it.
+        handedSentences.push(text);
         try {
           stream?.say(text, () => {
             sentenceOffsets.push({ text, endOffset: pcmSentToSink });
           });
         } catch (err) {
+          handedSentences.pop();
           logger.warn(LOG, 'Handing a sentence to the speech stream failed', err);
         }
       }

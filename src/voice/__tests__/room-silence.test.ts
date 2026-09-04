@@ -29,6 +29,8 @@ let synthCalls = 0;
 const synthTexts: string[] = [];
 let synthChunks = 1;
 let synthChunkGapMs = 0;
+/** Bytes per chunk. Raised only where a test needs a played count on the scale real speech reaches (48,000 bytes/s). */
+let synthChunkBytes = 64;
 /** Stands in for the synthesizer's time-to-first-byte. */
 let synthFirstChunkDelayMs = 0;
 let synthSilent = false;
@@ -121,8 +123,8 @@ vi.mock('../soniox.js', () => ({
           }
           // `Clear` stops generation; nothing further arrives.
           if (aborted) return;
-          onPcm(Buffer.alloc(64));
-          bytes += 64;
+          onPcm(Buffer.alloc(synthChunkBytes));
+          bytes += synthChunkBytes;
         }
       }
 
@@ -307,6 +309,14 @@ function fakeSink(opts: { confirmLagBytes?: number } = {}) {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Waits until the sink has taken exactly this many chunks, so a barge-in behind it lands on a known byte count rather than a timing guess. */
+async function playedChunks(sink: { chunks: Buffer[] }, count: number): Promise<void> {
+  for (let i = 0; i < 200 && sink.chunks.length < count; i++) {
+    await sleep(5);
+  }
+  expect(sink.chunks.length).toBe(count);
+}
+
 /** Long enough for an eager decision plus stubbed synthesis to complete. */
 const SETTLED = 80;
 
@@ -317,6 +327,7 @@ function reset(): void {
   synthCalls = 0;
   synthChunks = 1;
   synthChunkGapMs = 0;
+  synthChunkBytes = 64;
   synthFirstChunkDelayMs = 0;
   synthSilent = false;
   synthIncomplete = null;
@@ -2022,6 +2033,124 @@ describe('meeting room silence', () => {
     expect(turns('bot-confirmed')).toHaveLength(2);
     expect(lastWindowSeen).toContain('Archie: The pool ran dry.');
     expect(lastWindowSeen).not.toContain('recovered fully');
+    await meeting.stop();
+  });
+
+  // The four tests below cover the sentence the room was in the middle of hearing when it cut in: its heard words are estimated from the played bytes, rounded down to a word and em-dashed.
+
+  it('files the words heard of a sentence cut into before any sentence had completed', async () => {
+    reset();
+    // 23,200-byte chunks put the played count on the scale real speech reaches (48,000 bytes/s), so the estimate is what decides the answer.
+    synthChunkBytes = 23_200;
+    synthChunks = 6;
+    synthChunkGapMs = 40;
+    decideDelayMs = 400;
+    // Nothing completes, so the fallback rate applies: 49 chars x 2,900 = 142,100 bytes, and three chunks is 69,600 — just under half.
+    decideQueue.push({ speech: 'I can go into detail about how I handle failures.', sentenceAt: [10] });
+    const { meeting, sink } = await makeMeeting('bot-partial-first');
+    const a = speakerFor(meeting, ann);
+
+    a.emit({ kind: 'start' });
+    a.emit({ kind: 'end', transcript: 'Archie, how do you handle failures?' });
+    await playedChunks(sink, 3);
+
+    a.emit({ kind: 'start' });
+    expect(sink.cuts).toBe(1);
+    await sleep(500);
+
+    const row = turns('bot-partial-first')[0];
+    expect(String(row.error)).toContain('cut off');
+    // floor(0.49 x 49) = 24 chars, back to the word boundary at 20.
+    expect(row.speech).toBe('I can go into detail—');
+    expect(utterances('bot-partial-first')).toEqual([
+      { speaker: 'Ann', text: 'Archie, how do you handle failures?' },
+      { speaker: 'Archie', text: 'I can go into detail—' },
+    ]);
+    await meeting.stop();
+  });
+
+  it('files the words heard of the sentence cut into after the sentence that completed', async () => {
+    reset();
+    synthChunks = 2;
+    synthChunkGapMs = 40;
+    decideDelayMs = 500;
+    // Sentence one completes at 128 bytes over 29 chars, so this turn's own rate is 4.41 bytes/char; one 64-byte chunk into the second is 14 of its 49 chars.
+    decideQueue.push({
+      speech: 'The rollout finished at noon. I can go into detail about how I handle failures.',
+      sentenceAt: [10, 200],
+    });
+    const { meeting, sink } = await makeMeeting('bot-partial-second');
+    const a = speakerFor(meeting, ann);
+
+    a.emit({ kind: 'start' });
+    a.emit({ kind: 'end', transcript: 'Archie, how did the rollout go?' });
+    await playedChunks(sink, 3);
+
+    a.emit({ kind: 'start' });
+    expect(sink.cuts).toBe(1);
+    await sleep(500);
+
+    const row = turns('bot-partial-second')[0];
+    expect(row.speech).toBe('The rollout finished at noon. I can go into—');
+    expect(utterances('bot-partial-second')).toEqual([
+      { speaker: 'Ann', text: 'Archie, how did the rollout go?' },
+      { speaker: 'Archie', text: 'The rollout finished at noon. I can go into—' },
+    ]);
+    await meeting.stop();
+  });
+
+  it('files nothing of a sentence the room heard less than one word of', async () => {
+    reset();
+    synthChunks = 6;
+    synthChunkGapMs = 40;
+    decideDelayMs = 400;
+    // 128 played bytes against 142,100 estimated: part of the first word, which is no word.
+    decideQueue.push({ speech: 'I can go into detail about how I handle failures.', sentenceAt: [10] });
+    const { meeting, sink } = await makeMeeting('bot-partial-none');
+    const a = speakerFor(meeting, ann);
+
+    a.emit({ kind: 'start' });
+    a.emit({ kind: 'end', transcript: 'Archie, how do you handle failures?' });
+    await playedChunks(sink, 2);
+
+    a.emit({ kind: 'start' });
+    expect(sink.cuts).toBe(1);
+    await sleep(500);
+
+    const row = turns('bot-partial-none')[0];
+    expect(String(row.error)).toContain('cut off');
+    expect(row.speech).toBe('');
+    expect(utterances('bot-partial-none')).toEqual([
+      { speaker: 'Ann', text: 'Archie, how do you handle failures?' },
+    ]);
+    await meeting.stop();
+  });
+
+  it('measures a cut sentence by its own end offset when its audio had all arrived, not by the estimate', async () => {
+    reset();
+    decideDelayMs = 500;
+    // Both sentences complete (64 bytes each); `confirmLagBytes: 32` leaves the second exactly half-heard by its own end offset, 128.
+    decideQueue.push({
+      speech: 'Ready. It backs off and gives up after five tries. Then it gives up.',
+      sentenceAt: [50, 200, 400],
+    });
+    const { meeting, sink } = await makeMeeting('bot-partial-exact', {}, { sink: { confirmLagBytes: 32 } });
+    const a = speakerFor(meeting, ann);
+
+    a.emit({ kind: 'start' });
+    a.emit({ kind: 'end', transcript: 'Archie, what does the client do on a 500?' });
+    await sleep(250);
+    expect(sink.chunks.length).toBe(2);
+
+    a.emit({ kind: 'start' });
+    expect(sink.cuts).toBe(1);
+    await sleep(400);
+
+    const row = turns('bot-partial-exact')[0];
+    // Exact end: floor(0.5 x 43) = 21 chars, back to the boundary at 16.
+    expect(row.speech).toBe('Ready. It backs off and—');
+    // What the estimate would have said — 6 and 43 chars average to 6.08 bytes/char, putting the end at 325 and the cut 5 chars in.
+    expect(row.speech).not.toBe('Ready. It—');
     await meeting.stop();
   });
 
