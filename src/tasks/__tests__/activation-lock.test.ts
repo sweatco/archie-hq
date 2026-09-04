@@ -26,6 +26,12 @@ vi.mock('../../system/logger.js', () => ({
 const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
 vi.mock('../../agents/spawn.js', () => ({ spawnAgent: spawnMock }));
 
+const { loadMetadataMock } = vi.hoisted(() => ({ loadMetadataMock: vi.fn() }));
+vi.mock('../persistence.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../persistence.js')>()),
+  loadMetadata: loadMetadataMock,
+}));
+
 import { Task, activeTasks } from '../task.js';
 import { MessageQueue } from '../../agents/message-queue.js';
 import type { TaskMetadata } from '../../types/task.js';
@@ -74,6 +80,8 @@ describe('Task activation lock (double-spawn guard)', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     spawnMock.mockReset();
+    loadMetadataMock.mockReset();
+    loadMetadataMock.mockResolvedValue(null);
     // Each spawn marks its agent running, the way spawn.ts wires the handle.
     spawnMock.mockImplementation(async (agent: { handle?: unknown }) => {
       agent.handle = { isRunning: true, running: new Promise<void>(() => {}), abort: vi.fn() };
@@ -131,5 +139,32 @@ describe('Task activation lock (double-spawn guard)', () => {
 
     expect(spawnMock).toHaveBeenCalledTimes(2);
     expect(activeTasks.get(TASK_ID)).toBe(b);
+  });
+
+  it('reconciles the fixed destination and authors before choosing the spawned instance', async () => {
+    const staleA = new TaskCtor(TASK_ID, {
+      ...metadata(TASK_ID),
+      memory_destination: { channel_id: 'C07PUBLIC1' },
+      memory_authors: { U07PERSON1: 'One' },
+    }, [pmDef()]);
+    const staleB = new TaskCtor(TASK_ID, {
+      ...metadata(TASK_ID),
+      memory_destination: { channel_id: 'C07PUBLIC1' },
+      memory_authors: { U07PERSON2: 'Two' },
+    }, [pmDef()]);
+    loadMetadataMock.mockResolvedValue({
+      ...metadata(TASK_ID),
+      memory_destination: { channel_id: 'C07PUBLIC1' },
+      memory_authors: { U07PERSON3: 'Three' },
+    });
+
+    await Promise.all([staleA.sendMessage('from-a'), staleB.sendMessage('from-b')]);
+
+    const canonical = activeTasks.get(TASK_ID)!;
+    expect(canonical.metadata.memory_destination).toEqual({ channel_id: 'C07PUBLIC1' });
+    expect(canonical.metadata.memory_authors).toEqual(expect.objectContaining({
+      U07PERSON3: 'Three',
+    }));
+    expect(spawnMock).toHaveBeenCalledTimes(1);
   });
 });

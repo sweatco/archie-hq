@@ -410,13 +410,14 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
     // own thread there (that message becomes the thread root), and every human reply to it routes back to
     // this task instead of starting a stranger one. `home_channel` is what `postToUser` reads to do that.
     homeChannelId = trigger.binding.channel_id;
+    task.setMemoryDestination(trigger.binding.channel_id);
     task.metadata.home_channel = {
       channel_id: trigger.binding.channel_id,
       channel_name: trigger.binding.channel_name,
     };
     delivery = `You have no thread yet. Your first post_to_user opens this task's own thread in #${trigger.binding.channel_name}, and every message after that goes into that same thread. Until then you cannot post anywhere else.`;
   }
-  task.debouncedSave();
+  await task.save(true);
 
   const reason = context.kind === 'message'
     ? `a new message in #${context.channelName ?? 'a channel'} matched your filter`

@@ -58,7 +58,14 @@ import { getProbeBaseUrl } from '../system/context-probe.js';
 import { buildSandboxConfig, buildManagedNetworkPolicy, buildPackageManagerCacheEnv, createFilesystemGuardHooks, TRUSTED_PACKAGE_REGISTRY_DOMAINS, type SandboxOptions } from './sandbox.js';
 import { grantTriggerDataAccess, buildTriggerDataPromptSection } from './trigger-data.js';
 import { applyOAuthBindings } from '../system/oauth/inject.js';
-import { enrichPromptWithMemory, isMemoryEnabled, isInjectionEnabled } from '../memory/index.js';
+import { enrichPromptWithMemory } from '../memory/index.js';
+import { getAuthorizedMemoryAuthors } from '../memory/task-authors.js';
+import { isInjectionEnabled, isMemoryToolsEnabled } from '../memory/paths.js';
+import {
+  authorizeTaskMemory,
+  createMemoryMcpServer,
+  shouldAttachMemoryTools,
+} from '../memory/tools.js';
 
 // ---- Prompt generation (per agent kind) ----
 
@@ -114,7 +121,10 @@ async function generatePluginAgentPrompt(agent: Agent, task: Task): Promise<stri
 
 // ---- Plugin agent workspace setup ----
 
-async function setupAgentWorkspace(taskId: string, agent: Agent): Promise<string> {
+async function setupAgentWorkspace(
+  taskId: string,
+  agent: Agent,
+): Promise<string> {
   const agentWorkspace = join(getTaskPath(taskId), 'agents', agent.def.key);
   await mkdir(agentWorkspace, { recursive: true });
 
@@ -156,34 +166,15 @@ async function setupAgentWorkspace(taskId: string, agent: Agent): Promise<string
       sessionUrl: false,
     },
   };
-  if (agent.def.pluginHooks) settings.hooks = agent.def.pluginHooks;
+  const pluginHooks = agent.def.pluginHooks;
+  if (pluginHooks) settings.hooks = pluginHooks;
   await writeFile(settingsPath, JSON.stringify(settings, null, 2));
   logger.agent(
     agent.def.id,
-    `Wrote agent settings.json (attribution${agent.def.pluginHooks ? ' + plugin hooks' : ''})`,
+    `Wrote agent settings.json (attribution${pluginHooks ? ' + plugin hooks' : ''})`,
   );
 
   return agentWorkspace;
-}
-
-// ---- Memory helpers ----
-
-/**
- * Extract Slack user references from a task's knowledge.log.
- * Returns empty array if memory disabled, injection disabled, or log unavailable.
- * The result feeds only prompt injection, so when injection is off we skip the
- * transcript scan and user-file reads entirely.
- */
-async function extractTaskUsernames(taskId: string): Promise<import('../memory/types.js').UserRef[]> {
-  if (!isMemoryEnabled() || !isInjectionEnabled()) return [];
-  try {
-    const { readKnowledgeLog } = await import('../tasks/persistence.js');
-    const { extractUsernames } = await import('../memory/lifecycle.js');
-    const log = await readKnowledgeLog(taskId);
-    return extractUsernames(log);
-  } catch {
-    return [];
-  }
 }
 
 // ---- Audience helpers ----
@@ -237,6 +228,9 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   // Mark active before any heavy work (clone setup, MCP init) to prevent
   // false idle detection — recovery fires at 3s, MCP connections can take longer
   task.updateAgentState(def.id, true);
+  const memoryAuthorization = (isInjectionEnabled() || isMemoryToolsEnabled())
+    ? await authorizeTaskMemory(task)
+    : null;
 
   // ---- SDK config/tmp dirs (agent reads tool-results from here) ----
   // Only create for new tasks. Old tasks recovering won't have <taskId>/claude/
@@ -657,8 +651,20 @@ Shared folder: ${sharedPath} [READ-ONLY]
     : isRepoAgent(def)
       ? { repo: def.repo!.primary, taskTitle }
       : { plugin: def.pluginName, taskTitle };
-  const memoryUsernames = await extractTaskUsernames(taskId);
-  systemPrompt = await enrichPromptWithMemory(systemPrompt, memoryUsernames, memorySelectors);
+  if (memoryAuthorization) {
+    const enrichedPrompt = await enrichPromptWithMemory(
+      systemPrompt,
+      getAuthorizedMemoryAuthors(metadata),
+      memorySelectors,
+    );
+    if (enrichedPrompt !== systemPrompt) {
+      systemPrompt = enrichedPrompt;
+    }
+  }
+
+  if (memoryAuthorization && shouldAttachMemoryTools(metadata)) {
+    mcpServers['memory-tools'] = createMemoryMcpServer(task);
+  }
 
   // Expose the sandbox config on the agent so in-process tools (e.g.
   // `share_artifact`, `post_to_user` artifact_paths) can validate paths against

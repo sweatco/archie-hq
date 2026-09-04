@@ -15,6 +15,16 @@ export function isMemoryEnabled(): boolean {
   return process.env.ARCHIE_MEMORY !== 'false';
 }
 
+let memoryReady = false;
+
+export function isMemoryReady(): boolean {
+  return isMemoryEnabled() && memoryReady;
+}
+
+export function setMemoryReady(ready: boolean): void {
+  memoryReady = ready;
+}
+
 /** Housekeeping flag: set ARCHIE_MEMORY_HOUSEKEEPING=false to disable both auto and manual modes. */
 export function isHousekeepingEnabled(): boolean {
   return process.env.ARCHIE_MEMORY_HOUSEKEEPING !== 'false';
@@ -31,6 +41,10 @@ export function isHousekeepingEnabled(): boolean {
  */
 export function isInjectionEnabled(): boolean {
   return process.env.ARCHIE_MEMORY_INJECT === 'true';
+}
+
+export function isMemoryToolsEnabled(): boolean {
+  return process.env.ARCHIE_MEMORY_TOOLS === 'true';
 }
 
 // ---- Configurable caps ----
@@ -60,17 +74,41 @@ export function getMemoryDir(): string {
   return join(WORKDIR, 'memory');
 }
 
-/** Users directory: workdir/memory/users/ */
+export function getMemoryMarkerPath(): string {
+  return join(getMemoryDir(), '.scoped-v1.json');
+}
+
+export function getPublicMemoryDir(): string {
+  return join(getMemoryDir(), 'public');
+}
+
+export function getPrivateMemoryDir(): string {
+  return join(getMemoryDir(), 'private');
+}
+
+export function getPrivateChannelsMemoryDir(): string {
+  return join(getPrivateMemoryDir(), 'channels');
+}
+
+export function getPrivateUsersMemoryDir(): string {
+  return join(getPrivateMemoryDir(), 'users');
+}
+
+export function getRuntimeMemoryDir(): string {
+  return join(getMemoryDir(), 'runtime');
+}
+
+/** Public profiles directory: workdir/memory/public/users/ */
 export function getUsersDir(): string {
-  return join(getMemoryDir(), 'users');
+  return join(getPublicMemoryDir(), 'users');
 }
 
-/** Summaries directory: workdir/memory/summaries/ */
+/** Public task summaries directory: workdir/memory/public/tasks/ */
 export function getSummariesDir(): string {
-  return join(getMemoryDir(), 'summaries');
+  return join(getPublicMemoryDir(), 'tasks');
 }
 
-/** Per-task summary file: workdir/memory/summaries/<taskId>.md */
+/** Per-task summary file: workdir/memory/public/tasks/<taskId>.md */
 export function getSummaryPath(taskId: string): string {
   if (!isAllowedTaskId(taskId)) {
     throw new Error(`getSummaryPath: invalid taskId ${JSON.stringify(taskId)}`);
@@ -78,28 +116,28 @@ export function getSummaryPath(taskId: string): string {
   return join(getSummariesDir(), `${taskId}.md`);
 }
 
-/** Pending-extraction queue file: workdir/memory/pending-extractions.md */
+/** Pending-extraction queue file: workdir/memory/runtime/pending-extractions.md */
 export function getPendingPath(): string {
-  return join(getMemoryDir(), 'pending-extractions.md');
+  return join(getRuntimeMemoryDir(), 'pending-extractions.md');
 }
 
-/** Recent activity index: workdir/memory/recent-activity.md */
+/** Public recent activity index: workdir/memory/public/recent-activity.md */
 export function getRecentActivityPath(): string {
-  return join(getMemoryDir(), 'recent-activity.md');
+  return join(getPublicMemoryDir(), 'recent-activity.md');
 }
 
-/** Entities directory: workdir/memory/entities/ */
+/** Public entities directory: workdir/memory/public/entities/ */
 export function getEntitiesDir(): string {
-  return join(getMemoryDir(), 'entities');
+  return join(getPublicMemoryDir(), 'entities');
 }
 
-/** Derived entity index: workdir/memory/entities/index.md */
+/** Derived entity index: workdir/memory/public/entities/index.md */
 export function getEntityIndexPath(): string {
   return join(getEntitiesDir(), 'index.md');
 }
 
 /**
- * Per-entity file: workdir/memory/entities/<slug>.md.
+ * Per-entity file: workdir/memory/public/entities/<slug>.md.
  *
  * `slug` MUST be a valid entity slug (see `isValidEntitySlug`). Throws on any
  * other input — entity slugs originate from untrusted transcripts and become
@@ -116,12 +154,22 @@ export function getEntityPath(slug: string): string {
 // ---- User identifier validation ----
 
 const SLACK_ID_RE = /^(U|W|B|T)[A-Z0-9]{6,}$/;
+const MEMORY_HUMAN_ID_RE = /^(U|W)[A-Z0-9]{6,}$/;
+const SLACK_CONVERSATION_ID_RE = /^(C|G)[A-Z0-9]+$/;
 const FALLBACK_ID_RE = /^(cli|local):[A-Za-z0-9_\-]+$/;
 const TASK_ID_RE = /^[A-Za-z0-9._\-]+$/;
 
 /** True if `id` is a raw Slack user identifier (`U…`/`W…`/`B…`/`T…`). */
 export function isSlackUserId(id: string): boolean {
   return SLACK_ID_RE.test(id);
+}
+
+export function isMemoryHumanUserId(id: string): boolean {
+  return MEMORY_HUMAN_ID_RE.test(id);
+}
+
+export function isSlackConversationId(id: string): boolean {
+  return SLACK_CONVERSATION_ID_RE.test(id);
 }
 
 /** True if `id` is a documented non-Slack fallback identifier (`cli:…` / `local:…`). */
@@ -156,20 +204,27 @@ export function isValidEntitySlug(slug: string): boolean {
 }
 
 /**
- * Per-user file: workdir/memory/users/<id>.md.
- *
- * `id` MUST be either a raw Slack user identifier (`U…`/`W…`/`B…`/`T…`)
- * or a fallback identifier (`cli:<sessionId>`, `local:<osUser>`).
- * Throws on any other input.
+ * Public human profile: workdir/memory/public/users/<id>.md.
  */
 export function getUserPath(id: string): string {
-  if (!isAllowedUserId(id)) {
-    throw new Error(`getUserPath: invalid user identifier ${JSON.stringify(id)} — must be Slack ID or cli:/local: fallback`);
+  if (!isMemoryHumanUserId(id)) {
+    throw new Error(`getUserPath: invalid user identifier ${JSON.stringify(id)}`);
   }
-  // On case-insensitive filesystems the colon in fallback IDs could clash;
-  // normalise `:` to `__` for the fallback namespace only.
-  const safe = id.includes(':') ? id.replace(':', '__') : id;
-  return join(getUsersDir(), `${safe}.md`);
+  return join(getUsersDir(), `${id}.md`);
+}
+
+export function getChannelPrivatePath(channelId: string): string {
+  if (!isSlackConversationId(channelId)) {
+    throw new Error(`getChannelPrivatePath: invalid channel ID ${JSON.stringify(channelId)}`);
+  }
+  return join(getPrivateChannelsMemoryDir(), `${channelId}.md`);
+}
+
+export function getUserPrivatePath(userId: string): string {
+  if (!isMemoryHumanUserId(userId)) {
+    throw new Error(`getUserPrivatePath: invalid user ID ${JSON.stringify(userId)}`);
+  }
+  return join(getPrivateUsersMemoryDir(), `${userId}.md`);
 }
 
 // ---- Legacy (kept for callers that need to remove old session-dir summaries) ----

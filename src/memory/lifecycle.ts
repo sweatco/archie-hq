@@ -8,11 +8,9 @@
 import { writeFile, mkdir } from 'fs/promises';
 import { dirname } from 'path';
 import {
-  isMemoryEnabled,
+  isMemoryReady,
   getSummaryPath,
-  isAllowedUserId,
-  isSlackUserId,
-  isFallbackUserId,
+  isMemoryHumanUserId,
 } from './paths.js';
 import { readUser, applyUserUpdatesWithIdentity } from './store.js';
 import { runExtraction } from './extractor.js';
@@ -25,6 +23,9 @@ import { loadMetadata, readKnowledgeLog } from '../tasks/persistence.js';
 import { logger } from '../system/logger.js';
 import type { ExtractionResult, UserRef, ActivityEntry, MemoryUpdate } from './types.js';
 import type { TaskMetadata } from '../types/task.js';
+import { writePrivateOutcome } from './outcomes.js';
+import { classifySlackMemoryScope } from '../connectors/slack/client.js';
+import { isAuthorizedMemoryScope, scopeForSlackChannel } from '../tasks/memory-scope.js';
 
 // ============================================================================
 // Housekeeping note queue (consumed by buildSummaryMarkdown)
@@ -64,10 +65,8 @@ let extractionQueue: Promise<void> = Promise.resolve();
  * Extractions are serialized to avoid concurrent writes to shared memory files.
  */
 export function handleTaskCompleted(taskId: string): void {
-  if (!isMemoryEnabled()) return;
-  // Persist the intent to extract before scheduling. If the process exits
-  // before processExtraction completes, the next startup will find the entry
-  // and re-schedule.
+  if (!isMemoryReady()) return;
+  // Once enqueuePending completes, a restart can recover unfinished extraction.
   extractionQueue = extractionQueue
     .then(() => enqueuePending(taskId))
     .then(() => processExtraction(taskId))
@@ -80,7 +79,7 @@ export function handleTaskCompleted(taskId: string): void {
  * — the entry is already in pending-extractions.md so we only want to drain.
  */
 export function rescheduleTaskCompleted(taskId: string): void {
-  if (!isMemoryEnabled()) return;
+  if (!isMemoryReady()) return;
   extractionQueue = extractionQueue
     .then(() => processExtraction(taskId))
     .then(() => dequeuePending(taskId))
@@ -98,17 +97,51 @@ async function processExtraction(taskId: string): Promise<void> {
     return;
   }
 
+  const destination = metadata.memory_destination;
+  if (!destination) return;
+  const classify = async () => scopeForSlackChannel(
+    await classifySlackMemoryScope(destination.channel_id),
+    destination.channel_id,
+  );
+  const scope = await classify();
+  if (!isAuthorizedMemoryScope(destination, scope)) return;
+
   const transcript = await readKnowledgeLog(taskId);
   if (!transcript.trim()) {
     logger.warn('memory', `processExtraction: empty transcript for ${taskId}`);
     return;
   }
 
-  // Identify involved users — Slack mentions if present, else a deterministic fallback.
-  let users = extractUsernames(transcript);
-  if (users.length === 0) {
-    users = [resolveFallbackId(metadata)];
+  if (scope.kind === 'private_channel' || scope.kind === 'user') {
+    const outcome = await runExtraction({
+      userMemory: '',
+      entityIndex: '',
+      taskId,
+      participants: metadata.participants.join(', '),
+      taskOwner: metadata.task_owner ?? '',
+      status: metadata.status,
+      createdAt: metadata.created_at,
+      transcript,
+    }, new Set());
+    if (!outcome) return;
+    const current = await classify();
+    if (
+      !isAuthorizedMemoryScope(destination, current)
+      || current.kind !== scope.kind
+      || (scope.kind === 'user' && current.kind === 'user' && current.user_id !== scope.user_id)
+    ) return;
+    await writePrivateOutcome(scope, {
+      task_id: taskId,
+      created_at: metadata.created_at,
+      recorded_at: new Date().toISOString(),
+      summary: outcome.task_summary,
+    });
+    return;
   }
+
+  const users = Object.entries(metadata.memory_authors ?? {})
+    .filter(([userId]) => isMemoryHumanUserId(userId))
+    .map(([userId, displayName]) => ({ userId, displayName }));
 
   // Load existing memory for ALL involved users in parallel.
   const entityIndex = await readIndexMarkdown();
@@ -143,30 +176,37 @@ async function processExtraction(taskId: string): Promise<void> {
     logger.warn('memory', `processExtraction: extraction returned null for ${taskId}`);
     return;
   }
+  const current = await classify();
+  if (!isAuthorizedMemoryScope(destination, current) || current.kind !== 'public') return;
 
   // Apply per-user updates. Use the identity-aware writer so first-touch
   // user files get YAML frontmatter (slack_user_id + display_name + aliases).
   const housekeepingTargets = new Set<string>();
   const displayNameById = new Map(users.map((u) => [u.userId, u.displayName]));
+  const appliedUserUpdates: Record<string, MemoryUpdate[]> = {};
   for (const [userId, updates] of Object.entries(result.user_updates)) {
-    if (updates.length > 0) {
+    const attributedUpdates = updates.filter((update) =>
+      metadata.memory_message_authors?.[update.source_message_ts ?? ''] === userId
+    );
+    if (attributedUpdates.length > 0) {
       const displayName = displayNameById.get(userId) ?? userId;
-      const userCapExceeded = await applyUserUpdatesWithIdentity(userId, displayName, updates);
-      if (userCapExceeded) housekeepingTargets.add(userId);
+      const applied = await applyUserUpdatesWithIdentity(userId, displayName, attributedUpdates);
+      if (applied.appliedUpdates.length > 0) appliedUserUpdates[userId] = applied.appliedUpdates;
+      if (applied.capExceeded) housekeepingTargets.add(userId);
     }
   }
 
   // Apply entity updates (resolve-or-create; sanitizer runs inside entities.ts).
   // Each applied update auto-adds a `touched_by [[taskId]]` edge.
-  const touchedEntities: string[] = [];
+  const touchedEntities = new Set<string>();
   for (const update of result.entity_updates) {
     const applied = await applyEntityUpdate(update, taskId);
     if (!applied) continue;
-    touchedEntities.push(applied.slug);
+    touchedEntities.add(applied.slug);
     if (applied.capExceeded) housekeepingTargets.add('entities');
   }
   // Rebuild the derived index whenever entities changed.
-  if (touchedEntities.length > 0) {
+  if (touchedEntities.size > 0) {
     await rebuildIndex();
   }
 
@@ -187,11 +227,29 @@ async function processExtraction(taskId: string): Promise<void> {
   const activityIndex = await readActivity();
   // Related tasks: prefer tasks that share an entity with this one; fall back
   // to lexical similarity over the activity index when there's no entity overlap.
-  let related = await selectRelatedTasksByEntity(touchedEntities, taskId, activityIndex);
+  const touchedEntitySlugs = [...touchedEntities];
+  let related = await selectRelatedTasksByEntity(touchedEntitySlugs, taskId, activityIndex);
   if (related.length === 0) {
     related = selectRelatedTasks(result.activity_summary, result.domain, activityIndex, taskId);
   }
-  await writeSummary(taskId, metadata, result, users, activityIndex, related);
+  const safeTaskSummary = sanitizeTaskSummary(result.task_summary);
+  if (safeTaskSummary) {
+    await writeSummary(
+      taskId,
+      metadata,
+      {
+        ...result,
+        task_summary: safeTaskSummary,
+        user_updates: appliedUserUpdates,
+        entity_updates: touchedEntitySlugs.map((slug) => ({ slug })),
+      },
+      users,
+      activityIndex,
+      related,
+    );
+  } else {
+    logger.warn('memory', `dropped task summary for ${taskId} (sanitizer rejected)`);
+  }
 
   // Append to recent activity, then trim.
   const requestingUser = users[0]?.userId ?? 'cli';
@@ -205,65 +263,6 @@ async function processExtraction(taskId: string): Promise<void> {
   await trimActivity(50);
 
   logger.system(`[memory] Extraction complete for ${taskId}`);
-}
-
-// ============================================================================
-// User identifier parsing
-// ============================================================================
-
-// Match a `<UID:Display Name>` user-mention component wherever it appears,
-// accepting BOTH bracket orders: the internal `@<UID:Name>` and the Slack-native
-// `<@UID:Name>` the model tends to produce (and that producers now emit — see
-// restoreMentions in the Slack client). Production log lines often carry extra
-// context inside the same outer brackets, e.g.:
-//   `[<@U03RQQTE1EF:Riley Quinn> in slack:#<D0AUZLR6ZJQ:DM with Riley Quinn>:...]`
-// so we anchor on the `@<`/`<@` prefix, not the surrounding `[...]`. The `@`
-// adjacent to the UID is what distinguishes a user mention from a channel
-// reference like `#<D0AUZLR6ZJQ:DM with Riley Quinn>` (same `<UID:Name>` shape,
-// but `#<` prefix). Non-Slack-shaped IDs are filtered later by isSlackUserId.
-const MENTION_RE = /(?:@<|<@)([A-Z][A-Z0-9]{6,}):([^>]+)>/g;
-
-/**
- * Parse all Slack-mention markers from a transcript and return one record
- * per unique user. The raw Slack ID is the canonical filename identifier;
- * the display name is retained for prompt labels and YAML frontmatter.
- *
- * Channel references like `#<D0AUZLR6ZJQ:DM with Riley Quinn>` do NOT match
- * because they lack the `@` prefix. User IDs whose prefix is not Slack-shaped
- * (`U`/`W`/`B`/`T`) are filtered out by `isSlackUserId`.
- */
-export function extractUsernames(transcript: string): UserRef[] {
-  const seen = new Map<string, string>();
-  let match: RegExpExecArray | null;
-  const re = new RegExp(MENTION_RE.source, 'g');
-  while ((match = re.exec(transcript)) !== null) {
-    const userId = match[1];
-    const displayName = match[2].trim();
-    if (isSlackUserId(userId) && !seen.has(userId)) {
-      seen.set(userId, displayName || userId);
-    }
-  }
-  return Array.from(seen, ([userId, displayName]) => ({ userId, displayName }));
-}
-
-/**
- * Return the first Slack-mention user in the transcript, or null when none.
- */
-export function extractRequestingUser(transcript: string): UserRef | null {
-  const refs = extractUsernames(transcript);
-  return refs[0] ?? null;
-}
-
-/**
- * Resolve a non-Slack fallback identifier for a task whose transcript has
- * no Slack mentions. Examples: `cli:<sessionId>`, `cli:<taskId>`. The
- * fallback uses a prefix the Slack namespace cannot produce.
- */
-export function resolveFallbackId(metadata: TaskMetadata): UserRef {
-  const taskId = metadata.task_id;
-  // Future: pull a richer sessionId from CLI channel metadata when one is available.
-  const fallbackId = `cli:${taskId}`;
-  return { userId: fallbackId, displayName: `cli session (${taskId})` };
 }
 
 // ============================================================================
@@ -309,7 +308,8 @@ export function buildSummaryMarkdown(
   housekeepingNotes: string[] = [],
   related?: ActivityEntry[]
 ): string {
-  const safeSummary = sanitizeTaskSummary(result.task_summary) ?? result.task_summary.slice(0, 2000);
+  const safeSummary = sanitizeTaskSummary(result.task_summary);
+  if (!safeSummary) throw new Error('buildSummaryMarkdown: unsafe task summary');
   const lines: string[] = ['---'];
   lines.push(`task_id: ${taskId}`);
   lines.push(`status: ${metadata.status}`);
@@ -409,13 +409,9 @@ function renderMemoryUpdates(result: ExtractionResult, housekeepingNotes: string
     lines.push('');
   }
 
-  // Entity pages are the home for organizational knowledge (org.md is retired),
-  // so the diff renders each touched entity as its own group.
-  for (const e of result.entity_updates) {
-    lines.push(`### entities/${e.slug}.md`, '');
-    if (e.summary) lines.push(`- **summary** ${e.summary}`);
-    for (const o of e.observations ?? []) lines.push(`- **[${o.category}]** ${o.text}`);
-    for (const r of e.relations ?? []) lines.push(`- **${r.type}** [[${r.target}]]`);
+  if (hasEntity) {
+    lines.push('### Entities', '');
+    for (const e of result.entity_updates) lines.push(`- [[${e.slug}]]`);
     lines.push('');
   }
 

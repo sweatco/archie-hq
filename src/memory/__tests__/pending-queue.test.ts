@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, readFile, writeFile } from 'fs/promises';
+import { mkdtemp, rm, readFile, writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -38,6 +38,11 @@ describe('pending-queue', () => {
 
   it('returns [] when the file does not exist', async () => {
     expect(await readPending()).toEqual([]);
+  });
+
+  it('does not hide queue read errors', async () => {
+    await mkdir(pendingPath);
+    await expect(readPending()).rejects.toMatchObject({ code: 'EISDIR' });
   });
 
   it('enqueue creates the file with the entry', async () => {

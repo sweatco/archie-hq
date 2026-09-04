@@ -50,7 +50,10 @@ vi.mock('../client.js', () => ({
   getBotId: vi.fn().mockReturnValue('B_OURS'),
   addReaction: vi.fn(),
   setSlackDryRun: vi.fn(),
-  getUserInfo: vi.fn().mockResolvedValue({ name: 'dev', realName: 'A Dev', teamId: 'T_HOME' }),
+  getUserInfo: vi.fn().mockResolvedValue({
+    name: 'dev', realName: 'A Dev', teamId: 'T_HOME',
+    isRestricted: false, isUltraRestricted: false, isBot: false, isAppUser: false,
+  }),
   isExternalUser: vi.fn().mockReturnValue(false),
   isChannelShared: vi.fn().mockResolvedValue(false),
   postEphemeral: vi.fn(),
@@ -514,6 +517,7 @@ describe('the message-edit entry point renders through the shared module', () =>
     await flushHandler();
 
     expect(appendSlackEdit).toHaveBeenCalledTimes(1);
+    expect(appendSlackEdit.mock.calls[0]![1]).toMatchObject({ isBot: false, isAppUser: false });
     // The body must carry the attachment card, which only the shared renderer folds in. Reverting the
     // production call to `msg.text` yields 'after' alone and fails here.
     const body = appendSlackEdit.mock.calls[0]![3] as string;

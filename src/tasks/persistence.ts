@@ -5,8 +5,9 @@
  * appending to knowledge.log
  */
 
-import { mkdir, readdir, readFile, writeFile, appendFile } from 'fs/promises';
+import { mkdir, readdir, readFile, rename, unlink, writeFile, appendFile } from 'fs/promises';
 import { createReadStream, existsSync } from 'fs';
+import { randomUUID } from 'crypto';
 import { createInterface } from 'readline';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -18,8 +19,32 @@ import { SESSIONS_DIR } from '../system/workdir.js';
 import { emitEvent, onEvent } from '../system/event-bus.js';
 import { logger } from '../system/logger.js';
 import { formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { createKeyedLock } from '../system/keyed-lock.js';
 
 const execFileAsync = promisify(execFile);
+const metadataLock = createKeyedLock();
+
+export function reconcilePersistedMemoryMetadata(
+  persisted: TaskMetadata,
+  pending: TaskMetadata,
+): void {
+  if (
+    persisted.memory_destination
+    && pending.memory_destination
+    && persisted.memory_destination.channel_id !== pending.memory_destination.channel_id
+  ) {
+    throw new Error('task metadata has conflicting Slack destinations');
+  }
+  pending.memory_destination ??= persisted.memory_destination;
+  pending.memory_authors = {
+    ...(persisted.memory_authors ?? {}),
+    ...(pending.memory_authors ?? {}),
+  };
+  pending.memory_message_authors = {
+    ...(persisted.memory_message_authors ?? {}),
+    ...(pending.memory_message_authors ?? {}),
+  };
+}
 
 /**
  * Ceiling on a scan's stdout. Only matching paths are printed, so this is ~150
@@ -225,6 +250,40 @@ export async function loadMetadata(taskId: string): Promise<TaskMetadata | null>
     logger.warn('persistence', `Failed to parse metadata for ${taskId}: ${err}`);
     return null;
   }
+}
+
+export async function persistTaskMetadata(taskId: string, metadata: TaskMetadata): Promise<void> {
+  if (!/^task-\d{8}-\d{4}-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(taskId)) {
+    throw new Error(`invalid task ID: ${taskId}`);
+  }
+  await metadataLock(taskId, async () => {
+    const root = resolve(SESSIONS_DIR);
+    const path = resolve(getMetadataPath(taskId));
+    const rel = relative(root, path);
+    if (rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)) {
+      throw new Error(`task metadata path escapes sessions directory: ${taskId}`);
+    }
+    let persisted: TaskMetadata | undefined;
+    try {
+      persisted = JSON.parse(await readFile(path, 'utf-8')) as TaskMetadata;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+
+    if (persisted) {
+      reconcilePersistedMemoryMetadata(persisted, metadata);
+    }
+
+    const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(tempPath, JSON.stringify(metadata, null, 2));
+      await rename(tempPath, path);
+    } finally {
+      await unlink(tempPath).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      });
+    }
+  });
 }
 
 /**

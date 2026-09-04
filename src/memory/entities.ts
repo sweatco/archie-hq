@@ -48,6 +48,7 @@ import {
   isAllowedEntityScope,
   isAllowedDomain,
 } from './sanitize.js';
+
 import { logger } from '../system/logger.js';
 import type {
   EntityRecord,
@@ -58,6 +59,7 @@ import type {
   EntityUpdate,
 } from './types.js';
 
+const ENTITY_OBSERVATION_LIMIT = 30;
 const REPO_TOKEN_RE = /^[A-Za-z0-9._\-]{1,64}$/;
 
 // ============================================================================
@@ -138,7 +140,10 @@ export async function readEntity(slug: string): Promise<EntityRecord | null> {
 export async function writeEntity(record: EntityRecord): Promise<void> {
   const path = getEntityPath(record.entity);
   await mkdir(getEntitiesDir(), { recursive: true });
-  await writeFile(path, serializeEntity(record), 'utf-8');
+  await writeFile(path, serializeEntity({
+    ...record,
+    observations: record.observations.slice(-ENTITY_OBSERVATION_LIMIT),
+  }), 'utf-8');
 }
 
 /** Read + parse every entity file (excluding the derived index). */

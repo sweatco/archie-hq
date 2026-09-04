@@ -14,6 +14,8 @@ export interface MemoryUpdate {
   content: string;
   /** For 'update': the old line to replace */
   old?: string;
+  /** Slack source message used to authorize a first-person preference. */
+  source_message_ts?: string;
 }
 
 /** Extraction result from the Sonnet side-agent */

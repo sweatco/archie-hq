@@ -304,6 +304,17 @@ function checkCollision(agentId: string, pluginName: string, seen: Map<string, s
   seen.set(agentId, pluginName);
 }
 
+const HOST_OWNED_MCP_SERVER_NAMES = new Set([
+  'agent-tools',
+  'comms-tools',
+  'orchestration-tools',
+  'scheduling-tools',
+  'repo-tools',
+  'research-tools',
+  'file-bridge',
+  'memory-tools',
+]);
+
 /**
  * Resolve agent's mcpServers references against the root .mcp.json.
  *
@@ -329,6 +340,10 @@ function resolveAgentMcpServers(
     const descriptions: Record<string, string> = {};
     const policy: McpToolPolicy = {};
     for (const name of agent.mcpServers) {
+      if (HOST_OWNED_MCP_SERVER_NAMES.has(name) || name.includes('__')) {
+        logger.warn('registry', `Agent "${agent.key}" references reserved MCP server key "${name}"; reference refused`);
+        continue;
+      }
       const config = rootMcp.servers[name];
       if (config) {
         resolved[name] = config;

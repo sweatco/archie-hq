@@ -14,12 +14,14 @@ let tempDir: string;
 let usersDir: string;
 let activityPath: string;
 let memoryEnabled = true;
+let memoryReady = true;
 let injectionEnabled = false;
 
 let entitiesDir: string;
 
 vi.mock('../paths.js', () => ({
   isMemoryEnabled: () => memoryEnabled,
+  isMemoryReady: () => memoryEnabled && memoryReady,
   isInjectionEnabled: () => injectionEnabled,
   getUserPath: (id: string) => {
     const safe = id.includes(':') ? id.replace(':', '__') : id;
@@ -47,6 +49,7 @@ describe('memory context builder', () => {
     activityPath = join(tempDir, 'recent-activity.md');
     entitiesDir = join(tempDir, 'entities');
     memoryEnabled = true;
+    memoryReady = true;
     injectionEnabled = false; // production default; positive tests opt in explicitly
   });
 
@@ -172,6 +175,20 @@ describe('memory context builder', () => {
       await writeFile(join(usersDir, 'U07DANA001.md'), '## Communication\n- Prefers async\n', 'utf-8');
 
       const result = await enrichPromptWithMemory('base prompt', [{ userId: 'U07DANA001', displayName: 'Dana' }]);
+
+      expect(result).toBe('base prompt');
+    });
+
+    it('returns systemPrompt unchanged when scoped-store initialization failed', async () => {
+      memoryReady = false;
+      injectionEnabled = true;
+      await mkdir(usersDir, { recursive: true });
+      await writeFile(join(usersDir, 'U07DANA001.md'), '- must not be read\n', 'utf-8');
+
+      const result = await enrichPromptWithMemory(
+        'base prompt',
+        [{ userId: 'U07DANA001', displayName: 'Dana' }],
+      );
 
       expect(result).toBe('base prompt');
     });

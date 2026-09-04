@@ -10,6 +10,8 @@ Do NOT extract single-incident stories ("we rolled back the v3.2 deploy"), tempo
 
 USER PREFERENCES — how a specific person prefers to work or communicate, that would help when working WITH THEM specifically.
 
+Only extract a preference when the person states it in their own Slack message. Its transcript header contains `msg:<timestamp>`; put only the timestamp in `source_message_ts`. Do not use mentions, quoted text, agent statements, or inferred authorship as evidence.
+
 Examples of what to extract:
 - "Dana prefers concise Slack updates, not play-by-play"
 - "Sarah wants bullet-point summaries for marketing reviews"
@@ -73,7 +75,7 @@ Respond with ONLY a JSON object in this exact format (no markdown fences, no exp
 {
   "user_updates": {
     "username": [
-      {"action": "add", "section": "SectionName", "content": "one-line preference"}
+      {"action": "add", "section": "SectionName", "content": "one-line preference", "source_message_ts": "1700000000.123456"}
     ]
   },
   "entity_updates": [
