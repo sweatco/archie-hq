@@ -70,6 +70,11 @@ All paths below are rooted at `SESSIONS_DIR` (`${ARCHIE_WORKDIR}/sessions`).
 | `getArtifactsPath(taskId)` | `{SESSIONS_DIR}/{taskId}/shared/artifacts` |
 | `getEventsLogPath(taskId)` | `{SESSIONS_DIR}/{taskId}/shared/events.jsonl` |
 | `getUsageLogPath(taskId)` | `{SESSIONS_DIR}/{taskId}/shared/usage.jsonl` |
+
+Two more paths land under the same `shared/` tree but are built in the Recall connector rather than here, because a meeting's record is that connector's own shape and nothing outside `src/connectors/recall/` reads or writes it — they are listed for completeness, and `getSharedPath` above is all they borrow from this module:
+
+| Function (`src/connectors/recall/meeting-record.ts`) | Returns |
+|---|---|
 | `getMeetingPath(taskId, sessionId)` | `{SESSIONS_DIR}/{taskId}/shared/recall/{sessionId}` |
 | `getMeetingRecordPath(taskId, sessionId)` | `{SESSIONS_DIR}/{taskId}/shared/recall/{sessionId}/meeting.jsonl` |
 
@@ -77,7 +82,7 @@ Per-agent workspaces (`{taskId}/agents/{agentKey}/`) and SDK runtime dirs
 (`{taskId}/claude/{agentKey}/{session,tmp}`) are created in `src/agents/spawn.ts`,
 not in `persistence.ts`.
 
-One meeting, one subfolder — `sessionId` is the same id that keys the meeting's `recall:{session_id}` entry in `channels` (see `RecallChannel` below), so the folder and the channel key are built from the same value and cannot drift apart. See [Voice](./voice.md) for `appendMeetingRow`, the one appender that writes that file, and why it lives beside the helpers above rather than in the Recall connector.
+One meeting, one subfolder — `sessionId` is the same id that keys the meeting's `recall:{session_id}` entry in `channels` (see `RecallChannel` below), so the folder and the channel key are built from the same value and cannot drift apart. See [Voice](./voice.md) for `appendMeetingRow`, the one appender that writes that file, and why it lives in the connector rather than beside the helpers above.
 
 ### Task ID format
 
@@ -151,11 +156,11 @@ The `channels` field is keyed by a unique channel ID (e.g., `"{channel_id}:{thre
 
 A GitHub PR conversation is not represented as a channel. GitHub state for a task lives in `metadata.repositories` instead — an `AttachedRepo` per agent, with per-branch `BranchState` carrying the PR number — and the task-lookup helpers that resolve a task from a PR or a branch (`findTaskByPRNumber`, `findTaskByBranch`) scan that structure rather than `channels`.
 
-`CliChannel` is the CLI/REST-SSE surface's own channel kind, linked once per task via `linkCliChannel()`; like `SlackChannel`, it is handled directly wherever it can be the task's default channel. `RecallChannel` is a live voice meeting (Zoom, Meet or Teams) that the Recall connector bound to a task; see [Voice](./voice.md) for what it represents and why the record is permanent even after the meeting ends. Unlike Slack and CLI, a `RecallChannel` is never the default channel, and always dispatches through the channel-delivery seam (`src/tasks/channel-delivery.ts`) instead of a hand-written branch — the same seam any future channel kind plugs a deliverer into rather than growing another branch in `Task.postToUser`.
+`CliChannel` is the CLI/REST-SSE surface's own channel kind, linked once per task via `linkCliChannel()`; like `SlackChannel`, it is handled directly wherever it can be the task's default channel. `RecallChannel` is a live voice meeting (Zoom, Meet or Teams) that the Recall connector bound to a task; see [Voice](./voice.md) for what it represents and why the record is permanent even after the meeting ends. Unlike Slack and CLI, a `RecallChannel` is never the default channel, and always dispatches through its own connector's deliverer, reached from a branch in `postToUser` beside the one for Slack — the same way any future channel kind plugs a deliverer into rather than growing another branch in `Task.postToUser`.
 
 ### The meeting record
 
-A voice meeting's whole record is one append-only file, `shared/recall/{sessionId}/meeting.jsonl` (see `getMeetingRecordPath` under Path helpers above), written by `appendMeetingRow` — one JSON object per line, in the order things settled. It is not part of `TaskMetadata` and not keyed into `channels`; it is documented here because it is the other durable shape a task carries.
+A voice meeting's whole record is one append-only file, `shared/recall/{sessionId}/meeting.jsonl` (see `getMeetingRecordPath` under Path helpers above), written by `appendMeetingRow` — one JSON object per line, in the order things settled. Both live in `src/connectors/recall/meeting-record.ts`, not in `persistence.ts`. It is not part of `TaskMetadata` and not keyed into `channels`; it is documented here because it is the other durable shape a task carries.
 
 ```typescript
 // src/voice/types.ts — one union member per kind of line.
