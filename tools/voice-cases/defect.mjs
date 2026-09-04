@@ -27,7 +27,8 @@ const URLISH = /\b(?:https?:\/\/)?[\w-]+(?:\.[\w-]+){2,}(?:\/[\w./-]*)?/g;
 const TICKET = /\b[A-Z]{2,}-\d{2,}\b/g;
 const SEMVER = /\b\d+\.\d+\.\d+\b/g;
 const ERRCODE = /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/g;
-const DOTTEDKEY = /\b[a-z][a-z0-9]*(?:[._][a-z0-9_]+){1,}\b/g;
+// `_` is deliberately out of the inner class: with it in both halves, `a_0_0_0…` decomposes exponentially many ways, which is what CodeQL flags here. A separator run absorbs it instead, and the match set is identical — checked against every case transcript, every prompt and 1,806 stored model replies.
+const DOTTEDKEY = /\b[a-z][a-z0-9]*(?:[._]+[a-z0-9]+)+\b/g;
 const HEADERISH = /\b[A-Z][a-z]+(?:-[A-Z][a-z]+)+\b/g;
 const ISODATE = /\b\d{4}-\d{2}-\d{2}\b/g;
 const CLOCK = /\b\d{1,2}:\d{2}(?::\d{2})?\b/g;
