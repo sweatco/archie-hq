@@ -81,11 +81,10 @@ describe('the two Cerebras arms send the two request shapes production sent', ()
     await call('cerebras-gemma-4-31b-thinking');
     // requestBody's own field set, in its own order: model, cap, temperature, stream, messages, then reasoning_effort appended last.
     expect(Object.keys(lastBody)).toEqual([
-      'model', 'max_completion_tokens', 'temperature', 'stream', 'messages', 'reasoning_effort',
+      'model', 'temperature', 'stream', 'messages', 'reasoning_effort',
     ]);
     expect(lastBody).toMatchObject({
       model: 'gemma-4-31b',
-      max_completion_tokens: 2000,
       temperature: 0,
       stream: true,
       reasoning_effort: 'medium',
@@ -112,9 +111,9 @@ describe('the two Cerebras arms send the two request shapes production sent', ()
   it('the candidate owns its cap, so a driver cannot make the two arms the same request', async () => {
     stubStream([contentFrame('Noon.'), stopFrame()]);
     await runCall('cerebras-gemma-4-31b-thinking', { system: 's', user: 'u', maxTokens: 600 });
-    expect(lastBody.max_completion_tokens).toBe(2000);
+    expect('max_completion_tokens' in lastBody).toBe(false);
     expect(CANDIDATES['cerebras-gemma-4-31b'].maxTokens).toBe(600);
-    expect(CANDIDATES['cerebras-gemma-4-31b-thinking'].maxTokens).toBe(2000);
+    expect(CANDIDATES['cerebras-gemma-4-31b-thinking'].maxTokens).toBeUndefined();
   });
 });
 

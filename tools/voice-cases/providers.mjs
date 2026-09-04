@@ -154,11 +154,11 @@ export const CANDIDATES = {
     provider: 'cerebras', model: 'gemma-4-31b',
     temperature: 0, maxTokens: 600, note: 'baseline — production up to 68a16c6e, prompted <think>',
   },
-  // Production at HEAD (8c2d2621): the same model asking for its own reasoning channel, at the raised cap that change shipped with.
-  // `reasoning_effort: 'medium'` and `max_completion_tokens: 2000`, and no `reasoning_format` key — the body is the shape requestBody() builds with `reasoning: true`, field for field.
+  // Production at HEAD: the same model asking for its own reasoning channel and sending no token cap — reasoning is billed as completion tokens, a cap it could reach would truncate the answer, and the request timeout is the bound.
+  // `reasoning_effort: 'medium'`, no `max_completion_tokens`, no `reasoning_format` — the body is the shape requestBody() builds with `reasoning: true`, field for field.
   'cerebras-gemma-4-31b-thinking': {
     provider: 'cerebras', model: 'gemma-4-31b',
-    temperature: 0, maxTokens: 2000, reasoningEffort: 'medium',
+    temperature: 0, reasoningEffort: 'medium',
     note: 'production candidate — mirrors comprehension.ts requestBody with reasoning: true',
   },
 };
@@ -178,12 +178,12 @@ function anthropicBody(c, { system, user, maxTokens, stream }) {
   return body;
 }
 
-// Matches comprehension.ts's requestBody: `system` is a message with the system role, not a top-level field; the token cap is `max_completion_tokens` (`max_tokens` is the deprecated alias).
+// Matches comprehension.ts's requestBody: `system` is a message with the system role, not a top-level field; a candidate with a cap sends it as `max_completion_tokens` (`max_tokens` is the deprecated alias); one without sends no cap at all.
 // `reasoning_effort` is appended last and only for a candidate that asks for it, exactly as production appends it only for a call with `reasoning: true` — and no `reasoning_format` key on either arm, because production sends none.
 function cerebrasBody(c, { system, user, maxTokens, stream }) {
   const body = {
     model: c.model,
-    max_completion_tokens: maxTokens,
+    ...(maxTokens === undefined ? {} : { max_completion_tokens: maxTokens }),
     temperature: c.temperature ?? 0,
     stream,
     messages: [
