@@ -116,25 +116,33 @@ function sanitizeForLog(value: string): string {
   return value.replace(/[\p{Cc}\u2028\u2029]+/gu, ' ').trim();
 }
 
-/** A sentence whose audio the synthesizer reported fully handed over, and the turn-relative byte count at that moment. */
+/** A sentence whose audio the synthesizer reported fully handed over, and the turn-relative byte count at that moment. Sentences the synthesizer spoke as one utterance report the same count — see `SpeechStream.say`. */
 type SentenceEnd = { text: string; endOffset: number };
 
 // The mean of this turn's own rates, so the estimate rides the voice that is actually speaking rather than a nominal one.
+// Measured over each span the synthesizer reported whole, not per sentence: sentences spoken as one utterance share one end offset, so charging that span's bytes to its first sentence's length alone would read as a voice several times faster than the room heard, and every sentence behind it as instant.
 function bytesPerChar(completed: readonly SentenceEnd[]): number {
   let rates = 0;
   let counted = 0;
   let previousEnd = 0;
-  for (const sentence of completed) {
-    if (sentence.text.length > 0) {
-      rates += (sentence.endOffset - previousEnd) / sentence.text.length;
-      counted++;
+  let chars = 0;
+  for (let i = 0; i < completed.length; i++) {
+    // Counted the way a span's sentences are joined for the wire, separator included, so a character here is a character there.
+    chars += (chars === 0 ? 0 : 1) + completed[i].text.length;
+    const endsSpan = i + 1 === completed.length || completed[i + 1].endOffset !== completed[i].endOffset;
+    if (endsSpan) {
+      if (chars > 0) {
+        rates += (completed[i].endOffset - previousEnd) / chars;
+        counted++;
+      }
+      previousEnd = completed[i].endOffset;
+      chars = 0;
     }
-    previousEnd = sentence.endOffset;
   }
   return counted === 0 ? DEFAULT_BYTES_PER_CHAR : rates / counted;
 }
 
-/** The words of the sentence being spoken when the room cut in, em-dashed to mark the cut; null when not even one whole word landed. */
+/** The words of the span the room was in the middle of hearing -- one sentence, or the several a synthesizer spoke as one utterance -- em-dashed to mark the cut; null when not even one whole word landed. */
 function heardPartOf(text: string, start: number, end: number, confirmed: number): string | null {
   if (end <= start) {
     return null;
@@ -583,14 +591,19 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       const confirmed = now - baseline;
       const heard = sentenceOffsets.filter((s) => s.endOffset <= confirmed);
       const spoken = heard.map((s) => s.text);
-      const cutSentence = handedSentences[heard.length];
-      if (cutSentence !== undefined) {
+      // What the room was in the middle of hearing is a span, not a sentence: the sentences of one utterance completed together and share its end offset, and the synthesizer cannot resolve inside it -- so the estimate runs across their joined text, and a turn cut in its third sentence reports words from the third instead of stopping at the end of the first. An `undefined` offset matches `undefined`, which is the utterance that never completed at all: every sentence of it, none of them credited.
+      const spanEnd = sentenceOffsets[heard.length]?.endOffset;
+      const span: string[] = [];
+      for (let i = heard.length; i < handedSentences.length && sentenceOffsets[i]?.endOffset === spanEnd; i++) {
+        span.push(handedSentences[i]);
+      }
+      if (span.length > 0) {
+        // Joined the way the synthesizer joins them, so a character position in this text is a character position in what the room was hearing.
+        const text = span.join(' ');
         const start = heard.length === 0 ? 0 : heard[heard.length - 1].endOffset;
-        const own = sentenceOffsets[heard.length];
-        // Exact when this sentence's own audio had all arrived; otherwise how long it was going to be, at this turn's measured speech rate.
-        const end =
-          own === undefined ? start + cutSentence.length * bytesPerChar(sentenceOffsets) : own.endOffset;
-        const partial = heardPartOf(cutSentence, start, end, confirmed);
+        // Exact when the span's own audio had all arrived; otherwise how long it was going to be, at this turn's measured speech rate.
+        const end = spanEnd === undefined ? start + text.length * bytesPerChar(sentenceOffsets) : spanEnd;
+        const partial = heardPartOf(text, start, end, confirmed);
         if (partial !== null) {
           spoken.push(partial);
         }

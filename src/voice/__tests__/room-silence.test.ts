@@ -2175,40 +2175,54 @@ describe('meeting room silence', () => {
     await meeting.stop();
   });
 
-  it('files a prefix, not the sentences it heard, when a turn is cut before its one stream ends', async () => {
-    reset();
-    // What a turn as one stream actually reports on a barge-in: the stream never reached `terminated`, so no sentence completed and there is no per-sentence offset to credit — the whole estimate runs inside the first sentence, at the prompt's own nominal rate.
+  // The two below are the whole-turn-as-one-utterance shape: nothing in the turn completed, so there is no per-sentence offset anywhere, and the estimate has to run across the sentences together. Stopping at the end of the first one would file a fraction of what the room heard and let the next turn repeat the rest of it.
+  const CUT_MID_TURN = 'Ready. It held. The pool has not gone dry since.';
+
+  /** One turn of three sentences, all handed over, cut once `chunks` of it have played — the room hears 23,200 bytes per chunk, real speech's own scale. */
+  async function cutAfterChunks(sessionId: string, chunks: number) {
     synthTurnCompletion = true;
-    synthChunks = 1;
-    // 23,200-byte chunks put the played count on the scale real speech reaches (48,000 bytes/s), so the estimate is what decides the answer.
+    synthChunks = 2;
+    // Spread so a chunk always arrives after the cut, which is what makes the interruption visible at all, and so the count the cut lands on is unambiguous.
     synthChunkBytes = 23_200;
-    decideDelayMs = 1_000;
-    decideQueue.push({
-      speech: 'The rollout finished at noon. I can go into detail about how I handle failures. And it has held since.',
-      // The third sentence arrives after the cut, which is what makes the interruption visible at all.
-      sentenceAt: [10, 20, 900],
-    });
-    const { meeting, sink } = await makeMeeting('bot-partial-one-stream');
+    synthFirstChunkDelayMs = 200;
+    synthChunkGapMs = 500;
+    decideDelayMs = 900;
+    decideQueue.push({ speech: CUT_MID_TURN, sentenceAt: [10, 60, 110] });
+    const { meeting, sink } = await makeMeeting(sessionId);
     const a = speakerFor(meeting, ann);
 
     a.emit({ kind: 'start' });
-    a.emit({ kind: 'end', transcript: 'Archie, how did the rollout go?' });
-    // Both handed sentences' audio reached the room: 46,400 bytes of it.
-    await playedChunks(sink, 2);
+    a.emit({ kind: 'end', transcript: 'Archie, how is the pool?' });
+    await playedChunks(sink, chunks);
 
     a.emit({ kind: 'start' });
     expect(sink.cuts).toBe(1);
     await sleep(1_200);
+    return { meeting, row: turns(sessionId)[0] };
+  }
 
-    const row = turns('bot-partial-one-stream')[0];
+  it('files a prefix reaching into the sentence the room was cut off in the middle of', async () => {
+    reset();
+    const { meeting, row } = await cutAfterChunks('bot-partial-reaches', 3);
+
     expect(String(row.error)).toContain('cut off');
-    // 46,400 against 29 x 2,900 = 84,100 is 0.55, so floor(0.55 x 29) = 16 chars, back to the word boundary at 11.
-    // Deliberately less than the room heard — the second sentence was audible and is not credited. Under-reporting is the direction this must err in: crediting a word nobody heard is the one bias the record must never make.
-    expect(row.speech).toBe('The rollout—');
-    expect(utterances('bot-partial-one-stream')).toEqual([
-      { speaker: 'Ann', text: 'Archie, how did the rollout go?' },
-      { speaker: 'Archie', text: 'The rollout—' },
+    // 69,600 bytes against 48 chars x 2,900 is half the turn, so 24 chars, back to the word boundary at 24.
+    // Reaches into the third sentence, which is where the room actually was. Stopping at the first would have filed 'Ready.—' and left the next turn free to say the rest again.
+    expect(row.speech).toBe('Ready. It held. The pool—');
+    expect(utterances('bot-partial-reaches')).toEqual([
+      { speaker: 'Ann', text: 'Archie, how is the pool?' },
+      { speaker: 'Archie', text: 'Ready. It held. The pool—' },
     ]);
+    await meeting.stop();
+  });
+
+  it('stops the prefix where the played bytes stop, rather than running on into the next sentence', async () => {
+    reset();
+    // The direction that matters: the same turn, a third less of it heard, and the estimate must not spill into the sentence the room never reached.
+    const { meeting, row } = await cutAfterChunks('bot-partial-stops', 2);
+
+    expect(row.speech).toBe('Ready. It held.—');
+    expect(row.speech).not.toContain('pool');
     await meeting.stop();
   });
 
