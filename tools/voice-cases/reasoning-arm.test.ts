@@ -113,7 +113,7 @@ describe('the two Cerebras arms send the two request shapes production sent', ()
     await runCall('cerebras-gemma-4-31b-thinking', { system: 's', user: 'u', maxTokens: 600 });
     expect('max_completion_tokens' in lastBody).toBe(false);
     expect(CANDIDATES['cerebras-gemma-4-31b'].maxTokens).toBe(600);
-    expect(CANDIDATES['cerebras-gemma-4-31b-thinking'].maxTokens).toBeUndefined();
+    expect(CANDIDATES['cerebras-gemma-4-31b-thinking'].maxTokens).toBeNull();
   });
 });
 

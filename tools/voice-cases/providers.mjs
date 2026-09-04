@@ -158,7 +158,7 @@ export const CANDIDATES = {
   // `reasoning_effort: 'medium'`, no `max_completion_tokens`, no `reasoning_format` — the body is the shape requestBody() builds with `reasoning: true`, field for field.
   'cerebras-gemma-4-31b-thinking': {
     provider: 'cerebras', model: 'gemma-4-31b',
-    temperature: 0, reasoningEffort: 'medium',
+    temperature: 0, maxTokens: null, reasoningEffort: 'medium',
     note: 'production candidate — mirrors comprehension.ts requestBody with reasoning: true',
   },
 };
@@ -183,7 +183,7 @@ function anthropicBody(c, { system, user, maxTokens, stream }) {
 function cerebrasBody(c, { system, user, maxTokens, stream }) {
   const body = {
     model: c.model,
-    ...(maxTokens === undefined ? {} : { max_completion_tokens: maxTokens }),
+    ...(maxTokens == null ? {} : { max_completion_tokens: maxTokens }),
     temperature: c.temperature ?? 0,
     stream,
     messages: [
@@ -395,8 +395,8 @@ export async function runCall(candidateId, { system, user, maxTokens = 600, time
   const url = wire.url;
   // Resolved once, not per attempt: repeated reads tell us nothing, and a mid-call key rotation isn't a case here.
   const headers = wire.headers(c);
-  // A candidate's own cap wins over the caller's: the two Cerebras arms differ by it (600 before native thinking, 2000 after), and that difference is production's, not a knob for a driver to set.
-  const opts = { system, user, maxTokens: c.maxTokens ?? maxTokens, timeoutMs };
+  // A candidate's own cap wins over the caller's, and `null` means it sends none: the two Cerebras arms differ by exactly that (600 before native thinking, no cap after), and the difference is production's, not a knob for a driver to set.
+  const opts = { system, user, maxTokens: 'maxTokens' in c ? c.maxTokens : maxTokens, timeoutMs };
 
   let attempts = 0;
   let rateLimitedAttempts = 0;
