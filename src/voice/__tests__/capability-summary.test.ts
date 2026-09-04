@@ -95,16 +95,17 @@ describe('summariseCapabilities — what it sends', () => {
     const messages = seen[0].body.messages as Array<{ role: string; content: string }>;
     expect(messages[0]).toEqual({ role: 'system', content: 'CAPABILITIES PROMPT' });
     const user = String(messages[1].content);
+    // Order is pinned, not incidental: `<team>` leads because the brief starts from the roster and the skills only fill its areas in. With skills first they decided the areas instead, and the emitted list came out as software themes rather than the reachable colleagues.
     expect(user).toBe(
       [
+        '<team>',
+        TEAM,
+        '</team>',
+        '',
         '<skills>',
         `- ${SKILLS[0]}`,
         `- ${SKILLS[1]}`,
         '</skills>',
-        '',
-        '<team>',
-        TEAM,
-        '</team>',
         '',
         '<integrations>',
         INTEGRATIONS,

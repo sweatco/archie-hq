@@ -351,14 +351,15 @@ export async function summariseCapabilities(
   }
 
   // Tagged like the transcript, for a different reason: not untrusted, but the summariser has to tell the three sources apart. `(none)` flags an empty source as intentional, which omitting the tag would not.
+  // `<team>` leads because the brief starts there: the roster supplies the areas and the skills only fill them in. Skills led here once, and being both first and three and a half times the roster's volume, they decided the areas instead — the emitted list came out as software themes rather than the people actually reachable.
   const user = [
-    '<skills>',
-    ...skills.map((s) => `- ${s}`),
-    '</skills>',
-    '',
     '<team>',
     expertise.length > 0 ? expertise : '(none)',
     '</team>',
+    '',
+    '<skills>',
+    ...skills.map((s) => `- ${s}`),
+    '</skills>',
     '',
     '<integrations>',
     integrations.length > 0 ? integrations : '(none)',
