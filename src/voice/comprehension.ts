@@ -14,8 +14,8 @@ const MAX_ERROR_BODY = 500;
 const ADDRESSING_TIMEOUT_MS = 5_000;
 const ADDRESSING_MAX_TOKENS = 64;
 
-/** Speaking has no deadline of its own — if the room never goes quiet, Archie never speaks. This is the call's only bound: it sends no token cap, because reasoning is billed as completion tokens and a cap the reasoning could reach truncates the spoken answer; a runaway generation is cut here instead. */
-const SPEAKING_TIMEOUT_MS = 15_000;
+/** Bounds generating the reply — admission, native reasoning, the full text — not saying it: how long the words then take is the prompt's and the room's business. The call's only bound: it sends no token cap, because reasoning is billed as completion tokens and a cap the reasoning could reach truncates the answer; a hung connection or a runaway is cut here instead. */
+const GENERATION_TIMEOUT_MS = 15_000;
 
 /** Runs once at join with nobody waiting, so this is generous — it only stops a hung connection leaving the promise pending. */
 const CAPABILITY_TIMEOUT_MS = 20_000;
@@ -159,7 +159,7 @@ export async function decideResponse(
       label: 'speaking',
       system: prompt,
       user: buildSpeakingUserMessage(transcript, opts.consults, opts.context),
-      timeoutMs: SPEAKING_TIMEOUT_MS,
+      timeoutMs: GENERATION_TIMEOUT_MS,
       reasoning: true,
     },
     (delta) => {
@@ -563,7 +563,7 @@ interface ModelCall {
   label: string;
   system: string;
   user: string;
-  /** Absent on the speaking call — see SPEAKING_TIMEOUT_MS. */
+  /** Absent on the speaking call — see GENERATION_TIMEOUT_MS. */
   maxTokens?: number;
   timeoutMs: number;
   /** Ask for the model's native reasoning, which comes back on its own channel. Only the speaking call does; the others send no such field at all. */
