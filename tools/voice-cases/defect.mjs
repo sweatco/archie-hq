@@ -440,6 +440,8 @@ export function gradeDefect(c, m, ids) {
   const silent = p.silent === true;
   const speech = silent ? '' : p.speech;
   const chat = silent ? '' : (p.chat ?? '');
+  // Ungated by `silent`, unlike `chat`: this is the row's evidence for the promise verdict, which reads `p.pm` the same way. Absent from the row entirely once, and a report then scored every arm as having sent nothing while the replies had all sent a question — the row has to be able to explain its own verdict.
+  const pm = p.pm ?? '';
   const fails = [];
   const info = {};
 
@@ -570,7 +572,7 @@ export function gradeDefect(c, m, ids) {
     if (share > 0.15) fails.push(`LANGUAGE: answered an English room in Russian (cyrillic ${share.toFixed(2)})`);
   }
 
-  return { fails, info, silent, speech, chat, raw };
+  return { fails, info, silent, speech, chat, pm, raw };
 }
 
 /** ---------------- driver ----------------
@@ -631,7 +633,7 @@ if (isMain) {
         const g = gradeDefect(c, m, ids);
         out.push({
           case: c.id, kind: c.kind, rep: r, what: c.what, fails: g.fails, info: g.info,
-          silent: g.silent, speech: g.speech, chat: g.chat, raw: g.raw,
+          silent: g.silent, speech: g.speech, chat: g.chat, pm: g.pm, raw: g.raw,
           firstSentence: m.sentences[0]?.text ?? '', firstSentenceChars: (m.sentences[0]?.text ?? '').length,
           ttft: m.ttft, firstSentenceAt: m.firstSentence, complete: m.complete,
           inputTokens: m.inputTokens, outputTokens: m.outputTokens, sentences: m.sentences.length,

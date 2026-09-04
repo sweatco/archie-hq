@@ -231,6 +231,18 @@ describe('gradeDefect — what backs a promise', () => {
     expect(g.fails.filter((f: string) => f.startsWith('PROMISE:'))).toEqual([]);
   });
 
+  // The row has to be able to explain its own verdict. `pm` was missing from it while `speech` and `chat` were there, so a report reading the stored rows scored every arm as having sent nothing — twice — while the replies had all sent a question. The verdict and the evidence for it now come from the same place.
+  it('carries the PM line on the row, alongside speech and chat', () => {
+    const raw = `${OBSERVED_BASELINE}\nPM: Is Meridian on the old rate limit or the new one?`;
+    const backed = gradeDefect(D5A, reply(raw), []);
+    expect(backed.pm).toBe('Is Meridian on the old rate limit or the new one?');
+    expect(backed.info.promiseBacked).toBe(true);
+
+    const unbacked = gradeDefect(D5A, reply(OBSERVED_BASELINE), []);
+    expect(unbacked.pm).toBe('');
+    expect(unbacked.info.promiseBacked).toBe(false);
+  });
+
   it('info records the backing decision on every kind, not just D2', () => {
     const raw = `${OBSERVED_BASELINE}\nPM: Is Meridian on the old rate limit or the new one?`;
     const g = gradeDefect(D5A, reply(raw), []);
