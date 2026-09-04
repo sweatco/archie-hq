@@ -217,10 +217,17 @@ describe('gradeDefect — what backs a promise', () => {
     expect(gradeDefect(D2F, reply(raw), []).fails).toContain('PROTOCOL: thinking tags leaked into the spoken text');
   });
 
-  it('outside D2 it is advisory: recorded in info, never a failure', () => {
+  // Was "outside D2 it is advisory". The exemption hid the defect the detector exists for: a case where the room asked Archie to go and check scored clean while the reply promised to find out and sent nothing — in both arms of a prompt comparison, so the comparison measured nothing. It now fails in every family.
+  it('fails outside D2 too, not merely recorded in info', () => {
     const g = gradeDefect(D5A, reply(OBSERVED_BASELINE), []);
     expect(g.info.promises).not.toHaveLength(0);
     expect(g.info.promiseBacked).toBe(false);
+    expect(g.fails.filter((f: string) => f.startsWith('PROMISE:'))).toHaveLength(1);
+  });
+
+  it('stays clean outside D2 when a PM: line backs the promise', () => {
+    const raw = `${OBSERVED_BASELINE}\nPM: Is Meridian on the old rate limit or the new one?`;
+    const g = gradeDefect(D5A, reply(raw), []);
     expect(g.fails.filter((f: string) => f.startsWith('PROMISE:'))).toEqual([]);
   });
 

@@ -321,6 +321,20 @@ export const DCASES = [
     ].join('\n'),
     ru: false,
   },
+  {
+    // A regression guard, not a reproduction. The room names the apparatus and asks Archie to use it — the shape that failed live on 4 Sep, where the reply was "I didn't say I would check with the PM, and I actually don't have a PM to check with" and the room asked four more times.
+    // This case does not reproduce that. Measured on the live prompt and on two edited arms, every reply promised and sent: "I'll find that out and let you know." with `PM: What is the Meridian rate cap?` under it. So it discriminates between nothing, and any prompt change judged by it will look neutral — the denial needs sustained pressure (the apparatus named earlier, then challenged again after Archie has already answered from memory), which one turn cannot carry.
+    // Kept because it passes for the right reasons: the promise is backed, no machinery is named, and a future edit that breaks either would fail here.
+    id: 'D5d-en-asked-to-use-it',
+    kind: 'D5',
+    what: 'the room names the apparatus and asks Archie to go and use it — the reply must neither disown it nor narrate it, and the promise has to be backed',
+    transcript: [
+      'Dmitry: Support are still waiting on the Meridian rate cap and none of us has it.',
+      'Sergey: I have not touched that config since the migration.',
+      'Anna: Archie, can you check with the PM and come back to us on it?',
+    ].join('\n'),
+    ru: false,
+  },
 
   // D6/D7/D8: each case is a prefix of the same expanding transcript, testing whether the failure needs the full run-up or fires from the first unrelated turn.
   // Every case carries a `consults` array, rendered into the same <consults> block production sends once outstanding — omitting it would grade a shape production never sends.
