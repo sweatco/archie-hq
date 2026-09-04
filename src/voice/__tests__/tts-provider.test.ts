@@ -124,13 +124,17 @@ function latest(): DrivenSocket {
   return socket;
 }
 
+/**
+ * Speaks these sentences as one whole turn. `end()` is what puts a turn on the wire — a turn is buffered until the reply is finished — so the helper calls it; the promise it returns is held rather than awaited, since it is the server frames a test drives that settle it.
+ */
 function speakOn(cfg: VoiceConfig, sentences: string[]) {
   const played: Buffer[] = [];
   const session = createSonioxSpeechSession(cfg);
   const stream = session.speak((pcm) => played.push(pcm));
   latest().handshake();
   for (const sentence of sentences) stream.say(sentence, () => undefined);
-  return { session, stream, socket: latest(), played };
+  const done = stream.end();
+  return { session, stream, socket: latest(), played, done };
 }
 
 function languages(socket: DrivenSocket): string[] {
@@ -200,43 +204,84 @@ describe('the language Soniox is told to speak', () => {
   });
 
   it('keeps a whole answer in Russian once any sentence is Russian', () => {
-    // Language belongs to the whole reply, committed before the reply is whole — monotone is the safe direction, since an all-Latin sentence inside Russian is a technical term.
+    // Language belongs to the whole reply — monotone is the safe direction, since an all-Latin sentence inside Russian is a technical term.
     const { socket, session } = speakOn(onSoniox, [
       'Проблема в rate limiter.',
       'Rate limiter.',
       'Он отдавал 429.',
     ]);
-    // Serialised, so only the first is on the wire until it terminates.
-    socket.say({ stream_id: 's1', terminated: true });
-    socket.say({ stream_id: 's2', terminated: true });
-    expect(languages(socket)).toEqual(['ru', 'ru', 'ru']);
+    expect(languages(socket)).toEqual(['ru']);
+    session.close();
+  });
+
+  it('speaks a reply whose Russian arrives late in Russian, not in the language of its first sentence', () => {
+    // Buffering settles what stickiness alone could only limit: the language is chosen once the whole turn is in hand, so an English-looking opener no longer commits the answer to English.
+    const { socket, session } = speakOn(onSoniox, ['Rate limiter.', 'Он отдавал 429.']);
+    expect(languages(socket)).toEqual(['ru']);
     session.close();
   });
 
   it('sends a language on every stream, and never a BCP 47 tag', () => {
-    // ISO 639-1 only: omitted, null, "" all get "Missing language"; `en-US`/`ru-RU` are rejected as invalid — either mistake costs every utterance.
-    const { socket, session } = speakOn(onSoniox, ['Done.', 'Готово.']);
+    // ISO 639-1 only: omitted, null, "" all get "Missing language"; `en-US`/`ru-RU` are rejected as invalid — either mistake costs every utterance. Two streams here because the stall guard fired, which is the only way one turn becomes two.
+    vi.useFakeTimers();
+    const session = createSonioxSpeechSession(onSoniox);
+    const stream = session.speak(() => undefined);
+    latest().handshake();
+    const socket = latest();
+
+    stream.say('Готово.', () => undefined);
+    vi.advanceTimersByTime(3_000);
+    stream.say('Migration ran.', () => undefined);
+    void stream.end();
     socket.say({ stream_id: 's1', terminated: true });
+
+    expect(socket.startFrames.length).toBe(2);
     for (const frame of socket.startFrames) {
       expect(frame.language).toMatch(/^(en|ru)$/);
     }
-    expect(socket.startFrames.length).toBe(2);
     session.close();
   });
 });
 
 describe('the Soniox text frame', () => {
-  it('always ends the text, on every stream', () => {
-    // Below ~150 chars Soniox emits nothing until end-of-input; median reply is ~58 chars — without text_end the bot is mute. A stream left open is killed after ~5s (request_timeout).
-    const { socket, session } = speakOn(onSoniox, ['Yes.', 'The migration ran after it.']);
-    socket.say({ stream_id: 's1', terminated: true });
-    expect(socket.textFrames.length).toBe(2);
-    for (const frame of socket.textFrames) {
-      expect(frame.text_end).toBe(true);
-    }
+  it('ends the text once for the whole turn, not once per sentence', () => {
+    // The defect this exists for: text_end is where the synthesizer puts terminal intonation, so one per sentence made a three-sentence reply land as three finished-sounding announcements instead of one flowing turn.
+    const { socket, stream, session } = speakOn(onSoniox, [
+      'The pool ran dry.',
+      'Then it recovered.',
+      'It has held since.',
+    ]);
+    void stream.end();
+
+    expect(socket.startFrames.length).toBe(1);
+    expect(socket.textFrames.length).toBe(1);
+    expect(socket.textFrames[0].text).toBe('The pool ran dry. Then it recovered. It has held since.');
+    expect(socket.textFrames[0].text_end).toBe(true);
     session.close();
   });
 
+  it('puts the same bytes on the wire for a one-sentence reply as the per-sentence design did', () => {
+    // Below ~150 chars Soniox emits nothing until end-of-input; median reply is ~58 chars — without text_end the bot is mute. A stream left open is killed after ~5s (request_timeout), which is why text and text_end ship together.
+    // Asserted as the serialised frames rather than a shape, because this is the claim that buffering changed nothing for the common reply: it held before the turn was buffered and holds after.
+    const { socket, stream, session } = speakOn(onSoniox, ['The deploy finished at noon.']);
+    void stream.end();
+
+    expect(JSON.stringify(socket.sent)).toBe(
+      JSON.stringify([
+        {
+          api_key: 'sx-test-key-long-enough',
+          model: 'tts-rt-v2',
+          voice: 'Adrian',
+          language: 'en',
+          audio_format: 'pcm_s16le',
+          sample_rate: 24000,
+          stream_id: 's1',
+        },
+        { text: 'The deploy finished at noon.', text_end: true, stream_id: 's1' },
+      ]),
+    );
+    session.close();
+  });
 });
 
 describe('the Soniox socket', () => {
@@ -262,19 +307,33 @@ describe('the Soniox socket', () => {
     session.close();
   });
 
-  it('speaks the sentences one at a time, in order', async () => {
-    // Concurrent streams would interleave chunks on the way back — the sink is a byte stream, not a mixer, so the answer comes out as noise.
-    const { socket, stream, played, session } = speakOn(onSoniox, ['One.', 'Two.']);
+  it('speaks a stall-flushed front and the remainder one at a time, in order', async () => {
+    // Concurrent streams would interleave chunks on the way back — the sink is a byte stream, not a mixer, so the answer comes out as noise. One turn is one stream, so the stall guard is the only thing that can put two in flight at once.
+    vi.useFakeTimers();
+    const played: Buffer[] = [];
+    const session = createSonioxSpeechSession(onSoniox);
+    const stream = session.speak((pcm) => played.push(pcm));
+    latest().handshake();
+    const socket = latest();
+
+    stream.say('One.', () => undefined);
+    vi.advanceTimersByTime(3_000);
+    expect(socket.startFrames.length).toBe(1);
+
+    stream.say('Two.', () => undefined);
+    const done = stream.end();
+    // The remainder is queued, not sent: the front is still on the wire.
     expect(socket.startFrames.length).toBe(1);
 
     socket.audio('s1', 100);
     socket.say({ stream_id: 's1', terminated: true });
     expect(socket.startFrames.length).toBe(2);
+    expect(socket.textFrames.map((f) => f.text)).toEqual(['One.', 'Two.']);
 
     socket.audio('s2', 200);
     socket.say({ stream_id: 's2', terminated: true });
 
-    const result = await stream.end();
+    const result = await done;
     expect(played.map((b) => b.length)).toEqual([100, 200]);
     expect(result.bytes).toBe(300);
     session.close();
@@ -304,12 +363,14 @@ describe('the Soniox socket', () => {
     const first = session.speak(() => played.push(Buffer.alloc(1)));
     latest().handshake();
     first.say('Interrupted.', () => undefined);
+    void first.end();
     const socket = latest();
     first.abort();
 
     const second: Buffer[] = [];
     const next = session.speak((pcm) => second.push(pcm));
     next.say('The room asked again.', () => undefined);
+    void next.end();
 
     socket.audio('s1', 999);
     expect(second).toEqual([]);
@@ -359,6 +420,7 @@ describe('the Soniox socket', () => {
     first.serverClose();
 
     stream.say('Still here.', () => undefined);
+    void stream.end();
     const second = latest();
     expect(second).not.toBe(first);
     second.handshake();
@@ -384,6 +446,136 @@ describe('the Soniox socket', () => {
 
 });
 
+
+describe('buffering a turn', () => {
+  it('holds a sentence back while the reply is still being written', () => {
+    const session = createSonioxSpeechSession(onSoniox);
+    const stream = session.speak(() => undefined);
+    latest().handshake();
+    const socket = latest();
+
+    stream.say('The pool ran dry.', () => undefined);
+    stream.say('Then it recovered.', () => undefined);
+    // The whole point: one terminal intonation per turn, so nothing goes out while the model is still writing.
+    expect(socket.sent).toEqual([]);
+
+    void stream.end();
+    expect(socket.startFrames.length).toBe(1);
+    expect(socket.textFrames.map((f) => f.text)).toEqual(['The pool ran dry. Then it recovered.']);
+    session.close();
+  });
+
+  it('speaks what it has when a reply stalls, rather than leaving the room in silence', () => {
+    // The failure mode buffering introduces: with generation bounded only by GENERATION_TIMEOUT_MS (15s), a stall would be 15s of dead air, which is worse than a seam.
+    vi.useFakeTimers();
+    const session = createSonioxSpeechSession(onSoniox);
+    const stream = session.speak(() => undefined);
+    latest().handshake();
+    const socket = latest();
+
+    stream.say('Let me check that.', () => undefined);
+    // 3,000ms sits above the observed maximum decideMs of 2,562ms, so on measured behaviour the guard never fires at all.
+    vi.advanceTimersByTime(2_999);
+    expect(socket.sent).toEqual([]);
+
+    vi.advanceTimersByTime(1);
+    expect(socket.textFrames.map((f) => f.text)).toEqual(['Let me check that.']);
+    expect(socket.textFrames[0].text_end).toBe(true);
+    session.close();
+  });
+
+  it('keeps a reply that finishes inside the window whole', () => {
+    // The guard bounds the pathological case; it must not shape the normal one into pieces.
+    vi.useFakeTimers();
+    const session = createSonioxSpeechSession(onSoniox);
+    const stream = session.speak(() => undefined);
+    latest().handshake();
+    const socket = latest();
+
+    stream.say('One.', () => undefined);
+    vi.advanceTimersByTime(2_500);
+    stream.say('Two.', () => undefined);
+    void stream.end();
+
+    expect(socket.startFrames.length).toBe(1);
+    expect(socket.textFrames.map((f) => f.text)).toEqual(['One. Two.']);
+    // The guard is disarmed by the flush; the timer left behind must not open a second stream.
+    vi.advanceTimersByTime(5_000);
+    expect(socket.startFrames.length).toBe(1);
+    session.close();
+  });
+
+  it('completes every sentence of the turn when its stream terminates, in hand-over order', async () => {
+    // `meeting.ts` pairs completions with handed sentences by index and reads its own byte count at each, so hand-over order is the contract. One stream per turn means the sentences share the turn's end offset — resolution the synthesizer no longer has, not a truth it got wrong.
+    const completed: string[] = [];
+    const session = createSonioxSpeechSession(onSoniox);
+    const stream = session.speak(() => undefined);
+    latest().handshake();
+    const socket = latest();
+
+    for (const sentence of ['One.', 'Two.', 'Three.']) {
+      stream.say(sentence, () => completed.push(sentence));
+    }
+    const done = stream.end();
+
+    socket.audio('s1', 300);
+    // Nothing is complete while its stream is still running, however much audio has arrived.
+    expect(completed).toEqual([]);
+
+    socket.say({ stream_id: 's1', terminated: true });
+    expect(completed).toEqual(['One.', 'Two.', 'Three.']);
+
+    const result = await done;
+    expect(result.bytes).toBe(300);
+    expect(result.incomplete).toBeNull();
+    session.close();
+  });
+
+  it('reports the bytes the room got, and completes nothing, when a turn is cut off part-way', async () => {
+    // Barge-in: the audio stops at the source and the caller measures what was heard from the played count — but no sentence may be reported as spoken, since the stream never finished one.
+    const completed: string[] = [];
+    const played: Buffer[] = [];
+    const session = createSonioxSpeechSession(onSoniox);
+    const stream = session.speak((pcm) => played.push(pcm));
+    latest().handshake();
+    const socket = latest();
+
+    stream.say('The pool ran dry.', () => completed.push('first'));
+    stream.say('Then it recovered.', () => completed.push('second'));
+    const done = stream.end();
+    socket.audio('s1', 100);
+
+    stream.abort();
+    expect(socket.sent.some((f) => f.cancel === true && f.stream_id === 's1')).toBe(true);
+    // Already in flight when the server saw the cancel (measured 29-51ms later); it belongs to nobody.
+    socket.audio('s1', 100);
+
+    const result = await done;
+    expect(result.bytes).toBe(100);
+    expect(played.map((b) => b.length)).toEqual([100]);
+    expect(completed).toEqual([]);
+    session.close();
+  });
+
+  it('says nothing at all of a turn abandoned before it was flushed', async () => {
+    // The room took the floor while the model was still writing: the buffer is dropped unspoken, and nothing in it may be reported as heard.
+    const completed: string[] = [];
+    const session = createSonioxSpeechSession(onSoniox);
+    const stream = session.speak(() => undefined);
+    latest().handshake();
+    const socket = latest();
+
+    stream.say('The pool ran dry.', () => completed.push('first'));
+    stream.abort();
+    void stream.end();
+
+    expect(socket.sent).toEqual([]);
+    const result = await stream.end();
+    expect(result.bytes).toBe(0);
+    expect(completed).toEqual([]);
+    session.close();
+  });
+});
 
 const encoder = new TextEncoder();
 
@@ -445,6 +637,8 @@ describe('the shared speaking path, on Soniox', () => {
     reply.close();
 
     expect(await pending).toEqual({ outcome: 'silence' });
+    // Held past the flush too: `end()` is what puts a turn on the wire, and there must be no turn to put there.
+    void stream.end();
     expect(latest().textFrames).toEqual([]);
     stream.abort();
     session.close();
@@ -464,6 +658,7 @@ describe('the shared speaking path, on Soniox', () => {
     }
     reply.close();
     const decision = await pending;
+    void stream.end();
 
     // A hash read aloud is noise — CHAT: is written to be read. The strong assertion: it never reached Soniox at all, not merely that a callback didn't fire.
     expect(socket.textFrames.map((f) => f.text)).toEqual(['It is done.']);
@@ -478,7 +673,7 @@ describe('the shared speaking path, on Soniox', () => {
     session.close();
   });
 
-  it('speaks: the sentence reaches the wire while the reply is still being written', async () => {
+  it('speaks: the sentence is held while the reply is written, then goes out whole', async () => {
     const session = createSonioxSpeechSession(onSoniox);
     const stream = session.speak(() => undefined);
     latest().handshake();
@@ -486,15 +681,19 @@ describe('the shared speaking path, on Soniox', () => {
 
     const reply = openStream();
     const pending = decideInto(stream);
-    reply.push('The deploy finished at noon. ');
+    reply.push('The deploy finished at noon. It has held since. ');
     await settle();
-    expect(socket.textFrames.map((f) => f.text)).toEqual(['The deploy finished at noon.']);
+    // Two sentences are in hand, and neither is on the wire: the turn ships once, at the end.
+    expect(socket.sent).toEqual([]);
 
     reply.close();
     expect(await pending).toEqual({
       outcome: 'speak',
-      response: { speech: 'The deploy finished at noon.' },
+      response: { speech: 'The deploy finished at noon. It has held since.' },
     });
+    void stream.end();
+    expect(socket.textFrames.map((f) => f.text)).toEqual(['The deploy finished at noon. It has held since.']);
+    expect(socket.textFrames[0].text_end).toBe(true);
     stream.abort();
     session.close();
   });
@@ -510,7 +709,8 @@ describe('the shared speaking path, on Soniox', () => {
     const pending = decideInto(stream);
     reply.push('The deploy finished at noon. ');
     await settle();
-    expect(socket.textFrames.length).toBe(1);
+    // Buffered rather than spoken, so a reply dying this early costs the room the sentence too — the seam a stall would have made is bounded by the stall guard, not by every failure.
+    expect(socket.sent).toEqual([]);
 
     reply.fail('socket hung up');
     const decision = await pending;

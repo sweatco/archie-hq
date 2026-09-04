@@ -7,11 +7,14 @@
  *
  * Never throws: audio-path failures (bad key, dropped socket, bad frame) log instead of killing the engine.
  *
- * Three measured wire facts drive this file's shape:
- *  1. **Nothing synthesizes until `text_end`.** Below ~150 chars, Soniox emits no audio until end-of-input (measured: 0 chunks/4s at 64 chars, 19 at 152) — median reply is ~58 chars, so the incremental path never engages.
- *  2. **An open stream awaiting text is killed after ~5s** (`request_timeout`) — every sentence carries its own `text_end` immediately.
- *  3. **No warm idle socket** — see {@link ensureLink}.
- * So: one stream per sentence starts audio early without risking a wedge; see {@link Round.queue} for why sentences are then serialised.
+ * **One stream per turn, not per sentence.** A turn is buffered whole and synthesised as a single utterance: one start frame, the full text, one `text_end`. `text_end` is where the synthesizer puts terminal intonation, so one per sentence made a three-sentence reply land in the room as three finished-sounding announcements instead of one flowing turn — that was the defect. On a single-sentence reply the frames are identical either way.
+ *
+ * Two measured wire facts drive the framing, and both dissolve into the same rule — text and `text_end` ship together, in one flush, so no stream is ever left open waiting:
+ *  1. **Nothing synthesizes until `text_end`.** Below ~150 chars, Soniox emits no audio until end-of-input (measured: 0 chunks/4s at 64 chars, 19 at 152) — irrelevant here, since `text_end` rides along with the text.
+ *  2. **An open stream awaiting text is killed after ~5s** (`request_timeout`) — never armed here, for the same reason.
+ * A third shapes connection handling: **no warm idle socket** — see {@link ensureLink}.
+ *
+ * What buffering costs is the generation time of the sentences after the first, not a round trip: the whole model call is median 770ms, p90 1,751ms, max 2,562ms, and ~620ms of that is Cerebras' fixed per-request admission floor, so the tokens themselves are on the order of 150ms. Against that it removes one synthesis admission per extra sentence (`ttfbMs` median 310ms), so a multi-sentence reply is plausibly faster end to end as well as smoother. The one case where buffering would cost the room silence is bounded by {@link STALL_FLUSH_MS}; see {@link Round.queue} for why streams are then serialised.
  *
  * **KNOWN QUIRK, NOT HANDLED: square brackets** — Soniox's inline audio-tag syntax; bracketed content in ordinary text is silently deleted, no error. Low exposure (only prose is spoken, not `CHAT:` ids/hashes). Fix in `prompts/voice-speaking.md`, not here.
  */
@@ -38,6 +41,13 @@ const SAMPLE_RATE = 24000;
 
 /** Watchdog on progress, not total length: a stalled answer settles, a merely long one doesn't. */
 const AUDIO_WATCHDOG_MS = 6_000;
+
+/**
+ * How long a complete sentence may sit buffered while the reply is still being written, before it is synthesised without the rest.
+ *
+ * The guard exists because buffering changes the failure mode: generation stalling mid-reply now leaves the room in silence rather than mid-sentence, bounded only by `GENERATION_TIMEOUT_MS` (15s, comprehension.ts), and 15 seconds of dead air is worse than a seam. Sits above the observed maximum `decideMs` of 2,562ms (median 770ms, p90 1,751ms), so on measured behaviour it never fires: it bounds the pathological case rather than shaping the normal one.
+ */
+const STALL_FLUSH_MS = 3_000;
 
 /** Measured: once a stream has run, keepalives extend idle survival to 182s (vs 42s without) — headroom between sentences. Doesn't buy a warm socket at meeting start — see {@link ensureLink}. */
 const KEEPALIVE_MS = 15_000;
@@ -87,29 +97,41 @@ interface SonioxMessage {
   error_type?: string;
 }
 
-/** One sentence, which on this wire is one whole stream. */
+/** One sentence handed over by the caller, waiting for the flush that will speak it. */
+interface Sentence {
+  text: string;
+  /** `say`'s `onSentenceComplete`. */
+  onComplete: () => void;
+}
+
+/** One stream on this wire: a whole turn, spoken as a single utterance — or, if {@link STALL_FLUSH_MS} fired, the part of it that had been buffered by then. */
 interface Utterance {
   id: string;
+  /** The buffered sentences joined, which is what actually goes out. */
   text: string;
   language: string;
-  /** `say`'s `onSentenceComplete`: fires when this stream reports `terminated` (see {@link handleMessage}). */
-  onComplete: () => void;
+  /** The sentences this stream carries, in hand-over order; every one completes when the stream reports `terminated` (see {@link handleMessage}). */
+  sentences: Sentence[];
 }
 
 type LinkState = 'idle' | 'connecting' | 'ready' | 'dead';
 
 interface Round {
   onPcm: (pcm: Buffer) => void;
-  /** When the first sentence went out, for {@link SpeechResult.msToFirstByte}. */
+  /** When the first text went out, for {@link SpeechResult.msToFirstByte}. */
   firstTextAt: number | null;
   bytes: number;
   msToFirstByte: number | null;
   awaitingFirstChunk: boolean;
-  /** Serialized deliberately: Soniox multiplexes one socket, so concurrent streams' chunks would interleave on return — a byte-stream sink, not a mixer, would play noise. Affordable: synthesis outruns real time (3.5s of audio in 2.5s), so the queue stays ahead. */
+  /** Sentences handed over but not yet flushed — the turn being buffered. Emptied by {@link flush}, whether that is `end()` or the stall guard. */
+  buffer: Sentence[];
+  /** Armed while the buffer holds something; see {@link STALL_FLUSH_MS}. */
+  stall: NodeJS.Timeout | null;
+  /** Serialized deliberately: Soniox multiplexes one socket, so concurrent streams' chunks would interleave on return — a byte-stream sink, not a mixer, would play noise. Ordinarily holds one stream for the whole turn; a stall flush is what can put a second behind it. */
   queue: Utterance[];
   active: Utterance | null;
   ending: boolean;
-  /** Sticky once Russian appears: language belongs to the reply, not the sentence — monotone-to-Russian is safe, so a later all-Latin "Rate limiter." speaks as the Russian term, not a mid-answer switch. */
+  /** Sticky once Russian appears: language belongs to the reply, not the sentence. Buffering settles most of this — the whole turn is one stream, so one language — and stickiness still covers the rest: after a stall flush, a later all-Latin "Rate limiter." speaks as the Russian term rather than switching mid-answer. */
   sawCyrillic: boolean;
   settled: boolean;
   resolve: (r: SpeechResult) => void;
@@ -197,6 +219,9 @@ export function createSonioxSpeechSession(cfg: VoiceConfig): SpeechSession {
     if (r.settled) return;
     r.settled = true;
     r.watchdog = stopTimer(r.watchdog);
+    r.stall = stopTimer(r.stall);
+    // Dropped without completing: nothing buffered was ever spoken, and reporting it as spoken is how the transcript starts lying.
+    r.buffer.length = 0;
     r.queue.length = 0;
     r.active = null;
     if (why !== undefined) {
@@ -206,7 +231,40 @@ export function createSonioxSpeechSession(cfg: VoiceConfig): SpeechSession {
     r.resolve({ bytes: r.bytes, msToFirstByte: r.msToFirstByte, incomplete: why ?? null });
   }
 
-  /** Start frame carries the API key — never log it. `text_end` rides with the text: no more is coming for one sentence, so an open stream would only earn a `request_timeout`. */
+  /**
+   * Turns the buffered sentences into one stream and queues it. The one place a stream is minted, so `end()` and the stall guard produce the same shape.
+   *
+   * Language is decided here rather than at hand-over: by flush time the whole buffered turn has been seen, so a reply whose first sentence is all-Latin and whose second is Russian goes out as Russian rather than committing to English before the reply was whole.
+   */
+  function flush(r: Round): void {
+    r.stall = stopTimer(r.stall);
+    if (r.settled || r.buffer.length === 0) return;
+
+    const sentences = r.buffer.splice(0, r.buffer.length);
+    streamSeq += 1;
+    r.queue.push({
+      id: `s${streamSeq}`,
+      // One space: the sentences arrive already sanitized and terminated, and this is the whole turn read as one utterance.
+      text: sentences.map((sentence) => sentence.text).join(' '),
+      language: r.sawCyrillic ? 'ru' : 'en',
+      sentences,
+    });
+    pump(r);
+  }
+
+  /** Armed on the first sentence into an empty buffer and left alone after: the window is measured from the moment the room had something sayable, not from the newest sentence, or a reply dribbling out a sentence at a time would push it forever. */
+  function armStall(r: Round): void {
+    if (r.stall === null) {
+      r.stall = setTimeout(() => {
+        r.stall = null;
+        logger.debug(LOG, `A sentence has been buffered for ${STALL_FLUSH_MS}ms with the reply unfinished — speaking it now`);
+        flush(r);
+      }, STALL_FLUSH_MS);
+      r.stall.unref();
+    }
+  }
+
+  /** Start frame carries the API key — never log it. `text_end` rides with the text: the flush is the whole of what this stream will speak, so an open stream would only earn a `request_timeout`. */
   function pump(r: Round): void {
     if (r.settled || r.active !== null) return;
 
@@ -286,12 +344,15 @@ export function createSonioxSpeechSession(cfg: VoiceConfig): SpeechSession {
     }
 
     if (msg.terminated === true && r !== null && mine) {
-      // This stream carries exactly one sentence, so `terminated` means that sentence's audio is now wholly behind us. `meeting.ts` uses it to snapshot a true end-of-sentence byte offset; see D11.
+      // `terminated` means every sentence in this stream is now wholly behind us, so each one completes here, in hand-over order — `meeting.ts` reads the byte count at that moment and pairs offsets with sentences by index, so the order is the contract (see D11).
+      // What one stream per turn costs is resolution, not truth: the synthesizer cannot say where sentence one ended inside a single stream, so the sentences of a turn share its end offset. `answerRoom`'s own estimate covers the rest, and it errs towards crediting the room with less than it heard — never more.
       const finished = r.active;
       r.active = null;
       r.watchdog = stopTimer(r.watchdog);
       if (finished !== null) {
-        guarded('sentence complete', finished.onComplete);
+        for (const sentence of finished.sentences) {
+          guarded('sentence complete', sentence.onComplete);
+        }
       }
       pump(r);
     }
@@ -387,6 +448,8 @@ export function createSonioxSpeechSession(cfg: VoiceConfig): SpeechSession {
         bytes: 0,
         msToFirstByte: null,
         awaitingFirstChunk: true,
+        buffer: [],
+        stall: null,
         queue: [],
         active: null,
         ending: false,
@@ -409,20 +472,21 @@ export function createSonioxSpeechSession(cfg: VoiceConfig): SpeechSession {
           if (spoken.length === 0 || r.settled) return;
 
           r.sawCyrillic = r.sawCyrillic || hasCyrillic(spoken);
-          streamSeq += 1;
-          r.queue.push({
-            id: `s${streamSeq}`,
-            text: spoken,
-            language: r.sawCyrillic ? 'ru' : 'en',
-            onComplete: onSentenceComplete,
-          });
-          pump(r);
+          r.buffer.push({ text: spoken, onComplete: onSentenceComplete });
+          if (r.ending) {
+            // Nothing left to wait for: a sentence arriving after `end()` has no turn to be buffered into.
+            flush(r);
+          } else {
+            armStall(r);
+          }
         },
 
         end(): Promise<SpeechResult> {
           if (!r.settled) {
             r.ending = true;
-            // Everything may already have been spoken if the audio outran the caller.
+            // The turn is whole, so this is where it goes out — one stream carrying all of it, or the remainder if the stall guard already spoke the front.
+            flush(r);
+            // Everything may already have been spoken if the audio outran the caller, or there may have been nothing to say at all.
             pump(r);
           }
           return done;
