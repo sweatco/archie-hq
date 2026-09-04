@@ -1,16 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const { appendMeetingEvent, appendMeetingRow, getMeetingRecordPath } = vi.hoisted(() => ({
-  appendMeetingEvent: vi.fn(),
-  appendMeetingRow: vi.fn(),
-  // Deterministic stand-in for the real path helper, letting tests assert sessionId reaches the prompt — never reset, since each call site uses its own pair.
-  getMeetingRecordPath: vi.fn((taskId: string, sessionId: string) => `/mock/${taskId}/${sessionId}/meeting.jsonl`),
-}));
-vi.mock('../../tasks/persistence.js', () => ({
-  appendMeetingEvent,
-  appendMeetingRow,
-  getMeetingRecordPath,
-}));
+// The knowledge-log appender is the whole of what this module needs from persistence. A meeting's own record — its path helper and its row writer — is the recall connector's shape, in `src/connectors/recall/meeting-record.ts`, and this module imports nothing from `src/connectors/` (pinned by no-connector-imports.test.ts): `notifyMeetingEnded` is handed the record path instead of deriving it, and no row writer is reachable from here to spy on.
+const { appendMeetingEvent } = vi.hoisted(() => ({ appendMeetingEvent: vi.fn() }));
+vi.mock('../../tasks/persistence.js', () => ({ appendMeetingEvent }));
 
 const { taskGet } = vi.hoisted(() => ({ taskGet: vi.fn() }));
 vi.mock('../../tasks/task.js', () => ({
@@ -56,20 +48,19 @@ describe('createTaskHost', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     appendMeetingEvent.mockReset();
-    appendMeetingRow.mockReset();
     taskGet.mockReset();
   });
 
   // The host is now four methods: the room's own speech and chat go straight to the transport's recorder, never through here.
   describe('what the host is, and is not', () => {
-    it('records an event via appendMeetingEvent, and writes no row of its own', () => {
+    // That it writes no row of its own is the next test's claim, and the boundary test's: the row writer lives in the connector, unreachable from here.
+    it('records an event via appendMeetingEvent', () => {
       appendMeetingEvent.mockResolvedValue(undefined);
       const host = createTaskHost('task-event', 'sess-event', noopEnd);
 
       host.noteEvent('meeting started');
 
       expect(appendMeetingEvent).toHaveBeenCalledWith('task-event', 'meeting started');
-      expect(appendMeetingRow).not.toHaveBeenCalled();
     });
 
     it('offers no way to record speech or chat — those travel through the transport', () => {
@@ -108,8 +99,6 @@ describe('createTaskHost', () => {
         'pm-agent',
       );
       expect(meeting.deliverConsultAnswer).not.toHaveBeenCalled();
-      // The question's own `consult` row was written by `routeConsult` in meeting.ts before this ran; the host adds nothing.
-      expect(appendMeetingRow).not.toHaveBeenCalled();
 
       unregisterLiveMeeting('task-ok');
     });
@@ -234,18 +223,19 @@ describe('the meeting-ended wake-up', () => {
 });
 
 describe('notifyMeetingEnded', () => {
-  // Pins sessionId, not just taskId, reaching the record path — else the wake-up could point at the wrong meeting's file on a multi-meeting task.
-  it('wakes the PM with the ended wake-up, pointing at this meeting\'s own record path', async () => {
+  // The record path is an argument, not derived here: which meeting's file the wake-up names is the connector's to decide (a multi-meeting task has one per meeting), and this module cannot reach the connector's path helper. What is pinned here is that whatever path it is given reaches the prompt verbatim.
+  it('wakes the PM with the ended wake-up, naming the record path it was handed', async () => {
     const sendMessage = vi.fn().mockResolvedValue(undefined);
     taskGet.mockResolvedValue({ sendMessage });
 
-    notifyMeetingEnded('task-ended', 'sess-ended');
+    notifyMeetingEnded('task-ended', '/workdir/tasks/task-ended/shared/recall/sess-ended/meeting.jsonl');
     await drain();
 
     expect(taskGet).toHaveBeenCalledWith('task-ended');
-    expect(getMeetingRecordPath).toHaveBeenCalledWith('task-ended', 'sess-ended');
     expect(sendMessage).toHaveBeenCalledWith(
-      await loadPrompt('voice-wakeup-ended', { RECORD_PATH: '/mock/task-ended/sess-ended/meeting.jsonl' }),
+      await loadPrompt('voice-wakeup-ended', {
+        RECORD_PATH: '/workdir/tasks/task-ended/shared/recall/sess-ended/meeting.jsonl',
+      }),
       'pm-agent',
     );
   });

@@ -10,10 +10,7 @@ import type { RecallConfig } from '../recall.js';
 // An unbound meeting's rows go to `WORKDIR/voice-logs/` on real disk; point that at a scratch dir before the connector's module graph reads it.
 const WORK = mkdtempSync(join(tmpdir(), 'voice-connector-'));
 process.env.ARCHIE_WORKDIR = WORK;
-import { getChannelDeliverer, getChannelRenderer } from '../../../tasks/channel-delivery.js';
-import { getRegisteredConnectorPmTools } from '../../../agents/connector-tools.js';
-import { deliverToRecallChannel, renderRecallChannel } from '../channel-delivery.js';
-import type { MeetingOps } from '../pm-tools.js';
+import { getRecallPmTools, type MeetingOps } from '../pm-tools.js';
 
 // Hoisted because `vi.mock`'s factory runs before imports.
 const wsHarness = vi.hoisted(() => {
@@ -155,8 +152,8 @@ const hosts: FakeHost[] = [];
 const registry = new Map<string, unknown>();
 // Mirrors the real module's `reservedTaskIds`, so a test exercises the same reserve-before-await protocol `index.ts`'s startMeeting relies on (below).
 const reserved = new Set<string>();
-// Transcript lives at a per-meeting path keyed by sessionId — this file pins that the connector hands over the bot id that actually ended, not just the right task.
-const meetingEndedCalls: Array<{ taskId: string; sessionId: string }> = [];
+// The record lives at a per-meeting path, and the connector — not `src/voice/` — is what derives it, so what it hands the wake-up is the path itself. Pinned against `recordPathOf` below, which keeps this a claim about the bot id that actually ended, not just the right task.
+const meetingEndedCalls: Array<{ taskId: string; recordPath: string }> = [];
 /** Every `linkRecallChannel` / `endRecallChannel` call, in order — the durable half of the seam ("binding a meeting to a task" below). */
 const linkCalls: Array<{ taskId: string; sessionId: string; url: string }> = [];
 const endCalls: Array<{ taskId: string; sessionId: string }> = [];
@@ -165,7 +162,9 @@ const recordedRows: Array<{ taskId: string; sessionId: string; row: MeetingRow }
 /** Every `createRecallPmToolsServer` build, so a test can reach the `ops` the mount closed over (see `opsOf`). */
 const pmToolsBuilds: MeetingOps[] = [];
 
-vi.mock('../pm-tools.js', () => ({
+// Only the server build is stubbed; `setRecallPmTools`/`getRecallPmTools` stay the real module-level pair, so what a mount does to it is what these tests read back.
+vi.mock('../pm-tools.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../pm-tools.js')>()),
   createRecallPmToolsServer: (_agent: unknown, _task: unknown, ops: MeetingOps) => {
     pmToolsBuilds.push(ops);
     return { name: 'recall-tools-stub' };
@@ -214,8 +213,8 @@ vi.mock('../../../voice/task-binding.js', () => ({
   releaseMeetingSlot: (taskId: string) => {
     reserved.delete(taskId);
   },
-  notifyMeetingEnded: (taskId: string, sessionId: string) => {
-    meetingEndedCalls.push({ taskId, sessionId });
+  notifyMeetingEnded: (taskId: string, recordPath: string) => {
+    meetingEndedCalls.push({ taskId, recordPath });
   },
   linkRecallChannel: async (taskId: string, sessionId: string, url: string) => {
     linkCalls.push({ taskId, sessionId, url });
@@ -225,12 +224,18 @@ vi.mock('../../../voice/task-binding.js', () => ({
   },
 }));
 
-// The one writer into a task's meeting record. Async like the real one, so the connector's own serialising chain is exercised rather than bypassed.
-vi.mock('../../../tasks/persistence.js', () => ({
+// The one writer into a task's meeting record, and the path helper the teardown hands to the wake-up. Async like the real one, so the connector's own serialising chain is exercised rather than bypassed.
+vi.mock('../meeting-record.js', () => ({
   appendMeetingRow: async (taskId: string, sessionId: string, row: MeetingRow) => {
     recordedRows.push({ taskId, sessionId, row });
   },
+  getMeetingRecordPath: (taskId: string, sessionId: string) => recordPathOf(taskId, sessionId),
 }));
+
+/** Deterministic stand-in for the real helper's output — the real shape is pinned in meeting-record.test.ts. */
+function recordPathOf(taskId: string, sessionId: string): string {
+  return `/mock/${taskId}/recall/${sessionId}/meeting.jsonl`;
+}
 
 /** This meeting's rows, in the order the connector's chain wrote them. */
 function rowsFor(sessionId: string): MeetingRow[] {
@@ -436,11 +441,11 @@ async function mount(over: Partial<Omit<RecallConfig, 'voice'>> = {}) {
 
 /**
  * The `ops` this mount handed the PM-tools factory — `join_recall_meeting`/`leave_recall_meeting` are the only callers, so this is how a test reaches them.
- * Builds a server to get at them, the way `spawn.ts` would; the factory is registered process-wide, so call this straight after `mount()`.
+ * Builds a server to get at them, the way `spawn.ts` would; the factory is module-level, so call this straight after `mount()`.
  */
 function opsOf(): MeetingOps {
-  const factory = getRegisteredConnectorPmTools().get('recall-tools');
-  if (factory === undefined) throw new Error('no recall-tools factory was registered');
+  const factory = getRecallPmTools();
+  if (factory === null) throw new Error('the mount set no PM-tools factory');
   factory({} as never, {} as never);
   const ops = pmToolsBuilds[pmToolsBuilds.length - 1];
   if (ops === undefined) throw new Error('the registered factory built no server');
@@ -920,7 +925,7 @@ describe('recall mount — waking the PM when a meeting ends', () => {
 
     await request(router, 'DELETE', `/meetings/${botId}`);
 
-    expect(meetingEndedCalls).toEqual([{ taskId: 'task-del', sessionId: 'bot-del' }]);
+    expect(meetingEndedCalls).toEqual([{ taskId: 'task-del', recordPath: recordPathOf('task-del', 'bot-del') }]);
   });
 
   it('wakes it exactly once via the status poll', async () => {
@@ -934,7 +939,7 @@ describe('recall mount — waking the PM when a meeting ends', () => {
     await vi.advanceTimersByTimeAsync(POLL_MS);
     await flushMicrotasks();
 
-    expect(meetingEndedCalls).toEqual([{ taskId: 'task-poll-wake', sessionId: 'bot-poll-wake' }]);
+    expect(meetingEndedCalls).toEqual([{ taskId: 'task-poll-wake', recordPath: recordPathOf('task-poll-wake', 'bot-poll-wake') }]);
   });
 
   it('wakes it exactly once via a spoken LEAVE:', async () => {
@@ -946,7 +951,7 @@ describe('recall mount — waking the PM when a meeting ends', () => {
     hosts[0].leaveMeeting();
     await flushMicrotasks();
 
-    expect(meetingEndedCalls).toEqual([{ taskId: 'task-spoken-leave', sessionId: 'bot-spoken-leave' }]);
+    expect(meetingEndedCalls).toEqual([{ taskId: 'task-spoken-leave', recordPath: recordPathOf('task-spoken-leave', 'bot-spoken-leave') }]);
     expect(spawned[0].stopped).toBe(1);
   });
 
@@ -957,7 +962,7 @@ describe('recall mount — waking the PM when a meeting ends', () => {
 
     await lifecycle.stop();
 
-    expect(meetingEndedCalls).toEqual([{ taskId: 'task-shutdown', sessionId: 'bot-shutdown' }]);
+    expect(meetingEndedCalls).toEqual([{ taskId: 'task-shutdown', recordPath: recordPathOf('task-shutdown', 'bot-shutdown') }]);
   });
 
   it('never wakes it for an unbound meeting', async () => {
@@ -1540,7 +1545,7 @@ describe('recall mount — Recall ends the meeting, the poll finds out', () => {
     await flushMicrotasks();
 
     expect(made.stopped).toBe(1);
-    expect(meetingEndedCalls).toEqual([{ taskId: 'task-poll-ended', sessionId: botId }]);
+    expect(meetingEndedCalls).toEqual([{ taskId: 'task-poll-ended', recordPath: recordPathOf('task-poll-ended', botId) }]);
     expect(leaveCalls(botId)).toHaveLength(1);
 
     // Later ticks find nothing to end: `endMeeting` deletes from `live` before its first await, so no route can end a meeting twice.
@@ -1662,7 +1667,7 @@ describe('recall mount — Recall ends the meeting, the poll finds out', () => {
     await vi.advanceTimersByTimeAsync(POLL_MS);
     await flushMicrotasks();
     expect(made.stopped).toBe(1);
-    expect(meetingEndedCalls).toEqual([{ taskId: 'task-poll-fails', sessionId: botId }]);
+    expect(meetingEndedCalls).toEqual([{ taskId: 'task-poll-fails', recordPath: recordPathOf('task-poll-fails', botId) }]);
   });
 
   it('polls every live meeting, ending only the one Recall reports out', async () => {
@@ -1683,7 +1688,7 @@ describe('recall mount — Recall ends the meeting, the poll finds out', () => {
     expect(botDetailGets('bot-poll-b').length).toBeGreaterThanOrEqual(1);
     expect(a.spawned.stopped).toBe(0);
     expect(b.spawned.stopped).toBe(1);
-    expect(meetingEndedCalls).toEqual([{ taskId: 'task-poll-b', sessionId: 'bot-poll-b' }]);
+    expect(meetingEndedCalls).toEqual([{ taskId: 'task-poll-b', recordPath: recordPathOf('task-poll-b', 'bot-poll-b') }]);
   });
 
   it('does nothing on a tick that finds the previous one still in flight', async () => {
@@ -1941,20 +1946,12 @@ describe('recall mount — what leave_recall_meeting reaches', () => {
   });
 });
 
-describe('recall mount — the two seams a connector plugs into', () => {
-  // Registered once, at mount, into registries task.ts/spawn.ts read generically, never naming Recall — makes "no mount, no tool" true.
-  // See src/agents/__tests__/connector-tools.test.ts for the absent-until-registered half — earlier tests here already mounted the connector, same worker.
-  it('registers the real recall channel deliverer under the "recall" kind', async () => {
-    await mount();
-    expect(getChannelDeliverer('recall')).toBe(deliverToRecallChannel);
-  });
-
-  it('registers the real recall channel renderer under the "recall" kind, in the same call as the deliverer', async () => {
-    await mount();
-    expect(getChannelRenderer('recall')).toBe(renderRecallChannel);
-  });
-
-  it('registers a PM-tools factory under "recall-tools", built over this mount\'s own start and stop', async () => {
+// Delivery is no longer wired here: `Task.postToUser` calls `deliverToRecallChannel` directly, the same
+// way it calls Slack, so there is nothing for mount to register and nothing that could go unregistered.
+describe('recall mount — the seam a connector plugs into', () => {
+  // Set once, at mount, and never at import — that is what makes "no mount, no tool" true.
+  // See src/connectors/recall/__tests__/pm-tools.test.ts for the null-until-mounted half: it never mounts, whereas earlier tests here already did, same worker.
+  it('sets the module-level PM-tools factory, built over this mount\'s own start and stop', async () => {
     botIds.push('bot-tools-wired');
     await mount();
 

@@ -6,15 +6,15 @@
  */
 
 import { mkdir, writeFile } from 'fs/promises';
-import type { AgentName, Channel, SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, BranchState } from '../types/task.js';
+import type { AgentName, SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, BranchState } from '../types/task.js';
 import { CLI_CHANNEL_KEY } from '../types/task.js';
-import { getChannelDeliverer } from './channel-delivery.js';
 import type { AgentDef } from '../types/agent.js';
 import { isPmAgent, isRepoAgent } from '../types/agent.js';
 import { modelDisplayLabel, resolveAgentModel, modelChangingAgentIds } from '../agents/model-label.js';
 import { prCardFingerprint, prCardTitlePlain } from '../system/pr-card-format.js';
 import { APPROVAL_TTL_MS, PENDING_APPROVAL_TTL_MS } from '../agents/tool-approval-gate.js';
 import { getGitHubClient } from '../connectors/github/client.js';
+import { deliverToRecallChannel } from '../connectors/recall/channel-delivery.js';
 import { createKeyedLock } from '../system/keyed-lock.js';
 
 /**
@@ -458,10 +458,9 @@ export class Task {
    * channel yet, a message sent by an agent opens the task's own thread there
    * (the message itself becomes the thread root) and returns its channel key —
    * that is the only way a new thread is ever opened. Otherwise returns null,
-   * UNLESS `target.channel` names a channel of a kind this method does not
-   * natively handle (anything but `slack`) — then a registered deliverer (see
-   * `channel-delivery.js`) may return a note of its own to relay verbatim, and
-   * that note is returned here instead. A seam note only ever comes back when
+   * UNLESS `target.channel` names a `recall` channel — a live voice meeting,
+   * whose connector answers with a note of its own to relay verbatim, and that
+   * note is returned here instead. Such a note only ever comes back when
    * `target.channel` was given, so it cannot be mistaken for a new channel key.
    */
   async postToUser(message: string, agentName?: string, target?: PostTarget): Promise<string | null> {
@@ -479,12 +478,19 @@ export class Task {
         this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch, footer);
         return null;
       }
-      // Any other linked kind (recall, and any future kind) dispatches through
-      // the delivery seam instead of a hand-written branch here. An unlinked
-      // key or a kind with nothing registered (ch undefined, or no deliverer)
-      // is the same silent no-op it already was — not something this seam
-      // introduces.
-      return ch ? (await this.deliverThroughSeam(ch, target.channel, message, sender)) ?? null : null;
+      if (ch?.type === 'recall') {
+        // The Recall connector decides whether that meeting is still there and says so in its
+        // own words. The `knowledge.log` append is gated on its `delivered` flag, never on the
+        // note's wording, and records `target.channel` itself — so the line says what the
+        // destination *was*, not what that channel looks like now.
+        const outcome = await deliverToRecallChannel({ task: this, channel: ch, message });
+        if (outcome.delivered) {
+          this.logOutgoingMessage(sender, message, target.channel);
+        }
+        return outcome.note;
+      }
+      // An unlinked key, or a linked kind with no branch above, is the same silent no-op it has always been.
+      return null;
     }
 
     // Default channel
@@ -512,22 +518,6 @@ export class Task {
       this.logOutgoingMessage(sender, message, 'cli', undefined, footer);
     }
     return null;
-  }
-
-  /**
-   * Hand a message to whatever deliverer `channel-delivery.js` has registered for `ch.type`; a kind with none registered is a silent no-op.
-   *
-   * The `knowledge.log` append is gated on the deliverer's own `delivered` flag, never on `note`'s wording, and records `channelKey` itself so the line says what the destination *was* rather than what the channel looks like now.
-   */
-  private async deliverThroughSeam(ch: Channel, channelKey: string, message: string, sender: string): Promise<string | undefined> {
-    const deliverer = getChannelDeliverer(ch.type);
-    if (!deliverer) return undefined;
-    const outcome = await deliverer({ task: this, channel: ch, message, sender });
-    if (!outcome) return undefined;
-    if (outcome.delivered) {
-      this.logOutgoingMessage(sender, message, channelKey);
-    }
-    return outcome.note;
   }
 
   /**

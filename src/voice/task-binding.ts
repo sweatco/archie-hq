@@ -10,7 +10,7 @@ import type { Meeting } from './meeting.js';
 import type { MeetingHost, WrittenLine } from './types.js';
 import { readWrittenExchange } from './written.js';
 import { Task } from '../tasks/task.js';
-import { appendMeetingEvent, getMeetingRecordPath } from '../tasks/persistence.js';
+import { appendMeetingEvent } from '../tasks/persistence.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { logger } from '../system/logger.js';
 
@@ -133,18 +133,18 @@ export async function endRecallChannel(taskId: string, sessionId: string): Promi
 }
 
 /**
- * `src/connectors/recall/index.ts` calls this from `endMeeting`, the funnel every teardown path (status poll, DELETE route, shutdown) runs through. `sessionId` matters too: the record lives under that meeting's own folder, not one file per task.
+ * `src/connectors/recall/index.ts` calls this from `endMeeting`, the funnel every teardown path (status poll, DELETE route, shutdown) runs through.
+ *
+ * `recordPath` is passed in rather than derived here: where a meeting's record lives is the connector's own shape (`getMeetingRecordPath` in `src/connectors/recall/meeting-record.ts`), and `src/voice/` imports nothing from `src/connectors/` — a connector depends on the medium, never the reverse. It matters that it is this meeting's record and not the task's: a multi-meeting task has one per meeting, so a wake-up naming the wrong one would point the PM at another conversation.
  *
  * Not a `MeetingHost` method — those run inside the audio loop; this fires once, afterwards, from teardown, the one place that knows the meeting is gone.
  *
  * Fire-and-forget, doubly: shutdown awaits every `endMeeting` in its batch, so a hung wake-up would hang that exit too.
  */
-export function notifyMeetingEnded(taskId: string, sessionId: string): void {
+export function notifyMeetingEnded(taskId: string, recordPath: string): void {
   void (async () => {
     const task = await Task.get(taskId);
-    const prompt = await loadPrompt('voice-wakeup-ended', {
-      RECORD_PATH: getMeetingRecordPath(taskId, sessionId),
-    });
+    const prompt = await loadPrompt('voice-wakeup-ended', { RECORD_PATH: recordPath });
     await task.sendMessage(prompt, 'pm-agent');
   })();
 }

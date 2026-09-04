@@ -39,11 +39,8 @@ import {
   linkRecallChannel,
   endRecallChannel,
 } from '../../voice/task-binding.js';
-import { appendMeetingRow } from '../../tasks/persistence.js';
-import { registerChannelDeliverer } from '../../tasks/channel-delivery.js';
-import { deliverToRecallChannel, renderRecallChannel } from './channel-delivery.js';
-import { registerConnectorPmTools } from '../../agents/connector-tools.js';
-import { createRecallPmToolsServer, type MeetingOps } from './pm-tools.js';
+import { appendMeetingRow, getMeetingRecordPath } from './meeting-record.js';
+import { createRecallPmToolsServer, setRecallPmTools, type MeetingOps } from './pm-tools.js';
 
 export interface RecallLifecycle {
   /** Call once the HTTP server exists. */
@@ -277,9 +274,8 @@ export function mountRecallConnector(app: Application, cfg: RecallConfig): Recal
     stop: stopForTask,
   };
 
-  // Registered at mount, not always: if Recall isn't configured, the PM never sees these tools rather than sees them fail.
-  registerChannelDeliverer('recall', deliverToRecallChannel, renderRecallChannel);
-  registerConnectorPmTools('recall-tools', (agent, task) => createRecallPmToolsServer(agent, task, ops));
+  // Set at mount, not always: if Recall isn't configured, the PM never sees these tools rather than sees them fail.
+  setRecallPmTools((agent, task) => createRecallPmToolsServer(agent, task, ops));
 
   router.delete('/meetings/:botId', async (req: Request, res: Response) => {
     const botId = req.params.botId as string;
@@ -316,7 +312,8 @@ export function mountRecallConnector(app: Application, cfg: RecallConfig): Recal
       if (entry.binding !== undefined) {
         entry.binding.host.noteEvent(`meeting ended — recall/${botId}/`);
         // Fire-and-forget — an awaited wake-up that hung would hang `stop()`'s whole batch.
-        notifyMeetingEnded(entry.binding.taskId, botId);
+        // The record path is built here, not there: where a meeting's record lives is this connector's shape, and `src/voice/` imports nothing from `src/connectors/`.
+        notifyMeetingEnded(entry.binding.taskId, getMeetingRecordPath(entry.binding.taskId, botId));
       }
     }
     try {

@@ -1,5 +1,5 @@
 /**
- * `join_recall_meeting`/`leave_recall_meeting`: registered via `registerConnectorPmTools` at mount, not
+ * `join_recall_meeting`/`leave_recall_meeting`: contributed by the Recall connector at mount, not
  * the PM's static surface (`src/index.ts`). Distinct from `post_to_user` and the room's spoken `LEAVE:`
  * (`MeetingHost.leaveMeeting`) — no farewell, a PM decision not the room's.
  */
@@ -77,4 +77,18 @@ export function createRecallPmToolsServer(agent: Agent, task: Task, ops: Meeting
       createLeaveRecallMeetingTool(agent, task, ops),
     ],
   });
+}
+
+/** Built per spawn, so each PM gets tools bound to its own agent and task. */
+export type RecallPmToolsFactory = (agent: Agent, task: Task) => ReturnType<typeof createRecallPmToolsServer>;
+
+/** `null` until `mountRecallConnector` sets it, which it does only when Recall is configured — that is what makes "no mount, no tools" true rather than "tools that fail at call time". */
+let recallPmTools: RecallPmToolsFactory | null = null;
+
+export function setRecallPmTools(factory: RecallPmToolsFactory): void {
+  recallPmTools = factory;
+}
+
+export function getRecallPmTools(): RecallPmToolsFactory | null {
+  return recallPmTools;
 }

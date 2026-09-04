@@ -12,7 +12,6 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { join, resolve, relative, isAbsolute, sep } from 'path';
 import type { TaskMetadata, LogEntry, FindingType, SlackFile, SlackAuthor } from '../types/index.js';
-import type { MeetingRow } from '../voice/types.js';
 import type { SystemEvent } from '../system/event-bus.js';
 import { activeTasks } from './task.js';
 import { SESSIONS_DIR } from '../system/workdir.js';
@@ -154,42 +153,6 @@ export function getAttachmentsPath(taskId: string): string {
  */
 export function getArtifactsPath(taskId: string): string {
   return join(getSharedPath(taskId), 'artifacts');
-}
-
-/**
- * Get the path to a voice meeting's own folder.
- *
- * One folder per MEETING, not one per task: `sessionId` is the same id that
- * keys the meeting's `recall:<sessionId>` channel key (see `recallChannelKey`
- * in `src/voice/task-binding.ts`), so the folder and the channel key are
- * built from the same value and can never drift apart — no separate lookup
- * table maps one to the other. A task that hosts several meetings over its
- * life gets one sibling folder per meeting here, rather than every meeting's
- * speech landing in one shared file behind an artificial boundary line.
- */
-export function getMeetingPath(taskId: string, sessionId: string): string {
-  // `sessionId` reaches us from the Recall API, so it must not escape the meeting folder. The substitution is the one `src/connectors/recall/index.ts` applies to the same value for an unbound meeting's filename, so a dotted id maps identically in both places; a real bot id is a UUID and passes through unchanged. `taskId` needs no guard — `isSafeTaskId` already enforces a single path segment.
-  // The all-dots case needs its own arm: `.` survives the character class, and `join` then RESOLVES a `..` segment rather than treating it as a name, collapsing the `recall` directory instead of nesting under it.
-  const segment = sessionId.replace(/[^a-zA-Z0-9._-]/g, '_');
-  return join(getSharedPath(taskId), 'recall', /^\.+$/.test(segment) ? '_' : segment);
-}
-
-/**
- * Get the path to a meeting's record — the one append-only `meeting.jsonl`
- * inside that meeting's own folder (see `getMeetingPath`), one JSON row per
- * line. `MeetingRow` in `src/voice/types.ts` is the shape of a line and the
- * list of what a meeting records.
- *
- * Deliberately its own file, NOT `knowledge.log`: the PM reads knowledge.log
- * whole at the start of every turn, and room speech from a live voice
- * meeting is both high-volume and untrusted (it is a transcript of whatever
- * the room's open microphone picked up, unattributed and unverified).
- * Putting it there would mean every PM turn scans it unconditionally;
- * keeping it here means an agent greps it on demand instead, the same way it
- * would open any other file in its workspace.
- */
-export function getMeetingRecordPath(taskId: string, sessionId: string): string {
-  return join(getMeetingPath(taskId, sessionId), 'meeting.jsonl');
 }
 
 /**
@@ -532,40 +495,14 @@ function sanitizeTranscriptField(value: string): string {
 }
 
 /**
- * Append one row to this meeting's record (see `getMeetingRecordPath`) — the
- * one writer, for every kind of row a meeting produces. `MeetingRow`
- * (`src/voice/types.ts`) is the union of those kinds.
- *
- * One line of JSON rather than `formatLogEntry`'s `[ISO] [source] message`,
- * because the rows carry structure a line format cannot: nested fields, an
- * absent field meaning something different from an empty one, and multi-line
- * prose (a capability block) whose own line shape has to survive. Nothing
- * needs sanitising for the same reason — `JSON.stringify` escapes a newline
- * rather than letting it forge a second row.
- *
- * A meeting's folder does not exist until its first row does, so this creates
- * it (recursively, so every later call is harmless) before appending.
- *
- * Deliberately plain: this can reject, and the caller decides what a failure
- * means. Appends are serialised by the caller — the connector keeps one chain
- * per meeting (`src/connectors/recall/index.ts`), so two rows cannot interleave.
- */
-export async function appendMeetingRow(
-  taskId: string,
-  sessionId: string,
-  row: MeetingRow,
-): Promise<void> {
-  await mkdir(getMeetingPath(taskId, sessionId), { recursive: true });
-  await appendFile(getMeetingRecordPath(taskId, sessionId), `${JSON.stringify(row)}\n`);
-}
-
-/**
  * Append a voice-meeting event to the knowledge log — one more appender of
  * the same shape as the ones above, formatted by the same `formatLogEntry`
  * with `source` fixed to `'voice'`. Covers the three facts worth keeping
  * outside the meeting itself: started, a question put to the PM, ended. NOT
  * the room's speech itself, which is high-volume and belongs in this
- * meeting's own record instead — see `appendMeetingRow`.
+ * meeting's own record instead — see `appendMeetingRow` in
+ * `src/connectors/recall/meeting-record.ts`, which owns that file and the
+ * paths into it.
  *
  * Emits the same `'message'` event every other inbound appender in this file
  * emits — `appendCliMessage` is the clearest sibling — so a live CLI/SSE

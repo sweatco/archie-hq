@@ -11,7 +11,7 @@ vi.mock('../../../voice/task-binding.js', () => ({
 const { appendMeetingRow } = vi.hoisted(() => ({ appendMeetingRow: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../../../tasks/persistence.js', () => ({ appendMeetingRow }));
 
-import { deliverToRecallChannel, renderRecallChannel } from '../channel-delivery.js';
+import { deliverToRecallChannel } from '../channel-delivery.js';
 import type { Meeting } from '../../../voice/meeting.js';
 import type { RecallChannel } from '../../../types/task.js';
 import type { Task } from '../../../tasks/task.js';
@@ -48,14 +48,13 @@ describe('deliverToRecallChannel', () => {
       task: fakeTask('task-1'),
       channel: fakeChannel({ session_id: 'sess-1' }),
       message: 'the deploy finished at ten',
-      sender: 'pm-agent',
     });
 
     // No `from` argument: 'pm-agent' is the default, and the `answer` row is written inside deliverConsultAnswer — nothing here touches the record.
     expect(meeting.deliverConsultAnswer).toHaveBeenCalledWith('the deploy finished at ten');
-    // `delivered: true` tells postToUser (deliverThroughSeam) to log this in knowledge.log.
-    expect(outcome?.delivered).toBe(true);
-    expect(outcome?.note).toMatch(/spoken aloud/i);
+    // `delivered: true` is what tells postToUser's `recall` branch to log this in knowledge.log.
+    expect(outcome.delivered).toBe(true);
+    expect(outcome.note).toMatch(/spoken aloud/i);
   });
 
   // The append that used to live here is gone: one file, one writer, and the `answer` row goes down inside `deliverConsultAnswer`, where the consult id it belongs to is known.
@@ -66,10 +65,9 @@ describe('deliverToRecallChannel', () => {
       task: fakeTask('task-1'),
       channel: fakeChannel({ session_id: 'sess-1' }),
       message: 'the deploy finished at ten',
-      sender: 'pm-agent',
     });
 
-    expect(outcome?.delivered).toBe(true);
+    expect(outcome.delivered).toBe(true);
     expect(appendMeetingRow).not.toHaveBeenCalled();
   });
 
@@ -81,12 +79,11 @@ describe('deliverToRecallChannel', () => {
       task: fakeTask('task-1'),
       channel: fakeChannel({ session_id: 'sess-1' }),
       message: 'unsolicited update',
-      sender: 'pm-agent',
     });
 
     expect(meeting.deliverConsultAnswer).toHaveBeenCalled();
-    expect(outcome?.delivered).toBe(false);
-    expect(outcome?.note).toMatch(/nothing outstanding/i);
+    expect(outcome.delivered).toBe(false);
+    expect(outcome.note).toMatch(/nothing outstanding/i);
   });
 
   it('reports the room has dispersed, and not delivered, when no meeting is live on this task at all', async () => {
@@ -94,11 +91,10 @@ describe('deliverToRecallChannel', () => {
       task: fakeTask('task-gone'),
       channel: fakeChannel(),
       message: 'anything',
-      sender: 'pm-agent',
     });
 
-    expect(outcome?.delivered).toBe(false);
-    expect(outcome?.note).toMatch(/dispersed/i);
+    expect(outcome.delivered).toBe(false);
+    expect(outcome.note).toMatch(/dispersed/i);
   });
 
   it('reports the room has dispersed, not delivered, and never touches the meeting, when a different session is now live on the same task', async () => {
@@ -109,22 +105,10 @@ describe('deliverToRecallChannel', () => {
       task: fakeTask('task-1'),
       channel: fakeChannel({ session_id: 'sess-1' }),
       message: 'stale answer — ignore',
-      sender: 'pm-agent',
     });
 
-    expect(outcome?.delivered).toBe(false);
-    expect(outcome?.note).toMatch(/dispersed/i);
+    expect(outcome.delivered).toBe(false);
+    expect(outcome.note).toMatch(/dispersed/i);
     expect(newerMeeting.deliverConsultAnswer).not.toHaveBeenCalled();
-  });
-});
-
-// Unlike delivery, rendering reads only the channel record, not the live registry — no "meeting not live" case.
-describe('renderRecallChannel', () => {
-  it('renders a live meeting', () => {
-    expect(renderRecallChannel(fakeChannel({ ended: false }))).toBe('Meeting (live)');
-  });
-
-  it('renders an ended meeting, still — the record is kept, not removed', () => {
-    expect(renderRecallChannel(fakeChannel({ ended: true }))).toBe('Meeting (ended)');
   });
 });

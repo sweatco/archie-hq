@@ -4,7 +4,7 @@ vi.mock('../../../system/logger.js', () => ({
   logger: { agentAction: vi.fn(), warn: vi.fn(), error: vi.fn(), system: vi.fn(), debug: vi.fn() },
 }));
 
-import { createRecallPmToolsServer, type MeetingOps } from '../pm-tools.js';
+import { createRecallPmToolsServer, getRecallPmTools, type MeetingOps } from '../pm-tools.js';
 import type { Agent } from '../../../agents/agent.js';
 import type { Task } from '../../../tasks/task.js';
 
@@ -44,6 +44,13 @@ function getHandler(
 async function textOf(result: { content: { text: string }[] }): Promise<string> {
   return result.content[0].text;
 }
+
+// Deliberately never mounts the connector — that is the whole assertion. The other half, "a mount sets it", is in connector-mount.test.ts.
+describe('recallPmTools', () => {
+  it('is null until the connector mounts, so an unconfigured deployment hands the PM nothing', () => {
+    expect(getRecallPmTools()).toBeNull();
+  });
+});
 
 describe('join_recall_meeting', () => {
   it('registers exactly these two tools', () => {

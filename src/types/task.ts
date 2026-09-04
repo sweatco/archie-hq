@@ -156,7 +156,7 @@ export const CLI_CHANNEL_KEY = 'cli:local' as const;
  * stops, never removed. That is what lets a post to this channel — live,
  * ended, or left stale by a crash — always reach the Recall connector's own
  * deliverer rather than fall through to generic task code that has no idea
- * what a meeting is. See `src/tasks/channel-delivery.ts`.
+ * what a meeting is.
  */
 export interface RecallChannel extends ChannelBase {
   type: 'recall';
