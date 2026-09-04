@@ -149,7 +149,7 @@ export interface SpeechResult {
 
 /** One answer being spoken. Text may arrive in pieces as the model writes it. */
 export interface SpeechStream {
-  /** Push a complete sentence or clause; may repeat. `onSentenceComplete` fires once this sentence's audio is fully handed to `onPcm` — synthesis, not room-heard ({@link AudioSink.played} measures that). Required: the caller anchors an interrupted answer's record on it, so a synthesizer that cannot report per-sentence completion cannot implement this interface. */
+  /** Push a complete sentence or clause; may repeat. `onSentenceComplete` fires once this sentence's audio is fully handed to `onPcm` — synthesis, not room-heard ({@link AudioSink.played} measures that) — and never before, though it may be later: a synthesizer speaking several sentences as one utterance can only report where that utterance ended, so those sentences complete together, in hand-over order, at its end. The caller anchors an interrupted answer's record on the byte count at each callback, which is why "never early" is the half that is load-bearing: a completion ahead of its audio credits the room with words it never heard. Required, so a synthesizer with no completion to report at all cannot implement this interface. */
   say(text: string, onSentenceComplete: () => void): void;
   /** No more text coming; resolves when all audio has been delivered. */
   end(): Promise<SpeechResult>;

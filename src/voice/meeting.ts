@@ -572,7 +572,8 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
 
     let pcmSentToSink = 0;
     const sentenceOffsets: SentenceEnd[] = [];
-    // Soniox serializes its per-sentence streams, so completion order is handed order: index i of one lines up with index i of the other.
+    // Soniox completes a stream's sentences in hand-over order and serializes its streams, so completion order is handed order: index i of one lines up with index i of the other.
+    // A turn is one stream, so its sentences ordinarily complete together, sharing the turn's end offset — the estimate below is what resolves inside that. Distinct offsets within a turn mean the stall guard split it.
     const handedSentences: string[] = [];
     // Asked for here, awaited later: the turn must reach the speaking call in the same tick, and the sink answers with the count as of this call anyway.
     const playedBaseline = sink.played();
