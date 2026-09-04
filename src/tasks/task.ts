@@ -14,6 +14,7 @@ import { modelDisplayLabel, resolveAgentModel, modelChangingAgentIds } from '../
 import { prCardFingerprint, prCardTitlePlain } from '../system/pr-card-format.js';
 import { APPROVAL_TTL_MS, PENDING_APPROVAL_TTL_MS } from '../agents/tool-approval-gate.js';
 import { getGitHubClient } from '../connectors/github/client.js';
+import { deliverToRecallChannel } from '../connectors/recall/channel-delivery.js';
 import { createKeyedLock } from '../system/keyed-lock.js';
 
 /**
@@ -456,7 +457,11 @@ export class Task {
    * `target.channel`. For a trigger-fired task that has a `home_channel` and no
    * channel yet, a message sent by an agent opens the task's own thread there
    * (the message itself becomes the thread root) and returns its channel key —
-   * that is the only way a new thread is ever opened. Otherwise returns null.
+   * that is the only way a new thread is ever opened. Otherwise returns null,
+   * UNLESS `target.channel` names a `recall` channel — a live voice meeting,
+   * whose connector answers with a note of its own to relay verbatim, and that
+   * note is returned here instead. Such a note only ever comes back when
+   * `target.channel` was given, so it cannot be mistaken for a new channel key.
    */
   async postToUser(message: string, agentName?: string, target?: PostTarget): Promise<string | null> {
     const sender = agentName || 'system';
@@ -471,7 +476,20 @@ export class Task {
       if (ch?.type === 'slack') {
         await postSlackMessage({ channel: ch.channel_id, threadTs: ch.thread_id, text: message, footer });
         this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch, footer);
+        return null;
       }
+      if (ch?.type === 'recall') {
+        // The Recall connector decides whether that meeting is still there and says so in its
+        // own words. The `knowledge.log` append is gated on its `delivered` flag, never on the
+        // note's wording, and records `target.channel` itself — so the line says what the
+        // destination *was*, not what that channel looks like now.
+        const outcome = await deliverToRecallChannel({ task: this, channel: ch, message });
+        if (outcome.delivered) {
+          this.logOutgoingMessage(sender, message, target.channel);
+        }
+        return outcome.note;
+      }
+      // An unlinked key, or a linked kind with no branch above, is the same silent no-op it has always been.
       return null;
     }
 

@@ -88,7 +88,7 @@ export interface SlackThread {
 
 // ---- Channel types (replace slack_threads) ----
 
-export type ChannelType = 'slack' | 'github' | 'cli';
+export type ChannelType = 'slack' | 'github' | 'cli' | 'recall';
 
 export interface ChannelBase {
   type: ChannelType;
@@ -119,6 +119,7 @@ export interface SlackChannel extends ChannelBase {
   forwardNotifiedUsers?: string[];
 }
 
+/** CLI channel — the REST/SSE surface the CLI tails. One per task at most. */
 /** GitHub channel — a PR conversation */
 export interface GitHubChannel extends ChannelBase {
   type: 'github';
@@ -126,7 +127,6 @@ export interface GitHubChannel extends ChannelBase {
   pr_number: number;
 }
 
-/** CLI channel — the REST/SSE surface the CLI tails. One per task at most. */
 export interface CliChannel extends ChannelBase {
   type: 'cli';
   id: 'cli:local';
@@ -134,7 +134,40 @@ export interface CliChannel extends ChannelBase {
 
 export const CLI_CHANNEL_KEY = 'cli:local' as const;
 
-export type Channel = SlackChannel | GitHubChannel | CliChannel;
+/**
+ * Recall channel — a voice meeting (Zoom, Meet or Teams) that the Recall
+ * connector bound to this task. Named for the connector that owns it, the
+ * same way `SlackChannel` is named for Slack: a meeting is a place Archie is
+ * reachable, and that place is Recall — a future Telegram call would add a
+ * `telegram` kind owned by that connector instead. `src/voice/` is the
+ * medium and has no channel kind of its own; see `docs/architecture/voice.md`.
+ *
+ * `session_id` is Recall's bot id — also `Meeting.sessionId` (the voice
+ * medium's own name for it; see `src/voice/meeting.ts`). It is what makes the
+ * channel key (`recall:<session_id>`) unique per meeting: the in-process
+ * live-meeting registry in `src/voice/task-binding.ts` is keyed by taskId
+ * alone, so a deliverer reaching it for a *stale* channel key must compare
+ * this field against the live meeting's own `sessionId` to tell "no meeting
+ * live" apart from "a different, later meeting is live now" — see
+ * `src/connectors/recall/channel-delivery.ts`.
+ *
+ * The record itself is permanent, exactly like a `SlackChannel`: linked and
+ * `ended: false` when the meeting starts, flipped to `ended: true` when it
+ * stops, never removed. That is what lets a post to this channel — live,
+ * ended, or left stale by a crash — always reach the Recall connector's own
+ * deliverer rather than fall through to generic task code that has no idea
+ * what a meeting is.
+ */
+export interface RecallChannel extends ChannelBase {
+  type: 'recall';
+  session_id: string;
+  /** The meeting URL, when known. */
+  url?: string;
+  /** Set once the meeting has ended. Everything else about the record is unchanged and kept. */
+  ended: boolean;
+}
+
+export type Channel = SlackChannel | GitHubChannel | CliChannel | RecallChannel;
 
 /**
  * Snapshot of a pull request as shown on its "PR card" — the compact, updating

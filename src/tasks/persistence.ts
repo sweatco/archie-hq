@@ -5,7 +5,7 @@
  * appending to knowledge.log
  */
 
-import { mkdir, readdir, readFile, writeFile, appendFile } from 'fs/promises';
+import { mkdir, readdir, readFile, appendFile } from 'fs/promises';
 import { createReadStream, existsSync } from 'fs';
 import { createInterface } from 'readline';
 import { execFile } from 'child_process';
@@ -472,6 +472,61 @@ export async function appendCliMessage(
 
   await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
   emitEvent('message', taskId, { from: 'cli', to: 'pm-agent', message });
+}
+
+/**
+ * Strip characters that could forge a new line out of a value bound for
+ * `formatLogEntry`, which interpolates `source` and `message` into
+ * `[ISO] [source] message\n` with no escaping of its own. A raw `\n` (or any
+ * other control character) in either would write what a line-based reader
+ * sees as a second, independently attributed entry right after it.
+ *
+ * Mirrors `sanitizeForLog` in `src/voice/meeting.ts`, and applied again here,
+ * at the point of writing, so a consult question — model output derived from
+ * an open microphone, which this codebase can verify no better than a
+ * self-reported name (see `prompts/voice-wakeup-question.md`) — gets the same
+ * guarantee regardless of what a caller passes in. Deliberately narrow: only
+ * control characters and the two Unicode line separators some consumers treat
+ * the same way are touched, so ordinary punctuation, non-Latin scripts and
+ * emoji in real text survive untouched.
+ */
+function sanitizeTranscriptField(value: string): string {
+  return value.replace(/[\p{Cc}\u2028\u2029]+/gu, ' ').trim();
+}
+
+/**
+ * Append a voice-meeting event to the knowledge log — one more appender of
+ * the same shape as the ones above, formatted by the same `formatLogEntry`
+ * with `source` fixed to `'voice'`. Covers the three facts worth keeping
+ * outside the meeting itself: started, a question put to the PM, ended. NOT
+ * the room's speech itself, which is high-volume and belongs in this
+ * meeting's own record instead — see `appendMeetingRow` in
+ * `src/connectors/recall/meeting-record.ts`, which owns that file and the
+ * paths into it.
+ *
+ * Emits the same `'message'` event every other inbound appender in this file
+ * emits — `appendCliMessage` is the clearest sibling — so a live CLI/SSE
+ * observer sees voice activity too. This was previously the one appender of
+ * the nine that stayed silent on the event bus, which is why voice activity
+ * used to be invisible to a live view.
+ */
+export async function appendMeetingEvent(
+  taskId: string,
+  message: string,
+): Promise<void> {
+  // Sanitised for the same reason the transcript's fields are: a consult
+  // question is model output derived from room speech, so a newline in it
+  // would write what reads as a second, well-formed log line under whatever
+  // source it chose — into the file every agent reads at the start of a turn.
+  const sanitized = sanitizeTranscriptField(message);
+  const entry: LogEntry = {
+    timestamp: new Date().toISOString(),
+    source: 'voice',
+    message: sanitized,
+  };
+
+  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
+  emitEvent('message', taskId, { from: 'voice', to: 'pm-agent', message: sanitized });
 }
 
 /**

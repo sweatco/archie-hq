@@ -38,6 +38,9 @@ ${ARCHIE_WORKDIR}/sessions/
         {file_id}-{filename}               # e.g. F08ABC123-screenshot.png
       artifacts/                           # cross-agent shared files (versioned)
         {basename}.{8hex}.{ext}            # content-hash-deduped per basename+ext
+      recall/                              # one subfolder per voice meeting, named for its `recall:{session_id}` channel key
+        {session_id}/
+          meeting.jsonl                     # the whole meeting, one JSON row per line: what was said, who came and went, what was asked
     agents/
       {agentKey}/                          # Per-agent workspace (PM and plugin agents)
         .claude/
@@ -68,9 +71,18 @@ All paths below are rooted at `SESSIONS_DIR` (`${ARCHIE_WORKDIR}/sessions`).
 | `getEventsLogPath(taskId)` | `{SESSIONS_DIR}/{taskId}/shared/events.jsonl` |
 | `getUsageLogPath(taskId)` | `{SESSIONS_DIR}/{taskId}/shared/usage.jsonl` |
 
+Two more paths land under the same `shared/` tree but are built in the Recall connector rather than here, because a meeting's record is that connector's own shape and nothing outside `src/connectors/recall/` reads or writes it — they are listed for completeness, and `getSharedPath` above is all they borrow from this module:
+
+| Function (`src/connectors/recall/meeting-record.ts`) | Returns |
+|---|---|
+| `getMeetingPath(taskId, sessionId)` | `{SESSIONS_DIR}/{taskId}/shared/recall/{sessionId}` |
+| `getMeetingRecordPath(taskId, sessionId)` | `{SESSIONS_DIR}/{taskId}/shared/recall/{sessionId}/meeting.jsonl` |
+
 Per-agent workspaces (`{taskId}/agents/{agentKey}/`) and SDK runtime dirs
 (`{taskId}/claude/{agentKey}/{session,tmp}`) are created in `src/agents/spawn.ts`,
 not in `persistence.ts`.
+
+One meeting, one subfolder — `sessionId` is the same id that keys the meeting's `recall:{session_id}` entry in `channels` (see `RecallChannel` below), so the folder and the channel key are built from the same value and cannot drift apart. See [Voice](./voice.md) for `appendMeetingRow`, the one appender that writes that file, and why it lives in the connector rather than beside the helpers above.
 
 ### Task ID format
 
@@ -117,7 +129,7 @@ The block above is illustrative, not exhaustive — several fields (`title`, `br
 ### Channel (replaces legacy `slack_threads`)
 
 ```typescript
-type Channel = SlackChannel | GitHubChannel;
+type Channel = SlackChannel | CliChannel | RecallChannel;
 
 interface SlackChannel {
   type: 'slack';
@@ -127,14 +139,46 @@ interface SlackChannel {
   last_processed_ts: string; // timestamp of last processed message (for dedup)
 }
 
-interface GitHubChannel {
-  type: 'github';
-  repo: string;             // GitHub repo identifier
-  pr_number: number;        // PR number
+interface CliChannel {
+  type: 'cli';
+  id: 'cli:local';           // the only key this kind ever uses — one CLI channel per task, at most
+}
+
+interface RecallChannel {
+  type: 'recall';
+  session_id: string;        // Recall's bot id — also the meeting's own sessionId
+  url?: string;               // the meeting URL, when known
+  ended: boolean;             // set once the meeting ends; the record itself is kept, never removed
 }
 ```
 
-The `channels` field is keyed by a unique channel ID (e.g., `"{channel_id}:{thread_id}"` for Slack). The `default_channel` field identifies the originating channel. Legacy `slack_threads` arrays are migrated on first load.
+The `channels` field is keyed by a unique channel ID (e.g., `"{channel_id}:{thread_id}"` for Slack, `cli:local` for CLI, `"recall:{session_id}"` for a voice meeting). The `default_channel` field identifies the originating channel. Legacy `slack_threads` arrays are migrated on first load.
+
+A GitHub PR conversation is not represented as a channel. GitHub state for a task lives in `metadata.repositories` instead — an `AttachedRepo` per agent, with per-branch `BranchState` carrying the PR number — and the task-lookup helpers that resolve a task from a PR or a branch (`findTaskByPRNumber`, `findTaskByBranch`) scan that structure rather than `channels`.
+
+`CliChannel` is the CLI/REST-SSE surface's own channel kind, linked once per task via `linkCliChannel()`; like `SlackChannel`, it is handled directly wherever it can be the task's default channel. `RecallChannel` is a live voice meeting (Zoom, Meet or Teams) that the Recall connector bound to a task; see [Voice](./voice.md) for what it represents and why the record is permanent even after the meeting ends. Unlike Slack and CLI, a `RecallChannel` is never the default channel, and always dispatches through its own connector's deliverer, reached from a branch in `postToUser` beside the one for Slack — the same way any future channel kind plugs a deliverer into rather than growing another branch in `Task.postToUser`.
+
+### The meeting record
+
+A voice meeting's whole record is one append-only file, `shared/recall/{sessionId}/meeting.jsonl` (see `getMeetingRecordPath` under Path helpers above), written by `appendMeetingRow` — one JSON object per line, in the order things settled. Both live in `src/connectors/recall/meeting-record.ts`, not in `persistence.ts`. It is not part of `TaskMetadata` and not keyed into `channels`; it is documented here because it is the other durable shape a task carries.
+
+```typescript
+// src/voice/types.ts — one union member per kind of line.
+type MeetingRow =
+  | { at: string; type: 'started'; url: string; bot_id: string }
+  | { at: string; type: 'details'; platform: string | null; title: string | null }
+  | { at: string; type: 'capabilities'; text: string }
+  | { at: string; type: 'join' | 'leave'; participant: { id: string; name: string | null; is_host: boolean | null } }
+  | { at: string; type: 'utterance'; speaker: string; text: string }
+  | { at: string; type: 'chat'; speaker: string; text: string }
+  | { at: string; type: 'consult'; id: string; question: string }
+  | { at: string; type: 'answer'; id: string; text: string; from: 'pm-agent' | 'system' }
+  | { at: string; type: 'gate'; speaker: string; candidate: string; tier: 'name' | 'follow-up' | 'model' | 'already-owed'; matched?: string; addressed: boolean; gate_ms?: number; error?: string }
+  | { at: string; type: 'turn'; verdict: 'addressed' | 'suppressed' | 'error'; answer?: string; speech?: string; chat?: string; pm?: string; pm_dropped?: string; leave?: boolean; thought?: string; error?: string; timings?: { decideMs?: number; ttfbMs?: number; synthMs?: number; speakMs?: number } }
+  | { at: string; type: 'ended'; call_ended_at: string | null };
+```
+
+Two writers, one file: the Recall connector writes what a meeting *is* (`started`, `details`, `capabilities`, `join`, `leave`, `ended`), the conversation writes what it *did* (`utterance`, `chat`, `consult`, `answer`, `gate`, `turn`) and reaches this file only through `VoiceTransport.record`, never by name. Appends are serialised per meeting by the connector, so rows cannot interleave and the order on disk is the order they settled. A field that is not known is omitted rather than written as `null`; the two nullable fields above are the exceptions, where "asked and got nothing" is itself the fact. Derived views are the reader's job — the transcript is `type == "utterance"`, the roster is `join`/`leave`, the consult trail is `consult`/`answer` paired by `id`. See [Voice](./voice.md) for why this is one file rather than the several it replaced.
 
 ### SlackThreadRef (legacy)
 
@@ -223,17 +267,21 @@ agents and external events.
 [{ISO timestamp}] [{source}] [{type}] {message}
 ```
 
-The `type` field is present for agent findings (discovery, decision, completion, blocker)
-and omitted for Slack messages and GitHub events.
+The `type` field is present for agent findings (discovery, decision, completion, blocker, artifact) and omitted everywhere else (Slack messages, GitHub events, outbound user messages, CLI messages, inter-agent messages, and voice-meeting events).
 
 ### Entry types
 
 | Source pattern | Written by | Example |
 |---|---|---|
-| `slack:#<{channelId}:{channelName}>:{threadId}` | `appendSlackMessage()` (takes an already-rendered body; the render lives in `connectors/slack/message-body.ts`) | `[2025-01-15T10:30:00Z] [slack:#<C123:general>:1234.5678] [@<U456:Jane Doe>] Fix the login bug` |
+| `<@{userId}:{name}> in slack:#<{channelId}:{channelName}>:{threadId}` | `appendSlackMessage()` (takes an already-rendered body; the render lives in `connectors/slack/message-body.ts`) | `[2025-01-15T10:30:00Z] [<@U456:Jane Doe> in slack:#<C123:general>:1234.5678 \| msg:1234.5678] Fix the login bug` |
 | `{agentName}` | `appendAgentFinding()` | `[2025-01-15T10:31:00Z] [pm-agent] [decision] Assigned backend-agent as task owner` |
-| `github:{repoKey}` | `appendGitHubEvent()` | `[2025-01-15T10:32:00Z] [github:backend] PR #42: reviewer approved` |
-| `system` | Various (edit mode, budget) | `[2025-01-15T10:33:00Z] [system] [decision] Edit mode approved by user` |
+| `@<{from}> in github:{repo}/{destination}` | `appendGitHubEvent()` | `[2025-01-15T10:32:00Z] [@<jane> in github:acme/backend/PR #42] approved` |
+| `system` | `appendAgentFinding()` called with `'system'` as the agent name (edit mode, merges, budget, triggers) | `[2025-01-15T10:33:00Z] [system] [decision] Edit mode approved by user` |
+| `{agentName}` or `{agentName} in {destination}` | `appendMessageToUser()` — an outbound message to the user; no `type` | `[2025-01-15T10:34:00Z] [pm-agent in #general] Deployed to staging.` |
+| `cli` | `appendCliMessage()` | `[2025-01-15T10:35:00Z] [cli] Any update on the login fix?` |
+| `{fromAgent}` | `appendAgentMessage()` — an inter-agent message; the recipient is folded into the message as `→ {toAgent}: ...` | `[2025-01-15T10:36:00Z] [pm-agent] → backend-agent: Please investigate the login bug` |
+| `{agentName}` | `appendArtifactShared()` — always `[artifact]` typed | `[2025-01-15T10:37:00Z] [backend-agent] [artifact] shared artifact: shared/artifacts/schema.a1b2c3d4.sql — proposed migration` |
+| `voice` | `appendMeetingEvent()` — a meeting starting or ending, or a PM consult being asked; not the room's speech, which lives in that meeting's own `meeting.jsonl` | `[2025-01-15T10:38:00Z] [voice] meeting started — recall/bot-abc123/` |
 
 ### Slack message format
 

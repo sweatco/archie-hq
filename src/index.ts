@@ -27,7 +27,9 @@ import { mountSlackApp, type SlackLifecycle } from './connectors/slack/events.js
 import { mountGitHubWebhook } from './connectors/github/events.js';
 import { mountApiRoutes } from './connectors/api/routes.js';
 import { mountOAuthRoutes } from './connectors/oauth/routes.js';
+import { mountRecallConnector, type RecallLifecycle } from './connectors/recall/index.js';
 import { getIsShuttingDown, setShuttingDown } from './system/shutdown.js';
+import { installUnhandledRejectionLogger } from './system/process-errors.js';
 import { getActiveTaskIds } from './tasks/task.js';
 import { logger } from './system/logger.js';
 import { bootstrapWorkdir, cloneRepos, OAUTH_DIR, REPOS_DIR } from './system/workdir.js';
@@ -54,6 +56,12 @@ interface AppConfig {
   slackAppToken?: string;
   port: number;
   githubWebhookSecret?: string;
+  recallApiKey?: string;
+  recallRegion?: string;
+  deepgramApiKey?: string;
+  publicUrl?: string;
+  cerebrasApiKey?: string;
+  sonioxApiKey?: string;
 }
 
 /**
@@ -76,6 +84,14 @@ function loadConfig(): AppConfig {
     slackAppToken,
     port,
     githubWebhookSecret,
+    recallApiKey: process.env.RECALL_API_KEY,
+    // Recall regions are separate deployments with separate credentials: a key issued for one region
+    // does not authenticate against another, so override this to match the key a deployment holds.
+    recallRegion: process.env.RECALL_REGION || 'eu-central-1',
+    deepgramApiKey: process.env.DEEPGRAM_API_KEY,
+    publicUrl: process.env.ARCHIE_PUBLIC_URL?.replace(/\/+$/, ''),
+    cerebrasApiKey: process.env.CEREBRAS_API_KEY,
+    sonioxApiKey: process.env.SONIOX_API_KEY,
   };
 }
 
@@ -83,6 +99,8 @@ function loadConfig(): AppConfig {
  * Main function
  */
 async function main(): Promise<void> {
+  installUnhandledRejectionLogger();
+
   logger.plain('Archie - Autonomous Responsive and Collaborative Hyper Intelligent Employee');
   logger.plain('===========================================================================');
   logger.plain('');
@@ -248,9 +266,40 @@ async function main(): Promise<void> {
       logger.plain('Slack App not configured — running in CLI-only mode');
     }
 
+    // Mount the Recall connector (if configured), which carries voice into a
+    // Zoom/Meet/Teams room. Needs a Recall key for the meeting transport, a
+    // Deepgram key for listening, a Soniox key for speaking, a Cerebras key for
+    // comprehension, and a public URL because Recall dials back into us over
+    // WebSocket and loads our page as the bot's camera. Credentials are the whole
+    // config: the vendors and their settings are fixed in `src/voice/`.
+    let recallLifecycle: RecallLifecycle | null = null;
+    if (
+      config.recallApiKey &&
+      config.deepgramApiKey &&
+      config.sonioxApiKey &&
+      config.cerebrasApiKey &&
+      config.publicUrl
+    ) {
+      recallLifecycle = mountRecallConnector(app, {
+        recallApiKey: config.recallApiKey,
+        recallRegion: config.recallRegion!,
+        publicUrl: config.publicUrl,
+        voice: {
+          deepgramApiKey: config.deepgramApiKey,
+          sonioxApiKey: config.sonioxApiKey,
+          cerebrasApiKey: config.cerebrasApiKey,
+        },
+      });
+    } else {
+      logger.plain(
+        'Voice participant not configured — disabled (needs RECALL_API_KEY, DEEPGRAM_API_KEY, SONIOX_API_KEY, CEREBRAS_API_KEY, ARCHIE_PUBLIC_URL)',
+      );
+    }
+
     // Create the HTTP server but DO NOT listen yet — recover first so a Slack
     // event arriving on startup cannot reach a task before its agent is respawned.
     const server = http.createServer(app);
+    if (recallLifecycle) recallLifecycle.attach(server);
 
     await recoverActiveTasks();
     await initReminderScheduler();
@@ -273,6 +322,13 @@ async function main(): Promise<void> {
           await slackLifecycle.stop();
         } catch (err) {
           logger.error('index', 'Error stopping Slack receiver', err);
+        }
+      }
+      if (recallLifecycle) {
+        try {
+          await recallLifecycle.stop();
+        } catch (err) {
+          logger.error('index', 'Error stopping Recall connector', err);
         }
       }
       server.close();

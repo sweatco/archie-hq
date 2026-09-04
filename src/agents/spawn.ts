@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Agent } from './agent.js';
 import type { Task } from '../tasks/task.js';
+import type { Channel } from '../types/task.js';
 import { isRepoAgent, isPmAgent } from '../types/agent.js';
 import { buildCommitAuthorEnv } from './commit-author.js';
 import { coreSkillPaths } from './core-skills.js';
@@ -51,6 +52,7 @@ import { configureGitIdentity, getArchieAttributionIdentity } from '../connector
 import { buildChannelCanvasPromptSection } from '../connectors/slack/channel-canvas.js';
 import { buildChannelPinsPromptSection } from '../connectors/slack/channel-pins.js';
 import { resolvePeopleFromTranscript } from '../connectors/slack/client.js';
+import { getRecallPmTools } from '../connectors/recall/pm-tools.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { processAgentEventForLogging, logger } from '../system/logger.js';
 import { emitEvent } from '../system/event-bus.js';
@@ -203,6 +205,25 @@ async function extractTaskUsernames(taskId: string): Promise<import('../memory/t
  * parameters, not paragraphs. Returns '' when there is nobody to name (CLI tasks,
  * Slack unavailable) — an empty roster invites the model to invent one.
  */
+/**
+ * How one of the task's channels reads in the PM's context block.
+ *
+ * Module scope and exported for the same reason `buildTaskPeopleSection` is: these strings are what the PM sees, and a closure inside `spawnAgent` cannot be asserted without standing a whole spawn up. `Meeting (live)` / `Meeting (ended)` in particular were left untested when the channel-renderer registry was deleted — the registry's own test had been their only coverage.
+ *
+ * `id` is the fallback: a channel kind with no case here renders as its raw key rather than as an invented label.
+ */
+export function renderChannel(id: string, ch: Channel): string {
+  if (ch.type === 'slack') {
+    const name = ch.channel_name || ch.channel_id;
+    return name.startsWith('DM with ') ? name : `#${name}`;
+  }
+  if (ch.type === 'cli') return 'CLI session';
+  if (ch.type === 'github') return `PR ${ch.repo}#${ch.pr_number}`;
+  // A meeting's record is kept once it ends, so a task that held several shows each one here — `ended` is what tells them apart.
+  if (ch.type === 'recall') return ch.ended ? 'Meeting (ended)' : 'Meeting (live)';
+  return id;
+}
+
 export async function buildTaskPeopleSection(taskId: string): Promise<string> {
   let people: Awaited<ReturnType<typeof resolvePeopleFromTranscript>>;
   try {
@@ -346,15 +367,6 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     systemPrompt = await generatePMPrompt(task);
 
     const channelEntries = Object.entries(metadata.channels);
-    const renderChannel = (id: string, ch: typeof metadata.channels[string]): string => {
-      if (ch.type === 'slack') {
-        const name = ch.channel_name || ch.channel_id;
-        return name.startsWith('DM with ') ? name : `#${name}`;
-      }
-      if (ch.type === 'cli') return 'CLI session';
-      if (ch.type === 'github') return `PR ${ch.repo}#${ch.pr_number}`;
-      return id;
-    };
     const contextLines = [
       `Task: ${taskId}`,
       `Status: ${metadata.status}`,
@@ -420,6 +432,11 @@ Shared folder: ${sharedPath} [READ-ONLY]
     mcpServers['comms-tools'] = createCommsMcpServer(agent, task);
     mcpServers['orchestration-tools'] = createOrchestrationMcpServer(agent, task);
     mcpServers['scheduling-tools'] = createSchedulingMcpServer(agent, task);
+    // `join_recall_meeting`/`leave_recall_meeting`, and only where the Recall connector mounted: a deployment without it hands the PM nothing here rather than tools that answer "not configured".
+    const recallPmTools = getRecallPmTools();
+    if (recallPmTools) {
+      mcpServers['recall-tools'] = recallPmTools(agent, task);
+    }
   } else if (isRepoAgent(def)) {
     // ---- Repo access attached ----
     const editAllowed = metadata.edit_allowed === true;

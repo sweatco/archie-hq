@@ -408,7 +408,7 @@ function createPostToUserTool(agent: Agent, task: Task) {
   return tool(
     'post_to_user',
     'Send a message to the user in this task. Without target, posts to the default channel — wherever this task already lives (use that almost always). ' +
-    'Use target.channel only to reach another thread ALREADY linked to this task. ' +
+    'Use target.channel only to reach another channel ALREADY linked to this task (a Slack thread, or a live meeting a wake-up told you to answer through). ' +
     'If this task lives in a channel thread, bring someone in by @mentioning them in that thread. ' +
     'To say something in a channel that is NOT part of this task (exploration/outreach), use `post_to_channel` — it deliberately does not link to this task. ' +
     'A muted channel is refused. ' +
@@ -416,7 +416,7 @@ function createPostToUserTool(agent: Agent, task: Task) {
     {
       message: z.string().describe('The message to send'),
       target: z.object({
-        channel: z.string().optional().describe('Channel key of an existing linked thread (e.g., "slack:C123:456.789")'),
+        channel: z.string().optional().describe('Channel key of an existing linked channel (e.g., "slack:C123:456.789", or the key a meeting wake-up named)'),
       }).optional().describe('Where to post. Omit to post to the default channel.'),
     },
     async (args) => {
@@ -433,14 +433,22 @@ function createPostToUserTool(agent: Agent, task: Task) {
       const muted = mutedKey ? findMutedTarget(task.metadata.channels, mutedKey) : null;
       if (muted) return ok(formatMutedTargetRefusal(muted.channel_name));
       task.touch();
-      let newChannelKey: string | null;
+      let result: string | null;
       try {
-        newChannelKey = await task.postToUser(args.message, agentName, args.target);
+        result = await task.postToUser(args.message, agentName, args.target);
       } catch (e) {
         return ok(formatSlackSendError(e));
       }
-      if (newChannelKey) {
-        return ok(`Message posted. New channel linked: ${newChannelKey} (saved in task metadata for future use)`);
+      if (result && hasTarget) {
+        // A targeted post to a channel kind handled through the delivery seam
+        // (e.g. a live meeting) — this is the registered deliverer's own note
+        // about what happened, relayed verbatim. Never a new channel key: that
+        // only ever comes back from opening the task's own thread below, which
+        // requires no target at all.
+        return ok(result);
+      }
+      if (result) {
+        return ok(`Message posted. New channel linked: ${result} (saved in task metadata for future use)`);
       }
       return ok('Message posted.');
     },

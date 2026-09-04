@@ -45,8 +45,16 @@ vi.mock('./task.js', () => ({
   activeTasks: new Map(),
 }));
 
-import { renderAttachmentsSuffix, renderEditForContext, loadMetadata, getMetadataPath } from '../persistence.js';
+import {
+  renderAttachmentsSuffix,
+  renderEditForContext,
+  loadMetadata,
+  getMetadataPath,
+  getSharedPath,
+  appendMeetingEvent,
+} from '../persistence.js';
 import { renderMessageBody } from '../../connectors/slack/message-body.js';
+import { emitEvent } from '../../system/event-bus.js';
 import type { SlackFile } from '../../types/index.js';
 import type { TaskMetadata } from '../../types/task.js';
 
@@ -144,6 +152,41 @@ describe('metadata round-trip — pending_merge_approval', () => {
 
     const loaded = await loadMetadata(taskId);
     expect(loaded!.pending_merge_approval).toBeUndefined();
+  });
+});
+
+/**
+ * `appendMeetingEvent` used to be the one appender sharing this
+ * file's shape (`appendCliMessage` is the clearest sibling) that never called
+ * `emitEvent`, which is why voice activity was invisible to a live CLI/SSE
+ * view. These pin that it now does, with the same sanitised text it writes
+ * to knowledge.log.
+ */
+describe('appendMeetingEvent — emits the same live event its siblings already do', () => {
+  it('emits a message event alongside the knowledge-log append', async () => {
+    const taskId = 'task-meeting-event-emit';
+    await mkdir(getSharedPath(taskId), { recursive: true });
+
+    await appendMeetingEvent(taskId, 'meeting started — joining https://zoom.us/j/1');
+
+    expect(emitEvent).toHaveBeenCalledWith('message', taskId, {
+      from: 'voice',
+      to: 'pm-agent',
+      message: 'meeting started — joining https://zoom.us/j/1',
+    });
+  });
+
+  it('emits the sanitised message, matching what the knowledge log actually received', async () => {
+    const taskId = 'task-meeting-event-sanitise';
+    await mkdir(getSharedPath(taskId), { recursive: true });
+
+    await appendMeetingEvent(taskId, 'line one\nline two');
+
+    expect(emitEvent).toHaveBeenCalledWith('message', taskId, {
+      from: 'voice',
+      to: 'pm-agent',
+      message: 'line one line two',
+    });
   });
 });
 
