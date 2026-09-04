@@ -110,13 +110,15 @@ describe('the harness renders every standing block production does', () => {
 
   it('pins a value for every field of SpeakingContext, so none can go unmeasured', () => {
     // Production's own declaration, read out of its source; see speakingContextFields above for why it is read and not copied.
-    expect(speakingContextFields()).toEqual(['capabilities', 'participants', 'written']);
+    expect(speakingContextFields()).toEqual(['capabilities', 'participants', 'voiceFailed', 'written']);
     expect(Object.keys(FIXED_CONTEXT).sort()).toEqual(speakingContextFields());
 
     const rendered = userMsg(t, undefined, FIXED_CONTEXT as SpeakingContext);
     expect(rendered).toContain('<participants>');
     expect(rendered).toContain('<written>');
     expect(rendered).toContain('<capabilities>');
+    // `voiceFailed` is pinned false, so its block is deliberately absent: it says Archie cannot be heard, which is a case of its own rather than the shape every case is measured under.
+    expect(rendered).not.toContain('<voice>');
     expect(rendered).toContain('Dana Ruiz (has left)');
     expect(rendered).toContain('(name not reported)');
     expect(rendered).toContain('Ann Petrova (host)');

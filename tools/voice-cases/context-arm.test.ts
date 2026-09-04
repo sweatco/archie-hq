@@ -99,7 +99,9 @@ describe('the full arm renders every standing block production sends', () => {
   it('pins a value for every field of SpeakingContext', () => {
     // A block production fills that this arm omits would render in every live room and in no measurement of one. The field list is read out of production's source in user-message.test.ts.
     expect(armContext('full')).toBe(FIXED_CONTEXT);
-    expect(Object.keys(FIXED_CONTEXT).sort()).toEqual(['capabilities', 'participants', 'written']);
+    expect(Object.keys(FIXED_CONTEXT).sort()).toEqual(['capabilities', 'participants', 'voiceFailed', 'written']);
+    // Pinned false on purpose — see promptio.mjs. It is the one field whose live value is a failure state, so the arm pins the value an ordinary room sends and renders no block for it.
+    expect(FIXED_CONTEXT.voiceFailed).toBe(false);
   });
 
   it('adds the measured bulk, not a toy context', () => {

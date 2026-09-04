@@ -161,6 +161,8 @@ export const FIXED_CONTEXT = {
     '  - Submit new product ideas and feature suggestions to Notion',
     '  - Reinstate lost walking streaks for users via the admin panel',
   ].join('\n'),
+  // Pinned false, and pinned rather than omitted: the field must have a value here or a block production fills would go unmeasured, but the value that belongs in this arm is the one an ordinary room sends. True would put "your voice is not working" in front of every case in the suite and change what every one of them measures — a room where Archie cannot be heard is its own case, not the standing shape.
+  voiceFailed: false,
 };
 
 // The real production assembly, imported rather than reproduced — user-message.test.ts pins this delegation byte-for-byte.
