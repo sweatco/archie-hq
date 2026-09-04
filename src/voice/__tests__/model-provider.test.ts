@@ -151,8 +151,8 @@ describe('the request Cerebras is sent', () => {
     await pending;
 
     expect(seen[1].body.reasoning_effort).toBe('medium');
-    // Reasoning tokens are spent out of this cap, so it has to clear a whole reasoning pass and the answer behind it.
-    expect(seen[1].body.max_completion_tokens).toBe(2000);
+    // No cap on the speaking call: reasoning is billed as completion tokens, and a cap it could reach would truncate the answer — the request timeout is the only bound.
+    expect('max_completion_tokens' in seen[1].body).toBe(false);
   });
 
   it('keeps both model calls on the one endpoint', async () => {

@@ -14,10 +14,8 @@ const MAX_ERROR_BODY = 500;
 const ADDRESSING_TIMEOUT_MS = 5_000;
 const ADDRESSING_MAX_TOKENS = 64;
 
-/** Speaking has no deadline of its own — if the room never goes quiet, Archie never speaks; this only stops a hung connection holding the owe flag open. */
+/** Speaking has no deadline of its own — if the room never goes quiet, Archie never speaks. This is the call's only bound: it sends no token cap, because reasoning is billed as completion tokens and a cap the reasoning could reach truncates the spoken answer; a runaway generation is cut here instead. */
 const SPEAKING_TIMEOUT_MS = 15_000;
-/** Headroom, not a target: native reasoning tokens are billed and capped as completion tokens, so a cap the reasoning alone can reach truncates the spoken answer. */
-const SPEAKING_MAX_TOKENS = 2000;
 
 /** Runs once at join with nobody waiting, so this is generous — it only stops a hung connection leaving the promise pending. */
 const CAPABILITY_TIMEOUT_MS = 20_000;
@@ -161,7 +159,6 @@ export async function decideResponse(
       label: 'speaking',
       system: prompt,
       user: buildSpeakingUserMessage(transcript, opts.consults, opts.context),
-      maxTokens: SPEAKING_MAX_TOKENS,
       timeoutMs: SPEAKING_TIMEOUT_MS,
       reasoning: true,
     },
@@ -566,7 +563,8 @@ interface ModelCall {
   label: string;
   system: string;
   user: string;
-  maxTokens: number;
+  /** Absent on the speaking call — see SPEAKING_TIMEOUT_MS. */
+  maxTokens?: number;
   timeoutMs: number;
   /** Ask for the model's native reasoning, which comes back on its own channel. Only the speaking call does; the others send no such field at all. */
   reasoning?: boolean;
@@ -581,8 +579,8 @@ const VENDOR = 'cerebras';
 function modelRequest(args: ModelCall, stream: boolean): RequestInit {
   const body: Record<string, unknown> = {
     model: MODEL,
-    // Both names are accepted and behave identically (verified); this is the current one, `max_tokens` the deprecated alias.
-    max_completion_tokens: args.maxTokens,
+    // `max_tokens` is the deprecated alias of `max_completion_tokens`.
+    ...(args.maxTokens === undefined ? {} : { max_completion_tokens: args.maxTokens }),
     // Both calls judge a fixed transcript rather than write creatively — a reproducible answer is easier to debug from the meeting record.
     temperature: 0,
     stream,
