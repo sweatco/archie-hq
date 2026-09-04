@@ -27,7 +27,7 @@ import { mountSlackApp, type SlackLifecycle } from './connectors/slack/events.js
 import { mountGitHubWebhook } from './connectors/github/events.js';
 import { mountApiRoutes } from './connectors/api/routes.js';
 import { mountOAuthRoutes } from './connectors/oauth/routes.js';
-import { mountRecallConnector, type RecallLifecycle } from './voice/connector.js';
+import { mountRecallConnector, type RecallLifecycle } from './connectors/recall/index.js';
 import { getIsShuttingDown, setShuttingDown } from './system/shutdown.js';
 import { installUnhandledRejectionLogger } from './system/process-errors.js';
 import { getActiveTaskIds } from './tasks/task.js';
@@ -283,10 +283,12 @@ async function main(): Promise<void> {
       recallLifecycle = mountRecallConnector(app, {
         recallApiKey: config.recallApiKey,
         recallRegion: config.recallRegion!,
-        deepgramApiKey: config.deepgramApiKey,
-        sonioxApiKey: config.sonioxApiKey,
-        cerebrasApiKey: config.cerebrasApiKey,
         publicUrl: config.publicUrl,
+        voice: {
+          deepgramApiKey: config.deepgramApiKey,
+          sonioxApiKey: config.sonioxApiKey,
+          cerebrasApiKey: config.cerebrasApiKey,
+        },
       });
     } else {
       logger.plain(

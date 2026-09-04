@@ -10,12 +10,9 @@ import { decideResponse, wasAddressed } from '../comprehension.js';
 import type { VoiceConfig } from '../types.js';
 
 const onCerebras: VoiceConfig = {
-  recallApiKey: 'recall-key',
-  recallRegion: 'eu-central-1',
   deepgramApiKey: 'd',
   sonioxApiKey: 'sx-test-key-long-enough',
   cerebrasApiKey: 'csk-test',
-  publicUrl: 'https://archie.example',
 };
 
 const encoder = new TextEncoder();

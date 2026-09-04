@@ -3,14 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, existsSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { logger } from '../../system/logger.js';
-import type { AudioSink, MeetingHost, MeetingRow, Participant, VoiceConfig, VoiceTransport } from '../types.js';
+import { logger } from '../../../system/logger.js';
+import type { AudioSink, MeetingHost, MeetingRow, Participant, VoiceConfig, VoiceTransport } from '../../../voice/types.js';
+import type { RecallConfig } from '../recall.js';
 
 // An unbound meeting's rows go to `WORKDIR/voice-logs/` on real disk; point that at a scratch dir before the connector's module graph reads it.
 const WORK = mkdtempSync(join(tmpdir(), 'voice-connector-'));
 process.env.ARCHIE_WORKDIR = WORK;
-import { getChannelDeliverer, getChannelRenderer } from '../../tasks/channel-delivery.js';
-import { getRegisteredConnectorPmTools } from '../../agents/connector-tools.js';
+import { getChannelDeliverer, getChannelRenderer } from '../../../tasks/channel-delivery.js';
+import { getRegisteredConnectorPmTools } from '../../../agents/connector-tools.js';
 import { deliverToRecallChannel, renderRecallChannel } from '../channel-delivery.js';
 import type { MeetingOps } from '../pm-tools.js';
 
@@ -104,8 +105,8 @@ const spawned: Spawned[] = [];
 const teardownOrder: string[] = [];
 
 // isArchie is left real (shared name-matching logic with the medium) since roster/teardown tests exist to exercise it; faking it would test a stand-in, not what ships.
-vi.mock('../meeting.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../meeting.js')>();
+vi.mock('../../../voice/meeting.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../voice/meeting.js')>();
   return {
     ...actual,
     createMeeting: (cfg: VoiceConfig, transport: VoiceTransport, host?: MeetingHost) => {
@@ -171,7 +172,7 @@ vi.mock('../pm-tools.js', () => ({
   },
 }));
 
-vi.mock('../task-binding.js', () => ({
+vi.mock('../../../voice/task-binding.js', () => ({
   createTaskHost: (
     taskId: string,
     sessionId: string,
@@ -225,7 +226,7 @@ vi.mock('../task-binding.js', () => ({
 }));
 
 // The one writer into a task's meeting record. Async like the real one, so the connector's own serialising chain is exercised rather than bypassed.
-vi.mock('../../tasks/persistence.js', () => ({
+vi.mock('../../../tasks/persistence.js', () => ({
   appendMeetingRow: async (taskId: string, sessionId: string, row: MeetingRow) => {
     recordedRows.push({ taskId, sessionId, row });
   },
@@ -248,7 +249,7 @@ const capabilityCalls: Array<{ taskId: string }> = [];
 // Left resolved by default; a test swaps in a pending promise to prove the join doesn't wait on it.
 let capabilityResult: Promise<string> = Promise.resolve('');
 
-vi.mock('../capabilities.js', () => ({
+vi.mock('../../../voice/capabilities.js', () => ({
   buildCapabilitySummary: (_cfg: VoiceConfig, taskId: string) => {
     capabilityCalls.push({ taskId });
     return capabilityResult;
@@ -411,20 +412,22 @@ function request(router: Handler, method: string, url: string, body?: unknown): 
 
 const RECALL_KEY = 'recall-secret-key-44444';
 
-function config(over: Partial<VoiceConfig> = {}): VoiceConfig {
+function config(over: Partial<Omit<RecallConfig, 'voice'>> = {}): RecallConfig {
   return {
     recallApiKey: RECALL_KEY,
     recallRegion: 'eu-central-1',
-    deepgramApiKey: 'deepgram-secret-key-0000',
-    sonioxApiKey: 'soniox-secret-key-33333',
-    cerebrasApiKey: 'cerebras-secret-key-2222',
     publicUrl: 'https://archie.example',
     ...over,
+    voice: {
+      deepgramApiKey: 'deepgram-secret-key-0000',
+      sonioxApiKey: 'soniox-secret-key-33333',
+      cerebrasApiKey: 'cerebras-secret-key-2222',
+    },
   };
 }
 
-async function mount(over: Partial<VoiceConfig> = {}) {
-  const { mountRecallConnector } = await import('../connector.js');
+async function mount(over: Partial<Omit<RecallConfig, 'voice'>> = {}) {
+  const { mountRecallConnector } = await import('../index.js');
   const { app, router } = fakeApp();
   const lifecycle = mountRecallConnector(app as never, config(over));
   const [audioWss, pageWss] = wsHarness.servers;
@@ -471,7 +474,7 @@ function attach(lifecycle: { attach: (server: never) => void }) {
 }
 
 // The one socket carrying both audio_separate_raw.data and the two participant events — module scope since both audio-frame and participant-event tests need it.
-async function withAudioSocket(over: Partial<VoiceConfig> = {}) {
+async function withAudioSocket(over: Partial<Omit<RecallConfig, 'voice'>> = {}) {
   const mounted = await mount(over);
   const onUpgrade = attach(mounted.lifecycle);
   onUpgrade({ url: '/api/voice/audio' }, { destroy: vi.fn() }, Buffer.alloc(0));
@@ -616,19 +619,6 @@ describe('recall mount — the transport it assembles', () => {
       'https://eu-central-1.recall.ai/api/v1/bot/bot-one/send_chat_message/',
       'https://eu-central-1.recall.ai/api/v1/bot/bot-two/send_chat_message/',
     ]);
-  });
-
-  it('hands the medium every credential the process holds, the Recall key included', async () => {
-    // The medium's log scrubbers redact each of these; the Recall key is one they'd have no other way to learn.
-    botIds.push('bot-secrets');
-    const { router } = await mount();
-
-    const { spawned: made } = await startMeeting(router);
-
-    expect(made.cfg.recallApiKey).toBe(RECALL_KEY);
-    expect(made.cfg.deepgramApiKey).toBe('deepgram-secret-key-0000');
-    expect(made.cfg.sonioxApiKey).toBe('soniox-secret-key-33333');
-    expect(made.cfg.cerebrasApiKey).toBe('cerebras-secret-key-2222');
   });
 
   it('derives both dial-back URLs from publicUrl, switching http for ws', async () => {

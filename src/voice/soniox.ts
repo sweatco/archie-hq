@@ -56,7 +56,7 @@ function guarded(label: string, fn: () => void): void {
 /** Soniox's key travels in the message body (not a header, unlike Deepgram) — an error frame echoing the request could leak it; scrub before truncating, or a key splits mid-cut. Every key on the config, not only Soniox's: an echoed request isn't choosy about what it echoes. */
 function safeForLog(text: string, cfg: VoiceConfig, max = 300): string {
   let safe = text;
-  for (const secret of [cfg.sonioxApiKey, cfg.deepgramApiKey, cfg.cerebrasApiKey, cfg.recallApiKey]) {
+  for (const secret of [cfg.sonioxApiKey, cfg.deepgramApiKey, cfg.cerebrasApiKey]) {
     // Length floor: splitting on '' would mark every character.
     if (secret.length >= 8) {
       safe = safe.split(secret).join('[redacted]');

@@ -122,12 +122,9 @@ vi.mock('../comprehension.js', () => {
 });
 
 const cfg: VoiceConfig = {
-  recallApiKey: 'recall-key',
-  recallRegion: 'eu-central-1',
   deepgramApiKey: 'd',
   sonioxApiKey: 'soniox-key',
   cerebrasApiKey: 'cerebras-key',
-  publicUrl: 'https://archie.example',
 };
 
 // Typed as AudioSink, not cast: the seam is checked against the real contract, nothing more of it implemented than that.

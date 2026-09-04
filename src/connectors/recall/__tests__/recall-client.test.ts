@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { logger } from '../../system/logger.js';
-import { createRecallClient } from '../recall.js';
-import type { VoiceConfig } from '../types.js';
+import { logger } from '../../../system/logger.js';
+import { createRecallClient, type RecallConfig } from '../recall.js';
+import type { VoiceConfig } from '../../../voice/types.js';
 
 interface Call {
   url: string;
@@ -42,15 +42,21 @@ function fakeFetch(url: string | URL, init?: RequestInit): Promise<Response> {
 }
 
 // Clears the scrubber's 8-char floor; mutually non-overlapping so no leak is mistaken for another's.
-function config(over: Partial<VoiceConfig> = {}): VoiceConfig {
+function config(
+  over: Partial<Omit<RecallConfig, 'voice'>> & { voice?: Partial<VoiceConfig> } = {},
+): RecallConfig {
+  const { voice, ...recall } = over;
   return {
     recallApiKey: 'recall-secret-key-44444',
     recallRegion: 'eu-central-1',
-    deepgramApiKey: 'deepgram-secret-key-0000',
-    sonioxApiKey: 'soniox-secret-key-33333',
-    cerebrasApiKey: 'cerebras-secret-key-2222',
     publicUrl: 'https://archie.example',
-    ...over,
+    ...recall,
+    voice: {
+      deepgramApiKey: 'deepgram-secret-key-0000',
+      sonioxApiKey: 'soniox-secret-key-33333',
+      cerebrasApiKey: 'cerebras-secret-key-2222',
+      ...voice,
+    },
   };
 }
 
@@ -267,7 +273,7 @@ describe('recall client — credential redaction', () => {
     const short = 'shared-prefix-a';
     replies.push({ status: 400, body: JSON.stringify({ echo: long }) });
     const client = createRecallClient(
-      config({ recallApiKey: short, deepgramApiKey: long }),
+      config({ recallApiKey: short, voice: { deepgramApiKey: long } }),
     );
 
     const failure = await client.createBot(joinOpts).catch((err: unknown) => String(err));
@@ -279,7 +285,7 @@ describe('recall client — credential redaction', () => {
     // Splitting on '' inserts the marker between every character, destroying the account of what went wrong.
     replies.push({ status: 400, body: '{"detail":"Enter a valid URL."}' });
     const client = createRecallClient(
-      config({ recallApiKey: '', deepgramApiKey: 'abc', sonioxApiKey: '', cerebrasApiKey: 'xy' }),
+      config({ recallApiKey: '', voice: { deepgramApiKey: 'abc', sonioxApiKey: '', cerebrasApiKey: 'xy' } }),
     );
 
     const failure = await client.createBot(joinOpts).catch((err: unknown) => String(err));

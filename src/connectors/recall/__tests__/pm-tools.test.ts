@@ -1,12 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 
-vi.mock('../../system/logger.js', () => ({
+vi.mock('../../../system/logger.js', () => ({
   logger: { agentAction: vi.fn(), warn: vi.fn(), error: vi.fn(), system: vi.fn(), debug: vi.fn() },
 }));
 
 import { createRecallPmToolsServer, type MeetingOps } from '../pm-tools.js';
-import type { Agent } from '../../agents/agent.js';
-import type { Task } from '../../tasks/task.js';
+import type { Agent } from '../../../agents/agent.js';
+import type { Task } from '../../../tasks/task.js';
 
 function makeAgent(): Agent {
   return {

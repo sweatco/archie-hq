@@ -3,18 +3,18 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 
 const { liveMeetings } = vi.hoisted(() => ({ liveMeetings: new Map<string, unknown>() }));
 
-vi.mock('../task-binding.js', () => ({
+vi.mock('../../../voice/task-binding.js', () => ({
   getLiveMeeting: (taskId: string) => liveMeetings.get(taskId),
 }));
 
 // The one writer into a meeting's record; nothing on this deliverer's path may reach it.
 const { appendMeetingRow } = vi.hoisted(() => ({ appendMeetingRow: vi.fn().mockResolvedValue(undefined) }));
-vi.mock('../../tasks/persistence.js', () => ({ appendMeetingRow }));
+vi.mock('../../../tasks/persistence.js', () => ({ appendMeetingRow }));
 
 import { deliverToRecallChannel, renderRecallChannel } from '../channel-delivery.js';
-import type { Meeting } from '../meeting.js';
-import type { RecallChannel } from '../../types/task.js';
-import type { Task } from '../../tasks/task.js';
+import type { Meeting } from '../../../voice/meeting.js';
+import type { RecallChannel } from '../../../types/task.js';
+import type { Task } from '../../../tasks/task.js';
 
 function fakeMeeting(sessionId: string, overrides: Partial<Meeting> = {}): Meeting {
   return {

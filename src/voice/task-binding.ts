@@ -133,7 +133,7 @@ export async function endRecallChannel(taskId: string, sessionId: string): Promi
 }
 
 /**
- * `connector.ts` calls this from `endMeeting`, the funnel every teardown path (status poll, DELETE route, shutdown) runs through. `sessionId` matters too: the record lives under that meeting's own folder, not one file per task.
+ * `src/connectors/recall/index.ts` calls this from `endMeeting`, the funnel every teardown path (status poll, DELETE route, shutdown) runs through. `sessionId` matters too: the record lives under that meeting's own folder, not one file per task.
  *
  * Not a `MeetingHost` method — those run inside the audio loop; this fires once, afterwards, from teardown, the one place that knows the meeting is gone.
  *

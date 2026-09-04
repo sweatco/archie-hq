@@ -113,12 +113,9 @@ import { createSonioxSpeechSession } from '../soniox.js';
 import type { SpeechStream, VoiceConfig } from '../types.js';
 
 const onSoniox: VoiceConfig = {
-  recallApiKey: 'recall-key',
-  recallRegion: 'eu-central-1',
   deepgramApiKey: 'dg-key',
   sonioxApiKey: 'sx-test-key-long-enough',
   cerebrasApiKey: 'cerebras-key',
-  publicUrl: 'https://archie.example',
 };
 
 function latest(): DrivenSocket {

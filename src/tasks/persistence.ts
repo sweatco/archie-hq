@@ -168,7 +168,7 @@ export function getArtifactsPath(taskId: string): string {
  * speech landing in one shared file behind an artificial boundary line.
  */
 export function getMeetingPath(taskId: string, sessionId: string): string {
-  // `sessionId` reaches us from the Recall API, so it must not escape the meeting folder. The substitution is the one `src/voice/connector.ts` applies to the same value for an unbound meeting's filename, so a dotted id maps identically in both places; a real bot id is a UUID and passes through unchanged. `taskId` needs no guard — `isSafeTaskId` already enforces a single path segment.
+  // `sessionId` reaches us from the Recall API, so it must not escape the meeting folder. The substitution is the one `src/connectors/recall/index.ts` applies to the same value for an unbound meeting's filename, so a dotted id maps identically in both places; a real bot id is a UUID and passes through unchanged. `taskId` needs no guard — `isSafeTaskId` already enforces a single path segment.
   // The all-dots case needs its own arm: `.` survives the character class, and `join` then RESOLVES a `..` segment rather than treating it as a name, collapsing the `recall` directory instead of nesting under it.
   const segment = sessionId.replace(/[^a-zA-Z0-9._-]/g, '_');
   return join(getSharedPath(taskId), 'recall', /^\.+$/.test(segment) ? '_' : segment);
@@ -548,7 +548,7 @@ function sanitizeTranscriptField(value: string): string {
  *
  * Deliberately plain: this can reject, and the caller decides what a failure
  * means. Appends are serialised by the caller — the connector keeps one chain
- * per meeting (`src/voice/connector.ts`), so two rows cannot interleave.
+ * per meeting (`src/connectors/recall/index.ts`), so two rows cannot interleave.
  */
 export async function appendMeetingRow(
   taskId: string,

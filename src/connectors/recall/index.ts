@@ -20,14 +20,14 @@ import { WebSocketServer, type WebSocket } from 'ws';
 const require = createRequire(import.meta.url);
 const express = require('express');
 
-import { logger } from '../system/logger.js';
-import { WORKDIR } from '../system/workdir.js';
-import { createRecallClient } from './recall.js';
+import { logger } from '../../system/logger.js';
+import { WORKDIR } from '../../system/workdir.js';
+import { createRecallClient, type RecallConfig } from './recall.js';
 import { createAudioOutHub, renderPage } from './audio-out.js';
-import { createMeeting, isArchie, type Meeting } from './meeting.js';
-import { buildCapabilitySummary } from './capabilities.js';
-import { BOT_NAME } from './types.js';
-import type { MeetingHost, MeetingRow, MeetingRowParticipant, Participant, RosterEntry, VoiceConfig, VoiceTransport } from './types.js';
+import { createMeeting, isArchie, type Meeting } from '../../voice/meeting.js';
+import { buildCapabilitySummary } from '../../voice/capabilities.js';
+import { BOT_NAME } from '../../voice/types.js';
+import type { MeetingHost, MeetingRow, MeetingRowParticipant, Participant, RosterEntry, VoiceTransport } from '../../voice/types.js';
 import {
   createTaskHost,
   registerLiveMeeting,
@@ -38,11 +38,11 @@ import {
   notifyMeetingEnded,
   linkRecallChannel,
   endRecallChannel,
-} from './task-binding.js';
-import { appendMeetingRow } from '../tasks/persistence.js';
-import { registerChannelDeliverer } from '../tasks/channel-delivery.js';
+} from '../../voice/task-binding.js';
+import { appendMeetingRow } from '../../tasks/persistence.js';
+import { registerChannelDeliverer } from '../../tasks/channel-delivery.js';
 import { deliverToRecallChannel, renderRecallChannel } from './channel-delivery.js';
-import { registerConnectorPmTools } from '../agents/connector-tools.js';
+import { registerConnectorPmTools } from '../../agents/connector-tools.js';
 import { createRecallPmToolsServer, type MeetingOps } from './pm-tools.js';
 
 export interface RecallLifecycle {
@@ -154,7 +154,7 @@ const TERMINAL_BOT_STATUSES = new Set(['call_ended', 'done', 'fatal']);
  */
 const STATUS_POLL_MS = 30_000;
 
-export function mountRecallConnector(app: Application, cfg: VoiceConfig): RecallLifecycle {
+export function mountRecallConnector(app: Application, cfg: RecallConfig): RecallLifecycle {
   const recall = createRecallClient(cfg);
   const audioOut = createAudioOutHub();
   const live = new Map<string, LiveMeeting>();
@@ -203,7 +203,7 @@ export function mountRecallConnector(app: Application, cfg: VoiceConfig): Recall
       };
       // The record's opening line, carrying the URL nothing else in it repeats.
       record({ at: new Date().toISOString(), type: 'started', url: meetingUrl, bot_id: botId });
-      const meeting = createMeeting(cfg, transport, host);
+      const meeting = createMeeting(cfg.voice, transport, host);
       const binding = taskId !== undefined && host !== undefined ? { taskId, host } : undefined;
       live.set(botId, {
         botId,
@@ -222,7 +222,7 @@ export function mountRecallConnector(app: Application, cfg: VoiceConfig): Recall
         // Points at the record, not the URL — knowledge.log is an index the PM reads every turn.
         binding.host.noteEvent(`meeting started — recall/${botId}/`);
         // Deliberately unawaited — awaiting would hold this live meeting behind the model's latency.
-        void buildCapabilitySummary(cfg, binding.taskId).then((summary) => {
+        void buildCapabilitySummary(cfg.voice, binding.taskId).then((summary) => {
           meeting.setCapabilities(summary);
           // Trimmed to match byte-for-byte what `setCapabilities` sends the model, so a whitespace-only summary records as the empty block the meeting actually ran with.
           record({ at: new Date().toISOString(), type: 'capabilities', text: summary.trim() });

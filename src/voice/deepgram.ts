@@ -35,7 +35,7 @@ function guarded(label: string, fn: () => void): void {
 /** Token's in a header; an upstream echoing headers into an error body could leak it — scrub before truncating, or a key splits mid-cut. Every key on the config, not only Deepgram's: an echoed request isn't choosy about headers. */
 function safeForLog(text: string, cfg: VoiceConfig, max = 500): string {
   let safe = text;
-  for (const secret of [cfg.deepgramApiKey, cfg.sonioxApiKey, cfg.cerebrasApiKey, cfg.recallApiKey]) {
+  for (const secret of [cfg.deepgramApiKey, cfg.sonioxApiKey, cfg.cerebrasApiKey]) {
     // Length floor: splitting on '' would mark every character.
     if (secret.length >= 8) {
       safe = safe.split(secret).join('[redacted]');

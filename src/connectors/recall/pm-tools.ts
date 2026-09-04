@@ -5,11 +5,11 @@
  */
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import type { AgentName } from '../types/task.js';
-import type { Task } from '../tasks/task.js';
-import type { Agent } from '../agents/agent.js';
-import { logger } from '../system/logger.js';
-import type { StartMeetingResult, StopMeetingResult } from './connector.js';
+import type { AgentName } from '../../types/task.js';
+import type { Task } from '../../tasks/task.js';
+import type { Agent } from '../../agents/agent.js';
+import { logger } from '../../system/logger.js';
+import type { StartMeetingResult, StopMeetingResult } from './index.js';
 
 /** What the two tools need from the connector, closed over its own `startMeeting`/`endMeeting` at mount. */
 export interface MeetingOps {

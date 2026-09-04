@@ -28,12 +28,9 @@ import { openTurnStream } from '../deepgram.js';
 import type { VoiceConfig } from '../types.js';
 
 const base: VoiceConfig = {
-  recallApiKey: 'recall-key',
-  recallRegion: 'eu-central-1',
   deepgramApiKey: 'dg-key',
   sonioxApiKey: 'soniox-key',
   cerebrasApiKey: 'cerebras-key',
-  publicUrl: 'https://archie.example',
 };
 
 function dial(cfg: VoiceConfig): { flux: string } {

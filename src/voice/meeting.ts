@@ -173,7 +173,7 @@ interface Consult {
 }
 
 export interface Meeting {
-  // Recall's bot id. A channel deliverer checks it against a `RecallChannel`'s `session_id` before delivering (voice/channel-delivery.ts) -- that check, not this field alone, stops a stale channel reaching a different meeting live on the same task.
+  // Recall's bot id. A channel deliverer checks it against a `RecallChannel`'s `session_id` before delivering (connectors/recall/channel-delivery.ts) -- that check, not this field alone, stops a stale channel reaching a different meeting live on the same task.
   readonly sessionId: string;
   onAudio(p: Participant, pcm: Buffer): void;
   // Inbound only: Recall sends no audio for a muted participant, so `onAudio`-only state can't see the whole room. Whole roster each call, not a delta, so a transport missing one event self-corrects on the next.
@@ -918,7 +918,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     },
 
     deliverConsultAnswer(text: string, from: 'pm-agent' | 'system' = 'pm-agent'): { ok: true; id: string } | { ok: false } {
-      // `stopped` matters here: teardown (`endMeeting`, voice/connector.ts) awaits this meeting's streams before unregistering it; a reply landing in that window must not raise the debt again.
+      // `stopped` matters here: teardown (`endMeeting`, connectors/recall/index.ts) awaits this meeting's streams before unregistering it; a reply landing in that window must not raise the debt again.
       const consult = stopped ? undefined : outstandingConsult();
       if (consult === undefined) {
         return { ok: false };

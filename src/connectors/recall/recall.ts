@@ -3,8 +3,8 @@
  * No audio here — inbound via the realtime WebSocket, outbound via the output-media page.
  */
 
-import { logger } from '../system/logger.js';
-import type { VoiceConfig } from './types.js';
+import { logger } from '../../system/logger.js';
+import type { VoiceConfig } from '../../voice/types.js';
 
 const MAX_ERROR_BODY = 500;
 
@@ -13,6 +13,17 @@ const REQUEST_TIMEOUT_MS = 15_000;
 
 // How long Recall lets the room stand empty before pulling the bot out. Not the 2s default: Zoom issues a fresh participant id on rejoin, so a reconnect reads as an empty room.
 const EVERYONE_LEFT_TIMEOUT_S = 60;
+
+/**
+ * What this connector holds: its own Recall credentials, plus the medium's config it hands straight to `createMeeting` and `buildCapabilitySummary`.
+ */
+export interface RecallConfig {
+  recallApiKey: string;
+  recallRegion: string;
+  /** e.g. https://x.ngrok-free.app, no trailing slash — Recall dials back in for both audio directions. */
+  publicUrl: string;
+  voice: VoiceConfig;
+}
 
 /** The status poll's picks from `GET /api/v1/bot/{id}/`'s larger bot object. */
 export interface RecallBotDetails {
@@ -39,14 +50,14 @@ interface RecallResponse {
   body: string;
 }
 
-export function createRecallClient(cfg: VoiceConfig): RecallClient {
+export function createRecallClient(cfg: RecallConfig): RecallClient {
   const baseUrl = `https://${cfg.recallRegion}.recall.ai/api/v1`;
 
   /**
-   * Every credential in the process, not just Recall's.
+   * Every credential on this config, not just Recall's.
    * Longest first: overlapping pairs still fully redact. Short values excluded — splitting on `''` marks every character.
    */
-  const secrets = [cfg.recallApiKey, cfg.deepgramApiKey, cfg.cerebrasApiKey, cfg.sonioxApiKey]
+  const secrets = [cfg.recallApiKey, cfg.voice.deepgramApiKey, cfg.voice.cerebrasApiKey, cfg.voice.sonioxApiKey]
     .filter((secret) => secret.length >= 8)
     .sort((a, b) => b.length - a.length);
 

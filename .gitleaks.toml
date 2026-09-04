@@ -33,9 +33,9 @@ regexes = [
   '''AKIAIOSFODNN7EXAMPLE''',
   '''sk-abcdefghijklmnopqrstuv''',
   '''sk-abc123def456ghi789jkl012''',
-  # Voice config fixtures (src/voice/__tests__/recall-client.test.ts and
-  # connector-mount.test.ts). Deliberately secret-shaped: those tests assert that
-  # every credential the process holds is redacted before it reaches a log, so a
+  # Voice config fixtures (src/connectors/recall/__tests__/recall-client.test.ts
+  # and connector-mount.test.ts). Deliberately secret-shaped: those tests assert that
+  # every credential the config holds is redacted before it reaches a log, so a
   # fixture that did not look like a key would not exercise the redaction. Listed
   # by value rather than by path so a genuine credential pasted into either file
   # is still caught. Only the anthropic one currently trips the generic-api-key

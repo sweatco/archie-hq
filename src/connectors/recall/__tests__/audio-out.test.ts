@@ -2,9 +2,9 @@
 // The output page itself must NEVER be rendered: it opens a real AudioContext connected to `destination` with no user gesture, which is how verifying it once interrupted a live Zoom call. renderPage is only ever asserted on as a string.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WebSocket } from 'ws';
-import { logger } from '../../system/logger.js';
+import { logger } from '../../../system/logger.js';
 import { createAudioOutHub, renderPage } from '../audio-out.js';
-import { BOT_NAME } from '../types.js';
+import { BOT_NAME } from '../../../voice/types.js';
 
 /** PCM16 mono 24kHz: 48 bytes per millisecond. */
 const BYTES_PER_MS = 48;

@@ -8,20 +8,16 @@
 export const BOT_NAME = 'Archie';
 
 /**
- * Every credential the voice stack holds, resolved from env at startup in `index.ts`. All required — the connector does not mount without them.
+ * Every credential the medium holds, resolved from env at startup in `index.ts`. All required — a connector does not mount without them. A channel's own credentials are its config's business (`RecallConfig` in `src/connectors/recall/recall.ts`), never this one's.
  *
- * Credentials only: the vendors and their settings are fixed in `deepgram.ts`, `soniox.ts` and `comprehension.ts`. One flat object, so each module's log scrubber can redact every key the process holds rather than only its own — an echoed request isn't choosy about headers.
+ * Credentials only: the vendors and their settings are fixed in `deepgram.ts`, `soniox.ts` and `comprehension.ts`. Each module's log scrubber redacts every key here — an echoed request isn't choosy about headers.
  */
 export interface VoiceConfig {
-  recallApiKey: string;
-  recallRegion: string;
   deepgramApiKey: string;
   /** Speaks every answer; see soniox.ts. */
   sonioxApiKey: string;
   /** Serves both comprehension calls; see comprehension.ts. */
   cerebrasApiKey: string;
-  /** e.g. https://x.ngrok-free.app, no trailing slash — Recall dials back in for both audio directions. */
-  publicUrl: string;
 }
 
 /** Who an inbound audio packet came from. Only `id` and `name` are read; `email`/`isHost` ride along unused. A transport that can't separate speakers passes the same `Participant` every time. */
@@ -169,7 +165,7 @@ export interface SpeechSession {
   close(): void;
 }
 
-/** Sink for audio going into the meeting, supplied by the transport; implemented in `audio-out.ts`. */
+/** Sink for audio going into the meeting, supplied by the transport; implemented in `src/connectors/recall/audio-out.ts`. */
 export interface AudioSink {
   /** Queue PCM16 mono 24kHz for playback in the meeting. Ignored while disabled. */
   play(pcm: Buffer): void;
@@ -186,7 +182,7 @@ export interface AudioSink {
 }
 
 /**
- * What a transport supplies: a name, somewhere for speech, and somewhere for text. `meeting.ts` never learns how it's connected — Recall's implementation is `connector.ts`. ASR and synthesis are a separate seam (`deepgram.ts`, `soniox.ts`).
+ * What a transport supplies: a name, somewhere for speech, and somewhere for text. `meeting.ts` never learns how it's connected — Recall's implementation is `src/connectors/recall/index.ts`. ASR and synthesis are a separate seam (`deepgram.ts`, `soniox.ts`).
  *
  * Audio flows in through `Meeting.onAudio`, not pulled — the transport calls the meeting, never the reverse. One participant is the simplest case: a telephone stream is a single speaker — room silence with N=1.
  */

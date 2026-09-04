@@ -5,9 +5,9 @@
  */
 
 import type { RawData, WebSocket } from 'ws';
-import { logger } from '../system/logger.js';
-import { BOT_NAME } from './types.js';
-import type { AudioSink } from './types.js';
+import { logger } from '../../system/logger.js';
+import { BOT_NAME } from '../../voice/types.js';
+import type { AudioSink } from '../../voice/types.js';
 
 const SAMPLE_RATE = 24000;
 
