@@ -7,6 +7,7 @@ export function renderChannel(id: string, ch: Channel): string {
     return name.startsWith('DM with ') ? name : `#${name}`;
   }
   if (ch.type === 'cli') return 'CLI session';
+  if (ch.type === 'github') return `PR ${ch.repo}#${ch.pr_number}`;
   const render = getChannelRenderer(ch.type);
   // A record outlives its connector's registration, so an unmounted kind renders as its raw id rather than a fabricated "live"/"ended".
   return render ? render(ch) : id;

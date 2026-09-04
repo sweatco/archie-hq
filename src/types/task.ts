@@ -88,7 +88,7 @@ export interface SlackThread {
 
 // ---- Channel types (replace slack_threads) ----
 
-export type ChannelType = 'slack' | 'cli' | 'recall';
+export type ChannelType = 'slack' | 'github' | 'cli' | 'recall';
 
 export interface ChannelBase {
   type: ChannelType;
@@ -120,6 +120,13 @@ export interface SlackChannel extends ChannelBase {
 }
 
 /** CLI channel — the REST/SSE surface the CLI tails. One per task at most. */
+/** GitHub channel — a PR conversation */
+export interface GitHubChannel extends ChannelBase {
+  type: 'github';
+  repo: string;
+  pr_number: number;
+}
+
 export interface CliChannel extends ChannelBase {
   type: 'cli';
   id: 'cli:local';
@@ -160,7 +167,7 @@ export interface RecallChannel extends ChannelBase {
   ended: boolean;
 }
 
-export type Channel = SlackChannel | CliChannel | RecallChannel;
+export type Channel = SlackChannel | GitHubChannel | CliChannel | RecallChannel;
 
 /**
  * Snapshot of a pull request as shown on its "PR card" — the compact, updating
