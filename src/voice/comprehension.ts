@@ -1,5 +1,7 @@
 // Decides whether Archie speaks, what it says aloud, and what it posts to chat instead. Every failure biases to silence (`false` / `null` / `''`, never a throw), and the prompts are the contract -- this module only loads, frames and parses them.
 
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
 import { logger } from '../system/logger.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { BOT_NAME } from './types.js';
@@ -151,6 +153,15 @@ export async function decideResponse(
     return { outcome: 'failed', why: 'the speaking prompt could not be loaded', handedOver: 0 };
   }
 
+  // Both halves of the request come off disk, so both are guarded the same way: a missing or unfillable template is a failed turn with a reason, never a throw out of a module whose whole contract is to bias to silence.
+  let user: string;
+  try {
+    user = buildSpeakingUserMessage(transcript, opts.consults, opts.context);
+  } catch (error) {
+    logger.error(LOG, 'Could not assemble the request from prompts/voice-speaking-context.md', error);
+    return { outcome: 'failed', why: 'the speaking context could not be assembled', handedOver: 0 };
+  }
+
   const emitter = opts.onSentence === undefined ? null : new SentenceEmitter(opts.onSentence);
   let firstSentenceAt: number | null = null;
   const streamed = await streamModel(
@@ -158,7 +169,7 @@ export async function decideResponse(
       cfg,
       label: 'speaking',
       system: prompt,
-      user: buildSpeakingUserMessage(transcript, opts.consults, opts.context),
+      user,
       timeoutMs: GENERATION_TIMEOUT_MS,
       reasoning: true,
     },
@@ -223,54 +234,91 @@ export interface SpeakingContext {
   voiceFailed?: boolean;
 }
 
-/** Assembles the user half of the speaking request: the transcript, then every standing block with content. Each block is absent rather than emitted empty — an empty `<participants>` claims there is nobody in the room, which an absent block does not — so a meeting told nothing renders byte-for-byte as it did before the blocks existed. Order runs moment-outward: now, then what may predate the meeting, then the room, then what is fixed — and last, on the rare turn that has one, the state of Archie's own voice. */
+/** Where the user half of the speaking request lives: its intro line, every block's tags and the order they appear in are readable there as text, rather than only as concatenation here. Resolved the way `loadPrompt` resolves the system half — this module sits at `src/voice/` and compiles to `dist/voice/`, so `'../..'` is the repo root either way. */
+const SPEAKING_CONTEXT_TEMPLATE = fileURLToPath(new URL('../../prompts/voice-speaking-context.md', import.meta.url));
+
+// The whole body of the `<voice>` block. The one block whose content is fixed and whose only variable is whether it is there at all, which is why it stays here while the rest of the message is in the template: a placeholder is how a block is made to disappear, so this text is what fills the placeholder rather than something the file could state on its own.
+// The defect it exists for: a fallback to chat was announced outward and never inward, so the next turn read its own words in `<transcript>` as though they had been spoken and invented a reason for the text — live, with Soniox returning 503 on every turn, "I'm answering you out loud right now" while nothing was audible.
+// Stated as a fact with nothing said about what to do with it — the same shape as an outstanding consult.
+const VOICE_FAILED_NOTE =
+  'Your voice is not working: synthesis has been failing, so the last answer you gave went to the meeting chat as text and nobody in the room heard it.';
+
+/** Assembles the user half of the speaking request by filling `prompts/voice-speaking-context.md`: the transcript, then every standing block with content. Each block is absent rather than emitted empty — an empty `<participants>` claims there is nobody in the room, which an absent block does not — so a meeting told nothing renders byte-for-byte as it did before the blocks existed. Order is the template's, and it runs moment-outward: now, then what may predate the meeting, then the room, then what is fixed — and last, on the rare turn that has one, the state of Archie's own voice, nearest the reply it has to bear on. */
 export function buildSpeakingUserMessage(
   transcript: string,
   consults?: { id: string; question: string; answer?: string }[],
   context?: SpeakingContext,
 ): string {
-  const lines = [
-    'Meeting transcript, one utterance per line, most recent last:',
-    '',
-    '<transcript>',
-    transcript,
-    '</transcript>',
-  ];
-  if (consults !== undefined && consults.length > 0) {
-    // Kept apart from `<transcript>`, which marks the room's speech as untrusted; the consult exchange is a trusted internal source.
-    lines.push('', '<consults>', ...consults.map((c) => `${c.id}. Q: ${c.question}\n   A: ${c.answer ?? '(no answer yet)'}`), '</consults>');
-  }
-  const written = context?.written ?? [];
-  if (written.length > 0) {
-    // `Speaker: text`, the same shape the transcript uses -- the tag alone tells the two apart, so it must never be dropped.
-    lines.push('', '<written>', ...written.map((line) => `${line.speaker}: ${line.text}`), '</written>');
-  }
-  const participants = context?.participants ?? [];
-  if (participants.length > 0) {
-    // A departed participant keeps their line, marked -- unmarked, Archie would address an empty chair; a nameless row says so rather than disappearing, since the count matters even when the name doesn't.
-    lines.push('', '<participants>', ...participants.map((p) => {
-      const name = (p.name ?? '').trim();
-      const host = p.is_host === true ? ' (host)' : '';
-      const left = p.left_at === null ? '' : ' (has left)';
-      return `${name.length > 0 ? name : '(name not reported)'}${host}${left}`;
-    }), '</participants>');
-  }
+  // Kept apart from `<transcript>`, which marks the room's speech as untrusted; the consult exchange is a trusted internal source.
+  const consultLines = (consults ?? []).map((c) => `${c.id}. Q: ${c.question}\n   A: ${c.answer ?? '(no answer yet)'}`);
+  // `Speaker: text`, the same shape the transcript uses -- the tag alone tells the two apart, so it must never be dropped.
+  const writtenLines = (context?.written ?? []).map((line) => `${line.speaker}: ${line.text}`);
+  // A departed participant keeps their line, marked -- unmarked, Archie would address an empty chair; a nameless row says so rather than disappearing, since the count matters even when the name doesn't.
+  const participantLines = (context?.participants ?? []).map((p) => {
+    const name = (p.name ?? '').trim();
+    const host = p.is_host === true ? ' (host)' : '';
+    const left = p.left_at === null ? '' : ' (has left)';
+    return `${name.length > 0 ? name : '(name not reported)'}${host}${left}`;
+  });
   // Verbatim: the summarising call already produced the lines meant to be read. Trimmed only, so whitespace-only counts as no summary.
   const capabilities = (context?.capabilities ?? '').trim();
-  if (capabilities.length > 0) {
-    lines.push('', '<capabilities>', capabilities, '</capabilities>');
+
+  // One row per block in the template, and `null` is what makes a block disappear. Not the same as an empty string: `<transcript>` renders whatever it is handed, empty included, since a first turn with nothing transcribed yet still says so with the tags.
+  const values: Record<string, string | null> = {
+    TRANSCRIPT: transcript,
+    CONSULTS: consultLines.length === 0 ? null : consultLines.join('\n'),
+    WRITTEN: writtenLines.length === 0 ? null : writtenLines.join('\n'),
+    PARTICIPANTS: participantLines.length === 0 ? null : participantLines.join('\n'),
+    CAPABILITIES: capabilities.length === 0 ? null : capabilities,
+    VOICE: context?.voiceFailed === true ? VOICE_FAILED_NOTE : null,
+  };
+  // Read on every turn rather than cached, exactly as `loadPrompt` reads the system half: an edit to either file takes effect on the next turn, and the two must not fall out of step.
+  return fillSpeakingTemplate(readFileSync(SPEAKING_CONTEXT_TEMPLATE, 'utf-8'), values);
+}
+
+/**
+ * Fills the speaking context template. Its blocks are the blank-line-separated segments of the file, each carrying at most one `{{PLACEHOLDER}}`: a segment whose value is `null` disappears whole — tags, content and the blank line that separated it — and a segment with no placeholder at all, the intro line, always stays.
+ *
+ * Substitution happens per segment and only after the drop decision, which is what lets a value carry a blank line of its own without splitting its block in two, and what stops a `{{WRITTEN}}` said out loud in the room from being read as another block's substitution site — the transcript is untrusted speech on a path ending in the bot talking aloud.
+ *
+ * Throws on any disagreement between the file and the table above, rather than sending what it managed to assemble: a literal `{{WRITTEN}}` in front of the model, or a silently missing block of the room's own writing, is worse than the turn failing and saying so — which is what `decideResponse` does with it.
+ */
+function fillSpeakingTemplate(template: string, values: Record<string, string | null>): string {
+  const filled: string[] = [];
+  const seen = new Set<string>();
+  // A no-op on the file as committed, and the difference between a checkout with CRLF endings sending the message it always did and one where the blank lines stop separating anything, leaving a single unsplittable block.
+  for (const segment of template.replace(/\r\n/g, '\n').trim().split('\n\n')) {
+    const names = [...segment.matchAll(/{{([A-Z0-9_]+)}}/g)].map((match) => match[1]);
+    if (names.length === 0) {
+      filled.push(segment); // The intro line: nothing to fill, and nothing about it that could be absent.
+    } else if (names.length > 1) {
+      throw new Error(
+        `voice-speaking-context.md has a block carrying ${names.length} placeholders (${names.join(', ')}); a block is kept or dropped whole, so it can carry at most one`,
+      );
+    } else {
+      const name = names[0];
+      if (!Object.hasOwn(values, name)) {
+        throw new Error(`voice-speaking-context.md carries {{${name}}}, which nothing fills — it would reach the model as that literal text`);
+      }
+      if (seen.has(name)) {
+        throw new Error(`voice-speaking-context.md carries {{${name}}} more than once, and one value cannot fill two blocks`);
+      }
+      seen.add(name);
+      const value = values[name];
+      if (value !== null) {
+        // A function replacement, so `$&` and friends in meeting speech stay literal; the name matched above, so there is exactly one site.
+        filled.push(segment.replace(`{{${name}}}`, () => value));
+      }
+    }
   }
-  // Last, nearest the reply it has to bear on, and stated as a fact with nothing said about what to do with it — the same shape as an outstanding consult. Absent whenever speech works, so a meeting where it never failed sends the identical request.
-  // The defect it exists for: a fallback to chat was announced outward and never inward, so the next turn read its own words in `<transcript>` as though they had been spoken and invented a reason for the text — live, with Soniox returning 503 on every turn, "I'm answering you out loud right now" while nothing was audible.
-  if (context?.voiceFailed === true) {
-    lines.push(
-      '',
-      '<voice>',
-      'Your voice is not working: synthesis has been failing, so the last answer you gave went to the meeting chat as text and nobody in the room heard it.',
-      '</voice>',
+
+  const unplaced = Object.keys(values).filter((name) => !seen.has(name));
+  if (unplaced.length > 0) {
+    throw new Error(
+      `voice-speaking-context.md has no placeholder for ${unplaced.join(', ')}; that context would be assembled here and then silently dropped on the way to the model`,
     );
   }
-  return lines.join('\n');
+  return filled.join('\n\n');
 }
 
 /** Turns a deployment's internal self-description into plain language a voice agent can judge "can I find this out?" against — the one call here that isn't part of a turn, run once at join. The summarising step is the point rather than an optimisation: most descriptions name agent ids, skill names and trigger phrases, all unusable in a room. Returns `''` on every failure and never throws, since a loud one would let a lapsed key stop Archie joining at all. */
