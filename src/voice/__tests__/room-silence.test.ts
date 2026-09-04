@@ -38,6 +38,12 @@ let synthSilent = false;
 let synthIncomplete: string | null = null;
 /** Answers given up on at the source. See `abort`, deepgram.ts. */
 let synthAborts = 0;
+/**
+ * Completions fire together when the turn's audio is whole, rather than one per sentence.
+ *
+ * This is what soniox.ts actually reports: a turn is one stream, so it can say only where the *turn's* audio ended, and every sentence in it completes at that one offset. Off by default because the finer shape is still real — a stall flush splits a turn into two streams, each completing its own sentences — and because the tests calibrated on per-sentence offsets are what cover that.
+ */
+let synthTurnCompletion = false;
 let speechClosed = false;
 
 /** `sentenceAt`: ms offset per sentence; rest flush at generation end. */
@@ -113,6 +119,8 @@ vi.mock('../soniox.js', () => ({
       let aborted = false;
       let bytes = 0;
       const deliveries: Array<Promise<void>> = [];
+      /** Held completions, when the whole turn's audio is what completes them; see `synthTurnCompletion`. */
+      const held: Array<() => void> = [];
 
       async function deliver(chunks: number, firstMs: number, gapMs: number): Promise<void> {
         // First chunk lands a tick late, never synchronously.
@@ -138,7 +146,11 @@ vi.mock('../soniox.js', () => ({
                 .then(() => {
                   // Mirrors Soniox's `terminated`: never fires for an aborted or watchdog-settled sentence.
                   if (!aborted && synthIncomplete === null) {
-                    onSentenceComplete();
+                    if (synthTurnCompletion) {
+                      held.push(onSentenceComplete);
+                    } else {
+                      onSentenceComplete();
+                    }
                   }
                 })
                 .finally(() => {
@@ -153,6 +165,12 @@ vi.mock('../soniox.js', () => ({
           incomplete: string | null;
         }> {
           await Promise.all(deliveries);
+          // The turn's audio is whole here, so anything held completes now — in hand-over order, at the one byte count the turn ended on. Never after an abort: a cancelled stream reports no `terminated`, so nothing in it ever completes.
+          if (!aborted) {
+            for (const complete of held.splice(0, held.length)) {
+              complete();
+            }
+          }
           // Two failure signals: zero bytes vs `incomplete`.
           return { bytes, msToFirstByte: bytes > 0 ? 12 : null, incomplete: synthIncomplete };
         },
@@ -329,6 +347,7 @@ function reset(): void {
   synthSilent = false;
   synthIncomplete = null;
   synthAborts = 0;
+  synthTurnCompletion = false;
   speechClosed = false;
   gateCalls = 0;
   gateVerdict = false;
@@ -2153,6 +2172,43 @@ describe('meeting room silence', () => {
     expect(row.speech).toBe('Ready. It backs off and—');
     // What the estimate would have said — 6 and 43 chars average to 6.08 bytes/char, putting the end at 325 and the cut 5 chars in.
     expect(row.speech).not.toBe('Ready. It—');
+    await meeting.stop();
+  });
+
+  it('files a prefix, not the sentences it heard, when a turn is cut before its one stream ends', async () => {
+    reset();
+    // What a turn as one stream actually reports on a barge-in: the stream never reached `terminated`, so no sentence completed and there is no per-sentence offset to credit — the whole estimate runs inside the first sentence, at the prompt's own nominal rate.
+    synthTurnCompletion = true;
+    synthChunks = 1;
+    // 23,200-byte chunks put the played count on the scale real speech reaches (48,000 bytes/s), so the estimate is what decides the answer.
+    synthChunkBytes = 23_200;
+    decideDelayMs = 1_000;
+    decideQueue.push({
+      speech: 'The rollout finished at noon. I can go into detail about how I handle failures. And it has held since.',
+      // The third sentence arrives after the cut, which is what makes the interruption visible at all.
+      sentenceAt: [10, 20, 900],
+    });
+    const { meeting, sink } = await makeMeeting('bot-partial-one-stream');
+    const a = speakerFor(meeting, ann);
+
+    a.emit({ kind: 'start' });
+    a.emit({ kind: 'end', transcript: 'Archie, how did the rollout go?' });
+    // Both handed sentences' audio reached the room: 46,400 bytes of it.
+    await playedChunks(sink, 2);
+
+    a.emit({ kind: 'start' });
+    expect(sink.cuts).toBe(1);
+    await sleep(1_200);
+
+    const row = turns('bot-partial-one-stream')[0];
+    expect(String(row.error)).toContain('cut off');
+    // 46,400 against 29 x 2,900 = 84,100 is 0.55, so floor(0.55 x 29) = 16 chars, back to the word boundary at 11.
+    // Deliberately less than the room heard — the second sentence was audible and is not credited. Under-reporting is the direction this must err in: crediting a word nobody heard is the one bias the record must never make.
+    expect(row.speech).toBe('The rollout—');
+    expect(utterances('bot-partial-one-stream')).toEqual([
+      { speaker: 'Ann', text: 'Archie, how did the rollout go?' },
+      { speaker: 'Archie', text: 'The rollout—' },
+    ]);
     await meeting.stop();
   });
 
