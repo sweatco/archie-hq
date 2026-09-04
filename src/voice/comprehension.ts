@@ -50,7 +50,7 @@ export interface Response {
   chat?: string;
   /** Fire-and-forget: `meeting.ts` routes it through `MeetingHost.consult`, and the answer arrives later via `deliverConsultAnswer`. */
   pm?: string;
-  /** Not permission to leave: `routeLeave` acts on it only once the speech above has reached the room in full. */
+  /** Not permission to leave: `routeLeave` acts on it only once the answer above has reached the room in full — aloud when speech works, and through the meeting chat when it does not, since a farewell nobody can hear must not hold the departure. */
   leave?: boolean;
   /** The model's own reasoning, on its own channel rather than in the reply text. Never spoken or posted — it is for the meeting record's `turn` row. */
   thought?: string;

@@ -398,6 +398,8 @@ async function makeMeeting(
     host?: MeetingHost;
     /** Runs before the row is kept, so a test can make the transport's recorder throw — the contract says it must not, and this is what a broken one costs. */
     onRecord?: (row: MeetingRow) => void;
+    /** How long a chat post takes to land, for the tests about what waits on the chat channel. Zero-length by default, as every other test wants. */
+    chatDelayMs?: number;
   } = {},
 ) {
   const { createMeeting } = await import('../meeting.js');
@@ -411,6 +413,9 @@ async function makeMeeting(
       sessionId,
       sink,
       sendChat: async (text: string) => {
+        if (opts.chatDelayMs !== undefined) {
+          await sleep(opts.chatDelayMs);
+        }
         chat.push(text);
       },
       record: (row: MeetingRow) => {
@@ -2185,24 +2190,66 @@ describe('meeting room silence', () => {
     await meeting.stop();
   });
 
-  it('drops a leave request when the answer has no voice to say it with, and does not end the meeting', async () => {
+  it('leaves anyway when it has no voice to say the farewell with, and puts the farewell in the chat', async () => {
     reset();
+    // The live failure: waiting for a farewell to be heard is right while speech works and a trap when it does not — both of the user's explicit "leave now" instructions registered, neither could complete, and the bot was still in the call when they hung up.
     synthSilent = true;
     const host = fakeHost();
     decideQueue.push({ speech: "I'm heading out now — bye all.", leave: true });
-    const { meeting, chat } = await makeMeeting('bot-leave-no-voice', {}, { host });
+    const { meeting, sink, chat } = await makeMeeting('bot-leave-no-voice', {}, { host });
     const a = speakerFor(meeting, ann);
 
     a.emit({ kind: 'start' });
     a.emit({ kind: 'end', transcript: 'Archie, can you leave?' });
     await sleep(SETTLED);
 
-    // Reached the room only via chat, never as sound.
+    // Reached the room only via chat, never as sound — and that is enough to go.
+    expect(sink.chunks.length).toBe(0);
     expect(chat.length).toBe(2);
-    expect(host.left).toBe(0);
+    expect(chat[1]).toContain("I'm heading out now — bye all.");
+    expect(host.left).toBe(1);
     const responses = turns('bot-leave-no-voice');
-    expect(responses[0].leave).toBe(true); // the request is on the row — just never acted on
+    expect(responses[0].leave).toBe(true);
     await meeting.stop();
+  });
+
+  it('waits for the farewell to reach the chat before leaving, that being the only channel left', async () => {
+    reset();
+    // Leaving tears the meeting down, so a post still in flight would go down with it — and the room would be left with a bot that vanished mid-goodbye.
+    synthSilent = true;
+    const host = fakeHost();
+    decideQueue.push({ speech: 'Bye all.', leave: true });
+    const { meeting, chat } = await makeMeeting('bot-leave-chat-wait', {}, { host, chatDelayMs: 200 });
+    const a = speakerFor(meeting, ann);
+
+    a.emit({ kind: 'start' });
+    a.emit({ kind: 'end', transcript: 'Archie, can you leave?' });
+    await sleep(SETTLED);
+    expect(chat).toEqual([]);
+    expect(host.left).toBe(0);
+
+    await sleep(300);
+    expect(chat.length).toBe(2);
+    expect(host.left).toBe(1);
+    await meeting.stop();
+  });
+
+  it('does not leave when the meeting is torn down before the farewell post lands', async () => {
+    reset();
+    // The same guard the spoken path has: teardown is already ending the meeting, and the ending belongs to it.
+    synthSilent = true;
+    const host = fakeHost();
+    decideQueue.push({ speech: 'Bye all.', leave: true });
+    const { meeting } = await makeMeeting('bot-leave-chat-stopped', {}, { host, chatDelayMs: 200 });
+    const a = speakerFor(meeting, ann);
+
+    a.emit({ kind: 'start' });
+    a.emit({ kind: 'end', transcript: 'Archie, can you leave?' });
+    await sleep(SETTLED);
+    await meeting.stop();
+
+    await sleep(300);
+    expect(host.left).toBe(0);
   });
 
   it('drops a LEAVE: request silently when the meeting has no host, and the meeting keeps working', async () => {

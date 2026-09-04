@@ -213,6 +213,6 @@ export interface MeetingHost {
    * answer on that id — never leave it silent.
    */
   consult(id: string, question: string): void;
-  /** Archie decided to leave; the farewell has already been spoken in full — see `routeLeave`, the only caller. The host arranges the actual end on its own schedule, not inline. No arguments: id and task are closed over by `createTaskHost` (`task-binding.ts`); the farewell is already in the record as an `utterance` row. No host: dropped with a debug line — the unbound manual-entry meeting stays on the call. */
+  /** Archie decided to leave, and its farewell has already reached the room — spoken in full when speech works, posted to the meeting chat when it does not; see `routeLeave`, the only caller. The host arranges the actual end on its own schedule, not inline. No arguments: id and task are closed over by `createTaskHost` (`task-binding.ts`); the farewell is already in the record as an `utterance` row. No host: dropped with a debug line — the unbound manual-entry meeting stays on the call. */
   leaveMeeting(): void;
 }

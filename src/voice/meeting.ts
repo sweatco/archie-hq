@@ -454,18 +454,17 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     }
   }
 
-  function routeLeave(): void {
+  /** `how` names the channel the farewell actually reached, which is the whole difference between the two doors into here. */
+  function routeLeave(how: string): void {
     if (host === undefined) {
       logger.debug(LOG, 'No host on this meeting — dropped a LEAVE: request');
     } else {
-      logger.system(
-        `Voice meeting ${sessionId} is ending — ${BOT_NAME} asked to leave and its farewell was delivered in full`,
-      );
+      logger.system(`Voice meeting ${sessionId} is ending — ${BOT_NAME} asked to leave and ${how}`);
       host.leaveMeeting();
     }
   }
 
-  /** Holds the turn until the room has actually heard the farewell, then leaves -- unless a barge-in or a teardown overtakes the wait. See "Leaving the room" in docs/architecture/voice.md. */
+  /** Holds the turn until the room has actually heard the farewell, then leaves -- unless a barge-in or a teardown overtakes the wait. Only reached when speech works: with synthesis dead the wait could never end, so that case leaves from `answerWithoutVoice` instead. See "Leaving the room" in docs/architecture/voice.md. */
   async function leaveOnceHeard(row: TurnRecord, cutAtStart: number): Promise<void> {
     const pause = (ms: number): Promise<void> =>
       new Promise((resolve) => {
@@ -493,7 +492,7 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       row.error = 'the farewell was interrupted, so Archie stayed';
       logger.debug(LOG, 'Somebody cut in over the farewell — staying to reconsider at the next quiet moment');
     } else {
-      routeLeave();
+      routeLeave('its farewell was delivered in full');
     }
   }
 
@@ -513,10 +512,26 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
         void sendChat("I can hear you, but my voice isn't working right now — I'll answer here instead.");
       }
     }
+    let posted: Promise<void> = Promise.resolve();
     if (!stopped) {
-      void sendChat(answer.chat === undefined ? answer.speech : `${answer.speech}\n\n${answer.chat}`);
+      posted = sendChat(answer.chat === undefined ? answer.speech : `${answer.speech}\n\n${answer.chat}`);
     }
     noteOwnChat(answer.chat);
+    if (answer.leave === true) {
+      // Leaving is not conditional on working speech. `leaveOnceHeard` waits on a farewell the room can hear, which is exactly what is missing here, so waiting could only wait forever: both of a user's explicit "leave now" instructions registered and neither could complete, and the bot was still in the call when they hung up.
+      // The wait that does belong here is on the chat post, the only channel reaching the room: leaving tears the meeting down, and a post still in flight would go down with it.
+      void posted
+        .catch((err) => {
+          logger.warn(LOG, 'Posting the farewell to the meeting chat failed — leaving anyway', err);
+        })
+        .then(() => {
+          if (stopped) {
+            logger.debug(LOG, 'The meeting was already being torn down — left the ending to it');
+          } else {
+            routeLeave('its farewell went to the meeting chat, because its voice was not working');
+          }
+        });
+    }
   }
 
   async function decide(): Promise<void> {
