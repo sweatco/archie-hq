@@ -157,8 +157,10 @@ const KNOWLEDGE_LOG = [
   '[2026-04-10T10:05:00Z] [backend-agent] [discovery] Missing validation in auth handler',
 ].join('\n');
 
-// Helper: wait for the in-process sequential extraction queue to drain.
-const drain = () => new Promise((resolve) => setTimeout(resolve, 200));
+async function drain() {
+  await vi.waitFor(() => expect(runExtraction).toHaveBeenCalled(), { timeout: 5_000 });
+  await vi.waitFor(async () => expect(await readPending()).toEqual([]), { timeout: 5_000 });
+}
 
 // ============================================================================
 // Test suite
