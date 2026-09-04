@@ -219,9 +219,11 @@ export interface SpeakingContext {
   written?: readonly WrittenLine[];
   /** What Archie can go find out, in plain language. One opaque string: the summarising call owns its shape, not this file. */
   capabilities?: string;
+  /** True while Archie's own speech is failing: a turn in this meeting could not be synthesised and went to the meeting chat instead. Absent rather than `false` when speech works — including in a meeting where it has never failed, which must render exactly as it did before this field existed. `meeting.ts` clears it the moment audio reaches the room again. */
+  voiceFailed?: boolean;
 }
 
-/** Assembles the user half of the speaking request: the transcript, then every standing block with content. Each block is absent rather than emitted empty — an empty `<participants>` claims there is nobody in the room, which an absent block does not — so a meeting told nothing renders byte-for-byte as it did before the blocks existed. Order runs moment-outward: now, then what may predate the meeting, then the room, then what is fixed. */
+/** Assembles the user half of the speaking request: the transcript, then every standing block with content. Each block is absent rather than emitted empty — an empty `<participants>` claims there is nobody in the room, which an absent block does not — so a meeting told nothing renders byte-for-byte as it did before the blocks existed. Order runs moment-outward: now, then what may predate the meeting, then the room, then what is fixed — and last, on the rare turn that has one, the state of Archie's own voice. */
 export function buildSpeakingUserMessage(
   transcript: string,
   consults?: { id: string; question: string; answer?: string }[],
@@ -257,6 +259,16 @@ export function buildSpeakingUserMessage(
   const capabilities = (context?.capabilities ?? '').trim();
   if (capabilities.length > 0) {
     lines.push('', '<capabilities>', capabilities, '</capabilities>');
+  }
+  // Last, nearest the reply it has to bear on, and stated as a fact with nothing said about what to do with it — the same shape as an outstanding consult. Absent whenever speech works, so a meeting where it never failed sends the identical request.
+  // The defect it exists for: a fallback to chat was announced outward and never inward, so the next turn read its own words in `<transcript>` as though they had been spoken and invented a reason for the text — live, with Soniox returning 503 on every turn, "I'm answering you out loud right now" while nothing was audible.
+  if (context?.voiceFailed === true) {
+    lines.push(
+      '',
+      '<voice>',
+      'Your voice is not working: synthesis has been failing, so the last answer you gave went to the meeting chat as text and nobody in the room heard it.',
+      '</voice>',
+    );
   }
   return lines.join('\n');
 }

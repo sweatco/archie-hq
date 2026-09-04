@@ -208,7 +208,12 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
   const turn = { deciding: false, chain: Promise.resolve(), abandon: null as ((why: string) => void) | null };
   const timers = new Map<TimerKind, NodeJS.Timeout>();
   // Opened eagerly so its connection cost isn't paid in front of the first word; `session` is null only if opening threw -- then every answer goes through `answerWithoutVoice`.
-  const voice: { session: SpeechSession | null; failureAnnounced: boolean } = { session: null, failureAnnounced: false };
+  // Two flags for two audiences: `failureAnnounced` is the room's notice, sent once per meeting, and `failing` is the fact the model's own turn context carries. `failing` clears the moment audio reaches the room again, so a transient outage doesn't leave Archie believing it is mute for the rest of the meeting; the room is deliberately not told twice.
+  const voice: { session: SpeechSession | null; failureAnnounced: boolean; failing: boolean } = {
+    session: null,
+    failureAnnounced: false,
+    failing: false,
+  };
   let stopped = false;
 
   try {
@@ -496,6 +501,8 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
   function answerWithoutVoice(row: TurnRecord, answer: SpokenResponse, why: string, askedAt: number): void {
     row.verdict = 'error';
     row.speech = '';
+    // Recorded for the model, not only for the room: `noteOwnAnswer` below files this answer as an utterance, so without this fact the next turn reads it as something it said aloud.
+    voice.failing = true;
     clearOwed(askedAt);
     row.error = `${why} — answered in the meeting chat instead`;
     noteOwnAnswer(answer.speech);
@@ -599,6 +606,8 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
         if (!heardAnything) {
           heardAnything = true;
           recordTiming(row, 'speakMs', Date.now() - askedAt);
+          // Cleared on bytes actually going to the room rather than on a turn settling: this is the only evidence that speech works, and a turn can settle every other way without it.
+          voice.failing = false;
         }
         pcmSentToSink += pcm.length;
         sink.play(pcm);
@@ -648,6 +657,10 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
       }
       if (standing.capabilities.length > 0) {
         context.capabilities = standing.capabilities;
+      }
+      if (voice.failing) {
+        // Set only while it is true, like every other block here: a meeting whose speech has never failed sends the request it always did.
+        context.voiceFailed = true;
       }
 
       const startedAt = Date.now();

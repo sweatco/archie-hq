@@ -32,11 +32,12 @@ describe('the shared speaking context — absent rather than empty', () => {
 
   it('omits each block when its own field is empty, not just when it is missing', () => {
     // Type allows `[]`, unused by meeting.ts today; only the renderer guarantees omission.
-    const empty = build({ participants: [], written: [], capabilities: '' });
+    const empty = build({ participants: [], written: [], capabilities: '', voiceFailed: false });
     expect(empty).toBe(BASELINE);
     expect(empty).not.toContain('<participants>');
     expect(empty).not.toContain('<written>');
     expect(empty).not.toContain('<capabilities>');
+    expect(empty).not.toContain('<voice>');
   });
 
   it('treats a whitespace-only capability summary as no summary', () => {
@@ -53,6 +54,46 @@ describe('the shared speaking context — absent rather than empty', () => {
     );
     expect(build({ capabilities: '- read the repos' })).toBe(
       [BASELINE, '', '<capabilities>', '- read the repos', '</capabilities>'].join('\n'),
+    );
+  });
+});
+
+describe('the voice block', () => {
+  it('says the voice is not working, without saying what to do about it', () => {
+    // The live failure: with synthesis 503ing every turn, the fallback was announced to the room and never to the model, which then explained its text output as a choice ("a detailed list is a lot to listen to") and claimed to be speaking aloud. Stated as a fact so the model reasons from it; scripting the reply here would put words in a prompt's mouth from code.
+    const rendered = build({ voiceFailed: true });
+    expect(rendered).toBe(
+      [
+        BASELINE,
+        '',
+        '<voice>',
+        'Your voice is not working: synthesis has been failing, so the last answer you gave went to the meeting chat as text and nobody in the room heard it.',
+        '</voice>',
+      ].join('\n'),
+    );
+  });
+
+  it('is absent, not false, when speech is working', () => {
+    // The property that keeps a healthy meeting unchanged: no block, so the request is byte-for-byte what it was before this existed.
+    expect(build({ voiceFailed: false })).toBe(BASELINE);
+    expect(build({})).toBe(BASELINE);
+  });
+
+  it('comes last, after every standing block', () => {
+    // Nearest the reply it has to bear on, and appended rather than inserted — so nothing above it moves on the turn it appears.
+    const rendered = buildSpeakingUserMessage(TRANSCRIPT, [{ id: 'm1c1', question: 'who owns billing?' }], {
+      participants: ROSTER,
+      written: [{ speaker: 'Ann Petrova', text: 'can you join?' }],
+      capabilities: '- read the repos',
+      voiceFailed: true,
+    });
+    expect(rendered.indexOf('<voice>')).toBeGreaterThan(rendered.indexOf('</capabilities>'));
+    expect(rendered.slice(0, rendered.indexOf('\n\n<voice>'))).toBe(
+      buildSpeakingUserMessage(TRANSCRIPT, [{ id: 'm1c1', question: 'who owns billing?' }], {
+        participants: ROSTER,
+        written: [{ speaker: 'Ann Petrova', text: 'can you join?' }],
+        capabilities: '- read the repos',
+      }),
     );
   });
 });

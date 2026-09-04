@@ -2462,6 +2462,57 @@ describe('meeting standing context', () => {
     await meeting.stop();
   });
 
+  it('tells the next turn that its own voice was not working', async () => {
+    reset();
+    // The live meeting this exists for: Soniox returned 503 on every turn, the room was told once, and the model was never told at all — so it explained its own text output as a choice and said it was answering out loud.
+    synthSilent = true;
+    decideQueue.push({ speech: 'It rolled back at ten.' }, { speech: 'Still nothing audible.' });
+    const { meeting, chat } = await makeMeeting('bot-ctx-mute');
+
+    await oneTurn(meeting, 'Archie, what happened to the deploy?');
+    expect(chat.length).toBe(2);
+    // Nothing to go on for the turn that failed — the fact is what the *next* one is decided against.
+    expect(lastContextSeen?.voiceFailed).toBeUndefined();
+
+    await oneTurn(meeting, 'Archie, are you there?');
+    expect(lastContextSeen?.voiceFailed).toBe(true);
+    await meeting.stop();
+  });
+
+  it('stops saying so once the room hears something again', async () => {
+    reset();
+    // A transient outage must not leave Archie believing it is mute for the rest of the meeting.
+    synthSilent = true;
+    decideQueue.push({ speech: 'Nobody heard this.' }, { speech: 'This one lands.' }, { speech: 'And this one.' });
+    const { meeting, sink } = await makeMeeting('bot-ctx-mute-clears');
+
+    await oneTurn(meeting, 'Archie, what happened to the deploy?');
+    synthSilent = false;
+
+    await oneTurn(meeting, 'Archie, can you hear me?');
+    // Still true for the turn decided while nothing had been heard yet, and that turn is the one that clears it.
+    expect(lastContextSeen?.voiceFailed).toBe(true);
+    expect(sink.chunks.length).toBe(1);
+
+    await oneTurn(meeting, 'Archie, one more thing.');
+    expect(lastContextSeen?.voiceFailed).toBeUndefined();
+    await meeting.stop();
+  });
+
+  it('says nothing about the voice in a meeting where speech has never failed', async () => {
+    reset();
+    decideQueue.push({ speech: 'Ann and Mary.' }, { speech: 'Still here.' });
+    const { meeting } = await makeMeeting('bot-ctx-voice-fine');
+
+    await oneTurn(meeting);
+    await oneTurn(meeting, 'Archie, still there?');
+
+    // Absent, not false: the field never appears, so the request is the one this meeting would have sent before the fact existed.
+    expect(lastContextSeen).toEqual({});
+    expect(Object.keys(lastContextSeen ?? {})).not.toContain('voiceFailed');
+    await meeting.stop();
+  });
+
   it('pulls the task written exchange from the host and hands it to the speaking call', async () => {
     reset();
     decideQueue.push({ speech: 'Bob owns it.' });
