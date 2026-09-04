@@ -2151,7 +2151,7 @@ describe('meeting room silence', () => {
     await meeting.stop();
   });
 
-  // A `LEAVE:` marker ends the call only once the farewell reached the room — three tests below cover delivered in full, never heard, and heard with no host.
+  // A `LEAVE:` marker ends the call only once the farewell reached the room — the tests below cover delivered in full, never heard, heard with no host, and the wait for the room to finish playing it.
 
   it('speaks its farewell in full and only then signals departure', async () => {
     reset();
@@ -2171,8 +2171,13 @@ describe('meeting room silence', () => {
     expect(sink.chunks.length).toBe(0);
     expect(host.left).toBe(0);
 
+    // Delivered to the sink, and the room says it is still playing it — the departure waits on that too.
     await sleep(150);
     expect(sink.chunks.length).toBe(1);
+    expect(host.left).toBe(0);
+
+    sink.speaking = false;
+    await sleep(500);
     expect(host.left).toBe(1);
     const responses = turns('bot-leave-clean');
     expect(responses[0].verdict).toBe('addressed');
@@ -2214,6 +2219,10 @@ describe('meeting room silence', () => {
     expect(sink.chunks.length).toBe(1);
     expect(synthTexts).toEqual(["I'll head out now, thanks all."]);
     expect(chat).toEqual([]);
+
+    // The wait for the room to hear it runs with nobody to tell as well, and the turn's row lands once it ends.
+    sink.speaking = false;
+    await sleep(500);
     const responses = turns('bot-leave-no-host');
     expect(responses[0].verdict).toBe('addressed');
     expect(responses[0].leave).toBe(true);
@@ -2224,6 +2233,125 @@ describe('meeting room silence', () => {
     await sleep(SETTLED);
     expect(sink.chunks.length).toBe(2);
     await meeting.stop();
+  });
+
+  it('waits for the room to finish playing the farewell, then leaves after the tail', async () => {
+    reset();
+    const host = fakeHost();
+    // The live defect: 26 characters play for ~1.6s, and synthesis handed them over in ~1.2s.
+    decideQueue.push({ speech: 'Got it. Bye for now, Egor.', leave: true });
+    vi.useFakeTimers();
+    try {
+      const { meeting, sink } = await makeMeeting('bot-leave-heard', {}, { host });
+      const a = speakerFor(meeting, ann);
+
+      a.emit({ kind: 'start' });
+      a.emit({ kind: 'end', transcript: 'Archie, you can drop off now.' });
+
+      // Every byte handed to the sink, and the room still reports it playing.
+      await vi.advanceTimersByTimeAsync(50);
+      expect(sink.chunks.length).toBe(2);
+      expect(sink.isSpeaking()).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(host.left).toBe(0);
+
+      sink.speaking = false;
+      // The tail is measured from the poll that saw silence, so it lands within one 100ms poll of 300ms.
+      await vi.advanceTimersByTimeAsync(200);
+      expect(host.left).toBe(0);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(host.left).toBe(1);
+
+      const row = turns('bot-leave-heard')[0];
+      expect(row.verdict).toBe('addressed');
+      expect(row.speech).toBe('Got it. Bye for now, Egor.');
+      expect(row.error).toBeUndefined();
+      await meeting.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stays in the room when somebody cuts in over the farewell', async () => {
+    reset();
+    const host = fakeHost();
+    decideQueue.push({ speech: 'Got it. Bye for now, Egor.', leave: true });
+    vi.useFakeTimers();
+    try {
+      const { meeting, sink } = await makeMeeting('bot-leave-interrupted', {}, { host });
+      const a = speakerFor(meeting, ann);
+
+      a.emit({ kind: 'start' });
+      a.emit({ kind: 'end', transcript: 'Archie, you can drop off now.' });
+      await vi.advanceTimersByTimeAsync(50);
+      expect(sink.isSpeaking()).toBe(true);
+
+      // Barge-in while the room is still playing it: the cut revision moves, the same signal the answer path reads.
+      a.emit({ kind: 'start' });
+      expect(sink.cuts).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(host.left).toBe(0);
+      const row = turns('bot-leave-interrupted')[0];
+      expect(row.leave).toBe(true);
+      expect(row.error).toBe('the farewell was interrupted, so Archie stayed');
+      await meeting.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('leaves anyway, with a warning, when the room never reports the farewell finishing', async () => {
+    reset();
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const host = fakeHost();
+    decideQueue.push({ speech: 'Bye for now, Egor.', leave: true });
+    vi.useFakeTimers();
+    try {
+      const { meeting, sink } = await makeMeeting('bot-leave-stuck', {}, { host });
+      const a = speakerFor(meeting, ann);
+
+      a.emit({ kind: 'start' });
+      a.emit({ kind: 'end', transcript: 'Archie, you can drop off now.' });
+
+      // `speaking` never clears — a page that stops reporting must not hold the bot in the room.
+      await vi.advanceTimersByTimeAsync(19_000);
+      expect(sink.isSpeaking()).toBe(true);
+      expect(host.left).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect(host.left).toBe(1);
+      expect(warn.mock.calls.some((c) => String(c[1]).includes('leaving anyway'))).toBe(true);
+      await meeting.stop();
+    } finally {
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
+  });
+
+  it('does not leave when the meeting is torn down while the farewell is still playing', async () => {
+    reset();
+    const host = fakeHost();
+    decideQueue.push({ speech: 'Bye for now, Egor.', leave: true });
+    vi.useFakeTimers();
+    try {
+      const { meeting, sink } = await makeMeeting('bot-leave-stopped', {}, { host });
+      const a = speakerFor(meeting, ann);
+
+      a.emit({ kind: 'start' });
+      a.emit({ kind: 'end', transcript: 'Archie, you can drop off now.' });
+      await vi.advanceTimersByTimeAsync(50);
+      expect(sink.isSpeaking()).toBe(true);
+
+      // `stop()` awaits the turn chain, so the wait has to end with it rather than outlive it.
+      const stopping = meeting.stop();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await stopping;
+      expect(host.left).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

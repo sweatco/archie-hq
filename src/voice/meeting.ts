@@ -44,6 +44,10 @@ const REOPEN_BACKOFF_MS = 15 * 1000;
 const REOPEN_MIN_INTERVAL_MS = 2 * 1000;
 // 24 kHz x 2 bytes = 48,000 bytes/s at the ~16.7 chars/s the speaking prompt itself assumes ("a hundred characters is roughly six seconds"). Only used for a turn that completed no sentence of its own to measure.
 const DEFAULT_BYTES_PER_CHAR = 2_900;
+// Synthesis finishes well before playback does (a 26-char goodbye is handed over in ~1.2s and plays for ~1.6s), and leaving drops whatever the page still holds -- so the farewell waits on the page's own report, then on the platform's pipeline behind it.
+const LEAVE_TAIL_MS = 300;
+// A page that never reports playback finishing must not hold the bot in the room.
+const LEAVE_WAIT_MAX_MS = 20 * 1000;
 
 // Matching is whole-token (see `matchTrigger`): a prefix like `arch` is harmless (never fires on `architecture`), but a real word like `art`/`archive` would fire constantly -- check any addition against that.
 export const TRIGGER_VARIANTS: readonly string[] = [
@@ -456,6 +460,38 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
     }
   }
 
+  /** Holds the turn until the room has actually heard the farewell, then leaves -- unless a barge-in or a teardown overtakes the wait. See "Leaving the room" in docs/architecture/voice.md. */
+  async function leaveOnceHeard(row: TurnRecord, cutAtStart: number): Promise<void> {
+    const pause = (ms: number): Promise<void> =>
+      new Promise((resolve) => {
+        const timer = setTimeout(resolve, ms);
+        timer.unref();
+      });
+    const overtaken = (): boolean => stopped || revision.cut !== cutAtStart;
+    const giveUpAt = Date.now() + LEAVE_WAIT_MAX_MS;
+    while (sink.isSpeaking() && !overtaken() && Date.now() < giveUpAt) {
+      // 100ms: the page reports every ~170ms, so a finer poll only re-reads the same value.
+      await pause(100);
+    }
+    if (!overtaken() && sink.isSpeaking()) {
+      logger.warn(
+        LOG,
+        `The room still reports the farewell playing ${LEAVE_WAIT_MAX_MS / 1000}s on — leaving anyway`,
+      );
+    } else if (!overtaken()) {
+      await pause(LEAVE_TAIL_MS);
+    }
+    if (stopped) {
+      logger.debug(LOG, 'The meeting was already being torn down — left the ending to it');
+    } else if (revision.cut !== cutAtStart) {
+      // An interrupted goodbye leaves Archie in the room, the same as any other answer cut short.
+      row.error = 'the farewell was interrupted, so Archie stayed';
+      logger.debug(LOG, 'Somebody cut in over the farewell — staying to reconsider at the next quiet moment');
+    } else {
+      routeLeave();
+    }
+  }
+
   // Voice failed, so the answer goes out in writing instead -- still an error row: the room got text where it was owed speech.
   function answerWithoutVoice(row: TurnRecord, answer: SpokenResponse, why: string, askedAt: number): void {
     row.verdict = 'error';
@@ -704,8 +740,8 @@ export function createMeeting(cfg: VoiceConfig, transport: VoiceTransport, host?
             noteOwnChat(answer.chat);
             logger.debug(LOG, `Said: ${answer.speech}`);
             if (answer.leave === true) {
-              // Only reachable here -- the farewell must be confirmed delivered in full before the meeting may act on it.
-              routeLeave();
+              // Only reachable here -- the farewell must be delivered in full before the meeting may act on it, and heard in full before it leaves.
+              await leaveOnceHeard(row, cutAtStart);
             }
           } else if (abandoned !== null) {
             row.error = `${abandoned} — reconsidering now`;
