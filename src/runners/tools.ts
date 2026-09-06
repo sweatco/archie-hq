@@ -6,7 +6,6 @@ import { getRunnerManager } from './index.js';
 
 export const RUNNER_TOOL_NAMES = [
   'mcp__runner-tools__runner_list_profiles',
-  'mcp__runner-tools__runner_ensure',
   'mcp__runner-tools__runner_sync',
   'mcp__runner-tools__runner_exec',
   'mcp__runner-tools__runner_exec_poll',
@@ -60,17 +59,8 @@ export function createRunnerToolsMcpServer(agent: Agent, task: Task) {
         async () => runTool(async () => JSON.stringify({ profiles: manager().profilesForAgent(agent.def.id) })),
       ),
       tool(
-        'runner_ensure',
-        'Provision or reuse the task-scoped VM lease for a runner profile.',
-        { profile: z.string().min(1) },
-        async ({ profile }) => runTool(async () => {
-          const lease = await manager().ensure(task.taskId, agent.def.id, profile);
-          return JSON.stringify({ leaseId: lease.id, profile, state: lease.state, expiresAt: lease.expiresAt });
-        }),
-      ),
-      tool(
         'runner_sync',
-        'Copy tracked and unignored repository files into the task-scoped VM. Ignored files and .git are excluded.',
+        'Provision or reuse a task-scoped VM, then copy tracked and unignored repository files into it. Ignored files and .git are excluded.',
         { profile: z.string().min(1), github: z.string().optional() },
         async ({ profile, github }) => runTool(async () => {
           const attached = attachedRepository(agent, task, github);

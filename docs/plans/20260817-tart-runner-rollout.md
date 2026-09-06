@@ -28,7 +28,7 @@ Archie now separates Orchard receipt acknowledgement from client delivery. Each 
 - Add runner admission and drain controls plus an operator inventory endpoint or command. Rollback currently depends on manual coordination because disabling the config also disables reconciliation.
 - Export runner metrics and alerts: provisioning latency/failure, active and queued capacity, exec reconnects/timeouts, output truncation, release retries, orphan count, image pull time, VM age, and controller degraded reasons.
 - Prove the single-controller deployment invariant. Run exactly one Archie runner controller per `instanceId` and workdir until distributed leases and leader election exist.
-- Install the Orchard worker as root with `--user <host-user>` on macOS 15+ so its privileged local-network helper can reach Tart guests after the worker drops privileges. The TeamCity lab passed the full canary with the isolated external-netcat development patch, but that workaround is deliberately excluded from staging and production.
+- Install an official pinned Orchard worker as root with `--user <host-user>` on macOS 15+ so its privileged local-network helper can reach Tart guests after the worker drops privileges. A host without this supported setup is not runner-ready.
 - Remediate the current production dependency audit before deployment. The verified production image reports 8 runtime advisories, including 6 high-severity transitive advisories; update the dependency graph, review the resulting lockfile, and rerun the complete suite, container build, audit, and image scan.
 
 ## Test Strategy

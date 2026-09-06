@@ -1,5 +1,7 @@
 # Runner Host Architecture for Containers and Tart VMs
 
+> Historical research record. For the implemented contract and current operations, use [Tart Runners](../architecture/runners.md).
+
 ## TL;DR
 
 This is feasible. Archie should remain the control plane, use Orchard for Tart VM scheduling, and use a restricted runner daemon for containers. Xcode, Simulator, and LLDB should run inside Tart VMs. The Claude agent process should remain on the Archie host initially.
@@ -44,7 +46,6 @@ Instead:
 
 Suggested tools:
 
-- `runner_ensure(profile)`
 - `runner_sync(paths)`
 - `runner_exec(argv, cwd, timeout)`
 - `runner_collect(paths)`

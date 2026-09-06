@@ -170,6 +170,26 @@ export class RunnerManager {
     return lease;
   }
 
+  private withActiveLease<T>(
+    taskId: string,
+    agentId: string,
+    profileName: string,
+    action: (lease: RunnerLease, profile: RunnerProfile) => Promise<T>,
+  ): Promise<T> {
+    return this.lock(leaseKey(taskId, agentId, profileName), () =>
+      action(this.activeLease(taskId, agentId, profileName), this.profile(agentId, profileName)));
+  }
+
+  private async withReadyLease<T>(
+    taskId: string,
+    agentId: string,
+    profileName: string,
+    action: (lease: RunnerLease, profile: RunnerProfile) => Promise<T>,
+  ): Promise<T> {
+    await this.ensure(taskId, agentId, profileName);
+    return this.withActiveLease(taskId, agentId, profileName, action);
+  }
+
   private async persist(taskId: string): Promise<void> {
     await saveRunnerLeases(taskId, this.taskLeases(taskId));
   }
@@ -218,8 +238,7 @@ export class RunnerManager {
 
   async ensure(taskId: string, agentId: string, profileName: string): Promise<RunnerLease> {
     const profile = this.profile(agentId, profileName);
-    const key = leaseKey(taskId, agentId, profileName);
-    return this.lock(key, async () => {
+    return this.lock(leaseKey(taskId, agentId, profileName), async () => {
       const current = this.findLease(taskId, agentId, profileName);
       if (current) {
         try {
@@ -390,12 +409,8 @@ export class RunnerManager {
   }
 
   async sync(taskId: string, agentId: string, profileName: string, github: string, clonePath: string, signal?: AbortSignal): Promise<{ lease: RunnerLease; remotePath: string; bytes: number; files: number }> {
-    await this.ensure(taskId, agentId, profileName);
-    return this.lock(leaseKey(taskId, agentId, profileName), async () => {
-      const lease = this.activeLease(taskId, agentId, profileName);
-      const profile = this.profile(agentId, profileName);
-      return this.workspace.sync(lease, profile, github, clonePath, signal);
-    });
+    return this.withReadyLease(taskId, agentId, profileName, (lease, profile) =>
+      this.workspace.sync(lease, profile, github, clonePath, signal));
   }
 
   async exec(
@@ -411,10 +426,7 @@ export class RunnerManager {
   ): Promise<RunnerCommandResult> {
     validateExecuteCommand({ github, argv, cwd, env, waitSeconds, requestId });
     const relativeCwd = cwd === '.' ? '.' : assertRelativeRunnerPath(cwd);
-    await this.ensure(taskId, agentId, profileName);
-    return this.lock(leaseKey(taskId, agentId, profileName), async () => {
-      const lease = this.activeLease(taskId, agentId, profileName);
-      const profile = this.profile(agentId, profileName);
+    return this.withReadyLease(taskId, agentId, profileName, (lease, profile) => {
       const synced = lease.syncedRepos[github];
       if (!synced) throw new Error(`Repository ${github} has not been synced to runner profile ${profileName}`);
       const remoteCwd = relativeCwd === '.' ? synced.remotePath : posix.join(synced.remotePath, relativeCwd);
@@ -430,32 +442,21 @@ export class RunnerManager {
   }
 
   async poll(taskId: string, agentId: string, profileName: string, execId: string, afterCursor: number, waitSeconds?: number): Promise<RunnerCommandResult> {
-    return this.lock(leaseKey(taskId, agentId, profileName), async () => {
-      const lease = this.findLease(taskId, agentId, profileName);
-      if (!lease) throw new Error(`No active ${profileName} runner lease`);
-      const profile = this.profile(agentId, profileName);
-      return this.execution.poll(lease, profile, execId, afterCursor, waitSeconds);
-    });
+    return this.withActiveLease(taskId, agentId, profileName, (lease, profile) =>
+      this.execution.poll(lease, profile, execId, afterCursor, waitSeconds));
   }
 
   async cancel(taskId: string, agentId: string, profileName: string, execId: string): Promise<void> {
-    await this.lock(leaseKey(taskId, agentId, profileName), async () => {
-      const lease = this.findLease(taskId, agentId, profileName);
-      if (!lease) throw new Error(`No active ${profileName} runner lease`);
-      await this.execution.cancel(lease, this.profile(agentId, profileName), execId);
-    });
+    await this.withActiveLease(taskId, agentId, profileName, (lease, profile) =>
+      this.execution.cancel(lease, profile, execId));
   }
 
   async collect(taskId: string, agentId: string, profileName: string, github: string, paths: string[], signal?: AbortSignal): Promise<string> {
     if (!/^task-\d{8}-\d{4}-[a-z0-9]+$/.test(taskId)) throw new Error(`Invalid task id: ${taskId}`);
     if (paths.length === 0 || paths.length > 100) throw new Error('paths must contain between 1 and 100 entries');
     const safePaths = paths.map(assertRelativeRunnerPath);
-    await this.ensure(taskId, agentId, profileName);
-    return this.lock(leaseKey(taskId, agentId, profileName), async () => {
-      const lease = this.activeLease(taskId, agentId, profileName);
-      const profile = this.profile(agentId, profileName);
-      return this.workspace.collect(lease, profile, github, safePaths, signal);
-    });
+    return this.withReadyLease(taskId, agentId, profileName, (lease, profile) =>
+      this.workspace.collect(lease, profile, github, safePaths, signal));
   }
 
   async openDebug(taskId: string, agentId: string, profileName: string, ttlMinutes?: number, ports: number[] = []): Promise<{ backendId: string; context: string; expiresAt: string; commands: string[] }> {
@@ -463,11 +464,7 @@ export class RunnerManager {
       throw new Error('Debug ports must contain at most 8 integers between 1024 and 65535');
     }
     if (new Set(ports).size !== ports.length) throw new Error('Debug ports must be unique');
-    await this.ensure(taskId, agentId, profileName);
-    return this.lock(leaseKey(taskId, agentId, profileName), async () => {
-      const lease = this.findLease(taskId, agentId, profileName);
-      if (!lease) throw new Error(`No active ${profileName} runner lease`);
-      const profile = this.profile(agentId, profileName);
+    return this.withReadyLease(taskId, agentId, profileName, async (lease, profile) => {
       const ttl = Math.min(ttlMinutes ?? profile.debugTtlMinutes, profile.maxDebugTtlMinutes);
       if (ttl < 1) throw new Error('Debug TTL must be at least one minute');
       lease.debugExpiresAt = addMinutes(ttl);

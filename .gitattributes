@@ -3,5 +3,5 @@
 # them in PR diffs and reviewers see only the code expanded.
 openspec/changes/** linguist-generated=true
 
-# Stored unified diffs contain significant leading context markers.
-scripts/teamcity/*.patch -whitespace
+# project.yml is the reviewable source; this is committed for offline Xcode builds.
+fixtures/ios-runner-app/RunnerFixture.xcodeproj/** linguist-generated=true

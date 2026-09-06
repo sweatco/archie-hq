@@ -4,7 +4,7 @@
 
 Archie can use operator-managed Tart VMs through Orchard for workloads that cannot run on the Archie host, including Xcode builds, iOS Simulator automation, LLDB, and VNC debugging. The Claude agent remains on Archie; only commands and repository snapshots run remotely.
 
-Runner support is opt-in. If `ARCHIE_RUNNERS_CONFIG` is absent, no runner subsystem or tools are loaded.
+Runner support is opt-in. If `ARCHIE_RUNNERS_CONFIG` is absent, no runner controller is initialized and no agent receives runner tools.
 
 ## Architecture
 
@@ -20,6 +20,16 @@ Repository agent -> runner-tools -> RunnerManager -> Orchard -> Tart VM
 - Repository files remain canonical in the local task clone. `runner_sync` sends tracked and unignored files without `.git` or ignored content.
 - `runner_collect` validates requested paths and downloaded tar entries before extracting them under task artifacts.
 - Mobile-specific build and debugging logic belongs in repository skills. Archie exposes only generic runner operations.
+
+| Read this file | Responsibility |
+| --- | --- |
+| `config.ts`, `types.ts` | Operator policy and the small provider contract |
+| `manager.ts` | Lease ownership, provisioning, recovery, health, and cleanup |
+| `execution.ts`, `store.ts` | Durable commands, replay cursors, limits, and persisted state |
+| `workspace.ts`, `transfer.ts` | Repository upload and artifact download containment |
+| `orchard-provider.ts` | Orchard REST/WebSocket protocol only |
+| `tools.ts` | Agent-facing MCP adapter only |
+| `ios-full-cycle-e2e.ts` | Destructive acceptance canary; not runtime orchestration |
 
 Runner ownership, capacity reservations, and operation locks are process-local. Run exactly one runner-enabled Archie process for each `instanceId` and workdir. Two processes sharing an `instanceId` can classify each other's VMs as orphans, while two processes sharing a workdir cannot coordinate in-memory locks. Horizontal runner scaling requires distinct instance IDs and stable task routing, or a future distributed lease and leader-election layer.
 
@@ -89,8 +99,7 @@ Invalid configuration or missing secrets fails startup. Orchard unavailability d
 Only repository agents named in a profile’s `allowedAgents` receive `runner-tools`. Explicit agent tool allowlists are augmented with the exact runner tool names.
 
 - `runner_list_profiles`: list allowed profiles.
-- `runner_ensure`: provision or reuse a lease.
-- `runner_sync`: copy a declared repository snapshot into the VM.
+- `runner_sync`: provision or reuse a lease, then copy a declared repository snapshot into the VM.
 - `runner_exec`: start an argv-based command in the synced primary repository with a caller-generated UUID `request_id`. Reusing that ID retries the start idempotently while its retained session exists.
 - `runner_exec_poll`: reconnect and replay output after the last client delivery cursor.
 - `runner_exec_cancel`: terminate a reconnectable command.
@@ -162,16 +171,5 @@ The harness does not call `RunnerManager.initialize()`, so a disposable canary w
 - Build identity: `ARCHIE_BUILD_COMMIT` is required when the compiled Archie image has no clean Git checkout metadata. It is recorded in `evidence.json`.
 
 For the checked fixture, use the committed `RunnerFixture.xcodeproj`, scheme `RunnerFixture`, bundle `dev.archie.runner-fixture`, process `RunnerFixture`, app path `.archie-full-cycle/DerivedData/Build/Products/Debug-iphonesimulator/RunnerFixture.app`, and the runtime identifier installed in the runner image. The canary is compiled into the production image and does not depend on the `tsx` development dependency.
-
-`npm run runner:sweatcoin-e2e` is a compiled, manager-level live canary. It does not exercise task creation, agent spawning, MCP tool registration, or terminal-task cleanup, so it must not be described as a full Archie product-flow test. It requires `ARCHIE_SWEATCOIN_LIVE_E2E=true`, provisions a new lease without running global orphan reconciliation, and fails unless it can verify that its exact backend was deleted during cleanup.
-
-Use a dedicated lab runner configuration and a clean, commit-exact fixture containing `swc.app.tgz`, `axe.tgz` with AXe's `libexec` directory, and the bounded one-shot `mjpeg_bridge.py`. In addition to the normal runner credentials, provide:
-
-- `ARCHIE_SWEATCOIN_PROFILE`, `ARCHIE_SWEATCOIN_AGENT`, `ARCHIE_SWEATCOIN_FIXTURE_REPO`, `ARCHIE_SWEATCOIN_FIXTURE_COMMIT`, and `ARCHIE_SWEATCOIN_FIXTURE_GITHUB`.
-- `ARCHIE_SWEATCOIN_APP_BUILD_REF`, `ARCHIE_SWEATCOIN_APP_SHA256`, `ARCHIE_SWEATCOIN_AXE_VERSION`, `ARCHIE_SWEATCOIN_AXE_SHA256`, and `ARCHIE_SWEATCOIN_BRIDGE_SHA256`.
-- Exact `ARCHIE_SWEATCOIN_RUNTIME`; optional device, bundle, and expected-screen overrides use the other `ARCHIE_SWEATCOIN_*` variables defined in the checked harness.
-- `ARCHIE_BUILD_COMMIT` in a production image without Git metadata and `ARCHIE_SWEATCOIN_ORCHARD_VERSION` for the evidence manifest.
-
-The canary verifies fixture hashes in the guest; Simulator launch; screenshot dimensions; LLDB attach/backtrace/detach; H.264 MP4 structure and duration; MJPEG HTTP headers, multipart boundary, and complete frames; collected artifact hashes; and backend deletion. Set `ARCHIE_SWEATCOIN_ORCHARD_BIN` to exercise a host-side Orchard port forward and record that result in `evidence.json`. A positive `ARCHIE_SWEATCOIN_HOLD_SECONDS` is required before it creates and prints a live VNC/stream handoff; the debug TTL is aligned with the bounded hold.
 
 A separate production-container E2E remains required to cover the real task → allowed agent → MCP tools → task completion path. That test must use an isolated `instanceId`, Orchard pool, workdir, and credentials.
