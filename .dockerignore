@@ -9,6 +9,9 @@ sessions/
 
 # Repos (mounted as volume)
 repos/
+workdir/
+claude-data/
+e2e-evidence/
 
 # Secrets (mounted as volume)
 secrets/

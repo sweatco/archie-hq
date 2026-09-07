@@ -2,3 +2,6 @@
 # audit trail, not review material — mark them generated so GitHub collapses
 # them in PR diffs and reviewers see only the code expanded.
 openspec/changes/** linguist-generated=true
+
+# project.yml is the reviewable source; this is committed for offline Xcode builds.
+fixtures/ios-runner-app/RunnerFixture.xcodeproj/** linguist-generated=true
