@@ -86,7 +86,17 @@ npx tsx tools/e2e/teardown.ts
 
 Pass: `/health` contains exactly `{"enabled": false, "degraded": false, "activeLeases": 0}` (the boot environment must not set `ARCHIE_RUNNERS_CONFIG`), and the container log shows `Runners: disabled (ARCHIE_RUNNERS_CONFIG is not set)`. This proves the disabled path adds zero risk to a default deployment. Optionally run the harness's `basic-nonce` recipe to confirm normal task flow is unaffected. Always finish with a clean teardown exit.
 
-## Tier 5 — real Orchard canary (opt-in, credentials required)
+## Tier 5 — real Orchard canary
+
+On a prepared Apple Silicon Mac, the persisted local Sweatcoin scenario verifies the runner changes against a real mobile build:
+
+```bash
+npm run runner:sweatcoin-e2e -- --repo /absolute/path/to/sweatcoin-mobile
+```
+
+Use this after provisioning, execution, persistence, transfer, MCP, or harness changes when local Tart testing is authorized. It creates its own authenticated loopback controller and disposable workdir, uses a cached image without installing toolchain tools, and checks source transfer, detached execution across manager restart, request retry, native build, two unchanged Argent UI passes, video decoding, artifact collection, and physical VM deletion. See `docs/guides/sweatcoin-tart-e2e.md`. Report the result and `report.json` path. A prerequisite failure, failed mobile build, or incomplete UI scenario is not a pass. For UI-only changes, `--reuse-build /path/to/prior/report.json` replays a previously successful native build with the same mobile commit in a fresh VM; report that separate replay scope and its build provenance. This does not replace the full-cycle fixture's XCTest/LLDB assertions or a production Softnet check.
+
+### Shared Orchard pool
 
 Never run without an explicit user request plus real credentials: it provisions a real Tart VM on the shared Orchard pool. Use a disposable `ARCHIE_WORKDIR` — the harness writes lease audit state there.
 
