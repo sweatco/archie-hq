@@ -3,11 +3,13 @@ import { z } from 'zod';
 import type { Agent } from '../agents/agent.js';
 import type { Task } from '../tasks/task.js';
 import { getRunnerManager } from './index.js';
+import { runnerMcpArgv } from './mcp.js';
 
 export const RUNNER_TOOL_NAMES = [
   'mcp__runner-tools__runner_list_profiles',
   'mcp__runner-tools__runner_sync',
   'mcp__runner-tools__runner_exec',
+  'mcp__runner-tools__runner_mcp',
   'mcp__runner-tools__runner_exec_poll',
   'mcp__runner-tools__runner_exec_cancel',
   'mcp__runner-tools__runner_collect',
@@ -82,6 +84,22 @@ export function createRunnerToolsMcpServer(agent: Agent, task: Task) {
         async ({ profile, request_id, argv, cwd, env, wait_seconds }) => runTool(async () => {
           const attached = attachedRepository(agent, task);
           return JSON.stringify(await manager().exec(task.taskId, agent.def.id, profile, attached.github, argv, cwd, env, wait_seconds, request_id));
+        }),
+      ),
+      tool(
+        'runner_mcp',
+        'Discover or call a stdio MCP server declared in the synced repository .mcp.json, inside the task VM. Omit tool to list tools and schemas. Uses the guest Node.js and repository MCP SDK. Reuse request_id after an uncertain result; poll execId with runner_exec_poll. stdout contains the MCP result or a result_path for runner_collect when larger than 64 KiB. Check isError and the tool-specific verdict. Images are saved beside the result JSON for collection and viewing. Each call opens a new MCP session; backend services may persist until VM release.',
+        {
+          profile: z.string().min(1),
+          request_id: z.string().uuid(),
+          server: z.string().min(1).max(128),
+          tool: z.string().min(1).max(256).optional(),
+          arguments: z.record(z.string(), z.unknown()).optional(),
+          timeout_seconds: z.number().int().min(1).max(600).optional(),
+        },
+        async ({ profile, request_id, ...request }) => runTool(async () => {
+          const attached = attachedRepository(agent, task);
+          return JSON.stringify(await manager().exec(task.taskId, agent.def.id, profile, attached.github, runnerMcpArgv(request_id, request), '.', {}, 5, request_id));
         }),
       ),
       tool(

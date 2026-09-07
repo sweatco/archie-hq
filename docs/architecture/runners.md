@@ -28,10 +28,16 @@ Repository agent -> runner-tools -> RunnerManager -> Orchard -> Tart VM
 | `execution.ts`, `store.ts` | Durable commands, replay cursors, limits, and persisted state |
 | `workspace.ts`, `transfer.ts` | Repository upload and artifact download containment |
 | `orchard-provider.ts` | Orchard REST/WebSocket protocol only |
+| `mcp.ts` | Guest-side MCP client command; uses the repository's SDK and stdio server configuration |
 | `tools.ts` | Agent-facing MCP adapter only |
 | `ios-full-cycle-e2e.ts` | Destructive acceptance canary; not runtime orchestration |
+| `sweatcoin-e2e.ts` | Local Tart lab and real mobile build scenario; not runtime orchestration |
 
 Runner ownership, capacity reservations, and operation locks are process-local. Run exactly one runner-enabled Archie process for each `instanceId` and workdir. Two processes sharing an `instanceId` can classify each other's VMs as orphans, while two processes sharing a workdir cannot coordinate in-memory locks. Horizontal runner scaling requires distinct instance IDs and stable task routing, or a future distributed lease and leader-election layer.
+
+Ownership uses the complete backend name `archie-<instanceId>-<timestamp>-<8 hex characters>`. Instance IDs are used verbatim after configuration validation. A matching prefix alone is insufficient for recovery or orphan deletion, since another valid instance ID can extend it. Configuration schemas also define the TypeScript configuration types; policy fields have one source of truth.
+
+Upgrade caveat: older code stripped trailing dashes from instance IDs when naming VMs. Release leases created with such IDs before upgrading, or reconcile their old names manually. Recovery quarantines those ambiguous names instead of adopting a potentially foreign VM.
 
 ## Configuration
 
@@ -101,11 +107,22 @@ Only repository agents named in a profile’s `allowedAgents` receive `runner-to
 - `runner_list_profiles`: list allowed profiles.
 - `runner_sync`: provision or reuse a lease, then copy a declared repository snapshot into the VM.
 - `runner_exec`: start an argv-based command in the synced primary repository with a caller-generated UUID `request_id`. Reusing that ID retries the start idempotently while its retained session exists.
+- `runner_mcp`: discover or call a named stdio MCP server from the synced primary repository's `.mcp.json` inside the VM. Uses the same execution, retry, polling, cancellation, and collection paths as `runner_exec`.
 - `runner_exec_poll`: reconnect and replay output after the last client delivery cursor.
 - `runner_exec_cancel`: terminate a reconnectable command.
 - `runner_collect`: download relative artifact paths.
 - `runner_open_debug`: extend the lease within the configured cap and return credential-free Orchard context, VNC, and requested TCP port-forward commands.
 - `runner_release`: delete the lease immediately.
+
+### Repository MCP tools in the VM
+
+After syncing the repository and installing its project dependencies, call `runner_mcp` with `profile`, a fresh `request_id`, and `server` (for example `argent`). Omit `tool` to discover the server's tools and input schemas. Then supply `tool` and `arguments` to invoke one. See the [runner MCP guide](../guides/runner-mcp.md) for the interaction and artifact workflow.
+
+The MCP client, server command, repository SDK, and `${VARIABLE}` expansion all run in the guest. Archie does not load the repository's MCP configuration into its own process or forward host environment variables. Only the selected stdio entry runs; HTTP/SSE entries are rejected. The guest image must provide Node.js on its login-shell PATH, and the repository must resolve `@modelcontextprotocol/sdk` (Argent already depends on it). The tool does not install anything.
+
+Each invocation opens and closes an MCP session. Argent's separate tool-server can preserve simulator and recording state between invocations; a server that keeps state only in its stdio process cannot. Calls have a 120-second default deadline (maximum 600 seconds), further bounded by the runner profile and lease. Results are saved under `.archie-mcp/<request_id>.json`; images are saved beside them, and responses over 64 KiB return a collection path. Keep request IDs stable across uncertain results: a repeated tap is a different action, not a retry.
+
+This adds no guest listener or forwarding service to Archie. Guest services follow the VM lifecycle. Removing `runner_mcp` and its guest-client module leaves ordinary `runner_exec` and repository MCP configuration usable independently.
 
 Command environment values are sent through the exec WebSocket stdin bootstrap rather than URL query parameters. They are not included in lease state, output logs, audit events, proxy URLs, or tool responses; command output itself is persisted verbatim and must not print secrets.
 
@@ -119,9 +136,13 @@ The caller must generate one stable UUID per logical command and reuse it when a
 
 Startup reconciliation inspects persisted VMs, recovers both reconnectable Orchard watermarks and client delivery cursors from JSONL, closes expired commands, retries releases, and deletes old instance-prefixed Orchard orphans. The minute reaper applies lease, command, and debug deadlines. Transfer reconnect is allowed only after Orchard confirms that the complete stdin bootstrap and EOF reached the remote session; a connection loss during upload fails the staged transfer instead of reconnecting a tar process with incomplete input.
 
-Exec history retains a bounded number of terminal sessions and removes their JSONL logs. Active commands are also bounded per lease. Orchard WebSocket handshakes, buffered frames, command output, repository uploads, and artifact downloads all have explicit limits. Stdin is fragmented below Orchard's per-message limit. Transfers reconnect from their last acknowledged Orchard watermark when a subscriber drops before the terminal frame, and any replay gap fails the transfer instead of producing a corrupt repository or artifact. Persisted task, lease, exec, session, and backend ownership identifiers are validated before local log access or remote VM operations; one corrupt task state is isolated and reported as degraded without blocking recovery of other tasks.
+After the caller persists a terminal frame, the provider closes the remote exec session to release its retained SSH connection; subsequent output replay uses the local log. Exec history retains a bounded number of terminal sessions and removes their JSONL logs. Active commands are also bounded per lease. Orchard WebSocket handshakes, buffered frames, command output, repository uploads, and artifact downloads all have explicit limits. Stdin is fragmented below Orchard's per-message limit. Transfers reconnect from their last acknowledged Orchard watermark when a subscriber drops before the terminal frame, and any replay gap fails the transfer instead of producing a corrupt repository or artifact. Artifact collection stages a size-limited archive in the guest and downloads it in 1 MiB commands, validating every chunk length and removing the staging file afterward. This keeps each command below [Orchard’s 4 MiB replay buffer](https://github.com/cirruslabs/orchard/blob/3083b54/internal/controller/exec_sessions.go#L15); a single fast tar stream can otherwise overflow that buffer before reconnect. Persisted task, lease, exec, session, and backend ownership identifiers are validated before local log access or remote VM operations; one corrupt task state is isolated and reported as degraded without blocking recovery of other tasks.
 
 Task pauses and recovery stops preserve VMs. Terminal task completion deletes all leases except a still-valid debug lease. Graceful Archie shutdown leaves VMs intact for restart recovery. Release failures remain persisted as `releasing` and are retried by the reaper or next startup.
+
+A completed task's debug deadline also caps its active command deadlines, so a detached command cannot keep that VM alive beyond the debug window. Failed readiness attempts close their remote command even when the provider throws. Corrupt task state is quarantined: runner operations for that task fail until the state is repaired and Archie restarted, while other tasks can recover normally. New operations never replace a quarantined file with an empty lease history.
+
+Repository snapshots reject files reached through directory symlinks and treat filenames beginning with `@` literally. Leaf symlinks are archived as links. These host-side path checks are preflight validation; they do not make concurrent agent filesystem mutation atomic with archive creation.
 
 ## Human Debugging
 
@@ -149,6 +170,8 @@ Opening `http://127.0.0.1:18080` then shows the live Simulator-only MJPEG feed. 
 The opt-in Vitest case `src/runners/__tests__/orchard.e2e.test.ts` exercises a real Orchard deployment and is skipped by default. Run it with `ARCHIE_ORCHARD_E2E=true`, the normal runner configuration and credential variables, `ARCHIE_ORCHARD_E2E_PROFILE`, `ARCHIE_ORCHARD_E2E_AGENT`, and `ARCHIE_ORCHARD_E2E_REPO_PATH`. `ARCHIE_ORCHARD_E2E_COMMANDS` may contain a JSON array of argv arrays for an app-specific Xcode/Simulator/LLDB canary; defaults verify the Xcode, `simctl`, and LLDB toolchains. Use a disposable `ARCHIE_WORKDIR` because the harness writes its lease audit state there.
 
 The canary provisions and syncs a real repository, runs every configured command, detaches and reconnects to a long command, validates the VNC handoff, releases the lease, and confirms Orchard deleted the VM.
+
+For runner changes on a prepared Apple Silicon Mac, `npm run runner:sweatcoin-e2e -- --repo /absolute/path/to/sweatcoin-mobile` starts an isolated local Orchard lab from a cached Tart digest and checks the real mobile build, two Argent UI passes with video, manager restart/retry, transfers, and VM deletion. It uses the image's installed toolchain. The [Sweatcoin Tart E2E runbook](../guides/sweatcoin-tart-e2e.md) describes the TeamCity reference, prerequisites, evidence, and scope.
 
 `npm run runner:ios-full-cycle-e2e` is the source-to-debug acceptance canary. It uses a clean, exact Git commit and a deterministic dependency-free fixture by default, then proves the complete runner cycle:
 
