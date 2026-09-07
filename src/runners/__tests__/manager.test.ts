@@ -168,6 +168,48 @@ describe('RunnerManager', () => {
     manager.shutdown();
   });
 
+  it('only reaps exact instance-owned backend names', async () => {
+    const provider = new FakeProvider();
+    const owned = 'archie-test-1-12345678';
+    const foreign = ['archie-test-1-1-12345678', 'archie-test--1-12345678', 'archie-test-1-unrecognized'];
+    for (const id of [owned, ...foreign]) provider.instances.set(id, { id, status: 'running' });
+    const manager = new RunnerManager(loadedConfig(), provider);
+    await manager.initialize();
+    try {
+      expect(provider.released).toEqual([owned]);
+      for (const id of foreign) expect(provider.instances.has(id)).toBe(true);
+    } finally {
+      manager.shutdown();
+    }
+  });
+
+  it('preserves a trailing dash in the configured instance identity', async () => {
+    const loaded = loadedConfig();
+    loaded.config.instanceId = 'test-';
+    const provider = new FakeProvider();
+    const manager = new RunnerManager(loaded, provider);
+    const lease = await manager.ensure('task-1', 'mobile-agent', 'ios');
+    expect(lease.backendId).toMatch(/^archie-test--\d+-[a-f0-9]{8}$/);
+  });
+
+  it('does not recover or delete a lease owned by a longer instance id', async () => {
+    const provider = new FakeProvider();
+    const loaded = loadedConfig();
+    loaded.config.instanceId = 'test-1';
+    const other = new RunnerManager(loaded, provider);
+    const lease = await other.ensure('task-1', 'mobile-agent', 'ios');
+    vi.mocked(listRunnerTaskIds).mockResolvedValue(['task-1']);
+    vi.mocked(loadRunnerLeases).mockResolvedValue([lease]);
+    const manager = new RunnerManager(loadedConfig(), provider);
+    await manager.initialize();
+    try {
+      expect(manager.health()).toMatchObject({ degraded: true, activeLeases: 0 });
+      expect(provider.released).toEqual([]);
+    } finally {
+      manager.shutdown();
+    }
+  });
+
   it('reserves capacity atomically across concurrent tasks', async () => {
     let unblock!: () => void;
     const blocked = new Promise<void>((resolve) => { unblock = resolve; });
@@ -244,6 +286,7 @@ describe('RunnerManager', () => {
       }
     }
     const provider = new FailedReadinessProvider();
+    const close = vi.spyOn(provider, 'closeExec');
     const loaded = loadedConfig();
     loaded.config.profiles.ios.readinessCommand = ['/usr/bin/true'];
     loaded.config.profiles.ios.readinessTimeoutSeconds = 1;
@@ -251,9 +294,37 @@ describe('RunnerManager', () => {
     await manager.initialize();
 
     await expect(manager.ensure('task-1', 'mobile-agent', 'ios')).rejects.toThrow(/guest agent unavailable/);
+    expect(close).toHaveBeenCalledWith(provider.provisioned[0].id, expect.stringMatching(/^readiness-/));
     expect(provider.released).toHaveLength(1);
     expect(persisted.get('task-1')).toEqual([]);
     manager.shutdown();
+  });
+
+  it('ends running commands and the VM at a completed task debug deadline', async () => {
+    class DetachedProvider extends FakeProvider {
+      override async *exec(_id: string, _request: ExecRequest): AsyncIterable<ExecEvent> {}
+    }
+    vi.useFakeTimers();
+    const provider = new DetachedProvider();
+    const loaded = loadedConfig();
+    loaded.config.reaperIntervalSeconds = 60;
+    const manager = new RunnerManager(loaded, provider);
+    try {
+      await manager.initialize();
+      const lease = await manager.ensure('task-1', 'mobile-agent', 'ios');
+      lease.syncedRepos['org/app'] = { github: 'org/app', remotePath: '/workspace/app', syncedAt: new Date().toISOString() };
+      await manager.exec('task-1', 'mobile-agent', 'ios', 'org/app', ['sleep', '3600']);
+      await manager.openDebug('task-1', 'mobile-agent', 'ios', 1);
+      await manager.completeTask('task-1');
+      expect(provider.released).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(60_001);
+
+      expect(provider.released).toEqual([lease.backendId]);
+    } finally {
+      manager.shutdown();
+      vi.useRealTimers();
+    }
   });
 
   it('stops readiness retries when the backend fails', async () => {
@@ -301,7 +372,7 @@ describe('RunnerManager', () => {
     loaded.config.profiles.ios.readinessCommand = ['/usr/bin/true'];
     const lease: RunnerLease = {
       id: 'lease-1', taskId: 'task-1', agentId: 'mobile-agent', profile: 'ios',
-      backendId: 'archie-test-1-lease', state: 'provisioning',
+      backendId: 'archie-test-1-12345678', state: 'provisioning',
       createdAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + 60_000).toISOString(), syncedRepos: {}, execSessions: {},
     };
@@ -559,7 +630,7 @@ describe('RunnerManager', () => {
       taskId: 'task-1',
       agentId: id === 'lease-1' ? 'mobile-agent' : 'second-agent',
       profile: 'ios',
-      backendId: `archie-test-1-${id}`,
+      backendId: `archie-test-1-${id === 'lease-1' ? '11111111' : '22222222'}`,
       state: 'ready',
       createdAt: '2026-01-01T00:00:00.000Z',
       lastUsedAt: '2026-01-01T00:00:00.000Z',
@@ -583,7 +654,7 @@ describe('RunnerManager', () => {
     const provider = new FakeProvider();
     const lease: RunnerLease = {
       id: 'lease-1', taskId: 'task-1', agentId: 'mobile-agent', profile: 'ios',
-      backendId: 'archie-test-1-lease', state: 'ready',
+      backendId: 'archie-test-1-12345678', state: 'ready',
       createdAt: new Date().toISOString(), lastUsedAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + 60_000).toISOString(), syncedRepos: {},
       execSessions: {
@@ -606,10 +677,10 @@ describe('RunnerManager', () => {
 
   it('quarantines one corrupt task state without blocking healthy recovery', async () => {
     const provider = new FakeProvider();
-    const quarantinedBackend = 'archie-test-1-corrupt';
+    const quarantinedBackend = 'archie-test-1-33333333';
     const lease: RunnerLease = {
       id: 'lease-healthy', taskId: 'task-healthy', agentId: 'mobile-agent', profile: 'ios',
-      backendId: 'archie-test-1-healthy', state: 'ready', createdAt: new Date().toISOString(),
+      backendId: 'archie-test-1-44444444', state: 'ready', createdAt: new Date().toISOString(),
       lastUsedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(),
       syncedRepos: {}, execSessions: {},
     };
@@ -625,6 +696,7 @@ describe('RunnerManager', () => {
     await manager.initialize();
 
     expect(manager.health()).toMatchObject({ degraded: true, activeLeases: 1 });
+    await expect(manager.ensure('task-corrupt', 'mobile-agent', 'ios')).rejects.toThrow(/quarantined/);
     expect(await manager.ensure('task-healthy', 'mobile-agent', 'ios')).toBe(lease);
     expect(provider.released).not.toContain(quarantinedBackend);
     manager.shutdown();

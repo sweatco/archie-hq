@@ -85,15 +85,20 @@ describe('OrchardRunnerProvider', () => {
       ws.send(JSON.stringify({ type: 'exit', exit: { code: 0 }, watermark: 2 }));
     });
     const provider = new OrchardRunnerProvider(baseUrl, 'archie', 'token');
-    const events = [];
-    for await (const event of provider.exec('vm-1', { argv: ['printf', "it's safe"], sessionId: 'session-1' })) events.push(event);
+    const execution = provider.exec('vm-1', { argv: ['printf', "it's safe"], sessionId: 'session-1' })[Symbol.asyncIterator]();
+    const events = [(await execution.next()).value, (await execution.next()).value];
     expect(events).toMatchObject([
       { type: 'stdout', watermark: 1 },
       { type: 'exit', code: 0, watermark: 2 },
     ]);
     expect(Buffer.from((events[0] as { data: Uint8Array }).data).toString()).toBe('hello');
     await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(messages.map((message) => JSON.parse(message))).toContainEqual({ type: 'ack', watermark: 1 });
+    expect(messages.map(message => JSON.parse(message))).toEqual([{ type: 'ack', watermark: 1 }]);
+    expect((await execution.next()).done).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(messages.map(message => JSON.parse(message))).toEqual([
+      { type: 'ack', watermark: 1 }, { type: 'ack', watermark: 2 }, { type: 'close' },
+    ]);
     expect(requests[0].url).toContain('session=session-1');
     expect(new URL(requests[0].url ?? '', baseUrl).searchParams.get('command')).toBe("'printf' 'it'\\''s safe'");
   });

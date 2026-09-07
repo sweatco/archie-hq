@@ -65,8 +65,8 @@ const MAX_EXEC_QUEUE_BYTES = 8 * 1024 * 1024;
 const ORCHARD_STDIN_CHUNK_BYTES = 16 * 1024;
 
 function eventBytes(event: ExecEvent): number {
-  if (event.type === 'stdout' || event.type === 'stderr') return event.data.byteLength;
-  if (event.type === 'error') return Buffer.byteLength(event.error);
+  if (event.type === 'stdout' || event.type === 'stderr') return 64 + event.data.byteLength;
+  if (event.type === 'error') return 64 + Buffer.byteLength(event.error);
   return 64;
 }
 
@@ -257,31 +257,25 @@ export class OrchardRunnerProvider implements RunnerProvider {
           : typeof frame.watermark === 'number' && Number.isSafeInteger(frame.watermark) && frame.watermark >= 0
             ? frame.watermark
             : (() => { throw new Error('Invalid Orchard exec watermark'); })();
-        if (frame.type === 'stdout' || frame.type === 'stderr') {
+        if (frame.type === 'stdout' || frame.type === 'stderr' || frame.type === 'exit' || frame.type === 'error') {
           if (watermark === undefined) throw new Error(`Missing Orchard exec watermark for ${frame.type}`);
           if (watermark !== receivedWatermark + 1) {
             throw new Error(`Orchard exec history gap: expected watermark ${receivedWatermark + 1}, received ${watermark}`);
           }
           receivedWatermark = watermark;
-          if (!queue.push({ type: frame.type, data: Buffer.from(String(frame.data ?? ''), 'base64'), watermark })) ws.terminate();
-        } else if (frame.type === 'exit') {
-          if (watermark === undefined) throw new Error('Missing Orchard exec watermark for exit');
-          if (watermark !== receivedWatermark + 1) {
-            throw new Error(`Orchard exec history gap: expected watermark ${receivedWatermark + 1}, received ${watermark}`);
+          let event: ExecEvent;
+          if (frame.type === 'stdout' || frame.type === 'stderr') {
+            event = { type: frame.type, data: Buffer.from(String(frame.data ?? ''), 'base64'), watermark };
+          } else if (frame.type === 'exit') {
+            const exit = frame.exit as { code?: unknown } | undefined;
+            if (typeof exit?.code !== 'number' || !Number.isSafeInteger(exit.code)) throw new Error('Invalid Orchard exec exit code');
+            event = { type: 'exit', code: exit.code, watermark };
+            terminal = true;
+          } else {
+            event = { type: 'error', error: String(frame.error ?? 'Unknown Orchard exec error'), watermark };
+            terminal = true;
           }
-          receivedWatermark = watermark;
-          terminal = true;
-          const exit = frame.exit as { code?: unknown } | undefined;
-          if (typeof exit?.code !== 'number' || !Number.isSafeInteger(exit.code)) throw new Error('Invalid Orchard exec exit code');
-          if (!queue.push({ type: 'exit', code: exit.code, watermark })) ws.terminate();
-        } else if (frame.type === 'error') {
-          if (watermark === undefined) throw new Error('Missing Orchard exec watermark for error');
-          if (watermark !== receivedWatermark + 1) {
-            throw new Error(`Orchard exec history gap: expected watermark ${receivedWatermark + 1}, received ${watermark}`);
-          }
-          receivedWatermark = watermark;
-          terminal = true;
-          if (!queue.push({ type: 'error', error: String(frame.error ?? 'Unknown Orchard exec error'), watermark })) ws.terminate();
+          if (!queue.push(event)) ws.terminate();
         } else if (frame.type === 'no_more_history') {
           const historyWatermark = watermark ?? 0;
           if (historyWatermark !== receivedWatermark) {
@@ -318,6 +312,8 @@ export class OrchardRunnerProvider implements RunnerProvider {
           await send({ type: 'ack', watermark });
         }
         if (result.value.type === 'exit' || result.value.type === 'error') {
+          // The caller has persisted the terminal frame; release Orchard's retained SSH connection.
+          if (ws.readyState === WebSocket.OPEN) await send({ type: 'close' });
           if (ws.readyState === WebSocket.OPEN) ws.close();
           break;
         }

@@ -1,48 +1,8 @@
+import type { RunnerConfig } from './config.js';
+export type { RunnerConfig, RunnerProfile } from './config.js';
+
 export type RunnerLeaseState = 'provisioning' | 'ready' | 'failed' | 'releasing';
 export type RunnerExecState = 'running' | 'completed' | 'failed' | 'cancelled' | 'timed_out';
-
-export interface RunnerProfile {
-  image: string;
-  os: 'darwin' | 'linux';
-  cpu: number;
-  memoryMiB: number;
-  diskGiB: number;
-  username: string;
-  passwordEnv: string;
-  allowedAgents: string[];
-  labels: Record<string, string>;
-  resources: Record<string, number>;
-  networkMode: 'softnet' | 'nat';
-  softnetAllow: string[];
-  readinessCommand?: string[];
-  remoteWorkspaceRoot?: string;
-  leaseTtlMinutes: number;
-  debugTtlMinutes: number;
-  maxDebugTtlMinutes: number;
-  execTimeoutSeconds: number;
-  provisionTimeoutSeconds: number;
-  readinessTimeoutSeconds: number;
-  maxExecWaitSeconds: number;
-  maxExecOutputBytes: number;
-  maxActiveExecSessions: number;
-  maxExecSessionHistory: number;
-  maxUploadBytes: number;
-  maxDownloadBytes: number;
-}
-
-export interface RunnerConfig {
-  version: 1;
-  instanceId: string;
-  maxConcurrent: number;
-  orphanGraceMinutes: number;
-  reaperIntervalSeconds: number;
-  orchard: {
-    baseUrl: string;
-    context: string;
-    allowInsecureHttp: boolean;
-  };
-  profiles: Record<string, RunnerProfile>;
-}
 
 export interface LoadedRunnerConfig {
   config: RunnerConfig;

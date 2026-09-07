@@ -107,20 +107,50 @@ export class RunnerWorkspace {
     const output = createWriteStream(archivePath, { mode: 0o600 });
     const outputDone = finished(output);
     void outputDone.catch(() => {});
+    const staging = posix.join(profileWorkspaceRoot(profile), `.collect-${randomUUID()}`);
+    const remoteArchive = posix.join(staging, 'artifacts.tar');
+    const transferSignal = AbortSignal.any([AbortSignal.timeout(profile.execTimeoutSeconds * 1000), ...signal ? [signal] : []]);
+    // Orchard retains only 4 MiB of unacknowledged output per exec session.
+    const chunkSize = 1024 * 1024;
     let bytes = 0;
+    let failure: unknown;
     try {
+      let sizeOutput = '';
       await this.hooks.transfer(lease, profile, {
-        argv: ['/usr/bin/tar', '-cf', '-', '--', ...paths],
+        argv: ['/bin/sh', '-c', [
+          'set -eu',
+          'umask 077',
+          `mkdir ${shellQuote(staging)}`,
+          `ulimit -f ${Math.floor(profile.maxDownloadBytes / 512)}`,
+          `/usr/bin/tar -cf ${shellQuote(remoteArchive)} -- ${paths.map(path => shellQuote(`./${path}`)).join(' ')}`,
+          `wc -c < ${shellQuote(remoteArchive)}`,
+        ].join('\n')],
         cwd: synced.remotePath,
         onStdout: async (data) => {
-          bytes += data.byteLength;
-          if (bytes > profile.maxDownloadBytes) {
-            throw new Error(`Collected archive exceeds the ${profile.maxDownloadBytes}-byte download limit`);
-          }
-          if (!output.write(data)) await Promise.race([once(output, 'drain'), outputDone]);
+          sizeOutput += Buffer.from(data).toString('utf8');
+          if (sizeOutput.length > 128) throw new Error('Invalid collected archive size');
         },
-        signal,
+        signal: transferSignal,
       });
+      const size = Number(sizeOutput.trim());
+      if (!/^\d+$/.test(sizeOutput.trim()) || !Number.isSafeInteger(size) || size <= 0 || size > profile.maxDownloadBytes) {
+        throw new Error(`Invalid collected archive size or exceeds the ${profile.maxDownloadBytes}-byte download limit`);
+      }
+      for (let offset = 0; offset < size; offset += chunkSize) {
+        const expected = Math.min(chunkSize, size - offset);
+        let received = 0;
+        await this.hooks.transfer(lease, profile, {
+          argv: ['/bin/sh', '-c', 'exec dd "$@" 2>/dev/null', 'dd', `if=${remoteArchive}`, `bs=${chunkSize}`, `skip=${offset / chunkSize}`, 'count=1'],
+          onStdout: async (data) => {
+            received += data.byteLength;
+            if (received > expected) throw new Error('Collected archive chunk exceeds its expected size');
+            if (!output.write(data)) await Promise.race([once(output, 'drain'), outputDone]);
+          },
+          signal: transferSignal,
+        });
+        if (received !== expected) throw new Error('Collected archive chunk was not received completely');
+        bytes += received;
+      }
       output.end();
       await outputDone;
       if ((await stat(archivePath)).size !== bytes) throw new Error('Collected archive was not written completely');
@@ -149,9 +179,18 @@ export class RunnerWorkspace {
         destination,
       }, lease.agentId);
       return destination;
+    } catch (error) {
+      failure = error;
+      throw error;
     } finally {
       output.destroy();
       await rm(tempDir, { recursive: true, force: true });
+      await this.hooks.transfer(lease, profile, {
+        argv: ['/bin/rm', '-rf', '--', staging],
+        signal: AbortSignal.timeout(10_000),
+      }).catch(error => {
+        throw new Error(`${failure ? `${String(failure)}; ` : ''}Guest archive cleanup failed: ${String(error)}`);
+      });
     }
   }
 }

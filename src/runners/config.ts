@@ -2,7 +2,7 @@ import { isIP } from 'node:net';
 import { resolve } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
-import type { LoadedRunnerConfig, RunnerConfig } from './types.js';
+import type { LoadedRunnerConfig } from './types.js';
 
 const cidrSchema = z.string().refine((value) => {
   const [address, prefix, extra] = value.split('/');
@@ -77,12 +77,15 @@ export const runnerConfigSchema = z.object({
   message: 'At least one runner profile is required',
 });
 
+export type RunnerProfile = z.infer<typeof runnerProfileSchema>;
+export type RunnerConfig = z.infer<typeof runnerConfigSchema>;
+
 export async function loadRunnerConfig(env: NodeJS.ProcessEnv = process.env): Promise<LoadedRunnerConfig | null> {
   const configPath = env.ARCHIE_RUNNERS_CONFIG;
   if (!configPath) return null;
 
   const raw = await readFile(resolve(configPath), 'utf8');
-  const parsed = runnerConfigSchema.parse(JSON.parse(raw)) as RunnerConfig;
+  const parsed = runnerConfigSchema.parse(JSON.parse(raw));
   parsed.orchard.baseUrl = parsed.orchard.baseUrl.replace(/\/+$/, '');
 
   if (env.NODE_ENV === 'production') {

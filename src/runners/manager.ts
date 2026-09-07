@@ -34,10 +34,6 @@ function addMinutes(minutes: number): string {
   return new Date(Date.now() + minutes * 60_000).toISOString();
 }
 
-function sanitizeName(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32) || 'runner';
-}
-
 export { runnerRepositoryPath } from './workspace.js';
 
 function safeError(error: unknown): string {
@@ -90,7 +86,7 @@ export class RunnerManager {
         const taskLeases = await loadRunnerLeases(taskId);
         for (const lease of taskLeases) {
           if (lease.taskId !== taskId) throw new Error(`Runner lease ${lease.id} is stored under the wrong task`);
-          if (!lease.backendId.startsWith(this.backendPrefix())) throw new Error(`Runner lease ${lease.id} does not belong to instance ${this.config.instanceId}`);
+          if (this.backendCreatedAt(lease.backendId) === undefined) throw new Error(`Runner lease ${lease.id} does not belong to instance ${this.config.instanceId}`);
           await this.execution.restoreLogCursors(lease);
         }
         this.leases.set(taskId, taskLeases);
@@ -152,6 +148,7 @@ export class RunnerManager {
   }
 
   private taskLeases(taskId: string): RunnerLease[] {
+    if (this.degradedReasons.has(`state:${taskId}`)) throw new Error(`Runner state for ${taskId} is quarantined; repair it before using runners`);
     let taskLeases = this.leases.get(taskId);
     if (!taskLeases) {
       taskLeases = [];
@@ -233,7 +230,16 @@ export class RunnerManager {
   }
 
   private backendPrefix(): string {
-    return `archie-${sanitizeName(this.config.instanceId)}-`;
+    return `archie-${this.config.instanceId}-`;
+  }
+
+  private backendCreatedAt(backendId: string): number | undefined {
+    const prefix = this.backendPrefix();
+    if (!backendId.startsWith(prefix)) return undefined;
+    const suffix = backendId.slice(prefix.length);
+    if (!/^\d+-[a-f0-9]{8}$/.test(suffix)) return undefined;
+    const timestamp = Number(suffix.split('-')[0]);
+    return Number.isSafeInteger(timestamp) ? timestamp : undefined;
   }
 
   async ensure(taskId: string, agentId: string, profileName: string): Promise<RunnerLease> {
@@ -401,9 +407,9 @@ export class RunnerManager {
       }
     } finally {
       clearTimeout(timer);
+      if (exitCode !== 0) await this.provider.closeExec(lease.backendId, sessionId).catch(() => {});
     }
     if (exitCode !== 0) {
-      await this.provider.closeExec(lease.backendId, sessionId).catch(() => {});
       throw new Error(failure || `Runner readiness command exited with ${exitCode ?? 'no status'}`);
     }
   }
@@ -499,7 +505,7 @@ export class RunnerManager {
         await this.lock(leaseKey(lease.taskId, lease.agentId, lease.profile), async () => {
           if (!this.taskLeases(taskId).includes(lease)) return;
           if (lease.debugExpiresAt && Date.parse(lease.debugExpiresAt) > Date.now()) {
-            lease.expiresAt = lease.debugExpiresAt;
+            this.retainDebugLease(lease, lease.debugExpiresAt);
             await this.persist(taskId);
             return;
           }
@@ -510,6 +516,15 @@ export class RunnerManager {
       }
     }
     if (failures.length > 0) throw new AggregateError(failures, `Failed to complete ${failures.length} runner lease(s)`);
+  }
+
+  private retainDebugLease(lease: RunnerLease, expiresAt: string): void {
+    lease.expiresAt = expiresAt;
+    for (const session of Object.values(lease.execSessions)) {
+      if (session.state === 'running' && Date.parse(session.deadlineAt) > Date.parse(expiresAt)) {
+        session.deadlineAt = expiresAt;
+      }
+    }
   }
 
   private async releaseLease(lease: RunnerLease): Promise<void> {
@@ -593,7 +608,7 @@ export class RunnerManager {
           continue;
         }
         if (taskCompleted && lease.debugExpiresAt) {
-          lease.expiresAt = lease.debugExpiresAt;
+          this.retainDebugLease(lease, lease.debugExpiresAt);
           await this.persist(taskId);
         }
         if (lease.state === 'failed' || lease.state === 'releasing' || this.leaseExpired(lease)) {
@@ -618,12 +633,11 @@ export class RunnerManager {
   private async reconcileOrphans(): Promise<void> {
     if ([...this.degradedReasons.keys()].some((key) => key.startsWith('state:'))) return;
     const known = new Set([...this.leases.values()].flat().map((lease) => lease.backendId));
-    const prefix = this.backendPrefix();
     const graceMs = this.config.orphanGraceMinutes * 60_000;
     for (const instance of await this.provider.list()) {
-      if (!instance.id.startsWith(prefix) || known.has(instance.id)) continue;
-      const timestamp = Number(instance.id.slice(prefix.length).split('-')[0]);
-      if (!Number.isFinite(timestamp) || Date.now() - timestamp < graceMs) continue;
+      if (known.has(instance.id)) continue;
+      const timestamp = this.backendCreatedAt(instance.id);
+      if (timestamp === undefined || Date.now() - timestamp < graceMs) continue;
       try {
         await this.provider.release(instance.id);
         this.markHealthy(`orphan:${instance.id}`);

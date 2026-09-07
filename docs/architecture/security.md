@@ -58,7 +58,7 @@ OS-level sandbox (Bash only):
   denyWrite:  [.claude/settings.json, .claude/skills, .claude/hooks, CLAUDE.md]
 
 PreToolUse hooks (Read, Write, Edit, Glob, Grep):
-  Same allow/deny logic, resolves paths to absolute before checking
+  Resolves symlinks and missing write targets before checking allowed/protected roots
   Writable paths are implicitly readable (no need to list in both)
   Returns permissionDecision: 'deny' on violation
 ```
@@ -67,11 +67,17 @@ PreToolUse hooks (Read, Write, Edit, Glob, Grep):
 
 One of those re-allowed paths is worth calling out, because it is a hole punched through the `/app` denial rather than a path outside it: an agent's **mounted core skill directories**. Core skills live in archie-hq's own `skills/` tree, which is `/app/skills` in the container, and they mount into the agent workspace as symlinks.
 
-Loading a skill needs no grant at all and never did: `Skill` is in neither the hook's `READ_TOOLS` nor its `WRITE_TOOLS`, so the hook returns before it looks at a path, and the CLI reads the `SKILL.md` in-process rather than through `Bash`. Reading a skill's *file* is what is gated, and the two layers block it for different reasons — the hook because the core skills directory appears in no `allowRead`/`allowWrite` list, which holds in any environment, and bubblewrap because it resolves the workspace symlink back to `/app`. Measured in the container against `/app/skills/triggers/SKILL.md` before the grant: unreachable from `Bash` by either route, and reachable to `Read` only through the workspace symlink, since the hook checks the raw tool-input path without resolving it.
+Loading a skill uses the SDK's `Skill` tool, which is outside the filesystem hook's tool set. Reading a skill file through `Read`, `Glob`, or `Grep` requires a grant for its resolved destination. The hook follows symlinks, including dangling links to new write targets, and resolves `..` after symlinks. Both an alias to a protected file and a write through a protected mount are denied. Missing `Glob`/`Grep` paths are checked as the agent's working directory. Invalid or unresolvable paths fail closed.
+
+Filesystem hooks are preflight checks, not atomic filesystem operations. They cannot prevent another process from changing a path between the hook and the SDK's subsequent access, or independently confine every path a recursive tool visits. The OS sandbox remains the enforcement boundary for Bash; do not treat the in-process hook alone as equivalent kernel isolation.
 
 `spawn.ts` therefore adds the directories an agent actually mounts — not the whole tree — to `allowReadPaths`, on both the base and repo tracks. Plugin skills need no equivalent: their real path is inside the plugin dir, which is already granted.
 
 **Writes:** Deny-all by default. Workspace paths added to `allowWrite` per track. `/tmp` is always writable (tools need scratch space). Protected files (`.claude/settings.json`, `.claude/skills`, `.claude/hooks`, `CLAUDE.md`) are in `denyWrite` — agents cannot modify their own configuration at runtime.
+
+`buildPackageManagerCacheEnv()` redirects npm, Yarn, Yarn Berry's global folder, and Corepack under `CACHES_DIR` so builds do not write to the read-only home directory. npm's content cache and Yarn packages are checked against committed lockfile integrity; this reasoning does not extend to unhashed pip or Bundler downloads. Concurrent Yarn cache writes can cause failed integrity checks and require refetching.
+
+The shared npm `_npx` directory is a separate risk: it contains executable installations reused without integrity verification. Agents with write access to that cache can affect later MCP servers started through `npx`. Preinstalling MCP servers or separating their execution caches from agent-writable package caches would close this boundary; the current shared-cache configuration does neither.
 
 **A path can be granted write-only** — present in `allowWrite` without a matching `allowRead`. `CACHES_DIR` (`$ARCHIE_WORKDIR/caches/`, the shared package-manager cache) is granted that way; check the `allowWritePaths` grant sites in `src/agents/spawn.ts` for the current set rather than trusting a list here. Two things about that form are worth knowing, because both are counter-intuitive.
 
@@ -273,7 +279,7 @@ Layer 1b: Policy tier (managedSettings) — enforces the egress allowlist
   └── allowManagedDomainsOnly: true — user/project/local/flag domain rules ignored
 
 Layer 2: PreToolUse hooks (Read, Write, Edit, Glob, Grep)
-  ├── Resolves paths to absolute before checking
+  ├── Resolves symlinks, including new write targets, before checking
   ├── Writable paths are implicitly readable
   └── Enforces same boundaries as OS sandbox on in-process tools
 
@@ -357,7 +363,7 @@ Tracked sandbox issues. Each says whether a workaround is in place; remove a wor
 
 **Consequence:** no workaround is needed, and `denyRead` on a parent is safe to combine with `allowWrite` on a child. Do not reason from this entry's original claim; if a future `sandbox-runtime` upgrade changes mount ordering, re-measure rather than assuming either direction.
 
-**Source:** `src/agents/sandbox.ts` (`buildSandboxConfig` comment)
+**Source:** `src/agents/sandbox.ts` (`buildSandboxConfig`)
 
 ### 2. SDK binds sensitive files as /dev/null device nodes
 
@@ -374,7 +380,6 @@ Tracked sandbox issues. Each says whether a workaround is in place; remove a wor
 - **Content-level injection detection (beyond Bedrock Guardrails):** AWS Bedrock Guardrails are now used to scan research INPUT/OUTPUT (see Defense Layer 2). They are optional — when `BEDROCK_GUARDRAIL_ID` is unset the scan is skipped. There is no in-process pattern-matching fallback (the previous LLM Guard integration was removed).
 - **DNS monitoring:** No runtime monitoring of DNS queries from research agents to detect data exfiltration via DNS tunneling.
 - **Sandbox for nested classifier subagent:** The nested `query()` call in `research-tools.ts` (`classifyPreset`, Haiku) does not have sandbox configuration. It runs with `allowedTools: []`, so the only attack surface is the model deciding to emit malformed JSON — there are no filesystem or network tools to abuse. The triage agent in `src/system/triage.ts` is also unsandboxed but is currently **disabled** at the call site in `src/connectors/slack/events.ts`: Slack events route directly to the PM via `findTaskByThread` / `Task.create()` without classification, so its missing sandbox is not an active concern.
-- **Cross-task session isolation in Bash:** Other tasks' session directories are readable from Bash due to the denyRead limitation above. PreToolUse hooks protect in-process tools but Bash `cat`/`ls` can browse.
 
 ## Related Documentation
 

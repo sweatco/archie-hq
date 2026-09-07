@@ -56,6 +56,37 @@ describe('runner transfers', () => {
     await expect(extractRunnerArchive(archive, join(parent, 'output'), parent, 1024 * 1024)).rejects.toThrow(/Unsafe symbolic link/);
   });
 
+  it('does not read tracked files through a replaced directory symlink', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'archie-runner-replaced-'));
+    const outside = await mkdtemp(join(tmpdir(), 'archie-runner-private-'));
+    tempDirs.push(repo, outside);
+    await execFileAsync('git', ['init', '-q'], { cwd: repo });
+    await mkdir(join(repo, 'nested'));
+    await writeFile(join(repo, 'nested', 'secret.txt'), 'tracked');
+    await execFileAsync('git', ['add', 'nested/secret.txt'], { cwd: repo });
+    await writeFile(join(outside, 'secret.txt'), 'host secret');
+    await rm(join(repo, 'nested'), { recursive: true });
+    await symlink(outside, join(repo, 'nested'));
+
+    await expect(createRepositoryArchive(repo, 1024 * 1024)).rejects.toThrow(/symbolic link/);
+  });
+
+  it('archives a literal @ filename without interpreting it as another archive', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'archie-runner-at-file-'));
+    const output = await mkdtemp(join(tmpdir(), 'archie-runner-at-output-'));
+    tempDirs.push(repo, output);
+    await execFileAsync('git', ['init', '-q'], { cwd: repo });
+    await writeFile(join(repo, '@notes'), 'literal file');
+
+    const archive = await createRepositoryArchive(repo, 1024 * 1024);
+    try {
+      await extract({ cwd: output, file: archive.path });
+      expect(await readFile(join(output, '@notes'), 'utf8')).toBe('literal file');
+    } finally {
+      await archive.cleanup();
+    }
+  });
+
   it('rejects a destination outside its allowed root', async () => {
     const source = await mkdtemp(join(tmpdir(), 'archie-runner-source-'));
     const allowed = await mkdtemp(join(tmpdir(), 'archie-runner-allowed-'));

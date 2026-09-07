@@ -1,7 +1,7 @@
 import { createReadStream } from 'node:fs';
 import { lstat, mkdir, mkdtemp, realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { create, extract, list } from 'tar';
@@ -54,6 +54,7 @@ function collectGitFiles(cwd: string): Promise<string[]> {
 }
 
 export async function createRepositoryArchive(cwd: string, maxBytes: number): Promise<RepositoryArchive> {
+  cwd = await realpath(cwd);
   const candidates = await collectGitFiles(cwd);
   if (candidates.length > 100000) throw new Error('Repository snapshot exceeds the 100000-file limit');
   const files: string[] = [];
@@ -62,11 +63,14 @@ export async function createRepositoryArchive(cwd: string, maxBytes: number): Pr
     const source = resolve(cwd, file);
     if (!source.startsWith(`${resolve(cwd)}${sep}`)) throw new Error(`Repository path escapes clone: ${file}`);
     const entry = await lstat(source).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === 'ENOENT') return null;
+      if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
       throw error;
     });
     if (!entry || (!entry.isFile() && !entry.isSymbolicLink())) continue;
-    files.push(file);
+    if (await realpath(dirname(source)) !== dirname(source)) {
+      throw new Error(`Repository path traverses a symbolic link: ${file}`);
+    }
+    files.push(`./${file}`);
     sourceBytes += entry.size;
     if (sourceBytes > maxBytes) throw new Error(`Repository snapshot exceeds the ${maxBytes}-byte upload limit`);
   }
