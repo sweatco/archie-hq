@@ -22,6 +22,8 @@
 import { createHash } from 'crypto';
 import type { HookCallbackMatcher, HookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
 import { logger } from '../system/logger.js';
+import { resolveToolAccess, hasToolAccess, ToolAccessDenied } from './tool-access.js';
+import type { McpAccessPolicy, ToolAccessBinding } from './tool-access.js';
 
 /** How long a grant stays spendable. Spending it takes a chain — the requesting
  *  agent is woken, respawns, re-reads state, retries — so the window has to fit
@@ -51,6 +53,7 @@ export const PENDING_APPROVAL_TTL_MS = 60 * 60 * 1000;
 export type ToolTier = 'allow' | 'ask' | 'deny';
 
 export interface McpServerPolicy {
+  access?: McpAccessPolicy;
   /** Tier for tools not listed in `tiers`. Fail-safe default is `ask`. */
   default: ToolTier;
   /** Explicit per-tool tiers (bare tool names, without the mcp__ prefix). */
@@ -259,6 +262,12 @@ function deny(reason: string): HookJSONOutput {
  * task on disk (and so this module doesn't join the task ↔ agent import cycle).
  */
 export interface ToolApprovalPort {
+  /** Mounted plugin servers. Built-in MCP tools never consult plugin config. */
+  serverNames?: readonly string[];
+  /** Resolve current policy, including policy added while an agent is running. */
+  currentPolicy?(): McpToolPolicy;
+  /** Check the requester and return a binding that survives the approval round trip. */
+  authorize?(call: ClassifiedCall, policy: McpServerPolicy): Promise<ToolAccessBinding | undefined>;
   /**
    * Spend a stored grant for this digest. Resolves true when one was found,
    * unexpired, and consumed — false otherwise. The implementation must *remove*
@@ -267,7 +276,7 @@ export interface ToolApprovalPort {
    * spend to be durable, so a crash after the tool runs cannot leave the
    * single-use grant spendable again.
    */
-  consumeApproval(digest: string): boolean | Promise<boolean>;
+  consumeApproval(digest: string, access?: ToolAccessBinding): boolean | Promise<boolean>;
   /**
    * Post the Slack approval and park the task. Returns `'posted'`, or
    * `'already-pending'` when a different request is outstanding (one at a
@@ -280,6 +289,7 @@ export interface ToolApprovalPort {
     tool: string;
     summary: string;
     heading: string;
+    access?: ToolAccessBinding;
   }): Promise<'posted' | 'already-pending'>;
 }
 
@@ -293,31 +303,33 @@ export interface ToolApprovalPort {
  */
 export function createToolApprovalHooks(policy: McpToolPolicy, port: ToolApprovalPort): HookCallbackMatcher[] {
   return [{
-    // Generous explicit budget: the deny path posts to Slack and fsyncs metadata
+    // Generous explicit budget: the deny path posts to Slack and writes metadata
     // inside the hook, and what a host does with a TIMED-OUT PreToolUse decision
     // is its policy, not ours — so never get near the default.
     timeout: 120,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     hooks: [async (input: any): Promise<HookJSONOutput> => {
       const toolName = typeof input?.tool_name === 'string' ? input.tool_name : undefined;
-      // Classify before the try, so a throw can be attributed: an unmanaged
-      // tool must proceed even if something below would have failed, and a
-      // managed mutation must be denied rather than left to the SDK's handling
-      // of a rejected hook.
-      const call = toolName ? classifyToolCall(policy, toolName) : undefined;
-      if (!call || call.tier === 'allow') return { continue: true };
-
+      const parsed = toolName && parseMcpToolName(toolName);
+      if (!toolName || !parsed || (port.serverNames && !port.serverNames.includes(parsed.server))) return { continue: true };
       try {
-        return await decideCall(policy[call.server], port, call, input.tool_input);
+        const current = port.currentPolicy ? port.currentPolicy() : policy;
+        const call = classifyToolCall(current, toolName);
+        if (!call) return { continue: true };
+        return await decideCall(current[call.server], port, call, input.tool_input);
       } catch (error) {
         // Fail closed. The arguments are agent-controlled, so this path is
         // reachable on purpose as well as by accident (a deeply nested argument
         // overflows the canonicalizer's recursion), and a security hook must
         // not depend on how the host treats a rejected hook.
         const message = error instanceof Error ? error.message : String(error);
+        if (error instanceof ToolAccessDenied) {
+          logger.warn('tool-approval', `Access refused for ${toolName}: ${message}`);
+          return deny(`\`${toolName}\` was refused. ${message} Nothing ran.`);
+        }
         logger.error('tool-approval', `Gate failed for ${toolName} — denying`, error);
         return deny(
-          `\`${call.tool}\` was refused because the approval gate errored while evaluating it (${message}). ` +
+          `\`${toolName}\` was refused because the approval gate errored while evaluating it (${message}). ` +
           `Nothing ran. Report this to the user.`,
         );
       }
@@ -325,7 +337,7 @@ export function createToolApprovalHooks(policy: McpToolPolicy, port: ToolApprova
   }];
 }
 
-/** The gate's decision for one managed, non-`allow` call. Separated so the
+/** The gate's decision for one managed call. Separated so the
  *  wrapper above can turn any throw into a denial. */
 async function decideCall(
   serverPolicy: McpServerPolicy,
@@ -340,11 +352,23 @@ async function decideCall(
     );
   }
 
+  const rule = resolveToolAccess(serverPolicy.access, call.tool);
+  // Approver restrictions apply only when the tool asks. Requester restrictions
+  // must also guard allow-tier tools; allow means no confirmation, not no ACL.
+  if (call.tier === 'allow') delete rule.approverGroups;
+  let access: ToolAccessBinding | undefined;
+  if (hasToolAccess(rule)) {
+    if (!port.authorize) throw new ToolAccessDenied('Human access verification is unavailable.');
+    access = await port.authorize(call, serverPolicy);
+    if (!access) throw new ToolAccessDenied('Missing authorization context.');
+  }
+  if (call.tier === 'allow') return { continue: true };
+
   // tier === 'ask': per-call approval, bound to this exact call.
-  const digest = callDigest(call.server, call.tool, toolInput);
+  const digest = callDigest(call.server, call.tool, access ? { input: toolInput, access } : toolInput);
 
   // Already approved? Spend the grant and let this one call through.
-  if (await port.consumeApproval(digest)) {
+  if (await (access ? port.consumeApproval(digest, access) : port.consumeApproval(digest))) {
     logger.system(`Gated tool call ${call.server}:${call.tool} approved (${digest}) — proceeding`);
     return { continue: true };
   }
@@ -357,6 +381,7 @@ async function decideCall(
     tool: call.tool,
     summary: rendered.summary,
     heading: rendered.heading,
+    ...(access ? { access } : {}),
   });
 
   if (outcome === 'already-pending') {

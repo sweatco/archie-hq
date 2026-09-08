@@ -299,6 +299,7 @@ async function handleExistingTaskDirect(
     task.debouncedSave();
   }
 
+  await task.revokeToolRequester();
   await appendGitHubEvent(taskId, context.githubRepo, formatGitHubEvent(context));
   await task.sendMessage(AGENT_PROMPTS.githubInput, 'pm-agent');
 }

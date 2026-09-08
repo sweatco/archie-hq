@@ -322,12 +322,13 @@ export function handleChecksReadyDirect(
     checksReadyTimers.delete(key);
     logger.system(`GitHub: Firing checks_ready for ${key}`);
     try {
+      const task = await Task.get(taskId);
+      await task.revokeToolRequester();
       await appendGitHubEvent(taskId, githubRepo, {
         from: 'ci',
         destination: `PR #${prNumber}`,
         message: `checks updated — call get_pr_checks(${prNumber}) to inspect`,
       });
-      const task = await Task.get(taskId);
       await task.sendMessage(AGENT_PROMPTS.githubInput, 'pm-agent');
     } catch (error) {
       logger.error('checks-ready', `Failed to deliver checks_ready ping for ${key}`, error);

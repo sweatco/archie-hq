@@ -43,6 +43,7 @@ vi.mock('module', async (importOriginal) => {
 
 // A deliberately thin stand-in for the real extraction: top-level text plus attachment card text, authorless (the real `extractMessageContent` strips attachment authors too). Faithful extraction — blocks, mention resolution, file naming — is covered by client.test.ts; what matters here is only that dispatch reads what extraction produced rather than the raw `text` field.
 vi.mock('../client.js', () => ({
+  getHomeTeamId: vi.fn().mockReturnValue('T_HOME'),
   initSlackClient: vi.fn(),
   updateMessage: vi.fn().mockResolvedValue(undefined),
   getBotUserId: vi.fn().mockReturnValue('U_BOT'),

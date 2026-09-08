@@ -16,6 +16,7 @@ import {
   initSlackClient,
   updateMessage,
   getBotUserId,
+  getHomeTeamId,
   fetchSlackThread,
   getBotId,
   addReaction,
@@ -41,6 +42,9 @@ import { messageMatchesTrigger } from '../../system/trigger-match.js';
 import { generateTaskTitle } from '../../tasks/title-generator.js';
 import { setAssistantThreadTitle } from './title.js';
 import type { SlackThread, SlackAuthor } from '../../types/task.js';
+import { ToolAccessDenied, type SlackPrincipal } from '../../agents/tool-access.js';
+import { requesterFromSlackEvent } from '../../tasks/tool-requester.js';
+import { slackGroupAccess } from './user-groups.js';
 // import { triageSlackMessage } from '../../system/triage.js';
 
 /**
@@ -430,6 +434,8 @@ export async function mountSlackApp(
 
   registerMergeActionHandlers(app!);
   registerToolApprovalHandlers(app!);
+  app!.event('subteam_members_changed', async () => { slackGroupAccess.invalidate(); });
+  app!.event('subteam_updated', async () => { slackGroupAccess.invalidate(); });
 
   // Handle trigger approval button
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -663,8 +669,8 @@ const STALE_TOOL_APPROVAL_TEXT =
  * registrations; production registration happens in mountSlackApp.
  */
 export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): void {
-  /** Resolve the clicker for attribution; never blocks resolution. */
-  const resolveApprover = async (userId: string | undefined): Promise<{ id: string; name: string } | undefined> => {
+  /** Resolve attribution and, only for a verified home-workspace action, authority. */
+  const resolveApprover = async (userId: string | undefined, teamId?: string): Promise<{ id: string; name: string; principal?: SlackPrincipal } | undefined> => {
     if (!userId) return undefined;
     try {
       const info = await getUserInfo(userId);
@@ -672,7 +678,9 @@ export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): 
         logger.system(`Tool-call approver ${userId} is external/guest — identity omitted from the finding`);
         return undefined;
       }
-      return { id: userId, name: info.realName };
+      const principal = teamId && teamId === getHomeTeamId() && info.teamId === teamId
+        ? { userId, teamId } : undefined;
+      return { id: userId, name: info.realName, principal };
     } catch (error) {
       logger.warn('Slack', `Failed to resolve tool-call approver ${userId}`, error);
       return { id: userId, name: userId };
@@ -685,10 +693,10 @@ export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): 
 
     const { taskId, digest } = parseToolApprovalButtonValue(String(action.value ?? ''));
     const userId = body.user?.id || 'unknown';
-    logger.server(`Tool call approved by ${userId} for task ${taskId} (${digest})`);
+    logger.server(`Tool-call approval clicked by ${userId} for task ${taskId} (${digest})`);
 
     try {
-      const approver = await resolveApprover(userId !== 'unknown' ? userId : undefined);
+      const approver = await resolveApprover(userId !== 'unknown' ? userId : undefined, body.team?.id);
       const task = await Task.get(taskId);
       const disposition = await task.handleToolCallApproval(approver, digest);
 
@@ -699,6 +707,10 @@ export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): 
         await updateMessage(body.channel.id, body.message.ts, text, []);
       }
     } catch (error) {
+      if (error instanceof ToolAccessDenied && body.channel?.id) {
+        await postEphemeral(body.channel.id, userId, error.message);
+        return;
+      }
       logger.error('Server', 'Error handling tool-call approval', error);
     }
   });
@@ -709,11 +721,12 @@ export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): 
 
     const { taskId, digest } = parseToolApprovalButtonValue(String(action.value ?? ''));
     const userId = body.user?.id || 'unknown';
-    logger.server(`Tool call denied by ${userId} for task ${taskId} (${digest})`);
+    logger.server(`Tool-call denial clicked by ${userId} for task ${taskId} (${digest})`);
 
     try {
       const task = await Task.get(taskId);
-      const disposition = await task.handleToolCallDenial(digest);
+      const approver = await resolveApprover(userId !== 'unknown' ? userId : undefined, body.team?.id);
+      const disposition = await task.handleToolCallDenial(digest, approver?.principal);
 
       if (body.channel?.id && body.message?.ts) {
         const text = disposition === 'resolved'
@@ -722,6 +735,10 @@ export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): 
         await updateMessage(body.channel.id, body.message.ts, text, []);
       }
     } catch (error) {
+      if (error instanceof ToolAccessDenied && body.channel?.id) {
+        await postEphemeral(body.channel.id, userId, error.message);
+        return;
+      }
       logger.error('Server', 'Error handling tool-call denial', error);
     }
   });
@@ -892,7 +909,8 @@ export async function handleSlackEvent(event: {
     // The `thread.messages.length > 0` conjunct is a content floor on TASK CREATION specifically. Inverting the subtype gate to a denylist deliberately forwards subtypes nobody enumerated, which is what fixes the trigger arm, but this branch spends a PM turn: a payload with no author and no body (an assistant-container notice, a `tombstone`, a `bot_add`) otherwise reached `Task.create()` and woke the PM on an empty knowledge log. Checking the fetched thread rather than the subtype keeps that robust — any future subtype carrying nothing is refused for the same reason, with no list to maintain.
     //
     // It is deliberately NOT applied to the trigger branch below. That path renders from the raw event, not from the fetched thread, precisely because `fetchSlackThread` drops a message with neither a `user` nor a `botId` — gating it on `thread.messages` would reintroduce the very blindness this change removes.
-    const task = await Task.create();
+    const requester = requesterFromSlackEvent(thread, event.user, event.ts, getHomeTeamId());
+    const task = requester ? await Task.create(requester) : await Task.create();
     await task.append(thread);
     // Ack the triggering message. For @mention/DM the :eyes: was already added
     // before the thread fetch; for a reply to a bot-started thread, add it now.
@@ -1140,4 +1158,3 @@ async function sendSharedChannelWarnings(
 
   task.debouncedSave();
 }
-
