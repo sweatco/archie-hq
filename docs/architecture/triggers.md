@@ -31,7 +31,6 @@ The two schedulers (`reminder-scheduler.ts`, `trigger-scheduler.ts`) run side by
 interface Trigger {
   id: string;                                  // "trg-YYYYMMDD-HHMM-random6"
   status: 'pending' | 'enabled' | 'paused';   // pending = proposed, awaiting approval
-  created_by: string;                          // Slack user ID who requested it
   created_at: string;
   approved_by?: string;                        // who clicked Approve / typed y
   binding: TriggerBinding;                     // channel thread or user DM
@@ -182,6 +181,8 @@ Trigger creation reuses the edit-mode approval mechanism, which is already chann
 - **Slack** renders Approve/Deny buttons; **the CLI** renders the same request as `[y] approve / [n] deny`.
 - Both converge on the task-level handlers `handleTriggerApproval` / `handleTriggerDenial`. The Slack buttons carry the trigger id; the CLI `POST /tasks/:id/approve` body is just `{ type:'trigger', approve }`, so the handler falls back to `pending_trigger_id`.
 
+The approver is the only stored human identity (`approved_by`): their active-trigger cap is checked on approval and resume, and failure notices go to them. CLI approvals use `cli` and receive no Slack DM. Pending proposals have no approver. Legacy records discard the old identity field without inferring approval from it.
+
 There is **no operator bypass** — approving from the CLI is exactly equivalent to clicking Approve in Slack.
 
 ## Visibility & privacy
@@ -206,7 +207,7 @@ Every **configuration change** — created/enabled, edited, paused/resumed, dele
 - **Propose-then-confirm** — no agent enables a trigger from a model decision alone.
 - **Human approval is the loop guard** — a trigger-spawned task *may* call `propose_trigger`, but that only ever creates a `pending` trigger; nothing enables (or fires) without a human clicking Approve, and a task has no way to self-approve (approval comes only from the Slack button or the CLI `/approve` endpoint). So there is no autonomous amplification loop to gate against — the approval step already breaks it. (Runaway pending-proposal spam is bounded by the daily fire cap.)
 - **Read-only by default** — a fired task is an ordinary task; any write/push still needs in-the-moment edit-mode approval.
-- **Limits** — recurring schedules ≥1h apart; per-user and per-channel active-trigger caps; a per-account daily fired-run cap (in-memory, reset daily).
+- **Limits** — recurring schedules ≥1h apart; per-approver and per-channel active-trigger caps; a per-account daily fired-run cap (in-memory, reset daily).
 - **Kill switch** — `ARCHIE_TRIGGERS_ENABLED=false` disables all firing and creation globally.
 
 ## CLI & API surface

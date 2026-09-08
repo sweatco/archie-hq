@@ -2,7 +2,7 @@
 
 This is the example PM overlay. The text here is appended to the PM agent's system
 prompt, so use it to give the PM the standing context it needs for your organization —
-what the company/team does, who the regular requesters are, house style for replies,
+what the company/team does, who the regular users are, house style for replies,
 and any defaults that should hold across every conversation.
 
 For this example install, there's no real organization, so the context is minimal: you

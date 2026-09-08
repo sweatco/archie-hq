@@ -20,6 +20,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const HOME_TEAM = 'T_HOME';
 
 vi.mock('../client.js', () => ({
+  getHomeTeamId: vi.fn().mockReturnValue('T_HOME'),
   initSlackClient: vi.fn(),
   updateMessage: vi.fn().mockResolvedValue(undefined),
   getBotUserId: vi.fn(),

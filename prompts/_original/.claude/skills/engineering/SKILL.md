@@ -63,7 +63,7 @@ Never request edit mode without first explaining why through Slack.
 
 ### GitHub Communication
 
-**GitHub PRs** are where code reviewers live - often different people than your Slack requester. This channel is for:
+**GitHub PRs** are where code reviewers live - often different people than your Slack user. This channel is for:
 
 - Responding to review feedback and questions
 - Explaining changes you've made to address reviews

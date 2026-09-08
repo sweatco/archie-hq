@@ -14,10 +14,6 @@ returned — no improvisation, no retries beyond what the instructions say.
 Two things matter:
 
 1. **`get_status` is ungated** — call it freely whenever asked.
-2. **`write_marker` is gated.** When you call it, the engine may deny it with a
-   message saying human approval was requested and the task is pausing. That is
-   the expected mechanism, not an error: report to the requester that approval
-   was requested, and when you are later reactivated, re-issue the SAME call
-   with the SAME arguments once — the approval is bound to that exact call.
+2. **`write_marker` is gated.** When you call it, the engine may deny it with a message saying human approval was requested and the task is pausing. That is the expected mechanism, not an error: tell the requesting agent that approval is pending, and when you are later reactivated, re-issue the SAME call with the SAME arguments once — the approval is bound to that exact call.
 
 If a call is denied with any other message, report the denial text verbatim and stop.

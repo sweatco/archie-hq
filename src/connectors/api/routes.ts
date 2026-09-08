@@ -26,6 +26,7 @@ import { logger } from '../../system/logger.js';
 import { listTriggers, loadTrigger, saveTrigger, deleteTrigger, countActiveTriggers } from '../../system/trigger-store.js';
 import { indexTrigger, deindexTrigger, announceTriggerChange, describeTrigger, MAX_TRIGGERS_PER_USER, MAX_TRIGGERS_PER_CHANNEL } from '../../system/trigger-scheduler.js';
 import type { Trigger } from '../../types/trigger.js';
+import { ToolAccessDenied } from '../../agents/tool-access.js';
 
 /**
  * Mount API routes on an existing Express app.
@@ -203,10 +204,9 @@ export function mountApiRoutes(app: Application): void {
         return;
       }
 
-      await appendCliMessage(taskId, message);
-
       const task = await Task.get(taskId);
       task.linkCliChannel();
+      await appendCliMessage(taskId, message);
       await task.sendMessage(AGENT_PROMPTS.existingTask);
 
       res.json({ ok: true });
@@ -343,6 +343,10 @@ export function mountApiRoutes(app: Application): void {
       emitEvent('approval:resolved', taskId, { type, approve });
       res.json({ ok: true });
     } catch (error) {
+      if (error instanceof ToolAccessDenied) {
+        res.status(403).json({ error: error.message });
+        return;
+      }
       logger.error('api', 'Failed to process approval', error);
       res.status(500).json({ error: 'Failed to process approval' });
     }
@@ -354,7 +358,7 @@ export function mountApiRoutes(app: Application): void {
   const shapeTrigger = (t: Trigger) => ({
     id: t.id,
     status: t.status,
-    created_by: t.created_by,
+    approved_by: t.approved_by ?? null,
     created_at: t.created_at,
     last_fired_at: t.last_fired_at ?? null,
     binding_kind: t.binding.type,
@@ -416,11 +420,11 @@ export function mountApiRoutes(app: Application): void {
               return;
             }
           }
-          if (trigger.created_by && trigger.created_by !== 'unknown') {
-            const createdBy = trigger.created_by;
-            const perUser = await countActiveTriggers((t) => t.created_by === createdBy);
+          if (trigger.approved_by && trigger.approved_by !== 'unknown') {
+            const approvedBy = trigger.approved_by;
+            const perUser = await countActiveTriggers((t) => t.approved_by === approvedBy);
             if (perUser >= MAX_TRIGGERS_PER_USER) {
-              res.status(409).json({ error: `User is at the maximum of ${MAX_TRIGGERS_PER_USER} active triggers.` });
+              res.status(409).json({ error: `Approver is at the maximum of ${MAX_TRIGGERS_PER_USER} active triggers.` });
               return;
             }
           }

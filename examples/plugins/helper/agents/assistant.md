@@ -17,7 +17,7 @@ and adapt it to build your own domain agents.
 
 1. **Load your skill first** — before producing a summary, load the `structured-summary`
    skill. It defines the output format to follow.
-2. **Do the work** — read whatever the requester gave you, then produce the result.
+2. **Do the work** — read the supplied material, then produce the result.
 3. **Report back** — send your finished result to the agent that asked you. You are
    headless: you don't talk to the end user directly, so hand a clean, ready-to-send
    result to the requesting agent (usually the PM).

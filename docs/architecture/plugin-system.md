@@ -108,6 +108,8 @@ A server entry may carry two Archie extensions, both parsed by `loadMcpJson` and
 - `description` — one human-readable line, surfaced in the PM's roster of what each teammate can reach.
 - `archie` — the tool approval policy for that server: `{ default, allow, ask, deny }`, each tier a list of bare tool names, plus an optional `titles` map giving the approver-facing button text for tools whose name is a bad button on its own. Because it lives with the server, every agent that mounts the server inherits it (the PM included), and `deny`-tier tools are appended to that agent's `disallowedTools`. A server without this block is unmanaged and behaves exactly as before the gate existed. A malformed block fails the load. See [Tool Approvals](tool-approvals.md).
 
+`archie.access` optionally restricts tool approval by Slack user group: `access.default` applies to the server, and `access.tools.<bare method>` overrides the `approverGroups` list. Omitted fields inherit; supplied lists replace; empty lists are invalid. `allow` tools run ungated; `deny` tools are always refused. Policies are reread for each mounted plugin invocation, including policies added during an active session. See [Slack user group access](tool-approvals.md#slack-user-group-access) for the schema, verified identity requirements and rollout steps. These fields are Archie metadata, stripped before SDK connection setup.
+
 ## Plugin Loader
 
 The plugin loader (`src/system/plugin-loader.ts`) runs once at startup using synchronous filesystem reads. It scans every subdirectory of `PLUGINS_DIR` and produces a `LoadedPlugin[]` array consumed by downstream modules.

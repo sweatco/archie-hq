@@ -381,7 +381,7 @@ export const AGENT_PROMPTS = {
 When the PM receives a new task:
 
 1. Loads the relevant domain skill via the `Skill` tool
-2. Acknowledges the request via `post_to_user` (routed to whichever channel the requester is on — Slack, CLI, GitHub)
+2. Acknowledges the request via `post_to_user` (routed to whichever channel the user is on — Slack, CLI, GitHub)
 3. Calls `assign_task_owner(agent)` to designate the lead agent
 4. Calls `send_message_to_agent(agent, message)` with the delegation message starting with "You are the task owner for this request."
 

@@ -2,6 +2,8 @@
  * Task-related type definitions
  */
 
+import type { ToolAccessBinding, SlackPrincipal } from '../agents/tool-access.js';
+
 export type TaskStatus = 'in_progress' | 'stopped' | 'completed';
 
 /** Core agent names - repo agents can be any string ending in '-agent' */
@@ -350,11 +352,14 @@ export interface TaskMetadata {
    * stop.
    */
   pending_tool_approval?: {
+    access?: ToolAccessBinding;
+    /** Unique prompt identity, so an old button cannot approve a later identical call. */
+    approval_ref?: string;
     digest: string;       // identity of the exact (server, tool, arguments) call
     server: string;       // MCP server key, for the audit finding
     tool: string;         // bare tool name
     summary: string;      // rendered prompt body shown to the approver
-    heading: string;      // one-line heading (the tool's description, or server:tool)
+    heading: string;      // one-line heading (the policy title, or server:tool)
     requested_by: string; // agent id — woken on approval; park cleared on resolution
     requested_at: string; // ISO 8601
   };
@@ -383,6 +388,8 @@ export interface TaskMetadata {
  * spendable on that call and no other.
  */
 export interface ApprovedToolCall {
+  access?: ToolAccessBinding;
+  approver_principal?: SlackPrincipal;
   digest: string;
   server: string;
   tool: string;
@@ -432,4 +439,3 @@ export interface SlackAttachment {
   /** Text content of the attachment (forwarded message body, unfurled preview, etc.). */
   text: string;
 }
-

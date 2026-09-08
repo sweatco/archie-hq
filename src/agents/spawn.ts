@@ -30,6 +30,7 @@ import {
 } from './tools.js';
 import { createFileBridgeMcpServer, shouldAttachFileBridge } from './mcp-file-bridge.js';
 import { createToolApprovalHooks, mcpToolName } from './tool-approval-gate.js';
+import { liveMcpPolicy } from '../tasks/tool-access.js';
 import { hydrateBranchState } from '../connectors/github/branch-state.js';
 import { taskBranchName } from '../connectors/github/branch-naming.js';
 import { createResearchMcpServer, createResearchPostToolHook, createResearchDefenseTagHook } from '../mcp/research-tools.js';
@@ -274,6 +275,8 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   const model = resolveAgentModel(def, maxMode);
   const effort = resolveAgentEffort(def, maxMode);
   const tools = def.tools;
+  // Capture before OAuth injection mutates SDK connection headers.
+  const mountedMcpConnections = structuredClone(def.mcpServers ?? {});
 
   const pluginPaths = def.pluginPath ? [def.pluginPath] : [];
   const pluginReadPaths = [...pluginPaths, ...(def.pluginDataPath ? [def.pluginDataPath] : [])];
@@ -336,7 +339,7 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   // Base servers every agent gets; branches add their own (repo-tools, the PM
   // coordinator servers, etc.) on top.
   const mcpServers: Record<string, any> = {
-    ...(def.mcpServers || {}),
+    ...structuredClone(def.mcpServers ?? {}),
     'agent-tools': createBaseAgentMcpServer(agent, task),
     'research-tools': researchServer,
   };
@@ -759,14 +762,15 @@ Shared folder: ${sharedPath} [READ-ONLY]
     hooks: {
       PreToolUse: [
         ...createFilesystemGuardHooks(sandboxOpts),
-        // MCP tool approval gate (docs/architecture/tool-approvals.md): attached
-        // only when one of this agent's servers declares a policy, so agents
-        // whose servers are all unmanaged are untouched. The port reads live
-        // task metadata, so a grant written by the button handler is visible to
-        // the retry without a respawn.
-        ...(def.mcpPolicy
-          ? createToolApprovalHooks(def.mcpPolicy, {
-              consumeApproval: (digest) => task.consumeToolApproval(digest),
+        // Every mounted plugin server is checked, including previously
+        // unmanaged servers which may acquire an access policy mid-session.
+        // Built-in tools remain outside the plugin policy namespace.
+        ...(Object.keys(mountedMcpConnections).length > 0
+          ? createToolApprovalHooks(def.mcpPolicy ?? {}, {
+              serverNames: Object.keys(mountedMcpConnections),
+              currentPolicy: () => liveMcpPolicy(mountedMcpConnections),
+              authorize: (call, policy) => task.authorizeToolCall(call, policy),
+              consumeApproval: (digest, access) => task.consumeToolApproval(digest, access),
               requestApproval: (request) => task.requestToolApproval(def.id, request),
             })
           : []),

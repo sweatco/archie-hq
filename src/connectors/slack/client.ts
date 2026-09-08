@@ -2526,7 +2526,7 @@ export async function listWorkspaceChannels(): Promise<SlackChannelInfo[]> {
  *
  * PUBLIC channels only — never enumerates private channels. The task's own
  * private channel / DM, when relevant, is appended by the `list_channels` tool
- * from task metadata, so a public-channel or DM requester never learns that
+ * from task metadata, so a public-channel or DM user never learns that
  * other private channels exist.
  */
 export async function listBotChannels(): Promise<SlackChannelInfo[]> {

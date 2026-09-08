@@ -12,7 +12,7 @@ function channelTrigger(channelId: string): Trigger {
   return {
     id: `trg-${channelId}`,
     status: 'enabled',
-    created_by: 'U1',
+    approved_by: 'U1',
     created_at: '2026-06-24T00:00:00Z',
     binding: { type: 'channel', channel_id: channelId, channel_name: channelId },
     conditions: [{ type: 'schedule', tz: 'UTC', cron: '0 9 * * *', next_run_at: '2026-06-25T09:00:00Z' }],
@@ -24,7 +24,7 @@ function dmTrigger(userId: string): Trigger {
   return {
     id: `trg-dm-${userId}`,
     status: 'enabled',
-    created_by: userId,
+    approved_by: userId,
     created_at: '2026-06-24T00:00:00Z',
     binding: { type: 'user', user_id: userId },
     conditions: [{ type: 'schedule', tz: 'UTC', cron: '0 9 * * *', next_run_at: '2026-06-25T09:00:00Z' }],

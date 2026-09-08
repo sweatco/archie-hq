@@ -5,7 +5,7 @@
  * override it — an installation token always yields `<app-slug>[bot]`. So a PR
  * Archie opens for someone can never *be* theirs on GitHub, and the only place
  * their name can appear is the body. That was left to the model, which named the
- * Slack requester in prose or not at all — so the human behind a PR was
+ * Slack user in prose or not at all — so the human behind a PR was
  * recoverable only by opening a commit and reading its author.
  *
  * Composed here instead, in `create_pull_request`, so it can't be reworded,

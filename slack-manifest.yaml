@@ -52,6 +52,8 @@ settings:
     request_url: https://your-domain.example.com/webhooks/slack
     bot_events:
       - app_mention
+      - subteam_members_changed
+      - subteam_updated
       - assistant_thread_started
       - member_joined_channel
       - message.channels
