@@ -54,7 +54,7 @@ export function formatMutedTargetRefusal(channelName: string, what: 'message' | 
   const subject = what === 'files' ? 'Those files were not uploaded' : 'Nothing was posted';
   return (
     `Blocked: ${formatChannelLabel(channelName)} is muted — someone there asked you to step back. ${subject}. Only an @mention there lifts this.\n\n` +
-    `Do not route around it: not a new thread in that channel, not the same content in another channel, not a teammate posting it for you, not "one last message" or a correction. New information does not reopen it, and any promise to report back there is void — being asked to stop supersedes it. Send it to your requester in this task's own thread instead, or not at all.`
+    `Do not route around it: not a new thread in that channel, not the same content in another channel, not a teammate posting it for you, not "one last message" or a correction. New information does not reopen it, and any promise to report back there is void — being asked to stop supersedes it. Send it to the user in this task's own thread instead, or not at all.`
   );
 }
 
@@ -62,7 +62,7 @@ export function formatMutedTargetRefusal(channelName: string, what: 'message' | 
 export function formatCrossTaskMuteRefusal(channelName: string): string {
   return (
     `Blocked: someone in ${formatChannelLabel(channelName)} asked Archie to step out of that thread. Nothing was posted.\n\n` +
-    `The request came in on another task, but the people reading that thread are the same people. Send what you have to your requester in this task's own thread instead. Only an @mention in that thread reopens it.`
+    `The request came in on another task, but the people reading that thread are the same people. Send what you have to the user in this task's own thread instead. Only an @mention in that thread reopens it.`
   );
 }
 

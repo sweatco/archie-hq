@@ -4,7 +4,7 @@
  * The line exists because GitHub sets a PR's author from the credential that opens
  * it, so a PR Archie opens for someone can only name them in the body. These cover
  * the two ways that went wrong before: the human being absent (left to the model,
- * which named the Slack requester in prose or not at all), and Claude Code's
+ * which named the Slack user in prose or not at all), and Claude Code's
  * harness footer crediting the coding tool.
  */
 

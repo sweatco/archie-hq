@@ -117,7 +117,7 @@ function makeTrigger(contains?: string, from_user?: string): Trigger {
   return {
     id: 'trg-20260818-1200-abc123',
     status: 'enabled',
-    created_by: 'U_DEV',
+    approved_by: 'U_DEV',
     created_at: '2026-08-18T12:00:00.000Z',
     binding: { type: 'channel', channel_id: CHANNEL, channel_name: 'watched' },
     conditions: [{

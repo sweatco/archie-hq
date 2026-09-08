@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-/** Human access is independent of the allow/ask/deny execution tier. */
+/** Human approval eligibility for ask-tier calls. */
 export interface ToolAccessRule {
-  requesterGroups?: string[];
   approverGroups?: string[];
 }
 
@@ -11,22 +10,15 @@ export interface McpAccessPolicy {
   tools?: Record<string, ToolAccessRule>;
 }
 
-/** Created only at verified Slack ingress, never from tool arguments or API bodies. */
+/** Verified approval transport identity, never from tool arguments or API bodies. */
 export interface SlackPrincipal {
   teamId: string;
   userId: string;
 }
 
-export interface ToolRequester extends SlackPrincipal {
-  requestId: string;
-  channelId: string;
-  messageTs: string;
-}
-
 export interface ToolAccessBinding {
   taskId: string;
   revision: string;
-  requester?: ToolRequester;
   rule: ToolAccessRule;
 }
 
@@ -48,7 +40,7 @@ function rule(value: unknown, where: string): ToolAccessRule {
   const input = object(value, where);
   const output: ToolAccessRule = {};
   for (const [key, groups] of Object.entries(input)) {
-    if (key !== 'requesterGroups' && key !== 'approverGroups') {
+    if (key !== 'approverGroups') {
       throw new Error(`${where}: unknown access field "${key}".`);
     }
     if (!Array.isArray(groups) || groups.length === 0 ||
@@ -80,8 +72,4 @@ export function parseMcpAccessPolicy(value: unknown, where: string): McpAccessPo
 export function resolveToolAccess(policy: McpAccessPolicy | undefined, tool: string): ToolAccessRule {
   const override = policy?.tools && Object.hasOwn(policy.tools, tool) ? policy.tools[tool] : {};
   return { ...policy?.default, ...override };
-}
-
-export function hasToolAccess(rule: ToolAccessRule): boolean {
-  return !!(rule.requesterGroups || rule.approverGroups);
 }

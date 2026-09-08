@@ -330,7 +330,7 @@ export function mountApiRoutes(app: Application): void {
   const shapeTrigger = (t: Trigger) => ({
     id: t.id,
     status: t.status,
-    created_by: t.created_by,
+    approved_by: t.approved_by ?? null,
     created_at: t.created_at,
     last_fired_at: t.last_fired_at ?? null,
     binding_kind: t.binding.type,
@@ -392,11 +392,11 @@ export function mountApiRoutes(app: Application): void {
               return;
             }
           }
-          if (trigger.created_by && trigger.created_by !== 'unknown') {
-            const createdBy = trigger.created_by;
-            const perUser = await countActiveTriggers((t) => t.created_by === createdBy);
+          if (trigger.approved_by && trigger.approved_by !== 'unknown') {
+            const approvedBy = trigger.approved_by;
+            const perUser = await countActiveTriggers((t) => t.approved_by === approvedBy);
             if (perUser >= MAX_TRIGGERS_PER_USER) {
-              res.status(409).json({ error: `User is at the maximum of ${MAX_TRIGGERS_PER_USER} active triggers.` });
+              res.status(409).json({ error: `Approver is at the maximum of ${MAX_TRIGGERS_PER_USER} active triggers.` });
               return;
             }
           }

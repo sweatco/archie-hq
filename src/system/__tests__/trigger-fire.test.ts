@@ -128,7 +128,7 @@ function makeTrigger(over: Partial<Trigger> = {}): Trigger {
   return {
     id: 'trg-20260819-1200-abc123',
     status: 'enabled',
-    created_by: 'U_DEV',
+    approved_by: 'U_DEV',
     created_at: '2026-08-19T12:00:00.000Z',
     binding: { type: 'channel', channel_id: CHANNEL, channel_name: CHANNEL_NAME },
     conditions: [{ type: 'channel_message', channel_id: CHANNEL }],
@@ -170,6 +170,27 @@ beforeEach(() => {
   saveTriggerMock.mockResolvedValue(undefined);
   ensureChannelCanvasMock.mockResolvedValue(undefined);
   ensureChannelPinsMock.mockResolvedValue(undefined);
+});
+
+describe('trigger failure notices', () => {
+  it('notifies the approver when the bound channel is unreachable', async () => {
+    isChannelReachableMock.mockResolvedValue(false);
+
+    await fireTrigger(makeTrigger({ approved_by: 'U_APPROVER' }), { kind: 'schedule' });
+
+    expect(postSlackMessageMock).toHaveBeenCalledWith({ channel: 'U_APPROVER', text: expect.stringContaining('was paused') });
+    expect(taskCreateMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['cli', 'unknown', undefined])('sends no DM without a Slack approver (%s)', async (approved_by) => {
+    isChannelReachableMock.mockResolvedValue(false);
+
+    await fireTrigger(makeTrigger({ approved_by }), { kind: 'schedule' });
+
+    expect(postSlackMessageMock).not.toHaveBeenCalled();
+    expect(taskCreateMock).not.toHaveBeenCalled();
+    expect(saveTriggerMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'paused' }));
+  });
 });
 
 describe('a message fire ingests its thread', () => {

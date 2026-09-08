@@ -22,7 +22,7 @@
 import { createHash } from 'crypto';
 import type { HookCallbackMatcher, HookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
 import { logger } from '../system/logger.js';
-import { resolveToolAccess, hasToolAccess, ToolAccessDenied } from './tool-access.js';
+import { resolveToolAccess, ToolAccessDenied } from './tool-access.js';
 import type { McpAccessPolicy, ToolAccessBinding } from './tool-access.js';
 
 /** How long a grant stays spendable. Spending it takes a chain — the requesting
@@ -266,7 +266,7 @@ export interface ToolApprovalPort {
   serverNames?: readonly string[];
   /** Resolve current policy, including policy added while an agent is running. */
   currentPolicy?(): McpToolPolicy;
-  /** Check the requester and return a binding that survives the approval round trip. */
+  /** Bind the call to its task and current approval policy. */
   authorize?(call: ClassifiedCall, policy: McpServerPolicy): Promise<ToolAccessBinding | undefined>;
   /**
    * Spend a stored grant for this digest. Resolves true when one was found,
@@ -352,17 +352,14 @@ async function decideCall(
     );
   }
 
+  if (call.tier === 'allow') return { continue: true };
   const rule = resolveToolAccess(serverPolicy.access, call.tool);
-  // Approver restrictions apply only when the tool asks. Requester restrictions
-  // must also guard allow-tier tools; allow means no confirmation, not no ACL.
-  if (call.tier === 'allow') delete rule.approverGroups;
   let access: ToolAccessBinding | undefined;
-  if (hasToolAccess(rule)) {
+  if (rule.approverGroups) {
     if (!port.authorize) throw new ToolAccessDenied('Human access verification is unavailable.');
     access = await port.authorize(call, serverPolicy);
     if (!access) throw new ToolAccessDenied('Missing authorization context.');
   }
-  if (call.tier === 'allow') return { continue: true };
 
   // tier === 'ask': per-call approval, bound to this exact call.
   const digest = callDigest(call.server, call.tool, access ? { input: toolInput, access } : toolInput);

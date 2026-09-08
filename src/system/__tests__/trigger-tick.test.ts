@@ -11,7 +11,7 @@ function trig(conditions: TriggerCondition[]): Trigger {
   return {
     id: 'trg-20260101-0900-abc123',
     status: 'enabled',
-    created_by: 'U1',
+    approved_by: 'U1',
     created_at: '2026-01-01T00:00:00Z',
     binding: { type: 'channel', channel_id: 'C1', channel_name: 'general' },
     conditions,

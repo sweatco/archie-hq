@@ -5,7 +5,7 @@ import { fetchTriggers, updateTrigger, deleteTrigger } from '../api.js';
 interface TriggerSummary {
   id: string;
   status: string;
-  created_by: string;
+  approved_by: string | null;
   created_at: string;
   last_fired_at: string | null;
   binding_kind: 'channel' | 'user';
