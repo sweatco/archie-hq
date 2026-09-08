@@ -42,7 +42,7 @@ describe('loadMcpJson', () => {
   });
 
   it('parses access defaults and overrides, stripping them from SDK connection config', async () => {
-    const access = { default: { requesterGroups: ['S1'] }, tools: { publish: { approverGroups: ['S2'] } } };
+    const access = { default: { approverGroups: ['S1'] }, tools: { publish: { approverGroups: ['S2'] } } };
     const path = await writeMcpJson({ mcpServers: { release: { type: 'http', url: 'https://example.com/mcp', archie: { access } } } });
     const loaded = loadMcpJson(path, true);
     expect(loaded.policies.release.access).toEqual(access);
@@ -54,7 +54,7 @@ describe('loadMcpJson', () => {
     const path = join(tempDir, '.mcp.json');
     await writeFile(path, '{');
     expect(() => loadMcpJson(path, true)).toThrow('cannot be parsed');
-    await writeMcpJson({ mcpServers: { release: { archie: { access: { default: { requesterGroups: [] } } } } } });
+    await writeMcpJson({ mcpServers: { release: { archie: { access: { default: { approverGroups: [] } } } } } });
     expect(() => loadMcpJson(path)).toThrow('non-empty list');
   });
 

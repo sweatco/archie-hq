@@ -43,7 +43,6 @@ import { generateTaskTitle } from '../../tasks/title-generator.js';
 import { setAssistantThreadTitle } from './title.js';
 import type { SlackThread, SlackAuthor } from '../../types/task.js';
 import { ToolAccessDenied, type SlackPrincipal } from '../../agents/tool-access.js';
-import { requesterFromSlackEvent } from '../../tasks/tool-requester.js';
 import { slackGroupAccess } from './user-groups.js';
 // import { triageSlackMessage } from '../../system/triage.js';
 
@@ -909,8 +908,7 @@ export async function handleSlackEvent(event: {
     // The `thread.messages.length > 0` conjunct is a content floor on TASK CREATION specifically. Inverting the subtype gate to a denylist deliberately forwards subtypes nobody enumerated, which is what fixes the trigger arm, but this branch spends a PM turn: a payload with no author and no body (an assistant-container notice, a `tombstone`, a `bot_add`) otherwise reached `Task.create()` and woke the PM on an empty knowledge log. Checking the fetched thread rather than the subtype keeps that robust — any future subtype carrying nothing is refused for the same reason, with no list to maintain.
     //
     // It is deliberately NOT applied to the trigger branch below. That path renders from the raw event, not from the fetched thread, precisely because `fetchSlackThread` drops a message with neither a `user` nor a `botId` — gating it on `thread.messages` would reintroduce the very blindness this change removes.
-    const requester = requesterFromSlackEvent(thread, event.user, event.ts, getHomeTeamId());
-    const task = requester ? await Task.create(requester) : await Task.create();
+    const task = await Task.create();
     await task.append(thread);
     // Ack the triggering message. For @mention/DM the :eyes: was already added
     // before the thread fetch; for a reply to a bot-started thread, add it now.

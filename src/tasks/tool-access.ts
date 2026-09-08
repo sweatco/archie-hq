@@ -4,11 +4,9 @@ import { getRootMcpConfig } from '../system/plugin-loader.js';
 import { callDigest, classifyToolCall, mcpToolName, type ClassifiedCall, type McpServerPolicy, type McpToolPolicy } from '../agents/tool-approval-gate.js';
 import { resolveToolAccess, ToolAccessDenied, type SlackPrincipal, type ToolAccessBinding } from '../agents/tool-access.js';
 import { slackGroupAccess } from '../connectors/slack/user-groups.js';
-import { sameToolRequester } from './tool-requester.js';
-import type { TaskMetadata } from '../types/task.js';
 import { appendAgentFinding } from './persistence.js';
 
-type AccessTask = { taskId: string; metadata: TaskMetadata };
+type AccessTask = { taskId: string };
 
 /** Restrict live policies to mounted servers; connection changes require a respawn. */
 export function liveMcpPolicy(mounted: Record<string, unknown>): McpToolPolicy {
@@ -40,9 +38,6 @@ export function assertCurrentToolAccess(task: AccessTask, server: string, tool: 
   if (binding.taskId !== task.taskId || binding.revision !== latest.revision || latest.call.tier === 'deny') {
     throw new ToolAccessDenied('The tool access policy changed; request the operation again.');
   }
-  if (binding.rule.requesterGroups && !sameToolRequester(binding.requester, task.metadata.tool_requester)) {
-    throw new ToolAccessDenied('Requester authority is no longer valid. Start a separate task with a single human requester.');
-  }
 }
 
 export async function authorizeToolCall(task: AccessTask, call: ClassifiedCall, policy: McpServerPolicy): Promise<ToolAccessBinding> {
@@ -56,15 +51,7 @@ export async function authorizeToolCall(task: AccessTask, call: ClassifiedCall, 
     taskId: task.taskId,
     revision: latest.revision,
     rule,
-    ...(rule.requesterGroups && task.metadata.tool_requester ? { requester: { ...task.metadata.tool_requester } } : {}),
   };
-  if (rule.requesterGroups) {
-    if (!binding.requester) {
-      throw new ToolAccessDenied(`This tool requires a verified requester in ${rule.requesterGroups.join(' or ')}. Start a separate Slack task with a single human requester.`);
-    }
-    const recheck = await slackGroupAccess.requireMembership(binding.requester, rule.requesterGroups);
-    recheck();
-  }
   assertCurrentToolAccess(task, call.server, call.tool, binding);
   return binding;
 }
@@ -76,7 +63,7 @@ export async function verifyToolApproval(
     return await verifyApproval(task, server, tool, binding, approver);
   } catch (error) {
     void appendAgentFinding(task.taskId, 'system',
-      `Tool approval authorization refused: ${server}:${tool} (requester ${binding.requester?.userId ?? 'unrestricted'}, approver ${approver?.userId ?? 'unverified'}) — ${error instanceof Error ? error.message : 'authorization failed'}`,
+      `Tool approval authorization refused: ${server}:${tool} (approver ${approver?.userId ?? 'unverified'}) — ${error instanceof Error ? error.message : 'authorization failed'}`,
       'decision').catch(() => {});
     throw error;
   }
@@ -86,17 +73,13 @@ async function verifyApproval(
   task: AccessTask, server: string, tool: string, binding: ToolAccessBinding, approver?: SlackPrincipal,
 ): Promise<() => void> {
   const membershipVersion = slackGroupAccess.version;
-  const membershipChecks: Array<() => void> = [];
   assertCurrentToolAccess(task, server, tool, binding);
-  if (binding.rule.requesterGroups) {
-    membershipChecks.push(await slackGroupAccess.requireMembership(binding.requester, binding.rule.requesterGroups));
-  }
-  if (binding.rule.approverGroups) {
-    membershipChecks.push(await slackGroupAccess.requireMembership(approver, binding.rule.approverGroups));
-  }
+  const checkMembership = binding.rule.approverGroups
+    ? await slackGroupAccess.requireMembership(approver, binding.rule.approverGroups)
+    : undefined;
   const recheck = () => {
     if (membershipVersion !== slackGroupAccess.version) throw new ToolAccessDenied('Slack membership changed during authorization; retry.');
-    for (const check of membershipChecks) check();
+    checkMembership?.();
     assertCurrentToolAccess(task, server, tool, binding);
   };
   recheck();
@@ -109,7 +92,7 @@ export function assertUnrestrictedApproval(server: string, tool: string): void {
   const config = getRootMcpConfig(true);
   const policy = config.policies[server];
   const rule = resolveToolAccess(policy?.access, tool);
-  if (rule.requesterGroups || rule.approverGroups) {
+  if (rule.approverGroups) {
     throw new ToolAccessDenied('The tool now requires group authorization. Request it again under the current policy.');
   }
 }

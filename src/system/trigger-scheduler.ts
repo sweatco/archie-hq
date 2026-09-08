@@ -349,7 +349,7 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
 
   // Pre-flight for a channel-bound schedule fire: if the bound channel was
   // deleted or archived (or the bot removed and it archived), pause the trigger
-  // and DM the creator instead of spawning a task that would post into the void.
+  // and DM the approver instead of spawning a task that would post into the void.
   // Message-context fires skip this — we just received a message there, so it's
   // live — and DMs can't be deleted. Checked BEFORE the daily cap so a bail here
   // doesn't consume a cap slot (L2).
@@ -360,14 +360,14 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
       await saveTrigger(trigger);
       deindexTrigger(trigger.id);
       emitEvent('trigger:paused', trigger.id, { reason: 'bound channel unreachable' });
-      await notifyCreator(trigger, `⚠️ A trigger you set up was paused — its channel (#${trigger.binding.channel_name}) is gone or archived. Recreate it elsewhere if you still need it.`);
+      await notifyApprover(trigger, `⚠️ A trigger you approved was paused — its channel (#${trigger.binding.channel_name}) is gone or archived. Recreate it elsewhere if you still need it.`);
       return;
     }
   }
 
   if (!withinDailyCap()) {
     logger.warn('trigger-scheduler', `Daily fire cap (${DAILY_FIRE_CAP}) reached — dropping trigger ${trigger.id}`);
-    await notifyCreator(trigger, `⚠️ A trigger you set up couldn't run — Archie hit its daily limit of automated runs. It will resume tomorrow.`);
+    await notifyApprover(trigger, `⚠️ A trigger you approved couldn't run — Archie hit its daily limit of automated runs. It will resume tomorrow.`);
     return;
   }
 
@@ -646,12 +646,12 @@ async function postToBinding(binding: TriggerBinding, text: string): Promise<voi
   await postSlackMessage({ channel, text });
 }
 
-/** Best-effort DM to a trigger's creator (used for cap/failure notices). */
-async function notifyCreator(trigger: Trigger, text: string): Promise<void> {
-  if (!trigger.created_by || trigger.created_by === 'unknown') return; // no known human to DM
+/** Best-effort DM to a trigger's approver (used for cap/failure notices). */
+async function notifyApprover(trigger: Trigger, text: string): Promise<void> {
+  if (!trigger.approved_by || trigger.approved_by === 'unknown' || trigger.approved_by === 'cli') return; // no known human to DM
   try {
-    await postSlackMessage({ channel: trigger.created_by, text });
+    await postSlackMessage({ channel: trigger.approved_by, text });
   } catch (err) {
-    logger.warn('trigger-scheduler', `Failed to notify creator of ${trigger.id}`, err);
+    logger.warn('trigger-scheduler', `Failed to notify approver of ${trigger.id}`, err);
   }
 }

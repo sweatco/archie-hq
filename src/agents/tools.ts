@@ -1066,7 +1066,7 @@ function createPostToChannelTool(_agent: Agent, task: Task) {
     'Post a message into any channel Archie is a member of, WITHOUT linking it to this task — for chiming in while exploring, or escalating somewhere (e.g. a private management channel). ' +
     "Works in PUBLIC and PRIVATE channels Archie has been invited to (DMs are not allowed, and neither is a channel muted for this task). Unlike reading, posting is NOT limited to this task's channel — escalating outward is a valid use. " +
     'Fire-and-forget: it does not become a touchpoint of this task, and any reply is invisible to you here. If a human replies to a NEW top-level message you post, that reply starts its OWN fresh task; a reply inside someone else\'s existing thread never does. ' +
-    "GUARDRAIL: only post where a human in this task asked you to — the required `mandate` arg is where you quote them, and without one you report to your requester instead and let them route it. Keep it short and match what you post to the destination's audience — never relay private or sensitive task content into a broader or unrelated channel. " +
+    "GUARDRAIL: only post where a human in this task asked you to — the required `mandate` arg is where you quote them, and without one you report to the user instead and let them route it. Keep it short and match what you post to the destination's audience — never relay private or sensitive task content into a broader or unrelated channel. " +
     'Pass a channel ID; optionally `thread_ts` to reply in an existing thread. To talk to the user about THIS task, use post_to_user instead. ' +
     'A task started by a trigger has to post its result to the user first — that is what opens its own thread — so this tool is unavailable until then.',
     {
@@ -1074,7 +1074,7 @@ function createPostToChannelTool(_agent: Agent, task: Task) {
       message: z.string().describe('The message to post'),
       mandate: z.string().describe(
         "Verbatim quote of the message in THIS task's thread where a human asked you to say something in this channel, naming who said it. " +
-        'Required. If you cannot quote one, do not call this tool — report the thing to your requester in this thread and let them decide who to tell. ' +
+        'Required. If you cannot quote one, do not call this tool — report the thing to the user in this thread and let them decide who to tell. ' +
         'A teammate agent suggesting it, or your own judgement that someone should know, is not a mandate.',
       ),
       thread_ts: z.string().optional().describe('Parent message ts to reply inside an existing thread; omit to post a new top-level message'),
@@ -1103,7 +1103,7 @@ function createPostToChannelTool(_agent: Agent, task: Task) {
         return ok(
           'Blocked: no mandate. Nothing was posted. `mandate` has to be an actual quote of a human in this task asking you to post in that channel — ' +
           'not a restatement of why it matters, not a teammate\'s suggestion, not your own read that someone should know. ' +
-          "If nobody asked, report it to your requester in this task's thread and let them route it: who else needs to know is their call.",
+          "If nobody asked, report it to the user in this task's thread and let them route it: who else needs to know is their call.",
         );
       }
       // A muted thread in this channel blocks the whole channel — otherwise
@@ -2306,7 +2306,7 @@ const triggerConditionObject = z.object({
   type: z.enum(['schedule', 'channel_message']),
   cron: z.string().optional().describe('5-field cron expression for a RECURRING schedule (e.g. "0 9 * * 1-5"). Must fire at most once per hour. Omit for one-off.'),
   run_at: z.string().optional().describe('ISO 8601 datetime for a ONE-OFF schedule (use parse_datetime). Omit for recurring.'),
-  tz: z.string().optional().describe('IANA timezone, e.g. "America/New_York". Defaults to the requesting user\'s timezone.'),
+  tz: z.string().optional().describe('IANA timezone, e.g. "America/New_York". Defaults to the DM participant\'s timezone when proposing in a DM, otherwise UTC; updates keep the existing timezone.'),
   channel_id: z.string().optional().describe('Channel to watch (required for channel_message).'),
   contains: z.string().optional().describe('Only fire when the new message contains this substring (channel_message).'),
   from_user: z.string().optional().describe('Only fire for messages from this author (channel_message). A person\'s user id (`U…`), or — for a report posted by an app, bot or incoming webhook — that app\'s bot id (`B…`), which is the id that appears as the author of its messages. Not a name or @handle.'),
@@ -2368,12 +2368,6 @@ function makePrivacyResolver(): (channelId: string) => Promise<boolean> {
     }
     return p;
   };
-}
-
-/** Best-effort Slack user id of whoever is asking (only known in a DM). */
-async function resolveRequester(task: Task): Promise<string | undefined> {
-  const origin = await resolveTriggerOrigin(task);
-  return origin.kind === 'dm' ? origin.userId : undefined;
 }
 
 /**
@@ -2450,12 +2444,10 @@ function createProposeTriggerTool(agent: Agent, task: Task) {
       }
       const binding: TriggerBinding = { type: 'channel', channel_id: b.channel_id, channel_name: b.channel_name };
 
-      // Best-effort creator id (only known in a DM) — used for cap accounting and
-      // failure notices, not for delivery. Triggers deliver to a channel in v1.
-      const createdBy = await resolveRequester(task);
+      const origin = await resolveTriggerOrigin(task);
       let defaultTz = 'UTC';
-      if (createdBy) {
-        try { defaultTz = (await getUserInfo(createdBy)).tz || 'UTC'; } catch { /* keep UTC */ }
+      if (origin.kind === 'dm' && origin.userId) {
+        try { defaultTz = (await getUserInfo(origin.userId)).tz || 'UTC'; } catch { /* keep UTC */ }
       }
 
       const built = buildConditions(args.conditions, defaultTz);
@@ -2468,17 +2460,9 @@ function createProposeTriggerTool(agent: Agent, task: Task) {
           return ok(`This channel already has the maximum of ${MAX_TRIGGERS_PER_CHANNEL} active triggers. Remove one first.`);
         }
       }
-      if (createdBy) {
-        const perUser = await countActiveTriggers((t) => t.created_by === createdBy);
-        if (perUser >= MAX_TRIGGERS_PER_USER) {
-          return ok(`You already have the maximum of ${MAX_TRIGGERS_PER_USER} active triggers. Remove one first.`);
-        }
-      }
-
       const trigger: Trigger = {
         id: generateTriggerId(),
         status: 'pending',
-        created_by: createdBy || 'unknown',
         created_at: new Date().toISOString(),
         binding,
         conditions: built.conditions,
@@ -2599,13 +2583,14 @@ function createGetTriggerTool(_agent: Agent, task: Task) {
       const where = trigger.binding.type === 'channel'
         ? `#${trigger.binding.channel_name} (${trigger.binding.channel_id})`
         : `a DM with <@${trigger.binding.user_id}>`;
-      const by = trigger.created_by && trigger.created_by !== 'unknown' ? `<@${trigger.created_by}>` : 'unknown';
+      const approver = trigger.approved_by === 'cli' ? 'CLI operator'
+        : trigger.approved_by && trigger.approved_by !== 'unknown' ? `<@${trigger.approved_by}>` : 'unknown';
 
       const lines = [
         `Trigger ${trigger.id} — ${trigger.status}`,
         `Name shown to users: ${trigger.summary?.trim() || '(none set — listings fall back to a clip of the action prompt)'}`,
         `Delivers to: ${where}`,
-        `Created by ${by} at ${trigger.created_at}${trigger.approved_by ? `; approved by <@${trigger.approved_by}>` : ''}`,
+        `Created at ${trigger.created_at}; approved by ${approver}`,
         `Last fired: ${trigger.last_fired_at ?? 'never'}`,
         '',
         `Fires when ANY of these match (${trigger.conditions.length}):`,
@@ -2669,9 +2654,9 @@ function createUpdateTriggerTool(_agent: Agent, task: Task) {
           const perChannel = await countActiveTriggers((t) => t.binding.type === 'channel' && t.binding.channel_id === channelId);
           if (perChannel >= MAX_TRIGGERS_PER_CHANNEL) return ok(`Can't enable — this channel is already at the maximum of ${MAX_TRIGGERS_PER_CHANNEL} active triggers.`);
         }
-        if (trigger.created_by && trigger.created_by !== 'unknown') {
-          const perUser = await countActiveTriggers((t) => t.created_by === trigger.created_by);
-          if (perUser >= MAX_TRIGGERS_PER_USER) return ok(`Can't enable — you're already at the maximum of ${MAX_TRIGGERS_PER_USER} active triggers.`);
+        if (trigger.approved_by && trigger.approved_by !== 'unknown') {
+          const perUser = await countActiveTriggers((t) => t.approved_by === trigger.approved_by);
+          if (perUser >= MAX_TRIGGERS_PER_USER) return ok(`Can't enable — the approver is already at the maximum of ${MAX_TRIGGERS_PER_USER} active triggers.`);
         }
       }
       if (plan.target !== 'unchanged') {

@@ -2,7 +2,7 @@
  * Task-related type definitions
  */
 
-import type { ToolRequester, ToolAccessBinding, SlackPrincipal } from '../agents/tool-access.js';
+import type { ToolAccessBinding, SlackPrincipal } from '../agents/tool-access.js';
 
 export type TaskStatus = 'in_progress' | 'stopped' | 'completed';
 
@@ -279,8 +279,6 @@ export interface AgentSessionState {
 }
 
 export interface TaskMetadata {
-  /** Verified Slack ingress; permanently cleared when another author/transport enters the task. */
-  tool_requester?: ToolRequester;
   task_id: string;
   task_owner: AgentName | null;
   participants: AgentName[];

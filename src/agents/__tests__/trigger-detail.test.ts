@@ -94,7 +94,6 @@ function textOf(result: { content: { text: string }[] }): string {
 const WATCHER: Trigger = {
   id: 'trg-20260820-1219-w6751m',
   status: 'enabled',
-  created_by: 'U03RQQTE1EF',
   created_at: '2026-08-20T12:19:00.559Z',
   approved_by: 'U03RQQTE1EF',
   binding: { type: 'channel', channel_id: 'C05MFQCEN0N', channel_name: 'sweatcoin-mobile' },

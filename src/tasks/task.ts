@@ -7,9 +7,8 @@
 
 import { mkdir, writeFile } from 'fs/promises';
 import { randomUUID } from 'crypto';
-import { ToolAccessDenied, type ToolRequester, type ToolAccessBinding, type SlackPrincipal } from '../agents/tool-access.js';
+import { ToolAccessDenied, type ToolAccessBinding, type SlackPrincipal } from '../agents/tool-access.js';
 import { authorizeToolCall, verifyToolApproval, assertCurrentToolAccess, assertUnrestrictedApproval } from './tool-access.js';
-import { revokeToolRequester, restrictToolRequesterToThread } from './tool-requester.js';
 import type { AgentName, SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, BranchState } from '../types/task.js';
 import { CLI_CHANNEL_KEY } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
@@ -63,7 +62,6 @@ import { scanAgentDefs, getAgentDef, getVisiblePeerIdsForSender, synthesizeDynam
 import type { AttachedRepo } from '../types/task.js';
 import { syncPlugins } from '../system/plugin-sync.js';
 import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
-import { getBotUserId } from '../connectors/slack/client.js';
 import { writeJsonAtomic } from '../system/secrets-vault.js';
 import { renderMessageBody, shouldRedact } from '../connectors/slack/message-body.js';
 import { basename } from 'path';
@@ -221,7 +219,7 @@ export class Task {
    * Sets up disk structure (folders, metadata, skills).
    * Task is inert until sendMessage() is called, which activates it.
    */
-  static async create(toolRequester?: ToolRequester): Promise<Task> {
+  static async create(): Promise<Task> {
     await syncPlugins();
     await ensureSessionsDir();
 
@@ -238,7 +236,6 @@ export class Task {
     // metadata.repositories is populated lazily per-agent during spawn.
     // It maps agentId → list of currently-attached repos.
     const metadata: TaskMetadata = {
-      ...(toolRequester ? { tool_requester: { ...toolRequester } } : {}),
       task_id: taskId,
       task_owner: null,
       participants: [],
@@ -370,11 +367,6 @@ export class Task {
    * Returns whether a new thread was linked.
    */
   async append(thread: SlackThread): Promise<{ linkedNewThread: boolean }> {
-    const hadRequester = !!this.metadata.tool_requester;
-    if (hadRequester) restrictToolRequesterToThread(this.metadata, thread, getBotUserId());
-    // Revoke before exposing new input to any running agent, durably before
-    // writing it to the shared log. A later reply cannot restore authority.
-    if (hadRequester && !this.metadata.tool_requester) await this.save(true);
     const channelId = `slack:${thread.channel.id}:${thread.threadId}`;
     const existing = this.metadata.channels[channelId] as SlackChannel | undefined;
 
@@ -458,8 +450,6 @@ export class Task {
   ): Promise<boolean> {
     const ch = this.metadata.channels[channelKey];
     if (ch?.type !== 'slack') return false;
-    if (this.metadata.tool_requester && (author.id !== this.metadata.tool_requester.userId ||
-        author.teamId !== this.metadata.tool_requester.teamId)) await this.revokeToolRequester();
     await appendSlackEdit(
       this.taskId,
       { id: ch.channel_id, name: ch.channel_name },
@@ -478,7 +468,6 @@ export class Task {
    * promoted the first time via ??=.
    */
   linkCliChannel(): void {
-    revokeToolRequester(this.metadata);
     this.metadata.channels[CLI_CHANNEL_KEY] = { type: 'cli', id: CLI_CHANNEL_KEY };
     this.metadata.default_channel ??= CLI_CHANNEL_KEY;
     this.debouncedSave();
@@ -1544,12 +1533,6 @@ export class Task {
   // The gate itself lives in agents/tool-approval-gate.ts; this section owns
   // the metadata invariants it depends on. See docs/architecture/tool-approvals.md.
 
-  async revokeToolRequester(): Promise<void> {
-    if (!this.metadata.tool_requester) return;
-    revokeToolRequester(this.metadata);
-    await this.save(true);
-  }
-
   async authorizeToolCall(call: ClassifiedCall, policy: McpServerPolicy): Promise<ToolAccessBinding> {
     try {
       return await authorizeToolCall(this, call, policy);
@@ -1634,7 +1617,7 @@ export class Task {
     // cannot be persisted. No call may execute with a replayable grant on disk.
     await this.save(true);
     recheck();
-    void appendAgentFinding(this.taskId, 'system', `Tool access grant consumed: ${grant.server}:${grant.tool} (requester ${access.requester?.userId ?? 'unrestricted'}, approver ${grant.approver_principal?.userId ?? grant.approved_by ?? 'unrestricted'})`, 'completion').catch(() => {});
+    void appendAgentFinding(this.taskId, 'system', `Tool access grant consumed: ${grant.server}:${grant.tool} (approver ${grant.approver_principal?.userId ?? grant.approved_by ?? 'unrestricted'})`, 'completion').catch(() => {});
     return true;
   }
 
@@ -1646,7 +1629,7 @@ export class Task {
    * buttons to clear. There is no supersede path for a *live* request —
    * superseding would let an agent swap the call out from under a human who is
    * mid-way through reading it. The slot can be replaced only after expiry
-   * or an access policy/requester change; a failed Slack post clears it.
+   * or an access policy change; a failed Slack post clears it.
    */
   async requestToolApproval(
     agentId: string,
@@ -1667,7 +1650,7 @@ export class Task {
         else assertUnrestrictedApproval(live.server, live.tool);
       } catch (error) {
         if (!(error instanceof ToolAccessDenied)) throw error;
-        // A policy/requester change makes this prompt unapprovable. Replacing
+        // A policy change makes this prompt unapprovable. Replacing
         // that obsolete slot is safe: its unique ref cannot resolve the new one.
         void appendAgentFinding(this.taskId, 'system', `Obsolete tool approval replaced: ${live.server}:${live.tool} — ${error.message}`, 'decision').catch(() => {});
         live = undefined;
@@ -1679,11 +1662,11 @@ export class Task {
     // without arming would leave the agent running against a prompt nobody has
     // answered, free to try something else.
     //
-    // Only the *requester* re-arms. A grant is bound to the call, not to the
+    // Only the agent that raised the request re-arms. A grant is bound to the call, not to the
     // agent, so a second agent can reach this with the same digest — and both
     // resolution paths clear the teardown of `requested_by` alone, so arming
     // anyone else leaves a deferred stop() nothing will cancel: it fires at that
-    // agent's turn end and tears the task down while the requester's retry is
+    // agent's turn end and tears the task down while the original agent's retry is
     // in flight. Tell the other agent to wait instead.
     if (live && live.requested_by !== agentId) return 'already-pending';
     if (live) {
@@ -1692,7 +1675,8 @@ export class Task {
       return 'posted';
     }
 
-    this.metadata.pending_tool_approval = {
+    if (pending) this.agentProcesses.get(pending.requested_by as AgentName)?.clearPendingTeardown();
+    const proposed = this.metadata.pending_tool_approval = {
       ...(request.access ? { access: request.access, approval_ref: randomUUID() } : {}),
       digest: request.digest,
       server: request.server,
@@ -1712,7 +1696,7 @@ export class Task {
       'decision',
     ).catch(() => {});
 
-    const approvalRef = this.metadata.pending_tool_approval.approval_ref ?? request.digest;
+    const approvalRef = proposed.approval_ref ?? request.digest;
     const buttonValue = `${this.taskId}|${approvalRef}`;
     const blocks = [
       {
@@ -1724,7 +1708,6 @@ export class Task {
         elements: [{
           type: 'mrkdwn',
           text: `Requested by \`${agentId}\` · approving runs this one call once` +
-            (request.access?.requester ? ` · Human requester: <@${request.access.requester.userId}>` : '') +
             (request.access?.rule.approverGroups ? ` · Approvers: ${request.access.rule.approverGroups.map((id) => `<!subteam^${id}>`).join(' or ')}` : ''),
         }],
       },
@@ -1770,12 +1753,18 @@ export class Task {
       // parks it against a button nobody can see. This catch covers the flush
       // as well as the post for that reason. Rethrow so the gate's fail-closed
       // wrapper denies this attempt.
-      this.metadata.pending_tool_approval = undefined;
-      await this.save(true).catch((saveError) =>
-        logger.warn('task', `Failed to clear the pending tool-approval slot`, saveError),
-      );
+      if (this.metadata.pending_tool_approval === proposed) {
+        this.metadata.pending_tool_approval = undefined;
+        this.agentProcesses.get(agentId as AgentName)?.clearPendingTeardown();
+        await this.save(true).catch((saveError) =>
+          logger.warn('task', `Failed to clear the pending tool-approval slot`, saveError),
+        );
+      }
       throw error;
     }
+
+    // A replaced or already-resolved prompt must not arm a late stop on its old agent.
+    if (this.metadata.pending_tool_approval !== proposed) return 'posted';
 
     // Park: freeze the status so the wind-down doesn't resurface "working…",
     // and defer the stop to turn-end so stopping the queue doesn't close the
@@ -1867,12 +1856,10 @@ export class Task {
       `Tool call approved${bySuffix}: ${pending.server}:${pending.tool} — ${pending.heading}`,
       'decision',
     );
-    // Wake the agent that owns the grant: only a byte-identical retry from the
-    // requester spends it, and routing through the PM alone adds a
-    // re-delegation hop to the TTL clock.
-    const requester = (pending.requested_by || 'pm-agent') as AgentName;
+    // Wake the agent that raised the request so it can retry the identical call before the grant expires.
+    const agentId = (pending.requested_by || 'pm-agent') as AgentName;
     emitEvent('approval:resolved', this.taskId, { type: 'tool_call', approve: true });
-    await this.sendMessage(AGENT_PROMPTS.existingTask, requester);
+    await this.sendMessage(AGENT_PROMPTS.existingTask, agentId);
     return 'resolved';
   }
 
@@ -2000,8 +1987,8 @@ export class Task {
     if (pending && pending.status === 'pending') {
       const overChannel = pending.binding.type === 'channel'
         && (await countActiveTriggers((t) => t.binding.type === 'channel' && t.binding.channel_id === (pending.binding as { channel_id: string }).channel_id)) >= MAX_TRIGGERS_PER_CHANNEL;
-      const overUser = pending.created_by && pending.created_by !== 'unknown'
-        && (await countActiveTriggers((t) => t.created_by === pending.created_by)) >= MAX_TRIGGERS_PER_USER;
+      const overUser = approverId && approverId !== 'unknown'
+        && (await countActiveTriggers((t) => t.approved_by === approverId)) >= MAX_TRIGGERS_PER_USER;
       if (overChannel || overUser) {
         await deleteTrigger(id);
         if (this.metadata.pending_trigger_id === id) this.metadata.pending_trigger_id = undefined;

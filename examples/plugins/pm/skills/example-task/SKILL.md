@@ -10,7 +10,7 @@ who to hand it to, and how to deliver the result.
 ### Intake
 
 Before delegating, make sure you have:
-- The text or document to work on (paste, file, or link the requester provided).
+- The text or document to work on (paste, file, or link the user provided).
 - What they want done with it — a summary, a TL;DR, or a short drafted reply.
 - Any constraints worth knowing (length, audience, tone).
 
@@ -21,11 +21,11 @@ If the source text is missing, ask for it before going further.
 Hand the work to **assistant-agent**. Give it the full source text and state plainly
 what you want back (e.g. "Summarize this in the structured format" or "Draft a two-line
 friendly reply"). Make it the owner of producing the result; you own the conversation
-with the requester.
+with the user.
 
 ### Deliver
 
-When the assistant returns its result, present it to the requester in a clean, natural
+When the assistant returns its result, present it to the user in a clean, natural
 message. Don't mention delegation or internal mechanics — just give them the summary or
 draft as if it's your own work. If they ask for changes, relay the specifics back to the
 assistant and return the revised version.

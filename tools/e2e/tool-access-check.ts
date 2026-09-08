@@ -5,7 +5,7 @@
  * Usage: npx tsx tools/e2e/tool-access-check.ts
  * Requires Claude authentication (or ANTHROPIC_API_KEY). No Slack messages or
  * external mutations: all side effects are markers in a temporary directory.
- * Membership is deterministic here; real Slack lookup/transport behavior has
+ * The grant is deterministic here; real Slack membership/transport behavior has
  * separate integration tests. Run after SDK upgrades and authorization edits.
  */
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -14,7 +14,6 @@ import { tmpdir } from 'os';
 import { join, resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createToolApprovalHooks, type McpServerPolicy } from '../../src/agents/tool-approval-gate.js';
-import { ToolAccessDenied } from '../../src/agents/tool-access.js';
 import { logger } from '../../src/system/logger.js';
 
 export async function checkToolAccess(): Promise<void> {
@@ -22,24 +21,30 @@ export async function checkToolAccess(): Promise<void> {
   const marker = join(dir, 'marker.log');
   const server = resolve(dirname(fileURLToPath(import.meta.url)), '../../examples/plugins/gatecheck/server.mjs');
   try {
-    for (const eligible of [false, true]) {
-      let checked = 0;
-      const policy: McpServerPolicy = { default: 'allow', tiers: {}, titles: {}, access: { default: { requesterGroups: ['S1'] } } };
-      const hooks = createToolApprovalHooks({ gatecheck: policy }, {
-        authorize: async () => {
-          checked++;
-          if (!eligible) throw new ToolAccessDenied('Requester is not a member of S1. Do not retry.');
-          return { taskId: 'probe', revision: 'probe', rule: { requesterGroups: ['S1'] },
-            requester: { teamId: 'T1', userId: 'U1', channelId: 'C1', messageTs: '1', requestId: 'probe' } };
-        },
-        consumeApproval: () => false,
-        requestApproval: async () => { throw new Error('An allow-tier call must not ask for confirmation.'); },
-      });
+    let granted = false;
+    let checked = 0;
+    let requested = 0;
+    const policy: McpServerPolicy = { default: 'ask', tiers: {}, titles: {}, access: { default: { approverGroups: ['S1'] } } };
+    const hooks = createToolApprovalHooks({ gatecheck: policy }, {
+      authorize: async () => {
+        checked++;
+        return { taskId: 'probe', revision: 'probe', rule: { approverGroups: ['S1'] } };
+      },
+      consumeApproval: () => {
+        const approved = granted;
+        granted = false;
+        return approved;
+      },
+      requestApproval: async () => { requested++; return 'posted'; },
+    });
+    for (const phase of ['pending', 'approved', 'spent']) {
+      if (phase === 'approved') granted = true;
+      const before = checked;
       const abortController = new AbortController();
       const timer = setTimeout(() => abortController.abort(), 90_000);
       try {
         for await (const message of query({
-          prompt: `Call mcp__gatecheck__write_marker exactly once with value="${eligible ? 'eligible' : 'ineligible'}". If refused, stop.`,
+          prompt: `Call mcp__gatecheck__write_marker exactly once with value="approved". If refused, stop.`,
           options: {
             model: 'haiku', cwd: dir, settingSources: [], tools: [], maxTurns: 4,
             permissionMode: 'bypassPermissions', allowDangerouslySkipPermissions: true,
@@ -51,11 +56,12 @@ export async function checkToolAccess(): Promise<void> {
           if (message.type === 'result' && message.is_error) throw new Error(`SDK run failed: ${message.subtype}`);
         }
       } finally { clearTimeout(timer); }
-      if (checked !== 1) throw new Error(`Expected exactly one intercepted call, observed ${checked}.`);
+      if (checked - before !== 1) throw new Error(`Expected exactly one intercepted call, observed ${checked - before}.`);
       const lines = await readFile(marker, 'utf8').catch(() => '');
-      if (lines !== (eligible ? 'eligible\n' : '')) throw new Error(`Unexpected marker output for eligible=${eligible}.`);
-      logger.system(`PASS: ${eligible ? 'member executed once without extra confirmation' : 'nonmember denied before MCP execution'} (bypassPermissions)`);
+      if (lines !== (phase === 'pending' ? '' : 'approved\n')) throw new Error(`Unexpected marker output for phase=${phase}.`);
+      logger.system(`PASS: ${phase} (bypassPermissions)`);
     }
+    if (requested !== 2) throw new Error(`Expected two approval requests, observed ${requested}.`);
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
 

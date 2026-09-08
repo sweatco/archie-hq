@@ -1,8 +1,8 @@
 # MCP Tool Approvals
 
-Per-call human approval for critical MCP tools (#168), with optional Slack user group authorization for requesters and approvers (#327). The engine checks the policy before a tool executes, including calls made by the PM or a delegated agent.
+Per-call human approval for critical MCP tools (#168), with optional Slack user group authorization for approvers (#327). The engine checks the policy before a tool executes, including calls made by the PM or a delegated agent.
 
-Unlike [edit mode](edit-mode.md), this grant is per-call, single-use, and bound to the call's arguments. Group-restricted grants also carry the task, verified human requester (when required), effective access rule, and policy revision.
+Unlike [edit mode](edit-mode.md), this grant is per-call, single-use, and bound to the call's arguments. Group-restricted grants also carry the task, effective access rule, and policy revision.
 
 ## The config
 
@@ -26,7 +26,7 @@ Three tiers, deliberately the same three words Claude Code uses for permissions:
 
 | Tier | Meaning |
 |---|---|
-| `allow` | runs after any requester group check, without a confirmation |
+| `allow` | runs without a confirmation or group check |
 | `ask` | a human approves this one call, arguments included |
 | `deny` | never runs — withheld from every agent that mounts the server |
 
@@ -58,7 +58,6 @@ Put `access` **inside the server's `archie` block**. `access.default` supplies r
   "allow": ["get_release"],
   "access": {
     "default": {
-      "requesterGroups": ["S0123456789"],
       "approverGroups": ["S0234567890"]
     },
     "tools": {
@@ -70,15 +69,12 @@ Put `access` **inside the server's `archie` block**. `access.default` supplies r
 }
 ```
 
-- `requesterGroups` checks the human whose request authorizes the task. It applies to both `allow` and `ask` tools, before any approval prompt.
 - `approverGroups` checks the person clicking Approve/Deny on an `ask` tool. It does not turn an `allow` tool into an `ask` tool.
-- Membership in **any** listed group satisfies that field. When both fields are set, both checks must pass; the requester and approver may be different people.
-- Overrides replace that field's list. An omitted field inherits its server default; `{}` inherits both fields. There is no implicit union and no empty-list escape from an inherited restriction. To restrict only selected methods, omit `access.default` and list those methods under `access.tools`.
+- Membership in **any** listed group permits approval.
+- A tool override replaces the default list. An omitted field (including `{}`) inherits its server default. There is no implicit union or empty-list escape from an inherited restriction. To restrict only selected methods, omit `access.default` and list those methods under `access.tools`.
 - Empty lists, handles, malformed IDs, unknown keys, or non-object rules fail config loading. A `deny` tier always refuses, regardless of group membership.
 
-**Requester identity and shared tasks.** The current shared task log cannot reliably isolate simultaneous requests from different humans. This implementation supports requester authorization only for a new task created by verified Slack ingress with one internal human author. It persists a request UUID, workspace/user/channel IDs, and the triggering message timestamp. All agents on that task inherit the same binding; delegation cannot change the human identity.
-
-A message from another author, a link to another channel, or API/GitHub input permanently clears requester authority before that input enters the shared log. Later replies or deleting messages cannot restore it. Same-author replies in the original channel retain it. Existing tasks, triggers, CLI/API and GitHub tasks start without requester authority. To use `requesterGroups` in those cases, start a separate Slack task with a single author. Approval-only policies work for automated and mixed-author tasks. This is an authorization boundary over accepted task inputs, not isolation from every document or MCP result the agent reads.
+**Shared and automated tasks.** Anyone, including an automated trigger, can propose a call. Thread authors and trigger identities carry no tool authorization. An eligible approver must explicitly approve the specific call; other participants can continue the task without changing that approval. Delegated agents share the same task-bound, single-use grant.
 
 **Membership verification.** The bot needs `usergroups:read` and `users:read` (both already in `slack-manifest.yaml`). Apply the manifest's `subteam_members_changed` and `subteam_updated` subscriptions and redeploy the app configuration. Those events invalidate the cache; correctness does not depend on receiving their member snapshots. Group state comes from [`usergroups.list`](https://docs.slack.dev/reference/methods/usergroups.list/), and complete membership from [`usergroups.users.list`](https://docs.slack.dev/reference/methods/usergroups.users.list/). All configured groups must be readable, active, and in the home workspace. Unknown/disabled groups, guests, bots, deactivated accounts, missing scopes, rate-limit delays or lookup errors deny access. Each Slack lookup has a five-second deadline.
 
@@ -135,13 +131,13 @@ The consequence: the gate cannot *pause-and-resume* the original call. It **deni
 ```
 agent calls mcp__tramline__retry_workflow_run { id: "226284f5…" }
   │
-  ├─ gate: managed server, tier=ask, requester eligible if restricted, no grant on file
+  ├─ gate: managed server, tier=ask, no grant on file
   │    ├─ render: the policy title + sanitized arguments (never the agent's summary)
   │    ├─ post Approve/Deny to Slack, write pending_tool_approval, park the task
   │    └─ deny this attempt: "needs human approval, you'll be reactivated"
   │
   ├─ a human clicks Approve
-  │    ├─ prompt ref matches; requester/approver groups and policy rechecked
+  │    ├─ prompt ref matches; approver groups and policy rechecked
   │    ├─ grant stored in approved_tool_calls (single-use, 30-min TTL)
   │    └─ the requesting agent is woken
   │
@@ -151,8 +147,8 @@ agent calls mcp__tramline__retry_workflow_run { id: "226284f5…" }
 
 ### The invariants, and why each exists
 
-- **Digest binding.** Legacy grants use `sha256(server, tool, canonicalized arguments)`. Protected grants also cover task ID, requester binding (when required), effective access rule and current policy/connection revision. Canonicalization sorts keys and drops `undefined`. Protected prompts use a separate random reference so an old button cannot approve a later identical call.
-- **One pending request per task.** A live request cannot be superseded. The slot ages out after 1h; a changed access policy/requester also makes it obsolete. Replacement prompts have distinct references. Only the agent that raised the request re-arms its park on a retry; other agents wait.
+- **Digest binding.** Legacy grants use `sha256(server, tool, canonicalized arguments)`. Protected grants also cover task ID, effective access rule and current policy/connection revision. Canonicalization sorts keys and drops `undefined`. Protected prompts use a separate random reference so an old button cannot approve a later identical call.
+- **One pending request per task.** A live request cannot be superseded. The slot ages out after 1h; a changed access policy also makes it obsolete. Replacement prompts have distinct references. Only the agent that raised the request re-arms its park on a retry; other agents wait. Replacement clears the old agent's park, and a late post or post failure cannot alter the replacement slot or park.
 - **Anything that fails before the prompt lands clears the slot.** The slot's presence means "a prompt exists in Slack", and both the one-at-a-time refusal and the same-digest re-arm trust that. So the failure path covers the durable flush as well as the post itself: leaving the slot set would block every gated call for an hour and let a retry park the task against a button nobody can see.
 - **Single use across task reloads.** Inactive task instances share weakly held metadata, and loads are coalesced. After asynchronous authorization, resolution compares the pending slot again and consumption synchronously removes the grant before yielding. Task metadata writes are serialized and use atomic replacement. Protected calls proceed only after the removal is saved and authorization is still current; a failed write denies execution. This covers process restarts, not power-loss durability or multiple Archie processes sharing one sessions directory. Legacy unrestricted grants retain their earlier log-and-proceed behavior on a failed consumption write.
 - **Fail closed.** Any error while evaluating a mounted plugin call — including agent-controlled input that overflows the canonicalizer — becomes a denial. Non-plugin tools remain available independently of plugin configuration.
@@ -168,9 +164,9 @@ Slack buttons and `POST /tasks/:id/approve` both use the Task-level verifier. Pa
 ## Drift to watch
 
 - **`PreToolUse` firing for MCP tools is version-coupled to the Claude CLI**, exactly like the egress allowlist (see [Security](security.md)) — which silently regressed across a CLI bump once. The live tripwire is `tools/e2e/tool-gate-check.ts` (with the `gatecheck` example plugin as its fixture): it drives a real agent at a real gated MCP tool on a booted instance and asserts interception, deny-blocks-execution, and single-use spend. Run it after any SDK bump and any change to this gate or `spawn.ts`, before trusting the gate with a write-scoped credential.
-- **Group access has an additional SDK tripwire:** `npx tsx tools/e2e/tool-access-check.ts`. It uses the real SDK and local stdio MCP fixture under `bypassPermissions`, deterministic membership, and temporary marker files to check member/nonmember execution. It requires Claude authentication or `ANTHROPIC_API_KEY`; it does not contact Slack. Automated tests separately exercise Slack API responses and button/API handlers with mocks.
+- **Group access has an additional SDK tripwire:** `npx tsx tools/e2e/tool-access-check.ts`. It uses the real SDK and local stdio MCP fixture under `bypassPermissions`, a deterministic grant and temporary marker files to check denial before approval, one execution after approval, and denial after the grant is spent. It requires Claude authentication or `ANTHROPIC_API_KEY`; it does not contact Slack. Automated tests separately exercise Slack API responses and button/API handlers with mocks.
 - **Titles are policy-authored prose.** A title can understate a tool's effects; review it together with the method and arguments.
-- **A grant is not bound to the agent that requested it.** The digest covers the server, tool and arguments; another agent on the same task making the byte-identical call could spend it. Approving an *action* rather than an actor is the intended reading, but `requested_by` in the audit trail names the requester, not necessarily the executor. (The *pending slot* is requester-bound, so only the requester's retry re-arms the park.)
+- **A grant is not bound to the agent that requested it.** The digest covers the server, tool and arguments; another agent on the same task making the byte-identical call could spend it. Approving an *action* rather than an actor is the intended reading, but `requested_by` in the audit trail names the requesting agent, which may differ from the executor. (Only the agent that owns the *pending slot* can re-arm its park.)
 - **Per-agent divergence has no expression yet.** If one agent should be allowed something its peers must ask for, that needs an agent-level override layered on the server policy — deliberately not built, because no current agent pair diverges. Until then the coarse tool is a second server entry with its own credential (`tramline` read-only, `tramline-rw` gated), which also gets the credential scoping right.
 
 ## Relevant source files
@@ -182,7 +178,7 @@ Slack buttons and `POST /tasks/:id/approve` both use the Task-level verifier. Pa
 - `src/types/task.ts` — `pending_tool_approval`, `approved_tool_calls`, `ApprovedToolCall`
 - `src/connectors/slack/events.ts` — `registerToolApprovalHandlers`
 - `src/agents/tool-access.ts` — access schema, inheritance and identity types
-- `src/tasks/tool-access.ts`, `src/tasks/tool-requester.ts` — live policy, requester authority and approval verification
+- `src/tasks/tool-access.ts` — live policy and approval verification
 - `src/connectors/slack/user-groups.ts` — membership lookup, eligibility and bounded cache
 - `src/agents/spawn.ts` — hook wiring for mounted plugin servers
 - Tests: `src/agents/__tests__/tool-approval-gate.test.ts`, `src/agents/__tests__/registry-mcp-policy.test.ts`, `src/tasks/__tests__/tool-approval.test.ts`, `src/system/__tests__/plugin-loader.test.ts`

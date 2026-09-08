@@ -45,7 +45,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-09-08T12:00:00Z'));
   revision.value = 0;
-  policy = { default: 'ask', tiers: {}, titles: {}, access: { default: { requesterGroups: ['S1'], approverGroups: ['S2'] } } };
+  policy = { default: 'ask', tiers: {}, titles: {}, access: { default: { approverGroups: ['S2'] } } };
   config.mockImplementation(() => ({ servers: { release: connection }, policies: { release: policy }, descriptions: {} }));
   membership.mockReset().mockImplementation(async (principal, groups) => {
     if (!principal || !groups.some((group: string) => ({ S1: ['U1'], S2: ['U2'] }[group]?.includes(principal.userId)))) {
@@ -57,7 +57,6 @@ beforeEach(() => {
   task = new TaskCtor(id, {
     task_id: id, task_owner: null, participants: [], channels: {}, default_channel: null,
     agent_sessions: {}, repositories: {}, status: 'in_progress', created_at: '', updated_at: '',
-    tool_requester: { requestId: randomUUID(), teamId: 'T1', userId: 'U1', channelId: 'C1', messageTs: '1' },
   }, []);
   save = vi.fn().mockResolvedValue(undefined);
   task.save = save;
@@ -83,9 +82,9 @@ function ref(): string { return task.metadata.pending_tool_approval!.approval_re
 function denied(result: unknown) { expect(result).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } }); }
 
 describe('group-restricted MCP execution', () => {
-  it('authorizes requester and approver, then spends once across delegated agents', async () => {
+  it('requires only approver membership, then spends once across delegated agents', async () => {
     denied(await invoke());
-    expect(task.metadata.pending_tool_approval?.access?.requester?.userId).toBe('U1');
+    expect(membership).not.toHaveBeenCalled();
     await expect(task.handleToolCallApproval(approver, ref())).resolves.toBe('resolved');
     expect(await invoke({ release: 1 }, 'release-agent')).toEqual({ continue: true });
     expect(task.metadata.approved_tool_calls).toHaveLength(0);
@@ -100,19 +99,16 @@ describe('group-restricted MCP execution', () => {
     expect(task.metadata.approved_tool_calls).toBeUndefined();
   });
 
-  it('runs requester-only allow tools but denies a foreign requester and ambiguous task', async () => {
+  it('runs allow-tier tools without membership checks or approval prompts', async () => {
     policy.default = 'allow';
     expect(await invoke()).toEqual({ continue: true });
-    task.metadata.tool_requester!.userId = 'U3';
-    denied(await invoke());
-    delete task.metadata.tool_requester;
-    denied(await invoke());
+    expect(membership).not.toHaveBeenCalled();
     expect(task.postInteractiveToUser).not.toHaveBeenCalled();
   });
 
-  it('supports approval-only access for a task with no human requester', async () => {
+  it('requires explicit approval for a scheduled task', async () => {
     policy.access = { default: { approverGroups: ['S2'] } };
-    delete task.metadata.tool_requester;
+    task.metadata.triggered_by = 'trg-scheduled';
     denied(await invoke());
     await task.handleToolCallApproval(approver, ref());
     expect(await invoke()).toEqual({ continue: true });
@@ -149,12 +145,10 @@ describe('group-restricted MCP execution', () => {
     expect(task.metadata.approved_tool_calls).toHaveLength(1);
   });
 
-  it('does not redirect a grant to changed arguments or another human request', async () => {
+  it('does not redirect a grant to changed arguments', async () => {
     await invoke();
     await task.handleToolCallApproval(approver, ref());
     denied(await invoke({ release: 2 }));
-    task.metadata.tool_requester!.requestId = randomUUID();
-    denied(await invoke());
   });
 
   it('mints only one grant for concurrent approvals and spends once for concurrent retries', async () => {
@@ -184,10 +178,13 @@ describe('group-restricted MCP execution', () => {
     await expect(task.consumeToolApproval(moved.digest, moved.access)).rejects.toThrow('policy changed');
   });
 
-  it('denies after an identity or group change during asynchronous verification', async () => {
-    membership.mockImplementationOnce(async () => { delete task.metadata.tool_requester; return () => {}; });
-    denied(await invoke());
-    expect(task.postInteractiveToUser).not.toHaveBeenCalled();
+  it('denies a group change during asynchronous approval verification without consuming the prompt', async () => {
+    await invoke();
+    const pending = task.metadata.pending_tool_approval;
+    membership.mockImplementationOnce(async () => { revision.value++; return () => {}; });
+    await expect(task.handleToolCallApproval(approver, ref())).rejects.toThrow('membership changed');
+    expect(task.metadata.pending_tool_approval).toBe(pending);
+    expect(task.metadata.approved_tool_calls).toBeUndefined();
   });
 
   it('fails closed if durable consumption fails or a group event arrives during the write', async () => {
@@ -200,12 +197,12 @@ describe('group-restricted MCP execution', () => {
     denied(await invoke());
   });
 
-  it('invalidates requester authority durably before adding a second author to shared input', async () => {
+  it('preserves the specific approval when another participant adds input', async () => {
     await invoke(); await task.handleToolCallApproval(approver, ref());
     await task.append({ channel: { id: 'C1', name: 'release' }, threadId: '1', currentMessageTs: '2', shared: false, rootAuthorWasBot: false,
       messages: [{ user: { id: 'U3', username: 'other', realName: 'Other', teamId: 'T1' }, ownText: 'publish', ts: '2' }] });
-    expect(task.metadata.tool_requester).toBeUndefined();
-    denied(await invoke());
+    expect(await invoke()).toEqual({ continue: true });
+    expect(task.metadata.approved_tool_calls).toHaveLength(0);
   });
 
   it('shares inactive task metadata across concurrent loaders without reusing agent processes', async () => {
@@ -219,19 +216,17 @@ describe('group-restricted MCP execution', () => {
 });
 
 describe('approval transports', () => {
-  it('revokes Slack requester authority before appending API input', async () => {
+  it('keeps a pending approval when input arrives through the API', async () => {
+    await invoke();
+    const pending = task.metadata.pending_tool_approval;
     vi.spyOn(Task, 'get').mockResolvedValue(task);
-    vi.mocked(appendCliMessage).mockImplementationOnce(async () => {
-      expect(task.metadata.tool_requester).toBeUndefined();
-      expect(save).toHaveBeenCalledWith(true);
-    });
     let router: any;
     mountApiRoutes({ use: (_path: string, value: unknown) => { router = value; } } as any);
     const handler = router.stack.find((layer: any) => layer.route?.path === '/tasks/:id/message').route.stack[0].handle;
     const res = { status: vi.fn().mockReturnThis(), json: vi.fn() };
     await handler({ params: { id: task.taskId }, body: { message: 'publish' } }, res);
     expect(res.json).toHaveBeenCalledWith({ ok: true });
-    expect(task.metadata.tool_requester).toBeUndefined();
+    expect(task.metadata.pending_tool_approval).toBe(pending);
     expect(appendCliMessage).toHaveBeenCalledWith(task.taskId, 'publish');
   });
 
@@ -266,5 +261,74 @@ describe('approval transports', () => {
     await handlers.get('approve_tool_call')!(args);
     expect(task.metadata.approved_tool_calls).toHaveLength(1);
     expect(slack.update).toHaveBeenCalled();
+  });
+});
+
+// An obsolete prompt can be superseded while its posting/park is still in flight.
+describe('replacing an obsolete approval', () => {
+  it('keeps the new pending prompt if posting the obsolete prompt fails later', async () => {
+    policy.access = { default: { approverGroups: ['S2'] } };
+    let rejectOld!: (error: Error) => void;
+    let entered!: () => void;
+    const posting = new Promise<void>((resolve) => { entered = resolve; });
+    vi.mocked(task.postInteractiveToUser).mockImplementationOnce(() => {
+      entered();
+      return new Promise((_resolve, reject) => { rejectOld = reject; });
+    });
+    const oldCall = invoke();
+    await posting;
+    const oldRef = ref();
+    policy.titles.publish = 'Updated consequence';
+    await invoke({ release: 1 }, 'release-agent');
+    const replacement = task.metadata.pending_tool_approval;
+    expect(replacement?.approval_ref).not.toBe(oldRef);
+    rejectOld(new Error('Old Slack post failed'));
+    await oldCall;
+    expect(task.metadata.pending_tool_approval).toBe(replacement);
+  });
+
+  it('does not re-arm an obsolete prompt when its post succeeds after the replacement was approved', async () => {
+    const { Agent } = await import('../../agents/agent.js');
+    const first = new Agent({ id: 'pm-agent' } as AgentDef);
+    const second = new Agent({ id: 'release-agent' } as AgentDef);
+    const agents = (task as unknown as { agentProcesses: Map<string, InstanceType<typeof Agent>> }).agentProcesses;
+    agents.set('pm-agent', first);
+    agents.set('release-agent', second);
+    let finishOld!: () => void;
+    let entered!: () => void;
+    const posting = new Promise<void>((resolve) => { entered = resolve; });
+    vi.mocked(task.postInteractiveToUser).mockImplementationOnce(() => {
+      entered();
+      return new Promise<void>((resolve) => { finishOld = resolve; });
+    });
+    const oldCall = invoke();
+    await posting;
+    policy.titles.publish = 'Updated consequence';
+    await invoke({ release: 1 }, 'release-agent');
+    await task.handleToolCallApproval(approver, ref());
+    vi.mocked(task.suspendStatus).mockClear();
+    finishOld();
+    await oldCall;
+    expect(task.metadata.pending_tool_approval).toBeUndefined();
+    expect(first.pendingTeardown).toBeUndefined();
+    expect(second.pendingTeardown).toBeUndefined();
+    expect(task.suspendStatus).not.toHaveBeenCalled();
+  });
+
+  it('clears the old agent park when a different agent replaces and approves its prompt', async () => {
+    policy.access = { default: { approverGroups: ['S2'] } };
+    const { Agent } = await import('../../agents/agent.js');
+    const first = new Agent({ id: 'pm-agent' } as AgentDef);
+    const second = new Agent({ id: 'release-agent' } as AgentDef);
+    const agents = (task as unknown as { agentProcesses: Map<string, InstanceType<typeof Agent>> }).agentProcesses;
+    agents.set('pm-agent', first);
+    agents.set('release-agent', second);
+    await invoke();
+    expect(first.pendingTeardown).toBeDefined();
+    policy.titles.publish = 'Updated consequence';
+    await invoke({ release: 1 }, 'release-agent');
+    await task.handleToolCallApproval(approver, ref());
+    expect(second.pendingTeardown).toBeUndefined();
+    expect(first.pendingTeardown).toBeUndefined();
   });
 });
