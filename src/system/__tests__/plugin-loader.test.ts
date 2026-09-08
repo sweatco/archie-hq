@@ -41,6 +41,23 @@ describe('loadMcpJson', () => {
     expect(result).toEqual({ servers: {}, descriptions: {}, policies: {} });
   });
 
+  it('parses access defaults and overrides, stripping them from SDK connection config', async () => {
+    const access = { default: { requesterGroups: ['S1'] }, tools: { publish: { approverGroups: ['S2'] } } };
+    const path = await writeMcpJson({ mcpServers: { release: { type: 'http', url: 'https://example.com/mcp', archie: { access } } } });
+    const loaded = loadMcpJson(path, true);
+    expect(loaded.policies.release.access).toEqual(access);
+    expect(loaded.servers.release).toEqual({ type: 'http', url: 'https://example.com/mcp' });
+  });
+
+  it('fails closed on invalid or missing runtime configuration', async () => {
+    expect(() => loadMcpJson(join(tempDir, 'missing.json'), true)).toThrow('unavailable');
+    const path = join(tempDir, '.mcp.json');
+    await writeFile(path, '{');
+    expect(() => loadMcpJson(path, true)).toThrow('cannot be parsed');
+    await writeMcpJson({ mcpServers: { release: { archie: { access: { default: { requesterGroups: [] } } } } } });
+    expect(() => loadMcpJson(path)).toThrow('non-empty list');
+  });
+
   it('extracts description into descriptions and strips it from the server config', async () => {
     const path = await writeMcpJson({
       mcpServers: {
