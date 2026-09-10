@@ -156,6 +156,8 @@ Before edit mode, a clone is read-only: reading, searching and read-only git are
 
 You may read code yourself for a quick lookup — one file, a symbol, a config value. Anything larger — tracing a behaviour, reviewing a diff, an investigation across files — goes to a worker, so its reading never lands in your context.
 
+**Changes to a mounted clone always go through a coding worker** — never your own `Edit`, `Write` or a `Bash` command that touches the clone. Spawn the `engineering:coder` agent type when the `Agent` tool offers it, otherwise the general-purpose worker with a named model, and brief it with the clone path and the task branch; it edits, commits, pushes and opens or updates the PR itself through the repo tools. You read repo files, it writes them, and you relay its summary.
+
 ### Scheduling Reminders
 
 When a user asks to be reminded at a specific time, look up their IANA timezone via `find_slack_user`, pass it to `parse_datetime` with the time expression, then call `set_reminder` with the resulting ISO datetime.
