@@ -4,37 +4,98 @@
  * Shared prompt constants for spawn/recovery scenarios.
  * Used by task-runtime (sendMessage), task-recovery (triggerRecovery),
  * and event-handler (handleSlackEvent, GitHub webhook dispatch).
+ *
+ * Wakes CARRY THEIR CONTENT. A Slack message, a GitHub event or a system
+ * notice arrives in the PM's stream as the text itself, framed by one of the
+ * builders below — not as a pointer telling the PM to go and read something.
+ * With one agent per task the indirection bought nothing and cost a tool call
+ * per turn, and a pointer at a file the prompt no longer mentions is a wake the
+ * PM cannot act on at all.
+ *
+ * The inline text is the line `src/tasks/persistence.ts` wrote to knowledge.log,
+ * returned by the append function rather than re-rendered here — one renderer,
+ * so the author line, the `msg:<ts>` id, the `[Attachments: …]` suffix and the
+ * redaction placeholder are identical in both places. That `msg:<ts>` id is what
+ * the reaction tools take as `message_id`, and the PM prompt tells it so.
  */
 
+/**
+ * Contentless fallbacks. Every wake that HAS content uses a builder below; these
+ * two remain for the paths whose content is not (yet) threaded through to the
+ * wake — the CLI/API routes and the merge notifier — and as the empty-batch
+ * fallback when a Slack event turns out to have appended nothing new.
+ */
+const NEW_TASK =
+  // Deliberately not 'New task created, assign owner' — a PM that read that
+  // literally could conclude the trigger was a contentless system event and
+  // silently complete the task without ever looking. Observed live: a user
+  // @mentioned Archie and got no reply at all.
+  'New task created. Read the request in your conversation, then handle it.';
+
+// Deliberately NOT 'New input received'. That framing read as a work order, and the PM acted on it as
+// one: woken by a reply that opened by addressing a colleague, it went straight from reading into four
+// tool calls and then posted, uninvited, into two colleagues' exchange. The wording says the two things
+// that were missing — the activity may not be for the PM at all, and whether it is yours to answer is
+// decided BEFORE what to say.
+const EXISTING_TASK =
+  'New activity in a thread you are in — not necessarily a request for you. Read what arrived, then decide whether it is yours to answer before you decide what to say.';
+
+/** Join a batch of inline entries into one block, blank-line separated. */
+function block(entries: readonly string[]): string {
+  return entries.join('\n\n');
+}
+
 export const AGENT_PROMPTS = {
-  // None of these triggers carry the request itself — they wake the PM, and the
-  // content is in the conversation it is resumed with. They used to name
-  // knowledge.log for that; the log is gone, so they point at the conversation
-  // instead. Each one still has to say there IS something to read: `newTask`
-  // was once 'New task created, assign owner', and a PM that read it literally
-  // could conclude the trigger was a contentless system event and silently
-  // complete the task without ever looking. Observed live: a user @mentioned
-  // Archie and got no reply at all.
-  newTask: 'New task created. Read the request in your conversation, then handle it.',
-  // Deliberately NOT 'New input received' any more. That framing read as a work order, and the PM
-  // acted on it as one: woken by a reply that opened by addressing a colleague, it went straight from
-  // reading into four tool calls and then posted, uninvited, into two colleagues' exchange. The
-  // wording now says the two things that were missing — the activity may not be for the PM at all,
-  // and whether it is yours to answer is decided BEFORE what to say. It also stays true on the other
-  // path that uses this prompt (GitHub merge outcomes), which really are PM's to announce.
-  existingTask:
-    'New activity in a thread you are in — not necessarily a request for you. Read what arrived, then decide whether it is yours to answer before you decide what to say.',
+  newTask: NEW_TASK,
+  existingTask: EXISTING_TASK,
+
+  /**
+   * The messages that opened a new task, inline. A batch, because a linked
+   * thread is ingested whole: the PM gets the root and every reply that came
+   * with it, in order.
+   */
+  inboundNewTask: (entries: readonly string[]): string =>
+    entries.length === 0
+      ? NEW_TASK
+      : `New task. This is what arrived:\n\n${block(entries)}\n\nHandle it.`,
+
+  /**
+   * New Slack activity on a thread the task already follows (replies, edits).
+   * Keeps the addressing gate of the contentless version: the content being
+   * right here does not make it a work order.
+   *
+   * Each wake carries the messages appended by ITS event. Several arriving while
+   * the PM is busy queue up as separate wakes, each with its own content, rather
+   * than collapsing into one.
+   */
+  inboundActivity: (entries: readonly string[]): string =>
+    entries.length === 0
+      ? EXISTING_TASK
+      : `New activity in a thread you are in — not necessarily a request for you:\n\n${block(entries)}\n\nDecide whether it is yours to answer before you decide what to say.`,
+
   recovery: 'Task was interrupted. Review the conversation for current state and continue where you left off.',
 
-  // GitHub activity on work in flight — review comments, review bodies, PR
-  // conversation comments, CI results. Distinct from `existingTask` because the
-  // author is often the same person PM is talking to in Slack, and under the
-  // generic prompt PM read the notification as news to relay: it narrated the
-  // reviewer's own comments back at them and asked what they had meant. Saying
-  // the PR is the place to answer keeps the reply where the reviewer is looking.
-  // Merge outcomes (see connectors/github/merge.ts) keep `existingTask` — those
-  // really are PM's to announce.
-  githubInput: 'Activity on GitHub for work in this task — read what it is and which PR, then act on it there. The reply belongs on the PR, not in Slack, unless state changed or someone is blocked.',
+  /**
+   * GitHub activity on work in flight — review comments, review bodies, PR
+   * conversation comments, CI results. Distinct from `inboundActivity` because the
+   * author is often the same person PM is talking to in Slack, and under the
+   * generic prompt PM read the notification as news to relay: it narrated the
+   * reviewer's own comments back at them and asked what they had meant. Saying
+   * the PR is the place to answer keeps the reply where the reviewer is looking.
+   * Merge outcomes (see connectors/github/merge.ts) are announcements, not
+   * review traffic, and stay on the plain `existingTask` wake.
+   */
+  githubActivity: (entry: string): string =>
+    `Activity on GitHub for work in this task:\n\n${entry}\n\nAct on it there — the reply belongs on the PR, not in Slack, unless state changed or someone is blocked.`,
+
+  /**
+   * An engine-side event the PM did not observe: an approval resolved, a budget
+   * extended, a mode flipped. Unlike Slack activity this IS addressed to the PM
+   * — it is the answer to something the PM asked for — so there is no addressing
+   * gate to apply, only the question of what it means for the work in flight.
+   */
+  systemNotice: (notice: string): string =>
+    `System notice for this task:\n\n${notice}\n\nContinue from where you left off, taking this into account.`,
 
   // Stage 3: Reinforcement prompt for idle detection recovery
   reinforcePM: `RECOVERY: You went idle without completing the task.

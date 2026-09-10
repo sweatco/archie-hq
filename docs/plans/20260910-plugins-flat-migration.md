@@ -74,7 +74,7 @@ The descriptions are the one part of the merge worth writing by hand. A concaten
 
 Three of these (`growth-challenge-tracking`, `growth-add-challenge-comms-monitoring`, `ops-campaign-scheduling`) were not on anyone's list. They are shells whose craft sibling has a *different* name, so they don't collide and they can simply be folded with the name kept. Folding rather than merging is also what the spec chose for the `ops-campaign-*` shells whose craft siblings are `campaign-creation` / `campaign-edit`, so keep that consistent: **merge only same-named pairs; fold everything else.**
 
-Keep the `ops-` and `growth-` name prefixes on folded skills even though the prefix no longer does any routing work — the PR-triage labeler still keys off `pm/skills/<prefix>-*`, and more importantly the names are what people say out loud.
+Keep the `ops-` and `growth-` name prefixes on folded skills, but be honest that they are now only a naming convention. They used to earn their keep by driving the PR-triage labeler, which keyed off `pm/skills/<prefix>-*`; once every prefixed skill lives under `ops/**` or `growth/**` those globs match nothing and come out of `.github/labeler.yml` and `.github/CODEOWNERS`, so the prefix does no routing work at all. What is left is that the names are what people say out loud, which is reason enough not to churn them.
 
 Use `git mv` for every fold so history follows. A fold is one command; a merge is a script plus a `git rm` of the shell.
 
@@ -133,6 +133,14 @@ The two-line rule that decides every ambiguous case: **in a skill the PM runs, t
 **Skills whose names collide across plugins no longer collide.** `challenge-tracking` exists in both `growth` and `data-analytics` and always did; the SDK namespaces them, so the two can stay. Don't merge things just because they share a name across plugins — merge only same-named pairs *within* the plugin they are moving into.
 
 **Historical files are not documentation.** `ops/skills/campaign-creation/CHANGELOG.md` and the dated notes in `ops/references/` describe the retired two-agent model in the past tense, correctly. Leave them. Rewriting history entries to match the new model destroys the record of why a rule exists.
+
+## Known behaviour changes
+
+Two things the old per-agent frontmatter carried have no equivalent in the flat model. Neither is a regression to fix during the migration; both are stated here so nobody rediscovers them as bugs.
+
+**Per-agent max mode is gone.** `archie`, `backend`, `mobile` and `infrastructure` each declared `metadata.archie.maxMode` as `claude-fable-5-1` at `high` effort, so turning max mode on upgraded that agent and only that agent. With the agents deleted there is nowhere in a plugin to hang that pair. In the flat model max mode upgrades the PM session instead, and the model/effort pair it upgrades to comes from the engine's defaults rather than from any plugin file. The practical difference is that max mode is now one switch over the whole session, not four independent per-agent settings — a repo-heavy task gets the upgrade the same way a conversation does.
+
+**The per-agent `statusLabel` is dropped.** Only one agent set it: growth-ops, with `statusLabel: growth ops`, which phrased the live "Archie is…" line in the user's thread as the domain rather than the agent key. There is no per-agent status to label any more, so the line is phrased from the PM session alone. Nothing else used the field, and the key is no longer part of the allowed agent frontmatter.
 
 ## What took longest
 

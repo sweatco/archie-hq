@@ -17,7 +17,7 @@ import { fileURLToPath } from 'url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { ArchieClient } from './archie-client.js';
+import { ArchieClient, renderEventLine } from './archie-client.js';
 import { waitForTask } from './wait-for-task.js';
 
 /** Read PORT from a .env file without pulling in a dotenv dependency. */
@@ -68,24 +68,24 @@ server.tool(
 
 server.tool(
   'list_tasks',
-  'List recent Archie tasks with their status and agents.',
+  'List recent Archie tasks with their status, title and channel.',
   {},
   async () => {
     const tasks = await client.listTasks();
     if (tasks.length === 0) {
       return { content: [{ type: 'text', text: 'No tasks found.' }] };
     }
-    const lines = tasks.map((t) => {
-      const agents = t.agents.map((a) => `${a.id}(${a.active ? 'active' : 'idle'})`).join(', ');
-      return `${t.task_id}  ${t.status.padEnd(12)}  owner=${t.task_owner || 'none'}  agents=[${agents}]`;
-    });
+    const lines = tasks.map(
+      (t) =>
+        `${t.task_id}  ${t.status.padEnd(12)}  ${(t.channel_name ?? '-').padEnd(16)}  ${t.title ?? '(untitled)'}`,
+    );
     return { content: [{ type: 'text', text: lines.join('\n') }] };
   },
 );
 
 server.tool(
   'task_status',
-  'Get detailed status of a task: metadata, active agents, and the tail of the knowledge log.',
+  'Get detailed status of a task: metadata, the PM session state, and the tail of the transcript.',
   { task_id: z.string().describe('The task ID (e.g. task-20260410-1523-a3f9k2)') },
   async ({ task_id }) => {
     const detail = await client.getTaskDetail(task_id);
@@ -95,25 +95,27 @@ server.tool(
 
     sections.push(`Task: ${m.task_id}`);
     sections.push(`Status: ${m.status}`);
-    sections.push(`Owner: ${m.task_owner || 'none'}`);
-    sections.push(`Participants: ${m.participants.join(', ') || 'none'}`);
+    if (m.title) sections.push(`Title: ${m.title}`);
     if (m.edit_allowed !== undefined) sections.push(`Edit mode: ${m.edit_allowed ? 'allowed' : 'not allowed'}`);
     sections.push(`Created: ${m.created_at}`);
     sections.push(`Updated: ${m.updated_at}`);
 
-    // Agent sessions
-    const agentLines = detail.agents.map(
-      (a) => `  ${a.id}: ${a.active ? 'active' : 'idle'}`,
-    );
-    if (agentLines.length > 0) {
-      sections.push(`\nAgents:\n${agentLines.join('\n')}`);
-    }
+    // One PM per task, so `agent_sessions` holds one entry — printed as the PM
+    // state rather than as a roster. A legacy on-disk entry can be a bare
+    // session-id string.
+    const pmLines = Object.entries(m.agent_sessions ?? {}).map(([key, state]) => {
+      if (typeof state === 'string') return `  ${key}: session ${state}`;
+      const active = state.active ? 'active' : 'idle';
+      return `  ${key}: ${active}${state.session_id ? ` (session ${state.session_id})` : ''}`;
+    });
+    sections.push(`\nPM:\n${pmLines.length > 0 ? pmLines.join('\n') : '  not spawned yet'}`);
 
-    // Knowledge log tail
-    if (detail.knowledgeLog) {
-      const lines = detail.knowledgeLog.trimEnd().split('\n');
-      const tail = lines.slice(-30).join('\n');
-      sections.push(`\nKnowledge log (last ${Math.min(30, lines.length)} lines):\n${tail}`);
+    // Transcript tail, from the event log — the knowledge log is not served.
+    const { events } = await client.getEvents(task_id);
+    const lines = events.map(renderEventLine).filter((l): l is string => l !== null);
+    if (lines.length > 0) {
+      const tail = lines.slice(-30);
+      sections.push(`\nTranscript (last ${tail.length} of ${lines.length} lines):\n${tail.join('\n')}`);
     }
 
     return { content: [{ type: 'text', text: sections.join('\n') }] };
@@ -135,22 +137,22 @@ server.tool(
 
 server.tool(
   'get_log',
-  'Get the knowledge log for a task. Optionally return only the last N lines.',
+  "Get a task's transcript: inbound messages, the PM's replies and system findings, one line each. Optionally return only the last N lines.",
   {
     task_id: z.string().describe('The task ID'),
     tail: z.number().optional().describe('Number of lines from the end to return (default: all)'),
   },
   async ({ task_id, tail }) => {
-    const detail = await client.getTaskDetail(task_id);
-    if (!detail.knowledgeLog) {
+    // Built from the event log. knowledge.log still exists on disk as an
+    // offline record, but it is not served over the API and nothing on the
+    // live path reads it — every line worth showing here is also an event.
+    const { events } = await client.getEvents(task_id);
+    const lines = events.map(renderEventLine).filter((l): l is string => l !== null);
+    if (lines.length === 0) {
       return { content: [{ type: 'text', text: '(empty log)' }] };
     }
-    let text = detail.knowledgeLog;
-    if (tail) {
-      const lines = text.trimEnd().split('\n');
-      text = lines.slice(-tail).join('\n');
-    }
-    return { content: [{ type: 'text', text }] };
+    const shown = tail ? lines.slice(-tail) : lines;
+    return { content: [{ type: 'text', text: shown.join('\n') }] };
   },
 );
 
@@ -203,13 +205,13 @@ server.tool(
 
 server.tool(
   'wait_for_task',
-  'Block server-side until a task settles, in one call instead of polling get_events. Locate it by task_id or by a nonce in its knowledge log, then wait until completed / stopped / approval_requested or a ~45s cap. Returns STATE with the attribution line and any pm-agent replies. On the cap: STATE=pending plus a CURSOR — call again with that cursor and task_id to resume. On approval_requested: approve via the "approve" tool, then resume.',
+  'Block server-side until a task settles, in one call instead of polling get_events. Locate it by task_id or by a nonce in its transcript, then wait until completed / stopped / approval_requested or a ~45s cap. Returns STATE with the attribution line and any pm-agent replies. On the cap: STATE=pending plus a CURSOR — call again with that cursor and task_id to resume. On approval_requested: approve via the "approve" tool, then resume.',
   {
     task_id: z.string().optional().describe('Task to wait on. Provide this or "nonce".'),
     nonce: z
       .string()
       .optional()
-      .describe("Substring matched in the task's knowledge log — use when you tagged a message with a nonce but don't yet know the task id."),
+      .describe("Substring matched in the task's event log — use when you tagged a message with a nonce but don't yet know the task id."),
     timeout_seconds: z
       .number()
       .optional()

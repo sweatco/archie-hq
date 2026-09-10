@@ -33,7 +33,6 @@ vi.mock('../../system/event-bus.js', () => ({ emitEvent: vi.fn() }));
 import { Task } from '../task.js';
 import { getGitHubClient } from '../../connectors/github/client.js';
 import { appendAgentFinding } from '../persistence.js';
-import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
 import { emitEvent } from '../../system/event-bus.js';
 import type { TaskMetadata } from '../../types/task.js';
@@ -67,18 +66,33 @@ type FakeTask = {
   sendMessage: ReturnType<typeof vi.fn>;
 };
 
+/**
+ * The fake is built on `Task.prototype` rather than as a bare object literal:
+ * the handlers call the real `notifyPm`, which records the finding AND wakes
+ * the PM with it, and a bare object would have no such method. Everything the
+ * handlers touch is still an explicit mock on the instance.
+ */
 function makeFakeTask(
   slot?: TaskMetadata['pending_merge_approval'],
   repositories: TaskMetadata['repositories'] = [],
 ): FakeTask {
-  return {
+  return Object.assign(Object.create(Task.prototype) as object, {
     taskId: 'task-123',
     metadata: { pending_merge_approval: slot, repositories },
     agent: { clearPendingTeardown: vi.fn() },
     debouncedSave: vi.fn(),
     save: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn().mockResolvedValue(undefined),
-  };
+  }) as FakeTask;
+}
+
+/**
+ * The wake the PM actually receives must CARRY the decision, not point at a log
+ * it no longer reads. Asserted against the same substring as the finding, so
+ * the two cannot drift apart unnoticed.
+ */
+function expectWokenWith(task: FakeTask, fragment: string): void {
+  expect(task.sendMessage).toHaveBeenCalledWith(expect.stringContaining(fragment));
 }
 
 /** Repositories map with a single branch_state carrying `pr`'s number. */
@@ -125,7 +139,7 @@ describe('handleMergeApproval', () => {
     expect(appendAgentFinding).toHaveBeenCalledWith(
       'task-123', 'system', expect.stringContaining('merged on user approval by Dana'), 'completion',
     );
-    expect(task.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask);
+    expectWokenWith(task, 'merged on user approval by Dana');
   });
 
   it('arms a not-clean PR: no merge, merge_armed set, armed finding, slot cleared, PM reactivated (AC4)', async () => {
@@ -144,7 +158,7 @@ describe('handleMergeApproval', () => {
     expect(appendAgentFinding).toHaveBeenCalledWith(
       'task-123', 'system', expect.stringContaining('Auto-merge armed for org/backend#1'), 'decision',
     );
-    expect(task.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask);
+    expectWokenWith(task, 'Auto-merge armed for org/backend#1');
   });
 
   it('arms a dirty PR too — any non-clean open PR arms rather than merging', async () => {
@@ -202,7 +216,7 @@ describe('handleMergeApproval', () => {
       'task-123', 'system',
       expect.stringContaining('PR org/backend#1 is closed — nothing to merge'), 'decision',
     );
-    expect(task.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask);
+    expectWokenWith(task, 'PR org/backend#1 is closed — nothing to merge');
   });
 
   it('does not arm a PR merged during the approval window: reports the merged state, does not arm (F2)', async () => {
@@ -236,7 +250,7 @@ describe('handleMergeApproval', () => {
     expect(appendAgentFinding).toHaveBeenCalledWith(
       'task-123', 'system', expect.stringContaining('Base branch was modified'), 'decision',
     );
-    expect(task.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask);
+    expectWokenWith(task, 'Base branch was modified');
   });
 
   it('reports a thrown merge error as a decision finding, slot cleared, PM reactivated (AC4)', async () => {
@@ -253,7 +267,7 @@ describe('handleMergeApproval', () => {
     expect(appendAgentFinding).toHaveBeenCalledWith(
       'task-123', 'system', expect.stringContaining('boom from GitHub'), 'decision',
     );
-    expect(task.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask);
+    expectWokenWith(task, 'boom from GitHub');
   });
 
   it('merges with zero review approvals when GitHub reports clean — no approved floor (AC5)', async () => {
@@ -397,7 +411,7 @@ describe('handleMergeDenial', () => {
     expect(appendAgentFinding).toHaveBeenCalledWith(
       'task-123', 'system', 'Merge denied by user — PR not merged', 'decision',
     );
-    expect(task.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask);
+    expectWokenWith(task, 'Merge denied by user — PR not merged');
   });
 
   it('is a stale no-op on an empty slot', async () => {

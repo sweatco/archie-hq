@@ -1,0 +1,5 @@
+{
+  "name": "core",
+  "version": "1.0.0",
+  "description": "Engine-owned skills that ship with archie-hq itself rather than with a domain plugin: channel canvas, self-awareness, thread conduct, triggers and trigger-fired tasks."
+}

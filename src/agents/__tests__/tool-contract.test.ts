@@ -120,6 +120,7 @@ const PM_ORCHESTRATION_TOOLS = [
   'mcp__orchestration-tools__request_max_mode',
   'mcp__orchestration-tools__get_task_usage',
   'mcp__orchestration-tools__list_available_repos',
+  'mcp__orchestration-tools__mount_repo',
   'mcp__orchestration-tools__propose_trigger',
   'mcp__orchestration-tools__list_triggers',
   'mcp__orchestration-tools__get_trigger',

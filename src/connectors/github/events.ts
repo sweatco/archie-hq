@@ -256,8 +256,8 @@ async function maybeRefreshPrCards(
 }
 
 /**
- * Handle an existing-task event: log to shared knowledge, update PR bookkeeping
- * (for issue_comment), and wake the PM agent.
+ * Handle an existing-task event: record the event, update PR bookkeeping (for
+ * issue_comment), and wake the PM with the recorded line inline.
  *
  * The issue_comment branch preserves `last_processed_comment_id` on both
  * branch_states and legacy repoInfo so future features (e.g. backfill from
@@ -295,6 +295,8 @@ async function handleExistingTaskDirect(
     task.debouncedSave();
   }
 
-  await appendGitHubEvent(taskId, context.githubRepo, formatGitHubEvent(context));
-  await task.sendMessage(AGENT_PROMPTS.githubInput);
+  // The recorded line is the wake: author, repo, PR/branch and the comment or
+  // review body, exactly as written to the log.
+  const entry = await appendGitHubEvent(taskId, context.githubRepo, formatGitHubEvent(context));
+  await task.sendMessage(AGENT_PROMPTS.githubActivity(entry));
 }

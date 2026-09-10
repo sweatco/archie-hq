@@ -7,47 +7,75 @@
 
 // ---- Local types (not imported from src/types/) ----
 
+/**
+ * A row of `GET /api/tasks`. One PM runs a task, so there is no owner and no
+ * agent roster to report; the list carries identity and where the task lives.
+ */
 export interface TaskSummary {
   task_id: string;
   status: string;
-  task_owner: string | null;
-  participants: string[];
   created_at: string;
   updated_at: string;
-  agents: AgentStatus[];
+  title: string | null;
+  channel_name: string | null;
+  reminder?: unknown;
 }
 
-export interface AgentStatus {
-  id: string;
-  active: boolean;
-  session_id?: string;
-}
-
+/**
+ * `GET /api/tasks/:id`. Returns the metadata only — the knowledge log is not
+ * served (it is a write-only record now), so transcript-shaped questions are
+ * answered from the event log instead.
+ *
+ * `agent_sessions` holds one entry, keyed by the PM's agent key; a legacy
+ * on-disk value can still be a bare session-id string.
+ */
 export interface TaskDetail {
   metadata: {
     task_id: string;
     status: string;
-    task_owner: string | null;
-    participants: string[];
     channels: Record<string, unknown>;
-    agent_sessions: Record<string, { active: boolean; session_id?: string }>;
+    agent_sessions: Record<string, { active?: boolean; session_id?: string } | string>;
     edit_allowed?: boolean;
+    title?: string | null;
     created_at: string;
     updated_at: string;
   };
-  knowledgeLog: string;
-  agents: AgentStatus[];
+}
+
+export interface TaskEvent {
+  type: string;
+  taskId: string;
+  timestamp: string;
+  agentName?: string;
+  data: Record<string, unknown>;
 }
 
 export interface EventsResult {
-  events: Array<{
-    type: string;
-    taskId: string;
-    timestamp: string;
-    agentName?: string;
-    data: Record<string, unknown>;
-  }>;
+  events: TaskEvent[];
   total: number;
+}
+
+/**
+ * Render one event as a transcript line, or null for events that carry no prose
+ * (lifecycle, approvals, activity).
+ *
+ * This is the replacement for reading knowledge.log over the API: the log is no
+ * longer served, but every line that mattered to an observer — inbound
+ * messages, the PM's replies, system findings — is also emitted as an event and
+ * persisted to `events.jsonl`. Same content, one source.
+ */
+export function renderEventLine(e: TaskEvent): string | null {
+  if (e.type === 'message') {
+    const from = String(e.data['from'] ?? 'unknown');
+    const to = String(e.data['destination'] ?? e.data['to'] ?? '');
+    const where = to ? ` in ${to}` : '';
+    return `[${e.timestamp}] [${from}${where}] ${String(e.data['message'] ?? '')}`;
+  }
+  if (e.type === 'agent:log') {
+    const type = e.data['type'] ? ` [${String(e.data['type'])}]` : '';
+    return `[${e.timestamp}] [${e.agentName ?? 'system'}]${type} ${String(e.data['finding'] ?? '')}`;
+  }
+  return null;
 }
 
 // ---- Client ----

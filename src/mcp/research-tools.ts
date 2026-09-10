@@ -27,7 +27,10 @@ import { appendAgentFinding } from '../tasks/persistence.js';
 export interface ResearchToolCallbacks {
   getTaskId: () => string;         // task ID for knowledge.log entries
   getResearchesDir: () => string;  // returns <task>/researches
-  getCallerAgentId: () => string;  // which agent invoked the tool
+  // Which agent invoked the tool. A task runs one agent — the PM — so in
+  // practice this is always its id; it stays a callback because it is also
+  // what the saved report and the knowledge-log entry are attributed to.
+  getCallerAgentId: () => string;
   checkResearchBudget: () => { allowed: boolean; used: number; limit: number };
   incrementResearchCount: () => void;
   onResearchBudgetExceeded: () => Promise<void>;
@@ -526,7 +529,7 @@ export function createResearchPostToolHook(opts: {
 
 /**
  * PostToolUse hook that wraps research results with defensive context tags
- * before the calling agent (PM/repo/plugin) processes them.
+ * before the calling agent processes them.
  *
  * Uses additionalContext to inject a system message alongside the tool result.
  * Wired on the OUTER calling agent's query() PostToolUse array.

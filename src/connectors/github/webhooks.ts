@@ -301,10 +301,9 @@ const CHECKS_READY_DEBOUNCE_MS = 20_000;
 /**
  * Handle check_suite.completed with per-PR debouncing.
  *
- * Resets the timer on every event in the window; on fire, appends one
- * structured GitHub event to knowledge.log and wakes PM with the `githubInput`
- * prompt, which points the result at the repo agent that owns the branch — PM
- * has no `get_pr_checks` of its own to inspect with.
+ * Resets the timer on every event in the window; on fire, records one
+ * structured GitHub event and wakes the PM with that line inline, naming the
+ * tool that inspects the result.
  */
 export function handleChecksReadyDirect(
   taskId: string,
@@ -322,13 +321,13 @@ export function handleChecksReadyDirect(
     checksReadyTimers.delete(key);
     logger.system(`GitHub: Firing checks_ready for ${key}`);
     try {
-      await appendGitHubEvent(taskId, githubRepo, {
+      const entry = await appendGitHubEvent(taskId, githubRepo, {
         from: 'ci',
         destination: `PR #${prNumber}`,
         message: `checks updated — call get_pr_checks(${prNumber}) to inspect`,
       });
       const task = await Task.get(taskId);
-      await task.sendMessage(AGENT_PROMPTS.githubInput);
+      await task.sendMessage(AGENT_PROMPTS.githubActivity(entry));
     } catch (error) {
       logger.error('checks-ready', `Failed to deliver checks_ready ping for ${key}`, error);
     }

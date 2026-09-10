@@ -6,7 +6,7 @@
  */
 
 import { mkdir, writeFile } from 'fs/promises';
-import type { SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, BranchState } from '../types/task.js';
+import type { SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, BranchState, FindingType } from '../types/task.js';
 import { CLI_CHANNEL_KEY } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
 import { modelDisplayLabel, resolveAgentModel } from '../agents/model-label.js';
@@ -320,11 +320,17 @@ export class Task {
    * Append a Slack thread's messages to this task.
    * If the thread is new, links it as a channel and appends all messages.
    * If already linked, appends only messages newer than last_processed_ts.
-   * Returns whether a new thread was linked.
+   *
+   * Returns whether a new thread was linked, and `entries` — the lines just
+   * written, in order. Those lines are what the caller hands the PM inline
+   * (`AGENT_PROMPTS.inboundNewTask` / `inboundActivity`); the PM is never told to go
+   * and read them. `entries` is empty when the thread carried nothing new,
+   * which is a real case: an edit, or a redelivery under the watermark.
    */
-  async append(thread: SlackThread): Promise<{ linkedNewThread: boolean }> {
+  async append(thread: SlackThread): Promise<{ linkedNewThread: boolean; entries: string[] }> {
     const channelId = `slack:${thread.channel.id}:${thread.threadId}`;
     const existing = this.metadata.channels[channelId] as SlackChannel | undefined;
+    const entries: string[] = [];
 
     // Redaction policy: when the channel is shared and the message author is
     // external, drop content and don't download files. Author info is logged.
@@ -336,22 +342,26 @@ export class Task {
         // Skipping the download is load-bearing, not an optimisation: a redacted
         // message's files must never reach the task's attachments folder, since
         // the body that would reference them is a placeholder.
-        await appendSlackMessage(
+        //
+        // The redacted line is delivered inline like any other: the placeholder
+        // is what the PM must see, and dropping the entry would hide that
+        // someone external spoke at all.
+        entries.push(await appendSlackMessage(
           this.taskId, thread.channel, thread.threadId, msg.user,
           renderMessageBody(msg, { redacted: true }),
           { redacted: true, ts: msg.ts },
-        );
+        ));
       } else {
         const downloadedFiles = msg.files ? await downloadMessageFiles(this.taskId, msg.files) : undefined;
         // Render AFTER the download, from `downloadedFiles` rather than `msg.files`: only the
         // downloaded copies carry `localPath`, and the `[Attachments: …]` suffix prints the path
         // only when it is set — rendering earlier would silently strip every local path an agent
         // needs to open the file.
-        await appendSlackMessage(
+        entries.push(await appendSlackMessage(
           this.taskId, thread.channel, thread.threadId, msg.user,
           renderMessageBody({ ...msg, files: downloadedFiles }, { redacted }),
           { ts: msg.ts },
-        );
+        ));
       }
     };
 
@@ -372,7 +382,7 @@ export class Task {
       }
 
       this.debouncedSave();
-      return { linkedNewThread: true };
+      return { linkedNewThread: true, entries };
     }
 
     // Existing thread — only append messages newer than last_processed_ts
@@ -384,7 +394,7 @@ export class Task {
 
     existing.last_processed_ts = thread.currentMessageTs;
     this.debouncedSave();
-    return { linkedNewThread: false };
+    return { linkedNewThread: false, entries };
   }
 
   /**
@@ -395,18 +405,20 @@ export class Task {
    * text stays in the log under that same id, so the change is recoverable by
    * correlation. Deliberately does NOT advance `last_processed_ts` — an edit
    * reuses the original message's `ts`, so touching the watermark would skip
-   * genuinely new replies. Returns false when the thread isn't a linked Slack
-   * channel.
+   * genuinely new replies.
+   *
+   * Returns the written line, for the caller to deliver to the PM inline, or
+   * null when the thread isn't a linked Slack channel and nothing was recorded.
    */
   async appendSlackEdit(
     channelKey: string,
     author: SlackAuthor,
     editedTs: string,
     newText: string,
-  ): Promise<boolean> {
+  ): Promise<string | null> {
     const ch = this.metadata.channels[channelKey];
-    if (ch?.type !== 'slack') return false;
-    await appendSlackEdit(
+    if (ch?.type !== 'slack') return null;
+    return appendSlackEdit(
       this.taskId,
       { id: ch.channel_id, name: ch.channel_name },
       ch.thread_id,
@@ -414,7 +426,6 @@ export class Task {
       editedTs,
       newText,
     );
-    return true;
   }
 
   /**
@@ -1191,6 +1202,22 @@ export class Task {
 
   // ---- Approval handlers ----
 
+  /**
+   * Record a system-side decision and wake the PM WITH IT.
+   *
+   * Every approval, denial and budget change reaches the PM this way. The
+   * finding goes to knowledge.log for the offline record (memory extraction,
+   * audit) and the same sentence goes into the PM's stream, because the PM does
+   * not read that file: a wake saying only "something happened, go look" is one
+   * the PM cannot act on. One helper rather than a pair of calls per handler so
+   * the two cannot drift apart — a logged decision the PM never hears about is
+   * exactly the failure this replaces.
+   */
+  private async notifyPm(finding: string, type: FindingType): Promise<void> {
+    await appendAgentFinding(this.taskId, 'system', finding, type);
+    await this.sendMessage(AGENT_PROMPTS.systemNotice(finding));
+  }
+
   async handleEditModeApproval(approver?: { id: string; name: string; email?: string }): Promise<void> {
     // Cancel any park armed by request_edit_mode on the PM this turn. The tool
     // defers task.stop() to the PM's turn-end so it doesn't close the input
@@ -1231,13 +1258,11 @@ export class Task {
     await this.restartAgent('Edit mode approved — restarting for a writable mount');
 
     const approvedBy = this.metadata.edit_approved_by?.name || 'user';
-    await appendAgentFinding(this.taskId, 'system', `Edit mode approved by ${approvedBy}`, 'decision');
-    await this.sendMessage(AGENT_PROMPTS.existingTask);
+    await this.notifyPm(`Edit mode approved by ${approvedBy}`, 'decision');
   }
 
   async handleEditModeDenial(): Promise<void> {
-    await appendAgentFinding(this.taskId, 'system', 'Edit mode denied by user', 'decision');
-    await this.sendMessage(AGENT_PROMPTS.existingTask);
+    await this.notifyPm('Edit mode denied by user', 'decision');
   }
 
   /**
@@ -1437,8 +1462,7 @@ export class Task {
     } else {
       this.debouncedSave();
     }
-    await appendAgentFinding(this.taskId, 'system', finding, findingType);
-    await this.sendMessage(AGENT_PROMPTS.existingTask);
+    await this.notifyPm(finding, findingType);
     return 'resolved';
   }
 
@@ -1463,8 +1487,7 @@ export class Task {
     this.agent?.clearPendingTeardown();
 
     this.debouncedSave();
-    await appendAgentFinding(this.taskId, 'system', 'Merge denied by user — PR not merged', 'decision');
-    await this.sendMessage(AGENT_PROMPTS.existingTask);
+    await this.notifyPm('Merge denied by user — PR not merged', 'decision');
     return 'resolved';
   }
 
@@ -1727,15 +1750,13 @@ export class Task {
     await this.save(true);
 
     const bySuffix = approver?.name ? ` by ${approver.name}` : '';
-    await appendAgentFinding(
-      this.taskId,
-      'system',
-      `Tool call approved${bySuffix}: ${pending.server}:${pending.tool} — ${pending.heading}`,
-      'decision',
-    );
+    const notice = `Tool call approved${bySuffix}: ${pending.server}:${pending.tool} — ${pending.heading}`;
+    await appendAgentFinding(this.taskId, 'system', notice, 'decision');
     // Wake the PM, which owns the grant: only a byte-identical retry spends it.
+    // Not `notifyPm`: the resolution event belongs between the record and the
+    // wake, where it has always been.
     emitEvent('approval:resolved', this.taskId, { type: 'tool_call', approve: true });
-    await this.sendMessage(AGENT_PROMPTS.existingTask);
+    await this.sendMessage(AGENT_PROMPTS.systemNotice(notice));
     return 'resolved';
   }
 
@@ -1760,14 +1781,10 @@ export class Task {
     // Durable, matching the approve path: a denial lost to a crash in the
     // debounce window would leave the slot set and block every later call.
     await this.save(true);
-    await appendAgentFinding(
-      this.taskId,
-      'system',
-      `Tool call denied by user: ${pending.server}:${pending.tool} — ${pending.heading}`,
-      'decision',
-    );
+    const notice = `Tool call denied by user: ${pending.server}:${pending.tool} — ${pending.heading}`;
+    await appendAgentFinding(this.taskId, 'system', notice, 'decision');
     emitEvent('approval:resolved', this.taskId, { type: 'tool_call', approve: false });
-    await this.sendMessage(AGENT_PROMPTS.existingTask);
+    await this.sendMessage(AGENT_PROMPTS.systemNotice(notice));
     return 'resolved';
   }
 
@@ -1797,9 +1814,13 @@ export class Task {
     // this approval was reloaded via Task.get and has no live agent, and
     // save() only re-syncs the session of an agent that is live. The cleared
     // entry sticks and the next spawn restores no session_id → resumes nothing
-    // → runs on the new model. Context survives via knowledge.log, which the
-    // fresh spawn re-reads. Also null a live handle if approval landed before
-    // the pause fired (same-instance race).
+    // → runs on the new model. Also null a live handle if approval landed
+    // before the pause fired (same-instance race).
+    //
+    // TODO(flat): the fresh session starts cold. This used to be softened by
+    // the agent re-reading knowledge.log at spawn; with content delivered
+    // inline there is no re-read, so a model-changing max-mode upgrade now
+    // loses the prior conversation. Only the model-change branch is affected.
     if (resolveAgentModel(this.pmDef, true) !== resolveAgentModel(this.pmDef, false)) {
       const id = this.pmDef.id;
       if (this.metadata.agent_sessions[id]) this.metadata.agent_sessions[id] = { active: false };
@@ -1807,31 +1828,25 @@ export class Task {
     }
 
     this.debouncedSave();
-    await appendAgentFinding(this.taskId, 'system', `Max mode approved by ${approverName || 'user'}`, 'decision');
-    await this.sendMessage(AGENT_PROMPTS.existingTask);
+    await this.notifyPm(`Max mode approved by ${approverName || 'user'}`, 'decision');
   }
 
   async handleMaxModeDenial(): Promise<void> {
-    await appendAgentFinding(this.taskId, 'system', 'Max mode denied by user', 'decision');
-    await this.sendMessage(AGENT_PROMPTS.existingTask);
+    await this.notifyPm('Max mode denied by user', 'decision');
   }
 
   async handleResearchBudgetApproval(): Promise<void> {
     this.metadata.research_budget_extra = (this.metadata.research_budget_extra ?? 0) + 5;
     this.budgets.researchRequestLimit = 5 + (this.metadata.research_budget_extra ?? 0);
     this.debouncedSave();
-    await appendAgentFinding(
-      this.taskId,
-      'system',
+    await this.notifyPm(
       `Research budget extended by user (+5 requests, total extra: ${this.metadata.research_budget_extra})`,
       'decision',
     );
-    await this.sendMessage(AGENT_PROMPTS.existingTask);
   }
 
   async handleResearchBudgetDenial(): Promise<void> {
-    await appendAgentFinding(this.taskId, 'system', 'Additional research denied by user', 'decision');
-    await this.sendMessage(AGENT_PROMPTS.existingTask);
+    await this.notifyPm('Additional research denied by user', 'decision');
   }
 
   /**

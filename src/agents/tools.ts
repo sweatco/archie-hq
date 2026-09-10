@@ -19,10 +19,11 @@ import type { Agent } from './agent.js';
 import { isAutoMergeRepo } from './registry.js';
 import { getGitHubClient, parseCheckRef, getArchieAttributionIdentity } from '../connectors/github/client.js';
 import { buildAttributedBody } from '../connectors/github/pr-attribution.js';
-import { gitExec } from '../connectors/github/repo-clone.js';
+import { gitExec, ensureTaskClone, recordedBaseBranch } from '../connectors/github/repo-clone.js';
 import { hydrateBranchState, findBranchStateByPR, assignPrNumber } from '../connectors/github/branch-state.js';
 import { taskBranchName } from '../connectors/github/branch-naming.js';
-import { appendAgentFinding, isThreadMuted } from '../tasks/persistence.js';
+import { appendAgentFinding, isThreadMuted, getTaskClonePath } from '../tasks/persistence.js';
+import { getBaseCachePath } from '../system/workdir.js';
 import { exploreBody } from '../connectors/slack/message-body.js';
 import { assertReadable } from './artifacts.js';
 import { aggregateTaskUsage, formatTaskUsageReport } from './task-usage.js';
@@ -129,38 +130,56 @@ import { isSlackAuthorId, isAppAuthorId } from '../system/trigger-match.js';
 // Re-export branch state helpers for consumers that import from tools.ts
 export { hydrateBranchState, findBranchStateByPR };
 
+/** GitHub repo identifiers are case-insensitive; the task records one casing. */
+function sameRepo(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+/**
+ * Accept what people paste — a clone URL, a browser URL, a trailing `.git` —
+ * and return the bare `owner/repo`, or null when it is not one.
+ */
+export function normalizeGithubRef(raw: string): string | null {
+  const trimmed = raw
+    .trim()
+    .replace(/^git@github\.com:/i, '')
+    .replace(/^https?:\/\/(?:www\.)?github\.com\//i, '')
+    .replace(/\.git$/i, '')
+    .replace(/\/+$/, '');
+  return /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(trimmed) ? trimmed : null;
+}
+
 /**
  * Resolve a repo mounted into this task by its `github` identifier.
  *
  * The repositories list is flat and task-scoped, so there is nothing to key on
  * but the identifier. Returns undefined when the repo is not mounted.
- *
- * TODO(flat): the `agent` parameter is kept only so the repo-tool factory
- * signatures stay stable for W2-spawn; W2-tools drops it along with the
- * single-repo default below.
  */
-function getAttached(_agent: Agent, task: Task, github?: string): AttachedRepo | undefined {
+function getAttached(task: Task, github?: string): AttachedRepo | undefined {
   const mounted = task.metadata.repositories;
   if (!github) return mounted.length === 1 ? mounted[0] : undefined;
-  return mounted.find((a) => a.github === github);
+  return mounted.find((a) => sameRepo(a.github, github));
 }
 
 /**
  * Resolve the github identifier for a tool call.
  *
- * There is no per-agent repo whitelist any more — the GitHub App installation
- * is the allowlist and `mount_repo` is the gate. When the caller omits
- * `github`, the task's single mounted repo is the default; with several
- * mounted, the argument is required.
- *
- * TODO(flat): W2-tools owns the final shape of this once `mount_repo` exists.
+ * There is no per-agent repo whitelist — the GitHub App installation is the
+ * allowlist and `mount_repo` is the gate. When the caller omits `github`, the
+ * task's single mounted repo is the default; with several mounted, the
+ * argument is required.
  */
-function resolveGithub(agent: Agent, task: Task, requested?: string): { ok: true; github: string } | { ok: false; error: string } {
-  if (requested) return { ok: true, github: requested };
+function resolveGithub(task: Task, requested?: string): { ok: true; github: string } | { ok: false; error: string } {
   const mounted = task.metadata.repositories;
+  if (requested) {
+    // Answer with the identifier as this task recorded it, so casing typed by
+    // the caller cannot split one mounted repo into two.
+    const match = mounted.find((a) => sameRepo(a.github, requested));
+    return { ok: true, github: match?.github ?? requested };
+  }
   if (mounted.length === 1) return { ok: true, github: mounted[0].github };
   if (mounted.length === 0) {
-    return { ok: false, error: 'No repository is mounted in this task. Mount one first.' };
+    return { ok: false, error: 'No repository is mounted in this task. Call mount_repo first.' };
   }
   return {
     ok: false,
@@ -171,14 +190,14 @@ function resolveGithub(agent: Agent, task: Task, requested?: string): { ok: true
 /**
  * Resolve and require that the github has a local clone available.
  *
- * The error tells the agent to report rather than retry blindly.
+ * The error tells the agent to mount rather than retry blindly.
  */
-function requireAttached(agent: Agent, task: Task, requested?: string): { ok: true; github: string; attached: AttachedRepo } | { ok: false; error: string } {
-  const resolved = resolveGithub(agent, task, requested);
+function requireAttached(task: Task, requested?: string): { ok: true; github: string; attached: AttachedRepo } | { ok: false; error: string } {
+  const resolved = resolveGithub(task, requested);
   if (!resolved.ok) return resolved;
-  const attached = getAttached(agent, task, resolved.github);
+  const attached = getAttached(task, resolved.github);
   if (!attached?.clone_path) {
-    return { ok: false, error: `Repo "${resolved.github}" has no local clone (mount may have failed). Report this rather than retrying.` };
+    return { ok: false, error: `Repo "${resolved.github}" has no local clone. Call mount_repo("${resolved.github}") first.` };
   }
   return { ok: true, github: resolved.github, attached };
 }
@@ -1044,7 +1063,7 @@ function createGetTaskUsageTool(agent: Agent, task: Task) {
   );
 }
 
-// ---- GitHub tools (repo agents in edit mode) ----
+// ---- GitHub tools (write side gated by edit mode) ----
 
 function createPushBranchTool(agent: Agent, task: Task) {
   return tool(
@@ -1056,7 +1075,7 @@ function createPushBranchTool(agent: Agent, task: Task) {
     },
     async (args) => {
       const agentName = agent.def.id;
-      const resolved = requireAttached(agent, task, args.github);
+      const resolved = requireAttached(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const force = args.force === true;
       logger.agentAction(
@@ -1094,8 +1113,8 @@ function createPushBranchTool(agent: Agent, task: Task) {
 /**
  * Stamp the attribution line onto a PR body: who opened it, and for whom.
  *
- * The human is the edit-mode approver, which is also who repo-agent commits are
- * authored as (`buildCommitAuthorEnv`) — so the PR names exactly whoever
+ * The human is the edit-mode approver, which is also who the task's commits
+ * are authored as (`buildCommitAuthorEnv`) — so the PR names exactly whoever
  * `git blame` will name. Their Slack display name is used as-is.
  */
 function attributePrBody(task: Task, body: string): string {
@@ -1119,7 +1138,7 @@ function createPullRequestTool(agent: Agent, task: Task) {
       const agentName = agent.def.id;
       logger.agentAction(agentName, 'Creating PR', args.title);
 
-      const resolved = requireAttached(agent, task, args.github);
+      const resolved = requireAttached(task, args.github);
       if (!resolved.ok) return err(resolved.error);
 
       const client = getGitHubClient();
@@ -1129,8 +1148,14 @@ function createPullRequestTool(agent: Agent, task: Task) {
       const branch = attached.current_branch;
       const state = branch ? attached.branch_states?.[branch] : undefined;
       const head = branch || taskBranchName(task.taskId);
-      const entry = agent.def.repo!.repos.find((r) => r.github === github);
-      const base = state?.base_branch || entry?.baseBranch || 'main';
+      // Where this branch forks from. `branch_states` records it at mount time;
+      // a repo whose state predates that (or a branch created outside the mount
+      // path) falls back to asking GitHub for the repository default, which is
+      // what mount_repo would have recorded. There is no agent-declared base
+      // branch any more — an agent definition no longer carries repos.
+      const base = state?.base_branch
+        || (await client.resolveRepo(github))?.default_branch
+        || 'main';
 
       const body = attributePrBody(task, args.body);
       const result = await client.createPullRequest(github, head, base, args.title, body);
@@ -1154,7 +1179,7 @@ function createGetPRStatusTool(agent: Agent, task: Task) {
     'Get the current status of a pull request.',
     { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
-      const resolved = resolveGithub(agent, task, args.github);
+      const resolved = resolveGithub(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1175,7 +1200,7 @@ function createGetPRChecksTool(agent: Agent, task: Task) {
     'List CI checks (check-runs + legacy commit statuses) attached to a PR\'s HEAD commit. Returns conclusion, URL, and — for failed checks — the full output (title/summary/text). Use this when a "checks updated" event arrives or get_pr_status reports mergeableState=unstable, to find which specific check broke.',
     { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
-      const resolved = resolveGithub(agent, task, args.github);
+      const resolved = resolveGithub(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1229,7 +1254,7 @@ function createGetCheckRunTool(agent: Agent, task: Task) {
       github: githubArgSchema,
     },
     async (args) => {
-      const resolved = resolveGithub(agent, task, args.github);
+      const resolved = resolveGithub(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const githubRepo = resolved.github;
       const client = getGitHubClient();
@@ -1348,7 +1373,7 @@ function createListCodeScanningAlertsTool(agent: Agent, task: Task) {
         .describe('Filter by severity level.'),
     },
     async (args) => {
-      const resolved = resolveGithub(agent, task, args.github);
+      const resolved = resolveGithub(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1400,7 +1425,7 @@ function createGetCodeScanningAlertTool(agent: Agent, task: Task) {
       github: githubArgSchema,
     },
     async (args) => {
-      const resolved = resolveGithub(agent, task, args.github);
+      const resolved = resolveGithub(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1450,7 +1475,7 @@ function createGetPRReviewsTool(agent: Agent, task: Task) {
     'Get review-level summary for a PR (approvals, change requests, review bodies). For line-level comments, use get_review_threads.',
     { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
-      const resolved = resolveGithub(agent, task, args.github);
+      const resolved = resolveGithub(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1472,7 +1497,7 @@ function createGetPRCommentsTool(agent: Agent, task: Task) {
     'Get top-level PR conversation comments (the "Conversation" tab). Does not include line-level review comments — use get_review_threads for those.',
     { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
-      const resolved = resolveGithub(agent, task, args.github);
+      const resolved = resolveGithub(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1494,7 +1519,7 @@ function createGetReviewThreadsTool(agent: Agent, task: Task) {
     'Get every review thread on a PR with its thread_id (for resolve_review_thread) and each comment\'s comment_id (for reply_to_review_comment).',
     { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
-      const resolved = resolveGithub(agent, task, args.github);
+      const resolved = resolveGithub(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1531,7 +1556,7 @@ function createListPRsTool(agent: Agent, task: Task) {
       github: githubArgSchema,
     },
     async (args) => {
-      const resolved = resolveGithub(agent, task, args.github);
+      const resolved = resolveGithub(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1558,7 +1583,7 @@ function createGetPRTool(agent: Agent, task: Task) {
     'Get full PR details: title, description, diff, state, and branches.',
     { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
-      const resolved = resolveGithub(agent, task, args.github);
+      const resolved = resolveGithub(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1591,7 +1616,7 @@ function createUpdatePRTool(agent: Agent, task: Task) {
       github: githubArgSchema,
     },
     async (args) => {
-      const resolved = resolveGithub(agent, task, args.github);
+      const resolved = resolveGithub(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1617,7 +1642,7 @@ function createAddPRCommentTool(agent: Agent, task: Task) {
       github: githubArgSchema,
     },
     async (args) => {
-      const resolved = resolveGithub(agent, task, args.github);
+      const resolved = resolveGithub(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1639,7 +1664,7 @@ function createAddReviewCommentTool(agent: Agent, task: Task) {
       github: githubArgSchema,
     },
     async (args) => {
-      const resolved = resolveGithub(agent, task, args.github);
+      const resolved = resolveGithub(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1660,7 +1685,7 @@ function createReplyToReviewCommentTool(agent: Agent, task: Task) {
       github: githubArgSchema,
     },
     async (args) => {
-      const resolved = resolveGithub(agent, task, args.github);
+      const resolved = resolveGithub(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1680,7 +1705,7 @@ function createResolveReviewThreadTool(agent: Agent, task: Task) {
       github: githubArgSchema,
     },
     async (args) => {
-      const resolved = resolveGithub(agent, task, args.github);
+      const resolved = resolveGithub(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1696,7 +1721,7 @@ function createRequestReReviewTool(agent: Agent, task: Task) {
     'Request reviewers to re-review the PR after changes.',
     { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
-      const resolved = resolveGithub(agent, task, args.github);
+      const resolved = resolveGithub(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1713,7 +1738,7 @@ function createMergePRTool(agent: Agent, task: Task) {
     'Merge a pull request, subject to the repo\'s merge policy. On an auto-merge repo it merges directly if the PR is clean (returns the current status otherwise). On any other repo it posts an auto-merge approval request and pauses the task; once the user approves, the PR is armed to merge automatically as soon as all checks and required reviews pass. Works for any open PR — it does not require the PR to be mergeable yet.',
     { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
-      const resolved = resolveGithub(agent, task, args.github);
+      const resolved = resolveGithub(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1824,7 +1849,7 @@ function createClosePRTool(agent: Agent, task: Task) {
     'Close a pull request without merging.',
     { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
-      const resolved = resolveGithub(agent, task, args.github);
+      const resolved = resolveGithub(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1834,7 +1859,7 @@ function createClosePRTool(agent: Agent, task: Task) {
   );
 }
 
-// ---- Git workflow tools (repo agents) ----
+// ---- Git workflow tools ----
 
 function createFetchTool(agent: Agent, task: Task) {
   return tool(
@@ -1842,7 +1867,7 @@ function createFetchTool(agent: Agent, task: Task) {
     'Fetch latest refs from origin.',
     { github: githubArgSchema },
     async (args) => {
-      const resolved = requireAttached(agent, task, args.github);
+      const resolved = requireAttached(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       await gitExec(resolved.attached.clone_path!, 'fetch origin');
       return ok(`Fetched latest from origin (${resolved.github})`);
@@ -1859,7 +1884,7 @@ function createSwitchBranchTool(agent: Agent, task: Task) {
       github: githubArgSchema,
     },
     async (args) => {
-      const resolved = requireAttached(agent, task, args.github);
+      const resolved = requireAttached(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const { attached } = resolved;
       const clonePath = attached.clone_path!;
@@ -1923,7 +1948,7 @@ function createCreateBranchTool(agent: Agent, task: Task) {
       github: githubArgSchema,
     },
     async (args) => {
-      const resolved = requireAttached(agent, task, args.github);
+      const resolved = requireAttached(task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const { attached } = resolved;
 
@@ -1955,7 +1980,7 @@ function createListBranchesTool(agent: Agent, task: Task) {
       }
       let filtered = mounted;
       if (args.github) {
-        const resolved = resolveGithub(agent, task, args.github);
+        const resolved = resolveGithub(task, args.github);
         if (!resolved.ok) return err(resolved.error);
         filtered = mounted.filter((a) => a.github === resolved.github);
       }
@@ -2626,6 +2651,118 @@ function createListAvailableReposTool(_agent: Agent, task: Task) {
   );
 }
 
+/**
+ * `mount_repo` — check out a repository into this task and hand back the path.
+ *
+ * This is the ONLY way a clone comes into existence: nothing is cloned at
+ * spawn, so the PM mounts what a piece of work needs and passes the returned
+ * path to whoever does the work. One clone per repo per task, at
+ * `sessions/{taskId}/repos/{owner}/{repo}`.
+ *
+ * The checkout follows edit mode, exactly as the edit-mode approval path does
+ * (`decideCloneCheckout` is shared with it): the repository's base branch
+ * while the task is read-only, `archie/{taskId}` cut from base on the first
+ * mount after approval, and the branch the task was last on when a clone is
+ * re-created later.
+ *
+ * TODO(flat): the sandbox is frozen at spawn from the clones already recorded,
+ * so a repo mounted mid-session is not reachable until the PM respawns — the
+ * grant has to become the task's repos directory plus the base clones
+ * directory, which is spawn.ts/sandbox.ts (W2-spawn), not here.
+ *
+ * TODO(flat): `Task.recheckoutClonesForEditMode` (src/tasks/task.ts) now
+ * duplicates what `ensureTaskClone` does; it should call it instead.
+ */
+function createMountRepoTool(agent: Agent, task: Task) {
+  return tool(
+    'mount_repo',
+    'Check out a GitHub repository into this task and return its local path. Call this before any code work — nothing is cloned until you ask. ' +
+    'Pass an "owner/repo" identifier from `list_available_repos`. ' +
+    'While the task is read-only the clone sits on the repository default branch and cannot be written to; once edit mode is approved it moves onto this task\'s own branch and becomes writable. ' +
+    'Mounting a repo that is already mounted is safe — it returns the same path. ' +
+    'Pass the returned path to any worker you spawn, and never point two workers at the same clone at the same time.',
+    {
+      github: z.string().describe('Repository identifier, e.g. "org/backend".'),
+    },
+    async (args) => {
+      const github = normalizeGithubRef(args.github);
+      if (!github) {
+        return err(`"${args.github}" is not a repository identifier. Pass "owner/repo", e.g. "org/backend".`);
+      }
+
+      const client = getGitHubClient();
+      if (!client) {
+        return err(
+          'GitHub is not configured for this deployment, so no repository can be mounted. ' +
+          'Tell the user rather than retrying.',
+        );
+      }
+
+      const existing = task.metadata.repositories.find((a) => sameRepo(a.github, github));
+      const attached: AttachedRepo = existing ?? { github };
+
+      // The base branch this repo forks from. A repo the task already mounted
+      // recorded it; a fresh one asks GitHub, and that same call is the
+      // reachability check — the App installation is the allowlist, so a repo
+      // it cannot see is not mountable no matter what the caller believes.
+      let baseBranch = recordedBaseBranch(attached);
+      if (!baseBranch) {
+        const reachable = await client.resolveRepo(github);
+        if (!reachable) {
+          return err(
+            `The GitHub App cannot reach "${github}". Check it appears in list_available_repos ` +
+            `(the App has to be installed on it), then retry.`,
+          );
+        }
+        baseBranch = reachable.default_branch;
+      }
+
+      const editAllowed = task.metadata.edit_allowed === true;
+      // Cloning a large repo takes a while; keep the task from looking idle
+      // while git works.
+      task.touch();
+      let result;
+      try {
+        result = await ensureTaskClone({
+          attached,
+          clonePath: getTaskClonePath(task.taskId, github),
+          baseRepoPath: attached.base_path || getBaseCachePath(github),
+          editAllowed,
+          taskBranch: taskBranchName(task.taskId),
+          baseBranch,
+        });
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        logger.error('task', `Failed to mount ${github} into ${task.taskId}`, e);
+        return err(`Could not check out "${github}": ${reason}. Report this rather than retrying.`);
+      }
+
+      // Recorded only once the clone is on disk, so a failed mount does not
+      // leave behind an attachment the repo tools would then resolve to.
+      if (!existing) task.metadata.repositories.push(attached);
+      // Flushed, not debounced: the clone exists on disk now, and the record
+      // that points at it (and gets it cleaned up on teardown) must survive a
+      // crash in the next second.
+      await task.save(true);
+
+      logger.agentAction(
+        agent.def.id,
+        result.created ? 'Mounted repo' : 'Re-used mounted repo',
+        `${github} @ ${result.branch}`,
+      );
+
+      const lines = [
+        `${result.created ? 'Mounted' : 'Already mounted'}: ${github}`,
+        `Path: ${result.clone_path}`,
+        `Branch: ${result.branch}`,
+        `Default branch: ${result.base_branch}`,
+        `Mode: ${editAllowed ? 'read-write — commits, pushes and PRs are allowed' : 'read-only — request edit mode before changing anything'}`,
+      ];
+      return ok(lines.join('\n'));
+    },
+  );
+}
+
 /** Task orchestration (completion, edit mode, max mode, usage, repos, triggers). */
 export function createOrchestrationMcpServer(agent: Agent, task: Task) {
   return createSdkMcpServer({
@@ -2637,6 +2774,7 @@ export function createOrchestrationMcpServer(agent: Agent, task: Task) {
       createRequestMaxModeTool(agent, task),
       createGetTaskUsageTool(agent, task),
       createListAvailableReposTool(agent, task),
+      createMountRepoTool(agent, task),
       createProposeTriggerTool(agent, task),
       createListTriggersTool(agent, task),
       createGetTriggerTool(agent, task),
@@ -2660,8 +2798,12 @@ export function createSchedulingMcpServer(agent: Agent, task: Task) {
 }
 
 /**
- * Create the MCP server with all repo agent tools (git, PR, branch).
- * Access is controlled by allowedTools in spawn.ts, not by server registration.
+ * Create the MCP server with every repo tool (git, PR, branch).
+ *
+ * All of them resolve their target out of `metadata.repositories` — what this
+ * task has mounted — so there is nothing per-agent to scope here. The write
+ * side is withheld until edit mode is approved, via `disallowedTools` in
+ * spawn.ts rather than by leaving tools unregistered.
  */
 export function createRepoToolsMcpServer(agent: Agent, task: Task) {
   return createSdkMcpServer({

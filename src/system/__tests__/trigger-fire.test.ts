@@ -116,7 +116,7 @@ function fakeTask(n: number): FakeTask {
   return {
     taskId: `task-${n}`,
     metadata: { task_id: `task-${n}`, channels: {}, default_channel: null },
-    append: vi.fn().mockResolvedValue({ linkedNewThread: true }),
+    append: vi.fn().mockResolvedValue({ linkedNewThread: true, entries: ['[ts] [<@U1:R> in #dm] hello'] }),
     linkSlackThread: vi.fn(),
     sendMessage: vi.fn().mockResolvedValue(undefined),
     debouncedSave: vi.fn(),

@@ -9,22 +9,23 @@
  * Session recovery pattern (try with session → reset → retry → give up) written once.
  */
 
-import { join, basename } from 'path';
-import { mkdir, readdir, symlink, writeFile } from 'fs/promises';
+import { join, dirname, resolve as resolvePath } from 'path';
+import { mkdir, readdir, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
+import { fileURLToPath } from 'url';
 import { randomUUID } from 'node:crypto';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Agent } from './agent.js';
 import type { Task } from '../tasks/task.js';
 import { buildCommitAuthorEnv } from './commit-author.js';
-import { coreSkillPaths } from './core-skills.js';
 import { resolveAgentModel, resolveAgentEffort } from './model-label.js';
 import {
   createCommsMcpServer,
   createOrchestrationMcpServer,
   createSchedulingMcpServer,
+  createRepoToolsMcpServer,
 } from './tools.js';
-import { createFileBridgeMcpServer, shouldAttachFileBridge } from './mcp-file-bridge.js';
+import { createFileBridgeMcpServer } from './mcp-file-bridge.js';
 import { createToolApprovalHooks, mcpToolName } from './tool-approval-gate.js';
 import { createResearchMcpServer, createResearchPostToolHook, createResearchDefenseTagHook } from '../mcp/research-tools.js';
 import {
@@ -33,7 +34,8 @@ import {
   appendUsageRecord,
   readKnowledgeLog,
 } from '../tasks/persistence.js';
-import { WORKDIR, CACHES_DIR, getBaseCachePath, getPluginsHeadInfo } from '../system/workdir.js';
+import { WORKDIR, CACHES_DIR, PLUGINS_DIR, getBaseCachePath, getPluginsHeadInfo } from '../system/workdir.js';
+import { getPlugins } from '../system/plugin-loader.js';
 import { ensureTriggerDataDir } from '../system/trigger-store.js';
 import {
   createRecoverableInputGenerator,
@@ -69,17 +71,70 @@ const REPO_WRITE_TOOLS = [
   'mcp__repo-tools__create_branch',
 ];
 
+// ---- Plugin directories ----
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * The engine's own plugin (`core`), holding the skills archie-hq ships itself
+ * rather than in a domain plugin. It is passed to the SDK `plugins` option
+ * alongside every plugin directory in the plugins repo, so the SDK loads its
+ * skills natively — there is no symlinking and no per-track mount table any
+ * more.
+ *
+ * Resolved relative to this file: `src/agents` compiles to `dist/agents`, so
+ * `'..', '..'` lands on the repo root (`/app` in the production image) in both
+ * layouts. Docker puts the directory there — see `Dockerfile.prod`'s COPY and
+ * the dev bind mount in `docker-compose.yml`. If it is missing, the SDK simply
+ * loads no core skills and the assertion after `init` says so.
+ */
+const CORE_PLUGIN_DIR = join(__dirname, '..', '..', 'core-plugin');
+
+/**
+ * Every plugin directory this session loads: the engine's own, then each
+ * top-level directory of the plugins repo carrying `.claude-plugin/plugin.json`.
+ *
+ * `skipMcpDiscovery` keeps MCP engine-owned: a plugin that still ships an
+ * `.mcp.json` does not get its servers connected behind our back — every server
+ * this session talks to comes from the root `.mcp.json`, interpolated and
+ * OAuth-bound below.
+ */
+function pluginConfigs(): { type: 'local'; path: string; skipMcpDiscovery: true }[] {
+  const dirs = [
+    ...(existsSync(CORE_PLUGIN_DIR) ? [CORE_PLUGIN_DIR] : []),
+    ...getPlugins().map((p) => p.dir),
+  ];
+  return dirs.map((path) => ({ type: 'local' as const, path, skipMcpDiscovery: true as const }));
+}
+
+/**
+ * Plugin load failures are silent skips in the SDK — a bad manifest, an
+ * unreadable directory or a path the sandbox hides produces no error, just a
+ * session missing the skills and agents someone expects it to have. The `init`
+ * message lists what actually loaded, so compare it against what we asked for
+ * and say which ones are absent.
+ */
+function assertPluginsLoaded(
+  agentId: string,
+  requested: { path: string }[],
+  loaded: { name: string; path: string }[] | undefined,
+): void {
+  const loadedPaths = new Set((loaded ?? []).map((p) => resolvePath(p.path)));
+  const missing = requested.map((p) => p.path).filter((p) => !loadedPaths.has(resolvePath(p)));
+  if (missing.length > 0) {
+    logger.error(
+      agentId,
+      `SDK loaded ${loadedPaths.size}/${requested.length} plugin directories — missing: ${missing.join(', ')}`,
+    );
+  } else {
+    logger.agent(agentId, `Plugins loaded: ${(loaded ?? []).map((p) => p.name).join(', ') || 'none'}`);
+  }
+}
+
 // ---- Prompt generation ----
 
-async function generatePMPrompt(task: Task): Promise<string> {
-  // TODO(flat): TEAM_LIST / TEAM_EXPERTISE are passed empty so a template that
-  // still carries the placeholders renders nothing rather than literal braces.
-  // Drop both once W1-prompt's rewritten `pm-agent.md` has removed them.
-  return loadPrompt('pm-agent', {
-    TEAM_LIST: '',
-    TEAM_EXPERTISE: '',
-    PM_INTEGRATIONS: task.pmDef.pmConfig?.pmIntegrations ?? '',
-  });
+async function generatePMPrompt(): Promise<string> {
+  return loadPrompt('pm-agent', {});
 }
 
 // ---- Workspace setup ----
@@ -91,28 +146,15 @@ async function setupAgentWorkspace(taskId: string, agent: Agent): Promise<string
   const claudeDir = join(agentWorkspace, '.claude');
   await mkdir(claudeDir, { recursive: true });
 
-  // Symlink the agent's ordered skill list; the list is already plugin-first and deduplicated by resolveSkillPaths, so shadowing is decided there.
-  const skillPaths = agent.def.skillPaths ?? [];
-  if (skillPaths.length > 0) {
-    const agentSkillsDir = join(claudeDir, 'skills');
-    for (const skillPath of skillPaths) {
-      // The list is a scan-time snapshot, so re-check the source here at mount time. The plugins clone can be reset between the definition scan and this spawn (refreshPlugins does a git reset --hard), and symlink(2) does not validate its target — so mounting a since-removed skill would create a DANGLING link. That link then wedges the agent permanently: on the next spawn into this same workspace existsSync(target) follows the link, reports false, and symlink() throws EEXIST out of a path that does not catch it. The old loop got this check for free because it enumerated the directory here rather than trusting a snapshot.
-      if (!existsSync(skillPath)) continue;
-      const target = join(agentSkillsDir, basename(skillPath));
-      if (!existsSync(target)) {
-        await mkdir(agentSkillsDir, { recursive: true });
-        await symlink(skillPath, target);
-      }
-    }
-  }
-
   // Write .claude/settings.json (picked up by the SDK via settingSources: ['project']).
   //
   // attribution.commit replaces Claude Code's default commit trailer: we swap the
   // harness-default "Co-Authored-By: Claude <model>" line for Archie so commits
   // credit Archie as co-author, not the model. sessionUrl:false drops the
   // Claude-Session trailer too. When no identity is configured the empty string
-  // simply hides the trailer. Plugin hooks are merged in when set.
+  // simply hides the trailer. Plugin hooks are NOT written here any more — the
+  // SDK loads each plugin's `hooks/hooks.json` itself now that plugins are
+  // passed natively, so copying them in would register them twice.
   //
   // The identity is the attribution account, not the App bot: the bot form's
   // numeric prefix comes from GITHUB_APP_ID rather than a user ID, so GitHub
@@ -126,12 +168,8 @@ async function setupAgentWorkspace(taskId: string, agent: Agent): Promise<string
       sessionUrl: false,
     },
   };
-  if (agent.def.pluginHooks) settings.hooks = agent.def.pluginHooks;
   await writeFile(settingsPath, JSON.stringify(settings, null, 2));
-  logger.agent(
-    agent.def.id,
-    `Wrote agent settings.json (attribution${agent.def.pluginHooks ? ' + plugin hooks' : ''})`,
-  );
+  logger.agent(agent.def.id, 'Wrote agent settings.json (attribution)');
 
   return agentWorkspace;
 }
@@ -237,15 +275,18 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   const effort = resolveAgentEffort(def, maxMode);
   const tools = def.tools;
 
-  const pluginPaths = def.pluginPath ? [def.pluginPath] : [];
-  const pluginReadPaths = [...pluginPaths, ...(def.pluginDataPath ? [def.pluginDataPath] : [])];
-  // Core skills mount as symlinks under the workspace, but their real files live in
-  // archie-hq's own skills/ dir — /app/skills in the production image, and /app is
-  // denied. Loading a skill is unaffected (`Skill` is ungated), but reading its file
-  // is: without this grant Bash cannot reach it by either route, and Read reaches it
-  // only through the mount symlink, which the guard does not resolve. Plugin skills
-  // need no equivalent — their real path is inside pluginPath, granted just above.
-  const coreSkillReadPaths = coreSkillPaths(def.skillPaths);
+  const plugins = pluginConfigs();
+  // Where the loaded plugins' files actually live, so the session can read them.
+  // Two grants, both punching through a broad denial:
+  //  - the plugins repo, which sits under WORKDIR (denied wholesale below), and
+  //    covers every plugin directory in it at once;
+  //  - the core plugin, which sits in archie-hq's own tree — /app in the
+  //    production image, and /app is denied.
+  // Loading a skill needs neither grant (`Skill` is gated by neither the
+  // PreToolUse guard nor bubblewrap), but reading a skill's *file*, or the
+  // reference files and scripts a skill points at, needs both layers to allow
+  // the real path.
+  const pluginReadPaths = [PLUGINS_DIR, ...(existsSync(CORE_PLUGIN_DIR) ? [CORE_PLUGIN_DIR] : [])];
   const claudeReadDirs = useClaudeDirs ? [claudeConfigDir, claudeTmpDir] : [];
   const claudeWriteDirs = useClaudeDirs ? [claudeTmpDir] : [];
   const protectedWorkspaceFiles = [
@@ -285,8 +326,12 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     }));
   const clonePaths = repoMounts.map((m) => m.clonePath);
 
-  let systemPrompt = await generatePMPrompt(task);
-  const additionalDirectories: string[] = [...clonePaths, sharedPath, ...pluginPaths];
+  let systemPrompt = await generatePMPrompt();
+  // Deliberately NOT listing the plugins repo here, even though it is readable:
+  // CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD auto-loads a CLAUDE.md from
+  // every entry, and the plugins repo root carries one written for people
+  // authoring plugins — not for the PM running a task.
+  const additionalDirectories: string[] = [...clonePaths, sharedPath];
   // Cron* are harness tools that only live for the current Claude session — they
   // die when the agent's ephemeral subprocess exits (which is every time a turn
   // ends), so a scheduled job never fires. An agent reaching for them to "monitor"
@@ -309,7 +354,6 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     sharedPath,
     ...repoMounts.map((m) => m.baseObjectsPath),
     ...pluginReadPaths,
-    ...coreSkillReadPaths,
   ];
   // `.git/HEAD` stays deny-write even in edit mode so branch movement has to go
   // through switch_branch / create_branch rather than a raw `git checkout`.
@@ -412,32 +456,24 @@ Shared folder: ${sharedPath} [READ-ONLY]
     if (inSharedChannel) {
       systemPrompt = `${systemPrompt}\n\nNOTE: This task is active in a Slack channel shared with an external organisation. Messages from external participants are filtered before they reach you. Be mindful that anything you post will be visible to the external org. Do not share repository contents, credentials, internal URLs, or task history with external parties.`;
     }
-
-    // Append PM overlay prompt from the pm plugin (business context, etc.)
-    if (def.pmOverlayPrompt) {
-      systemPrompt = `${systemPrompt}\n\n${def.pmOverlayPrompt}`;
-    }
-
   }
 
   mcpServers['comms-tools'] = createCommsMcpServer(agent, task);
   mcpServers['orchestration-tools'] = createOrchestrationMcpServer(agent, task);
   mcpServers['scheduling-tools'] = createSchedulingMcpServer(agent, task);
-  // TODO(flat): W2-spawn attaches `repo-tools` here too (and W2-tools adds
-  // `mount_repo` to orchestration-tools). Until then nothing creates a clone,
-  // so `repoMounts` above is always empty in practice.
+  // repo-tools is always attached: the PM mounts repos on demand with
+  // `mount_repo`, and reading a clone is allowed before edit mode. The write
+  // side stays withheld until approval — see REPO_WRITE_TOOLS in
+  // `disallowedTools` above, and the read-only clone mount in the sandbox.
+  mcpServers['repo-tools'] = createRepoToolsMcpServer(agent, task);
 
   // Domain/admin MCP servers sometimes need a local file's bytes (e.g.
   // uploading an image). The file bridge forwards file contents into those
   // calls without routing bytes through the model. Bounded to servers the
-  // session already has.
-  // TODO(flat): W2-spawn drops the gating predicate and attaches the bridge
-  // unconditionally; today it excludes the PM, so this is currently a no-op.
-  if (shouldAttachFileBridge(def)) {
-    // The bridge resolves targets from this same live map at call time, so it
-    // sees OAuth-bound headers and never reaches servers dropped below.
-    mcpServers['file-bridge'] = createFileBridgeMcpServer(agent, task, mcpServers);
-  }
+  // session already has: it resolves targets from this same live map at call
+  // time, so it sees OAuth-bound headers and never reaches servers dropped
+  // below.
+  mcpServers['file-bridge'] = createFileBridgeMcpServer(agent, task, mcpServers);
 
   // ---- Channel pinned messages ----
   //
@@ -533,7 +569,10 @@ Shared folder: ${sharedPath} [READ-ONLY]
     cwd,
     additionalDirectories: additionalDirectories as any,
     executable: 'node' as const,
+    // The workspace `.claude/settings.json` (attribution). Skills, agents,
+    // commands and hooks come from `plugins` below, not from here.
     settingSources: ['project'] as any,
+    plugins,
     // The SDK replaces (not merges) process.env with this object, so any var the
     // spawned CLI needs must be listed here explicitly. HOME in particular must be
     // set: without it `~` fails to expand in unsandboxed hook commands, silently
@@ -565,8 +604,9 @@ Shared folder: ${sharedPath} [READ-ONLY]
         CLAUDE_CONFIG_DIR: claudeConfigDir,
         CLAUDE_CODE_TMPDIR: claudeTmpDir,
       } : {}),
-      ...(def.pluginPath ? { CLAUDE_PLUGIN_ROOT: def.pluginPath } : {}),
-      ...(def.pluginDataPath ? { CLAUDE_PLUGIN_DATA: def.pluginDataPath } : {}),
+      // CLAUDE_PLUGIN_ROOT is deliberately absent: the session loads many
+      // plugins now, so a single process-wide value would be wrong for all but
+      // one of them. The SDK sets it per plugin as it loads each one.
       // Commit authorship — see commitAuthorEnv above.
       ...commitAuthorEnv,
     },
@@ -686,6 +726,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
               }
               task.recordResolvedModel((event as any).model);
               logger.agent(def.id, `Model: ${(event as any).model || 'unknown'}`);
+              assertPluginsLoaded(def.id, plugins, (event as any).plugins);
               if (Array.isArray(event.mcp_servers)) {
                 // The init snapshot only carries { name, status }. Pull the
                 // richer status so a non-connected server records WHY (its

@@ -1,34 +1,32 @@
 /**
  * PM Agent Definition
  *
- * One task runs one agent — the PM — so this module builds exactly one
- * `AgentDef`. Everything else a plugin contributes (skills and agent files) is
- * loaded natively by the SDK from the plugin directories; the engine no longer
- * scans agent frontmatter, builds repo/plugin agent definitions, or computes
- * peer visibility.
+ * One task runs one agent — the PM — and its definition is engine-owned and
+ * static apart from two things read from the plugins repo root: the MCP servers
+ * of `.mcp.json` (all of them attach to the session) and the network allowlist
+ * of `archie.json`. Everything a plugin contributes — skills, agents, commands,
+ * hooks — is loaded natively by the SDK from the plugin directories, so nothing
+ * here scans a plugin's contents any more.
  *
- * Scanned fresh at startup and re-scanned by `syncPlugins()` after the plugins
- * repo moves, so a changed overlay is picked up by the next task.
+ * Built fresh on every task start/restart, so a plugins-repo change is picked
+ * up by the next task without a restart.
  */
 
 import type { AgentDef } from '../types/agent.js';
-import { getRootMcpConfig, getPlugins, getPmOverlay, type LoadedMcpConfig, type PluginAgentDef } from '../system/plugin-loader.js';
-import { PLUGINS_DATA_DIR } from '../system/workdir.js';
-import { join } from 'path';
+import { getRootMcpConfig, getArchieConfig } from '../system/plugin-loader.js';
 import { logger } from '../system/logger.js';
-import { resolveSkillPaths } from './core-skills.js';
-import { deniedToolNames, type McpToolPolicy } from './tool-approval-gate.js';
+import { deniedToolNames } from './tool-approval-gate.js';
 
 // ---- Engine constants ----
 //
 // The PM's model and effort are engine-owned, not plugin-owned. The defaults
 // are exactly what the `pm` plugin overlay resolved to before the flattening
-// (`model: opus`, `effort: medium`), so behaviour is unchanged out of the box.
+// (`model: opus`, `effort: high`), so behaviour is unchanged out of the box.
 // Max mode is likewise unchanged by default — the PM kept its normal model and
 // effort under max mode before, and still does unless a deployment opts in.
 
 const PM_MODEL = process.env.ARCHIE_PM_MODEL?.trim() || 'opus';
-const PM_EFFORT = process.env.ARCHIE_PM_EFFORT?.trim() || 'medium';
+const PM_EFFORT = process.env.ARCHIE_PM_EFFORT?.trim() || 'high';
 const PM_MAX_MODEL = process.env.ARCHIE_PM_MAX_MODEL?.trim() || PM_MODEL;
 const PM_MAX_EFFORT = process.env.ARCHIE_PM_MAX_EFFORT?.trim() || PM_EFFORT;
 
@@ -36,8 +34,8 @@ const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 
 function asEffort(value: string): AgentDef['effort'] {
   if ((EFFORT_LEVELS as readonly string[]).includes(value)) return value as AgentDef['effort'];
-  logger.warn('registry', `Unknown PM effort "${value}" — falling back to 'medium'`);
-  return 'medium';
+  logger.warn('registry', `Unknown PM effort "${value}" — falling back to 'high'`);
+  return 'high';
 }
 
 // ---- Module state ----
@@ -55,8 +53,8 @@ export function initRegistry(): void {
 }
 
 /**
- * The PM AgentDef, built fresh from the current plugin state. Used on every
- * task start/restart so a resumed task picks up overlay changes.
+ * The PM AgentDef, built fresh from the current plugins-repo state. Used on
+ * every task start/restart so a resumed task picks up config changes.
  */
 export function scanPmDef(): AgentDef {
   return buildPmDef();
@@ -89,105 +87,30 @@ export function __setPmDefForTesting(def: AgentDef | undefined): void {
 /**
  * Merge policy for a repo: may Archie merge its PRs without asking the user?
  *
- * TODO(flat): W2-spawn wires this to `repos[*].autoMerge` in the plugins repo's
- * root `archie.json`. Until then no repo is auto-merge, which is the safe
- * direction: every merge goes through the existing user-approval gate.
+ * Declared per repo in the plugins repo's root `archie.json`
+ * (`repos["owner/repo"].autoMerge`). Strict-boolean, so a repo that is absent,
+ * or whose flag is anything but the literal `true`, goes through the existing
+ * user-approval gate on every merge.
  */
-export function isAutoMergeRepo(_github: string): boolean {
-  return false;
+export function isAutoMergeRepo(github: string): boolean {
+  return getArchieConfig().repos[github]?.autoMerge === true;
 }
 
 // ---- Internal helpers ----
 
 /**
- * Resolve the PM's mcpServers references against the root .mcp.json.
+ * The PM definition: static identity and model, plus the two things the
+ * plugins repo root still decides.
  *
- * Tool permission rules:
- * - No `tools` defined → every tool is available (bypassPermissions), minus denials
- * - `tools` defined → use exactly what's listed
- * - `disallowedTools` → always applied on top, and the servers' own `deny`-tier
- *   tools are appended to it, so a tool disabled once in .mcp.json is withheld
- *   rather than re-listed per agent
- *
- * The tool approval policy travels with the server, not the agent: mounting
- * `tramline` brings its `archie` block along.
- */
-function resolveAgentMcpServers(
-  agent: PluginAgentDef,
-  rootMcp: LoadedMcpConfig,
-): Pick<AgentDef, 'mcpServers' | 'mcpDescriptions' | 'mcpPolicy' | 'tools' | 'disallowedTools'> {
-  const result: Pick<AgentDef, 'mcpServers' | 'mcpDescriptions' | 'mcpPolicy' | 'tools' | 'disallowedTools'> = {};
-
-  if (agent.mcpServers && agent.mcpServers.length > 0) {
-    const resolved: Record<string, any> = {};
-    const descriptions: Record<string, string> = {};
-    const policy: McpToolPolicy = {};
-    for (const name of agent.mcpServers) {
-      const config = rootMcp.servers[name];
-      if (config) {
-        resolved[name] = config;
-        if (rootMcp.descriptions[name]) descriptions[name] = rootMcp.descriptions[name];
-        if (rootMcp.policies[name]) policy[name] = rootMcp.policies[name];
-      } else {
-        logger.warn('registry', `PM overlay references MCP server "${name}" not found in root .mcp.json`);
-      }
-    }
-    if (Object.keys(resolved).length > 0) {
-      result.mcpServers = resolved;
-    }
-    if (Object.keys(descriptions).length > 0) {
-      result.mcpDescriptions = descriptions;
-    }
-    if (Object.keys(policy).length > 0) {
-      result.mcpPolicy = policy;
-    }
-  }
-
-  // Only pass tools when explicitly defined in the overlay frontmatter.
-  // With bypassPermissions, all tools (built-in + MCP) are available by default —
-  // def.tools restricts the set, so auto-generating MCP wildcards would kill built-ins.
-  if (agent.tools && agent.tools.length > 0) {
-    result.tools = agent.tools;
-  }
-
-  // Frontmatter denials plus every `deny`-tier tool of the servers mounted.
-  // Deduped: a plugin migrating to .mcp.json policies may still list a tool in
-  // both places for a while.
-  const disallowed = [
-    ...(agent.disallowedTools ?? []),
-    ...(result.mcpPolicy ? deniedToolNames(result.mcpPolicy) : []),
-  ];
-  if (disallowed.length > 0) {
-    result.disallowedTools = [...new Set(disallowed)];
-  }
-
-  return result;
-}
-
-/**
- * TODO(flat): W2-spawn replaces the overlay read entirely — every plugin
- * directory (including `pm`) goes through the SDK `plugins` option, and the
- * root MCP config attaches to the session as a whole rather than through the
- * overlay's `mcpServers` list.
+ * MCP is engine-owned and session-wide. Every server in `.mcp.json` attaches,
+ * carrying its own `archie` policy with it, and those policies are unioned into
+ * one session policy — `deny` tiers become `disallowedTools` here, `ask` tiers
+ * attach the PreToolUse approval gate in `spawn.ts`. There is no per-agent
+ * subsetting left to do: there is only one agent.
  */
 function buildPmDef(): AgentDef {
   const rootMcp = getRootMcpConfig();
-  const pmPlugin = getPlugins().find((p) => p.name === 'pm');
-  const overlay = getPmOverlay();
-  const resolvedMcp = overlay ? resolveAgentMcpServers(overlay, rootMcp) : {};
-
-  const describeServer = (name: string): string => {
-    const desc = rootMcp.descriptions[name];
-    return desc ? `${name} (${desc})` : name;
-  };
-
-  // The PM has no roster to annotate any more, but it still needs to know what
-  // it can reach itself — otherwise it tells a user that checking Jira /
-  // Rollbar / the admin panel isn't possible.
-  const pmServerNames = resolvedMcp.mcpServers ? Object.keys(resolvedMcp.mcpServers) : [];
-  const pmIntegrations = pmServerNames.length > 0
-    ? `You can query these external systems directly: ${pmServerNames.map(describeServer).join('; ')}.`
-    : '';
+  const denied = deniedToolNames(rootMcp.policies);
 
   return {
     id: 'pm-agent',
@@ -197,15 +120,13 @@ function buildPmDef(): AgentDef {
     model: PM_MODEL,
     effort: asEffort(PM_EFFORT),
     maxMode: { model: PM_MAX_MODEL, effort: asEffort(PM_MAX_EFFORT) },
-    maxTurns: overlay?.maxTurns,
     isPm: true,
-    pluginName: 'pm',
+    pluginName: 'core',
     visibility: 'global',
-    pluginDataPath: join(PLUGINS_DATA_DIR, 'pm'),
-    pmConfig: { pmIntegrations },
-    pmOverlayPrompt: overlay?.prompt || undefined,
-    skillPaths: resolveSkillPaths('pm', pmPlugin?.skillsPath || undefined),
-    pluginHooks: pmPlugin?.hooks || undefined,
-    ...resolvedMcp,
+    mcpServers: rootMcp.servers,
+    mcpDescriptions: rootMcp.descriptions,
+    ...(Object.keys(rootMcp.policies).length > 0 ? { mcpPolicy: rootMcp.policies } : {}),
+    ...(denied.length > 0 ? { disallowedTools: denied } : {}),
+    allowedNetworkDomains: getArchieConfig().allowedNetworkDomains,
   };
 }

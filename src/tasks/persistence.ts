@@ -2,7 +2,17 @@
  * Task Manager
  *
  * Handles task persistence: creating task folders, reading/writing metadata,
- * appending to knowledge.log
+ * appending to knowledge.log.
+ *
+ * `knowledge.log` is a WRITE-ONLY record of the task as far as the running PM
+ * is concerned: everything the PM needs is delivered inline into its stream (see
+ * `AGENT_PROMPTS` in `src/agents/prompts.ts`), so nothing on the live path reads
+ * the file back. It is still written because two offline consumers read it after
+ * the fact — the memory extractor (`src/memory/lifecycle.ts`) and the people
+ * section built at spawn (`extractTaskUsernames` in `src/agents/spawn.ts`). The
+ * append functions that feed the PM therefore RETURN the line they wrote, so the
+ * inline copy and the logged copy are the same string by construction rather
+ * than by two renderers agreeing.
  */
 
 import { mkdir, readFile, appendFile } from 'fs/promises';
@@ -223,11 +233,15 @@ export async function loadMetadata(taskId: string): Promise<TaskMetadata | null>
 }
 
 /**
- * Format a log entry for the shared knowledge log
+ * Format a log entry for the shared knowledge log — one line, no trailing
+ * newline (the write sites add it).
+ *
+ * The un-terminated form is what the PM-facing append functions return, so the
+ * text delivered inline to the PM is character-identical to the line on disk.
  */
 function formatLogEntry(entry: LogEntry): string {
   const typeStr = entry.type ? ` [${entry.type}]` : '';
-  return `[${entry.timestamp}] [${entry.source}]${typeStr} ${entry.message}\n`;
+  return `[${entry.timestamp}] [${entry.source}]${typeStr} ${entry.message}`;
 }
 
 /**
@@ -252,6 +266,8 @@ export function renderAttachmentsSuffix(artifactPaths: readonly string[]): strin
  * Append a Slack message to the knowledge log.
  *
  * The body arrives already rendered: rendering is owned by `renderMessageBody` in `src/connectors/slack/message-body.ts`, and the caller is the one that knows the message's parts (in particular the *downloaded* files, whose `localPath` only exists after the download await). Keeping this function to persistence-only concerns is what stops a second renderer growing here.
+ *
+ * Returns the written line so the caller can hand the PM the same text inline.
  */
 export async function appendSlackMessage(
   taskId: string,
@@ -260,7 +276,7 @@ export async function appendSlackMessage(
   userInfo: SlackAuthor,
   renderedBody: string,
   options?: { redacted?: boolean; ts?: string }
-): Promise<void> {
+): Promise<string> {
   const redacted = options?.redacted === true;
 
   // Mask the author name in the source line when the body is redacted, so the
@@ -277,7 +293,8 @@ export async function appendSlackMessage(
     message: renderedBody,
   };
 
-  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
+  const line = formatLogEntry(entry);
+  await appendFile(getKnowledgeLogPath(taskId), line + '\n');
   // Emit the original message body in events so live observers (CLI/UI) still
   // see redacted vs internal as a clear category — pass the same string we
   // wrote to the log.
@@ -287,6 +304,7 @@ export async function appendSlackMessage(
     destination: formatSlackChannelDisplay(channelInfo.name),
     message: renderedBody,
   });
+  return line;
 }
 
 /**
@@ -309,6 +327,8 @@ export function renderEditForContext(newText: string): string {
  * edit auditable. The `msg:<ts>` suffix matches the id stamped by
  * `appendSlackMessage`, so the edit correlates to the original message (whose
  * pre-edit text remains in the log under the same id).
+ *
+ * Returns the written line so the caller can hand the PM the same text inline.
  */
 export async function appendSlackEdit(
   taskId: string,
@@ -317,7 +337,7 @@ export async function appendSlackEdit(
   userInfo: SlackAuthor,
   editedTs: string,
   newText: string,
-): Promise<void> {
+): Promise<string> {
   const body = renderEditForContext(newText);
   const entry: LogEntry = {
     timestamp: new Date().toISOString(),
@@ -325,13 +345,15 @@ export async function appendSlackEdit(
     message: body,
   };
 
-  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
+  const line = formatLogEntry(entry);
+  await appendFile(getKnowledgeLogPath(taskId), line + '\n');
   emitEvent('message', taskId, {
     from: userInfo.realName,
     to: 'pm-agent',
     destination: formatSlackChannelDisplay(channelInfo.name),
     message: body,
   });
+  return line;
 }
 
 /**
@@ -350,7 +372,7 @@ export async function appendAgentFinding(
     message: finding,
   };
 
-  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
+  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry) + '\n');
   emitEvent('agent:log', taskId, { finding, type }, agentName);
 }
 
@@ -375,7 +397,7 @@ export async function appendMessageToUser(
     source,
     message: renderedMessage,
   };
-  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
+  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry) + '\n');
 }
 
 /**
@@ -384,6 +406,8 @@ export async function appendMessageToUser(
  * Accepts a structured payload matching the Slack/CLI shape so the CLI can
  * render GitHub events uniformly: `[from in destination] @pm-agent message`.
  *
+ * Returns the written line so the caller can hand the PM the same text inline.
+ *
  * @param githubRepo - Full "owner/repo" identifier (e.g., 'acme/mobile')
  * @param event - Structured event with author, destination (e.g. "PR #42"), and clean message body
  */
@@ -391,7 +415,7 @@ export async function appendGitHubEvent(
   taskId: string,
   githubRepo: string,
   event: { from: string; destination: string; message: string }
-): Promise<void> {
+): Promise<string> {
   const destination = `github:${githubRepo}/${event.destination}`;
   const entry: LogEntry = {
     timestamp: new Date().toISOString(),
@@ -399,34 +423,45 @@ export async function appendGitHubEvent(
     message: event.message,
   };
 
-  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
+  const line = formatLogEntry(entry);
+  await appendFile(getKnowledgeLogPath(taskId), line + '\n');
   emitEvent('message', taskId, {
     from: event.from,
     to: 'pm-agent',
     destination,
     message: event.message,
   });
+  return line;
 }
 
 /**
- * Append a CLI user message to the knowledge log
+ * Append a CLI user message to the knowledge log.
+ *
+ * Returns the written line so the caller can hand the PM the same text inline.
  */
 export async function appendCliMessage(
   taskId: string,
   message: string,
-): Promise<void> {
+): Promise<string> {
   const entry: LogEntry = {
     timestamp: new Date().toISOString(),
     source: 'cli',
     message,
   };
 
-  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
+  const line = formatLogEntry(entry);
+  await appendFile(getKnowledgeLogPath(taskId), line + '\n');
   emitEvent('message', taskId, { from: 'cli', to: 'pm-agent', message });
+  return line;
 }
 
 /**
- * Read the knowledge log
+ * Read the knowledge log.
+ *
+ * NOT on the PM's path — the PM is fed inline and never reads this file. The
+ * two remaining callers are offline consumers: the memory extractor
+ * (`src/memory/lifecycle.ts`) and the spawn-time people section
+ * (`extractTaskUsernames` / `buildTaskPeopleSection` in `src/agents/spawn.ts`).
  */
 export async function readKnowledgeLog(taskId: string): Promise<string> {
   const logPath = getKnowledgeLogPath(taskId);
