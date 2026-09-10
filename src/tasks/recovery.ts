@@ -4,7 +4,18 @@
  * All recovery logic in one place:
  * - Startup recovery: re-spawn the agent for in_progress tasks after server restart
  * - Idle detection: detect when the agent goes inactive
- * - Progressive recovery: reinforcement nudge → nuclear restart
+ * - Progressive recovery: reinforcement nudge → nuclear restart → pause
+ *
+ * "Nuclear" restarts the process, not the conversation: the task is stopped and
+ * reloaded from disk, and the fresh spawn *resumes* the persisted SDK session
+ * (rehydrated from `agent_sessions`) rather than clearing it, so the PM keeps
+ * its history and picks up where it left off.
+ *
+ * Because a nuclear cycle leaves the task active again, a PM that keeps parking
+ * without reporting completion would loop stop→resume until the wall-clock cap
+ * (eight cycles in six minutes, observed live). `MAX_NUCLEAR_RECOVERY_CYCLES`
+ * bounds that: past the cap the task is paused instead of respawned, and the
+ * user's next message resumes it normally.
  */
 
 import { findTasksByStatus } from './persistence.js';
@@ -110,10 +121,18 @@ export function scheduleIdleCheck(task: Task): void {
   }, 3000);
 }
 
+/** Nuclear recovery cycles allowed per task activation before the task is paused. */
+const MAX_NUCLEAR_RECOVERY_CYCLES = 3;
+
+/** Posted once when the cap is hit. No failure verdict — just how to resume. */
+const PAUSED_NOTICE =
+  "⏸️ I've paused this task — I tried a few times to get it moving again and it kept stalling. Send a new message in this thread and I'll pick it back up.";
+
 /**
  * Progressive recovery when the agent goes idle without reporting:
  * - Attempts 1-2: Reinforcement — nudge it with a prompt
- * - Attempt 3+: Nuclear — stop the task and restart it from disk
+ * - Attempt 3+: Nuclear — stop the task and resume it from disk
+ * - Past MAX_NUCLEAR_RECOVERY_CYCLES nuclears in one activation: pause instead
  *
  * Works entirely in-memory. The debounced persist snapshots whatever
  * state looks like when it fires.
@@ -124,17 +143,38 @@ async function triggerRecovery(task: Task): Promise<void> {
   logger.warn('recovery', `Agent inactive for task ${task.taskId} (attempt ${task.recoveryAttempts})`);
 
   if (task.recoveryAttempts >= 3) {
-    // Nuclear: reset recovery counter before stop
-    task.recoveryAttempts = 0;
+    const cycle = task.nuclearRecoveryCycles + 1;
 
-    // Lazy import to avoid circular dependency
-    const { Task: TaskClass } = await import('./task.js');
+    if (cycle > MAX_NUCLEAR_RECOVERY_CYCLES) {
+      // Respawning again would just start cycle N+1 of the same loop, so stop
+      // here and hand it back to the user. A new inbound message resumes the
+      // stopped task through the normal sendMessage → ensurePm path, which
+      // rehydrates the stored session id.
+      logger.warn(
+        'recovery',
+        `Task ${task.taskId} stalled after ${MAX_NUCLEAR_RECOVERY_CYCLES} nuclear recovery cycles (cycle ${cycle}) — pausing instead of respawning`,
+      );
+      await task.postToUser(PAUSED_NOTICE).catch((err: unknown) =>
+        logger.error('recovery', 'Failed to post recovery pause message', err),
+      );
+      await task.stop();
+    } else {
+      // Nuclear: reset recovery counter before stop
+      task.recoveryAttempts = 0;
 
-    await task.stop();
+      // Lazy import to avoid circular dependency
+      const { Task: TaskClass } = await import('./task.js');
 
-    // Re-load from disk and recover
-    const newTask = await TaskClass.get(task.taskId);
-    await recoverTaskAgents(newTask);
+      await task.stop();
+
+      // Re-load from disk and recover
+      const newTask = await TaskClass.get(task.taskId);
+      await recoverTaskAgents(newTask);
+
+      // The respawn re-activated the reloaded instance, and activate() zeroes
+      // the budget — re-apply the count so consecutive nuclears reach the cap.
+      newTask.nuclearRecoveryCycles = cycle;
+    }
   } else {
     // Reinforcement: nudge the *live, idle* agent so it ends its turn properly
     // (report_completion when waiting on the user, or pick the work back up).

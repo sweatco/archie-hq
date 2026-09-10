@@ -48,6 +48,7 @@ class Task {
   budgets: TaskBudgets;
   taskTimeoutTimer?: ReturnType<typeof setInterval>;  // 60s wall-clock checker
   recoveryAttempts: number;
+  nuclearRecoveryCycles: number;  // nuclear restarts this activation; capped at 3
 }
 ```
 
@@ -198,7 +199,8 @@ Progressive recovery:
 | Attempt | Strategy |
 |---|---|
 | 1–2 | **Reinforcement** — enqueue `AGENT_PROMPTS.reinforcePM` on the live agent and mark it active. If the process is dead, re-spawn instead of nudging a corpse. |
-| 3+ | **Nuclear** — reset the counter, `task.stop()`, reload from disk via `Task.get()`, re-send `AGENT_PROMPTS.recovery`. |
+| 3+ | **Nuclear** — reset the counter, `task.stop()`, reload from disk via `Task.get()`, re-send `AGENT_PROMPTS.recovery`. The reloaded spawn resumes the persisted SDK session rather than clearing it. |
+| 3+, past 3 nuclears | **Pause** — a nuclear cycle re-activates the task, so a PM that keeps going idle without reporting would loop stop→resume until the wall-clock cap. `MAX_NUCLEAR_RECOVERY_CYCLES` (3, counted per activation on `Task.nuclearRecoveryCycles`) caps it: log at warn, post one notice to the user, `task.stop()`. The user's next message resumes the task normally. |
 
 `reinforcePM` names the three legitimate ways a turn ends: a background worker running (spawned with the `Agent` tool), `report_completion`, or `request_edit_mode`.
 

@@ -165,6 +165,16 @@ export class Task {
   lastActivity: Date = new Date();
   recoveryAttempts: number = 0;
   /**
+   * How many times the nuclear recovery path (stop → resume from disk) has run
+   * during this activation. Capped by `MAX_NUCLEAR_RECOVERY_CYCLES`
+   * (tasks/recovery.ts): a PM that keeps going idle without reporting
+   * completion would otherwise loop stop→resume until the wall-clock cap.
+   * Reset by `activate()` — a new inbound message is genuine progress — and
+   * re-applied by the nuclear path across its own reload, so consecutive
+   * nuclears keep adding up.
+   */
+  nuclearRecoveryCycles: number = 0;
+  /**
    * Set by report_completion: PM has responded and is waiting on no one but the
    * user. The idle-check parks the task (instead of recovering) once the agent
    * is idle. Cleared when PM next goes active (see updateAgentState). In-memory
@@ -1961,6 +1971,11 @@ export class Task {
     // reopens routed to a specialist (which don't pass through PM's active edge);
     // the updateAgentState edge-clear covers mid-cycle PM re-engagement.
     this.completionIntent = false;
+    // A fresh activation also restarts the nuclear-recovery budget: the loop the
+    // cap guards against lives inside one activation, and the message that
+    // reopens a paused task is genuine progress. (triggerRecovery re-applies its
+    // count after a nuclear respawn, which activates the reloaded task too.)
+    this.nuclearRecoveryCycles = 0;
     this.metadata.status = 'in_progress';
     activeTasks.set(this.taskId, this);
     this.startTaskTimeout();
