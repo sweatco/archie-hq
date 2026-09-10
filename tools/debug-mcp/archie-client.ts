@@ -129,14 +129,16 @@ export class ArchieClient {
     taskId: string,
     type: string,
     approve: boolean,
-    // PR identity for merge-type approvals, forwarded verbatim in the request
-    // body (the API requires github + pr_number when type is "merge").
-    pr?: { github?: string; pr_number?: number },
+    // Identity of the pending item, forwarded verbatim in the request body: PR
+    // identity (the API requires github + pr_number when type is "merge") and
+    // `ref`, the opaque id echoed from the approval event (required for
+    // "tool_call", selects one of several proposals for "trigger").
+    pr?: { github?: string; pr_number?: number; ref?: string },
   ): Promise<{ stale: boolean }> {
     const res = await fetch(`${this.baseUrl}/api/tasks/${taskId}/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type, approve, github: pr?.github, pr_number: pr?.pr_number }),
+      body: JSON.stringify({ type, approve, github: pr?.github, pr_number: pr?.pr_number, ref: pr?.ref }),
     });
     if (res.ok) return { stale: false };
     const text = await res.text();

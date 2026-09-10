@@ -531,7 +531,14 @@ Shared folder: ${sharedPath} [READ-ONLY]
   }
 
   // ---- Organizational memory injection (read path; gated by ARCHIE_MEMORY_INJECT, default off) ----
-  const memorySelectors = { taskTitle: metadata.title ?? undefined };
+  // `repo` is what scores repo-scoped entity pages (SCORE_REPO in
+  // entity-index.ts). A task's repos are mounted on demand now, so the first
+  // attached one is the best selector available at spawn — without it, pages
+  // bound to the repo the task is about stop surfacing.
+  const memorySelectors = {
+    taskTitle: metadata.title ?? undefined,
+    repo: metadata.repositories[0]?.github,
+  };
   const memoryUsernames = await extractTaskUsernames(taskId);
   systemPrompt = await enrichPromptWithMemory(systemPrompt, memoryUsernames, memorySelectors);
 

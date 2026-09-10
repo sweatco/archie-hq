@@ -1765,9 +1765,9 @@ export class Task {
 
   async handleMaxModeApproval(approverName?: string): Promise<void> {
     // Idempotency: max mode is a one-way, task-lifetime grant. A repeat approval
-    // (e.g. a duplicate API POST) must not re-run the session reset below and
-    // clear a freshly-spawned upgraded session mid-work. The Slack path is
-    // guarded by the button-strip; the API path is not, so guard here.
+    // (e.g. a duplicate API POST) must not re-notify the PM or re-save state for
+    // a grant that's already active. The Slack path is guarded by the button
+    // strip; the API path is not, so guard here.
     if (this.metadata.max_mode === true) return;
 
     // Cancel any park armed by request_max_mode on the PM this turn — same race
@@ -1777,34 +1777,9 @@ export class Task {
     this.agent?.clearPendingTeardown();
     this.metadata.max_mode = true;
 
-    // Force a fresh SDK session when max mode changes the PM's resolved MODEL
-    // (an ARCHIE_PM_MAX_MODEL that differs from ARCHIE_PM_MODEL). A resumed
-    // session can pin its original model, which would make the swap a silent
-    // no-op; a fresh session guarantees the new model takes effect. Effort-only
-    // upgrades don't change the model, so they need no reset (a raised effort
-    // is a per-turn query() option the next turn uses).
-    //
-    // Clearing the PERSISTED `agent_sessions` entry is what survives to disk:
-    // request_max_mode paused and evicted the task, so the instance handling
-    // this approval was reloaded via Task.get and has no live agent, and
-    // save() only re-syncs the session of an agent that is live. The cleared
-    // entry sticks and the next spawn restores no session_id → resumes nothing
-    // → runs on the new model. Also null a live handle if approval landed
-    // before the pause fired (same-instance race).
-    //
-    // TODO(flat): the fresh session starts cold, and this is now the DEFAULT
-    // path — `ARCHIE_PM_MAX_MODEL` defaults to a different model from
-    // `ARCHIE_PM_MODEL`, so every max-mode approval takes this branch. It used
-    // to be softened by the agent re-reading knowledge.log at spawn; with
-    // content delivered inline there is no re-read, so the PM comes back
-    // without the conversation it was upgraded in the middle of. Needs either a
-    // transcript carry-over into the new session or an explicit hand-off
-    // summary before the reset.
-    if (resolveAgentModel(this.pmDef, true) !== resolveAgentModel(this.pmDef, false)) {
-      const id = this.pmDef.id;
-      if (this.metadata.agent_sessions[id]) this.metadata.agent_sessions[id] = { active: false };
-      if (this.agent) this.agent.session.session_id = undefined;
-    }
+    // No session reset needed: the resumed session picks up the new model and
+    // effort from the next spawn's query() options (see buildQueryOptions in
+    // src/agents/spawn.ts), which resolve fresh on every spawn.
 
     this.debouncedSave();
     await this.notifyPm(`Max mode approved by ${approverName || 'user'}`, 'decision');

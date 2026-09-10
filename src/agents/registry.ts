@@ -20,8 +20,8 @@ import { deniedToolNames } from './tool-approval-gate.js';
 // ---- Engine constants ----
 //
 // The PM's model and effort are engine-owned, not plugin-owned. The normal
-// defaults are exactly what the `pm` plugin overlay resolved to before the
-// flattening (`model: opus`, `effort: high`).
+// defaults are exactly what the `pm` plugin overlay resolves to today
+// (`model: opus`, `effort: medium`); an operator can still override either.
 //
 // Max mode gets the upgrade the REPO AGENTS carried before, because the PM now
 // does the work they used to: max mode is what a user reaches for when the
@@ -30,7 +30,7 @@ import { deniedToolNames } from './tool-approval-gate.js';
 // upgrade exists for.
 
 const PM_MODEL = process.env.ARCHIE_PM_MODEL?.trim() || 'opus';
-const PM_EFFORT = process.env.ARCHIE_PM_EFFORT?.trim() || 'high';
+const PM_EFFORT = process.env.ARCHIE_PM_EFFORT?.trim() || 'medium';
 const PM_MAX_MODEL = process.env.ARCHIE_PM_MAX_MODEL?.trim() || 'claude-fable-5-1';
 const PM_MAX_EFFORT = process.env.ARCHIE_PM_MAX_EFFORT?.trim() || 'high';
 

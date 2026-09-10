@@ -18,7 +18,7 @@ import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { logger } from '../../system/logger.js';
-import { fetchOrigin, configureGitIdentity } from './client.js';
+import { fetchOrigin, configureGitIdentity, getGitHubClient } from './client.js';
 import { hydrateBranchState } from './branch-state.js';
 import type { AttachedRepo, BranchState } from '../../types/task.js';
 
@@ -57,6 +57,30 @@ export async function gitExec(cwd: string, args: string): Promise<string> {
     }
     throw error;
   }
+}
+
+/**
+ * The branch a repo forks from, for callers that hold only its github id —
+ * resolved the way `mount_repo` resolves it: ask GitHub for the repository
+ * default; if that is unavailable (no App installation, network trouble), fall
+ * back to what an existing clone already has checked out, and only then to
+ * 'main'. Never throws: every failure degrades to the next fallback.
+ */
+export async function resolveBaseBranch(github: string, clonePath?: string): Promise<string> {
+  const fromGitHub = (await getGitHubClient()?.resolveRepo(github))?.default_branch;
+  if (fromGitHub) return fromGitHub;
+  if (clonePath) {
+    try {
+      const { stdout } = await execAsync('git rev-parse --abbrev-ref HEAD', { cwd: clonePath });
+      const branch = stdout.trim();
+      // Detached HEAD reports 'HEAD', which is not a branch name to check out.
+      if (branch && branch !== 'HEAD') return branch;
+    } catch {
+      // No clone there, or an unreadable one — fall through to the last resort.
+    }
+  }
+  logger.warn('repo-clone', `Could not resolve a default branch for ${github}, assuming 'main'`);
+  return 'main';
 }
 
 async function getDefaultBranch(repoPath: string): Promise<string> {
@@ -293,6 +317,10 @@ export async function ensureTaskClone(opts: {
 
   if (existing) {
     attached.clone_path = existing;
+    // Unconditionally, as the old per-agent spawn did: a clone left behind by an
+    // interrupted mount, or one whose config predates the current attribution
+    // identity, would otherwise commit as whoever git falls back to.
+    await configureGitIdentity(existing);
     const branch = attached.current_branch ?? await readCurrentBranch(existing);
     if (branch) attached.current_branch = branch;
     const base = recordedBaseBranch(attached) ?? opts.baseBranch ?? await getDefaultBranch(baseRepoPath);

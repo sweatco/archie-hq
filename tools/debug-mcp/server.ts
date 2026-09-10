@@ -18,7 +18,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { ArchieClient, renderEventLine } from './archie-client.js';
-import { waitForTask } from './wait-for-task.js';
+import { waitForTask, APPROVAL_TYPES } from './wait-for-task.js';
 
 /** Read PORT from a .env file without pulling in a dotenv dependency. */
 function portFromEnvFile(): string | undefined {
@@ -180,16 +180,20 @@ server.tool(
 
 server.tool(
   'approve',
-  'Approve or deny a pending request (edit mode, research budget, or merge) for a task. For type "merge", pass github and pr_number identifying the pending PR — the API rejects merge resolutions without them.',
+  'Approve or deny a pending request (edit mode, research budget, merge, trigger, tool call, max mode) for a task. For type "merge", pass github and pr_number identifying the pending PR — the API rejects merge resolutions without them. For type "tool_call", pass ref (the call digest); for "trigger", ref selects one of several outstanding proposals. Both are reported as APPROVAL_REF by wait_for_task.',
   {
     task_id: z.string().describe('The task ID'),
-    type: z.enum(['edit_mode', 'research_budget', 'merge']).describe('The request type to approve/deny'),
+    type: z.enum(APPROVAL_TYPES).describe('The request type to approve/deny'),
     approve: z.boolean().describe('true to approve, false to deny'),
     github: z.string().optional().describe('Repo of the pending PR, e.g. "org/repo" (required for type "merge")'),
     pr_number: z.number().optional().describe('Number of the pending PR (required for type "merge")'),
+    ref: z
+      .string()
+      .optional()
+      .describe('Id of the pending item, echoed from the approval event (required for type "tool_call")'),
   },
-  async ({ task_id, type, approve, github, pr_number }) => {
-    const { stale } = await client.approve(task_id, type, approve, { github, pr_number });
+  async ({ task_id, type, approve, github, pr_number, ref }) => {
+    const { stale } = await client.approve(task_id, type, approve, { github, pr_number, ref });
     if (stale) {
       return {
         content: [{
@@ -232,6 +236,7 @@ server.tool(
     lines.push(`TASK=${r.task_id ?? '(none)'}`);
     lines.push(`STATE=${r.state}`);
     if (r.approval_type) lines.push(`APPROVAL_TYPE=${r.approval_type}`);
+    if (r.approval_ref) lines.push(`APPROVAL_REF=${r.approval_ref}`);
     lines.push(`ATTRIBUTION=${r.attribution ?? '(none)'}`);
     for (const m of r.pm_replies) lines.push(`PM_REPLY: ${m.slice(0, 300)}`);
     if (r.cursor !== undefined) lines.push(`CURSOR=${r.cursor}`);

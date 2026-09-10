@@ -83,7 +83,7 @@ A read-only question reaches `completed` with an observable PM reply. Verifies t
 3. `wait_for_task(nonce: NONCE)` — first call correlates the nonce to a task id and returns `TASK=<id>`.
 4. While `STATE=pending`: call `wait_for_task(task_id: <id>, cursor: <CURSOR from the previous call>)` again — each call waits up to ~45s server-side and returns a resumable `CURSOR`.
 5. Terminal: assert `STATE=completed`, and a `PM_REPLY` line was observed (or fetch `get_events(task_id)` and assert a `message` event with `data.from === 'pm-agent'`).
-6. Excerpts for evidence: `get_log(task_id, tail: 40)` for the knowledge log (must contain the nonce), `get_events(task_id)` for `task:created` … `task:completed`.
+6. Excerpts for evidence: `get_log(task_id, tail: 40)` for the transcript (must contain the nonce), `get_events(task_id)` for `task:created` … `task:completed`.
 
 ### Recipe: `edit-mode-approval`
 
@@ -96,7 +96,7 @@ A change request against a configured repo trips the edit-mode gate, is approved
 3. `wait_for_task(nonce: NONCE)`, then resume with `task_id` + `cursor` while `STATE=pending`.
 4. On `STATE=approval_requested`: read the approval type from the `APPROVAL_TYPE=` line of the `wait_for_task` output, then call `approve(task_id: <id>, type: "edit_mode", approve: true)` (this is the `POST /api/tasks/:id/approve` path).
 5. Continue the `wait_for_task` loop; assert the task reaches `STATE=completed`.
-6. Excerpts for evidence: events must show `approval:requested` (`data.approvalType: "edit_mode"`) followed by `approval:resolved` and eventually `task:completed`; the knowledge log records the approval decision line.
+6. Excerpts for evidence: events must show `approval:requested` (`data.approvalType: "edit_mode"`) followed by `approval:resolved` and eventually `task:completed`; the transcript records the approval decision line.
 
 ### Recipe: `merge-approval-deny`
 
@@ -108,11 +108,11 @@ An explicit merge request in a repo without `autoMerge: true` trips the `merge` 
 2. `create_task` with a small, real change request against a configured repo that ends in an open PR, e.g. `"[${NONCE}] In <repo>, add a comment line '// archie-e2e touch' to the top of README-adjacent file X and open a PR. Do not merge it."`
 3. `wait_for_task(nonce: NONCE)`, then resume with `task_id` + `cursor` while `STATE=pending`. On `STATE=approval_requested` with `APPROVAL_TYPE=edit_mode`: `approve(task_id: <id>, type: "edit_mode", approve: true)` and keep waiting.
 4. Wait until the task settles with the PR opened (`STATE=completed`, PM reply announcing the PR). Note the PR number and repo from the PM reply or the knowledge log — the approve call in step 7 needs exactly this identity.
-5. `send_message(task_id: <id>, message: "[${NONCE}] Please merge that PR.")` — the PM delegates to the repo agent, whose `merge_pull_request` call posts the merge approval prompt instead of merging.
+5. `send_message(task_id: <id>, message: "[${NONCE}] Please merge that PR.")` — the PM's `merge_pull_request` call posts the merge approval prompt instead of merging.
 6. Resume the `wait_for_task` loop; assert `STATE=approval_requested` with `APPROVAL_TYPE=merge`. The knowledge log now carries the decision finding `Merge approval requested for <github>#<pr_number>` — this names the identity to resolve against.
 7. `approve(task_id: <id>, type: "merge", approve: false, github: "<github>", pr_number: <pr_number>)` with the identity of the PR the scenario drove open — the API rejects merge-type resolutions that omit `github`/`pr_number`.
 8. Continue the `wait_for_task` loop; assert the task settles (`STATE=completed`) and **no merge occurred**: the knowledge log contains the denial finding `Merge denied by user — PR not merged`, and neither the log nor the events contain a merged completion (`PR … merged on user approval`) for this PR.
-9. Excerpts for evidence: events must show `approval:requested` (`data.approvalType: "merge"`) followed by `approval:resolved` (`data.approve: false`) with no merge in between; knowledge-log lines for the merge-approval request and the denial finding.
+9. Excerpts for evidence: events must show `approval:requested` (`data.approvalType: "merge"`) followed by `approval:resolved` (`data.approve: false`) with no merge in between; transcript lines for the merge-approval request and the denial finding.
 
 ## 3. Capture evidence
 
@@ -128,11 +128,11 @@ cat payload.json | npx tsx tools/e2e/evidence.ts --out-dir <dir>
 
 **All-or-nothing semantics:** stdin is read fully before parsing; truncated or malformed JSON produces a classed error ("truncated JSON input from stdin" / "invalid JSON from stdin: …"), a non-zero exit, and no files. An invalid payload exits non-zero naming every validation error and writes nothing. The pair is written atomically (temp-file + rename) and transactionally — both files land or neither. A half-written evidence file is silent poison for the reviewer judging pass/fail from the file alone; the writer makes that state unrepresentable.
 
-### Schema: `archie-e2e-evidence/v1` (field by field)
+### Schema: `archie-e2e-evidence/v2` (field by field)
 
 | Field | Type | Meaning |
 |---|---|---|
-| `schema` | `"archie-e2e-evidence/v1"` | Schema tag, exact string. |
+| `schema` | `"archie-e2e-evidence/v2"` | Schema tag, exact string. |
 | `scenario` | string, kebab-case | Canonical recipe name (`basic-nonce`, `edit-mode-approval`, `merge-approval-deny`); names the output files. |
 | `ac_ids` | string[], non-empty | Brief AC ids this scenario verifies, e.g. `["AC2"]`. |
 | `started_at` / `finished_at` | ISO 8601 strings | Scenario wall-clock bounds. |
@@ -143,7 +143,7 @@ cat payload.json | npx tsx tools/e2e/evidence.ts --out-dir <dir>
 | `task_id` | string | Correlated task id from `wait_for_task`. |
 | `terminal_state` | enum | `completed \| stopped \| approval_requested \| pending \| not_found`. |
 | `assertions` | array, non-empty | Each: `id`, `description`, `expected`, `observed` (all non-empty strings), `pass` (boolean). |
-| `excerpts.knowledge_log` | string[] | Verbatim knowledge-log lines the assertions rest on. |
+| `excerpts.transcript` | string[] | Verbatim transcript lines (from `get_log`, rendered from `events.jsonl` — `knowledge.log` is not served over the API) the assertions rest on. |
 | `excerpts.events` | array | Verbatim event objects (from `get_events`) the assertions rest on. |
 | `result` | `"pass" \| "fail"` | Overall verdict; the validator enforces it equals the AND of assertion passes. |
 

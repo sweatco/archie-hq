@@ -72,6 +72,26 @@ describe('waitForTask — state detection', () => {
     expect(r.approval_type).toBe('merge');
   });
 
+  it('surfaces a tool_call gate with the digest ref the API requires back', async () => {
+    const c = makeClient({
+      events: {
+        t1: [{ type: 'approval:requested', data: { approvalType: 'tool_call', ref: 'sha256:abc' } }],
+      },
+    });
+    const r = await waitForTask(c, { taskId: 't1' }, { ...fakeClock(), ...tunables });
+    expect(r.state).toBe('approval_requested');
+    expect(r.approval_type).toBe('tool_call');
+    expect(r.approval_ref).toBe('sha256:abc');
+  });
+
+  it('reports the other engine approval types (trigger, max_mode)', async () => {
+    for (const type of ['trigger', 'max_mode'] as const) {
+      const c = makeClient({ events: { t1: [{ type: 'approval:requested', data: { approvalType: type } }] } });
+      const r = await waitForTask(c, { taskId: 't1' }, { ...fakeClock(), ...tunables });
+      expect(r.approval_type).toBe(type);
+    }
+  });
+
   it('prefers a terminal state over a replayed approval (precedence)', async () => {
     const c = makeClient({
       events: {

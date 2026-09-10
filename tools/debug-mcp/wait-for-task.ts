@@ -11,7 +11,21 @@ export type WaitState =
   | 'pending'
   | 'not_found';
 
-export type ApprovalType = 'edit_mode' | 'research_budget' | 'merge';
+/** Every approval type the engine raises and the API accepts on resolution. */
+export const APPROVAL_TYPES = [
+  'edit_mode',
+  'research_budget',
+  'merge',
+  'trigger',
+  'tool_call',
+  'max_mode',
+] as const;
+
+export type ApprovalType = (typeof APPROVAL_TYPES)[number];
+
+function isApprovalType(value: unknown): value is ApprovalType {
+  return typeof value === 'string' && (APPROVAL_TYPES as readonly string[]).includes(value);
+}
 
 export interface WaitResult {
   task_id: string | null;
@@ -20,6 +34,8 @@ export interface WaitResult {
   pm_replies: string[];
   cursor?: number;
   approval_type?: ApprovalType;
+  /** Opaque id of the pending item (trigger id, tool-call digest), when the event carries one. */
+  approval_ref?: string;
 }
 
 export interface WaitForTaskArgs {
@@ -154,6 +170,7 @@ export async function waitForTask(
       let lifecycle: 'running' | 'stopped' | 'completed' | undefined;
       let awaitingApproval = false;
       let approvalType: ApprovalType | undefined;
+      let approvalRef: string | undefined;
 
       for (const e of res.events) {
         switch (e.type) {
@@ -171,9 +188,12 @@ export async function waitForTask(
             break;
           case 'approval:requested': {
             awaitingApproval = true;
-            // The engine emits { text, approvalType } (src/tasks/task.ts).
-            const ty = e.data['approvalType'];
-            if (ty === 'edit_mode' || ty === 'research_budget' || ty === 'merge') approvalType = ty;
+            // The engine emits { text, approvalType, ref? } (src/tasks/task.ts).
+            // `ref` names the exact pending item (a trigger id, a tool-call
+            // digest) and must be echoed back on resolution for tool_call.
+            if (isApprovalType(e.data['approvalType'])) approvalType = e.data['approvalType'];
+            const ref = e.data['ref'];
+            approvalRef = typeof ref === 'string' && ref ? ref : undefined;
             break;
           }
           case 'approval:resolved':
@@ -186,7 +206,12 @@ export async function waitForTask(
       }
 
       if (lifecycle === 'completed') return settle('completed');
-      if (awaitingApproval) return settle('approval_requested', approvalType && { approval_type: approvalType });
+      if (awaitingApproval) {
+        return settle('approval_requested', {
+          ...(approvalType ? { approval_type: approvalType } : {}),
+          ...(approvalRef ? { approval_ref: approvalRef } : {}),
+        });
+      }
       if (lifecycle === 'stopped') return settle('stopped');
     }
 

@@ -60,7 +60,6 @@ function makeAgent(overrides: Partial<AgentDef> = {}): Agent {
     def: {
       id: 'backend-agent', key: 'backend', role: 'Backend', expertise: 'Node',
       pluginName: 'engineering', visibility: 'global',
-      repo: { repos: [{ github: 'org/backend', baseBranch: 'main' }], primary: 'org/backend' },
       ...overrides,
     },
     queue: {} as any,
@@ -177,7 +176,7 @@ describe('repo-tools MCP server contract', () => {
 });
 
 describe('PM MCP server contracts', () => {
-  const pmAgent = () => makeAgent({ isPm: true, repo: undefined, id: 'pm-agent' });
+  const pmAgent = () => makeAgent({ isPm: true, id: 'pm-agent' });
 
   it('comms-tools registers exactly its tools', () => {
     const server = createCommsMcpServer(pmAgent(), makeTask());

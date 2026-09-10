@@ -15,7 +15,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { initPlugins } from './plugin-loader.js';
 import { logger } from './logger.js';
-import { githubRepoToUrl } from '../connectors/github/repo-clone.js';
+import { githubRepoToUrl, resolveBaseBranch } from '../connectors/github/repo-clone.js';
 
 const execAsync = promisify(exec);
 
@@ -347,12 +347,17 @@ async function checkoutBranch(repoDir: string, branch: string, label: string): P
  * Clone if missing, fetch and pull default branch if exists.
  */
 async function cloneOrFetch(url: string, targetDir: string, label: string, baseBranch?: string): Promise<void> {
-  if (existsSync(join(targetDir, '.git'))) {
+  const cloned = existsSync(join(targetDir, '.git'));
+  // Warm clones are declared in `archie.json`, which carries no base branch, so
+  // it has to be discovered — a repo whose default is not `main` used to fail
+  // the checkout on every refresh. `resolveBaseBranch` asks GitHub, then the
+  // existing clone, then assumes 'main'; it never throws.
+  const branch = baseBranch || (await resolveBaseBranch(label, cloned ? targetDir : undefined));
+  if (cloned) {
     logger.system(`Pulling latest for ${label}...`);
     try {
       await execAsync('git remote prune origin', { cwd: targetDir });
       await execAsync('git fetch --all', { cwd: targetDir });
-      const branch = baseBranch || 'main';
       await execAsync(`git checkout "${branch}"`, { cwd: targetDir });
       await execAsync(`git reset --hard "origin/${branch}"`, { cwd: targetDir });
     } catch (error) {
@@ -361,8 +366,7 @@ async function cloneOrFetch(url: string, targetDir: string, label: string, baseB
   } else {
     // Nested `org/repo` target dirs require the parent to exist before clone.
     await mkdir(dirname(targetDir), { recursive: true });
-    const branchFlag = baseBranch ? ` -b "${baseBranch}"` : '';
-    logger.system(`Cloning ${label} from ${url}...`);
-    await execAsync(`git clone${branchFlag} "${url}" "${targetDir}"`);
+    logger.system(`Cloning ${label} from ${url} (branch: ${branch})...`);
+    await execAsync(`git clone -b "${branch}" "${url}" "${targetDir}"`);
   }
 }

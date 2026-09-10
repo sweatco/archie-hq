@@ -586,12 +586,14 @@ export async function findTaskByPRNumber(
       const metadata = await loadMetadata(taskId);
       if (!metadata) continue;
 
-      // Normalize legacy `repositories` shapes in memory before walking. This
-      // routes webhook events for in-flight PRs on tasks that haven't been
-      // re-saved since deploy (their on-disk metadata is still the pre-v30
-      // Record<repoKey, RepositoryInfo>, or the per-agent Record<agentId,
-      // AttachedRepo[]>). Mutates the loaded copy only — we never persist from
-      // here. Dynamic import avoids a static persistence↔task cycle; the call is
+      // Flatten a legacy per-agent `repositories` map in memory before walking.
+      // This routes webhook events for in-flight PRs on tasks that haven't been
+      // re-saved since deploy (their on-disk metadata is still the per-agent
+      // Record<agentId, AttachedRepo[]>). The older pre-v30 Record<repoKey,
+      // RepositoryInfo> shape carries no github identifier, so it is not
+      // normalized but dropped with a warning — a task still holding it does not
+      // resolve here. Mutates the loaded copy only — we never persist from here.
+      // Dynamic import avoids a static persistence↔task cycle; the call is
       // runtime-only so the cycle is harmless either way.
       const { migrateRepositoriesShape } = await import('./task.js');
       migrateRepositoriesShape(metadata);
