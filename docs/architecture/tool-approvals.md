@@ -1,8 +1,10 @@
 # MCP Tool Approvals
 
-Human-in-the-loop approval for critical MCP tools (issue #168). Today a tool is either allowed for an agent — and then invoked with no human check — or blocked outright. This gate adds the middle ground: a tool can be declared as needing **per-call human approval**, so genuinely useful but sensitive tools (retry a release build, publish an offer, send a campaign) can be enabled instead of withheld.
+Human-in-the-loop approval for critical MCP tools (issue #168). Without it a tool is either allowed — and then invoked with no human check — or blocked outright. This gate adds the middle ground: a tool can be declared as needing **per-call human approval**, so genuinely useful but sensitive tools (retry a release build, publish an offer, send a campaign) can be enabled instead of withheld.
 
 > A sibling of [edit mode](edit-mode.md) in spirit, but not in shape. Edit mode is a one-way, task-lifetime grant over a *capability class* (repo writes). This gate is per-call, single-use, and bound to the call's arguments. The closest existing relative is the per-PR `merge` gate, and its two key properties — approval bound to a specific target, resolution by any workspace member with identity recorded — are borrowed directly.
+
+**This gate is now load-bearing.** A task runs one session that mounts every configured MCP server, so the tiers here are the primary protection for production writes — they replace the per-agent credential scoping the multi-process model used to provide. See [Security → What the flat model gave up](security.md#what-the-flat-model-gave-up).
 
 ## The config
 
@@ -28,7 +30,7 @@ Three tiers, deliberately the same three words Claude Code uses for permissions:
 |---|---|
 | `allow` | runs with no gate |
 | `ask` | a human approves this one call, arguments included |
-| `deny` | never runs — withheld from every agent that mounts the server |
+| `deny` | never runs — withheld from the session entirely |
 
 `titles` is optional and covered under [what the approver reads](#what-the-approver-reads).
 
@@ -36,17 +38,17 @@ Three tiers, deliberately the same three words Claude Code uses for permissions:
 
 The tiers name **who decides the call**, never what the tool claims to be. `allow` is typically reads, but a policy may deliberately put a cheap, repeatable mutation there (a retry button); the tier is not named `readonly` because the gate cannot verify read-ness — and in this project read-sounding tools have twice turned out to start builds.
 
-**The policy belongs to the server, not to the agent.** Which tools of Tramline are dangerous is a property of Tramline: every agent that mounts it gets the same policy, with no per-agent copy to keep in sync. Three consequences worth knowing:
+**The policy belongs to the server, not to the agent.** Which tools of Tramline are dangerous is a property of Tramline. Every server in the root `.mcp.json` attaches to the PM session, and `buildPmDef()` unions their `archie` blocks into **one session policy**: `deny` tiers become the session's `disallowedTools` (`deniedToolNames`), `ask` tiers attach the PreToolUse gate. Three consequences worth knowing:
 
-- The **PM is covered** like any other agent — its overlay's servers resolve through the same `resolveAgentMcpServers`.
-- `deny` replaces the hand-maintained `disallowedTools` blocks in agent frontmatter. Those blocks were identical across agents sharing a server (mobile's 23 entries were a strict subset of release-manager's 59), which is what one copy per server fixes. Frontmatter `disallowedTools` still works and is merged on top — an agent can still refuse a tool nobody else refuses.
+- The gate is **session-wide**, so it covers the PM and every subagent it spawns — a worker cannot route around a tier by being a different agent, because it is the same process.
+- `deny` replaces the hand-maintained `disallowedTools` blocks that agent frontmatter used to carry. Those blocks were identical across agents sharing a server (mobile's 23 entries were a strict subset of release-manager's 59), which is what one copy per server fixes. A plugin agent's own `disallowedTools` still applies to that worker on top.
 - Renaming a server key in `.mcp.json` moves its policy with it; there is no second place to update.
 
 Both Archie extensions to a server entry — `description` and `archie` — are parsed and **stripped by the loader**, so the Claude Agent SDK only ever receives valid connection config and a plugin authored for Archie stays a valid Claude plugin. (Verified against Claude Code 2.1.237: unknown keys in a server entry are ignored, while a genuinely invalid entry is reported and skipped.)
 
 ### Default behaviour does not change
 
-**A server with no `archie` block is unmanaged: no hook is attached, and every one of its tools behaves exactly as it did before this feature.** Rollout is therefore incremental and opt-in per server — no existing plugin changes meaning, and an agent whose servers are all unmanaged runs on precisely the code path it ran on before. Nothing in the engine defaults to gating: the fail-safe `ask` default applies only *within* a server someone has already opted in.
+**A server with no `archie` block is unmanaged: its tools behave exactly as they did before this feature.** Rollout is therefore incremental and opt-in per server, and when *no* server declares a policy the union is empty, `def.mcpPolicy` is unset and no hook is attached at all. Nothing in the engine defaults to gating: the fail-safe `ask` default applies only *within* a server someone has already opted in.
 
 ### What the approver reads
 
@@ -84,7 +86,7 @@ It also refuses a **server key that cannot carry a policy**. The gate finds a po
 
 ## Why a PreToolUse hook, not `canUseTool`
 
-Every agent runs under `permissionMode: bypassPermissions`, and the SDK documents that this mode auto-approves calls past `canUseTool` ("PreToolUse hook denies bypass canUseTool", sdk.d.ts). The hook is the only interception point that holds in our configuration — and it is the same layer the filesystem guard already relies on to enforce read-only mode, so the trust in it is not new.
+The session runs under `permissionMode: bypassPermissions`, and the SDK documents that this mode auto-approves calls past `canUseTool` ("PreToolUse hook denies bypass canUseTool", sdk.d.ts). The hook is the only interception point that holds in our configuration — and it is the same layer the filesystem guard already relies on to enforce read-only mode, so the trust in it is not new.
 
 The consequence: the gate cannot *pause-and-resume* the original call. It **denies** the call, posts the approval, parks the task, and on approval stores a single-use grant that the agent's **retry of the same call** spends. The action always runs through the same audited MCP path; there is no second code path that executes tools.
 
@@ -110,7 +112,7 @@ agent calls mcp__tramline__retry_workflow_run { id: "226284f5…" }
 ### The invariants, and why each exists
 
 - **Digest binding.** The grant is keyed on `sha256(server, tool, canonicalized arguments)` — approving one call cannot be spent on a different tool, different arguments, or twice. Canonicalization sorts keys at every depth and drops `undefined`, so argument order can't change identity.
-- **One pending request per task**, no supersede: superseding would let an agent swap the call out from under a human mid-read. The slot ages out after 1h; a click on an older prompt is a stale no-op that mints nothing. Only the agent that raised the request re-arms its park on a retry — a *different* agent reaching the same live slot is told to wait, because both resolution paths clear the requester's teardown alone and arming anyone else would leave a deferred stop nothing cancels.
+- **One pending request per task**, no supersede: superseding would let an agent swap the call out from under a human mid-read. The slot ages out after 1h; a click on an older prompt is a stale no-op that mints nothing. The slot records a `requested_by` and only that requester re-arms its park on a retry; with one agent per task that check is now vestigial, and it is kept because the invariant it protects — a deferred stop must have someone to cancel it — is cheaper to keep than to re-derive.
 - **Anything that fails before the prompt lands clears the slot.** The slot's presence means "a prompt exists in Slack", and both the one-at-a-time refusal and the same-digest re-arm trust that. So the failure path covers the durable flush as well as the post itself: leaving the slot set would block every gated call for an hour and let a retry park the task against a button nobody can see.
 - **The spend is durable, the grant deduped.** The grant is removed from memory synchronously — two calls with the same digest in one turn cannot both find it — and the write is then *awaited* before the call proceeds, because a crash after the tool ran but before the write landed would leave the used token spendable again. A failed write is logged and the call still proceeds: refusing an action a human approved is worse than the replay risk. Losing the *grant* write, by contrast, only costs an extra prompt, so that one stays debounced.
 - **Fail closed.** Any error while evaluating a managed call — including agent-controlled input that overflows the canonicalizer — is a deny, not a throw. Unmanaged tools are classified before the try block and always proceed, even when the gate's own dependencies are broken.
@@ -127,16 +129,16 @@ Resolution has the same surfaces as every other gate: Slack buttons, and the CLI
 
 - **`PreToolUse` firing for MCP tools is version-coupled to the Claude CLI**, exactly like the egress allowlist (see [Security](security.md)) — which silently regressed across a CLI bump once. The live tripwire is `tools/e2e/tool-gate-check.ts` (with the `gatecheck` example plugin as its fixture): it drives a real agent at a real gated MCP tool on a booted instance and asserts interception, deny-blocks-execution, and single-use spend. Run it after any SDK bump and any change to this gate or `spawn.ts`, before trusting the gate with a write-scoped credential.
 - **Descriptions are the approver's only prose.** A server whose tool descriptions understate what a tool does produces a button that understates it too. That is deliberate — one place to fix, next to the code — but it means the descriptions of any `ask`-tier tool are part of the security surface and worth reviewing as such.
-- **A grant is not bound to the agent that requested it.** The digest covers the server, tool and arguments; another agent on the same task making the byte-identical call could spend it. Approving an *action* rather than an actor is the intended reading, but `requested_by` in the audit trail names the requester, not necessarily the executor. (The *pending slot* is requester-bound, so only the requester's retry re-arms the park.)
-- **Per-agent divergence has no expression yet.** If one agent should be allowed something its peers must ask for, that needs an agent-level override layered on the server policy — deliberately not built, because no current agent pair diverges. Until then the coarse tool is a second server entry with its own credential (`tramline` read-only, `tramline-rw` gated), which also gets the credential scoping right.
+- **A grant is bound to the call, not to the caller.** The digest covers the server, tool and arguments; a subagent making the byte-identical call spends the same grant. Approving an *action* rather than an actor is the intended reading, and with one session per task there is no actor distinction left to make anyway.
+- **Per-worker divergence has no expression, and cannot have one here.** A worker that should be allowed something the rest must ask for would need a per-subagent override, and the gate cannot see which subagent is calling — every call arrives on the one session's PreToolUse hook. The coarse tool is a second server entry with its own credential (`tramline` read-only, `tramline-rw` gated), which also gets the credential scoping right.
 
 ## Relevant source files
 
 - `src/agents/tool-approval-gate.ts` — tiers, classification, digest, rendering/sanitization, hook factory
 - `src/system/plugin-loader.ts` — `loadMcpJson` / `parseServerPolicy` (strict validation, throws on a malformed policy)
-- `src/agents/registry.ts` — `resolveAgentMcpServers` (policy per mounted server, `deny` → `disallowedTools`)
+- `src/agents/registry.ts` — `buildPmDef` (unions every server's policy onto the session; `deny` → `disallowedTools` via `deniedToolNames`)
 - `src/tasks/task.ts` — `requestToolApproval`, `consumeToolApproval`, `handleToolCallApproval` / `…Denial`
 - `src/types/task.ts` — `pending_tool_approval`, `approved_tool_calls`, `ApprovedToolCall`
 - `src/connectors/slack/events.ts` — `registerToolApprovalHandlers`
-- `src/agents/spawn.ts` — hook wiring (only for agents with a managed server) and the tool-description capture
+- `src/agents/spawn.ts` — hook wiring (only when some server declares a policy) and the tool-description capture
 - Tests: `src/agents/__tests__/tool-approval-gate.test.ts`, `src/agents/__tests__/registry-mcp-policy.test.ts`, `src/tasks/__tests__/tool-approval.test.ts`, `src/system/__tests__/plugin-loader.test.ts`

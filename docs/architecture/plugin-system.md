@@ -1,388 +1,155 @@
 # Plugin System Architecture
 
-Archie uses a plugin-based architecture to define agents and their capabilities. The plugin system supports two tracks of agents -- **repo agents** (engineering, tied to Git repositories) and **plugin agents** (generic domains, no repo) -- unified through a single plugin loader that scans at startup.
+A plugin contributes exactly two things: **skills** the PM can load, and **agent definitions** the PM can spawn as workers. Both are loaded natively by the Claude Agent SDK — Archie passes every plugin directory through `query()`'s `plugins` option and the SDK reads the plugin's `skills/`, `agents/`, `commands/` and `hooks/` itself. Archie no longer parses anything *inside* a plugin: there is no agent-definition builder, no frontmatter scanner, no skill symlinking and no per-track mount table.
 
-Plugins are not bundled with the source tree. At startup, `bootstrapWorkdir()` clones the git repository pointed to by `ARCHIE_PLUGINS` (optionally pinned by `ARCHIE_PLUGINS_BRANCH`) into `$ARCHIE_WORKDIR/plugins/`. The repo is then kept current on demand rather than on a timer: every task start/load runs `syncPlugins()` (`src/system/plugin-sync.ts`), which calls `refreshPlugins()` (`src/system/workdir.ts`) to do a lightweight `git ls-remote` HEAD check against the configured branch. If the remote tip hasn't moved nothing happens; if it has, Archie fetches, hard-resets onto it, re-scans plugin definitions, and rebuilds the agent registry — so a push to the plugins repo is picked up on the very next request. For local development, `$ARCHIE_WORKDIR/plugins/` may be a symlink to a checkout, in which case Archie skips git management and just re-scans from disk. An in-flight task is never disturbed — it keeps the team it was created with. A task that was stopped/completed picks up the change when it is pinged again (it reloads from disk through `Task.get()`, which syncs and scans a fresh team), as does any task after a process restart.
+What Archie still owns is what the SDK does not: cloning and refreshing the plugins repo, enumerating which top-level directories are plugins, and the two root-level config files (`.mcp.json` and `archie.json`) that stay engine-owned.
 
-The PM agent's context includes a "Plugins repo last updated" line — the committer date, short SHA, and subject of the current plugins HEAD (`getPluginsHeadInfo()` in `src/system/workdir.ts`) — so users in Slack can ask when the plugins/agents were last updated and cross-check against the repo.
+**Source:** `src/system/workdir.ts`, `src/system/plugin-loader.ts`, `src/agents/spawn.ts`, `src/agents/registry.ts`
 
-**Source:** `src/system/workdir.ts`, `src/system/plugin-loader.ts`
+## Where plugins come from
 
-## Two-Track Agent Architecture
+Plugins are not bundled with the source tree. At startup, `bootstrapWorkdir()` clones the git repository pointed to by `ARCHIE_PLUGINS` (optionally pinned by `ARCHIE_PLUGINS_BRANCH`) into `$ARCHIE_WORKDIR/plugins/`, then materializes its git submodules. The repo is kept current on demand rather than on a timer: every task start/load runs `syncPlugins()` (`src/system/plugin-sync.ts`), which calls `refreshPlugins()` to do a lightweight `git ls-remote` HEAD check against the configured branch. If the remote tip hasn't moved, nothing happens; if it has, Archie fetches, hard-resets onto it and re-scans the plugin directories — so a push is picked up on the very next request. For local development `$ARCHIE_WORKDIR/plugins/` may be a symlink to a checkout, in which case Archie skips git management and just re-scans from disk.
 
-### Repo Agent Track (Engineering)
+An in-flight task is never disturbed. A stopped or completed task picks the change up when it is pinged again (it reloads from disk through `Task.get()`, which syncs and re-scans the PM definition), as does any task after a process restart. There is no hot reload for a running session.
 
-Repo agents are tied to a specific Git repository and have access to git infrastructure (shared clones, branches, PRs via `repo-tools` MCP server). They operate in either read-only or edit mode depending on task state.
+The PM's context includes a "Plugins repo last updated" line — the committer date, short SHA and subject of the current plugins HEAD (`getPluginsHeadInfo()`) — so users in Slack can ask when the plugins were last updated and cross-check against the repo.
 
-- Identified by `metadata.archie.repo` in their markdown frontmatter (or legacy `repo-config.json`)
-- Each `agents/*.md` file with repo metadata becomes an agent (e.g., `backend.md` becomes `backend-agent`)
-- Infrastructure config (GitHub repo, base branch) comes from frontmatter `metadata.archie.repo`
-- Agent identity and domain instructions come from the frontmatter and markdown body
+## Plugin directory structure
 
-**Source:** `src/agents/spawn.ts`, `src/agents/registry.ts`, `src/types/agent.ts`
-
-### Plugin Agent Track (Generic Domains)
-
-Plugin agents are lightweight agents for domains that do not need git or GitHub infrastructure. They are suited for roles like copywriting, design review, QA analysis, or any non-engineering specialization — including roles that *act* on external systems through their plugin's MCP servers (commercial ops, growth/LiveOps) rather than only producing findings.
-
-- Defined by `agents/*.md` files whose frontmatter does **not** contain `metadata.archie.repo.github`
-- Each `.md` file becomes an agent (e.g., `agents/copywriter.md` becomes `copywriter-agent`)
-- Agent identity, expertise, and optional model override come from frontmatter
-- Domain-specific instructions come from the markdown body
-- Built-in tools: `Read`, `Glob`, `Grep`, `Skill`, `Write`, `Edit`, `Bash`, `send_message_to_agent` (via `agent-tools`), `log_finding` (via `agent-tools`), `web_research` (via `research-tools`)
-- The write boundary is enforced by the spawn-time sandbox: the agent workspace is the only writable path, so `Write`/`Edit`/`Bash` reach the agent's own scratch space and nothing else. Plugin agents are NOT issued the `repo-tools` MCP server or any git/GitHub plumbing, so there is no repo for them to modify
-- Network egress is denied unless the agent's frontmatter declares `allowedNetworkDomains`
-- Plugin agents may still opt into MCP servers via frontmatter `mcpServers` (resolved against the root `.mcp.json`), so they are not strictly limited to the built-in tool set
-
-**Source:** `src/agents/spawn.ts`, `src/agents/registry.ts`, `src/types/agent.ts`
-
-## Plugin Directory Structure
-
-Each plugin is a subdirectory inside the runtime plugins directory at `$ARCHIE_WORKDIR/plugins/` (cloned from `ARCHIE_PLUGINS` at startup; there is no top-level `plugins/` folder in this repository). Every plugin **must** have a `.claude-plugin/plugin.json` manifest to be loaded. The structure follows standard Claude Code conventions with Archie-specific extensions:
+Every plugin is a top-level directory of the plugins repo carrying a `.claude-plugin/plugin.json` manifest. Directories without a valid manifest (missing `name`, `version` or `description`, or unparseable JSON) are skipped with a warning. The structure is the standard Claude Code plugin layout:
 
 ```
 plugins/
-  engineering/                    # Repo plugin (agents with repo frontmatter)
-    .claude-plugin/
-      plugin.json                 # Required: { name, version, description }
-    repo-config.json              # Legacy infrastructure configs (optional)
-    agents/
-      backend.md                  # Agent prompt (frontmatter with repo metadata + body)
-      mobile.md
-    skills/                       # Agent craft skills (symlinked into agent workspaces)
-      debugging/
-        SKILL.md
-    hooks/
-      hooks.json                  # Plugin-defined hooks (injected into agent settings)
-
-  marketing/                      # Generic plugin (no repo metadata in frontmatter)
-    .claude-plugin/
-      plugin.json                 # Required manifest
-    agents/
-      copywriter.md               # Becomes copywriter-agent
-      brand-strategist.md         # Becomes brand-strategist-agent
+  .mcp.json                       # engine-owned: MCP servers + Archie extensions
+  archie.json                     # engine-owned: network allowlist + per-repo flags
+  engineering/
+    .claude-plugin/plugin.json    # required: { name, version, description }
     skills/
-      tone-analysis/
-        SKILL.md
-
-  pm/                             # Special PM overlay plugin
-    .claude-plugin/
-      plugin.json
+      pr-workflow/SKILL.md        # loadable as engineering:pr-workflow
     agents/
-      pm.md                       # Body appended to PM prompt; frontmatter configures MCP/tools
+      qa-reviewer.md              # spawnable as engineering:qa-reviewer
+    hooks/hooks.json              # loaded by the SDK, not copied by Archie
+  marketing/
+    .claude-plugin/plugin.json
+    skills/
+      tone-analysis/SKILL.md
+    agents/
+      tov-reviewer.md
 ```
 
-An agent is classified as a **repo agent** if its frontmatter contains `metadata.archie.repos` (or the legacy singular `metadata.archie.repo`). Otherwise it is a **plugin agent**. (The legacy `repo-config.json` file is still parsed and exposed on `LoadedPlugin.repoConfigs` for backward compatibility, but the live registry in `src/agents/registry.ts` derives every repo agent from frontmatter — `repo-config.json` is no longer the source of truth for cloning or agent registration.)
+There is no `repo-config.json`, no `metadata.archie.repo` binding and no `pm` overlay plugin. Repositories are not declared by plugins at all: the GitHub App installation is the allowlist and the PM mounts what it needs with `mount_repo` (see [edit-mode.md](edit-mode.md)).
 
-### Plugin Manifest (`plugin.json`)
+## Skills
 
-Every plugin directory must contain `.claude-plugin/plugin.json` with at least:
+Every plugin's `skills/` directory is loaded by the SDK, and the PM reaches them through the built-in `Skill` tool. **Skill names are namespaced by plugin** — `core:thread-conduct`, `engineering:pr-workflow` — so two plugins may ship a skill of the same name without colliding. The PM's prompt tells it to read the tool's own list rather than memorise a roster.
+
+A plugin agent may preload skills via its frontmatter `skills` field; that preloads, it does not restrict.
+
+### The core plugin
+
+Archie ships its own skills as one more plugin, `core-plugin/` in this repository, with the manifest name `core`. It holds the skills that belong to the engine rather than to a domain: `channel-canvas`, `self-awareness`, `thread-conduct`, `trigger-task` and `triggers`. It is passed to the SDK alongside the plugins-repo directories, so its skills load identically and appear as `core:<name>`.
+
+The directory is resolved relative to the compiled module (`dist/agents/../../core-plugin`), which lands on the repo root in both the dev and production layouts — `Dockerfile.prod` copies it there and `docker-compose.yml` bind-mounts it. If it is missing the SDK simply loads no core skills, and the post-`init` assertion below says so.
+
+### Load assertion
+
+Plugin load failures are **silent skips** in the SDK: a bad manifest, an unreadable directory or a path the sandbox hides produces no error, just a session missing skills someone expects it to have. So `assertPluginsLoaded()` compares the `plugins` array on the session's `init` message against the directories we asked for and logs an error naming any that are absent.
+
+## Agents
+
+An `agents/*.md` file in a plugin is loaded by the SDK and becomes an agent type on the PM's `Agent` tool, addressable as `plugin:agent`. The SDK honours `name`, `description`, `model`, `effort`, `tools`, `disallowedTools`, `skills`, `memory` and the background/worktree isolation flags. It **ignores** `mcpServers`, `permissionMode` and `hooks` on a plugin agent, with a warning — MCP is engine-owned and session-wide, so a plugin agent sees every server the PM does.
+
+Because a worker no longer needs a definition file just to exist, one is written only when a role earns it: a fixed procedure and output envelope, a reviewer that must be blind to how the material was made, or a model/effort combination the PM cannot express per spawn (effort is not a per-spawn `Agent` argument). Everything else goes to the general-purpose worker with a brief.
+
+## The root MCP config
+
+`$ARCHIE_WORKDIR/plugins/.mcp.json` is the single source of MCP servers, and **every server in it attaches to the PM session**. `loadMcpJson()` reads it, substitutes `${MCP_*}` environment variables, and splits out two Archie extensions before the config reaches the SDK, so a plugin repo authored for Archie stays a valid Claude plugin:
+
+- `description` — one human-readable line per server, used to phrase the Slack status line for an integration call.
+- `archie` — the tool approval policy for that server: `{ default, allow, ask, deny, titles }`. Policies from all servers are unioned into one session policy; `deny` tiers become `disallowedTools`, `ask` tiers attach the PreToolUse approval gate. A server without this block is unmanaged. A malformed block throws rather than being dropped. See [tool-approvals.md](tool-approvals.md).
+
+Every plugin is passed with `skipMcpDiscovery: true`, so a plugin that still ships its own `.mcp.json` does not get its servers connected behind the engine's back.
+
+OAuth bearer tokens are injected into HTTP/SSE servers on **every** spawn (`applyOAuthBindings`), so a long-lived session never holds a stale token; a server whose token cannot be refreshed is dropped before connect with an error. See [secrets.md](secrets.md).
+
+## The root engine config (`archie.json`)
+
+The one engine-level config surface the plugins repo has. A missing or malformed file means the empty config — no allowlisted domains, no warm repos, no auto-merge — which is the safe direction for all three. Loaded fresh on each read, so a plugins refresh is picked up by the next task.
 
 ```json
 {
-  "name": "engineering",
-  "version": "1.0.0",
-  "description": "Engineering agents for backend and mobile repositories"
-}
-```
-
-Directories without a valid manifest are silently skipped during scanning.
-
-### Plugin Hooks (`hooks/hooks.json`)
-
-Plugins can define hooks that are injected into agent workspace settings. The `hooks.json` file follows the Claude Code settings hooks format. The `${CLAUDE_PLUGIN_ROOT}` placeholder is substituted with the actual plugin directory path at load time.
-
-### PM Overlay Plugin
-
-A plugin named `pm` is treated specially. Its `agents/pm.md` file provides:
-- **Body**: Appended to the PM agent's system prompt (for business context, team-specific instructions)
-- **Frontmatter `mcpServers`**: Additional MCP server names the PM should have access to
-- **Frontmatter `tools`/`disallowedTools`**: Additional tool permissions for the PM
-
-### Root MCP Config
-
-A single `.mcp.json` file at the plugins directory root (`$ARCHIE_WORKDIR/plugins/.mcp.json`) provides MCP server connection configs. Individual agents reference server names from this file via their frontmatter `mcpServers: [...]` field. Environment variables matching `${MCP_*}` are substituted at load time.
-
-A server entry may carry two Archie extensions, both parsed by `loadMcpJson` and **stripped before the config reaches the SDK** so a plugin authored for Archie stays a valid Claude plugin:
-
-- `description` — one human-readable line, surfaced in the PM's roster of what each teammate can reach.
-- `archie` — the tool approval policy for that server: `{ default, allow, ask, deny }`, each tier a list of bare tool names, plus an optional `titles` map giving the approver-facing button text for tools whose name is a bad button on its own. Because it lives with the server, every agent that mounts the server inherits it (the PM included), and `deny`-tier tools are appended to that agent's `disallowedTools`. A server without this block is unmanaged and behaves exactly as before the gate existed. A malformed block fails the load. See [Tool Approvals](tool-approvals.md).
-
-## Plugin Loader
-
-The plugin loader (`src/system/plugin-loader.ts`) runs once at startup using synchronous filesystem reads. It scans every subdirectory of `PLUGINS_DIR` and produces a `LoadedPlugin[]` array consumed by downstream modules.
-
-### Bootstrap Order (`src/index.ts`)
-
-1. `bootstrapWorkdir()` — clones/pulls the plugins repo from `ARCHIE_PLUGINS` into `$ARCHIE_WORKDIR/plugins/`
-2. `initPlugins()` — scans `PLUGINS_DIR` and populates the in-memory `LoadedPlugin[]`
-3. `initRegistry()` — flattens loaded plugins into `AgentDef[]` (PM + repo + plugin agents) with collision detection
-4. `cloneRepos()` — clones each repo declared by a registered repo agent's frontmatter (`metadata.archie.repo.github`) into `$ARCHIE_WORKDIR/repos/{key}`
-
-### Startup Scanning Process
-
-1. Read all entries in `PLUGINS_DIR` (at `$ARCHIE_WORKDIR/plugins/`); dotfile entries are skipped
-2. For each subdirectory:
-   - **Require** `.claude-plugin/plugin.json` with `name`, `version`, `description` -- skip if missing or invalid
-   - Check for `repo-config.json` and parse it if present (legacy support; not used to register agents)
-   - Scan `agents/*.md` for all agent definitions, parsing frontmatter with `gray-matter`
-   - If frontmatter contains `metadata.archie.repo.github`, the agent is classified as a repo agent
-   - Check for `skills/` directory and record its absolute path
-   - Check for `hooks/hooks.json` and parse if present (with `${CLAUDE_PLUGIN_ROOT}` substitution)
-3. Return the array of `LoadedPlugin` objects
-
-```typescript
-// From src/system/plugin-loader.ts
-export interface LoadedPlugin {
-  name: string;                                          // Plugin name (from manifest)
-  dir: string;                                           // Absolute path
-  manifest: PluginManifest;                              // Parsed plugin.json
-  repoConfigs: Record<string, PluginRepoConfig> | null;  // Legacy repo-config.json
-  agents: PluginAgentDef[];                              // All agents (repo + plugin track)
-  skillsPath: string | null;                             // Absolute path to skills/ if exists
-  hooks: Record<string, any> | null;                     // Parsed hooks/hooks.json
-}
-```
-
-### Agent Markdown Parsing (gray-matter)
-
-Agent definition files use YAML frontmatter parsed by the `gray-matter` library:
-
-```markdown
----
-role: Senior backend engineer
-expertise: Ruby on Rails, PostgreSQL, API design
-model: sonnet
-metadata:
-  archie:
-    repo:
-      github: org/backend-repo
-      baseBranch: main
-mcpServers:
-  - teamcity
-  - bugsnag
-tools:
-  - "mcp__teamcity__*"
-disallowedTools:
-  - WebSearch
----
-
-## Domain Instructions
-
-You specialize in the backend service...
-```
-
-Fields:
-- **`role`** (string): Short role description, used in peer agent lists
-- **`expertise`** (string): Detailed expertise description, used in the agent's own prompt
-- **`model`** (string, optional): Model override. Defaults applied at spawn time in `src/agents/spawn.ts`: `opus` for the PM track, `sonnet` for repo and plugin tracks
-- **`effort`** (`'low' | 'medium' | 'high' | 'xhigh' | 'max'`, optional): Reasoning effort level passed to the SDK
-- **`maxTurns`** (number, optional): Cap on agentic turns per query (defaults to 100)
-- **`metadata.archie.repo`** (object, optional): If present with a `github` field, classifies the agent as a repo agent with `github` (repo identifier) and optional `baseBranch`
-- **`mcpServers`** (string[], optional): MCP server names from the root `.mcp.json` that this agent should have access to
-- **`tools`** (string[], optional): Tool allowlist. When omitted, the SDK runs with `bypassPermissions` and all built-in/MCP tools are available; when set, it restricts the agent to exactly the listed entries (so MCP wildcards must be added explicitly)
-- **`disallowedTools`** (string[], optional): Tool denylist (always applied on top of the allowlist)
-
-The markdown body (everything after the frontmatter) becomes the Layer 3 domain-specific prompt.
-
-## Repo Agent Configuration
-
-Repo agents declare one or more GitHub repositories in their frontmatter. The preferred shape is the plural `metadata.archie.repos: [...]` plus an optional `primary` selector:
-
-```markdown
----
-role: Senior backend engineer
-expertise: Ruby on Rails, PostgreSQL
-metadata:
-  archie:
-    repos:
-      - github: org/backend-repo
-        baseBranch: main
-      - github: org/shared-libs
-        baseBranch: main
-    primary: org/backend-repo   # optional; defaults to repos[0].github
----
-```
-
-- Every entry in `repos` is mounted at spawn (eager — there is no runtime attach).
-- `primary` is the default target for `repo-tools` when their `github` arg is omitted. If omitted, the first entry is used. If set, must match exactly one entry's `github`.
-- The legacy singular shape (`metadata.archie.repo: { github, baseBranch }`) is still accepted — the plugin loader auto-migrates it to the plural form: `repos: [{github, baseBranch}], primary: github`.
-- Both shapes in the same frontmatter is an error.
-
-### Agent Derivation
-
-Each agent `.md` file with repo metadata produces an `AgentDef` carrying repo access (`def.repo` set):
-- Agent ID: `{key}-agent` (e.g., filename `backend.md` becomes `backend-agent`)
-- Base cache paths: `$ARCHIE_WORKDIR/repos/{github}/` per declared repo (nested `org/repo` directories). All declared repos are pre-warmed by `cloneRepos()` at startup, deduplicated across all repo agents; a repo whose base cache is missing (e.g. added to frontmatter after startup) is lazy-cloned on first spawn.
-- Per-task clone paths: `sessions/<taskId>/repos/<agentId>/<github>/` (created by `setupSharedClone` at spawn). These are siblings of the agent's cwd (`sessions/<taskId>/agents/<agentId>/`), not nested inside it.
-- GitHub repos: from `metadata.archie.repos[*].github`
-- Base branches: from `metadata.archie.repos[*].baseBranch` (defaults to `"main"`)
-- Identity (role, expertise): from frontmatter
-- Domain prompt (Layer 3): from markdown body
-
-### Legacy `repo-config.json`
-
-The `repo-config.json` format is parsed and exposed on `LoadedPlugin.repoConfigs` for backward compatibility, but it is no longer consulted by the agent registry or by `cloneRepos()` — those derive everything from agent frontmatter. The format originally looked like:
-
-```json
-{
-  "backend": {
-    "githubRepo": "org/backend-repo",
-    "baseBranch": "main",
-    "prompt": "agents/backend.md"
+  "allowedNetworkDomains": ["sheets.googleapis.com"],
+  "repos": {
+    "org/backend":  { "warm": true, "autoMerge": true },
+    "org/mobile":   { "warm": true }
   }
 }
 ```
 
-New plugins should use frontmatter `metadata.archie.repo` exclusively.
+| Key | Effect |
+|---|---|
+| `allowedNetworkDomains` | The sandbox's outbound allowlist for the whole session, plus the trusted package registries when edit mode is on ([security.md](security.md#network)) |
+| `repos[*].warm` | Warm-clone this repo's base cache at startup, so the first `mount_repo` of a large repository is cheap. Everything else is cloned on demand — warming is a latency optimisation, not a precondition |
+| `repos[*].autoMerge` | May Archie merge this repo's PRs without a per-merge human approval? ([github-integration.md](github-integration.md#merge-policy-automerge)) |
 
-**Source:** `src/agents/registry.ts`
+Both booleans parse strictly: only the literal `true` opts in, so a typo fails safe.
 
-## Generic Plugin: `agents/*.md` Format
+## Bootstrap order (`src/index.ts`)
 
-For agents whose frontmatter omits `metadata.archie.repo.github`, each `.md` file in `agents/` defines an independent plugin-track agent:
+1. `bootstrapWorkdir()` — create the workdir tree, clone/pull the plugins repo, init submodules
+2. `validateMasterKey()` — when the OAuth vault holds records or a key is configured
+3. `initPlugins()` — enumerate plugin directories into the in-memory `LoadedPlugin[]`
+4. `initRegistry()` — build the PM definition from the root `.mcp.json` and `archie.json`
+5. `initEventPersistence()`, `initMemory()`
+6. Warm the base clones `archie.json` marks with `warm: true`
+7. Log what the next task will load — the plugin names, and the PM's model, effort, MCP servers and network allowlist
 
-- **Filename** determines the key: `copywriter.md` -> key `copywriter`, agent ID `copywriter-agent`
-- **Frontmatter** provides `role`, `expertise`, and optional `model`
-- **Body** provides the Layer 3 domain-specific prompt
-
-Agent ID collision detection runs at startup. `registry.ts` keeps a single `seenIds` map across both tracks and throws on any duplicate `{key}-agent` ID, regardless of whether the conflict is between two plugin agents, two repo agents, or one of each. The error names both source plugins.
-
-**Source:** `src/agents/registry.ts`
-
-## Agent Skills
-
-### Skills (`skills/`)
-
-Skills intended for agents. Each subdirectory under `skills/` is a Claude Code skill directory (containing `SKILL.md`). At agent spawn time, these are symlinked into the agent's workspace:
-
+```typescript
+// src/system/plugin-loader.ts
+export interface LoadedPlugin {
+  name: string;                 // manifest name — what the SDK namespaces skills under
+  dir: string;                  // absolute path, passed to the SDK `plugins` option
+  manifest: PluginManifest;     // parsed .claude-plugin/plugin.json
+}
 ```
-sessions/{task-id}/agents/{agentKey}/.claude/skills/{skillName} -> plugins/{pluginName}/skills/{skillName}   # a plugin's own skill
-sessions/{task-id}/agents/{agentKey}/.claude/skills/{skillName} -> {repoRoot}/skills/{skillName}             # a core skill (/app/skills in the image)
-```
 
-The PM agent also gets its own workspace with skills symlinked from its plugin at spawn time, plus the core skills described below.
+## Sandbox grants
 
-Skill symlinking is uniform across all tracks: every agent — repo, plugin, and PM — gets its own workspace, and `setupAgentWorkspace` symlinks that agent's `skillPaths` list the same way regardless of track. A repo agent whose plugin ships a `skills/` directory loads those skills via the `Skill` tool exactly like a plugin agent does. (For this to resolve, the agent def carries `pluginPath` so the symlink targets — which live under the plugins dir inside `WORKDIR` — are inside the agent's sandbox read paths; the registry sets `pluginPath` on both repo and plugin agents.)
+The session must be able to *read* the files behind a loaded skill — its `SKILL.md`, and the reference files and scripts it points at. Two grants cover that, both punching through a broad denial: the plugins repo (which sits under `WORKDIR`, denied wholesale) and the core plugin directory (which sits in archie-hq's own tree, denied as `/app`). Loading a skill needs neither grant — `Skill` is gated by neither the PreToolUse guard nor bubblewrap — but reading a skill's file needs both layers to allow the real path. See [security.md](security.md#filesystem-isolation).
 
-### Core skills, and which tracks mount them
+The plugins repo is deliberately **not** listed in `additionalDirectories`: `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` auto-loads a `CLAUDE.md` from every entry, and the plugins repo root carries one written for people authoring plugins, not for the PM running a task.
 
-Archie-hq ships some skills of its own in the repo's top-level `skills/` directory rather than inside any plugin. Which agents receive them is declared in exactly one place — the `CORE_SKILL_MOUNTS` manifest in `src/agents/core-skills.ts` — keyed by agent **track**, one of `pm`, `repo` or `plain`. **Read that constant for the current mapping**; this document deliberately does not restate it, because a list here goes stale the moment the manifest changes. The pattern it encodes: a skill written in the PM's voice mounts on `pm` alone, and a skill describing something every agent gets — a trigger-fired task's persistent directory, say — mounts on every track. Giving a skill a second audience is a line in that manifest; it does not require a second directory.
-
-The track is not stored on the agent definition. It is the case each construction site already distinguishes, so `scanAgentDefs` passes `'repo'` or `'plain'` according to its existing `if (agent.repo)` fork, `buildPmDef` passes `'pm'`, and `synthesizeDynamicAgentDef` passes `'repo'` because a PM-spawned dynamic agent is a repo agent by construction. This mirrors the two capability predicates `isPmAgent` and `isRepoAgent`, with a plain plugin agent being the negation of both.
-
-`resolveSkillPaths(track, pluginSkillsPath?)` turns a track plus the owning plugin's `skills/` directory into **one ordered list** of absolute skill directories, stored on the def as `skillPaths`. Plugin entries come first and the list is deduplicated by directory name, which is what makes **a plugin skill shadow a core skill of the same name**. An entry counts as a skill if it is a directory or a symlink resolving to one, so a skill vendored as a git submodule behind a symlink still mounts while a dangling link is skipped. `setupAgentWorkspace` then simply symlinks that list, re-checking that each source still exists at mount time — the plugins clone can be reset between the registry scan and the spawn, and `symlink(2)` does not validate its target.
-
-A core skill that ships in `skills/` while no track mounts it is unreachable from every agent, so startup emits a `logger.warn('system', …)` naming it. Forgetting to add a new skill to the manifest is therefore announced rather than silent.
-
-The mirror-image failure is **not** covered by that warning, and it is the one to watch in a deployment: if the `skills/` directory itself is missing — a production image built without the `COPY`, or the dev bind mount dropped — then every core path resolves to nothing, the manifest has nothing to complain about, and the PM boots with **zero core skills and no warning at all**. The symptom appears later, as a `Skill` call failing with `"Unknown skill"`. That is why `Dockerfile.prod` and `docker-compose.yml` both carry a comment on the line that puts the directory in place.
-
-One consequence of building the list at registry-scan time rather than at spawn time: `skillPaths` is a **snapshot**. A skill *removed* from a plugin is handled, because the mount re-checks each source. A skill *added* to a plugin is not mounted until the next scan — which happens at startup, on every `Task.create` and `Task.get`, and on plugin sync, so in practice within one turn. The same move puts one small `readdirSync` per agent def on that scan path, where previously the directory was read once per spawn.
-
-One limit is worth knowing before giving a core skill a new audience: a PM-voiced skill instructs PM-only MCP tools (`post_to_channel`, `mute_channel`, `read_thread`, `fetch_slack_reference`, `report_completion`), which are attached only on the PM — so widening one of *those* needs prompt and tool work too, not just a manifest entry. A skill intended for several tracks has to be written for that audience from the start: track-neutral prose, no MCP tool named, and no assumption about talking to users or owning a channel. `trigger-task` is written that way if you want a worked example.
-
-Reading a mounted skill's *files*, as opposed to loading it, needs a sandbox grant, and spawn issues one: it adds each agent's mounted core skill directories to `allowReadPaths`. Without it the PreToolUse hook denies the real path — the core skills directory is in none of its lists — and inside the container bubblewrap denies it too, since it resolves the mount symlink back to `/app`. Loading was never affected and needs no grant: `Skill` is gated by neither enforcement layer. See [security.md](security.md#filesystem-isolation) for what was measured.
-
-**Source:** `src/agents/core-skills.ts` (`CORE_SKILL_MOUNTS`, `resolveSkillPaths`, `findUnmountedCoreSkills`, `mountedSkillNames`), `src/agents/spawn.ts` (`setupAgentWorkspace`), `src/agents/registry.ts`, `src/index.ts` (the boot banner and the warning)
-
-## Task Directory Structure
-
-Each task gets an isolated directory under `sessions/`. The PM agent and each specialist agent get their own workspace:
+## Task directory structure
 
 ```
 sessions/
   task-20260222-1400-a3f9k2/
-    shared/                              # Shared task state
-      knowledge.log                      # Shared conversation log (all agents)
-      metadata.json                      # Task metadata (status, threads, sessions)
-      memory/                            # Agent memory storage
-      attachments/                       # Downloaded Slack files
-      researches/                        # Research results (JSON files)
+    shared/                    # shared task state, mounted read-only
+      metadata.json
+      knowledge.log
+      events.jsonl
+      usage.jsonl
+      memory/
+      attachments/
+      artifacts/
     agents/
-      pm/                                # PM agent workspace
-        .claude/
-          skills/
-            workflow/  -> ...            # Symlinked PM skills
-      copywriter/                        # Plugin agent workspace
-        .claude/
-          skills/
-            tone-analysis/  -> ...       # Symlinked agent skills
-    repos/                               # Git shared clones (always created; checked out on base for RO, feature branch for RW)
-      backend/                           # Shared clone for backend-agent
-    researches/                          # Per-research isolated storage
-      {uuid}/
-        request.json                     # Research manifest
-        notes/                           # Researcher output files
-        report.json                      # Final synthesized report
+      pm/                      # the PM's workspace (cwd, read-write)
+        .claude/settings.json  # attribution only — hooks come from the plugins
+    claude/
+      pm/{session,tmp}         # SDK config and scratch dirs
+    repos/
+      org/backend/             # one clone per repo per task, created by mount_repo
+    researches/
 ```
 
-**Source:** `src/tasks/persistence.ts` (path helpers), `src/tasks/task.ts` (task creation)
+**Source:** `src/tasks/persistence.ts` (path helpers), `src/agents/spawn.ts` (workspace and SDK dirs)
 
-## Core vs Plugin Separation
+## Core vs plugin separation
 
-### What stays in `src/` (core system)
-
-- Agent spawning: `src/agents/agent.ts`, `src/agents/spawn.ts`
-- Agent registry: `src/agents/registry.ts`
-- Agent tools: `src/agents/tools.ts`, `src/mcp/research-tools.ts`
-- Plugin loader: `src/system/plugin-loader.ts`
-- Task management: `src/tasks/task.ts`, `src/tasks/persistence.ts`
-- Type definitions: `src/types/agent.ts`, `src/types/task.ts`
-- Prompt templates: `prompts/agent-core.md`, `prompts/repo-agent.md`, `prompts/plugin-agent.md`
-
-### What lives in the plugins repo (domain-specific)
-
-The contents of the `ARCHIE_PLUGINS` git repository, materialized at runtime under `$ARCHIE_WORKDIR/plugins/`:
-
-- `.claude-plugin/plugin.json`: required manifest (name, version, description)
-- `repo-config.json`: legacy repository infrastructure mapping (optional, no longer consulted by the registry)
-- `agents/*.md`: agent identity, expertise, repo config (via frontmatter), and domain-specific instructions
-- `pm/agents/pm.md`: PM overlay prompt (body appended to PM system prompt)
-- `skills/`: agent skill directories (Claude Code skills for agents)
-- `hooks/hooks.json`: plugin-defined hooks (injected into agent settings)
-- `.mcp.json` (at the plugins-repo root, i.e. `$ARCHIE_WORKDIR/plugins/.mcp.json`): MCP server connection configs
-
-This separation means new agents can be added by editing the plugins repo -- no changes to core source code are required, and a redeploy is not necessary. The next task to start or load runs `syncPlugins()`, whose HEAD check sees the new commit and live-loads the content (the base repo for a newly-added repo agent is cloned on demand at spawn time).
-
-## Three-Layer Prompt Composition
-
-All agents (both tracks) use a three-layer prompt composition model:
-
-### Layer 1: Universal Multi-Agent Protocol (`prompts/agent-core.md`)
-
-Shared by all agents. Defines:
-- Agent identity (via template variables: `AGENT_ID`, `AGENT_ROLE`, `EXPERTISE`, `PEER_LIST`)
-- Dual role system (Task Owner vs Participant)
-- Communication tools (`send_message_to_agent`, `log_finding`)
-- Coordination strategies (sequential vs parallel)
-- Stopping points and workflow structure
-- Research content handling guidance
-
-### Layer 2: Track Extension
-
-Track-specific behavior added on top of Layer 1:
-
-- **Repo agents** use `prompts/repo-agent.md`: repository responsibility, dual mode system (read-only vs edit), git workflow (branch management, PR lifecycle), task lifecycle context, honesty guidelines
-- **Plugin agents** use `prompts/plugin-agent.md`: available tools (Read, Glob, Grep, Skill, plus Write/Edit/Bash scoped to the agent workspace), workspace description
-
-### Layer 3: Plugin Override (Domain-Specific)
-
-The markdown body from `agents/{key}.md` is appended as the final layer. This contains domain-specific instructions, coding standards, technology preferences, or any other specialization the agent needs.
-
-```typescript
-// From src/agents/agent.ts — prompt composition
-const corePrompt = await loadPrompt("agent-core", { ... });    // Layer 1
-const trackPrompt = await loadPrompt(trackTemplate, {});         // Layer 2
-const layers = [corePrompt, trackPrompt];
-if (agentDef.prompt) {
-  layers.push(agentDef.prompt);                                   // Layer 3
-}
-return layers.join("\n\n");
-```
-
-The same pattern applies to both repo and plugin agents in `src/agents/agent.ts`, using the appropriate track template (`prompts/repo-agent.md` or `prompts/plugin-agent.md`) for Layer 2.
+Everything in `src/` is domain-agnostic: the task runtime, the single agent spawner, the in-process MCP tools, the plugin enumerator and the root-config loaders. Everything domain-shaped lives in the `ARCHIE_PLUGINS` repository — skills, agent definitions, hooks, the MCP server declarations and their approval tiers, and the per-repo flags. Adding a domain means adding a plugin directory; no core change and no redeploy, because the next task to start or load runs `syncPlugins()` and picks it up.
 
 ## Related Documentation
 
-- [Web Research Architecture](./web-research.md) -- research tool available to all agents
-- [Security Architecture](./security.md) -- defense layers including plugin agent isolation
+- [Agents](./agents.md) — the PM, plugin agents, and the general-purpose worker
+- [Tool Approvals](./tool-approvals.md) — the `archie` block and the approval gate
+- [Security](./security.md) — sandbox grants and the shared-credential posture

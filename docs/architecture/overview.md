@@ -1,62 +1,60 @@
 # Architecture Overview
 
-Archie (Autonomous Responsive and Collaborative Hyper Intelligent Employee) is a multi-agent AI software engineering system built on the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk). Specialized agents collaborate on tasks across multiple repositories, coordinated through Slack and GitHub integrations.
+Archie (Autonomous Responsive and Collaborative Hyper Intelligent Employee) is an AI employee built on the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk). Work arrives from Slack, the CLI or GitHub, becomes a task, and a single agent — the PM — handles it, delegating pieces of the work to subagents it spawns.
 
 ## Core Principles
 
-- **Human-like behavior**: To users, Archie presents as a single AI assistant. Internal agent coordination is never exposed. The PM agent writes as "I", not "my agent" or "the backend agent."
-- **Context-aware sessions**: Each task gets its own runtime with per-agent message delivery, metadata, and a shared `knowledge.log` that all agents read for context.
-- **Direct agent communication**: Agents communicate peer-to-peer via `send_message_to_agent`, with messages delivered through simple in-memory queues in the task runtime.
-- **Mostly reactive, with triggers**: Archie acts in response to external events (Slack messages, GitHub webhooks). It can also act on **triggers** — persistent, user-approved "do Y when X happens" rules (a schedule, or a new channel message) that spawn a fresh task when they fire. Triggers are the one sanctioned form of self-initiated work; every trigger is created via an explicit Approve/Deny gate. See [triggers.md](./triggers.md).
-- **Interruptible**: Tasks can be stopped, resumed, and recovered. Edit mode requires explicit user approval via Slack buttons.
+- **One agent per task.** A task is one Claude Agent SDK session, resumed across turns. Everything the PM does not do itself it hands to a subagent through the SDK's built-in `Agent` tool, inside the same session and process. There are no peer agents and no message queues between agents.
+- **Coordination is prose, not machinery.** The PM briefs a worker and reads its report. There is no task owner, no handoff protocol and no shared blackboard to keep in sync.
+- **Context protection is the reason to delegate.** Only a worker's final report reaches the PM's context; everything it read stays with it. Anything expected to produce more than a screen of output goes through a worker regardless of domain.
+- **Human-like behavior.** To users, Archie presents as a single assistant. Internal mechanics are never exposed — the PM writes as "I", never "my worker".
+- **Mostly reactive, with triggers.** Archie acts on external events, and on **triggers** — persistent, user-approved "do Y when X happens" rules that spawn a fresh task when they fire. Every trigger passes an explicit Approve/Deny gate. See [triggers.md](./triggers.md).
+- **Interruptible.** Tasks can be stopped, parked, resumed and recovered. Code changes require explicit user approval.
 
 ## System Architecture
 
 ```
                     External Events
                     ┌──────────┐  ┌──────────┐
-                    │  Slack   │  │  GitHub   │
-                    │  Bolt    │  │  Webhooks │
-                    └────┬─────┘  └─────┬─────┘
+                    │  Slack   │  │  GitHub  │
+                    │  Bolt    │  │ Webhooks │
+                    └────┬─────┘  └─────┬────┘
                          │              │
 ─────────────────────────┼──────────────┼──────────── Connector Layer
                          │              │
               ┌──────────▼──┐  ┌────────▼────────┐
               │ Slack Events│  │  GitHub Events  │
-              │ (events.ts) │  │  (events.ts)    │
+              │ (events.ts) │  │   (events.ts)   │
               └──────┬──────┘  └────────┬────────┘
                      │                  │
-                     │  Deterministic routing: thread/branch/PR
-                     │  lookup → existing task or new task.
-                     │  (Triage agent exists but is currently
-                     │   disabled — events go straight to the
-                     │   PM via the Task.)
+                     │  Deterministic routing: thread / branch / PR
+                     │  lookup → existing task or new task. The wake
+                     │  carries the message text itself.
                      │                  │
 ─────────────────────┼──────────────────┼─────────── Task Layer
                      │                  │
                     ┌▼──────────────────▼─────┐
-                    │      Task Class         │
-                    │  (tasks/task.ts)        │
-                    │  Message queues, agent  │
-                    │  spawning, callbacks    │
+                    │       Task Class        │
+                    │     (tasks/task.ts)     │
+                    │  one message queue,     │
+                    │  one agent, callbacks   │
                     └────────────┬────────────┘
                                  │
 ─────────────────────────────────┼─────────────────── Agent Layer
                                  │
-              ┌──────────────────┼──────────────────┐
-              │                  │                  │
-     ┌────────▼──────┐  ┌───────▼──────┐  ┌────────▼────────┐
-     │   PM Agent    │  │  Repo Agents │  │  Plugin Agents  │
-     │   (Opus)      │  │  (Sonnet)    │  │  (Sonnet)       │
-     └───────────────┘  └──────────────┘  └─────────────────┘
+                    ┌────────────▼────────────┐
+                    │      PM  (Opus)         │
+                    │  one SDK session        │
+                    │   ├─ Skill  (plugin:skill)
+                    │   └─ Agent  (plugin:agent | general-purpose)
+                    │        └─ subagents, same process
+                    └────────────┬────────────┘
                                  │
 ─────────────────────────────────┼─────────────────── Persistence Layer
                                  │
-              ┌──────────────────┼──────────────────┐
-              │                  │                  │
-     ┌────────▼──────┐  ┌───────▼──────┐  ┌────────▼────────┐
-     │  metadata.json│  │ knowledge.log│  │  Git Clones     │
-     └───────────────┘  └──────────────┘  └─────────────────┘
+        ┌────────────────┬───────┴────────┬────────────────┐
+   metadata.json    knowledge.log    usage/events     task clones
+                    (write-only)        .jsonl        repos/<org>/<repo>
 ```
 
 ## Technology Stack
@@ -64,61 +62,39 @@ Archie (Autonomous Responsive and Collaborative Hyper Intelligent Employee) is a
 | Component | Technology |
 |---|---|
 | Runtime | Node.js >= 20, TypeScript, ES modules |
-| Agent Framework | `@anthropic-ai/claude-agent-sdk` ^0.2.77 |
-| Models | Opus (PM), Sonnet (repo agents, plugin agents, research). Haiku (title generation, triage — triage currently disabled) |
-| Slack Integration | `@slack/bolt` ^4.6.0, `@slack/web-api` ^7.0.0 |
-| GitHub Integration | `@octokit/app` ^16.1.2, `@octokit/webhooks` ^14.2.0 |
+| Agent Framework | `@anthropic-ai/claude-agent-sdk` 0.3.257 |
+| Models | Opus (the PM), Fable (the PM in max mode), Sonnet/Opus/Haiku/Fable per worker spawn, Haiku (title generation, research preset classification) |
+| Slack Integration | `@slack/bolt` ^5.0.0, `@slack/web-api` |
+| GitHub Integration | `@octokit/app` ^16.1.4, `@octokit/webhooks` |
 | Schema Validation | `zod` ^4.3.6, `zod-to-json-schema` ^3.25.0 |
-| Prompt Parsing | `gray-matter` ^4.0.3 (frontmatter extraction) |
-| Build | `tsc` (TypeScript compiler), `tsx` (dev mode) |
-| Deployment | Docker Compose (dev + prod configurations) |
+| Build | `tsc`, `tsx` (dev mode) |
+| Deployment | Docker Compose (dev + prod) |
 
-## Key Innovations
+## Key Design Choices
 
-### Two-Channel Communication
+### Delegation through the SDK
 
-Agents have two distinct communication channels (see [agents.md](agents.md) for details):
+The PM spawns workers with the built-in `Agent` tool. A worker is either an agent type a plugin defined (loaded natively by the SDK, addressable as `plugin:agent`) or the general-purpose worker with a model the PM names per spawn. Workers run in the background by default, so the PM's turn can end while one runs and it is woken when the worker reports. See [agents.md](agents.md).
 
-- **`send_message_to_agent`**: Direct peer-to-peer messaging. The sender's message is queued to the target agent. The target is spawned on demand if not already running.
-- **`log_finding`**: Write to the shared `knowledge.log` visible to all agents and the PM. Used for discoveries, decisions, completions, and blockers.
+### Native plugin loading
 
-### Thread Owner Pattern
+Plugin directories are passed straight to the SDK's `plugins` option; it reads their skills, agents, commands and hooks itself. Skills are namespaced `plugin:skill`, so same-named skills in different plugins no longer collide. Archie keeps only what the SDK does not do: cloning and refreshing the plugins repo, enumerating plugin directories, and the two engine-owned root files — `.mcp.json` (MCP servers plus their approval tiers) and `archie.json` (network allowlist, warm repos, auto-merge). See [plugin-system.md](plugin-system.md).
 
-Every task has a designated **task owner** (a repo or plugin agent) responsible for coordinating the overall work. The PM agent assigns ownership via `assign_task_owner` and communicates it in the delegation message. Task owners coordinate with participant agents using sequential or parallel strategies, then report back to the PM.
+### Repos are mounted, not declared
 
-### Streaming Generators
+Nothing is cloned when a task starts. The GitHub App installation is the allowlist; the PM calls `mount_repo("owner/repo")`, gets a `git clone --shared` checkout at `sessions/{taskId}/repos/{owner}/{repo}` and passes the path into a worker's brief. One clone per repo per task — the task is the isolation boundary. Read-only until edit mode is approved, at which point every clone moves onto `archie/{taskId}` and the PM resumes with a writable mount. See [edit-mode.md](edit-mode.md).
 
-Agents receive input via async generators connected to `MessageQueue` instances (`src/agents/message-queue.ts`). This enables continuous streaming: new messages are fed to running agents without restarting them. The `RecoverableInputGenerator` tracks consumed messages and can replay them on session recovery failure.
+### Wakes carry their content
 
-### Per-Task Instances
+A Slack message, a GitHub event or a system notice reaches the PM as the text itself, framed by a builder in `src/agents/prompts.ts` — not as a pointer telling it to go and read a file. `knowledge.log` is still written, but as a record for offline consumers (memory extraction, the people section) and as the audit trail; the running PM never reads it. See [persistence.md](persistence.md#the-knowledge-log).
 
-Each task gets its own `Task` instance (a class that encapsulates runtime state) with:
+### Per-task instances
 
-- Isolated message queues for every agent
-- Independent agent handles and session state
-- Task-scoped budgets (research requests, inter-agent messages, wall-clock timeout)
-- Metadata and knowledge log persisted to disk
-
-### Shared Git Clones
-
-All repo agents work in isolated `git clone --shared` checkouts (`src/connectors/github/repo-clone.ts`), regardless of mode. Each clone has its own `.git/` directory, refs, index, and HEAD, but borrows objects from the base repo's object store via alternates. In **readonly mode**, the clone is checked out on `origin/{baseBranch}`. In **edit mode**, the clone has a feature branch (`archie/task-{taskId}`) based on the repository's default branch. Agents can track multiple branches per clone via `BranchState` records. Agents commit locally and manage their own PRs via the `repo-tools` MCP server; clones for readonly tasks are cleaned up on task stop/complete. Legacy worktrees are migrated to shared clones on first encounter (`migrateWorktreeToClone`).
-
-### Plugin Architecture
-
-Agents and capabilities are loaded dynamically from the plugins directory under the runtime workdir (`$ARCHIE_WORKDIR/plugins`, default `./workdir/plugins`). On startup `bootstrapWorkdir()` (`src/system/workdir.ts`) clones the repo specified by `ARCHIE_PLUGINS` into that location (or pulls/resets it on subsequent boots) before `initPlugins()` (`src/system/plugin-loader.ts`) scans it. `initRegistry()` then builds `AgentDef`s from the loaded plugins, and `cloneRepos()` clones every repo declared by repo-track agent frontmatter into `$ARCHIE_WORKDIR/repos/<repo-key>` (or fetches+resets if already cloned). Each plugin can provide:
-
-- **Repo agents**: Via `agents/*.md` with repo metadata in frontmatter (or legacy `repo-config.json`)
-- **Plugin agents**: Via `agents/*.md` without repo metadata (lightweight; no repo, no git)
-- **PM overlay**: Via `pm/` plugin (`agents/pm.md` body appended to PM prompt)
-- **Agent skills**: Via `skills/` directories (agent-specific capabilities symlinked at spawn)
-- **Hooks**: Via `hooks/hooks.json` (plugin-defined hooks injected into agent settings)
-- **MCP servers**: Via root `.mcp.json` (agent frontmatter references server names)
-
-See [plugin-system.md](plugin-system.md) for details.
+Each task gets its own `Task` instance holding one message queue, one agent handle and session, task-scoped budgets (research requests, wall-clock timeout) and metadata persisted to disk through a 500 ms debounce.
 
 ## High-Level Message Flow
 
-### Slack Message Flow
+### Slack
 
 ```
 1. Slack event (app_mention, DM, or thread reply)
@@ -128,122 +104,99 @@ See [plugin-system.md](plugin-system.md) for details.
    → routeSlackEvent() discards our own bot messages; external/guest authors
      are skipped in handleSlackEvent() before any task work
 
-3. Deterministic thread→task lookup (triage agent is currently disabled)
-   → findTaskByThread(threadId): if a task is already linked to this Slack
-     thread, route to it (Task.get → task.append → task.sendMessage with
-     AGENT_PROMPTS.existingTask)
-   → Otherwise start a new task if it's an @mention, a DM, or a human reply to
-     a thread Archie itself started (rootAuthorWasBot — a post it made via the
-     post_to_channel explore tool; a trigger-fired task's own home thread is
-     also bot-rooted, but step 3 resolves that to the owning task first), AND
-     the fetched thread carries at least one
-     visible message — a payload with no author and no body never seeds a task
-     (Task.create → task.append → task.sendMessage with AGENT_PROMPTS.newTask)
+3. Deterministic thread→task lookup
+   → findTaskByThread(threadId): if a task is linked to this thread, route to it
+     (Task.get → append → sendMessage with AGENT_PROMPTS.inboundActivity(entries))
+   → Otherwise start a new task if it is an @mention, a DM, or a human reply to a
+     thread Archie itself started (rootAuthorWasBot), AND the fetched thread
+     carries at least one visible message
+     (Task.create → append → sendMessage with AGENT_PROMPTS.inboundNewTask(entries))
    → Replies in human-started threads the bot didn't start are ignored
 
-4. PM Agent processes input:
-   → Reads knowledge.log for context
-   → Loads relevant PM skill via Skill tool
-   → Delegates to repo/plugin agents via send_message_to_agent
-   → Or responds directly via post_to_user + report_completion
-
-5. Specialist Agents work:
-   → Read knowledge.log for context
-   → Investigate/modify code in their repository
-   → Report findings back to PM or task owner via send_message_to_agent
+4. The PM processes the messages it was handed inline:
+   → loads the relevant skill
+   → answers directly, or mounts a repo and spawns a worker
+   → relays anything the user needs via post_to_user, then report_completion
 ```
 
-### GitHub Webhook Flow
+### GitHub
 
 ```
 1. GitHub webhook (PR review, comment, push, check_run)
-   → connectors/github/events.ts receives via Express endpoint
+   → connectors/github/events.ts receives via an Express endpoint
 
-2. connectors/github/webhooks.ts performs deterministic routing:
-   → Matches task by branch name (archie/task-{id}, legacy feature/task-{id}) or PR number
-   → Routes to: direct (reviews, CI, comments), merge_check, or discard
+2. connectors/github/webhooks.ts routes deterministically:
+   → matches the task by branch name (archie/task-{id}, legacy feature/task-{id})
+     or by PR number
+   → direct (reviews, CI, comments), merge_check, or discard
 
-3. Events are appended to the matched task and the PM agent is messaged
-   directly (the GitHub path has never used the triage agent)
-4. For merge checks: merge orchestrator evaluates and merges if ready
+3. The event is appended and the same line is delivered to the PM inline
+4. For merge checks: the merge orchestrator evaluates and merges if ready
 ```
 
-See [slack-integration.md](slack-integration.md) and [github-integration.md](github-integration.md) for details.
+See [slack-integration.md](slack-integration.md) and [github-integration.md](github-integration.md).
 
 ## Source Code Structure
 
 ```
 src/
-├── index.ts                     # Entry point, HTTP server, startup, plugin/agent loading
+├── index.ts                     # Entry point, HTTP server, startup sequence
 ├── connectors/
-│   ├── slack/
-│   │   ├── client.ts            # Slack Web API wrapper, posting helpers, mention resolution, file downloads
-│   │   ├── events.ts            # Slack Bolt app, event handlers, deterministic thread→task routing, button actions
-│   │   └── title.ts             # Assistant-thread title sync (DM list naming)
-│   ├── github/
-│   │   ├── client.ts            # GitHub App / Octokit wrapper, git identity, GIT_ASKPASS
-│   │   ├── events.ts            # GitHub webhook dispatch (deterministic, no triage)
-│   │   ├── webhooks.ts          # Signature verification, routing, context extraction, formatting
-│   │   ├── merge.ts             # PR merge logic, linked PR checking
-│   │   ├── repo-clone.ts        # Shared `git clone --shared` lifecycle (setup, remove, worktree migration)
-│   │   └── branch-state.ts      # Per-branch state helpers (hydrate, mirror legacy, find by PR)
-│   ├── api/
-│   │   └── routes.ts            # REST + SSE routes for the CLI/admin UI
-│   └── oauth/
-│       └── routes.ts            # OAuth provider redirect endpoints (token exchange)
+│   ├── slack/                   # Bolt app, events, client, canvases, pins, status, title sync
+│   ├── github/                  # App auth, webhooks, PR/merge logic, repo-clone, branch state
+│   ├── api/routes.ts            # REST + SSE for the CLI/admin UI
+│   └── oauth/routes.ts          # OAuth provider redirect endpoints
 ├── agents/
-│   ├── agent.ts                 # Agent class: prompt composition, spawning, session management
-│   ├── spawn.ts                 # Agent spawn entrypoint, clone setup, tool wiring, edit-mode branching
-│   ├── registry.ts              # Agent definition registry (from plugins)
-│   ├── tools.ts                 # MCP tool definitions (PM + repo agent tools)
-│   ├── sandbox.ts               # Filesystem-guard hook + sandbox config builder
-│   ├── artifacts.ts             # Per-task artifact capture
-│   ├── task-usage.ts            # Token/cost aggregation + report formatting for get_task_usage
-│   ├── message-queue.ts         # Async message queue with recovery
-│   └── prompts.ts               # Shared prompt constants (new task, recovery, etc.)
+│   ├── agent.ts                 # Agent class: queue, handle, session, background tasks
+│   ├── spawn.ts                 # The single spawn path: workspace, prompt, plugins, MCP, sandbox, hooks
+│   ├── registry.ts              # The PM definition (model, effort, MCP servers, policy union)
+│   ├── tools.ts                 # In-process MCP servers (comms, orchestration, scheduling, repo)
+│   ├── sandbox.ts               # Filesystem guard hook + sandbox/network policy builders
+│   ├── tool-approval-gate.ts    # Per-call MCP approval gate
+│   ├── mcp-file-bridge.ts       # Forwards local file bytes into other MCP servers
+│   ├── activity.ts              # Tool call → status phrase
+│   ├── task-usage.ts            # Token/cost aggregation for get_task_usage
+│   ├── message-queue.ts         # Async message queue with replay
+│   ├── model-label.ts           # Model/effort resolution + display labels
+│   └── prompts.ts               # Wake builders (inline content) and recovery prompts
 ├── tasks/
-│   ├── task.ts                  # Task class: lifecycle, budgets, agent management, callbacks
-│   ├── launch.ts                # Spawn an independent child task from a running task
-│   ├── persistence.ts           # Disk I/O: metadata, knowledge log, debounced writes, lookups
+│   ├── task.ts                  # Task class: lifecycle, budgets, the one agent, approvals
+│   ├── persistence.ts           # Disk I/O, path helpers, task lookups
 │   ├── recovery.ts              # Startup recovery, idle detection, progressive recovery
-│   └── title-generator.ts       # Haiku-authored task title pipeline
+│   ├── status.ts                # The single "Archie is …" status line
+│   └── title-generator.ts       # Haiku-authored task titles
 ├── system/
-│   ├── shutdown.ts              # Shutdown state (getIsShuttingDown / setShuttingDown)
+│   ├── workdir.ts               # Path constants, plugins clone/refresh, warm base clones
+│   ├── plugin-loader.ts         # Plugin enumeration, root .mcp.json and archie.json
+│   ├── plugin-sync.ts           # Per-task plugins refresh
 │   ├── logger.ts                # Unified color-coded logger
-│   ├── triage.ts                # Triage agent (Haiku classifier — currently disabled, not invoked from any connector)
-│   ├── plugin-loader.ts         # Plugin directory scanner ($ARCHIE_WORKDIR/plugins)
-│   ├── workdir.ts               # Bootstrap: path constants (WORKDIR, PLUGINS_DIR, REPOS_DIR, SESSIONS_DIR, SECRETS_DIR), clone/pull/fetch helpers
-│   ├── secrets-vault.ts         # Encrypted vault for OAuth tokens (master-key validated at startup)
-│   ├── reminder-scheduler.ts    # Periodic reminder scheduler
-│   ├── event-bus.ts             # Process-local event emitter (for SSE / observers)
-│   └── oauth/                   # OAuth flow helpers (token injection into agent env)
-├── mcp/
-│   └── research-tools.ts        # Web research pipeline (multi-agent, prompts inline)
-├── types/
-│   ├── task.ts                  # TaskMetadata, SlackThread, RepositoryInfo, etc.
-│   ├── agent.ts                 # AgentDef, AgentHandle, AgentSessionState
-│   └── index.ts                 # Type re-exports
-└── utils/
-    └── prompt-loader.ts         # Markdown prompt file loader with variable substitution
+│   ├── event-bus.ts             # Process-local event emitter (SSE / observers)
+│   ├── secrets-vault.ts         # Encrypted vault for OAuth tokens
+│   ├── reminder-scheduler.ts    # Pending reminders
+│   ├── trigger-*.ts             # Trigger store, scheduler, matching, visibility
+│   └── oauth/                   # OAuth flow helpers and header injection
+├── memory/                      # Cross-task memory: extraction, index, injection
+├── mcp/research-tools.ts        # Web research pipeline
+├── types/                       # TaskMetadata, AgentDef, channels, triggers
+└── utils/prompt-loader.ts       # Markdown prompt loader with variable substitution
 
-prompts/                         # Repo-root: layered system prompts
-├── agent-core.md                # Layer 1: Universal multi-agent protocol
-├── pm-agent.md                  # PM agent system prompt
-├── repo-agent.md                # Layer 2: Repo agent track extension
-├── plugin-agent.md              # Layer 2: Plugin agent track extension
-└── triage-agent.md              # Triage agent system prompt (loaded only if triage is re-enabled)
+core-plugin/                     # The engine's own plugin: skills that ship with archie-hq
+prompts/
+├── pm-agent.md                  # The one engine prompt
+├── memory-extractor.md
+└── memory-housekeeper.md
 ```
 
 ## Related Documentation
 
-- [Agents Architecture](agents.md) -- agent types, communication, and prompt composition
-- [Orchestration](orchestration.md) -- task runtime, message queues, and agent lifecycle
-- [Persistence](persistence.md) -- task storage, metadata, and knowledge log
-- [Slack Integration](slack-integration.md) -- Slack Bolt setup, event handling, interactive messages
-- [GitHub Integration](github-integration.md) -- webhooks, PR management, merge orchestrator
-- [Edit Mode](edit-mode.md) -- approval flow, shared clones, and git workflow
-- [Max Mode](max-mode.md) -- per-task, human-approved model/effort upgrade for coding agents
-- [Tool Approvals](tool-approvals.md) -- per-call human approval for critical MCP tools
-- [Plugin System](plugin-system.md) -- plugin structure, loading, and agent registration
-- [Web Research](web-research.md) -- multi-agent research pipeline and defense layers
-- [Security](security.md) -- research budget, sandwich defense, prompt injection mitigations
+- [Agents](agents.md) — the PM, its workers, models and effort, session lifecycle
+- [Orchestration](orchestration.md) — task runtime, routing, recovery
+- [Persistence](persistence.md) — task storage, metadata, the knowledge log, usage accounting
+- [Slack Integration](slack-integration.md) — Bolt setup, event handling, interactive messages
+- [GitHub Integration](github-integration.md) — webhooks, PR management, merge orchestrator
+- [Edit Mode](edit-mode.md) — `mount_repo`, the approval gate, the git workflow
+- [Max Mode](max-mode.md) — the PM's per-task, human-approved model/effort upgrade
+- [Tool Approvals](tool-approvals.md) — per-call human approval for critical MCP tools
+- [Plugin System](plugin-system.md) — what a plugin contributes and how it is loaded
+- [Web Research](web-research.md) — research pipeline and defense layers
+- [Security](security.md) — sandbox, credentials, and the flat model's posture change

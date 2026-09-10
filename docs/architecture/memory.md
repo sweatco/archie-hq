@@ -16,8 +16,8 @@ This document describes the implementation as-built. The capability spec lives a
                 ┌──────────────── READ PATH (push) ────────────────┐
                 │                                                  │
   spawnAgent ──▶│  extractTaskUsernames(taskId)                    │
-  (PM / repo /  │      └─ scans knowledge.log for Slack mentions   │
-   plugin track)│                                                  │
+  (the PM, once │      └─ scans knowledge.log for Slack mentions   │
+   per spawn)   │                                                  │
                 │  enrichPromptWithMemory(prompt, users, selectors)│
                 │      ├─ readUser(u)    ─▶ <user_preferences …>   │
                 │      ├─ readActivity() ─▶ <recent_activity>      │
@@ -107,15 +107,9 @@ workdir/memory/                                  (runtime, gitignored)
 
 ## Read Path — Memory Injection at Spawn
 
-`src/agents/spawn.ts` calls `enrichPromptWithMemory()` after assembling the track-specific system prompt for every agent it spawns. Three call sites, one per track:
+`src/agents/spawn.ts` calls `enrichPromptWithMemory()` once, after assembling the PM's system prompt and its context blocks. A task runs one agent, so there is one call site. Subagents the PM spawns do not get their own injection — the PM carries the memory context and puts what a worker needs into its brief.
 
-| Track | Location | Trigger |
-|-------|----------|---------|
-| PM | `spawn.ts:252-253` | Every PM agent spawn |
-| Repo | `spawn.ts:381-382` | Every repo agent spawn |
-| Plugin | `spawn.ts:479-480` | Every plugin agent spawn |
-
-The helper `extractTaskUsernames(taskId)` (`spawn.ts:132`) parses the task's `knowledge.log` for Slack mention markers `<@UID:Display Name>` (or the legacy `@<UID:...>`) and returns one `UserRef` (raw Slack ID + display name) per unique mentioned user. The Slack ID is the user-memory filename, so the read and write paths key identically. Those users are the only ones for whom `<user_preferences>` blocks are injected.
+The helper `extractTaskUsernames(taskId)` parses the task's `knowledge.log` for Slack mention markers `<@UID:Display Name>` (or the legacy `@<UID:...>`) and returns one `UserRef` (raw Slack ID + display name) per unique mentioned user. The Slack ID is the user-memory filename, so the read and write paths key identically. Those users are the only ones for whom `<user_preferences>` blocks are injected.
 
 `buildMemoryContext(usernames)` (`src/memory/context.ts`) assembles up to three XML-tagged blocks:
 
@@ -137,10 +131,10 @@ The helper `extractTaskUsernames(taskId)` (`spawn.ts:132`) parses the task's `kn
 </entity>
 ```
 
-**Entity selection is push, not pull** — the system decides which entity pages to inject; there is no agent-callable query tool. `enrichPromptWithMemory(prompt, users, selectors)` receives spawn-context selectors (`{ repo?, plugin?, taskTitle? }`): PM passes `taskTitle`, repo agents pass `repo: def.repo.repoKey`, plugin agents pass `plugin: def.pluginName`. `selectEntities()` (`entity-index.ts`) then:
+**Entity selection is push, not pull** — the system decides which entity pages to inject; there is no agent-callable query tool. `enrichPromptWithMemory(prompt, users, selectors)` receives spawn-context selectors (`{ repo?, plugin?, taskTitle? }`). Spawn passes `taskTitle`, plus `repo` taken from the **first repo the task has mounted** (`metadata.repositories[0].github`) — a task binds to no repo at spawn any more, so the first mount is the best selector available; `plugin` is no longer passed at all. `selectEntities()` (`entity-index.ts`) then:
 
 1. **Always** includes `scope: org` entities (people-by-reference, integrations, company-wide systems).
-2. Includes entities tagged to the spawned `repo`.
+2. Includes entities tagged to the `repo` selector, when the task has mounted one.
 3. Scores the rest by token overlap of the task title / users against each entity's name, aliases, and summary.
 4. **Expands one hop** along `[[wikilink]]` relations from the selected set (so selecting `payment-service` pulls `postgres-prod` even if it wasn't directly matched).
 5. Bounds **the non-`org` pages** to `ARCHIE_MEMORY_ENTITY_INJECT_MAX` and logs which slugs were dropped. `scope: org` entities are exempt from this bound — they carry organizational knowledge (the role `org.md` used to play) and are always injected in full.
@@ -170,7 +164,7 @@ When the event fires, `handleTaskCompleted(taskId)` is invoked. It is fire-and-f
 ### Extraction Pipeline (`processExtraction`)
 
 ```
-1. loadMetadata(taskId)                  ──▶ task metadata (participants, channels, status)
+1. loadMetadata(taskId)                  ──▶ task metadata (channels, status, timestamps)
 2. readKnowledgeLog(taskId)              ──▶ transcript
 3. extractUsernames(transcript)          ──▶ UserRef[] (Slack IDs + names); cli:<taskId> fallback when none
 4. readUser() for ALL involved users + readIndexMarkdown ──▶ existing user memory + entity index

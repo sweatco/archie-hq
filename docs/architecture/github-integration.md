@@ -23,7 +23,7 @@ Two distinct identities, because GitHub treats them differently.
 **The identity Archie is credited as** is a real user account (`archie-hq`), built by `getArchieAttributionIdentity()` from `ARCHIE_GITHUB_LOGIN` + `ARCHIE_GITHUB_USER_ID` (+ optional `ARCHIE_GITHUB_NAME`). It lands in three places:
 
 - the **committer** on every commit made in a clone, written once per base repository at server startup by `configureGitIdentity()` (shared clones inherit it) -- and the **author** too on commits `buildCommitAuthorEnv` leaves unattributed, i.e. when no approver was recorded;
-- the **`Co-Authored-By` trailer** on repo-agent commits, written into the agent's `.claude/settings.json` as `attribution.commit` by `setupAgentWorkspace()`;
+- the **`Co-Authored-By` trailer** on commits, written into the workspace's `.claude/settings.json` as `attribution.commit` by `setupAgentWorkspace()`;
 - the **attribution footer** on PR bodies.
 
 A user account is required rather than merely nicer: a GitHub App bot cannot be `@mentioned` at all, and its profile is an app page rather than an account. Attribution needs no repository access, so the account can be credited without being granted anything.
@@ -42,7 +42,7 @@ GitHub sets a PR's author from the credential that creates it, and offers no fie
 Opened by @archie-hq on behalf of Bandita Parida.
 ```
 
-The human is the edit-mode approver (`edit_approved_by`), which is also who repo-agent commits are authored as (`buildCommitAuthorEnv` in `src/agents/commit-author.ts`), so the PR names exactly whoever `git blame` will name -- by their Slack display name, with no GitHub-account lookup. GitHub auto-links the `@login` to Archie's profile.
+The human is the edit-mode approver (`edit_approved_by`), which is also who commits are authored as (`buildCommitAuthorEnv` in `src/agents/commit-author.ts`), so the PR names exactly whoever `git blame` will name -- by their Slack display name, with no GitHub-account lookup. GitHub auto-links the `@login` to Archie's profile.
 
 `update_pr` re-stamps the line when it rewrites a body, and both strip any prior copy (matched on the `<!-- archie-attribution -->` marker) so re-injection replaces rather than stacks.
 
@@ -95,11 +95,11 @@ All GitHub events follow deterministic paths based on event type and action. The
 Route actions map to handler types:
 
 - **`merge_check`** -- Handled directly by the merge orchestrator (see below). Debounced.
-- **`existing_task`** -- Formatted as a structured event entry, appended to the task's knowledge log, and the PM agent is reactivated.
+- **`existing_task`** -- Formatted as a structured event entry, appended to the task's knowledge log, and the same line is delivered to the PM inline as it is woken.
 
 ### `issue_comment` Handling
 
-`issue_comment` events lack branch info, so the router resolves the task by PR number via `findTaskByPRNumber()`. Once routed as `existing_task`, `handleExistingTaskDirect()` deduplicates by `last_processed_comment_id` (tracked per-branch in `BranchState` with a legacy fallback on `RepositoryInfo`) before logging and waking the PM. There is no separate triage step -- every new comment reactivates the task.
+`issue_comment` events lack branch info, so the router resolves the task by PR number via `findTaskByPRNumber()`. Once routed as `existing_task`, `handleExistingTaskDirect()` walks the task's mounted repos for a branch state matching that PR and deduplicates by `last_processed_comment_id` before logging and waking the PM. There is no separate triage step -- every new comment reactivates the task.
 
 ### Event Message Formatting
 
@@ -110,15 +110,15 @@ Route actions map to handler types:
 - `from=ci, destination=branch:archie/task-abc123, message=workflow failure`
 - `from=alice, destination=branch:archie/task-abc123, message=pushed`
 
-These entries are written to the task's knowledge log so the PM agent can understand what happened.
+These entries are written to the task's knowledge log for the record, and the same line is handed to the PM inline so it can act without reading the file.
 
 ## GitHub MCP Tools
 
-GitHub and git tools are exposed to **repo agents** via the `repo-tools` MCP server, defined in `src/agents/tools.ts` (`createRepoToolsMcpServer`). Access is controlled at spawn time by the `allowedTools` list: read tools are always available, write tools are gated on `edit_allowed`.
+GitHub and git tools live on the `repo-tools` MCP server, defined in `src/agents/tools.ts` (`createRepoToolsMcpServer`) and attached to every task's session. Each tool resolves its target out of `metadata.repositories` — what the task has mounted with `mount_repo` — so there is nothing per-agent to scope. Read tools are always available; the write side is withheld through `disallowedTools` until edit mode is approved.
 
 ### Available Tools (via `repo-tools` MCP server)
 
-All tools below are registered on the same `repo-tools` MCP server. Whether a tool is reachable from a given agent is gated by the `allowedTools` list passed at spawn time (see `src/agents/spawn.ts`), which expands write tools only when `edit_allowed` is set on the agent.
+All tools below are registered on the same `repo-tools` MCP server. The write-side entries are listed in `REPO_WRITE_TOOLS` (`src/agents/spawn.ts`) and appended to `disallowedTools` unless `metadata.edit_allowed` is true, so the model does not see a tool it cannot use.
 
 **Always available (read-only and edit mode):**
 
@@ -152,7 +152,7 @@ All tools below are registered on the same `repo-tools` MCP server. Whether a to
 | `merge_pull_request` | Merge a pull request, subject to the repo's merge policy: on an auto-merge repo it merges directly when the PR is clean (returns the current status otherwise); on any other repo it posts an *auto-merge approval* request and pauses the task — once the user approves, the PR is armed to merge automatically as soon as all checks and required reviews pass. Works for any open PR; it does not require the PR to be mergeable yet. |
 | `close_pull_request` | Close a pull request without merging. |
 
-Each repo agent's tools are scoped to its own repository (the `githubRepo` from the agent's config). PR numbers are stored per-branch in `BranchState.pr_number`.
+Every tool that targets a specific repository takes an optional `github: "owner/repo"` argument, resolved against the repos this task has mounted; with one repo mounted it can be omitted. PR numbers are stored per-branch in `BranchState.pr_number`.
 
 ## Merge Orchestrator
 
@@ -163,19 +163,19 @@ The merge orchestrator (`src/connectors/github/merge.ts`) is a system-level comp
 The merge orchestrator is triggered by:
 
 1. **Webhook events** -- Via `handleMergeCheckDirect()` on approving review, `pull_request opened/synchronize`, `push`, and successful `workflow_run`.
-2. **Repo agent tool call** -- Repo agents can merge an individual PR via the `merge_pull_request` tool, which operates on a single PR scoped to the agent's repo but enforces the same merge policy: in an auto-merge repo it calls `GitHubClient.mergePullRequest()` directly when the PR is clean; in any other repo it posts an auto-merge *approval* request instead of merging, and the actual merge is delegated to the orchestrator's armed bucket once the user approves and the PR turns clean (see [Merge Policy](#merge-policy-automerge)).
+2. **Tool call** -- The PM can merge an individual PR via the `merge_pull_request` tool, which operates on a single PR but enforces the same merge policy: in an auto-merge repo it calls `GitHubClient.mergePullRequest()` directly when the PR is clean; in any other repo it posts an auto-merge *approval* request instead of merging, and the actual merge is delegated to the orchestrator's armed bucket once the user approves and the PR turns clean (see [Merge Policy](#merge-policy-automerge)).
 
 ### Merge Policy (`autoMerge`)
 
-Whether a repo may be merged automatically is a per-repo boolean, `autoMerge`, declared in repo-agent frontmatter on each repo entry (`metadata.archie.repos[].autoMerge`; the legacy singular `metadata.archie.repo.autoMerge` is picked up by the same auto-migration as the rest of the singular shape). The flag defaults to **off** and parses strictly: only the boolean literal `true` enables it — absent, `false`, or any non-boolean value (e.g. the string `"true"`) resolves to `false`. The value is threaded through both explicit copy points (`PluginRepoEntry` in `src/system/plugin-loader.ts`, `RepoEntry` in `src/agents/registry.ts`); dynamic (PM-spawned) agents always resolve to `false`.
+Whether a repo may be merged automatically is a per-repo boolean, `autoMerge`, declared in the plugins repo's root `archie.json` under `repos["owner/repo"].autoMerge`. The flag defaults to **off** and parses strictly: only the boolean literal `true` enables it — absent, `false`, or any non-boolean value (e.g. the string `"true"`) resolves to `false`.
 
-Policy is resolved at merge time by `isAutoMergeRepo(github)` (`src/agents/registry.ts`) with **AND semantics across declaring agents**: a repo is auto-mergeable only when at least one registered agent declares it and every declaring agent's entries for it set `autoMerge: true`. A repo declared by no registered agent (e.g. attached only via a dynamic agent) never auto-merges. Mixed flags resolve to off and log a warning. The lookup consults the live registry, not task-time snapshots, so a frontmatter change takes effect on the next merge check after a registry rescan.
+Policy is resolved at merge time by `isAutoMergeRepo(github)` (`src/agents/registry.ts`), which reads `archie.json` fresh on each call — so an edit to that file takes effect on the next merge check, after the next plugins refresh, with no restart. A repo the file does not mention never auto-merges.
 
 Both merge paths — the orchestrator and the tool — share one GitHub-mergeability predicate, `isMergeReadyPerGithub()` (`src/connectors/github/mergeability.ts`): `mergeableState === 'clean'`, or `mergeable === true` with `mergeableState === 'blocked'` (the GitHub Rulesets quirk, see below).
 
 **Non-auto repos: hold, notify once, merge on request.** A ready PR (open, approved, mergeable per GitHub) in a non-auto repo is never merged by the orchestrator. It lands in the `ready` bucket of `MergeCheckResult` (logged as `READY (merge on request)`), and `checkAndMergeLinkedPRs()` prompts the PM — via a decision finding plus reactivation — to tell the thread once that the PR is ready and will be merged on request. Once-ness is enforced by a persisted `BranchState.merge_ready_notified` marker: set on every matching branch state when the notification fires, cleared whenever a merge check observes the PR no longer ready (not ready while open, or closed without merging). The semantics are one notification per *continuous ready period* — webhook bursts and restarts never re-notify, while a PR that becomes un-ready and later ready again notifies again. A ready PR whose merge approval is currently pending (`task.metadata.pending_merge_approval` matches its `github` + `pr_number`) is skipped — the user already holds an actionable prompt for it. A ready PR that is already **armed** for auto-merge (`BranchState.merge_armed`) is skipped too — the user has already approved it, so a "ready — ask me to merge" nudge would be noise; the orchestrator merges it directly (see [Armed auto-merge](#armed-auto-merge) below).
 
-**Explicit-request path — approval arms auto-merge.** When the user asks to merge, the repo agent calls `merge_pull_request`. In a non-auto repo the tool never merges and never interprets the PR's mergeable state: for **any open PR** (it bails only on a closed/merged PR) it posts an interactive *auto-merge* approval prompt (approval type `merge`, action ids `approve_merge`/`deny_merge`), persists the request as `task.metadata.pending_merge_approval` (`github`, `pr_number`, requesting agent, timestamp), suspends the task status, and defers a task pause. Approving a not-yet-green PR is correct — that is the feature: approval means "merge this PR as soon as it is ready", not "merge it now". A repeat call while any agent process in the task still holds the parked pause reports the request as already pending; a pending request left unresolved after the task quiesced and was reactivated is superseded by a later call (slot rewritten, fresh prompt).
+**Explicit-request path — approval arms auto-merge.** When the user asks to merge, the PM calls `merge_pull_request`. In a non-auto repo the tool never merges and never interprets the PR's mergeable state: for **any open PR** (it bails only on a closed/merged PR) it posts an interactive *auto-merge* approval prompt (approval type `merge`, action ids `approve_merge`/`deny_merge`), persists the request as `task.metadata.pending_merge_approval` (`github`, `pr_number`, requesting agent, timestamp), suspends the task status, and defers a task pause. Approving a not-yet-green PR is correct — that is the feature: approval means "merge this PR as soon as it is ready", not "merge it now". A repeat call while the parked pause is still armed reports the request as already pending; a pending request left unresolved after the task quiesced and was reactivated is superseded by a later call (slot rewritten, fresh prompt).
 
 Resolution converges from every surface — Slack buttons and `POST /api/tasks/:id/approve` with `type: "merge"` (which requires `github` + `pr_number` in the body) — on `Task.handleMergeApproval()` / `Task.handleMergeDenial()`, which verify the resolved PR's identity against the pending request atomically with clearing it (a synchronous read-compare-clear), so a stale, repeated, or mismatched resolution is a no-op. On a matching **approval** the engine re-checks the PR with GitHub, with no review-approval floor (GitHub branch protection is the sole authority): if GitHub already reports it **clean** it merges immediately (completion finding); if it is open but not yet clean, the PR is **armed** — its `BranchState.merge_armed` marker is set and persisted durably, a decision finding records "auto-merge armed — will merge once checks pass", and the orchestrator merges it on the next merge-triggering webhook once it turns clean; if it has been closed/merged in the meantime, nothing is armed and the real outcome is recorded. On **denial** no GitHub call is made and nothing is armed. Either way the PM is reactivated so the user learns the outcome. The debug MCP surfaces the gate (`wait_for_task` → `APPROVAL_TYPE=merge`) and resolves it via its `approve` tool with the pending PR's `github`/`pr_number`.
 
@@ -229,7 +229,7 @@ for (const attachments of Object.values(task.metadata.repositories)) {
 }
 ```
 
-PR numbers are stored when a repo agent calls `create_pull_request` and are referenced in log entries using the `org/repo#123` format.
+PR numbers are stored when `create_pull_request` is called and are referenced in log entries using the `org/repo#123` format.
 
 ### PM Notification
 
@@ -282,9 +282,9 @@ GitHub webhook
 
 The system is designed so that the PM agent is only reactivated for GitHub events that require human or agent attention:
 
-- **Merge conflicts** (`mergeableState === 'dirty'`): PM is notified with a blocker finding to coordinate conflict resolution with repo agents.
+- **Merge conflicts** (`mergeableState === 'dirty'`): the PM is notified with a blocker finding so it can resolve the conflict itself or hand it to a worker.
 - **CI failures** (`workflow_run` with `conclusion === 'failure'`): Routed as `existing_task`, PM is reactivated to assess and delegate investigation.
-- **Review feedback** (`changes_requested`, review comments, PR conversation comments): Routed as `existing_task`, PM reads the feedback and coordinates changes with repo agents.
+- **Review feedback** (`changes_requested`, review comments, PR conversation comments): routed as `existing_task`; the PM reads the feedback and makes or delegates the changes.
 - **PR closed/merged externally** (`pull_request closed`): Routed as `existing_task` so the PM is informed.
 - **Approvals and CI passes**: Trigger a debounced merge check via the orchestrator. PM is only notified if a merge actually happens, a conflict is detected, or a held PR in a non-auto repo just became ready.
 
@@ -302,5 +302,5 @@ The system is designed so that the PM agent is only reactivated for GitHub event
 - `src/connectors/slack/events.ts` -- `approve_merge` / `deny_merge` Bolt action handlers; `src/connectors/api/routes.ts` -- the equivalent `type: "merge"` approval route
 - `src/connectors/github/repo-clone.ts` -- Shared-clone lifecycle (`setupSharedClone`, `removeClone`, `CloneCheckout`); each agent gets its own `git clone --shared` from the base repo
 - `src/connectors/github/branch-state.ts` -- Per-branch state helpers (`assignPrNumber` — assigns the PR number and resets the per-PR `merge_armed`/`merge_ready_notified` markers on branch reuse, `hydrateBranchState`, `findBranchStateByPR`)
-- `src/agents/tools.ts` -- `createRepoToolsMcpServer` (`repo-tools` MCP: git workflow + PR tools), `createPMAgentMcpServer` (`pm-agent-tools` MCP)
-- `src/types/task.ts` -- `RepositoryInfo` with `branch_states`, `BranchState` type with per-branch PR tracking
+- `src/agents/tools.ts` -- `createRepoToolsMcpServer` (`repo-tools` MCP: git workflow + PR tools), `createOrchestrationMcpServer` (`mount_repo`, `list_available_repos`)
+- `src/types/task.ts` -- `AttachedRepo` with `branch_states`, `BranchState` type with per-branch PR tracking

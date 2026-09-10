@@ -1,261 +1,132 @@
 # Edit Mode
 
-Archie operates in two modes: **readonly** (the default) and **edit** (after human approval). This two-mode system implements a human-in-the-loop safety gate that prevents agents from modifying code without explicit user consent.
+A task is **read-only** until a human approves **edit mode**. The flag is per task, one-way, and persisted — a human-in-the-loop gate that stops Archie changing code without explicit consent.
 
-> A sibling gate, [max mode](max-mode.md), reuses this same request → approve → respawn shape to upgrade the coding agents' model/effort for a task. A second sibling, [tool approvals](tool-approvals.md), gates individual MCP tool calls on per-call approval rather than a task-lifetime grant. All are independent.
+> A sibling gate, [max mode](max-mode.md), reuses the same request → approve → resume shape to upgrade the PM's model and effort. Another, [tool approvals](tool-approvals.md), gates individual MCP tool calls per call rather than for the task's lifetime. All three are independent.
 
-## Two-Mode System
+## Repositories are mounted, not declared
 
-### Readonly Mode (Default)
-
-When a task starts, all repo agents operate in readonly mode. Their `cwd` is an agent workspace under `sessions/{taskId}/agents/{agentKey}`, and the repository is mounted as an additional directory at `sessions/{taskId}/repos/{repoKey}`. The repo path is mounted read-only by the OS sandbox (and read-only via filesystem-guard PreToolUse hooks for in-process tools), so `Write`, `Edit`, and write-to-repo Bash commands fail even though the tools are nominally available. PR/branch write MCP tools (`push_branch`, `create_pull_request`, `merge_pull_request`, `create_branch`, etc.) are explicitly listed in `disallowedTools`. Read tools, git read commands via `Bash`, the `fetch` and `switch_branch` MCP tools, and PR read tools (`list_prs`, `get_pr`, `get_pr_status`, `get_pr_reviews`, `get_pr_comments`, `get_review_threads`) all work.
-
-In readonly mode the clone is checked out on the base branch (`{ type: 'base' }`). When the task stops or completes, the clone is removed by `cleanupClones()` to free disk space.
-
-### Edit Mode (After Approval)
-
-Once edit mode is approved for a task, the repo path's sandbox flips from read-only to read-write (`Write`, `Edit`, and write-capable `Bash` commands are now allowed against the clone), and the previously-disallowed MCP tools become available: `push_branch`, `create_pull_request`, `update_pr`, `add_pr_comment`, `add_review_comment`, `reply_to_review_comment`, `resolve_review_thread`, `request_re_review`, `merge_pull_request`, `close_pull_request`, and `create_branch`. Note that `merge_pull_request` carries a second gate on top of edit mode: in repos without `autoMerge: true` it does not merge directly but posts a `merge` approval request the user must resolve, and approving *arms* auto-merge (the PR merges once all checks and required reviews pass) rather than merging on the spot (see [GitHub Integration → Merge Policy](github-integration.md#merge-policy-automerge)). The next time a repo agent is spawned, the clone is set up on a fresh feature branch (`{ type: 'new_branch', name: 'archie/{taskId}' }`). Edit mode is a one-way, permanent transition for the task — once approved, it cannot be revoked. Clones for tasks with `edit_allowed === true` are NOT removed on stop/complete (they hold local commits, branches, and PR state).
-
-## Human-in-the-Loop Approval Flow
-
-The transition from readonly to edit mode follows this sequence:
-
-### 1. PM Requests Edit Mode
-
-The PM agent calls the `request_edit_mode` MCP tool (defined in `src/agents/tools.ts`) with a reason string explaining what changes are needed. Before calling this tool, the PM is expected to have already explained the situation to the user via `post_to_user`.
-
-### 2. Interactive Buttons Posted
-
-`request_edit_mode` logs a `decision` finding (`Edit mode requested: <reason>`) and calls `task.postInteractiveToUser(...)` with a Block Kit message containing two buttons:
+Nothing is cloned when a task starts. Plugins declare no repositories; the GitHub App installation is the allowlist. The PM discovers what it can reach with `list_available_repos` and brings a repository into the task with:
 
 ```
-*Edit mode request:* <reason>
-[ Approve ]  [ Deny ]
+mount_repo("owner/repo")
+  → path, branch, default branch, and whether it is read-only or writable
 ```
 
-The buttons use action IDs `approve_edit_mode` and `deny_edit_mode`, with the task ID as the button value. `postInteractiveToUser` posts to the channel passed via the tool's optional `channel` argument, falling back to the task's default channel when omitted (Slack today; other connectors may not surface the buttons). The explicit `channel` lets an agent target a linked thread even when the task has no default channel yet — e.g. a self-launched task that just opened a thread via `post_to_user`.
+`mount_repo` (`src/agents/tools.ts`) is the **only** way a clone comes into existence. It resolves the base branch — from the task's own record if it has mounted this repo before, otherwise from the GitHub API, which doubles as the reachability check — ensures a base clone exists in `$ARCHIE_WORKDIR/repos/<owner>/<repo>` (cloning on demand if it was not warmed at startup), then calls `ensureTaskClone` to create the task clone at `sessions/{taskId}/repos/{owner}/{repo}`. The repo is recorded in `metadata.repositories` only once the clone is on disk, and the write is flushed rather than debounced, so a crash cannot leave a clone nothing points at. Mounting an already-mounted repo is idempotent: it returns the same path after making sure the checkout matches the current edit mode.
 
-### 3. Task Pauses
+One clone per repo per task — the task, not an agent, is the isolation boundary. The PM passes the returned path into a worker's brief, and its prompt forbids pointing two workers at the same clone at once, since they share one working tree.
 
-Immediately after posting the approval request, `request_edit_mode` calls `task.stop()`. This stops all agent queues, marks the task `stopped`, and (because `edit_allowed` is not yet true) cleans up clones via `cleanupClones()`. The task is fully paused until the user responds.
+A repo mounted mid-session is immediately reachable because the sandbox grants the task's **repos directory**, not the clones that happened to exist at spawn (`buildRepoGrants` in `src/agents/sandbox.ts`).
 
-### 4. User Clicks a Button
+## The two modes
 
-**Approve** (handled in `src/connectors/slack/events.ts: app.action("approve_edit_mode")`, with an equivalent path in `src/connectors/api/routes.ts` for the CLI/API):
-- The original message is updated to replace the buttons with `Edit mode approved by <@user>`.
-- The handler resolves the clicking user via `getUserInfo()` and passes `{ id, name, email }` (email requires the `users:read.email` scope) to `handleEditModeApproval()`.
-- `handleEditModeApproval(approver?)` in `src/tasks/task.ts` is called.
-- Sets `metadata.edit_allowed = true` on the task and, when an approver was resolved, `metadata.edit_approved_by = { id, name, email }`. Persists via `debouncedSave()`. The approver is later used as the git **author** for commits (see [Commit Authorship](#commit-authorship)).
-- Appends the system finding `Edit mode approved by <name>` (decision) to `knowledge.log`.
-- Reactivates the PM agent by sending the `existingTask` agent prompt (which reactivates the task and re-spawns agents — repo agents now spawn into a fresh `archie/{taskId}` branch).
+### Read-only (default)
 
-**Deny** (handled in `src/connectors/slack/events.ts: app.action("deny_edit_mode")`, with the same API equivalent):
-- The original message is updated to replace the buttons with `Edit mode denied by <@user>`.
-- `handleEditModeDenial()` in `src/tasks/task.ts` is called.
-- Appends the system finding `Edit mode denied by user` (decision) to `knowledge.log`.
-- Reactivates the PM agent with the `existingTask` prompt to handle the denial (e.g., provide readonly findings instead).
+The clone sits on the repository's base branch. `sessions/{taskId}/repos/` is in `allowReadPaths` and `denyWritePaths`, so `Write`, `Edit` and any write-touching `Bash` command against a clone is refused by both the OS sandbox and the `createFilesystemGuardHooks` PreToolUse hooks. The write side of `repo-tools` is in `disallowedTools`, so the model never sees it.
 
-## Task-Level Mode Transition
+Working: `Read`, read-only git via `Bash`, `fetch`, `switch_branch`, `list_branches`, and every PR/check/code-scanning read tool.
 
-Edit mode is tracked as a boolean flag `edit_allowed` on `TaskMetadata` (`src/types/task.ts`):
+When the task stops or completes, `cleanupClones()` removes the clones and clears `clone_path`, so the next mount creates a fresh one.
 
-```typescript
-interface TaskMetadata {
-  edit_allowed?: boolean;  // Has user approved edit mode for this task?
-  // ...
-}
-```
+### Edit mode (after approval)
 
-Key properties of this transition:
+`sessions/{taskId}/repos/` moves into `allowWritePaths`, and the withheld `repo-tools` entries become available: `push_branch`, `create_pull_request`, `update_pr`, `add_pr_comment`, `add_review_comment`, `reply_to_review_comment`, `resolve_review_thread`, `request_re_review`, `merge_pull_request`, `close_pull_request`, `create_branch`. Clones for a task with `edit_allowed === true` are **not** removed on stop/complete — they hold local commits, branches and PR bookkeeping.
 
-- **Task-level**: The flag applies to the entire task, not individual agents. All repo agents in the task gain edit capabilities once approved.
-- **One-way**: Once `edit_allowed` is set to `true`, it is never set back to `false`. There is no mechanism to revoke edit mode for an active task.
-- **Persistent**: The flag is stored in `metadata.json` on disk and survives task stop/reactivation cycles.
+`merge_pull_request` carries a second gate on top of edit mode: in a repo without `autoMerge: true` in `archie.json` it does not merge, it posts a `merge` approval request, and approving *arms* auto-merge rather than merging on the spot ([github-integration.md](github-integration.md#merge-policy-automerge)).
 
-## Shared Clone Management
+Each clone's `.git/HEAD` stays in `denyWritePaths` even in edit mode, so branch movement must go through `switch_branch` / `create_branch` rather than a raw `git checkout`. **Known limitation:** that deny is enumerated per clone at spawn, so a repo mounted mid-session in edit mode has a writable `.git/HEAD` until the next respawn — the deny lists are prefix-matched and no directory expresses "`.git/HEAD` under any clone".
 
-Each repo agent gets its own task-local **shared clone** (created with `git clone --shared`), regardless of mode. This is managed by `src/connectors/github/repo-clone.ts`. A shared clone is an independent repository that borrows objects from the base repo via an `objects/info/alternates` file but has its own `.git/` directory, refs, index, and `origin` remote pointing at GitHub. (An older worktree-based design has been replaced; `migrateWorktreeToClone` exists only to upgrade legacy task state on first reuse.)
+## The approval flow
 
-### `setupSharedClone()`
+### 1. The PM requests it
 
-The `setupSharedClone()` function creates a new clone for a repository in a task. It accepts a `CloneCheckout` parameter that determines the checkout mode:
+`request_edit_mode(reason, channel?)` — called after explaining the intended change to the user with `post_to_user`. It is idempotent: if `edit_allowed` is already true it returns a no-op message telling the PM to proceed, and if a teardown is already armed this turn it says the request is already out. An explicit `channel` is validated before posting, so a bad key surfaces as actionable feedback rather than a silently dropped prompt.
+
+### 2. Buttons posted, task parks
+
+The tool writes a `decision` finding (`Edit mode requested: <reason>`), posts a Block Kit message with `approve_edit_mode` / `deny_edit_mode` buttons carrying the task id, suspends the live status indicator, and **defers** `task.stop()` to the end of the turn — stopping the queue inside the tool call would close the input stream under an in-flight hook.
+
+### 3. The user clicks
+
+**Approve** (`src/connectors/slack/events.ts`, with an equivalent path in `src/connectors/api/routes.ts`) resolves the clicking user and calls `handleEditModeApproval({ id, name, email })`, which:
+
+1. Clears the pending teardown — approval means "continue", so the armed park must not fire and tear down the task that was just approved.
+2. Sets `metadata.edit_allowed = true` and, if this is the first resolved approver, `metadata.edit_approved_by`.
+3. Flushes metadata synchronously — the spawn reads `edit_allowed` at spawn time, so the flag must be on disk before any respawn.
+4. Runs `recheckoutClonesForEditMode()`: one `ensureTaskClone(..., editAllowed: true)` per mounted repo, so the writable mount the PM comes back to is already checked out where its commits belong. This is the same helper `mount_repo` uses, deliberately — an earlier restatement of the logic skipped any clone still on disk, so a repo mounted while read-only stayed parked on base and the PM committed onto it.
+5. Restarts the PM: sync its session into metadata, abort the handle, stop the queue, drop the agent. The next `sendMessage` respawns it **resuming the same SDK session**, so context is kept and only the mount changes.
+6. Notifies the PM inline with `Edit mode approved by <name>` (also written to `knowledge.log` for the offline record).
+
+**Deny** calls `handleEditModeDenial()`, which notifies the PM that edit mode was denied — nothing else changes.
+
+### Why the restart
+
+Edit mode only flips the sandbox at spawn time: `editAllowed` is read once and the mount, the `disallowedTools` list and the repo grants are frozen from it. A process that is already running keeps its read-only mount and never re-reads the flag, so writes keep hitting a read-only filesystem after approval (observed live: EROFS persisted for ~20 minutes post-approval).
+
+There is a second window the restart cannot catch: an agent still **mid-boot** when approval lands has no live handle to abort, so it finishes booting read-only. `Agent.editModeAtSpawn` records the flag the current process booted under, and `Task.ensurePm()` compares it against the live flag the moment work is next delivered — tearing the agent down and respawning it writable.
+
+## Clone mechanics
+
+`ensureTaskClone` (`src/connectors/github/repo-clone.ts`) is the single entry point, shared by `mount_repo` and the approval path.
+
+**Reuse.** If a clone already exists — at the recorded `clone_path` (a migrated task may hold one elsewhere) or at the canonical path — it is reused, and `configureGitIdentity` is re-run on it unconditionally, so a clone left behind by an interrupted mount (or one whose config predates the current attribution identity) cannot commit as whoever git falls back to. If edit mode is on and the clone is sitting on a branch with no `branch_states` entry (i.e. the base branch), it is moved onto `archie/{taskId}` there and then, joining the branch if it already exists locally rather than resetting it.
+
+**Creation.** Otherwise `decideCloneCheckout` picks the checkout — a pure function, so the mount tool and the approval path cannot drift:
 
 ```typescript
 type CloneCheckout =
-  | { type: 'new_branch'; name: string }   // RW fresh: clone base, create branch
-  | { type: 'branch'; name: string }       // RW resume / branch visit
-  | { type: 'base' };                      // RO default: clone on base branch
+  | { type: 'base' }                       // read-only
+  | { type: 'branch'; name: string }       // edit mode, restoring a branch the task was on
+  | { type: 'new_branch'; name: string };  // edit mode, first mount → archie/{taskId}
 ```
 
-Steps:
-1. **Base branch detection**: Uses the provided `baseBranch` parameter, or auto-detects via `getDefaultBranch()` by reading `symbolic-ref refs/remotes/origin/HEAD`, then falling back to `origin/main`, then `origin/master`.
-2. **Fetch latest**: Calls `fetchOrigin(baseRepoPath)` (and additionally `fetchOrigin(baseRepoPath, name)` for `branch` checkouts) to pull the latest commits.
-3. **Base repo sync**: Resets the local branch in the base repo to `origin/{cloneBranch}` so `git clone --shared` sees up-to-date refs.
-4. **Clone**: `git clone --shared --branch {cloneBranch} "{baseRepoPath}" "{clonePath}"`, then `submodule update --init --recursive` (best-effort), then `remote set-url origin <github-url>` so pushes go to GitHub rather than the base repo.
-5. **Feature branch creation**: For `new_branch`, runs `checkout -b {name}` after cloning.
+A clone parked on the base branch records that branch in `current_branch` with **no** `branch_states` entry, so the entry's absence is what distinguishes "this is the base branch" from "a feature branch whose base we forgot".
 
-The clone is placed at `sessions/{taskId}/repos/{repoKey}` (e.g., `sessions/task-abc123/repos/backend`).
+`setupSharedClone` then fetches origin, syncs the base clone's ref, runs `git clone --shared --branch <branch>` from the base cache, initialises submodules best-effort, rewrites `origin` to the GitHub URL so pushes never go back to the base cache, and creates the feature branch for `new_branch`. `configureGitIdentity` runs afterwards on this path too.
 
-### Clone Creation at Spawn
-
-Clones are created when a repo agent is spawned. This happens inside the repo track branch of `spawnAgent()` in `src/agents/spawn.ts`:
-
-```
-spawnAgent() called (repo track)
-  -> If task-local path is a legacy worktree → migrateWorktreeToClone()
-  -> If a shared clone already exists at the path → reuse it
-  -> Otherwise pick a CloneCheckout from previous branch state + edit mode:
-       editAllowed && (no previous branch || previous == base) → new_branch (archie/{taskId})
-       editAllowed && previous != base                          → branch (restore previous_branch)
-       readonly                                                 → base
-     Then call setupSharedClone(...) with that checkout.
-  -> configureGitIdentity(clonePath)
-  -> Update metadata.repositories[repoKey] with clone_path / current_branch /
-     branch_states (hydrated for any non-base feature branch)
-  -> Spawn the SDK session with cwd = agent workspace and the clone path
-     listed under additionalDirectories
-```
-
-### Clone Cleanup
-
-When a task stops or completes AND `metadata.edit_allowed !== true`, `cleanupClones()` (`src/tasks/task.ts`) iterates `metadata.repositories` and calls `removeClone(clone_path)` (`src/connectors/github/repo-clone.ts`), which is a simple `rm -rf`, then clears `clone_path` so the next spawn re-creates a fresh clone. Clones for edit-mode tasks are kept on disk because they hold un-pushed commits, branches, and PR bookkeeping.
-
-### Repository Metadata
-
-After clone creation, the following fields are stored in `metadata.repositories[repoKey]` (`src/types/task.ts`):
+### Per-repo record
 
 ```typescript
-interface RepositoryInfo {
-  path: string;                                    // Base repository path
-  clone_path?: string;                             // Path to active task-local shared clone
-  current_branch?: string;                         // Branch agent is on (key into branch_states)
-  branch_states?: Record<string, BranchState>;     // Per-branch tracking
-  // Legacy fields (mirrored from current branch state for rollback safety):
-  feature_branch?: string;
-  base_branch?: string;
-  pr_number?: number;
-  last_processed_comment_id?: number;
+interface AttachedRepo {
+  github: string;                                // 'acme/backend' — also the key
+  clone_path?: string;                           // sessions/<id>/repos/acme/backend
+  base_path?: string;                            // base cache this clone borrows objects from
+  current_branch?: string;                       // key into branch_states
+  branch_states?: Record<string, BranchState>;
 }
 ```
 
-### Per-Branch State (`BranchState`)
+`BranchState` tracks `base_branch`, `pr_number`, `last_processed_comment_id`, `stash_name`, `pr_card`, and the two per-PR merge markers `merge_armed` / `merge_ready_notified`. Those two are reset by `assignPrNumber()` whenever a branch's `pr_number` changes, so a new PR on a reused branch never inherits a prior PR's arm state. Helpers live in `src/connectors/github/branch-state.ts`.
 
-Each branch the agent creates or visits is tracked independently:
+## Branch strategy
 
-```typescript
-interface BranchState {
-  base_branch?: string;                // PR target branch (e.g. 'main', 'master')
-  pr_number?: number;                  // PR associated with this branch
-  last_processed_comment_id?: number;  // triage tracking for this branch's PR
-  stash_name?: string;                 // set if dirty work was auto-stashed when leaving
-  merge_armed?: boolean;               // user approved auto-merge; orchestrator merges once clean
-  merge_ready_notified?: boolean;      // ready notification already posted for this ready period
-}
-```
+The first feature branch is `archie/{taskId}` (the task id already begins with `task-`). Further `create_branch` calls in the same task auto-number as `archie/{taskId}-2`, `-3`, … (`taskBranchName()` in `src/connectors/github/branch-naming.ts`). The naming serves double duty:
 
-The two merge markers are per-PR: they are reset by `assignPrNumber()` whenever a branch's `pr_number` changes, so a new PR opened on a reused branch never inherits a prior PR's arm or notification state (see [GitHub Integration → Merge Policy](github-integration.md#merge-policy-automerge)).
+1. **Isolation** — each task gets its own branch family.
+2. **Webhook routing** — `extractTaskIdFromBranch()` matches incoming GitHub events back to the task with `^(?:archie|feature)\/(task-\d{8}-\d{4}-[a-z0-9]+)(?:-\d+)?$`. The legacy `feature/` prefix stays accepted so pre-migration PRs keep attributing to their task.
 
-Branch state helpers live in `src/connectors/github/branch-state.ts`:
-- `assignPrNumber()` -- set the branch's PR number and reset the per-PR `merge_armed`/`merge_ready_notified` markers when the PR changes
-- `hydrateBranchState()` -- initialize `branch_states` from a newly created branch
-- `findBranchStateByPR()` -- look up a branch by its PR number (for webhook routing)
+Tasks can also be resolved by branch name or PR number over `metadata.repositories` (`findTaskByBranch`, `findTaskByPRNumber`), which is what handles a branch that does not follow the pattern.
 
-## Tool Restrictions
+## Commit authorship
 
-Repo-agent tool gating is implemented through two mechanisms in `src/agents/spawn.ts` (repo track):
+By default a commit is both authored and committed by the GitHub App bot, because `configureGitIdentity()` writes that identity into the clone's `user.name`/`user.email`. To make `git blame` point at the person who asked for the work, the **author** is set to the edit-mode approver while the **committer** stays the bot:
 
-1. **`disallowedTools`** — RO mode appends a fixed list of write-side MCP tools to `disallowedTools`. RW mode appends nothing extra. Both modes always also disallow `WebSearch` and `WebFetch`.
-2. **Sandbox** — In RO mode the clone path appears only in `allowReadPaths` and `denyWritePaths`, so `Write`, `Edit`, and any write-touching `Bash` invocation against the clone are blocked by both the OS sandbox and the `createFilesystemGuardHooks()` PreToolUse hooks. In RW mode the clone path is added to `allowWritePaths`, and write tools succeed. The `.git/HEAD` file is also kept in `denyWritePaths` to prevent the agent from doing raw `git checkout`/`switch` (branch movement must go through `switch_branch`/`create_branch`).
+- On approval, `metadata.edit_approved_by = { id, name, email }` is recorded — first resolved approver wins, so a repeat approval cannot reassign authorship mid-task.
+- At spawn, `buildCommitAuthorEnv` injects `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` from that field (trimmed; a blank name is dropped so authoring falls back to the bot rather than failing `git commit`). Git applies these to the author only. No agent cooperation is needed, and commits replayed by `cherry-pick`/`rebase` keep their original author, which is correct.
+- The author **email** lets GitHub link the commit to a profile when it matches a verified address. Without the `users:read.email` Slack scope a `${slackUserId}@users.noreply.archie.invalid` fallback is used — the name still shows in `git blame`, it just doesn't link.
+- With no resolved approver (CLI/API approvals without one), authoring falls back to the bot.
 
-The full single allowed-tool list (set as `def.tools` on the repo agent definition) is the same in RO and RW; what changes is which entries actually function.
+Because `edit_allowed` is one-way, there is a single author per task.
 
-### Always available (RO and RW)
-- `Read`, `Glob`, `Grep` — file inspection (sandbox-bounded reads)
-- `Bash` — read-side git commands work; write-side commands are blocked by the sandbox in RO mode
-- `mcp__agent-tools__send_message_to_agent`, `mcp__agent-tools__log_finding`, `mcp__agent-tools__share_artifact`
-- `mcp__research-tools__web_research`
-- `mcp__repo-tools__fetch` — fetch latest refs from origin
-- `mcp__repo-tools__switch_branch` — switch branches with auto-stash
-- `mcp__repo-tools__list_branches` — list branches the agent has touched in this task
-- `mcp__repo-tools__list_prs`, `mcp__repo-tools__get_pr`, `mcp__repo-tools__get_pr_status`, `mcp__repo-tools__get_pr_reviews`, `mcp__repo-tools__get_pr_comments`, `mcp__repo-tools__get_review_threads`
+## Relevant source files
 
-### Disallowed in RO, allowed in RW
-- `mcp__repo-tools__push_branch`
-- `mcp__repo-tools__create_pull_request`
-- `mcp__repo-tools__update_pr`
-- `mcp__repo-tools__add_pr_comment`
-- `mcp__repo-tools__add_review_comment`
-- `mcp__repo-tools__reply_to_review_comment`
-- `mcp__repo-tools__resolve_review_thread`
-- `mcp__repo-tools__request_re_review`
-- `mcp__repo-tools__merge_pull_request` — in non-auto-merge repos this tool adds its own `merge` approval gate on top of edit mode (it posts an auto-merge approval request instead of merging; approving arms the PR to merge once checks pass)
-- `mcp__repo-tools__close_pull_request`
-- `mcp__repo-tools__create_branch`
-
-### Effectively gated by the sandbox (registered everywhere, but only succeed in RW)
-- `Write`, `Edit` — blocked by `createFilesystemGuardHooks()` in RO; allowed in RW
-- `Bash` write-side commands against the clone (`git add`, `git commit`, `git rm`, `git restore`, `git merge`, `rm`, etc.) — blocked by the OS sandbox `denyWrite` on the clone path in RO; allowed in RW
-
-## Branch Strategy
-
-The first feature branch follows the pattern `archie/{taskId}`, where `taskId` is the full task identifier (e.g., `task-20260101-1823-abc123`) and so already begins with `task-`. If the agent calls `create_branch` again on the same task, additional branches are auto-numbered as `archie/{taskId}-2`, `archie/{taskId}-3`, etc. Branch naming lives in `src/connectors/github/branch-naming.ts` (`taskBranchName()`). This naming serves double duty:
-
-1. **Isolation**: Each task gets its own branch (or family of branches), preventing cross-task interference.
-2. **Webhook routing**: The webhook router uses `extractTaskIdFromBranch()` (re-exported from `src/connectors/github/webhooks.ts`) to match incoming GitHub events (pushes, CI results, reviews) back to the correct task. The regex `^(?:archie|feature)\/(task-\d{8}-\d{4}-[a-z0-9]+)(?:-\d+)?$` extracts the task ID, allowing the optional `-N` suffix from multi-branch tasks. The legacy `feature/` prefix remains accepted so pull requests opened before the migration keep attributing to their task.
-
-## Cross-Agent Isolation
-
-Each repo agent in a task operates in its own shared clone within the task's session directory, plus a per-agent workspace under `agents/{agentKey}` that serves as the SDK `cwd`:
-
-```
-sessions/
-  task-abc123/
-    agents/
-      backend/     <- workspace cwd for backend-agent (.claude/skills, hooks, etc.)
-      mobile/      <- workspace cwd for mobile-agent
-    repos/
-      backend/     <- shared clone for backend-agent
-      mobile/      <- shared clone for mobile-agent
-    shared/
-      knowledge.log
-      metadata.json
-```
-
-Key isolation properties:
-
-- **Separate clones**: Each repo agent gets its own task-local shared clone derived from a different base repository, so there is no cross-contamination between repositories.
-- **Separate branches**: Each clone has its own `archie/{taskId}` branch (created in RW mode), branched from the respective repository's base branch.
-- **Base repo isolation**: Clones are created with `git clone --shared` from the base repository. They borrow objects via `objects/info/alternates` but have independent refs/index, and `origin` is rewritten to GitHub so pushes never go back to the base repo. Multiple tasks can share the same base repo without conflict.
-- **Git identity**: `configureGitIdentity(clonePath)` runs after clone creation so commits get the configured user name and email (the GitHub App bot). This sets the commit **committer**; the **author** can differ — see below.
-
-## Commit Authorship
-
-By default a repo agent's commits are both authored and committed by the GitHub App bot (`archie[bot]`), because `configureGitIdentity()` writes that identity into the clone's `user.name`/`user.email`. To make `git blame` and GitHub point to the person who requested the work, the **author** is set to the human who approved edit mode while the **committer** stays the bot:
-
-- On approval, `metadata.edit_approved_by = { id, name, email }` is recorded (see step 4 above).
-- At spawn, `spawnAgent()` injects `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL` into the repo agent's process environment from that field (trimmed; a blank name is dropped so authoring falls back to the bot rather than failing `git commit`). Git applies these to the author only; the committer keeps falling back to the `user.*` config (the bot). No agent cooperation is needed — every *new* commit the agent creates (ordinary commits, merge commits, conflict resolutions) is authored by the human. Commits *replayed* by `git cherry-pick`/`git rebase` keep their original author, which is the correct behaviour.
-- The author **email** lets GitHub link the commit to the person's profile when it matches a verified address on their GitHub account (e.g. an SSO-linked corporate email). Until the `users:read.email` Slack scope is granted, `email` is undefined and a `${slackUserId}@users.noreply.archie.invalid` fallback is used — the name still shows in `git blame`, it just doesn't link.
-- When no approver was resolved (tasks created before this feature, or CLI/API approvals without an `approver` in the request body), `edit_approved_by` is absent and authoring falls back to the bot — the prior behaviour.
-
-Because `edit_allowed` is one-way and approved once, there is a single author per task; all commits in the task (including follow-up work after reactivation) are attributed to that approver.
-
-## Session Handling on Mode Transition
-
-The PM agent's reactivation after approval/denial uses `task.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent')`, which routes through the standard task-reactivation path. When the PM later sends work to a repo agent, `ensureAgentSpawned()` calls `spawnAgent()` for that agent. Because the readonly clone was deleted on the earlier `task.stop()`, `cloneExists()` returns false and a brand-new clone is created — in RW mode that means `setupSharedClone({ type: 'new_branch', name: 'archie/{taskId}' })`. The SDK session for the repo agent is started without a prior `session_id`, so it starts fresh against the new clone path.
-
-If a clone is reused across stop/reactivate cycles (e.g., RW reactivation where the clone was preserved), the existing SDK `session_id` (stored in `metadata.agent_sessions[agentId]`) is passed via `resume`, and the spawn flow runs `fetch origin` on the reused clone before continuing.
-
-## Relevant Source Files
-
-- `src/connectors/github/repo-clone.ts` — `setupSharedClone()`, `removeClone()`, `cloneExists()`, `isWorktree()`, `migrateWorktreeToClone()`, `CloneCheckout` type, `getDefaultBranch()`, `gitExec()`
-- `src/connectors/github/branch-state.ts` — `assignPrNumber()` (resets per-PR merge markers on branch reuse), `hydrateBranchState()`, `findBranchStateByPR()` (per-branch state helpers)
-- `src/agents/spawn.ts` — `spawnAgent()` with repo-track logic, tool gating, clone creation trigger, sandbox config, `GIT_AUTHOR_*` env injection for commit authorship
-- `src/agents/sandbox.ts` — `buildSandboxConfig()`, `createFilesystemGuardHooks()` — the two layers that enforce the read-only clone in RO mode
-- `src/agents/tools.ts` — `createPMAgentMcpServer` / `createRepoToolsMcpServer` / `createBaseAgentMcpServer`, `request_edit_mode` tool definition
-- `src/tasks/task.ts` — `handleEditModeApproval()`, `handleEditModeDenial()`, `cleanupClones()`, `postInteractiveToUser()`
-- `src/connectors/slack/events.ts` — `approve_edit_mode` and `deny_edit_mode` Bolt action handlers
-- `src/connectors/api/routes.ts` — non-Slack approval/denial path (CLI/HTTP) that calls the same `handleEditMode*` methods
-- `src/types/task.ts` — `TaskMetadata.edit_allowed`, `TaskMetadata.edit_approved_by` (commit author), `RepositoryInfo` with `clone_path` and `branch_states`, `BranchState` type
-- `src/connectors/slack/client.ts` — `getUserInfo()` (resolves approver name + email)
-- `src/connectors/github/client.ts` — `configureGitIdentity()` (sets the committer), `fetchOrigin()`
-- `src/connectors/github/webhooks.ts` — `extractTaskIdFromBranch()` for branch-to-task mapping
+- `src/agents/tools.ts` — `mount_repo`, `list_available_repos`, `request_edit_mode`, `createRepoToolsMcpServer`
+- `src/connectors/github/repo-clone.ts` — `ensureTaskClone()`, `decideCloneCheckout()`, `setupSharedClone()`, `removeClone()`, `recordedBaseBranch()`
+- `src/connectors/github/branch-state.ts` — `assignPrNumber()`, `hydrateBranchState()`, `findBranchStateByPR()`
+- `src/agents/spawn.ts` — `REPO_WRITE_TOOLS` gating, sandbox config, `editModeAtSpawn`, `GIT_AUTHOR_*` injection
+- `src/agents/sandbox.ts` — `buildRepoGrants()`, `buildSandboxConfig()`, `createFilesystemGuardHooks()`
+- `src/tasks/task.ts` — `handleEditModeApproval()`, `handleEditModeDenial()`, `recheckoutClonesForEditMode()`, `restartAgent()`, `ensurePm()`, `cleanupClones()`
+- `src/tasks/persistence.ts` — `getTaskClonePath()`, `getReposPath()`
+- `src/connectors/slack/events.ts` / `src/connectors/api/routes.ts` — the two approval surfaces
+- `src/types/task.ts` — `edit_allowed`, `edit_approved_by`, `AttachedRepo`, `BranchState`
