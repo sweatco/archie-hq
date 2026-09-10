@@ -32,6 +32,22 @@ export interface TaskBudgets {
   taskStartTime: Date;              // for wall-clock timeout
   taskTimeoutMs: number;            // default: 3_600_000 (60 minutes)
 }
+
+const DEFAULT_TASK_TIMEOUT_MS = 3_600_000; // 60 minutes
+
+/**
+ * Wall-clock cap before a task parks itself, overridable with
+ * `ARCHIE_TASK_TIMEOUT_MS`. Anything that is not a positive integer (blank,
+ * `0`, `-1`, `abc`) falls back to the default rather than disabling the cap —
+ * the backstop should not be removable by a typo. Read per task, so a restart
+ * is enough to change it.
+ */
+export function getTaskTimeoutMs(): number {
+  const raw = process.env.ARCHIE_TASK_TIMEOUT_MS;
+  if (!raw) return DEFAULT_TASK_TIMEOUT_MS;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_TASK_TIMEOUT_MS;
+}
 import { Agent } from '../agents/agent.js';
 
 import {
@@ -167,7 +183,7 @@ export class Task {
       researchRequestCount: metadata.research_request_count ?? 0,
       researchRequestLimit: 5 + (metadata.research_budget_extra ?? 0),
       taskStartTime: new Date(),
-      taskTimeoutMs: 3_600_000, // 60 minutes
+      taskTimeoutMs: getTaskTimeoutMs(),
     };
 
     // Migrate legacy slack_threads → channels
@@ -1728,9 +1744,9 @@ export class Task {
     const notice = `Tool call approved${bySuffix}: ${pending.server}:${pending.tool} — ${pending.heading}`;
     await appendAgentFinding(this.taskId, 'system', notice, 'decision');
     // Wake the PM, which owns the grant: only a byte-identical retry spends it.
-    // Not `notifyPm`: the resolution event belongs between the record and the
-    // wake, where it has always been.
-    emitEvent('approval:resolved', this.taskId, { type: 'tool_call', approve: true });
+    // No `approval:resolved` here — every other approval type emits it once,
+    // from the API route (src/connectors/api/routes.ts), and tool_call emitting
+    // from both places produced two events per resolution.
     await this.sendMessage(AGENT_PROMPTS.systemNotice(notice));
     return 'resolved';
   }
@@ -1758,7 +1774,7 @@ export class Task {
     await this.save(true);
     const notice = `Tool call denied by user: ${pending.server}:${pending.tool} — ${pending.heading}`;
     await appendAgentFinding(this.taskId, 'system', notice, 'decision');
-    emitEvent('approval:resolved', this.taskId, { type: 'tool_call', approve: false });
+    // No `approval:resolved` here either — see handleToolCallApproval.
     await this.sendMessage(AGENT_PROMPTS.systemNotice(notice));
     return 'resolved';
   }

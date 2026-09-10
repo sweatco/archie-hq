@@ -287,6 +287,55 @@ function deny(reason: string): HookJSONOutput {
 }
 
 /**
+ * MCP servers that belong to the agent that owns the conversation with the
+ * user, and to nobody it delegates to. They post to Slack, resolve the task
+ * lifecycle (report_completion, request_edit_mode, mount_repo) and schedule
+ * reminders — all things a throwaway worker must not do behind the PM's back.
+ *
+ * Kept as one exported constant so the blast radius is visible in a single
+ * place. Everything NOT listed here (repo-tools, research-tools, file-bridge,
+ * plugin/domain servers) stays available to workers: reading and investigating
+ * is exactly what they are for.
+ */
+export const PM_ONLY_MCP_SERVERS = [
+  'comms-tools',
+  'orchestration-tools',
+  'scheduling-tools',
+];
+
+/**
+ * Create a PreToolUse hook that keeps PM-only MCP servers out of subagents.
+ *
+ * This was a prompt rule only, and prompt rules get ignored: a general-purpose
+ * subagent was observed calling `mcp__comms-tools__post_to_user` and messaging
+ * the user directly, bypassing the PM entirely.
+ *
+ * The discriminator is `agent_id` on the hook input, which the SDK sets ONLY
+ * when the tool call originates inside a subagent (see `BaseHookInput` in the
+ * SDK types — absent on the main thread, even for `--agent` sessions).
+ * `agent_type` is deliberately not used: it is also present on a main thread
+ * started with `--agent`, which would deny the PM its own tools.
+ */
+export function createPmOnlyToolGuardHooks(): HookCallbackMatcher[] {
+  return [{
+    hooks: [async (input: any) => {
+      const { tool_name, agent_id } = input;
+
+      // Main thread (the PM or a specialist's own session) — untouched.
+      if (!agent_id) return { continue: true };
+
+      const isPmOnly = typeof tool_name === 'string'
+        && PM_ONLY_MCP_SERVERS.some((s) => tool_name.startsWith(`mcp__${s}__`));
+      if (!isPmOnly) return { continue: true };
+
+      return deny(
+        `${tool_name} is a PM-only tool; return your result to the PM instead.`,
+      );
+    }],
+  }];
+}
+
+/**
  * Create PreToolUse hooks that enforce filesystem boundaries on
  * in-process tools (Read, Write, Edit, Glob, Grep).
  *

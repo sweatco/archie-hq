@@ -48,7 +48,7 @@ import { loadPrompt } from '../utils/prompt-loader.js';
 import { processAgentEventForLogging, logger } from '../system/logger.js';
 import { emitEvent } from '../system/event-bus.js';
 import { getProbeBaseUrl } from '../system/context-probe.js';
-import { buildSandboxConfig, buildManagedNetworkPolicy, buildPackageManagerCacheEnv, buildRepoGrants, createFilesystemGuardHooks, TRUSTED_PACKAGE_REGISTRY_DOMAINS, type SandboxOptions } from './sandbox.js';
+import { buildSandboxConfig, buildManagedNetworkPolicy, buildPackageManagerCacheEnv, buildRepoGrants, createFilesystemGuardHooks, createPmOnlyToolGuardHooks, TRUSTED_PACKAGE_REGISTRY_DOMAINS, type SandboxOptions } from './sandbox.js';
 import { grantTriggerDataAccess, buildTriggerDataPromptSection } from './trigger-data.js';
 import { applyOAuthBindings } from '../system/oauth/inject.js';
 import { enrichPromptWithMemory, isMemoryEnabled, isInjectionEnabled } from '../memory/index.js';
@@ -645,6 +645,10 @@ Shared folder: ${sharedPath} [READ-ONLY]
     hooks: {
       PreToolUse: [
         ...createFilesystemGuardHooks(sandboxOpts),
+        // Subagents don't talk to the user or move the task lifecycle — they
+        // report back to whoever spawned them. Enforced here rather than by
+        // prompt, which a worker was observed ignoring outright.
+        ...createPmOnlyToolGuardHooks(),
         // MCP tool approval gate (docs/architecture/tool-approvals.md): attached
         // only when one of this agent's servers declares a policy, so agents
         // whose servers are all unmanaged are untouched. The port reads live

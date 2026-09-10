@@ -29,6 +29,7 @@ vi.mock('../../system/event-bus.js', () => ({ emitEvent: vi.fn() }));
 
 import { Task } from '../task.js';
 import { appendAgentFinding } from '../persistence.js';
+import { emitEvent } from '../../system/event-bus.js';
 import { APPROVAL_TTL_MS, PENDING_APPROVAL_TTL_MS } from '../../agents/tool-approval-gate.js';
 import type { TaskMetadata } from '../../types/task.js';
 
@@ -189,6 +190,22 @@ describe('handleToolCallApproval', () => {
     });
     expect(task.agent.clearPendingTeardown).toHaveBeenCalled();
     expect(task.sendMessage).toHaveBeenCalledWith(expect.any(String));
+  });
+
+  it('leaves approval:resolved to the API route, like every other approval type', async () => {
+    // This used to emit here AND unconditionally in the route, so one click
+    // produced two events. The route is the single emitter now.
+    const task = makeFakeTask();
+
+    await request(task);
+    vi.mocked(emitEvent).mockClear();
+    expect(await approve(task, REQUEST.digest)).toBe('resolved');
+    expect(vi.mocked(emitEvent).mock.calls.map((c) => c[0])).not.toContain('approval:resolved');
+
+    await request(task);
+    vi.mocked(emitEvent).mockClear();
+    expect(await deny(task, REQUEST.digest)).toBe('resolved');
+    expect(vi.mocked(emitEvent).mock.calls.map((c) => c[0])).not.toContain('approval:resolved');
   });
 
   it('is a stale no-op for a digest that does not match the slot', async () => {

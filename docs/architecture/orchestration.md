@@ -269,7 +269,7 @@ Both `stop()` and `complete()`:
 
 ### Wall-clock timeout
 
-A 60-second interval checks elapsed time against `budgets.taskTimeoutMs` (60 minutes). On expiry it posts a pause message — worded differently depending on whether the agent was mid-turn or simply waiting on a human — and calls `complete()`, so the task reopens cleanly on the next reply.
+A 60-second interval checks elapsed time against `budgets.taskTimeoutMs` (60 minutes by default; override with `ARCHIE_TASK_TIMEOUT_MS`, which ignores anything that is not a positive integer so the backstop cannot be switched off by a typo). On expiry it posts a pause message — worded differently depending on whether the agent was mid-turn or simply waiting on a human — and calls `complete()`, so the task reopens cleanly on the next reply.
 
 ---
 
