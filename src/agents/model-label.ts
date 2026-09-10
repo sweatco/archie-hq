@@ -78,21 +78,6 @@ export function resolveAgentEffort(def: AgentDef, maxMode = false): AgentDef['ef
   return def.effort;
 }
 
-/**
- * The ids of the non-PM agents whose resolved MODEL changes when max mode turns
- * on — i.e. the agents that must start a fresh SDK session on approval so the
- * swap actually takes effect (a resumed session can pin the old model). Sourced
- * from the task TEAM (which survives a task reload), not from live agent
- * handles: `request_max_mode` pauses/evicts the task, so on the reloaded
- * instance that handles the approval there are no live handles yet. Effort-only
- * upgrades don't change the model, so they're absent here (no reset needed).
- */
-export function modelChangingAgentIds(team: AgentDef[]): string[] {
-  return team
-    .filter((def) => !isPmAgent(def) && resolveAgentModel(def, true) !== resolveAgentModel(def, false))
-    .map((def) => def.id);
-}
-
 const cap = (s: string): string => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
 /**

@@ -384,24 +384,30 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
   let homeChannelId: string | undefined;
   if (context.kind === 'message' && context.thread) {
     // Ingestion, not announcement. `append` is the one path every other Slack task uses, and it does five things this branch would otherwise have to reinvent (and previously simply skipped): it writes the message to knowledge.log through the single renderer with the author line and the `msg:<ts>` id, applies the redaction policy via `shouldRedact`, skips file downloads for a redacted message while downloading them otherwise so the `[Attachments: …]` suffix carries usable local paths, links `slack:<channel>:<threadId>` as a channel, and promotes it to `default_channel`. That last pair is why `linkSlackThread` is NOT also called here — `append` links the identical key with the same shape, so doing both would double-write the same record.
-    await task.append(context.thread);
+    const { entries } = await task.append(context.thread);
 
-    // The ingestion floor, deliberately narrow. `fetchSlackThread` drops any raw message that has neither a `user` nor a `botId`, so the very message that fired this trigger can be missing from the thread it was fetched from — in which case `append` walked an empty (or incomplete) message list and wrote no log entry for it, and a delegated agent, which sees only knowledge.log, would have no idea what was said. Writing it directly from the body dispatch already rendered is what closes that hole.
+    // The ingestion floor, deliberately narrow. `fetchSlackThread` drops any raw message that has neither a `user` nor a `botId`, so the very message that fired this trigger can be missing from the thread it was fetched from — in which case `append` walked an empty (or incomplete) message list, returned no entry for it, and the PM would be woken by a fire whose triggering message it never sees. Writing it directly from the body dispatch already rendered is what closes that hole — and the line it returns joins the inline batch below.
     //
     // It fires ONLY for that reason, which is what `!context.authorId` tests — no user id and no bot id, so there is no identity for the redaction policy to classify in the first place. The fetch filter also drops a bot post from another workspace, and while the dispatch-side gate that is supposed to catch those first derives the team the same way (`bot_profile.team_id || team`, on both sides), the two read DIFFERENT PAYLOADS — the inbound `message` event on one side, what `conversations.replies` returns for that same ts on the other — so a post the event gate let through can still be dropped by the fetch. Writing on *any* absence would re-admit exactly that content, unredacted, past the one policy every other write to this log goes through. An empty body is refused for the same reason in miniature: an entry with no text claims a message the log does not actually carry. The ts comes from `thread.threadId` rather than being passed in separately — dispatch fires only on TOP-LEVEL messages, so the thread's root IS the message that fired, and the condition reads as what it actually asks: did the fetched thread contain its own root? Nothing else is needed: `append` registers the channel, promotes `default_channel` and advances `last_processed_ts` even when `thread.messages` is empty — only the per-message loop is skipped — so the thread is already owned and a second link would be redundant.
     if (!context.authorId && context.body && !context.thread.messages.some((m) => m.ts === context.thread!.threadId)) {
       const author = 'unknown';
-      await appendSlackMessage(
+      entries.push(await appendSlackMessage(
         task.taskId,
         { id: context.thread.channel.id, name: context.thread.channel.name },
         context.thread.threadId,
         { id: author, username: author, realName: author },
         context.body ?? '',
         { ts: context.thread.threadId },
-      );
+      ));
     }
 
-    delivery = 'Post your reply in your default channel — the thread where the triggering message was posted. The triggering message itself is in knowledge.log.';
+    // The triggering message rides along inline. Pointing the PM at knowledge.log
+    // was a pointer at a file its prompt no longer mentions — the same wake the
+    // Slack path already carries, so the fire is actionable on arrival.
+    delivery = 'Post your reply in your default channel — the thread where the triggering message was posted.';
+    if (entries.length > 0) {
+      delivery += `\n\nThe message that fired this:\n\n${entries.join('\n\n')}`;
+    }
   } else if (trigger.binding.type === 'user') {
     delivery = `Deliver the result to the user as a direct message (Slack user ID ${trigger.binding.user_id}).`;
   } else {

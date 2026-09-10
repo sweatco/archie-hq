@@ -380,7 +380,7 @@ async function fetchAllPRStatuses(
 
 /**
  * Notify PM about PRs with conflicts
- * Logs to knowledge.log and sends message to PM
+ * Records the finding for the offline log, then wakes the PM with the notice itself
  */
 async function notifyPMAboutConflicts(
   task: Task,
@@ -396,12 +396,12 @@ async function notifyPMAboutConflicts(
 
   await appendAgentFinding(task.taskId, 'system', message, 'blocker');
 
-  await task.sendMessage(AGENT_PROMPTS.existingTask);
+  await task.sendMessage(AGENT_PROMPTS.systemNotice(message));
 }
 
 /**
  * Notify PM that held-ready PRs (non-auto repos) can be merged on request
- * Logs to knowledge.log and sends message to PM
+ * Records the finding for the offline log, then wakes the PM with the notice itself
  */
 async function notifyPMAboutReadyPRs(
   task: Task,
@@ -417,12 +417,12 @@ async function notifyPMAboutReadyPRs(
 
   await appendAgentFinding(task.taskId, 'system', message, 'decision');
 
-  await task.sendMessage(AGENT_PROMPTS.existingTask);
+  await task.sendMessage(AGENT_PROMPTS.systemNotice(message));
 }
 
 /**
  * Notify PM that PRs were merged (or failed to merge)
- * Logs to knowledge.log and sends message to PM
+ * Records the finding for the offline log, then wakes the PM with the notice itself
  */
 async function notifyPMAboutMerge(
   task: Task,
@@ -449,5 +449,5 @@ async function notifyPMAboutMerge(
   const findingType = failedPRs.length > 0 ? 'blocker' : 'completion';
   await appendAgentFinding(task.taskId, 'system', message, findingType);
 
-  await task.sendMessage(AGENT_PROMPTS.existingTask);
+  await task.sendMessage(AGENT_PROMPTS.systemNotice(message));
 }

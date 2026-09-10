@@ -794,11 +794,11 @@ function createReactToMessageTool(agent: Agent, task: Task) {
     'Add an emoji reaction to a message in a Slack thread. Use to acknowledge, ' +
     'express sentiment, or signal status without sending a text message. ' +
     'Reacts to ANY message in a linked thread — pass `message_id`, the `msg:<ts>` ' +
-    'value shown next to each message in the knowledge log (e.g. "1716998400.123456"). ' +
+    'value shown next to each message that arrived in your conversation (e.g. "1716998400.123456"). ' +
     'Omit `channel` to target the task\'s default channel. ' +
     'The emoji is a Slack shortcode WITHOUT colons (e.g. "thumbsup", "eyes", "tada", "white_check_mark").',
     {
-      message_id: z.string().describe('The target message timestamp — the `msg:<ts>` id from the knowledge log (e.g. "1716998400.123456")'),
+      message_id: z.string().describe('The target message timestamp — the `msg:<ts>` id shown on the message as it reached you (e.g. "1716998400.123456")'),
       emoji: z.string().describe('Slack emoji shortcode without colons (e.g. "thumbsup", "heart", "eyes")'),
       channel: z.string().optional().describe('Channel key of the linked thread (e.g. "slack:C123:456.789"). Omit for the default channel.'),
     },
@@ -822,7 +822,7 @@ function createUnreactFromMessageTool(agent: Agent, task: Task) {
     'Mirrors `react_to_message`: pass the `message_id` (`msg:<ts>` id) and the emoji shortcode. ' +
     'Only removes Archie\'s own reaction; other users\' reactions are unaffected.',
     {
-      message_id: z.string().describe('The target message timestamp — the `msg:<ts>` id from the knowledge log'),
+      message_id: z.string().describe('The target message timestamp — the `msg:<ts>` id shown on the message as it reached you'),
       emoji: z.string().describe('Slack emoji shortcode without colons (e.g. "eyes")'),
       channel: z.string().optional().describe('Channel key of the linked thread. Omit for the default channel.'),
     },
@@ -843,10 +843,10 @@ function createGetMessageReactionsTool(_agent: Agent, task: Task) {
   return tool(
     'get_message_reactions',
     'Read the CURRENT emoji reactions on a Slack message (live state, fresher than ' +
-    'the snapshot in the knowledge log). Pass the `message_id` (`msg:<ts>` id). ' +
+    'the snapshot you were given). Pass the `message_id` (`msg:<ts>` id). ' +
     'Returns each reaction\'s emoji shortcode, how many users reacted, and who they were.',
     {
-      message_id: z.string().describe('The target message timestamp — the `msg:<ts>` id from the knowledge log'),
+      message_id: z.string().describe('The target message timestamp — the `msg:<ts>` id shown on the message as it reached you'),
       channel: z.string().optional().describe('Channel key of the linked thread. Omit for the default channel.'),
     },
     async (args) => {
@@ -1677,7 +1677,7 @@ function createAddReviewCommentTool(agent: Agent, task: Task) {
 function createReplyToReviewCommentTool(agent: Agent, task: Task) {
   return tool(
     'reply_to_review_comment',
-    'Reply inside an existing review thread. Requires the comment_id of any comment in the target thread (from the knowledge log or get_review_threads).',
+    'Reply inside an existing review thread. Requires the comment_id of any comment in the target thread (from the GitHub activity you were woken with, or get_review_threads).',
     {
       pr_number: z.number().describe('The PR number'),
       comment_id: z.number().describe('REST comment id of any comment in the target thread'),
@@ -2665,13 +2665,9 @@ function createListAvailableReposTool(_agent: Agent, task: Task) {
  * mount after approval, and the branch the task was last on when a clone is
  * re-created later.
  *
- * TODO(flat): the sandbox is frozen at spawn from the clones already recorded,
- * so a repo mounted mid-session is not reachable until the PM respawns — the
- * grant has to become the task's repos directory plus the base clones
- * directory, which is spawn.ts/sandbox.ts (W2-spawn), not here.
- *
- * TODO(flat): `Task.recheckoutClonesForEditMode` (src/tasks/task.ts) now
- * duplicates what `ensureTaskClone` does; it should call it instead.
+ * A repo mounted mid-session is reachable immediately: the sandbox grants the
+ * task's repos DIRECTORY (and the base clone cache read-only), not the clones
+ * that happened to exist at spawn — see the grants in `spawn.ts`.
  */
 function createMountRepoTool(agent: Agent, task: Task) {
   return tool(

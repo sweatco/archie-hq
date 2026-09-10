@@ -13,10 +13,12 @@ import {
   buildSandboxConfig,
   buildManagedNetworkPolicy,
   buildPackageManagerCacheEnv,
+  buildRepoGrants,
   TRUSTED_PACKAGE_REGISTRY_DOMAINS,
   type SandboxOptions,
 } from '../sandbox.js';
-import { CACHES_DIR } from '../../system/workdir.js';
+import { CACHES_DIR, REPOS_DIR } from '../../system/workdir.js';
+import { getReposPath } from '../../tasks/persistence.js';
 
 const base: SandboxOptions = {
   cwd: '/workdir/sessions/task-1/workspace',
@@ -106,5 +108,48 @@ describe('buildSandboxConfig', () => {
 
   it('defaults to network deny-all', () => {
     expect(buildSandboxConfig(base).network.allowedDomains).toEqual([]);
+  });
+});
+
+describe('buildRepoGrants', () => {
+  const TASK = 'task-20260910-1200-abc123';
+  const taskRepos = getReposPath(TASK);
+
+  it('grants the task repos DIRECTORY, not the clones that exist right now', () => {
+    // The regression: the grants used to be enumerated from
+    // `metadata.repositories`, which is empty at spawn because nothing is cloned
+    // until the PM calls `mount_repo`. The sandbox is frozen at spawn, so the
+    // first mount landed somewhere the session could not read and the PM had to
+    // be respawned to open the file it had just cloned. A directory grant is
+    // what makes a mid-session mount reachable.
+    for (const editAllowed of [false, true]) {
+      expect(buildRepoGrants(TASK, editAllowed).read).toContain(taskRepos);
+    }
+  });
+
+  it('makes the task clones writable exactly when edit mode is approved', () => {
+    expect(buildRepoGrants(TASK, false).write).toEqual([]);
+    expect(buildRepoGrants(TASK, false).denyWrite).toContain(taskRepos);
+
+    expect(buildRepoGrants(TASK, true).write).toContain(taskRepos);
+    expect(buildRepoGrants(TASK, true).denyWrite).not.toContain(taskRepos);
+  });
+
+  it('keeps the base clone cache readable and unwritable in BOTH modes', () => {
+    // Readable because task clones are `git clone --shared` and borrow its
+    // objects for their whole life; never writable because one task rewriting a
+    // base clone corrupts every other task sharing it.
+    for (const editAllowed of [false, true]) {
+      const grants = buildRepoGrants(TASK, editAllowed);
+      expect(grants.read).toContain(REPOS_DIR);
+      expect(grants.write).not.toContain(REPOS_DIR);
+      expect(grants.denyWrite).toContain(REPOS_DIR);
+    }
+  });
+
+  it('scopes the writable grant to this task — another task\'s clones are not under it', () => {
+    const other = getReposPath('task-20260910-1200-other0');
+    expect(buildRepoGrants(TASK, true).write).not.toContain(other);
+    expect(other.startsWith(taskRepos)).toBe(false);
   });
 });

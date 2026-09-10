@@ -80,6 +80,8 @@ describe('deriveActivity', () => {
     expect(deriveActivity('mcp__comms-tools__read_channel_history', {}, ctx)).toBe('catching up on a channel');
     expect(deriveActivity('mcp__comms-tools__read_thread', {}, ctx)).toBe('reading a thread');
     expect(deriveActivity('mcp__orchestration-tools__list_available_repos', {}, ctx)).toBe('looking over the repos');
+    // A cold clone runs for minutes; a blank status line there reads as a stall.
+    expect(deriveActivity('mcp__orchestration-tools__mount_repo', { github: 'org/backend' }, ctx)).toBe('mounting a repository');
     expect(deriveActivity('mcp__scheduling-tools__set_reminder', {}, ctx)).toBe('setting a reminder');
     expect(deriveActivity('mcp__research-tools__web_research', {}, ctx)).toBe('researching');
   });

@@ -135,6 +135,10 @@ function commsToolPhrase(tool: string): string | null {
 function orchestrationToolPhrase(tool: string): string | null {
   switch (tool) {
     case 'list_available_repos': return 'looking over the repos';
+    // A cold clone of a large repo takes minutes. Without a phrase the status
+    // line went blank for the whole of it, which reads as the task having
+    // stalled.
+    case 'mount_repo': return 'mounting a repository';
     default: return null;
   }
 }

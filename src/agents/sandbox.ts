@@ -15,7 +15,8 @@
 
 import { resolve, normalize } from 'path';
 import type { HookCallbackMatcher, HookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
-import { CACHES_DIR } from '../system/workdir.js';
+import { CACHES_DIR, REPOS_DIR } from '../system/workdir.js';
+import { getReposPath } from '../tasks/persistence.js';
 
 // ---- Types ----
 
@@ -94,6 +95,50 @@ export function buildSandboxConfig(opts: SandboxOptions) {
     network: {
       allowedDomains: opts.allowedNetworkDomains ?? [],
     },
+  };
+}
+
+// ---- Repository grants ----
+
+/** The repo half of a task's filesystem policy, keyed on directories. */
+export interface RepoGrants {
+  /** Readable in both modes. */
+  read: string[];
+  /** Writable — non-empty only in edit mode. */
+  write: string[];
+  /** Denied for writing, whatever else allows it. */
+  denyWrite: string[];
+}
+
+/**
+ * Repository read/write grants for one task, derived from PATHS rather than
+ * from the clones that happen to exist.
+ *
+ * The distinction is the whole point. `mount_repo` creates a clone in the
+ * middle of a session while the sandbox policy stays frozen from spawn, so a
+ * policy enumerated from `metadata.repositories` froze the session to the repos
+ * it booted with: the first mount landed in a directory the sandbox could
+ * neither read nor write, and the PM had to be respawned before it could open
+ * the file it had just cloned. Granting the task's clone ROOT closes that.
+ *
+ * Two directories, three rules:
+ *
+ * - `sessions/<taskId>/repos/` — this task's own clones. Always readable
+ *   (reading code is allowed before edit mode); writable exactly when edit mode
+ *   is approved.
+ * - `workdir/repos/` — the shared base-clone cache. Always readable, because
+ *   task clones are made with `git clone --shared` and borrow its `.git/objects`
+ *   for their whole life. NEVER writable, in either mode: a task that could
+ *   rewrite a base clone would corrupt every other task sharing it.
+ */
+export function buildRepoGrants(taskId: string, editAllowed: boolean): RepoGrants {
+  const taskRepos = getReposPath(taskId);
+  return {
+    read: [taskRepos, REPOS_DIR],
+    write: editAllowed ? [taskRepos] : [],
+    // The base cache is denied in both modes; the task's own clones are denied
+    // only while the task is read-only.
+    denyWrite: editAllowed ? [REPOS_DIR] : [REPOS_DIR, taskRepos],
   };
 }
 

@@ -54,7 +54,6 @@ import { getIsShuttingDown } from '../system/shutdown.js';
 import { scheduleIdleCheck } from './recovery.js';
 import { scanPmDef } from '../agents/registry.js';
 import type { AttachedRepo } from '../types/task.js';
-import type { CloneCheckout } from '../connectors/github/repo-clone.js';
 import { syncPlugins } from '../system/plugin-sync.js';
 import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
 import { renderMessageBody, shouldRedact } from '../connectors/slack/message-body.js';
@@ -1288,60 +1287,36 @@ export class Task {
    * creating it from base on the first approval and restoring the branch the
    * task was last on when a clone is re-created later.
    *
-   * A clone that still exists is left alone: it is already on the branch (and
-   * may hold un-pushed commits). A clone that was removed by the read-only
-   * teardown is re-created here, so approval — not the next tool call — is what
-   * makes the writable checkout appear.
+   * One call to `ensureTaskClone` per mounted repo, with `editAllowed` forced
+   * on — the same helper `mount_repo` uses, so the checkout decision, the
+   * `base_path` pinning, the branch-state hydration and the git identity all
+   * live in one place and cannot drift. This method used to restate that logic,
+   * and the restatement was wrong in one case: it skipped any clone that was
+   * still on disk, so a repo mounted while the task was read-only stayed parked
+   * on the base branch after approval and the PM committed onto base. The
+   * shared helper cuts the task branch in place instead.
    *
-   * TODO(flat): W2-tools' `mount_repo` performs the same checkout decision;
-   * share this helper rather than restating it.
+   * A clone the read-only teardown removed is re-created here, so approval —
+   * not the next tool call — is what makes the writable checkout appear.
    */
   private async recheckoutClonesForEditMode(): Promise<void> {
     if (this.metadata.repositories.length === 0) return;
-    const { setupSharedClone, cloneExists } = await import('../connectors/github/repo-clone.js');
-    const { configureGitIdentity } = await import('../connectors/github/client.js');
+    const { ensureTaskClone } = await import('../connectors/github/repo-clone.js');
     const { getBaseCachePath } = await import('../system/workdir.js');
     const { taskBranchName } = await import('../connectors/github/branch-naming.js');
-    const { hydrateBranchState } = await import('../connectors/github/branch-state.js');
 
     for (const att of this.metadata.repositories) {
       try {
-        const baseRepoPath = att.base_path || getBaseCachePath(att.github);
-        att.base_path = baseRepoPath;
-        const desiredClonePath = getTaskClonePath(this.taskId, att.github);
-
-        if (att.clone_path && await cloneExists(att.clone_path)) continue;
-        if (await cloneExists(desiredClonePath)) {
-          att.clone_path = desiredClonePath;
-          continue;
-        }
-
-        // No clone on disk: re-create it on the branch the task belongs on.
-        //
-        // A branch the task actually worked on always has a `branch_states`
-        // entry (that is where its base branch, PR number and stash live); a
-        // clone sitting on the repository's base branch has none. So the
-        // presence of an entry is what says "restore this branch" rather than
-        // "cut the task branch from base". `base_branch` from that entry is
-        // what this repo forks from; when it is absent `setupSharedClone`
-        // discovers the repository's default branch itself.
-        const previousBranch = att.current_branch;
-        const previousState = previousBranch ? att.branch_states?.[previousBranch] : undefined;
-        const checkout: CloneCheckout = previousState
-          ? { type: 'branch', name: previousBranch! }
-          : { type: 'new_branch', name: taskBranchName(this.taskId) };
-        const baseBranch = previousState?.base_branch;
-
-        const result = await setupSharedClone(
-          desiredClonePath, baseRepoPath, checkout, baseBranch, att.github,
-        );
-        att.clone_path = result.clone_path;
-        if (result.branch !== result.base_branch) {
-          hydrateBranchState(att, result.branch, result.base_branch);
-        } else {
-          att.current_branch = result.branch;
-        }
-        await configureGitIdentity(result.clone_path);
+        // `edit_allowed` is already true on metadata by the time this runs, but
+        // the argument is passed literally: this method exists only for the
+        // approval path, and reading the flag would make it look conditional.
+        const result = await ensureTaskClone({
+          attached: att,
+          clonePath: getTaskClonePath(this.taskId, att.github),
+          baseRepoPath: att.base_path || getBaseCachePath(att.github),
+          editAllowed: true,
+          taskBranch: taskBranchName(this.taskId),
+        });
         logger.system(
           `Task ${this.taskId}: ${att.github} checked out on ${result.branch} for edit mode`,
         );
@@ -1817,10 +1792,14 @@ export class Task {
     // → runs on the new model. Also null a live handle if approval landed
     // before the pause fired (same-instance race).
     //
-    // TODO(flat): the fresh session starts cold. This used to be softened by
-    // the agent re-reading knowledge.log at spawn; with content delivered
-    // inline there is no re-read, so a model-changing max-mode upgrade now
-    // loses the prior conversation. Only the model-change branch is affected.
+    // TODO(flat): the fresh session starts cold, and this is now the DEFAULT
+    // path — `ARCHIE_PM_MAX_MODEL` defaults to a different model from
+    // `ARCHIE_PM_MODEL`, so every max-mode approval takes this branch. It used
+    // to be softened by the agent re-reading knowledge.log at spawn; with
+    // content delivered inline there is no re-read, so the PM comes back
+    // without the conversation it was upgraded in the middle of. Needs either a
+    // transcript carry-over into the new session or an explicit hand-off
+    // summary before the reset.
     if (resolveAgentModel(this.pmDef, true) !== resolveAgentModel(this.pmDef, false)) {
       const id = this.pmDef.id;
       if (this.metadata.agent_sessions[id]) this.metadata.agent_sessions[id] = { active: false };

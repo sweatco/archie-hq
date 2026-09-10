@@ -142,9 +142,9 @@ describe('postToUser opens the task thread in home_channel', () => {
     expect(meta.channels).toEqual({});
     expect(meta.default_channel).toBeNull();
     // Unlinked is not the same as unsaid. Dry-run never reaches Slack, so there is no ts to key a thread
-    // by — but the agent did produce this message, and knowledge.log is the only place any other agent on
-    // the task can read it. Dropping it here would make a dry-run fire look like a fire that said nothing,
-    // and the destination is still recorded as the home channel it was meant for.
+    // by — but the agent did produce this message, and the log is the record of it (what the memory
+    // extractor and the offline audit read). Dropping it here would make a dry-run fire look like a fire
+    // that said nothing, and the destination is still recorded as the home channel it was meant for.
     expect(vi.mocked(appendMessageToUser)).toHaveBeenCalledWith(
       't1', 'pm-agent', 'the nightly report', `#${HOME.channel_name}`,
     );

@@ -20,10 +20,10 @@
  */
 
 /**
- * Contentless fallbacks. Every wake that HAS content uses a builder below; these
- * two remain for the paths whose content is not (yet) threaded through to the
- * wake — the CLI/API routes and the merge notifier — and as the empty-batch
- * fallback when a Slack event turns out to have appended nothing new.
+ * Contentless fallbacks, private to this module. No caller reaches them
+ * directly any more — every wake goes through a builder below — but a batch can
+ * still come back empty when a Slack event turns out to have appended nothing
+ * new, and the PM still has to be told something it can act on.
  */
 const NEW_TASK =
   // Deliberately not 'New task created, assign owner' — a PM that read that
@@ -46,9 +46,6 @@ function block(entries: readonly string[]): string {
 }
 
 export const AGENT_PROMPTS = {
-  newTask: NEW_TASK,
-  existingTask: EXISTING_TASK,
-
   /**
    * The messages that opened a new task, inline. A batch, because a linked
    * thread is ingested whole: the PM gets the root and every reply that came
@@ -83,7 +80,7 @@ export const AGENT_PROMPTS = {
    * reviewer's own comments back at them and asked what they had meant. Saying
    * the PR is the place to answer keeps the reply where the reviewer is looking.
    * Merge outcomes (see connectors/github/merge.ts) are announcements, not
-   * review traffic, and stay on the plain `existingTask` wake.
+   * review traffic, so they go out as a `systemNotice` carrying the outcome.
    */
   githubActivity: (entry: string): string =>
     `Activity on GitHub for work in this task:\n\n${entry}\n\nAct on it there — the reply belongs on the PR, not in Slack, unless state changed or someone is blocked.`,

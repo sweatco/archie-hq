@@ -156,8 +156,10 @@ export function mountApiRoutes(app: Application): void {
 
       const task = await Task.create();
       task.linkCliChannel();
-      await appendCliMessage(task.taskId, message);
-      await task.sendMessage(AGENT_PROMPTS.newTask);
+      // The wake carries the message, exactly as the Slack path does: the line
+      // the log recorded is the line the PM reads.
+      const line = await appendCliMessage(task.taskId, message);
+      await task.sendMessage(AGENT_PROMPTS.inboundNewTask([line]));
 
       res.status(201).json({ task_id: task.taskId });
     } catch (error) {
@@ -177,11 +179,11 @@ export function mountApiRoutes(app: Application): void {
         return;
       }
 
-      await appendCliMessage(taskId, message);
+      const line = await appendCliMessage(taskId, message);
 
       const task = await Task.get(taskId);
       task.linkCliChannel();
-      await task.sendMessage(AGENT_PROMPTS.existingTask);
+      await task.sendMessage(AGENT_PROMPTS.inboundActivity([line]));
 
       res.json({ ok: true });
     } catch (error) {

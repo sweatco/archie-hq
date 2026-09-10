@@ -48,7 +48,7 @@ import { loadPrompt } from '../utils/prompt-loader.js';
 import { processAgentEventForLogging, logger } from '../system/logger.js';
 import { emitEvent } from '../system/event-bus.js';
 import { getProbeBaseUrl } from '../system/context-probe.js';
-import { buildSandboxConfig, buildManagedNetworkPolicy, buildPackageManagerCacheEnv, createFilesystemGuardHooks, TRUSTED_PACKAGE_REGISTRY_DOMAINS, type SandboxOptions } from './sandbox.js';
+import { buildSandboxConfig, buildManagedNetworkPolicy, buildPackageManagerCacheEnv, buildRepoGrants, createFilesystemGuardHooks, TRUSTED_PACKAGE_REGISTRY_DOMAINS, type SandboxOptions } from './sandbox.js';
 import { grantTriggerDataAccess, buildTriggerDataPromptSection } from './trigger-data.js';
 import { applyOAuthBindings } from '../system/oauth/inject.js';
 import { enrichPromptWithMemory, isMemoryEnabled, isInjectionEnabled } from '../memory/index.js';
@@ -325,6 +325,12 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
       currentBranch: att.current_branch,
     }));
   const clonePaths = repoMounts.map((m) => m.clonePath);
+  // The repo half of the filesystem policy comes from DIRECTORIES, not from the
+  // clones recorded right now — see `buildRepoGrants`. `mount_repo` creates a
+  // clone mid-session while this policy stays frozen at spawn, so a policy
+  // enumerated from `metadata.repositories` would leave the first mount in a
+  // directory the sandbox could not reach.
+  const repoGrants = buildRepoGrants(taskId, editAllowed);
 
   let systemPrompt = await generatePMPrompt();
   // Deliberately NOT listing the plugins repo here, even though it is readable:
@@ -352,26 +358,34 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   // Read-only paths that stay read-only in both modes.
   const readOnlyPaths = [
     sharedPath,
+    // The per-mount base objects dirs stay for the one case `buildRepoGrants`
+    // does not cover: a legacy `base_path` recorded outside the base cache dir.
     ...repoMounts.map((m) => m.baseObjectsPath),
     ...pluginReadPaths,
   ];
   // `.git/HEAD` stays deny-write even in edit mode so branch movement has to go
   // through switch_branch / create_branch rather than a raw `git checkout`.
+  //
+  // TODO(flat): this one deny is still enumerated per clone, so a repo mounted
+  // mid-session in edit mode has a writable HEAD until the next respawn — the
+  // deny lists are prefix-matched, so there is no directory that expresses
+  // "`.git/HEAD` under any clone".
   const cloneGitHeads = clonePaths.map((c) => join(c, '.git', 'HEAD'));
   let sandboxOpts: SandboxOptions = {
     cwd,
     denyReadPaths: [WORKDIR],
-    allowReadPaths: [workspace, ...clonePaths, ...claudeReadDirs, ...readOnlyPaths],
+    allowReadPaths: [workspace, ...repoGrants.read, ...claudeReadDirs, ...readOnlyPaths],
     // CACHES_DIR must be writable, or package managers hit the EROFS that
     // buildPackageManagerCacheEnv exists to avoid — in both modes, since a
     // read-only task still runs typecheck/test.
     // allowWrite only: writable implies readable here. The one thing it costs is the artifact tools, which validate allowReadPaths alone — see sandbox.ts.
-    allowWritePaths: editAllowed
-      ? [workspace, CACHES_DIR, ...clonePaths, ...claudeWriteDirs]
-      : [workspace, CACHES_DIR, ...claudeWriteDirs],
-    denyWritePaths: editAllowed
-      ? [...readOnlyPaths, ...protectedWorkspaceFiles, ...cloneGitHeads]
-      : [...clonePaths, ...readOnlyPaths, ...protectedWorkspaceFiles],
+    allowWritePaths: [workspace, CACHES_DIR, ...repoGrants.write, ...claudeWriteDirs],
+    denyWritePaths: [
+      ...repoGrants.denyWrite,
+      ...readOnlyPaths,
+      ...protectedWorkspaceFiles,
+      ...(editAllowed ? cloneGitHeads : []),
+    ],
     // In edit mode the sandbox may reach the trusted package registries so the
     // session can run installs / regenerate lockfiles. Read-only tasks stay
     // network-denied beyond the agent's own allowlist. The list is a curated
@@ -445,7 +459,6 @@ ${contextLines.join('\n')}
 Working directory (cwd): ${workspace} [READ-WRITE]
 ${repoSection}
 Shared folder: ${sharedPath} [READ-ONLY]
-  - knowledge.log — conversation history and findings
   - metadata.json — task metadata
 `;
     systemPrompt = `${systemPrompt}\n\nCurrent Task Context:\n${context}`;

@@ -23,8 +23,15 @@ vi.mock('fs/promises', () => ({
   appendFile: vi.fn().mockResolvedValue(undefined),
   readFile: vi.fn().mockResolvedValue(''),
 }));
-const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
+const { spawnMock, ensureTaskCloneMock } = vi.hoisted(() => ({
+  spawnMock: vi.fn(),
+  ensureTaskCloneMock: vi.fn(),
+}));
 vi.mock('../../agents/spawn.js', () => ({ spawnAgent: spawnMock }));
+vi.mock('../../connectors/github/repo-clone.js', () => ({
+  ensureTaskClone: ensureTaskCloneMock,
+  removeClone: vi.fn().mockResolvedValue(undefined),
+}));
 
 import { Task, activeTasks } from '../task.js';
 import type { TaskMetadata } from '../../types/task.js';
@@ -58,6 +65,7 @@ describe('handleEditModeApproval — restart for a writable mount', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     spawnMock.mockReset();
+    ensureTaskCloneMock.mockReset();
     spawnMock.mockImplementation(async (agent: { handle?: unknown; session: { session_id?: string } }) => {
       agent.session.session_id ??= 'sess-1';
       agent.handle = { isRunning: true, running: new Promise<void>(() => {}), abort: vi.fn() };
@@ -98,6 +106,54 @@ describe('handleEditModeApproval — restart for a writable mount', () => {
     await task.handleEditModeApproval({ id: 'U1', name: 'Egor' });
     expect(task.metadata.edit_allowed).toBe(true);
     // The reactivation still spawns the agent; nothing crashed on the way.
+    expect(task.agent).toBeDefined();
+  });
+
+  // Approval used to restate the checkout logic that `mount_repo` runs through
+  // `ensureTaskClone`, and the restatement skipped any clone still on disk — so
+  // a repo mounted while the task was read-only stayed parked on the base
+  // branch and the PM committed onto base. Both paths now go through the one
+  // helper, which cuts the task branch in place on a reused clone.
+  it('routes every mounted repo through the shared clone helper, in edit mode', async () => {
+    const meta = metadata();
+    meta.repositories = [
+      { github: 'org/backend', clone_path: '/w/sessions/t/repos/org/backend', current_branch: 'main' },
+      { github: 'org/mobile' },
+    ];
+    ensureTaskCloneMock.mockImplementation(async (opts: { attached: { github: string } }) => ({
+      clone_path: `/w/sessions/t/repos/${opts.attached.github}`,
+      branch: `archie/${TASK_ID}`,
+      base_branch: 'main',
+      created: false,
+    }));
+
+    const task = new TaskCtor(TASK_ID, meta, pmDef());
+    await task.handleEditModeApproval({ id: 'U1', name: 'Egor' });
+
+    expect(ensureTaskCloneMock).toHaveBeenCalledTimes(2);
+    for (const [opts] of ensureTaskCloneMock.mock.calls) {
+      expect(opts.editAllowed).toBe(true);
+      expect(opts.taskBranch).toBe(`archie/${TASK_ID}`);
+      // The task-keyed clone path, not a per-agent one.
+      expect(opts.clonePath).toContain(`${TASK_ID}/repos/${opts.attached.github}`);
+      expect(opts.baseRepoPath).toContain(`/repos/${opts.attached.github}`);
+    }
+    // A clone already on disk is NOT skipped — that skip was the bug.
+    expect(ensureTaskCloneMock.mock.calls.map(([o]) => o.attached.github))
+      .toEqual(['org/backend', 'org/mobile']);
+  });
+
+  it('does not let one repo failing to check out block the others or the respawn', async () => {
+    const meta = metadata();
+    meta.repositories = [{ github: 'org/backend' }, { github: 'org/mobile' }];
+    ensureTaskCloneMock
+      .mockRejectedValueOnce(new Error('git exploded'))
+      .mockResolvedValueOnce({ clone_path: '/c', branch: 'b', base_branch: 'main', created: true });
+
+    const task = new TaskCtor(TASK_ID, meta, pmDef());
+    await task.handleEditModeApproval({ id: 'U1', name: 'Egor' });
+
+    expect(ensureTaskCloneMock).toHaveBeenCalledTimes(2);
     expect(task.agent).toBeDefined();
   });
 });

@@ -6,7 +6,7 @@
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import type { AgentDef } from '../../types/agent.js';
-import { modelDisplayLabel, resolveAgentModel, resolveAgentEffort, modelChangingAgentIds } from '../model-label.js';
+import { modelDisplayLabel, resolveAgentModel, resolveAgentEffort } from '../model-label.js';
 
 // The ARCHIE_MAX_MODE_* env overrides are read at call time; unstub after each test.
 afterEach(() => {
@@ -143,32 +143,5 @@ describe('resolveAgentEffort', () => {
     expect(resolveAgentEffort(def({ effort: 'low' }), true)).toBe('low'); // generic unaffected by env
     vi.stubEnv('ARCHIE_MAX_MODE_EFFORT', 'bogus');
     expect(resolveAgentEffort(def({ repo }), true)).toBe('max'); // invalid env ignored → max default
-  });
-});
-
-describe('modelChangingAgentIds', () => {
-  const repo = { repos: [{ github: 'o/r', baseBranch: 'main', autoMerge: false }], primary: 'o/r' };
-  const def = (over: Partial<AgentDef>): AgentDef => ({
-    id: 'x-agent', key: 'x', role: '', expertise: '', pluginName: 'p', ...over,
-  } as AgentDef);
-
-  it('selects only non-PM agents whose model changes under max mode', () => {
-    const team = [
-      def({ id: 'pm-agent', isPm: true }),                                                    // PM — excluded
-      def({ id: 'backend-agent', model: 'opus', repo, maxMode: { model: 'claude-fable-5-1' } }), // model swap → included
-      def({ id: 'infra-agent', model: 'opus', repo }),                                        // repo, effort-only default → NOT included
-      def({ id: 'copywriter-agent' }),                                                        // generic, unchanged → NOT included
-    ];
-    expect(modelChangingAgentIds(team)).toEqual(['backend-agent']);
-  });
-
-  it('includes repo/dynamic agents that swap via env, but not generic agents or the PM', () => {
-    vi.stubEnv('ARCHIE_MAX_MODE_MODEL', 'claude-fable-5-1');
-    const team = [
-      def({ id: 'dyn-agent', model: 'opus', repo }), // repo/dynamic → env swap → included
-      def({ id: 'copywriter-agent' }),               // generic → env doesn't apply → NOT included
-      def({ id: 'pm-agent', isPm: true }),           // PM → excluded
-    ];
-    expect(modelChangingAgentIds(team)).toEqual(['dyn-agent']);
   });
 });

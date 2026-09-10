@@ -66,33 +66,22 @@ export interface AgentRepoDef {
 }
 
 /**
- * PM-specific fields (present only on the PM coordinator agent)
+ * "Max mode" spec — the model and effort an agent upgrades to when the task has
+ * max mode approved. See resolveAgentModel / resolveAgentEffort.
  */
-export interface AgentPmDef {
-  /**
-   * One sentence naming the integrations the PM can query directly. Empty
-   * string when it has no MCP servers.
-   */
-  pmIntegrations: string;
+export interface MaxModeSpec {
+  /** Model to run on in max mode (e.g. 'claude-fable-5-1'). Omit to keep the normal model. */
+  model?: string;
+  /** Reasoning effort in max mode. Omit to keep the normal effort. */
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 }
 
 /**
  * Agent definition. A task runs exactly one agent — the PM — so in practice
  * this describes the PM: `getPmDef()` in `src/agents/registry.ts` is the only
  * thing that builds one. Rebuilt at startup and on every task start/restart so
- * a changed plugin overlay is picked up.
+ * a changed plugins-repo root is picked up.
  */
-/**
- * Per-agent "max mode" spec from `metadata.archie.maxMode`. Applied only when
- * the task has max mode approved; see resolveAgentModel / resolveAgentEffort.
- */
-export interface MaxModeSpec {
-  /** Model to run on in max mode (e.g. 'claude-fable-5-1'). Omit to keep the normal model. */
-  model?: string;
-  /** Reasoning effort in max mode. Omit to use the default (repo/dynamic → 'max'). */
-  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-}
-
 export interface AgentDef {
   /** Unique agent identifier, e.g., 'backend-agent', 'pm-agent' */
   id: string;
@@ -113,11 +102,10 @@ export interface AgentDef {
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
   /**
-   * Per-agent "max mode" upgrade, from `metadata.archie.maxMode` in frontmatter.
-   * When the task has max mode approved, these override the agent's normal
-   * model/effort (see resolveAgentModel / resolveAgentEffort). Absent → repo/
-   * dynamic agents default to max effort with the model unchanged; generic
-   * agents and the PM are unchanged.
+   * Max-mode upgrade. When the task has max mode approved these override the
+   * agent's normal model and effort (see resolveAgentModel /
+   * resolveAgentEffort). The PM's come from the engine constants in
+   * `registry.ts`, overridable by `ARCHIE_PM_MAX_MODEL` / `ARCHIE_PM_MAX_EFFORT`.
    */
   maxMode?: MaxModeSpec;
 
@@ -151,21 +139,6 @@ export interface AgentDef {
   /** Repo-specific fields — set only when the agent has repo access */
   repo?: AgentRepoDef;
 
-  /** Absolute path to plugin directory (not set on the PM coordinator) */
-  pluginPath?: string;
-
-  /** Absolute path to plugin's persistent data directory (workdir/plugins-data/<name>/) */
-  pluginDataPath?: string;
-
-  /** Ordered, deduplicated list of absolute skill directories to symlink into the agent workspace. Plugin skills come first, so a plugin shadows a core skill of the same name. Built by resolveSkillPaths in src/agents/core-skills.ts. */
-  skillPaths?: string[];
-
-  /** PM-specific fields (PM only) — built dynamically from team */
-  pmConfig?: AgentPmDef;
-
-  /** Extra prompt from pm plugin overlay (PM only) */
-  pmOverlayPrompt?: string;
-
   /** MCP server configs resolved from plugin's .mcp.json (server name → config) */
   mcpServers?: Record<string, any>;
 
@@ -182,11 +155,8 @@ export interface AgentDef {
   /** Tools to disallow (from agent frontmatter) */
   disallowedTools?: string[];
 
-  /** Sandbox outbound-network whitelist (from agent frontmatter). Empty/undefined = deny all. */
+  /** Sandbox outbound-network whitelist (from archie.json). Empty/undefined = deny all. */
   allowedNetworkDomains?: string[];
-
-  /** Plugin hooks config (from plugin's hooks/hooks.json), written to .claude/settings.json */
-  pluginHooks?: Record<string, any>;
 }
 
 // ---- Capability predicates ----

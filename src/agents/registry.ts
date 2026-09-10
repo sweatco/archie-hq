@@ -19,16 +19,20 @@ import { deniedToolNames } from './tool-approval-gate.js';
 
 // ---- Engine constants ----
 //
-// The PM's model and effort are engine-owned, not plugin-owned. The defaults
-// are exactly what the `pm` plugin overlay resolved to before the flattening
-// (`model: opus`, `effort: high`), so behaviour is unchanged out of the box.
-// Max mode is likewise unchanged by default — the PM kept its normal model and
-// effort under max mode before, and still does unless a deployment opts in.
+// The PM's model and effort are engine-owned, not plugin-owned. The normal
+// defaults are exactly what the `pm` plugin overlay resolved to before the
+// flattening (`model: opus`, `effort: high`).
+//
+// Max mode gets the upgrade the REPO AGENTS carried before, because the PM now
+// does the work they used to: max mode is what a user reaches for when the
+// default run was not good enough, and leaving the PM on its normal model made
+// the approval a no-op for exactly the coding and investigation work the
+// upgrade exists for.
 
 const PM_MODEL = process.env.ARCHIE_PM_MODEL?.trim() || 'opus';
 const PM_EFFORT = process.env.ARCHIE_PM_EFFORT?.trim() || 'high';
-const PM_MAX_MODEL = process.env.ARCHIE_PM_MAX_MODEL?.trim() || PM_MODEL;
-const PM_MAX_EFFORT = process.env.ARCHIE_PM_MAX_EFFORT?.trim() || PM_EFFORT;
+const PM_MAX_MODEL = process.env.ARCHIE_PM_MAX_MODEL?.trim() || 'claude-fable-5-1';
+const PM_MAX_EFFORT = process.env.ARCHIE_PM_MAX_EFFORT?.trim() || 'high';
 
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 

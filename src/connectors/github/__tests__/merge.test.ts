@@ -147,7 +147,10 @@ describe('checkAndMergeLinkedPRs — non-auto policy (AC1)', () => {
     expect(notifiers).toHaveLength(1);
     const notifier = notifiers[0]!;
     expect(notifier.sendMessage).toHaveBeenCalledTimes(1);
-    expect(notifier.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask);
+    // The wake carries the notice itself, not a pointer at knowledge.log.
+    const woken = String(notifier.sendMessage.mock.calls[0]![0]);
+    expect(woken).toBe(AGENT_PROMPTS.systemNotice(String(notifications[0]![2])));
+    expect(woken).toContain('org/backend#42');
 
     // The marker was set on the same instance that activated, and flushed
     // synchronously (save(true)) before the activating sendMessage — a
