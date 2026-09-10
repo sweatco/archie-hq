@@ -50,12 +50,10 @@ const TS = '1750000000.000100';
 function metadata(over: Partial<TaskMetadata> = {}): TaskMetadata {
   return {
     task_id: 't1',
-    task_owner: null,
-    participants: [],
     channels: {},
     default_channel: null,
     agent_sessions: {},
-    repositories: {},
+    repositories: [],
     ...over,
   } as unknown as TaskMetadata;
 }

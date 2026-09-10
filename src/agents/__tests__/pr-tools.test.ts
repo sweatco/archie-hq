@@ -112,41 +112,27 @@ function makeAgent(overrides: Partial<AgentDef> = {}): Agent {
 function makeTask(overrides: Partial<Task['metadata']> = {}): Task {
   return {
     taskId: 'task-123',
-    team: [
-      {
-        id: 'backend-agent', key: 'backend', role: 'Backend engineer', expertise: 'Node.js',
-        pluginName: 'engineering', visibility: 'global',
-        repo: { repos: [{ github: 'org/backend', baseBranch: 'main' }], primary: 'org/backend' },
-      },
-      {
-        id: 'mobile-agent', key: 'mobile', role: 'Mobile engineer', expertise: 'Mobile',
-        pluginName: 'engineering', visibility: 'global',
-        repo: { repos: [{ github: 'org/mobile', baseBranch: 'main' }], primary: 'org/mobile' },
-      },
-    ],
+    pmDef: { id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', isPm: true, pluginName: 'pm' },
     metadata: {
-      repositories: {
-        'backend-agent': [
-          {
-            github: 'org/backend',
-            clone_path: '/clones/backend',
-            current_branch: 'feature/task-123',
-            branch_states: {
-              'feature/task-123': {
-                base_branch: 'main',
-              },
+      repositories: [
+        {
+          github: 'org/backend',
+          clone_path: '/clones/backend',
+          current_branch: 'feature/task-123',
+          branch_states: {
+            'feature/task-123': {
+              base_branch: 'main',
             },
           },
-        ],
-      },
+        },
+      ],
       edit_allowed: true,
       status: 'active',
       channels: {},
-      participants: [],
       agent_sessions: {},
       ...overrides,
     },
-    agentProcesses: new Map(),
+    agent: undefined as unknown,
     touch: vi.fn(),
     debouncedSave: vi.fn(),
     suspendStatus: vi.fn(),
@@ -154,8 +140,6 @@ function makeTask(overrides: Partial<Task['metadata']> = {}): Task {
     postInteractiveToUser: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
     complete: vi.fn().mockResolvedValue(undefined),
-    toolSendMessage: vi.fn().mockResolvedValue('ok'),
-    getAgentStatus: vi.fn().mockReturnValue([]),
     updateAgentState: vi.fn(),
     checkResearchBudget: vi.fn().mockReturnValue(true),
     incrementResearchCount: vi.fn(),
@@ -253,7 +237,7 @@ describe('merge_pull_request', () => {
     expect(result.content[0].text).toContain('merged successfully');
   });
 
-  it('uses githubRepo from agent def', async () => {
+  it('targets the repo named in the github argument', async () => {
     mockGitHubClient.getPRStatus.mockResolvedValue({
       state: 'open', mergeable: true, mergeableState: 'clean', approved: true,
     });
@@ -261,15 +245,31 @@ describe('merge_pull_request', () => {
       success: true, message: 'PR #7 merged successfully',
     });
 
-    const agent = makeAgent({
-      id: 'mobile-agent',
-      repo: { repos: [{ github: 'org/mobile', baseBranch: 'main', autoMerge: false }], primary: 'org/mobile' },
+    const task = makeTask({
+      repositories: [
+        { github: 'org/backend', clone_path: '/clones/backend' },
+        { github: 'org/mobile', clone_path: '/clones/mobile' },
+      ],
     });
-    const tool = getRepoTool(agent, makeTask(), 'merge_pull_request');
-    await tool({ pr_number: 7 }, {});
+    const tool = getRepoTool(makeAgent(), task, 'merge_pull_request');
+    await tool({ pr_number: 7, github: 'org/mobile' }, {});
 
     expect(mockGitHubClient.getPRStatus).toHaveBeenCalledWith('org/mobile', 7);
     expect(mockGitHubClient.mergePullRequest).toHaveBeenCalledWith('org/mobile', 7);
+  });
+
+  it('refuses when several repos are mounted and no github argument is given', async () => {
+    const task = makeTask({
+      repositories: [
+        { github: 'org/backend', clone_path: '/clones/backend' },
+        { github: 'org/mobile', clone_path: '/clones/mobile' },
+      ],
+    });
+    const tool = getRepoTool(makeAgent(), task, 'merge_pull_request');
+    const result = await tool({ pr_number: 7 }, {});
+
+    expect(result.content[0].text).toContain('Several repos are mounted');
+    expect(mockGitHubClient.getPRStatus).not.toHaveBeenCalled();
   });
 
   it('throws when GitHub client is not configured', async () => {
@@ -394,7 +394,7 @@ describe('merge_pull_request — policy gating', () => {
 
     const agent = makeMergeAgent();
     const task = makeTask();
-    (task.agentProcesses as Map<string, Agent>).set('backend-agent', agent);
+    (task as { agent?: Agent }).agent = agent;
     const tool = getRepoTool(agent, task, 'merge_pull_request');
 
     await tool({ pr_number: 42 }, {});
@@ -405,17 +405,15 @@ describe('merge_pull_request — policy gating', () => {
     expect((agent as any).deferTeardown).toHaveBeenCalledTimes(1);
   });
 
-  it('concurrent agent: a different agent holding the pending teardown blocks supersede', async () => {
+  it('a live pending teardown blocks supersede of a fresh request', async () => {
     const agent = makeMergeAgent();
     const task = makeTask({
       pending_merge_approval: {
         github: 'org/backend', pr_number: 1,
-        requested_by: 'mobile-agent', requested_at: '2026-07-06T00:00:00.000Z',
+        requested_by: 'pm-agent', requested_at: '2026-07-06T00:00:00.000Z',
       },
     });
-    (task.agentProcesses as Map<string, unknown>).set('mobile-agent', {
-      pendingTeardown: () => Promise.resolve(),
-    });
+    (task as { agent?: unknown }).agent = { pendingTeardown: () => Promise.resolve() };
     const tool = getRepoTool(agent, task, 'merge_pull_request');
 
     const result = await tool({ pr_number: 2 }, {});
@@ -434,10 +432,9 @@ describe('merge_pull_request — policy gating', () => {
     const task = makeTask({
       pending_merge_approval: {
         github: 'org/backend', pr_number: 42,
-        requested_by: 'backend-agent', requested_at: '2026-07-06T00:00:00.000Z',
+        requested_by: 'pm-agent', requested_at: '2026-07-06T00:00:00.000Z',
       },
     });
-    (task.agentProcesses as Map<string, Agent>).set('backend-agent', agent);
     const tool = getRepoTool(agent, task, 'merge_pull_request');
 
     const result = await tool({ pr_number: 42 }, {});
@@ -455,10 +452,9 @@ describe('merge_pull_request — policy gating', () => {
     const task = makeTask({
       pending_merge_approval: {
         github: 'org/backend', pr_number: 1,
-        requested_by: 'backend-agent', requested_at: '2026-07-06T00:00:00.000Z',
+        requested_by: 'pm-agent', requested_at: '2026-07-06T00:00:00.000Z',
       },
     });
-    (task.agentProcesses as Map<string, Agent>).set('backend-agent', agent);
     const tool = getRepoTool(agent, task, 'merge_pull_request');
 
     const result = await tool({ pr_number: 2 }, {});

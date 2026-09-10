@@ -102,12 +102,10 @@ describe('metadata round-trip — pending_merge_approval', () => {
     };
     const metadata: TaskMetadata = {
       task_id: taskId,
-      task_owner: null,
-      participants: [],
       channels: {},
       default_channel: null,
       agent_sessions: {},
-      repositories: {},
+      repositories: [],
       status: 'in_progress',
       pending_merge_approval: slot,
       created_at: '2026-07-06T00:00:00.000Z',
@@ -127,12 +125,10 @@ describe('metadata round-trip — pending_merge_approval', () => {
     const taskId = 'task-no-merge-approval';
     const metadata: TaskMetadata = {
       task_id: taskId,
-      task_owner: null,
-      participants: [],
       channels: {},
       default_channel: null,
       agent_sessions: {},
-      repositories: {},
+      repositories: [],
       status: 'in_progress',
       created_at: '2026-07-06T00:00:00.000Z',
       updated_at: '2026-07-06T00:00:00.000Z',

@@ -51,15 +51,13 @@ async function writeTask(taskId: string, metadata: Record<string, unknown>): Pro
 function repoTask(branch: string, prNumber?: number): Record<string, unknown> {
   return {
     status: 'in_progress',
-    repositories: {
-      backend: [
-        {
-          github: 'sweatco/api',
-          branch,
-          branch_states: { [branch]: prNumber !== undefined ? { pr_number: prNumber } : {} },
-        },
-      ],
-    },
+    repositories: [
+      {
+        github: 'sweatco/api',
+        branch,
+        branch_states: { [branch]: prNumber !== undefined ? { pr_number: prNumber } : {} },
+      },
+    ],
   };
 }
 

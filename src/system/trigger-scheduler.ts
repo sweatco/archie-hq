@@ -447,7 +447,7 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
   }
 
   logger.system(`Trigger ${trigger.id} fired (${context.kind}) → task ${task.taskId}`);
-  await task.sendMessage(AGENT_PROMPTS.triggered(seed, reason), 'pm-agent');
+  await task.sendMessage(AGENT_PROMPTS.triggered(seed, reason));
 
   trigger.last_fired_at = new Date().toISOString();
   await saveTrigger(trigger);

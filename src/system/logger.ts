@@ -7,7 +7,6 @@
 
 import { relative } from 'path';
 import pc from 'picocolors';
-import type { AgentName } from '../types/index.js';
 
 // Project root path to trim from all file paths
 const PROJECT_ROOT = process.cwd();
@@ -35,7 +34,6 @@ const AGENT_COLORS: Record<string, (s: string) => string> = {
   'pm-agent': pc.magenta,
   'backend-agent': pc.green,
   'mobile-agent': pc.cyan,
-  'triage-agent': pc.yellow,
 };
 
 

@@ -1,14 +1,14 @@
 /**
  * Message Queue Implementation
  *
- * Provides async message queuing for agent communication.
- * Messages are queued and consumed via async generators for streaming input to agents.
+ * The task's inbound channel to its agent: webhooks, approvals, reminders and
+ * recovery nudges are enqueued here and consumed via an async generator that
+ * streams them into the SDK session.
  */
 
 interface QueuedMessage {
   content: string;
   timestamp: string;
-  from?: string;
 }
 
 interface PendingResolver {
@@ -24,7 +24,7 @@ export class MessageQueue {
   /**
    * Add a message to the queue
    */
-  addMessage(content: string, from?: string): void {
+  addMessage(content: string): void {
     if (this.stopped) {
       throw new Error('Queue has been stopped');
     }
@@ -32,7 +32,6 @@ export class MessageQueue {
     const message: QueuedMessage = {
       content,
       timestamp: new Date().toISOString(),
-      from,
     };
 
     // If there's a pending resolver waiting for a message, resolve it immediately
@@ -105,7 +104,7 @@ export class MessageQueue {
   /**
    * Add a message to the front of the queue (for replaying on retry)
    */
-  prependMessage(content: string, from?: string): void {
+  prependMessage(content: string): void {
     if (this.stopped) {
       throw new Error('Queue has been stopped');
     }
@@ -113,7 +112,6 @@ export class MessageQueue {
     const message: QueuedMessage = {
       content,
       timestamp: new Date().toISOString(),
-      from,
     };
 
     this.messages.unshift(message);
@@ -148,7 +146,7 @@ function formatMessageAsInput(msg: QueuedMessage, sessionId: string): SDKUserMes
     type: 'user' as const,
     message: {
       role: 'user' as const,
-      content: msg.from ? `[From ${msg.from}]: ${msg.content}` : msg.content,
+      content: msg.content,
     },
     parent_tool_use_id: null,
     session_id: sessionId,
@@ -190,7 +188,7 @@ export function createRecoverableInputGenerator(
     reset() {
       // Put messages back in reverse order so they end up in original order
       for (let i = consumed.length - 1; i >= 0; i--) {
-        queue.prependMessage(consumed[i].content, consumed[i].from);
+        queue.prependMessage(consumed[i].content);
       }
       consumed = [];
     },

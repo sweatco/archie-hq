@@ -1,11 +1,10 @@
 /**
- * Unified Agent Spawner
+ * Agent Spawner
  *
- * Single spawnAgent(agent, task) function replaces three separate spawners
- * (pm.ts, repo-agent.ts, plugin-agent.ts). One agent model: a plain plugin
- * agent gains repo access when it has `repo` attached, and the PM coordinator
- * is the one agent with `isPm`. Branches on those capabilities for model, CWD,
- * prompt, tools, edit mode, and skills.
+ * A task runs exactly one agent — the PM — so `spawnAgent(agent, task)` has one
+ * shape: workspace, prompt, context block, MCP servers, sandbox, hooks, query
+ * options. Everything the PM delegates runs as an SDK subagent inside this same
+ * session and process.
  *
  * Session recovery pattern (try with session → reset → retry → give up) written once.
  */
@@ -17,27 +16,20 @@ import { randomUUID } from 'node:crypto';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Agent } from './agent.js';
 import type { Task } from '../tasks/task.js';
-import { isRepoAgent, isPmAgent } from '../types/agent.js';
 import { buildCommitAuthorEnv } from './commit-author.js';
 import { coreSkillPaths } from './core-skills.js';
 import { resolveAgentModel, resolveAgentEffort } from './model-label.js';
 import {
-  createBaseAgentMcpServer,
-  createRepoToolsMcpServer,
   createCommsMcpServer,
   createOrchestrationMcpServer,
   createSchedulingMcpServer,
 } from './tools.js';
 import { createFileBridgeMcpServer, shouldAttachFileBridge } from './mcp-file-bridge.js';
 import { createToolApprovalHooks, mcpToolName } from './tool-approval-gate.js';
-import { hydrateBranchState } from '../connectors/github/branch-state.js';
-import { taskBranchName } from '../connectors/github/branch-naming.js';
 import { createResearchMcpServer, createResearchPostToolHook, createResearchDefenseTagHook } from '../mcp/research-tools.js';
-import { buildPeerListForSender } from './registry.js';
 import {
   getSharedPath,
   getTaskPath,
-  getAgentClonePath,
   appendUsageRecord,
   readKnowledgeLog,
 } from '../tasks/persistence.js';
@@ -46,8 +38,7 @@ import { ensureTriggerDataDir } from '../system/trigger-store.js';
 import {
   createRecoverableInputGenerator,
 } from './message-queue.js';
-import { setupSharedClone, cloneExists, type CloneCheckout } from '../connectors/github/repo-clone.js';
-import { configureGitIdentity, getArchieAttributionIdentity } from '../connectors/github/client.js';
+import { getArchieAttributionIdentity } from '../connectors/github/client.js';
 import { buildChannelCanvasPromptSection } from '../connectors/slack/channel-canvas.js';
 import { buildChannelPinsPromptSection } from '../connectors/slack/channel-pins.js';
 import { resolvePeopleFromTranscript } from '../connectors/slack/client.js';
@@ -60,59 +51,38 @@ import { grantTriggerDataAccess, buildTriggerDataPromptSection } from './trigger
 import { applyOAuthBindings } from '../system/oauth/inject.js';
 import { enrichPromptWithMemory, isMemoryEnabled, isInjectionEnabled } from '../memory/index.js';
 
-// ---- Prompt generation (per agent kind) ----
+/**
+ * The write side of `repo-tools`, withheld until edit mode is approved. The
+ * sandbox is the other half of the gate — see the `denyWritePaths` below.
+ */
+const REPO_WRITE_TOOLS = [
+  'mcp__repo-tools__push_branch',
+  'mcp__repo-tools__create_pull_request',
+  'mcp__repo-tools__update_pr',
+  'mcp__repo-tools__add_pr_comment',
+  'mcp__repo-tools__add_review_comment',
+  'mcp__repo-tools__reply_to_review_comment',
+  'mcp__repo-tools__resolve_review_thread',
+  'mcp__repo-tools__request_re_review',
+  'mcp__repo-tools__merge_pull_request',
+  'mcp__repo-tools__close_pull_request',
+  'mcp__repo-tools__create_branch',
+];
+
+// ---- Prompt generation ----
 
 async function generatePMPrompt(task: Task): Promise<string> {
-  const pmDef = task.team.find(isPmAgent);
+  // TODO(flat): TEAM_LIST / TEAM_EXPERTISE are passed empty so a template that
+  // still carries the placeholders renders nothing rather than literal braces.
+  // Drop both once W1-prompt's rewritten `pm-agent.md` has removed them.
   return loadPrompt('pm-agent', {
-    TEAM_LIST: pmDef?.pmConfig?.teamList ?? '',
-    TEAM_EXPERTISE: pmDef?.pmConfig?.teamExpertise ?? '',
-    PM_INTEGRATIONS: pmDef?.pmConfig?.pmIntegrations ?? '',
+    TEAM_LIST: '',
+    TEAM_EXPERTISE: '',
+    PM_INTEGRATIONS: task.pmDef.pmConfig?.pmIntegrations ?? '',
   });
 }
 
-async function generateRepoAgentPrompt(agent: Agent, task: Task): Promise<string> {
-  const def = agent.def;
-  const peerList = buildPeerListForSender(def, task.team);
-
-  const corePrompt = await loadPrompt('agent-core', {
-    AGENT_ID: def.id,
-    AGENT_ROLE: def.role,
-    EXPERTISE: def.expertise,
-    PEER_LIST: peerList,
-  });
-
-  // Per-repo data — github, base branch, current branch, clone path, mode — is
-  // surfaced through the dynamic Current Context block (built per spawn in the
-  // repo-agent branch of spawnAgent), not via static template variables here.
-  // The repo-agent prompt is generic; instances differ only in what their
-  // Current Context lists.
-  const repoPrompt = await loadPrompt('repo-agent', {});
-
-  const layers = [corePrompt, repoPrompt];
-  if (def.agentPrompt) layers.push(def.agentPrompt);
-  return layers.join('\n\n');
-}
-
-async function generatePluginAgentPrompt(agent: Agent, task: Task): Promise<string> {
-  const def = agent.def;
-  const peerList = buildPeerListForSender(def, task.team);
-
-  const corePrompt = await loadPrompt('agent-core', {
-    AGENT_ID: def.id,
-    AGENT_ROLE: def.role,
-    EXPERTISE: def.expertise,
-    PEER_LIST: peerList,
-  });
-
-  const pluginPrompt = await loadPrompt('plugin-agent', {});
-
-  const layers = [corePrompt, pluginPrompt];
-  if (def.agentPrompt) layers.push(def.agentPrompt);
-  return layers.join('\n\n');
-}
-
-// ---- Plugin agent workspace setup ----
+// ---- Workspace setup ----
 
 async function setupAgentWorkspace(taskId: string, agent: Agent): Promise<string> {
   const agentWorkspace = join(getTaskPath(taskId), 'agents', agent.def.key);
@@ -126,7 +96,7 @@ async function setupAgentWorkspace(taskId: string, agent: Agent): Promise<string
   if (skillPaths.length > 0) {
     const agentSkillsDir = join(claudeDir, 'skills');
     for (const skillPath of skillPaths) {
-      // The list is a scan-time snapshot, so re-check the source here at mount time. The plugins clone can be reset between scanAgentDefs() and this spawn (refreshPlugins does a git reset --hard), and symlink(2) does not validate its target — so mounting a since-removed skill would create a DANGLING link. That link then wedges the agent permanently: on the next spawn into this same workspace existsSync(target) follows the link, reports false, and symlink() throws EEXIST out of a path that does not catch it. The old loop got this check for free because it enumerated the directory here rather than trusting a snapshot.
+      // The list is a scan-time snapshot, so re-check the source here at mount time. The plugins clone can be reset between the definition scan and this spawn (refreshPlugins does a git reset --hard), and symlink(2) does not validate its target — so mounting a since-removed skill would create a DANGLING link. That link then wedges the agent permanently: on the next spawn into this same workspace existsSync(target) follows the link, reports false, and symlink() throws EEXIST out of a path that does not catch it. The old loop got this check for free because it enumerated the directory here rather than trusting a snapshot.
       if (!existsSync(skillPath)) continue;
       const target = join(agentSkillsDir, basename(skillPath));
       if (!existsSync(target)) {
@@ -225,8 +195,7 @@ export async function buildTaskPeopleSection(taskId: string): Promise<string> {
 // ---- Main spawner ----
 
 /**
- * Spawn an agent. Branches on the agent's capabilities (PM coordinator vs. repo
- * access vs. plain plugin) for all behavior. Sets agent.handle on success.
+ * Spawn the task's agent. Sets agent.handle on success.
  */
 export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   const { def } = agent;
@@ -234,9 +203,9 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   const metadata = task.metadata;
   const sharedPath = getSharedPath(taskId);
 
-  // Mark active before any heavy work (clone setup, MCP init) to prevent
-  // false idle detection — recovery fires at 3s, MCP connections can take longer
-  task.updateAgentState(def.id, true);
+  // Mark active before any heavy work (MCP init) to prevent false idle
+  // detection — recovery fires at 3s, MCP connections can take longer
+  task.updateAgentState(true);
 
   // ---- SDK config/tmp dirs (agent reads tool-results from here) ----
   // Only create for new tasks. Old tasks recovering won't have <taskId>/claude/
@@ -253,23 +222,16 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   }
   const useClaudeDirs = hasClaudeDirs || !agent.session.session_id;
 
-  // ---- Shared scaffolding (all agents) ----
-  //
-  // Every agent gets a workspace, the same research-tools server, the same base
-  // tool set, and the same base filesystem boundaries. Repo access and the PM
-  // coordinator role are layered on top of this.
+  // ---- Scaffolding ----
 
   const workspace = await setupAgentWorkspace(taskId, agent);
   const cwd = workspace;
-  // Default non-PM agents to sonnet with the 1M context window. The `[1m]`
-  // suffix is how the SDK enables it (it strips the suffix and adds the
-  // `context-1m-2025-08-07` beta); plain `sonnet` caps at 200K and overflows
-  // on the large injected system prompt. Opus is 1M natively, no suffix needed.
-  // (Resolution shared with the footer via resolveAgentModel.)
+  // The PM's model/effort come from engine constants (see registry.ts), which
+  // an operator can override with ARCHIE_PM_MODEL / ARCHIE_PM_EFFORT.
   // "Max mode": a task-lifetime, human-approved upgrade (see request_max_mode /
-  // handleMaxModeApproval). When on, resolveAgentModel/Effort apply the agent's
-  // maxMode overrides — repo/dynamic agents default to max effort; a model swap
-  // (e.g. Fable) is a per-agent frontmatter opt-in.
+  // handleMaxModeApproval). When on, resolveAgentModel/Effort apply the
+  // ARCHIE_PM_MAX_* constants; by default those equal the base pair, so max
+  // mode is a no-op unless a deployment opts in.
   const maxMode = metadata.max_mode === true;
   const model = resolveAgentModel(def, maxMode);
   const effort = resolveAgentEffort(def, maxMode);
@@ -299,17 +261,32 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     getCallerAgentId: () => def.id,
     checkResearchBudget: () => task.checkResearchBudget(),
     incrementResearchCount: () => task.incrementResearchCount(),
-    onResearchBudgetExceeded: () => task.onResearchBudgetExceeded(agent),
+    onResearchBudgetExceeded: () => task.onResearchBudgetExceeded(),
   });
 
-  // ---- Per-agent config ----
-  //
-  // Defaults describe the plain plugin agent. The PM coordinator and repo
-  // agents deviate from these in their branches below; anything they don't
-  // touch keeps the default.
+  // ---- Session config ----
 
-  let systemPrompt: string;
-  let additionalDirectories: string[] = [sharedPath, ...pluginPaths];
+  const editAllowed = metadata.edit_allowed === true;
+  // Record what edit mode this process is being built under. The sandbox mount
+  // and repo-tool allowlist below are frozen from this snapshot, so `ensurePm`
+  // can compare it against the live flag and re-spawn an agent that booted
+  // read-only just as edit mode was approved.
+  agent.editModeAtSpawn = editAllowed;
+
+  // Clones this task has mounted (created by `mount_repo`). Empty until the PM
+  // mounts something, and empty again after a read-only teardown removed them.
+  const repoMounts = metadata.repositories
+    .filter((att) => !!att.clone_path)
+    .map((att) => ({
+      github: att.github,
+      clonePath: att.clone_path!,
+      baseObjectsPath: join(att.base_path || getBaseCachePath(att.github), '.git', 'objects'),
+      currentBranch: att.current_branch,
+    }));
+  const clonePaths = repoMounts.map((m) => m.clonePath);
+
+  let systemPrompt = await generatePMPrompt(task);
+  const additionalDirectories: string[] = [...clonePaths, sharedPath, ...pluginPaths];
   // Cron* are harness tools that only live for the current Claude session — they
   // die when the agent's ephemeral subprocess exits (which is every time a turn
   // ends), so a scheduled job never fires. An agent reaching for them to "monitor"
@@ -317,34 +294,56 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   // set a self-re-arming cron that died at turn-end and never woke for 6 days).
   // Block them so agents use the durable `set_reminder` instead. Native recurring
   // triggers are planned separately.
-  let disallowedTools: string[] = [
+  const disallowedTools: string[] = [
     'WebSearch', 'WebFetch',
     'CronCreate', 'CronList', 'CronDelete',
     ...(def.disallowedTools || []),
+    // Edit mode is a per-task, one-way gate: before approval the write side of
+    // repo-tools is absent, exactly as it was for repo agents. The sandbox
+    // below is the other half — it keeps the clones read-only until approval.
+    ...(editAllowed ? [] : REPO_WRITE_TOOLS),
   ];
+
+  // Read-only paths that stay read-only in both modes.
+  const readOnlyPaths = [
+    sharedPath,
+    ...repoMounts.map((m) => m.baseObjectsPath),
+    ...pluginReadPaths,
+    ...coreSkillReadPaths,
+  ];
+  // `.git/HEAD` stays deny-write even in edit mode so branch movement has to go
+  // through switch_branch / create_branch rather than a raw `git checkout`.
+  const cloneGitHeads = clonePaths.map((c) => join(c, '.git', 'HEAD'));
   let sandboxOpts: SandboxOptions = {
     cwd,
     denyReadPaths: [WORKDIR],
-    allowReadPaths: [workspace, sharedPath, ...claudeReadDirs, ...pluginReadPaths, ...coreSkillReadPaths],
-    // CACHES_DIR is shared by every agent and must be writable, or package
-    // managers hit the EROFS that buildPackageManagerCacheEnv exists to avoid.
+    allowReadPaths: [workspace, ...clonePaths, ...claudeReadDirs, ...readOnlyPaths],
+    // CACHES_DIR must be writable, or package managers hit the EROFS that
+    // buildPackageManagerCacheEnv exists to avoid — in both modes, since a
+    // read-only task still runs typecheck/test.
     // allowWrite only: writable implies readable here. The one thing it costs is the artifact tools, which validate allowReadPaths alone — see sandbox.ts.
-    allowWritePaths: [workspace, CACHES_DIR, ...claudeWriteDirs],
-    denyWritePaths: [sharedPath, ...pluginPaths, ...protectedWorkspaceFiles],
-    allowedNetworkDomains: def.allowedNetworkDomains,
+    allowWritePaths: editAllowed
+      ? [workspace, CACHES_DIR, ...clonePaths, ...claudeWriteDirs]
+      : [workspace, CACHES_DIR, ...claudeWriteDirs],
+    denyWritePaths: editAllowed
+      ? [...readOnlyPaths, ...protectedWorkspaceFiles, ...cloneGitHeads]
+      : [...clonePaths, ...readOnlyPaths, ...protectedWorkspaceFiles],
+    // In edit mode the sandbox may reach the trusted package registries so the
+    // session can run installs / regenerate lockfiles. Read-only tasks stay
+    // network-denied beyond the agent's own allowlist. The list is a curated
+    // constant — see TRUSTED_PACKAGE_REGISTRY_DOMAINS.
+    allowedNetworkDomains: [
+      ...(def.allowedNetworkDomains ?? []),
+      ...(editAllowed ? TRUSTED_PACKAGE_REGISTRY_DOMAINS : []),
+    ],
   };
-  // Base servers every agent gets; branches add their own (repo-tools, the PM
-  // coordinator servers, etc.) on top.
   const mcpServers: Record<string, any> = {
     ...(def.mcpServers || {}),
-    'agent-tools': createBaseAgentMcpServer(agent, task),
     'research-tools': researchServer,
   };
 
-  if (isPmAgent(def)) {
-    // ---- PM coordinator ----
-    systemPrompt = await generatePMPrompt(task);
-
+  // ---- Current Task Context block ----
+  {
     const channelEntries = Object.entries(metadata.channels);
     const renderChannel = (id: string, ch: typeof metadata.channels[string]): string => {
       if (ch.type === 'slack') {
@@ -375,10 +374,6 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
         contextLines.push(`Default channel: ${renderChannel(metadata.default_channel, metadata.channels[metadata.default_channel])}`);
       }
     }
-    contextLines.push(
-      `Task Owner: ${metadata.task_owner || 'Not assigned'}`,
-      `Participants: ${metadata.participants.join(', ') || 'None yet'}`,
-    );
     if (metadata.reminder) {
       contextLines.push(`Reminder: ${metadata.reminder.trigger_at} — ${metadata.reminder.reason}`);
     }
@@ -394,13 +389,19 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     const inSharedChannel = Object.values(metadata.channels).some(
       (ch) => ch.type === 'slack' && ch.isShared === true,
     );
+    const repoMode = editAllowed ? 'READ-WRITE' : 'READ-ONLY';
+    const repoSection = repoMounts.length > 0
+      ? `\nRepositories mounted in this task [${repoMode}]:\n` +
+        repoMounts.map((m) => `  - ${m.github}\n    path: ${m.clonePath}` +
+          (m.currentBranch ? `\n    branch: ${m.currentBranch}` : '')).join('\n') + '\n'
+      : '';
     const context = `
 ${contextLines.join('\n')}
 
 Working directory (cwd): ${workspace} [READ-WRITE]
-
+${repoSection}
 Shared folder: ${sharedPath} [READ-ONLY]
-  - knowledge.log — conversation history and agent findings
+  - knowledge.log — conversation history and findings
   - metadata.json — task metadata
 `;
     systemPrompt = `${systemPrompt}\n\nCurrent Task Context:\n${context}`;
@@ -417,221 +418,51 @@ Shared folder: ${sharedPath} [READ-ONLY]
       systemPrompt = `${systemPrompt}\n\n${def.pmOverlayPrompt}`;
     }
 
-    mcpServers['comms-tools'] = createCommsMcpServer(agent, task);
-    mcpServers['orchestration-tools'] = createOrchestrationMcpServer(agent, task);
-    mcpServers['scheduling-tools'] = createSchedulingMcpServer(agent, task);
-  } else if (isRepoAgent(def)) {
-    // ---- Repo access attached ----
-    const editAllowed = metadata.edit_allowed === true;
-    // Record what edit mode this process is being built under. The sandbox mount
-    // and repo-tool allowlist below are frozen from this snapshot, so Agent.spawn
-    // can compare it against the live flag to detect (and re-spawn) an agent that
-    // booted read-only just as edit mode was approved.
-    agent.editModeAtSpawn = editAllowed;
-
-    // Ensure metadata.repositories[agentId] is an array; defaults to [primary]
-    // on first spawn so single-repo behaviour matches the pre-v30 world.
-    let attached = metadata.repositories[def.id];
-    if (!Array.isArray(attached)) {
-      attached = [];
-      metadata.repositories[def.id] = attached;
-    }
-    // Eager mount: every repo the agent declares in frontmatter is mounted at
-    // spawn. Ensure each declared repo has an attachment record (preserving
-    // existing clone/branch state for repos already present — important for
-    // recovering an old task after its agent gained a new repo in frontmatter).
-    // We iterate the DECLARED list (not the metadata list) so a repo removed
-    // from frontmatter is simply no longer mounted; a stale metadata record for
-    // it is harmless and left in place.
-    for (const entry of def.repo!.repos) {
-      if (!attached.some((a) => a.github === entry.github)) {
-        attached.push({ github: entry.github });
-      }
-    }
-
-    // Set up each declared repo: prepare clone, hydrate branch state.
-    const repoMounts: Array<{ github: string; clonePath: string; baseObjectsPath: string; currentBranch: string; baseBranch: string }> = [];
-    for (const entry of def.repo!.repos) {
-      const att = attached.find((a) => a.github === entry.github)!;
-      const baseBranch = entry.baseBranch || 'main';
-      // Prefer the base path the clone was actually built against — that's
-      // what alternates points at. Migrated old tasks carry the legacy base
-      // (`$ARCHIE_WORKDIR/repos/<short-key>/`); fresh clones default to the
-      // current github-nested layout. Pin it back into metadata so the value
-      // stays the single source of truth.
-      const baseRepoPath = att.base_path || getBaseCachePath(att.github);
-      att.base_path = baseRepoPath;
-      const baseObjectsPath = join(baseRepoPath, '.git', 'objects');
-      const desiredClonePath = getAgentClonePath(taskId, def.id, att.github);
-
-      let clonePath: string;
-      if (att.clone_path && await cloneExists(att.clone_path)) {
-        clonePath = att.clone_path;
-        logger.agent(def.id, `Reusing existing clone at ${clonePath} (${att.github})`, { editMode: editAllowed });
-      } else if (await cloneExists(desiredClonePath)) {
-        clonePath = desiredClonePath;
-        att.clone_path = clonePath;
-        logger.agent(def.id, `Reusing existing clone at ${clonePath} (${att.github})`, { editMode: editAllowed });
-      } else {
-        const previousBranch = att.current_branch;
-        const wasOnBaseBranch = !previousBranch || previousBranch === baseBranch;
-
-        let checkout: CloneCheckout;
-        if (editAllowed && wasOnBaseBranch) {
-          checkout = { type: 'new_branch', name: taskBranchName(taskId) };
-        } else if (editAllowed && previousBranch) {
-          checkout = { type: 'branch', name: previousBranch };
-        } else {
-          checkout = { type: 'base' };
-        }
-
-        const result = await setupSharedClone(
-          desiredClonePath, baseRepoPath, checkout, baseBranch, att.github,
-        );
-        clonePath = result.clone_path;
-        att.clone_path = clonePath;
-
-        if (result.branch !== result.base_branch) {
-          hydrateBranchState(att, result.branch, result.base_branch);
-        } else {
-          att.current_branch = result.branch;
-        }
-        logger.agent(def.id, `Created shared clone at ${clonePath} (${att.github} @ ${result.branch})`, { editMode: editAllowed });
-      }
-
-      await configureGitIdentity(clonePath);
-      repoMounts.push({
-        github: att.github,
-        clonePath,
-        baseObjectsPath,
-        currentBranch: att.current_branch || baseBranch,
-        baseBranch,
-      });
-    }
-
-    systemPrompt = await generateRepoAgentPrompt(agent, task);
-    const repoMode = editAllowed ? 'READ-WRITE' : 'READ-ONLY';
-    const mountLines = repoMounts.map((m) =>
-      `  - ${m.github}${m.github === def.repo!.primary ? ' (primary)' : ''}\n` +
-      `    path: ${m.clonePath} [${repoMode}]\n` +
-      `    branch: ${m.currentBranch} (base: ${m.baseBranch})`
-    ).join('\n');
-    const context = `
-Task: ${taskId}
-
-Working directory (cwd): ${workspace} [READ-WRITE]
-
-Repositories (all mounted; use the github arg on repo-tools to target one, default is your primary):
-${mountLines}
-
-Shared folder: ${sharedPath} [READ-ONLY]
-  - knowledge.log — conversation history and agent findings (read ONCE per message, don't poll)
-  - metadata.json — task metadata
-`;
-    systemPrompt = `${systemPrompt}\n\nCurrent Context:\n${context}`;
-
-    const allClonePaths = repoMounts.map((m) => m.clonePath);
-    additionalDirectories = [...allClonePaths, ...additionalDirectories];
-    mcpServers['repo-tools'] = createRepoToolsMcpServer(agent, task);
-
-    disallowedTools = [
-      ...disallowedTools,
-      ...(editAllowed
-        ? []
-        : [
-            'mcp__repo-tools__push_branch',
-            'mcp__repo-tools__create_pull_request',
-            'mcp__repo-tools__update_pr',
-            'mcp__repo-tools__add_pr_comment',
-            'mcp__repo-tools__add_review_comment',
-            'mcp__repo-tools__reply_to_review_comment',
-            'mcp__repo-tools__resolve_review_thread',
-            'mcp__repo-tools__request_re_review',
-            'mcp__repo-tools__merge_pull_request',
-            'mcp__repo-tools__close_pull_request',
-            'mcp__repo-tools__create_branch',
-          ]),
-    ];
-
-    // Repo agents extend the base sandbox with every attached clone (RW in edit
-    // mode) plus per-repo read-only/protected paths.
-    const readOnlyPaths = [sharedPath, ...repoMounts.map((m) => m.baseObjectsPath), ...pluginReadPaths, ...coreSkillReadPaths];
-    const cloneGitHeads = repoMounts.map((m) => join(m.clonePath, '.git', 'HEAD'));
-    sandboxOpts = {
-      cwd,
-      denyReadPaths: [WORKDIR],
-      allowReadPaths: [workspace, ...allClonePaths, ...claudeReadDirs, ...readOnlyPaths],
-      // CACHES_DIR stays writable in both modes: a readonly agent still runs
-      // package managers (typecheck, test), and they need the cache regardless.
-      allowWritePaths: editAllowed
-        ? [workspace, CACHES_DIR, ...allClonePaths, ...claudeWriteDirs]
-        : [workspace, CACHES_DIR, ...claudeWriteDirs],
-      denyWritePaths: editAllowed
-        ? [...readOnlyPaths, ...protectedWorkspaceFiles, ...cloneGitHeads]
-        : [...allClonePaths, ...readOnlyPaths],
-      // In edit mode, repo build sandboxes may reach the trusted package
-      // registries so agents can run installs / regenerate lockfiles. Read-only
-      // agents stay fully network-denied. The list is a curated constant — see
-      // TRUSTED_PACKAGE_REGISTRY_DOMAINS.
-      allowedNetworkDomains: [
-        ...(def.allowedNetworkDomains ?? []),
-        ...(editAllowed ? TRUSTED_PACKAGE_REGISTRY_DOMAINS : []),
-      ],
-    };
-  } else {
-    // ---- Plain plugin agent ----
-    systemPrompt = await generatePluginAgentPrompt(agent, task);
   }
 
-  // Plugin agents carry the domain/admin MCP servers that sometimes need a
-  // local file's bytes (e.g. uploading an image). Give them the file bridge
-  // so they can forward file contents into those calls without routing bytes
-  // through the model. Bounded to servers the agent already has.
+  mcpServers['comms-tools'] = createCommsMcpServer(agent, task);
+  mcpServers['orchestration-tools'] = createOrchestrationMcpServer(agent, task);
+  mcpServers['scheduling-tools'] = createSchedulingMcpServer(agent, task);
+  // TODO(flat): W2-spawn attaches `repo-tools` here too (and W2-tools adds
+  // `mount_repo` to orchestration-tools). Until then nothing creates a clone,
+  // so `repoMounts` above is always empty in practice.
+
+  // Domain/admin MCP servers sometimes need a local file's bytes (e.g.
+  // uploading an image). The file bridge forwards file contents into those
+  // calls without routing bytes through the model. Bounded to servers the
+  // session already has.
+  // TODO(flat): W2-spawn drops the gating predicate and attaches the bridge
+  // unconditionally; today it excludes the PM, so this is currently a no-op.
   if (shouldAttachFileBridge(def)) {
     // The bridge resolves targets from this same live map at call time, so it
     // sees OAuth-bound headers and never reaches servers dropped below.
     mcpServers['file-bridge'] = createFileBridgeMcpServer(agent, task, mcpServers);
   }
 
-  // ---- Channel pinned messages (every agent, one rule) ----
+  // ---- Channel pinned messages ----
   //
-  // A one-line index of what the channel's members pinned — an index, not a brief. Same reach as the canvas block below and for the same reason: a specialist cannot ask for what it does not know exists. Rebuilt every spawn, so a new pin lands on the next wake.
+  // A one-line index of what the channel's members pinned — an index, not a brief. Rebuilt every spawn, so a new pin lands on the next wake.
   //
   // It appends BEFORE the canvas, so the assembled prompt reads index first and standing brief second. That is the wanted order: the brief is the authoritative one and belongs nearest the instructions that follow, while the index is low-weight reference material that only ever points at something to open. The two are separately wrapped and each carries its own `note` fixing its weight, so neither depends on the other's position to be read correctly.
-  //
-  // Only pm-agent can open a pin — `read_thread` and `fetch_slack_reference` both live in comms-tools, which is PM-only — so a specialist that needs one asks, exactly as it does for a canvas file reference.
   const channelPinsSection = await buildChannelPinsPromptSection(metadata);
   if (channelPinsSection) {
     systemPrompt = `${systemPrompt}\n\n${channelPinsSection}`;
   }
 
-  // ---- Channel project context (every agent, one rule) ----
+  // ---- Channel project context ----
   //
-  // The per-channel "Archie" canvas is standing project context for the channel, so
-  // every agent working in that channel gets it — PM, repo agents, plugin agents
-  // alike. No slicing, no per-role subsets: whoever is doing the work needs the
-  // brief, and a specialist cannot ask for what it doesn't know exists. This used to
-  // be PM-only with the PM expected to relay the relevant parts, which fails exactly
-  // when it matters — the specialist is the one who discovers the thing that needs
-  // escalating, and the PM cannot predict that in advance.
-  //
-  // Deliberately placed after all three agent branches so there is one injection
-  // point and no way for a branch to miss it. XML-wrapped and rebuilt every spawn, so
-  // canvas edits propagate on the next wake.
-  //
-  // Note `fetch_slack_reference` stays PM-only: specialists see a canvas's file
-  // references but cannot open them, so material a teammate needs still travels via
-  // the PM's `share_artifact`.
+  // The per-channel "Archie" canvas is standing project context for the
+  // channel. XML-wrapped and rebuilt every spawn, so canvas edits propagate on
+  // the next wake.
   const channelCanvasSection = await buildChannelCanvasPromptSection(metadata);
   if (channelCanvasSection) {
     systemPrompt = `${systemPrompt}\n\n${channelCanvasSection}`;
   }
 
-  // ---- Persistent per-trigger directory (trigger-fired tasks only, every track) ----
+  // ---- Persistent per-trigger directory (trigger-fired tasks only) ----
   //
-  // After all three per-track branches, like the canvas block above: one injection point,
-  // so no branch can miss it. Must stay ahead of `agent.sandbox = sandboxOpts` below —
-  // that object is what the guard hooks and the bwrap config are built from.
+  // Must stay ahead of `agent.sandbox = sandboxOpts` below — that object is
+  // what the guard hooks and the bwrap config are built from.
   //
   // Deliberately NOT in `additionalDirectories`: CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD
   // auto-loads a CLAUDE.md from those, and this directory is agent-writable, so listing it
@@ -651,12 +482,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
   }
 
   // ---- Organizational memory injection (read path; gated by ARCHIE_MEMORY_INJECT, default off) ----
-  const taskTitle = metadata.title ?? undefined;
-  const memorySelectors = isPmAgent(def)
-    ? { taskTitle }
-    : isRepoAgent(def)
-      ? { repo: def.repo!.primary, taskTitle }
-      : { plugin: def.pluginName, taskTitle };
+  const memorySelectors = { taskTitle: metadata.title ?? undefined };
   const memoryUsernames = await extractTaskUsernames(taskId);
   systemPrompt = await enrichPromptWithMemory(systemPrompt, memoryUsernames, memorySelectors);
 
@@ -688,16 +514,16 @@ Shared folder: ${sharedPath} [READ-ONLY]
   // edit mode (the committer stays the GitHub App bot). See buildCommitAuthorEnv.
   const commitAuthorEnv = buildCommitAuthorEnv(def, metadata);
 
-  // Diagnostic: surface whether the human author is actually being applied. If a
-  // repo agent commits as the bot, this line distinguishes "approver was never
+  // Diagnostic: surface whether the human author is actually being applied. If
+  // a commit lands as the bot, this line distinguishes "approver was never
   // captured" (edit_approved_by=NONE) from "captured but env didn't take effect".
-  if (isRepoAgent(def)) {
+  if (editAllowed) {
     const ea = metadata.edit_approved_by;
     logger.agent(
       def.id,
       `Commit author: edit_approved_by=${ea ? `${ea.name} <${ea.email ?? 'no-email'}>` : 'NONE'}; ` +
         `GIT_AUTHOR ${'GIT_AUTHOR_NAME' in commitAuthorEnv ? 'injected' : 'absent → bot authors'}`,
-      { editMode: metadata.edit_allowed === true },
+      { editMode: true },
     );
   }
 
@@ -799,7 +625,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
               emitEvent('agent:bg_task', taskId, { action: 'end', key: id, status: 'completed', summary: '' }, def.id);
             }
           }
-          task.updateAgentState(def.id, false);
+          task.updateAgentState(false);
           return { continue: true };
         }],
       }],
@@ -847,7 +673,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
 
           for await (const event of agentQuery) {
             if (event.type === 'system' && event.subtype === 'init') {
-              task.updateAgentState(def.id, true, event.session_id);
+              task.updateAgentState(true, event.session_id);
               // Record the concrete model this session resolved the alias to
               // (e.g. opus → claude-opus-5) so the footer shows the real version
               // without the app hard-coding the alias→model mapping. The model
@@ -858,7 +684,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
               if (!(event as any).model) {
                 logger.warn(def.id, 'SDK init event missing .model — footer will use alias fallback');
               }
-              task.recordResolvedModel(def.id, (event as any).model);
+              task.recordResolvedModel((event as any).model);
               logger.agent(def.id, `Model: ${(event as any).model || 'unknown'}`);
               if (Array.isArray(event.mcp_servers)) {
                 // The init snapshot only carries { name, status }. Pull the
@@ -927,7 +753,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
                 );
                 // Enqueue-marks-active: keep the agent busy with no gap before the
                 // SDK starts the resumed turn, so the idle-check can't park it.
-                task.updateAgentState(def.id, true);
+                task.updateAgentState(true);
               }
             }
 
@@ -935,12 +761,12 @@ Shared folder: ${sharedPath} [READ-ONLY]
               event,
               def.id,
               additionalDirectories,
-              isRepoAgent(def) && metadata.edit_allowed === true,
+              editAllowed,
             );
 
-            // Derive the Slack "Archie is …" loading status from this agent's
+            // Derive the Slack "Archie is …" loading status from the session's
             // tool calls. Best-effort and debounced inside the task.
-            task.noteActivityFromEvent(def.id, event);
+            task.noteActivityFromEvent(event);
 
             // Persist SDK-reported usage/cost on every `result` event, stamped
             // with this query() call's nonce so read-time cost aggregation can
@@ -1001,7 +827,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
                 def.id,
                 `Turn ended with error result '${event.subtype}' — marking inactive so recovery can run`,
               );
-              task.updateAgentState(def.id, false);
+              task.updateAgentState(false);
             }
           }
 

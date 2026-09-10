@@ -133,22 +133,19 @@ async function runMergeCheck(task: Task): Promise<MergeCheckResult> {
     return result;
   }
 
-  // Collect all PRs linked to this task by iterating every attached repo across
-  // every agent. A PR is identified by (github, prNumber); dedupe so two agents
-  // pointing at the same PR don't generate duplicate work.
+  // Collect all PRs linked to this task from its mounted repos. A PR is
+  // identified by (github, prNumber); dedupe so two branches pointing at the
+  // same PR don't generate duplicate work.
   const linkedPRSet = new Set<string>();
   const linkedPRs: Array<{ github: string; prNumber: number }> = [];
-  for (const attachments of Object.values(task.metadata.repositories)) {
-    if (!Array.isArray(attachments)) continue;
-    for (const attached of attachments) {
-      if (!attached.branch_states) continue;
-      for (const state of Object.values(attached.branch_states)) {
-        if (!state.pr_number) continue;
-        const key = `${attached.github}#${state.pr_number}`;
-        if (linkedPRSet.has(key)) continue;
-        linkedPRSet.add(key);
-        linkedPRs.push({ github: attached.github, prNumber: state.pr_number });
-      }
+  for (const attached of task.metadata.repositories) {
+    if (!attached.branch_states) continue;
+    for (const state of Object.values(attached.branch_states)) {
+      if (!state.pr_number) continue;
+      const key = `${attached.github}#${state.pr_number}`;
+      if (linkedPRSet.has(key)) continue;
+      linkedPRSet.add(key);
+      linkedPRs.push({ github: attached.github, prNumber: state.pr_number });
     }
   }
 
@@ -347,13 +344,10 @@ async function runMergeCheck(task: Task): Promise<MergeCheckResult> {
  */
 function findBranchStatesForPR(task: Task, github: string, prNumber: number): BranchState[] {
   const matches: BranchState[] = [];
-  for (const attachments of Object.values(task.metadata.repositories)) {
-    if (!Array.isArray(attachments)) continue;
-    for (const attached of attachments) {
-      if (attached.github !== github || !attached.branch_states) continue;
-      for (const state of Object.values(attached.branch_states)) {
-        if (state.pr_number === prNumber) matches.push(state);
-      }
+  for (const attached of task.metadata.repositories) {
+    if (attached.github !== github || !attached.branch_states) continue;
+    for (const state of Object.values(attached.branch_states)) {
+      if (state.pr_number === prNumber) matches.push(state);
     }
   }
   return matches;
@@ -402,7 +396,7 @@ async function notifyPMAboutConflicts(
 
   await appendAgentFinding(task.taskId, 'system', message, 'blocker');
 
-  await task.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+  await task.sendMessage(AGENT_PROMPTS.existingTask);
 }
 
 /**
@@ -423,7 +417,7 @@ async function notifyPMAboutReadyPRs(
 
   await appendAgentFinding(task.taskId, 'system', message, 'decision');
 
-  await task.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+  await task.sendMessage(AGENT_PROMPTS.existingTask);
 }
 
 /**
@@ -455,5 +449,5 @@ async function notifyPMAboutMerge(
   const findingType = failedPRs.length > 0 ? 'blocker' : 'completion';
   await appendAgentFinding(task.taskId, 'system', message, findingType);
 
-  await task.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+  await task.sendMessage(AGENT_PROMPTS.existingTask);
 }

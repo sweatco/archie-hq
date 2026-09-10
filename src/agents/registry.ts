@@ -1,322 +1,116 @@
 /**
- * Unified Agent Registry
+ * PM Agent Definition
  *
- * Replaces the scan-then-transform pipeline of:
- *   plugin-loader.ts → repo-configs.ts → plugin-configs.ts → peer-list.ts
+ * One task runs one agent — the PM — so this module builds exactly one
+ * `AgentDef`. Everything else a plugin contributes (skills and agent files) is
+ * loaded natively by the SDK from the plugin directories; the engine no longer
+ * scans agent frontmatter, builds repo/plugin agent definitions, or computes
+ * peer visibility.
  *
- * One scan, one AgentDef type, one validation step.
- * Scanned fresh at startup (validate + fail-fast) and on every task start/restart.
+ * Scanned fresh at startup and re-scanned by `syncPlugins()` after the plugins
+ * repo moves, so a changed overlay is picked up by the next task.
  */
 
-import { type AgentDef, type RepoEntry, isRepoAgent, isPmAgent } from '../types/agent.js';
-import type { DynamicAgentSpec } from '../types/task.js';
-import { getPlugins, getRootMcpConfig, getPmOverlay, type LoadedMcpConfig, type PluginAgentDef } from '../system/plugin-loader.js';
+import type { AgentDef } from '../types/agent.js';
+import { getRootMcpConfig, getPlugins, getPmOverlay, type LoadedMcpConfig, type PluginAgentDef } from '../system/plugin-loader.js';
 import { PLUGINS_DATA_DIR } from '../system/workdir.js';
 import { join } from 'path';
 import { logger } from '../system/logger.js';
 import { resolveSkillPaths } from './core-skills.js';
 import { deniedToolNames, type McpToolPolicy } from './tool-approval-gate.js';
 
+// ---- Engine constants ----
+//
+// The PM's model and effort are engine-owned, not plugin-owned. The defaults
+// are exactly what the `pm` plugin overlay resolved to before the flattening
+// (`model: opus`, `effort: medium`), so behaviour is unchanged out of the box.
+// Max mode is likewise unchanged by default — the PM kept its normal model and
+// effort under max mode before, and still does unless a deployment opts in.
+
+const PM_MODEL = process.env.ARCHIE_PM_MODEL?.trim() || 'opus';
+const PM_EFFORT = process.env.ARCHIE_PM_EFFORT?.trim() || 'medium';
+const PM_MAX_MODEL = process.env.ARCHIE_PM_MAX_MODEL?.trim() || PM_MODEL;
+const PM_MAX_EFFORT = process.env.ARCHIE_PM_MAX_EFFORT?.trim() || PM_EFFORT;
+
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+function asEffort(value: string): AgentDef['effort'] {
+  if ((EFFORT_LEVELS as readonly string[]).includes(value)) return value as AgentDef['effort'];
+  logger.warn('registry', `Unknown PM effort "${value}" — falling back to 'medium'`);
+  return 'medium';
+}
+
 // ---- Module state ----
 
-let registry: AgentDef[] = [];
+let pmDef: AgentDef | undefined;
 
 // ---- Public API ----
 
 /**
  * Initialize the registry. Must be called after initPlugins().
- * Scans plugins and builds all AgentDefs (PM + repo + plugin agents).
- * Fails fast on validation errors (missing prompts, ID collisions, no repo configs).
+ * Rebuilds the PM definition from the current plugin state.
  */
 export function initRegistry(): void {
-  registry = scanAgentDefs();
+  pmDef = buildPmDef();
 }
 
 /**
- * Scan all plugins and produce a full list of AgentDefs.
- * Called at startup and on every task start/restart (fresh scan from disk).
+ * The PM AgentDef, built fresh from the current plugin state. Used on every
+ * task start/restart so a resumed task picks up overlay changes.
  */
-export function scanAgentDefs(): AgentDef[] {
-  const defs: AgentDef[] = [];
-  const seenIds = new Map<string, string>(); // agentId → pluginName (collision detection)
-
-  // Load root MCP config once for all agents
-  const rootMcp = getRootMcpConfig();
-
-  // --- Scan all agents from all plugins ---
-  for (const plugin of getPlugins()) {
-    for (const agent of plugin.agents) {
-      // Skip the PM overlay — it's handled separately in buildPmDef()
-      if (plugin.name === 'pm' && agent.key === 'pm') continue;
-
-      const agentId = `${agent.key}-agent`;
-      checkCollision(agentId, plugin.name, seenIds);
-
-      // Resolve MCP servers and tool permissions from frontmatter
-      const resolvedMcp = resolveAgentMcpServers(agent, rootMcp);
-
-      const visibility: 'global' | 'local' = agent.visibility ?? 'global';
-
-      if (agent.repo) {
-        // Repo agent — has repo metadata in frontmatter
-        defs.push({
-          id: agentId,
-          key: agent.key,
-          statusLabel: agent.statusLabel,
-          role: agent.role,
-          expertise: agent.expertise,
-          model: agent.model,
-          effort: agent.effort,
-          maxMode: agent.maxMode,
-          maxTurns: agent.maxTurns,
-          pluginName: plugin.name,
-          visibility,
-          agentPrompt: agent.prompt || undefined,
-          pluginPath: plugin.dir,
-          repo: {
-            repos: agent.repo.repos.map((r) => ({
-              github: r.github,
-              baseBranch: r.baseBranch || 'main',
-              autoMerge: r.autoMerge === true,
-            })),
-            primary: agent.repo.primary,
-          },
-          pluginDataPath: join(PLUGINS_DATA_DIR, plugin.name),
-          skillPaths: resolveSkillPaths('repo', plugin.skillsPath || undefined),
-          pluginHooks: plugin.hooks || undefined,
-          allowedNetworkDomains: agent.allowedNetworkDomains,
-          ...resolvedMcp,
-        });
-      } else {
-        // Plugin agent — no repo metadata
-        defs.push({
-          id: agentId,
-          key: agent.key,
-          statusLabel: agent.statusLabel,
-          role: agent.role,
-          expertise: agent.expertise,
-          model: agent.model,
-          effort: agent.effort,
-          maxMode: agent.maxMode,
-          maxTurns: agent.maxTurns,
-          pluginName: plugin.name,
-          visibility,
-          agentPrompt: agent.prompt,
-          pluginPath: plugin.dir,
-          pluginDataPath: join(PLUGINS_DATA_DIR, plugin.name),
-          skillPaths: resolveSkillPaths('plain', plugin.skillsPath || undefined),
-          pluginHooks: plugin.hooks || undefined,
-          allowedNetworkDomains: agent.allowedNetworkDomains,
-          ...resolvedMcp,
-        });
-      }
-    }
-  }
-
-  // --- PM agent (singleton, built from the full team) ---
-  const teamDefs = defs; // all repo + plugin agents collected above
-  defs.push(buildPmDef(teamDefs, rootMcp));
-
-  return defs;
+export function scanPmDef(): AgentDef {
+  return buildPmDef();
 }
 
 /**
- * Get all registered AgentDefs
+ * The cached PM AgentDef. Built lazily if `initRegistry()` has not run (tests,
+ * and any path that reaches an agent before startup finishes).
+ */
+export function getPmDef(): AgentDef {
+  pmDef ??= buildPmDef();
+  return pmDef;
+}
+
+/**
+ * Every AgentDef the engine knows about — the PM, and only the PM. Retained as
+ * a list so startup logging and any roster consumer keeps working.
  */
 export function getAllAgentDefs(): AgentDef[] {
-  return registry;
+  return [getPmDef()];
 }
 
 /**
- * Test-only: override the in-memory registry. Used by unit tests that exercise
- * the pure helpers (visibility filtering, peer-list construction) without
- * loading plugins from disk. Do not call from production code.
+ * Test-only: override the cached PM definition. Do not call from production code.
  */
-export function __setRegistryForTesting(defs: AgentDef[]): void {
-  registry = defs;
-}
-
-/**
- * Get all agent IDs (repo + plugin, excludes PM)
- */
-export function getAgentIds(): string[] {
-  return registry.filter((d) => !isPmAgent(d)).map((d) => d.id);
-}
-
-/**
- * Get all repo agent IDs
- */
-export function getRepoAgentIds(): string[] {
-  return registry.filter(isRepoAgent).map((d) => d.id);
-}
-
-/**
- * Get a single AgentDef by ID
- */
-export function getAgentDef(id: string): AgentDef | undefined {
-  return registry.find((d) => d.id === id);
-}
-
-/**
- * Get repo AgentDef whose **primary** is the given GitHub repository identifier
- * (e.g., 'acme/backend'). Matches on the primary only; an agent that merely
- * lists the repo as a secondary is not returned.
- */
-export function getAgentDefByGithubRepo(githubRepo: string): AgentDef | undefined {
-  return registry.find((d) => isRepoAgent(d) && d.repo!.primary === githubRepo);
-}
-
-/**
- * All registered repo agents that declare the given github anywhere in their
- * `repos` list (primary or otherwise). Used by `spawn_repo_agent`'s
- * anti-duplication check and by `list_available_repos` to tag repos that a
- * plugin specialist already covers.
- */
-export function findAgentDefsContainingRepo(githubRepo: string): AgentDef[] {
-  return registry.filter(
-    (d) => isRepoAgent(d) && d.repo!.repos.some((r) => r.github === githubRepo),
-  );
+export function __setPmDefForTesting(def: AgentDef | undefined): void {
+  pmDef = def;
 }
 
 /**
  * Merge policy for a repo: may Archie merge its PRs without asking the user?
  *
- * True only when every registered agent declaring the repo sets
- * `autoMerge: true` on all of its matching entries (AND semantics — a conflict
- * means at least one declaration wants supervision, and supervision wins).
- * Repos declared by no registered agent (dynamic-agent-only attachments,
- * retired agents) resolve to false — never auto-merge a repo nobody
- * statically owns. Consults the live registry, so a frontmatter change takes
- * effect on the next merge check after a rescan.
+ * TODO(flat): W2-spawn wires this to `repos[*].autoMerge` in the plugins repo's
+ * root `archie.json`. Until then no repo is auto-merge, which is the safe
+ * direction: every merge goes through the existing user-approval gate.
  */
-export function isAutoMergeRepo(github: string): boolean {
-  const defs = findAgentDefsContainingRepo(github);
-  if (defs.length === 0) return false;
-  const flags = defs.flatMap((d) =>
-    d.repo!.repos.filter((r) => r.github === github).map((r) => r.autoMerge === true),
-  );
-  const allAuto = flags.every(Boolean);
-  if (!allAuto && flags.some(Boolean)) {
-    logger.warn(
-      'registry',
-      `Mixed autoMerge flags for ${github} across declaring agents — resolving to manual-approval merges (AND semantics)`,
-    );
-  }
-  return allAuto;
-}
-
-/**
- * Re-synthesize a live AgentDef from a stored DynamicAgentSpec (PM-spawned
- * repo agent). Deterministic and idempotent — called on every `Task.get` to
- * rebuild the agent from the persisted spec, so no derived state lives on disk.
- */
-export function synthesizeDynamicAgentDef(spec: DynamicAgentSpec): AgentDef {
-  const repos: RepoEntry[] = spec.repos.map((r) => ({
-    github: r.github,
-    baseBranch: r.baseBranch || 'main',
-    // PM-spawned dynamic agents can never confer auto-merge.
-    autoMerge: false,
-  }));
-  if (repos.length === 0) {
-    throw new Error(`Dynamic agent spec ${spec.id} has no repos`);
-  }
-  return {
-    id: spec.id,
-    key: spec.shortname,
-    role: spec.role,
-    expertise: spec.expertise,
-    pluginName: '<dynamic>',
-    // Dynamic agents are repo agents, so default them to opus like the
-    // configured repo agents (which all set `model: opus` in frontmatter).
-    // Without this they fell through spawn.ts's non-PM default to sonnet,
-    // whose smaller context window overflowed on the large injected system
-    // prompt — the failure mode seen in task-20260625-2243-dj79r4.
-    model: 'opus',
-    // PM-spawned agents are globally addressable across the task — they only
-    // exist because PM created them on demand, so peers should be able to
-    // reach them without a same-plugin relationship.
-    visibility: 'global',
-    repo: { repos, primary: repos[0].github },
-    // A dynamic agent is a repo agent by construction and has no plugin of its own.
-    skillPaths: resolveSkillPaths('repo'),
-  };
-}
-
-/**
- * Get the PM AgentDef
- */
-export function getPmDef(): AgentDef | undefined {
-  return registry.find(isPmAgent);
-}
-
-/**
- * Return the set of agent ids the sender is allowed to address.
- * Filter rules:
- *   - Same-plugin peers are always visible (any visibility).
- *   - Other-plugin peers are visible only if visibility === 'global'.
- *   - PM is excluded (the send_message_to_agent enum adds it back as a fallback).
- *   - The sender itself is excluded.
- *
- * @param team Optional roster to filter over. Defaults to the global registry;
- *   pass `task.team` so PM-spawned dynamic agents (which live only in the task
- *   team, not the registry) are reachable. When the task has no dynamic agents
- *   `task.team` equals the registry, so the default and override agree.
- */
-export function getVisiblePeerIdsForSender(senderDef: AgentDef, team: AgentDef[] = registry): string[] {
-  return team
-    .filter((d) => !isPmAgent(d))
-    .filter((d) => d.id !== senderDef.id)
-    .filter((d) => d.pluginName === senderDef.pluginName || d.visibility === 'global')
-    .map((d) => d.id);
-}
-
-/**
- * Build a formatted peer list for the sender's prompt, applying visibility rules.
- *
- * @param team Optional roster (see {@link getVisiblePeerIdsForSender}). Pass
- *   `task.team` to include PM-spawned dynamic agents.
- */
-export function buildPeerListForSender(senderDef: AgentDef, team: AgentDef[] = registry): string {
-  const visibleIds = new Set(getVisiblePeerIdsForSender(senderDef, team));
-
-  const repoPeers = team
-    .filter((d) => isRepoAgent(d) && visibleIds.has(d.id))
-    .map((d) => `- ${d.id}: ${d.role} (${d.repo!.primary} repository)`);
-
-  // Non-repo peers (visibleIds already excludes the PM).
-  const pluginPeers = team
-    .filter((d) => !isRepoAgent(d) && visibleIds.has(d.id))
-    .map((d) => `- ${d.id}: ${d.role} [${d.pluginName}]`);
-
-  return [...repoPeers, ...pluginPeers].join('\n');
+export function isAutoMergeRepo(_github: string): boolean {
+  return false;
 }
 
 // ---- Internal helpers ----
 
-function checkCollision(agentId: string, pluginName: string, seen: Map<string, string>): void {
-  const existing = seen.get(agentId);
-  if (existing) {
-    throw new Error(
-      `Duplicate agent ID "${agentId}" found in plugins "${existing}" and "${pluginName}". ` +
-      `Rename one of the agent files to avoid collision.`
-    );
-  }
-  seen.set(agentId, pluginName);
-}
-
 /**
- * Resolve agent's mcpServers references against the root .mcp.json.
+ * Resolve the PM's mcpServers references against the root .mcp.json.
  *
  * Tool permission rules:
- * - No `tools` defined → wildcard for every MCP server (`mcp__<name>__*`)
- * - `tools` defined → use exactly what's listed (user adds wildcards explicitly if needed)
+ * - No `tools` defined → every tool is available (bypassPermissions), minus denials
+ * - `tools` defined → use exactly what's listed
  * - `disallowedTools` → always applied on top, and the servers' own `deny`-tier
  *   tools are appended to it, so a tool disabled once in .mcp.json is withheld
- *   from every agent that mounts the server rather than re-listed per agent
+ *   rather than re-listed per agent
  *
- * The tool approval policy travels with the server, not the agent: whichever
- * agents mount `tramline` all get its `archie` block. That is what makes the
- * PM — whose servers resolve through this same function — covered by default.
+ * The tool approval policy travels with the server, not the agent: mounting
+ * `tramline` brings its `archie` block along.
  */
 function resolveAgentMcpServers(
   agent: PluginAgentDef,
@@ -335,7 +129,7 @@ function resolveAgentMcpServers(
         if (rootMcp.descriptions[name]) descriptions[name] = rootMcp.descriptions[name];
         if (rootMcp.policies[name]) policy[name] = rootMcp.policies[name];
       } else {
-        logger.warn('registry', `Agent "${agent.key}" references MCP server "${name}" not found in root .mcp.json`);
+        logger.warn('registry', `PM overlay references MCP server "${name}" not found in root .mcp.json`);
       }
     }
     if (Object.keys(resolved).length > 0) {
@@ -349,16 +143,16 @@ function resolveAgentMcpServers(
     }
   }
 
-  // Only pass tools when explicitly defined in agent frontmatter.
+  // Only pass tools when explicitly defined in the overlay frontmatter.
   // With bypassPermissions, all tools (built-in + MCP) are available by default —
   // def.tools restricts the set, so auto-generating MCP wildcards would kill built-ins.
   if (agent.tools && agent.tools.length > 0) {
     result.tools = agent.tools;
   }
 
-  // Frontmatter denials plus every `deny`-tier tool of the servers this agent
-  // mounts. Deduped: a plugin migrating to .mcp.json policies may still list a
-  // tool in both places for a while.
+  // Frontmatter denials plus every `deny`-tier tool of the servers mounted.
+  // Deduped: a plugin migrating to .mcp.json policies may still list a tool in
+  // both places for a while.
   const disallowed = [
     ...(agent.disallowedTools ?? []),
     ...(result.mcpPolicy ? deniedToolNames(result.mcpPolicy) : []),
@@ -370,45 +164,29 @@ function resolveAgentMcpServers(
   return result;
 }
 
-function buildPmDef(teamDefs: AgentDef[], rootMcp: LoadedMcpConfig): AgentDef {
+/**
+ * TODO(flat): W2-spawn replaces the overlay read entirely — every plugin
+ * directory (including `pm`) goes through the SDK `plugins` option, and the
+ * root MCP config attaches to the session as a whole rather than through the
+ * overlay's `mcpServers` list.
+ */
+function buildPmDef(): AgentDef {
+  const rootMcp = getRootMcpConfig();
   const pmPlugin = getPlugins().find((p) => p.name === 'pm');
-
-  // PM belongs to the "pm" plugin for visibility purposes — agents marked `local`
-  // in the pm plugin are addressable by PM, locals elsewhere are not.
-  const visibleTeam = teamDefs.filter(
-    (d) => d.pluginName === 'pm' || d.visibility === 'global',
-  );
-
-  // PM overlay from the "pm" plugin (extra prompt, MCP, tool permissions)
   const overlay = getPmOverlay();
   const resolvedMcp = overlay ? resolveAgentMcpServers(overlay, rootMcp) : {};
 
-  // Annotate each teammate's roster line with the external systems it can reach
-  // via MCP. Without this the PM sees only roles/expertise and can wrongly tell a
-  // user that checking Jira / Rollbar / the admin panel / etc. isn't possible —
-  // the roster is its only window into what teammates can reach.
   const describeServer = (name: string): string => {
     const desc = rootMcp.descriptions[name];
     return desc ? `${name} (${desc})` : name;
   };
-  const integrationsSuffix = (d: AgentDef): string => {
-    const names = d.mcpServers ? Object.keys(d.mcpServers) : [];
-    return names.length > 0 ? ` — integrations: ${names.map(describeServer).join('; ')}` : '';
-  };
 
-  const teamList = visibleTeam
-    .map((d) => `- ${d.id}: ${d.role}${integrationsSuffix(d)}`)
-    .join('\n');
-
-  const teamExpertise = visibleTeam
-    .map((d) => `- ${d.id}: ${d.expertise}`)
-    .join('\n');
-
-  // The PM isn't part of its own roster, so surface the integrations it can call
-  // directly as a self-contained sentence (empty when it has none).
+  // The PM has no roster to annotate any more, but it still needs to know what
+  // it can reach itself — otherwise it tells a user that checking Jira /
+  // Rollbar / the admin panel isn't possible.
   const pmServerNames = resolvedMcp.mcpServers ? Object.keys(resolvedMcp.mcpServers) : [];
   const pmIntegrations = pmServerNames.length > 0
-    ? `You can also query these external systems yourself directly: ${pmServerNames.map(describeServer).join('; ')}.`
+    ? `You can query these external systems directly: ${pmServerNames.map(describeServer).join('; ')}.`
     : '';
 
   return {
@@ -416,15 +194,15 @@ function buildPmDef(teamDefs: AgentDef[], rootMcp: LoadedMcpConfig): AgentDef {
     key: 'pm',
     role: 'Project Manager',
     expertise: 'Task management, coordination, user communication',
-    model: overlay?.model,
-    effort: overlay?.effort,
-    maxMode: overlay?.maxMode,
+    model: PM_MODEL,
+    effort: asEffort(PM_EFFORT),
+    maxMode: { model: PM_MAX_MODEL, effort: asEffort(PM_MAX_EFFORT) },
     maxTurns: overlay?.maxTurns,
     isPm: true,
     pluginName: 'pm',
     visibility: 'global',
     pluginDataPath: join(PLUGINS_DATA_DIR, 'pm'),
-    pmConfig: { teamList, teamExpertise, pmIntegrations },
+    pmConfig: { pmIntegrations },
     pmOverlayPrompt: overlay?.prompt || undefined,
     skillPaths: resolveSkillPaths('pm', pmPlugin?.skillsPath || undefined),
     pluginHooks: pmPlugin?.hooks || undefined,

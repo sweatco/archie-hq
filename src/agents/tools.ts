@@ -13,18 +13,18 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import type { AgentName, FindingType, AttachedRepo, SlackThreadMessage } from '../types/task.js';
+import type { AttachedRepo, SlackThreadMessage } from '../types/task.js';
 import type { Task } from '../tasks/task.js';
 import type { Agent } from './agent.js';
-import { getVisiblePeerIdsForSender, findAgentDefsContainingRepo, synthesizeDynamicAgentDef, isAutoMergeRepo } from './registry.js';
+import { isAutoMergeRepo } from './registry.js';
 import { getGitHubClient, parseCheckRef, getArchieAttributionIdentity } from '../connectors/github/client.js';
 import { buildAttributedBody } from '../connectors/github/pr-attribution.js';
 import { gitExec } from '../connectors/github/repo-clone.js';
 import { hydrateBranchState, findBranchStateByPR, assignPrNumber } from '../connectors/github/branch-state.js';
 import { taskBranchName } from '../connectors/github/branch-naming.js';
-import { appendAgentFinding, appendArtifactShared, isThreadMuted } from '../tasks/persistence.js';
+import { appendAgentFinding, isThreadMuted } from '../tasks/persistence.js';
 import { exploreBody } from '../connectors/slack/message-body.js';
-import { copyArtifactToShared, assertReadable } from './artifacts.js';
+import { assertReadable } from './artifacts.js';
 import { aggregateTaskUsage, formatTaskUsageReport } from './task-usage.js';
 import { logger } from '../system/logger.js';
 import {
@@ -130,48 +130,51 @@ import { isSlackAuthorId, isAppAuthorId } from '../system/trigger-match.js';
 export { hydrateBranchState, findBranchStateByPR };
 
 /**
- * Resolve an attached repo for a repo-track agent in a task.
+ * Resolve a repo mounted into this task by its `github` identifier.
  *
- * If `github` is omitted, returns the agent's primary repo's `AttachedRepo`.
- * If `github` is provided, returns the matching attached repo; returns undefined
- * when the repo is not currently mounted for this agent (or when the agent has
- * never spawned).
+ * The repositories list is flat and task-scoped, so there is nothing to key on
+ * but the identifier. Returns undefined when the repo is not mounted.
+ *
+ * TODO(flat): the `agent` parameter is kept only so the repo-tool factory
+ * signatures stay stable for W2-spawn; W2-tools drops it along with the
+ * single-repo default below.
  */
-function getAttached(agent: Agent, task: Task, github?: string): AttachedRepo | undefined {
-  const target = github ?? agent.def.repo!.primary;
-  const attachments = task.metadata.repositories[agent.def.id];
-  if (!Array.isArray(attachments)) return undefined;
-  return attachments.find((a) => a.github === target);
+function getAttached(_agent: Agent, task: Task, github?: string): AttachedRepo | undefined {
+  const mounted = task.metadata.repositories;
+  if (!github) return mounted.length === 1 ? mounted[0] : undefined;
+  return mounted.find((a) => a.github === github);
 }
 
 /**
- * Resolve the github identifier for a tool call. Defaults to the agent's primary.
+ * Resolve the github identifier for a tool call.
  *
- * Validates the requested github is declared in the agent's `repos` whitelist —
- * agents can only operate on repos they've declared in frontmatter. For tools
- * that also need the repo to be currently mounted (clone access), use
- * `requireAttached`.
+ * There is no per-agent repo whitelist any more — the GitHub App installation
+ * is the allowlist and `mount_repo` is the gate. When the caller omits
+ * `github`, the task's single mounted repo is the default; with several
+ * mounted, the argument is required.
+ *
+ * TODO(flat): W2-tools owns the final shape of this once `mount_repo` exists.
  */
-function resolveGithub(agent: Agent, requested?: string): { ok: true; github: string } | { ok: false; error: string } {
-  const github = requested ?? agent.def.repo!.primary;
-  const declared = agent.def.repo!.repos.some((r) => r.github === github);
-  if (!declared) {
-    const list = agent.def.repo!.repos.map((r) => r.github).join(', ');
-    return { ok: false, error: `Repo "${github}" is not in this agent's declared repos list (${list}).` };
+function resolveGithub(agent: Agent, task: Task, requested?: string): { ok: true; github: string } | { ok: false; error: string } {
+  if (requested) return { ok: true, github: requested };
+  const mounted = task.metadata.repositories;
+  if (mounted.length === 1) return { ok: true, github: mounted[0].github };
+  if (mounted.length === 0) {
+    return { ok: false, error: 'No repository is mounted in this task. Mount one first.' };
   }
-  return { ok: true, github };
+  return {
+    ok: false,
+    error: `Several repos are mounted (${mounted.map((a) => a.github).join(', ')}) — pass the \`github\` argument to say which one.`,
+  };
 }
 
 /**
  * Resolve and require that the github has a local clone available.
  *
- * Every declared repo is mounted at spawn, so a missing clone is unexpected —
- * it means the repo wasn't declared (caught by `resolveGithub`) or its clone
- * setup didn't complete. The error tells the agent to report rather than retry
- * blindly.
+ * The error tells the agent to report rather than retry blindly.
  */
 function requireAttached(agent: Agent, task: Task, requested?: string): { ok: true; github: string; attached: AttachedRepo } | { ok: false; error: string } {
-  const resolved = resolveGithub(agent, requested);
+  const resolved = resolveGithub(agent, task, requested);
   if (!resolved.ok) return resolved;
   const attached = getAttached(agent, task, resolved.github);
   if (!attached?.clone_path) {
@@ -181,7 +184,7 @@ function requireAttached(agent: Agent, task: Task, requested?: string): { ok: tr
 }
 
 const githubArgSchema = z.string().optional().describe(
-  'Github identifier (e.g. "org/repo") of a declared repo. Defaults to the agent\'s primary repo when omitted.',
+  'Github identifier (e.g. "org/repo") of a repo mounted in this task. Optional when exactly one repo is mounted.',
 );
 
 const execAsync = promisify(exec);
@@ -292,117 +295,7 @@ export interface PRChecksReport {
   entries: PRCheckEntry[];
 }
 
-// ---- Tool creation helpers ----
-
-/**
- * Build the enum of agents the given sender can message.
- *
- * Applies visibility rules from the sender's plugin (same-plugin always
- * visible; other-plugin only when `visibility === 'global'`). Always includes
- * 'pm-agent' as a fallback target so an isolated local helper can still
- * escalate. Excludes the sender itself.
- */
-function visibleTargetsForSender(
-  senderDef: import('../types/agent.js').AgentDef,
-  task: Task,
-): [string, ...string[]] {
-  // Filter over the task team (registry + any PM-spawned dynamic agents), not
-  // just the registry, so a dynamic agent is a valid message target.
-  const visible = new Set<string>(getVisiblePeerIdsForSender(senderDef, task.team));
-  // PM is always reachable (escalation channel), except when the sender is PM itself.
-  if (senderDef.id !== 'pm-agent') visible.add('pm-agent');
-  const list = Array.from(visible);
-  return (list.length > 0 ? list : ['pm-agent']) as [string, ...string[]];
-}
-
-// ---- Base tools (all agents) ----
-
-function createSendMessageTool(agent: Agent, task: Task) {
-  return tool(
-    'send_message_to_agent',
-    'Send a message to another agent and wait for their response. Use this to coordinate with peer agents.',
-    {
-      // Free-form string (validated at runtime against the live task team) so a
-      // dynamic agent spawned mid-session is immediately addressable — a static
-      // enum would freeze the peer set at MCP-server creation time.
-      target: z.string().describe(
-        'The agent id to send the message to. Visible peers right now: ' +
-        visibleTargetsForSender(agent.def, task).join(', ') +
-        '. PM-spawned dynamic agents added during this session are also valid targets.',
-      ),
-      message: z.string().describe('The message content to send'),
-    },
-    async (args) => {
-      const allowed = new Set(visibleTargetsForSender(agent.def, task));
-      if (!allowed.has(args.target)) {
-        return err(
-          `"${args.target}" is not a visible peer. Allowed: ${Array.from(allowed).join(', ')}.`,
-        );
-      }
-      const response = await task.toolSendMessage(agent.def.id as AgentName, args.target as AgentName, args.message);
-      return { content: [{ type: 'text' as const, text: response }] };
-    },
-  );
-}
-
-function createLogFindingTool(agent: Agent, task: Task) {
-  return tool(
-    'log_finding',
-    'Write an entry to the shared knowledge log. Use for discoveries, decisions, completions, or blockers.',
-    {
-      entry: z.string().describe('The finding or decision to log'),
-      type: z.enum(['discovery', 'decision', 'completion', 'blocker']).describe('The type of entry'),
-    },
-    async (args) => {
-      const agentName = agent.def.id as AgentName;
-      const findingType = args.type as FindingType;
-      if (findingType === 'decision') {
-        logger.agentFinding(agentName, findingType, args.entry);
-      } else {
-        logger.agentFinding(agentName, findingType, args.entry, { truncate: 100 });
-      }
-      task.touch();
-      await appendAgentFinding(task.taskId, agentName, args.entry, findingType);
-      return { content: [{ type: 'text' as const, text: `Logged ${args.type}: ${args.entry}` }] };
-    },
-  );
-}
-
-function createShareArtifactTool(agent: Agent, task: Task) {
-  return tool(
-    'share_artifact',
-    'Share a document (plan, report, diff, or any longer output) with OTHER AGENTS by publishing an immutable snapshot to the task\'s shared artifacts folder. ' +
-    'This is for inter-agent sharing only — to deliver a file to the user, use `post_files_to_user`. ' +
-    'The tool COPIES the file — your local file is left in place, and the published copy is read-only and never updated. ' +
-    'Pass an absolute path to a file inside your readable sandbox; the tool returns the absolute path of the immutable copy under shared/artifacts/, which you should send in `send_message_to_agent` instead of pasting the document body. ' +
-    'Identical content is deduped by hash — re-sharing the same bytes returns the existing snapshot path. To publish revisions, edit your local file and call share_artifact again — each call creates a new versioned snapshot, preserving history.',
-    {
-      path: z.string().describe('Absolute path to the file you want to share'),
-      description: z.string().describe('Short description of what the artifact contains; logged for other agents'),
-    },
-    async (args) => {
-      const agentName = agent.def.id as AgentName;
-      let resolvedSource: string;
-      try {
-        resolvedSource = await assertReadable(args.path, requireSandbox(agent));
-      } catch (e) {
-        return err(e instanceof Error ? e.message : String(e));
-      }
-      let copyResult;
-      try {
-        copyResult = await copyArtifactToShared(task.taskId, resolvedSource);
-      } catch (e) {
-        return err(e instanceof Error ? e.message : String(e));
-      }
-      task.touch();
-      await appendArtifactShared(task.taskId, agentName, copyResult.artifactPath, args.description);
-      const verb = copyResult.reused ? 'Already shared' : 'Shared immutable snapshot';
-      return ok(`${verb} at ${copyResult.artifactPath}. This is a read-only copy — other agents can Read it but it will never be updated. To publish revisions, edit your local file and call share_artifact again. Logged to knowledge log.`);
-    },
-  );
-}
-
-// ---- PM-only tools ----
+// ---- PM tools ----
 
 function createPostToUserTool(agent: Agent, task: Task) {
   return tool(
@@ -420,7 +313,7 @@ function createPostToUserTool(agent: Agent, task: Task) {
       }).optional().describe('Where to post. Omit to post to the default channel.'),
     },
     async (args) => {
-      const agentName = agent.def.id as AgentName;
+      const agentName = agent.def.id;
       const hasTarget = !!args.target?.channel;
       // A trigger-fired task has no thread yet but does have a home channel, and this call is exactly what opens that thread — so "no channels" is only "nowhere to post" when there is no home channel either.
       if (!hasTarget && Object.keys(task.metadata.channels).length === 0 && !task.metadata.home_channel) {
@@ -459,7 +352,7 @@ function createPostFilesToUserTool(agent: Agent, task: Task) {
       channel: z.string().optional().describe('Channel key of an existing linked thread (e.g., "slack:C123:456.789"). Omit to post to the default channel.'),
     },
     async (args) => {
-      const agentName = agent.def.id as AgentName;
+      const agentName = agent.def.id;
       if (!args.channel && Object.keys(task.metadata.channels).length === 0) {
         return ok(
           'No channel is linked to this task, so there is nowhere to attach files.'
@@ -582,45 +475,6 @@ function createListChannelsTool(_agent: Agent, task: Task) {
   );
 }
 
-function createAssignTaskOwnerTool(agent: Agent, task: Task) {
-  return tool(
-    'assign_task_owner',
-    'Assign a task owner who will lead the investigation. Call this before sending the initial assignment message.',
-    {
-      // Free-form string (validated at runtime against the live task team) so a
-      // PM-spawned dynamic agent can be made owner in the same session — a
-      // static enum would freeze the set at MCP-server creation time.
-      agent: z.string().describe(
-        'The agent id to assign as task owner. Visible candidates right now: ' +
-        getVisiblePeerIdsForSender(agent.def, task.team).join(', ') +
-        '. PM-spawned dynamic agents added during this session are also valid.',
-      ),
-    },
-    async (args) => {
-      const agentName = agent.def.id as AgentName;
-      const allowed = new Set(getVisiblePeerIdsForSender(agent.def, task.team));
-      if (allowed.size > 0 && !allowed.has(args.agent)) {
-        return err(
-          `"${args.agent}" is not a visible candidate. Allowed: ${Array.from(allowed).join(', ')}.`,
-        );
-      }
-      const targetAgent = args.agent as AgentName;
-      logger.agentAction(agentName, 'Assigning task owner', targetAgent);
-      task.touch();
-
-      task.metadata.task_owner = targetAgent;
-      if (!task.metadata.participants.includes(targetAgent)) {
-        task.metadata.participants.push(targetAgent);
-      }
-      task.debouncedSave();
-
-      await appendAgentFinding(task.taskId, agentName, `Assigned ${targetAgent} as task owner`, 'decision');
-      logger.system(`Task ${task.taskId} owner set to ${targetAgent}`);
-      return { content: [{ type: 'text' as const, text: `Assigned ${targetAgent} as task owner.` }] };
-    },
-  );
-}
-
 function createRequestEditModeTool(agent: Agent, task: Task) {
   return tool(
     'request_edit_mode',
@@ -632,7 +486,7 @@ function createRequestEditModeTool(agent: Agent, task: Task) {
       channel: z.string().optional().describe('Channel key of an existing linked thread to post the request to (e.g., "slack:C123:456.789"). Omit to use the task\'s default channel.'),
     },
     async (args) => {
-      const agentName = agent.def.id as AgentName;
+      const agentName = agent.def.id;
 
       // Idempotency: edit mode is a task-lifetime grant. If it is already active,
       // don't post another approval prompt or pause the task — just tell the
@@ -715,7 +569,7 @@ function createRequestMaxModeTool(agent: Agent, task: Task) {
       channel: z.string().optional().describe('Channel key of an existing linked thread to post the request to (e.g., "slack:C123:456.789"). Omit to use the task\'s default channel.'),
     },
     async (args) => {
-      const agentName = agent.def.id as AgentName;
+      const agentName = agent.def.id;
 
       // Idempotency: max mode is a task-lifetime grant. If it is already active,
       // don't post another approval prompt or pause the task — just tell the
@@ -795,7 +649,7 @@ function createReportCompletionTool(agent: Agent, task: Task) {
       message: z.string().optional().describe('Optional message to post to Slack before finishing'),
     },
     async (args) => {
-      const agentName = agent.def.id as AgentName;
+      const agentName = agent.def.id;
       // Idempotency: task already parked/stopped — nothing to do.
       if (!task.isActive) {
         return ok('Task already completed. End your turn.');
@@ -876,7 +730,7 @@ function createMuteChannelTool(agent: Agent, task: Task) {
       channel: z.string().optional().describe('Channel key of the thread to mute (e.g., "slack:C123:456.789"). Omit to mute the task\'s default channel.'),
     },
     async (args) => {
-      const agentName = agent.def.id as AgentName;
+      const agentName = agent.def.id;
       const channelKey = args.channel ?? task.metadata.default_channel;
 
       if (!channelKey) {
@@ -930,7 +784,7 @@ function createReactToMessageTool(agent: Agent, task: Task) {
       channel: z.string().optional().describe('Channel key of the linked thread (e.g. "slack:C123:456.789"). Omit for the default channel.'),
     },
     async (args) => {
-      const agentName = agent.def.id as AgentName;
+      const agentName = agent.def.id;
       const emoji = args.emoji.replace(/:/g, '').trim();
       const dispatched = await task.reactToMessage(args.message_id, emoji, args.channel);
       if (!dispatched) {
@@ -954,7 +808,7 @@ function createUnreactFromMessageTool(agent: Agent, task: Task) {
       channel: z.string().optional().describe('Channel key of the linked thread. Omit for the default channel.'),
     },
     async (args) => {
-      const agentName = agent.def.id as AgentName;
+      const agentName = agent.def.id;
       const emoji = args.emoji.replace(/:/g, '').trim();
       const dispatched = await task.unreactFromMessage(args.message_id, emoji, args.channel);
       if (!dispatched) {
@@ -1159,7 +1013,7 @@ function createPostToChannelTool(_agent: Agent, task: Task) {
         // auditable after the fact.
         await appendAgentFinding(
           task.taskId,
-          _agent.def.id as AgentName,
+          _agent.def.id,
           `Posted to ${args.channel} outside this task. Mandate: ${mandate}`,
           'decision',
         );
@@ -1171,26 +1025,6 @@ function createPostToChannelTool(_agent: Agent, task: Task) {
       } catch (e) {
         return ok(formatSlackPostError(e, args.channel));
       }
-    },
-  );
-}
-
-function createGetAgentsStatusTool(agent: Agent, task: Task) {
-  return tool(
-    'get_agents_status',
-    'Get the status of all agents for the current task.',
-    {},
-    async () => {
-      const statuses = task.getAgentStatus();
-      if (statuses.length === 0) {
-        return { content: [{ type: 'text' as const, text: 'No agents spawned yet.' }] };
-      }
-      const lines = statuses.map((s) => {
-        const state = s.active ? 'active' : 'idle';
-        const activity = s.last_activity ? ` (last activity: ${s.last_activity})` : '';
-        return `- ${s.agent}: ${state}${activity}`;
-      });
-      return { content: [{ type: 'text' as const, text: `Agent statuses:\n${lines.join('\n')}` }] };
     },
   );
 }
@@ -1221,7 +1055,7 @@ function createPushBranchTool(agent: Agent, task: Task) {
       github: githubArgSchema,
     },
     async (args) => {
-      const agentName = agent.def.id as AgentName;
+      const agentName = agent.def.id;
       const resolved = requireAttached(agent, task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const force = args.force === true;
@@ -1282,7 +1116,7 @@ function createPullRequestTool(agent: Agent, task: Task) {
       github: githubArgSchema,
     },
     async (args) => {
-      const agentName = agent.def.id as AgentName;
+      const agentName = agent.def.id;
       logger.agentAction(agentName, 'Creating PR', args.title);
 
       const resolved = requireAttached(agent, task, args.github);
@@ -1320,7 +1154,7 @@ function createGetPRStatusTool(agent: Agent, task: Task) {
     'Get the current status of a pull request.',
     { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
-      const resolved = resolveGithub(agent, args.github);
+      const resolved = resolveGithub(agent, task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1341,7 +1175,7 @@ function createGetPRChecksTool(agent: Agent, task: Task) {
     'List CI checks (check-runs + legacy commit statuses) attached to a PR\'s HEAD commit. Returns conclusion, URL, and — for failed checks — the full output (title/summary/text). Use this when a "checks updated" event arrives or get_pr_status reports mergeableState=unstable, to find which specific check broke.',
     { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
-      const resolved = resolveGithub(agent, args.github);
+      const resolved = resolveGithub(agent, task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1395,7 +1229,7 @@ function createGetCheckRunTool(agent: Agent, task: Task) {
       github: githubArgSchema,
     },
     async (args) => {
-      const resolved = resolveGithub(agent, args.github);
+      const resolved = resolveGithub(agent, task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const githubRepo = resolved.github;
       const client = getGitHubClient();
@@ -1514,7 +1348,7 @@ function createListCodeScanningAlertsTool(agent: Agent, task: Task) {
         .describe('Filter by severity level.'),
     },
     async (args) => {
-      const resolved = resolveGithub(agent, args.github);
+      const resolved = resolveGithub(agent, task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1566,7 +1400,7 @@ function createGetCodeScanningAlertTool(agent: Agent, task: Task) {
       github: githubArgSchema,
     },
     async (args) => {
-      const resolved = resolveGithub(agent, args.github);
+      const resolved = resolveGithub(agent, task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1616,7 +1450,7 @@ function createGetPRReviewsTool(agent: Agent, task: Task) {
     'Get review-level summary for a PR (approvals, change requests, review bodies). For line-level comments, use get_review_threads.',
     { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
-      const resolved = resolveGithub(agent, args.github);
+      const resolved = resolveGithub(agent, task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1638,7 +1472,7 @@ function createGetPRCommentsTool(agent: Agent, task: Task) {
     'Get top-level PR conversation comments (the "Conversation" tab). Does not include line-level review comments — use get_review_threads for those.',
     { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
-      const resolved = resolveGithub(agent, args.github);
+      const resolved = resolveGithub(agent, task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1660,7 +1494,7 @@ function createGetReviewThreadsTool(agent: Agent, task: Task) {
     'Get every review thread on a PR with its thread_id (for resolve_review_thread) and each comment\'s comment_id (for reply_to_review_comment).',
     { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
-      const resolved = resolveGithub(agent, args.github);
+      const resolved = resolveGithub(agent, task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1697,7 +1531,7 @@ function createListPRsTool(agent: Agent, task: Task) {
       github: githubArgSchema,
     },
     async (args) => {
-      const resolved = resolveGithub(agent, args.github);
+      const resolved = resolveGithub(agent, task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1724,7 +1558,7 @@ function createGetPRTool(agent: Agent, task: Task) {
     'Get full PR details: title, description, diff, state, and branches.',
     { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
-      const resolved = resolveGithub(agent, args.github);
+      const resolved = resolveGithub(agent, task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1757,7 +1591,7 @@ function createUpdatePRTool(agent: Agent, task: Task) {
       github: githubArgSchema,
     },
     async (args) => {
-      const resolved = resolveGithub(agent, args.github);
+      const resolved = resolveGithub(agent, task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1783,7 +1617,7 @@ function createAddPRCommentTool(agent: Agent, task: Task) {
       github: githubArgSchema,
     },
     async (args) => {
-      const resolved = resolveGithub(agent, args.github);
+      const resolved = resolveGithub(agent, task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1805,7 +1639,7 @@ function createAddReviewCommentTool(agent: Agent, task: Task) {
       github: githubArgSchema,
     },
     async (args) => {
-      const resolved = resolveGithub(agent, args.github);
+      const resolved = resolveGithub(agent, task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1826,7 +1660,7 @@ function createReplyToReviewCommentTool(agent: Agent, task: Task) {
       github: githubArgSchema,
     },
     async (args) => {
-      const resolved = resolveGithub(agent, args.github);
+      const resolved = resolveGithub(agent, task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1846,7 +1680,7 @@ function createResolveReviewThreadTool(agent: Agent, task: Task) {
       github: githubArgSchema,
     },
     async (args) => {
-      const resolved = resolveGithub(agent, args.github);
+      const resolved = resolveGithub(agent, task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1862,7 +1696,7 @@ function createRequestReReviewTool(agent: Agent, task: Task) {
     'Request reviewers to re-review the PR after changes.',
     { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
-      const resolved = resolveGithub(agent, args.github);
+      const resolved = resolveGithub(agent, task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1879,7 +1713,7 @@ function createMergePRTool(agent: Agent, task: Task) {
     'Merge a pull request, subject to the repo\'s merge policy. On an auto-merge repo it merges directly if the PR is clean (returns the current status otherwise). On any other repo it posts an auto-merge approval request and pauses the task; once the user approves, the PR is armed to merge automatically as soon as all checks and required reviews pass. Works for any open PR — it does not require the PR to be mergeable yet.',
     { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
-      const resolved = resolveGithub(agent, args.github);
+      const resolved = resolveGithub(agent, task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -1906,11 +1740,9 @@ function createMergePRTool(agent: Agent, task: Task) {
       // supersedes a first merge request.
       const pending = task.metadata.pending_merge_approval;
       if (pending) {
-        // Task-level quiescence (same predicate as idleDecision): the slot is
-        // per-task while pendingTeardown is per-agent, so a concurrently
-        // running second repo agent must not misread a seconds-old request as
-        // stale and supersede it.
-        const parked = [...task.agentProcesses.values()].some((a) => a.pendingTeardown);
+        // Task-level quiescence (same predicate as idleDecision): a parked
+        // agent means the request is live and the task is pausing on it.
+        const parked = task.agent?.pendingTeardown != null;
         if (parked) {
           return ok(`Merge approval already pending for ${pending.github}#${pending.pr_number} — task is pausing until the user approves or denies it.`);
         }
@@ -1927,7 +1759,7 @@ function createMergePRTool(agent: Agent, task: Task) {
         return ok(`Cannot merge: PR #${args.pr_number} (${resolved.github}) is ${status.state}`);
       }
 
-      const agentName = agent.def.id as AgentName;
+      const agentName = agent.def.id;
       logger.agentAction(agentName, 'Requesting merge approval', `${resolved.github}#${args.pr_number}`);
       task.touch();
 
@@ -1992,7 +1824,7 @@ function createClosePRTool(agent: Agent, task: Task) {
     'Close a pull request without merging.',
     { pr_number: z.number().describe('The PR number'), github: githubArgSchema },
     async (args) => {
-      const resolved = resolveGithub(agent, args.github);
+      const resolved = resolveGithub(agent, task, args.github);
       if (!resolved.ok) return err(resolved.error);
       const client = getGitHubClient();
       if (!client) throw new Error('GitHub client not configured');
@@ -2114,18 +1946,18 @@ function createCreateBranchTool(agent: Agent, task: Task) {
 function createListBranchesTool(agent: Agent, task: Task) {
   return tool(
     'list_branches',
-    'List branches created or visited by this agent in the current task. With no arguments, lists branches across every attached repo.',
+    'List branches created or visited in the current task. With no arguments, lists branches across every mounted repo.',
     { github: githubArgSchema },
     async (args) => {
-      const attachments = task.metadata.repositories[agent.def.id];
-      if (!Array.isArray(attachments) || attachments.length === 0) {
-        return ok('No attached repos.');
+      const mounted = task.metadata.repositories;
+      if (mounted.length === 0) {
+        return ok('No repos are mounted in this task.');
       }
-      let filtered = attachments;
+      let filtered = mounted;
       if (args.github) {
-        const resolved = resolveGithub(agent, args.github);
+        const resolved = resolveGithub(agent, task, args.github);
         if (!resolved.ok) return err(resolved.error);
-        filtered = attachments.filter((a) => a.github === resolved.github);
+        filtered = mounted.filter((a) => a.github === resolved.github);
       }
       const blocks = filtered.map((a) => {
         const current = a.current_branch || '(unknown)';
@@ -2187,7 +2019,7 @@ function createSetReminderTool(agent: Agent, task: Task) {
         return { content: [{ type: 'text' as const, text: 'Datetime must be within 30 days.' }] };
       }
 
-      const agentName = agent.def.id as AgentName;
+      const agentName = agent.def.id;
       scheduleReminder(task, triggerAt, args.reason);
       logger.agentAction(agentName, 'Setting reminder', `${triggerAt.toISOString()}: ${args.reason}`);
 
@@ -2206,7 +2038,7 @@ function createCancelReminderTool(agent: Agent, task: Task) {
         return { content: [{ type: 'text' as const, text: 'No pending reminder to cancel.' }] };
       }
 
-      const agentName = agent.def.id as AgentName;
+      const agentName = agent.def.id;
       cancelReminder(task);
 
       await appendAgentFinding(task.taskId, agentName, 'Cancelled scheduled reminder', 'decision');
@@ -2734,9 +2566,7 @@ function createDeleteTriggerTool(_agent: Agent, task: Task) {
 // ---- MCP Server creation ----
 
 /**
- * PM coordinator tools, split by concern. The PM also gets the shared
- * `agent-tools` server (send_message_to_agent, log_finding, share_artifact),
- * so those are not repeated here.
+ * PM tools, split by concern.
  */
 
 /** User-facing communication (Slack messaging, lookups, channel control, reactions). */
@@ -2763,17 +2593,14 @@ export function createCommsMcpServer(agent: Agent, task: Task) {
 }
 
 /**
- * `list_available_repos` — PM discovers which repos the GitHub App can reach.
- * Tags repos already covered by a plugin specialist so PM prefers the
- * specialist over spawning a generic agent. Cached on the task for the turn.
+ * `list_available_repos` — the PM discovers which repos the GitHub App can
+ * reach. The installation is the allowlist; there is nothing else to consult.
+ * Cached on the task for the turn.
  */
 function createListAvailableReposTool(_agent: Agent, task: Task) {
   return tool(
     'list_available_repos',
-    'List every GitHub repository this installation can reach. Use this before ' +
-    '`spawn_repo_agent` to see what is available. Repos already covered by a ' +
-    'plugin specialist are marked — prefer messaging that specialist over ' +
-    'spawning a generic agent.',
+    'List every GitHub repository this installation can reach.',
     {},
     async () => {
       const client = getGitHubClient();
@@ -2791,131 +2618,25 @@ function createListAvailableReposTool(_agent: Agent, task: Task) {
         return ok('No repositories accessible to this installation.');
       }
       const lines = repos.map((r) => {
-        const owners = findAgentDefsContainingRepo(r.github);
-        const primaryOf = owners.find((d) => d.repo!.primary === r.github);
-        const tags: string[] = [];
-        if (primaryOf) tags.push(`primary of ${primaryOf.id}`);
-        else if (owners.length > 0) tags.push(`declared by ${owners.map((d) => d.id).join(', ')}`);
         const desc = r.description ? ` — ${r.description}` : '';
-        const tagStr = tags.length > 0 ? ` [${tags.join('; ')}]` : '';
-        return `- ${r.github} (default: ${r.default_branch})${tagStr}${desc}`;
+        return `- ${r.github} (default: ${r.default_branch})${desc}`;
       });
       return ok(`Repos accessible to this installation:\n${lines.join('\n')}`);
     },
   );
 }
 
-/**
- * `spawn_repo_agent` — PM creates an on-demand repo agent bound to a chosen
- * list of available repos. The agent eager-mounts all of them at spawn (first
- * = primary), behaving like a plugin-defined repo agent. Persisted in
- * `metadata.dynamic_agents` and added to the live `task.team`.
- *
- * Anti-duplication: rejects a repo already covered as a plugin specialist's
- * primary — PM should message that specialist instead.
- */
-function createSpawnRepoAgentTool(agent: Agent, task: Task) {
-  return tool(
-    'spawn_repo_agent',
-    [
-      'Spawn an on-demand repo agent for one or more GitHub repos, chosen from',
-      '`list_available_repos`. Use when no plugin specialist covers the repo(s)',
-      'you need. All listed repos are mounted at spawn; the first is the primary',
-      '(the default target for the agent\'s repo-tools).',
-      '',
-      'Prefer an existing plugin specialist when one exists — it has a curated',
-      'prompt and skills. After spawning, `send_message_to_agent` to the returned',
-      'id to give it work.',
-    ].join('\n'),
-    {
-      shortname: z.string().regex(/^[a-z][a-z0-9-]*$/).describe(
-        'Short identifier matching /^[a-z][a-z0-9-]*$/. The agent id becomes `<shortname>-<4hex>-agent`.',
-      ),
-      repos: z.array(z.object({
-        github: z.string().describe('Github identifier, e.g. "org/repo"'),
-        baseBranch: z.string().optional().describe('Base branch (default: the repo\'s default branch)'),
-      })).min(1).describe('Repos this agent will work with. First entry is the primary.'),
-      role: z.string().optional().describe('Short role description (default: "Generic engineer for <primary>")'),
-      expertise: z.string().optional().describe('Detailed expertise string used in the agent\'s prompt'),
-    },
-    async (args) => {
-      const agentName = agent.def.id as AgentName;
-      const primary = args.repos[0].github;
-
-      // Anti-duplication: a repo that's already a plugin specialist's primary
-      // should be reached via that specialist, not a generic clone.
-      for (const r of args.repos) {
-        const conflict = findAgentDefsContainingRepo(r.github)
-          .find((d) => d.pluginName !== '<dynamic>' && d.repo!.primary === r.github);
-        if (conflict) {
-          return err(
-            `Repo "${r.github}" is already the primary of ${conflict.id}. ` +
-            `Use send_message_to_agent with target=${conflict.id} instead of spawning a new agent.`,
-          );
-        }
-      }
-
-      // Validate every requested repo is reachable; fill in default branches.
-      const client = getGitHubClient();
-      if (!client) return err('GitHub client not configured');
-      const resolvedRepos: Array<{ github: string; baseBranch: string }> = [];
-      for (const r of args.repos) {
-        const reachable = await client.resolveRepo(r.github);
-        if (!reachable) {
-          return err(
-            `GitHub App cannot reach "${r.github}". Check it appears in ` +
-            `list_available_repos (the App must be installed on it), then retry.`,
-          );
-        }
-        resolvedRepos.push({ github: r.github, baseBranch: r.baseBranch || reachable.default_branch });
-      }
-
-      // Stable id; 4-hex suffix makes same-task shortname collisions negligible.
-      const suffix = Math.floor(Math.random() * 0xffff).toString(16).padStart(4, '0');
-      const id = `${args.shortname}-${suffix}-agent`;
-
-      const spec = {
-        id,
-        shortname: args.shortname,
-        repos: resolvedRepos,
-        role: args.role || `Generic engineer for ${primary}`,
-        expertise: args.expertise || `Investigation and work in ${resolvedRepos.map((r) => r.github).join(', ')}.`,
-      };
-
-      task.metadata.dynamic_agents ??= [];
-      task.metadata.dynamic_agents.push(spec);
-      task.team.push(synthesizeDynamicAgentDef(spec));
-      task.debouncedSave();
-
-      await appendAgentFinding(
-        task.taskId,
-        agentName,
-        `Spawned repo agent ${id} for ${resolvedRepos.map((r) => r.github).join(', ')}`,
-        'decision',
-      );
-
-      return ok(
-        `Spawned repo agent ${id} (primary: ${primary}). ` +
-        `Use send_message_to_agent with target=${id} to give it work.`,
-      );
-    },
-  );
-}
-
-/** Task orchestration (ownership, completion, edit mode, team status, repo-agent spawning). */
+/** Task orchestration (completion, edit mode, max mode, usage, repos, triggers). */
 export function createOrchestrationMcpServer(agent: Agent, task: Task) {
   return createSdkMcpServer({
     name: 'orchestration-tools',
     version: '1.0.0',
     tools: [
-      createAssignTaskOwnerTool(agent, task),
       createReportCompletionTool(agent, task),
       createRequestEditModeTool(agent, task),
       createRequestMaxModeTool(agent, task),
-      createGetAgentsStatusTool(agent, task),
       createGetTaskUsageTool(agent, task),
       createListAvailableReposTool(agent, task),
-      createSpawnRepoAgentTool(agent, task),
       createProposeTriggerTool(agent, task),
       createListTriggersTool(agent, task),
       createGetTriggerTool(agent, task),
@@ -2975,22 +2696,6 @@ export function createRepoToolsMcpServer(agent: Agent, task: Task) {
       createRequestReReviewTool(agent, task),
       createMergePRTool(agent, task),
       createClosePRTool(agent, task),
-    ],
-  });
-}
-
-/**
- * Create the MCP server with base agent tools shared by every agent
- * (PM, repo, and plugin): inter-agent messaging, findings, and artifacts.
- */
-export function createBaseAgentMcpServer(agent: Agent, task: Task) {
-  return createSdkMcpServer({
-    name: 'agent-tools',
-    version: '1.0.0',
-    tools: [
-      createSendMessageTool(agent, task),
-      createLogFindingTool(agent, task),
-      createShareArtifactTool(agent, task),
     ],
   });
 }

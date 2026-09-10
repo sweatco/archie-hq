@@ -28,14 +28,11 @@ function task(index: number) {
   return {
     task_id: `task-${index}`,
     status: 'completed',
-    task_owner: null,
-    participants: [],
     created_at: '2026-01-01T00:00:00.000Z',
     updated_at: '2026-01-01T00:00:00.000Z',
     title: `Title ${index}`,
     channel_name: 'cli',
     reminder: null,
-    agents: [],
   };
 }
 

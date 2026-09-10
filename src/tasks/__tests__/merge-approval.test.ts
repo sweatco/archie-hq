@@ -61,7 +61,7 @@ type FakeTask = {
     pending_merge_approval?: TaskMetadata['pending_merge_approval'];
     repositories: TaskMetadata['repositories'];
   };
-  agentProcesses: Map<string, { clearPendingTeardown: ReturnType<typeof vi.fn> }>;
+  agent: { clearPendingTeardown: ReturnType<typeof vi.fn> };
   debouncedSave: ReturnType<typeof vi.fn>;
   save: ReturnType<typeof vi.fn>;
   sendMessage: ReturnType<typeof vi.fn>;
@@ -69,12 +69,12 @@ type FakeTask = {
 
 function makeFakeTask(
   slot?: TaskMetadata['pending_merge_approval'],
-  repositories: TaskMetadata['repositories'] = {},
+  repositories: TaskMetadata['repositories'] = [],
 ): FakeTask {
   return {
     taskId: 'task-123',
     metadata: { pending_merge_approval: slot, repositories },
-    agentProcesses: new Map([['backend-agent', { clearPendingTeardown: vi.fn() }]]),
+    agent: { clearPendingTeardown: vi.fn() },
     debouncedSave: vi.fn(),
     save: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn().mockResolvedValue(undefined),
@@ -83,16 +83,14 @@ function makeFakeTask(
 
 /** Repositories map with a single branch_state carrying `pr`'s number. */
 function reposWithPR(pr: { github: string; pr_number: number }): TaskMetadata['repositories'] {
-  return {
-    'backend-agent': [
-      { github: pr.github, branch_states: { 'feat/x': { pr_number: pr.pr_number, base_branch: 'main' } } },
-    ],
-  };
+  return [
+    { github: pr.github, branch_states: { 'feat/x': { pr_number: pr.pr_number, base_branch: 'main' } } },
+  ];
 }
 
 /** Read the merge_armed flag off the reposWithPR branch state. */
 function armedFlag(task: FakeTask): boolean | undefined {
-  return task.metadata.repositories['backend-agent']![0]!.branch_states!['feat/x']!.merge_armed;
+  return task.metadata.repositories[0]!.branch_states!['feat/x']!.merge_armed;
 }
 
 const approver = { id: 'U1', name: 'Dana' };
@@ -122,12 +120,12 @@ describe('handleMergeApproval', () => {
 
     expect(disposition).toBe('resolved');
     expect(task.metadata.pending_merge_approval).toBeUndefined();
-    expect(task.agentProcesses.get('backend-agent')!.clearPendingTeardown).toHaveBeenCalledTimes(1);
+    expect(task.agent.clearPendingTeardown).toHaveBeenCalledTimes(1);
     expect(mockGitHubClient.mergePullRequest).toHaveBeenCalledWith('org/backend', 1);
     expect(appendAgentFinding).toHaveBeenCalledWith(
       'task-123', 'system', expect.stringContaining('merged on user approval by Dana'), 'completion',
     );
-    expect(task.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask, 'pm-agent');
+    expect(task.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask);
   });
 
   it('arms a not-clean PR: no merge, merge_armed set, armed finding, slot cleared, PM reactivated (AC4)', async () => {
@@ -146,7 +144,7 @@ describe('handleMergeApproval', () => {
     expect(appendAgentFinding).toHaveBeenCalledWith(
       'task-123', 'system', expect.stringContaining('Auto-merge armed for org/backend#1'), 'decision',
     );
-    expect(task.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask, 'pm-agent');
+    expect(task.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask);
   });
 
   it('arms a dirty PR too — any non-clean open PR arms rather than merging', async () => {
@@ -204,7 +202,7 @@ describe('handleMergeApproval', () => {
       'task-123', 'system',
       expect.stringContaining('PR org/backend#1 is closed — nothing to merge'), 'decision',
     );
-    expect(task.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask, 'pm-agent');
+    expect(task.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask);
   });
 
   it('does not arm a PR merged during the approval window: reports the merged state, does not arm (F2)', async () => {
@@ -238,7 +236,7 @@ describe('handleMergeApproval', () => {
     expect(appendAgentFinding).toHaveBeenCalledWith(
       'task-123', 'system', expect.stringContaining('Base branch was modified'), 'decision',
     );
-    expect(task.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask, 'pm-agent');
+    expect(task.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask);
   });
 
   it('reports a thrown merge error as a decision finding, slot cleared, PM reactivated (AC4)', async () => {
@@ -255,7 +253,7 @@ describe('handleMergeApproval', () => {
     expect(appendAgentFinding).toHaveBeenCalledWith(
       'task-123', 'system', expect.stringContaining('boom from GitHub'), 'decision',
     );
-    expect(task.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask, 'pm-agent');
+    expect(task.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask);
   });
 
   it('merges with zero review approvals when GitHub reports clean — no approved floor (AC5)', async () => {
@@ -393,13 +391,13 @@ describe('handleMergeDenial', () => {
 
     expect(disposition).toBe('resolved');
     expect(task.metadata.pending_merge_approval).toBeUndefined();
-    expect(task.agentProcesses.get('backend-agent')!.clearPendingTeardown).toHaveBeenCalledTimes(1);
+    expect(task.agent.clearPendingTeardown).toHaveBeenCalledTimes(1);
     expect(mockGitHubClient.getPRStatus).not.toHaveBeenCalled();
     expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
     expect(appendAgentFinding).toHaveBeenCalledWith(
       'task-123', 'system', 'Merge denied by user — PR not merged', 'decision',
     );
-    expect(task.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask, 'pm-agent');
+    expect(task.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask);
   });
 
   it('is a stale no-op on an empty slot', async () => {

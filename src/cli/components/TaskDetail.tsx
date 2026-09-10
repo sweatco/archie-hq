@@ -53,12 +53,6 @@ function formatDateTime(iso: string): string {
   });
 }
 
-interface AgentStatus {
-  agent: string;
-  active: boolean;
-  last_activity?: string;
-}
-
 interface SystemEvent {
   type: string;
   taskId: string;
@@ -103,10 +97,8 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
   const { exit } = useApp();
   const { stdout } = useStdout();
   const termHeight = stdout?.rows ?? 24;
-  const [agents, setAgents] = useState<AgentStatus[]>([]);
   const [events, setEvents] = useState<SystemEvent[]>([]);
   const [eventCursor, setEventCursor] = useState(0);
-  const [fallbackLines, setFallbackLines] = useState<string[]>([]); // knowledge.log for old tasks
   const [inputActive, setInputActive] = useState(true);
   const [focusedApprovalLine, setFocusedApprovalLine] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -123,8 +115,8 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
   const [linesBelow, setLinesBelow] = useState(0);
   const escapeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Reserve lines: header(1) + agents(1) + margin(1) + indicator/gap(2) + input(1)
-  const reservedLines = 6;
+  // Reserve lines: header(1) + margin(1) + indicator/gap(2) + input(1)
+  const reservedLines = 5;
   const logHeight = Math.max(5, termHeight - reservedLines);
 
   // Build log lines with inline approvals
@@ -145,98 +137,92 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
     }
   });
 
-  if (events.length > 0) {
-    events.forEach((event, idx) => {
-      switch (event.type) {
-        case 'message':
-          logLines.push({
-            node: (() => { const p = formatMessageParts(event.data.from as string, event.data.to as string, event.data.destination as string | undefined); const footer = event.data.footer as string | undefined; return <><Text dimColor>[{p.label}]</Text>{p.mention ? <Text color="cyan">{p.mention}</Text> : null} {event.data.message as string}{footer ? <Text dimColor>{'\n'}{footer}</Text> : null}</>; })(),
-          });
-          break;
-        case 'pr_card': {
-          const cardId = event.data.cardId as string | undefined;
-          if (!cardId || prCardAnchor.get(cardId) !== idx) break; // render once, at the anchor
-          logLines.push({ node: renderPrCard(prCardLatest.get(cardId) ?? event.data) });
-          break;
-        }
-        case 'agent:log':
-          logLines.push({
-            node: <Text dimColor>[{event.agentName}] {event.data.finding as string}</Text>,
-          });
-          break;
-        case 'agent:bg_task': {
-          // One entry per background task, keyed by task_id: render the 'start' as
-          // ⏳ running, and once the matching 'end' has arrived (events is rebuilt on
-          // every update) fold it into ✅/❌. Skip the 'end' itself.
-          if (event.data.action !== 'start') break;
-          const key = event.data.key as string;
-          const ended = events.find(
-            (e) => e.type === 'agent:bg_task' && e.data.action === 'end' && e.data.key === key,
-          );
-          const desc = (event.data.description as string) || 'background task';
-          if (ended) {
-            const status = ended.data.status as string;
-            logLines.push({
-              node: <Text dimColor>{status === 'completed' ? '✅' : '❌'} [{event.agentName}] background task {status} — {desc}</Text>,
-            });
-          } else {
-            logLines.push({
-              node: <Text color="yellow">⏳ [{event.agentName}] background task running — {desc}</Text>,
-            });
-          }
-          break;
-        }
-        case 'approval:requested': {
-          const resolved = isApprovalResolved(event, events);
-          if (resolved) {
-            logLines.push({
-              node: <Text dimColor>✅ {event.data.text as string} (resolved)</Text>,
-            });
-          } else {
-            logLines.push({
-              node: <Text color="yellow" bold>⏳ {event.data.text as string}  [y] approve / [n] deny</Text>,
-              approval: {
-                approvalType: event.data.approvalType as 'edit_mode' | 'research_budget' | 'merge' | 'trigger' | 'max_mode' | 'tool_call',
-                ref: event.data.ref as string | undefined,
-                eventIndex: idx,
-                // Merge approvals carry the PR identity; the API requires it on
-                // resolution. Absent for other types (undefined → omitted).
-                github: event.data.github as string | undefined,
-                pr_number: event.data.pr_number as number | undefined,
-              },
-            });
-          }
-          break;
-        }
-        case 'approval:resolved':
-          logLines.push({
-            node: <Text>{event.data.approve ? '✅' : '❌'} Approval {event.data.approve ? 'granted' : 'denied'}: {event.data.type as string}</Text>,
-          });
-          break;
-        case 'reminder:set':
-          logLines.push({
-            node: <Text color="magenta">⏰ Reminder set for {formatDateTime(event.data.trigger_at as string)} — {event.data.reason as string}</Text>,
-          });
-          break;
-        case 'reminder:cancelled':
-          logLines.push({
-            node: <Text dimColor>⏰ Reminder cancelled</Text>,
-          });
-          break;
-        case 'reminder:fired':
-          logLines.push({
-            node: <Text color="magenta">⏰ Reminder fired — {event.data.reason as string}</Text>,
-          });
-          break;
-        default:
-          break;
+  events.forEach((event, idx) => {
+    switch (event.type) {
+      case 'message':
+        logLines.push({
+          node: (() => { const p = formatMessageParts(event.data.from as string, event.data.to as string, event.data.destination as string | undefined); const footer = event.data.footer as string | undefined; return <><Text dimColor>[{p.label}]</Text>{p.mention ? <Text color="cyan">{p.mention}</Text> : null} {event.data.message as string}{footer ? <Text dimColor>{'\n'}{footer}</Text> : null}</>; })(),
+        });
+        break;
+      case 'pr_card': {
+        const cardId = event.data.cardId as string | undefined;
+        if (!cardId || prCardAnchor.get(cardId) !== idx) break; // render once, at the anchor
+        logLines.push({ node: renderPrCard(prCardLatest.get(cardId) ?? event.data) });
+        break;
       }
-    });
-  } else {
-    fallbackLines.forEach((line) => {
-      logLines.push({ node: <Text>{line}</Text> });
-    });
-  }
+      case 'agent:log':
+        logLines.push({
+          node: <Text dimColor>[{event.agentName}] {event.data.finding as string}</Text>,
+        });
+        break;
+      case 'agent:bg_task': {
+        // One entry per background task, keyed by task_id: render the 'start' as
+        // ⏳ running, and once the matching 'end' has arrived (events is rebuilt on
+        // every update) fold it into ✅/❌. Skip the 'end' itself.
+        if (event.data.action !== 'start') break;
+        const key = event.data.key as string;
+        const ended = events.find(
+          (e) => e.type === 'agent:bg_task' && e.data.action === 'end' && e.data.key === key,
+        );
+        const desc = (event.data.description as string) || 'background task';
+        if (ended) {
+          const status = ended.data.status as string;
+          logLines.push({
+            node: <Text dimColor>{status === 'completed' ? '✅' : '❌'} [{event.agentName}] background task {status} — {desc}</Text>,
+          });
+        } else {
+          logLines.push({
+            node: <Text color="yellow">⏳ [{event.agentName}] background task running — {desc}</Text>,
+          });
+        }
+        break;
+      }
+      case 'approval:requested': {
+        const resolved = isApprovalResolved(event, events);
+        if (resolved) {
+          logLines.push({
+            node: <Text dimColor>✅ {event.data.text as string} (resolved)</Text>,
+          });
+        } else {
+          logLines.push({
+            node: <Text color="yellow" bold>⏳ {event.data.text as string}  [y] approve / [n] deny</Text>,
+            approval: {
+              approvalType: event.data.approvalType as 'edit_mode' | 'research_budget' | 'merge' | 'trigger' | 'max_mode' | 'tool_call',
+              ref: event.data.ref as string | undefined,
+              eventIndex: idx,
+              // Merge approvals carry the PR identity; the API requires it on
+              // resolution. Absent for other types (undefined → omitted).
+              github: event.data.github as string | undefined,
+              pr_number: event.data.pr_number as number | undefined,
+            },
+          });
+        }
+        break;
+      }
+      case 'approval:resolved':
+        logLines.push({
+          node: <Text>{event.data.approve ? '✅' : '❌'} Approval {event.data.approve ? 'granted' : 'denied'}: {event.data.type as string}</Text>,
+        });
+        break;
+      case 'reminder:set':
+        logLines.push({
+          node: <Text color="magenta">⏰ Reminder set for {formatDateTime(event.data.trigger_at as string)} — {event.data.reason as string}</Text>,
+        });
+        break;
+      case 'reminder:cancelled':
+        logLines.push({
+          node: <Text dimColor>⏰ Reminder cancelled</Text>,
+        });
+        break;
+      case 'reminder:fired':
+        logLines.push({
+          node: <Text color="magenta">⏰ Reminder fired — {event.data.reason as string}</Text>,
+        });
+        break;
+      default:
+        break;
+    }
+  });
 
   // Collect line indices of pending approvals
   const pendingApprovalLines = logLines
@@ -258,17 +244,9 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
       setStatus(detail.metadata?.status || '');
       setReminder(detail.metadata?.reminder ?? null);
       setTitle(detail.metadata?.title ?? null);
-      setAgents(detail.agents || []);
       setLiveStatus(''); // ephemeral — repopulates from the next `status` event
       setEvents(eventsResult.events);
       setEventCursor(eventsResult.total);
-
-      // Fallback: if no events.jsonl yet, render from knowledge.log
-      if (eventsResult.events.length === 0 && detail.knowledgeLog) {
-        setFallbackLines(detail.knowledgeLog.split('\n').filter((l: string) => l.trim()));
-      } else {
-        setFallbackLines([]);
-      }
 
       setError(null);
       // Scroll to bottom after initial load
@@ -302,18 +280,6 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
 
       setEvents((prev) => [...prev, ev]);
       setEventCursor((c) => c + 1);
-
-      // Update agents bar from agent events
-      if (ev.type === 'agent:active' || ev.type === 'agent:inactive') {
-        setAgents((prev) => {
-          const existing = prev.find((a) => a.agent === ev.agentName);
-          const active = ev.type === 'agent:active';
-          if (existing) {
-            return prev.map((a) => a.agent === ev.agentName ? { ...a, active } : a);
-          }
-          return [...prev, { agent: ev.agentName!, active }];
-        });
-      }
 
       // Update status from task events
       if (ev.type === 'task:resumed') setStatus('in_progress');
@@ -463,24 +429,6 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
         </Text>
       </Box>
 
-      {/* Agents bar */}
-      <Box paddingX={1} gap={2}>
-        {agents.length > 0 ? (
-          agents.map((a) => (
-            <Box key={a.agent} gap={1}>
-              {a.active ? (
-                <Text color="green"><Spinner type="dots" /></Text>
-              ) : (
-                <Text color="gray">○</Text>
-              )}
-              <Text color={a.active ? 'green' : 'gray'}>{a.agent}</Text>
-            </Box>
-          ))
-        ) : (
-          <Text dimColor>No agents</Text>
-        )}
-      </Box>
-
       {/* Event log — fills available space, scrollable with arrow keys */}
       {logLines.length === 0 ? (
         <Box height={logHeight} paddingX={1} marginTop={1}>
@@ -533,5 +481,3 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
     </Box>
   );
 }
-
-export type { AgentStatus };

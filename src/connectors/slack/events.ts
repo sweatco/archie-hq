@@ -2,7 +2,7 @@
  * Slack Events — Bolt app, event handlers, button handlers
  *
  * Owns: Slack Bolt app, app_mention/message handlers, button actions,
- * Slack triage processing. Does NOT own the HTTP server or GitHub endpoints.
+ * routing incoming messages to tasks. Does NOT own the HTTP server or GitHub endpoints.
  */
 
 import { createRequire } from 'module';
@@ -41,7 +41,6 @@ import { messageMatchesTrigger } from '../../system/trigger-match.js';
 import { generateTaskTitle } from '../../tasks/title-generator.js';
 import { setAssistantThreadTitle } from './title.js';
 import type { SlackThread, SlackAuthor } from '../../types/task.js';
-// import { triageSlackMessage } from '../../system/triage.js';
 
 /**
  * Slack configuration
@@ -733,7 +732,7 @@ export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): 
 
 type SlackRouteResult =
   | { action: 'discard'; reason: string }
-  | { action: 'triage' };
+  | { action: 'process' };
 
 function routeSlackEvent(event: {
   bot_id?: string;
@@ -751,7 +750,7 @@ function routeSlackEvent(event: {
     return { action: 'discard', reason: 'Own bot user message' };
   }
 
-  return { action: 'triage' };
+  return { action: 'process' };
 }
 
 // ============================================================================
@@ -817,38 +816,6 @@ export async function handleSlackEvent(event: {
   // The pinned-messages index is refreshed on exactly the same terms: before the PM wakes, no-op for DMs, TTL-bounded, after the external-author bail-out above so a purely-external trigger never causes a scan, and never throws.
   await Promise.all([ensureChannelCanvas(event.channel), ensureChannelPins(event.channel)]);
 
-  // const triageResult = await triageSlackMessage(thread);
-  // switch (triageResult.action) {
-  //   case 'new_task': {
-  //     const task = await Task.create();
-  //     await task.append(thread);
-  //     await task.sendMessage(AGENT_PROMPTS.newTask);
-  //     break;
-  //   }
-  //   case 'existing_task': {
-  //     if (!triageResult.task_id) break;
-  //     const task = await Task.get(triageResult.task_id);
-  //     const { linkedNewThread } = await task.append(thread);
-  //     if (linkedNewThread) {
-  //       await postToThreads(
-  //         [{ thread_id: thread.threadId, channel_id: thread.channel.id, last_processed_ts: thread.currentMessageTs }],
-  //         'Got it, I\'ve linked this to the ongoing investigation.',
-  //       );
-  //     }
-  //     await task.sendMessage(AGENT_PROMPTS.existingTask);
-  //     break;
-  //   }
-  //   case 'cancel_task': {
-  //     if (!triageResult.task_id) break;
-  //     const task = await Task.get(triageResult.task_id);
-  //     await task.postToUser('Work stopped. All progress has been saved and can be resumed if needed.');
-  //     await task.stop();
-  //     break;
-  //   }
-  //   case 'noop':
-  //     logger.system('Triage: noop');
-  //     break;
-  // }
   const taskId = await findTaskByThread(threadId);
   if (taskId) {
     logger.system(`Processing #${thread.channel.name} (thread: ${threadId})`);

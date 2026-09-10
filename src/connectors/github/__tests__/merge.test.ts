@@ -105,15 +105,13 @@ function mockPersistedTask(repositories: TaskMetadata['repositories']): {
 }
 
 function singlePRRepositories(github: string, prNumber: number): TaskMetadata['repositories'] {
-  return {
-    'backend-agent': [
-      { github, branch_states: { 'feat/x': { pr_number: prNumber, base_branch: 'main' } } },
-    ],
-  };
+  return [
+    { github, branch_states: { 'feat/x': { pr_number: prNumber, base_branch: 'main' } } },
+  ];
 }
 
-function branchState(task: FakeTask, agentId: string, branch: string): BranchState {
-  return task.metadata.repositories[agentId]![0]!.branch_states![branch]!;
+function branchState(task: FakeTask, github: string, branch: string): BranchState {
+  return task.metadata.repositories.find((r) => r.github === github)!.branch_states![branch]!;
 }
 
 /** Findings that are the ready notification (decision finding naming the held PR). */
@@ -149,12 +147,12 @@ describe('checkAndMergeLinkedPRs — non-auto policy (AC1)', () => {
     expect(notifiers).toHaveLength(1);
     const notifier = notifiers[0]!;
     expect(notifier.sendMessage).toHaveBeenCalledTimes(1);
-    expect(notifier.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask, 'pm-agent');
+    expect(notifier.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.existingTask);
 
     // The marker was set on the same instance that activated, and flushed
     // synchronously (save(true)) before the activating sendMessage — a
     // debounced write would be invisible to any instance loaded meanwhile.
-    expect(branchState(notifier, 'backend-agent', 'feat/x').merge_ready_notified).toBe(true);
+    expect(branchState(notifier, 'org/backend', 'feat/x').merge_ready_notified).toBe(true);
     expect(notifier.save).toHaveBeenCalledWith(true);
     expect(notifier.save.mock.invocationCallOrder[0]!)
       .toBeLessThan(notifier.sendMessage.mock.invocationCallOrder[0]!);
@@ -173,7 +171,7 @@ describe('checkAndMergeLinkedPRs — non-auto policy (AC1)', () => {
     expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
     expect(readyNotifications()).toHaveLength(0);
     expect(task.sendMessage).not.toHaveBeenCalled();
-    expect(branchState(task, 'backend-agent', 'feat/x').merge_ready_notified).toBeUndefined();
+    expect(branchState(task, 'org/backend', 'feat/x').merge_ready_notified).toBeUndefined();
   });
 
   it('notifies again after the PR goes un-ready and becomes ready once more (marker cleared)', async () => {
@@ -187,7 +185,7 @@ describe('checkAndMergeLinkedPRs — non-auto policy (AC1)', () => {
     mockGitHubClient.getPRStatus.mockResolvedValue(NOT_READY);
     await checkAndMergeLinkedPRs('task-123');
     expect(readyNotifications()).toHaveLength(1);
-    expect(branchState(task, 'backend-agent', 'feat/x').merge_ready_notified).toBeUndefined();
+    expect(branchState(task, 'org/backend', 'feat/x').merge_ready_notified).toBeUndefined();
 
     mockGitHubClient.getPRStatus.mockResolvedValue(READY);
     await checkAndMergeLinkedPRs('task-123');
@@ -200,18 +198,18 @@ describe('checkAndMergeLinkedPRs — non-auto policy (AC1)', () => {
 
     mockGitHubClient.getPRStatus.mockResolvedValue(READY);
     await checkAndMergeLinkedPRs('task-123');
-    expect(branchState(task, 'backend-agent', 'feat/x').merge_ready_notified).toBe(true);
+    expect(branchState(task, 'org/backend', 'feat/x').merge_ready_notified).toBe(true);
 
     // PR #42 merges (externally or on approval); the marker must not survive it.
     mockGitHubClient.getPRStatus.mockResolvedValue({
       state: 'merged', mergeable: false, mergeableState: 'unknown', approved: true,
     });
     await checkAndMergeLinkedPRs('task-123');
-    expect(branchState(task, 'backend-agent', 'feat/x').merge_ready_notified).toBeUndefined();
+    expect(branchState(task, 'org/backend', 'feat/x').merge_ready_notified).toBeUndefined();
 
     // The same BranchState later carries a new PR (create_pull_request
     // overwrites pr_number) — its first ready period must notify.
-    branchState(task, 'backend-agent', 'feat/x').pr_number = 43;
+    branchState(task, 'org/backend', 'feat/x').pr_number = 43;
     mockGitHubClient.getPRStatus.mockResolvedValue(READY);
     await checkAndMergeLinkedPRs('task-123');
 
@@ -230,8 +228,7 @@ describe('checkAndMergeLinkedPRs — non-auto policy (AC1)', () => {
 
     // The marker must be in the persisted JSON — that is what any instance
     // loaded after a restart (or any later webhook) is built from.
-    const persistedState =
-      world.persisted().repositories['backend-agent']![0]!.branch_states!['feat/x']!;
+    const persistedState = world.persisted().repositories[0]!.branch_states!['feat/x']!;
     expect(persistedState.merge_ready_notified).toBe(true);
 
     // Restart: the harness already builds every instance from the persisted
@@ -263,11 +260,9 @@ describe('checkAndMergeLinkedPRs — auto policy (AC2)', () => {
 
 describe('checkAndMergeLinkedPRs — armed bucket (AC5)', () => {
   function armedRepositories(github: string, prNumber: number): TaskMetadata['repositories'] {
-    return {
-      'backend-agent': [
-        { github, branch_states: { 'feat/x': { pr_number: prNumber, base_branch: 'main', merge_armed: true } } },
-      ],
-    };
+    return [
+      { github, branch_states: { 'feat/x': { pr_number: prNumber, base_branch: 'main', merge_armed: true } } },
+    ];
   }
 
   it('merges an armed non-auto PR reported clean, with no approved floor (AC5)', async () => {
@@ -301,7 +296,7 @@ describe('checkAndMergeLinkedPRs — armed bucket (AC5)', () => {
 
     expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
     // Still open-and-not-clean → stays armed (arm is not cleared while open).
-    expect(branchState(task, 'backend-agent', 'feat/x').merge_armed).toBe(true);
+    expect(branchState(task, 'org/backend', 'feat/x').merge_armed).toBe(true);
   });
 
   it('excludes an armed PR from the ready notification even when clean+approved (AC1)', async () => {
@@ -327,7 +322,7 @@ describe('checkAndMergeLinkedPRs — armed bucket (AC5)', () => {
 
     await checkAndMergeLinkedPRs('task-123');
 
-    expect(branchState(task, 'backend-agent', 'feat/x').merge_armed).toBeUndefined();
+    expect(branchState(task, 'org/backend', 'feat/x').merge_armed).toBeUndefined();
     expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
   });
 
@@ -340,7 +335,7 @@ describe('checkAndMergeLinkedPRs — armed bucket (AC5)', () => {
 
     await checkAndMergeLinkedPRs('task-123');
 
-    expect(branchState(task, 'backend-agent', 'feat/x').merge_armed).toBeUndefined();
+    expect(branchState(task, 'org/backend', 'feat/x').merge_armed).toBeUndefined();
     expect(mockGitHubClient.mergePullRequest).not.toHaveBeenCalled();
   });
 
@@ -351,7 +346,7 @@ describe('checkAndMergeLinkedPRs — armed bucket (AC5)', () => {
     // pr_number reassignment must reset merge_armed / merge_ready_notified so
     // PR#2 does NOT inherit the arm and auto-merge without a fresh approval.
     const task = makeTask(armedRepositories('org/backend', 1));
-    const state = branchState(task, 'backend-agent', 'feat/x');
+    const state = branchState(task, 'org/backend', 'feat/x');
     state.merge_ready_notified = true; // also a per-PR marker that must reset
     expect(state.merge_armed).toBe(true);
 
@@ -379,14 +374,10 @@ describe('checkAndMergeLinkedPRs — armed bucket (AC5)', () => {
 describe('checkAndMergeLinkedPRs — mixed-policy task', () => {
   it('merges the auto PR while the non-auto PR is held with a ready notification', async () => {
     vi.mocked(isAutoMergeRepo).mockImplementation((github: string) => github === 'org/auto');
-    const task = makeTask({
-      'backend-agent': [
-        { github: 'org/auto', branch_states: { 'feat/a': { pr_number: 1, base_branch: 'main' } } },
-      ],
-      'mobile-agent': [
-        { github: 'org/manual', branch_states: { 'feat/b': { pr_number: 2, base_branch: 'main' } } },
-      ],
-    });
+    const task = makeTask([
+      { github: 'org/auto', branch_states: { 'feat/a': { pr_number: 1, base_branch: 'main' } } },
+      { github: 'org/manual', branch_states: { 'feat/b': { pr_number: 2, base_branch: 'main' } } },
+    ]);
     vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
     mockGitHubClient.getPRStatus.mockResolvedValue(READY);
     mockGitHubClient.mergePullRequest.mockResolvedValue({ success: true, message: 'merged' });
@@ -399,7 +390,7 @@ describe('checkAndMergeLinkedPRs — mixed-policy task', () => {
     expect(notifications).toHaveLength(1);
     expect(String(notifications[0]![2])).toContain('org/manual#2');
     expect(String(notifications[0]![2])).not.toContain('org/auto#1');
-    expect(branchState(task, 'mobile-agent', 'feat/b').merge_ready_notified).toBe(true);
-    expect(branchState(task, 'backend-agent', 'feat/a').merge_ready_notified).toBeUndefined();
+    expect(branchState(task, 'org/manual', 'feat/b').merge_ready_notified).toBe(true);
+    expect(branchState(task, 'org/auto', 'feat/a').merge_ready_notified).toBeUndefined();
   });
 });

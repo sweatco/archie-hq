@@ -3,27 +3,19 @@
  * status fragment for the Slack assistant-thread status indicator.
  *
  * This is the engine behind the "Archie is …" loading line. It is intentionally
- * a pure, dependency-light mapping so it can run on every agent's tool call with
+ * a pure, dependency-light mapping so it can run on every tool call with
  * negligible cost and be unit-tested in isolation. Two rules shape every phrase:
  *
- *   1. Single persona. Output is always first person and never names an agent or
- *      reveals that more than one is at work. Specialists are referred to only by
- *      their DOMAIN ("the backend"), never their identity ("the backend agent").
+ *   1. Single persona. Output is always first person and never names a worker or
+ *      reveals that anything was delegated.
  *   2. Slack prepends the app name. The fragments here are the part after it, so
- *      "digging into the backend" renders to the user as "Archie is digging into
- *      the backend…". The caller composes the surrounding "is …".
+ *      "going through the details" renders to the user as "Archie is going
+ *      through the details…". The caller composes the surrounding "is …".
  */
 
-import type { AgentDef, McpToolMeta } from '../types/agent.js';
-import { isPmAgent } from '../types/agent.js';
+import type { McpToolMeta } from '../types/agent.js';
 
 export interface ActivityContext {
-  /** The PM coordinator speaks for the whole team — it has no single domain. */
-  isPm: boolean;
-  /** Repo agent with edit access — distinguishes "working on" from "checking". */
-  editMode: boolean;
-  /** Short domain noun for a specialist ("mobile", "backend"); '' for the PM. */
-  domain: string;
   /**
    * MCP server descriptions from `.mcp.json` (server name → "Rollbar — …"),
    * used to phrase external-integration activity without a hardcoded map.
@@ -35,45 +27,6 @@ export interface ActivityContext {
    * label fallback.
    */
   mcpTools?: Map<string, McpToolMeta>;
-  /**
-   * Resolves a target agent id (e.g. from `send_message_to_agent`) to its domain
-   * noun, so a delegation reads as the single persona turning to that area
-   * ("looking into the backend") rather than naming an agent. Returns '' for the
-   * PM (no domain) and undefined for an unknown id.
-   */
-  resolveAgentDomain?: (agentId: string) => string | undefined;
-}
-
-/**
- * Short, user-facing domain noun for an agent, used in status text. Never the
- * agent id or role — those would leak the multi-agent structure.
- *
- * Resolution: explicit `statusLabel` frontmatter wins; otherwise the agent key
- * is used when it already reads as a domain (engineering keys: mobile, backend,
- * infrastructure), and role-style keys (copywriter, qa-analyst, …) fall back to
- * a cleaned plugin name. The PM has no domain.
- */
-export function agentDomainLabel(def: AgentDef): string {
-  if (isPmAgent(def)) return '';
-  if (def.statusLabel && def.statusLabel.trim()) return def.statusLabel.trim();
-
-  const key = def.key;
-  // Keys that name a person/role rather than a domain — defer to the plugin.
-  const roleLikeKeys = new Set([
-    'copywriter', 'tov-reviewer', 'reviewer', 'analyst',
-    'qa-analyst', 'qa-reviewer', 'data-analyst', 'specialist', 'assistant',
-  ]);
-  if (key && !roleLikeKeys.has(key)) return key;
-  return normalizePluginDomain(def.pluginName);
-}
-
-function normalizePluginDomain(plugin: string): string {
-  switch (plugin) {
-    case 'data-analytics': return 'data';
-    case 'qa': return 'QA';
-    case 'pm': return '';
-    default: return plugin || '';
-  }
 }
 
 /**
@@ -83,30 +36,29 @@ function normalizePluginDomain(plugin: string): string {
  */
 export function deriveActivity(
   toolName: string,
-  input: unknown,
+  _input: unknown,
   ctx: ActivityContext,
 ): string | null {
-  const here = ctx.domain ? `the ${ctx.domain}` : 'this';
-
   // ---- Built-in SDK tools (bare names) ----
   switch (toolName) {
     case 'Read':
     case 'Grep':
     case 'Glob':
-      return ctx.domain ? `digging into the ${ctx.domain}` : 'going through the details';
+      return 'going through the details';
     case 'Edit':
     case 'Write':
     case 'MultiEdit':
     case 'NotebookEdit':
-      return ctx.domain ? `making changes to the ${ctx.domain}` : 'drafting changes';
+      return 'drafting changes';
     case 'Bash':
-      // Always say *where* for a specialist; only the PM (no domain) is vague.
-      if (ctx.domain) return ctx.editMode ? `working on the ${ctx.domain}` : `running some checks on the ${ctx.domain}`;
       return 'running some checks';
     case 'Skill':
-      return ctx.domain ? `getting up to speed on the ${ctx.domain}` : 'getting up to speed';
+      return 'getting up to speed';
+    // `Agent` is the SDK's delegation tool; `Task` is its older name. Both mean
+    // the same thing to a reader: work is under way.
+    case 'Agent':
     case 'Task':
-      return ctx.domain ? `working on the ${ctx.domain}` : 'working through this';
+      return 'working through this';
     case 'TodoWrite':
     case 'WebSearch':
     case 'WebFetch':
@@ -118,25 +70,20 @@ export function deriveActivity(
   if (!mcp) return null;
   const { server, tool } = mcp;
 
-  // Universal research tool (available to all agents).
   if (server === 'research-tools') return tool === 'web_research' ? 'researching' : null;
 
-  // Repo / git / PR tools (engineering & other repo agents).
-  if (server === 'repo-tools') return repoToolPhrase(tool, ctx.domain);
+  // Repo / git / PR tools.
+  if (server === 'repo-tools') return repoToolPhrase(tool);
 
-  // Inter-agent coordination + shared-log activity — surfaced, but phrased
-  // generically so the single-persona voice never names another agent.
-  if (server === 'agent-tools') return agentToolPhrase(tool, input, ctx);
-
-  // PM comms / orchestration / scheduling — surface the user-meaningful actions;
-  // the rest (post_to_user, owner assignment, completion, reactions, …) is
-  // plumbing and stays hidden.
+  // Comms / orchestration / scheduling — surface the user-meaningful actions;
+  // the rest (post_to_user, completion, reactions, …) is plumbing and stays
+  // hidden.
   if (server === 'comms-tools') return commsToolPhrase(tool);
   if (server === 'orchestration-tools') return orchestrationToolPhrase(tool);
   if (server === 'scheduling-tools') return schedulingToolPhrase(tool);
 
   // External integrations (plugin MCP servers) — phrase from metadata, no map.
-  return integrationPhrase(toolName, server, here, ctx);
+  return integrationPhrase(toolName, server, ctx);
 }
 
 /**
@@ -171,25 +118,6 @@ function parseMcpTool(toolName: string): { server: string; tool: string } | null
   return { server: rest.slice(0, idx), tool: rest.slice(idx + 2) };
 }
 
-/**
- * Base agent-tools (every agent): inter-agent messaging, shared-log findings,
- * and artifact publishing. Never names another agent — a message to a domain
- * specialist reads as the single persona turning to that area ("looking into the
- * backend"); a message to the coordinator (or an unknown target) stays generic.
- */
-function agentToolPhrase(tool: string, input: unknown, ctx: ActivityContext): string | null {
-  switch (tool) {
-    case 'send_message_to_agent': {
-      const target = (input as { target?: unknown } | null)?.target;
-      const domain = typeof target === 'string' ? ctx.resolveAgentDomain?.(target) : undefined;
-      return domain ? `looking into the ${domain}` : 'coordinating';
-    }
-    case 'log_finding': return ctx.domain ? `making a note on the ${ctx.domain}` : 'making a note';
-    case 'share_artifact': return ctx.domain ? `writing up the ${ctx.domain}` : 'writing things up';
-    default: return null;
-  }
-}
-
 /** PM Slack lookups + exploration — posting/reactions/mute stay hidden. */
 function commsToolPhrase(tool: string): string | null {
   switch (tool) {
@@ -203,12 +131,10 @@ function commsToolPhrase(tool: string): string | null {
   }
 }
 
-/** PM orchestration — surface progress checks; hide the rest. */
+/** PM orchestration — surface the user-meaningful actions; hide the rest. */
 function orchestrationToolPhrase(tool: string): string | null {
   switch (tool) {
-    case 'get_agents_status': return 'checking on progress';
     case 'list_available_repos': return 'looking over the repos';
-    case 'spawn_repo_agent': return 'getting set up on a new repo';
     default: return null;
   }
 }
@@ -222,19 +148,19 @@ function schedulingToolPhrase(tool: string): string | null {
   }
 }
 
-function repoToolPhrase(tool: string, domain: string): string {
+function repoToolPhrase(tool: string): string {
   switch (tool) {
-    case 'push_branch': return domain ? `pushing the ${domain} changes` : 'pushing the changes';
-    case 'create_pull_request': return domain ? `opening a ${domain} pull request` : 'opening a pull request';
-    case 'merge_pull_request': return domain ? `merging the ${domain} changes` : 'merging the changes';
-    case 'close_pull_request': return domain ? `wrapping up the ${domain} pull request` : 'wrapping up the pull request';
+    case 'push_branch': return 'pushing the changes';
+    case 'create_pull_request': return 'opening a pull request';
+    case 'merge_pull_request': return 'merging the changes';
+    case 'close_pull_request': return 'wrapping up the pull request';
     case 'update_pr':
     case 'add_pr_comment':
     case 'add_review_comment':
     case 'reply_to_review_comment':
     case 'resolve_review_thread':
     case 'request_re_review':
-      return domain ? `updating the ${domain} pull request` : 'updating the pull request';
+      return 'updating the pull request';
     case 'list_prs':
     case 'get_pr':
     case 'get_pr_status':
@@ -243,14 +169,14 @@ function repoToolPhrase(tool: string, domain: string): string {
     case 'get_pr_reviews':
     case 'get_pr_comments':
     case 'get_review_threads':
-      return domain ? `reviewing the ${domain} PR` : 'reviewing the pull request';
+      return 'reviewing the pull request';
     case 'fetch':
     case 'switch_branch':
     case 'list_branches':
     case 'create_branch':
-      return domain ? `digging into the ${domain}` : 'getting the code ready';
+      return 'getting the code ready';
     default:
-      return domain ? `working on the ${domain}` : 'working on the code';
+      return 'working on the code';
   }
 }
 
@@ -265,13 +191,13 @@ function repoToolPhrase(tool: string, domain: string): string {
  * So a new integration self-describes: give its server a one-line description (or
  * let it report a sensible serverInfo.name) and it gets a phrase for free.
  */
-function integrationPhrase(toolName: string, server: string, here: string, ctx: ActivityContext): string {
+function integrationPhrase(toolName: string, server: string, ctx: ActivityContext): string {
   const meta = ctx.mcpTools?.get(toolName);
   const label =
     labelFromDescription(ctx.mcpDescriptions?.[server]) ??
     cleanServerLabel(meta?.serverName) ??
     cleanServerLabel(server);
-  if (!label) return `working on ${here}`;
+  if (!label) return 'working on this';
   const verb = meta?.readOnly === false ? 'updating' : 'checking';
   return `${verb} ${label}`;
 }

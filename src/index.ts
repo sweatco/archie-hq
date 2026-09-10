@@ -30,7 +30,7 @@ import { mountOAuthRoutes } from './connectors/oauth/routes.js';
 import { getIsShuttingDown, setShuttingDown } from './system/shutdown.js';
 import { getActiveTaskIds } from './tasks/task.js';
 import { logger } from './system/logger.js';
-import { bootstrapWorkdir, cloneRepos, OAUTH_DIR, REPOS_DIR } from './system/workdir.js';
+import { bootstrapWorkdir, OAUTH_DIR, REPOS_DIR } from './system/workdir.js';
 import { join } from 'path';
 import { validateMasterKey } from './system/secrets-vault.js';
 import { initPlugins, getPlugins } from './system/plugin-loader.js';
@@ -115,19 +115,12 @@ async function main(): Promise<void> {
     // be before any agent spawns so getProbeBaseUrl() is live at spawn time.
     startContextProbe();
 
-    // Clone repos declared by plugins (every entry across every repo agent,
-    // deduplicated by github identifier).
+    // TODO(flat): nothing is warm-cloned at startup any more — plugins no
+    // longer declare repos, and clones are created on demand per task.
+    // W2-spawn restores warm-cloning from `repos[*].warm` in the plugins
+    // repo's root `archie.json`.
     const agentDefs = getAllAgentDefs();
     const repoDefs = agentDefs.filter(isRepoAgent);
-    const byGithub = new Map<string, { github: string; baseBranch: string }>();
-    for (const def of repoDefs) {
-      for (const entry of def.repo!.repos) {
-        if (!byGithub.has(entry.github)) {
-          byGithub.set(entry.github, { github: entry.github, baseBranch: entry.baseBranch });
-        }
-      }
-    }
-    await cloneRepos([...byGithub.values()]);
 
     // Log loaded plugins and agents
     const plugins = getPlugins();

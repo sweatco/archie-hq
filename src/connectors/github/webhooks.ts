@@ -328,7 +328,7 @@ export function handleChecksReadyDirect(
         message: `checks updated — call get_pr_checks(${prNumber}) to inspect`,
       });
       const task = await Task.get(taskId);
-      await task.sendMessage(AGENT_PROMPTS.githubInput, 'pm-agent');
+      await task.sendMessage(AGENT_PROMPTS.githubInput);
     } catch (error) {
       logger.error('checks-ready', `Failed to deliver checks_ready ping for ${key}`, error);
     }

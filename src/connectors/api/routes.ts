@@ -13,9 +13,8 @@ const express = require('express');
 
 import { readdirSync } from 'fs';
 import { onEvent, offEvent, emitEvent } from '../../system/event-bus.js';
-import { Task, activeTasks } from '../../tasks/task.js';
+import { Task } from '../../tasks/task.js';
 import {
-  readKnowledgeLog,
   loadMetadata,
   appendCliMessage,
   readEvents,
@@ -88,8 +87,6 @@ export function mountApiRoutes(app: Application): void {
         const metadata = await loadMetadata(dir);
         if (!metadata) continue;
 
-        const activeTask = activeTasks.get(dir);
-
         // Extract channel name from default channel
         let channel_name: string | null = null;
         if (metadata.default_channel && metadata.channels[metadata.default_channel]) {
@@ -101,14 +98,11 @@ export function mountApiRoutes(app: Application): void {
         tasks.push({
           task_id: metadata.task_id,
           status: metadata.status,
-          task_owner: metadata.task_owner,
-          participants: metadata.participants,
           created_at: metadata.created_at,
           updated_at: metadata.updated_at,
           title: metadata.title ?? null,
           channel_name,
           reminder: metadata.reminder ?? null,
-          agents: activeTask ? activeTask.getAgentStatus() : [],
         });
       }
 
@@ -130,27 +124,7 @@ export function mountApiRoutes(app: Application): void {
         return;
       }
 
-      const knowledgeLog = await readKnowledgeLog(taskId);
-      const activeTask = activeTasks.get(taskId);
-
-      // Build agents list: start from metadata (all agents that ever participated),
-      // then overlay live status from in-memory task if available
-      const liveAgents = activeTask ? activeTask.getAgentStatus() : [];
-      const liveMap = new Map(liveAgents.map((a) => [a.agent, a]));
-      const agents = Object.entries(metadata.agent_sessions).map(([name, session]) => {
-        const live = liveMap.get(name);
-        if (live) return live;
-        const s = typeof session === 'string' ? { active: false } : session;
-        return { agent: name, active: s.active, last_activity: s.last_activity };
-      });
-      // Add any live agents not in metadata (shouldn't happen, but be safe)
-      for (const live of liveAgents) {
-        if (!metadata.agent_sessions[live.agent]) {
-          agents.push(live);
-        }
-      }
-
-      res.json({ metadata, knowledgeLog, agents });
+      res.json({ metadata });
     } catch (error) {
       logger.error('api', 'Failed to get task detail', error);
       res.status(500).json({ error: 'Failed to get task detail' });

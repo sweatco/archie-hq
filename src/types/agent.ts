@@ -2,8 +2,6 @@
  * Agent-related type definitions
  */
 
-import type { AgentName, TaskMetadata } from './task.js';
-
 /**
  * Per-tool metadata as reported by a connected MCP server (subset of the SDK's
  * `McpServerStatus`). Used to phrase the Slack status line without a per-server
@@ -15,47 +13,6 @@ export interface McpToolMeta {
   serverName?: string;
   /** Tool annotation: true = read-only, false = mutating, undefined = unknown. */
   readOnly?: boolean;
-}
-
-export interface AgentMessage {
-  from: AgentName;
-  to: AgentName;
-  content: string;
-  timestamp: string;
-}
-
-export interface AgentContext {
-  taskId: string;
-  metadata: TaskMetadata;
-  isTaskOwner: boolean;
-  sharedKnowledgePath: string;
-}
-
-export interface SendMessageToAgentParams {
-  target: AgentName;
-  message: string;
-}
-
-export interface LogFindingParams {
-  entry: string;
-  type: 'discovery' | 'decision' | 'completion' | 'blocker';
-}
-
-export interface PostToSlackParams {
-  message: string;
-}
-
-export interface AskUserParams {
-  question: string;
-  options?: string[];
-}
-
-export type AgentModel = 'claude-sonnet-4-5-20250514' | 'claude-haiku-4-5-20250514';
-
-export interface AgentConfig {
-  name: AgentName;
-  model: AgentModel;
-  systemPrompt: string;
 }
 
 /**
@@ -113,27 +70,17 @@ export interface AgentRepoDef {
  */
 export interface AgentPmDef {
   /**
-   * Formatted team list for prompt template. Each teammate's line is annotated
-   * with the external systems it can reach via MCP, so the PM knows which agent
-   * to route an integration request to instead of assuming Archie lacks access.
-   */
-  teamList: string;
-  /** Formatted team expertise for prompt template */
-  teamExpertise: string;
-  /**
-   * One sentence naming the integrations the PM can query directly (the PM is
-   * not part of its own roster). Empty string when it has no MCP servers.
+   * One sentence naming the integrations the PM can query directly. Empty
+   * string when it has no MCP servers.
    */
   pmIntegrations: string;
 }
 
 /**
- * Unified agent definition — replaces RepoAgentConfig + PluginAgentConfig
- *
- * Scanned fresh from plugins at startup and on every task start/restart.
- * There is a single kind of agent; capabilities are additive:
- *   - repo access is attached when `repo` is set
- *   - the PM coordinator is the one agent with `isPm` set (overlaid by the pm plugin)
+ * Agent definition. A task runs exactly one agent — the PM — so in practice
+ * this describes the PM: `getPmDef()` in `src/agents/registry.ts` is the only
+ * thing that builds one. Rebuilt at startup and on every task start/restart so
+ * a changed plugin overlay is picked up.
  */
 /**
  * Per-agent "max mode" spec from `metadata.archie.maxMode`. Applied only when
@@ -152,14 +99,6 @@ export interface AgentDef {
 
   /** Short key, e.g., 'backend', 'copywriter' */
   key: string;
-
-  /**
-   * Optional short domain noun for the first-person Slack status indicator
-   * (e.g. 'mobile', 'backend', 'marketing'). From `metadata.archie.statusLabel`.
-   * When absent, a label is derived from the key/plugin (see agentDomainLabel).
-   * Never expose the agent id or role in status text — only this domain noun.
-   */
-  statusLabel?: string;
 
   /** Short role description */
   role: string;
@@ -201,10 +140,8 @@ export interface AgentDef {
   pluginName: string;
 
   /**
-   * Addressing scope.
-   * - 'global': any agent (in any plugin) can address this agent and PM can dispatch to it.
-   * - 'local': only same-plugin agents can address it via send_message_to_agent.
-   *   Repo agents marked 'local' still receive webhook-routed events (external entry).
+   * Addressing scope. Vestigial now that a task runs one agent — always
+   * 'global' on the PM definition.
    */
   visibility: 'global' | 'local';
 

@@ -1,13 +1,12 @@
 /**
- * Regression tests for startup recovery isolating per-agent spawn failures.
+ * Regression tests for startup recovery isolating failures.
  *
- * `recoverTaskAgents` re-sends the recovery prompt to each previously-active
- * agent in one `for await` loop. With no try/catch inside it, the first failing
- * spawn aborted the loop: every agent after it was silently never messaged, and
- * since earlier agents had already incremented the counter, the "nothing came
- * back, wake PM" fallback didn't fire either. (Observed on
- * task-20260804-1050-iat4s8: mobile-agent recovered, backend-agent threw on an
- * orphaned git config lock, release-manager-agent was next and got nothing.)
+ * A task runs one agent, so recovery is one message per in_progress task. What
+ * still has to hold is that a task whose recovery throws does not abort the
+ * others: before the per-task try/catch, one failure (an orphaned git config
+ * lock, an unreadable session) left every task after it silently un-recovered
+ * and in_progress with no process behind it. (Observed on
+ * task-20260804-1050-iat4s8.)
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -23,64 +22,56 @@ vi.mock('../persistence.js', () => ({ findTasksByStatus: findTasksByStatusMock }
 vi.mock('../task.js', () => ({ Task: { get: taskGetMock } }));
 
 import { recoverActiveTasks } from '../recovery.js';
+import { AGENT_PROMPTS } from '../../agents/prompts.js';
 
-const TASK_ID = 'task-20260804-1050-iat4s8';
-
-/** A task stub whose `sendMessage` fails for the named agents. */
-function taskWithAgents(activeAgents: string[], failing: string[] = []) {
-  const sendMessage = vi.fn(async (_prompt: string, agentName: string) => {
-    if (failing.includes(agentName)) throw new Error('could not lock config file .git/config: File exists');
+/** A task stub whose `sendMessage` optionally fails. */
+function fakeTask(taskId: string, fails = false) {
+  const sendMessage = vi.fn(async () => {
+    if (fails) throw new Error('could not lock config file .git/config: File exists');
   });
-  return {
-    taskId: TASK_ID,
-    metadata: {
-      agent_sessions: Object.fromEntries(activeAgents.map((name) => [name, { active: true }])),
-    },
-    sendMessage,
-  };
-}
-
-/** Agent names passed to sendMessage, in call order. */
-function messaged(task: { sendMessage: ReturnType<typeof vi.fn> }): string[] {
-  return task.sendMessage.mock.calls.map((call) => call[1]);
+  return { taskId, metadata: { agent_sessions: {} }, sendMessage };
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  findTasksByStatusMock.mockResolvedValue([{ task_id: TASK_ID }]);
 });
 
 describe('recoverActiveTasks', () => {
-  it('recovers the agents after a failing one instead of stopping at it', async () => {
-    const task = taskWithAgents(
-      ['mobile-agent', 'backend-agent', 'release-manager-agent'],
-      ['backend-agent']
+  it('sends the recovery prompt to each in_progress task', async () => {
+    const task = fakeTask('task-20260804-1050-iat4s8');
+    findTasksByStatusMock.mockResolvedValue([{ task_id: task.taskId }]);
+    taskGetMock.mockResolvedValue(task);
+
+    await recoverActiveTasks();
+
+    expect(task.sendMessage).toHaveBeenCalledTimes(1);
+    expect(task.sendMessage).toHaveBeenCalledWith(AGENT_PROMPTS.recovery);
+  });
+
+  it('recovers the tasks after a failing one instead of stopping at it', async () => {
+    const first = fakeTask('task-20260804-1050-aaaaaa');
+    const thrower = fakeTask('task-20260804-1050-bbbbbb', true);
+    const last = fakeTask('task-20260804-1050-cccccc');
+    findTasksByStatusMock.mockResolvedValue(
+      [first, thrower, last].map((t) => ({ task_id: t.taskId })),
     );
-    taskGetMock.mockResolvedValue(task);
+    taskGetMock.mockImplementation(async (id: string) =>
+      [first, thrower, last].find((t) => t.taskId === id),
+    );
 
     await recoverActiveTasks();
 
-    // The incident's loss: release-manager-agent came after the thrower.
-    expect(messaged(task)).toEqual(['mobile-agent', 'backend-agent', 'release-manager-agent']);
-    expect(messaged(task)).not.toContain('pm-agent');
+    // The incident's loss: the task after the thrower got nothing.
+    expect(first.sendMessage).toHaveBeenCalledTimes(1);
+    expect(thrower.sendMessage).toHaveBeenCalledTimes(1);
+    expect(last.sendMessage).toHaveBeenCalledTimes(1);
   });
 
-  it('falls back to PM when every active agent fails to spawn', async () => {
-    const task = taskWithAgents(['mobile-agent', 'backend-agent'], ['mobile-agent', 'backend-agent']);
-    taskGetMock.mockResolvedValue(task);
+  it('is a no-op when nothing is in progress', async () => {
+    findTasksByStatusMock.mockResolvedValue([]);
 
     await recoverActiveTasks();
 
-    // Otherwise the task is left in_progress with no process behind it.
-    expect(messaged(task)).toEqual(['mobile-agent', 'backend-agent', 'pm-agent']);
-  });
-
-  it('still falls back to PM when metadata lists no active agent', async () => {
-    const task = taskWithAgents([]);
-    taskGetMock.mockResolvedValue(task);
-
-    await recoverActiveTasks();
-
-    expect(messaged(task)).toEqual(['pm-agent']);
+    expect(taskGetMock).not.toHaveBeenCalled();
   });
 });

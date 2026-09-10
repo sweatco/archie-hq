@@ -4,18 +4,11 @@
  * is rendered to Slack (assistant-thread status) and the CLI (live indicator).
  * This module owns the *composition*; renderers live elsewhere.
  *
- * It tracks which agents are active and what each is currently doing (fed from
- * the SDK tool-call stream and the agent active/idle transitions) and renders
- * ONE status string from the whole team, following these rules:
- *
- *   • The PM is the persona. When the PM is active it speaks — even if a
- *     specialist is also working — because the PM is doing the user-facing
- *     coordination/synthesis. (In practice the PM goes idle after delegating, so
- *     specialists naturally show through during delegation and the PM returns
- *     when it wakes to wrap up.)
- *   • Exactly one specialist active → that specialist's specific action.
- *   • Several specialists active → an aggregate of their domains
- *     ("checking mobile and backend…"), never naming any of them.
+ * A task runs one agent, the PM, so there is nothing to arbitrate: the line is
+ * whatever the PM is currently doing (fed from the SDK tool-call stream and the
+ * active/idle transitions), or a generic "working on this" when it is active
+ * with no surfaced tool call. Work the PM delegates surfaces as the PM's own
+ * activity — the single persona never reveals a worker.
  *
  * Output is the fragment after the app name (Slack prepends "Archie"), composed
  * as "is <fragment>…". Pushes are debounced and de-duplicated so we never spam
@@ -34,14 +27,6 @@ export function isStatusEnabled(): boolean {
   return process.env.ARCHIE_LIVE_STATUS !== 'false';
 }
 
-interface AgentEntry {
-  isPm: boolean;
-  domain: string;
-  active: boolean;
-  /** The specialist's current specific action, e.g. "digging into the backend". */
-  phrase?: string;
-}
-
 const DEBOUNCE_MS = 800;
 /**
  * Slack auto-clears a status after ~2 minutes if nothing refreshes it. A
@@ -52,7 +37,9 @@ const DEBOUNCE_MS = 800;
 const KEEPALIVE_MS = 90_000;
 
 export class TaskStatusController {
-  private readonly agents = new Map<string, AgentEntry>();
+  private active = false;
+  /** The current specific action, e.g. "researching". */
+  private phrase?: string;
   /** Last fragment pushed to Slack ('' means cleared / nothing shown). */
   private current = '';
   private timer?: ReturnType<typeof setTimeout>;
@@ -63,36 +50,31 @@ export class TaskStatusController {
   /** `push('')` clears the indicator; `push('is …')` sets it. */
   constructor(private readonly push: (status: string) => void) {}
 
-  /** An agent's turn started. */
-  setActive(agentId: string, isPm: boolean, domain: string): void {
-    const e = this.entry(agentId, isPm, domain);
-    e.active = true;
+  /** The agent's turn started. */
+  setActive(): void {
+    this.active = true;
     this.schedule();
   }
 
-  /** An agent's turn ended — it is no longer doing anything. */
-  setIdle(agentId: string): void {
-    const e = this.agents.get(agentId);
-    if (e) {
-      e.active = false;
-      e.phrase = undefined;
-    }
+  /** The agent's turn ended — it is no longer doing anything. */
+  setIdle(): void {
+    this.active = false;
+    this.phrase = undefined;
     this.schedule();
   }
 
-  /** Record what an agent is doing right now, derived from a tool call. */
-  note(agentId: string, isPm: boolean, domain: string, phrase: string): void {
-    const e = this.entry(agentId, isPm, domain);
-    e.active = true;
-    e.phrase = phrase;
+  /** Record what the agent is doing right now, derived from a tool call. */
+  note(phrase: string): void {
+    this.active = true;
+    this.phrase = phrase;
     this.schedule();
   }
 
   /**
    * The PM just posted a message to the user. Slack auto-clears the loading
    * indicator when the app posts into the thread, so forget what we believe is
-   * shown; the next render re-pushes if work continues. Does NOT wipe any
-   * agent's activity — a specialist still working will show through again.
+   * shown; the next render re-pushes if work continues. Does NOT wipe the
+   * current activity — ongoing work shows through again.
    */
   notePosted(): void {
     this.current = '';
@@ -101,7 +83,8 @@ export class TaskStatusController {
 
   /** Blank the indicator for good — task parked / stopped / done. */
   clear(): void {
-    this.agents.clear();
+    this.active = false;
+    this.phrase = undefined;
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = undefined;
@@ -137,7 +120,8 @@ export class TaskStatusController {
       this.timer = undefined;
     }
     this.stopKeepalive();
-    this.agents.clear();
+    this.active = false;
+    this.phrase = undefined;
     if (this.current !== '') {
       this.current = '';
       this.safePush('');
@@ -162,18 +146,6 @@ export class TaskStatusController {
       clearInterval(this.keepalive);
       this.keepalive = undefined;
     }
-  }
-
-  private entry(agentId: string, isPm: boolean, domain: string): AgentEntry {
-    let e = this.agents.get(agentId);
-    if (!e) {
-      e = { isPm, domain, active: false };
-      this.agents.set(agentId, e);
-    } else {
-      e.isPm = isPm;
-      e.domain = domain;
-    }
-    return e;
   }
 
   private schedule(): void {
@@ -203,26 +175,13 @@ export class TaskStatusController {
 
   /**
    * Compose the status fragment, or null to mean "leave the current indicator
-   * untouched". Null (rather than clearing) during the brief window where no
-   * agent is active avoids a flicker between the PM delegating and a specialist
-   * picking the work up — the indicator is only truly cleared by clear().
+   * untouched". Null (rather than clearing) while the agent is idle avoids a
+   * flicker in the gap between turns — the indicator is only truly cleared by
+   * clear() / suspend().
    */
   private render(): string | null {
-    const active = [...this.agents.values()].filter((a) => a.active);
-    if (active.length === 0) return null;
-
-    const pm = active.find((a) => a.isPm);
-    if (pm) return compose(pm.phrase ?? 'working on this');
-
-    const subs = active.filter((a) => !a.isPm);
-    if (subs.length === 1) {
-      const only = subs[0];
-      return compose(only.phrase ?? `working on ${place(only.domain)}`);
-    }
-
-    // Several specialists in parallel — aggregate their domains, never name them.
-    const domains = dedupeDomains(subs.map((s) => s.domain));
-    return compose(domains.length ? `checking ${joinList(domains)}` : 'working on a few things');
+    if (!this.active) return null;
+    return compose(this.phrase ?? 'working on this');
   }
 }
 
@@ -230,21 +189,3 @@ function compose(fragment: string): string {
   return `is ${fragment}…`;
 }
 
-function place(domain: string): string {
-  return domain ? `the ${domain}` : 'this';
-}
-
-function dedupeDomains(domains: string[]): string[] {
-  const out: string[] = [];
-  for (const d of domains) {
-    const t = (d ?? '').trim();
-    if (t && !out.includes(t)) out.push(t);
-  }
-  return out;
-}
-
-function joinList(items: string[]): string {
-  if (items.length <= 1) return items[0] ?? '';
-  if (items.length === 2) return `${items[0]} and ${items[1]}`;
-  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
-}
