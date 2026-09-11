@@ -92,6 +92,10 @@ Thread replies without an @mention are handled via the `message` listener and fo
 
 `task.append()` returns the lines it just wrote to `knowledge.log`, and the caller hands **those same strings** to the PM inline through a builder in `src/agents/prompts.ts` (`inboundNewTask`, `inboundActivity`, `githubActivity`, `systemNotice`, `triggered`, `reminder`, `recovery`, `reinforcePM`). The PM is never told to go and read a file. One renderer produces both copies, so the author line, the `msg:<ts>` id, the `[Attachments: …]` suffix and the redaction placeholder are identical in the log and in the PM's stream.
 
+### The one-time migration notice
+
+Every wake is enqueued in one place — `Task.deliver()`, the body `sendMessage()` runs under the activation lock — so Slack messages, API follow-ups, GitHub events, triggers, reminders, approval notices (`notifyPm`) and the startup recovery prompt all pass through it. When the task carries `migration_notice_pending` (a folder written by the pre-flattening engine, flagged on load — see [persistence.md](persistence.md#metadata-schema)), `deliver()` prefixes that wake with `buildMigrationNotice()` from `src/agents/prompts.ts`, clears the flag and flushes metadata synchronously, so the notice lands exactly once even if the process dies before the PM answers. It states that the PM is now the only agent on the task, names the removed inter-agent tools, points delegation at the `Agent` tool, lists the repos mounted into the task with their clone paths, branches and edit-mode state, and tells the PM to continue from the conversation rather than re-asking the user.
+
 ### GitHub Events
 
 ```

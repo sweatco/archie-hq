@@ -19,6 +19,73 @@
  * the reaction tools take as `message_id`, and the PM prompt tells it so.
  */
 
+import type { TaskMetadata } from '../types/task.js';
+
+/**
+ * The metadata a migration notice reads. Narrowed to what it renders so the notice stays a pure function of task state and can be built in a test from a handful of fields.
+ */
+export type MigrationNoticeInput = Pick<
+  TaskMetadata,
+  'repositories' | 'edit_allowed' | 'pending_merge_approval' | 'pending_tool_approval' | 'pending_trigger_id'
+>;
+
+/** The approvals still outstanding on a task, as one clause, or '' when there are none. */
+function describePendingApprovals(metadata: MigrationNoticeInput): string {
+  const parts: string[] = [];
+  if (metadata.pending_merge_approval) {
+    parts.push(`merge of ${metadata.pending_merge_approval.github}#${metadata.pending_merge_approval.pr_number}`);
+  }
+  if (metadata.pending_tool_approval) {
+    parts.push(`tool call ${metadata.pending_tool_approval.server}:${metadata.pending_tool_approval.tool}`);
+  }
+  if (metadata.pending_trigger_id) {
+    parts.push(`trigger ${metadata.pending_trigger_id}`);
+  }
+  return parts.join('; ');
+}
+
+/**
+ * The one-time notice prepended to the first wake a task receives after the flat-PM rework (see `migration_notice_pending` in `src/types/task.ts`).
+ *
+ * A task created by the old engine resumes an SDK session whose transcript is conditioned on the multi-agent world: it messaged specialists, assigned owners, spawned repo agents and waited for replies. Without this the PM's first move after the cutover is a call to a tool that no longer exists, or a wait for a peer that no longer exists. Pure, so the rendered text is unit-tested directly.
+ */
+export function buildMigrationNotice(metadata: MigrationNoticeInput): string {
+  const lines: string[] = [
+    'RUNTIME CHANGED WHILE THIS TASK WAS IDLE — read this before acting on anything earlier in this conversation.',
+    '',
+    'You are now the only agent on this task. The specialist agents this conversation refers to — backend, mobile, infrastructure, data-analyst, growth-ops, ops, copywriter, qa and any others — no longer exist as peers, so nothing you sent one of them will ever be answered.',
+    '',
+    'These tools were removed and must not be called: send_message_to_agent, assign_task_owner, spawn_repo_agent, log_finding, share_artifact, get_agents_status.',
+    '',
+    'Delegation now goes through the Agent tool — a plugin agent type listed in that tool, or the general-purpose worker with a model you name for the spawn. Code changes go through a coding worker.',
+    '',
+    'Repositories attached to this task:',
+  ];
+
+  const editMode = metadata.edit_allowed === true ? 'on' : 'off';
+  if (metadata.repositories.length === 0) {
+    lines.push('- none mounted');
+  } else {
+    for (const repo of metadata.repositories) {
+      lines.push(
+        `- ${repo.github} — clone: ${repo.clone_path ?? 'not cloned'} — branch: ${repo.current_branch ?? 'unknown'} — edit mode: ${editMode}`,
+      );
+    }
+  }
+  lines.push('mount_repo adopts these existing clones. Check git status in each before continuing — a former agent may have left uncommitted work.');
+
+  const pending = describePendingApprovals(metadata);
+  if (pending) {
+    lines.push('', `Pending approvals: ${pending}.`);
+  }
+
+  lines.push(
+    '',
+    'Any work a former agent was doing on this task is now yours. Continue from the conversation above rather than re-asking the user what they wanted.',
+  );
+  return lines.join('\n');
+}
+
 /**
  * Contentless fallbacks, private to this module. No caller reaches them
  * directly any more — every wake goes through a builder below — but a batch can

@@ -75,7 +75,7 @@ import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteract
 import type { SlackReactionsResult } from '../connectors/slack/client.js';
 import { renderMessageBody, shouldRedact } from '../connectors/slack/message-body.js';
 import { basename } from 'path';
-import { AGENT_PROMPTS } from '../agents/prompts.js';
+import { AGENT_PROMPTS, buildMigrationNotice } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
 import { emitEvent } from '../system/event-bus.js';
 import { TaskStatusController, isStatusEnabled } from './status.js';
@@ -249,6 +249,7 @@ export class Task {
       agent_sessions: {},
       repositories: [],
       status: 'in_progress',
+      runtime_version: RUNTIME_VERSION,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
@@ -289,18 +290,29 @@ export class Task {
     // now a flat AttachedRepo[]. Both legacy shapes migrate in place.
     const didMigrate = migrateRepositoriesShape(metadata);
 
-    // Persist the upgrade once. The migration is otherwise in-memory, so a
+    // Stamp the engine generation. A folder with no stamp was written by the
+    // pre-flattening multi-agent engine, so the PM's resumed session still
+    // believes in specialists and the tools that messaged them — it gets the
+    // migration notice on its next wake (see `deliver`).
+    const didStamp = stampRuntimeVersion(metadata);
+
+    // Persist the upgrade once. Both changes are otherwise in-memory, so a
     // terminal task that's only ever *read* (webhook resolution, comment-dedup
     // skip) would re-migrate on every load forever. Writing it back here means the
     // next load hits the fast path — and it locks in the shape now, while every
     // repo agent still resolves (a later plugin removal would otherwise make the
     // migration drop those entries). Only an active task ever re-saves on its own.
-    if (didMigrate) {
+    if (didMigrate || didStamp) {
       await writeFile(getMetadataPath(taskId), JSON.stringify(metadata, null, 2));
-      // Log once, here — the migration persisted, so it won't run again. (The
-      // migrate fn stays silent: it runs on every load, incl. read-only
-      // findTaskByPRNumber, so logging there would spam.)
+    }
+    // Log once, here — the writes persisted, so neither runs again. (The migrate
+    // fn stays silent: it runs on every load, incl. read-only
+    // findTaskByPRNumber, so logging there would spam.)
+    if (didMigrate) {
       logger.system(`[migrate] task ${taskId}: flattened repositories (${metadata.repositories.map((r) => r.github).join(', ') || 'none'})`);
+    }
+    if (didStamp) {
+      logger.system(`[migrate] task ${taskId}: stamped runtime_version ${RUNTIME_VERSION} — migration notice queued for its next wake`);
     }
 
     return new Task(taskId, metadata, scanPmDef());
@@ -333,13 +345,31 @@ export class Task {
     if (!this.isActive) {
       this.activate();
     }
+    const wake = await this.withMigrationNotice(message);
     const agent = await this.ensurePm();
-    agent.queue.addMessage(message);
+    agent.queue.addMessage(wake);
     // Mark active synchronously at enqueue (not lazily at the SDK `init` re-fire,
     // which lags). Keeps "idle" a faithful proxy for "no work in flight" so the
     // idle-check can't park an agent that's about to process, and fires the
     // intent-clear edge the moment work is delivered.
     this.updateAgentState(true);
+  }
+
+  /**
+   * Prefix a wake with the one-time migration notice when this task predates the flat-PM rework, then clear the flag and flush it.
+   *
+   * Sits in `deliver` because that is the one place every wake is enqueued — Slack thread messages, API follow-ups, GitHub events, triggers, reminders, approval notices (`notifyPm`) and the startup recovery prompt (`recoverActiveTasks` → `sendMessage`) all funnel through `sendMessage`. The flush is synchronous rather than debounced: the notice is already in the PM's queue, so a crash in the debounce window would deliver it a second time on the next boot.
+   */
+  private async withMigrationNotice(message: string): Promise<string> {
+    if (this.metadata.migration_notice_pending === true) {
+      const notice = buildMigrationNotice(this.metadata);
+      this.metadata.migration_notice_pending = false;
+      await this.save(true);
+      logger.system(`Task ${this.taskId}: prepended the runtime migration notice to this wake`);
+      return `${notice}\n\n${message}`;
+    } else {
+      return message;
+    }
   }
 
   /**
@@ -2053,6 +2083,30 @@ export function getActiveTaskIds(): string[] {
 
 export function getTask(taskId: string): Task | undefined {
   return activeTasks.get(taskId);
+}
+
+// ---- runtime-version stamp ----
+
+/**
+ * The engine generation this build writes. `2` is the flat single-PM runtime; metadata with no stamp was written by the multi-agent engine that preceded it.
+ */
+export const RUNTIME_VERSION = 2;
+
+/**
+ * Stamp `runtime_version` on metadata that has none, and flag its first wake for the migration notice.
+ *
+ * Every task folder that existed at the cutover was written by the old engine, and the PM session inside it is conditioned on that world — specialists to message, owners to assign, replies to wait for. The flag is what turns that into a single corrective wake rather than a tool call that no longer resolves. Completed and stopped tasks are stamped too: the notice costs nothing until such a task is resumed, and a resumed one needs it just as much.
+ *
+ * Returns true when the stamp was added, so `Task.get` persists it once instead of re-flagging on every load. Exported for testing.
+ */
+export function stampRuntimeVersion(metadata: TaskMetadata): boolean {
+  if (typeof metadata.runtime_version === 'number') {
+    return false;
+  } else {
+    metadata.runtime_version = RUNTIME_VERSION;
+    metadata.migration_notice_pending = true;
+    return true;
+  }
 }
 
 // ---- repositories-shape migration ----

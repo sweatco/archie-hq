@@ -82,6 +82,8 @@ interface TaskMetadata {
   agent_sessions: Record<string, AgentSessionState | string>;  // one entry: 'pm-agent'
   repositories: AttachedRepo[];        // flat — one entry per mounted repo
   status: TaskStatus;                  // 'in_progress' | 'stopped' | 'completed'
+  runtime_version?: number;            // engine generation — 2 = flat single-PM; absent = pre-flattening
+  migration_notice_pending?: boolean;  // stamped legacy task — next wake carries the migration notice
   edit_allowed?: boolean;
   max_mode?: boolean;
   edit_approved_by?: { id, name, email? };
@@ -101,6 +103,8 @@ interface TaskMetadata {
 ```
 
 `src/types/task.ts` is the source of truth; a couple of minor fields are omitted above. Nothing validates or filters metadata on the way to disk — `save()` stringifies the whole object and `loadMetadata` is a bare `JSON.parse` — so an older build never drops a field a newer one wrote.
+
+`runtime_version` stamps which engine generation last wrote the file: `2` is the flat single-PM runtime, and an absent stamp means the folder was written by the multi-agent engine that preceded it. `stampRuntimeVersion()` (`src/tasks/task.ts`) adds the stamp on the first `Task.get()` load, sets `migration_notice_pending` alongside it, and `Task.get()` persists both in the same write as the `repositories` migration — completed and stopped tasks included, since a resumed one needs the notice just as much. `Task.create()` writes `runtime_version` directly and never sets the flag, so a task created by this build is never mistaken for a legacy one.
 
 **Fields the flat model removed:** `task_owner`, `participants`, `dynamic_agents`, and the `AgentName` / `CoreAgentName` / `TriageResult` / `DynamicAgentSpec` types behind them. There is one agent, so ownership and participation carry no information. `requested_by` survives on the two pending-approval slots, where it is always `pm-agent`, because the invariant it guards (a deferred stop must have someone to cancel it) is cheaper to keep than to re-derive.
 

@@ -284,6 +284,14 @@ export interface TaskMetadata {
    */
   briefed_channels?: string[];
   status: TaskStatus;
+  /**
+   * Which engine generation last wrote this metadata. `2` is the flat single-PM runtime; absent means the folder was written by the pre-flattening multi-agent engine. Stamped on first load by `stampRuntimeVersion` (`src/tasks/task.ts`), set directly by `Task.create`.
+   */
+  runtime_version?: number;
+  /**
+   * Set when `stampRuntimeVersion` stamped a legacy task, i.e. one whose PM session transcript is conditioned on the removed multi-agent world. The next wake delivered to the PM is prefixed with the migration notice (`buildMigrationNotice`) and the flag is cleared in the same step, so it fires exactly once per task.
+   */
+  migration_notice_pending?: boolean;
   edit_allowed?: boolean;     // Has user approved edit mode for this task?
   max_mode?: boolean;         // Has user approved "max mode" (per-task model/effort upgrade) for this task?
   /**
