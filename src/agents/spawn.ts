@@ -36,6 +36,7 @@ import {
 } from '../tasks/persistence.js';
 import { WORKDIR, CACHES_DIR, PLUGINS_DIR, getBaseCachePath, getPluginsHeadInfo } from '../system/workdir.js';
 import { getPlugins } from '../system/plugin-loader.js';
+import { appendDeploymentContext } from './registry.js';
 import { ensureTriggerDataDir } from '../system/trigger-store.js';
 import {
   createRecoverableInputGenerator,
@@ -541,6 +542,15 @@ Shared folder: ${sharedPath} [READ-ONLY]
   };
   const memoryUsernames = await extractTaskUsernames(taskId);
   systemPrompt = await enrichPromptWithMemory(systemPrompt, memoryUsernames, memorySelectors);
+
+  // ---- Deployment context (`pm.md` at the plugins repo root) ----
+  //
+  // What this particular deployment is — who runs it, what it is for — written
+  // by whoever owns the plugins repo rather than compiled into the engine. Last
+  // of the dynamic sections, and re-read on every spawn like the pins and the
+  // canvas, so an edit reaches the next task without a restart. The frontmatter
+  // of the same file decides the PM's model and effort (see registry.ts).
+  systemPrompt = appendDeploymentContext(systemPrompt);
 
   // Expose the sandbox config on the agent so in-process tools (e.g.
   // `share_artifact`, `post_to_user` artifact_paths) can validate paths against

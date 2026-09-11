@@ -14,16 +14,16 @@ Anyone running Archie with their own plugins repo: a `pm` overlay plugin, `agent
 
 **2. Upgrade both repos in one deploy.** Prepare the plugins changes on a branch, point a staging instance at it (`ARCHIE_PLUGINS_BRANCH`), then merge and deploy the pair together.
 
-**3. Retire the `pm` overlay plugin.** 0.1.x appended the body of `pm/agents/pm.md` to the PM's prompt and honoured that file's `mcpServers` and tool fields. 0.2.0 reads no overlay — outside a plugin directory it reads only the root `.mcp.json` and `archie.json`. Move the body into a skill the PM can load; standing organisational context is what a skill is for. The overlay's MCP and tool fields are dropped, since every server now attaches to the session regardless.
+**3. Move the `pm` overlay plugin to the root.** Move `pm/agents/pm.md` to `pm.md` at the plugins repository root, read at every PM spawn with no restart needed. Frontmatter `model`, `effort` and `maxMode` (with its own `model`/`effort`) keep working there; `mcpServers` and `tools` fields are dropped, since every server now attaches to the session regardless. The body becomes standing context, appended to the PM's system prompt under a final `# Deployment context` heading — still the place for organisational context, tone and standing rules. A missing `pm.md` is a no-op; malformed frontmatter is tolerated as body-only.
 
 **4. Convert your plugins.**
 
 - **Skills stay as they are**, now PM-loadable and namespaced `plugin:skill`, so same-named skills no longer collide. Rewrite prose assuming the old runtime — a task owner, the knowledge log, the removed tools below. A worker's returned result *is* the report.
 - **Keep an agent file only with a reason** — a fixed output envelope, a reviewer blind to how the material was made, or a `model`/`effort`/`skills` setting the PM cannot express per spawn. Delete coordination shims; move their content into a skill.
 - **Trim the frontmatter.** Keep what the SDK honours for a plugin agent: `name`, `description`, `model`, `effort`, `maxTurns`, `tools`, `disallowedTools`, `skills`, `memory`, plus the background and worktree isolation flags. Drop the rest — `role`, `expertise`, `mcpServers`, `allowedNetworkDomains`, `permissionMode`, `hooks`, and the whole `metadata` block with its repo bindings and `maxMode`. The `description` is all the PM reads when choosing a worker, so it must absorb what `role` and `expertise` carried.
-- **Re-check MCP exposure.** The engine always read one root `.mcp.json`; what goes away is the per-agent `mcpServers` selector choosing which of those servers an agent saw. Every server now attaches to the one PM session, so anything you deliberately withheld from some agents is reachable everywhere in the task. Re-decide each: where a structural block is needed, put those tools in the server's `archie.deny` tier, sensitive-but-useful calls behind `ask`. Both root files are below.
+- **Re-check MCP exposure.** The engine always read one root `.mcp.json`; what goes away is the per-agent `mcpServers` selector choosing which of those servers an agent saw. Every server now attaches to the one PM session, so anything you deliberately withheld from some agents is reachable everywhere in the task. Re-decide each: where a structural block is needed, put those tools in the server's `archie.deny` tier, sensitive-but-useful calls behind `ask`.
 
-**5. Update the environment.** New: `ARCHIE_PM_MODEL`/`ARCHIE_PM_EFFORT` (the PM's model and effort, default `opus`/`medium`), `ARCHIE_PM_MAX_MODEL`/`ARCHIE_PM_MAX_EFFORT` (max mode's upgrade, default `claude-fable-5-1`/`high`), and `ARCHIE_TASK_TIMEOUT_MS` (wall-clock cap before a task parks itself; default `3600000`, 60 minutes). Removed: `ARCHIE_MAX_MODE_MODEL`/`ARCHIE_MAX_MODE_EFFORT` — max mode is now one session-wide switch.
+**5. Update the environment.** New: `ARCHIE_PM_MODEL`/`ARCHIE_PM_EFFORT` (PM model/effort, default `opus`/`medium`, `pm.md` wins below that), `ARCHIE_PM_MAX_MODEL`/`ARCHIE_PM_MAX_EFFORT` (max-mode upgrade, default `claude-fable-5-1`/`high`), and `ARCHIE_TASK_TIMEOUT_MS` (wall-clock cap, default `3600000` ms / 60 min). Removed: `ARCHIE_MAX_MODE_MODEL`/`ARCHIE_MAX_MODE_EFFORT`.
 
 **6. Slack.** Scopes are unchanged, but the reactions tool now reports a missing `reactions:read` scope rather than "no reactions".
 
@@ -77,7 +77,7 @@ What is lost: work a specialist had in flight but never relayed — nothing in t
 ## Checklist
 
 - [ ] `metadata.json` backups taken
-- [ ] Overlay body moved into a skill; frontmatter trimmed; shim agents deleted
+- [ ] Overlay moved to root `pm.md`; frontmatter trimmed; shim agents deleted
 - [ ] Root `.mcp.json` re-reviewed, tiers set; root `archie.json` written
 - [ ] `.env` updated (`ARCHIE_PM_*`, `ARCHIE_TASK_TIMEOUT_MS`; `ARCHIE_MAX_MODE_*` gone)
 - [ ] Staging boot: plugins load, a skill loads, a worker spawns

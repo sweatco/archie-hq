@@ -2,7 +2,7 @@
 
 A plugin contributes exactly two things: **skills** the PM can load, and **agent definitions** the PM can spawn as workers. Both are loaded natively by the Claude Agent SDK — Archie passes every plugin directory through `query()`'s `plugins` option and the SDK reads the plugin's `skills/`, `agents/`, `commands/` and `hooks/` itself. Archie no longer parses anything *inside* a plugin: there is no agent-definition builder, no frontmatter scanner, no skill symlinking and no per-track mount table.
 
-What Archie still owns is what the SDK does not: cloning and refreshing the plugins repo, enumerating which top-level directories are plugins, and the two root-level config files (`.mcp.json` and `archie.json`) that stay engine-owned.
+What Archie still owns is what the SDK does not: cloning and refreshing the plugins repo, enumerating which top-level directories are plugins, and the three root-level files (`.mcp.json`, `archie.json` and `pm.md`) that stay engine-owned.
 
 **Source:** `src/system/workdir.ts`, `src/system/plugin-loader.ts`, `src/agents/spawn.ts`, `src/agents/registry.ts`
 
@@ -57,7 +57,7 @@ Plugin load failures are **silent skips** in the SDK: a bad manifest, an unreada
 
 ## Agents
 
-An `agents/*.md` file in a plugin is loaded by the SDK and becomes an agent type on the PM's `Agent` tool, addressable as `plugin:agent`. The SDK honours `name`, `description`, `model`, `effort`, `tools`, `disallowedTools`, `skills`, `memory` and the background/worktree isolation flags. It **ignores** `mcpServers`, `permissionMode` and `hooks` on a plugin agent, with a warning — MCP is engine-owned and session-wide, so a plugin agent sees every server the PM does.
+An `agents/*.md` file in a plugin is loaded by the SDK and becomes an agent type on the PM's `Agent` tool, addressable as `plugin:agent`. The SDK honours `name`, `description`, `model`, `effort`, `maxTurns`, `tools`, `disallowedTools`, `skills`, `memory` and the background/worktree isolation flags. It **ignores** `mcpServers`, `permissionMode` and `hooks` on a plugin agent, with a warning — MCP is engine-owned and session-wide, so a plugin agent sees every server the PM does.
 
 Because a worker no longer needs a definition file just to exist, one is written only when a role earns it: a fixed procedure and output envelope, a reviewer that must be blind to how the material was made, or a model/effort combination the PM cannot express per spawn (effort is not a per-spawn `Agent` argument). Everything else goes to the general-purpose worker with a brief.
 
@@ -93,6 +93,23 @@ The one engine-level config surface the plugins repo has. A missing or malformed
 | `repos[*].autoMerge` | May Archie merge this repo's PRs without a per-merge human approval? ([github-integration.md](github-integration.md#merge-policy-automerge)) |
 
 Both booleans parse strictly: only the literal `true` opts in, so a typo fails safe.
+
+## PM overlay (`pm.md`)
+
+The third engine-owned root file. `pm.md` is a plain Markdown file at the plugins repository root, read at every PM spawn — no restart needed, the same "picked up on the next task start/load" timing as `.mcp.json` and `archie.json`. A missing file is a no-op; the PM's model, effort and max-mode default to the built-ins below.
+
+Optional YAML frontmatter carries three keys: `model`, `effort`, and `maxMode: { model, effort }`. Precedence for each of the four resolved values is env var, then `pm.md`, then the built-in default:
+
+| Value | Built-in default | `pm.md` frontmatter | Env override |
+|---|---|---|---|
+| Model | `opus` | `model` | `ARCHIE_PM_MODEL` |
+| Effort | `medium` | `effort` | `ARCHIE_PM_EFFORT` |
+| Max-mode model | `claude-fable-5-1` | `maxMode.model` | `ARCHIE_PM_MAX_MODEL` |
+| Max-mode effort | `high` | `maxMode.effort` | `ARCHIE_PM_MAX_EFFORT` |
+
+Malformed frontmatter is tolerated as body-only — the whole file is treated as body text rather than failing plugin load, unlike a malformed `archie` MCP block.
+
+The file's body is appended to the PM's system prompt under a final heading, `# Deployment context`. This is the place for standing organisational context, tone and standing rules that apply to every task regardless of domain — not procedure, which still belongs in a skill the PM loads on demand.
 
 ## Bootstrap order (`src/index.ts`)
 

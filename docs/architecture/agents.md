@@ -6,16 +6,18 @@ A task runs exactly **one** agent: the PM. Everything the PM does not do itself 
 
 ## The PM
 
-One `Agent` instance per task (`Task.agent`), created lazily on the first message (`Task.ensurePm`) and torn down by `stop()` / `complete()`. Its definition is engine-owned and static apart from two things read from the plugins repo root — the MCP servers in `.mcp.json` and the network allowlist in `archie.json` — and is rebuilt on every task start/reload so a plugins-repo change is picked up without a restart (`getPmDef()` / `scanPmDef()` in `src/agents/registry.ts`).
+One `Agent` instance per task (`Task.agent`), created lazily on the first message (`Task.ensurePm`) and torn down by `stop()` / `complete()`. Its definition is engine-owned and static apart from three things read from the plugins repo root — the MCP servers in `.mcp.json`, the network allowlist in `archie.json`, and the model/effort/max-mode overrides and body text in `pm.md` — and is rebuilt on every task start/reload so a plugins-repo change is picked up without a restart (`getPmDef()` / `scanPmDef()` in `src/agents/registry.ts`).
 
-| | Value | Override |
-|---|---|---|
-| Agent id / key | `pm-agent` / `pm` | — |
-| Model | `opus` | `ARCHIE_PM_MODEL` |
-| Effort | `medium` | `ARCHIE_PM_EFFORT` |
-| Max-mode model | `claude-fable-5-1` | `ARCHIE_PM_MAX_MODEL` |
-| Max-mode effort | `high` | `ARCHIE_PM_MAX_EFFORT` |
-| Max turns per query | 100 | — |
+| | Value | `pm.md` frontmatter | Env override |
+|---|---|---|---|
+| Agent id / key | `pm-agent` / `pm` | — | — |
+| Model | `opus` | `model` | `ARCHIE_PM_MODEL` |
+| Effort | `medium` | `effort` | `ARCHIE_PM_EFFORT` |
+| Max-mode model | `claude-fable-5-1` | `maxMode.model` | `ARCHIE_PM_MAX_MODEL` |
+| Max-mode effort | `high` | `maxMode.effort` | `ARCHIE_PM_MAX_EFFORT` |
+| Max turns per query | 100 | — | — |
+
+Precedence resolves narrowest-wins: an env var beats `pm.md`, which beats the built-in default. `pm.md`'s body text — everything after the frontmatter — is appended to the PM's system prompt under a `# Deployment context` heading regardless of which values it overrides; a missing file or malformed frontmatter falls back to the built-ins with no error (see [plugin-system.md](plugin-system.md#pm-overlay-pmmd)).
 
 ### Tools
 

@@ -72,6 +72,14 @@ describe('plugin directory enumeration', () => {
     expect(getPlugins().map((p) => p.name)).toEqual(['ok']);
   });
 
+  it('ignores the root files the engine owns — pm.md is a PM overlay, not a plugin', () => {
+    writeFileSync(join(PLUGINS_DIR, 'pm.md'), '---\nmodel: opus\n---\n\nDeployment context.\n');
+    writePlugin('engineering', { name: 'engineering', version: '1.0.0', description: 'eng' });
+
+    initPlugins();
+    expect(getPlugins().map((p) => p.name)).toEqual(['engineering']);
+  });
+
   it('does not need agents/, skills/ or hooks/ — the SDK reads those itself', () => {
     writePlugin('bare', { name: 'bare', version: '1.0.0', description: 'nothing but a manifest' });
 

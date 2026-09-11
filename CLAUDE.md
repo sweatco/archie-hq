@@ -26,7 +26,7 @@ Slack / CLI / GitHub → Task → PM agent → subagents it spawns
 - **Delegation** goes through the SDK's built-in `Agent` tool — either an agent type a plugin defines (loaded natively, `plugin:agent`) or the general-purpose worker with a model named per spawn. Subagents run inside the PM's own process; only their final report reaches its context.
 - **Repos are mounted, not declared**: `mount_repo("owner/repo")` clones into the task on demand. Read-only until edit mode is approved, which flips the clones writable and resumes the PM's session.
 - **Wakes carry their content** — a Slack message or GitHub event reaches the PM as the text itself. `knowledge.log` is a write-only record for memory extraction and audit; the PM never reads it.
-- **Plugins** contribute skills and agent definitions, loaded natively by the SDK. MCP servers and the network allowlist stay engine-owned in the plugins repo's root `.mcp.json` and `archie.json`.
+- **Plugins** contribute skills and agent definitions, loaded natively by the SDK. MCP servers, the network allowlist and the PM's overlay stay engine-owned in the plugins repo's root `.mcp.json`, `archie.json` and `pm.md`.
 - `docs/` contains architecture docs, guides, historical plans, and proposals
 
 ## Working Directory
