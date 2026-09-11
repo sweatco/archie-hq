@@ -1,4 +1,5 @@
 ---
+name: structured-summary
 description: Output format for summaries. Load before producing any summary so the result is consistent and skimmable.
 ---
 
@@ -23,5 +24,4 @@ reader should be cautious about.
 - If the input is already short (a sentence or two), just return the TL;DR — don't pad.
 - Never fabricate. If the source doesn't say something, don't claim it does.
 
-This skill is intentionally simple — it's an example of how domain knowledge and output
-formats live in a skill rather than in the agent definition.
+This skill is intentionally simple — it's an example of how domain knowledge and output formats live in a skill rather than in an agent definition. The PM can load it directly when it writes the summary itself; `helper:assistant` preloads it when the work is handed to a worker instead.
