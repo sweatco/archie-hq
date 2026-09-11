@@ -11,7 +11,7 @@
 
 Under the hood a task is one long-lived agent — the PM — that loads the skill for the domain, hands bulky or specialised work to workers it spawns, and reports back as a single voice. It's built on the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk) with a plugin architecture — add a new skill or department by dropping in a plugin directory, no core code changes.
 
-> **Breaking change in 0.2.0.** A task used to run several agent processes coordinating through message queues and a shared log; it now runs one. Plugin agent frontmatter, MCP server declarations and the sandbox network allowlist all moved, so the engine and your plugins repo must be upgraded together. If you run Archie with your own plugins, read [Migrating to the flat PM](docs/guides/migrating-to-flat-pm.md) before you deploy.
+> **Breaking change in 0.2.0.** A task used to run several agent processes coordinating through message queues and a shared log; it now runs one. Plugin agent frontmatter, the per-agent MCP scoping and the sandbox network allowlist all changed, so the engine and your plugins repo must be upgraded together — and existing task metadata is rewritten, so back it up first. If you run Archie with your own plugins, read [Migrating to the flat PM](docs/guides/migrating-to-flat-pm.md) before you deploy.
 
 ## Contents
 
