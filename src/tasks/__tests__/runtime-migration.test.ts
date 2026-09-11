@@ -31,6 +31,14 @@ vi.mock('fs/promises', async (importOriginal) => {
 
 vi.mock('../../system/plugin-sync.js', () => ({ syncPlugins: vi.fn().mockResolvedValue(undefined) }));
 
+// Task.get reads the folder through this one function; everything else in
+// persistence stays real.
+const { loadMetadataMock } = vi.hoisted(() => ({ loadMetadataMock: vi.fn() }));
+vi.mock('../persistence.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../persistence.js')>();
+  return { ...actual, loadMetadata: loadMetadataMock };
+});
+
 import { Task, activeTasks, stampRuntimeVersion, RUNTIME_VERSION } from '../task.js';
 import { buildMigrationNotice } from '../../agents/prompts.js';
 import { MessageQueue } from '../../agents/message-queue.js';
@@ -59,6 +67,16 @@ function pmDef(): AgentDef {
 }
 
 const TaskCtor = Task as unknown as new (taskId: string, metadata: TaskMetadata, pmDef: AgentDef) => Task;
+
+/** A directory that certainly exists, standing in for a clone still on disk. */
+const REAL_CLONE = process.cwd();
+
+/** The JSON bodies written to metadata.json, in order. */
+function metadataWrites(): string[] {
+  return writeFileMock.mock.calls
+    .filter((c: unknown[]) => String(c[0]).endsWith('metadata.json'))
+    .map((c: unknown[]) => String(c[1]));
+}
 
 describe('stampRuntimeVersion', () => {
   it('stamps and flags metadata written by the old engine', () => {
@@ -93,9 +111,36 @@ describe('buildMigrationNotice', () => {
     }
     expect(notice).toContain('Agent tool');
     expect(notice).toContain('coding worker');
-    expect(notice).toContain('- none mounted');
+    // Nothing attached: one line, and no instruction about clones that aren't there.
+    expect(notice).toContain('Repositories attached to this task: none');
+    expect(notice).not.toContain('mount_repo adopts these existing clones');
     // A budget the PM's context has to survive: this rides in front of a real wake.
     expect(notice.split('\n').length).toBeLessThan(40);
+  });
+
+  it('names the former agents from the task\'s own record, not a fixed team list', () => {
+    const notice = buildMigrationNotice(
+      legacyMetadata({
+        agent_sessions: {
+          'pm-agent': { active: false },
+          'archie-agent': { active: false },
+        },
+        // Legacy-only field: typed away, still on disk.
+        participants: ['pm-agent', 'copywriter-agent'],
+      } as Partial<TaskMetadata>),
+    );
+
+    expect(notice).toContain('The specialist agents this conversation refers to (archie-agent, copywriter-agent) no longer exist as peers');
+    // The PM is not one of its own former peers, and no agent this task never had is named.
+    expect(notice).not.toContain('pm-agent');
+    expect(notice).not.toContain('mobile');
+  });
+
+  it('falls back to the indefinite phrasing when the metadata names nobody', () => {
+    const notice = buildMigrationNotice(legacyMetadata({ agent_sessions: { 'pm-agent': { active: false } } }));
+
+    expect(notice).toContain('Any specialist agents this conversation refers to no longer exist as peers');
+    expect(notice).not.toContain('The specialist agents this conversation refers to (');
   });
 
   it('lists each attached repo with its clone path, branch and edit-mode state', () => {
@@ -103,21 +148,40 @@ describe('buildMigrationNotice', () => {
       legacyMetadata({
         edit_allowed: true,
         repositories: [
-          { github: 'acme/backend', clone_path: '/sessions/t/repos/acme/backend', current_branch: 'archie/task-x' },
+          { github: 'acme/backend', clone_path: REAL_CLONE, current_branch: 'archie/task-x' },
           { github: 'acme/mobile' },
         ],
       }),
     );
 
-    expect(notice).toContain('- acme/backend — clone: /sessions/t/repos/acme/backend — branch: archie/task-x — edit mode: on');
-    // A repo recorded before its clone finished still has to appear.
-    expect(notice).toContain('- acme/mobile — clone: not cloned — branch: unknown — edit mode: on');
+    expect(notice).toContain(`- acme/backend — clone: ${REAL_CLONE} — branch: archie/task-x — edit mode: on`);
+    // A repo recorded before its clone finished still has to appear — as what it is.
+    expect(notice).toContain('- acme/mobile — recorded, not cloned — mount_repo will clone it fresh');
+    // One adoptable clone is enough to earn the sentence.
     expect(notice).toContain('mount_repo adopts these existing clones');
     expect(notice).toContain('git status');
   });
 
+  it('omits the adopt sentence when no recorded clone is still on disk', () => {
+    const notice = buildMigrationNotice(
+      legacyMetadata({
+        repositories: [
+          // Recorded by the old engine, then removed at completion.
+          { github: 'acme/backend', clone_path: '/sessions/gone/repos/acme/backend', current_branch: 'main' },
+          { github: 'acme/mobile' },
+        ],
+      }),
+    );
+
+    expect(notice).toContain('- acme/backend — recorded, not cloned — mount_repo will clone it fresh');
+    expect(notice).toContain('- acme/mobile — recorded, not cloned — mount_repo will clone it fresh');
+    expect(notice).not.toContain('mount_repo adopts these existing clones');
+  });
+
   it('reports edit mode as off when the task never got approval', () => {
-    const notice = buildMigrationNotice(legacyMetadata({ repositories: [{ github: 'acme/backend' }] }));
+    const notice = buildMigrationNotice(
+      legacyMetadata({ repositories: [{ github: 'acme/backend', clone_path: REAL_CLONE }] }),
+    );
 
     expect(notice).toContain('edit mode: off');
   });
@@ -180,6 +244,56 @@ describe('migration notice delivery', () => {
     await task.sendMessage('New task. This is what arrived.');
 
     expect(addSpy.mock.calls.map((c: unknown[]) => c[0])).toEqual(['New task. This is what arrived.']);
+  });
+});
+
+describe('deferred write-back', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    spawnMock.mockReset();
+    spawnMock.mockImplementation(async (agent: { handle?: unknown }) => {
+      agent.handle = { isRunning: true, running: new Promise<void>(() => {}), abort: vi.fn() };
+    });
+    writeFileMock.mockClear();
+    loadMetadataMock.mockReset();
+    activeTasks.delete(TASK_ID);
+  });
+
+  afterEach(() => {
+    activeTasks.delete(TASK_ID);
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it('migrates in memory on load and writes nothing — a read must not upgrade the folder', async () => {
+    loadMetadataMock.mockResolvedValue(legacyMetadata());
+
+    const task = await Task.get(TASK_ID);
+
+    expect(task.metadata.runtime_version).toBe(RUNTIME_VERSION);
+    expect(task.metadata.migration_notice_pending).toBe(true);
+    // A webhook resolution or an API listing loads the task exactly like this;
+    // rolling back to the previous engine has to stay non-destructive for it.
+    expect(metadataWrites()).toEqual([]);
+  });
+
+  it('persists the migration once, on the first activation', async () => {
+    loadMetadataMock.mockResolvedValue(legacyMetadata());
+    const task = await Task.get(TASK_ID);
+
+    await task.sendMessage('Task was interrupted. Review the conversation and continue.');
+
+    // Two flushes, in order: the migration landing at activation, then deliver
+    // clearing the notice flag it just persisted.
+    const writes = metadataWrites().map((body) => JSON.parse(body) as TaskMetadata);
+    expect(writes).toHaveLength(2);
+    expect(writes[0].runtime_version).toBe(RUNTIME_VERSION);
+    expect(writes[0].migration_notice_pending).toBe(true);
+    expect(writes[1].migration_notice_pending).toBe(false);
+
+    // Once only — a second wake on the same instance re-persists nothing.
+    await task.sendMessage('New activity in a thread you are in.');
+    expect(metadataWrites()).toHaveLength(2);
   });
 });
 

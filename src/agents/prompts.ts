@@ -19,15 +19,42 @@
  * the reaction tools take as `message_id`, and the PM prompt tells it so.
  */
 
+import { existsSync } from 'fs';
 import type { TaskMetadata } from '../types/task.js';
 
 /**
  * The metadata a migration notice reads. Narrowed to what it renders so the notice stays a pure function of task state and can be built in a test from a handful of fields.
+ *
+ * `agent_sessions` is in the list because the roster of former peers is read off the task's OWN record rather than a hardcoded team list — a task that only ever talked to a copywriter must not be told it lost a mobile engineer. Legacy metadata also carries a `participants` array, which the current type no longer declares; it is read off the raw object in `describeFormerAgents`.
  */
 export type MigrationNoticeInput = Pick<
   TaskMetadata,
-  'repositories' | 'edit_allowed' | 'pending_merge_approval' | 'pending_tool_approval' | 'pending_trigger_id'
+  'repositories' | 'edit_allowed' | 'pending_merge_approval' | 'pending_tool_approval' | 'pending_trigger_id' | 'agent_sessions'
 >;
+
+/** The id the PM's own session is recorded under. Never a former peer, so it is subtracted from the roster. */
+const PM_AGENT_ID = 'pm-agent';
+
+/**
+ * The former specialist agents THIS task worked with, as one clause.
+ *
+ * Derived from the two places the old engine recorded them — an `agent_sessions` entry per agent that ever ran, and the `participants` roster — so the notice names the agents whose replies the transcript is actually waiting on. When neither survives (a task that never delegated, or metadata that lost the fields), the clause degrades to the indefinite form rather than inventing names.
+ */
+function describeFormerAgents(metadata: MigrationNoticeInput): string {
+  const legacy = metadata as { participants?: unknown };
+  const names = new Set<string>(Object.keys(metadata.agent_sessions ?? {}));
+  if (Array.isArray(legacy.participants)) {
+    for (const p of legacy.participants) {
+      if (typeof p === 'string' && p.trim()) names.add(p.trim());
+    }
+  }
+  names.delete(PM_AGENT_ID);
+  if (names.size > 0) {
+    return `The specialist agents this conversation refers to (${[...names].join(', ')}) no longer exist as peers`;
+  } else {
+    return 'Any specialist agents this conversation refers to no longer exist as peers';
+  }
+}
 
 /** The approvals still outstanding on a task, as one clause, or '' when there are none. */
 function describePendingApprovals(metadata: MigrationNoticeInput): string {
@@ -53,26 +80,40 @@ export function buildMigrationNotice(metadata: MigrationNoticeInput): string {
   const lines: string[] = [
     'RUNTIME CHANGED WHILE THIS TASK WAS IDLE — read this before acting on anything earlier in this conversation.',
     '',
-    'You are now the only agent on this task. The specialist agents this conversation refers to — backend, mobile, infrastructure, data-analyst, growth-ops, ops, copywriter, qa and any others — no longer exist as peers, so nothing you sent one of them will ever be answered.',
+    `You are now the only agent on this task. ${describeFormerAgents(metadata)}, so nothing you sent one of them will ever be answered.`,
     '',
     'These tools were removed and must not be called: send_message_to_agent, assign_task_owner, spawn_repo_agent, log_finding, share_artifact, get_agents_status.',
     '',
     'Delegation now goes through the Agent tool — a plugin agent type listed in that tool, or the general-purpose worker with a model you name for the spawn. Code changes go through a coding worker.',
     '',
-    'Repositories attached to this task:',
   ];
 
+  // A recorded clone_path is not evidence of a clone: a read-only task removes
+  // its clones at completion, and an entry can be recorded before its clone
+  // finishes. Only a path still on disk is adoptable, and only such an entry
+  // earns the "adopts these existing clones" sentence — told to check git status
+  // in clones that do not exist, the PM either invents a reason or wastes a turn
+  // finding out.
   const editMode = metadata.edit_allowed === true ? 'on' : 'off';
   if (metadata.repositories.length === 0) {
-    lines.push('- none mounted');
+    lines.push('Repositories attached to this task: none');
   } else {
+    lines.push('Repositories attached to this task:');
+    let anyClone = false;
     for (const repo of metadata.repositories) {
-      lines.push(
-        `- ${repo.github} — clone: ${repo.clone_path ?? 'not cloned'} — branch: ${repo.current_branch ?? 'unknown'} — edit mode: ${editMode}`,
-      );
+      if (repo.clone_path && existsSync(repo.clone_path)) {
+        anyClone = true;
+        lines.push(
+          `- ${repo.github} — clone: ${repo.clone_path} — branch: ${repo.current_branch ?? 'unknown'} — edit mode: ${editMode}`,
+        );
+      } else {
+        lines.push(`- ${repo.github} — recorded, not cloned — mount_repo will clone it fresh`);
+      }
+    }
+    if (anyClone) {
+      lines.push('mount_repo adopts these existing clones. Check git status in each before continuing — a former agent may have left uncommitted work.');
     }
   }
-  lines.push('mount_repo adopts these existing clones. Check git status in each before continuing — a former agent may have left uncommitted work.');
 
   const pending = describePendingApprovals(metadata);
   if (pending) {

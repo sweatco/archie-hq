@@ -183,6 +183,14 @@ export class Task {
    */
   completionIntent: boolean = false;
   taskTimeoutTimer?: ReturnType<typeof setInterval>;
+  /**
+   * What `Task.get` migrated in memory on this load (runtime stamp, flattened
+   * repositories), as one log-ready clause — and, by being set at all, the flag
+   * that the upgrade still has to reach disk. Written once by `activate()`, so a
+   * task that is only ever read is left exactly as the previous engine wrote it.
+   * Undefined for a task that needed no migration.
+   */
+  private pendingMigrationNote?: string;
   /** Drives the "Archie is …" Slack loading indicator from agent activity. */
   private readonly statusController: TaskStatusController;
 
@@ -296,26 +304,22 @@ export class Task {
     // migration notice on its next wake (see `deliver`).
     const didStamp = stampRuntimeVersion(metadata);
 
-    // Persist the upgrade once. Both changes are otherwise in-memory, so a
-    // terminal task that's only ever *read* (webhook resolution, comment-dedup
-    // skip) would re-migrate on every load forever. Writing it back here means the
-    // next load hits the fast path — and it locks in the shape now, while every
-    // repo agent still resolves (a later plugin removal would otherwise make the
-    // migration drop those entries). Only an active task ever re-saves on its own.
+    // Both changes stay IN MEMORY here. Every reader goes through this path —
+    // GitHub webhook resolution, the API's task listing, comment dedup — and a
+    // read has no business rewriting a task folder: it would upgrade tasks that
+    // never run on this engine at all, making a rollback to the previous release
+    // destructive for them. The write is deferred to `activate()`, the moment the
+    // task genuinely runs here; readers see the identical in-memory shape either
+    // way, and an unactivated task simply re-migrates on its next load (cheap,
+    // and the derivation is deterministic).
+    const task = new Task(taskId, metadata, scanPmDef());
     if (didMigrate || didStamp) {
-      await writeFile(getMetadataPath(taskId), JSON.stringify(metadata, null, 2));
+      task.pendingMigrationNote = [
+        ...(didMigrate ? [`flattened repositories (${metadata.repositories.map((r) => r.github).join(', ') || 'none'})`] : []),
+        ...(didStamp ? [`stamped runtime_version ${RUNTIME_VERSION} — migration notice queued for its next wake`] : []),
+      ].join('; ');
     }
-    // Log once, here — the writes persisted, so neither runs again. (The migrate
-    // fn stays silent: it runs on every load, incl. read-only
-    // findTaskByPRNumber, so logging there would spam.)
-    if (didMigrate) {
-      logger.system(`[migrate] task ${taskId}: flattened repositories (${metadata.repositories.map((r) => r.github).join(', ') || 'none'})`);
-    }
-    if (didStamp) {
-      logger.system(`[migrate] task ${taskId}: stamped runtime_version ${RUNTIME_VERSION} — migration notice queued for its next wake`);
-    }
-
-    return new Task(taskId, metadata, scanPmDef());
+    return task;
   }
 
   // ---- Public methods ----
@@ -343,7 +347,7 @@ export class Task {
    */
   private async deliver(message: string): Promise<void> {
     if (!this.isActive) {
-      this.activate();
+      await this.activate();
     }
     const wake = await this.withMigrationNotice(message);
     const agent = await this.ensurePm();
@@ -1996,7 +2000,7 @@ export class Task {
    * Activate the task — start timeout, mark in_progress.
    * Called lazily on first sendMessage().
    */
-  private activate(): void {
+  private async activate(): Promise<void> {
     this.isActive = true;
     // A fresh activation (new task or reopen of a parked one) starts a new cycle —
     // any completion intent from a prior cycle is stale. Clearing here covers
@@ -2012,7 +2016,20 @@ export class Task {
     activeTasks.set(this.taskId, this);
     this.startTaskTimeout();
     emitEvent('task:resumed', this.taskId);
-    this.debouncedSave();
+    // First activation of a task `Task.get` migrated in memory: this is where
+    // the upgrade earns its write. Flushed rather than debounced, and ahead of
+    // the wake being enqueued, so the runtime stamp and the notice flag that
+    // rides on it are on disk before the PM can answer — a crash in a debounce
+    // window would otherwise repeat the notice on the next boot. One save: the
+    // debounced one below is the alternative, not an addition.
+    if (this.pendingMigrationNote) {
+      const note = this.pendingMigrationNote;
+      this.pendingMigrationNote = undefined;
+      await this.save(true);
+      logger.system(`[migrate] task ${this.taskId}: persisted on activation — ${note}`);
+    } else {
+      this.debouncedSave();
+    }
   }
 
   private startTaskTimeout(): void {
@@ -2097,7 +2114,7 @@ export const RUNTIME_VERSION = 2;
  *
  * Every task folder that existed at the cutover was written by the old engine, and the PM session inside it is conditioned on that world — specialists to message, owners to assign, replies to wait for. The flag is what turns that into a single corrective wake rather than a tool call that no longer resolves. Completed and stopped tasks are stamped too: the notice costs nothing until such a task is resumed, and a resumed one needs it just as much.
  *
- * Returns true when the stamp was added, so `Task.get` persists it once instead of re-flagging on every load. Exported for testing.
+ * Returns true when the stamp was added, so `Task.get` can hand the write to the task's first activation instead of writing on every load — including the read-only ones. Exported for testing.
  */
 export function stampRuntimeVersion(metadata: TaskMetadata): boolean {
   if (typeof metadata.runtime_version === 'number') {
@@ -2125,8 +2142,10 @@ export function stampRuntimeVersion(metadata: TaskMetadata): boolean {
  *    resolve. Those entries are dropped with a warning; such tasks predate the
  *    per-agent shape by many months and are terminal.
  *
- * Returns true when anything changed, so `Task.get` can persist the upgrade
- * once instead of re-migrating on every read.
+ * Returns true when anything changed, so `Task.get` can defer the write to the
+ * task's first activation. A task that is only ever read re-migrates on every
+ * load, which is deliberate: the derivation is deterministic, and a read must
+ * not rewrite a folder the previous engine still owns.
  *
  * Exported for testing — exercised in the normal flow via `Task.get` and the
  * webhook lookups in persistence.ts.
