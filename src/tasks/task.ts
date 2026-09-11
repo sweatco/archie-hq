@@ -6,7 +6,7 @@
  */
 
 import { mkdir, writeFile } from 'fs/promises';
-import type { SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, BranchState, FindingType } from '../types/task.js';
+import type { SlackAuthor, SlackChannel, SlackThread, TaskMetadata, BranchState, FindingType } from '../types/task.js';
 import { CLI_CHANNEL_KEY } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
 import { modelDisplayLabel, resolveAgentModel } from '../agents/model-label.js';
@@ -72,6 +72,7 @@ import { scanPmDef } from '../agents/registry.js';
 import type { AttachedRepo } from '../types/task.js';
 import { syncPlugins } from '../system/plugin-sync.js';
 import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import type { SlackReactionsResult } from '../connectors/slack/client.js';
 import { renderMessageBody, shouldRedact } from '../connectors/slack/message-body.js';
 import { basename } from 'path';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
@@ -959,10 +960,11 @@ export class Task {
 
   /**
    * Read the live emoji reactions on a message in a linked Slack thread.
-   * Returns null when no Slack channel could be resolved, otherwise the current
-   * reactions (empty array when the message has none).
+   * Returns null when no Slack channel could be resolved, otherwise the read's
+   * outcome: the current reactions (empty array when the message has none) or
+   * the Slack error code that stopped the read.
    */
-  async readMessageReactions(messageTs: string, channelKey?: string): Promise<SlackReaction[] | null> {
+  async readMessageReactions(messageTs: string, channelKey?: string): Promise<SlackReactionsResult | null> {
     const ch = this.resolveSlackChannel(channelKey);
     if (!ch) {
       logger.warn('task', `readMessageReactions on task ${this.taskId}: ${channelKey ? `channel ${channelKey} not linked` : 'no default channel'}`);

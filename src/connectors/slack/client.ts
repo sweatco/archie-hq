@@ -322,19 +322,29 @@ export async function removeReaction(channel: string, timestamp: string, emoji: 
 }
 
 /**
+ * Outcome of a live reactions read: either the reactions (possibly none) or the
+ * Slack error code that stopped us. A failure must never render as "no
+ * reactions" — a missing scope and an unreacted message are different facts.
+ */
+export type SlackReactionsResult =
+  | { ok: true; reactions: SlackReaction[] }
+  | { ok: false; error: string };
+
+/**
  * Read the current emoji reactions on a single message. Requires the
  * `reactions:read` scope. Returns the live state (unlike the snapshot captured
- * during thread ingest). Returns an empty array on failure or in dry-run.
+ * during thread ingest). On failure returns the Slack error code rather than an
+ * empty list, so callers can tell "couldn't read" from "nothing there".
  */
-export async function getMessageReactions(channel: string, timestamp: string): Promise<SlackReaction[]> {
-  if (dryRun) return [];
+export async function getMessageReactions(channel: string, timestamp: string): Promise<SlackReactionsResult> {
+  if (dryRun) return { ok: true, reactions: [] };
   try {
     const client = getSlackClient();
     // `full: true` returns the complete user list per reaction (not truncated).
     const result = await client.reactions.get({ channel, timestamp, full: true });
     const message = result.message as { reactions?: Array<{ name?: string; count?: number; users?: string[] }> } | undefined;
     const raw = message?.reactions;
-    if (!raw || !Array.isArray(raw)) return [];
+    if (!raw || !Array.isArray(raw)) return { ok: true, reactions: [] };
 
     // Resolve reacting user IDs to names so the agent knows WHO reacted —
     // identity is the point when a reaction is a signal/vote. We use the cached
@@ -343,15 +353,19 @@ export async function getMessageReactions(channel: string, timestamp: string): P
     // surface as their raw ID — fine here, and consistent with how we leave
     // external participants unresolved elsewhere.
     const nameById = new Map((await listWorkspaceUsers()).map((u) => [u.id, u.realName]));
-    return raw
+    const reactions = raw
       .filter((r): r is { name: string; count?: number; users?: string[] } => Boolean(r) && typeof r?.name === 'string')
       .map((r) => {
         const users = (r.users ?? []).map((uid) => nameById.get(uid) ?? uid);
         return { name: r.name, count: r.count ?? 0, ...(users.length > 0 ? { users } : {}) };
       });
-  } catch {
-    // Silently ignore — message not found, missing scope, etc.
-    return [];
+    return { ok: true, reactions };
+  } catch (error) {
+    // message_not_found, missing_scope, channel_not_found… — surfaced, never
+    // flattened into an empty list. The code only, never the token.
+    const code = (error as { data?: { error?: string } } | undefined)?.data?.error ?? 'unknown_error';
+    logger.warn('Slack', `reactions.get failed for ${channel}:${timestamp} — ${code}`);
+    return { ok: false, error: code };
   }
 }
 

@@ -850,20 +850,26 @@ function createGetMessageReactionsTool(_agent: Agent, task: Task) {
       channel: z.string().optional().describe('Channel key of the linked thread. Omit for the default channel.'),
     },
     async (args) => {
-      const reactions = await task.readMessageReactions(args.message_id, args.channel);
-      if (reactions === null) {
+      const result = await task.readMessageReactions(args.message_id, args.channel);
+      if (result === null) {
         return ok(`Could not read reactions: ${args.channel ? `channel ${args.channel} is not a linked Slack thread` : 'task has no default Slack channel'}.`);
-      }
-      if (reactions.length === 0) {
+      } else if (!result.ok) {
+        // A failed read is NOT an unreacted message — say so, and never guess why.
+        const hint = result.error === 'missing_scope'
+          ? ' Archie\'s Slack app is missing the `reactions:read` scope — it must be reinstalled with that scope before reactions can be read. Do not infer anything about this message\'s reactions.'
+          : ' The reactions on this message are unknown — do not assume there are none.';
+        return ok(`Could not read reactions on ${args.message_id}: Slack returned \`${result.error}\`.${hint}`);
+      } else if (result.reactions.length === 0) {
         return ok(`Message ${args.message_id} has no reactions.`);
+      } else {
+        const summary = result.reactions
+          .map((r) => {
+            const who = r.users && r.users.length > 0 ? ` — ${r.users.join(', ')}` : '';
+            return `:${r.name}: (${r.count})${who}`;
+          })
+          .join('\n');
+        return ok(`Reactions on ${args.message_id}:\n${summary}`);
       }
-      const summary = reactions
-        .map((r) => {
-          const who = r.users && r.users.length > 0 ? ` — ${r.users.join(', ')}` : '';
-          return `:${r.name}: (${r.count})${who}`;
-        })
-        .join('\n');
-      return ok(`Reactions on ${args.message_id}:\n${summary}`);
     },
   );
 }
