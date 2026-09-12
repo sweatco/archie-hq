@@ -367,10 +367,12 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   // `.git/HEAD` stays deny-write even in edit mode so branch movement has to go
   // through switch_branch / create_branch rather than a raw `git checkout`.
   //
-  // TODO(flat): this one deny is still enumerated per clone, so a repo mounted
-  // mid-session in edit mode has a writable HEAD until the next respawn — the
-  // deny lists are prefix-matched, so there is no directory that expresses
-  // "`.git/HEAD` under any clone".
+  // TODO(flat): this deny is enumerated per clone that existed at spawn, so a
+  // repo mounted mid-session in edit mode keeps a writable `.git/HEAD` until the
+  // next respawn — a raw `git checkout` in that clone moves it off the task
+  // branch with nothing recording the move. Closing it needs either a deny
+  // pattern the sandbox does not support (the lists are prefix-matched, so no
+  // path expresses "`.git/HEAD` under any clone") or a respawn on mount_repo.
   const cloneGitHeads = clonePaths.map((c) => join(c, '.git', 'HEAD'));
   let sandboxOpts: SandboxOptions = {
     cwd,
@@ -487,7 +489,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
   // session already has: it resolves targets from this same live map at call
   // time, so it sees OAuth-bound headers and never reaches servers dropped
   // below.
-  mcpServers['file-bridge'] = createFileBridgeMcpServer(agent, task, mcpServers);
+  mcpServers['file-bridge'] = createFileBridgeMcpServer(agent, mcpServers);
 
   // ---- Channel pinned messages ----
   //

@@ -19,8 +19,6 @@ export interface ExtractionInput {
   /** Current entity index (thin table) so the extractor resolves to existing entities. */
   entityIndex: string;
   taskId: string;
-  participants: string;
-  taskOwner: string;
   status: string;
   createdAt: string;
   transcript: string;
@@ -47,8 +45,6 @@ Known entities (resolve against these — do not duplicate):
 Task metadata:
 <task_metadata>
 Task ID: {{TASK_ID}}
-Participants: {{PARTICIPANTS}}
-Task Owner: {{TASK_OWNER}}
 Status: {{STATUS}}
 Created: {{CREATED_AT}}
 </task_metadata>
@@ -86,8 +82,6 @@ export async function buildExtractionPrompt(input: ExtractionInput): Promise<str
     USER_MEMORY: input.userMemory,
     ENTITY_INDEX: input.entityIndex,
     TASK_ID: input.taskId,
-    PARTICIPANTS: input.participants,
-    TASK_OWNER: input.taskOwner,
     STATUS: input.status,
     CREATED_AT: input.createdAt,
     TRANSCRIPT: transcript,

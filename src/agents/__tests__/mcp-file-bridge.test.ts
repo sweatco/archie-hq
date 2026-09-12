@@ -73,10 +73,8 @@ function makeAgent(overrides: Record<string, unknown> = {}) {
   } as never;
 }
 
-const task = {} as never;
-
 function runTool(args: Record<string, unknown>, agent = makeAgent(), liveServers = makeLiveServers()) {
-  return createSendFileToMcpTool(agent, task, liveServers).handler(args as never, {});
+  return createSendFileToMcpTool(agent, liveServers).handler(args as never, {});
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

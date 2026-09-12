@@ -12,8 +12,6 @@ const baseInput: ExtractionInput = {
   userMemory: '## alice\n- Prefers async\n',
   entityIndex: '| [[payment-service]] | service | repo | payments API | 2026-05-01 |',
   taskId: 'task-abc-123',
-  participants: 'alice, bob',
-  taskOwner: 'alice',
   status: 'completed',
   createdAt: '2026-04-01T10:00:00Z',
   transcript: 'Some task transcript here.',
@@ -42,15 +40,11 @@ describe('buildExtractionPrompt(input)', () => {
     expect(prompt).not.toContain('{{TASK_ID}}');
   });
 
-  it('substitutes PARTICIPANTS placeholder', async () => {
+  it('carries no participant/owner metadata — a task runs exactly one agent', async () => {
     const prompt = await buildExtractionPrompt(baseInput);
-    expect(prompt).toContain('alice, bob');
+    expect(prompt).not.toContain('Participants:');
+    expect(prompt).not.toContain('Task Owner:');
     expect(prompt).not.toContain('{{PARTICIPANTS}}');
-  });
-
-  it('substitutes TASK_OWNER placeholder', async () => {
-    const prompt = await buildExtractionPrompt(baseInput);
-    expect(prompt).toContain('alice');
     expect(prompt).not.toContain('{{TASK_OWNER}}');
   });
 

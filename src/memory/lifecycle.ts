@@ -130,11 +130,6 @@ async function processExtraction(taskId: string): Promise<void> {
       userMemory,
       entityIndex,
       taskId,
-      // TODO(flat): a task runs one agent now, so both of these are constants.
-      // Drop them from the extractor input (and its prompt) when the memory
-      // subsystem is next touched.
-      participants: 'pm-agent',
-      taskOwner: 'pm-agent',
       status: metadata.status,
       createdAt: metadata.created_at,
       transcript,

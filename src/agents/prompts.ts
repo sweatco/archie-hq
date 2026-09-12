@@ -16,7 +16,8 @@
  * returned by the append function rather than re-rendered here — one renderer,
  * so the author line, the `msg:<ts>` id, the `[Attachments: …]` suffix and the
  * redaction placeholder are identical in both places. That `msg:<ts>` id is what
- * the reaction tools take as `message_id`, and the PM prompt tells it so.
+ * the reaction tools take as `message_id`, and it is their own descriptions —
+ * not the PM prompt — that say so.
  */
 
 import { existsSync } from 'fs';
