@@ -89,10 +89,15 @@ function makeTask(): Task {
   } as unknown as Task;
 }
 
-function getRegisteredToolNames(server: ReturnType<typeof createRepoToolsMcpServer>): string[] {
-  const raw = (server.instance as any)._registeredTools
+function getRegisteredTools(
+  server: ReturnType<typeof createRepoToolsMcpServer>,
+): Record<string, { description?: string }> {
+  return (server.instance as any)._registeredTools
     ?? Object.fromEntries((server.instance as any)._tools ?? []);
-  return Object.keys(raw);
+}
+
+function getRegisteredToolNames(server: ReturnType<typeof createRepoToolsMcpServer>): string[] {
+  return Object.keys(getRegisteredTools(server));
 }
 
 // ---- Expected tool lists (must stay in sync with spawn.ts) ----
@@ -188,6 +193,16 @@ describe('PM MCP server contracts', () => {
     const server = createOrchestrationMcpServer(pmAgent(), makeTask());
     const registered = getRegisteredToolNames(server).map((n) => `mcp__orchestration-tools__${n}`);
     expect(registered.sort()).toEqual(PM_ORCHESTRATION_TOOLS.sort());
+  });
+
+  // Max mode upgrades the agent that holds the problem, not the hands it delegates
+  // to. The description used to promise "a premium model such as Fable" for coding
+  // agents, which is the one model a worker must never be spawned on.
+  it('request_max_mode describes the upgrade as the PM\'s own, never a worker model', () => {
+    const server = createOrchestrationMcpServer(pmAgent(), makeTask());
+    const description = getRegisteredTools(server)['request_max_mode']?.description ?? '';
+    expect(description).toContain('YOUR OWN model');
+    expect(description).not.toMatch(/fable/i);
   });
 
   it('scheduling-tools registers exactly its tools', () => {

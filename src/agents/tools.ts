@@ -398,7 +398,7 @@ function createPostFilesToUserTool(agent: Agent, task: Task) {
   );
 }
 
-function createFindSlackUserTool(_agent: Agent, _task: Task) {
+function createFindSlackUserTool() {
   return tool(
     'find_slack_user',
     'Find a Slack user by name or ID. Returns matching users with their details. Use this to find user IDs before sending DMs.',
@@ -421,7 +421,7 @@ function createFindSlackUserTool(_agent: Agent, _task: Task) {
   );
 }
 
-function createFindSlackChannelTool(_agent: Agent, _task: Task) {
+function createFindSlackChannelTool() {
   return tool(
     'find_slack_channel',
     'Find a Slack channel by name or ID. Returns matching channels with their details. Use this to find channel IDs before posting to new threads.',
@@ -443,7 +443,7 @@ function createFindSlackChannelTool(_agent: Agent, _task: Task) {
   );
 }
 
-function createListChannelsTool(_agent: Agent, task: Task) {
+function createListChannelsTool(task: Task) {
   return tool(
     'list_channels',
     "List the channels you can read for THIS task — every PUBLIC channel Archie has been added to, plus this task's own channel if it happens to be a private channel or DM. " +
@@ -580,7 +580,7 @@ function createRequestEditModeTool(agent: Agent, task: Task) {
 function createRequestMaxModeTool(agent: Agent, task: Task) {
   return tool(
     'request_max_mode',
-    'Request permission to switch this task into "max mode" — an upgrade that runs the coding agents with more capability (maximum reasoning effort, plus a premium model such as Fable for agents configured to swap). Call this AFTER explaining to the user why the extra cost is worth it (max mode is more expensive). Task will pause until the user approves or denies. ' +
+    'Request permission to switch this task into "max mode" — an upgrade that raises YOUR OWN model and reasoning effort for the rest of the task. The workers you spawn are not affected: you keep naming their models yourself, exactly as you do outside max mode. Call this AFTER explaining to the user why the extra cost is worth it (max mode is more expensive). Task will pause until the user approves or denies. ' +
     'Max mode is a task-LIFETIME grant: once approved it stays in effect for the rest of the task, so you only ever need to request it once. If it is already approved this call is a no-op — it will not prompt the user again, it just confirms the grant. ' +
     'Without `channel`, the request posts to the task\'s default channel. Pass `channel` (a channel key like "slack:C123:456.789") to post it to a specific linked thread — useful when the task has no default channel yet or you opened a new thread to talk to the user.',
     {
@@ -839,7 +839,7 @@ function createUnreactFromMessageTool(agent: Agent, task: Task) {
   );
 }
 
-function createGetMessageReactionsTool(_agent: Agent, task: Task) {
+function createGetMessageReactionsTool(task: Task) {
   return tool(
     'get_message_reactions',
     'Read the CURRENT emoji reactions on a Slack message (live state, fresher than ' +
@@ -874,7 +874,7 @@ function createGetMessageReactionsTool(_agent: Agent, task: Task) {
   );
 }
 
-function createReadChannelHistoryTool(_agent: Agent, task: Task) {
+function createReadChannelHistoryTool(task: Task) {
   return tool(
     'read_channel_history',
     "Read a channel's recent messages to understand what's happening there — exploration only, NOT linked to this task. " +
@@ -901,7 +901,7 @@ function createReadChannelHistoryTool(_agent: Agent, task: Task) {
   );
 }
 
-function createReadThreadTool(_agent: Agent, task: Task) {
+function createReadThreadTool(task: Task) {
   return tool(
     'read_thread',
     'Read a specific thread (parent message + all replies) — exploration only, NOT linked to this task. ' +
@@ -939,7 +939,7 @@ const NON_MANDATES = new Set([
   'urgent', 'high severity', 'proactive', 'unknown', 'tbd', '-',
 ]);
 
-function createPostToChannelTool(_agent: Agent, task: Task) {
+function createPostToChannelTool(agent: Agent, task: Task) {
   return tool(
     'post_to_channel',
     'Post a message into any channel Archie is a member of, WITHOUT linking it to this task — for chiming in while exploring, or escalating somewhere (e.g. a private management channel). ' +
@@ -1038,7 +1038,7 @@ function createPostToChannelTool(_agent: Agent, task: Task) {
         // auditable after the fact.
         await appendAgentFinding(
           task.taskId,
-          _agent.def.id,
+          agent.def.id,
           `Posted to ${args.channel} outside this task. Mandate: ${mandate}`,
           'decision',
         );
@@ -1054,7 +1054,7 @@ function createPostToChannelTool(_agent: Agent, task: Task) {
   );
 }
 
-function createGetTaskUsageTool(agent: Agent, task: Task) {
+function createGetTaskUsageTool(task: Task) {
   return tool(
     'get_task_usage',
     "Report this task's total token usage (always) and SDK-reported cost when available, with a per-agent breakdown. Current task only.",
@@ -1179,7 +1179,7 @@ function createPullRequestTool(agent: Agent, task: Task) {
   );
 }
 
-function createGetPRStatusTool(agent: Agent, task: Task) {
+function createGetPRStatusTool(task: Task) {
   return tool(
     'get_pr_status',
     'Get the current status of a pull request.',
@@ -1200,7 +1200,7 @@ function createGetPRStatusTool(agent: Agent, task: Task) {
   );
 }
 
-function createGetPRChecksTool(agent: Agent, task: Task) {
+function createGetPRChecksTool(task: Task) {
   return tool(
     'get_pr_checks',
     'List CI checks (check-runs + legacy commit statuses) attached to a PR\'s HEAD commit. Returns conclusion, URL, and — for failed checks — the full output (title/summary/text). Use this when a "checks updated" event arrives or get_pr_status reports mergeableState=unstable, to find which specific check broke.',
@@ -1248,7 +1248,7 @@ function createGetPRChecksTool(agent: Agent, task: Task) {
   );
 }
 
-function createGetCheckRunTool(agent: Agent, task: Task) {
+function createGetCheckRunTool(task: Task) {
   return tool(
     'get_check_run',
     'Fetch a single CI check/run by its id or a github.com URL — no PR needed. ' +
@@ -1356,7 +1356,7 @@ function codeScanningErrorHint(e: unknown, githubRepo: string): string {
   return message;
 }
 
-function createListCodeScanningAlertsTool(agent: Agent, task: Task) {
+function createListCodeScanningAlertsTool(task: Task) {
   return tool(
     'list_code_scanning_alerts',
     'List code scanning security alerts (e.g. CodeQL) from the repo\'s Security tab. ' +
@@ -1420,7 +1420,7 @@ function createListCodeScanningAlertsTool(agent: Agent, task: Task) {
   );
 }
 
-function createGetCodeScanningAlertTool(agent: Agent, task: Task) {
+function createGetCodeScanningAlertTool(task: Task) {
   return tool(
     'get_code_scanning_alert',
     'Fetch full detail for a single code scanning alert (e.g. CodeQL) by its number. ' +
@@ -1475,7 +1475,7 @@ function createGetCodeScanningAlertTool(agent: Agent, task: Task) {
   );
 }
 
-function createGetPRReviewsTool(agent: Agent, task: Task) {
+function createGetPRReviewsTool(task: Task) {
   return tool(
     'get_pr_reviews',
     'Get review-level summary for a PR (approvals, change requests, review bodies). For line-level comments, use get_review_threads.',
@@ -1497,7 +1497,7 @@ function createGetPRReviewsTool(agent: Agent, task: Task) {
   );
 }
 
-function createGetPRCommentsTool(agent: Agent, task: Task) {
+function createGetPRCommentsTool(task: Task) {
   return tool(
     'get_pr_comments',
     'Get top-level PR conversation comments (the "Conversation" tab). Does not include line-level review comments — use get_review_threads for those.',
@@ -1519,7 +1519,7 @@ function createGetPRCommentsTool(agent: Agent, task: Task) {
   );
 }
 
-function createGetReviewThreadsTool(agent: Agent, task: Task) {
+function createGetReviewThreadsTool(task: Task) {
   return tool(
     'get_review_threads',
     'Get every review thread on a PR with its thread_id (for resolve_review_thread) and each comment\'s comment_id (for reply_to_review_comment).',
@@ -1550,7 +1550,7 @@ function createGetReviewThreadsTool(agent: Agent, task: Task) {
   );
 }
 
-function createListPRsTool(agent: Agent, task: Task) {
+function createListPRsTool(task: Task) {
   return tool(
     'list_prs',
     'List pull requests with optional filters.',
@@ -1583,7 +1583,7 @@ function createListPRsTool(agent: Agent, task: Task) {
   );
 }
 
-function createGetPRTool(agent: Agent, task: Task) {
+function createGetPRTool(task: Task) {
   return tool(
     'get_pr',
     'Get full PR details: title, description, diff, state, and branches.',
@@ -1610,7 +1610,7 @@ function createGetPRTool(agent: Agent, task: Task) {
   );
 }
 
-function createUpdatePRTool(agent: Agent, task: Task) {
+function createUpdatePRTool(task: Task) {
   return tool(
     'update_pr',
     'Update the title, description, and/or base branch of a pull request. All fields are optional — include only what needs to change.',
@@ -1638,7 +1638,7 @@ function createUpdatePRTool(agent: Agent, task: Task) {
   );
 }
 
-function createAddPRCommentTool(agent: Agent, task: Task) {
+function createAddPRCommentTool(task: Task) {
   return tool(
     'add_pr_comment',
     'Add a general comment to a pull request.',
@@ -1658,7 +1658,7 @@ function createAddPRCommentTool(agent: Agent, task: Task) {
   );
 }
 
-function createAddReviewCommentTool(agent: Agent, task: Task) {
+function createAddReviewCommentTool(task: Task) {
   return tool(
     'add_review_comment',
     'Start a NEW review thread on a specific line of code. To reply inside an existing thread, use reply_to_review_comment instead.',
@@ -1680,7 +1680,7 @@ function createAddReviewCommentTool(agent: Agent, task: Task) {
   );
 }
 
-function createReplyToReviewCommentTool(agent: Agent, task: Task) {
+function createReplyToReviewCommentTool(task: Task) {
   return tool(
     'reply_to_review_comment',
     'Reply inside an existing review thread. Requires the comment_id of any comment in the target thread (from the GitHub activity you were woken with, or get_review_threads).',
@@ -1701,7 +1701,7 @@ function createReplyToReviewCommentTool(agent: Agent, task: Task) {
   );
 }
 
-function createResolveReviewThreadTool(agent: Agent, task: Task) {
+function createResolveReviewThreadTool(task: Task) {
   return tool(
     'resolve_review_thread',
     'Mark a review thread as resolved. thread_id must be a GraphQL node id (e.g. PRRT_...) obtained from get_review_threads.',
@@ -1721,7 +1721,7 @@ function createResolveReviewThreadTool(agent: Agent, task: Task) {
   );
 }
 
-function createRequestReReviewTool(agent: Agent, task: Task) {
+function createRequestReReviewTool(task: Task) {
   return tool(
     'request_re_review',
     'Request reviewers to re-review the PR after changes.',
@@ -1849,7 +1849,7 @@ function createMergePRTool(agent: Agent, task: Task) {
   );
 }
 
-function createClosePRTool(agent: Agent, task: Task) {
+function createClosePRTool(task: Task) {
   return tool(
     'close_pull_request',
     'Close a pull request without merging.',
@@ -1867,7 +1867,7 @@ function createClosePRTool(agent: Agent, task: Task) {
 
 // ---- Git workflow tools ----
 
-function createFetchTool(agent: Agent, task: Task) {
+function createFetchTool(task: Task) {
   return tool(
     'fetch',
     'Fetch latest refs from origin.',
@@ -1881,7 +1881,7 @@ function createFetchTool(agent: Agent, task: Task) {
   );
 }
 
-function createSwitchBranchTool(agent: Agent, task: Task) {
+function createSwitchBranchTool(task: Task) {
   return tool(
     'switch_branch',
     'Switch to a different branch. Fetches latest, auto-stashes dirty work, auto-pops on return.',
@@ -1945,7 +1945,7 @@ function createSwitchBranchTool(agent: Agent, task: Task) {
   );
 }
 
-function createCreateBranchTool(agent: Agent, task: Task) {
+function createCreateBranchTool(task: Task) {
   return tool(
     'create_branch',
     'Create a new branch and switch to it. Branch name is auto-generated from the task ID. Returns the full branch name.',
@@ -1974,7 +1974,7 @@ function createCreateBranchTool(agent: Agent, task: Task) {
   );
 }
 
-function createListBranchesTool(agent: Agent, task: Task) {
+function createListBranchesTool(task: Task) {
   return tool(
     'list_branches',
     'List branches created or visited in the current task. With no arguments, lists branches across every mounted repo.',
@@ -2008,7 +2008,7 @@ function createListBranchesTool(agent: Agent, task: Task) {
 
 // ---- Reminder tools ----
 
-function createParseDatetimeTool(agent: Agent, task: Task) {
+function createParseDatetimeTool() {
   return tool(
     'parse_datetime',
     'Parse a natural language date/time expression into an ISO 8601 timestamp. Call this before set_reminder to get the correct datetime value. You must provide the timezone of the person the reminder relates to.',
@@ -2285,7 +2285,7 @@ function buildConditions(raw: RawCondition[], defaultTz: string): { conditions: 
   return { conditions };
 }
 
-function createProposeTriggerTool(agent: Agent, task: Task) {
+function createProposeTriggerTool(task: Task) {
   return tool(
     'propose_trigger',
     'Propose a persistent trigger ("do Y when X happens") for the user to approve. The trigger is created in a pending state and an Approve/Deny prompt is posted — it will NOT run until the user approves. Use this after you and the user have agreed on the cadence (or channel to watch), what to do, and which channel to deliver to. Results are delivered to a channel; delivery to a user DM is not supported yet. You do not need to pause the task.',
@@ -2382,7 +2382,7 @@ function createProposeTriggerTool(agent: Agent, task: Task) {
   );
 }
 
-function createListTriggersTool(_agent: Agent, task: Task) {
+function createListTriggersTool(task: Task) {
   return tool(
     'list_triggers',
     'List the triggers visible from this conversation (per privacy rules), one summary line each. Returns everything visible — filter or narrow it yourself when the user asks for "the ones in this channel", "just the schedules", etc. These lines are summaries, not the stored rule: call `get_trigger` for the exact conditions, filters and action prompt before answering a question about what one watches, and always before editing one.',
@@ -2444,7 +2444,7 @@ function detailCondition(c: TriggerCondition, index: number): string {
  * touch; withholding fields from a trigger that already passed that gate
  * protects nobody, since the same agent may rewrite or delete it outright.
  */
-function createGetTriggerTool(_agent: Agent, task: Task) {
+function createGetTriggerTool(task: Task) {
   return tool(
     'get_trigger',
     'Read one trigger in full: every condition exactly as stored (watched channel, keyword filter, author id), the internal action prompt it runs, and its status/binding/history. Use this before editing a trigger — `update_trigger` replaces the whole condition list, so you need to see what is there — and whenever the user asks what a trigger actually watches or does.',
@@ -2486,7 +2486,7 @@ function createGetTriggerTool(_agent: Agent, task: Task) {
   );
 }
 
-function createUpdateTriggerTool(_agent: Agent, task: Task) {
+function createUpdateTriggerTool(task: Task) {
   return tool(
     'update_trigger',
     'Pause, resume, or edit an existing trigger. Read it with `get_trigger` first — `conditions` replaces the whole list, so editing blind silently drops filters. You can only manage triggers visible from this conversation. Posts a one-line change notice to the trigger\'s bound channel.',
@@ -2571,7 +2571,7 @@ function createUpdateTriggerTool(_agent: Agent, task: Task) {
   );
 }
 
-function createDeleteTriggerTool(_agent: Agent, task: Task) {
+function createDeleteTriggerTool(task: Task) {
   return tool(
     'delete_trigger',
     'Delete a trigger permanently. You can only delete triggers visible from this conversation. Posts a one-line notice to the bound channel.',
@@ -2608,16 +2608,16 @@ export function createCommsMcpServer(agent: Agent, task: Task) {
     tools: [
       createPostToUserTool(agent, task),
       createPostFilesToUserTool(agent, task),
-      createFindSlackUserTool(agent, task),
-      createFindSlackChannelTool(agent, task),
-      createListChannelsTool(agent, task),
-      createReadChannelHistoryTool(agent, task),
-      createReadThreadTool(agent, task),
+      createFindSlackUserTool(),
+      createFindSlackChannelTool(),
+      createListChannelsTool(task),
+      createReadChannelHistoryTool(task),
+      createReadThreadTool(task),
       createPostToChannelTool(agent, task),
       createMuteChannelTool(agent, task),
       createReactToMessageTool(agent, task),
       createUnreactFromMessageTool(agent, task),
-      createGetMessageReactionsTool(agent, task),
+      createGetMessageReactionsTool(task),
       createFetchSlackReferenceTool(agent, task),
     ],
   });
@@ -2628,7 +2628,7 @@ export function createCommsMcpServer(agent: Agent, task: Task) {
  * reach. The installation is the allowlist; there is nothing else to consult.
  * Cached on the task for the turn.
  */
-function createListAvailableReposTool(_agent: Agent, task: Task) {
+function createListAvailableReposTool(task: Task) {
   return tool(
     'list_available_repos',
     'List every GitHub repository this installation can reach.',
@@ -2774,14 +2774,14 @@ export function createOrchestrationMcpServer(agent: Agent, task: Task) {
       createReportCompletionTool(agent, task),
       createRequestEditModeTool(agent, task),
       createRequestMaxModeTool(agent, task),
-      createGetTaskUsageTool(agent, task),
-      createListAvailableReposTool(agent, task),
+      createGetTaskUsageTool(task),
+      createListAvailableReposTool(task),
       createMountRepoTool(agent, task),
-      createProposeTriggerTool(agent, task),
-      createListTriggersTool(agent, task),
-      createGetTriggerTool(agent, task),
-      createUpdateTriggerTool(agent, task),
-      createDeleteTriggerTool(agent, task),
+      createProposeTriggerTool(task),
+      createListTriggersTool(task),
+      createGetTriggerTool(task),
+      createUpdateTriggerTool(task),
+      createDeleteTriggerTool(task),
     ],
   });
 }
@@ -2792,7 +2792,7 @@ export function createSchedulingMcpServer(agent: Agent, task: Task) {
     name: 'scheduling-tools',
     version: '1.0.0',
     tools: [
-      createParseDatetimeTool(agent, task),
+      createParseDatetimeTool(),
       createSetReminderTool(agent, task),
       createCancelReminderTool(agent, task),
     ],
@@ -2813,33 +2813,33 @@ export function createRepoToolsMcpServer(agent: Agent, task: Task) {
     version: '1.0.0',
     tools: [
       // Git workflow
-      createFetchTool(agent, task),
-      createSwitchBranchTool(agent, task),
-      createCreateBranchTool(agent, task),
-      createListBranchesTool(agent, task),
+      createFetchTool(task),
+      createSwitchBranchTool(task),
+      createCreateBranchTool(task),
+      createListBranchesTool(task),
       // PR read
-      createListPRsTool(agent, task),
-      createGetPRTool(agent, task),
-      createGetPRStatusTool(agent, task),
-      createGetPRChecksTool(agent, task),
-      createGetCheckRunTool(agent, task),
-      createGetPRReviewsTool(agent, task),
-      createGetPRCommentsTool(agent, task),
-      createGetReviewThreadsTool(agent, task),
+      createListPRsTool(task),
+      createGetPRTool(task),
+      createGetPRStatusTool(task),
+      createGetPRChecksTool(task),
+      createGetCheckRunTool(task),
+      createGetPRReviewsTool(task),
+      createGetPRCommentsTool(task),
+      createGetReviewThreadsTool(task),
       // Security / code scanning
-      createListCodeScanningAlertsTool(agent, task),
-      createGetCodeScanningAlertTool(agent, task),
+      createListCodeScanningAlertsTool(task),
+      createGetCodeScanningAlertTool(task),
       // PR write
       createPushBranchTool(agent, task),
       createPullRequestTool(agent, task),
-      createUpdatePRTool(agent, task),
-      createAddPRCommentTool(agent, task),
-      createAddReviewCommentTool(agent, task),
-      createReplyToReviewCommentTool(agent, task),
-      createResolveReviewThreadTool(agent, task),
-      createRequestReReviewTool(agent, task),
+      createUpdatePRTool(task),
+      createAddPRCommentTool(task),
+      createAddReviewCommentTool(task),
+      createReplyToReviewCommentTool(task),
+      createResolveReviewThreadTool(task),
+      createRequestReReviewTool(task),
       createMergePRTool(agent, task),
-      createClosePRTool(agent, task),
+      createClosePRTool(task),
     ],
   });
 }

@@ -63,7 +63,7 @@ Archie (Autonomous Responsive and Collaborative Hyper Intelligent Employee) is a
 |---|---|
 | Runtime | Node.js >= 20, TypeScript, ES modules |
 | Agent Framework | `@anthropic-ai/claude-agent-sdk` 0.3.257 |
-| Models | Opus (the PM), Fable (the PM in max mode), Sonnet/Opus/Haiku/Fable per worker spawn, Haiku (title generation, research preset classification) |
+| Models | Opus (the PM), Fable (the PM in max mode), Sonnet/Opus per worker spawn, Haiku (title generation, research preset classification) |
 | Slack Integration | `@slack/bolt` ^5.0.0, `@slack/web-api` |
 | GitHub Integration | `@octokit/app` ^16.1.4, `@octokit/webhooks` |
 | Schema Validation | `zod` ^4.3.6, `zod-to-json-schema` ^3.25.0 |

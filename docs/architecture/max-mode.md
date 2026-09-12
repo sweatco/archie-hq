@@ -15,7 +15,7 @@ A task runs one agent, the PM, so max mode is the **PM's** upgrade. When `metada
 
 The upgrade is a model swap and an effort raise by default. It is deliberately the upgrade the *repo agents* carried before the flattening, because the PM now does the coding and investigation work those agents used to do: leaving the PM on its normal model would have made the approval a no-op for exactly the work the upgrade exists for.
 
-Workers the PM spawns are unaffected by the flag itself — the `Agent` tool takes a model per spawn, so the PM's prompt tells it to spawn coding workers with `fable` while max mode is approved.
+Workers the PM spawns are unaffected. The `Agent` tool takes a model per spawn and the PM picks `sonnet` or `opus` for each, in max mode exactly as outside it — a worker is never spawned on `fable`, because the upgrade is for the agent holding the problem, not for the hands it delegates to.
 
 ## Approval flow
 
