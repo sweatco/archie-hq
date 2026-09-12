@@ -244,7 +244,8 @@ export const AGENT_PROMPTS = {
       ? EXISTING_TASK
       : `New activity in a thread you are in — not necessarily a request for you:\n\n${block(entries)}\n\nDecide whether it is yours to answer before you decide what to say.`,
 
-  recovery: 'Task was interrupted. Review the conversation for current state and continue where you left off.',
+  recovery:
+    "Task was interrupted. Review the conversation for current state and continue where you left off. Messages that arrived while the process was down or dying may not be in your transcript — read `shared/knowledge.log` under this task's folder (a plain-text record of every message in and out) or the Slack thread, and answer anything there you have not already answered before concluding.",
 
   /**
    * GitHub activity on work in flight — review comments, review bodies, PR
