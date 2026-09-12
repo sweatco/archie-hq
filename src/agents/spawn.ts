@@ -41,6 +41,7 @@ import { ensureTriggerDataDir } from '../system/trigger-store.js';
 import {
   createRecoverableInputGenerator,
 } from './message-queue.js';
+import { buildSessionResetNotice } from './prompts.js';
 import { getArchieAttributionIdentity } from '../connectors/github/client.js';
 import { buildChannelCanvasPromptSection } from '../connectors/slack/channel-canvas.js';
 import { buildChannelPinsPromptSection } from '../connectors/slack/channel-pins.js';
@@ -913,11 +914,20 @@ Shared folder: ${sharedPath} [READ-ONLY]
           if (sessionId && !hasRetried) {
             logger.warn(def.id, `Agent failed with session ${sessionId}, retrying fresh`);
             try {
-              recoverable.reset();
+              // The retry starts a session with NO transcript, and the only thing
+              // it will ever read is the wake being replayed here — so the notice
+              // rides that same message rather than arriving a wake later, when
+              // the PM has already answered mid-conversation as if it were the
+              // opening request. This is the one place both fresh-session paths
+              // pass through: the runtime fallback (a resume that failed mid-task)
+              // and startup recovery (`recoverActiveTasks` → `sendMessage` →
+              // `ensurePm` → spawn with a session id whose file is gone).
+              recoverable.reset(buildSessionResetNotice(task.metadata));
             } catch {
               // Queue was stopped (task completed/stopped) — bail out
               return;
             }
+            logger.warn(def.id, `Task ${taskId}: fresh session — prepended the session-reset notice to the replayed wake`);
             // Clear bad session from both agent and metadata so nuclear recovery
             // doesn't reload and retry it after a stop/restart cycle
             agent.session.session_id = undefined;

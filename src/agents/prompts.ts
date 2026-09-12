@@ -21,7 +21,7 @@
  */
 
 import { existsSync } from 'fs';
-import type { TaskMetadata } from '../types/task.js';
+import type { TaskMetadata, SlackChannel } from '../types/task.js';
 
 /**
  * The metadata a migration notice reads. Narrowed to what it renders so the notice stays a pure function of task state and can be built in a test from a handful of fields.
@@ -57,8 +57,39 @@ function describeFormerAgents(metadata: MigrationNoticeInput): string {
   }
 }
 
+/**
+ * The repos mounted into a task, as a block of lines.
+ *
+ * A recorded clone_path is not evidence of a clone: a read-only task removes its clones at completion, and an entry can be recorded before its clone finishes. Only a path still on disk is adoptable, and only such an entry earns the "adopts these existing clones" sentence — told to check git status in clones that do not exist, the PM either invents a reason or wastes a turn finding out.
+ */
+function describeRepositories(metadata: Pick<TaskMetadata, 'repositories' | 'edit_allowed'>): string[] {
+  const editMode = metadata.edit_allowed === true ? 'on' : 'off';
+  if (metadata.repositories.length === 0) {
+    return ['Repositories attached to this task: none'];
+  } else {
+    const lines = ['Repositories attached to this task:'];
+    let anyClone = false;
+    for (const repo of metadata.repositories) {
+      if (repo.clone_path && existsSync(repo.clone_path)) {
+        anyClone = true;
+        lines.push(
+          `- ${repo.github} — clone: ${repo.clone_path} — branch: ${repo.current_branch ?? 'unknown'} — edit mode: ${editMode}`,
+        );
+      } else {
+        lines.push(`- ${repo.github} — recorded, not cloned — mount_repo will clone it fresh`);
+      }
+    }
+    if (anyClone) {
+      lines.push('mount_repo adopts these existing clones. Check git status in each before continuing — a former agent may have left uncommitted work.');
+    }
+    return lines;
+  }
+}
+
 /** The approvals still outstanding on a task, as one clause, or '' when there are none. */
-function describePendingApprovals(metadata: MigrationNoticeInput): string {
+function describePendingApprovals(
+  metadata: Pick<TaskMetadata, 'pending_merge_approval' | 'pending_tool_approval' | 'pending_trigger_id'>,
+): string {
   const parts: string[] = [];
   if (metadata.pending_merge_approval) {
     parts.push(`merge of ${metadata.pending_merge_approval.github}#${metadata.pending_merge_approval.pr_number}`);
@@ -89,32 +120,7 @@ export function buildMigrationNotice(metadata: MigrationNoticeInput): string {
     '',
   ];
 
-  // A recorded clone_path is not evidence of a clone: a read-only task removes
-  // its clones at completion, and an entry can be recorded before its clone
-  // finishes. Only a path still on disk is adoptable, and only such an entry
-  // earns the "adopts these existing clones" sentence — told to check git status
-  // in clones that do not exist, the PM either invents a reason or wastes a turn
-  // finding out.
-  const editMode = metadata.edit_allowed === true ? 'on' : 'off';
-  if (metadata.repositories.length === 0) {
-    lines.push('Repositories attached to this task: none');
-  } else {
-    lines.push('Repositories attached to this task:');
-    let anyClone = false;
-    for (const repo of metadata.repositories) {
-      if (repo.clone_path && existsSync(repo.clone_path)) {
-        anyClone = true;
-        lines.push(
-          `- ${repo.github} — clone: ${repo.clone_path} — branch: ${repo.current_branch ?? 'unknown'} — edit mode: ${editMode}`,
-        );
-      } else {
-        lines.push(`- ${repo.github} — recorded, not cloned — mount_repo will clone it fresh`);
-      }
-    }
-    if (anyClone) {
-      lines.push('mount_repo adopts these existing clones. Check git status in each before continuing — a former agent may have left uncommitted work.');
-    }
-  }
+  lines.push(...describeRepositories(metadata));
 
   const pending = describePendingApprovals(metadata);
   if (pending) {
@@ -124,6 +130,65 @@ export function buildMigrationNotice(metadata: MigrationNoticeInput): string {
   lines.push(
     '',
     'Any work a former agent was doing on this task is now yours. Continue from the conversation above rather than re-asking the user what they wanted.',
+  );
+  return lines.join('\n');
+}
+
+/**
+ * The metadata a session-reset notice reads. Narrowed for the same reason as {@link MigrationNoticeInput} — the notice is a pure function of task state, buildable in a test from a handful of fields.
+ *
+ * `channels` and `default_channel` are here because the notice has to say WHERE the conversation it lost is readable back, and that differs by surface: a Slack-linked task has the whole exchange in its thread, a CLI or API task only in `knowledge.log`.
+ */
+export type SessionResetNoticeInput = Pick<
+  TaskMetadata,
+  'repositories' | 'edit_allowed' | 'pending_merge_approval' | 'pending_tool_approval' | 'pending_trigger_id' | 'channels' | 'default_channel'
+>;
+
+/** The Slack thread this task speaks in — its originating channel when that is a Slack one, else any Slack channel it is linked to. `undefined` for a CLI or API task. */
+function slackThreadOf(metadata: SessionResetNoticeInput): SlackChannel | undefined {
+  const origin = metadata.default_channel ? metadata.channels[metadata.default_channel] : undefined;
+  if (origin?.type === 'slack') {
+    return origin;
+  } else {
+    return Object.values(metadata.channels).find((ch): ch is SlackChannel => ch.type === 'slack');
+  }
+}
+
+/**
+ * The notice prefixed to the FIRST message a fresh session receives after resuming the previous one failed (see the session-recovery block in `src/agents/spawn.ts`).
+ *
+ * The retry hands the fresh session nothing but the wake that happened to be in flight. Without this the PM answers a mid-conversation message as if it were the opening one — re-asking what the user already said, or redoing work it already delivered. So the notice says the memory is gone and names the one place the conversation is still readable back. Pure, so the rendered text is unit-tested directly.
+ *
+ * Not to be confused with nuclear recovery, which RESUMES the persisted session (see `src/tasks/recovery.ts`) and therefore keeps its history.
+ */
+export function buildSessionResetNotice(metadata: SessionResetNoticeInput): string {
+  const thread = slackThreadOf(metadata);
+  const lines: string[] = [
+    'SESSION RESET — the previous session could not be resumed. This is a FRESH session: it has no memory of anything said in this task so far.',
+    '',
+    'Rebuild that context before you act on the message below:',
+  ];
+
+  if (thread) {
+    lines.push(
+      `- Read this task's thread with read_thread (channel ${thread.channel_id}${thread.channel_name ? ` — #${thread.channel_name}` : ''}, thread_ts ${thread.thread_id}). The earlier messages and your own replies are all there.`,
+    );
+  } else {
+    lines.push(
+      "- Read `shared/knowledge.log` under this task's folder (the shared folder named in your task context) — a plain-text record of every message in and out.",
+    );
+  }
+
+  lines.push('', ...describeRepositories(metadata));
+
+  const pending = describePendingApprovals(metadata);
+  if (pending) {
+    lines.push('', `Pending approvals: ${pending}.`);
+  }
+
+  lines.push(
+    '',
+    `Then continue the work from what the ${thread ? 'thread' : 'log'} shows rather than re-asking the user what they wanted.`,
   );
   return lines.join('\n');
 }

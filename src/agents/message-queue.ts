@@ -158,8 +158,16 @@ function formatMessageAsInput(msg: QueuedMessage, sessionId: string): SDKUserMes
  * and can restore them to the queue on retry
  */
 export interface RecoverableInputGenerator {
-  /** Returns consumed messages to the queue (call before retry) */
-  reset(): void;
+  /**
+   * Returns consumed messages to the queue (call before retry).
+   *
+   * `prefix`, when given, is glued to the front of the first message the next
+   * attempt will read — the session-reset notice, which has to arrive in the
+   * same turn the agent acts on rather than one wake later. A retry that
+   * consumed nothing yet still gets the prefix, as its own message, so the
+   * notice is never silently dropped.
+   */
+  reset(prefix?: string): void;
   /** Create a new generator instance (call for each attempt) */
   generator(): AsyncGenerator<SDKUserMessageInput>;
 }
@@ -185,12 +193,18 @@ export function createRecoverableInputGenerator(
   let consumed: QueuedMessage[] = [];
 
   return {
-    reset() {
-      // Put messages back in reverse order so they end up in original order
-      for (let i = consumed.length - 1; i >= 0; i--) {
-        queue.prependMessage(consumed[i].content);
-      }
+    reset(prefix?: string) {
+      const restored = consumed.map((m) => m.content);
       consumed = [];
+      if (prefix && restored.length > 0) {
+        restored[0] = `${prefix}\n\n${restored[0]}`;
+      } else if (prefix) {
+        restored.push(prefix);
+      }
+      // Put messages back in reverse order so they end up in original order
+      for (let i = restored.length - 1; i >= 0; i--) {
+        queue.prependMessage(restored[i]);
+      }
     },
 
     async *generator(): AsyncGenerator<SDKUserMessageInput> {

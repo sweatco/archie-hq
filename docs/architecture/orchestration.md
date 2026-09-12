@@ -96,6 +96,8 @@ Thread replies without an @mention are handled via the `message` listener and fo
 
 Every wake is enqueued in one place — `Task.deliver()`, the body `sendMessage()` runs under the activation lock — so Slack messages, API follow-ups, GitHub events, triggers, reminders, approval notices (`notifyPm`) and the startup recovery prompt all pass through it. When the task carries `migration_notice_pending` (a folder written by the pre-flattening engine, flagged on load — see [persistence.md](persistence.md#metadata-schema)), `deliver()` prefixes that wake with `buildMigrationNotice()` from `src/agents/prompts.ts`, clears the flag and flushes metadata synchronously, so the notice lands exactly once even if the process dies before the PM answers. It states that the PM is now the only agent on the task, names the removed inter-agent tools, points delegation at the `Agent` tool, lists the repos mounted into the task with their clone paths, branches and edit-mode state, and tells the PM to continue from the conversation rather than re-asking the user.
 
+A sibling notice covers the other way a PM loses its history: when resuming the SDK session fails, the session-recovery block in `src/agents/spawn.ts` clears the session id and retries fresh, and `recoverable.reset()` prefixes the replayed wake with `buildSessionResetNotice()` — the same repos and approvals blocks, plus where the lost conversation is still readable back (`read_thread` on the task's own thread, or `shared/knowledge.log` for a CLI or API task) — so the fresh session rebuilds context in the same turn it acts on, whether the resume failed mid-task or at startup recovery. Nuclear recovery is not this case: it resumes the persisted session rather than clearing it.
+
 ### GitHub Events
 
 ```
