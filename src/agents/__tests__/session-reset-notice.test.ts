@@ -135,6 +135,33 @@ describe('the replayed wake on a fresh-session retry', () => {
     expect(await drain(recoverable.generator(), 1)).toEqual(['SESSION RESET — notice body']);
   });
 
+  it('hands a message enqueued after the failure to the retry, not to the abandoned generator', async () => {
+    // The abandoned generator is parked inside queue.nextMessage() with a
+    // resolver registered. Left in place it is first in line, so the next
+    // addMessage (a recovery nudge, the next wake) revives the dead attempt —
+    // which swallows the message and makes the SDK abort the controller the
+    // spawn shares with the retry. The spawn loop detaches it in its catch.
+    const queue = new MessageQueue();
+    const recoverable = createRecoverableInputGenerator(queue);
+    queue.addMessage('the wake that was in flight');
+
+    const abandoned = recoverable.generator();
+    expect(await drain(abandoned, 1)).toEqual(['the wake that was in flight']);
+    const parked = abandoned.next(); // waiting on the queue when the query died
+
+    queue.detachWaiters();
+    recoverable.reset('SESSION RESET — notice body');
+    const retry = recoverable.generator();
+    expect(await drain(retry, 1)).toEqual(['SESSION RESET — notice body\n\nthe wake that was in flight']);
+    const waiting = retry.next(); // the fresh attempt is reading
+
+    queue.addMessage('RECOVERY: nudge');
+
+    expect((await waiting).value?.message.content).toBe('RECOVERY: nudge');
+    // The abandoned generator never wakes — nothing yields into the dead query.
+    expect(await Promise.race([parked, Promise.resolve('still parked')])).toBe('still parked');
+  });
+
   it('leaves a run that never failed untouched — no notice reaches a normal spawn', async () => {
     const queue = new MessageQueue();
     const recoverable = createRecoverableInputGenerator(queue);

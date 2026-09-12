@@ -911,6 +911,13 @@ Shared folder: ${sharedPath} [READ-ONLY]
 
           return;
         } catch (error) {
+          // This attempt is over, but the input generator the SDK was holding is
+          // still parked on `queue.nextMessage()` with a resolver registered.
+          // Nothing reads from it again, so detach it before anything else is
+          // enqueued — otherwise the next message goes to the dead generator
+          // instead of the live one (see MessageQueue.detachWaiters).
+          agent.queue.detachWaiters();
+
           if (sessionId && !hasRetried) {
             logger.warn(def.id, `Agent failed with session ${sessionId}, retrying fresh`);
             try {
@@ -934,6 +941,18 @@ Shared folder: ${sharedPath} [READ-ONLY]
             task.metadata.agent_sessions[def.id] = { active: false };
             sessionId = undefined;
             hasRetried = true;
+            // The spawn loop — not an idle agent — owns the task from here until
+            // the fresh attempt's `init` event marks it active again, and that
+            // boot takes longer than the idle-check's 3s delay. The failed
+            // attempt already marked the agent inactive (its error result above,
+            // or the Stop hook), so a check is armed and would find a "stalled"
+            // agent mid-retry: it nudged, and the nudge killed the retry.
+            // Marking active here makes the retry authoritative — same
+            // enqueue-marks-active convention as the background-task resume
+            // above. A retry that dies clears it through the normal paths (error
+            // result / Stop hook / crash detection), so genuine idleness still
+            // recovers.
+            task.updateAgentState(true);
             continue;
           }
 

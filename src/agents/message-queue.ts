@@ -102,6 +102,28 @@ export class MessageQueue {
   }
 
   /**
+   * Drop the waiters an abandoned reader left behind, without resolving or
+   * rejecting them. The queue itself stays open.
+   *
+   * The SDK owns each spawn attempt's input generator, which parks inside
+   * `nextMessage()` with a resolver registered here. When that attempt's query
+   * dies, nothing will ever read from the generator again — but its resolver is
+   * still first in line, so the next `addMessage` (a recovery nudge, the next
+   * wake) is handed to the DEAD generator instead of the live one. The message
+   * is swallowed, and the revived generator yields into the finished query's
+   * closed transport; the SDK reacts to that write failure by aborting the
+   * AbortController the spawn shares across attempts, killing the healthy retry
+   * (observed live: task-20260912-2035-5t7o36).
+   *
+   * The waiters are left pending rather than rejected on purpose: a rejection
+   * propagates out of the generator into the SDK's input pump, which aborts that
+   * same shared controller.
+   */
+  detachWaiters(): void {
+    this.pendingResolvers = [];
+  }
+
+  /**
    * Add a message to the front of the queue (for replaying on retry)
    */
   prependMessage(content: string): void {
