@@ -99,10 +99,11 @@ Archie is configured entirely through **plugins** — directories that follow th
 - **Agents** (`agents/*.md`) — worker types the PM can spawn, addressable as `plugin:agent`
 - **Hooks** (`hooks/`) — Claude Code hooks for cost guards, validation, etc.
 
-Skills, agents and hooks are loaded natively by the Claude Agent SDK. Two files at the repo root stay engine-owned:
+Skills, agents and hooks are loaded natively by the Claude Agent SDK. Three files at the repo root stay engine-owned:
 
 - **MCP servers** (`.mcp.json`) — external tool integrations (Jira, Firebase, BigQuery, …), plus the per-tool approval tiers that decide which calls need a human
 - **Engine config** (`archie.json`) — the sandbox network allowlist, which repos to warm-clone at startup, and which may be merged without asking
+- **PM overlay** (`pm.md`) — standing organisational context, tone and rules appended to the PM's system prompt, and its default model and effort, with no engine changes needed; see [Plugin System](docs/architecture/plugin-system.md#pm-overlay-pmmd)
 
 Example plugin structure:
 

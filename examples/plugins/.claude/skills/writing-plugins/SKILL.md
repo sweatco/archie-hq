@@ -22,6 +22,8 @@ A task runs exactly **one agent: the PM** — the "Archie" the user talks to in 
 
 A plugin contributes exactly two things: **skills** (`skills/<name>/SKILL.md`, loadable as `plugin:skill`) and **agents** (`agents/<name>.md`, spawnable as `plugin:agent`). Both are loaded natively by the Claude Agent SDK. There is no PM-only or specialist-only skill set — every skill is PM-loadable, and the PM decides whether to run the procedure inline or hand the heavy part to a worker.
 
+One root-level file sits outside any plugin's own directory and is engine-owned rather than plugin-contributed: `pm.md` at the plugins repo root. It carries standing organisational context appended to the PM's system prompt and sets the PM's default model and effort — see the PM overlay section in `docs/architecture/plugin-system.md`.
+
 **Study the bundled `helper/` plugin as the reference implementation.** `helper:example-task` is the workflow the PM runs: intake, the judgement call about whether the material is bulky enough to delegate, and delivery. `helper:structured-summary` is the output format, loadable by either side. `helper:assistant` is the worker, and it exists only because a generic spawn cannot preload a skill or set `effort`.
 
 ## Skill first, agent only with a reason
