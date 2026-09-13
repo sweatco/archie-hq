@@ -1,6 +1,6 @@
 /**
  * archie-e2e evidence writer — validate a scenario's evidence payload against the
- * `archie-e2e-evidence/v1` schema and write the canonical JSON plus a rendered
+ * `archie-e2e-evidence/v2` schema and write the canonical JSON plus a rendered
  * markdown companion for human reviewers.
  *
  * Usage: npx tsx tools/e2e/evidence.ts [--in <file>] [--out-dir <dir>]
@@ -21,9 +21,16 @@ import { accessSync, constants, existsSync, promises as fsp, readFileSync } from
 import { dirname, join } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 
-// ---- Schema (archie-e2e-evidence/v1) ----
+// ---- Schema (archie-e2e-evidence/v2) ----
+//
+// v2 renames excerpts.knowledge_log -> excerpts.transcript: the archie-debug MCP's
+// get_log tool no longer serves knowledge.log (it isn't exposed over the API at
+// all — see tools/debug-mcp/server.ts), it renders transcript lines from
+// events.jsonl instead. The field name now matches what the MCP actually
+// produces; the shape (a string array) and everything else is unchanged, so
+// this is the only bump.
 
-export const EVIDENCE_SCHEMA = 'archie-e2e-evidence/v1' as const;
+export const EVIDENCE_SCHEMA = 'archie-e2e-evidence/v2' as const;
 
 export const TERMINAL_STATES = ['completed', 'stopped', 'approval_requested', 'pending', 'not_found'] as const;
 export type TerminalState = (typeof TERMINAL_STATES)[number];
@@ -54,7 +61,7 @@ export interface Evidence {
   terminal_state: TerminalState;
   assertions: EvidenceAssertion[];
   excerpts: {
-    knowledge_log: string[];
+    transcript: string[];
     events: unknown[];
   };
   result: 'pass' | 'fail';
@@ -75,7 +82,7 @@ function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((x) => typeof x === 'string');
 }
 
-/** Validate an untrusted payload against archie-e2e-evidence/v1, returning named structured errors. */
+/** Validate an untrusted payload against archie-e2e-evidence/v2, returning named structured errors. */
 export function validateEvidence(payload: unknown): ValidationResult {
   const errors: string[] = [];
 
@@ -143,9 +150,9 @@ export function validateEvidence(payload: unknown): ValidationResult {
 
   const excerpts = payload['excerpts'];
   if (!isRecord(excerpts)) {
-    errors.push('excerpts must be an object with knowledge_log and events arrays');
+    errors.push('excerpts must be an object with transcript and events arrays');
   } else {
-    if (!isStringArray(excerpts['knowledge_log'])) errors.push('excerpts.knowledge_log must be an array of strings');
+    if (!isStringArray(excerpts['transcript'])) errors.push('excerpts.transcript must be an array of strings');
     if (!Array.isArray(excerpts['events'])) errors.push('excerpts.events must be an array');
   }
 
@@ -195,10 +202,10 @@ export function renderEvidenceMarkdown(e: Evidence): string {
   lines.push('');
   lines.push('## Excerpts');
   lines.push('');
-  lines.push('### Knowledge log');
+  lines.push('### Transcript');
   lines.push('');
   lines.push('```');
-  lines.push(e.excerpts.knowledge_log.length > 0 ? e.excerpts.knowledge_log.join('\n') : '(none)');
+  lines.push(e.excerpts.transcript.length > 0 ? e.excerpts.transcript.join('\n') : '(none)');
   lines.push('```');
   lines.push('');
   lines.push('### Events');

@@ -256,8 +256,8 @@ async function maybeRefreshPrCards(
 }
 
 /**
- * Handle an existing-task event: log to shared knowledge, update PR bookkeeping
- * (for issue_comment), and wake the PM agent.
+ * Handle an existing-task event: record the event, update PR bookkeeping (for
+ * issue_comment), and wake the PM with the recorded line inline.
  *
  * The issue_comment branch preserves `last_processed_comment_id` on both
  * branch_states and legacy repoInfo so future features (e.g. backfill from
@@ -271,21 +271,17 @@ async function handleExistingTaskDirect(
   const task = await Task.get(taskId);
 
   if (context.eventType === 'issue_comment' && context.prNumber && context.commentId) {
-    // Walk every attached repo across every agent looking for a branch state
-    // matching this PR. Update `last_processed_comment_id` on every match
-    // (two agents on the same PR should both dedup against the same id).
+    // Walk the task's mounted repos looking for a branch state matching this
+    // PR, and update `last_processed_comment_id` on every match.
     let lastProcessedId = 0;
     const matches: Array<{ state: { last_processed_comment_id?: number } }> = [];
-    for (const attachments of Object.values(task.metadata.repositories)) {
-      if (!Array.isArray(attachments)) continue;
-      for (const attached of attachments) {
-        if (attached.github !== context.githubRepo) continue;
-        const branchMatch = findBranchStateByPR(attached, context.prNumber);
-        if (!branchMatch) continue;
-        matches.push(branchMatch);
-        const seen = branchMatch.state.last_processed_comment_id ?? 0;
-        if (seen > lastProcessedId) lastProcessedId = seen;
-      }
+    for (const attached of task.metadata.repositories) {
+      if (attached.github !== context.githubRepo) continue;
+      const branchMatch = findBranchStateByPR(attached, context.prNumber);
+      if (!branchMatch) continue;
+      matches.push(branchMatch);
+      const seen = branchMatch.state.last_processed_comment_id ?? 0;
+      if (seen > lastProcessedId) lastProcessedId = seen;
     }
 
     if (context.commentId <= lastProcessedId) {
@@ -299,6 +295,8 @@ async function handleExistingTaskDirect(
     task.debouncedSave();
   }
 
-  await appendGitHubEvent(taskId, context.githubRepo, formatGitHubEvent(context));
-  await task.sendMessage(AGENT_PROMPTS.githubInput, 'pm-agent');
+  // The recorded line is the wake: author, repo, PR/branch and the comment or
+  // review body, exactly as written to the log.
+  const entry = await appendGitHubEvent(taskId, context.githubRepo, formatGitHubEvent(context));
+  await task.sendMessage(AGENT_PROMPTS.githubActivity(entry));
 }

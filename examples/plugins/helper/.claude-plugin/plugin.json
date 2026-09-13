@@ -1,5 +1,5 @@
 {
   "name": "helper",
   "version": "1.0.0",
-  "description": "Example domain plugin — a generic assistant agent that summarizes text and drafts short responses. A minimal, runnable starting point for building your own plugins."
+  "description": "Example domain plugin — a summarize-or-draft workflow the PM runs, the output format it follows, and a writing worker it can hand bulky material to. A minimal, runnable starting point for building your own plugins."
 }

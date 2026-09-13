@@ -57,8 +57,6 @@ Known entities (the entity index — resolve against these, do NOT create duplic
 Task metadata:
 <task_metadata>
 Task ID: {{TASK_ID}}
-Participants: {{PARTICIPANTS}}
-Task Owner: {{TASK_OWNER}}
 Status: {{STATUS}}
 Created: {{CREATED_AT}}
 </task_metadata>

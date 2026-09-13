@@ -250,7 +250,7 @@ describe('a body-less DM cannot seed a task, whatever its subtype', () => {
     } as any);
     vi.mocked(Task.create).mockResolvedValue({
       metadata: { channels: {}, title: 'x' },
-      append: vi.fn().mockResolvedValue({ linkedNewThread: true }),
+      append: vi.fn().mockResolvedValue({ linkedNewThread: true, entries: ['[ts] [<@U1:R> in #dm] hello'] }),
       ackMessage: vi.fn(),
       sendMessage: vi.fn().mockResolvedValue(undefined),
       debouncedSave: vi.fn(),

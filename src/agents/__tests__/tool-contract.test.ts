@@ -9,7 +9,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   createRepoToolsMcpServer,
-  createBaseAgentMcpServer,
   createCommsMcpServer,
   createOrchestrationMcpServer,
   createSchedulingMcpServer,
@@ -46,9 +45,7 @@ vi.mock('../../system/logger.js', () => ({
 }));
 
 vi.mock('../registry.js', () => ({
-  getAgentIds: vi.fn().mockReturnValue(['backend-agent', 'mobile-agent']),
-  getVisiblePeerIdsForSender: vi.fn().mockReturnValue(['backend-agent', 'mobile-agent']),
-  getAgentDef: vi.fn().mockReturnValue(undefined),
+  isAutoMergeRepo: vi.fn().mockReturnValue(false),
 }));
 
 vi.mock('../../connectors/slack/client.js', () => ({
@@ -63,7 +60,6 @@ function makeAgent(overrides: Partial<AgentDef> = {}): Agent {
     def: {
       id: 'backend-agent', key: 'backend', role: 'Backend', expertise: 'Node',
       pluginName: 'engineering', visibility: 'global',
-      repo: { repos: [{ github: 'org/backend', baseBranch: 'main' }], primary: 'org/backend' },
       ...overrides,
     },
     queue: {} as any,
@@ -74,46 +70,37 @@ function makeAgent(overrides: Partial<AgentDef> = {}): Agent {
 function makeTask(): Task {
   return {
     taskId: 'task-123',
-    team: [
-      {
-        id: 'backend-agent', key: 'backend', role: 'r', expertise: 'e',
-        pluginName: 'engineering',
-        repo: { repos: [{ github: 'org/backend', baseBranch: 'main' }], primary: 'org/backend' },
-      },
-    ],
+    pmDef: { id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', isPm: true, pluginName: 'pm' },
     metadata: {
-      repositories: {
-        'backend-agent': [{
-          github: 'org/backend',
-          clone_path: '/wt/backend',
-          current_branch: 'feat/x',
-          branch_states: {
-            'feat/x': { base_branch: 'main' },
-          },
-        }],
-      },
-      edit_allowed: true, status: 'active', channels: {}, participants: [], agent_sessions: {},
+      repositories: [{
+        github: 'org/backend',
+        clone_path: '/wt/backend',
+        current_branch: 'feat/x',
+        branch_states: {
+          'feat/x': { base_branch: 'main' },
+        },
+      }],
+      edit_allowed: true, status: 'active', channels: {}, agent_sessions: {},
     },
     touch: vi.fn(), debouncedSave: vi.fn(), suspendStatus: vi.fn(),
     postToUser: vi.fn(), postInteractiveToUser: vi.fn(),
-    stop: vi.fn(), complete: vi.fn(), toolSendMessage: vi.fn(), getAgentStatus: vi.fn(),
+    stop: vi.fn(), complete: vi.fn(),
     updateAgentState: vi.fn(), checkResearchBudget: vi.fn(), incrementResearchCount: vi.fn(), onResearchBudgetExceeded: vi.fn(),
   } as unknown as Task;
 }
 
-function getRegisteredToolNames(server: ReturnType<typeof createRepoToolsMcpServer>): string[] {
-  const raw = (server.instance as any)._registeredTools
+function getRegisteredTools(
+  server: ReturnType<typeof createRepoToolsMcpServer>,
+): Record<string, { description?: string }> {
+  return (server.instance as any)._registeredTools
     ?? Object.fromEntries((server.instance as any)._tools ?? []);
-  return Object.keys(raw);
+}
+
+function getRegisteredToolNames(server: ReturnType<typeof createRepoToolsMcpServer>): string[] {
+  return Object.keys(getRegisteredTools(server));
 }
 
 // ---- Expected tool lists (must stay in sync with spawn.ts) ----
-
-const AGENT_TOOLS = [
-  'mcp__agent-tools__send_message_to_agent',
-  'mcp__agent-tools__log_finding',
-  'mcp__agent-tools__share_artifact',
-];
 
 const PM_COMMS_TOOLS = [
   'mcp__comms-tools__post_to_user',
@@ -132,14 +119,12 @@ const PM_COMMS_TOOLS = [
 ];
 
 const PM_ORCHESTRATION_TOOLS = [
-  'mcp__orchestration-tools__assign_task_owner',
   'mcp__orchestration-tools__report_completion',
   'mcp__orchestration-tools__request_edit_mode',
   'mcp__orchestration-tools__request_max_mode',
-  'mcp__orchestration-tools__get_agents_status',
   'mcp__orchestration-tools__get_task_usage',
   'mcp__orchestration-tools__list_available_repos',
-  'mcp__orchestration-tools__spawn_repo_agent',
+  'mcp__orchestration-tools__mount_repo',
   'mcp__orchestration-tools__propose_trigger',
   'mcp__orchestration-tools__list_triggers',
   'mcp__orchestration-tools__get_trigger',
@@ -196,13 +181,7 @@ describe('repo-tools MCP server contract', () => {
 });
 
 describe('PM MCP server contracts', () => {
-  const pmAgent = () => makeAgent({ isPm: true, repo: undefined, id: 'pm-agent' });
-
-  it('agent-tools registers the shared base tools', () => {
-    const server = createBaseAgentMcpServer(pmAgent(), makeTask());
-    const registered = getRegisteredToolNames(server).map((n) => `mcp__agent-tools__${n}`);
-    expect(registered.sort()).toEqual(AGENT_TOOLS.sort());
-  });
+  const pmAgent = () => makeAgent({ isPm: true, id: 'pm-agent' });
 
   it('comms-tools registers exactly its tools', () => {
     const server = createCommsMcpServer(pmAgent(), makeTask());
@@ -214,6 +193,16 @@ describe('PM MCP server contracts', () => {
     const server = createOrchestrationMcpServer(pmAgent(), makeTask());
     const registered = getRegisteredToolNames(server).map((n) => `mcp__orchestration-tools__${n}`);
     expect(registered.sort()).toEqual(PM_ORCHESTRATION_TOOLS.sort());
+  });
+
+  // Max mode upgrades the agent that holds the problem, not the hands it delegates
+  // to. The description used to promise "a premium model such as Fable" for coding
+  // agents, which is the one model a worker must never be spawned on.
+  it('request_max_mode describes the upgrade as the PM\'s own, never a worker model', () => {
+    const server = createOrchestrationMcpServer(pmAgent(), makeTask());
+    const description = getRegisteredTools(server)['request_max_mode']?.description ?? '';
+    expect(description).toContain('YOUR OWN model');
+    expect(description).not.toMatch(/fable/i);
   });
 
   it('scheduling-tools registers exactly its tools', () => {

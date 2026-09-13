@@ -393,7 +393,7 @@ describe('the content floor on task creation', () => {
   it('still creates a task for a DM that carries a message', async () => {
     const task = {
       metadata: { channels: {}, title: 'x' },
-      append: vi.fn().mockResolvedValue({ linkedNewThread: true }),
+      append: vi.fn().mockResolvedValue({ linkedNewThread: true, entries: ['[ts] [<@U1:R> in #dm] hello'] }),
       ackMessage: vi.fn(),
       sendMessage: vi.fn().mockResolvedValue(undefined),
       debouncedSave: vi.fn(),
@@ -416,6 +416,12 @@ describe('the content floor on task creation', () => {
     });
 
     expect(vi.mocked(Task.create)).toHaveBeenCalledTimes(1);
+    // The wake carries what was ingested. The router is the seam where the
+    // appended lines could be dropped on the floor — which is what used to
+    // happen, leaving the PM woken by a pointer at a log it does not read.
+    expect(task.sendMessage).toHaveBeenCalledWith(
+      expect.stringContaining('[<@U1:R> in #dm] hello'),
+    );
   });
 });
 

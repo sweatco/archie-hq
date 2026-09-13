@@ -130,8 +130,6 @@ async function processExtraction(taskId: string): Promise<void> {
       userMemory,
       entityIndex,
       taskId,
-      participants: metadata.participants.join(', '),
-      taskOwner: metadata.task_owner ?? '',
       status: metadata.status,
       createdAt: metadata.created_at,
       transcript,

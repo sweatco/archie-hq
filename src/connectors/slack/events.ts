@@ -2,7 +2,7 @@
  * Slack Events — Bolt app, event handlers, button handlers
  *
  * Owns: Slack Bolt app, app_mention/message handlers, button actions,
- * Slack triage processing. Does NOT own the HTTP server or GitHub endpoints.
+ * routing incoming messages to tasks. Does NOT own the HTTP server or GitHub endpoints.
  */
 
 import { createRequire } from 'module';
@@ -41,7 +41,6 @@ import { messageMatchesTrigger } from '../../system/trigger-match.js';
 import { generateTaskTitle } from '../../tasks/title-generator.js';
 import { setAssistantThreadTitle } from './title.js';
 import type { SlackThread, SlackAuthor } from '../../types/task.js';
-// import { triageSlackMessage } from '../../system/triage.js';
 
 /**
  * Slack configuration
@@ -733,7 +732,7 @@ export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): 
 
 type SlackRouteResult =
   | { action: 'discard'; reason: string }
-  | { action: 'triage' };
+  | { action: 'process' };
 
 function routeSlackEvent(event: {
   bot_id?: string;
@@ -751,7 +750,7 @@ function routeSlackEvent(event: {
     return { action: 'discard', reason: 'Own bot user message' };
   }
 
-  return { action: 'triage' };
+  return { action: 'process' };
 }
 
 // ============================================================================
@@ -817,38 +816,6 @@ export async function handleSlackEvent(event: {
   // The pinned-messages index is refreshed on exactly the same terms: before the PM wakes, no-op for DMs, TTL-bounded, after the external-author bail-out above so a purely-external trigger never causes a scan, and never throws.
   await Promise.all([ensureChannelCanvas(event.channel), ensureChannelPins(event.channel)]);
 
-  // const triageResult = await triageSlackMessage(thread);
-  // switch (triageResult.action) {
-  //   case 'new_task': {
-  //     const task = await Task.create();
-  //     await task.append(thread);
-  //     await task.sendMessage(AGENT_PROMPTS.newTask);
-  //     break;
-  //   }
-  //   case 'existing_task': {
-  //     if (!triageResult.task_id) break;
-  //     const task = await Task.get(triageResult.task_id);
-  //     const { linkedNewThread } = await task.append(thread);
-  //     if (linkedNewThread) {
-  //       await postToThreads(
-  //         [{ thread_id: thread.threadId, channel_id: thread.channel.id, last_processed_ts: thread.currentMessageTs }],
-  //         'Got it, I\'ve linked this to the ongoing investigation.',
-  //       );
-  //     }
-  //     await task.sendMessage(AGENT_PROMPTS.existingTask);
-  //     break;
-  //   }
-  //   case 'cancel_task': {
-  //     if (!triageResult.task_id) break;
-  //     const task = await Task.get(triageResult.task_id);
-  //     await task.postToUser('Work stopped. All progress has been saved and can be resumed if needed.');
-  //     await task.stop();
-  //     break;
-  //   }
-  //   case 'noop':
-  //     logger.system('Triage: noop');
-  //     break;
-  // }
   const taskId = await findTaskByThread(threadId);
   if (taskId) {
     logger.system(`Processing #${thread.channel.name} (thread: ${threadId})`);
@@ -871,8 +838,10 @@ export async function handleSlackEvent(event: {
       }
     }
 
-    // Thread reply to an existing task — route to it
-    await task.append(thread);
+    // Thread reply to an existing task — route to it. `entries` are the lines
+    // just ingested; they ride along on the wake below so the PM reads the
+    // messages in its own stream instead of going to fetch them.
+    const { entries } = await task.append(thread);
     if (isAckable) task.ackMessage(channelKey, event.ts);
     if (!task.metadata.title) {
       generateTitleAndSync(task, thread).catch((err) =>
@@ -880,7 +849,7 @@ export async function handleSlackEvent(event: {
       );
     }
     await sendSharedChannelWarnings(task, event.channel, threadId, thread, shared);
-    await task.sendMessage(AGENT_PROMPTS.existingTask);
+    await task.sendMessage(AGENT_PROMPTS.inboundActivity(entries));
   } else if (shouldCreateNewTask(event.type, event.channel, thread.rootAuthorWasBot) && thread.messages.length > 0) {
     logger.system(`Processing #${thread.channel.name} (thread: ${threadId})`);
 
@@ -893,7 +862,7 @@ export async function handleSlackEvent(event: {
     //
     // It is deliberately NOT applied to the trigger branch below. That path renders from the raw event, not from the fetched thread, precisely because `fetchSlackThread` drops a message with neither a `user` nor a `botId` — gating it on `thread.messages` would reintroduce the very blindness this change removes.
     const task = await Task.create();
-    await task.append(thread);
+    const { entries } = await task.append(thread);
     // Ack the triggering message. For @mention/DM the :eyes: was already added
     // before the thread fetch; for a reply to a bot-started thread, add it now.
     if (!isAckable && thread.rootAuthorWasBot) addReaction(event.channel, event.ts, 'eyes');
@@ -904,7 +873,7 @@ export async function handleSlackEvent(event: {
       );
     }
     await sendSharedChannelWarnings(task, event.channel, threadId, thread, shared);
-    await task.sendMessage(AGENT_PROMPTS.newTask);
+    await task.sendMessage(AGENT_PROMPTS.inboundNewTask(entries));
   } else if (event.type === 'message' && !event.channel.startsWith('D') && !event.thread_ts) {
     // Ambient top-level channel message (no task, not an @mention, not a thread
     // reply) — the only place channel-message triggers fire. @mentions and DMs
@@ -986,8 +955,8 @@ async function dispatchChannelMessageTriggers(
  *    engage a thread the bot wasn't invited to), and
  *  - the editor is an internal (non-external/guest) user.
  *
- * When they hold we append an edit notice to the task's knowledge log and wake
- * the task with the standard "new input" prompt. The agent decides whether the
+ * When they hold we record an edit notice and wake the task with that notice
+ * inline, as one more piece of thread activity. The agent decides whether the
  * change is material; a cosmetic edit can simply be a no-op on its end.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1057,7 +1026,10 @@ async function handleSlackEdit(event: any): Promise<void> {
 
   const channelLabel = channel?.type === 'slack' ? channel.channel_name : channelId;
   logger.system(`Processing edit in #${channelLabel} (msg: ${editedTs})`);
-  await task.sendMessage(AGENT_PROMPTS.existingTask);
+  // One entry, delivered like any other thread activity: the `[edited]` line
+  // carries the same `msg:<ts>` id as the message it revises, so the PM can tell
+  // which of the messages it has already seen just changed.
+  await task.sendMessage(AGENT_PROMPTS.inboundActivity([recorded]));
 }
 
 const SHARED_CHANNEL_WARNING_TEXT =

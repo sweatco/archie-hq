@@ -4,12 +4,6 @@
 
 export type TaskStatus = 'in_progress' | 'stopped' | 'completed';
 
-/** Core agent names - repo agents can be any string ending in '-agent' */
-export type CoreAgentName = 'pm-agent' | 'triage-agent';
-
-/** Agent name - core agents or any repo agent (e.g., 'backend-agent', 'mobile-agent', 'web-agent') */
-export type AgentName = CoreAgentName | `${string}-agent`;
-
 export type FindingType = 'discovery' | 'decision' | 'completion' | 'blocker' | 'artifact';
 
 /** Tracking record for a Slack thread linked to a task */
@@ -190,22 +184,21 @@ export interface BranchState {
 }
 
 /**
- * One repo attached to a specific agent in a specific task.
+ * One repo mounted into a task.
  *
- * Each agent has its own clone — two agents attaching the same `github` get two
- * independent `AttachedRepo` records under different agent IDs in
- * `TaskMetadata.repositories`. The base-cache path is derivable as
- * `join(REPOS_DIR, github)` and is not stored here.
+ * There is exactly one clone per repo per task — the task, not an agent, is the
+ * isolation boundary — so `TaskMetadata.repositories` is a flat list keyed by
+ * nothing but the `github` identifier it carries. The base-cache path is
+ * derivable as `join(REPOS_DIR, github)` and is not stored here.
  */
 export interface AttachedRepo {
   /** Github identifier, e.g. 'acme/backend'. */
   github: string;
   /**
-   * Task-local shared clone path, e.g.
-   * `sessions/<id>/repos/<agentId>/acme/backend`. Set when the clone is
-   * created during agent spawn; undefined briefly between attachment record
-   * creation and clone setup. Lives outside the agent's cwd
-   * (`sessions/<id>/agents/<agentId>/`) so workspace and repo state are
+   * Task-local shared clone path, e.g. `sessions/<id>/repos/acme/backend`. Set
+   * when the clone is created; undefined briefly between the attachment record
+   * being created and clone setup finishing. Lives outside the agent's cwd
+   * (`sessions/<id>/agents/<agentKey>/`) so workspace and repo state are
    * cleanly separated.
    */
   clone_path?: string;
@@ -229,7 +222,7 @@ export interface AttachedRepo {
 /**
  * Legacy per-repo state shape (pre-v30).
  * Retained only to type the lazy migration path in Task.get; new code uses
- * `AttachedRepo` and `metadata.repositories: Record<agentId, AttachedRepo[]>`.
+ * `AttachedRepo` and the flat `metadata.repositories: AttachedRepo[]`.
  */
 export interface RepositoryInfo {
   path: string;
@@ -245,28 +238,6 @@ export interface RepositoryInfo {
 }
 
 /**
- * Spec for a repo agent the PM spawned on demand via `spawn_repo_agent`.
- *
- * Stores only the PM-supplied inputs (not a full AgentDef); the live AgentDef
- * is re-synthesized from this on every `Task.get` via `synthesizeDynamicAgentDef`,
- * so resolved/derived fields never go stale on disk. Persisted in
- * `TaskMetadata.dynamic_agents`. Such an agent eager-mounts its `repos` at spawn
- * exactly like a plugin-defined repo agent — there is no on-demand attach.
- */
-export interface DynamicAgentSpec {
-  /** Final agent ID, e.g. 'explorer-a3f9-agent'. */
-  id: string;
-  /** PM-supplied short name (`[a-z][a-z0-9-]*`). */
-  shortname: string;
-  /** Repos this agent works with. First entry is the primary. */
-  repos: Array<{ github: string; baseBranch?: string }>;
-  /** Role string used in peer lists and the agent's own prompt. */
-  role: string;
-  /** Expertise string used in the agent's prompt. */
-  expertise: string;
-}
-
-/**
  * Per-agent session state — tracks whether each agent is active
  * and preserves session IDs for SDK resume.
  */
@@ -278,8 +249,6 @@ export interface AgentSessionState {
 
 export interface TaskMetadata {
   task_id: string;
-  task_owner: AgentName | null;
-  participants: AgentName[];
   channels: Record<string, Channel>;   // Active message delivery targets, keyed by channel ID
   default_channel: string | null;      // Channel ID of the originating channel (null for CLI-originated tasks)
   /**
@@ -292,20 +261,15 @@ export interface TaskMetadata {
   slack_threads?: SlackThreadRef[];    // Legacy — only present on old tasks loaded from disk, removed after migration
   agent_sessions: Record<string, AgentSessionState | string>; // union handles legacy string values on disk
   /**
-   * Per-agent attached repos. Keyed by agent ID. Each value is the list of
-   * repos that agent currently has mounted (always includes the agent's
-   * primary at minimum, once it has spawned).
+   * Repos mounted into this task, one entry per `github`. Flat: the task owns
+   * the clone, not an agent.
    *
-   * Legacy on-disk shape (pre-v30): `Record<repoKey, RepositoryInfo>` keyed by
-   * short repo name. Migrated lazily in `Task.get`.
+   * Two legacy on-disk shapes are migrated lazily in `Task.get` (see
+   * `migrateRepositoriesShape`): the pre-v30 `Record<repoKey, RepositoryInfo>`
+   * keyed by short repo name, and the per-agent `Record<agentId,
+   * AttachedRepo[]>` that preceded the flat model.
    */
-  repositories: Record<string, AttachedRepo[]>;
-  /**
-   * Specs for repo agents the PM spawned on demand (via `spawn_repo_agent`).
-   * Re-synthesized into AgentDefs and merged into the task team on every
-   * `Task.get`. Absent on tasks that never spawned one.
-   */
-  dynamic_agents?: DynamicAgentSpec[];
+  repositories: AttachedRepo[];
   /**
    * Channel ids whose standing brief `post_to_channel`'s preflight has already
    * shown on this task. The first attempt to post into a channel with an `Archie…`
@@ -320,6 +284,14 @@ export interface TaskMetadata {
    */
   briefed_channels?: string[];
   status: TaskStatus;
+  /**
+   * Which engine generation last wrote this metadata. `2` is the flat single-PM runtime; absent means the folder was written by the pre-flattening multi-agent engine. Stamped on first load by `stampRuntimeVersion` (`src/tasks/task.ts`), set directly by `Task.create`.
+   */
+  runtime_version?: number;
+  /**
+   * Set when `stampRuntimeVersion` stamped a legacy task, i.e. one whose PM session transcript is conditioned on the removed multi-agent world. The next wake delivered to the PM is prefixed with the migration notice (`buildMigrationNotice`) and the flag is cleared in the same step, so it fires exactly once per task.
+   */
+  migration_notice_pending?: boolean;
   edit_allowed?: boolean;     // Has user approved edit mode for this task?
   max_mode?: boolean;         // Has user approved "max mode" (per-task model/effort upgrade) for this task?
   /**
@@ -339,7 +311,7 @@ export interface TaskMetadata {
   pending_merge_approval?: {
     github: string;       // repo of the requested PR
     pr_number: number;    // which PR to merge on approval
-    requested_by: string; // agent id — to clear its parked teardown on resolution
+    requested_by: string; // agent id (always the PM) — to clear its parked teardown on resolution
     requested_at: string; // ISO 8601, for the audit finding
   };
   /**
@@ -355,7 +327,7 @@ export interface TaskMetadata {
     tool: string;         // bare tool name
     summary: string;      // rendered prompt body shown to the approver
     heading: string;      // one-line heading (the tool's description, or server:tool)
-    requested_by: string; // agent id — woken on approval; park cleared on resolution
+    requested_by: string; // agent id (always the PM) — woken on approval; park cleared on resolution
     requested_at: string; // ISO 8601
   };
   /**
@@ -396,13 +368,6 @@ export interface LogEntry {
   source: string;
   type?: FindingType;
   message: string;
-}
-
-export interface TriageResult {
-  action: 'new_task' | 'existing_task' | 'cancel_task' | 'noop';
-  task_id?: string;
-  confidence: 'high' | 'medium' | 'low';
-  similar_tasks?: string[];
 }
 
 /** File metadata from Slack */

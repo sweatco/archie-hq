@@ -1,455 +1,95 @@
 # Agents Architecture
 
-This document describes the agent types, communication protocols, prompt composition, and behavioral patterns implemented in the Archie system. All descriptions reflect the actual codebase.
+A task runs exactly **one** agent: the PM. Everything the PM does not do itself it delegates to a **subagent** spawned through the Claude Agent SDK's built-in `Agent` tool, inside the PM's own session and process. There are no peer agents, no message queues between agents, no task owner and no triage classifier.
 
-## Agent Types
+**Source:** `src/agents/spawn.ts`, `src/agents/registry.ts`, `src/agents/agent.ts`, `src/tasks/task.ts`, `prompts/pm-agent.md`
 
-Archie uses three active agent types (plus a disabled triage classifier). Each is backed by a specific Claude model and serves a distinct role:
+## The PM
 
-| Agent Type | Model | Count | Role |
+One `Agent` instance per task (`Task.agent`), created lazily on the first message (`Task.ensurePm`) and torn down by `stop()` / `complete()`. Its definition is engine-owned and static apart from three things read from the plugins repo root — the MCP servers in `.mcp.json`, the network allowlist in `archie.json`, and the model/effort/max-mode overrides and body text in `pm.md` — and is rebuilt on every task start/reload so a plugins-repo change is picked up without a restart (`getPmDef()` / `scanPmDef()` in `src/agents/registry.ts`).
+
+| | Value | `pm.md` frontmatter | Env override |
 |---|---|---|---|
-| ~~Triage Agent~~ | Haiku | — | Event classifier (**currently disabled** — see below) |
-| PM Agent | Opus (default) | 1 per task | Task manager, user interface, agent coordinator |
-| Repo Agents | Sonnet (default, configurable) | 1 per plugin-defined repo agent per task | Codebase investigation and modification; declares one or more repos in frontmatter, all mounted at spawn |
-| Plugin Agents | Sonnet (default, configurable) | 1 per plugin agent per task | Lightweight domain specialists; no repo, no git |
+| Agent id / key | `pm-agent` / `pm` | — | — |
+| Model | `opus` | `model` | `ARCHIE_PM_MODEL` |
+| Effort | `medium` | `effort` | `ARCHIE_PM_EFFORT` |
+| Max-mode model | `claude-fable-5-1` | `maxMode.model` | `ARCHIE_PM_MAX_MODEL` |
+| Max-mode effort | `high` | `maxMode.effort` | `ARCHIE_PM_MAX_EFFORT` |
+| Max turns per query | 100 | — | — |
 
-Models for repo and plugin agents come from each agent's plugin frontmatter (`model` field, with `effort` and `maxTurns` also supported); `Sonnet` is the fallback when frontmatter is silent. The PM agent defaults to Opus but can be overridden by the `pm` plugin overlay's frontmatter (see `src/agents/registry.ts` `buildPmDef()` and `src/agents/spawn.ts`).
+Precedence resolves narrowest-wins: an env var beats `pm.md`, which beats the built-in default. `pm.md`'s body text — everything after the frontmatter — is appended to the PM's system prompt under a `# Deployment context` heading regardless of which values it overrides; a missing file or malformed frontmatter falls back to the built-ins with no error (see [plugin-system.md](plugin-system.md#pm-overlay-pmmd)).
 
-### Triage Agent (currently disabled)
+### Tools
 
-**Source**: `src/system/triage.ts` (still on disk, but no callers)
+Six in-process MCP servers are attached at spawn, plus every server in the plugins repo's root `.mcp.json` (see [plugin-system.md](plugin-system.md#the-root-mcp-config)).
 
-The triage agent is **not invoked** by the running system. In `src/connectors/slack/events.ts` the `triageSlackMessage` import and dispatch block are commented out — every incoming Slack event is routed directly to the PM agent:
-
-- A fresh `Task` is created (and `AGENT_PROMPTS.newTask` sent to the PM) on an `@mention`, a DM, or a human reply to a thread Archie itself started (`rootAuthorWasBot` — a top-level message it posted via the `post_to_channel` explore tool).
-- A reply in a thread already linked to a task appends the new messages and sends `AGENT_PROMPTS.existingTask` to that task's PM.
-- A reply in a human-started thread the bot didn't start is ignored.
-
-GitHub events follow the same deterministic pattern in `connectors/github/webhooks.ts` (PR reviews, push events, CI results) — none of them call triage either.
-
-The classifier code remains in the repository for potential re-enablement. When it ran, it was a stateless Haiku-backed call that used `query()` from the Claude Agent SDK with `outputFormat: { type: "json_schema" }` and the following Slack schema:
-
-```typescript
-{
-  action: "new_task" | "existing_task" | "cancel_task" | "noop",
-  task_id?: string,
-  confidence: "high" | "medium" | "low",
-  similar_tasks?: string[],
-  reasoning: string
-}
-```
-
-It had access to `Glob`, `Grep`, and `Read` to search `sessions/` for matching tasks. The disabled call site is preserved in `events.ts` as a commented block referencing `triageSlackMessage`.
-
-### PM Agent
-
-**Source**: `src/agents/agent.ts`, `src/agents/spawn.ts`, `src/agents/tools.ts` (`createPMAgentMcpServer`)
-
-One PM agent instance is spawned per task. It is the orchestrator: it receives all external input (from connectors), delegates work to specialist agents, communicates with users (Slack, CLI, GitHub), and manages the task lifecycle.
-
-**Model**: Opus by default (`def.model || 'opus'` in `spawn.ts`). Overridable through the `pm` plugin overlay's frontmatter, which can also set `effort` and `maxTurns`.
-
-**Tools** (registered on the `pm-agent-tools` MCP server):
-
-| Tool | Purpose |
+| Server | Tools |
 |---|---|
-| `send_message_to_agent` | Send instructions/questions to any agent |
-| `post_to_user` | Send a message to the user. Routes to the default linked channel or an existing linked thread (`target.channel`). The Slack/CLI/GitHub specifics live in `Task.postToUser`, so the PM never picks a transport directly. The PM cannot open new DMs, and cannot choose to open a new task-linked thread — it stays where the task lives (in a channel thread, `@mention` people there; in a DM, stay 1:1). The one exception is not a choice it makes: a trigger-fired task with no thread yet has a `home_channel` set by the scheduler from its approved binding, and the PM's first message there becomes that task's thread. |
-| `post_files_to_user` | Upload files to an already-linked thread (default channel or `channel` key). Does not open new destinations. |
-| `share_artifact` | Publish an immutable, deduped snapshot of a file under `<task>/shared/artifacts/` for inter-agent sharing. |
-| `find_slack_user` / `find_slack_channel` | Look up Slack user/channel IDs and metadata (e.g. a channel ID before reading or posting to it). |
-| `list_channels` | List the channels readable for this task (`users.conversations`): every public channel Archie's in, **plus this task's own channels** if private/a DM — including, for a trigger-fired task, the `home_channel` it has not opened a thread in yet (`taskSlackChannelLabels`, the same helper the read gate uses). Never enumerates other private channels/DMs. |
-| `read_channel_history` / `read_thread` | Read a channel's recent messages, or a specific thread — exploration only, not linked to the task. **Accessible-set gate** (`assertAccessibleChannel`): any public channel, plus this task's own channels (even if private/DM) — which for a trigger-fired task includes its `home_channel` before a thread exists there, since that channel's canvas and pin index are already in the agent's prompt; any *other* private channel/DM is refused. |
-| `post_to_channel` | Post into **any** channel Archie's a member of — public **or** private (e.g. escalate to a private management channel) — WITHOUT linking it to the task. 1:1 DMs and group DMs (mpims) refused via `assertPostableChannel`. NOT accessible-set-gated (posting outward is intentional); a prompt guardrail warns against leaking sensitive content. A human reply to a new top-level post here starts its own fresh task. **Refused while a trigger-fired task has no channel of its own** — see [Triggers](triggers.md#the-home-channel-is-the-tasks-own-channel). |
-| `assign_task_owner` | Designate an agent as task owner |
-| `report_completion` | Optionally post a final message, then stop the task |
-| `request_edit_mode` | Post an interactive Approve/Deny prompt to the default channel and pause the task |
-| `get_agents_status` | Check which agents are spawned and active |
-| `get_task_usage` | Report the current task's token usage (always) and SDK-reported cost when available, broken down per agent |
-| `mute_channel` | Disengage from one Slack channel/thread (the one named via `channel`, or the task's default channel) until the bot is @mentioned there again. DM channels cannot be muted |
-| `parse_datetime` / `set_reminder` / `cancel_reminder` | Schedule a reminder that wakes the task at an ISO datetime |
-| `list_available_repos` | List repos the GitHub App installation can reach (paginates `GET /installation/repositories`); tags repos a plugin specialist already covers. Cached per task. |
-| `spawn_repo_agent` | Create an on-demand repo agent bound to a chosen list of available repos (eager-mounted at spawn). Persists a `DynamicAgentSpec` to `metadata.dynamic_agents` and adds it to `task.team`. Rejects a repo already owned as a plugin specialist's primary. |
-
-The `Skill` tool is provided by the Claude Agent SDK itself (not by `pm-agent-tools`); skills are mounted from two sources — the `pm` plugin's own `skills/` directory, plus the core skills the `pm` track mounts per the `CORE_SKILL_MOUNTS` manifest in `src/agents/core-skills.ts` — resolved into one ordered `skillPaths` list and surfaced via `.claude/skills/` symlinks plus `settingSources: ['project']`. Plugin entries come first, so a `pm`-plugin skill shadows a core skill of the same name. See [plugin-system.md](plugin-system.md#core-skills-and-which-tracks-mount-them) for the manifest and the ordering rule. Built-in `Read` is available against the PM workspace and the shared task folder (which is mounted read-only via `additionalDirectories`); `WebSearch` and `WebFetch` are explicitly disallowed. `Bash` is available and sandboxed.
-
-> **Caveat on `Glob` and `Grep`, observed live and pre-existing.** The filesystem guard's read check covers `Read`, `Glob` and `Grep`, and several sections of these docs plus `prompts/plugin-agent.md`, `prompts/repo-agent.md` and `prompts/triage-agent.md` offer them to agents — but **`Glob` is not actually present in this runtime**. A live agent asking for it gets `No such tool available: Glob`, and it is not a deferred tool either. Nothing disallows it: the SDK ships as a native build, and per its own `tools` documentation native builds omit the dedicated `Grep`/`Glob` tools in favour of Bash `find`/`grep` unless they are named in `tools` or `allowedTools`, which this app does not do. **`Grep` is therefore very likely absent for the same reason, though that was never confirmed.** Treat every mention of either in this documentation and in the agent prompts as unverified, and use `Bash` (`ls`, `find`, `grep`) to enumerate a directory.
-
-PR lifecycle tools (push, create PR, merge, etc.) live on repo agents via the `repo-tools` MCP server — the PM has no direct git or GitHub access.
+| `comms-tools` | `post_to_user`, `post_files_to_user`, `find_slack_user`, `find_slack_channel`, `list_channels`, `read_channel_history`, `read_thread`, `post_to_channel`, `mute_channel`, `react_to_message`, `unreact_from_message`, `get_message_reactions`, `fetch_slack_reference` |
+| `orchestration-tools` | `report_completion`, `request_edit_mode`, `request_max_mode`, `get_task_usage`, `list_available_repos`, `mount_repo`, and the five trigger tools |
+| `scheduling-tools` | `parse_datetime`, `set_reminder`, `cancel_reminder` |
+| `repo-tools` | git and PR lifecycle against clones this task mounted — read side always, write side only in edit mode (see [edit-mode.md](edit-mode.md)) |
+| `research-tools` | `web_research` |
+| `file-bridge` | forwards a local file's bytes into another MCP server's call without routing them through the model; always attached |
 
-**Key behaviors**:
+`Agent`, `Skill`, `Read`, `Bash`, `Write` and `Edit` come from the SDK itself. `WebSearch`, `WebFetch` and `Cron*` are in `disallowedTools` on every spawn, as are the write-side `repo-tools` before edit mode and every `deny`-tiered MCP tool ([tool-approvals.md](tool-approvals.md)).
 
-- Presents as a unified "Archie" persona -- never exposes internal agent mechanics to users
-- Uses `<situation_analysis>` tags for structured reasoning before every action
-- Loads domain-specific skills via the `Skill` tool before delegating work
-- Follows the "waiting-for" mental model: after delegating to an agent the turn ends naturally; after responding to the user it calls `report_completion` to pause the system
-- Dynamically builds its team list from all loaded repo and plugin agent configs at startup
+> **Caveat on `Glob` and `Grep`, pre-existing and unverified.** The filesystem guard's read check covers `Read`, `Glob` and `Grep`, but `Glob` is not actually present in this runtime — a live agent asking for it gets `No such tool available: Glob`. Nothing disallows it: the SDK ships as a native build, and native builds omit the dedicated `Grep`/`Glob` tools in favour of Bash `find`/`grep` unless they are named in `tools`/`allowedTools`, which this app does not do. `Grep` is very likely absent for the same reason, though that was never confirmed. Use `Bash` to enumerate a directory.
 
-### Repo Agents
+### Skills
 
-**Source**: `src/agents/agent.ts`, `src/agents/spawn.ts`
+Skills come from the SDK's own plugin loader — every plugin directory is passed through the `plugins` option, and the SDK reads its `skills/` itself. Names are namespaced `plugin:skill` (`core:thread-conduct`, `engineering:pr-workflow`), so same-named skills in different plugins no longer collide, and there is no symlinking and no per-track mount table. The engine's own skills ship as one more plugin directory, `core-plugin/`, inside this repository.
 
-Repo agents declare one or more repositories in their plugin frontmatter (`metadata.archie.repos: [...]` plus optional `primary`). **Every declared repo is mounted at spawn** — there is no runtime attach. The primary is the default target for `repo-tools` when the `github` arg is omitted. They investigate code, make changes (in edit mode), and coordinate with other agents. Configuration comes from plugins via `src/agents/registry.ts`.
+### Prompt
 
-The pre-v30 singular shape (`metadata.archie.repo: {github, baseBranch}`) is still accepted — the plugin loader synthesizes the plural shape on load.
+`prompts/pm-agent.md`, loaded with no template substitution — there is no team roster to inject, because the `Agent` tool lists the available agent types itself. Spawn appends, in order: the Current Task Context block (task id, status, channels, reminder, plugins-repo HEAD, mounted repos with their paths and branches, working directory, shared folder), the `<people_in_task>` section, a shared-channel notice when applicable, the channel pin index, the channel canvas brief, the trigger-data section on a trigger-fired task, and organizational memory. The layered `agent-core.md` / `repo-agent.md` / `plugin-agent.md` / `triage-agent.md` prompts are gone.
 
-**Model**: Sonnet by default (`def.model || 'sonnet'` in `spawn.ts`). Overridable per-agent via plugin frontmatter.
+## Workers
 
-**Multi-repo mounts**: Each spawn iterates the agent's declared `repos` list, ensures an `AttachedRepo` record exists in `metadata.repositories[agentId]` for each (preserving the clone/branch state of repos already present), runs `setupSharedClone` per repo, and aggregates all clone paths into `additionalDirectories` and the sandbox `allowReadPaths`/`allowWritePaths`/`denyWritePaths`. Each repo gets its own task-local clone at `sessions/{taskId}/repos/{agentId}/{org}/{repo}/` — two agents that declare the same github get two independent clones with independent branch state. Because the loop iterates the *declared* list, adding a repo to an agent's frontmatter makes it mount on the next spawn (so an old task picks it up on recovery), and removing one simply stops mounting it (a stale metadata record is harmless).
+The PM delegates with the SDK `Agent` tool. Two kinds of worker exist:
 
-**Tools** (via MCP servers `agent-tools`, `repo-tools`, and `research-tools`):
+- **Plugin-defined agents** — an `agents/*.md` file in a plugin, loaded natively by the SDK and spawnable as `plugin:agent`. The SDK honours `name`, `description`, `model`, `effort`, `tools`, `disallowedTools`, `skills`, `memory` and background/worktree isolation; it ignores `mcpServers`, `permissionMode` and `hooks` with a warning. Only roles that earn a file get one — a fixed procedure and output envelope (analytics), or a reviewer that must be blind to how the material was made.
+- **The built-in general-purpose worker** — everything else. The PM writes the brief and names the model per spawn.
 
-| Tool | MCP Server | Availability | Purpose |
-|---|---|---|---|
-| `send_message_to_agent` | `agent-tools` | Always | Report findings or coordinate with peers |
-| `log_finding` | `agent-tools` | Always | Write to shared knowledge log |
-| `share_artifact` | `agent-tools` | Always | Publish an immutable snapshot to `shared/artifacts/` |
-| `web_research` | `research-tools` | Always | Spawn a research pipeline |
-| `fetch` | `repo-tools` | Always | Fetch latest refs from origin |
-| `switch_branch` | `repo-tools` | Always | Switch branches with auto-stash/pop |
-| `list_prs` | `repo-tools` | Always | List PRs with filters |
-| `get_pr` | `repo-tools` | Always | Get full PR details including diff |
-| `get_pr_status` | `repo-tools` | Always | Check PR mergeable state |
-| `get_pr_reviews` | `repo-tools` | Always | Review-level summary (approvals, change requests) |
-| `get_pr_comments` | `repo-tools` | Always | Top-level PR conversation comments |
-| `get_review_threads` | `repo-tools` | Always | Line-level review threads with thread/comment IDs |
-| `Read`, `Glob`, `Grep` | (built-in) | Always | Investigate repository code |
-| `git log`, `git diff`, `git show`, `git blame`, `git branch` | (Bash) | Always | Read-only git inspection |
-| `Write`, `Edit` | (built-in) | Edit mode | Modify files in the clone |
-| `git add`, `git commit`, `git status`, `git merge`, `git restore`, `rm`, `git rm` | (Bash) | Edit mode | Stage, commit, and manage changes |
-| `push_branch` | `repo-tools` | Edit mode | Push commits to origin |
-| `create_pull_request` | `repo-tools` | Edit mode | Create a PR on GitHub |
-| `update_pr` | `repo-tools` | Edit mode | Update PR title/description/base |
-| `add_pr_comment` | `repo-tools` | Edit mode | Add a general PR comment |
-| `add_review_comment` | `repo-tools` | Edit mode | Start a new review thread on a specific line |
-| `reply_to_review_comment` | `repo-tools` | Edit mode | Reply inside an existing review thread |
-| `resolve_review_thread` | `repo-tools` | Edit mode | Mark a review thread as resolved |
-| `request_re_review` | `repo-tools` | Edit mode | Request reviewers to re-review |
-| `merge_pull_request` | `repo-tools` | Edit mode | Merge a PR |
-| `close_pull_request` | `repo-tools` | Edit mode | Close a PR without merging |
-| `create_branch` | `repo-tools` | Edit mode | Create and switch to a new branch |
-| `list_branches` | `repo-tools` | Always | List branches visited by this agent in the current task |
+**Model and effort.** The PM's prompt requires a model on every spawn: `sonnet` for coding, research and analysis, `opus` only when the work clearly needs it. A worker is never spawned on `fable` — max mode upgrades the PM's own model and effort, not its workers'. An unset model inherits the PM's own, which is the expensive accident the rule exists to prevent. **Effort is not settable per spawn** — a generic worker inherits the session's effort, so effort variety needs an agent definition file.
 
-`WebSearch` and `WebFetch` are explicitly disallowed for repo agents. In read-only mode the write-side `repo-tools` entries above are added to `disallowedTools` in `spawn.ts`, and the OS-level sandbox + `createFilesystemGuardHooks` together block `Write`/`Edit` to the clone.
+**What a worker sees.** Only its final report reaches the PM's context; everything it read stays with it. That is the point of delegating — the PM's prompt sends anything expected to produce more than a screen of output through a worker regardless of domain. Workers have no Slack tools, so nothing they find reaches a user until the PM relays it.
 
-**Multi-repo `github` arg**: every `repo-tools` entry that targets a specific repo accepts an optional `github: "org/repo"` argument. Omitted, the tool acts on the agent's primary repo. The handler validates the github is in the agent's declared `repos` list (via `resolveGithub`); local-clone tools additionally require the repo to have a local clone present (via `requireAttached`), which it always does post-spawn.
+**Background by default.** The PM's turn can end while a worker runs. The SDK emits `task_started` and `task_notification`; spawn tracks in-flight ids on `agent.backgroundTasks` (so the idle check treats the PM as busy rather than stalled) and, on settle, enqueues a wake naming the outcome. A task that settles mid-turn emits no notification, so the Stop hook reconciles `backgroundTasks` against the SDK's authoritative `background_tasks` list before parking.
 
-**Dual mode system**: The agent's mode is set per-task by `metadata.edit_allowed`. In read-only mode the sandbox makes every attached clone read-only and write-side MCP tools are disallowed; in edit mode every attached clone is writable and all `repo-tools` entries are exposed. The agent observes its mode through the available tool set and the injected `READ-ONLY` / `READ-WRITE` annotation in its system prompt. Edit mode is global to the task — when approved, RW applies to the primary and to every attached repo.
+**Reuse.** A finished worker's agent id can be addressed again to continue it with its context intact, rather than spawning a fresh worker that has to rediscover the material.
 
-**Working directory**: The agent's cwd is its per-agent workspace at `sessions/{taskId}/agents/{agentId}/` — a pure scratch space that never contains repo state. Each mounted repo lives at `sessions/{taskId}/repos/{agentId}/{org}/{repo}/` (sibling of the agent's cwd, not nested inside it) and is exposed via `additionalDirectories`. Per-agent clone paths mean two agents that declare the same github get fully independent working trees. In read-only mode each clone is checked out on its base branch; in edit mode each carries an `archie/{taskId}` branch (or a previously persisted one). Shared task state at `sessions/{taskId}/shared/` is also mounted read-only.
+**Isolation.** There is none beyond the task. Subagents run in the PM's process and share its cwd, additional directories, sandbox, network allowlist and credentials — see [security.md](security.md#what-the-flat-model-gave-up). Two workers must never be pointed at the same clone at once; the PM keeps them apart by briefing, not by enforcement.
 
-### Dynamic Repo Agents (PM-spawned)
+## Max mode
 
-The PM can spawn a repo agent on demand via `spawn_repo_agent({shortname, repos, role?, expertise?})` — for repositories no plugin agent covers, without a redeploy. It behaves exactly like a plugin-defined repo agent (eager-mounts all its repos at spawn, same `repo-tools`, same lifecycle), differing only in:
+Max mode is the PM's own upgrade — a per-task, human-approved switch to a stronger model and effort, requested with `request_max_mode` and approved from Slack or the API. It upgrades the PM because the PM now does the coding and investigation work the upgrade exists for. See [max-mode.md](max-mode.md).
 
-- No plugin Layer-3 prompt body, no plugin MCP servers — just the universal protocol + the repo-agent track extension + a generic role/expertise. It has no plugin of its own, so the only skill it mounts is whatever the `repo` track carries in the manifest — today just `trigger-task`.
-- Its `repos` come from the PM's spawn args (validated reachable via `GitHubClient.resolveRepo`) rather than plugin frontmatter.
-- Its id is `<shortname>-<4hex>-agent`, and its `visibility` is `global`.
+## Session lifecycle
 
-Only the PM-supplied inputs are persisted, as a `DynamicAgentSpec` in `metadata.dynamic_agents`. On every `Task.get`, `synthesizeDynamicAgentDef` rebuilds the live `AgentDef` from each spec and merges it into `task.team` — so peer lists, `send_message_to_agent`/`assign_task_owner` enums (all filtered over `task.team`), and `ensureAgentSpawned` see it after a reload or process restart. There is no respawn machinery: a freshly-spawned agent just mounts its repos when first messaged.
+**Streaming input.** The PM reads from a `MessageQueue` (`src/agents/message-queue.ts`) through `createRecoverableInputGenerator`, which tracks consumed messages so a failed session can replay them. Wakes carry their content: a Slack message, a GitHub event or a system notice arrives as the text itself, framed by a builder in `src/agents/prompts.ts`, not as a pointer to a file.
 
-**Anti-duplication**: `spawn_repo_agent` rejects a github already covered as a plugin specialist's primary, steering the PM to message that specialist instead. `list_available_repos` tags such repos so the PM sees it before spawning.
+**Resume.** `agent.session.session_id` is hydrated from `metadata.agent_sessions['pm-agent']` and passed as `resume`. On failure the loop clears the bad session, resets the generator and retries fresh exactly once.
 
-### Plugin Agents
+**Idle detection and recovery.** When the turn ends the SDK Stop hook calls `task.updateAgentState(false)`, which schedules an idle check 3 s later. `idleDecision` (`src/tasks/recovery.ts`) returns `wait` (not active, teardown pending, still busy, or a background task in flight), `complete` (quiescent and `report_completion` was called) or `recover` (quiescent with nobody parked). Recovery nudges the live agent with `AGENT_PROMPTS.reinforcePM` twice, then goes nuclear: stop the task, reload it from disk, re-send `AGENT_PROMPTS.recovery` (the reloaded spawn resumes the persisted session, it does not clear it). After three nuclear cycles in one activation the task is paused instead, with one notice to the user, so a PM that keeps going idle can't loop stop→resume until the wall-clock cap.
 
-**Source**: `src/agents/agent.ts`, `src/agents/spawn.ts`
+**Interruption.** Stopping the queue rejects the pending `nextMessage()` and the generator exits. A mid-turn agent is also hard-aborted, because a closed stream otherwise loops it on "Stream closed" control requests until `maxTurns`.
 
-Plugin agents are lightweight agents for domains that don't need git or GitHub infrastructure. They have no repository and no git plumbing; file writes are confined to their own workspace. They are loaded from plugins that lack a `repo-config.json`.
+## No persistent code memory (two exceptions)
 
-**Model**: Sonnet by default (`def.model || 'sonnet'` in `spawn.ts`). Configurable via frontmatter `model` (and `effort`, `maxTurns`).
+Each task starts fresh. Context comes from the conversation delivered inline, `metadata.json`, the repository itself, the [memory layer](memory.md), and — on a trigger-fired task only — that trigger's persistent directory, shared by every fire of the same trigger ([triggers.md](triggers.md#persistent-per-trigger-directory)).
 
-**Tools**:
-
-| Tool | MCP Server | Purpose |
-|---|---|---|
-| `send_message_to_agent` | `agent-tools` | Report findings or coordinate with peers |
-| `log_finding` | `agent-tools` | Write to shared knowledge log |
-| `share_artifact` | `agent-tools` | Publish an immutable snapshot to `shared/artifacts/` |
-| `web_research` | `research-tools` | Spawn a research pipeline |
-| `Read`, `Glob`, `Grep` | (built-in) | Explore files in the agent workspace and (read-only) shared folder |
-| `Skill` | (SDK built-in) | Load agent skills mounted from the plugin, plus any core skill this agent's track mounts (today `trigger-task` on every track) |
-| `Write`, `Edit` | (built-in) | Create and modify files within the agent workspace (`.claude/settings.json`, `.claude/skills`, `.claude/hooks` and `CLAUDE.md` are protected) |
-| `Bash` | (built-in) | Run commands, sandboxed to the same write boundary; no network egress unless frontmatter declares `allowedNetworkDomains` |
-
-`WebSearch` and `WebFetch` are explicitly disallowed. Plugin agents have no access to git or `repo-tools`, so there is no repository for `Write`/`Edit`/`Bash` to reach — the write boundary is the sandbox, not the tool list. An agent's frontmatter may narrow this set further via `tools` or `disallowedTools`.
-
-**Workspace**: Each plugin agent gets its own workspace at `sessions/{taskId}/agents/{key}/` (cwd, read-write). Plugin skills, plus any core skill this agent's track mounts, are symlinked into `.claude/skills/`, plugin hooks are written to `.claude/settings.json`, and the shared task folder is mounted read-only via `additionalDirectories`.
-
-## Two-Channel Communication
-
-All agents communicate through two distinct channels:
-
-### Channel 1: `send_message_to_agent`
-
-Direct peer-to-peer messaging. Implemented as an MCP tool in `src/agents/tools.ts` and wired through `Task.toolSendMessage`.
-
-**Behavior**:
-1. The sender calls `send_message_to_agent(target, message)`
-2. The task runtime logs the message to `knowledge.log` and increments the inter-agent message budget
-3. If the target agent is not yet spawned, it is spawned on demand (`ensureAgentSpawned`)
-4. The message is added to the target agent's `MessageQueue`
-5. The target agent receives it via its streaming async generator
-6. The sender receives an acknowledgment string
-
-**Key property**: The target list is built dynamically from all registered repo and plugin agent IDs, plus `pm-agent`. This ensures agents can only message agents that actually exist.
-
-```typescript
-// From src/agents/tools.ts
-function allAgents(): [string, ...string[]] {
-  return ['pm-agent', ...getAgentIds()] as [string, ...string[]];
-}
-```
-
-### Channel 2: `log_finding`
-
-Broadcast-style logging to the shared `knowledge.log` file. Non-blocking -- the agent continues working after logging.
-
-**Finding types**: `discovery`, `decision`, `completion`, `blocker`
-
-**Behavior**: Appends a timestamped entry to `<task>/shared/knowledge.log` with the agent name and finding type. All agents and the PM read this file at the start of each turn to understand task context.
-
-## Thread Owner Pattern
-
-The thread owner pattern governs how work is coordinated across agents within a task:
-
-1. **PM assigns ownership**: When delegating work, the PM calls `assign_task_owner(agent)` and includes "You are the task owner" in the delegation message.
-
-2. **Task Owner responsibilities**: The task owner coordinates the overall completion of the task. It may involve other agents as participants, synthesize their findings, and report final results to the PM.
-
-3. **Participant role**: Any agent not explicitly assigned as task owner acts as a participant. Participants perform requested work and report back to the requesting agent (not the PM).
-
-4. **Coordination strategies** (defined in `prompts/agent-core.md`):
-   - **Sequential**: One agent's work depends on another's results. Agent sends request, then stops and waits.
-   - **Parallel**: Work can proceed independently. Task owner agrees on approach with participants, both work simultaneously, task owner waits for all completion reports.
-
-5. **Critical stopping points**: Agents must stop after sending a sequential request, after completing participant work, or after reporting to the PM. This prevents runaway agent loops.
-
-## Prompt Composition
-
-Agent prompts are composed in layers, loaded by `src/utils/prompt-loader.ts` with variable substitution (`{{VAR}}`):
-
-### Layer 1: Universal Multi-Agent Protocol (`prompts/agent-core.md`)
-
-Shared by all repo agents and plugin agents. Defines:
-- Agent identity (ID, role, expertise) via template variables
-- Peer agent list (dynamically generated)
-- Dual role system (Task Owner vs Participant)
-- Communication tools (`send_message_to_agent`, `log_finding`)
-- Coordination strategies (Sequential, Parallel)
-- Critical stopping points
-- Workflow steps: Establish Context, Analyze Situation (in `<thinking>` tags), Perform Work, Report Completion
-- Research content handling (`<research_result>` tags)
-
-Template variables: `{{AGENT_ID}}`, `{{AGENT_ROLE}}`, `{{EXPERTISE}}`, `{{PEER_LIST}}`
-
-### Layer 2: Track Extension
-
-Different for each agent track:
-
-**Repo agents** (`prompts/repo-agent.md`):
-- Repository responsibility (primary + any other declared repos, all mounted at spawn)
-- Multi-repo working model (the optional `github` arg on repo-tools, default = primary)
-- Task lifecycle context (Research, Implement, Review, Conflicts)
-- Dual mode system (Read-Only vs Edit, determined by available tools)
-- Git workflow: branch management (`switch_branch`, `create_branch`, `fetch`), staging, committing, PR lifecycle
-- Honesty and transparency guidelines
-- No template variables — per-repo data (github, clone path, current/base branch, RO/RW mode) is surfaced through the dynamic Current Context block built at spawn, not via static substitution. This keeps the prompt structurally correct for any number of repos.
-
-**Plugin agents** (`prompts/plugin-agent.md`):
-- Available tools summary (including Write/Edit/Bash, scoped to the agent workspace)
-- Workspace description, and that product code belongs to repo agents
-- Simple workflow: receive, do the work the agent's own instructions describe (research, or acting via its plugin's MCP tools), log, report
-
-### Layer 3: Domain-Specific Instructions
-
-Loaded from plugin `agents/*.md` files. Parsed with `gray-matter` to extract frontmatter (role, expertise, optional model) and markdown body (domain-specific instructions).
-
-For repo agents, this is the `agentPrompt` field from `RepoAgentConfig`. For plugin agents, this is the `prompt` field from `PluginAgentConfig`.
-
-### PM Agent Prompt
-
-The PM agent uses a separate prompt (`prompts/pm-agent.md`) that is not layered. It includes:
-- Team list and expertise (dynamically injected via `{{TEAM_LIST}}` and `{{TEAM_EXPERTISE}}`). Each `{{TEAM_LIST}}` line is annotated by `buildPmDef()` with the external systems that teammate can reach via MCP — built from the agent's resolved `mcpServers` plus the optional `description` of each server in the plugins' `.mcp.json` — so the PM can route an integration request to the agent that owns it instead of assuming Archie lacks access
-- The PM's own directly-callable integrations (`{{PM_INTEGRATIONS}}`), since the PM is not part of its own roster (empty when it has none)
-- Core mental models (Single Read Principle, Turn Flow, Communication Channel Philosophy, Unified Persona, Delegation Protocol, Task Completion Philosophy)
-- Available tools categorized as Action Tools vs Turn-Ending Tools
-- Structured reasoning process (`<situation_analysis>` tags)
-- Decision framework for common scenarios
-
-### Triage Agent Prompt
-
-`prompts/triage-agent.md` still ships in the repo and would be loaded by `runTriage()` if the call sites in `src/connectors/slack/events.ts` were re-enabled. With triage disabled it has no runtime effect.
-
-## Prompt Composition Assembly
-
-```
-Repo Agent:
-  agent-core.md(AGENT_ID, AGENT_ROLE, EXPERTISE, PEER_LIST)
-  + repo-agent.md()
-  + plugins/<name>/agents/<key>.md body (optional)
-
-Plugin Agent:
-  agent-core.md(AGENT_ID, AGENT_ROLE, EXPERTISE, PEER_LIST)
-  + plugin-agent.md()
-  + plugins/<name>/agents/<key>.md body (optional)
-
-PM Agent:
-  pm-agent.md(TEAM_LIST, TEAM_EXPERTISE, PM_INTEGRATIONS)
-  + (optional) pm overlay prompt body from the `pm` plugin
-
-Triage Agent (disabled):
-  triage-agent.md()  // present but not loaded at runtime
-```
-
-## Agent Characteristics
-
-### No Persistent Code Memory (one exception)
-
-Agents do not retain knowledge of code between tasks. Each task starts with fresh agent instances. Context comes from:
-- `knowledge.log` (task history, previous findings)
-- `metadata.json` (task state, participants, thread/PR info)
-- The repository itself (read via tools)
-- **On a trigger-fired task only:** that trigger's persistent directory, which is shared by every fire of the same trigger and is the one place an agent can leave notes for a future task — see [triggers.md](triggers.md#persistent-per-trigger-directory)
-
-### Session History
-
-Within a single task, agents maintain session history via the Claude Agent SDK's session resume mechanism. If an agent crashes, the runtime attempts to resume the existing session. If resume fails, it retries with a fresh session using the `RecoverableInputGenerator` to replay consumed messages.
-
-```typescript
-// From src/agents/spawn.ts
-const recoverable = createRecoverableInputGenerator(queue);
-// On failure:
-recoverable.reset(); // Put consumed messages back in queue
-sessionId = undefined;
-hasRetried = true;
-```
-
-### Peer Awareness
-
-Every repo and plugin agent's prompt includes a dynamically generated peer list. This is built by `buildPeerList()` in `src/agents/registry.ts`, called from `spawn.ts` with the current task's team:
-
-```typescript
-export function buildPeerList(excludeAgentId: string, team?: AgentDef[]): string {
-  const source = team ?? registry;
-  const repoPeers = source
-    .filter((d) => d.track === 'repo' && d.id !== excludeAgentId)
-    .map((d) => `- ${d.id}: ${d.role} (${d.repo!.primary} repository)`);
-
-  const pluginPeers = source
-    .filter((d) => d.track === 'plugin' && d.id !== excludeAgentId)
-    .map((d) => `- ${d.id}: ${d.role} [${d.pluginName}]`);
-
-  return [...repoPeers, ...pluginPeers].join('\n');
-}
-```
-
-Spawn passes `task.team` (registry agents plus any PM-spawned dynamic agents merged in at `Task.get` / `Task.create` time) so dynamic peers are visible. The list excludes the current agent and the PM (which is hardcoded in the agent-core prompt). This ensures agents know who they can communicate with and what each peer specializes in.
-
-### Streaming Input
-
-Agents receive messages via async generators connected to `MessageQueue` instances. Messages can arrive at any time:
-- From the event handler (user messages, GitHub events)
-- From other agents (via `send_message_to_agent` callbacks)
-- From the system (recovery prompts, edit mode approval)
-
-The queue uses a promise-based pull model: `nextMessage()` returns immediately if messages are queued, or waits for the next enqueued message.
-
-### Interruptible
-
-Agents can be interrupted at any time by stopping their message queue. When a queue is stopped, all pending resolvers are rejected, causing the agent's async generator to exit. This is used for:
-- Task completion (`completeTask`)
-- Task cancellation (`stopTask`)
-- Edit mode requests (task pauses until user responds)
-- Research budget exceeded (task pauses until user responds)
-- Wall-clock timeout (30 minutes default)
-
-### Idle Detection and Recovery
-
-When an agent's SDK `query()` finishes (Stop hook fires), the task marks it as inactive via `updateAgentState()`. This triggers `scheduleIdleCheck()` in `src/tasks/recovery.ts`, which can send recovery prompts to idle agents that haven't reported completion.
-
-Recovery prompts are defined in `src/agents/prompts.ts`:
-
-```typescript
-export const AGENT_PROMPTS = {
-  reinforcePM: 'RECOVERY: You went idle without completing the task...',
-  reinforceAgent: 'RECOVERY: You went idle without reporting back...',
-};
-```
-
-## Task Assignment by PM
-
-When the PM receives a new task:
-
-1. Loads the relevant domain skill via the `Skill` tool
-2. Acknowledges the request via `post_to_user` (routed to whichever channel the requester is on — Slack, CLI, GitHub)
-3. Calls `assign_task_owner(agent)` to designate the lead agent
-4. Calls `send_message_to_agent(agent, message)` with the delegation message starting with "You are the task owner for this request."
-
-`Task.toolSendMessage` (in `src/tasks/task.ts`):
-1. Logs the message to `knowledge.log` and increments the inter-agent message budget
-2. Spawns the target agent if not already running (`ensureAgentSpawned`)
-3. Adds the message to the target agent's queue
-4. Returns an acknowledgment string to the sender
-
-Agent spawning is lazy: agents are only instantiated when they first receive a message, not when a task is created.
-
-## Agent Lifecycle
-
-```
-1. Task created
-   → Disk structure (shared/, memory/, metadata.json, knowledge.log) created
-   → No agents spawned yet — Task is inert until sendMessage() is called
-
-2. First sendMessage() (defaults to pm-agent)
-   → Task activates (status=in_progress, wall-clock timer started)
-   → PM Agent created lazily and spawned with initial prompt
-   → Message added to PM's queue
-
-3. PM delegates to specialist
-   → Target agent created lazily on first send_message_to_agent
-   → ensureAgentSpawned spawns the SDK process
-   → Message added to target's queue
-   → Agent picks up the message via streaming generator
-
-4. Agent works
-   → Reads knowledge.log for context
-   → Uses tools to investigate/modify code
-   → Logs findings via log_finding
-   → Reports back via send_message_to_agent
-
-5. Task completes (or stops)
-   → PM calls report_completion (or stop is invoked elsewhere)
-   → All queues stopped, agent sessions deactivated
-   → Read-only clones removed; RW clones preserved (have branches/commits/PRs)
-   → Task metadata set to "completed" / "stopped"
-   → Runtime removed from activeTasks
-
-6. Task resumes (on new input)
-   → Task.get() loads metadata, fresh team scan from registry
-   → sendMessage() reactivates the task
-   → Agents respawned, resumed with persisted session IDs (with one-shot retry on failure)
-   → New message sent to the target agent
-```
-
-## Budget Controls
-
-Each task has budget limits enforced by the runtime (see [security.md](security.md)):
+## Budgets
 
 | Budget | Default | Enforcement |
 |---|---|---|
 | Research requests | 5 per task | Hard stop, Slack approval for +5 |
-| Inter-agent messages | 100 per task | Advisory warning to Slack |
-| Wall-clock timeout | 30 minutes | Hard stop with Slack notification |
+| Wall-clock | 60 minutes | Posts a pause message and parks the task |
 
 ## Related Documentation
 
-- [Architecture Overview](overview.md) -- system-level architecture and technology stack
-- [Orchestration](orchestration.md) -- task runtime, message queues, and agent lifecycle details
-- [Edit Mode](edit-mode.md) -- approval flow, shared clones, and git workflow
-- [Plugin System](plugin-system.md) -- plugin structure, agent registration, and skill loading
-- [Web Research](web-research.md) -- multi-agent research pipeline and defense layers
-- [Security](security.md) -- research budget, sandwich defense, prompt injection mitigations
-
----
-
-*The plugin architecture enables adding new agent types without modifying core code. New agents are registered by adding markdown files to a plugin directory and optionally providing infrastructure config for repository-backed agents.*
+- [Architecture Overview](overview.md) — system-level architecture and technology stack
+- [Orchestration](orchestration.md) — task runtime, routing, and recovery
+- [Edit Mode](edit-mode.md) — approval flow, `mount_repo`, and the git workflow
+- [Plugin System](plugin-system.md) — how plugins contribute skills and agents
+- [Security](security.md) — sandbox, credentials, and what the flat model gave up

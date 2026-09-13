@@ -3,7 +3,7 @@
  *
  * A trigger fire spawns a brand-new task, and the only thing that task knows about the world is what this function wires into it. Two properties are pinned here.
  *
- * On a MESSAGE fire the triggering message has to be ingested, not announced: it goes through `Task.append`, the same path every other Slack task uses, so the message lands in knowledge.log under the single renderer with its `msg:<ts>` id and its redaction verdict, and the thread it was posted in becomes the task's default channel. That matters because a delegated repo or plugin agent sees ONLY knowledge.log — before this, the rendered body was passed to `fireTrigger` and dropped on the floor, so such an agent could not know what was said. The ingestion floor covers the case `fetchSlackThread` cannot: it drops a raw message with neither a `user` nor a `botId`, so the triggering message is sometimes absent from the thread it was fetched from, and the rendered body is written directly instead.
+ * On a MESSAGE fire the triggering message has to be ingested, not announced: it goes through `Task.append`, the same path every other Slack task uses, so the message is rendered once — with its `msg:<ts>` id and its redaction verdict — and the thread it was posted in becomes the task's default channel. The entries `append` returns then ride along inline on the PM's wake, because there is one agent on the task and a pointer at a file is a wake it cannot act on. The ingestion floor covers the case `fetchSlackThread` cannot: it drops a raw message with neither a `user` nor a `botId`, so the triggering message is sometimes absent from the thread it was fetched from, and the rendered body is written directly instead.
  *
  * On a SCHEDULE fire there is no thread at all, so the task is homed in the bound channel instead: `home_channel` is what lets its first `post_to_user` open the task's own thread there, which is what makes a human reply to the result land back on the task that produced it rather than on a stranger. That channel's standing context — its canvas brief and its pin index — is refreshed as part of the fire, before `sendMessage` assembles the first agent's system prompt, because inbound Slack events are the only other thing that refreshes those stores and a scheduled run is not one.
  *
@@ -116,7 +116,7 @@ function fakeTask(n: number): FakeTask {
   return {
     taskId: `task-${n}`,
     metadata: { task_id: `task-${n}`, channels: {}, default_channel: null },
-    append: vi.fn().mockResolvedValue({ linkedNewThread: true }),
+    append: vi.fn().mockResolvedValue({ linkedNewThread: true, entries: [`[ts] [<@U1:R> in #dm] ${BODY}`] }),
     linkSlackThread: vi.fn(),
     sendMessage: vi.fn().mockResolvedValue(undefined),
     debouncedSave: vi.fn(),
@@ -162,7 +162,7 @@ beforeEach(() => {
     createdTasks.push(task);
     return task as unknown as Task;
   });
-  appendSlackMessageMock.mockResolvedValue(undefined);
+  appendSlackMessageMock.mockResolvedValue(`[ts] [unknown in #${CHANNEL_NAME}] ${BODY}`);
   downloadMessageFilesMock.mockImplementation(async (_taskId: string, files: Array<Record<string, unknown>>) =>
     files.map((f) => ({ ...f, localPath: '/sessions/t1/attachments/f.pdf' })));
   isChannelReachableMock.mockResolvedValue(true);
@@ -191,7 +191,7 @@ describe('a message fire ingests its thread', () => {
     expect(appendSlackMessageMock).not.toHaveBeenCalled();
   });
 
-  it('seeds the agent with where to reply, not with the message text', async () => {
+  it('seeds the agent with where to reply and with the message that fired it', async () => {
     await fireTrigger(makeTrigger(), {
       kind: 'message', thread: messageThread(), body: BODY, authorId: 'U_DEV', channelName: CHANNEL_NAME,
     });
@@ -199,11 +199,12 @@ describe('a message fire ingests its thread', () => {
     const task = createdTasks[0]!;
     expect(task.sendMessage).toHaveBeenCalledTimes(1);
     const seed = task.sendMessage.mock.calls[0]![0] as string;
-    // The body belongs in the log, where every agent on the task can read it — duplicating it into the
-    // PM's seed would hand the PM a copy no delegated agent has.
-    expect(seed).not.toContain(BODY);
     expect(seed).toContain('default channel');
-    expect(seed).toContain('knowledge.log');
+    // The entries `append` returned ride along inline. There is one agent on the task now, so
+    // pointing it at knowledge.log — a file its prompt no longer mentions — bought nothing.
+    expect(seed).toContain('The message that fired this:');
+    expect(seed).toContain(BODY);
+    expect(seed).not.toContain('knowledge.log');
   });
 
   it('posts no preamble to Slack', async () => {
@@ -305,6 +306,10 @@ describe('the ingestion floor fires only for the shape the fetch filter drops', 
     const call = appendSlackMessageMock.mock.calls[0]!;
     expect(call[4]).toBe(BODY);
     expect(call[5]).toEqual({ ts: TRIGGER_TS });
+    // The floor's line joins the inline batch too — otherwise the one message the
+    // fetch dropped would be the one message the PM's wake does not carry.
+    const seed = createdTasks[0]!.sendMessage.mock.calls[0]![0] as string;
+    expect(seed).toContain(`[unknown in #${CHANNEL_NAME}] ${BODY}`);
   });
 
   // The one that matters: an identified author means the fetch dropped the message for some OTHER reason —

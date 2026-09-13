@@ -2,9 +2,20 @@
  * Task Recovery
  *
  * All recovery logic in one place:
- * - Startup recovery: re-spawn agents for in_progress tasks after server restart
- * - Idle detection: detect when all agents go inactive
- * - Progressive recovery: reinforcement nudge → nuclear restart
+ * - Startup recovery: re-spawn the agent for in_progress tasks after server restart
+ * - Idle detection: detect when the agent goes inactive
+ * - Progressive recovery: reinforcement nudge → nuclear restart → pause
+ *
+ * "Nuclear" restarts the process, not the conversation: the task is stopped and
+ * reloaded from disk, and the fresh spawn *resumes* the persisted SDK session
+ * (rehydrated from `agent_sessions`) rather than clearing it, so the PM keeps
+ * its history and picks up where it left off.
+ *
+ * Because a nuclear cycle leaves the task active again, a PM that keeps parking
+ * without reporting completion would loop stop→resume until the wall-clock cap
+ * (eight cycles in six minutes, observed live). `MAX_NUCLEAR_RECOVERY_CYCLES`
+ * bounds that: past the cap the task is paused instead of respawned, and the
+ * user's next message resumes it normally.
  */
 
 import { findTasksByStatus } from './persistence.js';
@@ -12,7 +23,6 @@ import { logger } from '../system/logger.js';
 import { getIsShuttingDown } from '../system/shutdown.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import type { Task } from './task.js';
-import type { AgentName } from '../types/index.js';
 
 // ============================================================================
 // Startup Recovery
@@ -47,32 +57,15 @@ export async function recoverActiveTasks(): Promise<void> {
 }
 
 /**
- * Re-spawn previously active agents for a task, or fall back to PM.
- * Shared by startup recovery and nuclear recovery.
+ * Re-engage a task's agent. Shared by startup recovery and nuclear recovery.
  *
- * Each agent is recovered independently. One failing spawn used to abort the
- * loop, so the agents listed after it were silently never messaged — and since
- * earlier ones had already incremented `spawned`, the PM fallback didn't fire
- * either, leaving the task in_progress with a hole in it.
+ * `agent_sessions` is still the on-disk record of what was live at shutdown,
+ * but a task runs exactly one agent, so the outcome is the same either way: the
+ * recovery prompt goes to the PM, whose spawn rehydrates its session id from
+ * that record and resumes.
  */
 async function recoverTaskAgents(task: Task): Promise<void> {
-  let spawned = 0;
-  for (const [agentName, session] of Object.entries(task.metadata.agent_sessions)) {
-    const sessionState = typeof session === 'string' ? { active: false } : session;
-    if (!sessionState.active) continue;
-    try {
-      await task.sendMessage(AGENT_PROMPTS.recovery, agentName as AgentName);
-      spawned++;
-    } catch (error) {
-      logger.error('recovery', `Failed to recover ${agentName} for task ${task.taskId}`, error);
-    }
-  }
-
-  // Fallback: nothing came back live — no agent was active (stale metadata), or
-  // every spawn failed. Either way the PM re-arms the task's lifecycle.
-  if (spawned === 0) {
-    await task.sendMessage(AGENT_PROMPTS.recovery, 'pm-agent' as AgentName);
-  }
+  await task.sendMessage(AGENT_PROMPTS.recovery);
 }
 
 // ============================================================================
@@ -80,43 +73,42 @@ async function recoverTaskAgents(task: Task): Promise<void> {
 // ============================================================================
 
 /**
- * Schedule an idle check after an agent goes inactive.
- * Small delay to avoid racing with message delivery
- * (another agent may be about to send a message that wakes this one).
- */
-/**
  * What the idle-check should do for a task. Pure (no timers/IO) so the
  * completion-vs-recover-vs-wait decision is unit-testable:
  * - `'wait'`     — not active; a forced-stop teardown (request_edit_mode /
- *                  research-budget) is pending; or not yet quiescent (an agent is
- *                  active, has an in-flight background task, or none are spawned).
+ *                  research-budget) is pending; or not yet quiescent (the agent
+ *                  is active, has an in-flight background task, or has not spawned).
  * - `'complete'` — quiescent and PM signalled completion (report_completion).
- * - `'recover'`  — quiescent but nobody parked: an agent went idle without
+ * - `'recover'`  — quiescent but nobody parked: the agent went idle without
  *                  reporting (a dropped ball).
  *
- * Quiescence relies on agents being marked active at message *enqueue* (see
- * Task.sendMessage / toolSendMessage), so "all idle" faithfully means "no work
- * in flight." Shutdown is handled by the caller (it owns the process-global flag).
+ * Quiescence relies on the agent being marked active at message *enqueue* (see
+ * Task.sendMessage), so "idle" faithfully means "no work in flight." Shutdown is
+ * handled by the caller (it owns the process-global flag).
  */
 export function idleDecision(
-  task: Pick<Task, 'isActive' | 'completionIntent' | 'agentProcesses'>,
+  task: Pick<Task, 'isActive' | 'completionIntent' | 'agent'>,
 ): 'wait' | 'complete' | 'recover' {
   if (!task.isActive) return 'wait';
-  const agents = [...task.agentProcesses.values()];
+  const agent = task.agent;
+  // Quiescent = the agent has spawned and is not busy. It is busy if its turn is
+  // active OR it has an in-flight background task (a backgrounded wait /
+  // subagent the SDK will settle later) — without the latter, recovery would fire
+  // under a legitimate wait, since the agent's turn ends while the task runs.
+  if (!agent) return 'wait';
   // A pending teardown means a forced stop already called task.stop(), deferred
   // to this turn's SDK `result` event. The Stop hook that arms this check fires
   // *before* that event (gap can exceed the 3s delay), so without this guard the
   // check would "recover" an agent that stop() then orphans mid-turn.
-  if (agents.some((a) => a.pendingTeardown)) return 'wait';
-  // Quiescent = at least one agent spawned and none busy. An agent is busy if its
-  // turn is active OR it has an in-flight background task (a backgrounded wait /
-  // subagent the SDK will settle later) — without the latter, recovery would fire
-  // under a legitimate wait, since the agent's turn ends while the task runs.
-  if (agents.length === 0) return 'wait';
-  if (agents.some((a) => a.session.active || a.backgroundTasks.size > 0)) return 'wait';
+  if (agent.pendingTeardown) return 'wait';
+  if (agent.session.active || agent.backgroundTasks.size > 0) return 'wait';
   return task.completionIntent ? 'complete' : 'recover';
 }
 
+/**
+ * Schedule an idle check after the agent goes inactive. Small delay to avoid
+ * racing with message delivery (a webhook may be about to wake it).
+ */
 export function scheduleIdleCheck(task: Task): void {
   setTimeout(async () => {
     if (getIsShuttingDown()) return;
@@ -129,10 +121,18 @@ export function scheduleIdleCheck(task: Task): void {
   }, 3000);
 }
 
+/** Nuclear recovery cycles allowed per task activation before the task is paused. */
+const MAX_NUCLEAR_RECOVERY_CYCLES = 3;
+
+/** Posted once when the cap is hit. No failure verdict — just how to resume. */
+const PAUSED_NOTICE =
+  "⏸️ I've paused this task — I tried a few times to get it moving again and it kept stalling. Send a new message in this thread and I'll pick it back up.";
+
 /**
- * Progressive recovery when all agents go idle:
- * - Attempts 1-2: Reinforcement — nudge the lead agent with a prompt
- * - Attempt 3+: Nuclear — clear all sessions and restart with fresh context
+ * Progressive recovery when the agent goes idle without reporting:
+ * - Attempts 1-2: Reinforcement — nudge it with a prompt
+ * - Attempt 3+: Nuclear — stop the task and resume it from disk
+ * - Past MAX_NUCLEAR_RECOVERY_CYCLES nuclears in one activation: pause instead
  *
  * Works entirely in-memory. The debounced persist snapshots whatever
  * state looks like when it fires.
@@ -140,52 +140,57 @@ export function scheduleIdleCheck(task: Task): void {
 async function triggerRecovery(task: Task): Promise<void> {
   task.recoveryAttempts += 1;
 
-  logger.warn('recovery', `All agents inactive for task ${task.taskId} (attempt ${task.recoveryAttempts})`);
+  logger.warn('recovery', `Agent inactive for task ${task.taskId} (attempt ${task.recoveryAttempts})`);
 
   if (task.recoveryAttempts >= 3) {
-    // Nuclear: reset recovery counter before stop
-    task.recoveryAttempts = 0;
+    const cycle = task.nuclearRecoveryCycles + 1;
 
-    // Lazy import to avoid circular dependency
-    const { Task: TaskClass } = await import('./task.js');
+    if (cycle > MAX_NUCLEAR_RECOVERY_CYCLES) {
+      // Respawning again would just start cycle N+1 of the same loop, so stop
+      // here and hand it back to the user. A new inbound message resumes the
+      // stopped task through the normal sendMessage → ensurePm path, which
+      // rehydrates the stored session id.
+      logger.warn(
+        'recovery',
+        `Task ${task.taskId} stalled after ${MAX_NUCLEAR_RECOVERY_CYCLES} nuclear recovery cycles (cycle ${cycle}) — pausing instead of respawning`,
+      );
+      await task.postToUser(PAUSED_NOTICE).catch((err: unknown) =>
+        logger.error('recovery', 'Failed to post recovery pause message', err),
+      );
+      await task.stop();
+    } else {
+      // Nuclear: reset recovery counter before stop
+      task.recoveryAttempts = 0;
 
-    await task.stop();
+      // Lazy import to avoid circular dependency
+      const { Task: TaskClass } = await import('./task.js');
 
-    // Re-load from disk and recover
-    const newTask = await TaskClass.get(task.taskId);
-    await recoverTaskAgents(newTask);
+      await task.stop();
+
+      // Re-load from disk and recover
+      const newTask = await TaskClass.get(task.taskId);
+      await recoverTaskAgents(newTask);
+
+      // The respawn re-activated the reloaded instance, and activate() zeroes
+      // the budget — re-apply the count so consecutive nuclears reach the cap.
+      newTask.nuclearRecoveryCycles = cycle;
+    }
   } else {
-    // Reinforcement: nudge a *live, idle* agent so it ends its turn properly
-    // (report_completion when waiting on the user, or re-delegate).
-    //
-    // Prefer the task owner, then fall back to the PM. The fallback is the
-    // whole fix: a message-driven resume only spawns the PM (Task.get →
-    // sendMessage(pm)), so a blind nudge at `task_owner` — often a specialist
-    // like ops-agent that was NOT respawned — hit no live process, set
-    // recoveryAttempts=2, and silently stalled (no new agent:inactive event
-    // ever re-arms the idle check). The task then hung until the 30-min
-    // wall-clock. The PM owns the user conversation and is the right agent to
-    // either continue or park. (Playstorm 2026-06-11 stall.)
-    const owner = (task.metadata.task_owner || 'pm-agent') as AgentName;
-    const candidates: AgentName[] =
-      owner === 'pm-agent' ? ['pm-agent'] : [owner, 'pm-agent'];
-    const target = candidates.find((name) => task.agentProcesses.get(name)?.isRunning);
-    const targetAgent = target ? task.agentProcesses.get(target) : undefined;
-
-    if (targetAgent) {
-      const prompt = target === 'pm-agent'
-        ? AGENT_PROMPTS.reinforcePM
-        : AGENT_PROMPTS.reinforceAgent;
-      targetAgent.queue.addMessage(prompt);
+    // Reinforcement: nudge the *live, idle* agent so it ends its turn properly
+    // (report_completion when waiting on the user, or pick the work back up).
+    const agent = task.agent;
+    if (agent?.isRunning) {
+      agent.queue.addMessage(AGENT_PROMPTS.reinforcePM);
 
       // Mark active after nudge — via updateAgentState (not updateSession) so it
-      // emits agent:active and clears any stale completionIntent on a nudged PM
-      // (which would otherwise park on the next quiescence instead of re-deciding).
-      task.updateAgentState(targetAgent.def.id, true);
+      // emits agent:active and clears any stale completionIntent (which would
+      // otherwise park on the next quiescence instead of re-deciding).
+      task.updateAgentState(true);
     } else {
-      // No live agent to nudge — re-spawn rather than silently stalling.
-      // recoverTaskAgents re-sends the recovery prompt to previously-active
-      // agents, falling back to the PM, which re-arms the lifecycle.
+      // The process is dead — re-spawn rather than silently stalling. Before
+      // this fallback existed a nudge at a dead process set recoveryAttempts=2
+      // and stalled: no new agent:inactive event ever re-armed the idle check,
+      // so the task hung until the wall-clock cap. (Playstorm 2026-06-11.)
       await recoverTaskAgents(task);
     }
   }

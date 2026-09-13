@@ -1,6 +1,6 @@
 # Archie Documentation
 
-**Archie** (Autonomous Responsive and Collaborative Hyper Intelligent Employee) is a multi-agent AI software engineering system built on the Claude Agent SDK. Specialized agents collaborate on tasks across multiple repositories via Slack integration.
+**Archie** (Autonomous Responsive and Collaborative Hyper Intelligent Employee) is an AI employee built on the Claude Agent SDK. Work arrives from Slack, the CLI or GitHub, becomes a task, and one agent — the PM — handles it, delegating pieces to subagents it spawns.
 
 ## Architecture
 
@@ -9,13 +9,16 @@ How the system works today. Each doc describes the actual implementation, verifi
 | Document | Description |
 |----------|-------------|
 | [Overview](architecture/overview.md) | High-level architecture, principles, tech stack, source structure |
-| [Agents](architecture/agents.md) | Agent types, roles, communication, prompt composition |
+| [Agents](architecture/agents.md) | The PM, its workers, models and effort, session lifecycle |
 | [Orchestration](architecture/orchestration.md) | Task lifecycle, message routing, MCP tools, recovery |
-| [Persistence](architecture/persistence.md) | File-based sessions, metadata, shared knowledge log |
+| [Persistence](architecture/persistence.md) | File-based sessions, metadata, the knowledge log, usage accounting |
 | [Slack Integration](architecture/slack-integration.md) | Webhooks, message flow, UX patterns |
 | [GitHub Integration](architecture/github-integration.md) | PR management, webhooks, merge orchestration |
 | [Edit Mode](architecture/edit-mode.md) | Read/write modes, shared clones, approval flow |
-| [Plugin System](architecture/plugin-system.md) | Plugin architecture, agent tracks, skill discovery |
+| [Plugin System](architecture/plugin-system.md) | What a plugin contributes, native SDK loading, the engine-owned root config |
+| [Tool Approvals](architecture/tool-approvals.md) | Per-call human approval for critical MCP tools |
+| [Max Mode](architecture/max-mode.md) | The PM's per-task, human-approved model/effort upgrade |
+| [Triggers](architecture/triggers.md) | Persistent "do Y when X happens" rules |
 | [Web Research](architecture/web-research.md) | Research pipeline, multi-agent research tool |
 | [Security](architecture/security.md) | Threat model, defense layers, prompt injection defense |
 | [Secrets](architecture/secrets.md) | OAuth vault, encryption, secret handling |
@@ -82,18 +85,19 @@ Future work and unimplemented features. These are ideas that have been designed 
 
 ## Quick Reference
 
-**Message flow:** Slack/GitHub → PM Agent → Specialist Agents. The triage agent (`src/system/triage.ts`) exists but is currently disabled — Slack messages route directly to the PM.
+**Message flow:** Slack/GitHub/CLI → Task → PM agent → subagents it spawns. Routing is deterministic (thread, branch or PR lookup) and the wake carries the message text itself.
 
-**Agent types:**
-- **PM** (Opus by default) — manages tasks, assigns owners, communicates with users
-- **Repo Agents** — investigate and modify code in specific repositories (model configured per agent in plugin frontmatter)
-- **Plugin Agents** — domain-specific agents without git infrastructure (model configured per agent in plugin frontmatter)
+**Agents:**
+- **PM** (Opus by default, Fable in max mode) — one per task, the only agent Archie spawns and the only one that can talk to users
+- **Plugin agents** — agent types a plugin defines, loaded natively by the SDK and spawnable as `plugin:agent`
+- **The general-purpose worker** — everything else, with a model the PM names per spawn
 
 **Key files:**
 - Entry point: `src/index.ts`
-- Agent spawners and registry: `src/agents/`
-- System orchestration: `src/system/`
-- MCP tools: `src/mcp/`
+- The spawn path, the PM definition and the in-process MCP tools: `src/agents/`
+- Task runtime and persistence: `src/tasks/`
+- System services (workdir, plugins, triggers, secrets, events): `src/system/`
+- Web research: `src/mcp/`
 - Connectors (Slack, GitHub, OAuth, API): `src/connectors/`
-- Agent prompts: `prompts/`
+- The PM prompt: `prompts/pm-agent.md`; the engine's own skills: `core-plugin/`
 - Plugins are git-cloned into the runtime workdir (`ARCHIE_WORKDIR`, default `./workdir`); see `src/system/workdir.ts` and `src/system/plugin-loader.ts`

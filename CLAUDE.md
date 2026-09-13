@@ -13,25 +13,25 @@ Multi-agent AI software engineering system built with Claude Agent SDK. Speciali
 ## Technology Stack
 
 - **Runtime**: Node.js with TypeScript
-- **Agent Framework**: Claude Agent SDK (Sonnet 4.5, 1M context)
+- **Agent Framework**: Claude Agent SDK
 - **Integrations**: Slack API, GitHub App (Octokit)
 - **Storage**: File-based sessions
 - **Version Control**: Git
 
 ## Architecture Overview
 
-Slack messages → PM Agent → Specialist Agents (Backend, Mobile)
+Slack / CLI / GitHub → Task → PM agent → subagents it spawns
 
-- **Triage agent** (Haiku) is currently disabled — messages route directly to PM
-- **PM agent** manages tasks, assigns owners, communicates with users via Slack
-- **Specialist agents** (Backend/Mobile) investigate and modify codebases (readonly by default, edit mode after approval)
-- **Plugin agents** handle non-engineering domains (generic, no git infrastructure)
-- Agents communicate via message queues and shared `shared-knowledge.log`
+- **One agent per task**: the PM, a single Claude Agent SDK session resumed across turns. It is the only agent Archie spawns itself and the only one that can talk to users.
+- **Delegation** goes through the SDK's built-in `Agent` tool — either an agent type a plugin defines (loaded natively, `plugin:agent`) or the general-purpose worker with a model named per spawn. Subagents run inside the PM's own process; only their final report reaches its context.
+- **Repos are mounted, not declared**: `mount_repo("owner/repo")` clones into the task on demand. Read-only until edit mode is approved, which flips the clones writable and resumes the PM's session.
+- **Wakes carry their content** — a Slack message or GitHub event reaches the PM as the text itself. `knowledge.log` is a write-only record for memory extraction and audit; the PM never reads it.
+- **Plugins** contribute skills and agent definitions, loaded natively by the SDK. MCP servers, the network allowlist and the PM's overlay stay engine-owned in the plugins repo's root `.mcp.json`, `archie.json` and `pm.md`.
 - `docs/` contains architecture docs, guides, historical plans, and proposals
 
 ## Working Directory
 
-All runtime state (plugins, repos, sessions) lives under `ARCHIE_WORKDIR` (default: `./workdir`). The app auto-clones plugins from `ARCHIE_PLUGINS` git URL and repos declared by plugins on startup. See `src/system/workdir.ts` for the bootstrap logic.
+All runtime state (plugins, base clones, sessions, caches, triggers) lives under `ARCHIE_WORKDIR` (default: `./workdir`). The app auto-clones plugins from the `ARCHIE_PLUGINS` git URL on startup, and warm-clones the repos the plugins repo's `archie.json` marks `warm: true`; everything else is cloned on demand by `mount_repo`. See `src/system/workdir.ts` for the bootstrap logic.
 
 ## Development Setup
 

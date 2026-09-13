@@ -60,3 +60,4 @@ e2e-evidence/
 archie-data-*
 *.partial.*
 secrets/extra-ca.crt
+workdir-*

@@ -214,6 +214,15 @@ describe('loadMcpJson — archie tool policy', () => {
     expect(() => loadMcpJson(path)).toThrow(/unknown key "asks"/);
   });
 
+  // The one exception: a "_"-prefixed key is an explicit comment marker, not a
+  // plausible typo of a tier, and a policy block is where the reasoning for a
+  // denial belongs.
+  it('ignores a "_"-prefixed comment key', async () => {
+    const path = await writePolicy({ _comment: 'why these are denied', deny: ['start_release'] });
+    const result = loadMcpJson(path);
+    expect(result.policies.tramline.tiers).toEqual({ start_release: 'deny' });
+  });
+
   it('rejects a tool listed in two tiers', async () => {
     const path = await writePolicy({ allow: ['get_release'], deny: ['get_release'] });
     expect(() => loadMcpJson(path)).toThrow(/appears in both/);

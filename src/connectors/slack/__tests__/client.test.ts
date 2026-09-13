@@ -20,6 +20,7 @@ const slackApi = {
   users: { info: vi.fn(), conversations: vi.fn(), list: vi.fn() },
   usergroups: { list: vi.fn() },
   pins: { list: vi.fn() },
+  reactions: { get: vi.fn() },
 };
 
 // WebClient is used with `new`, so the mock implementation must be a regular
@@ -1138,5 +1139,60 @@ describe('listChannelPins', () => {
     expect(slackApi.pins.list).toHaveBeenCalledTimes(1);
 
     client.__resetPinsScopeFlagForTests();
+  });
+});
+
+/**
+ * A live reactions read has three outcomes that must stay distinct: reactions,
+ * genuinely none, and "couldn't read". Collapsing the third into the second is
+ * what let the PM report a visibly-reacted message as unreacted when the token
+ * lacked `reactions:read`.
+ */
+describe('getMessageReactions — failure is not emptiness', () => {
+  it('returns the reactions with reacting users resolved to names', async () => {
+    slackApi.users.list.mockResolvedValue({
+      members: [{ id: 'UHUMAN', name: 'sergei', real_name: 'Sergei P', team_id: 'THOME', profile: {} }],
+    });
+    slackApi.reactions.get.mockResolvedValue({
+      ok: true,
+      message: { reactions: [{ name: 'eyes', count: 2, users: ['UHUMAN', 'UOTHER'] }] },
+    });
+
+    const result = await client.getMessageReactions('C1', '100.0');
+
+    expect(result).toEqual({ ok: true, reactions: [{ name: 'eyes', count: 2, users: ['Sergei P', 'UOTHER'] }] });
+    expect(slackApi.reactions.get).toHaveBeenCalledWith({ channel: 'C1', timestamp: '100.0', full: true });
+  });
+
+  it('returns ok with an empty list when the message genuinely has no reactions', async () => {
+    slackApi.reactions.get.mockResolvedValue({ ok: true, message: { text: 'hi' } });
+
+    expect(await client.getMessageReactions('C1', '100.0')).toEqual({ ok: true, reactions: [] });
+  });
+
+  it('reports missing_scope as a failure and warns with the code, not the token', async () => {
+    const scopeErr: Error & { data?: { error?: string } } = new Error('An API error occurred');
+    scopeErr.data = { error: 'missing_scope' };
+    slackApi.reactions.get.mockRejectedValue(scopeErr);
+
+    const result = await client.getMessageReactions('C1', '100.0');
+
+    expect(result).toEqual({ ok: false, error: 'missing_scope' });
+    expect(loggerWarn).toHaveBeenCalledWith('Slack', expect.stringContaining('missing_scope'));
+    expect(loggerWarn.mock.calls.flat().join(' ')).not.toContain('xoxb-test');
+  });
+
+  it('reports a deleted/unknown message as a failure, not as "no reactions"', async () => {
+    const err: Error & { data?: { error?: string } } = new Error('An API error occurred');
+    err.data = { error: 'message_not_found' };
+    slackApi.reactions.get.mockRejectedValue(err);
+
+    expect(await client.getMessageReactions('C1', '100.0')).toEqual({ ok: false, error: 'message_not_found' });
+  });
+
+  it('falls back to unknown_error when the thrown value carries no Slack code', async () => {
+    slackApi.reactions.get.mockRejectedValue(new Error('socket hang up'));
+
+    expect(await client.getMessageReactions('C1', '100.0')).toEqual({ ok: false, error: 'unknown_error' });
   });
 });

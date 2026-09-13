@@ -6,11 +6,10 @@
  */
 
 import { mkdir, writeFile } from 'fs/promises';
-import type { AgentName, SlackAuthor, SlackChannel, SlackThread, SlackReaction, TaskMetadata, BranchState } from '../types/task.js';
+import type { SlackAuthor, SlackChannel, SlackThread, TaskMetadata, BranchState, FindingType } from '../types/task.js';
 import { CLI_CHANNEL_KEY } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
-import { isPmAgent, isRepoAgent } from '../types/agent.js';
-import { modelDisplayLabel, resolveAgentModel, modelChangingAgentIds } from '../agents/model-label.js';
+import { modelDisplayLabel, resolveAgentModel } from '../agents/model-label.js';
 import { prCardFingerprint, prCardTitlePlain } from '../system/pr-card-format.js';
 import { APPROVAL_TTL_MS, PENDING_APPROVAL_TTL_MS } from '../agents/tool-approval-gate.js';
 import { getGitHubClient } from '../connectors/github/client.js';
@@ -30,10 +29,24 @@ export interface PostTarget {
 export interface TaskBudgets {
   researchRequestCount: number;     // web_research calls made
   researchRequestLimit: number;     // default: 5
-  interAgentMessageCount: number;   // send_message_to_agent calls
-  interAgentMessageLimit: number;   // default: 100
   taskStartTime: Date;              // for wall-clock timeout
   taskTimeoutMs: number;            // default: 3_600_000 (60 minutes)
+}
+
+const DEFAULT_TASK_TIMEOUT_MS = 3_600_000; // 60 minutes
+
+/**
+ * Wall-clock cap before a task parks itself, overridable with
+ * `ARCHIE_TASK_TIMEOUT_MS`. Anything that is not a positive integer (blank,
+ * `0`, `-1`, `abc`) falls back to the default rather than disabling the cap —
+ * the backstop should not be removable by a typo. Read per task, so a restart
+ * is enough to change it.
+ */
+export function getTaskTimeoutMs(): number {
+  const raw = process.env.ARCHIE_TASK_TIMEOUT_MS;
+  if (!raw) return DEFAULT_TASK_TIMEOUT_MS;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_TASK_TIMEOUT_MS;
 }
 import { Agent } from '../agents/agent.js';
 
@@ -41,7 +54,6 @@ import {
   loadMetadata,
   getMetadataPath,
   appendAgentFinding,
-  appendAgentMessage,
   appendMessageToUser,
   appendSlackMessage,
   appendSlackEdit,
@@ -52,21 +64,23 @@ import {
   getSharedPath,
   getMemoryPath,
   getKnowledgeLogPath,
+  getTaskClonePath,
 } from './persistence.js';
 import { getIsShuttingDown } from '../system/shutdown.js';
 import { scheduleIdleCheck } from './recovery.js';
-import { scanAgentDefs, getAgentDef, getVisiblePeerIdsForSender, synthesizeDynamicAgentDef } from '../agents/registry.js';
+import { scanPmDef } from '../agents/registry.js';
 import type { AttachedRepo } from '../types/task.js';
 import { syncPlugins } from '../system/plugin-sync.js';
 import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import type { SlackReactionsResult } from '../connectors/slack/client.js';
 import { renderMessageBody, shouldRedact } from '../connectors/slack/message-body.js';
 import { basename } from 'path';
-import { AGENT_PROMPTS } from '../agents/prompts.js';
+import { AGENT_PROMPTS, buildMigrationNotice } from '../agents/prompts.js';
 import { logger } from '../system/logger.js';
 import { emitEvent } from '../system/event-bus.js';
 import { TaskStatusController, isStatusEnabled } from './status.js';
 import { setSlackThreadStatus } from '../connectors/slack/status.js';
-import { agentDomainLabel, deriveActivityFromEvent } from '../agents/activity.js';
+import { deriveActivityFromEvent } from '../agents/activity.js';
 
 // ---- Global state ----
 
@@ -122,54 +136,73 @@ const homeThreadLock = createKeyedLock();
  * not re-clear intent on every resumed turn. Pure, for unit testing.
  */
 export function shouldClearCompletionIntent(
-  agentName: string,
   active: boolean,
   wasActive: boolean,
 ): boolean {
-  return active && !wasActive && agentName === 'pm-agent';
+  return active && !wasActive;
 }
 
 export class Task {
   readonly taskId: string;
   metadata: TaskMetadata;
-  readonly agentProcesses: Map<AgentName, Agent> = new Map();
   /**
-   * The concrete model each agent's alias resolved to, keyed by agent id, as
-   * reported by the SDK at the agent's session `init` (e.g. `opus →
-   * claude-opus-5`; a max-mode swap starts a fresh session, so this updates to
-   * the new model). The footer labels it (via `collectModelsUsed`) so it shows
-   * the real version without the app knowing the alias→model mapping — that
-   * lives in the SDK. Empty until an agent's first init; until then the footer
-   * falls back to the configured alias (family-only label).
+   * The task's one agent — the PM. Created lazily on the first message
+   * (`ensurePm`) and torn down by stop()/complete().
    */
-  private readonly resolvedModels: Map<string, string> = new Map();
-  team: AgentDef[];
+  agent?: Agent;
+  /**
+   * The concrete model the PM's alias resolved to, as reported by the SDK at
+   * session `init` (e.g. `opus → claude-opus-5`; a max-mode swap starts a fresh
+   * session, so this updates to the new model). The footer labels it so it
+   * shows the real version without the app knowing the alias→model mapping —
+   * that lives in the SDK. Undefined until the first init; until then the
+   * footer falls back to the configured alias (family-only label).
+   */
+  private resolvedModel?: string;
+  /** The PM definition this task runs on — scanned fresh at task start/reload. */
+  pmDef: AgentDef;
   budgets: TaskBudgets;
   isActive: boolean = false;
   lastActivity: Date = new Date();
   recoveryAttempts: number = 0;
   /**
+   * How many times the nuclear recovery path (stop → resume from disk) has run
+   * during this activation. Capped by `MAX_NUCLEAR_RECOVERY_CYCLES`
+   * (tasks/recovery.ts): a PM that keeps going idle without reporting
+   * completion would otherwise loop stop→resume until the wall-clock cap.
+   * Reset by `activate()` — a new inbound message is genuine progress — and
+   * re-applied by the nuclear path across its own reload, so consecutive
+   * nuclears keep adding up.
+   */
+  nuclearRecoveryCycles: number = 0;
+  /**
    * Set by report_completion: PM has responded and is waiting on no one but the
-   * user. The idle-check parks the task (instead of recovering) once all agents
-   * are idle. Cleared when PM next goes active (see updateAgentState). In-memory
+   * user. The idle-check parks the task (instead of recovering) once the agent
+   * is idle. Cleared when PM next goes active (see updateAgentState). In-memory
    * only — lost on restart, where recovery re-arms the lifecycle instead.
    */
   completionIntent: boolean = false;
   taskTimeoutTimer?: ReturnType<typeof setInterval>;
+  /**
+   * What `Task.get` migrated in memory on this load (runtime stamp, flattened
+   * repositories), as one log-ready clause — and, by being set at all, the flag
+   * that the upgrade still has to reach disk. Written once by `activate()`, so a
+   * task that is only ever read is left exactly as the previous engine wrote it.
+   * Undefined for a task that needed no migration.
+   */
+  private pendingMigrationNote?: string;
   /** Drives the "Archie is …" Slack loading indicator from agent activity. */
   private readonly statusController: TaskStatusController;
 
-  private constructor(taskId: string, metadata: TaskMetadata, team: AgentDef[]) {
+  private constructor(taskId: string, metadata: TaskMetadata, pmDef: AgentDef) {
     this.taskId = taskId;
-    this.team = team;
+    this.pmDef = pmDef;
     this.statusController = new TaskStatusController((status) => this.onStatusRendered(status));
     this.budgets = {
       researchRequestCount: metadata.research_request_count ?? 0,
       researchRequestLimit: 5 + (metadata.research_budget_extra ?? 0),
-      interAgentMessageCount: 0,
-      interAgentMessageLimit: 100,
       taskStartTime: new Date(),
-      taskTimeoutMs: 3_600_000, // 60 minutes
+      taskTimeoutMs: getTaskTimeoutMs(),
     };
 
     // Migrate legacy slack_threads → channels
@@ -213,20 +246,18 @@ export class Task {
     await mkdir(sharedPath, { recursive: true });
     await mkdir(getMemoryPath(taskId), { recursive: true });
 
-    // Scan fresh agent defs for this task
-    const team = scanAgentDefs();
+    // Scan a fresh PM definition for this task
+    const pmDef = scanPmDef();
 
-    // metadata.repositories is populated lazily per-agent during spawn.
-    // It maps agentId → list of currently-attached repos.
+    // metadata.repositories is populated lazily as the PM mounts repos.
     const metadata: TaskMetadata = {
       task_id: taskId,
-      task_owner: null,
-      participants: [],
       channels: {},
       default_channel: null,
       agent_sessions: {},
-      repositories: {},
+      repositories: [],
       status: 'in_progress',
+      runtime_version: RUNTIME_VERSION,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
@@ -237,7 +268,7 @@ export class Task {
     logger.system(`Created task ${taskId}`);
     emitEvent('task:created', taskId);
 
-    const task = new Task(taskId, metadata, team);
+    const task = new Task(taskId, metadata, pmDef);
     return task;
   }
 
@@ -246,10 +277,10 @@ export class Task {
    * Task is inert until sendMessage() is called, which activates it.
    *
    * An in-flight task (still in activeTasks) is returned as-is — we never
-   * disturb a live task's team or agents. Only when a task is reloaded from
-   * disk (i.e. it was stopped/completed and is being pinged again, or the
-   * process restarted) do we sync plugins and scan a fresh team, so the
-   * resumed task picks up any repo changes.
+   * disturb a live task's definition or agent. Only when a task is reloaded
+   * from disk (i.e. it was stopped/completed and is being pinged again, or the
+   * process restarted) do we sync plugins and re-scan the PM definition, so the
+   * resumed task picks up any plugin changes.
    */
   static async get(taskId: string): Promise<Task> {
     const existing = activeTasks.get(taskId);
@@ -262,51 +293,50 @@ export class Task {
       throw new Error(`Task ${taskId} not found`);
     }
 
-    // v30 migration: `metadata.repositories` used to be Record<repoKey, RepositoryInfo>
-    // (one object per repo agent, keyed by short name). Now it's
-    // Record<agentId, AttachedRepo[]> (per-agent list of attached repos).
-    // Detect by structural check: any value that's NOT an array is old shape.
+    // `metadata.repositories` has had three shapes: pre-v30
+    // Record<repoKey, RepositoryInfo>, then Record<agentId, AttachedRepo[]>,
+    // now a flat AttachedRepo[]. Both legacy shapes migrate in place.
     const didMigrate = migrateRepositoriesShape(metadata);
 
-    // Persist the upgrade once. The migration is otherwise in-memory, so a
-    // terminal task that's only ever *read* (webhook resolution, comment-dedup
-    // skip) would re-migrate on every load forever. Writing it back here means the
-    // next load hits the fast path — and it locks in the shape now, while every
-    // repo agent still resolves (a later plugin removal would otherwise make the
-    // migration drop those entries). Only an active task ever re-saves on its own.
-    if (didMigrate) {
-      await writeFile(getMetadataPath(taskId), JSON.stringify(metadata, null, 2));
-      // Log once, here — the migration persisted, so it won't run again. (The
-      // migrate fn stays silent: it runs on every load, incl. read-only
-      // findTaskByPRNumber, so logging there would spam.)
-      logger.system(`[migrate] task ${taskId}: upgraded repositories to v30 (${Object.keys(metadata.repositories).join(', ')})`);
-    }
+    // Stamp the engine generation. A folder with no stamp was written by the
+    // pre-flattening multi-agent engine, so the PM's resumed session still
+    // believes in specialists and the tools that messaged them — it gets the
+    // migration notice on its next wake (see `deliver`).
+    const didStamp = stampRuntimeVersion(metadata);
 
-    const team = scanAgentDefs();
-    // Rehydrate PM-spawned repo agents from their persisted specs and merge
-    // them into the team, so peer lists, messaging, and ensureAgentSpawned all
-    // see them on a reloaded task (and after a process restart).
-    for (const spec of metadata.dynamic_agents ?? []) {
-      team.push(synthesizeDynamicAgentDef(spec));
+    // Both changes stay IN MEMORY here. Every reader goes through this path —
+    // GitHub webhook resolution, the API's task listing, comment dedup — and a
+    // read has no business rewriting a task folder: it would upgrade tasks that
+    // never run on this engine at all, making a rollback to the previous release
+    // destructive for them. The write is deferred to `activate()`, the moment the
+    // task genuinely runs here; readers see the identical in-memory shape either
+    // way, and an unactivated task simply re-migrates on its next load (cheap,
+    // and the derivation is deterministic).
+    const task = new Task(taskId, metadata, scanPmDef());
+    if (didMigrate || didStamp) {
+      task.pendingMigrationNote = [
+        ...(didMigrate ? [`flattened repositories (${metadata.repositories.map((r) => r.github).join(', ') || 'none'})`] : []),
+        ...(didStamp ? [`stamped runtime_version ${RUNTIME_VERSION} — migration notice queued for its next wake`] : []),
+      ].join('; ');
     }
-    return new Task(taskId, metadata, team);
+    return task;
   }
 
   // ---- Public methods ----
 
   /**
-   * Send a message to an agent (default: PM).
-   * Creates agent lazily on first message, spawns if not running.
+   * Send a message to the task's agent (the PM).
+   * Creates the agent lazily on first message, spawns it if not running.
    * Activates the task on first call (starts timeout, sets status).
    */
-  async sendMessage(message: string, agentName: AgentName = 'pm-agent'): Promise<void> {
+  async sendMessage(message: string): Promise<void> {
     // Serialize activation per taskId across all Task instances, and resolve to
     // the canonical instance *inside* the lock. If a concurrent trigger already
     // activated (registered itself in activeTasks), this routes the message onto
     // that instance rather than activating and spawning a duplicate; otherwise
     // `this` is the first in and becomes canonical. See `activationLock`.
     await activationLock(this.taskId, () =>
-      (activeTasks.get(this.taskId) ?? this).deliver(message, agentName),
+      (activeTasks.get(this.taskId) ?? this).deliver(message),
     );
   }
 
@@ -315,32 +345,52 @@ export class Task {
    * canonical instance. Never call directly — go through `sendMessage`, which
    * holds the lock and picks the canonical instance.
    */
-  private async deliver(message: string, agentName: AgentName): Promise<void> {
+  private async deliver(message: string): Promise<void> {
     if (!this.isActive) {
-      this.activate();
+      await this.activate();
     }
-    await this.ensureAgentSpawned(agentName);
-    const agent = this.agentProcesses.get(agentName);
-    if (!agent) {
-      throw new Error(`No agent ${agentName} after spawn`);
-    }
-    agent.queue.addMessage(message);
+    const wake = await this.withMigrationNotice(message);
+    const agent = await this.ensurePm();
+    agent.queue.addMessage(wake);
     // Mark active synchronously at enqueue (not lazily at the SDK `init` re-fire,
-    // which lags). Keeps "all agents idle" a faithful proxy for "no work in
-    // flight" so the idle-check can't park a recipient that's about to process,
-    // and fires PM's intent-clear edge the moment work is delivered.
-    this.updateAgentState(agentName, true);
+    // which lags). Keeps "idle" a faithful proxy for "no work in flight" so the
+    // idle-check can't park an agent that's about to process, and fires the
+    // intent-clear edge the moment work is delivered.
+    this.updateAgentState(true);
+  }
+
+  /**
+   * Prefix a wake with the one-time migration notice when this task predates the flat-PM rework, then clear the flag and flush it.
+   *
+   * Sits in `deliver` because that is the one place every wake is enqueued — Slack thread messages, API follow-ups, GitHub events, triggers, reminders, approval notices (`notifyPm`) and the startup recovery prompt (`recoverActiveTasks` → `sendMessage`) all funnel through `sendMessage`. The flush is synchronous rather than debounced: the notice is already in the PM's queue, so a crash in the debounce window would deliver it a second time on the next boot.
+   */
+  private async withMigrationNotice(message: string): Promise<string> {
+    if (this.metadata.migration_notice_pending === true) {
+      const notice = buildMigrationNotice(this.metadata);
+      this.metadata.migration_notice_pending = false;
+      await this.save(true);
+      logger.system(`Task ${this.taskId}: prepended the runtime migration notice to this wake`);
+      return `${notice}\n\n${message}`;
+    } else {
+      return message;
+    }
   }
 
   /**
    * Append a Slack thread's messages to this task.
    * If the thread is new, links it as a channel and appends all messages.
    * If already linked, appends only messages newer than last_processed_ts.
-   * Returns whether a new thread was linked.
+   *
+   * Returns whether a new thread was linked, and `entries` — the lines just
+   * written, in order. Those lines are what the caller hands the PM inline
+   * (`AGENT_PROMPTS.inboundNewTask` / `inboundActivity`); the PM is never told to go
+   * and read them. `entries` is empty when the thread carried nothing new,
+   * which is a real case: an edit, or a redelivery under the watermark.
    */
-  async append(thread: SlackThread): Promise<{ linkedNewThread: boolean }> {
+  async append(thread: SlackThread): Promise<{ linkedNewThread: boolean; entries: string[] }> {
     const channelId = `slack:${thread.channel.id}:${thread.threadId}`;
     const existing = this.metadata.channels[channelId] as SlackChannel | undefined;
+    const entries: string[] = [];
 
     // Redaction policy: when the channel is shared and the message author is
     // external, drop content and don't download files. Author info is logged.
@@ -352,22 +402,26 @@ export class Task {
         // Skipping the download is load-bearing, not an optimisation: a redacted
         // message's files must never reach the task's attachments folder, since
         // the body that would reference them is a placeholder.
-        await appendSlackMessage(
+        //
+        // The redacted line is delivered inline like any other: the placeholder
+        // is what the PM must see, and dropping the entry would hide that
+        // someone external spoke at all.
+        entries.push(await appendSlackMessage(
           this.taskId, thread.channel, thread.threadId, msg.user,
           renderMessageBody(msg, { redacted: true }),
           { redacted: true, ts: msg.ts },
-        );
+        ));
       } else {
         const downloadedFiles = msg.files ? await downloadMessageFiles(this.taskId, msg.files) : undefined;
         // Render AFTER the download, from `downloadedFiles` rather than `msg.files`: only the
         // downloaded copies carry `localPath`, and the `[Attachments: …]` suffix prints the path
         // only when it is set — rendering earlier would silently strip every local path an agent
         // needs to open the file.
-        await appendSlackMessage(
+        entries.push(await appendSlackMessage(
           this.taskId, thread.channel, thread.threadId, msg.user,
           renderMessageBody({ ...msg, files: downloadedFiles }, { redacted }),
           { ts: msg.ts },
-        );
+        ));
       }
     };
 
@@ -388,7 +442,7 @@ export class Task {
       }
 
       this.debouncedSave();
-      return { linkedNewThread: true };
+      return { linkedNewThread: true, entries };
     }
 
     // Existing thread — only append messages newer than last_processed_ts
@@ -400,7 +454,7 @@ export class Task {
 
     existing.last_processed_ts = thread.currentMessageTs;
     this.debouncedSave();
-    return { linkedNewThread: false };
+    return { linkedNewThread: false, entries };
   }
 
   /**
@@ -411,18 +465,20 @@ export class Task {
    * text stays in the log under that same id, so the change is recoverable by
    * correlation. Deliberately does NOT advance `last_processed_ts` — an edit
    * reuses the original message's `ts`, so touching the watermark would skip
-   * genuinely new replies. Returns false when the thread isn't a linked Slack
-   * channel.
+   * genuinely new replies.
+   *
+   * Returns the written line, for the caller to deliver to the PM inline, or
+   * null when the thread isn't a linked Slack channel and nothing was recorded.
    */
   async appendSlackEdit(
     channelKey: string,
     author: SlackAuthor,
     editedTs: string,
     newText: string,
-  ): Promise<boolean> {
+  ): Promise<string | null> {
     const ch = this.metadata.channels[channelKey];
-    if (ch?.type !== 'slack') return false;
-    await appendSlackEdit(
+    if (ch?.type !== 'slack') return null;
+    return appendSlackEdit(
       this.taskId,
       { id: ch.channel_id, name: ch.channel_name },
       ch.thread_id,
@@ -430,7 +486,6 @@ export class Task {
       editedTs,
       newText,
     );
-    return true;
   }
 
   /**
@@ -715,53 +770,31 @@ export class Task {
 
   /**
    * Build the grey footer appended to every user-facing message: the task id
-   * plus the PM's resolved model label (preserving any `[1m]` marker). Reads the
-   * PM agent's configured model, mirroring spawn's `def.model || 'opus'` default.
+   * plus the PM's model label (preserving any `[1m]` marker). Prefers the
+   * concrete model the SDK resolved the alias to (so the footer shows the
+   * version), falling back to the configured alias until that arrives — which
+   * means the footer is right even before the PM process spawns.
    */
   private buildUserFooter(): string {
-    const labels = this.collectModelsUsed().map(modelDisplayLabel);
-    return `${this.taskId} · ${labels.join(' + ')}`;
-  }
-
-  /**
-   * Record the concrete model an agent resolved to, as reported by the SDK at
-   * its session `init`. Lets the footer show the real version (`Opus 5`) without
-   * the app hard-coding the alias→model mapping. No-op for a falsy model.
-   */
-  recordResolvedModel(agentId: string, model?: string): void {
-    if (model && typeof model === 'string') this.resolvedModels.set(agentId, model);
-  }
-
-  /**
-   * The distinct models the task has used, PM first — preferring the concrete
-   * model the SDK resolved each alias to (so the footer shows the version), and
-   * falling back to the configured alias until that arrives. Reads the PM from
-   * the team roster (always present, so the footer is right even before the PM
-   * process spawns). As specialists join, the set grows (e.g. `Opus 5 + Sonnet 5 (1M)`).
-   */
-  private collectModelsUsed(): string[] {
-    const maxMode = this.metadata.max_mode === true;
-    const modelFor = (def: AgentDef): string => {
-      const resolved = this.resolvedModels.get(def.id);
-      const alias = resolveAgentModel(def, maxMode);
-      if (!resolved) return alias;
+    const alias = resolveAgentModel(this.pmDef, this.metadata.max_mode === true);
+    let model = alias;
+    if (this.resolvedModel) {
       // The SDK's concrete id carries no `[1m]` suffix; re-attach it when the
       // configured alias asked for the 1M window so the `(1M)` marker survives.
-      return /\[1m\]$/i.test(alias) && !/\[1m\]$/i.test(resolved) ? `${resolved}[1m]` : resolved;
-    };
-    const raw: string[] = [];
-    const pmDef = this.team.find((d) => isPmAgent(d));
-    if (pmDef) raw.push(modelFor(pmDef));
-    for (const a of this.agentProcesses.values()) raw.push(modelFor(a.def));
-    if (raw.length === 0) raw.push('opus');
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const m of raw) {
-      if (seen.has(m)) continue;
-      seen.add(m);
-      out.push(m);
+      model = /\[1m\]$/i.test(alias) && !/\[1m\]$/i.test(this.resolvedModel)
+        ? `${this.resolvedModel}[1m]`
+        : this.resolvedModel;
     }
-    return out;
+    return `${this.taskId} · ${modelDisplayLabel(model)}`;
+  }
+
+  /**
+   * Record the concrete model the PM resolved to, as reported by the SDK at its
+   * session `init`. Lets the footer show the real version (`Opus 5`) without
+   * the app hard-coding the alias→model mapping. No-op for a falsy model.
+   */
+  recordResolvedModel(model?: string): void {
+    if (model && typeof model === 'string') this.resolvedModel = model;
   }
 
   // ---- PR cards ----------------------------------------------------------
@@ -779,16 +812,13 @@ export class Task {
   private collectPrCards(): Array<{ github: string; prNumber: number; state: BranchState }> {
     const seen = new Set<string>();
     const out: Array<{ github: string; prNumber: number; state: BranchState }> = [];
-    for (const attachments of Object.values(this.metadata.repositories)) {
-      if (!Array.isArray(attachments)) continue;
-      for (const attached of attachments) {
-        for (const state of Object.values(attached.branch_states ?? {})) {
-          if (!state.pr_number) continue;
-          const cardId = `${attached.github}#${state.pr_number}`;
-          if (seen.has(cardId)) continue;
-          seen.add(cardId);
-          out.push({ github: attached.github, prNumber: state.pr_number, state });
-        }
+    for (const attached of this.metadata.repositories) {
+      for (const state of Object.values(attached.branch_states ?? {})) {
+        if (!state.pr_number) continue;
+        const cardId = `${attached.github}#${state.pr_number}`;
+        if (seen.has(cardId)) continue;
+        seen.add(cardId);
+        out.push({ github: attached.github, prNumber: state.pr_number, state });
       }
     }
     return out;
@@ -915,30 +945,19 @@ export class Task {
   }
 
   /**
-   * Feed an agent's SDK event into the status indicator. Called once per event
-   * from the spawn loop; it inspects tool_use blocks and, when one maps to a
-   * surfaceable action, records the agent's current activity. No-op for events
-   * without a status-worthy tool call.
+   * Feed an SDK event into the status indicator. Called once per event from the
+   * spawn loop; it inspects tool_use blocks and, when one maps to a surfaceable
+   * action, records the current activity. No-op for events without a
+   * status-worthy tool call.
    */
-  noteActivityFromEvent(agentId: string, event: unknown): void {
-    const agent = this.agentProcesses.get(agentId as AgentName);
+  noteActivityFromEvent(event: unknown): void {
+    const agent = this.agent;
     if (!agent) return;
-    const def = agent.def;
-    const isPm = isPmAgent(def);
-    const domain = agentDomainLabel(def);
-    const editMode = isRepoAgent(def) && this.metadata.edit_allowed === true;
     const phrase = deriveActivityFromEvent(event, {
-      isPm,
-      editMode,
-      domain,
-      mcpDescriptions: def.mcpDescriptions,
+      mcpDescriptions: agent.def.mcpDescriptions,
       mcpTools: agent.mcpTools,
-      resolveAgentDomain: (id) => {
-        const d = this.team.find((x) => x.id === id);
-        return d ? agentDomainLabel(d) : undefined;
-      },
     });
-    if (phrase) this.statusController.note(agentId, isPm, domain, phrase);
+    if (phrase) this.statusController.note(phrase);
   }
 
   /**
@@ -975,10 +994,11 @@ export class Task {
 
   /**
    * Read the live emoji reactions on a message in a linked Slack thread.
-   * Returns null when no Slack channel could be resolved, otherwise the current
-   * reactions (empty array when the message has none).
+   * Returns null when no Slack channel could be resolved, otherwise the read's
+   * outcome: the current reactions (empty array when the message has none) or
+   * the Slack error code that stopped the read.
    */
-  async readMessageReactions(messageTs: string, channelKey?: string): Promise<SlackReaction[] | null> {
+  async readMessageReactions(messageTs: string, channelKey?: string): Promise<SlackReactionsResult | null> {
     const ch = this.resolveSlackChannel(channelKey);
     if (!ch) {
       logger.warn('task', `readMessageReactions on task ${this.taskId}: ${channelKey ? `channel ${channelKey} not linked` : 'no default channel'}`);
@@ -1013,7 +1033,7 @@ export class Task {
   }
 
   /**
-   * Stop the task and clean up all agents.
+   * Stop the task and tear its agent down.
    */
   async stop(): Promise<void> {
     if (!this.isActive) {
@@ -1029,17 +1049,17 @@ export class Task {
     activeTasks.delete(this.taskId);
     this.clearTaskTimeout();
 
-    // Stop all queues. A parked or just-finished agent (session inactive) exits
+    // Stop the queue. A parked or just-finished agent (session inactive) exits
     // gracefully on its next queue pull — the resume-safe path the deferred
     // teardown relies on (see spawn.ts: never .return() the generator), so do
     // NOT abort it. But an agent still mid-turn keeps generating and hits
     // "Stream closed" on every tool/hook control request, looping until maxTurns
-    // — stopping its queue can't end it, so hard-abort those. agent:inactive is
+    // — stopping its queue can't end it, so hard-abort that. agent:inactive is
     // emitted by the Stop hook / crash handler (or the aborted loop exiting).
-    for (const a of this.agentProcesses.values()) {
-      const midTurn = a.session.active;
-      a.queue.stop();
-      if (midTurn) a.handle?.abort();
+    if (this.agent) {
+      const midTurn = this.agent.session.active;
+      this.agent.queue.stop();
+      if (midTurn) this.agent.handle?.abort();
     }
 
     // Clean up clones to free disk space (only when not in edit mode)
@@ -1074,17 +1094,17 @@ export class Task {
     activeTasks.delete(this.taskId);
     this.clearTaskTimeout();
 
-    // Stop all queues. A parked or just-finished agent (session inactive) exits
+    // Stop the queue. A parked or just-finished agent (session inactive) exits
     // gracefully on its next queue pull — the resume-safe path the deferred
     // teardown relies on (see spawn.ts: never .return() the generator), so do
     // NOT abort it. But an agent still mid-turn keeps generating and hits
     // "Stream closed" on every tool/hook control request, looping until maxTurns
-    // — stopping its queue can't end it, so hard-abort those. agent:inactive is
+    // — stopping its queue can't end it, so hard-abort that. agent:inactive is
     // emitted by the Stop hook / crash handler (or the aborted loop exiting).
-    for (const a of this.agentProcesses.values()) {
-      const midTurn = a.session.active;
-      a.queue.stop();
-      if (midTurn) a.handle?.abort();
+    if (this.agent) {
+      const midTurn = this.agent.session.active;
+      this.agent.queue.stop();
+      if (midTurn) this.agent.handle?.abort();
     }
 
     // Clean up clones to free disk space (only when not in edit mode).
@@ -1104,46 +1124,28 @@ export class Task {
   }
 
   /**
-   * Remove shared clones and clear clone_path so next spawn creates a fresh one.
-   * Iterates every attached repo across every agent in the task.
+   * Remove shared clones and clear clone_path so the next mount creates a fresh
+   * one. Iterates every repo mounted into the task.
    */
   private async cleanupClones(): Promise<void> {
     const { removeClone } = await import('../connectors/github/repo-clone.js');
-    for (const [agentId, attachments] of Object.entries(this.metadata.repositories)) {
-      if (!Array.isArray(attachments)) continue;
-      for (const attached of attachments) {
-        if (!attached.clone_path) continue;
-        try {
-          await removeClone(attached.clone_path);
-          attached.clone_path = undefined as unknown as string;
-          logger.system(`Task ${this.taskId}: cleaned up clone for ${agentId}/${attached.github}`);
-        } catch (error) {
-          logger.warn('task', `Failed to cleanup clone for ${agentId}/${attached.github}: ${error}`);
-        }
+    for (const attached of this.metadata.repositories) {
+      if (!attached.clone_path) continue;
+      try {
+        await removeClone(attached.clone_path);
+        attached.clone_path = undefined;
+        logger.system(`Task ${this.taskId}: cleaned up clone for ${attached.github}`);
+      } catch (error) {
+        logger.warn('task', `Failed to cleanup clone for ${attached.github}: ${error}`);
       }
     }
   }
 
   /**
-   * Get status of all spawned agents.
-   */
-  getAgentStatus(): { agent: string; active: boolean; last_activity?: string }[] {
-    const statuses: { agent: string; active: boolean; last_activity?: string }[] = [];
-    for (const [agentName, agent] of this.agentProcesses) {
-      statuses.push({
-        agent: agentName,
-        active: agent.session.active,
-        last_activity: agent.session.last_activity,
-      });
-    }
-    return statuses;
-  }
-
-  /**
-   * Record that PM has finished and is waiting on no one but the user (called by
-   * report_completion). The idle-check parks the task — instead of recovering —
-   * once all agents are idle (quiescent). Completion is thus decided at
-   * quiescence, not by a synchronous peer-active gate that races the Stop hook.
+   * Record that the PM has finished and is waiting on no one but the user
+   * (called by report_completion). The idle-check parks the task — instead of
+   * recovering — once the agent is idle (quiescent). Completion is thus decided
+   * at quiescence, not by a synchronous gate that races the Stop hook.
    */
   setCompletionIntent(): void {
     this.completionIntent = true;
@@ -1161,10 +1163,7 @@ export class Task {
    * Syncs agent sessions to metadata before write.
    */
   async save(flush?: boolean): Promise<void> {
-    // Sync agent sessions into metadata
-    for (const [agentName, agent] of this.agentProcesses) {
-      this.metadata.agent_sessions[agentName] = { ...agent.session };
-    }
+    this.syncAgentSession();
     this.metadata.updated_at = new Date().toISOString();
 
     // Use legacy save for now (debounced write)
@@ -1182,56 +1181,13 @@ export class Task {
   }
 
   /**
-   * Handle send_message_to_agent tool call.
-   * Routes message from one agent to another within this task.
-   * Stays on Task because it involves lazy spawn + budget tracking + queue routing.
+   * Copy the live agent's session into metadata, so the on-disk record always
+   * reflects the latest `session_id` / `active` / `last_activity`.
    */
-  async toolSendMessage(fromAgent: AgentName, target: AgentName, message: string): Promise<string> {
-    // Defensive visibility gate — Zod on the tool already filters the targets,
-    // but if the agent constructs a call outside that allowlist (jailbreak /
-    // fuzz), reject the message and surface the visible set so it can recover.
-    // Scope to the task team (registry + PM-spawned dynamic agents), so a
-    // dynamic agent created mid-session is reachable from same-session peers.
-    const senderDef = this.team.find((d) => d.id === fromAgent);
-    if (senderDef && target !== 'pm-agent') {
-      const visible = new Set(getVisiblePeerIdsForSender(senderDef, this.team));
-      if (!visible.has(target)) {
-        const list = Array.from(visible).sort().join(', ') || '(none)';
-        return `Error: ${target} is not addressable from ${fromAgent} (visibility rules). Visible peers: ${list}, pm-agent`;
-      }
+  private syncAgentSession(): void {
+    if (this.agent) {
+      this.metadata.agent_sessions[this.agent.def.id] = { ...this.agent.session };
     }
-
-    logger.agentMessage(fromAgent, target, message, { truncate: 100 });
-    this.lastActivity = new Date();
-
-    // Inter-agent message budget tracking
-    this.budgets.interAgentMessageCount++;
-    if (this.budgets.interAgentMessageCount > this.budgets.interAgentMessageLimit) {
-      logger.warn('budget', `Inter-agent message limit exceeded for task ${this.taskId}`);
-      this.postToUser(
-        `⚠️ Inter-agent message limit exceeded (${this.budgets.interAgentMessageCount}/${this.budgets.interAgentMessageLimit}).`,
-      ).catch((err: unknown) => logger.error('budget', 'Failed to post message limit warning', err));
-    }
-
-    await appendAgentMessage(this.taskId, fromAgent, target, message);
-
-    if (!this.isActive) {
-      logger.warn('task', `Task ${this.taskId} is inactive but ${fromAgent} is sending message`);
-      return 'Task is inactive, message logged to knowledge.log.';
-    }
-
-    await this.ensureAgentSpawned(target);
-    const targetAgent = this.agentProcesses.get(target);
-    if (!targetAgent) {
-      throw new Error(`No agent ${target} after spawn`);
-    }
-    targetAgent.queue.addMessage(message, fromAgent);
-    // Mark active synchronously at enqueue (see sendMessage). A peer reporting to
-    // PM marks PM active here — so a parked-intent PM is never read as idle while
-    // its relay is in flight, and its intent-clear edge fires immediately.
-    this.updateAgentState(target, true);
-
-    return `Message sent to ${target}. They will process it and log findings.`;
   }
 
   // Research budget methods (used by tools and research-tools)
@@ -1254,10 +1210,10 @@ export class Task {
     this.debouncedSave();
   }
 
-  async onResearchBudgetExceeded(agent: Agent): Promise<void> {
+  async onResearchBudgetExceeded(): Promise<void> {
     // Already pausing this turn — the spawn loop stops the task at turn-end.
     // Skip a duplicate approval post if web_research goes over budget again.
-    if (agent.pendingTeardown) return;
+    if (!this.agent || this.agent.pendingTeardown) return;
 
     logger.warn(
       'budget',
@@ -1298,14 +1254,30 @@ export class Task {
       'research_budget',
     ).catch((err: unknown) => logger.error('budget', 'Failed to post budget approval request', err));
 
-    // Defer the stop to the calling agent's turn-end (see report_completion):
+    // Defer the stop to the PM's turn-end (see report_completion):
     // web_research is mid-turn here, so stopping the queue now would close the
     // input stream under an in-flight hook ("stream closed" error).
     this.statusController.suspend(); // don't let the wind-down resurface the status
-    agent.deferTeardown(() => this.stop());
+    this.agent.deferTeardown(() => this.stop());
   }
 
   // ---- Approval handlers ----
+
+  /**
+   * Record a system-side decision and wake the PM WITH IT.
+   *
+   * Every approval, denial and budget change reaches the PM this way. The
+   * finding goes to knowledge.log for the offline record (memory extraction,
+   * audit) and the same sentence goes into the PM's stream, because the PM does
+   * not read that file: a wake saying only "something happened, go look" is one
+   * the PM cannot act on. One helper rather than a pair of calls per handler so
+   * the two cannot drift apart — a logged decision the PM never hears about is
+   * exactly the failure this replaces.
+   */
+  private async notifyPm(finding: string, type: FindingType): Promise<void> {
+    await appendAgentFinding(this.taskId, 'system', finding, type);
+    await this.sendMessage(AGENT_PROMPTS.systemNotice(finding));
+  }
 
   async handleEditModeApproval(approver?: { id: string; name: string; email?: string }): Promise<void> {
     // Cancel any park armed by request_edit_mode on the PM this turn. The tool
@@ -1313,49 +1285,108 @@ export class Task {
     // stream under an in-flight hook. If the user approves *before* that turn
     // ends, the stop is still armed and fires right after approval — stopping
     // the task we just approved and tearing the stream out from under the PM's
-    // delegation (the "stream closed" loop). Approval means "continue", so drop
-    // the park: the PM stays read-only; the repo agent it delegates to is what
-    // spawns read-write off edit_allowed.
-    this.agentProcesses.get('pm-agent')?.clearPendingTeardown();
+    // own work (the "stream closed" loop). Approval means "continue", so drop
+    // the park.
+    this.agent?.clearPendingTeardown();
     this.metadata.edit_allowed = true;
-    // Remember who approved so repo agents author their commits as this person
-    // (committer stays the bot — see spawnAgent's GIT_AUTHOR_* env). First
-    // resolved approver wins: only set when we don't already have one, so a
-    // later re-approval (e.g. a repeat POST to the approve route) can't reassign
+    // Remember who approved so commits are authored as this person (committer
+    // stays the bot — see spawnAgent's GIT_AUTHOR_* env). First resolved
+    // approver wins: only set when we don't already have one, so a later
+    // re-approval (e.g. a repeat POST to the approve route) can't reassign
     // authorship mid-task or clobber it with an unresolved user.
     if (approver && !this.metadata.edit_approved_by) {
       this.metadata.edit_approved_by = approver;
     }
-    // Flush synchronously (not debouncedSave): a repo agent reads edit_allowed at
-    // spawn time, so the writable-mount flag must be on disk before any (re)spawn
-    // — including one after a park/reload — rather than 500ms later.
+    // Flush synchronously (not debouncedSave): the spawn reads edit_allowed at
+    // spawn time, so the writable-mount flag must be on disk before any
+    // (re)spawn — including one after a park/reload — rather than 500ms later.
     await this.save(true);
 
-    // Restart any live repo agent so it re-mounts its clone writable. Edit mode
-    // only flips the sandbox at spawn time (editAllowed puts the clone in
-    // allowWritePaths); an agent that is already running keeps its read-only mount
-    // and never re-reads the flag, so writes keep hitting a read-only filesystem
-    // after approval (observed on task-20260625-1122-30wkzk: EROFS persisted for
-    // ~20 min post-approval). Tear it down so PM's delegation re-spawns it fresh —
-    // it resumes the same session (session_id persists in metadata), just with a
-    // writable checkout. PM is not a repo agent, so it is left running.
-    for (const [name, agent] of [...this.agentProcesses]) {
-      if (isRepoAgent(agent.def) && agent.isRunning) {
-        agent.handle?.abort();
-        agent.queue.stop();
-        this.agentProcesses.delete(name);
-        logger.system(`Edit mode approved — restarting ${name} for a writable mount`);
-      }
-    }
+    // Put every mounted clone on the task branch before the respawn, so the
+    // writable mount the PM comes back to is already checked out where its
+    // commits belong.
+    await this.recheckoutClonesForEditMode();
+
+    // Restart the PM so it re-mounts the clones writable. Edit mode only flips
+    // the sandbox at spawn time (editAllowed puts the clones in
+    // allowWritePaths); a process that is already running keeps its read-only
+    // mount and never re-reads the flag, so writes keep hitting a read-only
+    // filesystem after approval (observed on task-20260625-1122-30wkzk: EROFS
+    // persisted for ~20 min post-approval). Tearing it down here means the
+    // sendMessage below spawns it fresh — resuming the SAME SDK session
+    // (session_id is synced to metadata first, and Agent.spawn rehydrates from
+    // there), so context is kept and only the mount changes.
+    await this.restartAgent('Edit mode approved — restarting for a writable mount');
 
     const approvedBy = this.metadata.edit_approved_by?.name || 'user';
-    await appendAgentFinding(this.taskId, 'system', `Edit mode approved by ${approvedBy}`, 'decision');
-    await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+    await this.notifyPm(`Edit mode approved by ${approvedBy}`, 'decision');
   }
 
   async handleEditModeDenial(): Promise<void> {
-    await appendAgentFinding(this.taskId, 'system', 'Edit mode denied by user', 'decision');
-    await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+    await this.notifyPm('Edit mode denied by user', 'decision');
+  }
+
+  /**
+   * Tear down the running agent so the next `sendMessage` spawns it fresh.
+   *
+   * The session is synced into metadata first, so the replacement resumes the
+   * same SDK session rather than cold-starting. Abort + queue-stop is the
+   * pairing every other teardown path uses.
+   */
+  private async restartAgent(reason: string): Promise<void> {
+    const agent = this.agent;
+    if (!agent) return;
+    this.syncAgentSession();
+    agent.handle?.abort();
+    agent.queue.stop();
+    this.agent = undefined;
+    await this.save(true);
+    logger.system(`Task ${this.taskId}: ${reason}`);
+  }
+
+  /**
+   * Put every clone mounted into this task onto the task's feature branch,
+   * creating it from base on the first approval and restoring the branch the
+   * task was last on when a clone is re-created later.
+   *
+   * One call to `ensureTaskClone` per mounted repo, with `editAllowed` forced
+   * on — the same helper `mount_repo` uses, so the checkout decision, the
+   * `base_path` pinning, the branch-state hydration and the git identity all
+   * live in one place and cannot drift. This method used to restate that logic,
+   * and the restatement was wrong in one case: it skipped any clone that was
+   * still on disk, so a repo mounted while the task was read-only stayed parked
+   * on the base branch after approval and the PM committed onto base. The
+   * shared helper cuts the task branch in place instead.
+   *
+   * A clone the read-only teardown removed is re-created here, so approval —
+   * not the next tool call — is what makes the writable checkout appear.
+   */
+  private async recheckoutClonesForEditMode(): Promise<void> {
+    if (this.metadata.repositories.length === 0) return;
+    const { ensureTaskClone } = await import('../connectors/github/repo-clone.js');
+    const { getBaseCachePath } = await import('../system/workdir.js');
+    const { taskBranchName } = await import('../connectors/github/branch-naming.js');
+
+    for (const att of this.metadata.repositories) {
+      try {
+        // `edit_allowed` is already true on metadata by the time this runs, but
+        // the argument is passed literally: this method exists only for the
+        // approval path, and reading the flag would make it look conditional.
+        const result = await ensureTaskClone({
+          attached: att,
+          clonePath: getTaskClonePath(this.taskId, att.github),
+          baseRepoPath: att.base_path || getBaseCachePath(att.github),
+          editAllowed: true,
+          taskBranch: taskBranchName(this.taskId),
+        });
+        logger.system(
+          `Task ${this.taskId}: ${att.github} checked out on ${result.branch} for edit mode`,
+        );
+      } catch (error) {
+        logger.error('task', `Failed to check out ${att.github} for edit mode`, error);
+      }
+    }
+    await this.save(true);
   }
 
   /**
@@ -1397,10 +1428,9 @@ export class Task {
     // (double resolution) and then be wiped by this resolution's clear.
     this.metadata.pending_merge_approval = undefined;
 
-    // Cancel the park armed by merge_pull_request on the requesting agent —
-    // same stream-closed-loop protection edit mode applies to the PM, but
-    // targeted at whichever repo agent parked the task.
-    this.agentProcesses.get(pending.requested_by as AgentName)?.clearPendingTeardown();
+    // Cancel the park armed by merge_pull_request — same stream-closed-loop
+    // protection edit mode applies.
+    this.agent?.clearPendingTeardown();
 
     const prRef = `${pending.github}#${pending.pr_number}`;
     const bySuffix = approver?.name ? ` by ${approver.name}` : '';
@@ -1432,17 +1462,14 @@ export class Task {
           // merge orchestrator merges it on the next merge-triggering webhook
           // once GitHub reports it clean — the reframe's whole point (AC4).
           // Mark every BranchState entry for the PR via the same
-          // repositories → AttachedRepo[] → branch_states walk the orchestrator
-          // uses (mirrored here, not imported, to avoid a task ↔ orchestrator
-          // circular dependency: arming is the Task's job, the deferred merge
-          // is the orchestrator's).
-          for (const attachments of Object.values(this.metadata.repositories)) {
-            if (!Array.isArray(attachments)) continue;
-            for (const attached of attachments) {
-              if (attached.github !== pending.github || !attached.branch_states) continue;
-              for (const state of Object.values(attached.branch_states)) {
-                if (state.pr_number === pending.pr_number) state.merge_armed = true;
-              }
+          // repositories → branch_states walk the orchestrator uses (mirrored
+          // here, not imported, to avoid a task ↔ orchestrator circular
+          // dependency: arming is the Task's job, the deferred merge is the
+          // orchestrator's).
+          for (const attached of this.metadata.repositories) {
+            if (attached.github !== pending.github || !attached.branch_states) continue;
+            for (const state of Object.values(attached.branch_states)) {
+              if (state.pr_number === pending.pr_number) state.merge_armed = true;
             }
           }
           armed = true;
@@ -1472,8 +1499,7 @@ export class Task {
     } else {
       this.debouncedSave();
     }
-    await appendAgentFinding(this.taskId, 'system', finding, findingType);
-    await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+    await this.notifyPm(finding, findingType);
     return 'resolved';
   }
 
@@ -1495,11 +1521,10 @@ export class Task {
     }
     this.metadata.pending_merge_approval = undefined;
 
-    this.agentProcesses.get(pending.requested_by as AgentName)?.clearPendingTeardown();
+    this.agent?.clearPendingTeardown();
 
     this.debouncedSave();
-    await appendAgentFinding(this.taskId, 'system', 'Merge denied by user — PR not merged', 'decision');
-    await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+    await this.notifyPm('Merge denied by user — PR not merged', 'decision');
     return 'resolved';
   }
 
@@ -1601,7 +1626,7 @@ export class Task {
     if (live && live.requested_by !== agentId) return 'already-pending';
     if (live) {
       this.suspendStatus();
-      this.agentProcesses.get(agentId as AgentName)?.deferTeardown(() => this.stop());
+      this.agent?.deferTeardown(() => this.stop());
       return 'posted';
     }
 
@@ -1690,7 +1715,7 @@ export class Task {
     // and defer the stop to turn-end so stopping the queue doesn't close the
     // input stream under this in-flight hook.
     this.suspendStatus();
-    this.agentProcesses.get(agentId as AgentName)?.deferTeardown(() => this.stop());
+    this.agent?.deferTeardown(() => this.stop());
     return 'posted';
   }
 
@@ -1755,25 +1780,20 @@ export class Task {
     // Cancel the park armed by the gate hook on the requesting agent —
     // approval means "continue", so the deferred stop must not fire and tear
     // down the task we just approved.
-    this.agentProcesses.get(pending.requested_by as AgentName)?.clearPendingTeardown();
+    this.agent?.clearPendingTeardown();
 
     // Durable, not debounced: the agent's retry reads this from a reloaded
     // instance, so the grant has to be on disk before the reactivation below.
     await this.save(true);
 
     const bySuffix = approver?.name ? ` by ${approver.name}` : '';
-    await appendAgentFinding(
-      this.taskId,
-      'system',
-      `Tool call approved${bySuffix}: ${pending.server}:${pending.tool} — ${pending.heading}`,
-      'decision',
-    );
-    // Wake the agent that owns the grant: only a byte-identical retry from the
-    // requester spends it, and routing through the PM alone adds a
-    // re-delegation hop to the TTL clock.
-    const requester = (pending.requested_by || 'pm-agent') as AgentName;
-    emitEvent('approval:resolved', this.taskId, { type: 'tool_call', approve: true });
-    await this.sendMessage(AGENT_PROMPTS.existingTask, requester);
+    const notice = `Tool call approved${bySuffix}: ${pending.server}:${pending.tool} — ${pending.heading}`;
+    await appendAgentFinding(this.taskId, 'system', notice, 'decision');
+    // Wake the PM, which owns the grant: only a byte-identical retry spends it.
+    // No `approval:resolved` here — every other approval type emits it once,
+    // from the API route (src/connectors/api/routes.ts), and tool_call emitting
+    // from both places produced two events per resolution.
+    await this.sendMessage(AGENT_PROMPTS.systemNotice(notice));
     return 'resolved';
   }
 
@@ -1793,84 +1813,56 @@ export class Task {
     }
     this.metadata.pending_tool_approval = undefined;
 
-    this.agentProcesses.get(pending.requested_by as AgentName)?.clearPendingTeardown();
+    this.agent?.clearPendingTeardown();
 
     // Durable, matching the approve path: a denial lost to a crash in the
     // debounce window would leave the slot set and block every later call.
     await this.save(true);
-    await appendAgentFinding(
-      this.taskId,
-      'system',
-      `Tool call denied by user: ${pending.server}:${pending.tool} — ${pending.heading}`,
-      'decision',
-    );
-    emitEvent('approval:resolved', this.taskId, { type: 'tool_call', approve: false });
-    await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+    const notice = `Tool call denied by user: ${pending.server}:${pending.tool} — ${pending.heading}`;
+    await appendAgentFinding(this.taskId, 'system', notice, 'decision');
+    // No `approval:resolved` here either — see handleToolCallApproval.
+    await this.sendMessage(AGENT_PROMPTS.systemNotice(notice));
     return 'resolved';
   }
 
   async handleMaxModeApproval(approverName?: string): Promise<void> {
     // Idempotency: max mode is a one-way, task-lifetime grant. A repeat approval
-    // (e.g. a duplicate API POST) must not re-run the session reset below and
-    // clear a freshly-spawned upgraded session mid-work. The Slack path is
-    // guarded by the button-strip; the API path is not, so guard here.
+    // (e.g. a duplicate API POST) must not re-notify the PM or re-save state for
+    // a grant that's already active. The Slack path is guarded by the button
+    // strip; the API path is not, so guard here.
     if (this.metadata.max_mode === true) return;
 
     // Cancel any park armed by request_max_mode on the PM this turn — same race
     // as edit mode (see handleEditModeApproval): approval means "continue", so
     // drop the deferred stop before it fires and tears down the task we just
     // approved.
-    this.agentProcesses.get('pm-agent')?.clearPendingTeardown();
+    this.agent?.clearPendingTeardown();
     this.metadata.max_mode = true;
 
-    // Force a fresh SDK session for every non-PM agent whose resolved MODEL
-    // changes under max mode (e.g. a repo agent that opts into Fable via
-    // maxMode.model). A resumed session can pin its original model, which would
-    // make the swap a silent no-op; a fresh session guarantees the new model
-    // takes effect. Effort-only upgrades don't change the model, so they need no
-    // reset (a raised effort is a per-turn query() option the next turn uses).
-    //
-    // Source the set from the TEAM, not live handles: request_max_mode paused
-    // and evicted the task, so the instance handling this approval was reloaded
-    // via Task.get and its `agentProcesses` is empty. Clearing the PERSISTED
-    // `agent_sessions` entry is what survives to disk — save() only re-syncs
-    // sessions for agents still in `agentProcesses` (none here), so the cleared
-    // entry sticks and the agent's next spawn restores no session_id → resumes
-    // nothing → runs on the new model. Context survives via knowledge.log, which
-    // the fresh spawn re-reads. Also null a live handle if approval landed before
-    // the pause fired (same-instance race).
-    for (const id of modelChangingAgentIds(this.team)) {
-      if (this.metadata.agent_sessions[id]) this.metadata.agent_sessions[id] = { active: false };
-      const live = this.agentProcesses.get(id as AgentName);
-      if (live) live.session.session_id = undefined;
-    }
+    // No session reset needed: the resumed session picks up the new model and
+    // effort from the next spawn's query() options (see buildQueryOptions in
+    // src/agents/spawn.ts), which resolve fresh on every spawn.
 
     this.debouncedSave();
-    await appendAgentFinding(this.taskId, 'system', `Max mode approved by ${approverName || 'user'}`, 'decision');
-    await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+    await this.notifyPm(`Max mode approved by ${approverName || 'user'}`, 'decision');
   }
 
   async handleMaxModeDenial(): Promise<void> {
-    await appendAgentFinding(this.taskId, 'system', 'Max mode denied by user', 'decision');
-    await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+    await this.notifyPm('Max mode denied by user', 'decision');
   }
 
   async handleResearchBudgetApproval(): Promise<void> {
     this.metadata.research_budget_extra = (this.metadata.research_budget_extra ?? 0) + 5;
     this.budgets.researchRequestLimit = 5 + (this.metadata.research_budget_extra ?? 0);
     this.debouncedSave();
-    await appendAgentFinding(
-      this.taskId,
-      'system',
+    await this.notifyPm(
       `Research budget extended by user (+5 requests, total extra: ${this.metadata.research_budget_extra})`,
       'decision',
     );
-    await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
   }
 
   async handleResearchBudgetDenial(): Promise<void> {
-    await appendAgentFinding(this.taskId, 'system', 'Additional research denied by user', 'decision');
-    await this.sendMessage(AGENT_PROMPTS.existingTask, 'pm-agent');
+    await this.notifyPm('Additional research denied by user', 'decision');
   }
 
   /**
@@ -1935,109 +1927,109 @@ export class Task {
   // ---- Internal methods ----
 
   /**
-   * Update an agent's active state and persist.
+   * Update the agent's active state and persist.
    */
-  updateAgentState(agentName: AgentName | string, active: boolean, sessionId?: string): void {
+  updateAgentState(active: boolean, sessionId?: string): void {
     if (!active && getIsShuttingDown()) return;
 
-    const name = agentName as AgentName;
-    const agent = this.agentProcesses.get(name);
+    const agent = this.agent;
 
     // Note: an agent parked on a background task is allowed to go idle here — it
     // isn't actively working, so we don't fake it as active. Recovery is still
     // held off while a task is pending via idleDecision's backgroundTasks check;
     // the ⏳ background-task entry is the in-progress indication.
 
-    // Idempotency: skip if agent is already in the requested state (no sessionId update needed)
+    // Idempotency: skip if the agent is already in the requested state (no sessionId update needed)
     if (agent && agent.session.active === active && !sessionId) return;
 
-    // Clear a pending completion intent when PM genuinely re-engages: its prior
-    // "waiting on no one" is stale, so the next quiescence should re-decide.
-    // agent.session.active is still the pre-update value here (updateSession runs
-    // below), so this is edge-exact — see shouldClearCompletionIntent.
-    if (agent && shouldClearCompletionIntent(name, active, agent.session.active)) {
+    // Clear a pending completion intent when the PM genuinely re-engages: its
+    // prior "waiting on no one" is stale, so the next quiescence should
+    // re-decide. agent.session.active is still the pre-update value here
+    // (updateSession runs below), so this is edge-exact — see
+    // shouldClearCompletionIntent.
+    if (agent && shouldClearCompletionIntent(active, agent.session.active)) {
       this.completionIntent = false;
     }
 
     if (agent) {
       agent.updateSession(active, sessionId);
-      if (active) {
-        this.statusController.setActive(name, isPmAgent(agent.def), agentDomainLabel(agent.def));
-      } else {
-        this.statusController.setIdle(name);
-      }
+      if (active) this.statusController.setActive();
+      else this.statusController.setIdle();
     }
 
-    emitEvent(active ? 'agent:active' : 'agent:inactive', this.taskId, {}, name);
+    emitEvent(active ? 'agent:active' : 'agent:inactive', this.taskId, {}, this.pmDef.id);
     this.debouncedSave();
 
     if (!active) {
-      // Schedule idle check via legacy function
-      // Pass a compat shim
       scheduleIdleCheck(this);
     }
   }
 
   /**
-   * Ensure an agent is created and spawned.
+   * Ensure the task's agent exists and is spawned. Returns it.
    */
-  private async ensureAgentSpawned(agentName: AgentName): Promise<void> {
-    let agent = this.agentProcesses.get(agentName);
-
-    // Reconcile a repo agent that booted read-only just as edit mode was
-    // approved. A repo agent's sandbox mount and repo-tool allowlist are frozen
-    // from edit_allowed at spawn time (spawn.ts), so it can't gain write access
-    // without a fresh spawn. handleEditModeApproval restarts the repo agents that
-    // are running at approval, but one still mid-boot then (no live handle yet)
-    // slips past its isRunning check, finishes booting read-only, and stays that
-    // way — create_branch and every other write is denied. Catch it here the
-    // moment work is next delivered: tear it down (abort + stop its queue, the
-    // pairing the rest of the teardown paths use) and drop it, so the fresh spawn
-    // below comes up writable. Sync its session across first so the replacement
-    // resumes the same SDK session rather than cold-starting. PM is not a repo
-    // agent, so it is never reconciled.
+  private async ensurePm(): Promise<Agent> {
+    // Reconcile an agent that booted read-only just as edit mode was approved.
+    // The sandbox mount and repo-tool allowlist are frozen from edit_allowed at
+    // spawn time (spawn.ts), so a process that came up read-only can never
+    // write. `handleEditModeApproval` restarts the running agent, but one still
+    // mid-boot at that moment (no live handle to abort) finishes booting
+    // read-only and stays that way — every write is then denied. Catch it here
+    // the moment work is next delivered: tear it down (abort + stop its queue,
+    // the pairing the rest of the teardown paths use) and drop it, so the fresh
+    // spawn below comes up writable. Sync its session across first so the
+    // replacement resumes the same SDK session rather than cold-starting.
     if (
-      agent &&
-      isRepoAgent(agent.def) &&
+      this.agent &&
       this.metadata.edit_allowed === true &&
-      agent.editModeAtSpawn === false
+      this.agent.editModeAtSpawn === false
     ) {
-      agent.handle?.abort();
-      agent.queue.stop();
-      this.metadata.agent_sessions[agentName] = { ...agent.session };
-      this.agentProcesses.delete(agentName);
-      logger.system(`Edit mode approved — restarting ${agentName} for a writable mount`);
-      agent = undefined;
+      this.agent.handle?.abort();
+      this.agent.queue.stop();
+      this.syncAgentSession();
+      this.agent = undefined;
+      logger.system(`Edit mode approved — restarting ${this.pmDef.id} for a writable mount`);
     }
 
-    if (!agent) {
-      const def = this.team.find((d) => d.id === agentName);
-      if (!def) {
-        throw new Error(`Unknown agent: ${agentName}`);
-      }
-      agent = new Agent(def);
-      this.agentProcesses.set(agentName, agent);
-    }
-
-    await agent.spawn(this);
+    this.agent ??= new Agent(this.pmDef);
+    await this.agent.spawn(this);
+    return this.agent;
   }
 
   /**
    * Activate the task — start timeout, mark in_progress.
    * Called lazily on first sendMessage().
    */
-  private activate(): void {
+  private async activate(): Promise<void> {
     this.isActive = true;
     // A fresh activation (new task or reopen of a parked one) starts a new cycle —
     // any completion intent from a prior cycle is stale. Clearing here covers
     // reopens routed to a specialist (which don't pass through PM's active edge);
     // the updateAgentState edge-clear covers mid-cycle PM re-engagement.
     this.completionIntent = false;
+    // A fresh activation also restarts the nuclear-recovery budget: the loop the
+    // cap guards against lives inside one activation, and the message that
+    // reopens a paused task is genuine progress. (triggerRecovery re-applies its
+    // count after a nuclear respawn, which activates the reloaded task too.)
+    this.nuclearRecoveryCycles = 0;
     this.metadata.status = 'in_progress';
     activeTasks.set(this.taskId, this);
     this.startTaskTimeout();
     emitEvent('task:resumed', this.taskId);
-    this.debouncedSave();
+    // First activation of a task `Task.get` migrated in memory: this is where
+    // the upgrade earns its write. Flushed rather than debounced, and ahead of
+    // the wake being enqueued, so the runtime stamp and the notice flag that
+    // rides on it are on disk before the PM can answer — a crash in a debounce
+    // window would otherwise repeat the notice on the next boot. One save: the
+    // debounced one below is the alternative, not an addition.
+    if (this.pendingMigrationNote) {
+      const note = this.pendingMigrationNote;
+      this.pendingMigrationNote = undefined;
+      await this.save(true);
+      logger.system(`[migrate] task ${this.taskId}: persisted on activation — ${note}`);
+    } else {
+      this.debouncedSave();
+    }
   }
 
   private startTaskTimeout(): void {
@@ -2047,17 +2039,17 @@ export class Task {
 
       const mins = Math.round(elapsed / 60_000);
       // The wall-clock cap is a backstop, not a failure verdict. A task that's
-      // simply waiting on a human reply (all agents idle) must not announce a
+      // simply waiting on a human reply (agent idle) must not announce a
       // scary "timed out" — it was working as intended. Reframe as a pause and
       // `complete()` (park) so it reopens cleanly on the next reply, rather
-      // than `stop()`. Only when an agent is still mid-turn is this a genuinely
+      // than `stop()`. Only when the agent is still mid-turn is this a genuinely
       // long-running task being capped.
-      const anyAgentActive = [...this.agentProcesses.values()].some((a) => a.session.active);
+      const agentActive = this.agent?.session.active === true;
       logger.warn(
         'budget',
-        `Task ${this.taskId} hit wall-clock cap (${mins}min, agents ${anyAgentActive ? 'active' : 'idle'}) — pausing`,
+        `Task ${this.taskId} hit wall-clock cap (${mins}min, agent ${agentActive ? 'active' : 'idle'}) — pausing`,
       );
-      const msg = anyAgentActive
+      const msg = agentActive
         ? `⏸️ This task has been running for ${mins} minutes, so I'm pausing it here. Reply in this thread and I'll pick it back up.`
         : `⏸️ Pausing this task — I'd been waiting on a reply for a while. Just respond in this thread whenever you're ready and I'll continue.`;
       await this.postToUser(msg).catch((err: unknown) =>
@@ -2082,10 +2074,7 @@ export class Task {
     this.saveTimer = setTimeout(async () => {
       this.saveTimer = undefined;
       try {
-        // Sync sessions
-        for (const [agentName, agent] of this.agentProcesses) {
-          this.metadata.agent_sessions[agentName] = { ...agent.session };
-        }
+        this.syncAgentSession();
         this.metadata.updated_at = new Date().toISOString();
         await writeFile(
           getMetadataPath(this.taskId),
@@ -2113,103 +2102,79 @@ export function getTask(taskId: string): Task | undefined {
   return activeTasks.get(taskId);
 }
 
-// ---- v30 migration ----
+// ---- runtime-version stamp ----
 
 /**
- * Migrate `metadata.repositories` from the legacy `Record<repoKey, RepositoryInfo>`
- * shape to the new `Record<agentId, AttachedRepo[]>` shape.
+ * The engine generation this build writes. `2` is the flat single-PM runtime; metadata with no stamp was written by the multi-agent engine that preceded it.
+ */
+export const RUNTIME_VERSION = 2;
+
+/**
+ * Stamp `runtime_version` on metadata that has none, and flag its first wake for the migration notice.
  *
- * Detection: legacy values are objects with a `clone_path` / `current_branch`
- * field; the new shape is always an array. We discriminate per-value and rewrite
- * in-place. Persistence happens on the next `debouncedSave()`.
+ * Every task folder that existed at the cutover was written by the old engine, and the PM session inside it is conditioned on that world — specialists to message, owners to assign, replies to wait for. The flag is what turns that into a single corrective wake rather than a tool call that no longer resolves. Completed and stopped tasks are stamped too: the notice costs nothing until such a task is resumed, and a resumed one needs it just as much.
  *
- * For each legacy entry, we map `repoKey -> agentId` as `${repoKey}-agent` and
- * use the registered agent's primary github to construct the new `AttachedRepo`.
- * If the agent is no longer registered (plugin removed), the entry is dropped
- * with a warning.
+ * Returns true when the stamp was added, so `Task.get` can hand the write to the task's first activation instead of writing on every load — including the read-only ones. Exported for testing.
+ */
+export function stampRuntimeVersion(metadata: TaskMetadata): boolean {
+  if (typeof metadata.runtime_version === 'number') {
+    return false;
+  } else {
+    metadata.runtime_version = RUNTIME_VERSION;
+    metadata.migration_notice_pending = true;
+    return true;
+  }
+}
+
+// ---- repositories-shape migration ----
+
+/**
+ * Migrate `metadata.repositories` to the flat `AttachedRepo[]`.
  *
- * Exported for testing — exercised in the normal flow only via `Task.get`.
+ * Two legacy shapes exist on disk:
+ *
+ *  - `Record<agentId, AttachedRepo[]>` — one list per agent. Flattened by union
+ *    on `github`: two agents that both mounted a repo produce one entry, the
+ *    first one seen (an arbitrary but stable choice — their branch state is the
+ *    same PR history, and only one clone survives per task now).
+ *  - Pre-v30 `Record<repoKey, RepositoryInfo>` — keyed by a short repo name
+ *    whose `github` identifier only the (now removed) agent registry could
+ *    resolve. Those entries are dropped with a warning; such tasks predate the
+ *    per-agent shape by many months and are terminal.
+ *
+ * Returns true when anything changed, so `Task.get` can defer the write to the
+ * task's first activation. A task that is only ever read re-migrates on every
+ * load, which is deliberate: the derivation is deterministic, and a read must
+ * not rewrite a folder the previous engine still owns.
+ *
+ * Exported for testing — exercised in the normal flow via `Task.get` and the
+ * webhook lookups in persistence.ts.
  */
 export function migrateRepositoriesShape(metadata: TaskMetadata): boolean {
-  const repos = metadata.repositories;
-  if (!repos || typeof repos !== 'object') return false;
+  const repos = metadata.repositories as unknown;
+  if (Array.isArray(repos)) return false;
+  if (!repos || typeof repos !== 'object') {
+    metadata.repositories = [];
+    return true;
+  }
 
-  // Fast path: nothing to migrate if every entry is already an array.
-  let needsMigration = false;
-  for (const value of Object.values(repos)) {
+  const flat: AttachedRepo[] = [];
+  const seen = new Set<string>();
+  for (const [key, value] of Object.entries(repos as Record<string, unknown>)) {
     if (!Array.isArray(value)) {
-      needsMigration = true;
-      break;
-    }
-  }
-  if (!needsMigration) return false;
-
-  const migrated: Record<string, AttachedRepo[]> = {};
-  for (const [key, value] of Object.entries(repos)) {
-    if (Array.isArray(value)) {
-      migrated[key] = value;
+      logger.warn(
+        'task',
+        `[migrate] task ${metadata.task_id}: dropping pre-v30 repositories["${key}"] — its github identifier is no longer resolvable`,
+      );
       continue;
     }
-    // Legacy entry: object keyed by short repoKey (e.g. 'backend')
-    const agentId = `${key}-agent`;
-    const def = getAgentDef(agentId);
-    const primary = def?.repo?.primary;
-    if (!primary) {
-      logger.warn('task', `[migrate] Dropping legacy metadata.repositories[${key}] — no agent ${agentId} found in registry`);
-      continue;
-    }
-    const legacy = value as {
-      path?: string;
-      clone_path?: string;
-      current_branch?: string;
-      branch_states?: Record<string, any>;
-      feature_branch?: string;
-      base_branch?: string;
-      pr_number?: number;
-      last_processed_comment_id?: number;
-    };
-    const currentBranch = legacy.current_branch ?? legacy.feature_branch;
-    const attached: AttachedRepo = {
-      github: primary,
-      // Absent clone_path means "no clone yet" — keep it undefined (uniform with
-      // the live shape) rather than an empty-string sentinel. Spawn re-clones.
-      clone_path: legacy.clone_path || undefined,
-      // Preserve the legacy base-cache path the clone borrows from. The pre-v30
-      // base cache lived at $ARCHIE_WORKDIR/repos/<short-key>/, which differs
-      // from the new github-nested layout — without this, an in-flight clone
-      // whose alternates point at the old base path would lose read access
-      // through the sandbox when the spawner re-derives baseObjectsPath from
-      // the new layout convention. Spawn falls back to getBaseCachePath(github)
-      // only when base_path is absent (e.g. a fresh clone or a legacy entry
-      // with no `path` field).
-      base_path: legacy.path || undefined,
-      current_branch: currentBranch,
-      branch_states: legacy.branch_states,
-    };
-    // Lift legacy top-level PR/branch state into the branch_states map when the
-    // branch the task is on has no entry yet. Key off current_branch (the
-    // post-v17 norm) and fall back to feature_branch (older shape) — earlier
-    // code only handled feature_branch, losing PR state for tasks sitting on
-    // current_branch with no branch_states map.
-    if (currentBranch && !attached.branch_states?.[currentBranch]) {
-      attached.branch_states ??= {};
-      attached.branch_states[currentBranch] = {
-        base_branch: legacy.base_branch,
-        pr_number: legacy.pr_number,
-        last_processed_comment_id: legacy.last_processed_comment_id,
-      };
-    }
-    // Guard against a legacy repoKey and its v30 agentId key coexisting
-    // mid-rollout: don't append a second AttachedRepo for a github the
-    // already-migrated array entry covers.
-    const list = (migrated[agentId] ??= []);
-    if (!list.some((a) => a.github === attached.github)) {
-      list.push(attached);
-    } else {
-      logger.warn('task', `[migrate] task ${metadata.task_id}: skipping legacy ${key} — ${agentId} already has ${attached.github}`);
+    for (const attached of value as AttachedRepo[]) {
+      if (!attached?.github || seen.has(attached.github)) continue;
+      seen.add(attached.github);
+      flat.push(attached);
     }
   }
 
-  metadata.repositories = migrated;
+  metadata.repositories = flat;
   return true;
 }

@@ -1,7 +1,6 @@
 # Task Persistence
 
-How Archie stores task state on disk, syncs in-memory runtime to files, and recovers
-after restarts.
+How Archie stores task state on disk, syncs in-memory runtime to files, and recovers after restarts.
 
 > Source of truth: the code in `src/tasks/persistence.ts`, `src/tasks/task.ts`,
 > `src/tasks/recovery.ts`, and `src/types/task.ts`. This document describes only
@@ -11,15 +10,9 @@ after restarts.
 
 ## File-Based Persistence Architecture
 
-Archie uses a file-based approach: each task gets its own directory under
-`${ARCHIE_WORKDIR}/sessions/` (default: `./workdir/sessions/`, exported as
-`SESSIONS_DIR` from `src/system/workdir.ts`). While a task is active, the in-memory
-`Task.metadata` is the source of truth. Disk is treated as a **crash-recovery
-checkpoint** -- written to via a debounced mechanism so that rapid state changes
-coalesce into a single I/O operation.
+Each task gets its own directory under `${ARCHIE_WORKDIR}/sessions/` (default `./workdir/sessions/`, exported as `SESSIONS_DIR` from `src/system/workdir.ts`). While a task is active the in-memory `Task.metadata` is the source of truth; disk is a **crash-recovery checkpoint**, written through a debounce so rapid state changes coalesce into one I/O operation.
 
-There is no database. All lookups (find task by thread, find task by PR number, find
-tasks by status) scan the filesystem, using `grep` where possible for speed.
+There is no database. All lookups (by thread, by branch, by PR number, by status) scan the filesystem, using `grep` where possible.
 
 ---
 
@@ -28,62 +21,50 @@ tasks by status) scan the filesystem, using `grep` where possible for speed.
 ```
 ${ARCHIE_WORKDIR}/sessions/
   task-{YYYYMMDD}-{HHMM}-{random}/       # e.g. task-20251223-1712-a3f9k2
-    shared/                                # shared task state (read-only to agents)
+    shared/                                # shared task state, mounted read-only
       metadata.json                        # task metadata (canonical state)
-      knowledge.log                        # append-only shared knowledge log
-      events.jsonl                         # append-only system events (one JSON per line)
-      usage.jsonl                          # append-only SDK usage/cost records (one JSON per line)
-      memory/                              # agent memory (created at task init)
-      attachments/                         # downloaded Slack file attachments
-        {file_id}-{filename}               # e.g. F08ABC123-screenshot.png
-      artifacts/                           # cross-agent shared files (versioned)
-        {basename}.{8hex}.{ext}            # content-hash-deduped per basename+ext
+      knowledge.log                        # append-only record (see below)
+      events.jsonl                         # append-only system events, one JSON per line
+      usage.jsonl                          # append-only SDK usage/cost records
+      memory/                              # per-task memory staging
+      attachments/                         # downloaded Slack files, {file_id}-{filename}
+      artifacts/                           # content-hash-deduped file snapshots
     agents/
-      {agentKey}/                          # Per-agent workspace (PM and plugin agents)
-        .claude/
-          settings.json                    # plugin hooks (when defined)
-          skills/                          # symlinked skills: the plugin's own, plus any core skills this agent's track mounts
+      pm/                                  # the PM's workspace (cwd, read-write)
+        .claude/settings.json              # commit attribution only
     claude/
-      {agentKey}/
+      pm/
         session/                           # SDK config dir
         tmp/                               # SDK tool-results scratch dir
-    researches/                            # web_research outputs (when used)
-    repos/                                 # git shared clones (created lazily)
+    researches/                            # web_research outputs
+    repos/
+      {owner}/{repo}/                      # one shared clone per repo, created by mount_repo
 ```
 
-### Path helpers (`src/tasks/persistence.ts`)
+`agents/` and `claude/` hold exactly one entry, `pm`, because a task runs one agent. That key is deliberately unchanged from before the flattening, so `claude/{key}/` and the usage records keep their shape and historical cost reports stay readable.
 
-All paths below are rooted at `SESSIONS_DIR` (`${ARCHIE_WORKDIR}/sessions`).
+### Path helpers (`src/tasks/persistence.ts`)
 
 | Function | Returns |
 |---|---|
 | `getTaskPath(taskId)` | `{SESSIONS_DIR}/{taskId}` |
-| `getSharedPath(taskId)` | `{SESSIONS_DIR}/{taskId}/shared` |
-| `getReposPath(taskId)` | `{SESSIONS_DIR}/{taskId}/repos` |
-| `getMetadataPath(taskId)` | `{SESSIONS_DIR}/{taskId}/shared/metadata.json` |
-| `getKnowledgeLogPath(taskId)` | `{SESSIONS_DIR}/{taskId}/shared/knowledge.log` |
-| `getMemoryPath(taskId)` | `{SESSIONS_DIR}/{taskId}/shared/memory` |
-| `getAttachmentsPath(taskId)` | `{SESSIONS_DIR}/{taskId}/shared/attachments` |
-| `getArtifactsPath(taskId)` | `{SESSIONS_DIR}/{taskId}/shared/artifacts` |
-| `getEventsLogPath(taskId)` | `{SESSIONS_DIR}/{taskId}/shared/events.jsonl` |
-| `getUsageLogPath(taskId)` | `{SESSIONS_DIR}/{taskId}/shared/usage.jsonl` |
+| `getSharedPath(taskId)` | `…/{taskId}/shared` |
+| `getAgentsPath(taskId)` | `…/{taskId}/agents` |
+| `getReposPath(taskId)` | `…/{taskId}/repos` |
+| `getTaskClonePath(taskId, github)` | `…/{taskId}/repos/{owner}/{repo}` |
+| `getMetadataPath(taskId)` | `…/{taskId}/shared/metadata.json` |
+| `getKnowledgeLogPath(taskId)` | `…/{taskId}/shared/knowledge.log` |
+| `getMemoryPath(taskId)` | `…/{taskId}/shared/memory` |
+| `getAttachmentsPath(taskId)` | `…/{taskId}/shared/attachments` |
+| `getArtifactsPath(taskId)` | `…/{taskId}/shared/artifacts` |
+| `getEventsLogPath(taskId)` | `…/{taskId}/shared/events.jsonl` |
+| `getUsageLogPath(taskId)` | `…/{taskId}/shared/usage.jsonl` |
 
-Per-agent workspaces (`{taskId}/agents/{agentKey}/`) and SDK runtime dirs
-(`{taskId}/claude/{agentKey}/{session,tmp}`) are created in `src/agents/spawn.ts`,
-not in `persistence.ts`.
+The workspace and SDK runtime dirs are created in `src/agents/spawn.ts`, not here.
 
 ### Task ID format
 
-Generated by `generateTaskId()`:
-
-```
-task-{YYYYMMDD}-{HHMM}-{random6}
-```
-
-Example: `task-20251223-1712-a3f9k2`
-
-The date prefix enables natural filesystem sorting. The random suffix (6 chars,
-base-36) provides uniqueness.
+`generateTaskId()` produces `task-{YYYYMMDD}-{HHMM}-{random6}`, e.g. `task-20251223-1712-a3f9k2`. The date prefix gives natural filesystem sorting; the base-36 suffix gives uniqueness. `isSafeTaskId()` matches exactly that shape — a single path segment with no `..` — and every function that builds a path from an API-supplied id checks it.
 
 ---
 
@@ -93,128 +74,101 @@ base-36) provides uniqueness.
 
 ```typescript
 interface TaskMetadata {
-  task_id: string;                              // e.g. "task-20251223-1712-a3f9k2"
-  task_owner: AgentName | null;                 // agent leading the task, or null
-  participants: AgentName[];                    // all agents that have participated
-  channels: Record<string, Channel>;            // active message delivery targets, keyed by channel ID
-  default_channel: string | null;               // channel ID of originating channel
-  home_channel?: { channel_id, channel_name };  // trigger-fired tasks: the channel to open the task's own thread in
-  slack_threads?: SlackThreadRef[];             // legacy — only on old tasks, removed after migration
-  agent_sessions: Record<string, AgentSessionState | string>;  // per-agent session state
-  repositories: Record<string, AttachedRepo[]>; // per-agent attached repos, keyed by agent id
-  status: TaskStatus;                           // 'in_progress' | 'stopped' | 'completed'
-  edit_allowed?: boolean;                       // user approved edit mode
-  research_budget_extra?: number;               // additional budget granted (+5 per approval)
-  research_request_count?: number;              // persisted research call count
-  failure_counter?: number;                     // consecutive recovery attempts
-  created_at: string;                           // ISO timestamp
-  updated_at: string;                           // ISO timestamp, set on every write
+  task_id: string;
+  channels: Record<string, Channel>;   // active delivery targets, keyed by channel id
+  default_channel: string | null;      // originating channel (null for CLI-originated tasks)
+  home_channel?: { channel_id, channel_name };  // trigger-fired tasks: where to open the thread
+  title?: string;                      // Haiku-authored one-liner; absent on pre-feature tasks
+  agent_sessions: Record<string, AgentSessionState | string>;  // one entry: 'pm-agent'
+  repositories: AttachedRepo[];        // flat — one entry per mounted repo
+  status: TaskStatus;                  // 'in_progress' | 'stopped' | 'completed'
+  runtime_version?: number;            // engine generation — 2 = flat single-PM; absent = pre-flattening
+  migration_notice_pending?: boolean;  // stamped legacy task — next wake carries the migration notice
+  edit_allowed?: boolean;
+  max_mode?: boolean;
+  edit_approved_by?: { id, name, email? };
+  pending_merge_approval?: { github, pr_number, requested_by, requested_at };
+  pending_tool_approval?: { digest, server, tool, summary, heading, requested_by, requested_at };
+  approved_tool_calls?: ApprovedToolCall[];
+  research_budget_extra?: number;
+  research_request_count?: number;
+  reminder?: { trigger_at, reason };
+  triggered_by?: string;
+  pending_trigger_id?: string;
+  briefed_channels?: string[];
+  slack_threads?: SlackThreadRef[];    // legacy — migrated to `channels` on first load
+  created_at: string;
+  updated_at: string;
 }
 ```
 
-The block above is illustrative, not exhaustive — several fields (`title`, `briefed_channels`, `max_mode`, `edit_approved_by`, `pending_merge_approval`, `triggered_by`, `pending_trigger_id`, `reminder`, `dynamic_agents`) are omitted. `src/types/task.ts` is the source of truth. Nothing validates or filters metadata on the way to disk: `save()` stringifies the whole object and `loadMetadata` is a bare `JSON.parse`, so an older build never drops a field a newer one wrote.
+`src/types/task.ts` is the source of truth; a couple of minor fields are omitted above. Nothing validates or filters metadata on the way to disk — `save()` stringifies the whole object and `loadMetadata` is a bare `JSON.parse` — so an older build never drops a field a newer one wrote.
 
-### Channel (replaces legacy `slack_threads`)
+`runtime_version` stamps which engine generation last wrote the file: `2` is the flat single-PM runtime, and an absent stamp means the folder was written by the multi-agent engine that preceded it. `stampRuntimeVersion()` (`src/tasks/task.ts`) adds the stamp the first time a legacy task is **activated** under 0.2.0, sets `migration_notice_pending` alongside it, and that activation persists both in the same write as the `repositories` migration — completed and stopped tasks included, since a resumed one needs the notice just as much. A read-only `Task.get()` (webhook resolution, comment dedup) runs the same in-memory migration but never persists it, so such a task's on-disk shape is untouched until it is actually activated. `Task.create()` writes `runtime_version` directly and never sets the flag, so a task created by this build is never mistaken for a legacy one.
+
+**Fields the flat model made obsolete:** `task_owner`, `participants`, `dynamic_agents`, and the `AgentName` / `CoreAgentName` / `TriageResult` / `DynamicAgentSpec` types behind them. There is one agent, so ownership and participation carry no information. These are **ignored, not stripped**, when a legacy task is loaded: nothing deletes them from an old `metadata.json`, so they sit unread on disk until whatever writes that file next happens to omit them. The migration stamp (`runtime_version`, `migration_notice_pending`) and the `repositories` flattening are the only fields Archie writes back proactively, and only at a legacy task's first **activation** under 0.2.0 (`stampRuntimeVersion()`, `Task.get()`) — a read-only load (webhook resolution, comment dedup) never persists a rewrite. `requested_by` survives on the two pending-approval slots, where it is always `pm-agent`, because the invariant it guards (a deferred stop must have someone to cancel it) is cheaper to keep than to re-derive.
+
+### `repositories`: flat, one entry per repo
 
 ```typescript
-type Channel = SlackChannel | GitHubChannel;
-
-interface SlackChannel {
-  type: 'slack';
-  thread_id: string;        // Slack thread timestamp ID
-  channel_id: string;       // Slack channel ID
-  channel_name: string;     // Human-readable channel name
-  last_processed_ts: string; // timestamp of last processed message (for dedup)
-}
-
-interface GitHubChannel {
-  type: 'github';
-  repo: string;             // GitHub repo identifier
-  pr_number: number;        // PR number
+interface AttachedRepo {
+  github: string;                                // 'acme/backend' — also the key
+  clone_path?: string;                           // sessions/<id>/repos/acme/backend
+  base_path?: string;                            // base cache the clone borrows objects from
+  current_branch?: string;                       // key into branch_states
+  branch_states?: Record<string, BranchState>;
 }
 ```
 
-The `channels` field is keyed by a unique channel ID (e.g., `"{channel_id}:{thread_id}"` for Slack). The `default_channel` field identifies the originating channel. Legacy `slack_threads` arrays are migrated on first load.
+The task owns the clone, not an agent, so there is no agent segment in the path and no agent key in the record. Two legacy on-disk shapes migrate lazily in `Task.get()` via `migrateRepositoriesShape()`:
 
-### SlackThreadRef (legacy)
+- `Record<agentId, AttachedRepo[]>` — the per-agent shape that preceded this one. Flattened by union on `github`: two agents that both mounted a repo produce one entry, the first seen. Arbitrary but stable — their branch state is the same PR history, and only one clone survives per task now.
+- Pre-v30 `Record<repoKey, RepositoryInfo>` — keyed by a short repo name whose `github` identifier only the (now removed) agent registry could resolve. Those entries are **dropped with a warning**; such tasks predate the per-agent shape by many months and are terminal.
 
-```typescript
-interface SlackThreadRef {
-  thread_id: string;
-  channel_id: string;
-  last_processed_ts: string;
-}
-```
+The migration is in-memory on every load. It is persisted to disk only when the task is next **activated** — a read-only load (webhook resolution, comment dedup) re-migrates in memory every time but never writes the result back. The webhook lookups `findTaskByPRNumber` and `findTaskByBranch` run the same migration on their loaded copy before walking, so an in-flight PR on a task that has not been activated since deploy still routes.
 
-Present only on old tasks loaded from disk. Migrated to `channels` on first access.
-
-### RepositoryInfo
-
-```typescript
-interface RepositoryInfo {
-  path: string;                                    // base repo path on disk
-  clone_path?: string;                             // path to task-local shared clone
-  current_branch?: string;                         // branch agent is on (key into branch_states)
-  branch_states?: Record<string, BranchState>;     // per-branch tracking
-  // Legacy fields (mirrored from current branch state for rollback safety):
-  branch?: string;
-  base_branch?: string;
-  base_sha?: string;
-  feature_branch?: string;
-  pr_number?: number;
-  last_processed_comment_id?: number;
-}
-```
-
-### BranchState
+### `BranchState`
 
 ```typescript
 interface BranchState {
-  base_branch?: string;                // PR target branch (e.g. 'main', 'master')
-  pr_number?: number;                  // PR associated with this branch
-  last_processed_comment_id?: number;  // last GitHub comment id processed for this branch's PR
+  base_branch?: string;                // PR target branch
+  pr_number?: number;
+  last_processed_comment_id?: number;  // GitHub comment dedup for this branch's PR
   stash_name?: string;                 // set if dirty work was auto-stashed when leaving
+  pr_card?: PrCardState;               // posted-card ref + change-detection fingerprint
+  merge_ready_notified?: boolean;
+  merge_armed?: boolean;
 }
 ```
 
-Branch state tracks each branch the agent creates or visits. Legacy top-level fields (`feature_branch`, `pr_number`, etc.) are mirrored from the current branch state by `mirrorLegacyFields()` in `src/connectors/github/branch-state.ts` for backward compatibility.
-
-### AgentSessionState
+### `AgentSessionState`
 
 ```typescript
 interface AgentSessionState {
-  session_id?: string;     // Claude Agent SDK session ID (undefined = fresh start)
+  session_id?: string;     // SDK session id (undefined = fresh start)
   active: boolean;         // true = processing, false = finished/crashed
-  last_activity?: string;  // ISO timestamp
+  last_activity?: string;
 }
 ```
 
-The `agent_sessions` field supports a union of `AgentSessionState | string` to handle
-legacy metadata files where sessions were stored as bare session ID strings. The
-`getAgentSession()` helper in `src/tasks/task.ts` transparently converts legacy entries.
-
-### TaskStatus
-
-```typescript
-type TaskStatus = 'in_progress' | 'stopped' | 'completed';
-```
-
-### Related types
-
-```typescript
-type AgentName = CoreAgentName | `${string}-agent`;  // CoreAgentName covers built-in roles
-type FindingType = 'discovery' | 'decision' | 'completion' | 'blocker' | 'artifact';
-```
+`agent_sessions` holds one entry, keyed `pm-agent`. It is the only on-disk record of which session to resume at startup, and the entry max-mode clears when the approved upgrade changes the resolved model. The `AgentSessionState | string` union handles legacy files where the value was a bare session id.
 
 ---
 
-## Shared Knowledge Log
+## The knowledge log
 
 **Source**: `src/tasks/persistence.ts`
 
-The file `shared/knowledge.log` is an append-only text log that serves as the shared
-context between agents. Every agent can read it; the system appends to it on behalf of
-agents and external events.
+`shared/knowledge.log` is an append-only text record of the task: inbound Slack messages and edits, GitHub events, CLI messages, outgoing user-facing messages, and system findings.
+
+**It is write-only as far as the running agent is concerned.** Everything the PM needs is delivered **inline** into its stream (see [orchestration.md](orchestration.md#wakes-carry-their-content)), so nothing on the live path reads the file back, and the PM's prompt does not mention it. The append functions that feed the PM therefore **return the line they wrote**, and the caller hands that exact string to the PM — so the inline copy and the logged copy are identical by construction rather than by two renderers agreeing.
+
+Two offline consumers read it after the fact, and they are the reason it is still written:
+
+- **Memory extraction** (`src/memory/lifecycle.ts`) — the post-task pass that distils organizational facts and user preferences ([memory.md](memory.md)).
+- **The people section** built at spawn (`extractTaskUsernames` / `buildTaskPeopleSection` in `src/agents/spawn.ts`) — it scans the log for `<@UID:Name>` markers to build the `<people_in_task>` block.
+
+It is also the per-task audit trail: every approval, denial, budget change, gated tool call requested and gated tool call actually spent leaves a finding here.
 
 ### Log format
 
@@ -223,32 +177,19 @@ agents and external events.
 [{ISO timestamp}] [{source}] [{type}] {message}
 ```
 
-The `type` field is present for agent findings (discovery, decision, completion, blocker)
-and omitted for Slack messages and GitHub events.
+The `type` field (`discovery`, `decision`, `completion`, `blocker`, `artifact`) is present on findings and omitted on messages.
 
-### Entry types
+| Source pattern | Written by |
+|---|---|
+| `<@{userId}:{name}> in slack:#<{channelId}:{channelName}>:{threadId} \| msg:{ts}` | `appendSlackMessage()` / `appendSlackEdit()` |
+| `@<{author}> in github:{owner}/{repo}/{destination}` | `appendGitHubEvent()` |
+| `cli` | `appendCliMessage()` |
+| `{agentName} in {destination}` | `appendMessageToUser()` (outgoing) |
+| `system` | `appendAgentFinding()` (approvals, budgets, mode changes) |
 
-| Source pattern | Written by | Example |
-|---|---|---|
-| `slack:#<{channelId}:{channelName}>:{threadId}` | `appendSlackMessage()` (takes an already-rendered body; the render lives in `connectors/slack/message-body.ts`) | `[2025-01-15T10:30:00Z] [slack:#<C123:general>:1234.5678] [@<U456:Jane Doe>] Fix the login bug` |
-| `{agentName}` | `appendAgentFinding()` | `[2025-01-15T10:31:00Z] [pm-agent] [decision] Assigned backend-agent as task owner` |
-| `github:{repoKey}` | `appendGitHubEvent()` | `[2025-01-15T10:32:00Z] [github:backend] PR #42: reviewer approved` |
-| `system` | Various (edit mode, budget) | `[2025-01-15T10:33:00Z] [system] [decision] Edit mode approved by user` |
+The `msg:{ts}` id stamped on each Slack line is what the PM passes to the reaction tools as `message_id`, which is why it has to survive into the inline copy verbatim.
 
-### Slack message format
-
-Slack messages include user info in a structured format and optionally list attached files:
-
-```
-[@<{userId}:{realName}>] {cleaned message text}
-  [Attachments: {filename} ({localPath}), ...]
-```
-
-### File attachments
-
-When Slack messages include files, `downloadMessageFiles()` downloads them to the
-`attachments/` directory. Files are named `{fileId}-{originalName}` for uniqueness.
-The `url_private_download` URL is preferred over `url_private` for API-based downloads.
+Message bodies arrive already rendered — rendering is owned by `renderMessageBody` in `src/connectors/slack/message-body.ts` — so no second renderer grows in the persistence layer. Attached files are downloaded to `attachments/` as `{fileId}-{originalName}` before rendering, so the `[Attachments: …]` suffix carries usable local paths.
 
 ---
 
@@ -256,133 +197,69 @@ The `url_private_download` URL is preferred over `url_private` for API-based dow
 
 **Source**: `src/tasks/persistence.ts` (writer), `src/agents/spawn.ts` (hook), `src/agents/task-usage.ts` (aggregator), `src/agents/tools.ts` (`get_task_usage`).
 
-Archie tracks how much each task has consumed from two independent data sources, joined only at report time. Tokens are the source of truth and are always available; cost is SDK-reported and is present only when the SDK emitted a result event.
+Archie tracks consumption from two independent sources, joined only at report time. Tokens are the source of truth and are always available; cost is SDK-reported and present only when the SDK emitted a result event.
 
 ### The `shared/usage.jsonl` writer
 
-`spawn.ts` installs a fire-and-forget hook in the per-agent event loop: on every SDK `result` event it calls `appendUsageRecord()` (never awaited, so it can never block or break the loop). Each record is a `TaskUsageRecord` — `{ ts, taskId, agentId, agentKey, query_nonce, session_id?, subtype, num_turns, total_cost_usd, modelUsage, usage }` — serialized one-per-line to `shared/usage.jsonl`. Writes are serialized per task via a dedicated `usageWriteQueues` map (kept separate from the `events.jsonl` queue), guarded by an `existsSync` check on `shared/`, and wrapped in try/catch so the writer never throws. If a turn crashes before its result event, nothing is appended for that turn — which is the desired "cost unavailable for that turn" behavior, disclosed later as a transcript-vs-cost gap rather than papered over.
+`spawn.ts` installs a fire-and-forget hook in the event loop: on every SDK `result` event it calls `appendUsageRecord()` (never awaited, so it can never block or break the loop). Each record is a `TaskUsageRecord` — `{ ts, taskId, agentId, agentKey, query_nonce, session_id?, subtype, num_turns, total_cost_usd, modelUsage, usage }` — serialized one per line. Writes are serialized per task via a dedicated `usageWriteQueues` map (kept separate from the `events.jsonl` queue), guarded by an `existsSync` check on `shared/`, and wrapped in try/catch so the writer never throws. If a turn crashes before its result event nothing is appended — the desired "cost unavailable for that turn" behavior, disclosed later as a transcript-vs-cost gap rather than papered over.
 
-Because a taskId can arrive untrusted from the HTTP API, both the writer (`appendUsageRecord`) and the reader (`aggregateTaskUsage`) reject anything but the canonical `generateTaskId` shape (a single path segment with no `..`) before any path is built from it, so a taskId can never traverse outside the sessions/ root; an unsafe id is a silent no-op on write and an empty report on read. The guard is written twice, inline in each sink-reaching function — an anchored allowlist regexp at entry plus a `resolve()`+`relative()` containment check immediately before the filesystem sink — because CodeQL's `js/path-injection` analysis only recognises a sanitizer when the literal test sits in the function that reaches the sink, not when it is wrapped in a shared boolean helper (`isSafeTaskId` is retained for readability but is not the barrier CodeQL sees).
+Because a taskId can arrive untrusted from the HTTP API, both the writer (`appendUsageRecord`) and the reader (`aggregateTaskUsage`) reject anything but the canonical shape before any path is built from it; an unsafe id is a silent no-op on write and an empty report on read. The guard is written twice, inline in each sink-reaching function — an anchored allowlist regexp at entry plus a `resolve()`+`relative()` containment check immediately before the sink — because CodeQL's `js/path-injection` analysis only recognises a sanitizer when the literal test sits in the function that reaches the sink, not when it is wrapped in a shared boolean helper (`isSafeTaskId` is retained for readability but is not the barrier CodeQL sees).
 
 ### The `query_nonce` cost model
 
-The central design decision is that cost is aggregated by `query_nonce`, not by `session_id`. Archie makes exactly one `query()` call per spawn inside a `while (true)` retry loop, and an agent RESUMES the same `session_id` across many spawns — so one `session_id` accumulates many independent query()-call cost windows. Any read-time attempt to reconstruct query()-call boundaries by grouping on `session_id` (e.g. segmenting a session's records into runs on a `total_cost_usd` drop) is both over-engineered and silently wrong: a cheap query() call that precedes a more expensive one under a shared `session_id` shows no drop and is absorbed into the later run, omitting its cost.
+Cost is aggregated by `query_nonce`, not by `session_id`. Archie makes exactly one `query()` call per spawn inside a retry loop, and the agent RESUMES the same `session_id` across many spawns — so one `session_id` accumulates many independent cost windows. Any read-time attempt to reconstruct call boundaries by grouping on `session_id` (e.g. segmenting on a `total_cost_usd` drop) is both over-engineered and silently wrong: a cheap call preceding an expensive one under a shared session shows no drop and is absorbed into the later run.
 
-The nonce sidesteps this at write time. `spawn.ts` generates one `randomUUID()` per query() call, in scope for that call's entire event loop, so every result event it emits carries the same nonce. A nonce therefore delimits exactly one query() call's cost window and belongs to exactly one agent (each spawn is per-agent). Read-time cost is then a two-level reduce with no ordering assumptions, no drop detection, and no dependency on `session_id` semantics:
+The nonce sidesteps this at write time. `spawn.ts` generates one `randomUUID()` per `query()` call, in scope for that call's entire event loop, so every result event it emits carries the same nonce. Read-time cost is then a two-level reduce with no ordering assumptions:
 
-- **Within a nonce** (all records sharing one `query_nonce`): reduce to a single figure via `reduceNonceCost`. `total_cost_usd` is cumulative across the steps of a single query() call, so the reducer takes the maximum (equivalently the final cumulative value; `max` is robust to line ordering and monotonic under the cumulative model).
-- **Across nonces**: always sum — each query() call reports only its own cost. Grand cost is the sum over nonces of `reduceNonceCost(nonce)`; per-agent cost is the same sum bucketed by the nonce's `agentKey`, and since every record in a nonce shares one `agentKey`, per-agent costs sum to the grand total by construction.
+- **Within a nonce**: `reduceNonceCost` takes the maximum, since `total_cost_usd` is cumulative across the steps of one call (`max` is robust to line ordering and monotonic under the cumulative model).
+- **Across nonces**: always sum — each call reports only its own cost.
 
-`session_id` is retained on each record for traceability and debugging only; it is never used in the cost math.
+`session_id` is retained per record for traceability only; it is never used in the cost math.
 
-### The `get_task_usage` PM tool
+### The `get_task_usage` tool
 
-`get_task_usage` is a PM-only, zero-argument MCP tool (registered in the orchestration MCP server, which is wired only in the PM branch, so it never reaches repo or plugin agents). It answers "how much has the current task used/cost so far?". Its aggregator (`aggregateTaskUsage`) computes tokens the source-of-truth way: it recursively reads every SDK transcript under `claude/<agentKey>/session/projects/` (including nested subagent transcripts, excluding `journal.jsonl`), dedups assistant lines by `message.id`, skips `<synthetic>` turns, and sums the token buckets — bucketing per top-level `agentKey` so subagent tokens roll up to the parent. Cost is read exclusively from `shared/usage.jsonl` via the nonce model above. Tokens come straight from the transcripts; cost is the SDK's own `total_cost_usd` reported verbatim — there is no price table and no estimation. Cost is never 0-filled: an agent renders `unavailable` whenever it has no usage record of its own, whether the file is absent entirely or only other agents logged one — a missing record means unmeasured (the turn predates the hook, or crashed before its result event), not free. Tokens still report in that case, since they come from the transcripts. Figures print at four decimals because per-turn cost runs well under a cent, and a nonzero cost below that floor prints as `<$0.0001` rather than rounding to zero. When fewer turns carry cost than the transcript recorded, the report appends a disclosed gap line.
+A zero-argument tool on the orchestration MCP server answering "how much has this task used and cost so far?". `aggregateTaskUsage` computes tokens the source-of-truth way: it recursively reads every SDK transcript under `claude/pm/session/projects/` — **including the nested subagent transcripts**, so a worker's tokens roll up into the PM's line — dedups assistant lines by `message.id`, skips `<synthetic>` turns, and sums the token buckets. Cost is read exclusively from `usage.jsonl` via the nonce model. There is no price table and no estimation. Cost is never 0-filled: it renders `unavailable` when no record exists, because a missing record means unmeasured (the turn predates the hook, or crashed before its result event), not free. Figures print at four decimals, and a nonzero cost below that floor prints as `<$0.0001`. When fewer turns carry cost than the transcript recorded, the report appends a disclosed gap line.
 
 ### Caveats (documented, not corrected)
 
 - SDK cost is a client-side estimate from the SDK's bundled price table, not actual Anthropic billing — under subscription auth, where spend is flat, it diverges. This is disclosed in the tool's output rather than corrected.
-- Cache-write tokens are reported as a single bucket. The 1h-vs-5m ephemeral split (`ephemeral_1h/5m_input_tokens`) and `inference_geo` multipliers are NOT modeled because Archie sets neither `ENABLE_PROMPT_CACHING_1H` nor `inference_geo` (confirmed: `inference_geo:"global"`, `ephemeral_1h:0` in observed records).
-- Every `query_nonce` carries exactly one result-event record in practice — confirmed on a live boot (attested `32dd7f6`, PR #232) under both sequential turns and three messages queued mid-turn (the whole batch was handled inside one `query()` call and produced a single record with `num_turns=5`). Because a nonce therefore reduces over a singleton, `max == sum` unconditionally and the reducer is correct regardless of whether within-nonce `total_cost_usd` would be cumulative or per-turn deltas — the cumulative-vs-delta question is moot in practice, and no multi-record nonce (hence no monotonicity) was ever observed. The `max`-vs-`sum` reducer stays injectable purely as defensive headroom: if some hypothetical future SDK ever emitted multiple result events within a single `query()` call, flipping `max` to `sum` is a one-line change confined to `reduceNonceCost`.
+- Cache-write tokens are reported as a single bucket. The 1h-vs-5m ephemeral split and `inference_geo` multipliers are not modeled because Archie sets neither.
+- Every `query_nonce` carries exactly one result-event record in practice, confirmed on a live boot under both sequential turns and messages queued mid-turn. Because a nonce reduces over a singleton, `max == sum` unconditionally. The reducer stays injectable purely as defensive headroom: if a future SDK emitted multiple result events within one `query()` call, flipping `max` to `sum` is a one-line change in `reduceNonceCost`.
 
 ---
 
 ## Debounced Writes
 
-**Source**: `src/tasks/task.ts` — `Task.save()` and `Task.debouncedSave()`.
-
-### Design
-
-The 500 ms debounce coalesces rapid metadata changes into a single disk write. Both
-the debounced and flushed paths sync agent session state into metadata before
-writing.
-
-### Implementation
-
-```typescript
-async save(flush?: boolean): Promise<void>
-debouncedSave(): void
-```
+**Source**: `src/tasks/task.ts` — `Task.save()` / `Task.debouncedSave()`.
 
 | Mode | Behavior |
 |---|---|
-| `debouncedSave()` (or `save(false)`) | If a save timer is already armed, returns. Otherwise arms a 500 ms timer that syncs sessions and writes `metadata.json` once it fires. |
-| `save(true)` (flush) | Syncs sessions and writes `metadata.json` synchronously via `writeFile`. Does not cancel a pending debounced timer (the next debounced fire is harmless — it just rewrites the same JSON). |
+| `debouncedSave()` | If a timer is already armed, return. Otherwise arm a 500 ms timer that syncs the agent session and writes `metadata.json` once. |
+| `save(true)` | Sync and write `metadata.json` immediately. Does not cancel a pending debounced timer — the next fire just rewrites the same JSON. |
 
-Flush mode is used during `Task.stop()` and `Task.complete()` to guarantee the final
-status is persisted before the task instance is removed from `activeTasks`.
+Flush mode is used wherever losing the write would change behaviour rather than merely cost an I/O: `stop()` / `complete()`, edit-mode approval (the spawn reads `edit_allowed` from disk), `mount_repo` (a clone exists on disk and needs a record pointing at it), arming a merge, and every tool-approval slot and grant transition.
 
-### Session state sync
-
-Before every write (debounced or flushed), the save path copies each in-memory
-`Agent.session` into `metadata.agent_sessions`:
+Before every write the save path copies the live agent's session into metadata:
 
 ```typescript
-for (const [agentName, agent] of this.agentProcesses) {
-  this.metadata.agent_sessions[agentName] = { ...agent.session };
+if (this.agent) {
+  this.metadata.agent_sessions[this.agent.def.id] = { ...this.agent.session };
 }
 this.metadata.updated_at = new Date().toISOString();
 await writeFile(getMetadataPath(this.taskId), JSON.stringify(this.metadata, null, 2));
 ```
 
-This ensures on-disk metadata always reflects the latest agent session state
-(`session_id`, `active`, `last_activity`).
+`save()` only re-syncs a *live* agent, which is what makes max mode's session clear stick: `request_max_mode` evicts the task, so the instance handling the approval has no live agent and the cleared `agent_sessions` entry survives to disk.
 
-### Internal state
-
-The debounce uses a single per-instance timer field on the `Task`:
-
-```typescript
-private saveTimer?: ReturnType<typeof setTimeout>;
-```
-
-A second per-task write queue (`writeQueues` in `persistence.ts`) serialises
-appends to `events.jsonl` so event ordering is preserved.
+A second per-task write queue (`writeQueues` in `persistence.ts`) serialises appends to `events.jsonl` so event ordering is preserved.
 
 ---
 
-## Slack Message Deduplication
+## Deduplication
 
-### Per-thread tracking
+**Slack.** Each `SlackChannel` carries `last_processed_ts`. On a new thread, `Task.append()` writes the whole history and links the channel; on an existing one it writes only messages with `ts > last_processed_ts`, then advances the watermark. A message *edit* deliberately does not advance it — an edit reuses the original `ts`, so touching the watermark would skip genuinely new replies. Bot-message and external-user filtering happens upstream in `src/connectors/slack/events.ts`.
 
-Each `SlackChannel` in `metadata.channels` carries a `last_processed_ts` field -- the
-Slack timestamp of the most recently processed message in that thread.
-
-### New thread for existing task
-
-When a new Slack thread is linked to an existing task (`Task.append()` in
-`src/tasks/task.ts`), the full thread history is appended to the knowledge log and a
-new `SlackChannel` entry is added to `metadata.channels` (keyed
-`slack:{channelId}:{threadId}`) with `last_processed_ts` set to the current message's
-timestamp. `default_channel` is promoted via `??=` only the first time.
-
-### Existing thread
-
-When a message arrives in an already-tracked thread, `Task.append()` only writes
-messages with `ts > last_processed_ts`. Bot-message and external-user filtering
-happens upstream in `src/connectors/slack/events.ts` before `append()` is called.
-After processing, `last_processed_ts` is updated to the current message's timestamp
-and a debounced save is scheduled.
-
-```typescript
-// src/tasks/task.ts — existing thread dedup
-const lastProcessedTs = existing.last_processed_ts;
-for (const msg of thread.messages) {
-  if (msg.ts <= lastProcessedTs) continue;
-  await writeMessage(msg);
-}
-existing.last_processed_ts = thread.currentMessageTs;
-this.debouncedSave();
-```
-
-### GitHub comment deduplication
-
-Similarly, `BranchState.last_processed_comment_id` (per-branch) tracks the most recently
-processed GitHub PR comment ID. When `issue_comment` events arrive at
-`handleExistingTaskDirect()` in `src/connectors/github/events.ts`, only comments with
-`id > last_processed_comment_id` are appended to the knowledge log. The legacy
-`RepositoryInfo.last_processed_comment_id` is still supported for backward compatibility
-and mirrored from the current branch state.
+**GitHub.** `BranchState.last_processed_comment_id` tracks the most recent processed PR comment per branch. `handleExistingTaskDirect()` appends only comments with a higher id before waking the PM.
 
 ---
 
@@ -390,53 +267,24 @@ and mirrored from the current branch state.
 
 **Source**: `src/tasks/recovery.ts`
 
-### Startup flow
+1. `findTasksByStatus('in_progress')` greps every `metadata.json` for the status.
+2. For each hit, `Task.get(taskId)` rebuilds the in-memory `Task` from disk (running the repositories migration and re-scanning the PM definition).
+3. `task.sendMessage(AGENT_PROMPTS.recovery)` activates the task, which lazily creates and spawns the PM; its spawn rehydrates `session_id` from `agent_sessions` and resumes.
 
-`recoverActiveTasks()` is called once after the server is ready:
+During graceful shutdown `isShuttingDown` is flipped, and `Task.updateAgentState()` **skips** deactivation writes so `active: true` survives in metadata and recovery knows to re-engage.
 
-1. `findTasksByStatus('in_progress')` scans all `metadata.json` files using `grep` for
-   `"status": "in_progress"`.
-2. For each task, `Task.get(taskId)` rebuilds the in-memory `Task` from the
-   metadata file.
-3. `recoverTaskAgents()` re-spawns agents that were active before shutdown:
-   - Iterates `metadata.agent_sessions` looking for entries with `active === true`
-     (legacy bare-string entries are treated as inactive).
-   - Sends `AGENT_PROMPTS.recovery` to each active agent via `task.sendMessage()`.
-   - If no agents had `active === true` (stale metadata), falls back to spawning
-     `pm-agent` with the recovery prompt.
-
-### Shutdown preservation
-
-During graceful shutdown, `isShuttingDown` is flipped to `true` via
-`src/system/shutdown.ts` (`getIsShuttingDown()` / `setIsShuttingDown()`).
-`Task.updateAgentState()` checks this flag and **skips** deactivation writes,
-preserving the `active: true` state in metadata. This ensures recovery correctly
-identifies which agents to re-spawn.
-
-### Task reactivation
-
-`Task.get()` is idempotent at the active-tasks-map level: if the task is already in
-`activeTasks`, it returns the existing instance; otherwise it reads metadata from
-disk and constructs a new `Task` (inert until the first `sendMessage()`). The status
-on disk is preserved by the constructor; reactivation to `in_progress` happens in
-`Task.activate()`, which is called lazily on the first `sendMessage()`. This is how
-stopped tasks are reactivated (e.g., after edit mode approval or research budget
-approval).
+`Task.get()` is idempotent at the active-tasks-map level: an in-flight task is returned as-is and never disturbed; otherwise metadata is read from disk into a new, inert `Task`. The on-disk status is preserved by the constructor; the flip back to `in_progress` happens in `activate()`, lazily on the first `sendMessage()`. That is how a parked task reopens after an edit-mode, merge or tool-call approval.
 
 ---
 
 ## Cleanup Policy
 
-There is no automated cleanup or garbage collection of task directories. Completed and
-stopped task directories remain on disk indefinitely. The `sessions/` directory grows
-over time.
-
-Tasks can be looked up by status using `findTasksByStatus()`, which uses `grep` to
-scan metadata files. This could be used for manual or future automated cleanup, but
-no such mechanism is currently implemented.
+There is no automated cleanup or garbage collection of task directories. Completed and stopped task directories remain on disk indefinitely; the `sessions/` directory grows over time. Read-only clones are removed on stop/complete (edit-mode clones are kept — they hold commits and PR state), and the shared package-manager caches live outside `sessions/` in `$ARCHIE_WORKDIR/caches/` precisely so they are not duplicated per task.
 
 ---
 
 ## Related Documents
 
-- [System Orchestration](./orchestration.md) -- runtime state, message routing, agent lifecycle
+- [System Orchestration](./orchestration.md) — runtime state, message routing, recovery
+- [Edit Mode](./edit-mode.md) — `mount_repo`, clone lifecycle, branch state
+- [Memory Layer](./memory.md) — the offline consumer of `knowledge.log`
