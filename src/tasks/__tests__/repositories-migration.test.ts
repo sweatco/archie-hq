@@ -8,18 +8,19 @@
  * lookups resolve a task by.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { TaskMetadata } from '../../types/task.js';
-import { migrateRepositoriesShape } from '../task.js';
+import { migrateRepositoriesShape, __resetLegacyRepositoryDropStateForTests } from '../task.js';
+import { logger } from '../../system/logger.js';
 
 vi.mock('../../system/logger.js', () => ({
   logger: { warn: vi.fn(), system: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-/** Minimal metadata wrapper — only `repositories` matters for these tests. */
-function meta(repositories: any): TaskMetadata {
+/** Minimal metadata wrapper — only `repositories` (and, for the drop-summary tests, `task_id`) matters here. */
+function meta(repositories: any, taskId = 'task-test'): TaskMetadata {
   return {
-    task_id: 'task-test',
+    task_id: taskId,
     channels: {},
     default_channel: null,
     agent_sessions: {},
@@ -31,6 +32,13 @@ function meta(repositories: any): TaskMetadata {
 }
 
 describe('migrateRepositoriesShape', () => {
+  // The drop counters are process-scoped (see noteLegacyRepositoryDrop in
+  // task.ts) so they don't reset themselves between tests or test files.
+  beforeEach(() => {
+    __resetLegacyRepositoryDropStateForTests();
+    vi.clearAllMocks();
+  });
+
   it('flattens a per-agent map, preserving clone path + branch/PR state', () => {
     const m = meta({
       'backend-agent': [
@@ -108,6 +116,61 @@ describe('migrateRepositoriesShape', () => {
     migrateRepositoriesShape(m);
 
     expect(m.repositories.map((r) => r.github)).toEqual(['acme/backend']);
+  });
+
+  it('logs one warn summary instead of one warn per dropped key or per task', () => {
+    // Two legacy keys on the same task, in one call — this is what production's
+    // 22 March-2026 tasks look like (2 dropped keys apiece, 44 total).
+    const taskA = meta(
+      {
+        mobile: { path: '/workdir/repos/mobile', clone_path: '/c/mobile-a' },
+        backend: { path: '/workdir/repos/backend', clone_path: '/c/backend-a' },
+      },
+      'task-a',
+    );
+    migrateRepositoriesShape(taskA);
+
+    // A second, later-loaded task with one more legacy key.
+    const taskB = meta({ mobile: { path: '/workdir/repos/mobile', clone_path: '/c/mobile-b' } }, 'task-b');
+    migrateRepositoriesShape(taskB);
+
+    // Three dropped entries and two tasks in total, but only the first task's
+    // load crossed into a summary — one warn call, not three (one per key)
+    // and not two (one per task).
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      'task',
+      expect.stringContaining('2 legacy pre-v30 repository entries dropped in memory across 1 tasks (first: task-a)'),
+    );
+
+    // The second task's drop still surfaces, just quieter.
+    expect(logger.debug).toHaveBeenCalledWith(
+      'task',
+      expect.stringContaining('task task-b: dropped 1 pre-v30 repositories entry'),
+    );
+  });
+
+  it('logs a follow-up summary once the affected-task count grows by ten', () => {
+    for (let i = 1; i <= 11; i++) {
+      migrateRepositoriesShape(
+        meta({ mobile: { path: '/workdir/repos/mobile', clone_path: `/c/mobile-${i}` } }, `task-${i}`),
+      );
+    }
+
+    // First task's load crosses the initial summary; tasks 2-10 stay at
+    // debug; the 11th task's load grows the affected-task set by ten since
+    // the last summary, so it earns a second warn.
+    expect(logger.warn).toHaveBeenCalledTimes(2);
+    expect(logger.warn).toHaveBeenNthCalledWith(
+      1,
+      'task',
+      expect.stringContaining('1 legacy pre-v30 repository entries dropped in memory across 1 tasks (first: task-1)'),
+    );
+    expect(logger.warn).toHaveBeenNthCalledWith(
+      2,
+      'task',
+      expect.stringContaining('11 legacy pre-v30 repository entries dropped in memory across 11 tasks (first: task-1)'),
+    );
   });
 
   it('is a no-op on the already-flat shape — idempotent', () => {

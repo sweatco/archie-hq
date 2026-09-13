@@ -2129,6 +2129,55 @@ export function stampRuntimeVersion(metadata: TaskMetadata): boolean {
 // ---- repositories-shape migration ----
 
 /**
+ * Dropped pre-v30 `repositories` entries are correct (they predate the
+ * `github`-keyed shape and are re-mounted on demand) but noisy: production
+ * carries dozens of March-2026 task folders in this shape, and every load of
+ * every one of them used to warn once per dropped key. Tracked here at module
+ * scope so the whole process emits one summary line — not one line per key
+ * per task — the first time this happens, and again only if the set of
+ * affected tasks has grown by ten since the last summary. Everything between
+ * summaries still lands at debug, so the detail isn't lost, just quieted.
+ */
+let legacyRepositoryDropEntryCount = 0;
+const legacyRepositoryDropTaskIds = new Set<string>();
+let legacyRepositoryDropFirstTaskId: string | undefined;
+let legacyRepositoryDropTaskCountAtLastSummary = 0;
+
+/**
+ * Clear the process-scoped drop counters between tests. Without this, a test
+ * that trips the summary would poison every case that runs after it in the
+ * same process.
+ */
+export function __resetLegacyRepositoryDropStateForTests(): void {
+  legacyRepositoryDropEntryCount = 0;
+  legacyRepositoryDropTaskIds.clear();
+  legacyRepositoryDropFirstTaskId = undefined;
+  legacyRepositoryDropTaskCountAtLastSummary = 0;
+}
+
+function noteLegacyRepositoryDrop(taskId: string, droppedCount: number): void {
+  legacyRepositoryDropEntryCount += droppedCount;
+  legacyRepositoryDropFirstTaskId ??= taskId;
+  legacyRepositoryDropTaskIds.add(taskId);
+
+  const taskCount = legacyRepositoryDropTaskIds.size;
+  const isFirstSummary = legacyRepositoryDropTaskCountAtLastSummary === 0;
+  const grewByTen = taskCount - legacyRepositoryDropTaskCountAtLastSummary >= 10;
+  if (isFirstSummary || grewByTen) {
+    legacyRepositoryDropTaskCountAtLastSummary = taskCount;
+    logger.warn(
+      'task',
+      `[migrate] ${legacyRepositoryDropEntryCount} legacy pre-v30 repository entries dropped in memory across ${taskCount} tasks (first: ${legacyRepositoryDropFirstTaskId}); they predate github-keyed repositories and are re-mounted on demand`,
+    );
+  } else {
+    logger.debug(
+      'task',
+      `[migrate] task ${taskId}: dropped ${droppedCount} pre-v30 repositories entr${droppedCount === 1 ? 'y' : 'ies'} — its github identifier is no longer resolvable`,
+    );
+  }
+}
+
+/**
  * Migrate `metadata.repositories` to the flat `AttachedRepo[]`.
  *
  * Two legacy shapes exist on disk:
@@ -2139,8 +2188,9 @@ export function stampRuntimeVersion(metadata: TaskMetadata): boolean {
  *    same PR history, and only one clone survives per task now).
  *  - Pre-v30 `Record<repoKey, RepositoryInfo>` — keyed by a short repo name
  *    whose `github` identifier only the (now removed) agent registry could
- *    resolve. Those entries are dropped with a warning; such tasks predate the
- *    per-agent shape by many months and are terminal.
+ *    resolve. Those entries are dropped (see `noteLegacyRepositoryDrop` for
+ *    how that's logged); such tasks predate the per-agent shape by many
+ *    months and are terminal.
  *
  * Returns true when anything changed, so `Task.get` can defer the write to the
  * task's first activation. A task that is only ever read re-migrates on every
@@ -2160,12 +2210,10 @@ export function migrateRepositoriesShape(metadata: TaskMetadata): boolean {
 
   const flat: AttachedRepo[] = [];
   const seen = new Set<string>();
-  for (const [key, value] of Object.entries(repos as Record<string, unknown>)) {
+  let droppedCount = 0;
+  for (const [, value] of Object.entries(repos as Record<string, unknown>)) {
     if (!Array.isArray(value)) {
-      logger.warn(
-        'task',
-        `[migrate] task ${metadata.task_id}: dropping pre-v30 repositories["${key}"] — its github identifier is no longer resolvable`,
-      );
+      droppedCount++;
       continue;
     }
     for (const attached of value as AttachedRepo[]) {
@@ -2173,6 +2221,10 @@ export function migrateRepositoriesShape(metadata: TaskMetadata): boolean {
       seen.add(attached.github);
       flat.push(attached);
     }
+  }
+
+  if (droppedCount > 0) {
+    noteLegacyRepositoryDrop(metadata.task_id, droppedCount);
   }
 
   metadata.repositories = flat;
