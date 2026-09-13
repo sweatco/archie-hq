@@ -586,20 +586,21 @@ export async function findTaskByPRNumber(
       const metadata = await loadMetadata(taskId);
       if (!metadata) continue;
 
-      // Flatten a legacy per-agent `repositories` map in memory before walking.
-      // This routes webhook events for in-flight PRs on tasks that haven't been
-      // re-saved since deploy (their on-disk metadata is still the per-agent
-      // Record<agentId, AttachedRepo[]>). The older pre-v30 Record<repoKey,
-      // RepositoryInfo> shape carries no github identifier, so it is not
-      // normalized but dropped with a warning — a task still holding it does not
-      // resolve here. Mutates the loaded copy only — we never persist from here.
-      // Dynamic import avoids a static persistence↔task cycle; the call is
-      // runtime-only so the cycle is harmless either way.
-      const { migrateRepositoriesShape } = await import('./task.js');
-      migrateRepositoriesShape(metadata);
+      // Read a legacy per-agent `repositories` map in the flat shape without
+      // migrating it. This routes webhook events for in-flight PRs on tasks that
+      // haven't been re-saved since deploy (their on-disk metadata is still the
+      // per-agent Record<agentId, AttachedRepo[]>). The older pre-v30
+      // Record<repoKey, RepositoryInfo> shape carries no github identifier, so
+      // those entries are absent from the list — a task still holding it does
+      // not resolve here. A lookup walks every candidate the scan turned up, so
+      // it must neither rewrite those tasks nor log about them: migration is the
+      // pickup's job (`Task.get` + `activate`). Dynamic import avoids a static
+      // persistence↔task cycle; the call is runtime-only so the cycle is
+      // harmless either way.
+      const { readRepositories } = await import('./task.js');
 
       // Walk the task's mounted repos and look for the github + pr_number.
-      for (const attached of metadata.repositories ?? []) {
+      for (const attached of readRepositories(metadata)) {
         if (attached.github !== githubRepo) continue;
         if (!attached.branch_states) continue;
         for (const state of Object.values(attached.branch_states)) {
@@ -638,10 +639,11 @@ export async function findTaskByBranch(
       const metadata = await loadMetadata(taskId);
       if (!metadata) continue;
 
-      const { migrateRepositoriesShape } = await import('./task.js');
-      migrateRepositoriesShape(metadata);
+      // Read-only view of the legacy shapes — see findTaskByPRNumber: a lookup
+      // never migrates a task it is merely inspecting.
+      const { readRepositories } = await import('./task.js');
 
-      for (const attached of metadata.repositories ?? []) {
+      for (const attached of readRepositories(metadata)) {
         if (attached.github !== githubRepo) continue;
         if (attached.branch_states && branch in attached.branch_states) return taskId;
       }
@@ -683,21 +685,28 @@ export async function isThreadMuted(channelId: string, threadTs: string): Promis
 }
 
 /**
- * Find all tasks with a given status.
- * Substring scan narrows candidates without parsing every metadata.json.
+ * The ids of all tasks with a given status. Substring scan narrows candidates
+ * without reading every metadata.json, and each candidate is then confirmed by
+ * reading its `status` field — the substring could have matched anywhere.
+ *
+ * Ids only, deliberately. Startup recovery is the caller, and it walks the whole
+ * fleet: anything richer invites the scan to construct a Task per folder, which
+ * runs the load-path migrations (`migrateRepositoriesShape`,
+ * `stampRuntimeVersion`) over tasks this process never picks up. A task is
+ * migrated when it is activated, not when it is counted.
  */
-export async function findTasksByStatus(
+export async function findTaskIdsByStatus(
   status: 'in_progress' | 'stopped' | 'completed'
-): Promise<TaskMetadata[]> {
+): Promise<string[]> {
   await ensureSessionsDir();
 
-  const tasks: TaskMetadata[] = [];
+  const ids: string[] = [];
   for (const taskId of await scanMetadataFiles(`"status": ${JSON.stringify(status)}`)) {
     const metadata = await loadMetadata(taskId);
-    if (metadata) tasks.push(metadata);
+    if (metadata?.status === status) ids.push(taskId);
   }
 
-  return tasks;
+  return ids;
 }
 
 /**

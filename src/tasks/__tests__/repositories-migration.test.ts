@@ -8,13 +8,15 @@
  * lookups resolve a task by.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { TaskMetadata } from '../../types/task.js';
-import { migrateRepositoriesShape } from '../task.js';
+import { migrateRepositoriesShape, readRepositories } from '../task.js';
 
 vi.mock('../../system/logger.js', () => ({
   logger: { warn: vi.fn(), system: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
+
+import { logger } from '../../system/logger.js';
 
 /** Minimal metadata wrapper — only `repositories` matters for these tests. */
 function meta(repositories: any): TaskMetadata {
@@ -148,5 +150,44 @@ describe('migrateRepositoriesShape', () => {
     const m = meta(undefined);
     expect(migrateRepositoriesShape(m)).toBe(true);
     expect(m.repositories).toEqual([]);
+  });
+});
+
+/**
+ * The read-only half. Webhook routing walks every candidate a fleet-wide scan
+ * turned up, so it needs the flat view of a legacy task without upgrading one:
+ * same list, no write-back, no log line about a task nobody is running.
+ */
+describe('readRepositories', () => {
+  beforeEach(() => {
+    vi.mocked(logger.warn).mockClear();
+  });
+
+  it('returns the same list the migration would, without touching the metadata', () => {
+    const legacy = {
+      'backend-agent': [{ github: 'acme/backend', clone_path: '/c/backend' }],
+      'mobile-agent': [{ github: 'acme/mobile', clone_path: '/c/mobile' }],
+    };
+    const m = meta(legacy);
+
+    expect(readRepositories(m).map((r) => r.github)).toEqual(['acme/backend', 'acme/mobile']);
+    // Untouched: the on-disk shape is still what the previous engine wrote.
+    expect(m.repositories).toBe(legacy as unknown as TaskMetadata['repositories']);
+  });
+
+  it('drops pre-v30 entries silently — a lookup must not log about a task it is only inspecting', () => {
+    const m = meta({
+      'backend-agent': [{ github: 'acme/backend', clone_path: '/c/backend' }],
+      mobile: { path: '/workdir/repos/mobile', clone_path: '/c/mobile' },
+    });
+
+    expect(readRepositories(m).map((r) => r.github)).toEqual(['acme/backend']);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('returns the flat list as-is, and an empty list for a missing value', () => {
+    const flat = [{ github: 'acme/backend', clone_path: '/c/backend' }];
+    expect(readRepositories(meta(flat))).toBe(flat);
+    expect(readRepositories(meta(undefined))).toEqual([]);
   });
 });

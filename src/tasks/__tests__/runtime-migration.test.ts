@@ -40,8 +40,9 @@ vi.mock('../persistence.js', async (importOriginal) => {
 });
 
 import { Task, activeTasks, stampRuntimeVersion, RUNTIME_VERSION } from '../task.js';
-import { buildMigrationNotice } from '../../agents/prompts.js';
+import { AGENT_PROMPTS, buildMigrationNotice } from '../../agents/prompts.js';
 import { MessageQueue } from '../../agents/message-queue.js';
+import { logger } from '../../system/logger.js';
 import type { TaskMetadata } from '../../types/task.js';
 import type { AgentDef } from '../../types/agent.js';
 
@@ -275,6 +276,31 @@ describe('deferred write-back', () => {
     // A webhook resolution or an API listing loads the task exactly like this;
     // rolling back to the previous engine has to stay non-destructive for it.
     expect(metadataWrites()).toEqual([]);
+  });
+
+  // The startup scan hands over ids only; this is the other half of that
+  // contract — the task it did hand over is migrated, and the migration lands on
+  // disk, exactly as it did when every folder went through this path.
+  it('migrates and persists the legacy task the recovery scan picked up', async () => {
+    loadMetadataMock.mockResolvedValue(
+      legacyMetadata({
+        // Pre-v30 shape: keyed by short repo name, no github field anywhere.
+        repositories: { backend: { path: '/repos/backend' } } as unknown as TaskMetadata['repositories'],
+      }),
+    );
+
+    const task = await Task.get(TASK_ID);
+    await task.sendMessage(AGENT_PROMPTS.recovery);
+
+    const writes = metadataWrites().map((body) => JSON.parse(body) as TaskMetadata);
+    expect(writes.length).toBeGreaterThan(0);
+    // The repositories map is flattened (the unresolvable pre-v30 entry dropped)
+    // and the runtime stamped — on disk, not just in memory.
+    expect(writes[0].repositories).toEqual([]);
+    expect(writes[0].runtime_version).toBe(RUNTIME_VERSION);
+    // Dropping the entry is loud, because this task really is being run here.
+    const warned = vi.mocked(logger.warn).mock.calls.map((c) => String(c[1]));
+    expect(warned.some((line) => line.includes('[migrate]') && line.includes('backend'))).toBe(true);
   });
 
   it('persists the migration once, on the first activation', async () => {

@@ -23,11 +23,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('../../system/logger.js', () => ({
   logger: { warn: vi.fn(), system: vi.fn(), error: vi.fn(), debug: vi.fn(), agent: vi.fn(), plain: vi.fn() },
 }));
-const { findTasksByStatusMock, taskGetMock } = vi.hoisted(() => ({
-  findTasksByStatusMock: vi.fn(),
+const { findTaskIdsByStatusMock, taskGetMock } = vi.hoisted(() => ({
+  findTaskIdsByStatusMock: vi.fn(),
   taskGetMock: vi.fn(),
 }));
-vi.mock('../persistence.js', () => ({ findTasksByStatus: findTasksByStatusMock }));
+vi.mock('../persistence.js', () => ({ findTaskIdsByStatus: findTaskIdsByStatusMock }));
 vi.mock('../task.js', () => ({ Task: { get: taskGetMock } }));
 
 import { scheduleIdleCheck } from '../recovery.js';

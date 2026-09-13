@@ -14,11 +14,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../system/logger.js', () => ({
   logger: { warn: vi.fn(), system: vi.fn(), error: vi.fn(), debug: vi.fn(), agent: vi.fn(), plain: vi.fn() },
 }));
-const { findTasksByStatusMock, taskGetMock } = vi.hoisted(() => ({
-  findTasksByStatusMock: vi.fn(),
+const { findTaskIdsByStatusMock, taskGetMock } = vi.hoisted(() => ({
+  findTaskIdsByStatusMock: vi.fn(),
   taskGetMock: vi.fn(),
 }));
-vi.mock('../persistence.js', () => ({ findTasksByStatus: findTasksByStatusMock }));
+vi.mock('../persistence.js', () => ({ findTaskIdsByStatus: findTaskIdsByStatusMock }));
 vi.mock('../task.js', () => ({ Task: { get: taskGetMock } }));
 
 import { recoverActiveTasks } from '../recovery.js';
@@ -39,7 +39,7 @@ beforeEach(() => {
 describe('recoverActiveTasks', () => {
   it('sends the recovery prompt to each in_progress task', async () => {
     const task = fakeTask('task-20260804-1050-iat4s8');
-    findTasksByStatusMock.mockResolvedValue([{ task_id: task.taskId }]);
+    findTaskIdsByStatusMock.mockResolvedValue([task.taskId]);
     taskGetMock.mockResolvedValue(task);
 
     await recoverActiveTasks();
@@ -52,9 +52,7 @@ describe('recoverActiveTasks', () => {
     const first = fakeTask('task-20260804-1050-aaaaaa');
     const thrower = fakeTask('task-20260804-1050-bbbbbb', true);
     const last = fakeTask('task-20260804-1050-cccccc');
-    findTasksByStatusMock.mockResolvedValue(
-      [first, thrower, last].map((t) => ({ task_id: t.taskId })),
-    );
+    findTaskIdsByStatusMock.mockResolvedValue([first, thrower, last].map((t) => t.taskId));
     taskGetMock.mockImplementation(async (id: string) =>
       [first, thrower, last].find((t) => t.taskId === id),
     );
@@ -68,7 +66,7 @@ describe('recoverActiveTasks', () => {
   });
 
   it('is a no-op when nothing is in progress', async () => {
-    findTasksByStatusMock.mockResolvedValue([]);
+    findTaskIdsByStatusMock.mockResolvedValue([]);
 
     await recoverActiveTasks();
 

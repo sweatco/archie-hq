@@ -36,10 +36,13 @@ vi.mock('../../system/event-bus.js', () => ({
 
 vi.mock('../task.js', () => ({
   activeTasks: new Map(),
-  migrateRepositoriesShape: (m: unknown) => m,
+  // The lookups read the repositories in their flat shape without migrating —
+  // fixtures here are already flat, so the read is the identity.
+  readRepositories: (m: { repositories?: unknown }) =>
+    Array.isArray(m.repositories) ? m.repositories : [],
 }));
 
-import { findTaskByBranch, findTaskByPRNumber, findTaskByThread, findTasksByStatus, isThreadMuted } from '../persistence.js';
+import { findTaskByBranch, findTaskByPRNumber, findTaskByThread, findTaskIdsByStatus, isThreadMuted } from '../persistence.js';
 import { SESSIONS_DIR } from '../../system/workdir.js';
 
 async function writeTask(taskId: string, metadata: Record<string, unknown>): Promise<void> {
@@ -122,12 +125,24 @@ describe('findTaskBy* scanners', () => {
     expect(await findTaskByThread('0000000000.000000')).toBeNull();
   });
 
-  it('findTasksByStatus returns only tasks with the exact status', async () => {
+  it('findTaskIdsByStatus returns only the ids of tasks with the exact status', async () => {
     await writeTask('task-20260703-0007-a', { status: 'in_progress' });
     await writeTask('task-20260703-0008-b', { status: 'completed' });
 
-    const inProgress = await findTasksByStatus('in_progress');
-    expect(inProgress.map((t) => t.task_id)).toEqual(['task-20260703-0007-a']);
+    expect(await findTaskIdsByStatus('in_progress')).toEqual(['task-20260703-0007-a']);
+  });
+
+  // The needle is a substring of the serialized metadata, so it can match
+  // somewhere other than the status field — a PM's own note quoting the string,
+  // for one. The status is re-read before the id is returned, so a boot never
+  // hands a completed task to the recovery pickup.
+  it('findTaskIdsByStatus rejects a candidate whose substring hit is not the status field', async () => {
+    await writeTask('task-20260703-0009-decoy', {
+      status: 'completed',
+      title: 'the log line said "status": "in_progress" before it stalled',
+    });
+
+    expect(await findTaskIdsByStatus('in_progress')).toEqual([]);
   });
 
   // Needles are JSON-encoded fragments of the serialized metadata, so their form
