@@ -18,7 +18,7 @@
  * user's next message resumes it normally.
  */
 
-import { findTasksByStatus } from './persistence.js';
+import { findTaskIdsByStatus } from './persistence.js';
 import { logger } from '../system/logger.js';
 import { getIsShuttingDown } from '../system/shutdown.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
@@ -31,27 +31,35 @@ import type { Task } from './task.js';
 /**
  * Recover all in_progress tasks after server restart.
  * Called once during startup, after server is ready to accept webhooks.
+ *
+ * The scan is ids and statuses only (`findTaskIdsByStatus`) — no Task is
+ * constructed for a folder this boot is not picking up. That distinction is the
+ * whole point: `Task.get` runs the load-path migrations, so a scan that built
+ * one per folder would migrate and stamp the entire fleet in memory at every
+ * boot, logging about tasks that will never run here. Only an in_progress task
+ * reaches `Task.get`, and it is activated in the same breath — which is where
+ * the migration earns its write.
  */
 export async function recoverActiveTasks(): Promise<void> {
-  const tasks = await findTasksByStatus('in_progress');
+  const taskIds = await findTaskIdsByStatus('in_progress');
 
-  if (tasks.length === 0) {
+  if (taskIds.length === 0) {
     logger.system('Recovery: No in_progress tasks found');
     return;
   }
 
-  logger.system(`Recovery: Found ${tasks.length} in_progress task(s), re-activating...`);
+  logger.system(`Recovery: Found ${taskIds.length} in_progress task(s), re-activating...`);
 
   // Lazy import to avoid circular dependency (task-recovery ↔ tasks/task)
   const { Task: TaskClass } = await import('./task.js');
 
-  for (const taskMeta of tasks) {
+  for (const taskId of taskIds) {
     try {
-      const task = await TaskClass.get(taskMeta.task_id);
+      const task = await TaskClass.get(taskId);
       await recoverTaskAgents(task);
-      logger.system(`Recovery: Re-activated task ${taskMeta.task_id}`);
+      logger.system(`Recovery: Re-activated task ${taskId}`);
     } catch (error) {
-      logger.error('recovery', `Failed to recover task ${taskMeta.task_id}`, error);
+      logger.error('recovery', `Failed to recover task ${taskId}`, error);
     }
   }
 }

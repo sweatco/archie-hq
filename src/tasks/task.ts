@@ -2147,34 +2147,69 @@ export function stampRuntimeVersion(metadata: TaskMetadata): boolean {
  * load, which is deliberate: the derivation is deterministic, and a read must
  * not rewrite a folder the previous engine still owns.
  *
- * Exported for testing — exercised in the normal flow via `Task.get` and the
- * webhook lookups in persistence.ts.
+ * `Task.get` is the only caller, i.e. this runs when a task is picked up. A path
+ * that merely inspects many tasks — the webhook lookups in persistence.ts — uses
+ * `readRepositories` instead, which derives the same list without the write-back
+ * or the log line. Also exported for testing.
  */
 export function migrateRepositoriesShape(metadata: TaskMetadata): boolean {
-  const repos = metadata.repositories as unknown;
-  if (Array.isArray(repos)) return false;
-  if (!repos || typeof repos !== 'object') {
-    metadata.repositories = [];
-    return true;
-  }
+  const { flat, dropped, changed } = flattenRepositories(metadata.repositories as unknown);
+  if (!changed) return false;
 
-  const flat: AttachedRepo[] = [];
-  const seen = new Set<string>();
-  for (const [key, value] of Object.entries(repos as Record<string, unknown>)) {
-    if (!Array.isArray(value)) {
-      logger.warn(
-        'task',
-        `[migrate] task ${metadata.task_id}: dropping pre-v30 repositories["${key}"] — its github identifier is no longer resolvable`,
-      );
-      continue;
-    }
-    for (const attached of value as AttachedRepo[]) {
-      if (!attached?.github || seen.has(attached.github)) continue;
-      seen.add(attached.github);
-      flat.push(attached);
-    }
+  for (const key of dropped) {
+    logger.warn(
+      'task',
+      `[migrate] task ${metadata.task_id}: dropping pre-v30 repositories["${key}"] — its github identifier is no longer resolvable`,
+    );
   }
 
   metadata.repositories = flat;
   return true;
+}
+
+/**
+ * The task's repositories as the flat `AttachedRepo[]`, derived for a *reader*:
+ * nothing is written back to `metadata` and nothing is logged.
+ *
+ * This is what a lookup wants. Webhook routing walks every candidate a fleet-wide
+ * scan turned up (`findTaskByPRNumber`, `findTaskByBranch`), and migrating each
+ * one as it passes would upgrade — and log about — tasks this process is not
+ * picking up. Migration belongs to the pickup: `Task.get` on the task being
+ * activated, persisted by `activate()`. The list this returns is identical to
+ * the migrated one, so callers see the same repos either way.
+ */
+export function readRepositories(metadata: TaskMetadata): AttachedRepo[] {
+  return flattenRepositories(metadata.repositories as unknown).flat;
+}
+
+/**
+ * Derive the flat shape from whatever is on disk. Pure: the caller decides
+ * whether to write it back (`migrateRepositoriesShape`) or merely read it
+ * (`readRepositories`), and whether dropped pre-v30 keys deserve a log line.
+ *
+ * `changed: false` means the value was already a flat array, so a migration
+ * would be a no-op.
+ */
+function flattenRepositories(
+  repos: unknown,
+): { flat: AttachedRepo[]; dropped: string[]; changed: boolean } {
+  if (Array.isArray(repos)) return { flat: repos as AttachedRepo[], dropped: [], changed: false };
+  if (!repos || typeof repos !== 'object') return { flat: [], dropped: [], changed: true };
+
+  const flat: AttachedRepo[] = [];
+  const dropped: string[] = [];
+  const seen = new Set<string>();
+  for (const [key, value] of Object.entries(repos as Record<string, unknown>)) {
+    if (!Array.isArray(value)) {
+      dropped.push(key);
+    } else {
+      for (const attached of value as AttachedRepo[]) {
+        if (!attached?.github || seen.has(attached.github)) continue;
+        seen.add(attached.github);
+        flat.push(attached);
+      }
+    }
+  }
+
+  return { flat, dropped, changed: true };
 }
