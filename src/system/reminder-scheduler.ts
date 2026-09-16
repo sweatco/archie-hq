@@ -6,10 +6,9 @@
  */
 
 import { execSync } from 'child_process';
-import { writeFile } from 'fs/promises';
 import { Task } from '../tasks/task.js';
 import { SESSIONS_DIR } from './workdir.js';
-import { loadMetadata, getMetadataPath } from '../tasks/persistence.js';
+import { loadMetadata } from '../tasks/persistence.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { emitEvent } from './event-bus.js';
 import { logger } from './logger.js';
@@ -115,7 +114,7 @@ async function rebuildFromDisk(): Promise<void> {
 /**
  * Check for due reminders and fire them.
  */
-async function checkDueReminders(): Promise<void> {
+export async function checkDueReminders(): Promise<void> {
   const now = new Date();
 
   for (const [taskId, reminder] of pendingReminders) {
@@ -125,20 +124,16 @@ async function checkDueReminders(): Promise<void> {
     pendingReminders.delete(taskId);
 
     try {
-      // 2. Clear metadata.reminder + flush save (agent sees clean state)
-      const metadata = await loadMetadata(taskId);
-      if (!metadata) {
-        logger.warn('reminder-scheduler', `Task ${taskId} not found on disk, skipping reminder`);
-        continue;
-      }
+      // 2. Clear the canonical metadata object and flush it before reactivation.
+      // Task.get may return retained inactive metadata, so an independent disk
+      // write would leave a stale reminder in memory that a later save resurrects.
+      const task = await Task.get(taskId);
+      task.metadata.reminder = undefined;
+      await task.save(true);
 
-      metadata.reminder = undefined;
-      await writeFile(getMetadataPath(taskId), JSON.stringify(metadata, null, 2));
-
-      // 3. Reactivate task
+      // 3. Reactivate task only after the consumed reminder is durable.
       emitEvent('reminder:fired', taskId, { reason: reminder.reason });
       logger.system(`Reminder fired for ${taskId}: ${reminder.reason}`);
-      const task = await Task.get(taskId);
       await task.sendMessage(
         AGENT_PROMPTS.reminder(reminder.reason),
       );

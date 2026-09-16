@@ -7,7 +7,7 @@
 
 import { mkdir, writeFile } from 'fs/promises';
 import { randomUUID } from 'crypto';
-import { ToolAccessDenied, type ToolAccessBinding, type SlackPrincipal } from '../agents/tool-access.js';
+import { ToolAccessDenied, ToolAccessRevoked, type ToolAccessBinding, type SlackPrincipal } from '../agents/tool-access.js';
 import { authorizeToolCall, verifyToolApproval, assertCurrentToolAccess, assertUnrestrictedApproval } from './tool-access.js';
 import type { SlackAuthor, SlackChannel, SlackThread, TaskMetadata, BranchState, FindingType } from '../types/task.js';
 import { CLI_CHANNEL_KEY } from '../types/task.js';
@@ -1649,13 +1649,33 @@ export class Task {
       throw new ToolAccessDenied('The approval belongs to a different request or access policy.');
     }
 
-    const recheck = await verifyToolApproval(
-      this,
-      grant.server,
-      grant.tool,
-      access,
-      grant.approver_principal,
-    );
+    let recheck: () => void;
+    try {
+      recheck = await verifyToolApproval(
+        this,
+        grant.server,
+        grant.tool,
+        access,
+        grant.approver_principal,
+      );
+    } catch (error) {
+      // A confirmed identity/membership revocation makes this grant permanently
+      // unusable. Remove it durably so the gate can request a different eligible
+      // approver. Transient Slack/policy verification failures keep the grant and
+      // continue to fail closed instead of turning an outage into revocation.
+      if (!(error instanceof ToolAccessRevoked)) throw error;
+      if (!this.metadata.approved_tool_calls?.includes(grant)) return false;
+      this.metadata.approved_tool_calls = this.metadata.approved_tool_calls.filter((item) => item !== grant);
+      await this.save(true);
+      void appendAgentFinding(
+        this.taskId,
+        'system',
+        `Tool access grant revoked: ${grant.server}:${grant.tool} ` +
+          `(approver ${grant.approver_principal?.userId ?? grant.approved_by ?? 'unverified'})`,
+        'decision',
+      ).catch(() => {});
+      return false;
+    }
     // No await between recheck and removal: concurrent retries cannot both spend.
     recheck();
     if (!this.metadata.approved_tool_calls?.includes(grant) || Date.parse(grant.expires_at) <= Date.now()) {

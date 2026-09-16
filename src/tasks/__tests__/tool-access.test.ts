@@ -26,7 +26,7 @@ vi.mock('../persistence.js', async (original) => ({
 
 import { Task, activeTasks } from '../task.js';
 import { createToolApprovalHooks, type McpServerPolicy } from '../../agents/tool-approval-gate.js';
-import { ToolAccessDenied } from '../../agents/tool-access.js';
+import { ToolAccessDenied, ToolAccessRevoked } from '../../agents/tool-access.js';
 import { liveMcpPolicy } from '../tool-access.js';
 import { mountApiRoutes } from '../../connectors/api/routes.js';
 import { registerToolApprovalHandlers } from '../../connectors/slack/events.js';
@@ -138,12 +138,31 @@ describe('group-restricted MCP execution', () => {
     expect(task.metadata.pending_tool_approval?.access).toBeDefined();
   });
 
-  it('rechecks membership at spend and refuses after removal', async () => {
+  it('discards a revoked grant and lets another eligible member approve a replacement', async () => {
     await invoke();
     await task.handleToolCallApproval(approver, ref());
-    membership.mockRejectedValue(new ToolAccessDenied('User removed from group'));
+    membership.mockImplementation(async (principal) => {
+      if (principal?.userId === approver.id) throw new ToolAccessRevoked('User removed from group');
+      if (principal?.userId === 'U3') return () => {};
+      throw new ToolAccessRevoked('User is not eligible');
+    });
+    denied(await invoke());
+    expect(task.metadata.approved_tool_calls).toHaveLength(0);
+    expect(task.metadata.pending_tool_approval).toBeDefined();
+
+    const replacement = { id: 'U3', name: 'Backup lead', principal: { teamId: 'T1', userId: 'U3' } };
+    await task.handleToolCallApproval(replacement, ref());
+    expect(await invoke()).toEqual({ continue: true });
+    expect(task.metadata.approved_tool_calls).toHaveLength(0);
+  });
+
+  it('keeps an unspent grant when membership verification is temporarily unavailable', async () => {
+    await invoke();
+    await task.handleToolCallApproval(approver, ref());
+    membership.mockRejectedValue(new ToolAccessDenied('Slack membership lookup unavailable'));
     denied(await invoke());
     expect(task.metadata.approved_tool_calls).toHaveLength(1);
+    expect(task.metadata.pending_tool_approval).toBeUndefined();
   });
 
   it('does not redirect a grant to changed arguments', async () => {

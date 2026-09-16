@@ -2,7 +2,7 @@
 
 import type { WebClient } from '@slack/web-api';
 import { getHomeTeamId, getSlackClient } from './client.js';
-import { ToolAccessDenied, type SlackPrincipal } from '../../agents/tool-access.js';
+import { ToolAccessDenied, ToolAccessRevoked, type SlackPrincipal } from '../../agents/tool-access.js';
 
 export const GROUP_CACHE_TTL_MS = 60_000;
 const LOOKUP_TIMEOUT_MS = 5_000;
@@ -31,7 +31,7 @@ export class SlackGroupAccess {
   async requireMembership(principal: SlackPrincipal | undefined, groups: string[]): Promise<() => void> {
     const teamId = this.homeTeam();
     if (!principal || !teamId || principal.teamId !== teamId || !/^[UW][A-Z0-9]+$/.test(principal.userId)) {
-      throw new ToolAccessDenied('A verified human from the configured Slack workspace is required.');
+      throw new ToolAccessRevoked('A verified human from the configured Slack workspace is required.');
     }
     const generation = this.generation;
     const started = Date.now();
@@ -42,11 +42,11 @@ export class SlackGroupAccess {
       const user = userResult.user;
       if (!userResult.ok || !user || user.team_id !== teamId || user.deleted || user.is_bot || user.is_app_user ||
           user.is_restricted || user.is_ultra_restricted) {
-        throw new ToolAccessDenied('An active internal Slack member is required.');
+        throw new ToolAccessRevoked('An active internal Slack member is required.');
       }
       const members = await Promise.all(groups.map((group) => this.members(teamId, group)));
       if (!members.some(({ users }) => users.has(principal.userId))) {
-        throw new ToolAccessDenied(`Requires membership in Slack user group ${groups.join(' or ')}.`);
+        throw new ToolAccessRevoked(`Requires membership in Slack user group ${groups.join(' or ')}.`);
       }
       const expires = Math.min(started + GROUP_CACHE_TTL_MS, ...members.map((entry) => entry.expires));
       const recheck = () => {

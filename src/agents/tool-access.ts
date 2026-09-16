@@ -29,6 +29,14 @@ export class ToolAccessDenied extends Error {
   }
 }
 
+/** A definitive identity/membership failure that invalidates an existing grant. */
+export class ToolAccessRevoked extends ToolAccessDenied {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ToolAccessRevoked';
+  }
+}
+
 function object(value: unknown, where: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`${where} must be an object.`);
