@@ -20,6 +20,7 @@
 import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { mcpToolName, parseMcpToolName, type McpToolPolicy, type McpServerPolicy, type ToolTier } from '../agents/tool-approval-gate.js';
+import { parseMcpAccessPolicy } from '../agents/tool-access.js';
 import { PLUGINS_DIR } from './workdir.js';
 import { logger } from './logger.js';
 
@@ -94,11 +95,11 @@ function parseServerPolicy(serverKey: string, raw: unknown, path: string): McpSe
     );
   }
 
-  const allowedKeys = new Set(['default', 'titles', ...TIERS]);
+  const allowedKeys = new Set(['default', 'titles', 'access', ...TIERS]);
   for (const key of Object.keys(entry)) {
     if (key.startsWith('_')) continue;
     if (!allowedKeys.has(key)) {
-      throw new Error(`${where}: unknown key "${key}" — expected one of default, ${TIERS.join(', ')}, titles, or a "_"-prefixed comment.`);
+      throw new Error(`${where}: unknown key "${key}" — expected one of default, ${TIERS.join(', ')}, titles, access, or a "_"-prefixed comment.`);
     }
   }
 
@@ -136,7 +137,14 @@ function parseServerPolicy(serverKey: string, raw: unknown, path: string): McpSe
     }
   }
 
-  return { default: fallback as ToolTier, tiers, titles };
+  return {
+    default: fallback as ToolTier,
+    tiers,
+    titles,
+    ...(entry.access !== undefined
+      ? { access: parseMcpAccessPolicy(entry.access, `${where}.access`) }
+      : {}),
+  };
 }
 
 /**
@@ -148,9 +156,12 @@ function parseServerPolicy(serverKey: string, raw: unknown, path: string): McpSe
  * always has. A *malformed policy* throws instead: dropping it would silently
  * ungate a tool someone meant to gate.
  */
-export function loadMcpJson(path: string): LoadedMcpConfig {
+export function loadMcpJson(path: string, strict = false): LoadedMcpConfig {
   const empty: LoadedMcpConfig = { servers: {}, descriptions: {}, policies: {} };
-  if (!existsSync(path)) return empty;
+  if (!existsSync(path)) {
+    if (strict) throw new Error('MCP configuration is unavailable.');
+    return empty;
+  }
 
   let rawServers: Record<string, any>;
   try {
@@ -162,6 +173,7 @@ export function loadMcpJson(path: string): LoadedMcpConfig {
     });
     rawServers = JSON.parse(substituted).mcpServers ?? {};
   } catch {
+    if (strict) throw new Error('MCP configuration cannot be parsed.');
     logger.warn('system', `MCP config: failed to parse ${path}`);
     return empty;
   }
@@ -321,8 +333,8 @@ export function initPlugins(): void {
  * Loaded fresh each call so config changes are picked up.
  * Every server in it attaches to the PM session.
  */
-export function getRootMcpConfig(): LoadedMcpConfig {
-  return loadMcpJson(join(PLUGINS_DIR, '.mcp.json'));
+export function getRootMcpConfig(strict = false): LoadedMcpConfig {
+  return loadMcpJson(join(PLUGINS_DIR, '.mcp.json'), strict);
 }
 
 /**

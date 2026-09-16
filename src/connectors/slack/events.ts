@@ -16,6 +16,7 @@ import {
   initSlackClient,
   updateMessage,
   getBotUserId,
+  getHomeTeamId,
   fetchSlackThread,
   getBotId,
   addReaction,
@@ -41,6 +42,8 @@ import { messageMatchesTrigger } from '../../system/trigger-match.js';
 import { generateTaskTitle } from '../../tasks/title-generator.js';
 import { setAssistantThreadTitle } from './title.js';
 import type { SlackThread, SlackAuthor } from '../../types/task.js';
+import { ToolAccessDenied, type SlackPrincipal } from '../../agents/tool-access.js';
+import { slackGroupAccess } from './user-groups.js';
 
 /**
  * Slack configuration
@@ -429,6 +432,8 @@ export async function mountSlackApp(
 
   registerMergeActionHandlers(app!);
   registerToolApprovalHandlers(app!);
+  app!.event('subteam_members_changed', async () => { slackGroupAccess.invalidate(); });
+  app!.event('subteam_updated', async () => { slackGroupAccess.invalidate(); });
 
   // Handle trigger approval button
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -638,11 +643,11 @@ async function generateTitleAndSync(task: Task, thread: SlackThread): Promise<vo
   }
 }
 
-/** Parse a tool-approval button value (`<taskId>|<digest>`). */
-function parseToolApprovalButtonValue(value: string): { taskId: string; digest: string } {
+/** Parse a tool-approval button value (`<taskId>|<opaque-ref>`). */
+function parseToolApprovalButtonValue(value: string): { taskId: string; ref: string } {
   const pipe = value.indexOf('|');
-  if (pipe === -1) return { taskId: value, digest: '' };
-  return { taskId: value.slice(0, pipe), digest: value.slice(pipe + 1) };
+  if (pipe === -1) return { taskId: value, ref: '' };
+  return { taskId: value.slice(0, pipe), ref: value.slice(pipe + 1) };
 }
 
 const STALE_TOOL_APPROVAL_TEXT =
@@ -652,18 +657,20 @@ const STALE_TOOL_APPROVAL_TEXT =
 /**
  * Register the MCP tool-call approve/deny button handlers.
  *
- * Same shape and same trust model as the merge pair: any workspace member who
- * can see the prompt may resolve it — identity is resolved for the audit
- * finding only, and an external/guest clicker still resolves with their
- * identity omitted, mirroring edit mode and merge. The Task method's atomic
- * read-compare-clear on the digest is the single verification point.
+ * An unrestricted prompt retains the original workspace-wide trust model. A
+ * group-restricted prompt resolves only for a verified home-workspace member;
+ * the Task method rechecks membership and the live policy before minting a
+ * grant. Refused clicks leave the prompt intact.
  *
  * Exported for tests, which pass a fake Bolt app recording `.action`
  * registrations; production registration happens in mountSlackApp.
  */
 export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): void {
-  /** Resolve the clicker for attribution; never blocks resolution. */
-  const resolveApprover = async (userId: string | undefined): Promise<{ id: string; name: string } | undefined> => {
+  /** Resolve attribution and, only for a verified home-workspace action, authority. */
+  const resolveApprover = async (
+    userId: string | undefined,
+    teamId?: string,
+  ): Promise<{ id: string; name: string; principal?: SlackPrincipal } | undefined> => {
     if (!userId) return undefined;
     try {
       const info = await getUserInfo(userId);
@@ -671,7 +678,10 @@ export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): 
         logger.system(`Tool-call approver ${userId} is external/guest — identity omitted from the finding`);
         return undefined;
       }
-      return { id: userId, name: info.realName };
+      const principal = teamId && teamId === getHomeTeamId() && info.teamId === teamId
+        ? { userId, teamId }
+        : undefined;
+      return { id: userId, name: info.realName, principal };
     } catch (error) {
       logger.warn('Slack', `Failed to resolve tool-call approver ${userId}`, error);
       return { id: userId, name: userId };
@@ -682,14 +692,14 @@ export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): 
   boltApp.action('approve_tool_call', async ({ action, ack, body }: any) => {
     await ack();
 
-    const { taskId, digest } = parseToolApprovalButtonValue(String(action.value ?? ''));
+    const { taskId, ref } = parseToolApprovalButtonValue(String(action.value ?? ''));
     const userId = body.user?.id || 'unknown';
-    logger.server(`Tool call approved by ${userId} for task ${taskId} (${digest})`);
+    logger.server(`Tool-call approval clicked by ${userId} for task ${taskId} (${ref})`);
 
     try {
-      const approver = await resolveApprover(userId !== 'unknown' ? userId : undefined);
+      const approver = await resolveApprover(userId !== 'unknown' ? userId : undefined, body.team?.id);
       const task = await Task.get(taskId);
-      const disposition = await task.handleToolCallApproval(approver, digest);
+      const disposition = await task.handleToolCallApproval(approver, ref);
 
       if (body.channel?.id && body.message?.ts) {
         const text = disposition === 'resolved'
@@ -698,6 +708,10 @@ export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): 
         await updateMessage(body.channel.id, body.message.ts, text, []);
       }
     } catch (error) {
+      if (error instanceof ToolAccessDenied && body.channel?.id) {
+        await postEphemeral(body.channel.id, userId, error.message);
+        return;
+      }
       logger.error('Server', 'Error handling tool-call approval', error);
     }
   });
@@ -706,13 +720,14 @@ export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): 
   boltApp.action('deny_tool_call', async ({ action, ack, body }: any) => {
     await ack();
 
-    const { taskId, digest } = parseToolApprovalButtonValue(String(action.value ?? ''));
+    const { taskId, ref } = parseToolApprovalButtonValue(String(action.value ?? ''));
     const userId = body.user?.id || 'unknown';
-    logger.server(`Tool call denied by ${userId} for task ${taskId} (${digest})`);
+    logger.server(`Tool-call denial clicked by ${userId} for task ${taskId} (${ref})`);
 
     try {
       const task = await Task.get(taskId);
-      const disposition = await task.handleToolCallDenial(digest);
+      const approver = await resolveApprover(userId !== 'unknown' ? userId : undefined, body.team?.id);
+      const disposition = await task.handleToolCallDenial(ref, approver?.principal);
 
       if (body.channel?.id && body.message?.ts) {
         const text = disposition === 'resolved'
@@ -721,6 +736,10 @@ export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): 
         await updateMessage(body.channel.id, body.message.ts, text, []);
       }
     } catch (error) {
+      if (error instanceof ToolAccessDenied && body.channel?.id) {
+        await postEphemeral(body.channel.id, userId, error.message);
+        return;
+      }
       logger.error('Server', 'Error handling tool-call denial', error);
     }
   });
@@ -1112,4 +1131,3 @@ async function sendSharedChannelWarnings(
 
   task.debouncedSave();
 }
-

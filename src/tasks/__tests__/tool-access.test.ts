@@ -34,7 +34,8 @@ import type { TaskMetadata } from '../../types/task.js';
 import type { AgentDef } from '../../types/agent.js';
 import { appendCliMessage } from '../persistence.js';
 
-const TaskCtor = Task as unknown as new (id: string, metadata: TaskMetadata, team: AgentDef[]) => Task;
+const TaskCtor = Task as unknown as new (id: string, metadata: TaskMetadata, pmDef: AgentDef) => Task;
+const pmDef = { id: 'pm-agent', key: 'pm-agent' } as AgentDef;
 let policy: McpServerPolicy;
 let task: Task;
 let save: ReturnType<typeof vi.fn<(flush?: boolean) => Promise<void>>>;
@@ -55,9 +56,9 @@ beforeEach(() => {
   });
   const id = `test-${randomUUID()}`;
   task = new TaskCtor(id, {
-    task_id: id, task_owner: null, participants: [], channels: {}, default_channel: null,
-    agent_sessions: {}, repositories: {}, status: 'in_progress', created_at: '', updated_at: '',
-  }, []);
+    task_id: id, channels: {}, default_channel: null,
+    agent_sessions: {}, repositories: [], status: 'in_progress', created_at: '', updated_at: '',
+  }, pmDef);
   save = vi.fn().mockResolvedValue(undefined);
   task.save = save;
   task.sendMessage = vi.fn().mockResolvedValue(undefined);
@@ -170,10 +171,10 @@ describe('group-restricted MCP execution', () => {
   it('preserves bindings on reload and refuses a grant moved to another task', async () => {
     await invoke(); await task.handleToolCallApproval(approver, ref());
     const persisted = JSON.stringify(task.metadata);
-    task = new TaskCtor(task.taskId, JSON.parse(persisted), []);
+    task = new TaskCtor(task.taskId, JSON.parse(persisted), pmDef);
     task.save = save;
     expect(await invoke()).toEqual({ continue: true });
-    task = new TaskCtor(`other-${randomUUID()}`, JSON.parse(persisted), []);
+    task = new TaskCtor(`other-${randomUUID()}`, JSON.parse(persisted), pmDef);
     const moved = task.metadata.approved_tool_calls![0];
     await expect(task.consumeToolApproval(moved.digest, moved.access)).rejects.toThrow('policy changed');
   });
@@ -279,7 +280,7 @@ describe('replacing an obsolete approval', () => {
     await posting;
     const oldRef = ref();
     policy.titles.publish = 'Updated consequence';
-    await invoke({ release: 1 }, 'release-agent');
+    await invoke();
     const replacement = task.metadata.pending_tool_approval;
     expect(replacement?.approval_ref).not.toBe(oldRef);
     rejectOld(new Error('Old Slack post failed'));
@@ -289,11 +290,8 @@ describe('replacing an obsolete approval', () => {
 
   it('does not re-arm an obsolete prompt when its post succeeds after the replacement was approved', async () => {
     const { Agent } = await import('../../agents/agent.js');
-    const first = new Agent({ id: 'pm-agent' } as AgentDef);
-    const second = new Agent({ id: 'release-agent' } as AgentDef);
-    const agents = (task as unknown as { agentProcesses: Map<string, InstanceType<typeof Agent>> }).agentProcesses;
-    agents.set('pm-agent', first);
-    agents.set('release-agent', second);
+    const pm = new Agent(pmDef);
+    task.agent = pm;
     let finishOld!: () => void;
     let entered!: () => void;
     const posting = new Promise<void>((resolve) => { entered = resolve; });
@@ -304,31 +302,26 @@ describe('replacing an obsolete approval', () => {
     const oldCall = invoke();
     await posting;
     policy.titles.publish = 'Updated consequence';
-    await invoke({ release: 1 }, 'release-agent');
+    await invoke();
     await task.handleToolCallApproval(approver, ref());
     vi.mocked(task.suspendStatus).mockClear();
     finishOld();
     await oldCall;
     expect(task.metadata.pending_tool_approval).toBeUndefined();
-    expect(first.pendingTeardown).toBeUndefined();
-    expect(second.pendingTeardown).toBeUndefined();
+    expect(pm.pendingTeardown).toBeUndefined();
     expect(task.suspendStatus).not.toHaveBeenCalled();
   });
 
-  it('clears the old agent park when a different agent replaces and approves its prompt', async () => {
+  it('clears the PM park when a policy change replaces and approves its prompt', async () => {
     policy.access = { default: { approverGroups: ['S2'] } };
     const { Agent } = await import('../../agents/agent.js');
-    const first = new Agent({ id: 'pm-agent' } as AgentDef);
-    const second = new Agent({ id: 'release-agent' } as AgentDef);
-    const agents = (task as unknown as { agentProcesses: Map<string, InstanceType<typeof Agent>> }).agentProcesses;
-    agents.set('pm-agent', first);
-    agents.set('release-agent', second);
+    const pm = new Agent(pmDef);
+    task.agent = pm;
     await invoke();
-    expect(first.pendingTeardown).toBeDefined();
+    expect(pm.pendingTeardown).toBeDefined();
     policy.titles.publish = 'Updated consequence';
-    await invoke({ release: 1 }, 'release-agent');
+    await invoke();
     await task.handleToolCallApproval(approver, ref());
-    expect(second.pendingTeardown).toBeUndefined();
-    expect(first.pendingTeardown).toBeUndefined();
+    expect(pm.pendingTeardown).toBeUndefined();
   });
 });

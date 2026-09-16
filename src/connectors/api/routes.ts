@@ -25,6 +25,7 @@ import { logger } from '../../system/logger.js';
 import { listTriggers, loadTrigger, saveTrigger, deleteTrigger, countActiveTriggers } from '../../system/trigger-store.js';
 import { indexTrigger, deindexTrigger, announceTriggerChange, describeTrigger, MAX_TRIGGERS_PER_USER, MAX_TRIGGERS_PER_CHANNEL } from '../../system/trigger-scheduler.js';
 import type { Trigger } from '../../types/trigger.js';
+import { ToolAccessDenied } from '../../agents/tool-access.js';
 
 /**
  * Mount API routes on an existing Express app.
@@ -285,13 +286,11 @@ export function mountApiRoutes(app: Application): void {
           await task.handleTriggerDenial(ref);
         }
       } else if (type === 'tool_call') {
-        // Same trust model as every other gate's API path: reaching this route
-        // means operator access to the engine. `ref` carries the digest of the
-        // exact (server, tool, arguments) call being resolved — echoed from the
-        // approval event — and is verified against the pending slot inside the
-        // Task methods.
+        // `ref` is the pending prompt's opaque identity. API-supplied approver
+        // data is audit metadata only and cannot satisfy a Slack group policy;
+        // the Task verifier returns 403 for such protected prompts.
         if (typeof ref !== 'string' || !ref) {
-          res.status(400).json({ error: 'tool_call approval requires ref (the call digest)' });
+          res.status(400).json({ error: 'tool_call approval requires ref (the call reference)' });
           return;
         }
         const disposition = approve
@@ -319,6 +318,10 @@ export function mountApiRoutes(app: Application): void {
       emitEvent('approval:resolved', taskId, { type, approve });
       res.json({ ok: true });
     } catch (error) {
+      if (error instanceof ToolAccessDenied) {
+        res.status(403).json({ error: error.message });
+        return;
+      }
       logger.error('api', 'Failed to process approval', error);
       res.status(500).json({ error: 'Failed to process approval' });
     }

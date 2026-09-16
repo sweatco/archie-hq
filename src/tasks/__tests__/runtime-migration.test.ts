@@ -20,13 +20,20 @@ const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
 vi.mock('../../agents/spawn.js', () => ({ spawnAgent: spawnMock }));
 
 // Every save in these cases would otherwise write into a real sessions dir.
-const { writeFileMock, mkdirMock } = vi.hoisted(() => ({
+const { writeFileMock, mkdirMock, writeJsonAtomicMock } = vi.hoisted(() => ({
   writeFileMock: vi.fn().mockResolvedValue(undefined),
   mkdirMock: vi.fn().mockResolvedValue(undefined),
+  writeJsonAtomicMock: vi.fn(async (path: string, data: unknown) => {
+    writeFileMock(path, JSON.stringify(data, null, 2));
+  }),
 }));
 vi.mock('fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs/promises')>();
   return { ...actual, writeFile: writeFileMock, mkdir: mkdirMock };
+});
+vi.mock('../../system/secrets-vault.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../system/secrets-vault.js')>();
+  return { ...actual, writeJsonAtomic: writeJsonAtomicMock };
 });
 
 vi.mock('../../system/plugin-sync.js', () => ({ syncPlugins: vi.fn().mockResolvedValue(undefined) }));
@@ -46,7 +53,12 @@ import { logger } from '../../system/logger.js';
 import type { TaskMetadata } from '../../types/task.js';
 import type { AgentDef } from '../../types/agent.js';
 
-const TASK_ID = 'task-20260101-0000-legacy';
+let taskSequence = 0;
+let TASK_ID = 'task-20260101-0000-legacy';
+
+beforeEach(() => {
+  TASK_ID = `task-20260101-0000-legacy-${++taskSequence}`;
+});
 
 /** A task folder as the old engine left it: no runtime_version anywhere. */
 function legacyMetadata(over: Partial<TaskMetadata> = {}): TaskMetadata {

@@ -66,7 +66,7 @@ Because a worker no longer needs a definition file just to exist, one is written
 `$ARCHIE_WORKDIR/plugins/.mcp.json` is the single source of MCP servers, and **every server in it attaches to the PM session**. `loadMcpJson()` reads it, substitutes `${MCP_*}` environment variables, and splits out two Archie extensions before the config reaches the SDK, so a plugin repo authored for Archie stays a valid Claude plugin:
 
 - `description` — one human-readable line per server, used to phrase the Slack status line for an integration call.
-- `archie` — the tool approval policy for that server: `{ default, allow, ask, deny, titles }`. Policies from all servers are unioned into one session policy; `deny` tiers become `disallowedTools`, `ask` tiers attach the PreToolUse approval gate. A server without this block is unmanaged. A malformed block throws rather than being dropped. See [tool-approvals.md](tool-approvals.md).
+- `archie` — the tool approval policy for that server: `{ default, allow, ask, deny, titles, access }`. `access` optionally restricts ask-tier approval to Slack user groups. Policies from all servers are unioned into one session policy; `deny` tiers become `disallowedTools`, while a live PreToolUse gate watches every mounted plugin server so policy changes take effect without a respawn. A server without this block is unmanaged. A malformed block throws rather than being dropped. See [tool-approvals.md](tool-approvals.md).
 
 Every plugin is passed with `skipMcpDiscovery: true`, so a plugin that still ships its own `.mcp.json` does not get its servers connected behind the engine's back.
 
