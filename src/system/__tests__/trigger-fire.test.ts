@@ -29,6 +29,7 @@ const {
   saveTriggerMock,
   ensureChannelCanvasMock,
   ensureChannelPinsMock,
+  classifySlackMemoryScopeMock,
 } = vi.hoisted(() => ({
   taskCreateMock: vi.fn(),
   appendSlackMessageMock: vi.fn(),
@@ -38,6 +39,7 @@ const {
   saveTriggerMock: vi.fn(),
   ensureChannelCanvasMock: vi.fn(),
   ensureChannelPinsMock: vi.fn(),
+  classifySlackMemoryScopeMock: vi.fn(),
 }));
 
 // Partial mocks throughout (`importOriginal` + override) rather than bare factories: `Task` pulls in the
@@ -61,6 +63,7 @@ vi.mock('../../connectors/slack/client.js', async (importOriginal) => {
     ...actual,
     isChannelReachable: isChannelReachableMock,
     postSlackMessage: postSlackMessageMock,
+    classifySlackMemoryScope: classifySlackMemoryScopeMock,
     // Without this the redaction case is a dead branch: `isExternalUser` fails open to false when the
     // Slack client was never initialised, so `shouldRedact` would say no and the case would assert the
     // ordinary path under a redacted-looking fixture.
@@ -98,7 +101,10 @@ import { Task } from '../../tasks/task.js';
 
 // The constructor is private, and the real `Task.create` touches disk — the redaction case needs a real
 // instance without either, so it is built through the same cast `append-render-ordering.test.ts` uses.
-const TaskCtor = Task as unknown as new (taskId: string, metadata: TaskMetadata, team: AgentDef[]) => Task;
+const TaskCtor = Task as unknown as new (taskId: string, metadata: TaskMetadata, pmDef: AgentDef) => Task;
+const PM_DEF = {
+  id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'core', visibility: 'global', isPm: true,
+} as AgentDef;
 
 interface FakeTask {
   taskId: string;
@@ -108,6 +114,7 @@ interface FakeTask {
   sendMessage: ReturnType<typeof vi.fn>;
   debouncedSave: ReturnType<typeof vi.fn>;
   save: ReturnType<typeof vi.fn>;
+  setMemoryDestination: ReturnType<typeof vi.fn>;
 }
 
 let createdTasks: FakeTask[] = [];
@@ -121,6 +128,9 @@ function fakeTask(n: number): FakeTask {
     sendMessage: vi.fn().mockResolvedValue(undefined),
     debouncedSave: vi.fn(),
     save: vi.fn().mockResolvedValue(undefined),
+    setMemoryDestination: vi.fn(function (this: FakeTask, channelId: string) {
+      this.metadata.memory_destination = { channel_id: channelId };
+    }),
   };
 }
 
@@ -170,6 +180,7 @@ beforeEach(() => {
   saveTriggerMock.mockResolvedValue(undefined);
   ensureChannelCanvasMock.mockResolvedValue(undefined);
   ensureChannelPinsMock.mockResolvedValue(undefined);
+  classifySlackMemoryScopeMock.mockResolvedValue({ kind: 'public', channel_id: CHANNEL });
 });
 
 describe('a message fire ingests its thread', () => {
@@ -344,6 +355,17 @@ describe('a schedule fire homes its task in the bound channel', () => {
       channel_id: CHANNEL,
       channel_name: CHANNEL_NAME,
     });
+    expect(createdTasks[0]!.metadata.memory_destination).toEqual({ channel_id: CHANNEL });
+  });
+
+  it('fixes the destination before the first agent turn', async () => {
+    await fireTrigger(makeTrigger(), { kind: 'schedule' });
+
+    expect(createdTasks[0]!.setMemoryDestination.mock.invocationCallOrder[0]!)
+      .toBeLessThan(createdTasks[0]!.sendMessage.mock.invocationCallOrder[0]!);
+    expect(createdTasks[0]!.save).toHaveBeenCalledWith(true);
+    expect(createdTasks[0]!.save.mock.invocationCallOrder[0]!)
+      .toBeLessThan(createdTasks[0]!.sendMessage.mock.invocationCallOrder[0]!);
   });
 
   it('refreshes that channel\'s canvas and pin index before the first agent spawns', async () => {
@@ -414,10 +436,10 @@ describe('a message fire ingests through the real Task.append', () => {
   // real `Task` whose only stubs are the two persistence-adjacent seams (`debouncedSave`, `sendMessage`).
   function realTask(): Task {
     const metadata = {
-      task_id: 'task-real', task_owner: null, participants: [], channels: {}, default_channel: null,
-      agent_sessions: {},
+      task_id: 'task-real', channels: {}, default_channel: null,
+      agent_sessions: {}, repositories: [],
     } as unknown as TaskMetadata;
-    const task = new TaskCtor('task-real', metadata, []);
+    const task = new TaskCtor('task-real', metadata, PM_DEF);
     const stubbed = task as unknown as { debouncedSave: () => void; sendMessage: unknown; save: () => Promise<void> };
     stubbed.debouncedSave = () => {};
     stubbed.sendMessage = vi.fn().mockResolvedValue(undefined);

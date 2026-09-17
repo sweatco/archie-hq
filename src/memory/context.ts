@@ -8,18 +8,14 @@
 import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { readUser } from './store.js';
-import { listEntities, serializeEntity } from './entities.js';
-import { readIndexMarkdown, renderIndex, selectEntities } from './entity-index.js';
-import { isMemoryEnabled, isInjectionEnabled, getRecentActivityPath } from './paths.js';
+import { listEntities } from './entities.js';
+import { renderIndex } from './entity-index.js';
+import { isMemoryReady, isInjectionEnabled, isMemoryToolsEnabled, getRecentActivityPath } from './paths.js';
 import { logger } from '../system/logger.js';
-import type { UserRef, EntityRecord } from './types.js';
+import type { UserRef } from './types.js';
 
-/** Spawn-context selectors used to push the relevant entity pages. */
-export interface MemorySelectors {
-  repo?: string;
-  plugin?: string;
-  taskTitle?: string;
-}
+const ENTITY_CATALOGUE_LIMIT = 4_000;
+const ENTITY_TOOL_GUIDANCE = 'The catalogue may be incomplete. Use search_memory to find relevant knowledge and read_entity for details.';
 
 /**
  * Build an XML-tagged memory context string from available memory artifacts.
@@ -35,8 +31,9 @@ export interface MemorySelectors {
  */
 export async function buildMemoryContext(
   users: UserRef[] | string[],
-  selectors: MemorySelectors = {},
 ): Promise<string> {
+  if (!isMemoryReady()) return '';
+
   const blocks: string[] = [];
 
   // Per-user preferences
@@ -68,29 +65,16 @@ export async function buildMemoryContext(
     }
   }
 
-  // Entity layer: always inject the thin index when any entity exists, then
-  // push the full pages selected for this spawn (repo/plugin + users + title).
-  const records = await listEntities();
+  const records = (await listEntities()).filter((record) => record.status !== 'archived');
   if (records.length > 0) {
-    const indexMd = (await readIndexMarkdown()).trim() || renderIndex(records).trim();
-    if (indexMd) {
-      blocks.push(`<entity_index>\n${indexMd}\n</entity_index>`);
-    }
-    const { selected, dropped } = selectEntities(records, { ...selectors, users: refs });
-    if (dropped.length > 0) {
-      logger.system(`[memory] entity selection dropped ${dropped.length} over inject cap: ${dropped.join(', ')}`);
-    }
-    for (const rec of selected) {
-      blocks.push(renderEntityBlock(rec));
-    }
+    const open = '<entity_index>\n';
+    const guidance = isMemoryToolsEnabled() ? `\n\n${ENTITY_TOOL_GUIDANCE}` : '';
+    const close = '\n</entity_index>';
+    const index = renderIndex(records, ENTITY_CATALOGUE_LIMIT - open.length - guidance.length - close.length).trimEnd();
+    if (index) blocks.push(`${open}${index}${guidance}${close}`);
   }
 
   return blocks.join('\n\n');
-}
-
-/** Wrap a full entity page in an `<entity ...>` block for prompt injection. */
-function renderEntityBlock(rec: EntityRecord): string {
-  return `<entity slug="${escapeAttr(rec.entity)}" type="${escapeAttr(rec.type)}" scope="${escapeAttr(rec.scope)}">\n${serializeEntity(rec).trimEnd()}\n</entity>`;
 }
 
 /**
@@ -108,20 +92,19 @@ function renderEntityBlock(rec: EntityRecord): string {
 export async function enrichPromptWithMemory(
   systemPrompt: string,
   users: UserRef[] | string[],
-  selectors: MemorySelectors = {},
 ): Promise<string> {
-  if (!isMemoryEnabled()) {
+  if (!isMemoryReady()) {
     return systemPrompt;
   }
 
   // Injection is gated separately from extraction and defaults off. Bail before
-  // any store read or entity selection so disabled injection costs nothing.
+  // any store read so disabled injection costs nothing.
   if (!isInjectionEnabled()) {
     logger.debug('memory', 'injection disabled (ARCHIE_MEMORY_INJECT≠true) — prompt unchanged; extraction unaffected');
     return systemPrompt;
   }
 
-  const memoryContext = await buildMemoryContext(users, selectors);
+  const memoryContext = await buildMemoryContext(users);
   if (!memoryContext) {
     return systemPrompt;
   }

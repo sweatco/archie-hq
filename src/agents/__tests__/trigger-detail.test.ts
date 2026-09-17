@@ -73,6 +73,7 @@ function makeTask(): Task {
     isActive: true,
     metadata: { channels: {}, default_channel: null },
     touch: vi.fn(), debouncedSave: vi.fn(), save: vi.fn().mockResolvedValue(undefined),
+    prepareTriggerDelivery: vi.fn().mockResolvedValue(undefined),
     postInteractiveToUser: vi.fn().mockResolvedValue(undefined),
   } as unknown as Task;
 }

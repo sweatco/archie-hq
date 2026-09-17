@@ -6,9 +6,10 @@
  */
 
 import { mkdir, writeFile } from 'fs/promises';
-import type { SlackAuthor, SlackChannel, SlackThread, TaskMetadata, BranchState, FindingType } from '../types/task.js';
+import type { SlackAuthor, SlackChannel, SlackThread, TaskMetadata, BranchState, FindingType, TaskMemoryScope } from '../types/task.js';
 import { CLI_CHANNEL_KEY } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
+import type { TriggerBinding } from '../types/trigger.js';
 import { modelDisplayLabel, resolveAgentModel } from '../agents/model-label.js';
 import { prCardFingerprint, prCardTitlePlain } from '../system/pr-card-format.js';
 import { APPROVAL_TTL_MS, PENDING_APPROVAL_TTL_MS } from '../agents/tool-approval-gate.js';
@@ -52,7 +53,6 @@ import { Agent } from '../agents/agent.js';
 
 import {
   loadMetadata,
-  getMetadataPath,
   appendAgentFinding,
   appendMessageToUser,
   appendSlackMessage,
@@ -65,13 +65,15 @@ import {
   getMemoryPath,
   getKnowledgeLogPath,
   getTaskClonePath,
+  persistTaskMetadata,
+  reconcilePersistedMemoryMetadata,
 } from './persistence.js';
 import { getIsShuttingDown } from '../system/shutdown.js';
 import { scheduleIdleCheck } from './recovery.js';
 import { scanPmDef } from '../agents/registry.js';
 import type { AttachedRepo } from '../types/task.js';
 import { syncPlugins } from '../system/plugin-sync.js';
-import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, formatSlackChannelRef, formatSlackChannelDisplay, classifySlackMemoryScope, getBotUserId, isInternalMemoryUser } from '../connectors/slack/client.js';
 import type { SlackReactionsResult } from '../connectors/slack/client.js';
 import { renderMessageBody, shouldRedact } from '../connectors/slack/message-body.js';
 import { basename } from 'path';
@@ -81,6 +83,8 @@ import { emitEvent } from '../system/event-bus.js';
 import { TaskStatusController, isStatusEnabled } from './status.js';
 import { setSlackThreadStatus } from '../connectors/slack/status.js';
 import { deriveActivityFromEvent } from '../agents/activity.js';
+import { deriveMemoryDestination, isAuthorizedMemoryScope, scopeForSlackChannel } from './memory-scope.js';
+import { isMemoryReady } from '../memory/paths.js';
 
 // ---- Global state ----
 
@@ -224,6 +228,13 @@ export class Task {
     // Ensure channels/default_channel exist on metadata
     metadata.channels ??= {};
     metadata.default_channel ??= null;
+    metadata.memory_destination ??= deriveMemoryDestination(
+      metadata.channels,
+      metadata.default_channel,
+      metadata.home_channel?.channel_id,
+    );
+    metadata.memory_authors ??= {};
+    metadata.memory_message_authors ??= {};
 
     this.metadata = metadata;
   }
@@ -262,7 +273,7 @@ export class Task {
       updated_at: new Date().toISOString(),
     };
 
-    await writeFile(getMetadataPath(taskId), JSON.stringify(metadata, null, 2));
+    await persistTaskMetadata(taskId, metadata);
     await writeFile(getKnowledgeLogPath(taskId), '');
 
     logger.system(`Created task ${taskId}`);
@@ -335,9 +346,16 @@ export class Task {
     // activated (registered itself in activeTasks), this routes the message onto
     // that instance rather than activating and spawning a duplicate; otherwise
     // `this` is the first in and becomes canonical. See `activationLock`.
-    await activationLock(this.taskId, () =>
-      (activeTasks.get(this.taskId) ?? this).deliver(message),
-    );
+    await activationLock(this.taskId, async () => {
+      const active = activeTasks.get(this.taskId);
+      if (active) {
+        await active.deliver(message);
+        return;
+      }
+      const persisted = await loadMetadata(this.taskId);
+      if (persisted) reconcilePersistedMemoryMetadata(persisted, this.metadata);
+      await this.deliver(message);
+    });
   }
 
   /**
@@ -391,6 +409,17 @@ export class Task {
     const channelId = `slack:${thread.channel.id}:${thread.threadId}`;
     const existing = this.metadata.channels[channelId] as SlackChannel | undefined;
     const entries: string[] = [];
+    this.setMemoryDestination(thread.channel.id);
+    if (isMemoryReady()) {
+      const memoryScope = scopeForSlackChannel(
+        await classifySlackMemoryScope(thread.channel.id),
+        thread.channel.id,
+      );
+      if (isAuthorizedMemoryScope(this.metadata.memory_destination, memoryScope)) {
+        for (const message of thread.messages) this.recordMemoryAuthor(message.user, message.ts);
+      }
+    }
+    await this.save(true);
 
     // Redaction policy: when the channel is shared and the message author is
     // external, drop content and don't download files. Author info is logged.
@@ -478,7 +507,18 @@ export class Task {
   ): Promise<string | null> {
     const ch = this.metadata.channels[channelKey];
     if (ch?.type !== 'slack') return null;
-    return appendSlackEdit(
+    this.setMemoryDestination(ch.channel_id);
+    if (isMemoryReady()) {
+      const memoryScope = scopeForSlackChannel(
+        await classifySlackMemoryScope(ch.channel_id),
+        ch.channel_id,
+      );
+      if (isAuthorizedMemoryScope(this.metadata.memory_destination, memoryScope)) {
+        this.recordMemoryAuthor(author, editedTs);
+      }
+    }
+    await this.save(true);
+    const entry = await appendSlackEdit(
       this.taskId,
       { id: ch.channel_id, name: ch.channel_name },
       ch.thread_id,
@@ -486,6 +526,78 @@ export class Task {
       editedTs,
       newText,
     );
+    this.debouncedSave();
+    return entry;
+  }
+
+  setMemoryDestination(channelId: string): void {
+    const current = this.metadata.memory_destination;
+    if (current && current.channel_id !== channelId) {
+      throw new Error('this task belongs to a different Slack destination');
+    }
+    if (!current) {
+      const derived = deriveMemoryDestination(
+        this.metadata.channels,
+        this.metadata.default_channel,
+        this.metadata.home_channel?.channel_id,
+      );
+      if (derived && derived.channel_id !== channelId) {
+        throw new Error('this task belongs to a different Slack destination');
+      }
+      const hasSlackHistory = Object.values(this.metadata.channels).some((channel) => channel.type === 'slack');
+      if (!derived && hasSlackHistory) {
+        throw new Error('this task has no unambiguous Slack destination');
+      }
+      this.metadata.memory_destination = { channel_id: channelId };
+    }
+  }
+
+  async prepareMemoryDelivery(channelId: string): Promise<TaskMemoryScope> {
+    const destination = this.metadata.memory_destination;
+    if (!destination || destination.channel_id !== channelId) {
+      throw new Error('delivery blocked: this task belongs to a different Slack destination');
+    }
+    if (!isMemoryReady()) return { kind: 'none', channel_id: channelId };
+    const scope = scopeForSlackChannel(await classifySlackMemoryScope(channelId), channelId);
+    if (!isAuthorizedMemoryScope(destination, scope)) {
+      throw new Error('delivery blocked: Slack destination is not currently safe');
+    }
+    return scope;
+  }
+
+  async prepareTriggerDelivery(binding: TriggerBinding): Promise<void> {
+    if (binding.type === 'channel') {
+      await this.prepareMemoryDelivery(binding.channel_id);
+      return;
+    }
+    const destination = this.metadata.memory_destination;
+    if (!destination) throw new Error('delivery blocked: this task has no Slack destination');
+    const scope = await this.prepareMemoryDelivery(destination.channel_id);
+    if (scope.kind !== 'user' || scope.user_id !== binding.user_id) {
+      throw new Error('delivery blocked: trigger belongs to a different Slack destination');
+    }
+  }
+
+  async updateSlackMessageSafely(
+    channelId: string,
+    messageTs: string,
+    text: string,
+    blocks: unknown[],
+  ): Promise<void> {
+    await this.prepareMemoryDelivery(channelId);
+    await updateMessage(channelId, messageTs, text, blocks);
+  }
+
+  private recordMemoryAuthor(author: SlackAuthor, messageTs: string): void {
+    if (author.id === getBotUserId()) return;
+    if (!/^[UW][A-Z0-9]{6,}$/.test(author.id)) return;
+    if (!/^\d+\.\d+$/.test(messageTs)) return;
+    if (author.isBot !== false || author.isAppUser !== false) return;
+    if (!isInternalMemoryUser(author)) return;
+    this.metadata.memory_authors ??= {};
+    this.metadata.memory_message_authors ??= {};
+    this.metadata.memory_authors[author.id] = author.realName || author.username || author.id;
+    this.metadata.memory_message_authors[messageTs] = author.id;
   }
 
   /**
@@ -524,6 +636,7 @@ export class Task {
     if (target?.channel) {
       const ch = this.metadata.channels[target.channel];
       if (ch?.type === 'slack') {
+        await this.prepareMemoryDelivery(ch.channel_id);
         await postSlackMessage({ channel: ch.channel_id, threadTs: ch.thread_id, text: message, footer });
         this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch, footer);
       }
@@ -549,6 +662,7 @@ export class Task {
       return null;
     }
     if (defaultCh.type === 'slack') {
+      await this.prepareMemoryDelivery(defaultCh.channel_id);
       await postSlackMessage({ channel: defaultCh.channel_id, threadTs: defaultCh.thread_id, text: message, footer });
       this.logOutgoingMessage(sender, message, Task.formatSlackDest(defaultCh).display, defaultCh, footer);
     } else if (defaultCh.type === 'cli') {
@@ -581,6 +695,7 @@ export class Task {
     if (existing) {
       const [key, ch] = existing;
       this.metadata.default_channel = key;
+      await this.prepareMemoryDelivery(ch.channel_id);
       await postSlackMessage({ channel: ch.channel_id, threadTs: ch.thread_id, text: message, footer });
       this.logOutgoingMessage(sender, message, Task.formatSlackDest(ch).display, ch, footer);
       await this.save(true);
@@ -588,6 +703,7 @@ export class Task {
     }
 
     // No threadTs — this is a new top-level post in the channel, and its ts becomes the thread root.
+    await this.prepareMemoryDelivery(home.channel_id);
     const ts = await postSlackMessage({ channel: home.channel_id, text: message, footer });
     if (!ts) {
       // Dry-run mode returns undefined without ever reaching Slack, so there is no thread to link to.
@@ -632,6 +748,7 @@ export class Task {
       return;
     }
     if (target.type === 'slack') {
+      await this.prepareMemoryDelivery(target.channel_id);
       await postSlackFiles({ channel: target.channel_id, threadTs: target.thread_id, files });
       this.logFilesUpload(sender, filePaths, Task.formatSlackDest(target).display, target);
     } else if (target.type === 'cli') {
@@ -712,6 +829,7 @@ export class Task {
 
     const ch = this.resolveSlackChannel(channelKey);
     if (ch) {
+      await this.prepareMemoryDelivery(ch.channel_id);
       await postInteractiveToThreads([{
         thread_id: ch.thread_id,
         channel_id: ch.channel_id,
@@ -846,6 +964,7 @@ export class Task {
           // failed repost doesn't diverge the CLI (which renders off the event).
           let slackRef = state.pr_card?.slack;
           if (slack) {
+            await this.prepareMemoryDelivery(slack.channel_id);
             if (slackRef?.ts) await deleteMessage(slackRef.channel_id, slackRef.ts);
             const ts = await postInteractiveToThread(slack.channel_id, slack.thread_id, prCardTitlePlain(card), buildPrCardBlocks(card));
             slackRef = ts ? { ts, channel_id: slack.channel_id, thread_id: slack.thread_id } : undefined;
@@ -889,6 +1008,7 @@ export class Task {
         const slackRef = target.state.pr_card.slack;
         logger.system(`PR card ${github}#${prNumber}: updating in place (${target.state.pr_card.fingerprint} → ${fingerprint}), slack=${slackRef?.ts ? 'yes' : 'no'}`);
         if (slackRef?.ts) {
+          await this.prepareMemoryDelivery(slackRef.channel_id);
           await updateMessage(slackRef.channel_id, slackRef.ts, prCardTitlePlain(card), buildPrCardBlocks(card));
         }
         emitEvent('pr_card', this.taskId, { action: 'update', cardId: `${github}#${prNumber}`, ...card });
@@ -928,10 +1048,15 @@ export class Task {
    * channels (e.g. CLI-only tasks), where the CLI shows the status instead.
    */
   private pushSlackStatus(status: string): void {
-    for (const ch of Object.values(this.metadata.channels)) {
-      if (ch.type !== 'slack' || ch.muted) continue;
-      void setSlackThreadStatus(ch.channel_id, ch.thread_id, status);
-    }
+    const destination = this.metadata.memory_destination;
+    if (!destination) return;
+    void this.prepareMemoryDelivery(destination.channel_id)
+      .then(() => Promise.all(
+        Object.values(this.metadata.channels)
+          .filter((ch): ch is SlackChannel => ch.type === 'slack' && !ch.muted && ch.channel_id === destination.channel_id)
+          .map((ch) => setSlackThreadStatus(ch.channel_id, ch.thread_id, status)),
+      ))
+      .catch((error) => logger.warn('task', `Slack status suppressed for ${this.taskId}: ${error}`));
   }
 
   /**
@@ -974,6 +1099,7 @@ export class Task {
       logger.warn('task', `reactToMessage on task ${this.taskId}: ${channelKey ? `channel ${channelKey} not linked` : 'no default channel'} — reaction dropped`);
       return false;
     }
+    await this.prepareMemoryDelivery(ch.channel_id);
     await addReaction(ch.channel_id, messageTs, emoji);
     return true;
   }
@@ -988,6 +1114,7 @@ export class Task {
       logger.warn('task', `unreactFromMessage on task ${this.taskId}: ${channelKey ? `channel ${channelKey} not linked` : 'no default channel'} — reaction removal dropped`);
       return false;
     }
+    await this.prepareMemoryDelivery(ch.channel_id);
     await removeReaction(ch.channel_id, messageTs, emoji);
     return true;
   }
@@ -1166,16 +1293,9 @@ export class Task {
     this.syncAgentSession();
     this.metadata.updated_at = new Date().toISOString();
 
-    // Use legacy save for now (debounced write)
-    // saveLegacyTask expects TaskRuntimeState, but we need to bridge
-    // For now, write directly
     if (flush) {
-      await writeFile(
-        getMetadataPath(this.taskId),
-        JSON.stringify(this.metadata, null, 2),
-      );
+      await persistTaskMetadata(this.taskId, this.metadata);
     } else {
-      // Debounced — use the legacy saveTask by creating a compat shim
       this.debouncedSave();
     }
   }
@@ -1886,6 +2006,17 @@ export class Task {
     // past it. Refuse (delete the pending file) if enabling would exceed a cap.
     const pending = await loadTrigger(id);
     if (pending && pending.status === 'pending') {
+      try {
+        await this.prepareTriggerDelivery(pending.binding);
+      } catch (error) {
+        await appendAgentFinding(
+          this.taskId,
+          'system',
+          `Trigger ${id} not enabled — ${error instanceof Error ? error.message : String(error)}`,
+          'decision',
+        );
+        return null;
+      }
       const overChannel = pending.binding.type === 'channel'
         && (await countActiveTriggers((t) => t.binding.type === 'channel' && t.binding.channel_id === (pending.binding as { channel_id: string }).channel_id)) >= MAX_TRIGGERS_PER_CHANNEL;
       const overUser = pending.created_by && pending.created_by !== 'unknown'
@@ -2076,10 +2207,7 @@ export class Task {
       try {
         this.syncAgentSession();
         this.metadata.updated_at = new Date().toISOString();
-        await writeFile(
-          getMetadataPath(this.taskId),
-          JSON.stringify(this.metadata, null, 2),
-        );
+        await persistTaskMetadata(this.taskId, this.metadata);
       } catch (err) {
         logger.error('task', `Failed to save task ${this.taskId}`, err);
       }

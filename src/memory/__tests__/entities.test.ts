@@ -20,7 +20,6 @@ vi.mock('../paths.js', () => ({
   getEntityIndexPath: () => join(entitiesDir, 'index.md'),
   getEntityPath: (slug: string) => join(entitiesDir, `${slug}.md`),
   getEntityCap: () => entityCap,
-  getEntityInjectMax: () => 8,
   isValidEntitySlug: (s: string) => /^[a-z0-9][a-z0-9-]{0,63}$/.test(s) && s !== 'index',
 }));
 
@@ -92,6 +91,20 @@ describe('entity store', () => {
       await writeEntity(REC);
       expect(existsSync(join(entitiesDir, 'payment-service.md'))).toBe(true);
       expect(await readEntity('payment-service')).toEqual(REC);
+    });
+
+    it('keeps only the newest 30 observations', async () => {
+      await writeEntity({
+        ...REC,
+        observations: Array.from({ length: 35 }, (_, i) => ({
+          category: 'fact' as const,
+          text: `fact ${i}`,
+        })),
+      });
+      const observations = (await readEntity('payment-service'))!.observations;
+      expect(observations).toHaveLength(30);
+      expect(observations[0].text).toBe('fact 5');
+      expect(observations.at(-1)?.text).toBe('fact 34');
     });
 
     it('readEntity returns null for a missing entity', async () => {

@@ -53,7 +53,14 @@ import { getProbeBaseUrl } from '../system/context-probe.js';
 import { buildSandboxConfig, buildManagedNetworkPolicy, buildPackageManagerCacheEnv, buildRepoGrants, createFilesystemGuardHooks, createPmOnlyToolGuardHooks, TRUSTED_PACKAGE_REGISTRY_DOMAINS, type SandboxOptions } from './sandbox.js';
 import { grantTriggerDataAccess, buildTriggerDataPromptSection } from './trigger-data.js';
 import { applyOAuthBindings } from '../system/oauth/inject.js';
-import { enrichPromptWithMemory, isMemoryEnabled, isInjectionEnabled } from '../memory/index.js';
+import { enrichPromptWithMemory } from '../memory/index.js';
+import { getAuthorizedMemoryAuthors } from '../memory/task-authors.js';
+import { isInjectionEnabled, isMemoryToolsEnabled } from '../memory/paths.js';
+import {
+  authorizeTaskMemory,
+  createMemoryMcpServer,
+  shouldAttachMemoryTools,
+} from '../memory/tools.js';
 
 /**
  * The write side of `repo-tools`, withheld until edit mode is approved. The
@@ -176,26 +183,6 @@ async function setupAgentWorkspace(taskId: string, agent: Agent): Promise<string
   return agentWorkspace;
 }
 
-// ---- Memory helpers ----
-
-/**
- * Extract Slack user references from a task's knowledge.log.
- * Returns empty array if memory disabled, injection disabled, or log unavailable.
- * The result feeds only prompt injection, so when injection is off we skip the
- * transcript scan and user-file reads entirely.
- */
-async function extractTaskUsernames(taskId: string): Promise<import('../memory/types.js').UserRef[]> {
-  if (!isMemoryEnabled() || !isInjectionEnabled()) return [];
-  try {
-    const { readKnowledgeLog } = await import('../tasks/persistence.js');
-    const { extractUsernames } = await import('../memory/lifecycle.js');
-    const log = await readKnowledgeLog(taskId);
-    return extractUsernames(log);
-  } catch {
-    return [];
-  }
-}
-
 // ---- Audience helpers ----
 
 /**
@@ -246,6 +233,9 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   // Mark active before any heavy work (MCP init) to prevent false idle
   // detection — recovery fires at 3s, MCP connections can take longer
   task.updateAgentState(true);
+  const memoryAuthorization = (isInjectionEnabled() || isMemoryToolsEnabled())
+    ? await authorizeTaskMemory(task)
+    : null;
 
   // ---- SDK config/tmp dirs (agent reads tool-results from here) ----
   // Only create for new tasks. Old tasks recovering won't have <taskId>/claude/
@@ -534,17 +524,17 @@ Shared folder: ${sharedPath} [READ-ONLY]
     systemPrompt = `${systemPrompt}\n\n${buildTriggerDataPromptSection(triggerId, triggerDataPath, triggerDataEntries)}`;
   }
 
-  // ---- Organizational memory injection (read path; gated by ARCHIE_MEMORY_INJECT, default off) ----
-  // `repo` is what scores repo-scoped entity pages (SCORE_REPO in
-  // entity-index.ts). A task's repos are mounted on demand now, so the first
-  // attached one is the best selector available at spawn — without it, pages
-  // bound to the repo the task is about stop surfacing.
-  const memorySelectors = {
-    taskTitle: metadata.title ?? undefined,
-    repo: metadata.repositories[0]?.github,
-  };
-  const memoryUsernames = await extractTaskUsernames(taskId);
-  systemPrompt = await enrichPromptWithMemory(systemPrompt, memoryUsernames, memorySelectors);
+  // ---- Organizational memory (one authorized attachment for the PM session) ----
+  if (memoryAuthorization) {
+    systemPrompt = await enrichPromptWithMemory(
+      systemPrompt,
+      getAuthorizedMemoryAuthors(metadata),
+    );
+  }
+
+  if (memoryAuthorization && shouldAttachMemoryTools(metadata)) {
+    mcpServers['memory-tools'] = createMemoryMcpServer(task);
+  }
 
   // ---- Deployment context (`pm.md` at the plugins repo root) ----
   //
