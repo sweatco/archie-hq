@@ -63,6 +63,14 @@ describe('isAllowedDomain', () => {
 });
 
 describe('escapeTableCell', () => {
+  it.each([
+    ['C:\\work', 'C:\\\\work'],
+    ['A\\|B', 'A\\\\\\|B'],
+    ['A\\\\|B|C', 'A\\\\\\\\\\|B\\|C'],
+  ])('preserves literal backslashes in %j', (input, expected) => {
+    expect(escapeTableCell(input)).toBe(expected);
+  });
+
   it('escapes pipes', () => {
     expect(escapeTableCell('foo|bar')).toBe('foo\\|bar');
   });

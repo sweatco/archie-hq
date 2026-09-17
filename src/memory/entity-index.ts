@@ -1,6 +1,7 @@
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { getEntityIndexPath, getEntitiesDir } from './paths.js';
 import { listEntities } from './entities.js';
+import { escapeTableCell } from './sanitize.js';
 import type { EntityRecord } from './types.js';
 
 const INDEX_HEADER = `# Entity Index
@@ -20,7 +21,7 @@ export function lastTouched(record: EntityRecord): string {
 
 function indexRow(record: EntityRecord): string {
   const scope = record.repos.length ? `${record.scope}:${record.repos.join('/')}` : record.scope;
-  const summary = (record.summary || record.displayName).replace(/\|/g, '\\|');
+  const summary = escapeTableCell(record.summary || record.displayName);
   return `| [[${record.entity}]] | ${record.type} | ${scope} | ${summary} | ${lastTouched(record) || '—'} |`;
 }
 

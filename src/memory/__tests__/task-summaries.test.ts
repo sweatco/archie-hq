@@ -108,6 +108,15 @@ describe('canonical task summaries', () => {
     expect(excerpt.replace(/\\\|/g, '|')).toHaveLength(200);
   });
 
+  it.each(['public', 'private'] as const)('escapes %s overview cells without changing canonical text', async (visibility) => {
+    const markdown = taskMarkdown('task-1', 'C07PUBLIC1', '2026-09-15T10:05:00.000Z', 'A\\|B');
+    await writeTaskSummary(visibility, 'C07PUBLIC1', 'task-1', markdown);
+
+    const channelDir = join(tempRoot, visibility, 'C07PUBLIC1');
+    expect(await readFile(join(channelDir, 'rolling-summary.md'), 'utf-8')).toContain('| A\\\\\\|B |');
+    expect(await readFile(join(channelDir, 'task-1.md'), 'utf-8')).toBe(markdown);
+  });
+
   it('skips invalid directories, symlinked files, temporary files, and malformed records', async () => {
     const channelDir = join(tempRoot, 'public', 'C07PUBLIC1');
     await mkdir(channelDir, { recursive: true });

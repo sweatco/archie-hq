@@ -2,6 +2,7 @@ import { mkdir, lstat, readFile, readdir, rename, unlink, writeFile } from 'fs/p
 import { randomUUID } from 'crypto';
 import matter from 'gray-matter';
 import { logger } from '../system/logger.js';
+import { escapeTableCell } from './sanitize.js';
 import {
   getPublicMemoryDir,
   getTaskChannelDir,
@@ -53,7 +54,7 @@ export async function rebuildTaskOverview(
     b.extractionAt.localeCompare(a.extractionAt) || a.taskId.localeCompare(b.taskId)
   );
   const rows = records.slice(0, OVERVIEW_LIMIT).map((record) => {
-    const excerpt = normalizeExcerpt(record.summary, 200).replace(/\|/g, '\\|');
+    const excerpt = escapeTableCell(normalizeExcerpt(record.summary, 200));
     return `| ${record.extractionAt.slice(0, 10)} | [${record.taskId}](./${record.taskId}.md) | ${excerpt} |`;
   });
   const markdown = [

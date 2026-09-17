@@ -63,9 +63,8 @@ export function isAllowedDomain(domain: string): boolean {
   return ALLOWED_DOMAINS.has(domain);
 }
 
-/** Escape pipe characters so a value can safely live in a Markdown table cell. */
 export function escapeTableCell(value: string): string {
-  return value.replace(/\|/g, '\\|');
+  return value.replace(/[\\|]/g, '\\$&');
 }
 
 /** Collapse runs of whitespace, strip leading list markers, single-line only. */

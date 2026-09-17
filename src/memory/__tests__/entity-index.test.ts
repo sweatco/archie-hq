@@ -68,6 +68,11 @@ describe('entity index', () => {
     expect(markdown).not.toContain('[[stripe]]');
   });
 
+  it.each(['summary', 'displayName'] as const)('escapes backslashes and pipes in the %s cell', (field) => {
+    const markdown = renderIndex([rec({ entity: 'payment-service', [field]: 'A\\|B' })]);
+    expect(markdown).toContain('| A\\\\\\|B |');
+  });
+
   it('sorts by latest touch descending, then slug, with undated records last', () => {
     const markdown = renderIndex([
       rec({ entity: 'undated' }),
