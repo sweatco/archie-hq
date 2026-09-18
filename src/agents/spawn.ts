@@ -26,6 +26,7 @@ import {
   createRepoToolsMcpServer,
 } from './tools.js';
 import { createFileBridgeMcpServer } from './mcp-file-bridge.js';
+import { recordSubagentToolUses, isSubagentToolUse } from './subagent-tool-uses.js';
 import { createToolApprovalHooks, mcpToolName } from './tool-approval-gate.js';
 import { createResearchMcpServer, createResearchPostToolHook, createResearchDefenseTagHook } from '../mcp/research-tools.js';
 import {
@@ -735,6 +736,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
   handle.running = (async () => {
     let sessionId = existingSessionId;
     let hasRetried = false;
+    const subagentToolUseIds = new Set<string>();
 
     try {
       while (true) {
@@ -749,6 +751,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
           });
 
           for await (const event of agentQuery) {
+            if (event.type === 'assistant') recordSubagentToolUses(event, subagentToolUseIds);
             if (event.type === 'system' && event.subtype === 'init') {
               task.updateAgentState(true, event.session_id);
               // Record the concrete model this session resolved the alias to
@@ -811,7 +814,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
             // own. Track in-flight tasks (so the idle-check treats the agent as busy,
             // not stalled — no spurious recovery) and re-engage the agent on settle.
             if (event.type === 'system' && event.subtype === 'task_started') {
-              agent.backgroundTasks.add(event.task_id);
+              if (!isSubagentToolUse(event.tool_use_id, subagentToolUseIds)) agent.backgroundTasks.add(event.task_id);
               logger.agent(def.id, `background task started — ${event.description}`);
               // Chat/CLI: one transcript entry per task, keyed by task_id — rendered
               // as ⏳ running, then folded to ✅/❌ when the matching 'end' arrives.

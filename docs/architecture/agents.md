@@ -55,7 +55,7 @@ The PM delegates with the SDK `Agent` tool. Two kinds of worker exist:
 
 **What a worker sees.** Only its final report reaches the PM's context; everything it read stays with it. That is the point of delegating — the PM's prompt sends anything expected to produce more than a screen of output through a worker regardless of domain. Workers have no Slack tools, so nothing they find reaches a user until the PM relays it.
 
-**Background by default.** The PM's turn can end while a worker runs. The SDK emits `task_started` and `task_notification`; spawn tracks in-flight ids on `agent.backgroundTasks` (so the idle check treats the PM as busy rather than stalled) and, on settle, enqueues a wake naming the outcome. A task that settles mid-turn emits no notification, so the Stop hook reconciles `backgroundTasks` against the SDK's authoritative `background_tasks` list before parking.
+**Background by default.** The PM's turn can end while a worker runs. The SDK emits `task_started` and `task_notification`; spawn tracks in-flight ids on `agent.backgroundTasks` (so the idle check treats the PM as busy rather than stalled) and, on settle, enqueues a wake naming the outcome. A task that settles mid-turn emits no notification, so the Stop hook reconciles `backgroundTasks` against the SDK's authoritative `background_tasks` list before parking. A background task started by a tool call inside a worker (its `tool_use_id` belongs to an event with a `parent_tool_use_id`) is not tracked: the worker's own task covers it while the worker runs, and once the worker has reported nothing waits on it.
 
 **Reuse.** A finished worker's agent id can be addressed again to continue it with its context intact, rather than spawning a fresh worker that has to rediscover the material.
 
