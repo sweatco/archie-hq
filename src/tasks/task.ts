@@ -2038,20 +2038,16 @@ export class Task {
       if (elapsed < this.budgets.taskTimeoutMs) return;
 
       const mins = Math.round(elapsed / 60_000);
-      // The wall-clock cap is a backstop, not a failure verdict. A task that's
-      // simply waiting on a human reply (agent idle) must not announce a
-      // scary "timed out" — it was working as intended. Reframe as a pause and
-      // `complete()` (park) so it reopens cleanly on the next reply, rather
-      // than `stop()`. Only when the agent is still mid-turn is this a genuinely
-      // long-running task being capped.
+      // The wall-clock cap is a backstop, not a failure verdict: `complete()`
+      // (park) so it reopens cleanly on the next reply, rather than `stop()`.
+      // The notice is the same whatever state the task was in — the cap can't
+      // tell why it fired, so it must not guess.
       const agentActive = this.agent?.session.active === true;
       logger.warn(
         'budget',
         `Task ${this.taskId} hit wall-clock cap (${mins}min, agent ${agentActive ? 'active' : 'idle'}) — pausing`,
       );
-      const msg = agentActive
-        ? `⏸️ This task has been running for ${mins} minutes, so I'm pausing it here. Reply in this thread and I'll pick it back up.`
-        : `⏸️ Pausing this task — I'd been waiting on a reply for a while. Just respond in this thread whenever you're ready and I'll continue.`;
+      const msg = `⏸️ I've paused this task — reply in this thread to pick it back up.`;
       await this.postToUser(msg).catch((err: unknown) =>
         logger.error('budget', 'Failed to post pause message', err),
       );
