@@ -95,6 +95,7 @@ function makeTask(opts: { home?: boolean; originChannelId?: string } = {}): Task
     };
     default_channel = key;
   }
+  let audience = opts.originChannelId;
   return {
     taskId: 'task-1',
     isActive: true,
@@ -107,6 +108,17 @@ function makeTask(opts: { home?: boolean; originChannelId?: string } = {}): Task
     touch: vi.fn(), debouncedSave: vi.fn(), save: vi.fn().mockResolvedValue(undefined),
     postToUser: vi.fn().mockResolvedValue(null),
     postFilesToUser: vi.fn().mockResolvedValue(undefined),
+    prepareMemoryDelivery: vi.fn(async (channelId: string) => {
+      audience ??= channelId;
+      if (audience !== channelId) throw new Error('delivery blocked: this task belongs to a different Slack audience');
+      return { kind: 'public', channel_id: audience };
+    }),
+    prepareTriggerDelivery: vi.fn(async (binding: { type: string; channel_id?: string }) => {
+      const channelId = binding.channel_id;
+      if (!channelId) throw new Error('delivery blocked');
+      audience ??= channelId;
+      if (audience !== channelId) throw new Error('delivery blocked: this task belongs to a different Slack audience');
+    }),
     resurfacePrCards: vi.fn().mockResolvedValue(undefined),
     suspendStatus: vi.fn(),
     setCompletionIntent: vi.fn(),
@@ -189,18 +201,17 @@ describe('post_to_channel waits until the task has a channel of its own', () => 
     expect(out).not.toMatch(/no mandate/i);
   });
 
-  // (c) Once the task's thread is open, the tool works normally again — including for the home channel itself, which gets no special branch.
-  it('posts normally once the task has a linked default channel', async () => {
+  it('rejects another channel after the task thread is open', async () => {
     const post = getHandler('post_to_channel', makeTask({ home: true, originChannelId: 'CHOME' }));
 
     const out = textOf(await post({ channel: 'C123', message: 'heads up', mandate: MANDATE }));
 
-    expect(postSlackMessage).toHaveBeenCalledWith({ channel: 'C123', text: 'heads up', threadTs: undefined });
-    expect(out).toContain('1716998400.123456');
+    expect(postSlackMessage).not.toHaveBeenCalled();
+    expect(out).toMatch(/different Slack audience/i);
     expect(out).not.toMatch(/no channel of its own yet/i);
   });
 
-  it('posts into the home channel itself once the thread is open — no same-channel branch', async () => {
+  it('posts into the home channel itself once the thread is open', async () => {
     const post = getHandler('post_to_channel', makeTask({ home: true, originChannelId: 'CHOME' }));
 
     const out = textOf(await post({ channel: 'CHOME', message: 'aside', mandate: MANDATE }));
@@ -320,5 +331,16 @@ describe('propose_trigger refuses a binding that is not a channel', () => {
 
     expect(out).not.toMatch(/has to deliver to a channel/i);
     expect(task.metadata.pending_trigger_id).toBeDefined();
+    expect(task.prepareTriggerDelivery).toHaveBeenCalledWith(expect.objectContaining({ channel_id: 'C0123456789' }));
+  });
+
+  it('leaves the trigger unchanged when memory delivery authorization blocks', async () => {
+    const task = makeTask();
+    vi.mocked(task.prepareTriggerDelivery).mockRejectedValue(new Error('delivery blocked'));
+
+    const out = textOf(await getOrchestrationHandler('propose_trigger', task)(args('C0123456789')));
+
+    expect(out).toContain('Trigger not created');
+    expect(task.metadata.pending_trigger_id).toBeUndefined();
   });
 });

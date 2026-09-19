@@ -103,4 +103,5 @@ describe('isAutoMergeRepo', () => {
     expect(isAutoMergeRepo('sweatco/backend')).toBe(false);
     expect(isAutoMergeRepo('sweatco/unlisted')).toBe(false);
   });
+
 });

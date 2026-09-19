@@ -9,14 +9,15 @@
  * `AGENT_PROMPTS` in `src/agents/prompts.ts`), so nothing on the live path reads
  * the file back. It is still written because two offline consumers read it after
  * the fact — the memory extractor (`src/memory/lifecycle.ts`) and the people
- * section built at spawn (`extractTaskUsernames` in `src/agents/spawn.ts`). The
+ * section built at spawn (`buildTaskPeopleSection` in `src/agents/spawn.ts`). The
  * append functions that feed the PM therefore RETURN the line they wrote, so the
  * inline copy and the logged copy are the same string by construction rather
  * than by two renderers agreeing.
  */
 
-import { mkdir, readFile, appendFile } from 'fs/promises';
+import { mkdir, readFile, rename, unlink, writeFile, appendFile } from 'fs/promises';
 import { createReadStream, existsSync } from 'fs';
+import { randomUUID } from 'crypto';
 import { createInterface } from 'readline';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -28,8 +29,32 @@ import { SESSIONS_DIR } from '../system/workdir.js';
 import { emitEvent, onEvent } from '../system/event-bus.js';
 import { logger } from '../system/logger.js';
 import { formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { createKeyedLock } from '../system/keyed-lock.js';
 
 const execFileAsync = promisify(execFile);
+const metadataLock = createKeyedLock();
+
+export function reconcilePersistedMemoryMetadata(
+  persisted: TaskMetadata,
+  pending: TaskMetadata,
+): void {
+  if (
+    persisted.memory_destination
+    && pending.memory_destination
+    && persisted.memory_destination.channel_id !== pending.memory_destination.channel_id
+  ) {
+    throw new Error('task metadata has conflicting Slack destinations');
+  }
+  pending.memory_destination ??= persisted.memory_destination;
+  pending.memory_authors = {
+    ...(persisted.memory_authors ?? {}),
+    ...(pending.memory_authors ?? {}),
+  };
+  pending.memory_message_authors = {
+    ...(persisted.memory_message_authors ?? {}),
+    ...(pending.memory_message_authors ?? {}),
+  };
+}
 
 /**
  * Ceiling on a scan's stdout. Only matching paths are printed, so this is ~150
@@ -230,6 +255,38 @@ export async function loadMetadata(taskId: string): Promise<TaskMetadata | null>
     logger.warn('persistence', `Failed to parse metadata for ${taskId}: ${err}`);
     return null;
   }
+}
+
+export async function persistTaskMetadata(taskId: string, metadata: TaskMetadata): Promise<void> {
+  if (!isSafeTaskId(taskId)) {
+    throw new Error(`invalid task ID: ${taskId}`);
+  }
+  await metadataLock(taskId, async () => {
+    const root = resolve(SESSIONS_DIR);
+    const path = resolve(getMetadataPath(taskId));
+    const rel = relative(root, path);
+    if (rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)) {
+      throw new Error(`task metadata path escapes sessions directory: ${taskId}`);
+    }
+    let persisted: TaskMetadata | undefined;
+    try {
+      persisted = JSON.parse(await readFile(path, 'utf-8')) as TaskMetadata;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+
+    if (persisted) reconcilePersistedMemoryMetadata(persisted, metadata);
+
+    const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(tempPath, JSON.stringify(metadata, null, 2));
+      await rename(tempPath, path);
+    } finally {
+      await unlink(tempPath).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      });
+    }
+  });
 }
 
 /**
@@ -461,7 +518,7 @@ export async function appendCliMessage(
  * NOT on the PM's path — the PM is fed inline and never reads this file. The
  * two remaining callers are offline consumers: the memory extractor
  * (`src/memory/lifecycle.ts`) and the spawn-time people section
- * (`extractTaskUsernames` / `buildTaskPeopleSection` in `src/agents/spawn.ts`).
+ * (`buildTaskPeopleSection` in `src/agents/spawn.ts`).
  */
 export async function readKnowledgeLog(taskId: string): Promise<string> {
   const logPath = getKnowledgeLogPath(taskId);

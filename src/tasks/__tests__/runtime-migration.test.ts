@@ -20,13 +20,21 @@ const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
 vi.mock('../../agents/spawn.js', () => ({ spawnAgent: spawnMock }));
 
 // Every save in these cases would otherwise write into a real sessions dir.
-const { writeFileMock, mkdirMock } = vi.hoisted(() => ({
+const { writeFileMock, mkdirMock, renameMock, unlinkMock } = vi.hoisted(() => ({
   writeFileMock: vi.fn().mockResolvedValue(undefined),
   mkdirMock: vi.fn().mockResolvedValue(undefined),
+  renameMock: vi.fn().mockResolvedValue(undefined),
+  unlinkMock: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs/promises')>();
-  return { ...actual, writeFile: writeFileMock, mkdir: mkdirMock };
+  return {
+    ...actual,
+    writeFile: writeFileMock,
+    mkdir: mkdirMock,
+    rename: renameMock,
+    unlink: unlinkMock,
+  };
 });
 
 vi.mock('../../system/plugin-sync.js', () => ({ syncPlugins: vi.fn().mockResolvedValue(undefined) }));
@@ -75,7 +83,7 @@ const REAL_CLONE = process.cwd();
 /** The JSON bodies written to metadata.json, in order. */
 function metadataWrites(): string[] {
   return writeFileMock.mock.calls
-    .filter((c: unknown[]) => String(c[0]).endsWith('metadata.json'))
+    .filter((c: unknown[]) => String(c[0]).includes('/metadata.json.'))
     .map((c: unknown[]) => String(c[1]));
 }
 
@@ -336,7 +344,7 @@ describe('Task.create', () => {
 
     // The same is true of what landed on disk — a fresh task must never be
     // re-stamped (and so re-flagged) by the next Task.get.
-    const written = writeFileMock.mock.calls.find((c: unknown[]) => String(c[0]).endsWith('metadata.json'));
+    const written = writeFileMock.mock.calls.find((c: unknown[]) => String(c[0]).includes('/metadata.json.'));
     expect(written).toBeDefined();
     const onDisk = JSON.parse(String(written![1])) as TaskMetadata;
     expect(onDisk.runtime_version).toBe(RUNTIME_VERSION);

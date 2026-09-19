@@ -5,7 +5,7 @@
  * whose extraction has not yet finished. Survives process restarts so the
  * memory layer never silently loses a learning.
  *
- * Storage: `workdir/memory/pending-extractions.md` — a Markdown file with
+ * Storage: `workdir/memory/runtime/pending-extractions.md` — a Markdown file with
  * one task ID per line under a `- ` list bullet. Human-readable; deletable
  * by hand if needed.
  */
@@ -53,8 +53,9 @@ export async function readPending(): Promise<string[]> {
   let content: string;
   try {
     content = await readFile(path, 'utf-8');
-  } catch {
-    return [];
+  } catch (err: any) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
   }
   const ids: string[] = [];
   for (const line of content.split('\n')) {
