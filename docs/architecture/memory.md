@@ -10,10 +10,11 @@ Memory access comes from live Slack API metadata, never transcript text or model
 
 - The first Slack channel fixes `memory_destination.channel_id`. Public and private tasks remain in that exact channel; DM tasks remain in that exact `D…` conversation.
 - Legacy tasks derive the destination from their home channel, default Slack thread, or one unambiguous linked Slack channel. Ambiguous tasks fail closed.
-- Internal public channels authorize public memory. Internal private channels and MPIMs authorize public memory plus their exact private channel directory. Internal DMs authorize public memory plus their exact DM directory.
+- Internal public channels authorize public memory. Internal private channels and MPIMs authorize public memory plus their exact private channel directory. Internal DMs authorize public memory plus their exact DM directory. Verified bots and app users from the home workspace do not disqualify channel membership, but they remain ineligible as memory authors and DM partners.
 - Slack Connect, pending external sharing, restricted guests, external users, missing provenance, and lookup failures deny memory authorization.
 - Public/private conversion changes live authorization at the fixed destination; it does not rewrite persisted task metadata.
-- When the scoped store is unavailable or `ARCHIE_MEMORY=false`, destination restrictions remain but normal Slack and trigger delivery does not depend on memory authorization.
+- Slack delivery checks only the task's fixed destination. New memory reads and extraction still use live audience authorization, but messages, files, reactions, status updates, approval cards, PR cards, and `post_to_channel` are not vetoed by memory readiness or audience classification.
+- When the scoped store is unavailable or `ARCHIE_MEMORY=false`, destination restrictions remain but normal Slack and trigger delivery continues. Context already loaded into an SDK session is not revoked when memory is disabled or the audience later becomes ineligible; subsequent reads and extraction are denied.
 
 Slack authors are resolved by the host. Only internal, non-restricted human `U…` or `W…` IDs enter `memory_authors`; `memory_message_authors` maps each ingested Slack timestamp to its author. A profile update is accepted only when its cited source timestamp belongs to that profile owner. Body mentions, quoted text, model output, bot IDs, and fallback IDs cannot authorize profile reads or writes.
 
@@ -21,9 +22,9 @@ Private task memory is never injected into prompts or copied into the public cor
 
 The task destination is the privacy boundary. A public task reads public memory. A private-channel task reads public memory plus that exact channel. A DM task reads public memory plus that exact `D…` conversation. An authorized task without recorded authors still receives public entities and activity, but no profiles.
 
-Task messages, files, reactions, status updates, approval cards, PR cards, and `post_to_channel` use the same destination check. Transport acknowledgements and trigger lifecycle announcements carry no task memory. Repository writes, GitHub operations, plugins, and other external tools are outside this Slack-memory boundary.
+Task messages, files, reactions, status updates, approval cards, PR cards, and `post_to_channel` use the same fixed-destination check without consulting memory authorization. Transport acknowledgements and trigger lifecycle announcements carry no task memory. Repository writes, GitHub operations, plugins, and other external tools are outside this Slack-memory boundary.
 
-Trigger proposals and content edits must target the authoring task's destination. Pausing, resuming, and deleting a visible trigger do not copy task context. A fired trigger creates a fresh task whose memory scope comes from its live Slack destination; no creator-task memory state is propagated. Existing triggers need no migration.
+Trigger proposals and content edits must target the authoring task's destination. Existing user-bound triggers separately verify that the fixed destination is a DM with the exact recipient; this check does not depend on memory eligibility. Pausing, resuming, and deleting a visible trigger do not copy task context. A fired trigger creates a fresh task whose memory scope comes from its live Slack destination; no creator-task memory state is propagated. Existing triggers need no migration.
 
 ## Workspace binding and startup
 
@@ -95,6 +96,8 @@ full authorized on-disk corpus ──────────┘
 `ARCHIE_MEMORY_INJECT=true` enables public profile/activity context plus an active-entity catalogue. The catalogue uses the persisted entity reader, excludes archived records, sorts by latest observation touch descending then slug, and contains complete rows until its next row would exceed the limit. Its XML wrappers, table header, omission notice, and tool guidance are included in the 4,000-character JavaScript string-length limit.
 
 Each task runs one PM SDK session. `src/agents/spawn.ts` performs live task authorization once during that session's setup, appends authorized injection once, and attaches the task-bound memory MCP server once. Native workers run inside the same session and any memory-tool call is evaluated against the same task metadata and live destination; there are no worker-specific memory attachments or specialist spawn branches.
+
+Audience changes and flag changes affect the next authorization check. They do not remove memory already present in the SDK session's context, and the session is not replaced solely to revoke that context.
 
 No full entity page is injected, including `org` pages. Scope and repository metadata no longer drive automatic full-page selection. When memory tools are enabled, the catalogue tells agents to use `search_memory` for omitted knowledge and `read_entity` for details. No catalogue is emitted when there are no active entities.
 

@@ -67,7 +67,7 @@ function newTask(): Task {
       }],
   } as unknown as TaskMetadata, PM_DEF);
   (task as unknown as { save: (flush?: boolean) => Promise<void> }).save = vi.fn().mockResolvedValue(undefined);
-  (task as unknown as { prepareMemoryDelivery: (channelId: string) => Promise<unknown> }).prepareMemoryDelivery = vi.fn().mockResolvedValue({ kind: 'public', channel_id: 'C07CHANNEL' });
+  (task as unknown as { prepareMemoryDelivery: (channelId: string) => Promise<void> }).prepareMemoryDelivery = vi.fn().mockResolvedValue(undefined);
   return task;
 }
 

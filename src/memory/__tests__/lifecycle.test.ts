@@ -23,6 +23,7 @@ let usersDir: string;
 let activityPath: string;
 let publicTasksDir: string;
 let sessionsDir: string;
+const lifecycleState = vi.hoisted(() => ({ ready: true, transcriptReads: 0 }));
 
 // ============================================================================
 // Mock paths.js — all path functions point into the temp directory
@@ -30,7 +31,7 @@ let sessionsDir: string;
 
 vi.mock('../paths.js', () => ({
   isMemoryEnabled: () => true,
-  isMemoryReady: () => true,
+  isMemoryReady: () => lifecycleState.ready,
   isHousekeepingEnabled: () => true,
   getMemoryDir: () => memoryDir,
   getUsersDir: () => usersDir,
@@ -74,6 +75,7 @@ vi.mock('../../tasks/persistence.js', () => ({
     return JSON.parse(content);
   },
   readKnowledgeLog: async (taskId: string) => {
+    lifecycleState.transcriptReads += 1;
     const logPath = join(sessionsDir, taskId, 'shared', 'knowledge.log');
     if (!existsSync(logPath)) return '';
     return readFile(logPath, 'utf-8');
@@ -187,6 +189,8 @@ async function drain(): Promise<void> {
 
 describe('handleTaskCompleted() — end-to-end integration', () => {
   beforeEach(async () => {
+    lifecycleState.ready = true;
+    lifecycleState.transcriptReads = 0;
     tempDir = await mkdtemp(join(tmpdir(), 'archie-lifecycle-test-'));
     memoryDir = join(tempDir, 'memory');
     usersDir = join(memoryDir, 'users');
@@ -258,8 +262,21 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     await drain();
 
     expect(runExtraction).not.toHaveBeenCalled();
+    expect(lifecycleState.transcriptReads).toBe(0);
     expect(existsSync(join(publicTasksDir, `${TASK_ID}.md`))).toBe(false);
     expect(existsSync(activityPath)).toBe(false);
+  });
+
+  it('does not classify, read, or extract while memory is unavailable', async () => {
+    lifecycleState.ready = false;
+
+    handleTaskCompleted(TASK_ID);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(classifySlackMemoryScope).not.toHaveBeenCalled();
+    expect(lifecycleState.transcriptReads).toBe(0);
+    expect(runExtraction).not.toHaveBeenCalled();
+    expect(await readPending()).toEqual([]);
   });
 
   it.each([

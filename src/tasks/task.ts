@@ -6,7 +6,7 @@
  */
 
 import { mkdir, writeFile } from 'fs/promises';
-import type { SlackAuthor, SlackChannel, SlackThread, TaskMetadata, BranchState, FindingType, TaskMemoryScope } from '../types/task.js';
+import type { SlackAuthor, SlackChannel, SlackThread, TaskMetadata, BranchState, FindingType } from '../types/task.js';
 import { CLI_CHANNEL_KEY } from '../types/task.js';
 import type { AgentDef } from '../types/agent.js';
 import type { TriggerBinding } from '../types/trigger.js';
@@ -73,7 +73,7 @@ import { scheduleIdleCheck } from './recovery.js';
 import { scanPmDef } from '../agents/registry.js';
 import type { AttachedRepo } from '../types/task.js';
 import { syncPlugins } from '../system/plugin-sync.js';
-import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, formatSlackChannelRef, formatSlackChannelDisplay, classifySlackMemoryScope, getBotUserId, isInternalMemoryUser } from '../connectors/slack/client.js';
+import { postSlackMessage, postSlackFiles, postInteractiveToThread, postInteractiveToThreads, updateMessage, deleteMessage, buildPrCardBlocks, addReaction, removeReaction, getMessageReactions, buildThreadUrl, formatSlackChannelRef, formatSlackChannelDisplay, classifySlackMemoryScope, getBotUserId, getChannelInfo, isInternalMemoryUser } from '../connectors/slack/client.js';
 import type { SlackReactionsResult } from '../connectors/slack/client.js';
 import { renderMessageBody, shouldRedact } from '../connectors/slack/message-body.js';
 import { basename } from 'path';
@@ -552,17 +552,11 @@ export class Task {
     }
   }
 
-  async prepareMemoryDelivery(channelId: string): Promise<TaskMemoryScope> {
+  async prepareMemoryDelivery(channelId: string): Promise<void> {
     const destination = this.metadata.memory_destination;
     if (!destination || destination.channel_id !== channelId) {
       throw new Error('delivery blocked: this task belongs to a different Slack destination');
     }
-    if (!isMemoryReady()) return { kind: 'none', channel_id: channelId };
-    const scope = scopeForSlackChannel(await classifySlackMemoryScope(channelId), channelId);
-    if (!isAuthorizedMemoryScope(destination, scope)) {
-      throw new Error('delivery blocked: Slack destination is not currently safe');
-    }
-    return scope;
   }
 
   async prepareTriggerDelivery(binding: TriggerBinding): Promise<void> {
@@ -572,8 +566,9 @@ export class Task {
     }
     const destination = this.metadata.memory_destination;
     if (!destination) throw new Error('delivery blocked: this task has no Slack destination');
-    const scope = await this.prepareMemoryDelivery(destination.channel_id);
-    if (scope.kind !== 'user' || scope.user_id !== binding.user_id) {
+    await this.prepareMemoryDelivery(destination.channel_id);
+    const channel = await getChannelInfo(destination.channel_id);
+    if (channel.isIm !== true || channel.imUserId !== binding.user_id) {
       throw new Error('delivery blocked: trigger belongs to a different Slack destination');
     }
   }

@@ -1868,18 +1868,13 @@ async function fetchMemoryMemberTrust(userId: string): Promise<MemoryMemberTrust
         team_id?: string;
         is_restricted?: boolean;
         is_ultra_restricted?: boolean;
-        is_bot?: boolean;
-        is_app_user?: boolean;
         deleted?: boolean;
       } | undefined;
       const value = user
         && user.team_id
         && user.is_restricted === false
         && user.is_ultra_restricted === false
-        && typeof user.is_bot === 'boolean'
-        && typeof user.is_app_user === 'boolean'
         && user.deleted !== true
-        && ((user.is_bot === false && user.is_app_user === false) || userId === getBotUserId())
         ? { teamId: user.team_id, isRestricted: false as const, isUltraRestricted: false as const }
         : null;
       if ((memoryMemberTrustGeneration.get(userId) ?? 0) !== generation) return null;

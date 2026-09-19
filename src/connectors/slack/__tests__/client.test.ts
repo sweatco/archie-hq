@@ -137,8 +137,10 @@ describe('classifySlackMemoryScope', () => {
     ['a restricted guest', { is_restricted: true }],
     ['an ultra-restricted guest', { is_ultra_restricted: true }],
     ['a foreign-workspace member', { team_id: 'TOTHER' }],
-    ['a third-party bot', { is_bot: true }],
-    ['a third-party app user', { is_app_user: true }],
+    ['a deleted member', { deleted: true }],
+    ['a member without team provenance', { team_id: undefined }],
+    ['a member without restricted provenance', { is_restricted: undefined }],
+    ['a member without ultra-restricted provenance', { is_ultra_restricted: undefined }],
   ])('refuses a channel containing %s', async (_label, override) => {
     slackApi.conversations.members.mockResolvedValue({ members: ['UOUTSIDER'] });
     slackApi.users.info.mockResolvedValue({ user: directoryUser('UOUTSIDER', override) });
@@ -146,14 +148,16 @@ describe('classifySlackMemoryScope', () => {
     await expect(client.classifySlackMemoryScope('C1')).resolves.toEqual({ kind: 'none' });
   });
 
-  it('allows only Archie\'s own bot member in public and private channels', async () => {
-    slackApi.conversations.members.mockResolvedValue({ members: [BOT_USER, 'UINTERNAL'] });
+  it('allows verified same-workspace bot and app members in public and private channels', async () => {
+    slackApi.conversations.members.mockResolvedValue({ members: [BOT_USER, 'UWORKBOT1', 'UAPPUSER1', 'UINTERNAL'] });
     slackApi.users.info.mockImplementation(async ({ user }: { user: string }) => ({
-      user: directoryUser(user, user === BOT_USER ? { is_bot: true, is_app_user: true } : {}),
+      user: directoryUser(user, user === 'UINTERNAL' ? {} : { is_bot: true, is_app_user: true }),
     }));
 
     await expect(client.classifySlackMemoryScope('C1')).resolves.toEqual({ kind: 'public', channel_id: 'C1' });
     client.invalidateMemoryMemberTrust(BOT_USER);
+    client.invalidateMemoryMemberTrust('UWORKBOT1');
+    client.invalidateMemoryMemberTrust('UAPPUSER1');
     client.invalidateMemoryMemberTrust('UINTERNAL');
     slackApi.conversations.info.mockResolvedValue({
       channel: {
@@ -180,6 +184,10 @@ describe('classifySlackMemoryScope', () => {
     await expect(client.classifySlackMemoryScope('C1')).resolves.toEqual({ kind: 'none' });
 
     slackApi.conversations.info.mockRejectedValueOnce(new Error('channel_not_found'));
+    await expect(client.classifySlackMemoryScope('C1')).resolves.toEqual({ kind: 'none' });
+
+    slackApi.conversations.members.mockResolvedValueOnce({ members: ['UINTERNAL'] });
+    slackApi.users.info.mockRejectedValueOnce(new Error('user_not_found'));
     await expect(client.classifySlackMemoryScope('C1')).resolves.toEqual({ kind: 'none' });
   });
 
