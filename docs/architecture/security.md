@@ -130,7 +130,7 @@ The research pipeline is the single channel through which untrusted web content 
 
 **Edit mode.** A task starts read-only: the write side of `repo-tools` is absent and the clones are deny-write. The PM calls `request_edit_mode` with a reason, Slack buttons are posted, the task parks. On approval the clones move onto the task branch, the sandbox flips them writable and the PM's session is resumed with the new configuration. One-way and task-lifetime. See [edit-mode.md](edit-mode.md).
 
-**MCP tool approvals.** An MCP server can declare, per tool, that calls need a per-call human approval — an `archie` block next to its connection config in the root `.mcp.json`. A PreToolUse hook classifies each call: `allow` runs ungated, `deny` never runs (and is withheld through `disallowedTools` up front), `ask` is denied while an engine-rendered Slack prompt is posted and the task parks. Approval stores a single-use grant bound to `sha256(server, tool, canonicalized args)` that the agent's retry of that exact call spends. Because the policy travels with the server and the session mounts every server, one config covers the whole task. This is the primary protection for production writes now that process isolation is gone. See [tool-approvals.md](tool-approvals.md).
+**MCP tool approvals.** An MCP server can declare, per tool, that calls need a per-call human approval — an `archie` block next to its connection config in the root `.mcp.json`. A PreToolUse hook classifies each call: `allow` runs ungated, `deny` never runs (and is withheld through `disallowedTools` up front), `ask` is denied while an engine-rendered Slack prompt is posted and the task parks. Optional `access.approverGroups` restricts resolution to verified active members of configured Slack user groups. Protected grants bind the exact call to the task and current policy, recheck membership before spend, and are single-use. Because the policy travels with the server and the session mounts every server, one config covers the whole task. This is the primary protection for production writes now that process isolation is gone. See [tool-approvals.md](tool-approvals.md).
 
 **PR review.** All code changes go through pull requests. Merge is gated on GitHub branch protection, and in repos without `autoMerge: true` on an explicit user approval as well ([github-integration.md](github-integration.md#merge-policy-automerge)).
 
@@ -188,7 +188,7 @@ Layer 4: Git isolation
   └── MCP tools scoped (no force push) + GitHub branch protection
 
 Layer 5: Human gates
-  ├── edit mode (task-lifetime), MCP tool approvals (per call), merge approval (per PR)
+  ├── edit mode (task-lifetime), MCP tool approvals (per call, optionally Slack-group restricted), merge approval (per PR)
   └── PR review before merge
 
 Layer 6: Resource budgets

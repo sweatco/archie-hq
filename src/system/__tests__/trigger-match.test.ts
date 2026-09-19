@@ -11,7 +11,7 @@ const CHANNEL = 'C0WATCHED';
 
 function watcher(match?: { contains?: string; from_user?: string }): Trigger {
   return {
-    id: 'trg-1', status: 'enabled', created_by: 'U_DEV', created_at: '2026-08-20T00:00:00.000Z',
+    id: 'trg-1', status: 'enabled', approved_by: 'U_DEV', created_at: '2026-08-20T00:00:00.000Z',
     binding: { type: 'channel', channel_id: CHANNEL, channel_name: 'watched' },
     conditions: [{ type: 'channel_message', channel_id: CHANNEL, ...(match ? { match } : {}) }],
     action: { prompt: 'look into it' },

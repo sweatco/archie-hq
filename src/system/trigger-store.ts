@@ -149,7 +149,10 @@ export async function loadTrigger(id: string): Promise<Trigger | null> {
   const path = getTriggerPath(id);
   if (!existsSync(path)) return null;
   try {
-    return JSON.parse(await readFile(path, 'utf-8')) as Trigger;
+    const trigger = JSON.parse(await readFile(path, 'utf-8'));
+    // Drop the legacy identity; only an explicit approval establishes approved_by.
+    delete trigger.created_by;
+    return trigger as Trigger;
   } catch (err) {
     logger.warn('trigger-store', `Failed to parse trigger ${id}: ${err}`);
     return null;

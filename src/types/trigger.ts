@@ -42,10 +42,8 @@ export interface Trigger {
   id: string;
   /** pending = proposed, awaiting approval; enabled = live; paused = inactive */
   status: TriggerStatus;
-  /** Slack user ID who requested it */
-  created_by: string;
   created_at: string;
-  /** Slack user ID who approved it (set when status flips pending → enabled) */
+  /** Slack user ID who approved it, or `cli` for operator approval. Used for caps and failure notices. */
   approved_by?: string;
   binding: TriggerBinding;
   /** N conditions — any match fires the trigger */

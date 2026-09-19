@@ -200,7 +200,7 @@ export async function appendCliMessage(taskId, userName, message): Promise<void>
 ### 3g: PM prompt update
 
 In `prompts/pm-agent.md`, section "Communication Channel Philosophy":
-- Change "**Slack** is where your requester lives" → "**The originating channel** is where your requester lives (Slack, CLI, or other). Your `post_to_slack` tool automatically routes to the correct channel."
+- Change "**Slack** is where you talk with the people in this task" → "**The originating channel** is where you talk with the people in this task (Slack, CLI, or other). Your `post_to_slack` tool automatically routes to the correct channel."
 - Keep tool name `post_to_slack` for now (rename is a separate PR)
 
 ## Step 4: CLI TUI (Ink)

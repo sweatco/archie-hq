@@ -13,6 +13,11 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+vi.mock('../../system/plugin-loader.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../system/plugin-loader.js')>();
+  return { ...actual, getRootMcpConfig: () => ({ servers: {}, policies: {}, descriptions: {} }) };
+});
+
 vi.mock('../persistence.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../persistence.js')>();
   return { ...actual, appendAgentFinding: vi.fn().mockResolvedValue(undefined) };

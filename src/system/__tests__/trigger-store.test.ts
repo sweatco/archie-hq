@@ -9,12 +9,13 @@
  * pulled in dynamically rather than with a static import.
  */
 
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, chmodSync } from 'fs';
 import { mkdir, writeFile, readFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import type { Trigger } from '../../types/trigger.js';
+import type { Task } from '../../tasks/task.js';
 
 const WORK = mkdtempSync(join(tmpdir(), 'archie-trigger-store-'));
 process.env.ARCHIE_WORKDIR = WORK;
@@ -33,13 +34,62 @@ function sampleTrigger(id: string): Trigger {
   return {
     id,
     status: 'enabled',
-    created_by: 'UCREATOR',
+    approved_by: 'UAPPROVER',
     created_at: '2026-08-17T09:00:00.000Z',
-    binding: { type: 'user', user_id: 'UCREATOR' },
+    binding: { type: 'user', user_id: 'UAPPROVER' },
     conditions: [{ type: 'schedule', tz: 'UTC', next_run_at: '2026-08-18T09:00:00.000Z', cron: '0 9 * * *' }],
     action: { prompt: 'do the thing' },
   };
 }
+
+describe('trigger approval identity', () => {
+  it.each(['UAPPROVER', undefined])('drops the legacy identity and preserves only the recorded approval (%s)', async (approvedBy) => {
+    const trigger = { ...sampleTrigger(`trg-legacy-${approvedBy ?? 'pending'}`), approved_by: approvedBy };
+    await saveTrigger(trigger);
+    await writeFile(getTriggerPath(trigger.id), JSON.stringify({ ...trigger, created_by: 'UOLD' }));
+
+    const loaded = await store.loadTrigger(trigger.id);
+    expect(loaded).toEqual(trigger);
+    expect(loaded).not.toHaveProperty('created_by');
+    await saveTrigger(loaded!);
+    expect(JSON.parse(await readFile(getTriggerPath(trigger.id), 'utf-8'))).not.toHaveProperty('created_by');
+  });
+
+  it('checks the approving person’s cap, then records a different approver who has room', async () => {
+    const { Task } = await import('../../tasks/task.js');
+    const scheduler = await import('../trigger-scheduler.js');
+    const persistence = await import('../../tasks/persistence.js');
+    const announce = vi.spyOn(scheduler, 'announceTriggerChange').mockResolvedValue(undefined);
+    const finding = vi.spyOn(persistence, 'appendAgentFinding').mockResolvedValue(undefined);
+    const id = 'trg-approval-cap';
+    const pending = { ...sampleTrigger(id), status: 'pending' as const, approved_by: undefined };
+    const task = {
+      taskId: 'task-trigger-approval',
+      metadata: { pending_trigger_id: id },
+      debouncedSave: vi.fn(),
+    };
+    try {
+      for (let i = 0; i < scheduler.MAX_TRIGGERS_PER_USER; i++) {
+        await saveTrigger({ ...sampleTrigger(`trg-cap-${i}`), approved_by: 'UFULL' });
+      }
+      await saveTrigger(pending);
+      const approve = (userId: string) => Task.prototype.handleTriggerApproval.call(task as unknown as Task, userId, id);
+
+      expect(await approve('UFULL')).toBeNull();
+      expect(await store.loadTrigger(id)).toBeNull();
+      expect(announce).not.toHaveBeenCalled();
+
+      await saveTrigger(pending);
+      expect(await approve('UFREE')).toMatchObject({ status: 'enabled', approved_by: 'UFREE' });
+      expect(await store.loadTrigger(id)).toMatchObject({ status: 'enabled', approved_by: 'UFREE' });
+      expect(announce).toHaveBeenCalledOnce();
+    } finally {
+      scheduler.deindexTrigger(id);
+      announce.mockRestore();
+      finding.mockRestore();
+    }
+  });
+});
 
 describe('isValidTriggerId', () => {
   it('accepts a freshly generated id', () => {
