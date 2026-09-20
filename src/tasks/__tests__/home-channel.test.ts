@@ -41,8 +41,11 @@ import type { AgentDef } from '../../types/agent.js';
 const TaskCtor = Task as unknown as new (
   taskId: string,
   metadata: TaskMetadata,
-  team: AgentDef[],
+  pmDef: AgentDef,
 ) => Task;
+const PM_DEF = {
+  id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'core', visibility: 'global', isPm: true,
+} as AgentDef;
 
 const HOME = { channel_id: 'C9', channel_name: 'ops' };
 const TS = '1750000000.000100';
@@ -60,7 +63,7 @@ function metadata(over: Partial<TaskMetadata> = {}): TaskMetadata {
 
 /** Builds a Task over `meta`, with both persistence seams neutered — see the harness note above. */
 function newTask(meta: TaskMetadata): Task {
-  const task = new TaskCtor('t1', meta, []);
+  const task = new TaskCtor('t1', meta, PM_DEF);
   (task as unknown as { debouncedSave: () => void }).debouncedSave = () => {};
   (task as unknown as { save: (flush?: boolean) => Promise<void> }).save = async () => {};
   return task;

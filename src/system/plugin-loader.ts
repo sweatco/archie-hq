@@ -45,6 +45,16 @@ export interface LoadedMcpConfig {
 }
 
 const TIERS: ToolTier[] = ['allow', 'ask', 'deny'];
+const HOST_OWNED_MCP_SERVER_NAMES = new Set([
+  'agent-tools',
+  'comms-tools',
+  'orchestration-tools',
+  'scheduling-tools',
+  'repo-tools',
+  'research-tools',
+  'file-bridge',
+  'memory-tools',
+]);
 
 /**
  * Parse and validate one server's `archie` block from .mcp.json.
@@ -170,6 +180,10 @@ export function loadMcpJson(path: string): LoadedMcpConfig {
   const descriptions: Record<string, string> = {};
   const policies: McpToolPolicy = {};
   for (const [name, config] of Object.entries(rawServers)) {
+    if (HOST_OWNED_MCP_SERVER_NAMES.has(name) || name.includes('__')) {
+      logger.warn('system', `MCP config ${path}: reserved server key "${name}" refused`);
+      continue;
+    }
     if (!config || typeof config !== 'object' || Array.isArray(config)) {
       servers[name] = config;
       continue;

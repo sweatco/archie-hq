@@ -10,13 +10,21 @@ import {
   isFallbackUserId,
   isAllowedUserId,
   isAllowedTaskId,
+  isSlackConversationId,
   isValidEntitySlug,
   getUserPath,
-  getSummaryPath,
+  getTaskChannelDir,
+  getTaskSummaryPath,
+  getTaskOverviewPath,
   getEntityPath,
+  getMemoryMarkerPath,
+  getPublicMemoryDir,
+  getPrivateMemoryDir,
+  getRuntimeMemoryDir,
+  isMemoryHumanUserId,
   getEntityCap,
-  getEntityInjectMax,
   isInjectionEnabled,
+  isMemoryToolsEnabled,
 } from '../paths.js';
 
 describe('isSlackUserId', () => {
@@ -86,9 +94,10 @@ describe('getUserPath', () => {
     expect(getUserPath('U07ABC123')).toMatch(/users\/U07ABC123\.md$/);
   });
 
-  it('normalises the colon in fallback IDs to a double underscore', () => {
-    expect(getUserPath('cli:task-abc')).toMatch(/users\/cli__task-abc\.md$/);
-    expect(getUserPath('local:riley')).toMatch(/users\/local__riley\.md$/);
+  it('rejects fallback and bot identifiers for public profiles', () => {
+    expect(() => getUserPath('cli:task-abc')).toThrow(/invalid user identifier/);
+    expect(() => getUserPath('local:riley')).toThrow(/invalid user identifier/);
+    expect(() => getUserPath('B0X1Y2Z3A4')).toThrow(/invalid user identifier/);
   });
 
   it('throws on bare first names', () => {
@@ -104,13 +113,27 @@ describe('getUserPath', () => {
   });
 });
 
-describe('getSummaryPath', () => {
-  it('places summaries under memory/summaries/', () => {
-    expect(getSummaryPath('task-20260410-1000-abc')).toMatch(/memory\/summaries\/task-20260410-1000-abc\.md$/);
+describe('task summary paths', () => {
+  it('keeps human profile validation separate from conversation IDs', () => {
+    expect(isMemoryHumanUserId('U07ABC123')).toBe(true);
+    expect(isMemoryHumanUserId('W123456789')).toBe(true);
+    expect(isMemoryHumanUserId('B0X1Y2Z3A4')).toBe(false);
+    expect(isSlackConversationId('C07ABC123')).toBe(true);
+    expect(isSlackConversationId('G07ABC123')).toBe(true);
+    expect(isSlackConversationId('D07ABC123')).toBe(true);
+    expect(isSlackConversationId('U07ABC123')).toBe(false);
   });
 
-  it('throws on malformed taskId', () => {
-    expect(() => getSummaryPath('has space')).toThrow(/invalid taskId/);
+  it('places public, private-channel, and DM task files under their conversation IDs', () => {
+    expect(getTaskSummaryPath('public', 'C07ABC123', 'task-1')).toMatch(/memory\/public\/C07ABC123\/task-1\.md$/);
+    expect(getTaskSummaryPath('private', 'G07ABC123', 'task-1')).toMatch(/memory\/private\/G07ABC123\/task-1\.md$/);
+    expect(getTaskSummaryPath('private', 'D07ABC123', 'task-1')).toMatch(/memory\/private\/D07ABC123\/task-1\.md$/);
+    expect(getTaskOverviewPath('private', 'D07ABC123')).toMatch(/memory\/private\/D07ABC123\/rolling-summary\.md$/);
+  });
+
+  it('rejects malformed channel and task IDs', () => {
+    expect(() => getTaskChannelDir('private', '../C07ABC123')).toThrow(/invalid channel ID/);
+    expect(() => getTaskSummaryPath('public', 'C07ABC123', 'has space')).toThrow(/invalid task ID/);
   });
 });
 
@@ -134,8 +157,8 @@ describe('isValidEntitySlug', () => {
 });
 
 describe('getEntityPath', () => {
-  it('places entities under memory/entities/', () => {
-    expect(getEntityPath('payment-service')).toMatch(/memory\/entities\/payment-service\.md$/);
+  it('places entities under memory/public/entities/', () => {
+    expect(getEntityPath('payment-service')).toMatch(/memory\/public\/entities\/payment-service\.md$/);
   });
   it('throws on an invalid slug (no traversal reaches the filesystem)', () => {
     expect(() => getEntityPath('../../etc/passwd')).toThrow(/invalid entity slug/);
@@ -143,10 +166,18 @@ describe('getEntityPath', () => {
   });
 });
 
+describe('scoped directory layout', () => {
+  it('keeps public and private scopes separate', () => {
+    expect(getMemoryMarkerPath()).toMatch(/memory\/\.scoped-v1\.json$/);
+    expect(getPublicMemoryDir()).toMatch(/memory\/public$/);
+    expect(getPrivateMemoryDir()).toMatch(/memory\/private$/);
+    expect(getRuntimeMemoryDir()).toMatch(/memory\/runtime$/);
+  });
+});
+
 describe('entity caps', () => {
-  it('default entity cap and inject max are positive integers', () => {
+  it('default entity cap is a positive integer', () => {
     expect(getEntityCap()).toBeGreaterThan(0);
-    expect(getEntityInjectMax()).toBeGreaterThan(0);
   });
 });
 
@@ -172,5 +203,24 @@ describe('isInjectionEnabled', () => {
   it.each(['false', '1', 'TRUE', 'True', 'yes', ''])('stays off for %j', (v) => {
     process.env[KEY] = v;
     expect(isInjectionEnabled()).toBe(false);
+  });
+});
+
+describe('isMemoryToolsEnabled', () => {
+  const KEY = 'ARCHIE_MEMORY_TOOLS';
+  const original = process.env[KEY];
+
+  afterEach(() => {
+    if (original === undefined) delete process.env[KEY];
+    else process.env[KEY] = original;
+  });
+
+  it('defaults to off and accepts only the exact string "true"', () => {
+    delete process.env[KEY];
+    expect(isMemoryToolsEnabled()).toBe(false);
+    process.env[KEY] = 'true';
+    expect(isMemoryToolsEnabled()).toBe(true);
+    process.env[KEY] = 'TRUE';
+    expect(isMemoryToolsEnabled()).toBe(false);
   });
 });

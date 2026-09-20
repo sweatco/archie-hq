@@ -19,9 +19,11 @@ vi.mock('../../system/logger.js', () => ({
 }));
 vi.mock('fs/promises', () => ({
   writeFile: vi.fn().mockResolvedValue(undefined),
+  rename: vi.fn().mockResolvedValue(undefined),
+  unlink: vi.fn().mockResolvedValue(undefined),
   mkdir: vi.fn().mockResolvedValue(undefined),
   appendFile: vi.fn().mockResolvedValue(undefined),
-  readFile: vi.fn().mockResolvedValue(''),
+  readFile: vi.fn().mockRejectedValue(Object.assign(new Error('missing'), { code: 'ENOENT' })),
 }));
 const { spawnMock, ensureTaskCloneMock } = vi.hoisted(() => ({
   spawnMock: vi.fn(),
@@ -43,7 +45,7 @@ const TaskCtor = Task as unknown as new (
   pmDef: AgentDef,
 ) => Task;
 
-const TASK_ID = 'task-20260625-1122-30wkzk-test';
+const TASK_ID = 'task-20260625-1122-30wkzk';
 
 function metadata(): TaskMetadata {
   return {

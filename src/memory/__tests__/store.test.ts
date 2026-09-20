@@ -32,8 +32,11 @@ vi.mock('../../system/logger.js', () => ({
 import {
   readUser,
   writeUser,
-  applyUserUpdates,
+  applyUserUpdatesWithIdentity,
 } from '../store.js';
+
+const applyUserUpdates = (userId: string, updates: Parameters<typeof applyUserUpdatesWithIdentity>[2]) =>
+  applyUserUpdatesWithIdentity(userId, userId, updates);
 
 describe('memory store', () => {
   beforeEach(async () => {
@@ -150,9 +153,10 @@ describe('memory store', () => {
       await mkdir(usersDir, { recursive: true });
       await writeFile(join(usersDir, 'finn.md'), '## Notes\n- Uses TypeScript\n', 'utf-8');
       const before = await readFile(join(usersDir, 'finn.md'), 'utf-8');
-      await applyUserUpdates('finn', [{ action: 'update', content: 'Uses TypeScript v5', old: 'Uses JavaScript' }]);
+      const result = await applyUserUpdates('finn', [{ action: 'update', content: 'Uses TypeScript v5', old: 'Uses JavaScript' }]);
       const after = await readFile(join(usersDir, 'finn.md'), 'utf-8');
       expect(after).toBe(before);
+      expect(result.appliedUpdates).toEqual([]);
     });
 
     it('skips update when `old` is missing entirely', async () => {
@@ -162,6 +166,16 @@ describe('memory store', () => {
       await applyUserUpdates('gwen', [{ action: 'update', content: 'orphan content' } as any]);
       const after = await readFile(join(usersDir, 'gwen.md'), 'utf-8');
       expect(after).toBe(before);
+    });
+
+    it('returns only updates that changed the stored profile', async () => {
+      const result = await applyUserUpdates('alice', [
+        { action: 'update', content: 'missing', old: 'not present' },
+        { action: 'add', section: 'Communication', content: 'Prefers async' },
+      ]);
+      expect(result.appliedUpdates).toEqual([
+        { action: 'add', section: 'Communication', content: 'Prefers async' },
+      ]);
     });
   });
 });

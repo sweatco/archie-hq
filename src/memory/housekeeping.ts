@@ -19,6 +19,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import {
   isHousekeepingEnabled,
+  isMemoryReady,
   getUserPath,
   getEntityPath,
   getUsersDir,
@@ -51,6 +52,7 @@ export type HousekeepingTarget = 'all' | 'entities' | string;
  *   - `target = '<id>'`     → consolidate users/<id>.md only (side-agent)
  */
 export async function runHousekeeping(target: HousekeepingTarget): Promise<void> {
+  if (!isMemoryReady()) return;
   if (!isHousekeepingEnabled()) {
     logger.system('[memory] housekeeping disabled (ARCHIE_MEMORY_HOUSEKEEPING=false)');
     return;
