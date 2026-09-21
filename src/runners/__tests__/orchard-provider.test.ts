@@ -8,10 +8,12 @@ describe('OrchardRunnerProvider', () => {
   let server: http.Server;
   let wss: WebSocketServer;
   let baseUrl: string;
-  const requests: Array<{ method?: string; url?: string; authorization?: string; body?: unknown }> = [];
+  let redirectUrl: string | undefined;
+  const requests: Array<{ method?: string; url?: string; authorization?: string; accessId?: string; accessSecret?: string; body?: unknown }> = [];
 
   beforeEach(async () => {
     requests.length = 0;
+    redirectUrl = undefined;
     server = http.createServer((request, response) => {
       const chunks: Buffer[] = [];
       request.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -20,8 +22,16 @@ describe('OrchardRunnerProvider', () => {
           method: request.method,
           url: request.url,
           authorization: request.headers.authorization,
+          accessId: request.headers['cf-access-client-id'] as string | undefined,
+          accessSecret: request.headers['cf-access-client-secret'] as string | undefined,
           body: chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : undefined,
         });
+        if (redirectUrl) {
+          response.statusCode = 302;
+          response.setHeader('location', redirectUrl);
+          response.end();
+          return;
+        }
         response.setHeader('content-type', 'application/json');
         if (request.method === 'POST') response.end(JSON.stringify({ name: 'vm-1', status: 'pending' }));
         else if (request.method === 'DELETE') response.end('{}');
@@ -31,7 +41,13 @@ describe('OrchardRunnerProvider', () => {
     });
     wss = new WebSocketServer({ noServer: true });
     server.on('upgrade', (request, socket, head) => {
-      requests.push({ method: request.method, url: request.url, authorization: request.headers.authorization });
+      requests.push({
+        method: request.method,
+        url: request.url,
+        authorization: request.headers.authorization,
+        accessId: request.headers['cf-access-client-id'] as string | undefined,
+        accessSecret: request.headers['cf-access-client-secret'] as string | undefined,
+      });
       if (new URL(request.url ?? '/', baseUrl || 'http://127.0.0.1').searchParams.get('session') === 'missing') {
         socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
         return;
@@ -51,18 +67,22 @@ describe('OrchardRunnerProvider', () => {
   });
 
   it('creates, inspects, lists, and deletes Tart VMs with Basic authentication', async () => {
-    const provider = new OrchardRunnerProvider(baseUrl, 'archie', 'token');
+    const provider = new OrchardRunnerProvider(baseUrl, 'archie', 'token', 30000, 'access-id', 'access-secret');
     const created = await provider.provision({
       id: 'vm-1', image: `ghcr.io/example/xcode@sha256:${'a'.repeat(64)}`, os: 'darwin',
       cpu: 4, memoryMiB: 8192, diskGiB: 100, username: 'admin', password: 'guest',
-      labels: { pool: 'ios' }, resources: {}, networkMode: 'softnet', softnetAllow: ['10.0.0.0/8'],
+      labels: { pool: 'ios' }, resources: {}, networkMode: 'softnet', softnetAllow: ['in @host'], softnetBlock: ['in 0.0.0.0/0', 'out @host'],
     });
     expect(created.status).toBe('pending');
     expect(await provider.inspect('vm-1')).toMatchObject({ id: 'vm-1', status: 'running', worker: 'mac-1' });
     expect(await provider.list()).toHaveLength(1);
     await provider.release('vm-1');
     expect(requests.every((request) => request.authorization === `Basic ${Buffer.from('archie:token').toString('base64')}`)).toBe(true);
-    expect(requests[0].body).toMatchObject({ runtime: 'tart', headless: false, netSoftnet: true, netSoftnetBlock: ['0.0.0.0/0'] });
+    expect(requests.every((request) => request.accessId === 'access-id' && request.accessSecret === 'access-secret')).toBe(true);
+    expect(requests[0].body).toMatchObject({
+      runtime: 'tart', headless: false, netSoftnet: true,
+      netSoftnetAllow: ['in @host'], netSoftnetBlock: ['in 0.0.0.0/0', 'out @host'],
+    });
   });
 
   it('uses ordinary NAT without Softnet fields for an explicit lab profile', async () => {
@@ -70,7 +90,7 @@ describe('OrchardRunnerProvider', () => {
     await provider.provision({
       id: 'vm-1', image: `ghcr.io/example/xcode@sha256:${'a'.repeat(64)}`, os: 'darwin',
       cpu: 4, memoryMiB: 8192, diskGiB: 100, username: 'admin', password: 'guest',
-      labels: {}, resources: {}, networkMode: 'nat', softnetAllow: [],
+      labels: {}, resources: {}, networkMode: 'nat', softnetAllow: [], softnetBlock: ['0.0.0.0/0'],
     });
     expect(requests[0].body).not.toHaveProperty('netSoftnet');
     expect(requests[0].body).not.toHaveProperty('netSoftnetAllow');
@@ -84,7 +104,7 @@ describe('OrchardRunnerProvider', () => {
       ws.send(JSON.stringify({ type: 'stdout', data: Buffer.from('hello').toString('base64'), watermark: 1 }));
       ws.send(JSON.stringify({ type: 'exit', exit: { code: 0 }, watermark: 2 }));
     });
-    const provider = new OrchardRunnerProvider(baseUrl, 'archie', 'token');
+    const provider = new OrchardRunnerProvider(baseUrl, 'archie', 'token', 30000, 'access-id', 'access-secret');
     const execution = provider.exec('vm-1', { argv: ['printf', "it's safe"], sessionId: 'session-1' })[Symbol.asyncIterator]();
     const events = [(await execution.next()).value, (await execution.next()).value];
     expect(events).toMatchObject([
@@ -101,6 +121,16 @@ describe('OrchardRunnerProvider', () => {
     ]);
     expect(requests[0].url).toContain('session=session-1');
     expect(new URL(requests[0].url ?? '', baseUrl).searchParams.get('command')).toBe("'printf' 'it'\\''s safe'");
+
+    wss.once('connection', (ws) => ws.on('message', () => ws.close()));
+    await provider.closeExec('vm-1', 'session-1');
+    expect(requests.every((request) => request.accessId === 'access-id' && request.accessSecret === 'access-secret')).toBe(true);
+  });
+
+  it('rejects HTTP redirects while sending custom credentials', async () => {
+    redirectUrl = 'https://example.invalid/vms';
+    const provider = new OrchardRunnerProvider(baseUrl, 'archie', 'token', 30000, 'access-id', 'access-secret');
+    await expect(provider.list()).rejects.toThrow();
   });
 
   it('rejects a replay gap instead of silently corrupting command output', async () => {

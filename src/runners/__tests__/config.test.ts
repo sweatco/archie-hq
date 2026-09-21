@@ -27,6 +27,8 @@ function baseConfig() {
 }
 
 describe('runner configuration', () => {
+  const infraConfig = process.env.ARCHIE_INFRA_RUNNERS_CONFIG;
+
   it('applies bounded defaults and requires digest-pinned images', () => {
     const parsed = runnerConfigSchema.parse(baseConfig());
     expect(parsed.maxConcurrent).toBe(1);
@@ -70,6 +72,8 @@ describe('runner configuration', () => {
       ARCHIE_RUNNERS_CONFIG: path,
       ORCHARD_SERVICE_ACCOUNT_NAME: 'archie',
       ORCHARD_SERVICE_ACCOUNT_TOKEN: 'service-secret',
+      ORCHARD_CF_ACCESS_CLIENT_ID: 'access-id',
+      ORCHARD_CF_ACCESS_CLIENT_SECRET: 'access-secret',
       IOS_RUNNER_PASSWORD: 'guest-secret',
     });
     expect(loaded?.config.orchard.baseUrl).toBe('https://orchard.example.test');
@@ -109,7 +113,46 @@ describe('runner configuration', () => {
     await expect(loadRunnerConfig({ ARCHIE_RUNNERS_CONFIG: path })).rejects.toThrow(/ORCHARD_SERVICE_ACCOUNT/);
   });
 
+  it('requires paired Access credentials for deployed HTTPS connections', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'archie-runner-config-'));
+    tempDirs.push(dir);
+    const path = join(dir, 'runners.json');
+    await writeFile(path, JSON.stringify(baseConfig()));
+    const env = {
+      ARCHIE_RUNNERS_CONFIG: path,
+      ORCHARD_SERVICE_ACCOUNT_NAME: 'archie',
+      ORCHARD_SERVICE_ACCOUNT_TOKEN: 'service-secret',
+      IOS_RUNNER_PASSWORD: 'guest-secret',
+    };
+    await expect(loadRunnerConfig(env)).rejects.toThrow(/HTTPS and Cloudflare Access/);
+    await expect(loadRunnerConfig({ ...env, ORCHARD_CF_ACCESS_CLIENT_ID: 'id' })).rejects.toThrow(/provided together/);
+  });
+
+  it('allows loopback test connections without Access credentials', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'archie-runner-config-'));
+    tempDirs.push(dir);
+    const path = join(dir, 'runners.json');
+    await writeFile(path, JSON.stringify({ ...baseConfig(), orchard: { baseUrl: 'http://127.0.0.1:6120', context: 'test' } }));
+    await expect(loadRunnerConfig({
+      ARCHIE_RUNNERS_CONFIG: path,
+      ORCHARD_SERVICE_ACCOUNT_NAME: 'archie',
+      ORCHARD_SERVICE_ACCOUNT_TOKEN: 'service-secret',
+      IOS_RUNNER_PASSWORD: 'guest-secret',
+    })).resolves.not.toBeNull();
+  });
+
   it('is disabled when no config path is set', async () => {
     await expect(loadRunnerConfig({})).resolves.toBeNull();
+  });
+
+  (infraConfig ? it : it.skip)('loads the infrastructure-rendered runner config', async () => {
+    await expect(loadRunnerConfig({
+      ARCHIE_RUNNERS_CONFIG: infraConfig,
+      ORCHARD_SERVICE_ACCOUNT_NAME: 'archie-staging',
+      ORCHARD_SERVICE_ACCOUNT_TOKEN: 'fixture-service-token',
+      ORCHARD_CF_ACCESS_CLIENT_ID: 'fixture-access-id',
+      ORCHARD_CF_ACCESS_CLIENT_SECRET: 'fixture-access-secret',
+      ORCHARD_IOS_GUEST_PASSWORD: 'fixture-guest-password',
+    })).resolves.not.toBeNull();
   });
 });

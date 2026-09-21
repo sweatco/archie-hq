@@ -24,6 +24,9 @@ export async function initRunners(): Promise<void> {
     loaded.config.orchard.baseUrl,
     loaded.serviceAccountName,
     loaded.serviceAccountToken,
+    30000,
+    loaded.accessClientId,
+    loaded.accessClientSecret,
   );
   manager = new RunnerManager(loaded, provider);
   await manager.initialize();

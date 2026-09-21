@@ -120,7 +120,7 @@ function loadedConfig(maxConcurrent = 2): LoadedRunnerConfig {
           image: `ghcr.io/example/xcode@sha256:${'a'.repeat(64)}`,
           os: 'darwin', cpu: 4, memoryMiB: 8192, diskGiB: 100,
           username: 'admin', passwordEnv: 'GUEST', allowedAgents: ['mobile-agent', 'second-agent'],
-          labels: {}, resources: {}, networkMode: 'softnet', softnetAllow: [], leaseTtlMinutes: 120,
+          labels: {}, resources: {}, networkMode: 'softnet', softnetAllow: [], softnetBlock: ['0.0.0.0/0'], leaseTtlMinutes: 120,
           debugTtlMinutes: 30, maxDebugTtlMinutes: 60, execTimeoutSeconds: 3600,
           provisionTimeoutSeconds: 30, readinessTimeoutSeconds: 30, maxExecWaitSeconds: 1,
           maxExecOutputBytes: 1024, maxActiveExecSessions: 4, maxExecSessionHistory: 50,

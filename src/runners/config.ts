@@ -12,6 +12,13 @@ const cidrSchema = z.string().refine((value) => {
   return family === 4 && bits <= 32;
 }, 'Expected an IPv4 CIDR');
 
+const softnetRuleSchema = z.string().refine((value) => {
+  const match = /^(?:(in|out) )?(.+)$/.exec(value);
+  if (!match) return false;
+  if (match[2] === '@host') return match[1] !== undefined;
+  return cidrSchema.safeParse(match[2]).success;
+}, 'Expected an IPv4 CIDR or directional Softnet rule');
+
 export const runnerProfileSchema = z.object({
   image: z.string().regex(/^[^\s@]+@sha256:[a-fA-F0-9]{64}$/, 'Runner images must be pinned by sha256 digest'),
   os: z.enum(['darwin', 'linux']).default('darwin'),
@@ -24,7 +31,8 @@ export const runnerProfileSchema = z.object({
   labels: z.record(z.string(), z.string()).default({}),
   resources: z.record(z.string(), z.number().int().nonnegative()).default({}),
   networkMode: z.enum(['softnet', 'nat']).default('softnet'),
-  softnetAllow: z.array(cidrSchema).default([]),
+  softnetAllow: z.array(softnetRuleSchema).default([]),
+  softnetBlock: z.array(softnetRuleSchema).default(['0.0.0.0/0']),
   readinessCommand: z.array(z.string()).min(1).optional(),
   remoteWorkspaceRoot: z.string().refine(
     (value) => value.startsWith('/') && !/^\/+$/u.test(value) && !/[\0-\x1f\x7f]/.test(value) && !value.split('/').includes('..'),
@@ -99,6 +107,16 @@ export async function loadRunnerConfig(env: NodeJS.ProcessEnv = process.env): Pr
   if (!serviceAccountName || !serviceAccountToken) {
     throw new Error('ORCHARD_SERVICE_ACCOUNT_NAME and ORCHARD_SERVICE_ACCOUNT_TOKEN are required when runners are enabled');
   }
+  const accessClientId = env.ORCHARD_CF_ACCESS_CLIENT_ID;
+  const accessClientSecret = env.ORCHARD_CF_ACCESS_CLIENT_SECRET;
+  if (Boolean(accessClientId) !== Boolean(accessClientSecret)) {
+    throw new Error('ORCHARD_CF_ACCESS_CLIENT_ID and ORCHARD_CF_ACCESS_CLIENT_SECRET must be provided together');
+  }
+  const orchardUrl = new URL(parsed.orchard.baseUrl);
+  const loopback = orchardUrl.hostname === '127.0.0.1' || orchardUrl.hostname === 'localhost' || orchardUrl.hostname === '::1';
+  if (!loopback && (orchardUrl.protocol !== 'https:' || !accessClientId)) {
+    throw new Error('Deployed Orchard connections require HTTPS and Cloudflare Access credentials');
+  }
 
   const guestPasswords: Record<string, string> = {};
   for (const [name, profile] of Object.entries(parsed.profiles)) {
@@ -107,7 +125,7 @@ export async function loadRunnerConfig(env: NodeJS.ProcessEnv = process.env): Pr
     guestPasswords[name] = password;
   }
 
-  return { config: parsed, serviceAccountName, serviceAccountToken, guestPasswords };
+  return { config: parsed, serviceAccountName, serviceAccountToken, accessClientId, accessClientSecret, guestPasswords };
 }
 
 export function profileWorkspaceRoot(profile: RunnerConfig['profiles'][string]): string {

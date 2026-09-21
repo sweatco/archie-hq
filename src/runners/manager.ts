@@ -328,6 +328,7 @@ export class RunnerManager {
           resources: profile.resources,
           networkMode: profile.networkMode,
           softnetAllow: profile.softnetAllow,
+          softnetBlock: profile.softnetBlock,
         });
         return await this.waitUntilReady(lease, profile);
       } catch (error) {

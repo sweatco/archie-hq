@@ -101,26 +101,35 @@ function withPrivateEnvironment(request: ExecRequest): ExecRequest {
 }
 
 export class OrchardRunnerProvider implements RunnerProvider {
-  private readonly authorization: string;
+  private readonly authenticationHeaders: Record<string, string>;
 
   constructor(
     private readonly baseUrl: string,
     serviceAccountName: string,
     serviceAccountToken: string,
     private readonly requestTimeoutMs = 30000,
+    accessClientId?: string,
+    accessClientSecret?: string,
   ) {
-    this.authorization = `Basic ${Buffer.from(`${serviceAccountName}:${serviceAccountToken}`).toString('base64')}`;
+    this.authenticationHeaders = {
+      authorization: `Basic ${Buffer.from(`${serviceAccountName}:${serviceAccountToken}`).toString('base64')}`,
+      ...(accessClientId && accessClientSecret ? {
+        'CF-Access-Client-Id': accessClientId,
+        'CF-Access-Client-Secret': accessClientSecret,
+      } : {}),
+    };
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`, {
       ...init,
       headers: {
-        authorization: this.authorization,
+        ...this.authenticationHeaders,
         ...(init.body ? { 'content-type': 'application/json' } : {}),
         ...init.headers,
       },
       signal: AbortSignal.timeout(this.requestTimeoutMs),
+      redirect: 'error',
     });
     if (!response.ok) {
       throw new OrchardRequestError(`Orchard ${init.method ?? 'GET'} ${path} failed (${response.status})`, response.status);
@@ -152,7 +161,7 @@ export class OrchardRunnerProvider implements RunnerProvider {
         ...(spec.networkMode === 'softnet' ? {
           netSoftnet: true,
           netSoftnetAllow: spec.softnetAllow,
-          netSoftnetBlock: ['0.0.0.0/0'],
+          netSoftnetBlock: spec.softnetBlock,
         } : {}),
       }),
     });
@@ -196,7 +205,7 @@ export class OrchardRunnerProvider implements RunnerProvider {
     const hasPrivateEnvironment = Object.keys(request.env ?? {}).length > 0;
     const wireRequest = withPrivateEnvironment(request);
     const queue = new AsyncEventQueue<ExecEvent>(MAX_EXEC_QUEUE_BYTES, eventBytes);
-    const ws = new WebSocket(this.execUrl(id, wireRequest), { headers: { authorization: this.authorization }, maxPayload: 4 * 1024 * 1024 });
+    const ws = new WebSocket(this.execUrl(id, wireRequest), { headers: this.authenticationHeaders, maxPayload: 4 * 1024 * 1024, followRedirects: false });
     let terminal = false;
     let opened = false;
     let bootstrapComplete = false;
@@ -328,7 +337,7 @@ export class OrchardRunnerProvider implements RunnerProvider {
   async closeExec(id: string, sessionId: string): Promise<void> {
     const url = this.execUrl(id, { sessionId, reconnectFrom: 0 });
     await new Promise<void>((resolve, reject) => {
-      const ws = new WebSocket(url, { headers: { authorization: this.authorization }, maxPayload: 4 * 1024 * 1024 });
+      const ws = new WebSocket(url, { headers: this.authenticationHeaders, maxPayload: 4 * 1024 * 1024, followRedirects: false });
       const timer = setTimeout(() => {
         ws.terminate();
         reject(new Error(`Timed out closing Orchard exec session ${sessionId}`));

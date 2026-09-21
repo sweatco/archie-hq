@@ -8,6 +8,8 @@ export interface LoadedRunnerConfig {
   config: RunnerConfig;
   serviceAccountName: string;
   serviceAccountToken: string;
+  accessClientId?: string;
+  accessClientSecret?: string;
   guestPasswords: Record<string, string>;
 }
 
@@ -31,6 +33,7 @@ export interface RunnerSpec {
   resources: Record<string, number>;
   networkMode: 'softnet' | 'nat';
   softnetAllow: string[];
+  softnetBlock: string[];
 }
 
 export interface ExecRequest {
