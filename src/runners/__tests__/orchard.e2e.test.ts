@@ -32,7 +32,7 @@ describe('real Orchard runner', () => {
       ? JSON.parse(process.env.ARCHIE_ORCHARD_E2E_COMMANDS) as string[][]
       : [
           ['/usr/bin/xcodebuild', '-version'],
-          ['/bin/sh', '-lc', 'device="$(xcrun simctl list devices available | awk -F "[()]" "/iPhone/{print \\$2; exit}")"; test -n "$device"; xcrun simctl boot "$device"; xcrun simctl bootstatus "$device" -b; xcrun simctl shutdown "$device"'],
+          ['/bin/sh', '-lc', 'set -eu\ndevice="$(xcrun simctl list devices available | awk -F "[()]" "/iPhone/{print \\$2; exit}")"\ntest -n "$device"\ntrap \'xcrun simctl shutdown "$device" >/dev/null 2>&1 || true\' EXIT\nxcrun simctl boot "$device"\nxcrun simctl bootstatus "$device" -b'],
           ['/usr/bin/curl', '-fsS', '--max-time', '15', publicEndpoint],
           ['/bin/sh', '-lc', `! /usr/bin/curl -fsS --max-time 5 ${JSON.stringify(blockedHostEndpoint)}`],
           ['/bin/sh', '-lc', `! /usr/bin/curl -gfsS --max-time 5 ${JSON.stringify(blockedIpv6Endpoint)}`],
