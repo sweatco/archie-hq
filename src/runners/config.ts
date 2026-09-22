@@ -113,7 +113,7 @@ export async function loadRunnerConfig(env: NodeJS.ProcessEnv = process.env): Pr
     throw new Error('ORCHARD_CF_ACCESS_CLIENT_ID and ORCHARD_CF_ACCESS_CLIENT_SECRET must be provided together');
   }
   const orchardUrl = new URL(parsed.orchard.baseUrl);
-  const loopback = orchardUrl.hostname === '127.0.0.1' || orchardUrl.hostname === 'localhost' || orchardUrl.hostname === '::1';
+  const loopback = orchardUrl.hostname === '127.0.0.1' || orchardUrl.hostname === 'localhost' || orchardUrl.hostname === '[::1]';
   if (!loopback && (orchardUrl.protocol !== 'https:' || !accessClientId)) {
     throw new Error('Deployed Orchard connections require HTTPS and Cloudflare Access credentials');
   }

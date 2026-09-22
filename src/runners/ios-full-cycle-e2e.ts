@@ -460,7 +460,14 @@ async function main(): Promise<void> {
     throw new Error(`ARCHIE_IOS_E2E_HOLD_SECONDS exceeds the ${profile.maxDebugTtlMinutes}-minute profile debug cap`);
   }
 
-  const provider = new OrchardRunnerProvider(loaded.config.orchard.baseUrl, loaded.serviceAccountName, loaded.serviceAccountToken);
+  const provider = new OrchardRunnerProvider(
+    loaded.config.orchard.baseUrl,
+    loaded.serviceAccountName,
+    loaded.serviceAccountToken,
+    30000,
+    loaded.accessClientId,
+    loaded.accessClientSecret,
+  );
   const manager = new RunnerManager(loaded, provider);
   const taskId = generateTaskId();
   const transferAbort = new AbortController();

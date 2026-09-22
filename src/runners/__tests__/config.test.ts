@@ -132,7 +132,7 @@ describe('runner configuration', () => {
     const dir = await mkdtemp(join(tmpdir(), 'archie-runner-config-'));
     tempDirs.push(dir);
     const path = join(dir, 'runners.json');
-    await writeFile(path, JSON.stringify({ ...baseConfig(), orchard: { baseUrl: 'http://127.0.0.1:6120', context: 'test' } }));
+    await writeFile(path, JSON.stringify({ ...baseConfig(), orchard: { baseUrl: 'http://127.0.0.1:6120', context: 'test', allowInsecureHttp: true } }));
     await expect(loadRunnerConfig({
       ARCHIE_RUNNERS_CONFIG: path,
       ORCHARD_SERVICE_ACCOUNT_NAME: 'archie',
