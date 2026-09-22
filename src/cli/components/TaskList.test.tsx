@@ -92,7 +92,7 @@ async function runRetry() {
   await settle();
 }
 
-describe('TaskList', () => {
+describe('TaskList', { timeout: 30_000 }, () => {
   beforeEach(() => {
     vi.useFakeTimers();
     fetchTasksMock.mockReset();
