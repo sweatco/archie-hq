@@ -54,7 +54,10 @@ describe('real Orchard runner', () => {
       backendId = lease.backendId;
       await manager.sync(taskId, agentId, profile, github, repoPath);
       for (const command of commands) {
-        const result = await manager.exec(taskId, agentId, profile, github, command);
+        let result = await manager.exec(taskId, agentId, profile, github, command);
+        while (result.state === 'running') {
+          result = await manager.poll(taskId, agentId, profile, result.execId, result.cursor, 30);
+        }
         expect(result.state).toBe('completed');
         expect(result.exitCode).toBe(0);
       }
