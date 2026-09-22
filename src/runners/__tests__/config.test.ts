@@ -113,6 +113,22 @@ describe('runner configuration', () => {
     await expect(loadRunnerConfig({ ARCHIE_RUNNERS_CONFIG: path })).rejects.toThrow(/ORCHARD_SERVICE_ACCOUNT/);
   });
 
+  it('does not expose the configured password variable when its value is missing', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'archie-runner-config-'));
+    tempDirs.push(dir);
+    const path = join(dir, 'runners.json');
+    await writeFile(path, JSON.stringify(baseConfig()));
+    const result = loadRunnerConfig({
+      ARCHIE_RUNNERS_CONFIG: path,
+      ORCHARD_SERVICE_ACCOUNT_NAME: 'archie',
+      ORCHARD_SERVICE_ACCOUNT_TOKEN: 'service-secret',
+      ORCHARD_CF_ACCESS_CLIENT_ID: 'access-id',
+      ORCHARD_CF_ACCESS_CLIENT_SECRET: 'access-secret',
+    });
+    await expect(result).rejects.toThrow('Runner profile "ios" requires its configured guest password');
+    await expect(result).rejects.not.toThrow(/IOS_RUNNER_PASSWORD/);
+  });
+
   it('requires paired Access credentials for deployed HTTPS connections', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'archie-runner-config-'));
     tempDirs.push(dir);

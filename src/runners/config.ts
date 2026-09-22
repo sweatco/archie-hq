@@ -121,7 +121,7 @@ export async function loadRunnerConfig(env: NodeJS.ProcessEnv = process.env): Pr
   const guestPasswords: Record<string, string> = {};
   for (const [name, profile] of Object.entries(parsed.profiles)) {
     const password = env[profile.passwordEnv];
-    if (!password) throw new Error(`Runner profile "${name}" requires ${profile.passwordEnv}`);
+    if (!password) throw new Error(`Runner profile "${name}" requires its configured guest password`);
     guestPasswords[name] = password;
   }
 
