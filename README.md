@@ -9,11 +9,13 @@
 
 **Archie is an AI employee** — you delegate real work to it in Slack, the same way you would to a colleague, and it gets the job done across any domain: engineering, marketing, analytics, ops, or anything you plug in.
 
-Under the hood it's not one chatbot but a whole team: a PM agent takes your request, brings in the right specialist agents, has them collaborate, and reports back. It's built on the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk) with a plugin architecture — add a new skill or department by dropping in a plugin directory, no core code changes.
+Under the hood a task is one long-lived agent — the PM — that loads the skill for the domain, hands bulky or specialised work to workers it spawns, and reports back as a single voice. It's built on the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk) with a plugin architecture — add a new skill or department by dropping in a plugin directory, no core code changes.
+
+> **Breaking change in 0.2.0.** A task used to run several agent processes coordinating through message queues and a shared log; it now runs one. Plugin agent frontmatter, the per-agent MCP scoping and the sandbox network allowlist all changed, so the engine and your plugins repo must be upgraded together — and existing task metadata is rewritten, so back it up first. If you run Archie with your own plugins, read [Migrating to the flat PM](docs/guides/migrating-to-flat-pm.md) before you deploy.
 
 ## Contents
 
-- [Why a team, not a single agent?](#why-a-team-not-a-single-agent)
+- [Why one agent that delegates](#why-one-agent-that-delegates)
 - [Runs your whole team on one server](#runs-your-whole-team-on-one-server)
 - [How It Works](#how-it-works)
 - [Quick Start](#quick-start-no-slack-no-github--just-an-api-key)
@@ -25,15 +27,15 @@ Under the hood it's not one chatbot but a whole team: a PM agent takes your requ
 - [Contributing](CONTRIBUTING.md)
 - [License](#license)
 
-## Why a team, not a single agent?
+## Why one agent that delegates
 
-A single agent can call sub-agents, so why model a whole team? Three reasons:
+Archie used to run several long-lived agent processes per task, coordinating through message queues, a shared log and owner handoffs. It now runs exactly one — the PM — and spawns workers through the SDK's own delegation tool. Three reasons:
 
-- **Context stays focused.** One agent grinding through a long task fills its context window fast and starts losing the thread. Splitting the work across agents keeps each one's context small, relevant, and sharp.
-- **Specialists beat a generalist.** An agent with a well-defined role — backed by peers it can question and reach agreement with — produces better work than a single generic agent reasoning alone. Collaboration and disagreement are features, not overhead.
-- **A coordinator delegates; a lead hoards.** Give one "lead" agent some sub-agents and it tends to do the whole job itself — it sees itself as the one in charge of the *work*. Archie's PM is a coordinator by design: its job is to delegate and synthesize, never to do the work. That structural choice is what actually distributes the work to the right specialists instead of one model trying to be everything.
+- **Context stays focused, and that is what delegation is for.** Only a worker's final report comes back; everything it read stays with it. So anything bulky — a code investigation, an analytics run, a log trawl — goes out to a worker regardless of domain, and the PM's own context stays small and sharp.
+- **A role is knowledge plus access, not a process.** Once the PM can load any skill and spawn any worker, most "agents" turn out to be a prompt and a tool grant that a skill expresses better. A worker earns a definition file only when it needs a fixed procedure and output envelope, or must be deliberately blind to how the material it reviews was made.
+- **Coordination in prose beats coordination in machinery.** The PM briefs a worker and reads its report. There is no owner to assign, no handoff protocol, and nothing to keep in sync between processes.
 
-This is also why Archie reads as an **employee**, not a tool: it has coworkers, a manager, a workplace (Slack), and a human approval gate before anything ships. You onboard new abilities as plugins, not forks.
+Archie still reads as an **employee**, not a tool: it has a workplace (Slack), a memory that outlives a task, and a human approval gate before anything ships. You onboard new abilities as plugins, not forks.
 
 ## Runs your whole team on one server
 
@@ -45,22 +47,23 @@ Archie is a production system, not a demo — and it's deliberately cheap to ope
 ## How It Works
 
 ```
-Slack / CLI → PM Agent → Domain Agents
-                 ↕              ↕
-           Shared knowledge log / MCP tools / Git / APIs
+Slack / CLI / GitHub → Task → PM agent ──┬─ skills (plugin:skill)
+                                         └─ workers (plugin:agent | general-purpose)
+                          ↕
+              MCP tools / Git clones / APIs
 ```
 
-1. A user sends a message in Slack (or via the CLI)
-2. The **PM agent** reads the request, loads the relevant domain skill, and delegates to the right agents
-3. **Domain agents** do the actual work — investigate code, query databases, draft copy, analyze data, call external APIs — whatever their domain requires
-4. The PM synthesizes results and responds to the user
-5. For engineering tasks that need code changes, the user approves **edit mode** — agents then create branches, write code, and open PRs
+1. A user sends a message in Slack (or via the CLI), or a GitHub webhook arrives
+2. The message becomes a task, and its **PM agent** loads the relevant domain skill
+3. Small conversational and operational steps the PM does itself; anything bulky it hands to a **worker** it spawns, with a brief and a model
+4. Workers run in the background and report back; the PM synthesizes and replies to the user — workers cannot talk to anyone themselves
+5. For code changes the user approves **edit mode** — clones then move onto a task branch, and Archie commits and opens PRs
 
-Each agent is sandboxed: filesystem access is restricted to its workspace, network is blocked from Bash, and code changes require human approval.
+The task is sandboxed: filesystem access is restricted to the task's own folder and clones, network egress from Bash is an explicit allowlist, and code changes require human approval.
 
 ## Quick Start (no Slack, no GitHub — just an API key)
 
-Archie ships with a small **example plugin set** (a PM plus a general assistant agent) so a fresh clone does something useful immediately. This path needs only an Anthropic API key — no Slack app, no GitHub App, no SSH keys.
+Archie ships with a small **example plugin set** — a summarize-or-draft skill the PM runs and a writing worker it can hand bulky material to — so a fresh clone does something useful immediately. This path needs only an Anthropic API key — no Slack app, no GitHub App, no SSH keys.
 
 ```bash
 # 1. Clone and install
@@ -81,105 +84,85 @@ npm run dev          # or: npm run docker:dev  (runs inside the OS sandbox)
 npm run cli
 ```
 
-Ask it something like *"summarize this: <paste a few paragraphs>"* — the PM will delegate to the example assistant agent and return a structured summary.
+Ask it something like *"summarize this: <paste a few paragraphs>"* — the PM loads the example skill and returns a structured summary, handing the work to the example worker when the material is bulky.
 
 **Going further:**
 - **Your own plugins** — point `ARCHIE_PLUGINS` at a git URL, or replace `workdir/plugins` with your own checkout. Read the bundled **`writing-plugins`** skill at [`examples/plugins/.claude/skills/writing-plugins/SKILL.md`](examples/plugins/.claude/skills/writing-plugins/SKILL.md) and the [Plugin System](docs/architecture/plugin-system.md) doc.
 - **Slack** — add `SLACK_BOT_TOKEN` + `SLACK_SIGNING_SECRET` for HTTP webhook mode, or `SLACK_APP_TOKEN` (`xapp-...`) for Socket Mode (no public URL needed). See [Local Development](docs/guides/local-development.md).
-- **GitHub / repo agents** — needed only for code-writing agents that open PRs. See the [GitHub App Setup guide](docs/guides/github-setup.md) for the App, permissions, events, and env vars. Repos declared by plugins are auto-cloned on startup.
+- **GitHub** — needed only for code work that opens PRs. See the [GitHub App Setup guide](docs/guides/github-setup.md) for the App, permissions, events, and env vars. The App installation is the repo allowlist; repos are cloned on demand (or warmed at startup via `archie.json`).
 
 ## Plugins
 
 Archie is configured entirely through **plugins** — directories that follow the [Claude Code plugin structure](https://docs.anthropic.com/en/docs/claude-code/plugins) with Archie-specific extensions. A plugin defines:
 
-- **Agents** (`agents/*.md`) — domain agents with roles, expertise, repo bindings, and tool configuration
-- **PM extension** (`agents/pm.md`) — extends the PM agent with domain-specific context and MCP tools
-- **MCP servers** (`.mcp.json`) — external tool integrations (Jira, Firebase, BigQuery, etc.)
-- **Skills** (`skills/`) — domain-specific workflows the PM agent can load on demand
+- **Skills** (`skills/`) — domain workflows the PM loads on demand, namespaced as `plugin:skill`
+- **Agents** (`agents/*.md`) — worker types the PM can spawn, addressable as `plugin:agent`
 - **Hooks** (`hooks/`) — Claude Code hooks for cost guards, validation, etc.
+
+Skills, agents and hooks are loaded natively by the Claude Agent SDK. Three files at the repo root stay engine-owned:
+
+- **MCP servers** (`.mcp.json`) — external tool integrations (Jira, Firebase, BigQuery, …), plus the per-tool approval tiers that decide which calls need a human
+- **Engine config** (`archie.json`) — the sandbox network allowlist, which repos to warm-clone at startup, and which may be merged without asking
+- **PM overlay** (`pm.md`) — standing organisational context, tone and rules appended to the PM's system prompt, and its default model and effort, with no engine changes needed; see [Plugin System](docs/architecture/plugin-system.md#pm-overlay-pmmd)
 
 Example plugin structure:
 
 ```
 plugins/
-├── pm/                           # PM extension
-│   ├── .claude-plugin/
-│   │   └── plugin.json
-│   ├── agents/
-│   │   └── pm.md                # Extends PM with domain context and MCP tools
-│   └── skills/
-│       └── engineering/SKILL.md # Workflows the PM loads on demand
-├── engineering/                  # Engineering domain (repo agents)
-│   ├── .claude-plugin/
-│   │   └── plugin.json
-│   └── agents/
-│       └── mobile.md            # Repo agent — has metadata.archie.repo binding
-├── marketing/                   # Marketing domain (plugin agent)
-│   ├── .claude-plugin/
-│   │   └── plugin.json
-│   ├── agents/
-│   │   └── copywriter.md        # Plugin agent — workspace + tools, no repo
+├── engineering/
+│   ├── .claude-plugin/plugin.json
 │   ├── skills/
-│   │   └── marketing/SKILL.md   # Domain workflow for PM
-│   └── hooks/
-│       └── hooks.json           # Claude Code hooks (cost guards, validation, etc.)
-└── .mcp.json                    # Shared MCP server configs (firebase, jira, etc.)
+│   │   └── pr-workflow/SKILL.md  # loadable as engineering:pr-workflow
+│   ├── agents/
+│   │   └── qa-reviewer.md        # spawnable as engineering:qa-reviewer
+│   └── hooks/hooks.json
+├── marketing/
+│   ├── .claude-plugin/plugin.json
+│   ├── skills/
+│   │   └── tone-analysis/SKILL.md
+│   └── agents/
+│       └── tov-reviewer.md
+├── .mcp.json                     # MCP servers + per-tool approval tiers
+└── archie.json                   # network allowlist, warm repos, auto-merge
 ```
 
-**Repo agents** require a `metadata.archie.repo` block in their frontmatter to bind to a GitHub repository:
+An agent file needs a `name`, a `description` (that is what the PM reads when choosing a worker) and usually a `model` and `effort`. There is no repo binding: the GitHub App installation is the allowlist, and the PM mounts what a task needs.
 
-```yaml
----
-role: Senior React Native engineer
-metadata:
-  archie:
-    repo:
-      github: org/mobile-app
-      baseBranch: main
-mcpServers:
-  - firebase
-  - bugsnag
----
-```
+Write an agent file only when a worker earns one — a fixed procedure and output envelope, a reviewer that must be blind to how the material was made, or a model/effort pairing the PM cannot express per spawn. Everything else is a skill the PM loads plus the general-purpose worker.
 
-**Plugin agents** just need `role` and optionally `mcpServers` — no repo binding, they get a workspace and tools.
-
-To add a new domain: create a plugin directory, define agents in markdown frontmatter, and restart. No core code changes needed.
+To add a new domain: create a plugin directory, drop in skills, and push. No core code changes and no redeploy — the next task picks it up.
 
 ## Architecture
 
-Archie has three agent types, all configured through plugins:
+A task is one agent and one SDK session:
 
+| | What it is | What it does |
+| --- | --- | --- |
+| **PM agent** | One per task, Opus by default | Talks to users, loads domain skills, mounts repos, spawns and briefs workers |
+| **Plugin agents** | Worker types a plugin defines | A fixed procedure, or a reviewer blind to how the material was made |
+| **General-purpose worker** | Built into the SDK | Everything else, with a model the PM names per spawn |
 
-| Agent             | Examples                 | What it does                                                      |
-| ----------------- | ------------------------ | ----------------------------------------------------------------- |
-| **PM Agent**      | One per task             | Coordinates agents, talks to users, loads domain skills on demand |
-| **Repo Agents**   | Backend, Mobile          | Full codebase access, git, PRs, CI tools — one per repository     |
-| **Plugin Agents** | Copywriter, Analyst, Ops | Any domain — gets a workspace, MCP tools, and read/write access   |
-
-
-Repo agents are for engineering work (code + git + GitHub). Plugin agents are for everything else — they get a workspace, any MCP tools you wire up, and read/write access to their domain. The PM agent is extended by a special `pm` plugin that adds domain context, MCP tools, and skills.
+Workers run inside the PM's own session and report back to it; only their final report reaches its context, and none of them can reach a user directly.
 
 **Key capabilities:**
 
-- Agent-to-agent communication via message queues
-- Shared knowledge log for findings and audit trail
-- Git shared clones for isolated, parallel task execution (repo agents)
-- MCP tool integration for any external service (plugin agents)
-- Human approval gate for code changes (read-only → edit mode)
+- Delegation through the SDK's own `Agent` tool, with background workers that wake the PM when they finish
+- Skills and worker types loaded natively from plugin directories, namespaced per plugin
+- Git shared clones mounted on demand, one per repo per task
+- Human approval gates: edit mode for code changes, per-call approval for critical MCP tools, per-PR approval for merges
 - Automated PR creation and merge orchestration
 - OS-level sandbox (bubblewrap) for filesystem and network isolation
 - Web research pipeline with structured output and injection defense
-- Per-task resource budgets (research requests, wall-clock timeout)
+- Cross-task memory, persistent triggers, and per-task budgets (research requests, wall-clock timeout)
 
 ## Security
 
-Agents run in a sandboxed environment with defense-in-depth:
+A task runs in a sandboxed environment with defense-in-depth. **The task, not an agent, is the isolation boundary:** workers run inside the PM's session and share its credentials, network allowlist and filesystem grants, so per-call approval tiers — not per-agent credential scoping — are what gate critical writes.
 
-- **Filesystem isolation** — each agent can only read/write its own workspace via bubblewrap (Bash) and PreToolUse hooks (Read/Write/Edit)
-- **Network deny-all** — Bash cannot reach the internet; web access only through the controlled research pipeline
-- **Tool denylists** — WebSearch/WebFetch blocked on all agents; Write/Edit blocked in read-only mode
-- **Human gates** — edit mode requires Slack approval; PRs require review before merge
+- **Filesystem isolation** — a task can only read/write its own session folder and clones, via bubblewrap (Bash) and PreToolUse hooks (Read/Write/Edit); base clones are read-only
+- **Network deny-all** — Bash cannot reach the internet beyond an explicit allowlist (one union for the whole session, from `archie.json`); web access only through the controlled research pipeline
+- **Tool denylists** — WebSearch/WebFetch always blocked; repo writes, pushes and PRs withheld until edit mode is approved
+- **Human gates** — edit mode requires Slack approval; critical MCP calls pause for per-call approval; PRs require review before merge
 - **Git safety** — branch protection server-side; no force push; git push blocked from Bash (no network)
 
 See [Security Architecture](docs/architecture/security.md) for the full threat model, enforcement layers, and deployment requirements.
@@ -189,18 +172,20 @@ See [Security Architecture](docs/architecture/security.md) for the full threat m
 **Architecture:**
 
 - [Overview](docs/architecture/overview.md) — system design and concepts
-- [Agents](docs/architecture/agents.md) — agent types, prompts, communication
-- [Orchestration](docs/architecture/orchestration.md) — task lifecycle, message routing
+- [Agents](docs/architecture/agents.md) — the PM, its workers, models and effort
+- [Orchestration](docs/architecture/orchestration.md) — task lifecycle, activation and recovery
+- [Tool Approvals](docs/architecture/tool-approvals.md) — per-call human approval for critical MCP tools
 - [Security](docs/architecture/security.md) — sandbox, threat model, defense layers, deployment
 - [Plugin System](docs/architecture/plugin-system.md) — plugin structure and agent registration
 - [Edit Mode](docs/architecture/edit-mode.md) — approval flow, shared clones, git workflow
 - [Persistence](docs/architecture/persistence.md) — session storage and recovery
 - [Slack Integration](docs/architecture/slack-integration.md) — UX layer
 - [GitHub Integration](docs/architecture/github-integration.md) — PR workflow
-- [Web Research](docs/architecture/web-research.md) — multi-agent research pipeline
+- [Web Research](docs/architecture/web-research.md) — the controlled `web_research` pipeline
 
 **Guides:**
 
+- [Migrating to the flat PM](docs/guides/migrating-to-flat-pm.md) — the 0.2.0 breaking change: what to convert in your plugins repo, and what happens to existing tasks
 - [Local Development](docs/guides/local-development.md) — full setup with Slack, GitHub App, ngrok
 - [GitHub App Setup](docs/guides/github-setup.md) — create the App, required permissions & webhook events, env vars
 - [Plugin System](docs/architecture/plugin-system.md) — how plugins are structured and loaded (plus the bundled `writing-plugins` skill under `examples/plugins/.claude/skills/`)

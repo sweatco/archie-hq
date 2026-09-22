@@ -21,10 +21,12 @@ export type TriggerStatus = 'pending' | 'enabled' | 'paused';
  * resolved live at list time (see list_triggers), because a channel can be
  * converted public↔private after the trigger was created and a stale cached
  * value would leak a now-private channel's triggers into public contexts.
+ *
+ * A `user` binding's `channel_id`/`channel_name` are the DM it was set up in, taken from that conversation and never from the model.
  */
 export type TriggerBinding =
   | { type: 'channel'; channel_id: string; channel_name: string }
-  | { type: 'user'; user_id: string };
+  | { type: 'user'; user_id: string; channel_id: string; channel_name: string };
 
 /**
  * A condition that fires the trigger.
@@ -45,6 +47,10 @@ export interface Trigger {
   /** Slack user ID who requested it */
   created_by: string;
   created_at: string;
+  /** Last edit while pending; the boot-scan GC measures the pending TTL from it. */
+  updated_at?: string;
+  /** Task that proposed it; scopes management while pending. Absent on older proposals. */
+  proposed_in_task?: string;
   /** Slack user ID who approved it (set when status flips pending → enabled) */
   approved_by?: string;
   binding: TriggerBinding;

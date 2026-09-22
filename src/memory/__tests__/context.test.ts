@@ -14,13 +14,17 @@ let tempDir: string;
 let usersDir: string;
 let activityPath: string;
 let memoryEnabled = true;
+let memoryReady = true;
 let injectionEnabled = false;
+let toolsEnabled = false;
 
 let entitiesDir: string;
 
 vi.mock('../paths.js', () => ({
   isMemoryEnabled: () => memoryEnabled,
+  isMemoryReady: () => memoryEnabled && memoryReady,
   isInjectionEnabled: () => injectionEnabled,
+  isMemoryToolsEnabled: () => toolsEnabled,
   getUserPath: (id: string) => {
     const safe = id.includes(':') ? id.replace(':', '__') : id;
     return join(usersDir, `${safe}.md`);
@@ -32,7 +36,6 @@ vi.mock('../paths.js', () => ({
   getEntityIndexPath: () => join(entitiesDir, 'index.md'),
   getEntityPath: (slug: string) => join(entitiesDir, `${slug}.md`),
   getEntityCap: () => 300,
-  getEntityInjectMax: () => 8,
   isValidEntitySlug: (s: string) => /^[a-z0-9][a-z0-9-]{0,63}$/.test(s) && s !== 'index',
 }));
 
@@ -47,7 +50,9 @@ describe('memory context builder', () => {
     activityPath = join(tempDir, 'recent-activity.md');
     entitiesDir = join(tempDir, 'entities');
     memoryEnabled = true;
+    memoryReady = true;
     injectionEnabled = false; // production default; positive tests opt in explicitly
+    toolsEnabled = false;
   });
 
   // Helper: write an entity file into the temp entities dir.
@@ -176,6 +181,20 @@ describe('memory context builder', () => {
       expect(result).toBe('base prompt');
     });
 
+    it('returns systemPrompt unchanged when scoped-store initialization failed', async () => {
+      memoryReady = false;
+      injectionEnabled = true;
+      await mkdir(usersDir, { recursive: true });
+      await writeFile(join(usersDir, 'U07DANA001.md'), '- must not be read\n', 'utf-8');
+
+      const result = await enrichPromptWithMemory(
+        'base prompt',
+        [{ userId: 'U07DANA001', displayName: 'Dana' }],
+      );
+
+      expect(result).toBe('base prompt');
+    });
+
     it('returns systemPrompt unchanged when injection is on but all memory is empty', async () => {
       injectionEnabled = true;
       const result = await enrichPromptWithMemory('base prompt', []);
@@ -234,33 +253,52 @@ describe('memory context builder', () => {
       expect(result).toContain('[[payment-service]]');
     });
 
-    it('selects repo-scoped and org-scoped entities for a repo agent', async () => {
+    it('injects catalogue rows but no full entity pages or observations', async () => {
       await writeEntity('payment-service', FM({ display_name: '"Payment Service"', scope: 'repo', repos: '[backend]' }));
-      await writeEntity('stripe', FM({ display_name: '"Stripe"', type: 'integration', scope: 'org' }));
-      await writeEntity('mobile-app', FM({ display_name: '"Mobile App"', scope: 'repo', repos: '[mobile]' }));
+      await writeEntity('stripe', FM({ display_name: '"Stripe"', type: 'integration', scope: 'org' }), [
+        '- [fact] private observation text  <!-- touched: 2026-05-01 -->',
+      ]);
 
-      const result = await buildMemoryContext([], { repo: 'backend' });
-      expect(result).toContain('<entity slug="payment-service"');
-      expect(result).toContain('<entity slug="stripe"'); // scope:org always selected
-      expect(result).not.toContain('<entity slug="mobile-app"'); // other repo, no signal
+      const result = await buildMemoryContext([]);
+      expect(result).toContain('[[payment-service]]');
+      expect(result).toContain('[[stripe]]');
+      expect(result).not.toContain('<entity slug=');
+      expect(result).not.toContain('private observation text');
     });
 
-    it('pulls a one-hop linked entity even when not directly matched', async () => {
-      await writeEntity(
-        'payment-service',
-        FM({ display_name: '"Payment Service"', scope: 'repo', repos: '[backend]' }),
-        [],
-        ['- depends_on [[postgres-prod]]'],
-      );
-      await writeEntity('postgres-prod', FM({ display_name: '"Postgres Prod"', type: 'system', scope: 'repo', repos: '[infra]' }));
+    it('excludes archived entities from the injected catalogue', async () => {
+      await writeEntity('active-service', FM({ display_name: '"Active"' }));
+      await writeEntity('archived-service', FM({ display_name: '"Archived"', status: 'archived' }));
 
-      const result = await buildMemoryContext([], { repo: 'backend' });
-      expect(result).toContain('<entity slug="payment-service"');
-      expect(result).toContain('<entity slug="postgres-prod"'); // via depends_on edge
+      const result = await buildMemoryContext([]);
+      expect(result).toContain('[[active-service]]');
+      expect(result).not.toContain('[[archived-service]]');
+    });
+
+    it('caps the complete catalogue block at 4,000 characters', async () => {
+      for (let index = 0; index < 100; index++) {
+        await writeEntity(`service-${String(index).padStart(3, '0')}`, FM({ display_name: `"Service ${index}"` }), [
+          `- [fact] observation ${index}  <!-- touched: 2026-05-01 -->`,
+        ]);
+      }
+
+      const result = await buildMemoryContext([]);
+      const catalogue = result.match(/<entity_index>[\s\S]*<\/entity_index>/)?.[0] ?? '';
+      expect(catalogue.length).toBeLessThanOrEqual(4_000);
+      expect(catalogue).toContain('_Additional entities omitted._');
+      expect(catalogue.split('\n').filter((line) => line.startsWith('| [[')).every((line) => line.endsWith('|'))).toBe(true);
+    });
+
+    it('adds retrieval guidance only when memory tools are enabled', async () => {
+      await writeEntity('payment-service', FM({ display_name: '"Payment Service"' }));
+      expect(await buildMemoryContext([])).not.toContain('Use search_memory');
+
+      toolsEnabled = true;
+      expect(await buildMemoryContext([])).toContain('Use search_memory to find relevant knowledge and read_entity for details.');
     });
 
     it('emits no entity blocks when there are no entities', async () => {
-      const result = await buildMemoryContext([], { repo: 'backend' });
+      const result = await buildMemoryContext([]);
       expect(result).not.toContain('<entity_index>');
       expect(result).not.toContain('<entity slug=');
     });

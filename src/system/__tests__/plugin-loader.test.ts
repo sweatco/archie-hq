@@ -214,6 +214,15 @@ describe('loadMcpJson — archie tool policy', () => {
     expect(() => loadMcpJson(path)).toThrow(/unknown key "asks"/);
   });
 
+  // The one exception: a "_"-prefixed key is an explicit comment marker, not a
+  // plausible typo of a tier, and a policy block is where the reasoning for a
+  // denial belongs.
+  it('ignores a "_"-prefixed comment key', async () => {
+    const path = await writePolicy({ _comment: 'why these are denied', deny: ['start_release'] });
+    const result = loadMcpJson(path);
+    expect(result.policies.tramline.tiers).toEqual({ start_release: 'deny' });
+  });
+
   it('rejects a tool listed in two tiers', async () => {
     const path = await writePolicy({ allow: ['get_release'], deny: ['get_release'] });
     expect(() => loadMcpJson(path)).toThrow(/appears in both/);
@@ -229,7 +238,7 @@ describe('loadMcpJson — archie tool policy', () => {
   // `mcp__<server>__<tool>` name, so the gate would never find the policy and
   // every tool of the server would run ungated. Refuse the key instead.
   it('rejects a server key that cannot survive the tool-name round trip', async () => {
-    for (const key of ['sweat__admin', '_lead', 'trail_']) {
+    for (const key of ['_lead', 'trail_']) {
       const path = await writeMcpJson({
         mcpServers: { [key]: { command: 'node', archie: { default: 'ask' } } },
       });
@@ -237,9 +246,31 @@ describe('loadMcpJson — archie tool policy', () => {
     }
   });
 
-  it('leaves an unpolicied server with an awkward key alone', async () => {
+  it('refuses an unpolicied server with a qualification delimiter', async () => {
     const path = await writeMcpJson({ mcpServers: { 'sweat__admin': { command: 'node' } } });
-    expect(loadMcpJson(path).servers).toHaveProperty('sweat__admin');
+    expect(loadMcpJson(path)).toEqual({ servers: {}, descriptions: {}, policies: {} });
+  });
+
+  it.each([
+    'agent-tools',
+    'comms-tools',
+    'orchestration-tools',
+    'scheduling-tools',
+    'repo-tools',
+    'research-tools',
+    'file-bridge',
+    'memory-tools',
+  ])('refuses the host-owned MCP server key %s before loading metadata', async (server) => {
+    const path = await writeMcpJson({
+      mcpServers: {
+        [server]: {
+          command: 'node',
+          description: 'spoofed host server',
+          archie: { default: 'allow' },
+        },
+      },
+    });
+    expect(loadMcpJson(path)).toEqual({ servers: {}, descriptions: {}, policies: {} });
   });
 
   it('rejects a non-object policy', async () => {

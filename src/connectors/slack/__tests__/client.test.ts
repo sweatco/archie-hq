@@ -16,10 +16,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // One shared fake WebClient; methods are reconfigured per test.
 const slackApi = {
   auth: { test: vi.fn() },
-  conversations: { info: vi.fn(), replies: vi.fn(), history: vi.fn() },
+  conversations: { info: vi.fn(), replies: vi.fn(), history: vi.fn(), members: vi.fn() },
   users: { info: vi.fn(), conversations: vi.fn(), list: vi.fn() },
   usergroups: { list: vi.fn() },
   pins: { list: vi.fn() },
+  reactions: { get: vi.fn() },
 };
 
 // WebClient is used with `new`, so the mock implementation must be a regular
@@ -55,15 +56,246 @@ beforeEach(async () => {
   slackApi.users.list.mockResolvedValue({ members: [] });
   slackApi.users.info.mockImplementation(async ({ user }: { user: string }) => ({
     ok: true,
-    user: { id: user, name: user.toLowerCase(), real_name: `Real ${user}`, team_id: 'THOME', profile: {} },
+    user: {
+      id: user, name: user.toLowerCase(), real_name: `Real ${user}`, team_id: 'THOME', profile: {},
+      is_restricted: false, is_ultra_restricted: false, is_bot: false, is_app_user: false,
+    },
   }));
   // Default: a public, non-shared channel.
   slackApi.conversations.info.mockResolvedValue({
-    ok: true, channel: { id: 'C1', name: 'general', is_private: false, is_im: false, is_mpim: false },
+    ok: true,
+    channel: {
+      id: 'C1', name: 'general', is_private: false, is_im: false, is_mpim: false,
+      is_shared: false, is_ext_shared: false, is_pending_ext_shared: false,
+    },
   });
+  slackApi.conversations.members.mockResolvedValue({ members: [BOT_USER, 'UINTERNAL'] });
 
+  const memoryPaths = await import('../../../memory/paths.js');
+  memoryPaths.setMemoryReady(true);
   client = await import('../client.js');
   await client.initSlackClient('xoxb-test');
+});
+
+describe('classifySlackMemoryScope', () => {
+  const directoryUser = (id: string, over: Record<string, unknown> = {}) => ({
+    id,
+    team_id: 'THOME',
+    is_restricted: false,
+    is_ultra_restricted: false,
+    is_bot: false,
+    is_app_user: false,
+    deleted: false,
+    ...over,
+  });
+
+  it('classifies an internal public channel as public', async () => {
+    await expect(client.classifySlackMemoryScope('C1')).resolves.toEqual({
+      kind: 'public', channel_id: 'C1',
+    });
+  });
+
+  it('classifies an internal private channel and MPIM as channel-local', async () => {
+    slackApi.conversations.info.mockResolvedValue({
+      channel: {
+        id: 'G1', is_private: true, is_im: false, is_mpim: true,
+        is_shared: false, is_ext_shared: false, is_pending_ext_shared: false,
+      },
+    });
+
+    await expect(client.classifySlackMemoryScope('G1')).resolves.toEqual({
+      kind: 'private_channel', channel_id: 'G1',
+    });
+  });
+
+  it('classifies Slack\'s sparse internal DM response as user-local without listing members', async () => {
+    slackApi.conversations.info.mockResolvedValue({
+      channel: {
+        id: 'D1', is_im: true, user: 'UINTERNAL',
+      },
+    });
+
+    await expect(client.classifySlackMemoryScope('D1')).resolves.toEqual({
+      kind: 'user', user_id: 'UINTERNAL',
+    });
+    expect(slackApi.conversations.members).not.toHaveBeenCalled();
+  });
+
+  it('refuses Slack Connect before inspecting membership', async () => {
+    slackApi.conversations.info.mockResolvedValue({
+      channel: {
+        id: 'CEXT', is_private: false, is_im: false, is_mpim: false,
+        is_shared: true, is_ext_shared: true, is_pending_ext_shared: false,
+      },
+    });
+
+    await expect(client.classifySlackMemoryScope('CEXT')).resolves.toEqual({ kind: 'none' });
+    expect(slackApi.conversations.members).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a restricted guest', { is_restricted: true }],
+    ['an ultra-restricted guest', { is_ultra_restricted: true }],
+    ['a foreign-workspace member', { team_id: 'TOTHER' }],
+    ['a deleted member', { deleted: true }],
+    ['a member without team provenance', { team_id: undefined }],
+    ['a member without restricted provenance', { is_restricted: undefined }],
+    ['a member without ultra-restricted provenance', { is_ultra_restricted: undefined }],
+  ])('refuses a channel containing %s', async (_label, override) => {
+    slackApi.conversations.members.mockResolvedValue({ members: ['UOUTSIDER'] });
+    slackApi.users.info.mockResolvedValue({ user: directoryUser('UOUTSIDER', override) });
+
+    await expect(client.classifySlackMemoryScope('C1')).resolves.toEqual({ kind: 'none' });
+  });
+
+  it('allows verified same-workspace bot and app members in public and private channels', async () => {
+    slackApi.conversations.members.mockResolvedValue({ members: [BOT_USER, 'UWORKBOT1', 'UAPPUSER1', 'UINTERNAL'] });
+    slackApi.users.info.mockImplementation(async ({ user }: { user: string }) => ({
+      user: directoryUser(user, user === 'UINTERNAL' ? {} : { is_bot: true, is_app_user: true }),
+    }));
+
+    await expect(client.classifySlackMemoryScope('C1')).resolves.toEqual({ kind: 'public', channel_id: 'C1' });
+    client.invalidateMemoryMemberTrust(BOT_USER);
+    client.invalidateMemoryMemberTrust('UWORKBOT1');
+    client.invalidateMemoryMemberTrust('UAPPUSER1');
+    client.invalidateMemoryMemberTrust('UINTERNAL');
+    slackApi.conversations.info.mockResolvedValue({
+      channel: {
+        id: 'G1', is_private: true, is_im: false, is_mpim: false,
+        is_shared: false, is_ext_shared: false, is_pending_ext_shared: false,
+      },
+    });
+    await expect(client.classifySlackMemoryScope('G1')).resolves.toEqual({ kind: 'private_channel', channel_id: 'G1' });
+  });
+
+  it('walks all member pages before allowing public memory', async () => {
+    slackApi.conversations.members
+      .mockResolvedValueOnce({ members: ['UINTERNAL'], response_metadata: { next_cursor: 'next' } })
+      .mockResolvedValueOnce({ members: ['UINTERNAL2'], response_metadata: { next_cursor: '' } });
+
+    await expect(client.classifySlackMemoryScope('C1')).resolves.toEqual({
+      kind: 'public', channel_id: 'C1',
+    });
+    expect(slackApi.conversations.members).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails closed on missing members or lookup errors', async () => {
+    slackApi.conversations.members.mockResolvedValueOnce({ members: [] });
+    await expect(client.classifySlackMemoryScope('C1')).resolves.toEqual({ kind: 'none' });
+
+    slackApi.conversations.info.mockRejectedValueOnce(new Error('channel_not_found'));
+    await expect(client.classifySlackMemoryScope('C1')).resolves.toEqual({ kind: 'none' });
+
+    slackApi.conversations.members.mockResolvedValueOnce({ members: ['UINTERNAL'] });
+    slackApi.users.info.mockRejectedValueOnce(new Error('user_not_found'));
+    await expect(client.classifySlackMemoryScope('C1')).resolves.toEqual({ kind: 'none' });
+  });
+
+  it('does no Slack work while the scoped memory store is unready', async () => {
+    const memoryPaths = await import('../../../memory/paths.js');
+    memoryPaths.setMemoryReady(false);
+
+    await expect(client.classifySlackMemoryScope('C1')).resolves.toEqual({ kind: 'none' });
+    expect(slackApi.conversations.info).not.toHaveBeenCalled();
+    memoryPaths.setMemoryReady(true);
+  });
+
+  it('fails closed when a required conversation provenance field is absent', async () => {
+    slackApi.conversations.info.mockResolvedValue({
+      channel: {
+        id: 'C1', is_private: false, is_im: false, is_mpim: false,
+        is_shared: false, is_pending_ext_shared: false,
+      },
+    });
+
+    await expect(client.classifySlackMemoryScope('C1')).resolves.toEqual({ kind: 'none' });
+    expect(slackApi.conversations.members).not.toHaveBeenCalled();
+  });
+
+  it('refuses an internal bot-user DM', async () => {
+    slackApi.conversations.info.mockResolvedValue({
+      channel: {
+        id: 'D1', is_im: true, is_mpim: false, is_private: true, user: 'UAPPBOT1',
+        is_shared: false, is_ext_shared: false, is_pending_ext_shared: false,
+      },
+    });
+    slackApi.users.info.mockResolvedValue({
+      user: {
+        id: 'UAPPBOT1', team_id: 'THOME', profile: {},
+        is_restricted: false, is_ultra_restricted: false, is_bot: true, is_app_user: true,
+      },
+    });
+
+    await expect(client.classifySlackMemoryScope('D1')).resolves.toEqual({ kind: 'none' });
+  });
+
+  it('reuses unexpired positive member trust while refreshing membership', async () => {
+    await client.classifySlackMemoryScope('C1');
+    await client.classifySlackMemoryScope('C1');
+
+    expect(slackApi.users.list).not.toHaveBeenCalled();
+    expect(slackApi.users.info).toHaveBeenCalledTimes(2);
+    expect(slackApi.conversations.members).toHaveBeenCalledTimes(2);
+  });
+
+  it('resolves only current channel members instead of scanning the workspace', async () => {
+    const members = Array.from({ length: 20 }, (_, i) => `U${String(i).padStart(7, '0')}`);
+    slackApi.conversations.members.mockResolvedValue({ members });
+
+    await expect(client.classifySlackMemoryScope('C1')).resolves.toEqual({ kind: 'public', channel_id: 'C1' });
+    expect(slackApi.users.list).not.toHaveBeenCalled();
+    expect(slackApi.users.info).toHaveBeenCalledTimes(20);
+  });
+
+  it('bounds concurrent users.info cache misses', async () => {
+    const members = Array.from({ length: 25 }, (_, i) => `U${String(i).padStart(7, '0')}`);
+    slackApi.conversations.members.mockResolvedValue({ members });
+    let active = 0;
+    let peak = 0;
+    slackApi.users.info.mockImplementation(async ({ user }: { user: string }) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      active -= 1;
+      return { user: directoryUser(user) };
+    });
+
+    await expect(client.classifySlackMemoryScope('C1')).resolves.toEqual({ kind: 'public', channel_id: 'C1' });
+
+    expect(slackApi.users.info).toHaveBeenCalledTimes(25);
+    expect(peak).toBeLessThanOrEqual(8);
+  });
+
+  it('observes a member becoming restricted without waiting for event invalidation', async () => {
+    slackApi.conversations.members.mockResolvedValue({ members: ['UINTERNAL'] });
+    slackApi.users.info
+      .mockResolvedValueOnce({ user: directoryUser('UINTERNAL') })
+      .mockResolvedValueOnce({ user: directoryUser('UINTERNAL', { is_restricted: true }) });
+
+    await expect(client.classifySlackMemoryScope('C1')).resolves.toEqual({ kind: 'public', channel_id: 'C1' });
+    client.invalidateMemoryMemberTrust('UINTERNAL');
+    await expect(client.classifySlackMemoryScope('C1')).resolves.toEqual({ kind: 'none' });
+  });
+
+  it('does not authorize or cache an invalidated in-flight lookup', async () => {
+    slackApi.conversations.members.mockResolvedValue({ members: ['UINTERNAL'] });
+    let resolveFirst!: (value: unknown) => void;
+    const first = new Promise((resolve) => { resolveFirst = resolve; });
+    slackApi.users.info
+      .mockImplementationOnce(() => first)
+      .mockResolvedValueOnce({ user: directoryUser('UINTERNAL', { is_restricted: true }) });
+
+    const staleClassification = client.classifySlackMemoryScope('C1');
+    await vi.waitFor(() => expect(slackApi.users.info).toHaveBeenCalledTimes(1));
+    client.invalidateMemoryMemberTrust('UINTERNAL');
+    const currentClassification = client.classifySlackMemoryScope('C1');
+
+    await expect(currentClassification).resolves.toEqual({ kind: 'none' });
+    resolveFirst({ user: directoryUser('UINTERNAL') });
+    await expect(staleClassification).resolves.toEqual({ kind: 'none' });
+    await expect(client.classifySlackMemoryScope('C1')).resolves.toEqual({ kind: 'none' });
+    expect(slackApi.users.info).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('fetchSlackThread — rootAuthorWasBot', () => {
@@ -112,6 +344,7 @@ describe('fetchSlackThread — rootAuthorWasBot', () => {
     expect(texts).toContain('human starts the thread');
     expect(texts).toContain('another human');
     expect(texts).not.toContain('archie chimed in'); // bot non-root message filtered out
+    expect(thread.messages[0]!.user).toMatchObject({ isBot: false, isAppUser: false });
   });
 });
 
@@ -1138,5 +1371,60 @@ describe('listChannelPins', () => {
     expect(slackApi.pins.list).toHaveBeenCalledTimes(1);
 
     client.__resetPinsScopeFlagForTests();
+  });
+});
+
+/**
+ * A live reactions read has three outcomes that must stay distinct: reactions,
+ * genuinely none, and "couldn't read". Collapsing the third into the second is
+ * what let the PM report a visibly-reacted message as unreacted when the token
+ * lacked `reactions:read`.
+ */
+describe('getMessageReactions — failure is not emptiness', () => {
+  it('returns the reactions with reacting users resolved to names', async () => {
+    slackApi.users.list.mockResolvedValue({
+      members: [{ id: 'UHUMAN', name: 'sergei', real_name: 'Sergei P', team_id: 'THOME', profile: {} }],
+    });
+    slackApi.reactions.get.mockResolvedValue({
+      ok: true,
+      message: { reactions: [{ name: 'eyes', count: 2, users: ['UHUMAN', 'UOTHER'] }] },
+    });
+
+    const result = await client.getMessageReactions('C1', '100.0');
+
+    expect(result).toEqual({ ok: true, reactions: [{ name: 'eyes', count: 2, users: ['Sergei P', 'UOTHER'] }] });
+    expect(slackApi.reactions.get).toHaveBeenCalledWith({ channel: 'C1', timestamp: '100.0', full: true });
+  });
+
+  it('returns ok with an empty list when the message genuinely has no reactions', async () => {
+    slackApi.reactions.get.mockResolvedValue({ ok: true, message: { text: 'hi' } });
+
+    expect(await client.getMessageReactions('C1', '100.0')).toEqual({ ok: true, reactions: [] });
+  });
+
+  it('reports missing_scope as a failure and warns with the code, not the token', async () => {
+    const scopeErr: Error & { data?: { error?: string } } = new Error('An API error occurred');
+    scopeErr.data = { error: 'missing_scope' };
+    slackApi.reactions.get.mockRejectedValue(scopeErr);
+
+    const result = await client.getMessageReactions('C1', '100.0');
+
+    expect(result).toEqual({ ok: false, error: 'missing_scope' });
+    expect(loggerWarn).toHaveBeenCalledWith('Slack', expect.stringContaining('missing_scope'));
+    expect(loggerWarn.mock.calls.flat().join(' ')).not.toContain('xoxb-test');
+  });
+
+  it('reports a deleted/unknown message as a failure, not as "no reactions"', async () => {
+    const err: Error & { data?: { error?: string } } = new Error('An API error occurred');
+    err.data = { error: 'message_not_found' };
+    slackApi.reactions.get.mockRejectedValue(err);
+
+    expect(await client.getMessageReactions('C1', '100.0')).toEqual({ ok: false, error: 'message_not_found' });
+  });
+
+  it('falls back to unknown_error when the thrown value carries no Slack code', async () => {
+    slackApi.reactions.get.mockRejectedValue(new Error('socket hang up'));
+
+    expect(await client.getMessageReactions('C1', '100.0')).toEqual({ ok: false, error: 'unknown_error' });
   });
 });

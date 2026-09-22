@@ -23,6 +23,7 @@ import { parseLastTouched, stripLastTouched, appendLastTouched } from '../annota
 let entitiesDir = '/tmp/fake-entities';
 
 vi.mock('../paths.js', () => ({
+  isMemoryReady: () => true,
   isHousekeepingEnabled: () => true,
   getUserPath: (id: string) => `/tmp/fake-user-${id}.md`,
   getUsersDir: () => '/tmp/fake-users',
@@ -31,7 +32,6 @@ vi.mock('../paths.js', () => ({
   getEntityIndexPath: () => join(entitiesDir, 'index.md'),
   getEntityPath: (slug: string) => join(entitiesDir, `${slug}.md`),
   getEntityCap: () => 300,
-  getEntityInjectMax: () => 8,
   isValidEntitySlug: (s: string) => /^[a-z0-9][a-z0-9-]{0,63}$/.test(s) && s !== 'index',
 }));
 

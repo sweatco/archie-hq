@@ -7,7 +7,7 @@ description: Boot a live Archie instance from the current branch, drive E2E scen
 
 Verify acceptance criteria against a live Archie instance booted from the branch under test. The lifecycle is four steps, each with one documented invocation:
 
-1. **Boot** — `npx tsx tools/e2e/boot.ts` builds and starts the instance detached, waits for `/health`.
+1. **Boot** — `npx tsx tools/e2e/boot.ts` prepares a worktree if needed, builds and starts the instance detached, waits for `/health`.
 2. **Drive** — execute scenario recipes through the `archie-debug` MCP (no scripts; you make the MCP calls).
 3. **Evidence** — pipe a per-scenario payload to `npx tsx tools/e2e/evidence.ts`, which validates and writes the JSON + markdown pair.
 4. **Teardown** — `npx tsx tools/e2e/teardown.ts` stops everything and verifies no project containers remain.
@@ -24,35 +24,32 @@ Verify acceptance criteria against a live Archie instance booted from the branch
 
 ### Booting from a git worktree
 
-A worktree checkout is a fresh tree, so `workdir/` and `claude-data/` do not exist in it and the boot creates empty ones. An instance booted that way has no history and no per-channel state: the CLI task list has nothing to paginate, and — because the channel store is what makes announce-once work — **the instance re-announces every `Archie…` canvas into its real Slack channel on first contact.** That is a live, user-visible post caused purely by test setup.
-
-Before the first boot in a new worktree:
+A worktree checkout is a fresh tree: `.env`, `workdir/`, `claude-data/` and a real `secrets/` are untracked, so none of them exist in it. That is a setup gap, not a missing harness — `boot.ts` closes it itself as step 0 by running:
 
 ```bash
-ln -s /path/to/main/checkout/workdir      workdir
-ln -s /path/to/main/checkout/claude-data  claude-data
-cp -R /path/to/main/checkout/secrets      secrets     # a real copy, NOT a symlink
+npm run e2e:prepare        # tools/e2e/prepare-worktree.ts; --print-plan to inspect first
 ```
 
-**Do all three, and link `workdir` whole — that alone resolves the setup.** In particular it is what supplies the plugins: main's `workdir/plugins` is itself a symlink to a local `archie-plugins` checkout, so linking main's `workdir` gets you the configured agents and their repos for free. Creating `workdir/` yourself instead — or letting the boot create it — leaves `workdir/plugins` empty, and **that does not fail the boot**: `ARCHIE_PLUGINS` is unset in local dev so nothing clones, and `initWorkdir`'s guard only tests that the directory *exists*. The instance comes up healthy with **zero agents**, and the first symptom is a repo-change scenario where the PM never requests edit mode — which reads like a product bug rather than setup.
+It links `workdir` and `claude-data` to the main checkout's, copies `secrets/` for real, and writes `.env` from main's with a free `PORT`. It is idempotent, never overwrites existing local state, writes only untracked files in the current worktree (it never creates a worktree), and touches no network. `boot.ts --no-prepare` skips it.
 
-`workdir` is designed for concurrent access by many containers, so sharing it between checkouts is correct rather than risky — and copying it is not an option at ~20G.
+Why each part matters:
 
-**`secrets/` is the exception and must be a real directory.** `Dockerfile.dev` does `COPY secrets/ /tmp/ca-src/`, and Docker's build context does not follow symlinks at the context root: a symlinked `secrets` fails the build with `"/secrets": not found`. Bind mounts *do* follow host symlinks, which is why `workdir` and `claude-data` are fine. The same asymmetry is why `docker-compose.yml` re-mounts `./workdir/plugins` explicitly — a symlink *inside* a mounted tree does not resolve in the container.
-
-Also set a free `PORT` in the worktree's `.env`. Main's 3000 is usually taken by another checkout's container; `boot.ts` will relocate around a squatter on its own, but the `archie-debug` MCP resolves its URL once at spawn, so an explicit port is one less thing to reconcile.
+- **`workdir` linked whole** supplies the plugins: main's `workdir/plugins` is itself a symlink to a local `archie-plugins` checkout. An empty `workdir/plugins` **does not fail the boot** — `ARCHIE_PLUGINS` is unset in local dev so nothing clones, and `initWorkdir` only tests that the directory exists — so the instance comes up healthy with **zero agents**. And because the channel store is what makes announce-once work, an empty `workdir` **re-announces every `Archie…` canvas into its real Slack channel on first contact**. `workdir` is designed for concurrent access by many containers, so sharing it is correct — and copying it is not an option at ~20G.
+- **`secrets/` must be a real directory.** `Dockerfile.dev` does `COPY secrets/ /tmp/ca-src/`, and Docker's build context does not follow symlinks at the context root: a symlinked `secrets` fails the build with `"/secrets": not found`. Bind mounts *do* follow host symlinks, which is why `workdir` and `claude-data` are fine as links (and why `docker-compose.yml` re-mounts `./workdir/plugins` explicitly).
+- **A free `PORT`**: main's 3000 is usually taken by another checkout's container, and the `archie-debug` MCP resolves its URL once at spawn.
 
 **Rollback:** delete `.claude/skills/archie-e2e/` and `tools/e2e/` — the harness has no side effects and nothing else references them (plus one `e2e-evidence/` line in `.gitignore`).
 
 ## 1. Boot
 
 ```bash
-npx tsx tools/e2e/boot.ts [--timeout-seconds N]
+npx tsx tools/e2e/boot.ts [--timeout-seconds N] [--no-prepare]
 ```
 
 The boot runs a strict ordered sequence; each step gates the next, so no failure ever falls through into the poll loop:
 
-1. **Preflight** (mandatory, first): `.env` exists at the repo root and `ANTHROPIC_API_KEY` is non-empty. Failure exits non-zero naming the missing item, with no compose invocation at all.
+0. **Worktree prerequisites**: `prepare-worktree.ts`, as above; a no-op in the main checkout or an already-prepared worktree. A state it cannot resolve safely exits non-zero naming the fix, before any compose invocation.
+1. **Preflight** (mandatory): `.env` exists at the repo root and `ANTHROPIC_API_KEY` is non-empty. Failure exits non-zero naming the missing item, with no compose invocation at all.
 2. **Port preflight**: the target port is probed before any compose invocation (skipped when `ARCHIE_URL` is set explicitly — that target is the operator's to manage). Free → proceed. Published by **this project's own archie** (checked against the container's published ports, not mere existence) → `docker compose down` first and boot fresh on the same port (the harness never adopts a running instance — it may be stale code; every boot builds from the current checkout). Held by **anything else** (a foreign archie from another worktree, an unrelated service) → a free port is auto-picked and the boot relocates there, leaving the squatter untouched.
 3. **Compose up, exit code trapped**: `docker compose up --build -d` (detached — `npm run docker:dev` is foreground, don't use it here), with `PORT` and `GIT_SHA` passed in the compose environment. A non-zero exit prints the diagnostics block and exits non-zero **before a single `/health` poll** — a failed build never spends any of the wait cap.
 4. **Health poll**: `GET {baseUrl}/health` every 5s until 200. Bounded by a default cap of **600s**, overridable via `--timeout-seconds` or `E2E_BOOT_TIMEOUT_SECONDS` (flag beats env beats default). Each tick also checks `docker compose ps --format json`: an `archie` container that is exited, dead, restarting (crash loop), or missing fails immediately instead of waiting out the cap.
@@ -83,7 +80,7 @@ A read-only question reaches `completed` with an observable PM reply. Verifies t
 3. `wait_for_task(nonce: NONCE)` — first call correlates the nonce to a task id and returns `TASK=<id>`.
 4. While `STATE=pending`: call `wait_for_task(task_id: <id>, cursor: <CURSOR from the previous call>)` again — each call waits up to ~45s server-side and returns a resumable `CURSOR`.
 5. Terminal: assert `STATE=completed`, and a `PM_REPLY` line was observed (or fetch `get_events(task_id)` and assert a `message` event with `data.from === 'pm-agent'`).
-6. Excerpts for evidence: `get_log(task_id, tail: 40)` for the knowledge log (must contain the nonce), `get_events(task_id)` for `task:created` … `task:completed`.
+6. Excerpts for evidence: `get_log(task_id, tail: 40)` for the transcript (must contain the nonce), `get_events(task_id)` for `task:created` … `task:completed`.
 
 ### Recipe: `edit-mode-approval`
 
@@ -96,7 +93,7 @@ A change request against a configured repo trips the edit-mode gate, is approved
 3. `wait_for_task(nonce: NONCE)`, then resume with `task_id` + `cursor` while `STATE=pending`.
 4. On `STATE=approval_requested`: read the approval type from the `APPROVAL_TYPE=` line of the `wait_for_task` output, then call `approve(task_id: <id>, type: "edit_mode", approve: true)` (this is the `POST /api/tasks/:id/approve` path).
 5. Continue the `wait_for_task` loop; assert the task reaches `STATE=completed`.
-6. Excerpts for evidence: events must show `approval:requested` (`data.approvalType: "edit_mode"`) followed by `approval:resolved` and eventually `task:completed`; the knowledge log records the approval decision line.
+6. Excerpts for evidence: events must show `approval:requested` (`data.approvalType: "edit_mode"`) followed by `approval:resolved` and eventually `task:completed`; the transcript records the approval decision line.
 
 ### Recipe: `merge-approval-deny`
 
@@ -108,11 +105,11 @@ An explicit merge request in a repo without `autoMerge: true` trips the `merge` 
 2. `create_task` with a small, real change request against a configured repo that ends in an open PR, e.g. `"[${NONCE}] In <repo>, add a comment line '// archie-e2e touch' to the top of README-adjacent file X and open a PR. Do not merge it."`
 3. `wait_for_task(nonce: NONCE)`, then resume with `task_id` + `cursor` while `STATE=pending`. On `STATE=approval_requested` with `APPROVAL_TYPE=edit_mode`: `approve(task_id: <id>, type: "edit_mode", approve: true)` and keep waiting.
 4. Wait until the task settles with the PR opened (`STATE=completed`, PM reply announcing the PR). Note the PR number and repo from the PM reply or the knowledge log — the approve call in step 7 needs exactly this identity.
-5. `send_message(task_id: <id>, message: "[${NONCE}] Please merge that PR.")` — the PM delegates to the repo agent, whose `merge_pull_request` call posts the merge approval prompt instead of merging.
+5. `send_message(task_id: <id>, message: "[${NONCE}] Please merge that PR.")` — the PM's `merge_pull_request` call posts the merge approval prompt instead of merging.
 6. Resume the `wait_for_task` loop; assert `STATE=approval_requested` with `APPROVAL_TYPE=merge`. The knowledge log now carries the decision finding `Merge approval requested for <github>#<pr_number>` — this names the identity to resolve against.
 7. `approve(task_id: <id>, type: "merge", approve: false, github: "<github>", pr_number: <pr_number>)` with the identity of the PR the scenario drove open — the API rejects merge-type resolutions that omit `github`/`pr_number`.
 8. Continue the `wait_for_task` loop; assert the task settles (`STATE=completed`) and **no merge occurred**: the knowledge log contains the denial finding `Merge denied by user — PR not merged`, and neither the log nor the events contain a merged completion (`PR … merged on user approval`) for this PR.
-9. Excerpts for evidence: events must show `approval:requested` (`data.approvalType: "merge"`) followed by `approval:resolved` (`data.approve: false`) with no merge in between; knowledge-log lines for the merge-approval request and the denial finding.
+9. Excerpts for evidence: events must show `approval:requested` (`data.approvalType: "merge"`) followed by `approval:resolved` (`data.approve: false`) with no merge in between; transcript lines for the merge-approval request and the denial finding.
 
 ## 3. Capture evidence
 
@@ -128,11 +125,11 @@ cat payload.json | npx tsx tools/e2e/evidence.ts --out-dir <dir>
 
 **All-or-nothing semantics:** stdin is read fully before parsing; truncated or malformed JSON produces a classed error ("truncated JSON input from stdin" / "invalid JSON from stdin: …"), a non-zero exit, and no files. An invalid payload exits non-zero naming every validation error and writes nothing. The pair is written atomically (temp-file + rename) and transactionally — both files land or neither. A half-written evidence file is silent poison for the reviewer judging pass/fail from the file alone; the writer makes that state unrepresentable.
 
-### Schema: `archie-e2e-evidence/v1` (field by field)
+### Schema: `archie-e2e-evidence/v2` (field by field)
 
 | Field | Type | Meaning |
 |---|---|---|
-| `schema` | `"archie-e2e-evidence/v1"` | Schema tag, exact string. |
+| `schema` | `"archie-e2e-evidence/v2"` | Schema tag, exact string. |
 | `scenario` | string, kebab-case | Canonical recipe name (`basic-nonce`, `edit-mode-approval`, `merge-approval-deny`); names the output files. |
 | `ac_ids` | string[], non-empty | Brief AC ids this scenario verifies, e.g. `["AC2"]`. |
 | `started_at` / `finished_at` | ISO 8601 strings | Scenario wall-clock bounds. |
@@ -143,7 +140,7 @@ cat payload.json | npx tsx tools/e2e/evidence.ts --out-dir <dir>
 | `task_id` | string | Correlated task id from `wait_for_task`. |
 | `terminal_state` | enum | `completed \| stopped \| approval_requested \| pending \| not_found`. |
 | `assertions` | array, non-empty | Each: `id`, `description`, `expected`, `observed` (all non-empty strings), `pass` (boolean). |
-| `excerpts.knowledge_log` | string[] | Verbatim knowledge-log lines the assertions rest on. |
+| `excerpts.transcript` | string[] | Verbatim transcript lines (from `get_log`, rendered from `events.jsonl` — `knowledge.log` is not served over the API) the assertions rest on. |
 | `excerpts.events` | array | Verbatim event objects (from `get_events`) the assertions rest on. |
 | `result` | `"pass" \| "fail"` | Overall verdict; the validator enforces it equals the AND of assertion passes. |
 

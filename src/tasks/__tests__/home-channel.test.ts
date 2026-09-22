@@ -41,8 +41,11 @@ import type { AgentDef } from '../../types/agent.js';
 const TaskCtor = Task as unknown as new (
   taskId: string,
   metadata: TaskMetadata,
-  team: AgentDef[],
+  pmDef: AgentDef,
 ) => Task;
+const PM_DEF = {
+  id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'core', visibility: 'global', isPm: true,
+} as AgentDef;
 
 const HOME = { channel_id: 'C9', channel_name: 'ops' };
 const TS = '1750000000.000100';
@@ -50,19 +53,17 @@ const TS = '1750000000.000100';
 function metadata(over: Partial<TaskMetadata> = {}): TaskMetadata {
   return {
     task_id: 't1',
-    task_owner: null,
-    participants: [],
     channels: {},
     default_channel: null,
     agent_sessions: {},
-    repositories: {},
+    repositories: [],
     ...over,
   } as unknown as TaskMetadata;
 }
 
 /** Builds a Task over `meta`, with both persistence seams neutered — see the harness note above. */
 function newTask(meta: TaskMetadata): Task {
-  const task = new TaskCtor('t1', meta, []);
+  const task = new TaskCtor('t1', meta, PM_DEF);
   (task as unknown as { debouncedSave: () => void }).debouncedSave = () => {};
   (task as unknown as { save: (flush?: boolean) => Promise<void> }).save = async () => {};
   return task;
@@ -144,9 +145,9 @@ describe('postToUser opens the task thread in home_channel', () => {
     expect(meta.channels).toEqual({});
     expect(meta.default_channel).toBeNull();
     // Unlinked is not the same as unsaid. Dry-run never reaches Slack, so there is no ts to key a thread
-    // by — but the agent did produce this message, and knowledge.log is the only place any other agent on
-    // the task can read it. Dropping it here would make a dry-run fire look like a fire that said nothing,
-    // and the destination is still recorded as the home channel it was meant for.
+    // by — but the agent did produce this message, and the log is the record of it (what the memory
+    // extractor and the offline audit read). Dropping it here would make a dry-run fire look like a fire
+    // that said nothing, and the destination is still recorded as the home channel it was meant for.
     expect(vi.mocked(appendMessageToUser)).toHaveBeenCalledWith(
       't1', 'pm-agent', 'the nightly report', `#${HOME.channel_name}`,
     );

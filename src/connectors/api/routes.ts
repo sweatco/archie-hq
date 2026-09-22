@@ -13,19 +13,20 @@ const express = require('express');
 
 import { readdirSync } from 'fs';
 import { onEvent, offEvent, emitEvent } from '../../system/event-bus.js';
-import { Task, activeTasks } from '../../tasks/task.js';
+import { Task } from '../../tasks/task.js';
 import {
-  readKnowledgeLog,
   loadMetadata,
   appendCliMessage,
   readEvents,
+  findTaskOnDisk,
 } from '../../tasks/persistence.js';
 import { SESSIONS_DIR } from '../../system/workdir.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
-import { listTriggers, loadTrigger, saveTrigger, deleteTrigger, countActiveTriggers } from '../../system/trigger-store.js';
+import { listTriggers, loadTrigger, saveTrigger, deleteTrigger, countActiveTriggers, updatePendingTrigger, withdrawPendingTrigger } from '../../system/trigger-store.js';
 import { indexTrigger, deindexTrigger, announceTriggerChange, describeTrigger, MAX_TRIGGERS_PER_USER, MAX_TRIGGERS_PER_CHANNEL } from '../../system/trigger-scheduler.js';
 import type { Trigger } from '../../types/trigger.js';
+import { cancelReminder } from '../../system/reminder-scheduler.js';
 
 /**
  * Mount API routes on an existing Express app.
@@ -88,8 +89,6 @@ export function mountApiRoutes(app: Application): void {
         const metadata = await loadMetadata(dir);
         if (!metadata) continue;
 
-        const activeTask = activeTasks.get(dir);
-
         // Extract channel name from default channel
         let channel_name: string | null = null;
         if (metadata.default_channel && metadata.channels[metadata.default_channel]) {
@@ -101,14 +100,11 @@ export function mountApiRoutes(app: Application): void {
         tasks.push({
           task_id: metadata.task_id,
           status: metadata.status,
-          task_owner: metadata.task_owner,
-          participants: metadata.participants,
           created_at: metadata.created_at,
           updated_at: metadata.updated_at,
           title: metadata.title ?? null,
           channel_name,
           reminder: metadata.reminder ?? null,
-          agents: activeTask ? activeTask.getAgentStatus() : [],
         });
       }
 
@@ -130,27 +126,7 @@ export function mountApiRoutes(app: Application): void {
         return;
       }
 
-      const knowledgeLog = await readKnowledgeLog(taskId);
-      const activeTask = activeTasks.get(taskId);
-
-      // Build agents list: start from metadata (all agents that ever participated),
-      // then overlay live status from in-memory task if available
-      const liveAgents = activeTask ? activeTask.getAgentStatus() : [];
-      const liveMap = new Map(liveAgents.map((a) => [a.agent, a]));
-      const agents = Object.entries(metadata.agent_sessions).map(([name, session]) => {
-        const live = liveMap.get(name);
-        if (live) return live;
-        const s = typeof session === 'string' ? { active: false } : session;
-        return { agent: name, active: s.active, last_activity: s.last_activity };
-      });
-      // Add any live agents not in metadata (shouldn't happen, but be safe)
-      for (const live of liveAgents) {
-        if (!metadata.agent_sessions[live.agent]) {
-          agents.push(live);
-        }
-      }
-
-      res.json({ metadata, knowledgeLog, agents });
+      res.json({ metadata });
     } catch (error) {
       logger.error('api', 'Failed to get task detail', error);
       res.status(500).json({ error: 'Failed to get task detail' });
@@ -182,8 +158,10 @@ export function mountApiRoutes(app: Application): void {
 
       const task = await Task.create();
       task.linkCliChannel();
-      await appendCliMessage(task.taskId, message);
-      await task.sendMessage(AGENT_PROMPTS.newTask);
+      // The wake carries the message, exactly as the Slack path does: the line
+      // the log recorded is the line the PM reads.
+      const line = await appendCliMessage(task.taskId, message);
+      await task.sendMessage(AGENT_PROMPTS.inboundNewTask([line]));
 
       res.status(201).json({ task_id: task.taskId });
     } catch (error) {
@@ -203,16 +181,43 @@ export function mountApiRoutes(app: Application): void {
         return;
       }
 
-      await appendCliMessage(taskId, message);
+      const line = await appendCliMessage(taskId, message);
 
       const task = await Task.get(taskId);
       task.linkCliChannel();
-      await task.sendMessage(AGENT_PROMPTS.existingTask);
+      await task.sendMessage(AGENT_PROMPTS.inboundActivity([line]));
 
       res.json({ ok: true });
     } catch (error) {
       logger.error('api', 'Failed to send message', error);
       res.status(500).json({ error: 'Failed to send message' });
+    }
+  });
+
+  // ---- DELETE /tasks/:id/reminder — operator off switch for a task's reminder ----
+
+  // Operator off switch: cancel_reminder is agent-only, and a recurring reminder re-activates a task indefinitely.
+  router.delete('/tasks/:id/reminder', async (req: Request, res: Response) => {
+    try {
+      // Task.get throws for a missing task; answer 404 rather than a misleading 500.
+      const taskId = findTaskOnDisk(req.params.id as string);
+      if (!taskId) {
+        res.status(404).json({ error: 'Task not found' });
+        return;
+      }
+      const task = await Task.get(taskId);
+      const existing = task.metadata.reminder;
+      if (!existing) {
+        res.json({ ok: true, cancelled: false });
+        return;
+      }
+      cancelReminder(task);
+      await task.save(true);
+      logger.system(`Reminder cancelled for ${taskId} by operator`);
+      res.json({ ok: true, cancelled: true, reminder: existing });
+    } catch (error) {
+      logger.error('api', 'Failed to cancel reminder', error);
+      res.status(500).json({ error: 'Failed to cancel reminder' });
     }
   });
 
@@ -304,9 +309,39 @@ export function mountApiRoutes(app: Application): void {
         // CLI echoes it from the approval event), so the right one resolves even
         // when several proposals are outstanding. Approver is the CLI operator.
         if (approve) {
-          await task.handleTriggerApproval('cli', ref);
+          const trigger = await task.handleTriggerApproval('cli', ref);
+          if (!trigger) {
+            // A cap refusal leaves the proposal approvable, so keep the CLI prompt; anything else is
+            // settled and must emit approval:resolved, the only thing that clears the prompt.
+            const existing = ref ? await loadTrigger(ref) : null;
+            const capBlocked = existing?.status === 'pending';
+            if (!capBlocked) emitEvent('approval:resolved', taskId, { type, approve });
+            res.status(409).json({
+              ok: false,
+              stale: true,
+              capBlocked,
+              error: capBlocked
+                ? `Trigger ${ref ?? '(none)'} was not enabled — the active-trigger limit was reached. Remove or pause another automation, then approve again.`
+                : `Trigger ${ref ?? '(none)'} was not enabled — it is already active or was withdrawn.`,
+            });
+            return;
+          }
         } else {
-          await task.handleTriggerDenial(ref);
+          const result = await task.handleTriggerDenial(ref);
+          if (result.outcome !== 'withdrawn') {
+            emitEvent('approval:resolved', taskId, { type, approve });
+            res.status(409).json({
+              ok: false,
+              stale: true,
+              outcome: result.outcome,
+              error: result.outcome === 'already_live'
+                ? result.status === 'paused'
+                  ? `Trigger ${ref ?? '(none)'} was not declined — it is already approved and currently paused. Delete it if you want it gone.`
+                  : `Trigger ${ref ?? '(none)'} was not declined — it is already approved and running. Pause or delete it instead.`
+                : `Trigger ${ref ?? '(none)'} was not declined — no such proposal is pending.`,
+            });
+            return;
+          }
         }
       } else if (type === 'tool_call') {
         // Same trust model as every other gate's API path: reaching this route
@@ -363,11 +398,10 @@ export function mountApiRoutes(app: Application): void {
     summary: describeTrigger(t),
   });
 
-  // GET /triggers — list all triggers with their bound channel
+  // GET /triggers — list all triggers, pending proposals included
   router.get('/triggers', async (_req: Request, res: Response) => {
     try {
       const triggers = (await listTriggers())
-        .filter((t) => t.status !== 'pending')
         .sort((a, b) => b.created_at.localeCompare(a.created_at));
       res.json({ triggers: triggers.map(shapeTrigger), total: triggers.length });
     } catch (error) {
@@ -380,7 +414,7 @@ export function mountApiRoutes(app: Application): void {
   router.get('/triggers/:id', async (req: Request, res: Response) => {
     try {
       const trigger = await loadTrigger(req.params.id as string);
-      if (!trigger || trigger.status === 'pending') {
+      if (!trigger) {
         res.status(404).json({ error: 'Trigger not found' });
         return;
       }
@@ -397,8 +431,14 @@ export function mountApiRoutes(app: Application): void {
       const id = req.params.id as string;
       const { status, action_prompt } = req.body as { status?: 'paused' | 'enabled'; action_prompt?: string };
       const trigger = await loadTrigger(id);
-      if (!trigger || trigger.status === 'pending') {
+      if (!trigger) {
         res.status(404).json({ error: 'Trigger not found' });
+        return;
+      }
+      if (trigger.status === 'pending' && status) {
+        res.status(409).json({
+          error: 'Trigger is awaiting approval — resolve it via the approval prompt rather than setting status.',
+        });
         return;
       }
 
@@ -433,6 +473,26 @@ export function mountApiRoutes(app: Application): void {
         return;
       }
 
+      if (trigger.status === 'pending') {
+        // No deindex: a pending trigger is never indexed, and after an await this could evict one
+        // a concurrent Approve just enabled.
+        const result = await updatePendingTrigger(id, (t) => {
+          if (editedContent) t.action.prompt = action_prompt as string;
+        });
+        if (result.outcome !== 'updated') {
+          res.status(409).json({
+            ok: false,
+            stale: true,
+            error: result.outcome === 'resolved'
+              ? `Proposal was resolved while this edit was in flight — it is now ${result.status}, so nothing was changed.`
+              : 'Proposal was withdrawn while this edit was in flight, so nothing was changed.',
+          });
+          return;
+        }
+        res.json({ ok: true, trigger: shapeTrigger(result.trigger) });
+        return;
+      }
+
       await saveTrigger(trigger);
       if (trigger.status === 'enabled') indexTrigger(trigger);
       else deindexTrigger(trigger.id);
@@ -457,10 +517,20 @@ export function mountApiRoutes(app: Application): void {
         res.status(404).json({ error: 'Trigger not found' });
         return;
       }
+      if (trigger.status === 'pending') {
+        const result = await withdrawPendingTrigger(id);
+        if (result.outcome === 'resolved') {
+          res.status(409).json({ ok: false, stale: true, error: `Proposal was approved meanwhile — it is now ${result.status}, so it was not withdrawn.` });
+          return;
+        }
+        emitEvent('trigger:deleted', id, { trigger_id: id });
+        res.json({ ok: true });
+        return;
+      }
       deindexTrigger(id);
       await deleteTrigger(id);
       emitEvent('trigger:deleted', id, { trigger_id: id });
-      if (trigger.status !== 'pending') await announceTriggerChange(trigger, 'deleted');
+      await announceTriggerChange(trigger, 'deleted');
       res.json({ ok: true });
     } catch (error) {
       logger.error('api', 'Failed to delete trigger', error);

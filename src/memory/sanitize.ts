@@ -63,9 +63,8 @@ export function isAllowedDomain(domain: string): boolean {
   return ALLOWED_DOMAINS.has(domain);
 }
 
-/** Escape pipe characters so a value can safely live in a Markdown table cell. */
 export function escapeTableCell(value: string): string {
-  return value.replace(/\|/g, '\\|');
+  return value.replace(/[\\|]/g, '\\$&');
 }
 
 /** Collapse runs of whitespace, strip leading list markers, single-line only. */
@@ -145,6 +144,7 @@ export function sanitizeUpdate(update: MemoryUpdate): MemoryUpdate | null {
     if (update.old === undefined) return null;
     const o = normaliseBullet(update.old);
     if (o === null) return null;
+    if (looksLikeInstruction(o) || looksLikeSecret(o)) return null;
     old = o;
   }
 
@@ -164,6 +164,7 @@ export function sanitizeActivityEntry(entry: ActivityEntry): ActivityEntry | nul
   let summary = entry.summary.replace(/\s+/g, ' ').trim();
   if (!summary) return null;
   if (/\n|\r/.test(summary)) return null;
+  if (looksLikeInstruction(summary) || looksLikeSecret(summary)) return null;
   if (summary.length > ACTIVITY_SUMMARY_MAX) summary = summary.slice(0, ACTIVITY_SUMMARY_MAX);
   summary = escapeTableCell(summary);
 
@@ -186,6 +187,7 @@ export function sanitizeTaskSummary(summary: string): string | null {
   if (!s) return null;
   if (/^---$/m.test(s)) return null;
   if (s.length > TASK_SUMMARY_MAX) return null;
+  if (looksLikeInstruction(s) || looksLikeSecret(s)) return null;
   return s;
 }
 

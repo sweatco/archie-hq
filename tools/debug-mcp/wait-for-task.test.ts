@@ -3,19 +3,22 @@ import { waitForTask, type TaskClient } from './wait-for-task.js';
 
 type Ev = { type: string; data?: Record<string, unknown> };
 
+/** An inbound message event — the shape the engine emits on ingestion. */
+function inbound(from: string, message: string): Ev {
+  return { type: 'message', data: { from, to: 'pm-agent', message } };
+}
+
 function makeClient(opts: {
-  tasks?: Array<{ task_id: string; log: string }>;
+  tasks?: string[];
   events?: Record<string, Ev[]>;
 }): TaskClient {
-  const tasks = opts.tasks ?? [];
   const events = opts.events ?? {};
+  // A task the client can list. Defaults to whatever has events, so a test that
+  // only cares about one task's stream doesn't have to declare it twice.
+  const tasks = opts.tasks ?? Object.keys(events);
   return {
     async listTasks() {
-      return tasks.map((t) => ({ task_id: t.task_id }));
-    },
-    async getTaskDetail(id: string) {
-      const t = tasks.find((x) => x.task_id === id);
-      return { knowledgeLog: t?.log ?? '' };
+      return tasks.map((task_id) => ({ task_id }));
     },
     async getEvents(id: string, after?: number) {
       const all = (events[id] ?? []).map((e) => ({ type: e.type, data: e.data ?? {} }));
@@ -69,6 +72,26 @@ describe('waitForTask — state detection', () => {
     expect(r.approval_type).toBe('merge');
   });
 
+  it('surfaces a tool_call gate with the digest ref the API requires back', async () => {
+    const c = makeClient({
+      events: {
+        t1: [{ type: 'approval:requested', data: { approvalType: 'tool_call', ref: 'sha256:abc' } }],
+      },
+    });
+    const r = await waitForTask(c, { taskId: 't1' }, { ...fakeClock(), ...tunables });
+    expect(r.state).toBe('approval_requested');
+    expect(r.approval_type).toBe('tool_call');
+    expect(r.approval_ref).toBe('sha256:abc');
+  });
+
+  it('reports the other engine approval types (trigger, max_mode)', async () => {
+    for (const type of ['trigger', 'max_mode'] as const) {
+      const c = makeClient({ events: { t1: [{ type: 'approval:requested', data: { approvalType: type } }] } });
+      const r = await waitForTask(c, { taskId: 't1' }, { ...fakeClock(), ...tunables });
+      expect(r.approval_type).toBe(type);
+    }
+  });
+
   it('prefers a terminal state over a replayed approval (precedence)', async () => {
     const c = makeClient({
       events: {
@@ -82,24 +105,42 @@ describe('waitForTask — state detection', () => {
     expect(r.state).toBe('completed');
   });
 
-  it('captures attribution from the first knowledge-log line', async () => {
+  it('captures attribution from the first inbound message event', async () => {
     const c = makeClient({
-      tasks: [{ task_id: 't1', log: '@<U123:Dana> in slack:#dm  hello (E2E-abcd)\nmore' }],
-      events: { t1: [{ type: 'task:completed' }] },
+      events: {
+        t1: [
+          inbound('Dana', 'hello (E2E-abcd)'),
+          { type: 'message', data: { from: 'pm-agent', to: 'user', message: 'on it' } },
+          { type: 'task:completed' },
+        ],
+      },
     });
     const r = await waitForTask(c, { taskId: 't1' }, { ...fakeClock(), ...tunables });
-    expect(r.attribution).toContain('@<U123:Dana>');
+    expect(r.attribution).toBe('Dana: hello (E2E-abcd)');
+  });
+
+  it('never attributes a task to the PM\'s own reply', async () => {
+    const c = makeClient({
+      events: {
+        t1: [
+          { type: 'message', data: { from: 'pm-agent', to: 'user', message: 'on it' } },
+          { type: 'task:completed' },
+        ],
+      },
+    });
+    const r = await waitForTask(c, { taskId: 't1' }, { ...fakeClock(), ...tunables });
+    expect(r.attribution).toBeNull();
   });
 });
 
 describe('waitForTask — correlation', () => {
-  it('finds the task by nonce', async () => {
+  it('finds the task by a nonce in its event stream', async () => {
     const c = makeClient({
-      tasks: [
-        { task_id: 't-new', log: 'hello (E2E-zzzz)' },
-        { task_id: 't-old', log: 'something else' },
-      ],
-      events: { 't-new': [{ type: 'task:completed' }] },
+      tasks: ['t-new', 't-old'],
+      events: {
+        't-new': [inbound('Dana', 'hello (E2E-zzzz)'), { type: 'task:completed' }],
+        't-old': [inbound('Dana', 'something else')],
+      },
     });
     const r = await waitForTask(c, { nonce: 'E2E-zzzz' }, { ...fakeClock(), ...tunables });
     expect(r.task_id).toBe('t-new');
@@ -107,7 +148,7 @@ describe('waitForTask — correlation', () => {
   });
 
   it('returns not_found when the nonce never appears', async () => {
-    const c = makeClient({ tasks: [{ task_id: 't1', log: 'nope' }] });
+    const c = makeClient({ events: { t1: [inbound('Dana', 'nope')] } });
     const r = await waitForTask(c, { nonce: 'E2E-absent' }, { ...fakeClock(), ...tunables });
     expect(r.state).toBe('not_found');
     expect(r.task_id).toBeNull();

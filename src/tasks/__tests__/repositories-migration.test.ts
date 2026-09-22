@@ -1,38 +1,27 @@
 /**
- * v30 migration: legacy `metadata.repositories` (Record<repoKey, RepositoryInfo>)
- * → new shape (Record<agentId, AttachedRepo[]>).
+ * `metadata.repositories` shape migration → the flat `AttachedRepo[]`.
  *
- * This runs against real production task metadata on Task.get, so the round-trip
- * must preserve everything that drives in-flight work: clone paths (so RW tasks
- * reuse their existing working tree), branch state, PR numbers, and the
- * comment-dedup cursor. These tests feed representative legacy shapes through
- * the migration and assert nothing is lost.
+ * This runs against real production task metadata on Task.get, so the
+ * round-trip must preserve everything that drives in-flight work: clone paths
+ * (so an edit-mode task reuses its existing working tree), branch state, PR
+ * numbers, and the comment-dedup cursor — those are what the GitHub webhook
+ * lookups resolve a task by.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
-import type { AgentDef } from '../../types/agent.js';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { TaskMetadata } from '../../types/task.js';
-import { __setRegistryForTesting } from '../../agents/registry.js';
-import { migrateRepositoriesShape } from '../task.js';
+import { migrateRepositoriesShape, readRepositories } from '../task.js';
 
-function repoDef(key: string, github: string): AgentDef {
-  return {
-    id: `${key}-agent`,
-    key,
-    role: `${key} role`,
-    expertise: `${key} expertise`,
-    pluginName: 'engineering',
-    visibility: 'global',
-    repo: { repos: [{ github, baseBranch: 'main' }], primary: github },
-  } as AgentDef;
-}
+vi.mock('../../system/logger.js', () => ({
+  logger: { warn: vi.fn(), system: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
+
+import { logger } from '../../system/logger.js';
 
 /** Minimal metadata wrapper — only `repositories` matters for these tests. */
 function meta(repositories: any): TaskMetadata {
   return {
     task_id: 'task-test',
-    task_owner: null,
-    participants: [],
     channels: {},
     default_channel: null,
     agent_sessions: {},
@@ -43,226 +32,162 @@ function meta(repositories: any): TaskMetadata {
   } as TaskMetadata;
 }
 
-beforeEach(() => {
-  __setRegistryForTesting([
-    repoDef('backend', 'acme/backend'),
-    repoDef('mobile', 'acme/mobile'),
-  ]);
-});
-
 describe('migrateRepositoriesShape', () => {
-  it('migrates a legacy entry with branch_states, preserving clone path + PR state', () => {
-    // Shape a real in-flight RW task would have on disk pre-v30.
+  it('flattens a per-agent map, preserving clone path + branch/PR state', () => {
     const m = meta({
-      backend: {
-        path: '/workdir/repos/backend',
-        clone_path: '/sessions/task-test/repos/backend',
-        current_branch: 'feature/task-test',
-        branch_states: {
-          'feature/task-test': {
-            base_branch: 'main',
-            pr_number: 42,
-            last_processed_comment_id: 1001,
+      'backend-agent': [
+        {
+          github: 'acme/backend',
+          base_path: '/workdir/repos/acme/backend',
+          clone_path: '/sessions/task-test/repos/backend-agent/acme/backend',
+          current_branch: 'archie/task-test',
+          branch_states: {
+            'archie/task-test': { base_branch: 'main', pr_number: 42, last_processed_comment_id: 1001 },
           },
         },
-      },
+      ],
     });
 
-    migrateRepositoriesShape(m);
+    expect(migrateRepositoriesShape(m)).toBe(true);
+    expect(m.repositories).toHaveLength(1);
 
-    // Re-keyed by agentId, value is an array.
-    expect(Object.keys(m.repositories)).toEqual(['backend-agent']);
-    const entries = m.repositories['backend-agent'];
-    expect(Array.isArray(entries)).toBe(true);
-    expect(entries).toHaveLength(1);
-
-    const att = entries[0];
+    const att = m.repositories[0];
     expect(att.github).toBe('acme/backend');
-    // clone_path preserved → RW task reuses its existing working tree, no re-clone.
-    expect(att.clone_path).toBe('/sessions/task-test/repos/backend');
-    // base_path preserved → sandbox grants read access to the OLD base cache
-    // (pre-v30 short-key layout), which is what this clone's alternates points
-    // at. Without this, every git read through alternates would hit EACCES.
-    expect(att.base_path).toBe('/workdir/repos/backend');
-    expect(att.current_branch).toBe('feature/task-test');
-    // Branch/PR/comment-dedup state survives intact.
-    expect(att.branch_states!['feature/task-test']).toEqual({
+    // clone_path preserved → an edit-mode task reuses its working tree.
+    expect(att.clone_path).toBe('/sessions/task-test/repos/backend-agent/acme/backend');
+    // base_path preserved → the sandbox grants read access to the base cache
+    // this clone's alternates actually points at.
+    expect(att.base_path).toBe('/workdir/repos/acme/backend');
+    expect(att.current_branch).toBe('archie/task-test');
+    // Branch/PR/comment-dedup state survives intact — this is what
+    // findTaskByPRNumber / findTaskByBranch resolve on.
+    expect(att.branch_states!['archie/task-test']).toEqual({
       base_branch: 'main',
       pr_number: 42,
       last_processed_comment_id: 1001,
     });
   });
 
-  it('lifts legacy top-level fields (feature_branch/pr_number) into branch_states', () => {
-    // Older shape: no branch_states map, just the flat legacy fields.
+  it('unions several agents into one list, keyed by github', () => {
     const m = meta({
-      backend: {
-        path: '/workdir/repos/backend',
-        clone_path: '/sessions/task-test/repos/backend',
-        feature_branch: 'feature/old',
-        base_branch: 'develop',
-        pr_number: 7,
-        last_processed_comment_id: 500,
-      },
+      'backend-agent': [{ github: 'acme/backend', clone_path: '/c/backend' }],
+      'mobile-agent': [{ github: 'acme/mobile', clone_path: '/c/mobile' }],
     });
 
     migrateRepositoriesShape(m);
 
-    const att = m.repositories['backend-agent'][0];
-    expect(att.github).toBe('acme/backend');
-    expect(att.current_branch).toBe('feature/old');
-    expect(att.branch_states!['feature/old']).toEqual({
-      base_branch: 'develop',
-      pr_number: 7,
-      last_processed_comment_id: 500,
-    });
+    expect(m.repositories.map((r) => r.github).sort()).toEqual(['acme/backend', 'acme/mobile']);
   });
 
-  it('lifts top-level PR state when a legacy task sits on current_branch with no feature_branch', () => {
-    // Post-v17 shape: the task tracks current_branch (not feature_branch) and
-    // carries top-level pr_number/last_processed_comment_id but has no
-    // branch_states map yet. The lift must key off current_branch or the PR
-    // linkage is lost on migration.
-    const m = meta({
-      backend: {
-        path: '/workdir/repos/backend',
-        clone_path: '/sessions/task-test/repos/backend',
-        current_branch: 'feature/task-test',
-        base_branch: 'main',
-        pr_number: 314,
-        last_processed_comment_id: 900,
-      },
-    });
-
-    migrateRepositoriesShape(m);
-
-    const att = m.repositories['backend-agent'][0];
-    expect(att.current_branch).toBe('feature/task-test');
-    expect(att.branch_states!['feature/task-test']).toEqual({
-      base_branch: 'main',
-      pr_number: 314,
-      last_processed_comment_id: 900,
-    });
-  });
-
-  it('does not duplicate a repo when a legacy key and its v30 agentId key coexist', () => {
-    // Mid-rollout: a v30 spawn already wrote the new agentId-keyed array entry,
-    // but the legacy repoKey entry is still on disk. The migration must not
-    // append a second AttachedRepo for the same github.
+  it('dedupes a repo two agents both mounted, keeping the first entry', () => {
     const m = meta({
       'backend-agent': [
         {
           github: 'acme/backend',
-          clone_path: '/sessions/task-test/repos/backend-agent/acme/backend',
-          current_branch: 'feature/new',
-          branch_states: { 'feature/new': { base_branch: 'main', pr_number: 42 } },
+          clone_path: '/c/backend',
+          branch_states: { 'archie/task-test': { pr_number: 42 } },
         },
       ],
-      backend: {
-        clone_path: '/sessions/task-test/repos/backend',
-        current_branch: 'feature/old',
-        branch_states: { 'feature/old': { base_branch: 'main', pr_number: 41 } },
+      'infra-agent': [
+        { github: 'acme/backend', clone_path: '/c/infra/backend', branch_states: {} },
+      ],
+    });
+
+    migrateRepositoriesShape(m);
+
+    expect(m.repositories).toHaveLength(1);
+    expect(m.repositories[0].clone_path).toBe('/c/backend');
+    expect(m.repositories[0].branch_states!['archie/task-test'].pr_number).toBe(42);
+  });
+
+  it('drops pre-v30 entries, whose github identifier is no longer resolvable', () => {
+    const m = meta({
+      'backend-agent': [{ github: 'acme/backend', clone_path: '/c/backend' }],
+      // Pre-v30 shape: keyed by a short repo name, no github field anywhere.
+      mobile: { path: '/workdir/repos/mobile', clone_path: '/c/mobile', current_branch: 'main' },
+    });
+
+    migrateRepositoriesShape(m);
+
+    expect(m.repositories.map((r) => r.github)).toEqual(['acme/backend']);
+  });
+
+  it('is a no-op on the already-flat shape — idempotent', () => {
+    const alreadyFlat = [
+      {
+        github: 'acme/backend',
+        clone_path: '/c/backend',
+        current_branch: 'archie/task-test',
+        branch_states: { 'archie/task-test': { base_branch: 'main', pr_number: 42 } },
       },
-    });
+    ];
+    const m = meta(alreadyFlat);
 
-    migrateRepositoriesShape(m);
-
-    const entries = m.repositories['backend-agent'];
-    expect(entries).toHaveLength(1);
-    // The already-migrated array entry wins; the stale legacy duplicate is dropped.
-    expect(entries[0].current_branch).toBe('feature/new');
-    expect(entries[0].branch_states!['feature/new'].pr_number).toBe(42);
-  });
-
-  it('leaves clone_path undefined (not "") when a legacy entry had no clone', () => {
-    const m = meta({
-      backend: { current_branch: 'main', branch_states: {} },
-    });
-
-    migrateRepositoriesShape(m);
-
-    expect(m.repositories['backend-agent'][0].clone_path).toBeUndefined();
-  });
-
-  it('migrates multiple repos and keys each by its own agent', () => {
-    const m = meta({
-      backend: { clone_path: '/c/backend', current_branch: 'main', branch_states: {} },
-      mobile: { clone_path: '/c/mobile', current_branch: 'main', branch_states: {} },
-    });
-
-    migrateRepositoriesShape(m);
-
-    expect(Object.keys(m.repositories).sort()).toEqual(['backend-agent', 'mobile-agent']);
-    expect(m.repositories['backend-agent'][0].github).toBe('acme/backend');
-    expect(m.repositories['mobile-agent'][0].github).toBe('acme/mobile');
-  });
-
-  it('drops entries whose agent is no longer registered (plugin removed)', () => {
-    const m = meta({
-      backend: { clone_path: '/c/backend', current_branch: 'main', branch_states: {} },
-      legacyghost: { clone_path: '/c/ghost', current_branch: 'main', branch_states: {} },
-    });
-
-    migrateRepositoriesShape(m);
-
-    // backend survives; the orphan is dropped rather than crashing the load.
-    expect(Object.keys(m.repositories)).toEqual(['backend-agent']);
-  });
-
-  it('is a no-op on already-migrated (array) shape — idempotent', () => {
-    const alreadyNew = {
-      'backend-agent': [
-        {
-          github: 'acme/backend',
-          clone_path: '/sessions/task-test/repos/backend-agent/acme/backend',
-          current_branch: 'feature/task-test',
-          branch_states: { 'feature/task-test': { base_branch: 'main', pr_number: 42 } },
-        },
-      ],
-    };
-    const m = meta(alreadyNew);
-
-    migrateRepositoriesShape(m);
-
-    // Untouched — same reference contents, no double-migration.
-    expect(m.repositories).toEqual(alreadyNew);
+    expect(migrateRepositoriesShape(m)).toBe(false);
+    expect(m.repositories).toBe(alreadyFlat);
   });
 
   it('running twice produces the same result (migration then no-op)', () => {
     const m = meta({
-      backend: {
-        clone_path: '/c/backend',
-        current_branch: 'feature/x',
-        branch_states: { 'feature/x': { base_branch: 'main', pr_number: 9 } },
-      },
+      'backend-agent': [
+        { github: 'acme/backend', clone_path: '/c/backend', branch_states: { 'feature/x': { pr_number: 9 } } },
+      ],
     });
 
     migrateRepositoriesShape(m);
     const afterFirst = JSON.parse(JSON.stringify(m.repositories));
-    migrateRepositoriesShape(m);
+    expect(migrateRepositoriesShape(m)).toBe(false);
     expect(m.repositories).toEqual(afterFirst);
   });
 
-  it('handles a mixed map (one already-migrated, one legacy)', () => {
-    const m = meta({
-      // already new
-      'mobile-agent': [
-        { github: 'acme/mobile', clone_path: '/c/mobile', current_branch: 'main', branch_states: {} },
-      ],
-      // still legacy
-      backend: { clone_path: '/c/backend', current_branch: 'main', branch_states: {} },
-    });
-
-    migrateRepositoriesShape(m);
-
-    expect(Object.keys(m.repositories).sort()).toEqual(['backend-agent', 'mobile-agent']);
-    expect(m.repositories['mobile-agent'][0].github).toBe('acme/mobile');
-    expect(m.repositories['backend-agent'][0].github).toBe('acme/backend');
+  it('turns an empty legacy map into an empty list', () => {
+    const m = meta({});
+    expect(migrateRepositoriesShape(m)).toBe(true);
+    expect(m.repositories).toEqual([]);
   });
 
-  it('no-ops on an empty repositories map', () => {
-    const m = meta({});
-    migrateRepositoriesShape(m);
-    expect(m.repositories).toEqual({});
+  it('turns a missing/garbage value into an empty list rather than throwing', () => {
+    const m = meta(undefined);
+    expect(migrateRepositoriesShape(m)).toBe(true);
+    expect(m.repositories).toEqual([]);
+  });
+});
+
+/**
+ * The read-only half. Webhook routing walks every candidate a fleet-wide scan
+ * turned up, so it needs the flat view of a legacy task without upgrading one:
+ * same list, no write-back, no log line about a task nobody is running.
+ */
+describe('readRepositories', () => {
+  beforeEach(() => {
+    vi.mocked(logger.warn).mockClear();
+  });
+
+  it('returns the same list the migration would, without touching the metadata', () => {
+    const legacy = {
+      'backend-agent': [{ github: 'acme/backend', clone_path: '/c/backend' }],
+      'mobile-agent': [{ github: 'acme/mobile', clone_path: '/c/mobile' }],
+    };
+    const m = meta(legacy);
+
+    expect(readRepositories(m).map((r) => r.github)).toEqual(['acme/backend', 'acme/mobile']);
+    // Untouched: the on-disk shape is still what the previous engine wrote.
+    expect(m.repositories).toBe(legacy as unknown as TaskMetadata['repositories']);
+  });
+
+  it('drops pre-v30 entries silently — a lookup must not log about a task it is only inspecting', () => {
+    const m = meta({
+      'backend-agent': [{ github: 'acme/backend', clone_path: '/c/backend' }],
+      mobile: { path: '/workdir/repos/mobile', clone_path: '/c/mobile' },
+    });
+
+    expect(readRepositories(m).map((r) => r.github)).toEqual(['acme/backend']);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('returns the flat list as-is, and an empty list for a missing value', () => {
+    const flat = [{ github: 'acme/backend', clone_path: '/c/backend' }];
+    expect(readRepositories(meta(flat))).toBe(flat);
+    expect(readRepositories(meta(undefined))).toEqual([]);
   });
 });

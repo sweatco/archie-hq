@@ -166,8 +166,11 @@ sweep at startup) deletes pending files older than the TTL.
 
 ## Spawn-time injection
 
-`src/system/oauth/inject.ts` is called once per agent spawn, just before
-the SDK options are built (`src/agents/spawn.ts`).
+`src/system/oauth/inject.ts` is called on every spawn of a task's agent,
+just before the SDK options are built (`src/agents/spawn.ts`) — so a
+long-lived session re-binds its tokens on each wake rather than holding a
+stale one. Every server in the root `.mcp.json` attaches to that session,
+so every configured record is considered on every spawn.
 
 For each `mcpServers` entry whose transport is `http` or `sse`:
 
@@ -182,8 +185,8 @@ For each `mcpServers` entry whose transport is `http` or `sse`:
   operator intent wins.
 - If the refresh fails, drop that one entry from the `mcpServers` map
   and log an error. Other MCP servers spawn normally.
-- Non-http/sse MCP entries (stdio, in-process SDK servers like
-  `createBaseAgentMcpServer`) are untouched — stdio entries keep their
+- Non-http/sse MCP entries (stdio, and the in-process SDK servers such as
+  `comms-tools` and `repo-tools`) are untouched — stdio entries keep their
   existing `${MCP_*}` env-var substitution path.
 
 ## Reconnect / revoke

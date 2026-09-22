@@ -11,7 +11,21 @@ export type WaitState =
   | 'pending'
   | 'not_found';
 
-export type ApprovalType = 'edit_mode' | 'research_budget' | 'merge';
+/** Every approval type the engine raises and the API accepts on resolution. */
+export const APPROVAL_TYPES = [
+  'edit_mode',
+  'research_budget',
+  'merge',
+  'trigger',
+  'tool_call',
+  'max_mode',
+] as const;
+
+export type ApprovalType = (typeof APPROVAL_TYPES)[number];
+
+function isApprovalType(value: unknown): value is ApprovalType {
+  return typeof value === 'string' && (APPROVAL_TYPES as readonly string[]).includes(value);
+}
 
 export interface WaitResult {
   task_id: string | null;
@@ -20,6 +34,8 @@ export interface WaitResult {
   pm_replies: string[];
   cursor?: number;
   approval_type?: ApprovalType;
+  /** Opaque id of the pending item (trigger id, tool-call digest), when the event carries one. */
+  approval_ref?: string;
 }
 
 export interface WaitForTaskArgs {
@@ -29,10 +45,17 @@ export interface WaitForTaskArgs {
   cursor?: number;
 }
 
-/** The slice of ArchieClient the wait logic needs (satisfied structurally). */
+/**
+ * The slice of ArchieClient the wait logic needs (satisfied structurally).
+ *
+ * Everything is read from the event log. The knowledge log used to answer the
+ * "which task carries my nonce" and "what was this task asked to do" questions,
+ * but it is no longer served over the API — the inbound message that carries a
+ * nonce is emitted as a `message` event and persisted to `events.jsonl`, so one
+ * source answers both.
+ */
 export interface TaskClient {
   listTasks(): Promise<Array<{ task_id: string }>>;
-  getTaskDetail(taskId: string): Promise<{ knowledgeLog: string }>;
   getEvents(
     taskId: string,
     after?: number,
@@ -54,9 +77,22 @@ const DEFAULT_POLL_INTERVAL_MS = 2500;
 const DEFAULT_RECENT_WINDOW = 25;
 const ATTRIBUTION_MAX = 512;
 
-function firstNonEmptyLine(log: string): string | null {
-  const line = log.split('\n').find((s) => s.trim().length > 0);
-  return line ? line.slice(0, ATTRIBUTION_MAX) : null;
+type RawEvent = { type: string; data: Record<string, unknown> };
+
+/**
+ * The first thing said TO the task — the request it was created for, which is
+ * what the first knowledge-log line used to be. Inbound only (`to: 'pm-agent'`):
+ * the PM's own replies are in the same stream, and attributing a task to its
+ * first answer instead of its first question would be worse than nothing.
+ */
+function firstInboundLine(events: readonly RawEvent[]): string | null {
+  for (const e of events) {
+    if (e.type !== 'message' || e.data['to'] !== 'pm-agent') continue;
+    const text = String(e.data['message'] ?? '').trim();
+    if (!text) continue;
+    return `${String(e.data['from'] ?? 'unknown')}: ${text}`.slice(0, ATTRIBUTION_MAX);
+  }
+  return null;
 }
 
 async function findTaskByNonce(
@@ -67,8 +103,8 @@ async function findTaskByNonce(
   const tasks = await client.listTasks();
   for (const t of tasks.slice(0, recentWindow)) {
     try {
-      const { knowledgeLog } = await client.getTaskDetail(t.task_id);
-      if (knowledgeLog.includes(nonce)) return t.task_id;
+      const { events } = await client.getEvents(t.task_id);
+      if (events.some((e) => JSON.stringify(e.data).includes(nonce))) return t.task_id;
     } catch {
       // task vanished or unreadable mid-scan — skip it
     }
@@ -119,8 +155,10 @@ export async function waitForTask(
       if (!attributionTried) {
         attributionTried = true;
         try {
-          const { knowledgeLog } = await client.getTaskDetail(taskId);
-          attribution = firstNonEmptyLine(knowledgeLog);
+          // Read from the start (no cursor) — attribution is the task's FIRST
+          // inbound message, which the polling read below has usually gone past.
+          const { events } = await client.getEvents(taskId);
+          attribution = firstInboundLine(events);
         } catch {
           // attribution is best-effort
         }
@@ -132,6 +170,7 @@ export async function waitForTask(
       let lifecycle: 'running' | 'stopped' | 'completed' | undefined;
       let awaitingApproval = false;
       let approvalType: ApprovalType | undefined;
+      let approvalRef: string | undefined;
 
       for (const e of res.events) {
         switch (e.type) {
@@ -149,9 +188,12 @@ export async function waitForTask(
             break;
           case 'approval:requested': {
             awaitingApproval = true;
-            // The engine emits { text, approvalType } (src/tasks/task.ts).
-            const ty = e.data['approvalType'];
-            if (ty === 'edit_mode' || ty === 'research_budget' || ty === 'merge') approvalType = ty;
+            // The engine emits { text, approvalType, ref? } (src/tasks/task.ts).
+            // `ref` names the exact pending item (a trigger id, a tool-call
+            // digest) and must be echoed back on resolution for tool_call.
+            if (isApprovalType(e.data['approvalType'])) approvalType = e.data['approvalType'];
+            const ref = e.data['ref'];
+            approvalRef = typeof ref === 'string' && ref ? ref : undefined;
             break;
           }
           case 'approval:resolved':
@@ -164,7 +206,12 @@ export async function waitForTask(
       }
 
       if (lifecycle === 'completed') return settle('completed');
-      if (awaitingApproval) return settle('approval_requested', approvalType && { approval_type: approvalType });
+      if (awaitingApproval) {
+        return settle('approval_requested', {
+          ...(approvalType ? { approval_type: approvalType } : {}),
+          ...(approvalRef ? { approval_ref: approvalRef } : {}),
+        });
+      }
       if (lifecycle === 'stopped') return settle('stopped');
     }
 

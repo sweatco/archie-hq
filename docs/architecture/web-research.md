@@ -2,28 +2,29 @@
 
 Web research is available to all agents (PM, repo, and plugin) as an MCP tool called `web_research`. It classifies query complexity via Haiku, then delegates to the Perplexity Agent API with the appropriate preset. Results are returned as markdown.
 
-The SDK's built-in `WebSearch` and `WebFetch` tools are explicitly disallowed for every agent track (see `disallowedTools` in `src/agents/spawn.ts`). All web access flows through `web_research` so that budget enforcement, isolation, and defense-tag wrapping always apply.
+The SDK's built-in `WebSearch` and `WebFetch` tools are explicitly disallowed on every session (see `disallowedTools` in `src/agents/spawn.ts`). All web access flows through `web_research` so that budget enforcement, isolation, and defense-tag wrapping always apply.
 
 ## Tool Registration
 
-The `web_research` tool is registered as an MCP server on every agent's `query()` call:
+The `web_research` tool is registered as an in-process MCP server on every `query()` call:
 
 ```typescript
-// From src/agents/spawn.ts (same pattern for all agent types)
+// From src/agents/spawn.ts
 mcpServers: {
-  "agent-tools": mcpServer,
   "research-tools": createResearchMcpServer({
-    getTaskId: () => metadata.task_id,
-    getResearchesDir: () => join(getTaskPath(metadata.task_id), 'researches'),
-    getCallerAgentId: () => config.agentId,
-    checkResearchBudget: callbacks.checkResearchBudget,
-    incrementResearchCount: callbacks.incrementResearchCount,
-    onResearchBudgetExceeded: callbacks.onResearchBudgetExceeded,
+    getTaskId: () => taskId,
+    getResearchesDir: () => join(getTaskPath(taskId), 'researches'),
+    getCallerAgentId: () => def.id,
+    checkResearchBudget: () => task.checkResearchBudget(),
+    incrementResearchCount: () => task.incrementResearchCount(),
+    onResearchBudgetExceeded: () => task.onResearchBudgetExceeded(),
   }),
+  // …comms-tools, orchestration-tools, scheduling-tools, repo-tools, file-bridge,
+  //   plus every server from the plugins repo's root .mcp.json
 },
 ```
 
-The tool is exposed as `mcp__research-tools__web_research` in each agent's allowed tools list.
+The tool is exposed as `mcp__research-tools__web_research` on every task's session.
 
 **Source:** `src/mcp/research-tools.ts`
 
@@ -46,7 +47,7 @@ web_research MCP tool
 
 ### Step 1: Preset Classification
 
-A Haiku model classifies the query using the same `query()` + `outputFormat: json_schema` pattern as triage (`src/system/triage.ts`). The presets are a cost ladder, and the classifier is told to pick the cheapest rung that can answer the query:
+A Haiku model classifies the query with a nested `query()` call using `outputFormat: json_schema` and `allowedTools: []`. The presets are a cost ladder, and the classifier is told to pick the cheapest rung that can answer the query:
 
 | Preset | Shape of the work | Model Perplexity selects | Observed cost on one research query |
 |---|---|---|---|
@@ -95,7 +96,7 @@ sessions/{task-id}/researches/
 
 ## Defense Tag Hooks (Outer Agent)
 
-When research results return to the calling agent (PM, repo, or plugin), two PostToolUse hooks fire on the **outer** agent's `query()`:
+When research results return to the calling session, two PostToolUse hooks fire on the **outer** agent's `query()`:
 
 ### 1. Persistence Hook (`createResearchPostToolHook`)
 

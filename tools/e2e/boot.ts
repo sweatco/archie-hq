@@ -1,9 +1,14 @@
 /**
  * archie-e2e boot — start a live Archie instance from the current checkout and wait for health.
  *
- * Usage: npx tsx tools/e2e/boot.ts [--timeout-seconds N]
+ * Usage: npx tsx tools/e2e/boot.ts [--timeout-seconds N] [--no-prepare]
  *
  * Strict fail-fast sequence (each step gates the next):
+ *   0. Worktree prerequisites (tools/e2e/prepare-worktree.ts): in a git worktree,
+ *      link workdir/claude-data to the main checkout, copy secrets/ for real, and
+ *      write a .env on a free port. A no-op in the main checkout and on an
+ *      already-prepared worktree; `--no-prepare` opts out. A worktree lacking
+ *      these is a setup gap the boot closes, not a harness that is unavailable.
  *   1. Preflight: .env exists at the repo root and ANTHROPIC_API_KEY is non-empty.
  *      Failure exits non-zero naming the missing item — no compose invocation at all.
  *   2. Port preflight: probe the target port BEFORE any compose invocation.
@@ -37,6 +42,7 @@ import { createServer, type AddressInfo } from 'net';
 import { dirname, join } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { resolveBaseUrl, resolveTimeoutSeconds } from './config.js';
+import { runPrepare } from './prepare-worktree.js';
 import { makeExec, type ExecFn } from './exec.js';
 
 export const DEFAULT_BOOT_TIMEOUT_SECONDS = 600;
@@ -350,8 +356,8 @@ export async function runBoot(deps: BootDeps, opts: BootOpts): Promise<number> {
 // ---- CLI main ----
 
 /** Exported for tests. Throws on unknown arguments and on flags missing their value. */
-export function parseArgs(argv: string[]): { timeoutFlag?: string } {
-  const result: { timeoutFlag?: string } = {};
+export function parseArgs(argv: string[]): { timeoutFlag?: string; noPrepare?: true } {
+  const result: { timeoutFlag?: string; noPrepare?: true } = {};
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === '--timeout-seconds') {
@@ -362,8 +368,10 @@ export function parseArgs(argv: string[]): { timeoutFlag?: string } {
       result.timeoutFlag = value;
     } else if (arg.startsWith('--timeout-seconds=')) {
       result.timeoutFlag = arg.slice('--timeout-seconds='.length);
+    } else if (arg === '--no-prepare') {
+      result.noPrepare = true;
     } else {
-      throw new Error(`unknown argument: ${arg} (usage: npx tsx tools/e2e/boot.ts [--timeout-seconds N])`);
+      throw new Error(`unknown argument: ${arg} (usage: npx tsx tools/e2e/boot.ts [--timeout-seconds N] [--no-prepare])`);
     }
   }
   return result;
@@ -402,9 +410,12 @@ async function main(): Promise<void> {
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
   let timeoutFlag: string | undefined;
+  let noPrepare = false;
   let timeoutSeconds: number;
   try {
-    timeoutFlag = parseArgs(process.argv.slice(2)).timeoutFlag;
+    const args = parseArgs(process.argv.slice(2));
+    timeoutFlag = args.timeoutFlag;
+    noPrepare = args.noPrepare === true;
     timeoutSeconds = resolveTimeoutSeconds(
       timeoutFlag,
       process.env.E2E_BOOT_TIMEOUT_SECONDS,
@@ -413,6 +424,19 @@ async function main(): Promise<void> {
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exit(2);
+  }
+
+  const hostExec = makeExec({ cwd: repoRoot });
+
+  // Prepare a fresh worktree before the preflight reads .env; --no-prepare opts out.
+  if (noPrepare) {
+    console.log('--no-prepare given — skipping the worktree prerequisite check.');
+  } else {
+    const prepared = await runPrepare(repoRoot, hostExec, {
+      log: (line) => console.log(line),
+      error: (line) => console.error(line),
+    });
+    if (prepared.code !== 0) process.exit(prepared.code);
   }
 
   // Preflight — mandatory, before any compose invocation.
@@ -430,7 +454,6 @@ async function main(): Promise<void> {
 
   // Checkout attestation value: the compose environment carries it into the
   // container and /health reports it back. `-dirty` marks an unclean tree.
-  const hostExec = makeExec({ cwd: repoRoot });
   let expectedSha: string | undefined;
   {
     const rev = await hostExec('git', ['rev-parse', 'HEAD']);

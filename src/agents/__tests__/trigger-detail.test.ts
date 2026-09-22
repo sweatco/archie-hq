@@ -73,6 +73,7 @@ function makeTask(): Task {
     isActive: true,
     metadata: { channels: {}, default_channel: null },
     touch: vi.fn(), debouncedSave: vi.fn(), save: vi.fn().mockResolvedValue(undefined),
+    prepareTriggerDelivery: vi.fn().mockResolvedValue(undefined),
     postInteractiveToUser: vi.fn().mockResolvedValue(undefined),
   } as unknown as Task;
 }
@@ -172,10 +173,10 @@ describe('get_trigger reads back everything an edit has to preserve', () => {
 
   // A pending proposal is not yet a trigger anywhere else in this surface (`list_triggers` and
   // `update_trigger` both filter it out); the read tool must not become the one way to see one.
-  it('refuses a pending proposal', async () => {
-    loadTrigger.mockResolvedValue({ ...WATCHER, status: 'pending' } satisfies Trigger);
+  it('reads a pending proposal this task made, marked as not running', async () => {
+    loadTrigger.mockResolvedValue({ ...WATCHER, status: 'pending', proposed_in_task: 'task-1' } satisfies Trigger);
     const out = textOf(await getHandler('get_trigger', makeTask())({ id: WATCHER.id }));
-    expect(out).toMatch(/No trigger .* found/);
+    expect(out).toContain('awaiting approval — not running');
   });
 });
 

@@ -15,7 +15,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { initPlugins } from './plugin-loader.js';
 import { logger } from './logger.js';
-import { githubRepoToUrl } from '../connectors/github/repo-clone.js';
+import { githubRepoToUrl, resolveBaseBranch } from '../connectors/github/repo-clone.js';
 
 const execAsync = promisify(exec);
 
@@ -29,7 +29,7 @@ export const WORKDIR = process.env.ARCHIE_WORKDIR || join(process.cwd(), 'workdi
 /** Plugins directory (cloned from ARCHIE_PLUGINS git URL) */
 export const PLUGINS_DIR = join(WORKDIR, 'plugins');
 
-/** Base repos directory (auto-cloned from plugin repo-config.json) */
+/** Base repos directory (warm-cloned at startup per archie.json, else on demand) */
 export const REPOS_DIR = join(WORKDIR, 'repos');
 
 /** Sessions directory (task runtime data) */
@@ -37,9 +37,6 @@ export const SESSIONS_DIR = join(WORKDIR, 'sessions');
 
 /** Triggers directory (one JSON file per persistent trigger) */
 export const TRIGGERS_DIR = join(WORKDIR, 'triggers');
-
-/** Persistent per-plugin data directory */
-export const PLUGINS_DATA_DIR = join(WORKDIR, 'plugins-data');
 
 /** Persistent per-trigger data directory (one subdirectory per trigger, outlives a single fire) */
 export const TRIGGERS_DATA_DIR = join(WORKDIR, 'triggers-data');
@@ -93,7 +90,6 @@ export async function bootstrapWorkdir(): Promise<void> {
   await mkdir(REPOS_DIR, { recursive: true });
   await mkdir(SESSIONS_DIR, { recursive: true });
   await mkdir(TRIGGERS_DIR, { recursive: true });
-  await mkdir(PLUGINS_DATA_DIR, { recursive: true });
   await mkdir(TRIGGERS_DATA_DIR, { recursive: true });
   await mkdir(CACHES_DIR, { recursive: true });
   await mkdir(OAUTH_DIR, { recursive: true, mode: 0o700 });
@@ -135,11 +131,14 @@ export async function bootstrapWorkdir(): Promise<void> {
 }
 
 /**
- * Clone repos declared by plugins. Called after plugins are loaded.
+ * Warm the base clones the plugins repo asks for (`repos[*].warm` in its root
+ * `archie.json`). Called after plugins are loaded.
  *
  * Each base clone lives at `$ARCHIE_WORKDIR/repos/<org>/<repo>` (the github
- * identifier becomes a nested directory). Task-local agent clones use this as
- * their alternates source via `git clone --shared`.
+ * identifier becomes a nested directory). Task-local clones use this as their
+ * alternates source via `git clone --shared`. A repo that is not warmed is
+ * cloned on demand by `mount_repo`, so this is a latency optimisation, not a
+ * precondition.
  *
  * @param repos - Array of { github, baseBranch } — deduplicated by caller
  */
@@ -348,12 +347,17 @@ async function checkoutBranch(repoDir: string, branch: string, label: string): P
  * Clone if missing, fetch and pull default branch if exists.
  */
 async function cloneOrFetch(url: string, targetDir: string, label: string, baseBranch?: string): Promise<void> {
-  if (existsSync(join(targetDir, '.git'))) {
+  const cloned = existsSync(join(targetDir, '.git'));
+  // Warm clones are declared in `archie.json`, which carries no base branch, so
+  // it has to be discovered — a repo whose default is not `main` used to fail
+  // the checkout on every refresh. `resolveBaseBranch` asks GitHub, then the
+  // existing clone, then assumes 'main'; it never throws.
+  const branch = baseBranch || (await resolveBaseBranch(label, cloned ? targetDir : undefined));
+  if (cloned) {
     logger.system(`Pulling latest for ${label}...`);
     try {
       await execAsync('git remote prune origin', { cwd: targetDir });
       await execAsync('git fetch --all', { cwd: targetDir });
-      const branch = baseBranch || 'main';
       await execAsync(`git checkout "${branch}"`, { cwd: targetDir });
       await execAsync(`git reset --hard "origin/${branch}"`, { cwd: targetDir });
     } catch (error) {
@@ -362,8 +366,7 @@ async function cloneOrFetch(url: string, targetDir: string, label: string, baseB
   } else {
     // Nested `org/repo` target dirs require the parent to exist before clone.
     await mkdir(dirname(targetDir), { recursive: true });
-    const branchFlag = baseBranch ? ` -b "${baseBranch}"` : '';
-    logger.system(`Cloning ${label} from ${url}...`);
-    await execAsync(`git clone${branchFlag} "${url}" "${targetDir}"`);
+    logger.system(`Cloning ${label} from ${url} (branch: ${branch})...`);
+    await execAsync(`git clone -b "${branch}" "${url}" "${targetDir}"`);
   }
 }

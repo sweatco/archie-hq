@@ -14,6 +14,8 @@ export interface MemoryUpdate {
   content: string;
   /** For 'update': the old line to replace */
   old?: string;
+  /** Slack source message used to authorize a first-person preference. */
+  source_message_ts?: string;
 }
 
 /** Extraction result from the Sonnet side-agent */
@@ -37,7 +39,7 @@ export interface ExtractionResult {
 /** Kind of durable subject an entity page represents. People are NOT entities. */
 export type EntityType = 'service' | 'system' | 'integration' | 'concept' | 'repo';
 
-/** How broadly an entity is relevant — drives push selection at spawn. */
+/** How broadly an entity is relevant. */
 export type EntityScope = 'org' | 'domain' | 'repo';
 
 /** Entity lifecycle status. Stale entities are archived, never deleted. */

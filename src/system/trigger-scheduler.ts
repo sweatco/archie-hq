@@ -15,7 +15,7 @@ import { Task } from '../tasks/task.js';
 import { appendSlackMessage } from '../tasks/persistence.js';
 import type { SlackThread } from '../types/task.js';
 import type { Trigger, TriggerBinding, TriggerCondition } from '../types/trigger.js';
-import { listTriggers, saveTrigger, deleteTrigger } from './trigger-store.js';
+import { listTriggers, saveTrigger, deleteTrigger, countActiveTriggers } from './trigger-store.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { emitEvent } from './event-bus.js';
 import { logger } from './logger.js';
@@ -23,6 +23,7 @@ import { isAppAuthorId } from './trigger-match.js';
 import { postSlackMessage, isChannelReachable } from '../connectors/slack/client.js';
 import { ensureChannelCanvas } from '../connectors/slack/channel-canvas.js';
 import { ensureChannelPins } from '../connectors/slack/channel-pins.js';
+import { formatConversationLabel } from '../connectors/slack/channel-ids.js';
 
 // ---- Limits / config ----
 
@@ -127,6 +128,11 @@ export async function initTriggerScheduler(): Promise<void> {
 /** Pending proposals older than this are GC'd on the boot scan. */
 const PENDING_TTL_MS = 24 * 60 * 60_000;
 
+// An edit renews the pending TTL, so a revised proposal isn't reaped on its original clock.
+export function pendingSince(trigger: Pick<Trigger, 'created_at' | 'updated_at'>): number {
+  return new Date(trigger.updated_at ?? trigger.created_at).getTime();
+}
+
 /**
  * Rebuild the in-memory index from disk (enabled triggers only). Also GC's
  * stale `pending` proposals — a proposal that was never approved/denied (e.g.
@@ -141,7 +147,7 @@ async function rebuildFromDisk(): Promise<void> {
     for (const trigger of await listTriggers()) {
       if (trigger.status === 'enabled') {
         indexTrigger(trigger);
-      } else if (trigger.status === 'pending' && now - new Date(trigger.created_at).getTime() > PENDING_TTL_MS) {
+      } else if (trigger.status === 'pending' && now - pendingSince(trigger) > PENDING_TTL_MS) {
         await deleteTrigger(trigger.id);
         logger.system(`Trigger ${trigger.id}: GC'd stale pending proposal`);
       }
@@ -375,48 +381,51 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
   task.metadata.triggered_by = trigger.id;
 
   // Wire delivery. A message fire ingests the triggering thread, which links it as the default channel and
-  // posts nothing. A schedule fire has no thread, so the task is homed in the bound channel and its first
-  // user-facing message opens its own thread there.
+  // posts nothing. A schedule fire has no thread, so the task is homed in the bound conversation — a channel
+  // or the creator's DM — and its first user-facing message opens its own thread there.
   let delivery: string;
-  // Set only by the channel-binding schedule branch below, and used after the if/else to refresh that
-  // channel's standing context. It doubles as the "this fire homed a task in a channel" flag: a message
-  // fire and a DM-bound fire both leave it undefined.
-  let homeChannelId: string | undefined;
+  // Set only for a channel-bound schedule fire: a message fire was already scanned, and a DM has no canvas or pins.
+  let scanChannelId: string | undefined;
   if (context.kind === 'message' && context.thread) {
     // Ingestion, not announcement. `append` is the one path every other Slack task uses, and it does five things this branch would otherwise have to reinvent (and previously simply skipped): it writes the message to knowledge.log through the single renderer with the author line and the `msg:<ts>` id, applies the redaction policy via `shouldRedact`, skips file downloads for a redacted message while downloading them otherwise so the `[Attachments: …]` suffix carries usable local paths, links `slack:<channel>:<threadId>` as a channel, and promotes it to `default_channel`. That last pair is why `linkSlackThread` is NOT also called here — `append` links the identical key with the same shape, so doing both would double-write the same record.
-    await task.append(context.thread);
+    const { entries } = await task.append(context.thread);
 
-    // The ingestion floor, deliberately narrow. `fetchSlackThread` drops any raw message that has neither a `user` nor a `botId`, so the very message that fired this trigger can be missing from the thread it was fetched from — in which case `append` walked an empty (or incomplete) message list and wrote no log entry for it, and a delegated agent, which sees only knowledge.log, would have no idea what was said. Writing it directly from the body dispatch already rendered is what closes that hole.
+    // The ingestion floor, deliberately narrow. `fetchSlackThread` drops any raw message that has neither a `user` nor a `botId`, so the very message that fired this trigger can be missing from the thread it was fetched from — in which case `append` walked an empty (or incomplete) message list, returned no entry for it, and the PM would be woken by a fire whose triggering message it never sees. Writing it directly from the body dispatch already rendered is what closes that hole — and the line it returns joins the inline batch below.
     //
     // It fires ONLY for that reason, which is what `!context.authorId` tests — no user id and no bot id, so there is no identity for the redaction policy to classify in the first place. The fetch filter also drops a bot post from another workspace, and while the dispatch-side gate that is supposed to catch those first derives the team the same way (`bot_profile.team_id || team`, on both sides), the two read DIFFERENT PAYLOADS — the inbound `message` event on one side, what `conversations.replies` returns for that same ts on the other — so a post the event gate let through can still be dropped by the fetch. Writing on *any* absence would re-admit exactly that content, unredacted, past the one policy every other write to this log goes through. An empty body is refused for the same reason in miniature: an entry with no text claims a message the log does not actually carry. The ts comes from `thread.threadId` rather than being passed in separately — dispatch fires only on TOP-LEVEL messages, so the thread's root IS the message that fired, and the condition reads as what it actually asks: did the fetched thread contain its own root? Nothing else is needed: `append` registers the channel, promotes `default_channel` and advances `last_processed_ts` even when `thread.messages` is empty — only the per-message loop is skipped — so the thread is already owned and a second link would be redundant.
     if (!context.authorId && context.body && !context.thread.messages.some((m) => m.ts === context.thread!.threadId)) {
       const author = 'unknown';
-      await appendSlackMessage(
+      entries.push(await appendSlackMessage(
         task.taskId,
         { id: context.thread.channel.id, name: context.thread.channel.name },
         context.thread.threadId,
         { id: author, username: author, realName: author },
         context.body ?? '',
         { ts: context.thread.threadId },
-      );
+      ));
     }
 
-    delivery = 'Post your reply in your default channel — the thread where the triggering message was posted. The triggering message itself is in knowledge.log.';
-  } else if (trigger.binding.type === 'user') {
-    delivery = `Deliver the result to the user as a direct message (Slack user ID ${trigger.binding.user_id}).`;
+    // The triggering message rides along inline. Pointing the PM at knowledge.log
+    // was a pointer at a file its prompt no longer mentions — the same wake the
+    // Slack path already carries, so the fire is actionable on arrival.
+    delivery = 'Post your reply in your default channel — the thread where the triggering message was posted.';
+    if (entries.length > 0) {
+      delivery += `\n\nThe message that fired this:\n\n${entries.join('\n\n')}`;
+    }
   } else {
     // A schedule fire has no thread to reply in, so instead of handing the agent a detached "post it over
-    // there" tool, the task is HOMED in the bound channel: its first user-facing message opens the task's
+    // there" tool, the task is HOMED in the bound conversation: its first user-facing message opens the task's
     // own thread there (that message becomes the thread root), and every human reply to it routes back to
     // this task instead of starting a stranger one. `home_channel` is what `postToUser` reads to do that.
-    homeChannelId = trigger.binding.channel_id;
+    if (trigger.binding.type === 'channel') scanChannelId = trigger.binding.channel_id;
+    task.setMemoryDestination(trigger.binding.channel_id);
     task.metadata.home_channel = {
       channel_id: trigger.binding.channel_id,
       channel_name: trigger.binding.channel_name,
     };
-    delivery = `You have no thread yet. Your first post_to_user opens this task's own thread in #${trigger.binding.channel_name}, and every message after that goes into that same thread. Until then you cannot post anywhere else.`;
+    delivery = `You have no thread yet. Your first post_to_user opens this task's own thread in ${formatConversationLabel(trigger.binding.channel_name)}, and every message after that goes into that same thread. Until then you cannot post anywhere else.`;
   }
-  task.debouncedSave();
+  await task.save(true);
 
   const reason = context.kind === 'message'
     ? `a new message in #${context.channelName ?? 'a channel'} matched your filter`
@@ -441,13 +450,13 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
   // The `.catch` is deliberate rather than defensive: a canvas or pins scan is context, and a failed scan
   // must never cost the fire itself — a scheduled run that silently does not happen is far worse than one
   // that runs with a stale brief.
-  if (homeChannelId) {
-    await Promise.all([ensureChannelCanvas(homeChannelId), ensureChannelPins(homeChannelId)])
-      .catch((err) => logger.warn('trigger-scheduler', `Failed to refresh standing context for home channel ${homeChannelId} on trigger ${trigger.id}`, err));
+  if (scanChannelId) {
+    await Promise.all([ensureChannelCanvas(scanChannelId), ensureChannelPins(scanChannelId)])
+      .catch((err) => logger.warn('trigger-scheduler', `Failed to refresh standing context for home channel ${scanChannelId} on trigger ${trigger.id}`, err));
   }
 
   logger.system(`Trigger ${trigger.id} fired (${context.kind}) → task ${task.taskId}`);
-  await task.sendMessage(AGENT_PROMPTS.triggered(seed, reason), 'pm-agent');
+  await task.sendMessage(AGENT_PROMPTS.triggered(seed, reason));
 
   trigger.last_fired_at = new Date().toISOString();
   await saveTrigger(trigger);
@@ -465,6 +474,9 @@ type TriggerChange = 'enabled' | 'edited' | 'paused' | 'resumed' | 'deleted';
  * a failed post is logged, not thrown.
  */
 export async function announceTriggerChange(trigger: Trigger, change: TriggerChange): Promise<void> {
+  // A DM's only reader is the person who just made the change.
+  if (trigger.binding.type === 'user') return;
+
   // The notice is posted IN the bound channel, so naming the channel again would
   // be redundant — omit "where" here (the approval card, posted in the task
   // thread, still shows it).
@@ -545,8 +557,9 @@ export function describeSchedule(cron: string, tz: string): string {
     return 'on a custom schedule';
   }
 
-  if (!isNum(hour) || !isNum(min)) return 'on a custom schedule';
-  const time = formatClock(Number(hour), Number(min));
+  const hours = hour.split(',');
+  if (!isNum(min) || !hours.every(isNum)) return 'on a custom schedule';
+  const time = hours.map((h) => formatClock(Number(h), Number(min))).join(' and ');
 
   if (dow !== '*') {
     if (dow === '1-5') return `every weekday at ${time}${tzSuffix}`;
@@ -626,9 +639,42 @@ export function triggerWhen(trigger: Trigger): string {
   return trigger.conditions.map((c) => describeCondition(c, bound)).join(' or ');
 }
 
-/** WHERE results are delivered ("#general" / "a DM"). */
+/** WHERE results are delivered ("#general" / "DM with Dana"). Not "your DM": the operator lists everyone's. */
 export function triggerWhere(trigger: Trigger): string {
-  return trigger.binding.type === 'channel' ? `#${trigger.binding.channel_name}` : 'a DM';
+  return formatConversationLabel(trigger.binding.channel_name);
+}
+
+// Caps count enabled triggers only, so they must be re-checked at approval, not just at proposal.
+export async function triggerCapExceeded(trigger: Trigger): Promise<boolean> {
+  const overChannel = trigger.binding.type === 'channel'
+    && (await countActiveTriggers((t) => t.binding.type === 'channel' && t.binding.channel_id === (trigger.binding as { channel_id: string }).channel_id)) >= MAX_TRIGGERS_PER_CHANNEL;
+  if (overChannel) return true;
+  return Boolean(
+    trigger.created_by && trigger.created_by !== 'unknown'
+    && (await countActiveTriggers((t) => t.created_by === trigger.created_by)) >= MAX_TRIGGERS_PER_USER,
+  );
+}
+
+// `notice` replaces the heading but keeps the buttons: a cap refusal is the one non-terminal outcome.
+export function buildTriggerApprovalBlocks(trigger: Trigger, notice?: string): unknown[] {
+  return [
+    { type: 'section', text: { type: 'mrkdwn', text: notice ?? '*Set up this automation?*' } },
+    {
+      type: 'section',
+      fields: [
+        { type: 'mrkdwn', text: `*What*\n${triggerWhat(trigger)}` },
+        { type: 'mrkdwn', text: `*When*\n${triggerWhen(trigger)}` },
+        { type: 'mrkdwn', text: `*Where*\n${triggerWhere(trigger)}` },
+      ],
+    },
+    {
+      type: 'actions',
+      elements: [
+        { type: 'button', text: { type: 'plain_text', text: 'Approve' }, action_id: 'approve_trigger', value: trigger.id, style: 'primary' },
+        { type: 'button', text: { type: 'plain_text', text: 'Deny' }, action_id: 'deny_trigger', value: trigger.id, style: 'danger' },
+      ],
+    },
+  ];
 }
 
 /** Human-readable one-liner: "<when> → <what>". Used by CLI/API listings. */
@@ -637,12 +683,10 @@ export function describeTrigger(trigger: Trigger): string {
 }
 
 /**
- * Post a plain message to a trigger's binding (channel or user DM). Slack's
- * chat.postMessage resolves a user id directly to that user's DM, so no
- * separate conversations.open is needed.
+ * Post a plain message to a trigger's binding.
  */
 async function postToBinding(binding: TriggerBinding, text: string): Promise<void> {
-  const channel = binding.type === 'user' ? binding.user_id : binding.channel_id;
+  const channel = binding.channel_id;
   await postSlackMessage({ channel, text });
 }
 

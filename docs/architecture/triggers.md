@@ -7,7 +7,9 @@ Two condition types ship in v1:
 - **Schedule** — fires on a recurring cadence (hourly / daily / weekdays / weekly at a time) or once at a future time.
 - **Channel-message** — fires on a new **top-level** message in a watched channel matching an optional filter (substring and/or author).
 
-A trigger is **bound** to a delivery target. In v1 that is a **channel** (results posted there). A `user` (DM) binding exists in the type but is **not offered at creation yet** — the fired PM has no DM-capable delivery tool under the current channel model, so `propose_trigger` accepts channel bindings only. User-DM delivery is a planned follow-up.
+A trigger is **bound** to a delivery target: a **channel**, or a **user** (that person's 1:1 DM). Both variants carry `channel_id` and `channel_name` — for a `user` binding those are the DM conversation (`D…`) the trigger was configured in and Slack's label for it (`DM with <real name>`) — so delivery has one shape and one code path rather than two.
+
+A `user` binding can only be created from inside that person's own DM, and **every field of it comes from the conversation the request arrived in**: `propose_trigger` reads no id at all from its arguments for that type. That is what makes it structurally impossible to aim a DM trigger at anyone but the person asking, rather than something enforced by validating an id the model supplied. A DM trigger is also **schedule-only** — see the constraint under Conditions.
 
 > Design bias: reuse, no new scheduling engine. The firing loop is the reminder scheduler's index-and-tick pattern; creation reuses the edit-mode Approve/Deny flow; fired tasks are ordinary read-only tasks. The only added dependency is [`croner`](https://www.npmjs.com/package/croner) (a tiny, DST-correct cron parser) used solely to compute next-run times.
 
@@ -17,11 +19,14 @@ These are separate features that share only a pattern:
 
 | | Reminder (`set_reminder`) | Trigger |
 | --- | --- | --- |
-| Effect | Re-wakes the **current** task later | Spawns a **new** task on a saved rule |
-| Lifetime | One-shot, lives on the task | Persistent, lives in the trigger store |
-| Floor | none ("remind me in 5 min" works) | ≥1h, **recurring schedules only** |
+| Effect | Re-wakes the **current** task later, context intact | Spawns a **new** task on every run of a saved rule; runs share memory, not a conversation |
+| Lifetime | One-shot (`datetime`) or recurring (`cron` + `tz`, ending at a required `until`); both within 30 days; lives on the task | Persistent, lives in the trigger store |
+| Floor | none for a one-shot; ≥1h for a recurring cron | ≥1h, **recurring schedules only** |
+| Governance | No approval step. Agent-facing `cancel_reminder`, plus an operator off switch (`DELETE /api/tasks/:id/reminder`) | Propose-then-confirm, listable/pausable, announced, capped, global kill switch |
 
-The two schedulers (`reminder-scheduler.ts`, `trigger-scheduler.ts`) run side by side and never interfere.
+The two schedulers (`reminder-scheduler.ts`, `trigger-scheduler.ts`) run side by side and never interfere, though the reminder scheduler reuses the trigger cron helpers (`computeNextRun`, `validateRecurringInterval`) rather than carrying a second recurrence engine.
+
+**Every recurring reminder ends, and says so.** There is no approval gate, so the engine bounds it instead: `until` is required and at most 30 days ahead (to run longer, ask again or use a trigger), and the engine posts one line in the task's thread when a recurring reminder is set and one when it ends — at its last run, on `cancel_reminder`, on the operator's `DELETE` route, when a one-shot replaces it, or when recovery pauses a task that keeps stalling (a new schedule replacing it just posts its own start line). Nothing is posted per run. A task with no thread yet — a trigger-fired task before its first post — is refused a recurring reminder, since its notices would have nowhere to land.
 
 ## Data model
 
@@ -33,6 +38,8 @@ interface Trigger {
   status: 'pending' | 'enabled' | 'paused';   // pending = proposed, awaiting approval
   created_by: string;                          // Slack user ID who requested it
   created_at: string;
+  updated_at?: string;                         // last edit while pending; the GC clock reads this
+  proposed_in_task?: string;                   // owns the proposal while pending (see below)
   approved_by?: string;                        // who clicked Approve / typed y
   binding: TriggerBinding;                     // channel thread or user DM
   conditions: TriggerCondition[];              // any match fires
@@ -45,7 +52,7 @@ interface Trigger {
 - A **one-off** schedule condition has only `next_run_at` (no `cron`); it auto-pauses after firing once.
 - **Channel privacy is deliberately not stored** on the binding — it's resolved live at list time (see Visibility), so a public↔private conversion can't leak a now-private channel's triggers.
 
-Storage: one JSON file per trigger under `$ARCHIE_WORKDIR/triggers/` (`src/system/trigger-store.ts`), plus — for a trigger that has actually fired — one directory per trigger under `$ARCHIE_WORKDIR/triggers-data/` (see [Persistent per-trigger directory](#persistent-per-trigger-directory) below).
+Storage: one JSON file per trigger under `$ARCHIE_WORKDIR/triggers/` (`src/system/trigger-store.ts`), written **atomically** (temp file + `rename`) and with every read-modify-write **serialized per trigger id** by a keyed lock — [While a proposal is pending](#while-a-proposal-is-pending) explains why an editable proposal makes both necessary. Plus — for a trigger that has actually fired — one directory per trigger under `$ARCHIE_WORKDIR/triggers-data/` (see [Persistent per-trigger directory](#persistent-per-trigger-directory) below).
 
 ## Scheduling: cron, kept internal
 
@@ -60,10 +67,23 @@ User asks in plain language
    → PM agent gathers cadence/channel + what to do + where to deliver
    → propose_trigger  →  status:'pending'  →  Approve/Deny prompt
         Approve → status:'enabled', indexed in the scheduler, announced
-        Deny    → pending file deleted
+        Deny    → pending file deleted (only while still pending — see below)
    → (enabled) condition fires → fireTrigger spawns a fresh read-only task
    → that task does the work and posts the result to the bound channel
 ```
+
+### While a proposal is pending
+
+A `pending` proposal is a live, manageable object, not an invisible interim state. It appears in `list_triggers` and on the operator API marked *awaiting approval — not running*, and the proposing conversation can **edit** it (`update_trigger`, which re-posts a fresh Approve/Deny card carrying the new details) or **withdraw** it (`delete_trigger`). Approval remains the user's exclusive act: a `status` argument on a pending proposal is refused on every surface.
+
+Six consequences worth knowing:
+
+- **Management is scoped to the proposing task** (`Trigger.proposed_in_task`), not to the binding. Binding visibility is wrong in both directions here — `propose_trigger` applies no visibility check, so a DM can bind a proposal to a private channel that binding rules would then hide from that same DM, while a public-bound proposal would otherwise be editable *and* approvable from any other conversation. Operator context sees everything, and a **trigger-fired task is not operator context**: it is homed in the channel its trigger is bound to, so `resolveTriggerOrigin` reports that channel rather than falling through to `operator` merely because no thread has been opened yet.
+- **A proposal predating `proposed_in_task` has no owner recorded**, so it falls back to binding visibility — which is enough to list it and to *withdraw* it, but not to **edit** it from a conversation that did not make it. Listing and withdrawal on those terms keep a pre-existing proposal from becoming unmanageable; editing on those terms would let another conversation rewrite the action prompt behind a card the original requester is still looking at, and they would approve content they never saw. Withdraw and re-propose instead. These age out within 24h anyway.
+- **Editing renews the GC clock.** The boot scan reaps pending proposals older than `PENDING_TTL_MS` (24h), measured from `updated_at` when set (`pendingSince`), so revising a day-old proposal doesn't leave it to be reaped an hour later along with its just-posted card.
+- **Cards are never retracted.** Editing deliberately leaves the earlier card in the thread, so multiple live cards for one trigger are normal. Both resolutions are therefore idempotent by status: a second Approve reports the automation is already on rather than a failure, and a **Deny is refused once the trigger is no longer pending** — it neither deletes the file nor deindexes the running trigger, and the refusal is recorded in the task's knowledge log. (The no-task fallback in `events.ts` — reached when no task can be resolved from the thread — applies the identical status gate and card copy, but writes no knowledge-log finding, because there is no task to write one to.) Withdrawing a proposal leaves its buttons inert. Slack and the CLI/API report the same outcome (the CLI answers `409` with `stale: true`).
+- **Hitting a cap at approval leaves the proposal pending.** The cap is re-checked when Approve is clicked (pending proposals don't count toward it, so several could otherwise be approved past the limit), on **every** approval path — including the fallback taken when no task resolves from the card's thread, which previously applied no cap at all. A refusal is *not* a withdrawal: the file stays, the card says the limit was reached, and — because a refusal is the one non-terminal outcome — that card **keeps its Approve/Deny buttons**, so freeing a slot and clicking Approve enables the same proposal. Every other outcome is decided and does clear them. The 24h GC still reaps it if the user walks away.
+- **Concurrent resolution is serialized, not merely re-checked.** An edit and the user's Approve routinely overlap, since editing re-posts a card and cards are never retracted. Narrowing the window by re-reading before writing is not enough: the write itself still interleaved, and measured against the real store, 117 of 150 such overlaps left the record unparseable — which `loadTrigger` reports as *missing*, so the trigger vanished from every listing and stopped counting toward caps while the scheduler kept firing it from memory. So the whole read-modify-write happens inside the store's per-id lock (`updatePendingTrigger`), used by both the agent and operator edit paths, and writes are atomic. The scheduler's own fire-path writes (`last_fired_at`, a consumed one-off condition, an auto-pause) deliberately stay outside that lock — they act on enabled triggers in the in-memory index, outside this lifecycle — so they get atomicity but not serialization.
 
 A one-off schedule auto-pauses after it fires (its condition is consumed). **Rescheduling a paused trigger auto-resumes it:** `update_trigger` treats new conditions on a paused trigger as intent to make it live again — it re-enables (re-checking caps) and reports the resume back to the PM so the user is told. Editing only the prompt/summary of a paused trigger does *not* resume it (a deliberate pause is respected). An explicit `status: 'paused'` in the same call always wins.
 
@@ -79,7 +99,7 @@ A one-off schedule auto-pauses after it fires (its condition is consumed). **Res
 
 #### A message fire ingests its thread
 
-A `channel_message` fire calls `task.append(thread)` with the thread the dispatch hook already fetched. That is the same ingestion path every other Slack task uses, and it does five things at once: it writes the triggering message to `knowledge.log` through the single renderer with its author line and `msg:<ts>` id, applies the redaction policy via `shouldRedact`, downloads its files (or skips them for a redacted message) so the `[Attachments: …]` suffix carries usable local paths, links `slack:<channel>:<threadId>` as a channel, and promotes it to `default_channel`. The task therefore replies under the message that fired it, and **every agent on the task can read that message**, not just the PM — before this, the fire told the PM only that "a new message matched your filter" and the message itself reached nothing, so a delegated repo or plugin agent, which sees only the log, had to guess.
+A `channel_message` fire calls `task.append(thread)` with the thread the dispatch hook already fetched. That is the same ingestion path every other Slack task uses, and it does five things at once: it writes the triggering message to `knowledge.log` through the single renderer with its author line and `msg:<ts>` id, applies the redaction policy via `shouldRedact`, downloads its files (or skips them for a redacted message) so the `[Attachments: …]` suffix carries usable local paths, links `slack:<channel>:<threadId>` as a channel, and promotes it to `default_channel`. The task therefore replies under the message that fired it, and the PM is handed the message text itself rather than a notice that "a new message matched your filter" — before this the message reached nothing, so the PM had to guess what it said.
 
 There is one **ingestion floor** behind that, and it is deliberately narrow. `fetchSlackThread` drops a raw message with neither a `user` nor a `botId`, so the very message that fired the trigger can be missing from the thread it was fetched from — and then `append` writes no entry for it. In that case `fireTrigger` writes the already-rendered body itself, attributed to `unknown` — which is not a fallback but the condition: the branch runs precisely because no user id and no bot id came with the payload. It fires **only** for that reason: `append` still links the channel and advances the watermark on an empty message list, so nothing else needs repairing, and the fetch's other drop reason is a bot post from another workspace, whose content must not bypass the redaction policy on its way into the log. An empty body is refused for the same reason in miniature. The entry's `msg:<ts>` id is read off the thread's own root, because dispatch fires only on top-level messages — the thread root *is* the message that fired, so the check asks precisely whether the fetched thread contained its own root.
 
@@ -94,7 +114,7 @@ Four properties of that open are load-bearing:
 - **Only an agent's message opens a thread.** `postToUser` takes the open branch only when `sender !== 'system'`. The internal callers that post without an agent name — the inter-agent budget warning, the wall-clock pause notice — would otherwise make an operational notice the thread root, which is the preamble this feature exists to avoid.
 - **One thread per channel.** The open first looks for a thread this task already has in the home channel and posts into it instead of rooting a second one. The whole open is serialized per task by a keyed lock, because an agent can emit two `post_to_user` calls in one turn and both would otherwise root a top-level message.
 - **The linking write is flushed, not debounced.** That record is what routes every future reply, and the message is already live in Slack, so a crash in a debounce window would leave a thread nobody owns.
-- **The destination never comes from the model.** Opening a task-linked thread was removed from the PM deliberately (commit `89f81b7`). It returns here in the narrowest form: no tool takes a destination, and the only writer of `home_channel` is `fireTrigger` reading the binding of a human-approved trigger. `propose_trigger` refuses a binding id that is a DM or a user, because that id also decides what the fired task may later read.
+- **The destination never comes from the model.** Opening a task-linked thread was removed from the PM deliberately (commit `89f81b7`). It returns here in the narrowest form: no tool takes a destination, and the only writer of `home_channel` is `fireTrigger` reading the binding of a human-approved trigger. `propose_trigger` still refuses a **channel** binding whose id is a DM or a user, because that id also decides what the fired task may later read and the approving human sees only a friendly name on the card. Reaching a DM is possible only through the `user` binding, which is not a relaxation of that rule but the same rule applied differently: the id is never read from the model at all, it is taken from the conversation the request arrived in.
 
 #### The home channel is the task's own channel
 
@@ -106,18 +126,18 @@ Because those stores are otherwise refreshed only by inbound Slack events, a sch
 
 **Four rough edges of a task that has not opened its thread yet**, all reachable and none of them fixed here:
 
-- **An approval card reaches nobody.** `postInteractiveToUser` resolves its destination from linked channels only — it has no `home_channel` branch, unlike `postToUser` — so a fired task that follows the seed's advice to request edit mode *before* its first post gets an SSE event and a log line and no buttons in Slack. Post first, then request.
+- **An approval card reaches nobody.** `postInteractiveToUser` resolves its destination from linked channels only — it has no `home_channel` branch, unlike `postToUser` — so a fired task that follows the seed's advice to request edit mode *before* its first post gets an SSE event and a log line and no buttons in Slack. Post first, then request. `propose_trigger` refuses outright in that state, since its card is the only way the trigger can be approved.
 - **A failed first post leaves the task mute, not merely un-threaded.** If the home-channel post throws (the bot is not in the channel, the channel was archived), `default_channel` stays null, so `post_to_channel` keeps refusing and `post_to_user` keeps throwing. A retry can still open the thread, but until one succeeds the task cannot reach anyone. Note `isChannelReachable` passes a public channel the bot is not a member of, so the pre-flight does not catch that case.
 - **`report_completion(message)` can be the message that opens the thread.** It routes through `postToUser` with the agent as sender, so a fired task that says everything in one final message opens its thread with it. That is intended, not an accident.
 - **`post_files_to_user` cannot open a thread**, because Slack's upload carries no text to serve as a root. The PM is told this by its channel context line at spawn, which names the home channel and says the first `post_to_user` is what opens the thread.
 
-**DM (`user`) bindings are still not delivered.** `propose_trigger` accepts channel bindings only, so no DM-bound trigger can exist to deliver to, and the `user` branch of the delivery seed is unchanged and unreachable in practice.
+**DM (`user`) bindings deliver through the same homing path as channels.** A schedule fire sets `home_channel` from the binding whatever its type, and the first `post_to_user` opens the task's own thread there — Slack's `chat.postMessage` takes a `D…` conversation id exactly as it takes a `C…` one, which is already how every ordinary DM reply is posted. A DM-bound fire differs in exactly two ways: it runs no canvas or pin scan (a DM has neither), and it is not reachability-probed (a DM cannot be archived; see the known limitation below).
 
 ## Persistent per-trigger directory
 
 Each fire is a brand-new task with its own agent workspace, and no fire can reach another's. So a trigger whose job needs continuity — "summarise what changed since last time", "chase the thing you raised yesterday" — used to have no way to carry anything forward, and silently degraded into redoing the work and re-reporting it in full. Every trigger that actually fires now gets one directory that outlives a single fire, at `$ARCHIE_WORKDIR/triggers-data/<trigger-id>/`. A trigger that is never approved or never fires gets none, because creation happens at agent spawn.
 
-**Created at agent spawn, not at fire.** The scheduler is untouched. `ensureTriggerDataDir` (`src/system/trigger-store.ts`) runs from the one block in `spawnAgent` that sits after all three per-track branches, so every agent on a trigger-fired task gets it — PM, repo agent and plugin agent alike. `mkdir` is recursive, which is what makes it idempotent: spawn re-runs once per agent, again on every wake of the task, and again after a restart.
+**Created at agent spawn, not at fire.** The scheduler is untouched. `ensureTriggerDataDir` (`src/system/trigger-store.ts`) runs from `spawnAgent`, so any trigger-fired task gets it. `mkdir` is recursive, which is what makes it idempotent: spawn re-runs on every wake of the task and again after a restart.
 
 **It refuses to create once the record is gone.** A task outlives the fire that created it — a user can keep replying in its thread, the PM can delegate, a restart re-spawns it — while `metadata.triggered_by` keeps naming a trigger that may since have been deleted. So creation checks that the trigger's record file still exists first, and returns null when it does not. Without that check the next spawn would recreate the directory straight after `deleteTrigger` removed it, resurrecting deleted content and orphaning it for good, because nothing scans `triggers-data/` for entries whose record has gone. The check is deliberately `existsSync` on the record path rather than `loadTrigger`, because `loadTrigger` also returns null for a `JSON.parse` failure and `saveTrigger` truncates before it writes — a spawn reading the record mid-write would otherwise conclude a live trigger had been deleted.
 
@@ -128,9 +148,9 @@ Each fire is a brand-new task with its own agent workspace, and no fire can reac
 
 **Not in `additionalDirectories`.** `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` is on, so a `CLAUDE.md` in an additional directory is auto-loaded into the prompt — and this directory is agent-writable, so listing it there would let one agent inject a prompt into every later agent on the same trigger.
 
-**Announced once, in one place, on every track.** `buildTriggerDataPromptSection` builds a single block appended after the per-track branches. It names the trigger, names the path as read-write, lists the directory's entries (names only, sorted, capped at 50), says to load the `trigger-task` skill, and frames whatever is in there as data rather than instructions, since it was written by an earlier agent. That is all it does.
+**Announced once, in one place.** `buildTriggerDataPromptSection` builds a single block appended to the PM's system prompt. It names the trigger, names the path as read-write, lists the directory's entries (names only, sorted, capped at 50), says to load the `trigger-task` skill, and frames whatever is in there as data rather than instructions, since it was written by an earlier agent. That is all it does.
 
-**Why the skill instruction is in the block and not in the seed message.** The seed (`AGENT_PROMPTS.triggered`) reaches the PM alone, and a delegated repo or plugin agent holds the same directory read-write. The block is the only trigger-specific text every track sees, so it is the only place an instruction reaches everyone who might write there. `knowledge.log` was the other candidate and is worse on two counts: it is the data channel, where user-authored text lands and where the injection rules say to treat what you read as data rather than instruction, and it is chronological, so a line written at fire time reads as a stale event ten turns later rather than as a standing instruction.
+**Why the skill instruction is in the block and not in the seed message.** The seed (`AGENT_PROMPTS.triggered`) is a one-off wake; the block is standing context, rebuilt on every spawn, so it still says what the directory is on turn ten and after a restart. It also reaches workers indirectly — the PM can quote it into a brief — where a consumed wake message cannot. `knowledge.log` was the other candidate and is worse on two counts: it is the data channel, where user-authored text lands and where the injection rules say to treat what you read as data rather than instruction, and it is chronological, so a line written at fire time reads as a stale event ten turns later rather than as a standing instruction.
 
 Three things the block deliberately does not do, each of which it did at some point during development:
 
@@ -180,7 +200,7 @@ Trigger creation reuses the edit-mode approval mechanism, which is already chann
 
 - `propose_trigger` stashes the proposed id on `task.metadata.pending_trigger_id` and calls `postInteractiveToUser(..., 'trigger')`, which always emits an `approval:requested` event.
 - **Slack** renders Approve/Deny buttons; **the CLI** renders the same request as `[y] approve / [n] deny`.
-- Both converge on the task-level handlers `handleTriggerApproval` / `handleTriggerDenial`. The Slack buttons carry the trigger id; the CLI `POST /tasks/:id/approve` body is just `{ type:'trigger', approve }`, so the handler falls back to `pending_trigger_id`.
+- Both converge on the task-level handlers `handleTriggerApproval` / `handleTriggerDenial`. The Slack buttons carry the trigger id, and so does the CLI: `POST /tasks/:id/approve` echoes the `ref` from the approval event, so the right proposal resolves even when several are outstanding. `pending_trigger_id` is only the fallback for a body that carries no `ref`.
 
 There is **no operator bypass** — approving from the CLI is exactly equivalent to clicking Approve in Slack.
 
@@ -195,11 +215,11 @@ Scoped by the **tier of the space the request comes from** (`src/system/trigger-
 
 Privacy is resolved from the **workspace channel map** (`listWorkspaceChannels()` → `conversations.list`, `id → isPrivate`, a process-wide ~10-min cache shared with the `find_slack_channel` tool), so a listing is O(1) lookups with no per-channel Slack calls. A channel not in the cached map (brand-new, just-converted, or archived) falls through to a live `conversations.info` lookup. Both paths **fail closed** — an unresolved channel is treated as private — so a private trigger is never leaked into a public/DM listing. The trade is a bounded ≤10-min staleness window after a public→private conversion of an already-cached channel.
 
-The **operator CLI** (`/api/triggers`, the `t` view) operates at operator trust and sees all triggers, consistent with the existing CLI task list.
+The **operator CLI** (`/api/triggers`, the `t` view) operates at operator trust and sees all triggers, consistent with the existing CLI task list. Operator origin is inferred from a task having no Slack conversation of its own, so one case is carved out explicitly: a **trigger-fired task** has only a `home_channel` until its first post opens a thread, and its origin is resolved from that conversation — a channel, or the creator's DM — rather than defaulting to operator. Without that it would read every trigger in the workspace and could edit and withdraw proposals made in other people's private conversations.
 
 ## Announcements (no silent changes)
 
-Every **configuration change** — created/enabled, edited, paused/resumed, deleted — posts a one-line notice to the channel the trigger is bound to, even when the change was made from a DM. Firing is **not** a config change and is never announced.
+Every **configuration change** to a **channel**-bound trigger — created/enabled, edited, paused/resumed, deleted — posts a one-line notice to the channel it is bound to, even when the change was made from a DM. That is the transparency guarantee: a channel always knows what automation runs in it. A **DM**-bound trigger announces nothing, because a DM's only member is the person who just made the change and the notice would report their own action back to them; `announceTriggerChange` returns early for a `user` binding, which covers all six of its call sites at once. Two other things are deliberately silent: **firing** (not a config change), and any change to a still-`pending` proposal (editing or withdrawing one announces nothing, because nothing is running yet and the channel was never told it existed).
 
 ## Protections & limits
 
@@ -208,11 +228,15 @@ Every **configuration change** — created/enabled, edited, paused/resumed, dele
 - **Read-only by default** — a fired task is an ordinary task; any write/push still needs in-the-moment edit-mode approval.
 - **Limits** — recurring schedules ≥1h apart; per-user and per-channel active-trigger caps; a per-account daily fired-run cap (in-memory, reset daily).
 - **Kill switch** — `ARCHIE_TRIGGERS_ENABLED=false` disables all firing and creation globally.
+- **A DM trigger can only be created from the DM it delivers to.** The refusal is not a validation of a supplied id — there is no id to validate, because the `user` branch of `propose_trigger` reads none. It is also the reason a DM trigger cannot carry a `channel_message` condition: a message fire ingests the watched thread and replies *there*, ignoring the binding entirely, so that pairing would deliver into the watched channel instead of the DM. `buildConditions` takes the binding type and refuses it, which covers `propose_trigger` and `update_trigger` with one implementation.
+- **A fired task's visibility tier is the conversation it is homed in.** `resolveTriggerOrigin` falls back to `home_channel` when the task has no Slack `default_channel` (yet), which is exactly a fired task's state on its first turn. Without that fallback the turn resolves to the operator tier, which sees every trigger in the workspace — including other people's DM triggers — and a fired task could read them out into whatever conversation it was homed in.
+
+**Known limitation: a DM binding is never reachability-probed.** A schedule fire pre-flights a *channel* binding with `isChannelReachable` and auto-pauses the trigger when the channel is gone or archived. DM bindings deliberately skip that check. A DM cannot be archived, but it can become unpostable in other ways (the user deactivated, the app uninstalled), and in that state every fire spawns a task whose first post fails, with nothing to pause it. The probe is not simply extended because `isChannelReachable` returns `false` on **any** error including a transient one, and the consequence of a false negative is a permanent pause — silently killing a working automation is the worse failure of the two. Closing this properly needs a probe that distinguishes "gone" from "could not tell".
 
 ## CLI & API surface
 
-- `GET /api/triggers`, `GET /api/triggers/:id`, `PATCH /api/triggers/:id` (pause/resume/edit prompt), `DELETE /api/triggers/:id` — operator endpoints, mirroring `/api/tasks`.
-- `POST /api/tasks/:id/approve` accepts `type:'trigger'` for the CLI approval gate.
+- `GET /api/triggers`, `GET /api/triggers/:id`, `PATCH /api/triggers/:id` (pause/resume/edit prompt), `DELETE /api/triggers/:id` — operator endpoints, mirroring `/api/tasks`. These include `pending` proposals (distinguished by `status`), so an unapproved proposal is inspectable and withdrawable from here rather than being invisible to the operator; `PATCH` refuses a `status` change on one, since approval belongs to the user.
+- `POST /api/tasks/:id/approve` accepts `type:'trigger'` for the CLI approval gate. A resolution that changed nothing — approving something already enabled, or denying a proposal that has since been approved — answers `409 { ok: false, stale: true }` rather than a false success, matching the merge gate and keeping the CLI and Slack outcomes equivalent.
 - CLI: press `t` from the task list to open the trigger list (status, bound channel, `[p]` pause/resume, `[d]` delete).
 
 ## Key files

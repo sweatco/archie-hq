@@ -22,6 +22,7 @@ process.env.ARCHIE_WORKDIR = WORK;
 const store = await import('../trigger-store.js');
 const { isValidTriggerId, generateTriggerId, getTriggerPath } = store;
 const { getTriggerDataPath, ensureTriggerDataDir, removeTriggerDataDir, saveTrigger, deleteTrigger } = store;
+const { countActiveTriggers } = store;
 const { TRIGGERS_DATA_DIR } = await import('../workdir.js');
 
 afterAll(() => {
@@ -35,7 +36,7 @@ function sampleTrigger(id: string): Trigger {
     status: 'enabled',
     created_by: 'UCREATOR',
     created_at: '2026-08-17T09:00:00.000Z',
-    binding: { type: 'user', user_id: 'UCREATOR' },
+    binding: { type: 'user', user_id: 'UCREATOR', channel_id: 'DCREATOR', channel_name: 'DM with Creator' },
     conditions: [{ type: 'schedule', tz: 'UTC', next_run_at: '2026-08-18T09:00:00.000Z', cron: '0 9 * * *' }],
     action: { prompt: 'do the thing' },
   };
@@ -190,5 +191,25 @@ describe('deleteTrigger', () => {
 
     await expect(deleteTrigger(id)).resolves.toBeUndefined();
     expect(existsSync(getTriggerPath(id))).toBe(false);
+  });
+});
+
+describe('countActiveTriggers counts only what is running', () => {
+  // The stated non-goal of making pending proposals visible: they must not start
+  // consuming caps. If they did, a user with several unanswered proposals could
+  // be refused a new automation by proposals nobody had agreed to yet.
+  //
+  // Counted through the predicate form the cap checks actually use, scoped to a
+  // creator of its own — earlier tests in this file leave records in the shared
+  // temp workdir, and an unscoped count would tally those too.
+  it('excludes pending and paused triggers', async () => {
+    const CREATOR = 'UCAPTEST';
+    const mk = (id: string, status: Trigger['status']) => ({ ...sampleTrigger(id), status, created_by: CREATOR });
+    await saveTrigger(mk('trg-20260824-1000-en1', 'enabled'));
+    await saveTrigger(mk('trg-20260824-1000-en2', 'enabled'));
+    await saveTrigger(mk('trg-20260824-1000-pau', 'paused'));
+    await saveTrigger(mk('trg-20260824-1000-pen', 'pending'));
+
+    expect(await countActiveTriggers((t) => t.created_by === CREATOR)).toBe(2);
   });
 });

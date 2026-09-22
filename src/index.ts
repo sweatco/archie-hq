@@ -30,20 +30,17 @@ import { mountOAuthRoutes } from './connectors/oauth/routes.js';
 import { getIsShuttingDown, setShuttingDown } from './system/shutdown.js';
 import { getActiveTaskIds } from './tasks/task.js';
 import { logger } from './system/logger.js';
-import { bootstrapWorkdir, cloneRepos, OAUTH_DIR, REPOS_DIR } from './system/workdir.js';
-import { join } from 'path';
+import { bootstrapWorkdir, cloneRepos, OAUTH_DIR } from './system/workdir.js';
 import { validateMasterKey } from './system/secrets-vault.js';
-import { initPlugins, getPlugins } from './system/plugin-loader.js';
+import { initPlugins, getPlugins, getArchieConfig } from './system/plugin-loader.js';
 import { startContextProbe } from './system/context-probe.js';
-import { initRegistry, getAllAgentDefs } from './agents/registry.js';
-import { findUnmountedCoreSkills, mountedSkillNames } from './agents/core-skills.js';
-import { isRepoAgent, isPmAgent } from './types/agent.js';
-import { configureGitIdentity } from './connectors/github/client.js';
+import { initRegistry, getPmDef } from './agents/registry.js';
 import { recoverActiveTasks } from './tasks/recovery.js';
 import { initEventPersistence } from './tasks/persistence.js';
 import { initReminderScheduler } from './system/reminder-scheduler.js';
 import { initTriggerScheduler } from './system/trigger-scheduler.js';
 import { initMemory } from './memory/index.js';
+import { getHomeTeamId } from './connectors/slack/client.js';
 import { getRunnerHealth, initRunners, shutdownRunners } from './runners/index.js';
 
 /**
@@ -110,97 +107,41 @@ async function main(): Promise<void> {
     initPlugins();
     initRegistry();
     initEventPersistence();
-    await initMemory();
     await initRunners();
 
     // DEBUG: start the context-probe logging proxy (no-op when disabled). Must
     // be before any agent spawns so getProbeBaseUrl() is live at spawn time.
     startContextProbe();
 
-    // Clone repos declared by plugins (every entry across every repo agent,
-    // deduplicated by github identifier).
-    const agentDefs = getAllAgentDefs();
-    const repoDefs = agentDefs.filter(isRepoAgent);
-    const byGithub = new Map<string, { github: string; baseBranch: string }>();
-    for (const def of repoDefs) {
-      for (const entry of def.repo!.repos) {
-        if (!byGithub.has(entry.github)) {
-          byGithub.set(entry.github, { github: entry.github, baseBranch: entry.baseBranch });
-        }
-      }
+    // Warm the base clones the plugins repo asks for (`repos[*].warm` in
+    // archie.json), so the first `mount_repo` of a big repository does not pay
+    // for a cold clone inside a task. Every other repo is cloned on demand.
+    const archieConfig = getArchieConfig();
+    const warmRepos = Object.entries(archieConfig.repos)
+      .filter(([, cfg]) => cfg.warm === true)
+      .map(([github]) => ({ github }));
+    if (warmRepos.length > 0) {
+      logger.plain(`Warming base clones: ${warmRepos.map((r) => r.github).join(', ')}`);
+      await cloneRepos(warmRepos);
     }
-    await cloneRepos([...byGithub.values()]);
 
-    // Log loaded plugins and agents
+    // Log what the next task will load. The plugin directories here are exactly
+    // what spawn hands to the SDK `plugins` option; their skills and agents are
+    // read by the SDK, not by us, so there is nothing to enumerate at startup —
+    // spawn asserts against the session's `init` message instead.
     const plugins = getPlugins();
-
     logger.plain(`Plugins loaded: ${plugins.map((p) => p.name).join(', ') || 'none'}`);
-    logger.plain('');
 
-    const pmDef = agentDefs.find(isPmAgent);
-
-    logger.plain('Team:');
-    logger.plain('  pm-agent (orchestrator)');
-    const pmSkillNames = mountedSkillNames(pmDef?.skillPaths);
-    if (pmSkillNames.length > 0) {
-      logger.plain(`    skills: ${pmSkillNames.join(', ')}`);
+    const pmDef = getPmDef();
+    logger.plain('PM agent:');
+    logger.plain(`  model: ${pmDef.model}${pmDef.effort ? ` (effort: ${pmDef.effort})` : ''}`);
+    if (pmDef.mcpServers && Object.keys(pmDef.mcpServers).length > 0) {
+      logger.plain(`  mcp: ${Object.keys(pmDef.mcpServers).join(', ')}`);
     }
-    if (pmDef?.mcpServers) {
-      logger.plain(`    mcp: ${Object.keys(pmDef.mcpServers).join(', ')}`);
-    }
-    if (pmDef?.pmOverlayPrompt) {
-      logger.plain(`    overlay: pm plugin`);
-    }
-    for (const def of repoDefs) {
-      logger.plain(`  [${def.pluginName}] ${def.id} (${def.visibility}) — ${def.role}`);
-      const primary = def.repo!.primary;
-      const primaryPath = join(REPOS_DIR, primary);
-      const gitName = await configureGitIdentity(primaryPath);
-      logger.plain(`    primary: ${primary} (${primaryPath})`);
-      if (gitName) {
-        logger.plain(`    git: ${gitName}`);
-      }
-      const otherRepos = def.repo!.repos.filter((r) => r.github !== primary);
-      if (otherRepos.length > 0) {
-        logger.plain(`    also mounts: ${otherRepos.map((r) => r.github).join(', ')}`);
-      }
-      if (def.mcpServers) {
-        logger.plain(`    mcp: ${Object.keys(def.mcpServers).join(', ')}`);
-      }
-    }
-    for (const def of agentDefs.filter((d) => !isPmAgent(d) && !isRepoAgent(d))) {
-      logger.plain(`  [${def.pluginName}] ${def.id} (${def.visibility}) — ${def.role}`);
-      if (def.mcpServers) {
-        logger.plain(`    mcp: ${Object.keys(def.mcpServers).join(', ')}`);
-      }
+    if (pmDef.allowedNetworkDomains && pmDef.allowedNetworkDomains.length > 0) {
+      logger.plain(`  network: ${pmDef.allowedNetworkDomains.join(', ')}`);
     }
     logger.plain('');
-
-    // Warn about plugins that have no externally reachable agents.
-    // Repo agents can still be addressed via webhooks even when local, so they
-    // count as external entry points; plugin agents must be `global` for PM
-    // (or another plugin) to dispatch into them.
-    const pluginNames = new Set(plugins.map((p) => p.name));
-    pluginNames.delete('pm');
-    for (const pluginName of pluginNames) {
-      const pluginAgents = agentDefs.filter((d) => d.pluginName === pluginName && !isPmAgent(d));
-      if (pluginAgents.length === 0) continue;
-      const hasEntryPoint = pluginAgents.some(
-        (d) => d.visibility === 'global' || isRepoAgent(d),
-      );
-      if (!hasEntryPoint) {
-        logger.warn(
-          'system',
-          `Plugin "${pluginName}" has no externally reachable agents — PM cannot dispatch into it (all agents are local).`,
-        );
-      }
-    }
-
-    // A core skill that no agent track mounts is dead weight nobody can load — it ships in the image, occupies a directory, and is unreachable from every agent's `.claude/skills`.
-    // This check exists so forgetting to add a new core skill to the mounting manifest is announced at startup instead of the skill silently never being available to anyone.
-    for (const name of findUnmountedCoreSkills()) {
-      logger.warn('system', `Core skill "${name}" is mounted by no agent track — add it to CORE_SKILL_MOUNTS in src/agents/core-skills.ts, or delete the skill.`);
-    }
 
     // ---- HTTP Server Setup ----
 
@@ -254,6 +195,8 @@ async function main(): Promise<void> {
     } else {
       logger.plain('Slack App not configured — running in CLI-only mode');
     }
+
+    await initMemory(getHomeTeamId());
 
     // Create the HTTP server but DO NOT listen yet — recover first so a Slack
     // event arriving on startup cannot reach a task before its agent is respawned.

@@ -26,6 +26,12 @@ vi.mock('../../system/logger.js', () => ({
 const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
 vi.mock('../../agents/spawn.js', () => ({ spawnAgent: spawnMock }));
 
+const { loadMetadataMock } = vi.hoisted(() => ({ loadMetadataMock: vi.fn() }));
+vi.mock('../persistence.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../persistence.js')>()),
+  loadMetadata: loadMetadataMock,
+}));
+
 import { Task, activeTasks } from '../task.js';
 import { MessageQueue } from '../../agents/message-queue.js';
 import type { TaskMetadata } from '../../types/task.js';
@@ -36,18 +42,16 @@ import type { AgentDef } from '../../types/agent.js';
 const TaskCtor = Task as unknown as new (
   taskId: string,
   metadata: TaskMetadata,
-  team: AgentDef[],
+  pmDef: AgentDef,
 ) => Task;
 
 function metadata(taskId: string): TaskMetadata {
   return {
     task_id: taskId,
-    task_owner: 'pm-agent',
-    participants: [],
     channels: {},
     default_channel: null,
     agent_sessions: {},
-    repositories: {},
+    repositories: [],
     status: 'in_progress',
     created_at: '2026-06-30T00:00:00.000Z',
     updated_at: '2026-06-30T00:00:00.000Z',
@@ -58,7 +62,7 @@ function pmDef(): AgentDef {
   return {
     id: 'pm-agent',
     key: 'pm',
-    statusLabel: '',
+    visibility: 'global',
     role: 'PM',
     expertise: '',
     isPm: true,
@@ -74,6 +78,8 @@ describe('Task activation lock (double-spawn guard)', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     spawnMock.mockReset();
+    loadMetadataMock.mockReset();
+    loadMetadataMock.mockResolvedValue(null);
     // Each spawn marks its agent running, the way spawn.ts wires the handle.
     spawnMock.mockImplementation(async (agent: { handle?: unknown }) => {
       agent.handle = { isRunning: true, running: new Promise<void>(() => {}), abort: vi.fn() };
@@ -90,15 +96,15 @@ describe('Task activation lock (double-spawn guard)', () => {
   });
 
   it('spawns once when two separate instances send concurrently for the same taskId', async () => {
-    const a = new TaskCtor(TASK_ID, metadata(TASK_ID), [pmDef()]);
-    const b = new TaskCtor(TASK_ID, metadata(TASK_ID), [pmDef()]);
+    const a = new TaskCtor(TASK_ID, metadata(TASK_ID), pmDef());
+    const b = new TaskCtor(TASK_ID, metadata(TASK_ID), pmDef());
 
     await Promise.all([a.sendMessage('from-a'), b.sendMessage('from-b')]);
 
     // Core guarantee: the duplicate instance did NOT spawn its own subprocess.
     expect(spawnMock).toHaveBeenCalledTimes(1);
     // Only the canonical instance holds an agent; the loser routed onto it.
-    expect(a.agentProcesses.size + b.agentProcesses.size).toBe(1);
+    expect([a.agent, b.agent].filter(Boolean)).toHaveLength(1);
     const canonical = activeTasks.get(TASK_ID);
     expect(canonical === a || canonical === b).toBe(true);
     // Neither message was dropped — both landed on the one agent's queue.
@@ -108,16 +114,16 @@ describe('Task activation lock (double-spawn guard)', () => {
   });
 
   it('spawns once for two concurrent sends on a single instance', async () => {
-    const a = new TaskCtor(TASK_ID, metadata(TASK_ID), [pmDef()]);
+    const a = new TaskCtor(TASK_ID, metadata(TASK_ID), pmDef());
 
     await Promise.all([a.sendMessage('m1'), a.sendMessage('m2')]);
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
-    expect(a.agentProcesses.size).toBe(1);
+    expect(a.agent).toBeDefined();
   });
 
   it('reactivates (one fresh spawn) when the canonical instance parked before the next send', async () => {
-    const a = new TaskCtor(TASK_ID, metadata(TASK_ID), [pmDef()]);
+    const a = new TaskCtor(TASK_ID, metadata(TASK_ID), pmDef());
     await a.sendMessage('first');
     expect(spawnMock).toHaveBeenCalledTimes(1);
 
@@ -126,10 +132,37 @@ describe('Task activation lock (double-spawn guard)', () => {
 
     // A new trigger builds a fresh instance and legitimately reactivates — this
     // is a fresh spawn, not a duplicate (the old subprocess was torn down).
-    const b = new TaskCtor(TASK_ID, metadata(TASK_ID), [pmDef()]);
+    const b = new TaskCtor(TASK_ID, metadata(TASK_ID), pmDef());
     await b.sendMessage('second');
 
     expect(spawnMock).toHaveBeenCalledTimes(2);
     expect(activeTasks.get(TASK_ID)).toBe(b);
+  });
+
+  it('reconciles the fixed destination and authors before choosing the spawned instance', async () => {
+    const staleA = new TaskCtor(TASK_ID, {
+      ...metadata(TASK_ID),
+      memory_destination: { channel_id: 'C07PUBLIC1' },
+      memory_authors: { U07PERSON1: 'One' },
+    }, pmDef());
+    const staleB = new TaskCtor(TASK_ID, {
+      ...metadata(TASK_ID),
+      memory_destination: { channel_id: 'C07PUBLIC1' },
+      memory_authors: { U07PERSON2: 'Two' },
+    }, pmDef());
+    loadMetadataMock.mockResolvedValue({
+      ...metadata(TASK_ID),
+      memory_destination: { channel_id: 'C07PUBLIC1' },
+      memory_authors: { U07PERSON3: 'Three' },
+    });
+
+    await Promise.all([staleA.sendMessage('from-a'), staleB.sendMessage('from-b')]);
+
+    const canonical = activeTasks.get(TASK_ID)!;
+    expect(canonical.metadata.memory_destination).toEqual({ channel_id: 'C07PUBLIC1' });
+    expect(canonical.metadata.memory_authors).toEqual(expect.objectContaining({
+      U07PERSON3: 'Three',
+    }));
+    expect(spawnMock).toHaveBeenCalledTimes(1);
   });
 });

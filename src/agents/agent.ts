@@ -1,13 +1,13 @@
 /**
  * Agent Class
  *
- * Each agent owns its runtime state: definition, message queue, SDK handle, session.
- * Created lazily by Task on first message to that agent.
- * Spawned by spawnAgent() from spawn.ts.
+ * The task's one agent owns its runtime state: definition, message queue, SDK
+ * handle, session. Created lazily by Task on the first message, spawned by
+ * spawnAgent() from spawn.ts.
  */
 
 import type { AgentDef, AgentHandle, McpToolMeta } from '../types/agent.js';
-import type { AgentName, AgentSessionState } from '../types/task.js';
+import type { AgentSessionState } from '../types/task.js';
 import type { SandboxOptions } from './sandbox.js';
 import { MessageQueue } from './message-queue.js';
 import { spawnAgent } from './spawn.js';
@@ -35,13 +35,13 @@ export class Agent {
   sandbox?: SandboxOptions;
   /**
    * Whether edit mode was in effect when this agent's *current* SDK process was
-   * spawned (repo agents only; `undefined` for non-repo agents and before the
-   * first spawn). A repo agent's sandbox mount and repo-tool allowlist are
-   * frozen from `metadata.edit_allowed` at spawn time, so a process that booted
-   * read-only can never write — it must be re-spawned. `Task.ensureAgentSpawned`
-   * reads this to restart an agent that booted read-only just as edit mode was
-   * approved — the mid-boot window `handleEditModeApproval`'s restart loop can't
-   * catch, because the agent has no live handle yet while it is still booting.
+   * spawned (`undefined` before the first spawn). The sandbox mount and
+   * repo-tool allowlist are frozen from `metadata.edit_allowed` at spawn time,
+   * so a process that booted read-only can never write — it must be re-spawned.
+   * `Task.ensurePm` reads this to restart an agent that booted read-only just
+   * as edit mode was approved — the mid-boot window `handleEditModeApproval`'s
+   * restart can't catch, because the agent has no live handle yet while it is
+   * still booting.
    */
   editModeAtSpawn?: boolean;
 
@@ -102,8 +102,8 @@ export class Agent {
   /**
    * Add a message to this agent's queue
    */
-  sendMessage(message: string, from?: string): void {
-    this.queue.addMessage(message, from);
+  sendMessage(message: string): void {
+    this.queue.addMessage(message);
   }
 
   /**
@@ -135,27 +135,19 @@ export class Agent {
 
   /**
    * Spawn this agent for a task. Idempotent — no-op if already running.
-   * Handles participant tracking, spawning, crash detection, persist, and logging.
-   * Uses dynamic import to avoid circular dependency (agent.ts → spawn.ts → agent.ts).
+   * Handles spawning, crash detection, persist, and logging.
    */
   async spawn(task: import('../tasks/task.js').Task): Promise<void> {
     if (this.isRunning) return;
 
-    const agentName = this.def.id as AgentName;
-
     // Restore session from task metadata if we don't have one yet
     if (!this.session.session_id) {
-      const entry = task.metadata.agent_sessions[agentName];
+      const entry = task.metadata.agent_sessions[this.def.id];
       if (entry) {
         this.session = typeof entry === 'string'
           ? { session_id: entry, active: false }
           : { ...entry, active: false };
       }
-    }
-
-    // Track participant
-    if (!task.metadata.participants.includes(agentName)) {
-      task.metadata.participants.push(agentName);
     }
 
     const hadSession = !!this.session.session_id;
@@ -167,18 +159,17 @@ export class Agent {
     try {
       await spawnAgent(this, task);
     } catch (err) {
-      task.updateAgentState(this.def.id, false);
+      task.updateAgentState(false);
       throw err;
     }
 
     // Wire crash detection: when the SDK iterator exits, mark inactive.
     if (this.handle) {
       this.handle.running.then(() => {
-        task.updateAgentState(this.def.id, false);
+        task.updateAgentState(false);
       });
     }
 
-    // Persist (participant added, repo agent may have mutated attached repos)
     task.debouncedSave();
 
     // Log

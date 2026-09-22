@@ -11,6 +11,7 @@
 
 import type { WebClient } from '@slack/web-api';
 import { logger } from '../../system/logger.js';
+import { isSlackDryRun } from './client.js';
 
 export async function setAssistantThreadTitle(
   client: WebClient,
@@ -18,6 +19,7 @@ export async function setAssistantThreadTitle(
   thread_ts: string,
   title: string,
 ): Promise<void> {
+  if (isSlackDryRun()) return;
   try {
     await client.assistant.threads.setTitle({ channel_id, thread_ts, title });
     logger.system(`Slack DM title synced (${channel_id}/${thread_ts})`);

@@ -19,7 +19,7 @@ import type { RunnerCommandResult } from './types.js';
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL('../../', import.meta.url));
-const agent = 'mobile-agent';
+const agent = 'pm-agent';
 const profile = 'ios';
 const github = 'sweatco/sweatcoin-mobile';
 const sha = (data: string | Buffer) => createHash('sha256').update(data).digest('hex');

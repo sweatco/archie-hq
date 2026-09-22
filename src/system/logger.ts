@@ -7,7 +7,6 @@
 
 import { relative } from 'path';
 import pc from 'picocolors';
-import type { AgentName } from '../types/index.js';
 
 // Project root path to trim from all file paths
 const PROJECT_ROOT = process.cwd();
@@ -35,7 +34,6 @@ const AGENT_COLORS: Record<string, (s: string) => string> = {
   'pm-agent': pc.magenta,
   'backend-agent': pc.green,
   'mobile-agent': pc.cyan,
-  'triage-agent': pc.yellow,
 };
 
 
@@ -176,6 +174,8 @@ export class Logger {
           console.log(`${label} ${c.dim('  │')} ${line}`);
         }
       }
+    } else if (toolName === 'Agent') {
+      console.log(`${label} ${c.dim('Tool:')} ${formatAgentSpawnLine(input)}`);
     } else if (toolName === 'WebSearch') {
       const searchQuery = input.query || '';
       const displayQuery = searchQuery.length > 80 ? searchQuery.substring(0, 77) + '...' : searchQuery;
@@ -311,6 +311,32 @@ export class Logger {
       console.log(`${c.dim('[' + prefix + ']')} ${message}`);
     }
   }
+}
+
+/**
+ * Input shape of the SDK's `Agent` tool_use block. Only the fields the log
+ * line needs — never the prompt body, which is not logged.
+ */
+interface AgentSpawnInput {
+  subagent_type?: string;
+  model?: string;
+  description?: string;
+}
+
+/**
+ * Format the `Agent` tool's log line: which agent type and model it spawned,
+ * plus the one-line description. Before this, production logs showed only
+ * "Tool: Agent" — the subagent_type and model were in the tool input but never
+ * surfaced, so operators couldn't tell a `marketing:tov-reviewer` spawn from an
+ * `engineering:coder` one, or which model backed it.
+ *
+ * Deliberately excludes `input.prompt` — the prompt body is never logged.
+ */
+export function formatAgentSpawnLine(input: AgentSpawnInput): string {
+  const agentType = input.subagent_type || 'general-purpose';
+  const model = input.model || 'inherited';
+  const desc = input.description ? ` — ${input.description}` : '';
+  return `Agent → ${agentType} (${model})${desc}`;
 }
 
 /**

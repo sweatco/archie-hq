@@ -693,6 +693,10 @@ export class GitHubClient {
   /**
    * Resolve a review thread via GraphQL. `threadId` must be the GraphQL node id
    * (e.g. `PRRT_...`) obtained from `getReviewThreads`.
+   *
+   * `githubRepo` is unused — the GraphQL node id already addresses the thread —
+   * but is kept so every PR method on this client takes the same
+   * `(githubRepo, prNumber, …)` shape callers rely on.
    */
   async resolveReviewThread(
     githubRepo: string,

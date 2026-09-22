@@ -220,15 +220,18 @@ describe('no empty-text fallback survives', () => {
  */
 describe('the structural matchers are discriminating', () => {
   it('flags an ownText read in a file that is not allowed to have one', () => {
+    // A synthetic path, deliberately not a real module: the fixture only has to
+    // be somewhere the rule applies, and naming a live file would make this
+    // case turn red the day that file is deleted.
     const violating: SourceFile[] = [
-      { path: 'src/system/triage.ts', code: 'const body = msg.ownText;', isTest: false },
+      { path: 'src/system/some-consumer.ts', code: 'const body = msg.ownText;', isTest: false },
     ];
 
-    expect(ownTextReadOffenders(violating)).toEqual(['src/system/triage.ts']);
+    expect(ownTextReadOffenders(violating)).toEqual(['src/system/some-consumer.ts']);
     // ...and the same read is fine in the renderer that owns the field, or in a test.
     expect(ownTextReadOffenders([
       { path: 'src/connectors/slack/message-body.ts', code: 'parts.ownText', isTest: false },
-      { path: 'src/system/__tests__/triage.test.ts', code: 'msg.ownText', isTest: true },
+      { path: 'src/system/__tests__/some-consumer.test.ts', code: 'msg.ownText', isTest: true },
     ])).toEqual([]);
   });
 

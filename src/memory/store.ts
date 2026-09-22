@@ -39,27 +39,32 @@ export async function writeUser(username: string, content: string): Promise<void
 /**
  * Apply a list of updates to a user's memory file. If the file does not exist,
  * create it with YAML frontmatter (`slack_user_id`, `display_name`, `aliases`).
- * Returns true if a soft cap was exceeded after the write.
+ * Returns only updates that changed the file and whether the result exceeds a soft cap.
  */
 export async function applyUserUpdatesWithIdentity(
   userId: string,
   displayName: string,
   updates: MemoryUpdate[]
-): Promise<boolean> {
+): Promise<{ appliedUpdates: MemoryUpdate[]; capExceeded: boolean }> {
   let content = await readUser(userId);
-  if (!content) {
-    content = buildUserFrontmatter(userId, displayName);
-  }
+  const original = content;
+  if (!content) content = buildUserFrontmatter(userId, displayName);
+  const appliedUpdates: MemoryUpdate[] = [];
   for (const update of updates) {
     const clean = sanitizeUpdate(update);
     if (!clean) {
       logger.warn('memory', `dropped user update for ${userId} (sanitizer rejected): ${JSON.stringify(update).slice(0, 120)}`);
       continue;
     }
-    content = applyUpdate(content, clean);
+    const next = applyUpdate(content, clean);
+    if (next !== content) appliedUpdates.push(clean);
+    content = next;
   }
-  await writeUser(userId, content);
-  return softCapExceeded(content, getUserCap(), getSectionCap());
+  if (content !== original && appliedUpdates.length > 0) await writeUser(userId, content);
+  return {
+    appliedUpdates,
+    capExceeded: softCapExceeded(content, getUserCap(), getSectionCap()),
+  };
 }
 
 /**
@@ -165,18 +170,4 @@ export function applyUpdate(content: string, update: MemoryUpdate): string {
 
   lines.splice(actualInsert, 0, newItem);
   return lines.join('\n');
-}
-
-/** Apply a list of updates to a user's memory file, sanitizing each before write. */
-export async function applyUserUpdates(username: string, updates: MemoryUpdate[]): Promise<void> {
-  let content = await readUser(username);
-  for (const update of updates) {
-    const clean = sanitizeUpdate(update);
-    if (!clean) {
-      logger.warn('memory', `dropped user update for ${username} (sanitizer rejected): ${JSON.stringify(update).slice(0, 120)}`);
-      continue;
-    }
-    content = applyUpdate(content, clean);
-  }
-  await writeUser(username, content);
 }

@@ -1,31 +1,28 @@
 /**
- * Registry — MCP tool policy resolution.
+ * Registry — the PM definition's MCP surface.
  *
- * The policy travels with the *server* (its `archie` block in the plugins
- * repo's .mcp.json), not with the agent, so:
- *   - every agent that mounts the server gets the same policy, with no copy to
- *     keep in sync per agent;
- *   - the PM is covered by construction, since its overlay resolves servers
- *     through the same function;
- *   - `deny`-tier tools are withheld up front via disallowedTools, so the tool
- *     is never offered to the model in the first place.
+ * MCP is engine-owned and session-wide: every server in the plugins repo's
+ * root .mcp.json attaches to the one agent a task runs, and the per-server
+ * `archie` blocks union into a single session policy. `deny`-tier tools are
+ * withheld up front via disallowedTools — the tool is never offered to the
+ * model in the first place — while `ask` tiers are what the approval gate in
+ * spawn.ts reads.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { LoadedPlugin, LoadedMcpConfig, PluginAgentDef } from '../../system/plugin-loader.js';
+import type { LoadedMcpConfig, ArchieConfig } from '../../system/plugin-loader.js';
 
 vi.mock('../../system/plugin-loader.js', () => ({
-  getPlugins: vi.fn(),
   getRootMcpConfig: vi.fn(),
-  getPmOverlay: vi.fn().mockReturnValue(null),
+  getArchieConfig: vi.fn(),
 }));
 
 vi.mock('../../system/logger.js', () => ({
   logger: { warn: vi.fn(), system: vi.fn(), debug: vi.fn(), info: vi.fn(), error: vi.fn() },
 }));
 
-import { getPlugins, getRootMcpConfig, getPmOverlay } from '../../system/plugin-loader.js';
-import { scanAgentDefs } from '../registry.js';
+import { getRootMcpConfig, getArchieConfig } from '../../system/plugin-loader.js';
+import { scanPmDef, isAutoMergeRepo } from '../registry.js';
 
 const ROOT_MCP: LoadedMcpConfig = {
   servers: {
@@ -44,82 +41,67 @@ const ROOT_MCP: LoadedMcpConfig = {
   },
 };
 
-function agent(key: string, extra: Partial<PluginAgentDef> = {}): PluginAgentDef {
-  return { key, role: `${key} role`, expertise: 'e', prompt: 'p', ...extra };
-}
+const ARCHIE_CONFIG: ArchieConfig = {
+  allowedNetworkDomains: ['sheets.googleapis.com'],
+  repos: {
+    'sweatco/mobile': { warm: true, autoMerge: true },
+    'sweatco/backend': { warm: true, autoMerge: false },
+  },
+};
 
-function plugin(name: string, agents: PluginAgentDef[]): LoadedPlugin {
-  return {
-    name,
-    dir: `/plugins/${name}`,
-    manifest: { name, version: '1.0.0', description: 'test' },
-    repoConfigs: null,
-    agents,
-    skillsPath: null,
-    hooks: null,
-  };
-}
-
-describe('scanAgentDefs — MCP tool policy', () => {
+describe('scanPmDef — MCP surface', () => {
   beforeEach(() => {
     vi.mocked(getRootMcpConfig).mockReturnValue(ROOT_MCP);
-    vi.mocked(getPmOverlay).mockReturnValue(null);
+    vi.mocked(getArchieConfig).mockReturnValue(ARCHIE_CONFIG);
   });
 
-  it('attaches a server policy to every agent that mounts it', () => {
-    vi.mocked(getPlugins).mockReturnValue([
-      plugin('engineering', [agent('release-manager', { mcpServers: ['tramline', 'clickhouse'] })]),
-      plugin('mobile', [agent('mobile', { mcpServers: ['tramline'] })]),
+  it('attaches every server in the root config', () => {
+    expect(Object.keys(scanPmDef().mcpServers!)).toEqual([
+      'tramline',
+      'clickhouse',
+      'sweatco-admin',
     ]);
-
-    const defs = scanAgentDefs();
-    for (const id of ['release-manager-agent', 'mobile-agent']) {
-      const def = defs.find((d) => d.id === id)!;
-      expect(def.mcpPolicy!.tramline.default).toBe('ask');
-      expect(def.mcpPolicy!.tramline.tiers.get_release).toBe('allow');
-    }
   });
 
-  it('leaves mcpPolicy undefined when none of the agent\'s servers declare one', () => {
-    vi.mocked(getPlugins).mockReturnValue([
-      plugin('data', [agent('data-analyst', { mcpServers: ['clickhouse'] })]),
-    ]);
+  it('unions the per-server policies into one session policy', () => {
+    const policy = scanPmDef().mcpPolicy!;
+    expect(Object.keys(policy).sort()).toEqual(['sweatco-admin', 'tramline']);
+    expect(policy.tramline.default).toBe('ask');
+    expect(policy.tramline.tiers.get_release).toBe('allow');
+    // The ask tier the approval gate reads.
+    expect(policy['sweatco-admin'].tiers.publish_offer).toBe('ask');
+  });
+
+  it('leaves mcpPolicy undefined when no server declares one', () => {
+    vi.mocked(getRootMcpConfig).mockReturnValue({ ...ROOT_MCP, policies: {} });
 
     // Unmanaged: spawn attaches no gate hook at all, so behaviour is unchanged.
-    expect(scanAgentDefs().find((d) => d.id === 'data-analyst-agent')!.mcpPolicy).toBeUndefined();
+    expect(scanPmDef().mcpPolicy).toBeUndefined();
+    expect(scanPmDef().disallowedTools).toBeUndefined();
   });
 
-  it('does not leak the policy of a server the agent has not mounted', () => {
-    vi.mocked(getPlugins).mockReturnValue([
-      plugin('data', [agent('data-analyst', { mcpServers: ['clickhouse', 'tramline'] })]),
-    ]);
-
-    const policy = scanAgentDefs().find((d) => d.id === 'data-analyst-agent')!.mcpPolicy!;
-    expect(Object.keys(policy)).toEqual(['tramline']);
-  });
-
-  it('withholds deny-tier tools through disallowedTools, deduped with frontmatter', () => {
-    vi.mocked(getPlugins).mockReturnValue([
-      plugin('engineering', [agent('release-manager', {
-        mcpServers: ['tramline'],
-        // A plugin mid-migration may still list one of them by hand.
-        disallowedTools: ['WebSearch', 'mcp__tramline__start_release'],
-      })]),
-    ]);
-
-    const def = scanAgentDefs().find((d) => d.id === 'release-manager-agent')!;
-    expect(def.disallowedTools).toEqual([
-      'WebSearch',
+  it('withholds every deny-tier tool through disallowedTools', () => {
+    expect(scanPmDef().disallowedTools).toEqual([
       'mcp__tramline__start_release',
       'mcp__tramline__stop_release',
     ]);
   });
 
-  it('covers the PM through its overlay servers', () => {
-    vi.mocked(getPlugins).mockReturnValue([plugin('pm', [])]);
-    vi.mocked(getPmOverlay).mockReturnValue(agent('pm', { mcpServers: ['sweatco-admin'] }));
-
-    const pm = scanAgentDefs().find((d) => d.id === 'pm-agent')!;
-    expect(pm.mcpPolicy!['sweatco-admin'].tiers.publish_offer).toBe('ask');
+  it('takes the sandbox network allowlist from archie.json', () => {
+    expect(scanPmDef().allowedNetworkDomains).toEqual(['sheets.googleapis.com']);
   });
+});
+
+describe('isAutoMergeRepo', () => {
+  beforeEach(() => {
+    vi.mocked(getRootMcpConfig).mockReturnValue(ROOT_MCP);
+    vi.mocked(getArchieConfig).mockReturnValue(ARCHIE_CONFIG);
+  });
+
+  it('is true only for a repo archie.json opts in', () => {
+    expect(isAutoMergeRepo('sweatco/mobile')).toBe(true);
+    expect(isAutoMergeRepo('sweatco/backend')).toBe(false);
+    expect(isAutoMergeRepo('sweatco/unlisted')).toBe(false);
+  });
+
 });
