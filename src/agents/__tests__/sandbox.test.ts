@@ -8,12 +8,16 @@
  * those live checks depend on.
  */
 
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   buildSandboxConfig,
   buildManagedNetworkPolicy,
   buildPackageManagerCacheEnv,
   buildRepoGrants,
+  createFilesystemGuardHooks,
   createPmOnlyToolGuardHooks,
   PM_ONLY_MCP_SERVERS,
   TRUSTED_PACKAGE_REGISTRY_DOMAINS,
@@ -59,6 +63,72 @@ describe('buildManagedNetworkPolicy', () => {
     expect(buildManagedNetworkPolicy(opts).sandbox.network.allowedDomains).toEqual(
       buildSandboxConfig(opts).network.allowedDomains,
     );
+  });
+});
+
+describe('filesystem guard symlinks', () => {
+  const directories: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(directories.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  async function fixture() {
+    const root = await mkdtemp(join(tmpdir(), 'archie-guard-'));
+    directories.push(root);
+    const workspace = join(root, 'workspace');
+    const outside = join(root, 'outside');
+    await mkdir(workspace);
+    await mkdir(outside);
+    await writeFile(join(outside, 'secret'), 'private');
+    const opts: SandboxOptions = {
+      cwd: workspace,
+      allowReadPaths: [workspace],
+      allowWritePaths: [workspace],
+      denyWritePaths: [join(workspace, 'protected')],
+    };
+    const check = async (tool_name: string, file_path: string) => {
+      const hook = createFilesystemGuardHooks(opts)[0].hooks[0];
+      const result = await hook({
+        hook_event_name: 'PreToolUse',
+        session_id: 'test',
+        cwd: workspace,
+        transcript_path: '',
+        tool_use_id: 'test',
+        tool_name,
+        tool_input: { file_path },
+      }, undefined, { signal: new AbortController().signal });
+      return 'hookSpecificOutput' in result ? result.hookSpecificOutput : undefined;
+    };
+    return { workspace, outside, opts, check };
+  }
+
+  it('denies reads, writes and new files through escaping and dangling symlinks', async () => {
+    const { workspace, outside, check } = await fixture();
+    await symlink(outside, join(workspace, 'escape'));
+    await symlink(join(outside, 'missing'), join(workspace, 'dangling'));
+    for (const [tool, path] of [['Read', 'escape/secret'], ['Write', 'escape/new/file'], ['Write', 'dangling'], ['Grep', 'escape']]) {
+      expect(await check(tool, path)).toMatchObject({ permissionDecision: 'deny' });
+    }
+  });
+
+  it('denies aliases to protected files and resolves .. after symlinks', async () => {
+    const { workspace, outside, check } = await fixture();
+    await writeFile(join(workspace, 'protected'), 'settings');
+    await symlink('protected', join(workspace, 'alias'));
+    await mkdir(join(outside, 'child'));
+    await symlink(join(outside, 'child'), join(workspace, 'escape'));
+    expect(await check('Write', 'alias')).toMatchObject({ permissionDecision: 'deny' });
+    expect(await check('Read', 'escape/../secret')).toMatchObject({ permissionDecision: 'deny' });
+  });
+
+  it('allows declared skill symlinks and new files in writable directories', async () => {
+    const { workspace, outside, opts, check } = await fixture();
+    opts.allowReadPaths.push(outside);
+    await symlink(outside, join(workspace, 'skill'));
+    expect(await check('Read', 'skill/secret')).toBeUndefined();
+    expect(await check('Write', 'new/directory/file')).toBeUndefined();
+    expect(await check('Write', 'skill/new')).toMatchObject({ permissionDecision: 'deny' });
   });
 });
 

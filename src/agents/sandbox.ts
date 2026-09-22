@@ -13,7 +13,8 @@
  * buildManagedNetworkPolicy for why the sandbox config alone does not enforce it.
  */
 
-import { resolve, normalize } from 'path';
+import { dirname, isAbsolute, resolve, normalize } from 'path';
+import { lstat, readlink } from 'node:fs/promises';
 import type { HookCallbackMatcher, HookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
 import { CACHES_DIR, REPOS_DIR } from '../system/workdir.js';
 import { getReposPath } from '../tasks/persistence.js';
@@ -286,6 +287,37 @@ function deny(reason: string): HookJSONOutput {
   };
 }
 
+async function resolveGuardPath(path: string): Promise<string> {
+  const parts = path.split('/');
+  let current = '/';
+  let links = 0;
+
+  while (parts.length > 0) {
+    const part = parts.shift()!;
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      current = dirname(current);
+      continue;
+    }
+
+    const next = resolve(current, part);
+    const entry = await lstat(next).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (entry?.isSymbolicLink()) {
+      if (++links > 40) throw new Error('Too many symbolic links');
+      const target = await readlink(next);
+      if (isAbsolute(target)) current = '/';
+      parts.unshift(...target.split('/'));
+    } else {
+      current = next;
+    }
+  }
+
+  return current;
+}
+
 /**
  * MCP servers that belong to the agent that owns the conversation with the
  * user, and to nobody it delegates to. They post to Slack, resolve the task
@@ -343,6 +375,7 @@ export function createPmOnlyToolGuardHooks(): HookCallbackMatcher[] {
  * that filters by tool_name inside the callback.
  */
 export function createFilesystemGuardHooks(opts: SandboxOptions): HookCallbackMatcher[] {
+  let roots: Promise<{ read: string[]; write: string[]; protected: string[] }> | undefined;
   return [{
     hooks: [async (input: any) => {
       const { tool_name, tool_input } = input;
@@ -351,36 +384,34 @@ export function createFilesystemGuardHooks(opts: SandboxOptions): HookCallbackMa
         return { continue: true };
       }
 
-      // Extract path from tool input
-      let rawPath: string | undefined;
-      if (tool_input && typeof tool_input === 'object') {
-        if ('file_path' in tool_input) rawPath = tool_input.file_path as string;
-        else if ('path' in tool_input) rawPath = tool_input.path as string;
+      const rawPath = tool_input?.file_path ?? tool_input?.path ?? '.';
+      if (typeof rawPath !== 'string' || rawPath.includes('\0')) {
+        return deny('Invalid filesystem path');
       }
 
-      // No path specified (Glob/Grep default to cwd) → allowed
-      if (!rawPath) return { continue: true };
+      try {
+        roots ??= Promise.all([
+          Promise.all([...opts.allowReadPaths, ...(opts.allowWritePaths ?? [])].map(resolveGuardPath)),
+          Promise.all((opts.allowWritePaths ?? []).map(resolveGuardPath)),
+          Promise.all((opts.denyWritePaths ?? []).map(resolveGuardPath)),
+        ]).then(([read, write, protectedPaths]) => ({ read, write, protected: protectedPaths }));
+        const allowed = await roots;
+        const path = await resolveGuardPath(isAbsolute(rawPath) ? rawPath : `${opts.cwd}/${rawPath}`);
 
-      // Resolve to absolute before checking
-      const absPath = resolve(opts.cwd, rawPath);
-
-      // Read check — allow if path is in allowRead OR allowWrite (writable implies readable)
-      if (READ_TOOLS.has(tool_name)) {
-        const canRead = isUnderAny(absPath, opts.allowReadPaths)
-          || (opts.allowWritePaths && isUnderAny(absPath, opts.allowWritePaths));
-        if (!canRead) {
-          return deny(`Read denied: ${absPath} is outside allowed paths`);
+        if (READ_TOOLS.has(tool_name)) {
+          if (!isUnderAny(path, allowed.read)) {
+            return deny(`Read denied: ${path} is outside allowed paths`);
+          }
+        } else {
+          if (!isUnderAny(path, allowed.write)) {
+            return deny(`Write denied: ${path} is outside allowed paths`);
+          }
+          if (isUnderAny(path, allowed.protected) || isUnderAny(resolve(opts.cwd, rawPath), opts.denyWritePaths ?? [])) {
+            return deny(`Write denied: ${path} is in a protected path`);
+          }
         }
-      }
-
-      // Write check
-      if (WRITE_TOOLS.has(tool_name)) {
-        if (!opts.allowWritePaths || !isUnderAny(absPath, opts.allowWritePaths)) {
-          return deny(`Write denied: ${absPath} is outside allowed paths`);
-        }
-        if (opts.denyWritePaths && isUnderAny(absPath, opts.denyWritePaths)) {
-          return deny(`Write denied: ${absPath} is in a protected path`);
-        }
+      } catch {
+        return deny('Cannot safely resolve filesystem path');
       }
 
       return { continue: true };
