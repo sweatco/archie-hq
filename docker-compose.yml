@@ -65,8 +65,8 @@ services:
       # Mount source code for hot reload
       - ./src:/app/src
       - ./prompts:/app/prompts
-      # Core skills, which src/agents/core-skills.ts mounts from /app/skills per its CORE_SKILL_MOUNTS manifest, and only if that directory exists. Dockerfile.dev never copies them, so this bind mount is their only source in dev — without it every core-skill `Skill` call fails with "Unknown skill".
-      - ./skills:/app/skills
+      # The engine's own plugin (`core`), holding the skills archie-hq ships itself. src/agents/spawn.ts resolves it to /app/core-plugin and passes it to the SDK `plugins` option, and only if that directory exists. Dockerfile.dev never copies it, so this bind mount is its only source in dev — without it every core-skill `Skill` call fails with "Unknown skill".
+      - ./core-plugin:/app/core-plugin
 
       # SSH agent forwarding (macOS Docker Desktop)
       - /run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock

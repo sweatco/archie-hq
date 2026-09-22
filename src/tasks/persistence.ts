@@ -2,11 +2,22 @@
  * Task Manager
  *
  * Handles task persistence: creating task folders, reading/writing metadata,
- * appending to knowledge.log
+ * appending to knowledge.log.
+ *
+ * `knowledge.log` is a WRITE-ONLY record of the task as far as the running PM
+ * is concerned: everything the PM needs is delivered inline into its stream (see
+ * `AGENT_PROMPTS` in `src/agents/prompts.ts`), so nothing on the live path reads
+ * the file back. It is still written because two offline consumers read it after
+ * the fact — the memory extractor (`src/memory/lifecycle.ts`) and the people
+ * section built at spawn (`buildTaskPeopleSection` in `src/agents/spawn.ts`). The
+ * append functions that feed the PM therefore RETURN the line they wrote, so the
+ * inline copy and the logged copy are the same string by construction rather
+ * than by two renderers agreeing.
  */
 
-import { mkdir, readdir, readFile, writeFile, appendFile } from 'fs/promises';
+import { mkdir, readFile, rename, unlink, writeFile, appendFile } from 'fs/promises';
 import { createReadStream, existsSync } from 'fs';
+import { randomUUID } from 'crypto';
 import { createInterface } from 'readline';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -18,8 +29,32 @@ import { SESSIONS_DIR } from '../system/workdir.js';
 import { emitEvent, onEvent } from '../system/event-bus.js';
 import { logger } from '../system/logger.js';
 import { formatSlackChannelRef, formatSlackChannelDisplay } from '../connectors/slack/client.js';
+import { createKeyedLock } from '../system/keyed-lock.js';
 
 const execFileAsync = promisify(execFile);
+const metadataLock = createKeyedLock();
+
+export function reconcilePersistedMemoryMetadata(
+  persisted: TaskMetadata,
+  pending: TaskMetadata,
+): void {
+  if (
+    persisted.memory_destination
+    && pending.memory_destination
+    && persisted.memory_destination.channel_id !== pending.memory_destination.channel_id
+  ) {
+    throw new Error('task metadata has conflicting Slack destinations');
+  }
+  pending.memory_destination ??= persisted.memory_destination;
+  pending.memory_authors = {
+    ...(persisted.memory_authors ?? {}),
+    ...(pending.memory_authors ?? {}),
+  };
+  pending.memory_message_authors = {
+    ...(persisted.memory_message_authors ?? {}),
+    ...(pending.memory_message_authors ?? {}),
+  };
+}
 
 /**
  * Ceiling on a scan's stdout. Only matching paths are printed, so this is ~150
@@ -92,32 +127,27 @@ export function getAgentsPath(taskId: string): string {
 }
 
 /**
- * Get the directory where a given agent's repo clones live for this task.
+ * Get the directory holding this task's repo clones.
  *
- * Layout: `sessions/<taskId>/repos/<agentId>/`. Each clone is then nested at
- * `<github>` (e.g., `org/repo/`). This is a sibling of `agents/<agentId>/`
- * (the agent's cwd) — clones are deliberately kept out of the workspace tree
- * so the workspace stays a clean RW scratch space and clone permissions are
- * controlled solely via the sandbox's allow/deny mounts.
- */
-export function getAgentClonesDir(taskId: string, agentId: string): string {
-  return join(getTaskPath(taskId), 'repos', agentId);
-}
-
-/**
- * Get the clone path for a specific repo attached to a specific agent.
- * Returns `sessions/<taskId>/repos/<agentId>/<github>/`.
- */
-export function getAgentClonePath(taskId: string, agentId: string, github: string): string {
-  return join(getAgentClonesDir(taskId, agentId), github);
-}
-
-/**
- * Get the legacy per-task repos directory (pre-v30).
- * Used only by the migration path; new code should use `getAgentClonesDir`.
+ * Layout: `sessions/<taskId>/repos/`, with each clone nested at `<github>`
+ * (e.g. `org/repo/`). A sibling of `agents/<agentKey>/` (the agent's cwd):
+ * clones are deliberately kept out of the workspace tree so the workspace stays
+ * a clean RW scratch space and clone permissions are controlled solely via the
+ * sandbox's allow/deny mounts.
  */
 export function getReposPath(taskId: string): string {
   return join(getTaskPath(taskId), 'repos');
+}
+
+/**
+ * Get the clone path for a repo mounted into this task.
+ * Returns `sessions/<taskId>/repos/<github>/`.
+ *
+ * One clone per repo per task — the task is the isolation boundary, so there is
+ * no agent segment in the path.
+ */
+export function getTaskClonePath(taskId: string, github: string): string {
+  return join(getReposPath(taskId), github);
 }
 
 /**
@@ -227,12 +257,48 @@ export async function loadMetadata(taskId: string): Promise<TaskMetadata | null>
   }
 }
 
+export async function persistTaskMetadata(taskId: string, metadata: TaskMetadata): Promise<void> {
+  if (!isSafeTaskId(taskId)) {
+    throw new Error(`invalid task ID: ${taskId}`);
+  }
+  await metadataLock(taskId, async () => {
+    const root = resolve(SESSIONS_DIR);
+    const path = resolve(getMetadataPath(taskId));
+    const rel = relative(root, path);
+    if (rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)) {
+      throw new Error(`task metadata path escapes sessions directory: ${taskId}`);
+    }
+    let persisted: TaskMetadata | undefined;
+    try {
+      persisted = JSON.parse(await readFile(path, 'utf-8')) as TaskMetadata;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+
+    if (persisted) reconcilePersistedMemoryMetadata(persisted, metadata);
+
+    const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(tempPath, JSON.stringify(metadata, null, 2));
+      await rename(tempPath, path);
+    } finally {
+      await unlink(tempPath).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      });
+    }
+  });
+}
+
 /**
- * Format a log entry for the shared knowledge log
+ * Format a log entry for the shared knowledge log — one line, no trailing
+ * newline (the write sites add it).
+ *
+ * The un-terminated form is what the PM-facing append functions return, so the
+ * text delivered inline to the PM is character-identical to the line on disk.
  */
 function formatLogEntry(entry: LogEntry): string {
   const typeStr = entry.type ? ` [${entry.type}]` : '';
-  return `[${entry.timestamp}] [${entry.source}]${typeStr} ${entry.message}\n`;
+  return `[${entry.timestamp}] [${entry.source}]${typeStr} ${entry.message}`;
 }
 
 /**
@@ -257,6 +323,8 @@ export function renderAttachmentsSuffix(artifactPaths: readonly string[]): strin
  * Append a Slack message to the knowledge log.
  *
  * The body arrives already rendered: rendering is owned by `renderMessageBody` in `src/connectors/slack/message-body.ts`, and the caller is the one that knows the message's parts (in particular the *downloaded* files, whose `localPath` only exists after the download await). Keeping this function to persistence-only concerns is what stops a second renderer growing here.
+ *
+ * Returns the written line so the caller can hand the PM the same text inline.
  */
 export async function appendSlackMessage(
   taskId: string,
@@ -265,7 +333,7 @@ export async function appendSlackMessage(
   userInfo: SlackAuthor,
   renderedBody: string,
   options?: { redacted?: boolean; ts?: string }
-): Promise<void> {
+): Promise<string> {
   const redacted = options?.redacted === true;
 
   // Mask the author name in the source line when the body is redacted, so the
@@ -282,7 +350,8 @@ export async function appendSlackMessage(
     message: renderedBody,
   };
 
-  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
+  const line = formatLogEntry(entry);
+  await appendFile(getKnowledgeLogPath(taskId), line + '\n');
   // Emit the original message body in events so live observers (CLI/UI) still
   // see redacted vs internal as a clear category — pass the same string we
   // wrote to the log.
@@ -292,6 +361,7 @@ export async function appendSlackMessage(
     destination: formatSlackChannelDisplay(channelInfo.name),
     message: renderedBody,
   });
+  return line;
 }
 
 /**
@@ -314,6 +384,8 @@ export function renderEditForContext(newText: string): string {
  * edit auditable. The `msg:<ts>` suffix matches the id stamped by
  * `appendSlackMessage`, so the edit correlates to the original message (whose
  * pre-edit text remains in the log under the same id).
+ *
+ * Returns the written line so the caller can hand the PM the same text inline.
  */
 export async function appendSlackEdit(
   taskId: string,
@@ -322,7 +394,7 @@ export async function appendSlackEdit(
   userInfo: SlackAuthor,
   editedTs: string,
   newText: string,
-): Promise<void> {
+): Promise<string> {
   const body = renderEditForContext(newText);
   const entry: LogEntry = {
     timestamp: new Date().toISOString(),
@@ -330,13 +402,15 @@ export async function appendSlackEdit(
     message: body,
   };
 
-  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
+  const line = formatLogEntry(entry);
+  await appendFile(getKnowledgeLogPath(taskId), line + '\n');
   emitEvent('message', taskId, {
     from: userInfo.realName,
     to: 'pm-agent',
     destination: formatSlackChannelDisplay(channelInfo.name),
     message: body,
   });
+  return line;
 }
 
 /**
@@ -355,33 +429,8 @@ export async function appendAgentFinding(
     message: finding,
   };
 
-  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
+  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry) + '\n');
   emitEvent('agent:log', taskId, { finding, type }, agentName);
-}
-
-/**
- * Append an artifact share to the knowledge log.
- *
- * Records that an agent published a file to `shared/artifacts/`. Other agents can
- * read the artifact via the absolute path. Reuses the `agent:log` event channel so
- * existing CLI/SSE rendering picks it up without changes.
- */
-export async function appendArtifactShared(
-  taskId: string,
-  agentName: string,
-  artifactPath: string,
-  description: string,
-): Promise<void> {
-  const finding = `shared artifact: ${artifactPath} — ${description}`;
-  const entry: LogEntry = {
-    timestamp: new Date().toISOString(),
-    source: agentName,
-    type: 'artifact',
-    message: finding,
-  };
-
-  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
-  emitEvent('agent:log', taskId, { finding, type: 'artifact' }, agentName);
 }
 
 /**
@@ -405,26 +454,7 @@ export async function appendMessageToUser(
     source,
     message: renderedMessage,
   };
-  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
-}
-
-/**
- * Append an inter-agent message to the knowledge log
- */
-export async function appendAgentMessage(
-  taskId: string,
-  fromAgent: string,
-  toAgent: string,
-  message: string,
-): Promise<void> {
-  const entry: LogEntry = {
-    timestamp: new Date().toISOString(),
-    source: fromAgent,
-    message: `→ ${toAgent}: ${message}`,
-  };
-
-  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
-  emitEvent('message', taskId, { from: fromAgent, to: toAgent, message });
+  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry) + '\n');
 }
 
 /**
@@ -433,6 +463,8 @@ export async function appendAgentMessage(
  * Accepts a structured payload matching the Slack/CLI shape so the CLI can
  * render GitHub events uniformly: `[from in destination] @pm-agent message`.
  *
+ * Returns the written line so the caller can hand the PM the same text inline.
+ *
  * @param githubRepo - Full "owner/repo" identifier (e.g., 'acme/mobile')
  * @param event - Structured event with author, destination (e.g. "PR #42"), and clean message body
  */
@@ -440,7 +472,7 @@ export async function appendGitHubEvent(
   taskId: string,
   githubRepo: string,
   event: { from: string; destination: string; message: string }
-): Promise<void> {
+): Promise<string> {
   const destination = `github:${githubRepo}/${event.destination}`;
   const entry: LogEntry = {
     timestamp: new Date().toISOString(),
@@ -448,34 +480,45 @@ export async function appendGitHubEvent(
     message: event.message,
   };
 
-  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
+  const line = formatLogEntry(entry);
+  await appendFile(getKnowledgeLogPath(taskId), line + '\n');
   emitEvent('message', taskId, {
     from: event.from,
     to: 'pm-agent',
     destination,
     message: event.message,
   });
+  return line;
 }
 
 /**
- * Append a CLI user message to the knowledge log
+ * Append a CLI user message to the knowledge log.
+ *
+ * Returns the written line so the caller can hand the PM the same text inline.
  */
 export async function appendCliMessage(
   taskId: string,
   message: string,
-): Promise<void> {
+): Promise<string> {
   const entry: LogEntry = {
     timestamp: new Date().toISOString(),
     source: 'cli',
     message,
   };
 
-  await appendFile(getKnowledgeLogPath(taskId), formatLogEntry(entry));
+  const line = formatLogEntry(entry);
+  await appendFile(getKnowledgeLogPath(taskId), line + '\n');
   emitEvent('message', taskId, { from: 'cli', to: 'pm-agent', message });
+  return line;
 }
 
 /**
- * Read the knowledge log
+ * Read the knowledge log.
+ *
+ * NOT on the PM's path — the PM is fed inline and never reads this file. The
+ * two remaining callers are offline consumers: the memory extractor
+ * (`src/memory/lifecycle.ts`) and the spawn-time people section
+ * (`buildTaskPeopleSection` in `src/agents/spawn.ts`).
  */
 export async function readKnowledgeLog(taskId: string): Promise<string> {
   const logPath = getKnowledgeLogPath(taskId);
@@ -585,9 +628,9 @@ export async function findTaskByThread(threadId: string): Promise<string | null>
 /**
  * Find a task by PR number and repo.
  *
- * Scans metadata files for candidates, then verifies that some agent on the
- * task has an AttachedRepo for the matching github with a branch state
- * pointing at the given PR number.
+ * Scans metadata files for candidates, then verifies that the task has an
+ * AttachedRepo for the matching github with a branch state pointing at the
+ * given PR number.
  */
 export async function findTaskByPRNumber(
   githubRepo: string,
@@ -600,24 +643,25 @@ export async function findTaskByPRNumber(
       const metadata = await loadMetadata(taskId);
       if (!metadata) continue;
 
-      // Normalize legacy (pre-v30) `repositories` shape in memory before
-      // walking. This routes webhook events for in-flight PRs on tasks that
+      // Read a legacy per-agent `repositories` map in the flat shape without
+      // migrating it. This routes webhook events for in-flight PRs on tasks that
       // haven't been re-saved since deploy (their on-disk metadata is still the
-      // old Record<repoKey, RepositoryInfo>). Mutates the loaded copy only — we
-      // never persist from here. Dynamic import avoids a static persistence↔task
-      // cycle; the call is runtime-only so the cycle is harmless either way.
-      const { migrateRepositoriesShape } = await import('./task.js');
-      migrateRepositoriesShape(metadata);
+      // per-agent Record<agentId, AttachedRepo[]>). The older pre-v30
+      // Record<repoKey, RepositoryInfo> shape carries no github identifier, so
+      // those entries are absent from the list — a task still holding it does
+      // not resolve here. A lookup walks every candidate the scan turned up, so
+      // it must neither rewrite those tasks nor log about them: migration is the
+      // pickup's job (`Task.get` + `activate`). Dynamic import avoids a static
+      // persistence↔task cycle; the call is runtime-only so the cycle is
+      // harmless either way.
+      const { readRepositories } = await import('./task.js');
 
-      // Walk every agent's attached repos and look for the github + pr_number.
-      for (const attachments of Object.values(metadata.repositories || {})) {
-        if (!Array.isArray(attachments)) continue;
-        for (const attached of attachments) {
-          if (attached.github !== githubRepo) continue;
-          if (!attached.branch_states) continue;
-          for (const state of Object.values(attached.branch_states)) {
-            if (state.pr_number === prNumber) return taskId;
-          }
+      // Walk the task's mounted repos and look for the github + pr_number.
+      for (const attached of readRepositories(metadata)) {
+        if (attached.github !== githubRepo) continue;
+        if (!attached.branch_states) continue;
+        for (const state of Object.values(attached.branch_states)) {
+          if (state.pr_number === prNumber) return taskId;
         }
       }
     }
@@ -652,15 +696,13 @@ export async function findTaskByBranch(
       const metadata = await loadMetadata(taskId);
       if (!metadata) continue;
 
-      const { migrateRepositoriesShape } = await import('./task.js');
-      migrateRepositoriesShape(metadata);
+      // Read-only view of the legacy shapes — see findTaskByPRNumber: a lookup
+      // never migrates a task it is merely inspecting.
+      const { readRepositories } = await import('./task.js');
 
-      for (const attachments of Object.values(metadata.repositories || {})) {
-        if (!Array.isArray(attachments)) continue;
-        for (const attached of attachments) {
-          if (attached.github !== githubRepo) continue;
-          if (attached.branch_states && branch in attached.branch_states) return taskId;
-        }
+      for (const attached of readRepositories(metadata)) {
+        if (attached.github !== githubRepo) continue;
+        if (attached.branch_states && branch in attached.branch_states) return taskId;
       }
     }
   } catch {
@@ -700,21 +742,28 @@ export async function isThreadMuted(channelId: string, threadTs: string): Promis
 }
 
 /**
- * Find all tasks with a given status.
- * Substring scan narrows candidates without parsing every metadata.json.
+ * The ids of all tasks with a given status. Substring scan narrows candidates
+ * without reading every metadata.json, and each candidate is then confirmed by
+ * reading its `status` field — the substring could have matched anywhere.
+ *
+ * Ids only, deliberately. Startup recovery is the caller, and it walks the whole
+ * fleet: anything richer invites the scan to construct a Task per folder, which
+ * runs the load-path migrations (`migrateRepositoriesShape`,
+ * `stampRuntimeVersion`) over tasks this process never picks up. A task is
+ * migrated when it is activated, not when it is counted.
  */
-export async function findTasksByStatus(
+export async function findTaskIdsByStatus(
   status: 'in_progress' | 'stopped' | 'completed'
-): Promise<TaskMetadata[]> {
+): Promise<string[]> {
   await ensureSessionsDir();
 
-  const tasks: TaskMetadata[] = [];
+  const ids: string[] = [];
   for (const taskId of await scanMetadataFiles(`"status": ${JSON.stringify(status)}`)) {
     const metadata = await loadMetadata(taskId);
-    if (metadata) tasks.push(metadata);
+    if (metadata?.status === status) ids.push(taskId);
   }
 
-  return tasks;
+  return ids;
 }
 
 /**

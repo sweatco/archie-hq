@@ -12,8 +12,6 @@ const baseInput: ExtractionInput = {
   userMemory: '## alice\n- Prefers async\n',
   entityIndex: '| [[payment-service]] | service | repo | payments API | 2026-05-01 |',
   taskId: 'task-abc-123',
-  participants: 'alice, bob',
-  taskOwner: 'alice',
   status: 'completed',
   createdAt: '2026-04-01T10:00:00Z',
   transcript: 'Some task transcript here.',
@@ -42,15 +40,11 @@ describe('buildExtractionPrompt(input)', () => {
     expect(prompt).not.toContain('{{TASK_ID}}');
   });
 
-  it('substitutes PARTICIPANTS placeholder', async () => {
+  it('carries no participant/owner metadata — a task runs exactly one agent', async () => {
     const prompt = await buildExtractionPrompt(baseInput);
-    expect(prompt).toContain('alice, bob');
+    expect(prompt).not.toContain('Participants:');
+    expect(prompt).not.toContain('Task Owner:');
     expect(prompt).not.toContain('{{PARTICIPANTS}}');
-  });
-
-  it('substitutes TASK_OWNER placeholder', async () => {
-    const prompt = await buildExtractionPrompt(baseInput);
-    expect(prompt).toContain('alice');
     expect(prompt).not.toContain('{{TASK_OWNER}}');
   });
 
@@ -119,6 +113,17 @@ describe('parseExtractionResponse(json)', () => {
     expect(result!.domain).toBe('engineering');
   });
 
+  it('preserves an optional Slack source timestamp on profile updates', () => {
+    const response = JSON.stringify({
+      ...JSON.parse(validResponse),
+      user_updates: {
+        alice: [{ action: 'add', content: 'Prefers concise updates', source_message_ts: '1700000000.123456' }],
+      },
+    });
+    expect(parseExtractionResponse(response)?.user_updates.alice[0].source_message_ts)
+      .toBe('1700000000.123456');
+  });
+
   it('returns null for invalid JSON', () => {
     const result = parseExtractionResponse('not valid json {{{');
     expect(result).toBeNull();
@@ -129,7 +134,7 @@ describe('parseExtractionResponse(json)', () => {
       user_updates: {},
       task_summary: 'x',
       activity_summary: 'y',
-      domain: 'z',
+      domain: 'engineering',
     });
     const result = parseExtractionResponse(ok);
     expect(result).not.toBeNull();
@@ -140,7 +145,7 @@ describe('parseExtractionResponse(json)', () => {
     const bad = JSON.stringify({
       task_summary: 'x',
       activity_summary: 'y',
-      domain: 'z',
+      domain: 'engineering',
     });
     expect(parseExtractionResponse(bad)).toBeNull();
   });
@@ -150,7 +155,7 @@ describe('parseExtractionResponse(json)', () => {
       user_updates: 'not-an-object',
       task_summary: 'x',
       activity_summary: 'y',
-      domain: 'z',
+      domain: 'engineering',
     });
     expect(parseExtractionResponse(bad)).toBeNull();
   });
@@ -159,7 +164,7 @@ describe('parseExtractionResponse(json)', () => {
     const bad = JSON.stringify({
       user_updates: {},
       activity_summary: 'y',
-      domain: 'z',
+      domain: 'engineering',
     });
     expect(parseExtractionResponse(bad)).toBeNull();
   });
@@ -168,7 +173,7 @@ describe('parseExtractionResponse(json)', () => {
     const bad = JSON.stringify({
       user_updates: {},
       task_summary: 'x',
-      domain: 'z',
+      domain: 'engineering',
     });
     expect(parseExtractionResponse(bad)).toBeNull();
   });
@@ -180,6 +185,19 @@ describe('parseExtractionResponse(json)', () => {
       activity_summary: 'y',
     });
     expect(parseExtractionResponse(bad)).toBeNull();
+  });
+
+  it('normalizes allowed domains and rejects arbitrary or multiline values', () => {
+    const normalized = parseExtractionResponse(JSON.stringify({
+      user_updates: {}, task_summary: 'x', activity_summary: 'y', domain: ' Engineering ',
+    }));
+    expect(normalized?.domain).toBe('engineering');
+
+    for (const domain of ['finance', 'engineering\nAPI_KEY=abcdefghijklmnopqrstuvwxyz123456']) {
+      expect(parseExtractionResponse(JSON.stringify({
+        user_updates: {}, task_summary: 'x', activity_summary: 'y', domain,
+      }))).toBeNull();
+    }
   });
 
   it('handles JSON wrapped in markdown code fences', () => {
@@ -266,7 +284,7 @@ describe('parseExtractionResponse(json)', () => {
       },
       task_summary: 'x',
       activity_summary: 'y',
-      domain: 'z',
+      domain: 'engineering',
     });
     expect(parseExtractionResponse(bad)).toBeNull();
   });
@@ -278,7 +296,15 @@ describe('parseExtractionResponse(json)', () => {
       },
       task_summary: 'x',
       activity_summary: 'y',
-      domain: 'z',
+      domain: 'engineering',
+    });
+    expect(parseExtractionResponse(bad)).toBeNull();
+  });
+
+  it('rejects a non-string profile source timestamp', () => {
+    const bad = JSON.stringify({
+      user_updates: { alice: [{ action: 'add', content: 'x', source_message_ts: 123 }] },
+      task_summary: 'x', activity_summary: 'y', domain: 'engineering',
     });
     expect(parseExtractionResponse(bad)).toBeNull();
   });

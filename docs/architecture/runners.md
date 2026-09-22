@@ -9,7 +9,7 @@ Runner support is opt-in. If `ARCHIE_RUNNERS_CONFIG` is absent, no runner contro
 ## Architecture
 
 ```text
-Repository agent -> runner-tools -> RunnerManager -> Orchard -> Tart VM
+PM session -> runner-tools -> RunnerManager -> Orchard -> Tart VM
                                       |              |
                                       |              +-- command output and VNC
                                       +-- runners.json, exec logs, artifacts
@@ -64,7 +64,7 @@ Set `ARCHIE_RUNNERS_CONFIG` to an operator-owned JSON file. The service account 
       "diskGiB": 150,
       "username": "admin",
       "passwordEnv": "ORCHARD_IOS_GUEST_PASSWORD",
-      "allowedAgents": ["mobile-agent"],
+      "allowedAgents": ["pm-agent"],
       "labels": { "pool": "ios" },
       "resources": { "org.cirruslabs.logical-cores": 8 },
       "networkMode": "softnet",
@@ -102,7 +102,7 @@ Invalid configuration or missing secrets fails startup. Orchard unavailability d
 
 ## Agent Tools
 
-Only repository agents named in a profile’s `allowedAgents` receive `runner-tools`. Explicit agent tool allowlists are augmented with the exact runner tool names.
+The PM receives `runner-tools` only when its stable id, `pm-agent`, appears in a profile’s `allowedAgents`. SDK workers share the PM session's MCP servers and filesystem policy, so they use the same task-scoped runner identity and allowlist rather than receiving independent leases.
 
 - `runner_list_profiles`: list allowed profiles.
 - `runner_sync`: provision or reuse a lease, then copy a declared repository snapshot into the VM.
@@ -195,4 +195,4 @@ The harness does not call `RunnerManager.initialize()`, so a disposable canary w
 
 For the checked fixture, use the committed `RunnerFixture.xcodeproj`, scheme `RunnerFixture`, bundle `dev.archie.runner-fixture`, process `RunnerFixture`, app path `.archie-full-cycle/DerivedData/Build/Products/Debug-iphonesimulator/RunnerFixture.app`, and the runtime identifier installed in the runner image. The canary is compiled into the production image and does not depend on the `tsx` development dependency.
 
-A separate production-container E2E remains required to cover the real task → allowed agent → MCP tools → task completion path. That test must use an isolated `instanceId`, Orchard pool, workdir, and credentials.
+A separate production-container E2E remains required to cover the real task → allowed PM session → MCP tools → task completion path. That test must use an isolated `instanceId`, Orchard pool, workdir, and credentials.

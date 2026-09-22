@@ -26,15 +26,20 @@ function manager() {
   return current;
 }
 
-function attachedRepository(agent: Agent, task: Task, requested?: string): { github: string; clonePath: string } {
-  const repo = agent.def.repo;
-  if (!repo) throw new Error('Runner tools require a repository agent');
-  const github = requested ?? repo.primary;
-  if (!repo.repos.some((entry) => entry.github === github)) throw new Error(`Repository ${github} is not declared for ${agent.def.id}`);
-  const attached = task.metadata.repositories[agent.def.id];
-  const match = Array.isArray(attached) ? attached.find((entry) => entry.github === github) : undefined;
-  if (!match?.clone_path) throw new Error(`Repository ${github} has no local clone`);
-  return { github, clonePath: match.clone_path };
+function attachedRepository(task: Task, requested?: string): { github: string; clonePath: string } {
+  const mounted = task.metadata.repositories.filter((repo) => repo.clone_path);
+  const match = requested
+    ? mounted.find((repo) => repo.github.toLowerCase() === requested.toLowerCase())
+    : mounted.length === 1 ? mounted[0] : undefined;
+  if (!match?.clone_path) {
+    if (!requested && mounted.length > 1) {
+      throw new Error(`Several repositories are mounted (${mounted.map((repo) => repo.github).join(', ')}); pass github explicitly`);
+    }
+    throw new Error(requested
+      ? `Repository ${requested} has no local clone; call mount_repo first`
+      : 'No repository is mounted; call mount_repo first');
+  }
+  return { github: match.github, clonePath: match.clone_path };
 }
 
 async function runTool(fn: () => Promise<string>) {
@@ -56,7 +61,7 @@ export function createRunnerToolsMcpServer(agent: Agent, task: Task) {
     tools: [
       tool(
         'runner_list_profiles',
-        'List the operator-defined remote VM profiles this repository agent may use.',
+        'List the operator-defined remote VM profiles this task session may use.',
         {},
         async () => runTool(async () => JSON.stringify({ profiles: manager().profilesForAgent(agent.def.id) })),
       ),
@@ -65,7 +70,7 @@ export function createRunnerToolsMcpServer(agent: Agent, task: Task) {
         'Provision or reuse a task-scoped VM, then copy tracked and unignored repository files into it. Ignored files and .git are excluded.',
         { profile: z.string().min(1), github: z.string().optional() },
         async ({ profile, github }) => runTool(async () => {
-          const attached = attachedRepository(agent, task, github);
+          const attached = attachedRepository(task, github);
           const result = await manager().sync(task.taskId, agent.def.id, profile, attached.github, attached.clonePath);
           return JSON.stringify({ leaseId: result.lease.id, github: attached.github, remotePath: result.remotePath, bytes: result.bytes, files: result.files });
         }),
@@ -82,7 +87,7 @@ export function createRunnerToolsMcpServer(agent: Agent, task: Task) {
           wait_seconds: z.number().int().min(0).max(120).optional(),
         },
         async ({ profile, request_id, argv, cwd, env, wait_seconds }) => runTool(async () => {
-          const attached = attachedRepository(agent, task);
+          const attached = attachedRepository(task);
           return JSON.stringify(await manager().exec(task.taskId, agent.def.id, profile, attached.github, argv, cwd, env, wait_seconds, request_id));
         }),
       ),
@@ -98,7 +103,7 @@ export function createRunnerToolsMcpServer(agent: Agent, task: Task) {
           timeout_seconds: z.number().int().min(1).max(600).optional(),
         },
         async ({ profile, request_id, ...request }) => runTool(async () => {
-          const attached = attachedRepository(agent, task);
+          const attached = attachedRepository(task);
           return JSON.stringify(await manager().exec(task.taskId, agent.def.id, profile, attached.github, runnerMcpArgv(request_id, request), '.', {}, 5, request_id));
         }),
       ),
@@ -129,7 +134,7 @@ export function createRunnerToolsMcpServer(agent: Agent, task: Task) {
         'Download relative paths from the synced primary repository into the task shared artifacts directory.',
         { profile: z.string().min(1), paths: z.array(z.string()).min(1).max(100) },
         async ({ profile, paths }) => runTool(async () => {
-          const attached = attachedRepository(agent, task);
+          const attached = attachedRepository(task);
           const destination = await manager().collect(task.taskId, agent.def.id, profile, attached.github, paths);
           return JSON.stringify({ artifactPath: destination });
         }),

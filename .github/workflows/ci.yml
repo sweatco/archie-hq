@@ -37,7 +37,10 @@ jobs:
       # gitleaks-action wrapper: that wrapper requires a paid GITLEAKS_LICENSE
       # when the repo lives under a GitHub organization. The CLI (MIT) has no
       # such gate. We resolve the latest release dynamically so no version is
-      # hardcoded, and scan the full git history with the repo's .gitleaks.toml.
+      # hardcoded, and scan the full history of the checked-out ref with the
+      # repo's .gitleaks.toml. `--log-opts=HEAD` matters: fetch-depth 0 fetches
+      # every branch, and without it gitleaks walks `git log --all`, so a
+      # placeholder key on any unmerged branch would fail main and every PR.
       - name: Run gitleaks (open-source CLI)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -50,7 +53,7 @@ jobs:
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${ver}/gitleaks_${ver}_linux_x64.tar.gz" -o gitleaks.tar.gz
           tar -xzf gitleaks.tar.gz gitleaks
           rc=0
-          ./gitleaks detect --source . --redact --config .gitleaks.toml \
+          ./gitleaks detect --source . --redact --config .gitleaks.toml --log-opts=HEAD \
             --report-format json --report-path gitleaks-report.json --exit-code 1 || rc=$?
           if [ "$rc" -ne 0 ]; then
             echo "::group::gitleaks findings (secrets redacted)"

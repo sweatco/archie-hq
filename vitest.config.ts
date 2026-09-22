@@ -4,7 +4,6 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'tools/**/*.test.ts'],
-    testTimeout: 15_000,
   },
   resolve: {
     // TypeScript files import with .js extensions (NodeNext resolution).

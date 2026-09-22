@@ -29,6 +29,7 @@ vi.mock('../../system/event-bus.js', () => ({ emitEvent: vi.fn() }));
 
 import { Task } from '../task.js';
 import { appendAgentFinding } from '../persistence.js';
+import { emitEvent } from '../../system/event-bus.js';
 import { APPROVAL_TTL_MS, PENDING_APPROVAL_TTL_MS } from '../../agents/tool-approval-gate.js';
 import type { TaskMetadata } from '../../types/task.js';
 
@@ -44,7 +45,7 @@ const OTHER_DIGEST = 'd2'.padEnd(16, '0');
 type FakeTask = {
   taskId: string;
   metadata: Partial<TaskMetadata>;
-  agentProcesses: Map<string, { clearPendingTeardown: ReturnType<typeof vi.fn>; deferTeardown: ReturnType<typeof vi.fn> }>;
+  agent: { clearPendingTeardown: ReturnType<typeof vi.fn>; deferTeardown: ReturnType<typeof vi.fn> };
   debouncedSave: ReturnType<typeof vi.fn>;
   save: ReturnType<typeof vi.fn>;
   sendMessage: ReturnType<typeof vi.fn>;
@@ -57,10 +58,7 @@ function makeFakeTask(metadata: Partial<TaskMetadata> = {}): FakeTask {
   return {
     taskId: 'task-123',
     metadata,
-    agentProcesses: new Map([
-      ['release-manager-agent', { clearPendingTeardown: vi.fn(), deferTeardown: vi.fn() }],
-      ['pm-agent', { clearPendingTeardown: vi.fn(), deferTeardown: vi.fn() }],
-    ]),
+    agent: { clearPendingTeardown: vi.fn(), deferTeardown: vi.fn() },
     debouncedSave: vi.fn(),
     save: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn().mockResolvedValue(undefined),
@@ -70,7 +68,7 @@ function makeFakeTask(metadata: Partial<TaskMetadata> = {}): FakeTask {
   };
 }
 
-const request = (task: FakeTask, req = REQUEST, agent = 'release-manager-agent') =>
+const request = (task: FakeTask, req = REQUEST, agent = 'pm-agent') =>
   Task.prototype.requestToolApproval.call(task as unknown as Task, agent, req);
 const consume = (task: FakeTask, digest: string) =>
   Task.prototype.consumeToolApproval.call(task as unknown as Task, digest);
@@ -95,12 +93,12 @@ describe('requestToolApproval', () => {
       digest: REQUEST.digest,
       server: REQUEST.server,
       tool: REQUEST.tool,
-      requested_by: 'release-manager-agent',
+      requested_by: 'pm-agent',
     });
     expect(task.save).toHaveBeenCalledWith(true);
     expect(task.postInteractiveToUser).toHaveBeenCalledTimes(1);
     expect(task.suspendStatus).toHaveBeenCalled();
-    expect(task.agentProcesses.get('release-manager-agent')!.deferTeardown).toHaveBeenCalled();
+    expect(task.agent.deferTeardown).toHaveBeenCalled();
   });
 
   // Regression for the review-confirmed deadlock: the slot's presence means "a
@@ -115,7 +113,7 @@ describe('requestToolApproval', () => {
     expect(task.metadata.pending_tool_approval).toBeUndefined();
     // and the task is NOT parked against the nonexistent prompt
     expect(task.suspendStatus).not.toHaveBeenCalled();
-    expect(task.agentProcesses.get('release-manager-agent')!.deferTeardown).not.toHaveBeenCalled();
+    expect(task.agent.deferTeardown).not.toHaveBeenCalled();
 
     // the next action is not blocked
     task.postInteractiveToUser.mockResolvedValueOnce(undefined);
@@ -155,17 +153,16 @@ describe('requestToolApproval', () => {
     expect(task.suspendStatus).not.toHaveBeenCalled();
   });
 
-  // A grant is bound to the call, not the agent, so a second agent can reach a
-  // live slot with the same digest. Arming its teardown would leave a deferred
-  // stop() that resolution never cancels (both paths clear `requested_by`), and
-  // it would fire mid-retry and tear the task down.
-  it('refuses a same-digest request from a different agent instead of parking it', async () => {
+  // A grant is bound to the call, not the requester, so the guard still refuses
+  // a same-digest request that did not come from whoever holds the slot rather
+  // than arming a deferred stop() that resolution would never cancel.
+  it('refuses a same-digest request from a different requester instead of parking it', async () => {
     const task = makeFakeTask();
     await request(task);
     vi.clearAllMocks();
 
-    expect(await request(task, REQUEST, 'pm-agent')).toBe('already-pending');
-    expect(task.agentProcesses.get('pm-agent')!.deferTeardown).not.toHaveBeenCalled();
+    expect(await request(task, REQUEST, 'other-agent')).toBe('already-pending');
+    expect(task.agent.deferTeardown).not.toHaveBeenCalled();
     expect(task.suspendStatus).not.toHaveBeenCalled();
   });
 
@@ -191,8 +188,24 @@ describe('handleToolCallApproval', () => {
       digest: REQUEST.digest,
       approved_by: 'U1',
     });
-    expect(task.agentProcesses.get('release-manager-agent')!.clearPendingTeardown).toHaveBeenCalled();
-    expect(task.sendMessage).toHaveBeenCalledWith(expect.any(String), 'release-manager-agent');
+    expect(task.agent.clearPendingTeardown).toHaveBeenCalled();
+    expect(task.sendMessage).toHaveBeenCalledWith(expect.any(String));
+  });
+
+  it('leaves approval:resolved to the API route, like every other approval type', async () => {
+    // This used to emit here AND unconditionally in the route, so one click
+    // produced two events. The route is the single emitter now.
+    const task = makeFakeTask();
+
+    await request(task);
+    vi.mocked(emitEvent).mockClear();
+    expect(await approve(task, REQUEST.digest)).toBe('resolved');
+    expect(vi.mocked(emitEvent).mock.calls.map((c) => c[0])).not.toContain('approval:resolved');
+
+    await request(task);
+    vi.mocked(emitEvent).mockClear();
+    expect(await deny(task, REQUEST.digest)).toBe('resolved');
+    expect(vi.mocked(emitEvent).mock.calls.map((c) => c[0])).not.toContain('approval:resolved');
   });
 
   it('is a stale no-op for a digest that does not match the slot', async () => {

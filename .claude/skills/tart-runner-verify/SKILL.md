@@ -5,7 +5,7 @@ description: Verification ladder for the Tart/Orchard runner subsystem (src/runn
 
 # tart-runner-verify — verification ladder for the runner subsystem
 
-Verifies the opt-in Tart VM runner subsystem (see `docs/architecture/runners.md`): Archie stays the control plane, allowlisted repository agents get generic `runner-tools`, and the whole subsystem is inert when `ARCHIE_RUNNERS_CONFIG` is unset.
+Verifies the opt-in Tart VM runner subsystem (see `docs/architecture/runners.md`): Archie stays the control plane, an allowlisted PM session gets generic `runner-tools`, and the whole subsystem is inert when `ARCHIE_RUNNERS_CONFIG` is unset.
 
 Tiers are ordered cheap-to-expensive. Always run tiers 1–3. Run tier 4 when Docker is available. Run tier 5 only on explicit user request with real Orchard credentials. Report every tier as PASS / FAIL / SKIPPED (with reason) — never fake a pass, never silently omit a tier.
 
@@ -41,7 +41,7 @@ TMP=$(mktemp -d) && cat > "$TMP/runners.json" <<'JSON'
     "smoke": {
       "image": "ghcr.io/example/img@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "passwordEnv": "SMOKE_GUEST_PASSWORD",
-      "allowedAgents": ["backend-agent"]
+      "allowedAgents": ["pm-agent"]
     }
   }
 }

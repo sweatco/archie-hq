@@ -1,6 +1,6 @@
 {
   "name": "archie-hq",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Archie - Autonomous Responsive and Collaborative Hyper Intelligent Employee",
   "license": "AGPL-3.0-or-later",
   "type": "module",
@@ -19,7 +19,6 @@
     "oauth:list": "tsx src/cli/oauth.ts list",
     "oauth:revoke": "tsx src/cli/oauth.ts revoke",
     "oauth:refresh": "tsx src/cli/oauth.ts refresh",
-    "memory:housekeeping": "tsx scripts/memory-housekeeping.ts",
     "runner:ios-full-cycle-e2e": "node dist/runners/ios-full-cycle-e2e.js",
     "runner:sweatcoin-e2e": "tsx src/runners/sweatcoin-e2e.ts",
     "docker:dev": "docker compose up --build",

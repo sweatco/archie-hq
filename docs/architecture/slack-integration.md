@@ -69,7 +69,7 @@ The server registers two Bolt event handlers:
 
    The asymmetry between the two questions is narrower than "bots": a **top-level** app post reaches triggers but does not wake a task, because no top-level post does — that arm is thread-replies-and-DMs only. A foreign-workspace bot is refused explicitly on the trigger path; on the task path it needs no guard, since `fetchSlackThread` already drops its message so the content never reaches an agent (the residue is that such a reply can wake the task to find nothing new — a wasted turn in a Slack Connect channel, not a leak).
 
-   Task creation additionally requires the fetched thread to carry at least one visible message, so a payload with no author and no body cannot seed a task on an empty knowledge log.
+   Task creation additionally requires the fetched thread to carry at least one visible message, so a payload with no author and no body cannot seed a task the PM has nothing to act on.
 
    In channels and group DMs, messages containing a bot mention are skipped here because `app_mention` already handles them; in 1:1 DMs, mention-containing messages are processed here because `app_mention` does not fire for DMs. Note that Archie only receives private-channel and group-DM events for conversations it has been invited to.
 
@@ -105,11 +105,7 @@ When they hold, the edited payload goes through `rawMessageBody` — the same fu
 
 The pre-edit text is deliberately **not** duplicated — the original message already sits in the log under the same `msg:<ts>` id, so the agent correlates the edit to it by id rather than us re-logging now-stale text.
 
-Crucially, `appendSlackEdit` does **not** advance `last_processed_ts`: an edit reuses the original message's `ts`, so touching the watermark would cause genuinely new replies to be skipped. After logging, the task is woken with the standard `AGENT_PROMPTS.existingTask` ("new input received") prompt — the agent reads the edit from the log and decides whether the change is material, taking no action when it is merely cosmetic.
-
-## Triage Agent (Disabled)
-
-The Haiku-based triage agent in `src/system/triage.ts` is **currently disabled**. The classification block in `handleSlackEvent` is commented out (`src/connectors/slack/events.ts:351-382`); routing is performed directly by the event handler using the structural cues described below. The triage module is kept in the tree because it may be reintroduced.
+Crucially, `appendSlackEdit` does **not** advance `last_processed_ts`: an edit reuses the original message's `ts`, so touching the watermark would cause genuinely new replies to be skipped. The written line is returned and delivered to the PM inline via `AGENT_PROMPTS.inboundActivity`, so the PM reads the edited text itself and decides whether the change is material, taking no action when it is merely cosmetic.
 
 ## Message Flow: Slack to PM Agent
 
@@ -163,7 +159,7 @@ What a channel pins is standing context about that channel, in the same way the 
 
 **Nothing is filtered by age.** A runbook pinned two years ago is often the most relevant thing in a channel, so both dates and both ages are exposed and the agent judges. Every value in the block — element text and attribute alike — is XML-escaped, which is what keeps pinned content, a display name or a channel name from closing the wrapper or forging a `<pin>` element with someone else's attribution.
 
-Opening a pin needs no new tool: the PM already has `read_thread` for a message, whose `channel` and `thread_ts` parameters take the pin's `channel_id` and `ts`, and `fetch_slack_reference` now accepts a pinned file id as well as a canvas-referenced one. Both live in `comms-tools`, which is PM-only, so a specialist that needs a pin asks — exactly as it does for a canvas file reference.
+Opening a pin needs no new tool: the PM already has `read_thread` for a message, whose `channel` and `thread_ts` parameters take the pin's `channel_id` and `ts`, and `fetch_slack_reference` accepts a pinned file id as well as a canvas-referenced one. Only the PM sees the pin index, so a worker that needs a pin's content gets it in its brief — exactly as with a canvas file reference.
 
 ## Multi-Channel Support
 
@@ -188,13 +184,13 @@ A task's Slack channels are linked by `task.append(thread)` as inbound events ar
 
 ## Message Deduplication
 
-Each Slack channel entry stores a `last_processed_ts` timestamp. The eyes-reaction acknowledgment in `handleSlackEvent` uses it to remove the previous "eyes" reaction before adding one to the new message, so only the most recent inbound message ever shows the indicator. `task.append(thread)` in `src/tasks/task.ts` is also responsible for advancing `last_processed_ts` and skipping messages it has already absorbed into the knowledge log.
+Each Slack channel entry stores a `last_processed_ts` timestamp. The eyes-reaction acknowledgment in `handleSlackEvent` uses it to remove the previous "eyes" reaction before adding one to the new message, so only the most recent inbound message ever shows the indicator. `task.append(thread)` in `src/tasks/task.ts` is also responsible for advancing `last_processed_ts` and skipping messages it has already absorbed; it returns the lines it wrote, which are what the PM is handed inline.
 
 ## How PM Replies Reach Slack
 
 There is no `post_to_slack` MCP tool and no event-bus subscription that ferries messages to Slack — the PM calls `postSlackMessage` (and `postSlackFiles`) directly, in-process, through the `Task` instance. The pipeline is:
 
-1. The PM agent calls the `post_to_user` MCP tool (defined in `src/agents/tools.ts`). This is the **only** outbound user-messaging tool — repo and plugin agents do not have it; they communicate via `send_message_to_agent` and let the PM decide what to relay. File uploads use the sibling `post_files_to_user` tool, which can only attach to an already-linked thread.
+1. The PM calls the `post_to_user` MCP tool (defined in `src/agents/tools.ts`). It is the **only** outbound user-messaging tool, and it lives on the PM's session: a worker the PM spawns has no way to reach a user and reports back to the PM instead, which decides what to relay. File uploads use the sibling `post_files_to_user` tool, which can only attach to an already-linked thread.
 2. The tool handler invokes `task.postToUser(message, agentName, target)` in `src/tasks/task.ts`, which routes by target:
    - no target → post to `default_channel` (Slack or CLI)
    - `target.channel <key>` → post to a specific already-linked thread
@@ -206,7 +202,7 @@ There is no `post_to_slack` MCP tool and no event-bus subscription that ferries 
 
 ## Message Footer
 
-Every user-facing message carries a small grey footer: `task-<id> · <models>`, where `<models>` is the **distinct set of models the task has actually used** — PM first, then each spawned specialist — joined with ` + ` (e.g. `task-20260626-2130-a3f9k2 · Opus 5 + Sonnet 5 (1M)`). As more agents join, the set grows. It is built once per send by `Task.buildUserFooter()` → `collectModelsUsed()`, which prefers the **concrete model the SDK resolved each agent's alias to** — recorded at the agent's session `init` via `Task.recordResolvedModel()` (so `opus` shows as its real version, e.g. `Opus 5`; a max-mode swap starts a fresh session, so the label follows, e.g. `Fable 5.1`). It falls back to the configured alias (`resolveAgentModel`, shared with `spawn.ts`) only before an agent's first `init`. Labels are then derived by `modelDisplayLabel` in `src/agents/model-label.ts`, which **parses** any model id generically — drops the `claude-`/`anthropic/` prefix, capitalises the family, dots up to two numeric version segments, drops the date, and renders the `[1m]` 1M-context marker as `(1M)` — so a brand-new model version renders correctly with no code change (there is no per-version lookup table). Delivered to both surfaces:
+Every user-facing message carries a small grey footer: `task-<id> · <model>` — the model the task's one agent is running on (e.g. `task-20260626-2130-a3f9k2 · Opus 5`). It is built once per send by `Task.buildUserFooter()`, which prefers the **concrete model the SDK resolved the alias to** — recorded at session `init` via `Task.recordResolvedModel()`, so `opus` shows as its real version and a max-mode swap (which starts a fresh session) follows it to `Fable 5.1`. It falls back to the configured alias (`resolveAgentModel`, shared with `spawn.ts`) before the first `init`, so the footer is right even before the process spawns. Labels are then derived by `modelDisplayLabel` in `src/agents/model-label.ts`, which **parses** any model id generically — drops the `claude-`/`anthropic/` prefix, capitalises the family, dots up to two numeric version segments, drops the date, and renders the `[1m]` 1M-context marker as `(1M)` — so a brand-new model version renders correctly with no code change (there is no per-version lookup table). Delivered to both surfaces:
 
 - **Slack** — `postToUser` passes it as `postSlackMessage({ …, footer })`, which appends a trailing `context` block beneath the `markdown` block.
 - **CLI** — `logOutgoingMessage` includes `footer` in the `message` event data; `TaskDetail.tsx` renders it dimmed under the message text. Slack ignores the event field (it uses the context block).
@@ -215,7 +211,7 @@ The task id is plain text today; it is the single render site to later wrap in a
 
 ## PR Cards
 
-When a repo agent opens a PR, Archie posts a compact, self-updating **PR card** so it's obvious a PR exists, its state, and CI progress. The card is driven by a channel-agnostic `pr_card` event (see [GitHub Integration → PR Cards](github-integration.md)); Slack is one renderer:
+When a PR is opened, Archie posts a compact, self-updating **PR card** so it's obvious a PR exists, its state, and CI progress. The card is driven by a channel-agnostic `pr_card` event (see [GitHub Integration → PR Cards](github-integration.md)); Slack is one renderer:
 
 - `buildPrCardBlocks` emits a Block Kit **`card`** block: a title row (`<url|#number> head-branch`) and a subtitle (`repo · CI summary`), e.g. `sweatcoin-mobile · :hourglass: CI checks (1/2)`. A merged/closed PR shows its final state in the subtitle instead of CI. Subtitle text is shared with the CLI via `pr-card-format`; Slack uses emoji shortcodes (`:hourglass:`/`:white_check_mark:`/`:x:`/`:large_purple_circle:`).
 - `Task.resurfacePrCards()` posts the card with `postInteractiveToThread` into the default thread and stores the message `ts` in `BranchState.pr_card.slack`. It runs **eagerly from `report_completion`** (right after the final message, so the card appears instantly rather than at deferred teardown) and again from `complete()`/`stop()` as an idempotent safety net.
@@ -226,16 +222,15 @@ When a repo agent opens a PR, Archie posts a compact, self-updating **PR card** 
 
 While a task is being worked on, Archie shows a live "**Archie is …**" status line of what it's currently doing. This is a **surface-agnostic** capability: one status string is composed per task and rendered to whatever surfaces are available — the CLI, the logs, and Slack. Slack happens to render it natively as the assistant-thread loading shimmer under the composer (via `assistant.threads.setStatus`, the progress sibling of the title pipeline — same `client.assistant.threads.*` accessor and `channel_id` + `thread_ts`, wrapped best-effort in `src/connectors/slack/status.ts`). Slack auto-prepends the app name, so the string is always a verb fragment (`"is checking mobile and backend…"` → "**Archie** is checking mobile and backend…"). Since the 2026-03 platform change `setStatus` accepts `chat:write` as well as `assistant:write`, so it works in regular channel threads as well as DM/assistant threads — Archie sets it on every linked, non-muted Slack thread. (Documented here because Slack is the primary renderer; the engine itself is generic and lives in `src/tasks/status.ts`.)
 
-The status is derived **automatically** from agent activity — no agent prompt changes, and it works for the PM and every present/future plugin agent:
+The status is derived **automatically** from the session's tool calls — no prompt changes, and work the PM delegates surfaces as the PM's own activity, so the single persona never reveals a worker:
 
-- **Capture.** The per-agent SDK loop in `src/agents/spawn.ts` calls `task.noteActivityFromEvent(agentId, event)` on every event, alongside the existing logging hook. `deriveActivity` (`src/agents/activity.ts`) maps each `tool_use` block (`block.name`, `block.input`) to a short first-person fragment:
-  A specialist's fragments always name **where** (its domain), so a single active specialist is never vague; only the PM (no domain) and genuinely domain-agnostic actions stay generic.
-  - **work** — `Read`/`Grep` → "digging into the backend"; `Edit`/`Write` → "making changes to the backend"; `Bash` → "running some checks on the backend"; `Skill` → "getting up to speed on the backend"; `create_pull_request` → "opening a backend pull request"; `push_branch` → "pushing the backend changes"; external MCP → "checking Rollbar" / "updating Monday.com" (metadata-derived). `web_research` stays "researching" (external info, not the codebase domain).
-  - **coordination & PM steps**, phrased in the single voice so no agent is ever named — `send_message_to_agent` → "looking into the backend" (resolved from the **target's** domain, so a delegation reads as Archie turning to that area) or "coordinating" (to the coordinator / unknown); `log_finding` → "making a note on the backend"; `share_artifact` → "writing up the backend"; `find_slack_user`/`find_slack_channel` → "looking someone up"/"finding the right channel"; `read_channel_history`/`read_thread` → "catching up on a channel"/"reading a thread"; `get_agents_status` → "checking on progress"; `set_reminder` → "setting a reminder". (The PM has no domain, so its steps stay generic.)
-  - **plumbing** maps to `null` and never surfaces — `post_to_user`/`post_to_channel` (clear-on-post path), `assign_task_owner`, `report_completion`, `request_edit_mode`, `parse_datetime`, reactions/mute.
+- **Capture.** The SDK loop in `src/agents/spawn.ts` calls `task.noteActivityFromEvent(event)` on every event, alongside the logging hook. `deriveActivity` (`src/agents/activity.ts`) maps each `tool_use` block to a short first-person fragment:
+  - **work** — `Read`/`Grep`/`Glob` → "going through the details"; `Edit`/`Write` → "drafting changes"; `Bash` → "running some checks"; `Skill` → "getting up to speed"; `Agent` → work under way; `create_pull_request` → opening a pull request; `push_branch` → pushing the changes; `web_research` → "researching".
+  - **external integrations** — phrased from the server's own metadata rather than a hardcoded map: the `description` line in `.mcp.json` plus the server-reported `readOnly` annotation captured at connect time picks the verb, giving "checking Rollbar" or "updating Monday.com".
+  - **plumbing** maps to `null` and never surfaces — `post_to_user`/`post_to_channel` (the clear-on-post path), `report_completion`, `request_edit_mode`, `parse_datetime`, reactions and mute.
 
-  Agent active/idle transitions flow through `Task.updateAgentState`, which already knows who is mid-turn.
-- **Render.** `TaskStatusController` (`src/tasks/status.ts`) composes **one** line from the whole team with a fixed precedence: if the **PM** is active it speaks ("is putting this together…"); else if exactly **one specialist** is active it shows that specialist's specific action ("is working on the mobile app…"); else it **aggregates the domains** of the several active specialists ("is checking mobile and backend…"). It is always first person and never names an agent — specialists appear only by their **domain noun**, resolved by `agentDomainLabel` from the optional `metadata.archie.statusLabel` frontmatter, falling back to the agent key (engineering: `mobile`, `backend`) or a cleaned plugin name. This composes naturally with the PM's stop-and-wait flow: after delegating, the PM goes idle and specialist statuses show through; when it wakes to synthesise, its own status returns.
+  Active/idle transitions flow through `Task.updateAgentState`, which already knows when the turn is running.
+- **Render.** `TaskStatusController` (`src/tasks/status.ts`) has nothing to arbitrate: the line is whatever the session is currently doing, or a generic "working on this" while it is active with no surfaced tool call. It is always first person and never names an agent.
 - **Deliver.** Each rendered line goes through a single sink, `Task.onStatusRendered`, which fans it out to both surfaces so the status can be observed with or without Slack: (1) a `status` event on the in-process event bus → SSE → the **CLI** renders the same "Archie is …" line live (a spinner above the message input — `TaskDetail.tsx`); (2) the **Slack** assistant-thread indicator (best-effort, every linked non-muted Slack thread). A CLI-only task has no Slack channel, so the Slack push is a no-op there and the CLI is how you test it. (Status changes are intentionally not logged — they'd be noise; the CLI is the debug surface.)
 - **Debounce, keepalive & clear.** Pushes are debounced (~1s) and de-duplicated so no surface is spammed and the indicator doesn't flicker between turns. Because Slack auto-clears a status after ~2 minutes if nothing refreshes it, a keepalive re-asserts the current status every ~90s — without it, a long-running, quiet tool call (e.g. `web_research`) would lose the indicator mid-work. It is cleared when the PM posts to the user (`logOutgoingMessage` → Slack also auto-clears on a posted reply) and on task `stop()`/`complete()` (which also stops the keepalive). When a turn is **winding down** to a stop/complete — `report_completion`, an edit-mode request, or a research-budget stop — the controller is **suspended** (`Task.suspendStatus`) so the indicator is blanked *immediately* rather than at turn-end; otherwise a trailing tool call (or the keepalive) would pop the status back for a couple seconds after the final message. Activity is in-memory only — never persisted — so a restart never resurfaces a stale "working…". The whole feature is gated by `ARCHIE_LIVE_STATUS` (default on).
 
@@ -253,7 +248,7 @@ Button clicks are handled by Bolt action handlers in `src/connectors/slack/event
 The PM agent's prompt (`prompts/pm-agent.md`) establishes these communication rules:
 
 - Write as "I", not "my agent" or "the backend agent".
-- Never mention task owners, delegation, or internal coordination to the user.
+- Never mention delegation or internal coordination to the user.
 - Keep messages natural, brief, and focused on what users care about.
 - Use simple markdown (bold, italic, lists) but avoid headers.
 - For social contexts (welcomes, celebrations, announcements), respond warmly as a team member would.
@@ -280,7 +275,7 @@ The Slack client extracts file metadata from messages, including files shared di
 ## Acknowledgment, Muting, and Shared-Channel Awareness
 
 - **Acknowledgment (eyes reaction)** — `@mention` and DM messages are acknowledged with an `:eyes:` reaction (plain thread replies in an engaged channel are not, to avoid noise during inter-employee conversation). `task.ackMessage` records the acked message on `SlackChannel.ack_ts` and clears the previous one, so only one indicator is live per thread and it survives non-mention follow-ups. Cleaned up on task stop/complete by `clearAcks`.
-- **Agent-driven reactions** — the PM can react to *any* message in a linked thread via the `react_to_message` tool (and `unreact_from_message` / `get_message_reactions`). Messages are addressable because `appendSlackMessage` stamps each knowledge-log source line with a `msg:<ts>` id; the agent passes that `ts` as `message_id`. Reactions present at ingest time are also captured as a `SlackReaction[]` snapshot (from `conversations.replies`) and rendered as a `[Reactions: …]` line in the log; `get_message_reactions` reads the live state via `reactions.get`.
+- **Agent-driven reactions** — the PM can react to *any* message in a linked thread via the `react_to_message` tool (and `unreact_from_message` / `get_message_reactions`). Messages are addressable because `appendSlackMessage` stamps each source line with a `msg:<ts>` id, and that same line is what reaches the PM inline; the PM passes that `ts` as `message_id`. Reactions present at ingest time are also captured as a `SlackReaction[]` snapshot (from `conversations.replies`) and rendered as a `[Reactions: …]` line in the log; `get_message_reactions` reads the live state via `reactions.get`.
 - **Muting** — the PM's `mute_channel` tool sets `SlackChannel.muted = true` on a single channel (the one named, or the task's `default_channel` if no `channel` arg is given), after which that thread is ignored until a new `@mention` toggles it back on. DM channels cannot be muted because there is no `@mention` re-engagement path in a DM.
 - **Shared channels (Slack Connect)** — `isChannelShared` (60s TTL cache) flags external-shared channels; `sendSharedChannelWarnings` posts ephemeral notices once per (thread × user): a general shared-channel heads-up to internal participants, and a forward-from-external notice to anyone who pastes content originally authored by an external user.
 
@@ -292,10 +287,9 @@ The Slack client extracts file metadata from messages, including files shared di
 - `src/connectors/slack/message-body.ts` — **the one place a Slack message becomes agent-facing text**: `renderMessageBody` plus the named entry points every path uses (`messageBody` for the title transcript, `exploreBody` for explore reads, `pinBody` for the pin index, `rawMessageBody` for a raw Bolt payload). Task ingestion calls `renderMessageBody` + `shouldRedact` directly rather than `messageBody`, because it must substitute the DOWNLOADED files into the parts — only those carry a `localPath`, and the `[Attachments: …]` suffix prints the path only when it is set, so rendering from the un-downloaded files would silently drop every path an agent needs to open the file and `shouldRedact`, the single answer to the redaction question
 - `src/connectors/slack/title.ts` — `assistant.threads.setTitle` wrapper for DM-rooted tasks
 - `src/connectors/slack/status.ts` — Slack renderer for the status indicator: best-effort `assistant.threads.setStatus` wrapper
-- `src/tasks/status.ts` — `TaskStatusController` (composes the single first-person status line: PM precedence → single specialist → aggregated domains, debounced) + `isStatusEnabled` (the `ARCHIE_LIVE_STATUS` master gate, all surfaces)
+- `src/tasks/status.ts` — `TaskStatusController` (composes the single first-person status line, debounced, with a keepalive) + `isStatusEnabled` (the `ARCHIE_LIVE_STATUS` master gate, all surfaces)
 - `src/cli/components/TaskDetail.tsx` — CLI renderer: shows the live status line from `status` events (a spinner above the message input)
-- `src/agents/activity.ts` — `deriveActivity` (tool call → status fragment) and `agentDomainLabel` (agent → domain noun, never its identity)
-- `src/system/triage.ts` — Haiku-based message classifier (currently disabled at the call site)
+- `src/agents/activity.ts` — `deriveActivity` (tool call → status fragment, including the MCP-metadata-derived integration phrasing)
 - `src/agents/tools.ts` — `post_to_user`, `post_files_to_user`, `mute_channel`, `react_to_message`, `unreact_from_message`, `get_message_reactions`, `find_slack_user`, `find_slack_channel`, etc. (no `post_to_slack`)
 - `src/tasks/task.ts` — `postToUser`, `postFilesToUser`, `postInteractiveToUser`, `reactToMessage`, `unreactFromMessage`, `readMessageReactions`, channel registration
 - `src/system/event-bus.ts` — in-process event bus (used for SSE streaming to CLI; not a Slack transport)

@@ -50,7 +50,10 @@ vi.mock('../client.js', () => ({
   getBotId: vi.fn().mockReturnValue('B_OURS'),
   addReaction: vi.fn(),
   setSlackDryRun: vi.fn(),
-  getUserInfo: vi.fn().mockResolvedValue({ name: 'dev', realName: 'A Dev', teamId: 'T_HOME' }),
+  getUserInfo: vi.fn().mockResolvedValue({
+    name: 'dev', realName: 'A Dev', teamId: 'T_HOME',
+    isRestricted: false, isUltraRestricted: false, isBot: false, isAppUser: false,
+  }),
   isExternalUser: vi.fn().mockReturnValue(false),
   isChannelShared: vi.fn().mockResolvedValue(false),
   postEphemeral: vi.fn(),
@@ -393,7 +396,7 @@ describe('the content floor on task creation', () => {
   it('still creates a task for a DM that carries a message', async () => {
     const task = {
       metadata: { channels: {}, title: 'x' },
-      append: vi.fn().mockResolvedValue({ linkedNewThread: true }),
+      append: vi.fn().mockResolvedValue({ linkedNewThread: true, entries: ['[ts] [<@U1:R> in #dm] hello'] }),
       ackMessage: vi.fn(),
       sendMessage: vi.fn().mockResolvedValue(undefined),
       debouncedSave: vi.fn(),
@@ -416,6 +419,12 @@ describe('the content floor on task creation', () => {
     });
 
     expect(vi.mocked(Task.create)).toHaveBeenCalledTimes(1);
+    // The wake carries what was ingested. The router is the seam where the
+    // appended lines could be dropped on the floor — which is what used to
+    // happen, leaving the PM woken by a pointer at a log it does not read.
+    expect(task.sendMessage).toHaveBeenCalledWith(
+      expect.stringContaining('[<@U1:R> in #dm] hello'),
+    );
   });
 });
 
@@ -514,6 +523,7 @@ describe('the message-edit entry point renders through the shared module', () =>
     await flushHandler();
 
     expect(appendSlackEdit).toHaveBeenCalledTimes(1);
+    expect(appendSlackEdit.mock.calls[0]![1]).toMatchObject({ isBot: false, isAppUser: false });
     // The body must carry the attachment card, which only the shared renderer folds in. Reverting the
     // production call to `msg.text` yields 'after' alone and fails here.
     const body = appendSlackEdit.mock.calls[0]![3] as string;

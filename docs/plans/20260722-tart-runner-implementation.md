@@ -2,7 +2,7 @@
 
 ## Scope
 
-Implement opt-in Tart VM runners through Orchard. Archie remains the control plane and exposes only generic runner tools to explicitly allowed repository agents. OpenSpec is not used.
+Implement opt-in Tart VM runners through Orchard. Archie remains the control plane and exposes only generic runner tools to an explicitly allowed PM session. OpenSpec is not used.
 
 ## Progress
 
@@ -41,11 +41,11 @@ Implement opt-in Tart VM runners through Orchard. Archie remains the control pla
 - Baseline: `docs/proposals/runner-host-architecture.md` was already untracked; no existing tracked files were modified before implementation.
 - Orchard API verified against the current official `api/openapi.yaml`: VM CRUD, reconnectable WebSocket exec sessions, history watermarks, acknowledgements, detach, close, and VNC-compatible VM naming are available.
 - Added `ws`, `tar`, and `@types/ws` dependencies.
-- Added strict operator configuration, digest-pinned images, repository-agent allowlists, default-deny Softnet policy, environment-only secrets, and startup validation.
+- Added strict operator configuration, digest-pinned images, session-agent allowlists, default-deny Softnet policy, environment-only secrets, and startup validation.
 - Added Orchard VM CRUD, Basic authentication, argv-safe WebSocket exec, streamed stdin, history replay, durable watermark acknowledgements, detach, cancellation, and bounded payloads.
 - Added atomic task lease state, watermark-indexed output logs, restart reconciliation, orphan cleanup, TTL/debug reaping, degraded health, and completion cleanup.
 - Added filtered git snapshot upload, staged remote replacement, bounded artifact download, and traversal/link/type validation.
-- Added nine generic `runner-tools` only for allowed repository agents, including explicit SDK tool-allowlist augmentation.
+- Added nine generic `runner-tools` only for allowed PM sessions, including explicit SDK tool-allowlist augmentation.
 - Added architecture, persistence, agent, deployment, environment, and canary documentation.
 - `npm run typecheck`: passed.
 - `npm run build`: passed.

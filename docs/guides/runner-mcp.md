@@ -1,6 +1,6 @@
 # Use repository MCP tools inside a runner VM
 
-`runner_mcp` lets an allowed repository agent use a stdio MCP server in its task's VM. For example, Sweatcoin declares `argent` in `.mcp.json` and pins `@swmansion/argent` in its project dependencies. The simulator, Argent, and its native backend all run inside Tart; Archie controls them through Orchard.
+`runner_mcp` lets an allowed PM session use a stdio MCP server in its task's VM. For example, Sweatcoin declares `argent` in `.mcp.json` and pins `@swmansion/argent` in its project dependencies. The simulator, Argent, and its native backend all run inside Tart; Archie controls them through Orchard.
 
 ## Interaction workflow
 

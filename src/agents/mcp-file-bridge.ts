@@ -28,20 +28,8 @@ import { readFile, stat } from 'fs/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { Agent } from './agent.js';
-import type { Task } from '../tasks/task.js';
-import { isPmAgent, isRepoAgent, type AgentDef } from '../types/agent.js';
 import { assertReadable } from './artifacts.js';
 import { logger } from '../system/logger.js';
-
-/**
- * Only plain plugin agents get the file bridge: they carry the domain/admin
- * MCP servers that sometimes need a local file's bytes (e.g. uploading an
- * image). The PM overlay and repo agents do not get it. `spawnAgent` wires the
- * bridge through this predicate so the gating decision is testable on its own.
- */
-export function shouldAttachFileBridge(def: AgentDef): boolean {
-  return !isPmAgent(def) && !isRepoAgent(def);
-}
 
 const ok = (text: string) => ({ content: [{ type: 'text' as const, text }] });
 const err = (text: string) => ({ content: [{ type: 'text' as const, text: `Error: ${text}` }] });
@@ -67,7 +55,7 @@ function extractResultText(result: unknown): { text: string; isError: boolean } 
 /** Shape of an entry in the live server map that the bridge can forward to. */
 type HttpServerConfig = { type?: string; url?: string; headers?: Record<string, string> };
 
-export function createSendFileToMcpTool(agent: Agent, _task: Task, liveServers: Record<string, unknown>) {
+export function createSendFileToMcpTool(agent: Agent, liveServers: Record<string, unknown>) {
   return tool(
     'send_file_to_mcp_tool',
     "Call a tool on one of your connected MCP servers, injecting local files' raw bytes (base64-encoded) as named arguments of the tool. " +
@@ -230,16 +218,15 @@ export function createSendFileToMcpTool(agent: Agent, _task: Task, liveServers: 
 }
 
 /**
- * MCP server exposing the file bridge. Wired to generic plugin agents only
- * (they carry the admin/domain MCP servers that need file bytes); the PM and
- * repo agents don't get it. `liveServers` must be the same map the spawn
- * passes to the SDK — the bridge resolves targets from it at call time, so
- * OAuth-injected headers and dropped servers are reflected.
+ * MCP server exposing the file bridge. Wired only where the agent carries
+ * admin/domain MCP servers that need file bytes. `liveServers` must be the
+ * same map the spawn passes to the SDK — the bridge resolves targets from it
+ * at call time, so OAuth-injected headers and dropped servers are reflected.
  */
-export function createFileBridgeMcpServer(agent: Agent, task: Task, liveServers: Record<string, unknown>) {
+export function createFileBridgeMcpServer(agent: Agent, liveServers: Record<string, unknown>) {
   return createSdkMcpServer({
     name: 'file-bridge',
     version: '1.0.0',
-    tools: [createSendFileToMcpTool(agent, task, liveServers)],
+    tools: [createSendFileToMcpTool(agent, liveServers)],
   });
 }

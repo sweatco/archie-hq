@@ -13,7 +13,7 @@ import {
 
 function validPayload(): Evidence {
   return {
-    schema: 'archie-e2e-evidence/v1',
+    schema: 'archie-e2e-evidence/v2',
     scenario: 'edit-mode-approval',
     ac_ids: ['AC3'],
     started_at: '2026-07-04T12:00:00Z',
@@ -43,7 +43,7 @@ function validPayload(): Evidence {
       },
     ],
     excerpts: {
-      knowledge_log: ['[2026-07-04T12:00:01Z] [system] task created'],
+      transcript: ['[2026-07-04T12:00:01Z] [system] task created'],
       events: [{ type: 'approval:requested', data: { type: 'edit_mode' } }],
     },
     result: 'pass',
@@ -80,10 +80,10 @@ describe('validateEvidence', () => {
   });
 
   it('rejects a wrong schema tag and missing required fields', () => {
-    const r = validateEvidence({ schema: 'archie-e2e-evidence/v2', scenario: 'x' });
+    const r = validateEvidence({ schema: 'archie-e2e-evidence/v1', scenario: 'x' });
     expect(r.ok).toBe(false);
     const msg = !r.ok ? r.errors.join('\n') : '';
-    expect(msg).toContain('schema must be "archie-e2e-evidence/v1"');
+    expect(msg).toContain('schema must be "archie-e2e-evidence/v2"');
     expect(msg).toContain('nonce must be a non-empty string');
     expect(msg).toContain('environment must be an object');
   });
@@ -138,7 +138,7 @@ describe('renderEvidenceMarkdown', () => {
 
 describe('parseEvidenceJson', () => {
   it('classifies EOF mid-JSON as truncated input', () => {
-    const r = parseEvidenceJson('{"schema": "archie-e2e-evidence/v1", "scenario": "bas');
+    const r = parseEvidenceJson('{"schema": "archie-e2e-evidence/v2", "scenario": "bas');
     expect(r.ok).toBe(false);
     expect(!r.ok && r.error).toContain('truncated JSON input from stdin');
   });

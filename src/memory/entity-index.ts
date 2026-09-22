@@ -1,20 +1,7 @@
-/**
- * Entity Index + Push Selection
- *
- * `entities/index.md` is a thin, DERIVED table — one row per entity. It is
- * regenerated from the entity files (never hand-authored, never authoritative;
- * files win on conflict). It is always injected at spawn so an agent knows
- * what exists.
- *
- * Selection is PUSH: given the spawn context (repo/plugin + participating
- * users + task title) we deterministically pick which full entity pages to
- * inject — always including `scope: org` entities, expanding one hop along the
- * wikilink graph, and bounding the result. No agent-callable query tool.
- */
-
 import { readFile, writeFile, mkdir } from 'fs/promises';
-import { getEntityIndexPath, getEntitiesDir, getEntityInjectMax } from './paths.js';
-import { listEntities, resolveEntity } from './entities.js';
+import { getEntityIndexPath, getEntitiesDir } from './paths.js';
+import { listEntities } from './entities.js';
+import { escapeTableCell } from './sanitize.js';
 import type { EntityRecord } from './types.js';
 
 const INDEX_HEADER = `# Entity Index
@@ -22,176 +9,58 @@ const INDEX_HEADER = `# Entity Index
 
 | Entity | Type | Scope | Summary | Last |
 |--------|------|-------|---------|------|`;
+const OMISSION_NOTICE = '_Additional entities omitted._';
 
-// ============================================================================
-// Derived index
-// ============================================================================
-
-/** Most-recent touched date across an entity's observations, or '' when none. */
 export function lastTouched(record: EntityRecord): string {
   let latest = '';
-  for (const o of record.observations) {
-    if (o.touched && o.touched > latest) latest = o.touched;
+  for (const observation of record.observations) {
+    if (observation.touched && observation.touched > latest) latest = observation.touched;
   }
   return latest;
 }
 
-function indexRow(r: EntityRecord): string {
-  const scope = r.repos.length ? `${r.scope}:${r.repos.join('/')}` : r.scope;
-  const summary = (r.summary || r.displayName).replace(/\|/g, '\\|');
-  return `| [[${r.entity}]] | ${r.type} | ${scope} | ${summary} | ${lastTouched(r) || '—'} |`;
+function indexRow(record: EntityRecord): string {
+  const scope = record.repos.length ? `${record.scope}:${record.repos.join('/')}` : record.scope;
+  const summary = escapeTableCell(record.summary || record.displayName);
+  return `| [[${record.entity}]] | ${record.type} | ${scope} | ${summary} | ${lastTouched(record) || '—'} |`;
 }
 
-/** Render the index Markdown for a set of records (newest-touched first). */
-export function renderIndex(records: EntityRecord[]): string {
-  const sorted = [...records].sort((a, b) => {
-    const t = lastTouched(b).localeCompare(lastTouched(a));
-    return t !== 0 ? t : a.entity.localeCompare(b.entity);
-  });
-  const rows = sorted.map(indexRow).join('\n');
-  return rows ? `${INDEX_HEADER}\n${rows}\n` : `${INDEX_HEADER}\n`;
+export function renderIndex(records: EntityRecord[], characterBudget = Infinity): string {
+  const rows = [...records]
+    .sort((a, b) => {
+      const touched = lastTouched(b).localeCompare(lastTouched(a));
+      return touched !== 0 ? touched : a.entity.localeCompare(b.entity);
+    })
+    .map(indexRow);
+  const complete = rows.length > 0 ? `${INDEX_HEADER}\n${rows.join('\n')}\n` : `${INDEX_HEADER}\n`;
+  if (!Number.isFinite(characterBudget) || complete.length <= characterBudget) return complete;
+  if (characterBudget < INDEX_HEADER.length + OMISSION_NOTICE.length + 2) return '';
+  let rendered = `${INDEX_HEADER}\n`;
+  let included = 0;
+  for (let index = 0; index < rows.length; index++) {
+    const row = `${rows[index]}\n`;
+    const reserve = index < rows.length - 1 ? OMISSION_NOTICE.length + 1 : 0;
+    if (rendered.length + row.length + reserve > characterBudget) break;
+    rendered += row;
+    included++;
+  }
+  if (included < rows.length) rendered += `${OMISSION_NOTICE}\n`;
+  return rendered;
 }
 
-/**
- * Regenerate `entities/index.md` from the entity files. Derived artifact:
- * always reflects the files, overwriting any prior/manual content. Returns the
- * rendered Markdown.
- */
 export async function rebuildIndex(): Promise<string> {
   const records = await listEntities();
-  const md = renderIndex(records);
+  const markdown = renderIndex(records);
   await mkdir(getEntitiesDir(), { recursive: true });
-  await writeFile(getEntityIndexPath(), md, 'utf-8');
-  return md;
+  await writeFile(getEntityIndexPath(), markdown, 'utf-8');
+  return markdown;
 }
 
-/** Read the persisted index Markdown, or '' when absent. */
 export async function readIndexMarkdown(): Promise<string> {
   try {
     return await readFile(getEntityIndexPath(), 'utf-8');
-  } catch (err: any) {
-    if (err.code === 'ENOENT') return '';
-    throw err;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return '';
+    throw error;
   }
-}
-
-// ============================================================================
-// Push selection
-// ============================================================================
-
-export interface SelectionContext {
-  repo?: string;
-  plugin?: string;
-  users?: Array<{ userId: string; displayName: string }>;
-  taskTitle?: string;
-}
-
-export interface SelectionResult {
-  selected: EntityRecord[];
-  dropped: string[];
-}
-
-const STOPWORDS = new Set([
-  'a', 'an', 'and', 'or', 'the', 'of', 'in', 'on', 'at', 'to', 'for', 'with',
-  'as', 'by', 'is', 'was', 'be', 'this', 'that', 'it', 'from', 'into',
-]);
-
-function tokenize(s: string): Set<string> {
-  return new Set(
-    (s || '')
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, ' ')
-      .split(/\s+/)
-      .filter((t) => t.length > 2 && !STOPWORDS.has(t)),
-  );
-}
-
-function recordTokens(r: EntityRecord): Set<string> {
-  const parts = [r.entity.replace(/-/g, ' '), r.displayName, r.summary, r.domain, ...r.aliases];
-  return tokenize(parts.join(' '));
-}
-
-const SCORE_REPO = 500;
-const SCORE_ORG = 1000;
-const SCORE_OWNER = 200;
-const SCORE_EXPANSION = 50;
-const SCORE_PER_TOKEN = 10;
-
-/**
- * Select which full entity pages to inject for a spawn. Always includes
- * `scope: org` entities, scores the rest against the context, and expands one
- * hop along relations. `scope: org` pages carry the organizational knowledge
- * that used to live in `org.md`, so they are injected in full and are EXEMPT
- * from the page bound; `max` (default from config) caps only the remaining
- * repo/domain/title-scored and graph-expanded pages. Archived entities are
- * never injected.
- */
-export function selectEntities(
-  records: EntityRecord[],
-  ctx: SelectionContext,
-  max = getEntityInjectMax(),
-): SelectionResult {
-  const active = records.filter((r) => r.status !== 'archived');
-  const ctxRepo = ctx.repo?.toLowerCase();
-  const userIds = new Set((ctx.users ?? []).map((u) => u.userId.toLowerCase()));
-  const ctxTokens = tokenize(
-    [ctx.taskTitle, ctx.repo, ctx.plugin, ...(ctx.users ?? []).map((u) => u.displayName)].join(' '),
-  );
-
-  const scores = new Map<string, number>();
-  const bySlug = new Map<string, EntityRecord>();
-  for (const r of active) bySlug.set(r.entity, r);
-
-  const bump = (slug: string, by: number) => scores.set(slug, (scores.get(slug) ?? 0) + by);
-
-  for (const r of active) {
-    if (r.scope === 'org') bump(r.entity, SCORE_ORG);
-    if (ctxRepo && r.repos.some((repo) => repo.toLowerCase() === ctxRepo)) bump(r.entity, SCORE_REPO);
-    if (userIds.size) {
-      for (const rel of r.relations) {
-        if (rel.type === 'owned_by' && userIds.has(rel.target.toLowerCase())) {
-          bump(r.entity, SCORE_OWNER);
-          break;
-        }
-      }
-    }
-    let overlap = 0;
-    const tokens = recordTokens(r);
-    for (const t of ctxTokens) if (tokens.has(t)) overlap++;
-    if (overlap > 0) bump(r.entity, overlap * SCORE_PER_TOKEN);
-  }
-
-  // One-hop expansion: pull entities linked from any already-scored entity.
-  for (const slug of Array.from(scores.keys())) {
-    const r = bySlug.get(slug);
-    if (!r) continue;
-    for (const rel of r.relations) {
-      const target = resolveEntity(rel.target, active);
-      if (target && !scores.has(target.entity)) bump(target.entity, SCORE_EXPANSION);
-    }
-  }
-
-  const ranked = Array.from(scores.keys())
-    .map((slug) => bySlug.get(slug)!)
-    .filter(Boolean)
-    .sort((a, b) => {
-      const s = (scores.get(b.entity) ?? 0) - (scores.get(a.entity) ?? 0);
-      if (s !== 0) return s;
-      const t = lastTouched(b).localeCompare(lastTouched(a));
-      return t !== 0 ? t : a.entity.localeCompare(b.entity);
-    });
-
-  // `scope: org` pages are exempt from the bound; `max` caps only the rest.
-  const selected: EntityRecord[] = [];
-  const dropped: string[] = [];
-  let nonOrgBudget = max;
-  for (const r of ranked) {
-    if (r.scope === 'org' || nonOrgBudget > 0) {
-      selected.push(r);
-      if (r.scope !== 'org') nonOrgBudget--;
-    } else {
-      dropped.push(r.entity);
-    }
-  }
-  return { selected, dropped };
 }

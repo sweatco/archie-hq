@@ -1,14 +1,14 @@
 /**
  * Message Queue Implementation
  *
- * Provides async message queuing for agent communication.
- * Messages are queued and consumed via async generators for streaming input to agents.
+ * The task's inbound channel to its agent: webhooks, approvals, reminders and
+ * recovery nudges are enqueued here and consumed via an async generator that
+ * streams them into the SDK session.
  */
 
 interface QueuedMessage {
   content: string;
   timestamp: string;
-  from?: string;
 }
 
 interface PendingResolver {
@@ -24,7 +24,7 @@ export class MessageQueue {
   /**
    * Add a message to the queue
    */
-  addMessage(content: string, from?: string): void {
+  addMessage(content: string): void {
     if (this.stopped) {
       throw new Error('Queue has been stopped');
     }
@@ -32,7 +32,6 @@ export class MessageQueue {
     const message: QueuedMessage = {
       content,
       timestamp: new Date().toISOString(),
-      from,
     };
 
     // If there's a pending resolver waiting for a message, resolve it immediately
@@ -103,9 +102,31 @@ export class MessageQueue {
   }
 
   /**
+   * Drop the waiters an abandoned reader left behind, without resolving or
+   * rejecting them. The queue itself stays open.
+   *
+   * The SDK owns each spawn attempt's input generator, which parks inside
+   * `nextMessage()` with a resolver registered here. When that attempt's query
+   * dies, nothing will ever read from the generator again — but its resolver is
+   * still first in line, so the next `addMessage` (a recovery nudge, the next
+   * wake) is handed to the DEAD generator instead of the live one. The message
+   * is swallowed, and the revived generator yields into the finished query's
+   * closed transport; the SDK reacts to that write failure by aborting the
+   * AbortController the spawn shares across attempts, killing the healthy retry
+   * (observed live: task-20260912-2035-5t7o36).
+   *
+   * The waiters are left pending rather than rejected on purpose: a rejection
+   * propagates out of the generator into the SDK's input pump, which aborts that
+   * same shared controller.
+   */
+  detachWaiters(): void {
+    this.pendingResolvers = [];
+  }
+
+  /**
    * Add a message to the front of the queue (for replaying on retry)
    */
-  prependMessage(content: string, from?: string): void {
+  prependMessage(content: string): void {
     if (this.stopped) {
       throw new Error('Queue has been stopped');
     }
@@ -113,7 +134,6 @@ export class MessageQueue {
     const message: QueuedMessage = {
       content,
       timestamp: new Date().toISOString(),
-      from,
     };
 
     this.messages.unshift(message);
@@ -148,7 +168,7 @@ function formatMessageAsInput(msg: QueuedMessage, sessionId: string): SDKUserMes
     type: 'user' as const,
     message: {
       role: 'user' as const,
-      content: msg.from ? `[From ${msg.from}]: ${msg.content}` : msg.content,
+      content: msg.content,
     },
     parent_tool_use_id: null,
     session_id: sessionId,
@@ -160,8 +180,16 @@ function formatMessageAsInput(msg: QueuedMessage, sessionId: string): SDKUserMes
  * and can restore them to the queue on retry
  */
 export interface RecoverableInputGenerator {
-  /** Returns consumed messages to the queue (call before retry) */
-  reset(): void;
+  /**
+   * Returns consumed messages to the queue (call before retry).
+   *
+   * `prefix`, when given, is glued to the front of the first message the next
+   * attempt will read — the session-reset notice, which has to arrive in the
+   * same turn the agent acts on rather than one wake later. A retry that
+   * consumed nothing yet still gets the prefix, as its own message, so the
+   * notice is never silently dropped.
+   */
+  reset(prefix?: string): void;
   /** Create a new generator instance (call for each attempt) */
   generator(): AsyncGenerator<SDKUserMessageInput>;
 }
@@ -187,12 +215,18 @@ export function createRecoverableInputGenerator(
   let consumed: QueuedMessage[] = [];
 
   return {
-    reset() {
-      // Put messages back in reverse order so they end up in original order
-      for (let i = consumed.length - 1; i >= 0; i--) {
-        queue.prependMessage(consumed[i].content, consumed[i].from);
-      }
+    reset(prefix?: string) {
+      const restored = consumed.map((m) => m.content);
       consumed = [];
+      if (prefix && restored.length > 0) {
+        restored[0] = `${prefix}\n\n${restored[0]}`;
+      } else if (prefix) {
+        restored.push(prefix);
+      }
+      // Put messages back in reverse order so they end up in original order
+      for (let i = restored.length - 1; i >= 0; i--) {
+        queue.prependMessage(restored[i]);
+      }
     },
 
     async *generator(): AsyncGenerator<SDKUserMessageInput> {

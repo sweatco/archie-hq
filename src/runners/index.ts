@@ -3,8 +3,7 @@ import { loadRunnerConfig } from './config.js';
 import { RunnerManager } from './manager.js';
 import { OrchardRunnerProvider } from './orchard-provider.js';
 import type { RunnerHealth } from './types.js';
-import { getAllAgentDefs } from '../agents/registry.js';
-import { isRepoAgent } from '../types/agent.js';
+import { getPmDef } from '../agents/registry.js';
 
 let manager: RunnerManager | null = null;
 
@@ -14,10 +13,12 @@ export async function initRunners(): Promise<void> {
     logger.system('Runners: disabled (ARCHIE_RUNNERS_CONFIG is not set)');
     return;
   }
-  const repoAgentIds = new Set(getAllAgentDefs().filter(isRepoAgent).map((agent) => agent.id));
+  const pmAgentId = getPmDef().id;
   for (const [profileName, profile] of Object.entries(loaded.config.profiles)) {
     for (const agentId of profile.allowedAgents) {
-      if (!repoAgentIds.has(agentId)) throw new Error(`Runner profile "${profileName}" references unknown repository agent "${agentId}"`);
+      if (agentId !== pmAgentId) {
+        throw new Error(`Runner profile "${profileName}" references unknown session agent "${agentId}"; expected "${pmAgentId}"`);
+      }
     }
   }
   const provider = new OrchardRunnerProvider(

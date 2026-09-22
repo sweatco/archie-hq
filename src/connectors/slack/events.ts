@@ -2,7 +2,7 @@
  * Slack Events — Bolt app, event handlers, button handlers
  *
  * Owns: Slack Bolt app, app_mention/message handlers, button actions,
- * Slack triage processing. Does NOT own the HTTP server or GitHub endpoints.
+ * routing incoming messages to tasks. Does NOT own the HTTP server or GitHub endpoints.
  */
 
 import { createRequire } from 'module';
@@ -14,7 +14,6 @@ import type { App as AppType } from '@slack/bolt';
 
 import {
   initSlackClient,
-  updateMessage,
   getBotUserId,
   fetchSlackThread,
   getBotId,
@@ -26,6 +25,7 @@ import {
   postEphemeral,
   getSlackClient,
   cleanSlackText,
+  invalidateMemoryMemberTrust,
 } from './client.js';
 import { ensureChannelCanvas } from './channel-canvas.js';
 import { ensureChannelPins } from './channel-pins.js';
@@ -41,7 +41,6 @@ import { messageMatchesTrigger } from '../../system/trigger-match.js';
 import { generateTaskTitle } from '../../tasks/title-generator.js';
 import { setAssistantThreadTitle } from './title.js';
 import type { SlackThread, SlackAuthor } from '../../types/task.js';
-// import { triageSlackMessage } from '../../system/triage.js';
 
 /**
  * Slack configuration
@@ -72,6 +71,16 @@ export interface SlackLifecycle {
 }
 
 let app: AppType | null = null;
+
+async function updateTaskApprovalMessage(
+  taskId: string | null,
+  body: { channel?: { id?: string }; message?: { ts?: string } },
+  text: string,
+): Promise<void> {
+  if (!taskId || !body.channel?.id || !body.message?.ts) return;
+  const task = await Task.get(taskId);
+  await task.updateSlackMessageSafely(body.channel.id, body.message.ts, text, []);
+}
 
 /**
  * Mount Slack Bolt app on an existing Express app
@@ -233,6 +242,13 @@ export async function mountSlackApp(
       logger.error('Server', 'Error scanning channel context on channel join', err));
   });
 
+  for (const eventName of ['user_change', 'team_join']) {
+    app!.event(eventName, async ({ event }: { event: any }) => {
+      const userId = event.user?.id;
+      if (typeof userId === 'string') invalidateMemoryMemberTrust(userId);
+    });
+  }
+
   // Handle edit mode approval button
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app!.action('approve_edit_mode', async ({ action, ack, body }: any) => {
@@ -244,14 +260,7 @@ export async function mountSlackApp(
     logger.server(`Edit mode approved by ${userId} for task ${taskId}`);
 
     try {
-      if (body.channel?.id && body.message?.ts) {
-        await updateMessage(
-          body.channel.id,
-          body.message.ts,
-          `✅ *Edit mode approved* by <@${userId}>`,
-          []
-        );
-      }
+      await updateTaskApprovalMessage(taskId, body, `✅ *Edit mode approved* by <@${userId}>`);
 
       const task = await Task.get(taskId);
       // Resolve the approver to a name (+email when the users:read.email scope is
@@ -293,14 +302,7 @@ export async function mountSlackApp(
     logger.server(`Edit mode denied by ${userId} for task ${taskId}`);
 
     try {
-      if (body.channel?.id && body.message?.ts) {
-        await updateMessage(
-          body.channel.id,
-          body.message.ts,
-          `❌ *Edit mode denied* by <@${userId}>`,
-          []
-        );
-      }
+      await updateTaskApprovalMessage(taskId, body, `❌ *Edit mode denied* by <@${userId}>`);
 
       const task = await Task.get(taskId);
       await task.handleEditModeDenial();
@@ -320,14 +322,7 @@ export async function mountSlackApp(
     logger.server(`Max mode approved by ${userId} for task ${taskId}`);
 
     try {
-      if (body.channel?.id && body.message?.ts) {
-        await updateMessage(
-          body.channel.id,
-          body.message.ts,
-          `✅ *Max mode approved* by <@${userId}>`,
-          []
-        );
-      }
+      await updateTaskApprovalMessage(taskId, body, `✅ *Max mode approved* by <@${userId}>`);
 
       const task = await Task.get(taskId);
       // Best-effort display name for the knowledge.log finding. Unlike edit mode,
@@ -358,14 +353,7 @@ export async function mountSlackApp(
     logger.server(`Max mode denied by ${userId} for task ${taskId}`);
 
     try {
-      if (body.channel?.id && body.message?.ts) {
-        await updateMessage(
-          body.channel.id,
-          body.message.ts,
-          `❌ *Max mode denied* by <@${userId}>`,
-          []
-        );
-      }
+      await updateTaskApprovalMessage(taskId, body, `❌ *Max mode denied* by <@${userId}>`);
 
       const task = await Task.get(taskId);
       await task.handleMaxModeDenial();
@@ -385,14 +373,7 @@ export async function mountSlackApp(
     logger.server(`Research budget approved by ${userId} for task ${taskId}`);
 
     try {
-      if (body.channel?.id && body.message?.ts) {
-        await updateMessage(
-          body.channel.id,
-          body.message.ts,
-          `✅ *Research budget extended* by <@${userId}> (+5 requests)`,
-          []
-        );
-      }
+      await updateTaskApprovalMessage(taskId, body, `✅ *Research budget extended* by <@${userId}> (+5 requests)`);
 
       const task = await Task.get(taskId);
       await task.handleResearchBudgetApproval();
@@ -412,14 +393,7 @@ export async function mountSlackApp(
     logger.server(`Research budget denied by ${userId} for task ${taskId}`);
 
     try {
-      if (body.channel?.id && body.message?.ts) {
-        await updateMessage(
-          body.channel.id,
-          body.message.ts,
-          `❌ *Additional research denied* by <@${userId}>`,
-          []
-        );
-      }
+      await updateTaskApprovalMessage(taskId, body, `❌ *Additional research denied* by <@${userId}>`);
 
       const task = await Task.get(taskId);
       await task.handleResearchBudgetDenial();
@@ -455,18 +429,12 @@ export async function mountSlackApp(
         const task = await Task.get(taskId);
         trigger = await task.handleTriggerApproval(userId, triggerId);
       } else {
-        logger.warn('Server', `approve_trigger: no task found for thread ${threadId}; enabling trigger directly`);
-        const { enableProposedTrigger } = await import('../../system/trigger-store.js');
-        const { indexTrigger, announceTriggerChange } = await import('../../system/trigger-scheduler.js');
-        trigger = await enableProposedTrigger(triggerId, userId);
-        if (trigger) { indexTrigger(trigger); await announceTriggerChange(trigger, 'enabled'); }
+        logger.warn('Server', `approve_trigger: no task found for thread ${threadId}; approval refused`);
       }
-      if (body.channel?.id && body.message?.ts) {
-        const text = trigger
-          ? `✅ Approved by <@${userId}> — *${triggerWhat(trigger)}* is now on.`
-          : `⚠️ Approved by <@${userId}>, but the automation couldn't be enabled (it may already be active or a limit was reached).`;
-        await updateMessage(body.channel.id, body.message.ts, text, []);
-      }
+      const text = trigger
+        ? `✅ Approved by <@${userId}> — *${triggerWhat(trigger)}* is now on.`
+        : `⚠️ Approved by <@${userId}>, but the automation couldn't be enabled (it may already be active or a limit was reached).`;
+      await updateTaskApprovalMessage(taskId, body, text);
     } catch (error) {
       logger.error('Server', 'Error handling trigger approval', error);
     }
@@ -484,10 +452,8 @@ export async function mountSlackApp(
     logger.server(`Trigger ${triggerId} denied by ${userId}`);
 
     try {
-      if (body.channel?.id && body.message?.ts) {
-        await updateMessage(body.channel.id, body.message.ts, `❌ Declined by <@${userId}> — no automation was set up.`, []);
-      }
       const taskId = threadId ? await findTaskByThread(threadId) : null;
+      await updateTaskApprovalMessage(taskId, body, `❌ Declined by <@${userId}> — no automation was set up.`);
       if (taskId) {
         const task = await Task.get(taskId);
         await task.handleTriggerDenial(triggerId);
@@ -580,7 +546,7 @@ export function registerMergeActionHandlers(boltApp: Pick<AppType, 'action'>): v
         const text = disposition === 'resolved'
           ? `✅ *Merge approved* by <@${userId}>`
           : STALE_MERGE_PROMPT_TEXT;
-        await updateMessage(body.channel.id, body.message.ts, text, []);
+        await task.updateSlackMessageSafely(body.channel.id, body.message.ts, text, []);
       }
     } catch (error) {
       logger.error('Server', 'Error handling merge approval', error);
@@ -604,7 +570,7 @@ export function registerMergeActionHandlers(boltApp: Pick<AppType, 'action'>): v
         const text = disposition === 'resolved'
           ? `❌ *Merge denied* by <@${userId}>`
           : STALE_MERGE_PROMPT_TEXT;
-        await updateMessage(body.channel.id, body.message.ts, text, []);
+        await task.updateSlackMessageSafely(body.channel.id, body.message.ts, text, []);
       }
     } catch (error) {
       logger.error('Server', 'Error handling merge denial', error);
@@ -696,7 +662,7 @@ export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): 
         const text = disposition === 'resolved'
           ? `✅ *Tool call approved* by <@${userId}>`
           : STALE_TOOL_APPROVAL_TEXT;
-        await updateMessage(body.channel.id, body.message.ts, text, []);
+        await task.updateSlackMessageSafely(body.channel.id, body.message.ts, text, []);
       }
     } catch (error) {
       logger.error('Server', 'Error handling tool-call approval', error);
@@ -719,7 +685,7 @@ export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): 
         const text = disposition === 'resolved'
           ? `❌ *Tool call denied* by <@${userId}>`
           : STALE_TOOL_APPROVAL_TEXT;
-        await updateMessage(body.channel.id, body.message.ts, text, []);
+        await task.updateSlackMessageSafely(body.channel.id, body.message.ts, text, []);
       }
     } catch (error) {
       logger.error('Server', 'Error handling tool-call denial', error);
@@ -733,7 +699,7 @@ export function registerToolApprovalHandlers(boltApp: Pick<AppType, 'action'>): 
 
 type SlackRouteResult =
   | { action: 'discard'; reason: string }
-  | { action: 'triage' };
+  | { action: 'process' };
 
 function routeSlackEvent(event: {
   bot_id?: string;
@@ -751,7 +717,7 @@ function routeSlackEvent(event: {
     return { action: 'discard', reason: 'Own bot user message' };
   }
 
-  return { action: 'triage' };
+  return { action: 'process' };
 }
 
 // ============================================================================
@@ -817,38 +783,6 @@ export async function handleSlackEvent(event: {
   // The pinned-messages index is refreshed on exactly the same terms: before the PM wakes, no-op for DMs, TTL-bounded, after the external-author bail-out above so a purely-external trigger never causes a scan, and never throws.
   await Promise.all([ensureChannelCanvas(event.channel), ensureChannelPins(event.channel)]);
 
-  // const triageResult = await triageSlackMessage(thread);
-  // switch (triageResult.action) {
-  //   case 'new_task': {
-  //     const task = await Task.create();
-  //     await task.append(thread);
-  //     await task.sendMessage(AGENT_PROMPTS.newTask);
-  //     break;
-  //   }
-  //   case 'existing_task': {
-  //     if (!triageResult.task_id) break;
-  //     const task = await Task.get(triageResult.task_id);
-  //     const { linkedNewThread } = await task.append(thread);
-  //     if (linkedNewThread) {
-  //       await postToThreads(
-  //         [{ thread_id: thread.threadId, channel_id: thread.channel.id, last_processed_ts: thread.currentMessageTs }],
-  //         'Got it, I\'ve linked this to the ongoing investigation.',
-  //       );
-  //     }
-  //     await task.sendMessage(AGENT_PROMPTS.existingTask);
-  //     break;
-  //   }
-  //   case 'cancel_task': {
-  //     if (!triageResult.task_id) break;
-  //     const task = await Task.get(triageResult.task_id);
-  //     await task.postToUser('Work stopped. All progress has been saved and can be resumed if needed.');
-  //     await task.stop();
-  //     break;
-  //   }
-  //   case 'noop':
-  //     logger.system('Triage: noop');
-  //     break;
-  // }
   const taskId = await findTaskByThread(threadId);
   if (taskId) {
     logger.system(`Processing #${thread.channel.name} (thread: ${threadId})`);
@@ -871,8 +805,10 @@ export async function handleSlackEvent(event: {
       }
     }
 
-    // Thread reply to an existing task — route to it
-    await task.append(thread);
+    // Thread reply to an existing task — route to it. `entries` are the lines
+    // just ingested; they ride along on the wake below so the PM reads the
+    // messages in its own stream instead of going to fetch them.
+    const { entries } = await task.append(thread);
     if (isAckable) task.ackMessage(channelKey, event.ts);
     if (!task.metadata.title) {
       generateTitleAndSync(task, thread).catch((err) =>
@@ -880,7 +816,7 @@ export async function handleSlackEvent(event: {
       );
     }
     await sendSharedChannelWarnings(task, event.channel, threadId, thread, shared);
-    await task.sendMessage(AGENT_PROMPTS.existingTask);
+    await task.sendMessage(AGENT_PROMPTS.inboundActivity(entries));
   } else if (shouldCreateNewTask(event.type, event.channel, thread.rootAuthorWasBot) && thread.messages.length > 0) {
     logger.system(`Processing #${thread.channel.name} (thread: ${threadId})`);
 
@@ -893,7 +829,7 @@ export async function handleSlackEvent(event: {
     //
     // It is deliberately NOT applied to the trigger branch below. That path renders from the raw event, not from the fetched thread, precisely because `fetchSlackThread` drops a message with neither a `user` nor a `botId` — gating it on `thread.messages` would reintroduce the very blindness this change removes.
     const task = await Task.create();
-    await task.append(thread);
+    const { entries } = await task.append(thread);
     // Ack the triggering message. For @mention/DM the :eyes: was already added
     // before the thread fetch; for a reply to a bot-started thread, add it now.
     if (!isAckable && thread.rootAuthorWasBot) addReaction(event.channel, event.ts, 'eyes');
@@ -904,7 +840,7 @@ export async function handleSlackEvent(event: {
       );
     }
     await sendSharedChannelWarnings(task, event.channel, threadId, thread, shared);
-    await task.sendMessage(AGENT_PROMPTS.newTask);
+    await task.sendMessage(AGENT_PROMPTS.inboundNewTask(entries));
   } else if (event.type === 'message' && !event.channel.startsWith('D') && !event.thread_ts) {
     // Ambient top-level channel message (no task, not an @mention, not a thread
     // reply) — the only place channel-message triggers fire. @mentions and DMs
@@ -986,8 +922,8 @@ async function dispatchChannelMessageTriggers(
  *    engage a thread the bot wasn't invited to), and
  *  - the editor is an internal (non-external/guest) user.
  *
- * When they hold we append an edit notice to the task's knowledge log and wake
- * the task with the standard "new input" prompt. The agent decides whether the
+ * When they hold we record an edit notice and wake the task with that notice
+ * inline, as one more piece of thread activity. The agent decides whether the
  * change is material; a cosmetic edit can simply be a no-op on its end.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1050,6 +986,8 @@ async function handleSlackEdit(event: any): Promise<void> {
     teamId: authorInfo?.teamId,
     isRestricted: authorInfo?.isRestricted,
     isUltraRestricted: authorInfo?.isUltraRestricted,
+    isBot: authorInfo?.isBot,
+    isAppUser: authorInfo?.isAppUser,
   };
 
   const recorded = await task.appendSlackEdit(channelKey, author, editedTs, newText);
@@ -1057,7 +995,10 @@ async function handleSlackEdit(event: any): Promise<void> {
 
   const channelLabel = channel?.type === 'slack' ? channel.channel_name : channelId;
   logger.system(`Processing edit in #${channelLabel} (msg: ${editedTs})`);
-  await task.sendMessage(AGENT_PROMPTS.existingTask);
+  // One entry, delivered like any other thread activity: the `[edited]` line
+  // carries the same `msg:<ts>` id as the message it revises, so the PM can tell
+  // which of the messages it has already seen just changed.
+  await task.sendMessage(AGENT_PROMPTS.inboundActivity([recorded]));
 }
 
 const SHARED_CHANNEL_WARNING_TEXT =
@@ -1140,4 +1081,3 @@ async function sendSharedChannelWarnings(
 
   task.debouncedSave();
 }
-
