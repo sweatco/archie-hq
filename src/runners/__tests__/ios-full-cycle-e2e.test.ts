@@ -1,11 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
   createIosFullCycleScripts,
+  formatIosFullCycleFailure,
   loadIosFullCycleSpec,
   parseXcresultTestSummary,
   validateLldbTranscript,
   xcodeContainerArguments,
 } from '../ios-full-cycle-e2e.js';
+
+describe('formatIosFullCycleFailure', () => {
+  it('omits nested error payloads', () => {
+    const error = new AggregateError([new Error('guest-secret')], 'canary failed with 1 error');
+    expect(formatIosFullCycleFailure(error)).toBe('iOS full-cycle canary failed: canary failed with 1 error');
+  });
+});
 
 const baseEnv: NodeJS.ProcessEnv = {
   ARCHIE_IOS_E2E_PROFILE: 'ios',

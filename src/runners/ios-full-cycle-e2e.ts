@@ -164,6 +164,11 @@ export function parseXcresultTestSummary(value: unknown): XcresultTestSummary {
   };
 }
 
+export function formatIosFullCycleFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : 'Unknown error';
+  return `iOS full-cycle canary failed: ${message}`;
+}
+
 export function validateLldbTranscript(transcript: string, expectedValue: string): void {
   const expected = [
     /stop reason = breakpoint/i,
@@ -626,7 +631,7 @@ async function main(): Promise<void> {
 const entrypoint = process.argv[1];
 if (entrypoint && import.meta.url === pathToFileURL(resolve(entrypoint)).href) {
   void main().catch((error) => {
-    console.error(error);
+    console.error(formatIosFullCycleFailure(error));
     if (!process.exitCode) process.exitCode = 1;
   });
 }
