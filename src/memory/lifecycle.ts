@@ -56,6 +56,12 @@ function drainHousekeepingNotes(): string[] {
 
 let extractionQueue: Promise<void> = Promise.resolve();
 
+export function enqueueMemoryWrite<T>(write: () => Promise<T>): Promise<T> {
+  const operation = extractionQueue.then(write);
+  extractionQueue = operation.then(() => {}, () => {});
+  return operation;
+}
+
 /**
  * Schedule memory extraction for a completed task.
  * Fire-and-forget; errors are logged but never thrown.

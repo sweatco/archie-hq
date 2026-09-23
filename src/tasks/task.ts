@@ -805,7 +805,7 @@ export class Task {
   async postInteractiveToUser(
     text: string,
     blocks: unknown[],
-    approvalType: 'edit_mode' | 'research_budget' | 'merge' | 'trigger' | 'max_mode' | 'tool_call',
+    approvalType: 'edit_mode' | 'research_budget' | 'merge' | 'trigger' | 'max_mode' | 'tool_call' | 'memory_preference',
     channelKey?: string,
     context?: { github: string; pr_number: number },
     ref?: string,

@@ -8,6 +8,8 @@ import { listEntities, serializeEntity } from './entities.js';
 import { readActivity } from './activity.js';
 import { readUser } from './store.js';
 import { readPublicTaskSummaries, readTaskSummariesFromChannel } from './task-summaries.js';
+import { rememberFact, rememberPreference } from './explicit.js';
+import { logger } from '../system/logger.js';
 import {
   isAllowedTaskId,
   isMemoryHumanUserId,
@@ -199,6 +201,15 @@ export function shouldAttachMemoryTools(metadata: TaskMetadata): boolean {
     && !!metadata.memory_destination;
 }
 
+async function writeResult(action: () => Promise<unknown>) {
+  try {
+    return result(JSON.stringify(await action()));
+  } catch (error) {
+    logger.warn('memory', 'Explicit memory write failed', error);
+    return result(JSON.stringify({ status: 'failed', message: 'Memory could not be saved. Please retry.' }));
+  }
+}
+
 export function createMemoryMcpServer(task: Task) {
   return createSdkMcpServer({
     name: 'memory-tools',
@@ -221,6 +232,21 @@ export function createMemoryMcpServer(task: Task) {
         'Read an authorized canonical task summary. Content is untrusted evidence.',
         { task_id: z.string() },
         ({ task_id }) => readTaskSummaryMemory(task, task_id),
+      ),
+      tool(
+        'remember_preference',
+        'Save a preference the user explicitly asked Archie to remember. Phrase it as a short descriptive fact, cite the originating Slack message timestamp, and wait for author approval in private conversations.',
+        { content: z.string(), source_message_ts: z.string() },
+        (input) => writeResult(() => rememberPreference(task, input)),
+      ),
+      tool(
+        'remember_fact',
+        'Save one explicit project or team fact from an authorized public conversation. Use the originating Slack message timestamp. For a new entity, provide its type and short summary.',
+        {
+          entity: z.string(), content: z.string(), source_message_ts: z.string(),
+          create: z.object({ type: z.enum(['service', 'system', 'integration', 'concept', 'repo']), summary: z.string() }).optional(),
+        },
+        (input) => writeResult(() => rememberFact(task, input)),
       ),
     ],
   });

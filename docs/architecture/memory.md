@@ -18,7 +18,7 @@ Memory access comes from live Slack API metadata, never transcript text or model
 
 Slack authors are resolved by the host. Only internal, non-restricted human `U…` or `W…` IDs enter `memory_authors`; `memory_message_authors` maps each ingested Slack timestamp to its author. A profile update is accepted only when its cited source timestamp belongs to that profile owner. Body mentions, quoted text, model output, bot IDs, and fallback IDs cannot authorize profile reads or writes.
 
-Private task memory is never injected into prompts or copied into the public corpus. Memory reads and extraction writes reclassify the fixed destination while memory is active. Extraction authorizes before reading the transcript and again before persistence; DM persistence also requires the partner user to remain unchanged between those checks.
+Private task memory is never injected into prompts or copied into the public corpus. The sole explicit exception is an author-approved preference, whose previewed text enters that author's shared workspace profile. Memory reads and extraction writes reclassify the fixed destination while memory is active. Extraction authorizes before reading the transcript and again before persistence; DM persistence also requires the partner user to remain unchanged between those checks.
 
 The task destination is the privacy boundary. A public task reads public memory. A private-channel task reads public memory plus that exact channel. A DM task reads public memory plus that exact `D…` conversation. An authorized task without recorded authors still receives public entities and activity, but no profiles.
 
@@ -103,9 +103,9 @@ No full entity page is injected, including `org` pages. Scope and repository met
 
 Private task files and channel overviews are never injected.
 
-### Read-only tools
+### Memory tools
 
-`ARCHIE_MEMORY_TOOLS=true` attaches three host-side MCP tools after live authorization:
+`ARCHIE_MEMORY_TOOLS=true` attaches five host-side MCP tools after live authorization. The read tools are:
 
 - `search_memory` performs deterministic lexical search across complete entity contents including archived entities, public activity, profiles for structured task authors, all canonical public task files, and canonical task files in the exact authorized private directory. It does not search overviews.
 - `read_entity` resolves a public entity by slug or alias, including archived records.
@@ -116,6 +116,16 @@ Task search scans full files and returns excerpts of at most 400 characters arou
 The shared task reader accepts only valid immediate channel directories and regular canonical task Markdown files. It skips symlinks, temporary files, overviews, invalid identifiers, unrelated directories, and malformed or location-mismatched frontmatter. Missing directories are empty; other I/O errors surface. It never reads task transcripts or unrelated private destinations.
 
 All tool responses are XML-escaped, labelled as untrusted evidence, and limited to 8,000 characters.
+
+### Explicit memory writes
+
+The same `ARCHIE_MEMORY_TOOLS` gate attaches `remember_preference` and `remember_fact`. Both require the originating Slack message timestamp; the host resolves its author from task metadata and checks the live audience again when the write runs on the existing memory lifecycle queue. Tool input cannot select another user or destination. `ARCHIE_MEMORY=false` disables writes too.
+
+`remember_preference` saves a descriptive bullet to that author's public workspace profile. In public channels it saves immediately. In DMs and private channels, the host posts the exact proposed bullet and saves only after the author clicks **Save across conversations**. The pending request is stored in task metadata for up to one hour. Other viewers cannot approve it. The private extractor still writes only an exact-conversation task summary; it does not publish private facts or surrounding DM context.
+
+`remember_fact` adds one observation to an existing public entity or creates an entity when given its type and summary. It accepts only authorized public conversations. The existing entity index is rebuilt after a save. Both tools report a successful save only after their memory writer succeeds, and identical retries return unchanged. Explicit memories follow ordinary housekeeping and entity observation retention.
+
+The SDK transcript is not consumed by extraction, `events.jsonl` has no memory consumer, and `knowledge.log` is extracted only after completion with a bounded transcript. The originating message is already in the task log; explicit saves use the existing memory writers directly.
 
 ## Limits and flags
 
@@ -137,7 +147,7 @@ All tool responses are XML-escaped, labelled as untrusted evidence, and limited 
 | off | on | Full authorized corpus through tools; no injected memory |
 | on | on | Catalogue-assisted tool recall plus existing profiles/activity |
 
-`ARCHIE_MEMORY` is the master switch and defaults enabled; exact `false` disables initialization, extraction, injection, and tools. Injection and tools default off and are independent. `ARCHIE_MEMORY_HOUSEKEEPING` defaults enabled. Existing profile, section, staleness, and entity soft-cap variables remain unchanged. The catalogue limit is fixed and applies only to each injected catalogue block, not the whole prompt or conversation.
+`ARCHIE_MEMORY` is the master switch and defaults enabled; exact `false` disables initialization, extraction, injection, and tools. Injection and memory tools default off independently. `ARCHIE_MEMORY_HOUSEKEEPING` defaults enabled. Existing profile, section, staleness, and entity soft-cap variables remain unchanged. The catalogue limit is fixed and applies only to each injected catalogue block, not the whole prompt or conversation.
 
 ## Reset, rollout, and rollback
 
