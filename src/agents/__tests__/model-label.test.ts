@@ -10,6 +10,7 @@ import { modelDisplayLabel, resolveAgentModel, resolveAgentEffort } from '../mod
 
 describe('modelDisplayLabel', () => {
   it('derives family + version from a concrete claude id (no per-version table)', () => {
+    expect(modelDisplayLabel('claude-opus-5-5')).toBe('Opus 5.5');
     expect(modelDisplayLabel('claude-opus-5')).toBe('Opus 5');
     expect(modelDisplayLabel('claude-opus-4-8')).toBe('Opus 4.8');
     expect(modelDisplayLabel('claude-sonnet-5')).toBe('Sonnet 5');
