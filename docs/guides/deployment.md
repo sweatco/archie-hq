@@ -42,6 +42,21 @@ Secrets are injected via the container's environment file plus the mounted
 - `ARCHIE_PUBLIC_URL` — public HTTPS URL for OAuth provider redirects (`${url}/oauth/callback`)
 - `CLAUDE_PATH` — absolute path to the Claude Code `cli.js` (set to `/usr/local/bin/claude` in container)
 - `PORT` — HTTP port (defaults to `3000`)
+- `ARCHIE_RUNNERS_CONFIG` — optional mounted Tart runner profile configuration; absence disables runners
+- `ORCHARD_SERVICE_ACCOUNT_NAME` / `ORCHARD_SERVICE_ACCOUNT_TOKEN` — required when runners are enabled
+- Profile-specific guest password variables named by each runner profile’s `passwordEnv`
+
+### Tart Runners
+
+Runner deployments require outbound HTTPS and WebSocket access from Archie to the Orchard controller and Apple Silicon workers registered with Orchard. Mount the operator-owned JSON file read-only into the container, set `ARCHIE_RUNNERS_CONFIG` to its container path, and keep Orchard and guest credentials only in the environment file. See [Tart Runners](../architecture/runners.md) for the schema and lifecycle.
+
+On macOS 15 and newer, run each Orchard worker through the supported privileged-helper form: start `orchard worker run` as root with `--user <regular-host-user>`. This keeps Tart state under the regular account, drops the worker's privileges, and leaves only Orchard's small local-network connection helper privileged. Do not rely on an SSH-launched unprivileged worker: macOS Local Network privacy can let an interactive shell reach a NAT guest while denying the worker's exec and port-forward sockets. Production profiles use `networkMode: "softnet"`; the `nat` mode is an explicitly unisolated lab-only fallback. Archie enforces this boundary at startup: `NODE_ENV=production` rejects NAT profiles and insecure Orchard HTTP.
+
+Use an official, pinned Orchard release. Do not carry a local transport fork to bypass the privileged-helper requirement; a host without the supported root-installed worker is not runner-ready.
+
+Start with one digest-pinned iOS profile, one allowed mobile agent, and `maxConcurrent: 1`. Verify provisioning, repository sync, `xcodebuild`, Simulator boot/install/launch, artifact collection, reconnectable long-running exec, VNC, task completion, and VM deletion before increasing capacity.
+
+Run only one runner-enabled Archie replica for an `instanceId` and workdir. Capacity accounting and locks are process-local, and duplicate replicas can delete each other's VMs during orphan reconciliation. Keep the runner controller single-replica until distributed leases and leader election exist.
 
 ### Repository Access
 
@@ -61,6 +76,8 @@ Continuous integration runs via GitHub Actions: on every push and pull request i
 Building and publishing the production container image also runs via GitHub Actions. `.github/workflows/docker-publish.yml` runs on pushes to `main` and via manual `workflow_dispatch`, builds `Dockerfile.prod` with Docker Buildx, and publishes to GitHub Container Registry as `ghcr.io/<owner>/<repo>:main-<commit-sha>`.
 
 Deployment to the VM is the Jenkins job `sweatcoin-archie-hq-production-deploy`, defined in the [sweatcoin-infrastructure](https://github.com/sweatco/sweatcoin-infrastructure) repo, which runs the Ansible playbook `apps/archie-hq/deploy-production.yml`.
+
+Before disabling runners or rolling back to a build without runner support, stop new runner-using work, inventory every `archie-<instanceId>-*` VM in Orchard, release active leases, and confirm the inventory is empty. Removing `ARCHIE_RUNNERS_CONFIG` disables reconciliation, so it must be the final rollback step rather than the first.
 
 ## Docker Configuration
 
@@ -85,6 +102,7 @@ ExecStart=/usr/bin/docker run --name archie-app \
   --security-opt systempaths=unconfined \
   -v /workdir:/workdir \
   -v /app/secrets:/app/secrets \
+  --mount type=bind,src=/etc/archie/runners.json,dst=/app/config/runners.json,readonly \
   -v /data/claude:/home/archie/.claude \
   -v /data/claude/.claude.json:/home/archie/.claude.json \
   <registry>/archie-hq:latest
@@ -125,6 +143,7 @@ echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/9
 | `/data/claude` | `/home/archie/.claude` | Claude CLI config and session logs |
 | `/data/claude/.claude.json` | `/home/archie/.claude.json` | Claude CLI feature flags |
 | `/app/secrets` | `/app/secrets` | GitHub App private key + encrypted OAuth vault (read-write — daemon persists refreshed tokens) |
+| `/etc/archie/runners.json` | `/app/config/runners.json` | Optional runner profiles (read-only; set `ARCHIE_RUNNERS_CONFIG=/app/config/runners.json`) |
 
 ### Non-Root User
 
@@ -137,12 +156,12 @@ On restart, the application automatically recovers in-progress tasks via `recove
 ### Health Check
 
 ```
-GET /health → 200 { status: "ok", activeTasks: N }
-GET /health → 503 { status: "shutting_down", activeTasks: N }   # while draining on SIGTERM/SIGINT
+GET /health → 200 { status: "ok", activeTasks: N, runners: { enabled, degraded, activeLeases } }
+GET /health → 503 { status: "shutting_down", activeTasks: N, runners: { enabled, degraded, activeLeases } }
+GET /health/runners → 200 when disabled or healthy; 503 when enabled and degraded
 ```
 
-The handler is mounted directly in `src/index.ts`. External uptime monitoring should poll
-every minute and alert on sustained failure.
+The handlers are mounted directly in `src/index.ts`. External uptime monitoring should poll `/health` every minute. Runner-enabled deployments should also poll `/health/runners` and alert on sustained failure.
 
 ### Logging
 

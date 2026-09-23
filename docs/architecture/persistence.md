@@ -29,6 +29,9 @@ ${ARCHIE_WORKDIR}/sessions/
       memory/                              # per-task memory staging
       attachments/                         # downloaded Slack files, {file_id}-{filename}
       artifacts/                           # content-hash-deduped file snapshots
+        runners/{lease}/{collection}/      # validated artifacts collected from Tart VMs
+      runners.json                         # atomic task runner lease/session state
+      runners/{lease}/exec/{exec}.jsonl    # append-only remote command output
     agents/
       pm/                                  # the PM's workspace (cwd, read-write)
         .claude/settings.json              # commit attribution only

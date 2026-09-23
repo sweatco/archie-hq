@@ -23,6 +23,8 @@ How the system works today. Each doc describes the actual implementation, verifi
 | [Security](architecture/security.md) | Threat model, defense layers, prompt injection defense |
 | [Secrets](architecture/secrets.md) | OAuth vault, encryption, secret handling |
 | [Memory Layer](architecture/memory.md) | Cross-task persistent knowledge: org facts, user preferences, recent activity |
+| [Tart Runners](architecture/runners.md) | Orchard-backed Tart VM execution, persistence, transfers, and VNC handoff |
+| [Architecture Review — 2026-09-06](architecture/review-2026-09-06.md) | Review scope, fixed defects, simplifications, regression evidence, and remaining constraints |
 
 ## Guides
 
@@ -31,6 +33,8 @@ How to work with the system. Setup, deployment, and development patterns.
 | Document | Description |
 |----------|-------------|
 | [Local Development](guides/local-development.md) | Prerequisites, setup, running, debugging |
+| [Sweatcoin Tart E2E](guides/sweatcoin-tart-e2e.md) | Repeatable mobile build, manager restart, simulator launch, and cleanup on a local Tart image |
+| [Runner MCP](guides/runner-mcp.md) | Use a repository's MCP tools, including Argent, inside a task VM |
 | [Deployment](guides/deployment.md) | GCP deployment, CI/CD, monitoring, operations |
 | [SDK Patterns](guides/sdk-patterns.md) | Agent SDK hooks, turn detection, streaming input |
 | [Bedrock Guardrails Setup](guides/bedrock-guardrails-setup.md) | Configuring AWS Bedrock guardrails for prompt injection defense |

@@ -21,7 +21,7 @@ Precedence resolves narrowest-wins: an env var beats `pm.md`, which beats the bu
 
 ### Tools
 
-Six in-process MCP servers are attached at spawn, plus every server in the plugins repo's root `.mcp.json` (see [plugin-system.md](plugin-system.md#the-root-mcp-config)).
+Six in-process MCP servers are attached at spawn, plus every server in the plugins repo's root `.mcp.json` (see [plugin-system.md](plugin-system.md#the-root-mcp-config)). A seventh, `runner-tools`, is attached only when an operator-defined runner profile allows `pm-agent`.
 
 | Server | Tools |
 |---|---|
@@ -31,6 +31,7 @@ Six in-process MCP servers are attached at spawn, plus every server in the plugi
 | `repo-tools` | git and PR lifecycle against clones this task mounted — read side always, write side only in edit mode (see [edit-mode.md](edit-mode.md)) |
 | `research-tools` | `web_research` |
 | `file-bridge` | forwards a local file's bytes into another MCP server's call without routing them through the model; always attached |
+| `runner-tools` | optional task-scoped Tart VM provisioning, repository sync, execution, repository MCP calls, polling, artifact collection, bounded debugging and release (see [runners.md](runners.md)) |
 
 `Agent`, `Skill`, `Read`, `Bash`, `Write` and `Edit` come from the SDK itself. `WebSearch`, `WebFetch` and `Cron*` are in `disallowedTools` on every spawn, as are the write-side `repo-tools` before edit mode and every `deny`-tiered MCP tool ([tool-approvals.md](tool-approvals.md)).
 
