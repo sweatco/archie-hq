@@ -11,7 +11,7 @@ import {
 } from './paths.js';
 import { readUser, applyUserUpdatesWithIdentity } from './store.js';
 import { runExtraction } from './extractor.js';
-import { applyEntityUpdate, readEntity } from './entities.js';
+import { applyEntityUpdate, listEntities, readEntity } from './entities.js';
 import { rebuildIndex, readIndexMarkdown } from './entity-index.js';
 import { appendActivity, trimActivity, readActivity } from './activity.js';
 import { sanitizeTaskSummary } from './sanitize.js';
@@ -55,6 +55,12 @@ function drainHousekeepingNotes(): string[] {
 // ============================================================================
 
 let extractionQueue: Promise<void> = Promise.resolve();
+
+export function enqueueMemoryWrite<T>(write: () => Promise<T>): Promise<T> {
+  const operation = extractionQueue.then(write);
+  extractionQueue = operation.then(() => {}, () => {});
+  return operation;
+}
 
 /**
  * Schedule memory extraction for a completed task.
@@ -145,7 +151,14 @@ async function processExtraction(taskId: string): Promise<void> {
     .map(([userId, displayName]) => ({ userId, displayName }));
 
   // Load existing memory for ALL involved users in parallel.
-  const entityIndex = await readIndexMarkdown();
+  const savedObservations = (await listEntities())
+    .filter((entity) => entity.relations.some((relation) => relation.type === 'touched_by' && relation.target === taskId))
+    .flatMap((entity) => entity.observations.map((observation) =>
+      `- [[${entity.entity}]] [${observation.category}] ${observation.text}`
+    ));
+  const entityIndex = `${await readIndexMarkdown()}${savedObservations.length
+    ? `\nAlready saved for this task (do not add equivalent observations; distinct new details are allowed):\n${savedObservations.join('\n')}`
+    : ''}`;
   const userMemoryBlocks = await Promise.all(
     users.map(async (u) => {
       const mem = await readUser(u.userId);

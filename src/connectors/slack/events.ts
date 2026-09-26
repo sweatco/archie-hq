@@ -31,6 +31,7 @@ import { ensureChannelCanvas } from './channel-canvas.js';
 import { ensureChannelPins } from './channel-pins.js';
 import { shouldCreateNewTask, shouldForwardMessageEvent, isAckableEvent } from './task-routing.js';
 import { Task } from '../../tasks/task.js';
+import { registerMemoryPreferenceHandlers } from '../../memory/slack-approval.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
 import { getIsShuttingDown } from '../../system/shutdown.js';
@@ -404,6 +405,7 @@ export async function mountSlackApp(
 
   registerMergeActionHandlers(app!);
   registerToolApprovalHandlers(app!);
+  registerMemoryPreferenceHandlers(app!);
 
   // Handle trigger approval button
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -25,7 +25,7 @@
 - **Public profiles use human Slack IDs only.** New profile and DM paths accept `U…` or `W…` IDs. Bot IDs, fallback IDs, display names, and path-shaped values cannot create or authorize scoped profile files.
 - **Model output is untrusted.** Extraction output passes through `sanitize.ts` before persistence. Memory tool responses are escaped, marked as untrusted evidence, and size-bounded.
 - **Writes are serialized.** Extraction, canonical task replacement, overview rebuilding, pending recovery, and automatic housekeeping use the lifecycle queue. Do not add an independent writer to scoped memory.
-- **Flags are independent and default safe.** `ARCHIE_MEMORY=false` disables every seam. `ARCHIE_MEMORY_INJECT` and `ARCHIE_MEMORY_TOOLS` independently gate public prompt injection and read-only tools; both default off.
+- **Flags are independent and default safe.** `ARCHIE_MEMORY=false` disables every seam. `ARCHIE_MEMORY_INJECT` gates prompt injection and `ARCHIE_MEMORY_TOOLS` gates read and explicit write tools; both default off.
 - **No migration or external dependency.** Scoped v1 remains Markdown/JSON on disk. An unmarked old store is wiped instead of migrated.
 
 ## Load-bearing files
@@ -35,7 +35,7 @@
 - `lifecycle.ts` — serialized public/private extraction routing.
 - `task-summaries.ts` — canonical task readers, atomic writers, and derived channel overviews.
 - `task-authors.ts` — structured-author filtering.
-- `tools.ts` — read-only MCP tools and live authorization.
+- `tools.ts` and `explicit.ts` — memory MCP tools, explicit writes, and live authorization.
 - `sanitize.ts` — persistence trust boundary.
 - `context.ts` — public profile/activity and bounded entity-catalogue injection.
 
