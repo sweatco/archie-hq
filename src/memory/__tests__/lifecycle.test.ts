@@ -125,6 +125,8 @@ vi.mock('../extractor.js', async (importOriginal) => {
 // ============================================================================
 
 import { handleTaskCompleted, rescheduleTaskCompleted, selectRelatedTasksByEntity } from '../lifecycle.js';
+import { applyEntityUpdate } from '../entities.js';
+import { rebuildIndex } from '../entity-index.js';
 import { enqueuePending, readPending } from '../pending-queue.js';
 import { runExtraction } from '../extractor.js';
 import { classifySlackMemoryScope, postSlackMessage } from '../../connectors/slack/client.js';
@@ -635,6 +637,29 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     const indexPath = join(memoryDir, 'entities', 'index.md');
     expect(existsSync(indexPath)).toBe(true);
     expect(await readFile(indexPath, 'utf-8')).toContain('[[payment-service]]');
+  });
+
+  it('shows observations already saved by this task without changing its transcript', async () => {
+    await applyEntityUpdate({
+      slug: 'saved-project', type: 'concept', summary: 'Saved project',
+      observations: [{ category: 'fact', text: 'Uses marker cobalt-741' }],
+    }, TASK_ID);
+    await applyEntityUpdate({
+      slug: 'other-project', type: 'concept', summary: 'Other project',
+      observations: [{ category: 'fact', text: 'Uses marker violet-892' }],
+    }, 'another-task');
+    await rebuildIndex();
+
+    handleTaskCompleted(TASK_ID);
+    await drain();
+
+    const input = vi.mocked(runExtraction).mock.calls[0]![0];
+    expect(input.entityIndex).toContain('do not add equivalent observations');
+    expect(input.entityIndex).toContain('[[saved-project]] [fact] Uses marker cobalt-741');
+    expect(input.entityIndex).not.toContain('Uses marker violet-892');
+    expect(input.entityIndex).toContain('[[other-project]]');
+    expect(input.transcript).toBe(KNOWLEDGE_LOG);
+    expect(await readFile(join(sessionsDir, TASK_ID, 'shared', 'knowledge.log'), 'utf-8')).toBe(KNOWLEDGE_LOG);
   });
 
   it('selectRelatedTasksByEntity links tasks that share an entity', async () => {

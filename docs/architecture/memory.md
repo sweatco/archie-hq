@@ -75,7 +75,7 @@ task completion → authorize → extract → reauthorize → canonical task fil
                                           └─ private: summary only
 ```
 
-Public extraction loads profiles only for structured task authors plus the complete persisted entity index. It applies attributed profile updates, sanitized entity updates, and the existing activity/housekeeping behavior. Entity pages retain the last 30 stored observations. The persisted entity index remains complete, including archived entities.
+Public extraction loads profiles only for structured task authors plus the complete persisted entity index. It also sees existing observations on entities touched by the task, so it can avoid extracting paraphrases of facts already saved explicitly. It applies attributed profile updates, sanitized entity updates, and the existing activity/housekeeping behavior. Entity pages retain the last 30 stored observations. The persisted entity index remains complete, including archived entities.
 
 After the first authorization check, extraction reads the completed task's `knowledge.log` through `readKnowledgeLog()`. The log remains a write-only audit/extraction record for the running PM: inbound content is delivered to the PM inline, and neither extraction path depends on removed participant or task-owner metadata.
 
