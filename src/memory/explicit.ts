@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import type { Task } from '../tasks/task.js';
 import type { TaskMemoryScope } from '../types/task.js';
-import { classifySlackMemoryScope, getUserInfo, isInternalMemoryUser } from '../connectors/slack/client.js';
+import { classifySlackMemoryScope, getUserInfo, isInternalMemoryUser, postInteractiveToThread } from '../connectors/slack/client.js';
 import { isAuthorizedMemoryScope, scopeForSlackChannel } from '../tasks/memory-scope.js';
 import { createKeyedLock } from '../system/keyed-lock.js';
 import { logger } from '../system/logger.js';
@@ -77,11 +77,8 @@ export async function rememberPreference(task: Task, input: Preference): Promise
       return { status: 'pending', text: pending.content, message: 'A preference approval is already pending in this task.' };
     }
     const channelId = task.metadata.memory_destination?.channel_id;
-    const channelKey = Object.keys(task.metadata.channels).find((key) => {
-      const channel = task.metadata.channels[key];
-      return channel.type === 'slack' && channel.channel_id === channelId;
-    });
-    if (!channelId || !channelKey) return { status: 'rejected', message: 'No Slack thread is available for approval.' };
+    const channel = Object.values(task.metadata.channels).find((channel) => channel.type === 'slack' && channel.channel_id === channelId);
+    if (!channelId || channel?.type !== 'slack') return { status: 'rejected', message: 'No Slack thread is available for approval.' };
 
     const id = randomUUID();
     task.metadata.pending_memory_preference = {
@@ -99,7 +96,8 @@ export async function rememberPreference(task: Task, input: Preference): Promise
     ];
     try {
       await task.save(true);
-      await task.postInteractiveToUser('Approve sharing this preference across conversations?', blocks, 'memory_preference', channelKey, undefined, id);
+      await task.prepareMemoryDelivery(channelId);
+      await postInteractiveToThread(channelId, channel.thread_id, 'Approve sharing this preference across conversations?', blocks);
     } catch (error) {
       task.metadata.pending_memory_preference = undefined;
       await task.save(true).catch((saveError) => logger.warn('memory', 'Could not clear failed preference approval', saveError));
@@ -121,6 +119,7 @@ export async function rememberFact(task: Task, input: Fact): Promise<Result> {
       return { status: 'rejected', message: 'A new entity requires a valid type and short summary.' };
     }
     if (existing?.observations.some((o) => o.category === 'fact' && normalized(o.text) === normalized(clean.text))) {
+      await applyEntityUpdate({ slug: existing.entity }, task.taskId);
       return { status: 'unchanged', entity: existing.entity, text: clean.text };
     }
     const applied = await applyEntityUpdate({

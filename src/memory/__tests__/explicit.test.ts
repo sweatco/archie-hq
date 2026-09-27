@@ -11,6 +11,7 @@ const state = vi.hoisted(() => ({
   writeUser: vi.fn(),
   writeEntity: vi.fn(),
   rebuildIndex: vi.fn(),
+  postInteractiveToThread: vi.fn(),
 }));
 
 vi.mock('../paths.js', () => ({
@@ -25,6 +26,7 @@ vi.mock('../../connectors/slack/client.js', () => ({
     : { kind: state.scope, channel_id: channelId },
   getUserInfo: async (id: string) => ({ teamId: id === 'U07AUTHOR1' ? 'T1' : 'T2' }),
   isInternalMemoryUser: (user: { teamId: string }) => user.teamId === 'T1',
+  postInteractiveToThread: (...args: unknown[]) => state.postInteractiveToThread(...args),
 }));
 vi.mock('../lifecycle.js', () => ({
   enqueueMemoryWrite: async (write: () => Promise<unknown>) => {
@@ -44,9 +46,9 @@ vi.mock('../store.js', () => ({
 vi.mock('../entities.js', () => ({
   listEntities: async () => state.observations.length ? [{ entity: 'payments', aliases: [], observations: state.observations.map((text) => ({ category: 'fact', text })) }] : [],
   resolveEntity: (key: string, records: Array<{ entity: string }>) => records.find((record) => record.entity === key) ?? null,
-  applyEntityUpdate: async (update: { slug: string; observations: Array<{ text: string }> }) => {
-    state.writeEntity(update);
-    state.observations.push(update.observations[0]!.text);
+  applyEntityUpdate: async (update: { slug: string; observations?: Array<{ text: string }> }, taskId: string) => {
+    state.writeEntity(update, taskId);
+    if (update.observations?.[0]) state.observations.push(update.observations[0].text);
     return { slug: update.slug, created: state.observations.length === 1, capExceeded: false };
   },
 }));
@@ -66,7 +68,7 @@ function task(channelId = 'C07PUBLIC1'): Task {
   return {
     taskId: 'task-explicit', metadata,
     save: vi.fn().mockResolvedValue(undefined),
-    postInteractiveToUser: vi.fn().mockResolvedValue(undefined),
+    prepareMemoryDelivery: vi.fn().mockResolvedValue(undefined),
   } as unknown as Task;
 }
 
@@ -80,6 +82,7 @@ describe('explicit memory', () => {
     state.writeUser.mockReset();
     state.writeEntity.mockReset();
     state.rebuildIndex.mockReset();
+    state.postInteractiveToThread.mockReset();
   });
 
   it('saves a public preference for its recorded author and treats a retry as unchanged', async () => {
@@ -97,7 +100,10 @@ describe('explicit memory', () => {
     const pending = await rememberPreference(current, { content: 'Prefers short answers', source_message_ts: '123.456' });
     expect(pending.status).toBe('pending');
     expect(state.writeUser).not.toHaveBeenCalled();
-    expect(current.postInteractiveToUser).toHaveBeenCalledOnce();
+    expect(current.prepareMemoryDelivery).toHaveBeenCalledWith('D07PRIVATE1');
+    expect(state.postInteractiveToThread).toHaveBeenCalledWith(
+      'D07PRIVATE1', '100.0', 'Approve sharing this preference across conversations?', expect.any(Array),
+    );
     const id = current.metadata.pending_memory_preference!.id;
     expect((await resolvePreferenceApproval(current, id, 'U07OTHER22', 'D07PRIVATE1', true)).status).toBe('rejected');
     expect(state.writeUser).not.toHaveBeenCalled();
@@ -116,16 +122,27 @@ describe('explicit memory', () => {
     expect(state.writeUser).not.toHaveBeenCalled();
   });
 
+  it('does not post an approval outside the task destination', async () => {
+    state.scope = 'user';
+    const current = task('D07PRIVATE1');
+    vi.mocked(current.prepareMemoryDelivery).mockRejectedValueOnce(new Error('wrong destination'));
+    await expect(rememberPreference(current, { content: 'Prefers short answers', source_message_ts: '123.456' })).rejects.toThrow('wrong destination');
+    expect(state.postInteractiveToThread).not.toHaveBeenCalled();
+    expect(current.metadata.pending_memory_preference).toBeUndefined();
+  });
+
   it('writes a public fact once and declines private facts', async () => {
     const current = task();
     const request = { entity: 'payments', content: 'Uses idempotency keys', source_message_ts: '123.456', create: { type: 'service' as const, summary: 'Payment service' } };
     expect((await rememberFact(current, request)).status).toBe('saved');
     expect((await rememberFact(current, request)).status).toBe('unchanged');
-    expect(state.writeEntity).toHaveBeenCalledOnce();
+    expect(state.writeEntity).toHaveBeenCalledTimes(2);
+    expect(state.writeEntity).toHaveBeenLastCalledWith({ slug: 'payments' }, current.taskId);
+    expect(state.observations).toEqual(['Uses idempotency keys']);
     expect(state.rebuildIndex).toHaveBeenCalledOnce();
     state.scope = 'user';
     expect((await rememberFact(task('D07PRIVATE1'), request)).status).toBe('rejected');
-    expect(state.writeEntity).toHaveBeenCalledOnce();
+    expect(state.writeEntity).toHaveBeenCalledTimes(2);
   });
 
   it('checks authorization again when a queued write runs', async () => {
