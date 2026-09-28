@@ -204,6 +204,7 @@ async function processExtraction(taskId: string, options: MemoryReplayOptions = 
   // Apply per-user updates. Use the identity-aware writer so first-touch
   // user files get YAML frontmatter (slack_user_id + display_name + aliases).
   const housekeepingTargets = new Set<string>();
+  const replayDate = options.now?.().toISOString().slice(0, 10);
   const displayNameById = new Map(users.map((u) => [u.userId, u.displayName]));
   const appliedUserUpdates: Record<string, MemoryUpdate[]> = {};
   for (const [userId, updates] of Object.entries(result.user_updates)) {
@@ -212,7 +213,7 @@ async function processExtraction(taskId: string, options: MemoryReplayOptions = 
     );
     if (attributedUpdates.length > 0) {
       const displayName = displayNameById.get(userId) ?? userId;
-      const applied = await applyUserUpdatesWithIdentity(userId, displayName, attributedUpdates);
+      const applied = await applyUserUpdatesWithIdentity(userId, displayName, attributedUpdates, replayDate);
       if (applied.appliedUpdates.length > 0) appliedUserUpdates[userId] = applied.appliedUpdates;
       if (applied.capExceeded) housekeepingTargets.add(userId);
     }
@@ -222,7 +223,7 @@ async function processExtraction(taskId: string, options: MemoryReplayOptions = 
   // Each applied update auto-adds a `touched_by [[taskId]]` edge.
   const touchedEntities = new Set<string>();
   for (const update of result.entity_updates) {
-    const applied = await applyEntityUpdate(update, taskId);
+    const applied = await applyEntityUpdate(update, taskId, replayDate);
     if (!applied) continue;
     touchedEntities.add(applied.slug);
     if (applied.capExceeded) housekeepingTargets.add('entities');
@@ -237,7 +238,7 @@ async function processExtraction(taskId: string, options: MemoryReplayOptions = 
   if (housekeepingTargets.size > 0) {
     const { runHousekeeping } = await import('./housekeeping.js');
     for (const target of housekeepingTargets) {
-      if (options.strict) await runHousekeeping(target, { strict: true, budget: options.housekeepingBudget });
+      if (options.strict) await runHousekeeping(target, { strict: true, budget: options.housekeepingBudget, today: replayDate });
       else extractionQueue = extractionQueue.then(() =>
         runHousekeeping(target).catch((err) => logger.warn('memory', `housekeeping for ${target} failed: ${err}`))
       );

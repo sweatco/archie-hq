@@ -256,6 +256,8 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     await replayTaskCompletion(TASK_ID, options);
     const path = join(publicTasksDir, `${TASK_ID}.md`);
     expect(await readFile(path, 'utf8')).toContain('extraction_at: "2026-04-10T10:30:00.000Z"');
+    expect(await readFile(join(usersDir, `${USER_DANA}.md`), 'utf8')).toContain('touched: 2026-04-10');
+    expect(await readFile(join(memoryDir, 'entities', 'backend.md'), 'utf8')).toContain('touched: 2026-04-10');
     vi.mocked(runExtraction).mockResolvedValueOnce({
       user_updates: {}, entity_updates: [], task_summary: 'Updated after resumption.',
       activity_summary: 'Updated task', domain: 'engineering',

@@ -31,7 +31,6 @@ import { rebuildIndex } from './entity-index.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { logger } from '../system/logger.js';
 import { recordHousekeepingNote } from './lifecycle.js';
-import { memoryNow } from './clock.js';
 import { parseLastTouched as parseLastTouchedFromAnnotations, stripLastTouched as stripLastTouchedFromAnnotations, appendLastTouched as appendLastTouchedFromAnnotations } from './annotations.js';
 import type { EntityRecord } from './types.js';
 
@@ -52,7 +51,7 @@ export type HousekeepingBudget = {
     settle(status: 'ok' | 'error'): Promise<void>;
   }>;
 };
-export type HousekeepingOptions = { strict?: boolean; budget?: HousekeepingBudget };
+export type HousekeepingOptions = { strict?: boolean; budget?: HousekeepingBudget; today?: string };
 
 /**
  * Consolidate one or more memory files. No-op when the housekeeping flag is
@@ -69,10 +68,10 @@ export async function runHousekeeping(target: HousekeepingTarget, options: House
     return;
   }
   if (target === 'entities') {
-    await runEntityHousekeeping();
+    await runEntityHousekeeping(options.today);
   } else if (target === 'all') {
     await consolidateAllUserFiles(options);
-    await runEntityHousekeeping();
+    await runEntityHousekeeping(options.today);
   } else {
     // assume a user ID
     await consolidateFile(`users/${target}.md`, getUserPath(target), options);
@@ -166,7 +165,7 @@ function mergeInto(canonical: EntityRecord, dup: EntityRecord): void {
 }
 
 async function runEntityHousekeeping(today?: string): Promise<void> {
-  const date = today ?? memoryNow().toISOString().slice(0, 10);
+  const date = today ?? new Date().toISOString().slice(0, 10);
   const records = await listEntities();
   if (records.length === 0) return;
 
@@ -261,7 +260,7 @@ async function consolidateFile(label: string, path: string, options: Housekeepin
 // ============================================================================
 
 async function runHousekeeperAgent(fileContent: string, options: HousekeepingOptions): Promise<string> {
-  const today = memoryNow().toISOString().slice(0, 10);
+  const today = options.today ?? new Date().toISOString().slice(0, 10);
   const variables = {
     FILE_CONTENT: fileContent,
     STALENESS_DAYS: String(getStalenessDays()),

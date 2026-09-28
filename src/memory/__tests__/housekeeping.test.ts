@@ -38,8 +38,9 @@ describe('budgeted evaluation housekeeping', () => {
         usage: { input_tokens: 10, output_tokens: 10 }, total_cost_usd: 0.001 };
     })()) as unknown as typeof query);
     try {
-      await runHousekeeping(id, { strict: true, budget: { reserve } });
+      await runHousekeeping(id, { strict: true, budget: { reserve }, today: '2026-04-10' });
       expect(reserve).toHaveBeenCalledOnce();
+      expect(vi.mocked(query).mock.calls[0][0].prompt).toContain('Current date for staleness comparison: 2026-04-10');
       expect(vi.mocked(query).mock.calls[0][0].options?.model).toBe('claude-sonnet-5');
       expect(vi.mocked(query).mock.calls[0][0].options?.maxBudgetUsd).toBe(3.5);
       expect(onUsage).toHaveBeenCalledWith({ inputTokens: 10, outputTokens: 10, costUsd: 0.001 });

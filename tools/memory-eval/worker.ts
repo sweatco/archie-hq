@@ -45,7 +45,6 @@ async function build(args: BuildInput): Promise<unknown> {
   } else await mkdir(args.workdir, { recursive: true, mode: 0o700 });
   const { initMemory } = await import('../../src/memory/index.js');
   const { replayTaskCompletion } = await import('../../src/memory/lifecycle.js');
-  const { setMemoryClockForEvaluation } = await import('../../src/memory/clock.js');
   if (!await initMemory('TEVALTEAM')) throw new Error('isolated memory init failed');
   const budget = new Budget(args.ledger, args.capUsd);
   await budget.open();
@@ -85,34 +84,31 @@ async function build(args: BuildInput): Promise<unknown> {
         const scope = audience.kind === 'user'
           ? { kind: 'user' as const, channel_id: audience.channelId, user_id: audience.userId ?? args.history.scope.authorIds[0] ?? 'UEVALUSER01' }
           : { kind: audience.kind, channel_id: audience.channelId };
-        setMemoryClockForEvaluation(new Date(completion.at));
-        try {
-          let housekeepingCall = 0;
-          const outcome = await replayTaskCompletion(completion.taskId, {
-            scope, strict: true, model: 'claude-sonnet-5', maxBudgetUsd: reserved,
-            now: () => new Date(completion.at),
-            onUsage: (usage) => { actual = usage.costUsd && usage.costUsd > 0 ? usage.costUsd :
-              usage.inputTokens + usage.outputTokens > 0 ?
-                (usage.inputTokens * PRICING.models['claude-sonnet-5'].input + usage.outputTokens * PRICING.models['claude-sonnet-5'].output) / 1_000_000 : null; },
-            housekeepingBudget: { reserve: async (promptBytes) => {
-              const estimate = Math.max(3.5, reserveEstimate('claude-sonnet-5', promptBytes + 16_000, 4096));
-              const receipt = await budget.reserve(`${args.history.id}:${completion.taskId}@${completion.at}:housekeeping-${attempt}-${++housekeepingCall}`, estimate);
-              let charge: number | null = null;
-              return { model: 'claude-sonnet-5', maxBudgetUsd: estimate,
-                onUsage: (usage: { inputTokens: number; outputTokens: number; costUsd?: number }) => {
-                  charge = usage.costUsd && usage.costUsd > 0 ? usage.costUsd :
-                    usage.inputTokens + usage.outputTokens > 0 ?
-                      (usage.inputTokens * PRICING.models['claude-sonnet-5'].input + usage.outputTokens * PRICING.models['claude-sonnet-5'].output) / 1_000_000 : null;
-                },
-                settle: async (status: 'ok' | 'error') => { await budget.settle(receipt, charge, status); },
-              };
-            } },
-          });
-          if (outcome.status !== 'extracted') {
-            if (!outcome.modelCalled) actual = 0;
-            throw new Error(`replay no-op: ${outcome.status} ${outcome.reason ?? ''}`);
-          }
-        } finally { setMemoryClockForEvaluation(null); }
+        let housekeepingCall = 0;
+        const outcome = await replayTaskCompletion(completion.taskId, {
+          scope, strict: true, model: 'claude-sonnet-5', maxBudgetUsd: reserved,
+          now: () => new Date(completion.at),
+          onUsage: (usage) => { actual = usage.costUsd && usage.costUsd > 0 ? usage.costUsd :
+            usage.inputTokens + usage.outputTokens > 0 ?
+              (usage.inputTokens * PRICING.models['claude-sonnet-5'].input + usage.outputTokens * PRICING.models['claude-sonnet-5'].output) / 1_000_000 : null; },
+          housekeepingBudget: { reserve: async (promptBytes) => {
+            const estimate = Math.max(3.5, reserveEstimate('claude-sonnet-5', promptBytes + 16_000, 4096));
+            const receipt = await budget.reserve(`${args.history.id}:${completion.taskId}@${completion.at}:housekeeping-${attempt}-${++housekeepingCall}`, estimate);
+            let charge: number | null = null;
+            return { model: 'claude-sonnet-5', maxBudgetUsd: estimate,
+              onUsage: (usage: { inputTokens: number; outputTokens: number; costUsd?: number }) => {
+                charge = usage.costUsd && usage.costUsd > 0 ? usage.costUsd :
+                  usage.inputTokens + usage.outputTokens > 0 ?
+                    (usage.inputTokens * PRICING.models['claude-sonnet-5'].input + usage.outputTokens * PRICING.models['claude-sonnet-5'].output) / 1_000_000 : null;
+              },
+              settle: async (status: 'ok' | 'error') => { await budget.settle(receipt, charge, status); },
+            };
+          } },
+        });
+        if (outcome.status !== 'extracted') {
+          if (!outcome.modelCalled) actual = 0;
+          throw new Error(`replay no-op: ${outcome.status} ${outcome.reason ?? ''}`);
+        }
         const retention = await retentionSnapshot(args.history, args.workdir);
         await budget.settle(index, actual, 'ok');
         receipts.push({ taskId: completion.taskId, at: completion.at, attempt, reservedUsd: reserved, actualUsd: actual, retention });

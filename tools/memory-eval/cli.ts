@@ -74,7 +74,7 @@ async function configHash(): Promise<string> {
     'src/memory/extractor.ts', 'src/memory/lifecycle.ts', 'src/memory/sanitize.ts',
     'src/memory/store.ts', 'src/memory/entities.ts', 'src/memory/task-summaries.ts',
     'src/memory/housekeeping.ts', 'src/memory/paths.ts',
-    'src/memory/clock.ts', 'src/memory/annotations.ts', 'src/memory/activity.ts',
+    'src/memory/annotations.ts', 'src/memory/activity.ts',
     'src/memory/entity-index.ts', 'src/memory/pending-queue.ts', 'src/memory/task-authors.ts',
     'prompts/memory-extractor.md', 'prompts/memory-housekeeper.md',
     'tools/memory-eval/replay-format.ts', 'tools/memory-eval/schema.ts', 'tools/memory-eval/retention.ts',

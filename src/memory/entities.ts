@@ -31,7 +31,6 @@
  */
 
 import { readFile, writeFile, mkdir, readdir } from 'fs/promises';
-import { memoryNow } from './clock.js';
 import { existsSync } from 'fs';
 import {
   getEntityPath,
@@ -212,7 +211,7 @@ export async function applyEntityUpdate(
   today?: string,
 ): Promise<AppliedEntity | null> {
   if (!update || typeof update.slug !== 'string') return null;
-  const date = today ?? memoryNow().toISOString().slice(0, 10);
+  const date = today ?? new Date().toISOString().slice(0, 10);
 
   const all = await listEntities();
   const proposedSlug = sanitizeEntitySlug(update.slug);

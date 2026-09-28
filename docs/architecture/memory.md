@@ -79,8 +79,6 @@ Public extraction loads profiles only for structured task authors plus the compl
 
 After the first authorization check, extraction reads the completed task's `knowledge.log` through `readKnowledgeLog()`. The log remains a write-only audit/extraction record for the running PM: inbound content is delivered to the PM inline, and neither extraction path depends on removed participant or task-owner metadata.
 
-The offline evaluator has an awaitable replay entry point guarded by `ARCHIE_MEMORY_EVAL_REPLAY=true`. It runs only in an isolated workdir, accepts a fixture's recorded scope and completion clock, and surfaces extraction and housekeeping failures. The guarded clock also drives entity annotations and housekeeping age during replay. Production completion handling continues to use live Slack authorization and its existing queue.
-
 Private-channel and DM extraction passes empty profile and entity context to the extractor and writes only the sanitized canonical task file and derived overview for its exact destination. It does not update public profiles, entities, activity, related tasks, or housekeeping projections.
 
 Rejected summaries produce no task file and no overview row. Tasks with no destination or denied live authorization return before transcript access.

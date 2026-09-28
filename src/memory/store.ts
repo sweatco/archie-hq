@@ -44,7 +44,8 @@ export async function writeUser(username: string, content: string): Promise<void
 export async function applyUserUpdatesWithIdentity(
   userId: string,
   displayName: string,
-  updates: MemoryUpdate[]
+  updates: MemoryUpdate[],
+  today?: string,
 ): Promise<{ appliedUpdates: MemoryUpdate[]; capExceeded: boolean }> {
   let content = await readUser(userId);
   const original = content;
@@ -56,7 +57,7 @@ export async function applyUserUpdatesWithIdentity(
       logger.warn('memory', `dropped user update for ${userId} (sanitizer rejected): ${JSON.stringify(update).slice(0, 120)}`);
       continue;
     }
-    const next = applyUpdate(content, clean);
+    const next = applyUpdate(content, clean, today);
     if (next !== content) appliedUpdates.push(clean);
     content = next;
   }
@@ -113,7 +114,7 @@ function buildUserFrontmatter(userId: string, displayName: string): string {
  * - 'add': find `## {section}` header and insert `- {content}` at end of that section
  *           If section missing, append it at end of file
  */
-export function applyUpdate(content: string, update: MemoryUpdate): string {
+export function applyUpdate(content: string, update: MemoryUpdate, today?: string): string {
   if (update.action === 'update') {
     if (update.old === undefined) {
       logger.warn('memory', 'applyUpdate: update action without `old` field — skipped');
@@ -123,7 +124,7 @@ export function applyUpdate(content: string, update: MemoryUpdate): string {
     const idx = lines.findIndex((line) => stripLastTouched(line).includes(update.old!));
     if (idx !== -1) {
       // Refresh the touched annotation on update
-      lines[idx] = appendLastTouched(`- ${update.content}`);
+      lines[idx] = appendLastTouched(`- ${update.content}`, today);
       return lines.join('\n');
     }
     // old text not found — skip + warn rather than silently appending
@@ -133,7 +134,7 @@ export function applyUpdate(content: string, update: MemoryUpdate): string {
 
   // 'add' action only — annotate with today's date
   const section = update.section;
-  const newItem = appendLastTouched(`- ${update.content}`);
+  const newItem = appendLastTouched(`- ${update.content}`, today);
 
   if (!section) {
     // No section — append to end
