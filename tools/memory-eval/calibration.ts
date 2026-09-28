@@ -9,6 +9,8 @@ type Result = { caseId?: string; arm?: string; status?: string; answer?: string;
 type HumanResponse = { packetHash?: string; reviewer?: string; requiredMet?: boolean[]; forbiddenAsserted?: boolean[];
   unsupportedClaims?: string[]; contradictedClaims?: string[]; unverifiableClaims?: string[];
   abstained?: boolean; useful?: 'yes' | 'no' | 'unclear'; disagreementResolution?: string };
+export type CalibrationReadiness = { packetHash: string; reviewReady: boolean; reviewed: number; total: number;
+  pending: Array<{ sampleId: string; reason: string }> };
 
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const rubricVersion = 'reader-execution-and-original-evidence-v1';
@@ -33,7 +35,7 @@ async function writeOnce(path: string, value: unknown): Promise<void> {
 }
 
 export async function writeCalibrationPacket(reportPath: string, cases: Case[], histories: Map<string, History>,
-  rows: Result[], evidenceFor: (c: Case, h: History) => string): Promise<{ packetHash: string; pending: number }> {
+  rows: Result[], evidenceFor: (c: Case, h: History) => string): Promise<CalibrationReadiness> {
   const selected = cases.flatMap((c) => ['candidate', 'no_memory', 'oracle'].filter((arm) =>
     arm !== 'oracle' || c.source === 'longmemeval' || c.ability.includes('scope'))
     .map((arm) => ({ c, arm: arm as 'candidate' | 'no_memory' | 'oracle', row: rows.find((r) => r.caseId === c.id && r.arm === arm) })))
@@ -95,7 +97,8 @@ export async function writeCalibrationPacket(reportPath: string, cases: Case[], 
       JSON.stringify(response[key as keyof HumanResponse]) !== JSON.stringify(verdict[key as keyof Verdict]));
     if (disagreement && !response.disagreementResolution?.trim()) pending.push({ sampleId: sample.sampleId, reason: 'unresolved model disagreement' });
   }
-  await writePrivate(join(calibrationDir, 'readiness.json'), { packetHash, reviewReady: pending.length === 0 && samples.length > 0,
-    reviewed: samples.length - pending.length, total: samples.length, pending });
-  return { packetHash, pending: pending.length };
+  const readiness = { packetHash, reviewReady: pending.length === 0 && samples.length > 0,
+    reviewed: samples.length - pending.length, total: samples.length, pending };
+  await writePrivate(join(calibrationDir, 'readiness.json'), readiness);
+  return readiness;
 }

@@ -12,7 +12,8 @@ import { evidenceDiagnosis, retainedEvidence } from './diagnostics.js';
 import { answerSuccess, oracleFor, readerExecution, retryableJudgeError, type ToolTrace } from './judgment.js';
 import { selectedCases } from './selection.js';
 import { retentionPrecondition } from './retention.js';
-import { writeCalibrationPacket } from './calibration.js';
+import { writeCalibrationPacket, type CalibrationReadiness } from './calibration.js';
+import { reportReadiness, reviewInvariantHash } from './report-readiness.js';
 
 const command = process.argv[2] ?? 'help';
 const root = resolve(process.env.ARCHIE_EVAL_HOME ?? '/Users/igorsova/Projects/achie-snapshots/memory-eval');
@@ -174,6 +175,7 @@ async function run(): Promise<void> {
   await mkdir(reportPath, { recursive: true, mode: 0o700 });
   const manifest = { runId, revision: (await import('node:child_process')).execSync('git rev-parse HEAD', { cwd: repo, encoding: 'utf8' }).trim(),
     corpusHash: await sourceHash(corpusPath), configHash: await configHash(), readerConfigHash: await readerConfigHash(),
+    reviewInvariantHash: reviewInvariantHash(cases, byId),
     resolvedIngestionConfig: await resolvedIngestionConfig(), cases: cases.map((c) => c.id),
     pricing: PRICING, reader: 'claude-opus-5-5', extractor: 'claude-sonnet-5', capUsd: { initial: 100, routine: 10 } };
   await savePrivate(join(reportPath, 'manifest.json'), manifest);
@@ -237,7 +239,7 @@ async function run(): Promise<void> {
 }
 
 async function writeRunReport(cases: Case[], manifest: Record<string, unknown>, results: unknown[], fixedRetrieval: unknown[],
-  reportPath: string, histories: Map<string, History>): Promise<void> {
+  reportPath: string, histories: Map<string, History>, options: { emitPath?: boolean; failOnIncomplete?: boolean } = {}): Promise<CalibrationReadiness> {
   const runId = String(manifest.runId);
   const expected = cases.length * 3;
   const ok = results.filter((r) => (r as { status?: string }).status === 'ok').length;
@@ -307,22 +309,24 @@ async function writeRunReport(cases: Case[], manifest: Record<string, unknown>, 
   const judged = rows.filter((result) => result.semantic?.status === 'advisory').length;
   const executionStatus = ok === expected && fixedOk === cases.length ? 'complete' : 'incomplete';
   const gradingStatus = judged === expected ? 'complete' : 'incomplete';
-  const reviewStatus = cases.every((c) => c.review === 'approved') ? 'calibration_pending' : 'human_review_pending';
-  const status = executionStatus === 'complete' && gradingStatus === 'complete' ? 'provisional' : 'incomplete';
+  const calibration = await writeCalibrationPacket(reportPath, cases, histories, rows, judgingEvidence);
+  const readiness = reportReadiness(executionStatus, gradingStatus, cases, calibration);
+  const { status, reviewStatus } = readiness;
   let ledgerCostUsd: number | null = null;
   try { ledgerCostUsd = (JSON.parse(await readFile(join(reportPath, 'budget.json'), 'utf8')) as { committedUsd: number }).committedUsd; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  await savePrivate(join(reportPath, 'report.json'), { ...manifest, status, executionStatus, gradingStatus, reviewStatus,
-    qualityOutcome: 'not_gated', expectedArms: expected, completedArms: ok, judgedArms: judged,
+  await savePrivate(join(reportPath, 'report.json'), { ...manifest, executionStatus, gradingStatus, ...readiness, calibration,
+    expectedArms: expected, completedArms: ok, judgedArms: judged,
     missingOrFailedArms: expected - ok, fixedRetrievalCompleted: fixedOk, fixedRetrievalExpected: cases.length, ledgerCostUsd, breakdown });
   const sourceRows = Object.entries(breakdown).filter(([k]) => k.startsWith('source:'))
     .map(([k, r]) => `| ${k.slice(7)} | ${r.armsOk}/${r.expectedArms} | ${r.judgedArms}/${r.expectedArms} | ${r.noMemorySuccess}/${r.cases} | ${r.candidateSuccess}/${r.cases} | ${r.oracleSuccess}/${r.cases} | ${r.pairedWins} | ${r.pairedRegressions} | ${r.pairUnscored} | ${r.candidateUnsupported}/${r.candidateContradicted}/${r.candidateUnverifiable} | ${r.retainedCanonical}/${r.expectedEvidence} | ${r.fixedReferenceSurfaced}/${r.expectedEvidence} | ${r.fixedFactualOverlap}/${r.expectedEvidence} | $${(r.readerCostUsd + r.judgeCostUsd).toFixed(4)} |`).join('\n');
   const repairs = Array.isArray(manifest.gradingRepairs) ? manifest.gradingRepairs.length : 0;
-  const md = `# Memory evaluation routine run\n\n- Run: ${runId}\n- Execution: ${executionStatus}; ${ok}/${expected} answer arms, ${fixedOk}/${cases.length} fixed retrieval calls\n- Grading: ${gradingStatus}; ${judged}/${expected} semantic verdicts\n- Grade-only repairs: ${repairs}; repaired verdicts use saved answers and the same run ledger, with judge hashes in manifest.json\n- Run ledger: ${ledgerCostUsd === null ? 'not opened' : `$${ledgerCostUsd.toFixed(4)}`} against $10 cap; source rows exclude failed-verdict charges\n- Review: ${reviewStatus}; quality outcome not gated\n- Overall status: ${status}\n- Corpus SHA-256: ${manifest.corpusHash}\n- Config SHA-256: ${manifest.configHash}\n- Models: ${manifest.reader} reader, ${manifest.extractor} extractor\n\n| Source | Arms | Judged | No memory | Candidate | Oracle | Wins | Regressions | Unscored | Candidate unsupported/contradicted/unverifiable | Canonical retained | Fixed references | Fixed lexical evidence | Reader + judge cost |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n${sourceRows}\n\nReference surfacing and lexical overlap are diagnostics, not proof of factual correctness. Abstention success requires both appropriate refusal and a supported explanation. Full slices, tool traces, tokens, latency, and leak markers are in report.json, results.json, and fixed-retrieval.json.\n`;
+  const pendingLines = calibration.pending.map((item) => `- ${item.sampleId}: ${item.reason}`).join('\n');
+  const md = `# Memory evaluation routine run\n\n- Run: ${runId}\n- Execution: ${executionStatus}; ${ok}/${expected} answer arms, ${fixedOk}/${cases.length} fixed retrieval calls\n- Grading: ${gradingStatus}; ${judged}/${expected} semantic verdicts\n- Source labels: ${readiness.sourceLabelStatus}\n- Human calibration: ${readiness.humanCalibrationStatus}; ${calibration.reviewed}/${calibration.total} reviewed; packet ${calibration.packetHash}\n- Review: ${reviewStatus}; quality outcome ${readiness.qualityOutcome}\n- Overall status: ${status}\n- Grade-only repairs: ${repairs}; repaired verdicts use saved answers and the same run ledger, with judge hashes in manifest.json\n- Run ledger: ${ledgerCostUsd === null ? 'not opened' : `$${ledgerCostUsd.toFixed(4)}`} against $10 cap; source rows exclude failed-verdict charges\n- Corpus SHA-256: ${manifest.corpusHash}\n- Config SHA-256: ${manifest.configHash}\n- Models: ${manifest.reader} reader, ${manifest.extractor} extractor\n\n${pendingLines ? `Pending human decisions:\n\n${pendingLines}\n\n` : ''}| Source | Arms | Judged | No memory | Candidate | Oracle | Wins | Regressions | Unscored | Candidate unsupported/contradicted/unverifiable | Canonical retained | Fixed references | Fixed lexical evidence | Reader + judge cost |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n${sourceRows}\n\nReference surfacing and lexical overlap are diagnostics, not proof of factual correctness. Abstention success requires both appropriate refusal and a supported explanation. Full slices, tool traces, tokens, latency, and leak markers are in report.json, results.json, and fixed-retrieval.json.\n`;
   await savePrivate(join(reportPath, 'report.md'), md);
-  await writeCalibrationPacket(reportPath, cases, histories, rows, judgingEvidence);
-  process.stdout.write(`${reportPath}\n`);
-  if (status === 'incomplete') process.exitCode = 1;
+  if (options.emitPath !== false) process.stdout.write(`${reportPath}\n`);
+  if (status === 'incomplete' && options.failOnIncomplete !== false) process.exitCode = 1;
+  return calibration;
 }
 
 async function repairGrades(): Promise<void> {
@@ -390,17 +394,27 @@ async function packetExisting(): Promise<void> {
   const runId = process.argv[3];
   if (!runId || runId.includes('/') || runId.includes('..')) throw new Error('packet requires a saved run ID');
   const reportPath = join(root, 'runs', runId);
-  const manifest = JSON.parse(await readFile(join(reportPath, 'manifest.json'), 'utf8')) as { cases: string[]; corpusHash: string };
-  if (manifest.corpusHash !== await sourceHash(corpusPath)) throw new Error('saved run corpus differs from current inputs');
+  const manifest = JSON.parse(await readFile(join(reportPath, 'manifest.json'), 'utf8')) as Record<string, unknown> &
+    { cases: string[]; corpusHash: string; reviewInvariantHash?: string };
   const corpus = await loadCorpus();
+  const errors = validateCorpus(corpus);
+  if (errors.length) throw new Error(`corpus invalid:\n${errors.join('\n')}`);
   const byCase = new Map(corpus.cases.map((c) => [c.id, c]));
   const cases = manifest.cases.map((id) => {
     const c = byCase.get(id);
     if (!c) throw new Error(`saved run case unavailable: ${id}`);
     return c;
   });
+  const histories = new Map(corpus.histories.map((h) => [h.id, h]));
+  const currentCorpusHash = await sourceHash(corpusPath);
+  if (manifest.corpusHash !== currentCorpusHash
+    && (!manifest.reviewInvariantHash || manifest.reviewInvariantHash !== reviewInvariantHash(cases, histories))) {
+    throw new Error('saved run corpus differs beyond review status or reviewer notes');
+  }
   const rows = JSON.parse(await readFile(join(reportPath, 'results.json'), 'utf8')) as Array<Record<string, unknown>>;
-  const status = await writeCalibrationPacket(reportPath, cases, new Map(corpus.histories.map((h) => [h.id, h])), rows, judgingEvidence);
+  const fixedRetrieval = JSON.parse(await readFile(join(reportPath, 'fixed-retrieval.json'), 'utf8')) as unknown[];
+  const status = await writeRunReport(cases, { ...manifest, reviewCorpusHash: currentCorpusHash }, rows, fixedRetrieval,
+    reportPath, histories, { emitPath: false, failOnIncomplete: false });
   process.stdout.write(`${JSON.stringify(status)}\n`);
 }
 
