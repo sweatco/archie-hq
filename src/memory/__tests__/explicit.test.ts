@@ -12,6 +12,7 @@ const state = vi.hoisted(() => ({
   writeEntity: vi.fn(),
   rebuildIndex: vi.fn(),
   postInteractiveToThread: vi.fn(),
+  pending: undefined as TaskMetadata['pending_memory_preference'],
 }));
 
 vi.mock('../paths.js', () => ({
@@ -53,6 +54,7 @@ vi.mock('../entities.js', () => ({
   },
 }));
 vi.mock('../entity-index.js', () => ({ rebuildIndex: () => state.rebuildIndex() }));
+vi.mock('../../tasks/persistence.js', () => ({ loadMetadata: async () => ({ pending_memory_preference: state.pending }) }));
 vi.mock('../../system/logger.js', () => ({ logger: { warn: vi.fn() } }));
 
 import { rememberFact, rememberPreference, resolvePreferenceApproval } from '../explicit.js';
@@ -67,7 +69,7 @@ function task(channelId = 'C07PUBLIC1'): Task {
   } as unknown as TaskMetadata;
   return {
     taskId: 'task-explicit', metadata,
-    save: vi.fn().mockResolvedValue(undefined),
+    save: vi.fn(async () => { state.pending = metadata.pending_memory_preference; }),
     prepareMemoryDelivery: vi.fn().mockResolvedValue(undefined),
   } as unknown as Task;
 }
@@ -83,6 +85,7 @@ describe('explicit memory', () => {
     state.writeEntity.mockReset();
     state.rebuildIndex.mockReset();
     state.postInteractiveToThread.mockReset();
+    state.pending = undefined;
   });
 
   it('saves a public preference for its recorded author and treats a retry as unchanged', async () => {
@@ -119,6 +122,22 @@ describe('explicit memory', () => {
     const id = current.metadata.pending_memory_preference!.id;
     state.scope = 'none';
     expect((await resolvePreferenceApproval(current, id, 'U07AUTHOR1', 'D07PRIVATE1', true)).status).toBe('rejected');
+    expect(state.writeUser).not.toHaveBeenCalled();
+  });
+
+  it('rejects a stale save after cancellation', async () => {
+    state.scope = 'user';
+    const cancelling = task('D07PRIVATE1');
+    await rememberPreference(cancelling, { content: 'Prefers short answers', source_message_ts: '123.456' });
+    const stale = task('D07PRIVATE1');
+    stale.metadata.pending_memory_preference = { ...cancelling.metadata.pending_memory_preference! };
+    const id = stale.metadata.pending_memory_preference.id;
+    const [cancelled, saved] = await Promise.all([
+      resolvePreferenceApproval(cancelling, id, 'U07AUTHOR1', 'D07PRIVATE1', false),
+      resolvePreferenceApproval(stale, id, 'U07AUTHOR1', 'D07PRIVATE1', true),
+    ]);
+    expect(cancelled.status).toBe('cancelled');
+    expect(saved.status).toBe('rejected');
     expect(state.writeUser).not.toHaveBeenCalled();
   });
 

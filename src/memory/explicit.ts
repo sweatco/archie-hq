@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import type { Task } from '../tasks/task.js';
+import { loadMetadata } from '../tasks/persistence.js';
 import type { TaskMemoryScope } from '../types/task.js';
 import { classifySlackMemoryScope, getUserInfo, isInternalMemoryUser, postInteractiveToThread } from '../connectors/slack/client.js';
 import { isAuthorizedMemoryScope, scopeForSlackChannel } from '../tasks/memory-scope.js';
@@ -140,7 +141,7 @@ export async function rememberFact(task: Task, input: Fact): Promise<Result> {
 
 export async function resolvePreferenceApproval(task: Task, id: string, userId: string, channelId: string, approve: boolean): Promise<Result> {
   return approvalLock(task.taskId, async () => {
-    const pending = task.metadata.pending_memory_preference;
+    const pending = (await loadMetadata(task.taskId))?.pending_memory_preference;
     if (!pending || pending.id !== id || pending.channel_id !== channelId) return { status: 'rejected', message: 'This approval is stale.' };
     if (pending.author_id !== userId || !isInternalMemoryUser(await getUserInfo(userId))) {
       return { status: 'rejected', message: 'Only the preference author can approve or cancel it.' };
