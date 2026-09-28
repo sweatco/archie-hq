@@ -136,20 +136,31 @@ export async function draftArchie(root: string, out: string): Promise<{ historie
         required: [], forbidden: [], evidence: [evidence.source], review: 'quarantined',
         reason: 'Historical Slack authorization is not in the archive; verify channel properties and requester access before replay.' });
     }
-    const nextTask = {
-      operations: 'Prepare the next operational handoff with a concrete plan that follows earlier requester instructions.',
-      marketing: 'Prepare the next campaign brief with a concrete plan that follows earlier requester instructions.',
-      engineering: 'Prepare the next release checklist with a concrete plan that follows earlier requester instructions.',
-      product: 'Prepare the next product copy revision with a concrete plan that follows earlier requester instructions.',
-    }[group.workload]!;
+    const future = {
+      'ops-publish': { context: 'A new daily publishing cycle starts after the recorded tasks. Draft a handoff plan for the next publish; no publication is authorized yet.',
+        question: 'Which schedule and approval checks should the handoff include before publication?', required: ['check the latest approved schedule', 'identify changes needing approval'] },
+      'ops-scheduling': { context: 'The coordinator needs a proposed calendar for the next operations cycle. Dates in older tasks may have changed.',
+        question: 'What schedule checks and owner confirmations should the proposal include?', required: ['verify current dates', 'confirm the responsible owner'] },
+      'ops-offer': { context: 'A new offer draft is requested for review only. Earlier offer terms may have been superseded.',
+        question: 'How should the draft distinguish approved terms from terms needing approval?', required: ['verify current approved terms', 'flag proposed terms for approval'] },
+      'ops-approval': { context: 'Prepare a decision log for the next operational review. Do not treat earlier proposals as decisions.',
+        question: 'What approvals and open decisions should the log call out?', required: ['separate approved decisions from open proposals', 'identify the next approval owner'] },
+      'marketing-campaign': { context: 'A new campaign brief is requested for review, with audience, channels, and launch dependencies. No launch is authorized.',
+        question: 'What prior constraints and new approvals should the brief check?', required: ['verify audience and channel constraints', 'identify launch approvals'] },
+      'marketing-analytics': { context: 'Prepare a measurement plan for a new campaign. The plan needs metric definitions and source checks before reporting.',
+        question: 'What metrics and data-source checks should the plan specify?', required: ['define the metrics', 'verify data sources'] },
+      'engineering-release': { context: 'Draft a release checklist for the next deployment. The deployment itself is out of scope.',
+        question: 'What validation and rollback checks belong in the checklist?', required: ['validation checks', 'rollback plan'] },
+      'product-copy': { context: 'Prepare a revised product-copy draft for review. Prior wording may include unapproved claims.',
+        question: 'How should the draft handle earlier copy constraints and claim approvals?', required: ['verify current copy constraints', 'flag unapproved claims'] },
+    }[group.name]!;
     cases.push({ id: `${historyId}-future`, family: historyId, source: 'archie', workload: group.workload,
       ability: 'future-task-plan', taskKind: 'future_task', split: splitForFamily(historyId), historyId,
       queryAt: new Date(Date.parse(completions.at(-1)!.at) + 60_000).toISOString(), requester: selected[0].authorId ?? 'unknown',
       audience: { kind: 'none', channelId: selected[0].audience?.channelId ?? channelId, authorization: 'unknown' },
-      currentContext: nextTask,
-      question: 'What would you do for this new task, using relevant prior instructions without assuming unconfirmed decisions are approved?',
-      required: [], forbidden: [], evidence: [selected[0].source], review: 'quarantined',
-      reason: 'Future-task plan draft. Original user evidence is cited; historical authorization and task-specific claims require human review.' });
+      currentContext: future.context, question: future.question,
+      required: future.required, forbidden: ['present an unapproved proposal as approved'], evidence: [], review: 'quarantined',
+      reason: 'Current-task outcomes are independent of recall labels. Reviewer must verify historical authorization, source relevance at the cutoff, and any memory-dependent claims.' });
     histories.push(history);
   }
   // Replace identifiers and recorded author names only after all mappings are known.
@@ -175,7 +186,7 @@ export async function draftArchie(root: string, out: string): Promise<{ historie
 
 export function syntheticCorpus(): { histories: History[]; cases: Case[] } {
   const families = [
-    { name: 'updates', fact: 'The approved launch date is October 12.', newer: 'The approved launch date is October 19.', question: 'What is the current approved launch date?', answer: 'October 19', forbidden: 'October 12' },
+    { name: 'updates', fact: 'Team North owns the partner onboarding checklist.', newer: 'The approved checklist owner is now Team South.', question: 'Who currently owns the partner onboarding checklist?', answer: 'Team South', forbidden: 'Team North' },
     { name: 'decision-correction', fact: 'The approved launch date is October 12.', newer: 'The approved launch date is October 19.', question: 'What is the current approved launch date?', answer: 'October 19', forbidden: 'October 12' },
     { name: 'attribution', fact: 'I prefer a short weekly summary.', newer: 'A colleague proposed daily reports and quoted Mira as preferring daily; Mira did not approve that.', question: 'What cadence did Mira request?', answer: 'weekly', forbidden: 'daily' },
     { name: 'scope', fact: 'In private channel GTESTCHAN01, the renewal ceiling is 40 units.', newer: 'Public notes mention renewal timing but no ceiling.', question: 'What ceiling can this audience access?', answer: '40 units', forbidden: 'a private ceiling from another channel' },
@@ -195,7 +206,7 @@ export function syntheticCorpus(): { histories: History[]; cases: Case[] } {
       let newer = family.newer;
       let required = family.answer;
       let forbidden = family.forbidden;
-      if (v === 1 && family.name === 'updates') { newer = 'The approved launch date is October 26.'; required = 'October 26'; forbidden = 'October 19'; }
+      if (v === 1 && family.name === 'updates') { newer = 'The approved checklist owner is now Team West.'; required = 'Team West'; forbidden = 'Team South'; }
       if (v === 1 && family.name === 'uncertainty') { newer = 'The 24-hour lead time was approved.'; required = 'approved'; forbidden = 'still awaits approval'; }
       const scopeDm = family.name === 'scope' && (v === 4 || v === 5);
       const privateId = scopeDm ? 'DTESTUSER01' : 'GTESTCHAN01';
@@ -225,7 +236,9 @@ export function syntheticCorpus(): { histories: History[]; cases: Case[] } {
       const h: History = { id: historyId, family: id, source: 'synthetic', workload: 'synthetic',
         scope: { kind: family.name === 'scope' ? scopeDm ? 'user' : 'private_channel' : 'public', channelId: family.name === 'scope' ? privateId : 'CTESTCHAN01',
           ...(scopeDm ? { userId: 'UTESTUSER01' } : {}), authorIds: family.name === 'attribution' ? ['UMIRAUSER01', 'UTESTUSER02'] : ['UTESTUSER01'] }, events,
-        completions: [...completionByTask].map(([taskId, at]) => ({ at, taskId })) };
+        completions: [...completionByTask].map(([taskId, at]) => ({ at, taskId })),
+        ...(family.name === 'retention' ? { retentionCheck: { entitySlug: 'project-cedar', observationNeedle: 'Grove',
+          canonicalNeedle: 'Grove', initialTaskId: `${historyId}-task-0` } } : {}) };
       histories.push(h);
       const isScopeDenied = family.name === 'scope' && (v === 1 || v === 2 || v === 5 || v >= 6);
       const audience: Case['audience'] = family.name !== 'scope' ? { kind: h.scope.kind, channelId: h.scope.channelId }
@@ -235,7 +248,7 @@ export function syntheticCorpus(): { histories: History[]; cases: Case[] } {
               : v === 7 ? { kind: 'private_channel', channelId: privateId, authorization: 'external' }
                 : v === 8 ? { kind: 'private_channel', channelId: privateId, authorization: 'unknown' }
                   : { kind: h.scope.kind, channelId: h.scope.channelId, ...(scopeDm ? { userId: 'UTESTUSER01' } : {}) };
-      cases.push({ id: `${id}-${v + 1}`, family: id, source: 'synthetic', workload: 'synthetic', ability: family.name,
+      cases.push({ id: `${id}-${v + 1}`, family: id, scenarioGroup: id, source: 'synthetic', workload: 'synthetic', ability: family.name,
         split: splitForFamily(id), historyId, queryAt: new Date(Date.parse(events.at(-1)!.at) + 1000).toISOString(),
         requester: family.name === 'attribution' ? 'UMIRAUSER01' : family.name === 'scope' ? v === 3 || v === 5 ? 'UTESTUSER02' : 'UTESTUSER01'
           : v === 2 && family.name !== 'retention' ? 'UTESTUSER02' : 'UTESTUSER01', audience, currentContext: '',
@@ -250,7 +263,7 @@ export function syntheticCorpus(): { histories: History[]; cases: Case[] } {
       if (futureVariant) {
         const anchor = cases.at(-1)!;
         const scenario = {
-          updates: ['Draft one sentence for the next release note.', 'What approved date should the sentence use?'],
+          updates: ['Assign the next partner onboarding checklist update.', 'Which team should own the checklist now?'],
           'decision-correction': ['Draft one sentence for the next release note.', 'What approved date should the sentence use?'],
           attribution: ["Prepare Mira's next status reporting plan.", 'What cadence should the plan use?'],
           scope: ['Prepare a renewal quote for the declared audience.', 'What ceiling may you include in the quote, if any?'],

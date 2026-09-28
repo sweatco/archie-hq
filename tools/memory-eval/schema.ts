@@ -15,6 +15,7 @@ export type History = {
   scope: Audience & { authorIds: string[] };
   events: Event[];
   completions: Array<{ at: string; taskId: string; audience?: Audience }>;
+  retentionCheck?: { entitySlug: string; observationNeedle: string; canonicalNeedle: string; initialTaskId: string };
 };
 export type Case = {
   id: string;
@@ -22,6 +23,7 @@ export type Case = {
   source: Source;
   workload: string;
   ability: string;
+  scenarioGroup?: string;
   taskKind?: 'recall' | 'future_task';
   split: 'dev' | 'holdout';
   historyId: string;
@@ -69,6 +71,26 @@ export function authorizedVisibleEvents(c: Case, history: History): Event[] {
   });
 }
 
+export function completionAudience(history: History, completion: History['completions'][number]): Audience | null {
+  const first = history.events.find((event) => event.taskId === completion.taskId && event.at <= completion.at);
+  return completion.audience ?? first?.audience ?? history.scope ?? null;
+}
+
+export function authorizedIngestionAudience(history: History, completion: History['completions'][number]): Audience | null {
+  const audience = completionAudience(history, completion);
+  if (!audience || audience.kind === 'none' || audience.authorization && audience.authorization !== 'verified') return null;
+  if (history.source === 'archie' && audience.authorization !== 'verified') return null;
+  if (audience.kind === 'user' && !audience.userId) return null;
+  const events = history.events.filter((event) => event.taskId === completion.taskId && event.at <= completion.at);
+  if (!events.length || events.some((event) => {
+    const source = event.audience ?? history.scope;
+    return source.kind !== audience.kind || source.channelId !== audience.channelId || source.userId !== audience.userId
+      || source.authorization && source.authorization !== 'verified'
+      || history.source === 'archie' && source.authorization !== 'verified';
+  })) return null;
+  return audience;
+}
+
 export function permittedEvidence(c: Case, history: History): Event[] {
   const authorized = authorizedVisibleEvents(c, history);
   return c.evidence.map((span) => authorized.find((event) => event.source.ref === span.ref && event.source.start === span.start && event.source.end === span.end))
@@ -79,16 +101,27 @@ export function validateCorpus(corpus: Corpus): string[] {
   const errors: string[] = [];
   const histories = new Map(corpus.histories.map((h) => [h.id, h]));
   const ids = new Set<string>();
+  const signatures = new Map<string, { historyId: string; group: string }>();
+  for (const history of corpus.histories.filter((item) => item.source === 'synthetic')) {
+    const signature = digest(JSON.stringify(history.events.map((event) => [event.role, event.text])));
+    const group = corpus.cases.find((c) => c.historyId === history.id)?.scenarioGroup ?? history.family;
+    const prior = signatures.get(signature);
+    if (prior && prior.group !== group) errors.push(`${history.id}: duplicates ${prior.historyId} across scenario groups`);
+    else signatures.set(signature, { historyId: history.id, group });
+  }
   for (const c of corpus.cases) {
     if (ids.has(c.id)) errors.push(`${c.id}: duplicate id`);
     ids.add(c.id);
     const h = histories.get(c.historyId);
     if (!h) { errors.push(`${c.id}: missing history`); continue; }
     if (h.family !== c.family || h.source !== c.source) errors.push(`${c.id}: family/source mismatch`);
-    if (c.split !== splitForFamily(c.family)) errors.push(`${c.id}: split differs from family`);
+    if (c.split !== splitForFamily(c.scenarioGroup ?? c.family)) errors.push(`${c.id}: split differs from scenario group`);
     if (!Number.isFinite(Date.parse(c.queryAt))) errors.push(`${c.id}: invalid query time`);
-    if (c.source === 'archie' && c.review !== 'quarantined' && h.events.some((event) => !event.audience || event.audience.authorization !== 'verified')) {
+    if (c.source === 'archie' && c.review !== 'quarantined' && visibleAt(h, c.queryAt).some((event) => !event.audience || event.audience.authorization !== 'verified')) {
       errors.push(`${c.id}: real-history authorization is unverified`);
+    }
+    if (c.review !== 'quarantined') for (const completion of h.completions.filter((item) => item.at <= c.queryAt)) {
+      if (!authorizedIngestionAudience(h, completion)) errors.push(`${c.id}: completion authorization is unverified or denied at ${completion.at}`);
     }
     const evidenceFree = c.id.endsWith('_abs') || (c.ability === 'scope' && c.required.some((claim) => /insufficient/i.test(claim)));
     if (c.review === 'approved' && (c.required.length === 0 && c.forbidden.length === 0 || c.evidence.length === 0 && !evidenceFree)) {

@@ -271,6 +271,13 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     expect(classifySlackMemoryScope).not.toHaveBeenCalled();
   });
 
+  it('reports a denied replay as a zero-call outcome', async () => {
+    process.env.ARCHIE_MEMORY_EVAL_REPLAY = 'true';
+    const outcome = await replayTaskCompletion(TASK_ID, { scope: { kind: 'none', channel_id: 'C1' }, strict: true });
+    expect(outcome).toEqual({ status: 'denied', reason: 'scope_denied', modelCalled: false });
+    expect(runExtraction).not.toHaveBeenCalled();
+  });
+
   it('does not write org.md (org.md retired); org knowledge lands in an entity', async () => {
     handleTaskCompleted(TASK_ID);
     await drain();

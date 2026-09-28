@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { parseKnowledgeLog, syntheticCorpus } from './corpus.js';
 import { checkpointKey, permittedEvidence, validateCorpus, visibleAt } from './schema.js';
 import { classificationForCase } from './auth.js';
+import { selectedCases } from './selection.js';
 
 describe('memory evaluation corpus', () => {
   it('keeps multiline records intact', () => {
@@ -20,6 +21,53 @@ describe('memory evaluation corpus', () => {
     expect(new Set(family.map((c) => c.split)).size).toBe(1);
     const history = part.histories.find((h) => h.id === 'synthetic-updates-v1')!;
     expect(visibleAt(history, history.events[0].at).map((e) => e.text)).toEqual([history.events[0].text]);
+  });
+
+  it('rejects equivalent synthetic histories under different split identities', () => {
+    const part = syntheticCorpus();
+    const original = part.histories.find((h) => h.id === 'synthetic-updates-v1')!;
+    const copy = structuredClone(original);
+    copy.id = 'copied-history'; copy.family = 'copied-family';
+    const c = structuredClone(part.cases.find((item) => item.historyId === original.id)!);
+    c.id = 'copied-case'; c.historyId = copy.id; c.family = copy.family; c.scenarioGroup = copy.family;
+    c.split = 'dev'; c.evidence = [];
+    expect(validateCorpus({ version: 1, histories: [...part.histories, copy], cases: [...part.cases, c], provenance: {} })
+      .some((error) => error.includes('duplicates') && error.includes('across scenario groups'))).toBe(true);
+  });
+
+  it('does not select quarantined cases even by explicit ID', () => {
+    const part = syntheticCorpus();
+    const c = part.cases.find((item) => item.id === 'synthetic-decision-correction-1-future')!;
+    c.review = 'quarantined';
+    expect(() => selectedCases({ version: 1, ...part, provenance: {} }, c.id)).toThrow('quarantined');
+  });
+
+  it('checks only completions before the query and rejects unknown real ingestion authorization', () => {
+    const part = syntheticCorpus();
+    const history = structuredClone(part.histories.find((h) => h.id === 'synthetic-decision-correction-v1')!);
+    history.source = 'archie';
+    history.events.forEach((event) => { event.audience = { kind: 'public', channelId: 'CTESTCHAN01', authorization: 'verified' }; });
+    history.completions.forEach((completion) => { completion.audience = { kind: 'public', channelId: 'CTESTCHAN01', authorization: 'verified' }; });
+    const c = structuredClone(part.cases.find((item) => item.historyId === history.id)!);
+    c.source = 'archie'; c.review = 'approved'; c.queryAt = history.completions[0].at;
+    c.evidence = [history.events[0].source];
+    history.completions[1].audience = { kind: 'public', channelId: 'CTESTCHAN01', authorization: 'unknown' };
+    expect(validateCorpus({ version: 1, histories: [history], cases: [c], provenance: {} })).toEqual([]);
+    c.queryAt = history.completions[1].at;
+    expect(validateCorpus({ version: 1, histories: [history], cases: [c], provenance: {} })
+      .some((error) => error.includes('completion authorization'))).toBe(true);
+  });
+
+  it('rejects a verified public completion containing a private source event', () => {
+    const part = syntheticCorpus();
+    const h = structuredClone(part.histories.find((item) => item.id === 'synthetic-decision-correction-v1')!);
+    h.events[0].audience = { kind: 'private_channel', channelId: 'GTESTCHAN01', authorization: 'verified' };
+    h.completions[0].audience = { kind: 'public', channelId: 'CTESTCHAN01', authorization: 'verified' };
+    const c = structuredClone(part.cases.find((item) => item.historyId === h.id)!);
+    c.queryAt = h.completions[0].at;
+    c.evidence = [];
+    expect(validateCorpus({ version: 1, histories: [h], cases: [c], provenance: {} })
+      .some((error) => error.includes('completion authorization'))).toBe(true);
   });
 
   it('rejects future evidence and assistant-only approved Archie gold', () => {

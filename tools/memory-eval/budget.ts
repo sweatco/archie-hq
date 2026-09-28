@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 
 export const PRICING = {
   source: 'https://platform.claude.com/docs/en/about-claude/pricing',
-  checkedAt: '2026-09-26',
+  checkedAt: '2026-09-28',
   models: {
     'claude-opus-5-5': { input: 4, output: 20 },
     'claude-sonnet-5': { input: 2, output: 10 },
