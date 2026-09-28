@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseKnowledgeLog, syntheticCorpus } from './corpus.js';
 import { checkpointKey, permittedEvidence, validateCorpus, visibleAt } from './schema.js';
+import { classificationForCase } from './auth.js';
 
 describe('memory evaluation corpus', () => {
   it('keeps multiline records intact', () => {
@@ -35,11 +36,22 @@ describe('memory evaluation corpus', () => {
     expect(validateCorpus({ version: 1, histories: [archie], cases: [c], provenance: {} })).toContain(`${c.id}: assistant assertion used as approved gold`);
   });
 
-  it('rejects a private audience crossing channels', () => {
+  it('allows a cross-private denial case without authorizing its source', () => {
     const part = syntheticCorpus();
     const c = structuredClone(part.cases.find((x) => x.family === 'synthetic-scope')!);
     c.audience = { kind: 'private_channel', channelId: 'GOTHERCHAN01' };
-    expect(validateCorpus({ version: 1, histories: part.histories, cases: [c], provenance: {} })).toContain(`${c.id}: private audience differs from history scope`);
+    const history = part.histories.find((h) => h.id === c.historyId)!;
+    expect(validateCorpus({ version: 1, histories: part.histories, cases: [c], provenance: {} })).toEqual([]);
+    expect(permittedEvidence(c, history).some((event) => event.text.includes('40 units'))).toBe(false);
+    const dm = part.cases.find((item) => item.id === 'synthetic-scope-6')!;
+    expect(permittedEvidence(dm, part.histories.find((h) => h.id === dm.historyId)!)).toEqual([]);
+    for (const id of ['synthetic-scope-7', 'synthetic-scope-8', 'synthetic-scope-9']) {
+      const denied = part.cases.find((item) => item.id === id)!;
+      expect(permittedEvidence(denied, part.histories.find((h) => h.id === denied.historyId)!)).toEqual([]);
+      expect(classificationForCase(denied)).toEqual({ kind: 'none' });
+    }
+    expect(classificationForCase(dm)).toEqual({ kind: 'none' });
+    expect(classificationForCase(part.cases.find((item) => item.id === 'synthetic-scope-5')!)).toEqual({ kind: 'user', user_id: 'UTESTUSER01' });
   });
 
   it('invalidates a checkpoint when history, cutoff, or ingestion configuration changes', () => {

@@ -3,16 +3,18 @@ import { createHash } from 'node:crypto';
 export type Source = 'archie' | 'synthetic' | 'longmemeval';
 export type Review = 'draft' | 'calibrated' | 'approved' | 'quarantined';
 export type Span = { ref: string; start: number; end: number; quote: string };
+export type Audience = { kind: 'public' | 'private_channel' | 'user' | 'none'; channelId: string; userId?: string;
+  authorization?: 'verified' | 'unknown' | 'revoked' | 'external' };
 export type Event = { at: string; role: 'user' | 'assistant' | 'system'; text: string; source: Span; taskId?: string; authorId?: string; authorName?: string; messageTs?: string;
-  audience?: { kind: 'public' | 'private_channel' | 'user'; channelId: string } };
+  audience?: Audience };
 export type History = {
   id: string;
   family: string;
   source: Source;
   workload: string;
-  scope: { kind: 'public' | 'private_channel' | 'user'; channelId: string; authorIds: string[] };
+  scope: Audience & { authorIds: string[] };
   events: Event[];
-  completions: Array<{ at: string; taskId: string }>;
+  completions: Array<{ at: string; taskId: string; audience?: Audience }>;
 };
 export type Case = {
   id: string;
@@ -20,11 +22,12 @@ export type Case = {
   source: Source;
   workload: string;
   ability: string;
+  taskKind?: 'recall' | 'future_task';
   split: 'dev' | 'holdout';
   historyId: string;
   queryAt: string;
   requester: string;
-  audience: { kind: 'public' | 'private_channel' | 'user'; channelId: string };
+  audience: Audience;
   currentContext: string;
   question: string;
   required: string[];
@@ -54,15 +57,22 @@ export function checkpointKey(history: History, cutoff: string, configHash: stri
   }));
 }
 
+export function authorizedVisibleEvents(c: Case, history: History): Event[] {
+  if (c.audience.kind === 'user' && c.audience.userId !== c.requester) return [];
+  return visibleAt(history, c.queryAt).filter((event) => {
+    const sourceAudience = event.audience ?? history.scope;
+    if (sourceAudience.kind === 'none' || sourceAudience.authorization && sourceAudience.authorization !== 'verified'
+      || c.audience.kind === 'none' || c.audience.authorization && c.audience.authorization !== 'verified') return false;
+    if (sourceAudience.kind === 'public') return true;
+    return c.audience.kind === sourceAudience.kind && c.audience.channelId === sourceAudience.channelId
+      && (sourceAudience.kind !== 'user' || sourceAudience.userId === c.requester && c.audience.userId === c.requester);
+  });
+}
+
 export function permittedEvidence(c: Case, history: History): Event[] {
-  const visible = visibleAt(history, c.queryAt);
-  return c.evidence.map((span) => visible.find((e) => e.source.ref === span.ref && e.source.start === span.start && e.source.end === span.end))
-    .filter((event): event is Event => {
-      if (!event) return false;
-      const sourceAudience = event.audience ?? history.scope;
-      return sourceAudience.kind === 'public' || c.audience.kind !== 'public'
-        && c.audience.kind === sourceAudience.kind && c.audience.channelId === sourceAudience.channelId;
-    });
+  const authorized = authorizedVisibleEvents(c, history);
+  return c.evidence.map((span) => authorized.find((event) => event.source.ref === span.ref && event.source.start === span.start && event.source.end === span.end))
+    .filter((event): event is Event => !!event);
 }
 
 export function validateCorpus(corpus: Corpus): string[] {
@@ -77,8 +87,8 @@ export function validateCorpus(corpus: Corpus): string[] {
     if (h.family !== c.family || h.source !== c.source) errors.push(`${c.id}: family/source mismatch`);
     if (c.split !== splitForFamily(c.family)) errors.push(`${c.id}: split differs from family`);
     if (!Number.isFinite(Date.parse(c.queryAt))) errors.push(`${c.id}: invalid query time`);
-    if (c.audience.kind !== 'public' && c.audience.channelId !== h.scope.channelId) {
-      errors.push(`${c.id}: private audience differs from history scope`);
+    if (c.source === 'archie' && c.review !== 'quarantined' && h.events.some((event) => !event.audience || event.audience.authorization !== 'verified')) {
+      errors.push(`${c.id}: real-history authorization is unverified`);
     }
     const evidenceFree = c.id.endsWith('_abs') || (c.ability === 'scope' && c.required.some((claim) => /insufficient/i.test(claim)));
     if (c.review === 'approved' && (c.required.length === 0 && c.forbidden.length === 0 || c.evidence.length === 0 && !evidenceFree)) {

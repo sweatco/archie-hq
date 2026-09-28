@@ -366,6 +366,25 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     expect(content).toContain('Prefers direct communication');
   });
 
+  it('rejects profile updates attributed to a quote or another author', async () => {
+    await writeFile(join(sessionsDir, TASK_ID, 'shared', 'metadata.json'), JSON.stringify({
+      ...METADATA,
+      memory_authors: { [USER_DANA]: 'Dana Lee', [USER_BOB]: 'Bob' },
+      memory_message_authors: { [DANA_MESSAGE_TS]: USER_DANA, '1700000001.123456': USER_BOB },
+    }));
+    vi.mocked(runExtraction).mockResolvedValue({
+      user_updates: { [USER_DANA]: [
+        { action: 'add', section: 'Work Style', content: 'Quoted preference', source_message_ts: '1700000001.123456' },
+        { action: 'add', section: 'Work Style', content: 'Unverified mention', source_message_ts: '1700000002.123456' },
+      ] },
+      entity_updates: [], task_summary: 'Discussed preferences.', activity_summary: 'Discussed preferences', domain: 'operations',
+    });
+
+    handleTaskCompleted(TASK_ID);
+    await drain();
+    expect(existsSync(join(usersDir, `${USER_DANA}.md`))).toBe(false);
+  });
+
   it.each(['Alex\\Ops', 'Alex\\', 'Alex\\name', 'Alex "Ops"'])(
     'persists public extraction with the exact author name %j',
     async (displayName) => {

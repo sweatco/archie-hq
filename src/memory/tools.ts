@@ -50,15 +50,11 @@ function result(content: string) {
   return { content: [{ type: 'text' as const, text: envelope(content) }] };
 }
 
-export async function authorizeTaskMemory(task: Task): Promise<AuthorizedMemory | null> {
+export function authorizeMemoryWithClassification(metadata: TaskMetadata, classification: import('../types/task.js').SlackMemoryClassification): AuthorizedMemory | null {
   if (!isMemoryReady()) return null;
-  const metadata = task.metadata;
   const destination = metadata.memory_destination;
   if (!destination) return null;
-  const scope = scopeForSlackChannel(
-    await classifySlackMemoryScope(destination.channel_id),
-    destination.channel_id,
-  );
+  const scope = scopeForSlackChannel(classification, destination.channel_id);
   if (!isAuthorizedMemoryScope(destination, scope)) return null;
   if (scope.kind === 'private_channel') {
     return { metadata, allowPublic: true, privateChannelId: scope.channel_id };
@@ -67,6 +63,11 @@ export async function authorizeTaskMemory(task: Task): Promise<AuthorizedMemory 
     return { metadata, allowPublic: true, privateChannelId: scope.channel_id };
   }
   return { metadata, allowPublic: true };
+}
+
+export async function authorizeTaskMemory(task: Task): Promise<AuthorizedMemory | null> {
+  if (!isMemoryReady() || !task.metadata.memory_destination) return null;
+  return authorizeMemoryWithClassification(task.metadata, await classifySlackMemoryScope(task.metadata.memory_destination.channel_id));
 }
 
 async function authorizeMemory(task: Task): Promise<AuthorizedMemory | null> {

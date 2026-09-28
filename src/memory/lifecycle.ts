@@ -24,6 +24,7 @@ import { writeTaskSummary } from './task-summaries.js';
 import { classifySlackMemoryScope } from '../connectors/slack/client.js';
 import { isAuthorizedMemoryScope, scopeForSlackChannel } from '../tasks/memory-scope.js';
 import type { TaskMemoryScope } from '../types/task.js';
+import type { HousekeepingBudget } from './housekeeping.js';
 
 // ============================================================================
 // Housekeeping note queue (consumed by buildSummaryMarkdown)
@@ -95,6 +96,7 @@ export interface MemoryReplayOptions {
   maxBudgetUsd?: number;
   onUsage?: (usage: { inputTokens: number; outputTokens: number; costUsd?: number }) => void;
   strict?: boolean;
+  housekeepingBudget?: HousekeepingBudget;
 }
 
 /** Offline callers supply recorded scope and a fixed clock in an isolated workdir. */
@@ -234,7 +236,7 @@ async function processExtraction(taskId: string, options: MemoryReplayOptions = 
   if (housekeepingTargets.size > 0) {
     const { runHousekeeping } = await import('./housekeeping.js');
     for (const target of housekeepingTargets) {
-      if (options.strict) await runHousekeeping(target);
+      if (options.strict) await runHousekeeping(target, { strict: true, budget: options.housekeepingBudget });
       else extractionQueue = extractionQueue.then(() =>
         runHousekeeping(target).catch((err) => logger.warn('memory', `housekeeping for ${target} failed: ${err}`))
       );

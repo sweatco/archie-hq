@@ -10,7 +10,7 @@ export async function draftRealLabels(corpus: Corpus, ledgerPath: string): Promi
   let drafted = 0;
   const failures: string[] = [];
   for (const history of corpus.histories.filter((h) => h.source === 'archie')) {
-    const cases = corpus.cases.filter((c) => c.historyId === history.id);
+    const cases = corpus.cases.filter((c) => c.historyId === history.id && c.taskKind !== 'future_task');
     if (cases.every((c) => c.reason?.startsWith('Model-drafted'))) continue;
     const evidence = cases.map((c) => {
       const span = c.evidence[0];
