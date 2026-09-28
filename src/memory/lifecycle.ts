@@ -23,6 +23,7 @@ import type { TaskMetadata } from '../types/task.js';
 import { writeTaskSummary } from './task-summaries.js';
 import { classifySlackMemoryScope } from '../connectors/slack/client.js';
 import { isAuthorizedMemoryScope, scopeForSlackChannel } from '../tasks/memory-scope.js';
+import type { TaskMemoryScope } from '../types/task.js';
 
 // ============================================================================
 // Housekeeping note queue (consumed by buildSummaryMarkdown)
@@ -87,7 +88,24 @@ export function rescheduleTaskCompleted(taskId: string): void {
 // processExtraction
 // ============================================================================
 
-async function processExtraction(taskId: string): Promise<void> {
+export interface MemoryReplayOptions {
+  scope?: TaskMemoryScope;
+  now?: () => Date;
+  model?: string;
+  maxBudgetUsd?: number;
+  onUsage?: (usage: { inputTokens: number; outputTokens: number; costUsd?: number }) => void;
+  strict?: boolean;
+}
+
+/** Offline callers supply recorded scope and a fixed clock in an isolated workdir. */
+export async function replayTaskCompletion(taskId: string, options: MemoryReplayOptions): Promise<void> {
+  if (process.env.ARCHIE_MEMORY_EVAL_REPLAY !== 'true' || !options.scope || !options.strict || !isMemoryReady()) {
+    throw new Error('evaluation replay requires isolated evaluator mode, scoped ready store, and strict mode');
+  }
+  await processExtraction(taskId, options);
+}
+
+async function processExtraction(taskId: string, options: MemoryReplayOptions = {}): Promise<void> {
   const metadata = await loadMetadata(taskId);
   if (!metadata) {
     logger.warn('memory', `processExtraction: metadata not found for ${taskId}`);
@@ -96,7 +114,7 @@ async function processExtraction(taskId: string): Promise<void> {
 
   const destination = metadata.memory_destination;
   if (!destination) return;
-  const classify = async () => scopeForSlackChannel(
+  const classify = async () => options.scope ?? scopeForSlackChannel(
     await classifySlackMemoryScope(destination.channel_id),
     destination.channel_id,
   );
@@ -117,8 +135,8 @@ async function processExtraction(taskId: string): Promise<void> {
       status: metadata.status,
       createdAt: metadata.created_at,
       transcript,
-    }, new Set());
-    if (!outcome) return;
+    }, new Set(), { model: options.model, maxBudgetUsd: options.maxBudgetUsd, onUsage: options.onUsage });
+    if (!outcome) { if (options.strict) throw new Error(`extraction failed for ${taskId}`); return; }
     const current = await classify();
     if (
       !isAuthorizedMemoryScope(destination, current)
@@ -130,7 +148,7 @@ async function processExtraction(taskId: string): Promise<void> {
       logger.warn('memory', `dropped task summary for ${taskId} (sanitizer rejected)`);
       return;
     }
-    const extractionAt = new Date().toISOString();
+    const extractionAt = (options.now?.() ?? new Date()).toISOString();
     await writeTaskSummary(
       'private',
       destination.channel_id,
@@ -168,10 +186,12 @@ async function processExtraction(taskId: string): Promise<void> {
       createdAt: metadata.created_at,
       transcript,
     },
-    allowedUserIds
+    allowedUserIds,
+    { model: options.model, maxBudgetUsd: options.maxBudgetUsd, onUsage: options.onUsage },
   );
 
   if (!result) {
+    if (options.strict) throw new Error(`extraction failed for ${taskId}`);
     logger.warn('memory', `processExtraction: extraction returned null for ${taskId}`);
     return;
   }
@@ -214,10 +234,9 @@ async function processExtraction(taskId: string): Promise<void> {
   if (housekeepingTargets.size > 0) {
     const { runHousekeeping } = await import('./housekeeping.js');
     for (const target of housekeepingTargets) {
-      extractionQueue = extractionQueue.then(() =>
-        runHousekeeping(target).catch((err) =>
-          logger.warn('memory', `housekeeping for ${target} failed: ${err}`)
-        )
+      if (options.strict) await runHousekeeping(target);
+      else extractionQueue = extractionQueue.then(() =>
+        runHousekeeping(target).catch((err) => logger.warn('memory', `housekeeping for ${target} failed: ${err}`))
       );
     }
   }
@@ -246,6 +265,7 @@ async function processExtraction(taskId: string): Promise<void> {
       users,
       activityIndex,
       related,
+      (options.now?.() ?? new Date()).toISOString(),
     );
   } else {
     logger.warn('memory', `dropped task summary for ${taskId} (sanitizer rejected)`);
@@ -277,10 +297,10 @@ async function writeSummary(
   result: ExtractionResult,
   users: UserRef[],
   activityIndex: ActivityEntry[],
-  related?: ActivityEntry[]
+  related?: ActivityEntry[],
+  extractionAt = new Date().toISOString(),
 ): Promise<void> {
   const housekeepingNotes = drainHousekeepingNotes();
-  const extractionAt = new Date().toISOString();
   const content = buildSummaryMarkdown(
     taskId,
     channelId,

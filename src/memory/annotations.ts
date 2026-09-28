@@ -7,6 +7,8 @@
  * housekeeping.ts can use it without circular imports.
  */
 
+import { memoryNow } from './clock.js';
+
 const TOUCHED_RE = /<!--\s*touched:\s*(\d{4}-\d{2}-\d{2})\s*-->/;
 
 /** Extract the touched date from a bullet line, or null when absent. */
@@ -22,7 +24,7 @@ export function stripLastTouched(line: string): string {
 
 /** Append (or refresh) a touched annotation. Defaults to today's UTC date. */
 export function appendLastTouched(line: string, date?: string): string {
-  const d = date ?? new Date().toISOString().slice(0, 10);
+  const d = date ?? memoryNow().toISOString().slice(0, 10);
   const stripped = stripLastTouched(line);
   return `${stripped}  <!-- touched: ${d} -->`;
 }

@@ -15,7 +15,7 @@ import {
   isMemoryToolsEnabled,
 } from './paths.js';
 
-interface AuthorizedMemory {
+export interface AuthorizedMemory {
   metadata: TaskMetadata;
   allowPublic: boolean;
   privateChannelId?: string;
@@ -161,6 +161,10 @@ function rankHits(hits: SearchHit[], limit: number): SearchHit[] {
 async function searchMemory(task: Task, query: string, limit: number) {
   const auth = await authorizeMemory(task);
   if (!auth) return result('Memory unavailable for this task audience.');
+  return searchMemoryAuthorized(auth, query, limit);
+}
+
+export async function searchMemoryAuthorized(auth: AuthorizedMemory, query: string, limit: number) {
   const tokens = queryTokens(query);
   if (tokens.length === 0) return result('Query must contain at least one lexical token.');
   const hits = rankHits(await buildSearchHits(auth, tokens), limit);
@@ -170,6 +174,11 @@ async function searchMemory(task: Task, query: string, limit: number) {
 async function readEntityMemory(task: Task, identifier: string) {
   const auth = await authorizeMemory(task);
   if (!auth?.allowPublic) return result('Memory unavailable for this task audience.');
+  return readEntityAuthorized(auth, identifier);
+}
+
+export async function readEntityAuthorized(auth: AuthorizedMemory, identifier: string) {
+  if (!auth.allowPublic) return result('Memory unavailable for this task audience.');
   const candidate = identifier.trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9 _-]{0,79}$/.test(candidate) || candidate.includes('..')) {
     return result('Invalid entity identifier.');
@@ -184,6 +193,10 @@ async function readEntityMemory(task: Task, identifier: string) {
 async function readTaskSummaryMemory(task: Task, taskId: string) {
   const auth = await authorizeMemory(task);
   if (!auth) return result('Memory unavailable for this task audience.');
+  return readTaskSummaryAuthorized(auth, taskId);
+}
+
+export async function readTaskSummaryAuthorized(auth: AuthorizedMemory, taskId: string) {
   if (!isAllowedTaskId(taskId)) return result('Invalid task ID.');
   if (auth.privateChannelId) {
     const [local] = await readTaskSummariesFromChannel('private', auth.privateChannelId, taskId);

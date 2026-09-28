@@ -22,7 +22,8 @@
     "docker:dev": "docker compose up --build",
     "docker:stop": "docker compose down",
     "test": "vitest run --reporter=verbose",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "memory:eval": "tsx tools/memory-eval/cli.ts"
   },
   "engines": {
     "node": ">=20.0.0",

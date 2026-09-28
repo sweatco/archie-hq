@@ -218,7 +218,8 @@ export function parseExtractionResponse(
  */
 export async function runExtraction(
   input: ExtractionInput,
-  allowedUserIds?: Set<string>
+  allowedUserIds?: Set<string>,
+  options: { model?: string; maxBudgetUsd?: number; onUsage?: (usage: { inputTokens: number; outputTokens: number; costUsd?: number }) => void } = {},
 ): Promise<ExtractionResult | null> {
   let prompt: string;
   try {
@@ -232,8 +233,9 @@ export async function runExtraction(
     const agentQuery = query({
       prompt,
       options: {
-        model: 'sonnet' as any,
+        model: (options.model ?? 'sonnet') as any,
         maxTurns: 1,
+        ...(options.maxBudgetUsd ? { maxBudgetUsd: options.maxBudgetUsd } : {}),
         tools: [],
         executable: 'node',
         env: {
@@ -265,6 +267,12 @@ export async function runExtraction(
         }
       }
       if (event.type === 'result') {
+        const usage = (event as any).usage;
+        if (usage && options.onUsage) options.onUsage({
+          inputTokens: Number(usage.input_tokens ?? 0),
+          outputTokens: Number(usage.output_tokens ?? 0),
+          costUsd: Number((event as any).total_cost_usd ?? 0),
+        });
         if (event.subtype === 'success') {
           const resultText = (event as any).result;
           if (typeof resultText === 'string' && resultText.trim()) {
