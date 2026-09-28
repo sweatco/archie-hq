@@ -69,8 +69,16 @@ const REAL_FAMILIES: Array<{ name: string; workload: string; tasks: string[] }> 
   { name: 'product-copy', workload: 'product', tasks: ['task-20260922-1132-gxx0ix', 'task-20260924-0952-kwk6f8', 'task-20260924-1429-y14i4l'] },
 ];
 
-export async function draftArchie(root: string, out: string): Promise<{ histories: History[]; cases: Case[] }> {
+type FutureRecipe = { archiveSha256: string; families: Record<string, { currentContext: string; question: string;
+  required: string[]; forbidden: string[]; sources: Array<{ taskId: string; start: number }>; relevanceNote: string }> };
+
+export async function draftArchie(root: string, out: string, archiveSha256: string): Promise<{ histories: History[]; cases: Case[] }> {
   await mkdir(out, { recursive: true, mode: 0o700 });
+  const futureRecipe = await json<FutureRecipe>(join(out, 'real-future-drafts.json'));
+  if (futureRecipe.archiveSha256 !== archiveSha256
+    || JSON.stringify(Object.keys(futureRecipe.families).sort()) !== JSON.stringify(REAL_FAMILIES.map((group) => group.name).sort())) {
+    throw new Error('private real future-task recipe does not match the verified archive or workload families');
+  }
   const keyPath = join(out, 'pseudonym-key');
   let key: Buffer;
   try { key = await readFile(keyPath); } catch { key = randomBytes(32); await writeFile(keyPath, key, { mode: 0o600, flag: 'wx' }); }
@@ -136,31 +144,23 @@ export async function draftArchie(root: string, out: string): Promise<{ historie
         required: [], forbidden: [], evidence: [evidence.source], review: 'quarantined',
         reason: 'Historical Slack authorization is not in the archive; verify channel properties and requester access before replay.' });
     }
-    const future = {
-      'ops-publish': { context: 'A new daily publishing cycle starts after the recorded tasks. Draft a handoff plan for the next publish; no publication is authorized yet.',
-        question: 'Which schedule and approval checks should the handoff include before publication?', required: ['check the latest approved schedule', 'identify changes needing approval'] },
-      'ops-scheduling': { context: 'The coordinator needs a proposed calendar for the next operations cycle. Dates in older tasks may have changed.',
-        question: 'What schedule checks and owner confirmations should the proposal include?', required: ['verify current dates', 'confirm the responsible owner'] },
-      'ops-offer': { context: 'A new offer draft is requested for review only. Earlier offer terms may have been superseded.',
-        question: 'How should the draft distinguish approved terms from terms needing approval?', required: ['verify current approved terms', 'flag proposed terms for approval'] },
-      'ops-approval': { context: 'Prepare a decision log for the next operational review. Do not treat earlier proposals as decisions.',
-        question: 'What approvals and open decisions should the log call out?', required: ['separate approved decisions from open proposals', 'identify the next approval owner'] },
-      'marketing-campaign': { context: 'A new campaign brief is requested for review, with audience, channels, and launch dependencies. No launch is authorized.',
-        question: 'What prior constraints and new approvals should the brief check?', required: ['verify audience and channel constraints', 'identify launch approvals'] },
-      'marketing-analytics': { context: 'Prepare a measurement plan for a new campaign. The plan needs metric definitions and source checks before reporting.',
-        question: 'What metrics and data-source checks should the plan specify?', required: ['define the metrics', 'verify data sources'] },
-      'engineering-release': { context: 'Draft a release checklist for the next deployment. The deployment itself is out of scope.',
-        question: 'What validation and rollback checks belong in the checklist?', required: ['validation checks', 'rollback plan'] },
-      'product-copy': { context: 'Prepare a revised product-copy draft for review. Prior wording may include unapproved claims.',
-        question: 'How should the draft handle earlier copy constraints and claim approvals?', required: ['verify current copy constraints', 'flag unapproved claims'] },
-    }[group.name]!;
+    const future = futureRecipe.families[group.name];
+    if (!future.currentContext || !future.question || !future.required.length || !future.sources.length) throw new Error(`${group.name}: incomplete future-task recipe`);
+    const futureEvidence = future.sources.map(({ taskId, start }) => {
+      const event = rawEvents.find((item) => item.taskId === taskId && item.source.start === start && item.role === 'user');
+      if (!event) throw new Error(`${group.name}: future-task source not found: ${taskId}:${start}`);
+      return event;
+    });
+    const queryAt = new Date(Date.parse(completions.at(-1)!.at) + 60_000).toISOString();
+    if (futureEvidence.some((event) => event.at > queryAt)) throw new Error(`${group.name}: future-task evidence is later than query`);
+    if (new Set(futureEvidence.map((event) => event.audience?.channelId)).size !== 1) throw new Error(`${group.name}: future-task evidence spans multiple recorded channels`);
     cases.push({ id: `${historyId}-future`, family: historyId, source: 'archie', workload: group.workload,
       ability: 'future-task-plan', taskKind: 'future_task', split: splitForFamily(historyId), historyId,
-      queryAt: new Date(Date.parse(completions.at(-1)!.at) + 60_000).toISOString(), requester: selected[0].authorId ?? 'unknown',
-      audience: { kind: 'none', channelId: selected[0].audience?.channelId ?? channelId, authorization: 'unknown' },
-      currentContext: future.context, question: future.question,
-      required: future.required, forbidden: ['present an unapproved proposal as approved'], evidence: [], review: 'quarantined',
-      reason: 'Current-task outcomes are independent of recall labels. Reviewer must verify historical authorization, source relevance at the cutoff, and any memory-dependent claims.' });
+      queryAt, requester: futureEvidence.find((event) => event.authorId)?.authorId ?? 'unknown',
+      audience: { kind: 'none', channelId: futureEvidence[0].audience?.channelId ?? channelId, authorization: 'unknown' },
+      currentContext: future.currentContext, question: future.question,
+      required: future.required, forbidden: future.forbidden, evidence: futureEvidence.map((event) => event.source), review: 'quarantined',
+      reason: `${future.relevanceNote} Historical authorization and human label approval are still pending.` });
     histories.push(history);
   }
   // Replace identifiers and recorded author names only after all mappings are known.

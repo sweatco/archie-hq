@@ -9,9 +9,10 @@ import { authorizedVisibleEvents, checkpointKey, digest, permittedEvidence, vali
 import { PRICING } from './budget.js';
 import { draftRealLabels } from './labels.js';
 import { evidenceDiagnosis, retainedEvidence } from './diagnostics.js';
-import { answerSuccess, oracleFor, retryableJudgeError } from './judgment.js';
+import { answerSuccess, oracleFor, readerExecution, retryableJudgeError, type ToolTrace } from './judgment.js';
 import { selectedCases } from './selection.js';
 import { retentionPrecondition } from './retention.js';
+import { writeCalibrationPacket } from './calibration.js';
 
 const command = process.argv[2] ?? 'help';
 const root = resolve(process.env.ARCHIE_EVAL_HOME ?? '/Users/igorsova/Projects/achie-snapshots/memory-eval');
@@ -143,11 +144,16 @@ function deterministicScore(c: Case, answer: string) {
     allRequired: requiredHit.every(Boolean), anyForbidden: forbiddenHit.some(Boolean) };
 }
 
-async function gradeAnswer(c: Case, h: History, item: { answer?: string; toolTrace?: unknown[] }, reportPath: string): Promise<unknown> {
+type ProbeResult = { arm?: string; answer?: string; injection?: string; memoryToolsAvailable?: boolean;
+  toolCalls?: number; toolTurns?: number; modelTurns?: number; toolTrace?: ToolTrace[] };
+async function gradeAnswer(c: Case, h: History, item: ProbeResult, reportPath: string): Promise<unknown> {
+  const arm = item.arm;
+  if (arm !== 'no_memory' && arm !== 'candidate' && arm !== 'oracle') throw new Error('judge requires a recorded reader arm');
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       return await worker({ mode: 'judge', case: c, answer: String(item.answer ?? ''), evidence: judgingEvidence(c, h),
-        toolTrace: item.toolTrace ?? [], ledger: join(reportPath, 'budget.json'), capUsd: 10 }, { ARCHIE_MEMORY: 'false' });
+        execution: readerExecution(arm, item, arm === 'oracle' ? oracleFor(c, h) : ''),
+        ledger: join(reportPath, 'budget.json'), capUsd: 10 }, { ARCHIE_MEMORY: 'false' });
     } catch (error) {
       if (attempt === 2 || !retryableJudgeError(error)) throw error;
     }
@@ -214,7 +220,7 @@ async function run(): Promise<void> {
         arm === 'candidate' ? {} : { ARCHIE_MEMORY: 'false', ARCHIE_WORKDIR: join(reportPath, `empty-${arm}-${c.id}`) });
         let semantic: unknown = { status: 'unscored' };
         if ((item as { status?: string }).status === 'ok' && (c.required.length || c.forbidden.length)) {
-          try { semantic = await gradeAnswer(c, h, item as { answer?: string; toolTrace?: unknown[] }, reportPath); }
+          try { semantic = await gradeAnswer(c, h, item as ProbeResult, reportPath); }
           catch (error) { semantic = { status: 'error', error: String(error) }; }
         }
         const record = { ...item as object, checkpoint: ckpt.hash, score: deterministicScore(c, String((item as { answer?: string }).answer ?? '')),
@@ -314,39 +320,9 @@ async function writeRunReport(cases: Case[], manifest: Record<string, unknown>, 
   const repairs = Array.isArray(manifest.gradingRepairs) ? manifest.gradingRepairs.length : 0;
   const md = `# Memory evaluation routine run\n\n- Run: ${runId}\n- Execution: ${executionStatus}; ${ok}/${expected} answer arms, ${fixedOk}/${cases.length} fixed retrieval calls\n- Grading: ${gradingStatus}; ${judged}/${expected} semantic verdicts\n- Grade-only repairs: ${repairs}; repaired verdicts use saved answers and the same run ledger, with judge hashes in manifest.json\n- Run ledger: ${ledgerCostUsd === null ? 'not opened' : `$${ledgerCostUsd.toFixed(4)}`} against $10 cap; source rows exclude failed-verdict charges\n- Review: ${reviewStatus}; quality outcome not gated\n- Overall status: ${status}\n- Corpus SHA-256: ${manifest.corpusHash}\n- Config SHA-256: ${manifest.configHash}\n- Models: ${manifest.reader} reader, ${manifest.extractor} extractor\n\n| Source | Arms | Judged | No memory | Candidate | Oracle | Wins | Regressions | Unscored | Candidate unsupported/contradicted/unverifiable | Canonical retained | Fixed references | Fixed lexical evidence | Reader + judge cost |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n${sourceRows}\n\nReference surfacing and lexical overlap are diagnostics, not proof of factual correctness. Abstention success requires both appropriate refusal and a supported explanation. Full slices, tool traces, tokens, latency, and leak markers are in report.json, results.json, and fixed-retrieval.json.\n`;
   await savePrivate(join(reportPath, 'report.md'), md);
-  await writeCalibrationPacket(reportPath, cases, histories, rows);
+  await writeCalibrationPacket(reportPath, cases, histories, rows, judgingEvidence);
   process.stdout.write(`${reportPath}\n`);
   if (status === 'incomplete') process.exitCode = 1;
-}
-
-async function writeCalibrationPacket(reportPath: string, cases: Case[], histories: Map<string, History>,
-  rows: Array<{ caseId?: string; arm?: string; status?: string; answer?: string; semantic?: unknown }>): Promise<void> {
-  const chosen = cases.flatMap((c) => {
-    const arms = ['candidate', 'no_memory', 'oracle'].filter((arm) =>
-      arm !== 'oracle' || c.source === 'longmemeval' || c.ability.includes('scope'));
-    return arms.map((arm) => ({ c, arm, result: rows.find((r) => r.caseId === c.id && r.arm === arm) }));
-  }).filter(({ result }) => result?.status === 'ok');
-  const reviewer = ['# Independent answer calibration', '',
-    'Judge each answer using the original evidence below. Record claim-level findings before opening `calibration-model-verdicts.json`. The answers are anonymous with respect to evaluation arm.',
-    'A missing or failed answer arm is absent from this packet and remains a failure in the run report.', ''];
-  const verdicts: unknown[] = [];
-  for (const [index, { c, arm, result }] of chosen.entries()) {
-    const id = `sample-${String(index + 1).padStart(2, '0')}`;
-    const h = histories.get(c.historyId)!;
-    reviewer.push(`## ${id}`, '', `- Case: ${c.id}`, `- Source/workload/ability: ${c.source} / ${c.workload} / ${c.ability}`,
-      `- Current task context: ${c.currentContext || '(none)'}`, `- Question: ${c.question}`, `- Required claims: ${c.required.join('; ') || '(none)'}`,
-      `- Forbidden claims: ${c.forbidden.join('; ') || '(none)'}`, `- Answer: ${JSON.stringify(result!.answer ?? '')}`,
-      '- Required claims supported and answered (one decision per claim):', '- Forbidden claims asserted (one decision per claim):',
-      '- Unsupported answer claims:', '- Contradicted answer claims:', '- Unverifiable answer claims:',
-      '- Appropriate abstention, if applicable: [ ] yes [ ] no [ ] not applicable',
-      '- Useful for the new task: [ ] yes [ ] no [ ] unclear', '- Notes:', '',
-      '### Complete authorized original evidence', '', '```text', judgingEvidence(c, h), '```', '');
-    verdicts.push({ sampleId: id, caseId: c.id, arm, modelVerdict: result!.semantic });
-  }
-  await savePrivate(join(reportPath, 'calibration-review.md'), reviewer.join('\n'));
-  await savePrivate(join(reportPath, 'calibration-model-verdicts.json'), verdicts);
-  await savePrivate(join(reportPath, 'calibration-disagreements.md'),
-    '# Calibration disagreement report\n\nComplete after independent human review. Compare each claim-level decision with `calibration-model-verdicts.json`.\n\n| Sample | Required | Forbidden | Unsupported | Contradicted | Unverifiable | Abstention | Task usefulness | Resolution |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n\nDo not promote advisory scores to quality gates until disagreements and source-label decisions are resolved.\n');
 }
 
 async function repairGrades(): Promise<void> {
@@ -377,7 +353,7 @@ async function repairGrades(): Promise<void> {
     const c = byCase.get(String(row.caseId))!;
     const h = byId.get(c.historyId)!;
     try {
-      row.semantic = await gradeAnswer(c, h, row as { answer?: string; toolTrace?: unknown[] }, reportPath);
+      row.semantic = await gradeAnswer(c, h, row as ProbeResult, reportPath);
       manifest.gradingRepairs = [...(manifest.gradingRepairs ?? []), { at: new Date().toISOString(), caseId: c.id,
         arm: row.arm, judgeCodeHash: await readerConfigHash() }];
     } catch (error) { row.semantic = { status: 'error', error: String(error) }; }
@@ -410,12 +386,32 @@ async function reportExisting(): Promise<void> {
   process.stdout.write(await readFile(join(root, 'runs', runId, 'report.md'), 'utf8'));
 }
 
+async function packetExisting(): Promise<void> {
+  const runId = process.argv[3];
+  if (!runId || runId.includes('/') || runId.includes('..')) throw new Error('packet requires a saved run ID');
+  const reportPath = join(root, 'runs', runId);
+  const manifest = JSON.parse(await readFile(join(reportPath, 'manifest.json'), 'utf8')) as { cases: string[]; corpusHash: string };
+  if (manifest.corpusHash !== await sourceHash(corpusPath)) throw new Error('saved run corpus differs from current inputs');
+  const corpus = await loadCorpus();
+  const byCase = new Map(corpus.cases.map((c) => [c.id, c]));
+  const cases = manifest.cases.map((id) => {
+    const c = byCase.get(id);
+    if (!c) throw new Error(`saved run case unavailable: ${id}`);
+    return c;
+  });
+  const rows = JSON.parse(await readFile(join(reportPath, 'results.json'), 'utf8')) as Array<Record<string, unknown>>;
+  const status = await writeCalibrationPacket(reportPath, cases, new Map(corpus.histories.map((h) => [h.id, h])), rows, judgingEvidence);
+  process.stdout.write(`${JSON.stringify(status)}\n`);
+}
+
 async function draft(): Promise<void> {
   const longmem = join(root, 'public-source', 'longmemeval_s_cleaned.json');
   const oracle = join(root, 'public-source', 'longmemeval_oracle.json');
-  const archie = await withVerifiedSource((path) => draftArchie(path, root));
+  const futureRecipePath = join(root, 'real-future-drafts.json');
+  const archie = await withVerifiedSource((path) => draftArchie(path, root, ARCHIVE_SHA));
   const parts = [archie, syntheticCorpus(), await importLongMemEval(longmem, oracle)];
-  const corpus = combine(parts, { archiveSha256: ARCHIVE_SHA, publicSha256: await sourceHash(longmem), capture: '2026-09-26T02:24:39Z',
+  const corpus = combine(parts, { archiveSha256: ARCHIVE_SHA, realFutureRecipeSha256: await sourceHash(futureRecipePath),
+    publicSha256: await sourceHash(longmem), capture: '2026-09-26T02:24:39Z',
     oracleSha256: await sourceHash(oracle),
     note: 'Real-history channel properties are absent from the archive; real cases remain quarantined until historical authorization is verified.' });
   try {
@@ -482,6 +478,7 @@ try {
   } else if (command === 'build') await buildOnly();
   else if (command === 'run') await run();
   else if (command === 'repair') await repairGrades();
+  else if (command === 'packet') await packetExisting();
   else if (command === 'report') await reportExisting();
-  else process.stdout.write('Usage: npm run memory:eval -- inventory|import|draft|labels|validate|build|run [--case ID]|repair RUN_ID|report [RUN_ID]\n');
+  else process.stdout.write('Usage: npm run memory:eval -- inventory|import|draft|labels|validate|build|run [--case ID]|repair RUN_ID|packet RUN_ID|report [RUN_ID]\n');
 } catch (error) { process.stderr.write(`${String(error)}\n`); process.exitCode = 1; }

@@ -127,10 +127,13 @@ export function validateCorpus(corpus: Corpus): string[] {
     if (c.review === 'approved' && (c.required.length === 0 && c.forbidden.length === 0 || c.evidence.length === 0 && !evidenceFree)) {
       errors.push(`${c.id}: approved case has no claims/evidence`);
     }
-    if (c.review !== 'quarantined') for (const span of c.evidence) {
+    if (c.source === 'archie' && c.taskKind === 'future_task' && (!c.required.length || !c.evidence.length)) {
+      errors.push(`${c.id}: real future task lacks claims/evidence`);
+    }
+    for (const span of c.evidence) {
       const e = h.events.find((x) => x.source.ref === span.ref && x.source.start === span.start && x.source.end === span.end);
       if (!e || e.at > c.queryAt || !e.text.includes(span.quote)) errors.push(`${c.id}: invalid/future evidence ${span.ref}`);
-      if (c.source === 'archie' && e?.role === 'assistant' && c.review === 'approved') errors.push(`${c.id}: assistant assertion used as approved gold`);
+      if (c.source === 'archie' && e?.role === 'assistant' && (c.review === 'approved' || c.taskKind === 'future_task')) errors.push(`${c.id}: assistant assertion used as approved gold`);
     }
   }
   return errors;

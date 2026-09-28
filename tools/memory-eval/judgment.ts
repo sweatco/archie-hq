@@ -2,6 +2,9 @@ import type { Case, History } from './schema.js';
 import { permittedEvidence } from './schema.js';
 
 export type ToolTrace = { name: string; input: unknown; output: string };
+export type ReaderExecution = { accessMode: 'none' | 'candidate' | 'oracle'; visibleMemoryContext: string;
+  memoryToolsAvailable: boolean; maxMemoryCalls: number; maxToolTurns: number; maxModelTurns: number;
+  actualMemoryCalls: number; actualToolTurns: number; actualModelTurns: number; toolTrace: ToolTrace[] };
 export type Verdict = { status?: string; requiredMet?: boolean[]; forbiddenAsserted?: boolean[];
   unsupportedClaims?: string[]; contradictedClaims?: string[]; unverifiableClaims?: string[]; abstained?: boolean };
 
@@ -20,6 +23,24 @@ export function processClaimChecks(answer: string, toolTrace: ToolTrace[]) {
   });
 }
 
+export function readerExecution(arm: 'no_memory' | 'candidate' | 'oracle', result: {
+  injection?: string; memoryToolsAvailable?: boolean; toolCalls?: number; toolTrace?: ToolTrace[]; toolTurns?: number; modelTurns?: number;
+}, oracleEvidence = ''): ReaderExecution {
+  const memoryToolsAvailable = arm === 'candidate' && (result.memoryToolsAvailable ?? true);
+  return { accessMode: arm === 'no_memory' ? 'none' : arm, visibleMemoryContext: arm === 'candidate' ? result.injection ?? ''
+    : arm === 'oracle' ? result.injection ?? `Permitted source evidence:\n${oracleEvidence || '(none)'}` : '', memoryToolsAvailable,
+  maxMemoryCalls: memoryToolsAvailable ? 3 : 0, maxToolTurns: memoryToolsAvailable ? 3 : 0,
+  maxModelTurns: arm === 'candidate' ? 4 : 1, actualMemoryCalls: result.toolCalls ?? 0,
+  actualToolTurns: result.toolTurns ?? 0, actualModelTurns: result.modelTurns ?? 0,
+  toolTrace: result.toolTrace ?? [] };
+}
+
+export function executionClaimChecks(answer: string, execution: ReaderExecution) {
+  const limitClaims = [...answer.matchAll(/\b(?:I|we)\s+(?:hit|reached)\s+(?:my|our|the)\s+(?:search|memory|tool)\s+(?:call\s+)?limit\b/gi)];
+  return limitClaims.map((match) => ({ claim: match[0], limitReached: execution.memoryToolsAvailable
+    && execution.maxMemoryCalls > 0 && execution.actualMemoryCalls >= execution.maxMemoryCalls }));
+}
+
 export function oracleFor(c: Case, history: History): string {
   return permittedEvidence(c, history).map((event) => JSON.stringify({
     at: event.at, role: event.role, taskId: event.taskId, authorId: event.authorId,
@@ -29,14 +50,14 @@ export function oracleFor(c: Case, history: History): string {
   })).join('\n') || '(no supporting evidence)';
 }
 
-export function judgePayload(c: Case, answer: string, originalEvidence: string, toolTrace: ToolTrace[] = []) {
+export function judgePayload(c: Case, answer: string, originalEvidence: string, execution: ReaderExecution) {
   return {
     currentTask: { context: c.currentContext, question: c.question, queryAt: c.queryAt,
       requester: c.requester, declaredAudience: c.audience },
     requiredClaims: c.required, forbiddenClaims: c.forbidden,
     evidenceCompleteness: 'all authorized original events before the question time', originalEvidence,
-    executionEvidence: toolTrace.map(({ name, input, output }) => ({ name, input, output })),
-    processClaimChecks: processClaimChecks(answer, toolTrace), answer,
+    readerExecution: execution, processClaimChecks: processClaimChecks(answer, execution.toolTrace),
+    executionClaimChecks: executionClaimChecks(answer, execution), answer,
   };
 }
 

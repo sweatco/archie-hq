@@ -42,6 +42,16 @@ describe('memory evaluation corpus', () => {
     expect(() => selectedCases({ version: 1, ...part, provenance: {} }, c.id)).toThrow('quarantined');
   });
 
+  it('validates original source spans even while a real future case is quarantined', () => {
+    const part = syntheticCorpus();
+    const h = structuredClone(part.histories.find((item) => item.id === 'synthetic-decision-correction-v1')!);
+    const c = structuredClone(part.cases.find((item) => item.historyId === h.id)!);
+    h.source = 'archie'; c.source = 'archie'; c.review = 'quarantined'; c.taskKind = 'future_task';
+    c.evidence = [{ ...h.events[0].source, quote: 'not in original event' }];
+    expect(validateCorpus({ version: 1, histories: [h], cases: [c], provenance: {} }))
+      .toContain(`${c.id}: invalid/future evidence ${c.evidence[0].ref}`);
+  });
+
   it('checks only completions before the query and rejects unknown real ingestion authorization', () => {
     const part = syntheticCorpus();
     const history = structuredClone(part.histories.find((h) => h.id === 'synthetic-decision-correction-v1')!);
