@@ -4,6 +4,14 @@
 
 <!-- This file is generated automatically — do NOT edit it by hand. The `.github/workflows/daily-changelog.yml` workflow summarizes each day's merged PRs into a dated entry and commits it to `main` on its own. To shape how a change reads here, write a clear PR description — that is the source the automation reads. Quiet days with nothing merged are intentionally skipped (no entry), so gaps between dates are expected. Hand edits drift from the automation and may be overwritten; the only reason to touch this file directly is to repair a mistake the automation made. -->
 
+## 2026-09-28
+
+- **Archie piloted shorter, source-bound Slack replies by rewriting PM prompt and skill guidance, and retired the forced "Archie Direct" output style that had been overriding users' own style settings on every response.** An evaluation across 26 reply positions found the revised prompt-and-skills approach cut user-facing reply length by roughly 63% versus a clean control, but manual review still found unsupported claims (e.g. an undated count described as "today"), so production rollout stays gated on fixing those factuality failures and running tool-backed evaluation. _Technical: Markdown-only change (`prompts/pm-agent.md`, `core-plugin/skills/thread-conduct/SKILL.md`, example plugin skill); full evaluation and failure review recorded in `docs/plans/20260926-prompt-only-concise-pilot.md`; measured on Claude Agent SDK 0.3.283 though the repo pins 0.3.281. PR #344._
+
+## 2026-09-27
+
+- _Technical: pilot work for shorter, source-bound Archie replies (PM prompt and skill changes) landed on main. Commit 6ad5fbb._
+
 ## 2026-09-23
 
 - **Archie's PM and Opus-tier workers now run on Claude Opus 5.5.** The pinned Claude Agent SDK moves from 0.3.257 to 0.3.281, whose bundled Claude Code resolves Archie's `opus` alias to `claude-opus-5-5`; the PM still defaults to `opus` and operator model overrides remain available, and Sonnet/Fable selections are unchanged. _Technical: footer model-label test and example updated for the new concrete id; full Vitest suite (121 files, 1,754 tests) green; deploying a new image is enough to pick it up, no infra template change needed. PR #342._
