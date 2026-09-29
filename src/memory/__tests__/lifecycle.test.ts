@@ -639,7 +639,7 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     expect(await readFile(indexPath, 'utf-8')).toContain('[[payment-service]]');
   });
 
-  it('shows observations already saved by this task without changing its transcript', async () => {
+  it('shows observations on touched entities without changing its transcript', async () => {
     await applyEntityUpdate({
       slug: 'saved-project', type: 'concept', summary: 'Saved project',
       observations: [{ category: 'fact', text: 'Uses marker cobalt-741' }],
@@ -654,7 +654,7 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     await drain();
 
     const input = vi.mocked(runExtraction).mock.calls[0]![0];
-    expect(input.entityIndex).toContain('do not add equivalent observations');
+    expect(input.entityIndex).toContain('Existing observations on entities touched by this task (do not add equivalent observations');
     expect(input.entityIndex).toContain('[[saved-project]] [fact] Uses marker cobalt-741');
     expect(input.entityIndex).not.toContain('Uses marker violet-892');
     expect(input.entityIndex).toContain('[[other-project]]');

@@ -157,7 +157,7 @@ async function processExtraction(taskId: string): Promise<void> {
       `- [[${entity.entity}]] [${observation.category}] ${observation.text}`
     ));
   const entityIndex = `${await readIndexMarkdown()}${savedObservations.length
-    ? `\nAlready saved for this task (do not add equivalent observations; distinct new details are allowed):\n${savedObservations.join('\n')}`
+    ? `\nExisting observations on entities touched by this task (do not add equivalent observations; distinct new details are allowed):\n${savedObservations.join('\n')}`
     : ''}`;
   const userMemoryBlocks = await Promise.all(
     users.map(async (u) => {
