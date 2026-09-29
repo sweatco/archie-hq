@@ -23,6 +23,8 @@ import type { TaskMetadata } from '../types/task.js';
 import { writeTaskSummary } from './task-summaries.js';
 import { classifySlackMemoryScope } from '../connectors/slack/client.js';
 import { isAuthorizedMemoryScope, scopeForSlackChannel } from '../tasks/memory-scope.js';
+import type { TaskMemoryScope } from '../types/task.js';
+import type { HousekeepingBudget } from './housekeeping.js';
 
 // ============================================================================
 // Housekeeping note queue (consumed by buildSummaryMarkdown)
@@ -87,26 +89,45 @@ export function rescheduleTaskCompleted(taskId: string): void {
 // processExtraction
 // ============================================================================
 
-async function processExtraction(taskId: string): Promise<void> {
+export interface MemoryReplayOptions {
+  scope?: TaskMemoryScope;
+  now?: () => Date;
+  model?: string;
+  maxBudgetUsd?: number;
+  onUsage?: (usage: { inputTokens: number; outputTokens: number; costUsd?: number }) => void;
+  strict?: boolean;
+  housekeepingBudget?: HousekeepingBudget;
+}
+export type ExtractionOutcome = { status: 'extracted' | 'skipped' | 'denied'; reason?: string; modelCalled: boolean };
+
+/** Offline callers supply recorded scope and a fixed clock in an isolated workdir. */
+export async function replayTaskCompletion(taskId: string, options: MemoryReplayOptions): Promise<ExtractionOutcome> {
+  if (process.env.ARCHIE_MEMORY_EVAL_REPLAY !== 'true' || !options.scope || !options.strict || !isMemoryReady()) {
+    throw new Error('evaluation replay requires isolated evaluator mode, scoped ready store, and strict mode');
+  }
+  return processExtraction(taskId, options);
+}
+
+async function processExtraction(taskId: string, options: MemoryReplayOptions = {}): Promise<ExtractionOutcome> {
   const metadata = await loadMetadata(taskId);
   if (!metadata) {
     logger.warn('memory', `processExtraction: metadata not found for ${taskId}`);
-    return;
+    return { status: 'skipped', reason: 'metadata_missing', modelCalled: false };
   }
 
   const destination = metadata.memory_destination;
-  if (!destination) return;
-  const classify = async () => scopeForSlackChannel(
+  if (!destination) return { status: 'skipped', reason: 'destination_missing', modelCalled: false };
+  const classify = async () => options.scope ?? scopeForSlackChannel(
     await classifySlackMemoryScope(destination.channel_id),
     destination.channel_id,
   );
   const scope = await classify();
-  if (!isAuthorizedMemoryScope(destination, scope)) return;
+  if (!isAuthorizedMemoryScope(destination, scope)) return { status: 'denied', reason: 'scope_denied', modelCalled: false };
 
   const transcript = await readKnowledgeLog(taskId);
   if (!transcript.trim()) {
     logger.warn('memory', `processExtraction: empty transcript for ${taskId}`);
-    return;
+    return { status: 'skipped', reason: 'transcript_empty', modelCalled: false };
   }
 
   if (scope.kind === 'private_channel' || scope.kind === 'user') {
@@ -117,27 +138,27 @@ async function processExtraction(taskId: string): Promise<void> {
       status: metadata.status,
       createdAt: metadata.created_at,
       transcript,
-    }, new Set());
-    if (!outcome) return;
+    }, new Set(), { model: options.model, maxBudgetUsd: options.maxBudgetUsd, onUsage: options.onUsage });
+    if (!outcome) { if (options.strict) throw new Error(`extraction failed for ${taskId}`); return { status: 'skipped', reason: 'model_failed', modelCalled: true }; }
     const current = await classify();
     if (
       !isAuthorizedMemoryScope(destination, current)
       || current.kind !== scope.kind
       || (scope.kind === 'user' && current.kind === 'user' && current.user_id !== scope.user_id)
-    ) return;
+    ) return { status: 'denied', reason: 'scope_changed', modelCalled: true };
     const safeTaskSummary = sanitizeTaskSummary(outcome.task_summary);
     if (!safeTaskSummary) {
       logger.warn('memory', `dropped task summary for ${taskId} (sanitizer rejected)`);
-      return;
+      return { status: 'skipped', reason: 'summary_rejected', modelCalled: true };
     }
-    const extractionAt = new Date().toISOString();
+    const extractionAt = (options.now?.() ?? new Date()).toISOString();
     await writeTaskSummary(
       'private',
       destination.channel_id,
       taskId,
       buildPrivateSummaryMarkdown(taskId, destination.channel_id, metadata, safeTaskSummary, extractionAt),
     );
-    return;
+    return { status: 'extracted', modelCalled: true };
   }
 
   const users = Object.entries(metadata.memory_authors ?? {})
@@ -168,15 +189,17 @@ async function processExtraction(taskId: string): Promise<void> {
       createdAt: metadata.created_at,
       transcript,
     },
-    allowedUserIds
+    allowedUserIds,
+    { model: options.model, maxBudgetUsd: options.maxBudgetUsd, onUsage: options.onUsage },
   );
 
   if (!result) {
+    if (options.strict) throw new Error(`extraction failed for ${taskId}`);
     logger.warn('memory', `processExtraction: extraction returned null for ${taskId}`);
-    return;
+    return { status: 'skipped', reason: 'model_failed', modelCalled: true };
   }
   const current = await classify();
-  if (!isAuthorizedMemoryScope(destination, current) || current.kind !== 'public') return;
+  if (!isAuthorizedMemoryScope(destination, current) || current.kind !== 'public') return { status: 'denied', reason: 'scope_changed', modelCalled: true };
 
   // Apply per-user updates. Use the identity-aware writer so first-touch
   // user files get YAML frontmatter (slack_user_id + display_name + aliases).
@@ -214,10 +237,9 @@ async function processExtraction(taskId: string): Promise<void> {
   if (housekeepingTargets.size > 0) {
     const { runHousekeeping } = await import('./housekeeping.js');
     for (const target of housekeepingTargets) {
-      extractionQueue = extractionQueue.then(() =>
-        runHousekeeping(target).catch((err) =>
-          logger.warn('memory', `housekeeping for ${target} failed: ${err}`)
-        )
+      if (options.strict) await runHousekeeping(target, { strict: true, budget: options.housekeepingBudget });
+      else extractionQueue = extractionQueue.then(() =>
+        runHousekeeping(target).catch((err) => logger.warn('memory', `housekeeping for ${target} failed: ${err}`))
       );
     }
   }
@@ -246,6 +268,7 @@ async function processExtraction(taskId: string): Promise<void> {
       users,
       activityIndex,
       related,
+      (options.now?.() ?? new Date()).toISOString(),
     );
   } else {
     logger.warn('memory', `dropped task summary for ${taskId} (sanitizer rejected)`);
@@ -263,6 +286,7 @@ async function processExtraction(taskId: string): Promise<void> {
   await trimActivity(50);
 
   logger.system(`[memory] Extraction complete for ${taskId}`);
+  return { status: 'extracted', modelCalled: true };
 }
 
 // ============================================================================
@@ -277,10 +301,10 @@ async function writeSummary(
   result: ExtractionResult,
   users: UserRef[],
   activityIndex: ActivityEntry[],
-  related?: ActivityEntry[]
+  related?: ActivityEntry[],
+  extractionAt = new Date().toISOString(),
 ): Promise<void> {
   const housekeepingNotes = drainHousekeepingNotes();
-  const extractionAt = new Date().toISOString();
   const content = buildSummaryMarkdown(
     taskId,
     channelId,

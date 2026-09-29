@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm } from 'fs/promises';
+import { mkdtemp, rm, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -19,8 +19,34 @@ import {
   runHousekeeping,
 } from '../housekeeping.js';
 import { parseLastTouched, stripLastTouched, appendLastTouched } from '../annotations.js';
+import { query } from '@anthropic-ai/claude-agent-sdk';
+
+vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
 
 let entitiesDir = '/tmp/fake-entities';
+
+describe('budgeted evaluation housekeeping', () => {
+  it('reserves before a pinned model call and settles usage', async () => {
+    const id = `UEVAL${Date.now()}`;
+    const path = `/tmp/fake-user-${id}.md`;
+    await writeFile(path, '## Work\n- Prefers weekly reports  <!-- touched: 2026-01-01 -->\n');
+    const settled = vi.fn();
+    const onUsage = vi.fn();
+    const reserve = vi.fn().mockResolvedValue({ model: 'claude-sonnet-5', maxBudgetUsd: 3.5, onUsage, settle: settled });
+    vi.mocked(query).mockImplementation((() => (async function* () {
+      yield { type: 'result', subtype: 'success', result: '## Work\n- Prefers weekly reports',
+        usage: { input_tokens: 10, output_tokens: 10 }, total_cost_usd: 0.001 };
+    })()) as unknown as typeof query);
+    try {
+      await runHousekeeping(id, { strict: true, budget: { reserve } });
+      expect(reserve).toHaveBeenCalledOnce();
+      expect(vi.mocked(query).mock.calls[0][0].options?.model).toBe('claude-sonnet-5');
+      expect(vi.mocked(query).mock.calls[0][0].options?.maxBudgetUsd).toBe(3.5);
+      expect(onUsage).toHaveBeenCalledWith({ inputTokens: 10, outputTokens: 10, costUsd: 0.001 });
+      expect(settled).toHaveBeenCalledWith('ok');
+    } finally { await rm(path, { force: true }); vi.mocked(query).mockReset(); }
+  });
+});
 
 vi.mock('../paths.js', () => ({
   isMemoryReady: () => true,

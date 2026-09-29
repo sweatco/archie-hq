@@ -15,7 +15,7 @@ import {
   isMemoryToolsEnabled,
 } from './paths.js';
 
-interface AuthorizedMemory {
+export interface AuthorizedMemory {
   metadata: TaskMetadata;
   allowPublic: boolean;
   privateChannelId?: string;
@@ -50,15 +50,11 @@ function result(content: string) {
   return { content: [{ type: 'text' as const, text: envelope(content) }] };
 }
 
-export async function authorizeTaskMemory(task: Task): Promise<AuthorizedMemory | null> {
+export function authorizeMemoryWithClassification(metadata: TaskMetadata, classification: import('../types/task.js').SlackMemoryClassification): AuthorizedMemory | null {
   if (!isMemoryReady()) return null;
-  const metadata = task.metadata;
   const destination = metadata.memory_destination;
   if (!destination) return null;
-  const scope = scopeForSlackChannel(
-    await classifySlackMemoryScope(destination.channel_id),
-    destination.channel_id,
-  );
+  const scope = scopeForSlackChannel(classification, destination.channel_id);
   if (!isAuthorizedMemoryScope(destination, scope)) return null;
   if (scope.kind === 'private_channel') {
     return { metadata, allowPublic: true, privateChannelId: scope.channel_id };
@@ -67,6 +63,11 @@ export async function authorizeTaskMemory(task: Task): Promise<AuthorizedMemory 
     return { metadata, allowPublic: true, privateChannelId: scope.channel_id };
   }
   return { metadata, allowPublic: true };
+}
+
+export async function authorizeTaskMemory(task: Task): Promise<AuthorizedMemory | null> {
+  if (!isMemoryReady() || !task.metadata.memory_destination) return null;
+  return authorizeMemoryWithClassification(task.metadata, await classifySlackMemoryScope(task.metadata.memory_destination.channel_id));
 }
 
 async function authorizeMemory(task: Task): Promise<AuthorizedMemory | null> {
@@ -161,6 +162,10 @@ function rankHits(hits: SearchHit[], limit: number): SearchHit[] {
 async function searchMemory(task: Task, query: string, limit: number) {
   const auth = await authorizeMemory(task);
   if (!auth) return result('Memory unavailable for this task audience.');
+  return searchMemoryAuthorized(auth, query, limit);
+}
+
+export async function searchMemoryAuthorized(auth: AuthorizedMemory, query: string, limit: number) {
   const tokens = queryTokens(query);
   if (tokens.length === 0) return result('Query must contain at least one lexical token.');
   const hits = rankHits(await buildSearchHits(auth, tokens), limit);
@@ -170,6 +175,11 @@ async function searchMemory(task: Task, query: string, limit: number) {
 async function readEntityMemory(task: Task, identifier: string) {
   const auth = await authorizeMemory(task);
   if (!auth?.allowPublic) return result('Memory unavailable for this task audience.');
+  return readEntityAuthorized(auth, identifier);
+}
+
+export async function readEntityAuthorized(auth: AuthorizedMemory, identifier: string) {
+  if (!auth.allowPublic) return result('Memory unavailable for this task audience.');
   const candidate = identifier.trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9 _-]{0,79}$/.test(candidate) || candidate.includes('..')) {
     return result('Invalid entity identifier.');
@@ -184,6 +194,10 @@ async function readEntityMemory(task: Task, identifier: string) {
 async function readTaskSummaryMemory(task: Task, taskId: string) {
   const auth = await authorizeMemory(task);
   if (!auth) return result('Memory unavailable for this task audience.');
+  return readTaskSummaryAuthorized(auth, taskId);
+}
+
+export async function readTaskSummaryAuthorized(auth: AuthorizedMemory, taskId: string) {
   if (!isAllowedTaskId(taskId)) return result('Invalid task ID.');
   if (auth.privateChannelId) {
     const [local] = await readTaskSummariesFromChannel('private', auth.privateChannelId, taskId);

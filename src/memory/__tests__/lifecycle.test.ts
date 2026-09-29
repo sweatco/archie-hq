@@ -124,7 +124,7 @@ vi.mock('../extractor.js', async (importOriginal) => {
 // Import the module under test and mocked modules (after mocks are set up)
 // ============================================================================
 
-import { handleTaskCompleted, rescheduleTaskCompleted, selectRelatedTasksByEntity } from '../lifecycle.js';
+import { handleTaskCompleted, replayTaskCompletion, rescheduleTaskCompleted, selectRelatedTasksByEntity } from '../lifecycle.js';
 import { enqueuePending, readPending } from '../pending-queue.js';
 import { runExtraction } from '../extractor.js';
 import { classifySlackMemoryScope, postSlackMessage } from '../../connectors/slack/client.js';
@@ -242,7 +242,40 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
   });
 
   afterEach(async () => {
+    delete process.env.ARCHIE_MEMORY_EVAL_REPLAY;
     await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('guards offline replay and replaces a resumed task at the fixed completion time', async () => {
+    const options = { scope: { kind: 'public' as const, channel_id: 'C1' }, strict: true,
+      now: () => new Date('2026-04-10T10:30:00Z') };
+    await expect(replayTaskCompletion(TASK_ID, options)).rejects.toThrow('isolated evaluator mode');
+    expect(lifecycleState.transcriptReads).toBe(0);
+
+    process.env.ARCHIE_MEMORY_EVAL_REPLAY = 'true';
+    await replayTaskCompletion(TASK_ID, options);
+    const path = join(publicTasksDir, `${TASK_ID}.md`);
+    expect(await readFile(path, 'utf8')).toContain('extraction_at: "2026-04-10T10:30:00.000Z"');
+    vi.mocked(runExtraction).mockResolvedValueOnce({
+      user_updates: {}, entity_updates: [], task_summary: 'Updated after resumption.',
+      activity_summary: 'Updated task', domain: 'engineering',
+    });
+    await writeFile(join(sessionsDir, TASK_ID, 'shared', 'knowledge.log'), `${KNOWLEDGE_LOG}\n[2026-04-10T11:00:00Z] [user] Resume with correction\n`);
+    await replayTaskCompletion(TASK_ID, { ...options, now: () => new Date('2026-04-10T11:30:00Z') });
+    const canonical = await readFile(path, 'utf8');
+    expect(canonical).toContain('Updated after resumption.');
+    expect(canonical).toContain('extraction_at: "2026-04-10T11:30:00.000Z"');
+    expect(canonical).not.toContain('Investigated and fixed the login bug.');
+    const overview = await readFile(join(publicTasksDir, 'rolling-summary.md'), 'utf8');
+    expect(overview.split('\n').filter((line) => line.includes(TASK_ID))).toHaveLength(1);
+    expect(classifySlackMemoryScope).not.toHaveBeenCalled();
+  });
+
+  it('reports a denied replay as a zero-call outcome', async () => {
+    process.env.ARCHIE_MEMORY_EVAL_REPLAY = 'true';
+    const outcome = await replayTaskCompletion(TASK_ID, { scope: { kind: 'none', channel_id: 'C1' }, strict: true });
+    expect(outcome).toEqual({ status: 'denied', reason: 'scope_denied', modelCalled: false });
+    expect(runExtraction).not.toHaveBeenCalled();
   });
 
   it('does not write org.md (org.md retired); org knowledge lands in an entity', async () => {
@@ -338,6 +371,25 @@ describe('handleTaskCompleted() — end-to-end integration', () => {
     expect(content).toContain(`slack_user_id: ${USER_DANA}`);
     expect(content).toContain('display_name: "Dana Lee"');
     expect(content).toContain('Prefers direct communication');
+  });
+
+  it('rejects profile updates attributed to a quote or another author', async () => {
+    await writeFile(join(sessionsDir, TASK_ID, 'shared', 'metadata.json'), JSON.stringify({
+      ...METADATA,
+      memory_authors: { [USER_DANA]: 'Dana Lee', [USER_BOB]: 'Bob' },
+      memory_message_authors: { [DANA_MESSAGE_TS]: USER_DANA, '1700000001.123456': USER_BOB },
+    }));
+    vi.mocked(runExtraction).mockResolvedValue({
+      user_updates: { [USER_DANA]: [
+        { action: 'add', section: 'Work Style', content: 'Quoted preference', source_message_ts: '1700000001.123456' },
+        { action: 'add', section: 'Work Style', content: 'Unverified mention', source_message_ts: '1700000002.123456' },
+      ] },
+      entity_updates: [], task_summary: 'Discussed preferences.', activity_summary: 'Discussed preferences', domain: 'operations',
+    });
+
+    handleTaskCompleted(TASK_ID);
+    await drain();
+    expect(existsSync(join(usersDir, `${USER_DANA}.md`))).toBe(false);
   });
 
   it.each(['Alex\\Ops', 'Alex\\', 'Alex\\name', 'Alex "Ops"'])(

@@ -31,6 +31,7 @@ import { rebuildIndex } from './entity-index.js';
 import { loadPrompt } from '../utils/prompt-loader.js';
 import { logger } from '../system/logger.js';
 import { recordHousekeepingNote } from './lifecycle.js';
+import { memoryNow } from './clock.js';
 import { parseLastTouched as parseLastTouchedFromAnnotations, stripLastTouched as stripLastTouchedFromAnnotations, appendLastTouched as appendLastTouchedFromAnnotations } from './annotations.js';
 import type { EntityRecord } from './types.js';
 
@@ -42,6 +43,16 @@ const TRACE_DISTANCE_THRESHOLD = 0.4;
 // ============================================================================
 
 export type HousekeepingTarget = 'all' | 'entities' | string;
+export type HousekeepingUsage = { inputTokens: number; outputTokens: number; costUsd?: number };
+export type HousekeepingBudget = {
+  reserve(promptBytes: number): Promise<{
+    model: string;
+    maxBudgetUsd: number;
+    onUsage(usage: HousekeepingUsage): void;
+    settle(status: 'ok' | 'error'): Promise<void>;
+  }>;
+};
+export type HousekeepingOptions = { strict?: boolean; budget?: HousekeepingBudget };
 
 /**
  * Consolidate one or more memory files. No-op when the housekeeping flag is
@@ -51,7 +62,7 @@ export type HousekeepingTarget = 'all' | 'entities' | string;
  *   - `target = 'entities'` → dedup/merge + archive-stale + rebuild index (code-level)
  *   - `target = '<id>'`     → consolidate users/<id>.md only (side-agent)
  */
-export async function runHousekeeping(target: HousekeepingTarget): Promise<void> {
+export async function runHousekeeping(target: HousekeepingTarget, options: HousekeepingOptions = {}): Promise<void> {
   if (!isMemoryReady()) return;
   if (!isHousekeepingEnabled()) {
     logger.system('[memory] housekeeping disabled (ARCHIE_MEMORY_HOUSEKEEPING=false)');
@@ -60,15 +71,15 @@ export async function runHousekeeping(target: HousekeepingTarget): Promise<void>
   if (target === 'entities') {
     await runEntityHousekeeping();
   } else if (target === 'all') {
-    await consolidateAllUserFiles();
+    await consolidateAllUserFiles(options);
     await runEntityHousekeeping();
   } else {
     // assume a user ID
-    await consolidateFile(`users/${target}.md`, getUserPath(target));
+    await consolidateFile(`users/${target}.md`, getUserPath(target), options);
   }
 }
 
-async function consolidateAllUserFiles(): Promise<void> {
+async function consolidateAllUserFiles(options: HousekeepingOptions): Promise<void> {
   const dir = getUsersDir();
   if (!existsSync(dir)) return;
   const { readdir } = await import('fs/promises');
@@ -78,8 +89,9 @@ async function consolidateAllUserFiles(): Promise<void> {
     const stem = name.slice(0, -3);
     const id = stem.includes('__') ? stem.replace('__', ':') : stem;
     try {
-      await consolidateFile(`users/${name}`, getUserPath(id));
+      await consolidateFile(`users/${name}`, getUserPath(id), options);
     } catch (err) {
+      if (options.strict) throw err;
       logger.warn('memory', `housekeeping: skipped users/${name}: ${err}`);
     }
   }
@@ -154,7 +166,7 @@ function mergeInto(canonical: EntityRecord, dup: EntityRecord): void {
 }
 
 async function runEntityHousekeeping(today?: string): Promise<void> {
-  const date = today ?? new Date().toISOString().slice(0, 10);
+  const date = today ?? memoryNow().toISOString().slice(0, 10);
   const records = await listEntities();
   if (records.length === 0) return;
 
@@ -205,7 +217,7 @@ async function runEntityHousekeeping(today?: string): Promise<void> {
 // consolidateFile
 // ============================================================================
 
-async function consolidateFile(label: string, path: string): Promise<void> {
+async function consolidateFile(label: string, path: string, options: HousekeepingOptions): Promise<void> {
   if (!existsSync(path)) return;
   const before = await readFile(path, 'utf-8');
   if (!before.trim()) return;
@@ -215,8 +227,9 @@ async function consolidateFile(label: string, path: string): Promise<void> {
 
   let proposed: string;
   try {
-    proposed = await runHousekeeperAgent(before);
+    proposed = await runHousekeeperAgent(before, options);
   } catch (err) {
+    if (options.strict) throw err;
     logger.warn('memory', `housekeeping: side-agent call failed for ${label}: ${err}`);
     return;
   }
@@ -247,8 +260,8 @@ async function consolidateFile(label: string, path: string): Promise<void> {
 // Side-agent invocation
 // ============================================================================
 
-async function runHousekeeperAgent(fileContent: string): Promise<string> {
-  const today = new Date().toISOString().slice(0, 10);
+async function runHousekeeperAgent(fileContent: string, options: HousekeepingOptions): Promise<string> {
+  const today = memoryNow().toISOString().slice(0, 10);
   const variables = {
     FILE_CONTENT: fileContent,
     STALENESS_DAYS: String(getStalenessDays()),
@@ -262,11 +275,15 @@ async function runHousekeeperAgent(fileContent: string): Promise<string> {
     prompt = `Consolidate this memory file by merging duplicates and dropping stale entries older than ${variables.STALENESS_DAYS} days. Do not introduce new facts.\n\n${fileContent}`;
   }
 
+  if (options.strict && !options.budget) throw new Error('strict housekeeping requires a budget');
+  const reservation = await options.budget?.reserve(Buffer.byteLength(prompt));
+  try {
   const agent = query({
     prompt,
     options: {
-      model: 'sonnet' as any,
+      model: (reservation?.model ?? 'sonnet') as any,
       maxTurns: 1,
+      ...(reservation ? { maxBudgetUsd: reservation.maxBudgetUsd } : {}),
       tools: [],
       executable: 'node',
       env: {
@@ -296,12 +313,20 @@ async function runHousekeeperAgent(fileContent: string): Promise<string> {
         }
       }
     }
-    if (event.type === 'result' && event.subtype === 'success') {
+    if (event.type === 'result') {
+      const usage = (event as any).usage;
+      if (usage) reservation?.onUsage({ inputTokens: Number(usage.input_tokens ?? 0), outputTokens: Number(usage.output_tokens ?? 0), costUsd: Number((event as any).total_cost_usd ?? 0) });
+      if (event.subtype !== 'success' && options.strict) throw new Error(`housekeeping model result: ${event.subtype}`);
       const r = (event as any).result;
-      if (typeof r === 'string' && r.trim()) responseText = r;
+      if (event.subtype === 'success' && typeof r === 'string' && r.trim()) responseText = r;
     }
   }
+  await reservation?.settle('ok');
   return responseText.trim();
+  } catch (error) {
+    await reservation?.settle('error');
+    throw error;
+  }
 }
 
 // ============================================================================
