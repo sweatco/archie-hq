@@ -322,6 +322,8 @@ export interface TaskMetadata {
    * Set when `stampRuntimeVersion` stamped a legacy task, i.e. one whose PM session transcript is conditioned on the removed multi-agent world. The next wake delivered to the PM is prefixed with the migration notice (`buildMigrationNotice`) and the flag is cleared in the same step, so it fires exactly once per task.
    */
   migration_notice_pending?: boolean;
+  /** Set when the wall-clock cap parks the task; the next wake is prefixed with `AGENT_PROMPTS.capPauseNotice` and the flag cleared. */
+  cap_pause_notice_pending?: boolean;
   edit_allowed?: boolean;     // Has user approved edit mode for this task?
   max_mode?: boolean;         // Has user approved "max mode" (per-task model/effort upgrade) for this task?
   /**
