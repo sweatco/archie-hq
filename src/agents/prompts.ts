@@ -272,7 +272,7 @@ export const AGENT_PROMPTS = {
   // Background work cut off by the cap reports its tool calls as cancelled with
   // Claude Code's user-denial wording, which the PM otherwise takes for a person.
   capPauseNotice:
-    'This task was paused by its time limit, which stopped any work still in flight, background workers included. Nobody declined anything: a tool call that came back cancelled or refused around the pause was the time limit, not a person. Check what actually finished before you continue.',
+    'This task was paused by its time limit, which stopped any work in flight. Tool calls cancelled around the pause were the time limit, not a person. Check what actually finished before you continue.',
 
   // Stage 3: Reinforcement prompt for idle detection recovery
   reinforcePM: `RECOVERY: You went idle without completing the task.

@@ -1,10 +1,3 @@
-/**
- * The wall-clock cap parks the task and stops any background work still in
- * flight, and the next wake tells the PM that the time limit, not a person, cut
- * that work off. Cut-off workers see Claude Code's user-denial wording on their
- * tool calls, so without the notice the PM reports a refusal nobody made.
- */
-
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../system/logger.js', () => ({
@@ -87,7 +80,6 @@ async function parkByCap(meta: TaskMetadata): Promise<Task> {
   task.agent!.backgroundTasks.add('worker-1');
   task.budgets.taskStartTime = new Date(Date.now() - task.budgets.taskTimeoutMs);
   await vi.advanceTimersByTimeAsync(60_000);
-  await vi.advanceTimersByTimeAsync(1_000);
   return task;
 }
 
@@ -95,13 +87,14 @@ describe('wall-clock cap park', () => {
   it('stops background work even when the PM itself is idle', async () => {
     const task = await parkByCap(metadata());
 
-    expect(task.metadata.status).toBe('completed');
+    await vi.waitFor(() => expect(aborts[0]).toHaveBeenCalled());
     expect(aborts).toHaveLength(1);
-    expect(aborts[0]).toHaveBeenCalled();
+    expect(task.metadata.status).toBe('completed');
   });
 
   it('tells the PM on the next wake, and only that wake, that the time limit stopped its work', async () => {
     await parkByCap(metadata());
+    await vi.waitFor(() => expect(aborts[0]).toHaveBeenCalled());
 
     // A reply reopens the task from disk as a fresh instance.
     const written = writeFileMock.mock.calls.filter((c: unknown[]) => String(c[0]).includes('/metadata.json.'));
