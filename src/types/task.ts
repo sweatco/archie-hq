@@ -279,6 +279,14 @@ export interface TaskMetadata {
   memory_destination?: TaskMemoryDestination;
   memory_authors?: Record<string, string>;
   memory_message_authors?: Record<string, string>;
+  pending_memory_preference?: {
+    id: string;
+    author_id: string;
+    channel_id: string;
+    source_message_ts: string;
+    content: string;
+    requested_at: string;
+  };
   title?: string;                      // AI-generated one-line summary; absent on pre-feature tasks
   slack_threads?: SlackThreadRef[];    // Legacy — only present on old tasks loaded from disk, removed after migration
   agent_sessions: Record<string, AgentSessionState | string>; // union handles legacy string values on disk

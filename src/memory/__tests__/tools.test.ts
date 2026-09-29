@@ -139,8 +139,10 @@ describe('memory tools', () => {
     await rm(tempRoot, { recursive: true, force: true });
   });
 
-  it('attaches exactly three tools only for ready, enabled tasks with a destination', () => {
-    expect(Object.keys(handlers()).sort()).toEqual(['read_entity', 'read_task_summary', 'search_memory']);
+  it('attaches read and remember tools only for ready, enabled tasks with a destination', () => {
+    expect(Object.keys(handlers()).sort()).toEqual([
+      'read_entity', 'read_task_summary', 'remember_fact', 'remember_preference', 'search_memory',
+    ]);
     expect(shouldAttachMemoryTools(state.metadata!)).toBe(true);
     state.tools = false;
     expect(shouldAttachMemoryTools(state.metadata!)).toBe(false);
