@@ -5,6 +5,7 @@ import { authorizedIngestionAudience, type Case, type History } from './schema.j
 import { Budget, PRICING, reserveEstimate } from './budget.js';
 import { replayLogEntry } from './replay-format.js';
 import { classificationForCase } from './auth.js';
+import { withReplayDate } from './replay-clock.js';
 import type { ReaderExecution } from './judgment.js';
 
 type BuildInput = { mode: 'build'; history: History; cutoff: string; workdir: string; ledger: string; capUsd: number };
@@ -85,9 +86,8 @@ async function build(args: BuildInput): Promise<unknown> {
           ? { kind: 'user' as const, channel_id: audience.channelId, user_id: audience.userId ?? args.history.scope.authorIds[0] ?? 'UEVALUSER01' }
           : { kind: audience.kind, channel_id: audience.channelId };
         let housekeepingCall = 0;
-        const outcome = await replayTaskCompletion(completion.taskId, {
+        const outcome = await withReplayDate(completion.at, () => replayTaskCompletion(completion.taskId, {
           scope, strict: true, model: 'claude-sonnet-5', maxBudgetUsd: reserved,
-          now: () => new Date(completion.at),
           onUsage: (usage) => { actual = usage.costUsd && usage.costUsd > 0 ? usage.costUsd :
             usage.inputTokens + usage.outputTokens > 0 ?
               (usage.inputTokens * PRICING.models['claude-sonnet-5'].input + usage.outputTokens * PRICING.models['claude-sonnet-5'].output) / 1_000_000 : null; },
@@ -104,7 +104,7 @@ async function build(args: BuildInput): Promise<unknown> {
               settle: async (status: 'ok' | 'error') => { await budget.settle(receipt, charge, status); },
             };
           } },
-        });
+        }));
         if (outcome.status !== 'extracted') {
           if (!outcome.modelCalled) actual = 0;
           throw new Error(`replay no-op: ${outcome.status} ${outcome.reason ?? ''}`);

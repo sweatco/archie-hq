@@ -78,7 +78,7 @@ async function configHash(): Promise<string> {
     'src/memory/entity-index.ts', 'src/memory/pending-queue.ts', 'src/memory/task-authors.ts',
     'prompts/memory-extractor.md', 'prompts/memory-housekeeper.md',
     'tools/memory-eval/replay-format.ts', 'tools/memory-eval/schema.ts', 'tools/memory-eval/retention.ts',
-    'tools/memory-eval/budget.ts', 'package-lock.json',
+    'tools/memory-eval/replay-clock.ts', 'tools/memory-eval/budget.ts', 'package-lock.json',
   ];
   const workerSource = await readFile(join(repo, 'tools/memory-eval/worker.ts'), 'utf8');
   const buildSource = workerSource.split('function responseText(')[0];

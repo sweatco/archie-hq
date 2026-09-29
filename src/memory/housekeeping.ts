@@ -51,7 +51,7 @@ export type HousekeepingBudget = {
     settle(status: 'ok' | 'error'): Promise<void>;
   }>;
 };
-export type HousekeepingOptions = { strict?: boolean; budget?: HousekeepingBudget; today?: string };
+export type HousekeepingOptions = { strict?: boolean; budget?: HousekeepingBudget };
 
 /**
  * Consolidate one or more memory files. No-op when the housekeeping flag is
@@ -68,10 +68,10 @@ export async function runHousekeeping(target: HousekeepingTarget, options: House
     return;
   }
   if (target === 'entities') {
-    await runEntityHousekeeping(options.today);
+    await runEntityHousekeeping();
   } else if (target === 'all') {
     await consolidateAllUserFiles(options);
-    await runEntityHousekeeping(options.today);
+    await runEntityHousekeeping();
   } else {
     // assume a user ID
     await consolidateFile(`users/${target}.md`, getUserPath(target), options);
@@ -260,7 +260,7 @@ async function consolidateFile(label: string, path: string, options: Housekeepin
 // ============================================================================
 
 async function runHousekeeperAgent(fileContent: string, options: HousekeepingOptions): Promise<string> {
-  const today = options.today ?? new Date().toISOString().slice(0, 10);
+  const today = new Date().toISOString().slice(0, 10);
   const variables = {
     FILE_CONTENT: fileContent,
     STALENESS_DAYS: String(getStalenessDays()),

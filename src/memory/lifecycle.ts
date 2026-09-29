@@ -91,7 +91,6 @@ export function rescheduleTaskCompleted(taskId: string): void {
 
 export interface MemoryReplayOptions {
   scope?: TaskMemoryScope;
-  now?: () => Date;
   model?: string;
   maxBudgetUsd?: number;
   onUsage?: (usage: { inputTokens: number; outputTokens: number; costUsd?: number }) => void;
@@ -100,7 +99,7 @@ export interface MemoryReplayOptions {
 }
 export type ExtractionOutcome = { status: 'extracted' | 'skipped' | 'denied'; reason?: string; modelCalled: boolean };
 
-/** Offline callers supply recorded scope and a fixed clock in an isolated workdir. */
+/** Offline callers supply recorded scope in an isolated workdir. */
 export async function replayTaskCompletion(taskId: string, options: MemoryReplayOptions): Promise<ExtractionOutcome> {
   if (process.env.ARCHIE_MEMORY_EVAL_REPLAY !== 'true' || !options.scope || !options.strict || !isMemoryReady()) {
     throw new Error('evaluation replay requires isolated evaluator mode, scoped ready store, and strict mode');
@@ -151,7 +150,7 @@ async function processExtraction(taskId: string, options: MemoryReplayOptions = 
       logger.warn('memory', `dropped task summary for ${taskId} (sanitizer rejected)`);
       return { status: 'skipped', reason: 'summary_rejected', modelCalled: true };
     }
-    const extractionAt = (options.now?.() ?? new Date()).toISOString();
+    const extractionAt = new Date().toISOString();
     await writeTaskSummary(
       'private',
       destination.channel_id,
@@ -204,7 +203,6 @@ async function processExtraction(taskId: string, options: MemoryReplayOptions = 
   // Apply per-user updates. Use the identity-aware writer so first-touch
   // user files get YAML frontmatter (slack_user_id + display_name + aliases).
   const housekeepingTargets = new Set<string>();
-  const replayDate = options.now?.().toISOString().slice(0, 10);
   const displayNameById = new Map(users.map((u) => [u.userId, u.displayName]));
   const appliedUserUpdates: Record<string, MemoryUpdate[]> = {};
   for (const [userId, updates] of Object.entries(result.user_updates)) {
@@ -213,7 +211,7 @@ async function processExtraction(taskId: string, options: MemoryReplayOptions = 
     );
     if (attributedUpdates.length > 0) {
       const displayName = displayNameById.get(userId) ?? userId;
-      const applied = await applyUserUpdatesWithIdentity(userId, displayName, attributedUpdates, replayDate);
+      const applied = await applyUserUpdatesWithIdentity(userId, displayName, attributedUpdates);
       if (applied.appliedUpdates.length > 0) appliedUserUpdates[userId] = applied.appliedUpdates;
       if (applied.capExceeded) housekeepingTargets.add(userId);
     }
@@ -223,7 +221,7 @@ async function processExtraction(taskId: string, options: MemoryReplayOptions = 
   // Each applied update auto-adds a `touched_by [[taskId]]` edge.
   const touchedEntities = new Set<string>();
   for (const update of result.entity_updates) {
-    const applied = await applyEntityUpdate(update, taskId, replayDate);
+    const applied = await applyEntityUpdate(update, taskId);
     if (!applied) continue;
     touchedEntities.add(applied.slug);
     if (applied.capExceeded) housekeepingTargets.add('entities');
@@ -238,7 +236,7 @@ async function processExtraction(taskId: string, options: MemoryReplayOptions = 
   if (housekeepingTargets.size > 0) {
     const { runHousekeeping } = await import('./housekeeping.js');
     for (const target of housekeepingTargets) {
-      if (options.strict) await runHousekeeping(target, { strict: true, budget: options.housekeepingBudget, today: replayDate });
+      if (options.strict) await runHousekeeping(target, { strict: true, budget: options.housekeepingBudget });
       else extractionQueue = extractionQueue.then(() =>
         runHousekeeping(target).catch((err) => logger.warn('memory', `housekeeping for ${target} failed: ${err}`))
       );
@@ -269,7 +267,7 @@ async function processExtraction(taskId: string, options: MemoryReplayOptions = 
       users,
       activityIndex,
       related,
-      (options.now?.() ?? new Date()).toISOString(),
+      new Date().toISOString(),
     );
   } else {
     logger.warn('memory', `dropped task summary for ${taskId} (sanitizer rejected)`);
