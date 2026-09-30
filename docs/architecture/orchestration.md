@@ -277,7 +277,7 @@ Both `stop()` and `complete()`:
 
 ### Wall-clock timeout
 
-A 60-second interval checks elapsed time against `budgets.taskTimeoutMs` (60 minutes by default; override with `ARCHIE_TASK_TIMEOUT_MS`, which ignores anything that is not a positive integer so the backstop cannot be switched off by a typo). On expiry it posts a pause message — worded differently depending on whether the agent was mid-turn or simply waiting on a human — and calls `complete()`, so the task reopens cleanly on the next reply.
+A 60-second interval checks elapsed time against `budgets.taskTimeoutMs` (60 minutes by default; override with `ARCHIE_TASK_TIMEOUT_MS`, which ignores anything that is not a positive integer so the backstop cannot be switched off by a typo). On expiry it posts one generic pause message, calls `complete()`, and then aborts the agent's process, because `complete()` alone leaves an idle PM's background workers running. It also sets `cap_pause_notice_pending`, so the wake that reopens the task is prefixed with `AGENT_PROMPTS.capPauseNotice`: the time limit stopped the work, not a person.
 
 ---
 

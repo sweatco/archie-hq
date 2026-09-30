@@ -367,7 +367,7 @@ export class Task {
     if (!this.isActive) {
       await this.activate();
     }
-    const wake = await this.withMigrationNotice(message);
+    const wake = await this.withMigrationNotice(await this.withCapPauseNotice(message));
     const agent = await this.ensurePm();
     agent.queue.addMessage(wake);
     // Mark active synchronously at enqueue (not lazily at the SDK `init` re-fire,
@@ -389,6 +389,17 @@ export class Task {
       await this.save(true);
       logger.system(`Task ${this.taskId}: prepended the runtime migration notice to this wake`);
       return `${notice}\n\n${message}`;
+    } else {
+      return message;
+    }
+  }
+
+  private async withCapPauseNotice(message: string): Promise<string> {
+    if (this.metadata.cap_pause_notice_pending === true) {
+      this.metadata.cap_pause_notice_pending = false;
+      await this.save(true);
+      logger.system(`Task ${this.taskId}: prepended the cap-pause notice to this wake`);
+      return `${AGENT_PROMPTS.capPauseNotice}\n\n${message}`;
     } else {
       return message;
     }
@@ -2178,6 +2189,11 @@ export class Task {
         logger.error('budget', 'Failed to post pause message', err),
       );
       await this.complete();
+      this.metadata.cap_pause_notice_pending = true;
+      await this.save(true);
+      // complete() leaves an idle agent's process running while background
+      // workers are in flight; past the cap they must not keep working.
+      this.agent?.handle?.abort();
     }, 60_000);
   }
 
