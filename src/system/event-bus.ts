@@ -15,7 +15,9 @@ export type EventType =
   | 'approval:requested' | 'approval:resolved'
   | 'pr_card'
   | 'reminder:set' | 'reminder:cancelled' | 'reminder:fired'
-  | 'trigger:created' | 'trigger:fired' | 'trigger:paused' | 'trigger:resumed' | 'trigger:deleted';
+  | 'trigger:created' | 'trigger:fired' | 'trigger:paused' | 'trigger:resumed' | 'trigger:deleted'
+  | 'runner:provisioning' | 'runner:ready' | 'runner:failed' | 'runner:sync'
+  | 'runner:exec' | 'runner:artifacts' | 'runner:debug' | 'runner:released';
 
 export interface SystemEvent {
   type: EventType;

@@ -62,6 +62,7 @@ import {
   createMemoryMcpServer,
   shouldAttachMemoryTools,
 } from '../memory/tools.js';
+import { createRunnerToolsMcpServer, RUNNER_TOOL_NAMES, shouldAttachRunnerTools } from '../runners/tools.js';
 
 /**
  * The write side of `repo-tools`, withheld until edit mode is approved. The
@@ -266,7 +267,7 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   const maxMode = metadata.max_mode === true;
   const model = resolveAgentModel(def, maxMode);
   const effort = resolveAgentEffort(def, maxMode);
-  const tools = def.tools;
+  const tools = def.tools ? [...def.tools] : undefined;
 
   const plugins = pluginConfigs();
   // Where the loaded plugins' files actually live, so the session can read them.
@@ -474,6 +475,16 @@ Shared folder: ${sharedPath} [READ-ONLY]
   // side stays withheld until approval — see REPO_WRITE_TOOLS in
   // `disallowedTools` above, and the read-only clone mount in the sandbox.
   mcpServers['repo-tools'] = createRepoToolsMcpServer(agent, task);
+
+  if (shouldAttachRunnerTools(def.id)) {
+    mcpServers['runner-tools'] = createRunnerToolsMcpServer(agent, task);
+    if (tools) {
+      for (const toolName of RUNNER_TOOL_NAMES) {
+        if (!tools.includes(toolName)) tools.push(toolName);
+      }
+    }
+    systemPrompt = `${systemPrompt}\n\nRemote runners are available through generic runner-tools. Mount and sync the repository before executing commands. Use runner_mcp to discover and call a repository's stdio MCP server inside the VM (for example Argent for simulator interaction); install its repository dependencies first. Give every logical command or MCP call a stable UUID request_id and reuse it if the start result is uncertain. Persist the returned cursor and pass it as after_cursor when polling; if a poll result is uncertain, retry with the previous cursor. Continue polling while hasMore is true. Collect result_path when an MCP response is too large to inline; paths returned by guest tools refer to the VM. Platform-specific workflows belong to repository skills.`;
+  }
 
   // Domain/admin MCP servers sometimes need a local file's bytes (e.g.
   // uploading an image). The file bridge forwards file contents into those
