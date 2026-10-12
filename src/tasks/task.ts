@@ -571,14 +571,9 @@ export class Task {
   }
 
   async prepareTriggerDelivery(binding: TriggerBinding): Promise<void> {
-    if (binding.type === 'channel') {
-      await this.prepareMemoryDelivery(binding.channel_id);
-      return;
-    }
-    const destination = this.metadata.memory_destination;
-    if (!destination) throw new Error('delivery blocked: this task has no Slack destination');
-    await this.prepareMemoryDelivery(destination.channel_id);
-    const channel = await getChannelInfo(destination.channel_id);
+    await this.prepareMemoryDelivery(binding.channel_id);
+    if (binding.type === 'channel') return;
+    const channel = await getChannelInfo(binding.channel_id);
     if (channel.isIm !== true || channel.imUserId !== binding.user_id) {
       throw new Error('delivery blocked: trigger belongs to a different Slack destination');
     }

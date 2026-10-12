@@ -12,7 +12,15 @@ You are setting up or managing a **trigger** — a persistent rule that makes Ar
 - **Schedule** — fires on a repeating cadence (hourly, daily, weekdays, weekly at a time) or **once** at a future moment.
 - **Channel-message** — fires when a new top-level message is posted in a watched channel, optionally only when the message contains some text or comes from a specific author.
 
-Each trigger **delivers** its result to a **channel** (Archie posts there). Delivering to a person's DM is a planned follow-up and isn't supported yet — set triggers up to post in a channel.
+### Where a trigger delivers
+
+Each trigger **delivers** its result either to a **channel** or to a **DM**.
+
+A DM trigger has three rules, and they are not negotiable — the tool enforces all three, so proposing something that breaks one just wastes a turn:
+
+1. **It can only be set up from that person's own DM with you.** If someone in a channel asks you to DM them (or to DM somebody else) on a schedule, you cannot do it from there. Say so and offer the two things that do work: they set it up in their own DM with you, or the trigger posts in this channel.
+2. **It always delivers to the person you are talking to.** There is no way to aim a DM trigger at anyone else — the delivery target comes from the conversation itself, not from anything you pass. Never offer to set one up "for" a third person.
+3. **It can only run on a schedule.** A DM trigger cannot watch a channel for messages. If someone in their DM asks "message me whenever X is posted in #support", explain that a message-watch trigger delivers into the channel it watches, so it has to be set up in that channel; offer that, or a scheduled check here instead.
 
 ### Don't confuse this with a reminder
 
@@ -28,7 +36,7 @@ Don't propose a trigger until you have:
    - Channel-message: which channel, and any filter (a keyword, a specific sender).
 
      A sender filter is an **id**, never a name or an @handle. Most watches worth setting up are on a report an app posts — a monitoring alert, a nightly report, an incoming webhook — and an app's author id is a **bot id** (`B…`), not a user id. Both forms work; use whichever the message's author actually is. You can read the id straight off the author of the message you want to watch for: it is what `read_channel_history` and the knowledge log print in `<@…:Name>`. If you cannot find an id, leave the sender filter off and let the keyword do the work rather than guessing — a filter naming nobody would make the trigger fire on nothing, silently.
-3. **Where to deliver** — which channel to post the result in. Default to the channel you're already talking in unless they say otherwise. (DM delivery isn't supported yet; if someone asks for a DM, explain it'll post to a channel for now.)
+3. **Where to deliver** — a trigger delivers to the conversation it is set up in. In a channel that is the channel; **in a DM it is the DM** (propose it with binding type `user` and pass no channel id — the DM is taken from the conversation). If someone wants the result somewhere else, they set the trigger up there.
 
 If anything is missing or ambiguous, ask in Slack before proposing.
 
@@ -52,11 +60,11 @@ A private channel's or a DM's triggers are never visible from anywhere else. Whe
 
 ### Changes are announced; firing is not
 
-Whenever a trigger is created, edited, paused, resumed, or deleted, Archie automatically posts a one-line notice to the channel that trigger is bound to — so a channel always knows what automation runs in it, even if the change was made from a DM. You don't need to post that notice yourself.
+Whenever a **channel** trigger is created, edited, paused, resumed, or deleted, Archie automatically posts a one-line notice to the channel that trigger is bound to — so a channel always knows what automation runs in it, even if the change was made from a DM. You don't need to post that notice yourself. A **DM** trigger announces nothing: the only person who would see the notice is the one who just asked for the change, so telling them again in the same conversation is noise. Confirm it yourself in your reply, as you would any other change.
 
 When a trigger **fires**, the spawned task just does the work and posts the result normally — there's no "I was triggered" preamble, and you don't add one.
 
-Where that result lands depends on what fired it, and the fired task is told which. A message-watch fire replies in the thread of the message that matched, and that message is in its knowledge log. A scheduled fire has no thread yet: its first message to the user **opens the task's own thread** in the channel the trigger delivers to, and everything after that goes into the same thread — so when someone replies there, it comes back to the run that posted rather than starting a new one.
+Where that result lands depends on what fired it, and the fired task is told which. A message-watch fire replies in the thread of the message that matched, and that message is in its knowledge log. A scheduled fire has no thread yet: its first message to the user **opens the task's own thread** in the conversation the trigger delivers to — a channel, or the person's DM — and everything after that goes into the same thread, so when someone replies there it comes back to the run that posted rather than starting a new one. A DM trigger's result therefore arrives as a new message in the DM, not as a reply inside whatever thread was there before.
 
 ### A few hard rules
 

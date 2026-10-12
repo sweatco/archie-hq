@@ -23,6 +23,7 @@ import { isAppAuthorId } from './trigger-match.js';
 import { postSlackMessage, isChannelReachable } from '../connectors/slack/client.js';
 import { ensureChannelCanvas } from '../connectors/slack/channel-canvas.js';
 import { ensureChannelPins } from '../connectors/slack/channel-pins.js';
+import { formatConversationLabel } from '../connectors/slack/channel-ids.js';
 
 // ---- Limits / config ----
 
@@ -375,13 +376,11 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
   task.metadata.triggered_by = trigger.id;
 
   // Wire delivery. A message fire ingests the triggering thread, which links it as the default channel and
-  // posts nothing. A schedule fire has no thread, so the task is homed in the bound channel and its first
-  // user-facing message opens its own thread there.
+  // posts nothing. A schedule fire has no thread, so the task is homed in the bound conversation — a channel
+  // or the creator's DM — and its first user-facing message opens its own thread there.
   let delivery: string;
-  // Set only by the channel-binding schedule branch below, and used after the if/else to refresh that
-  // channel's standing context. It doubles as the "this fire homed a task in a channel" flag: a message
-  // fire and a DM-bound fire both leave it undefined.
-  let homeChannelId: string | undefined;
+  // Set only for a channel-bound schedule fire: a message fire was already scanned, and a DM has no canvas or pins.
+  let scanChannelId: string | undefined;
   if (context.kind === 'message' && context.thread) {
     // Ingestion, not announcement. `append` is the one path every other Slack task uses, and it does five things this branch would otherwise have to reinvent (and previously simply skipped): it writes the message to knowledge.log through the single renderer with the author line and the `msg:<ts>` id, applies the redaction policy via `shouldRedact`, skips file downloads for a redacted message while downloading them otherwise so the `[Attachments: …]` suffix carries usable local paths, links `slack:<channel>:<threadId>` as a channel, and promotes it to `default_channel`. That last pair is why `linkSlackThread` is NOT also called here — `append` links the identical key with the same shape, so doing both would double-write the same record.
     const { entries } = await task.append(context.thread);
@@ -408,20 +407,18 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
     if (entries.length > 0) {
       delivery += `\n\nThe message that fired this:\n\n${entries.join('\n\n')}`;
     }
-  } else if (trigger.binding.type === 'user') {
-    delivery = `Deliver the result to the user as a direct message (Slack user ID ${trigger.binding.user_id}).`;
   } else {
     // A schedule fire has no thread to reply in, so instead of handing the agent a detached "post it over
-    // there" tool, the task is HOMED in the bound channel: its first user-facing message opens the task's
+    // there" tool, the task is HOMED in the bound conversation: its first user-facing message opens the task's
     // own thread there (that message becomes the thread root), and every human reply to it routes back to
     // this task instead of starting a stranger one. `home_channel` is what `postToUser` reads to do that.
-    homeChannelId = trigger.binding.channel_id;
+    if (trigger.binding.type === 'channel') scanChannelId = trigger.binding.channel_id;
     task.setMemoryDestination(trigger.binding.channel_id);
     task.metadata.home_channel = {
       channel_id: trigger.binding.channel_id,
       channel_name: trigger.binding.channel_name,
     };
-    delivery = `You have no thread yet. Your first post_to_user opens this task's own thread in #${trigger.binding.channel_name}, and every message after that goes into that same thread. Until then you cannot post anywhere else.`;
+    delivery = `You have no thread yet. Your first post_to_user opens this task's own thread in ${formatConversationLabel(trigger.binding.channel_name)}, and every message after that goes into that same thread. Until then you cannot post anywhere else.`;
   }
   await task.save(true);
 
@@ -448,9 +445,9 @@ export async function fireTrigger(trigger: Trigger, context: FireContext): Promi
   // The `.catch` is deliberate rather than defensive: a canvas or pins scan is context, and a failed scan
   // must never cost the fire itself — a scheduled run that silently does not happen is far worse than one
   // that runs with a stale brief.
-  if (homeChannelId) {
-    await Promise.all([ensureChannelCanvas(homeChannelId), ensureChannelPins(homeChannelId)])
-      .catch((err) => logger.warn('trigger-scheduler', `Failed to refresh standing context for home channel ${homeChannelId} on trigger ${trigger.id}`, err));
+  if (scanChannelId) {
+    await Promise.all([ensureChannelCanvas(scanChannelId), ensureChannelPins(scanChannelId)])
+      .catch((err) => logger.warn('trigger-scheduler', `Failed to refresh standing context for home channel ${scanChannelId} on trigger ${trigger.id}`, err));
   }
 
   logger.system(`Trigger ${trigger.id} fired (${context.kind}) → task ${task.taskId}`);
@@ -472,6 +469,9 @@ type TriggerChange = 'enabled' | 'edited' | 'paused' | 'resumed' | 'deleted';
  * a failed post is logged, not thrown.
  */
 export async function announceTriggerChange(trigger: Trigger, change: TriggerChange): Promise<void> {
+  // A DM's only reader is the person who just made the change.
+  if (trigger.binding.type === 'user') return;
+
   // The notice is posted IN the bound channel, so naming the channel again would
   // be redundant — omit "where" here (the approval card, posted in the task
   // thread, still shows it).
@@ -633,9 +633,9 @@ export function triggerWhen(trigger: Trigger): string {
   return trigger.conditions.map((c) => describeCondition(c, bound)).join(' or ');
 }
 
-/** WHERE results are delivered ("#general" / "a DM"). */
+/** WHERE results are delivered ("#general" / "DM with Dana"). Not "your DM": the operator lists everyone's. */
 export function triggerWhere(trigger: Trigger): string {
-  return trigger.binding.type === 'channel' ? `#${trigger.binding.channel_name}` : 'a DM';
+  return formatConversationLabel(trigger.binding.channel_name);
 }
 
 /** Human-readable one-liner: "<when> → <what>". Used by CLI/API listings. */
@@ -644,12 +644,10 @@ export function describeTrigger(trigger: Trigger): string {
 }
 
 /**
- * Post a plain message to a trigger's binding (channel or user DM). Slack's
- * chat.postMessage resolves a user id directly to that user's DM, so no
- * separate conversations.open is needed.
+ * Post a plain message to a trigger's binding.
  */
 async function postToBinding(binding: TriggerBinding, text: string): Promise<void> {
-  const channel = binding.type === 'user' ? binding.user_id : binding.channel_id;
+  const channel = binding.channel_id;
   await postSlackMessage({ channel, text });
 }
 

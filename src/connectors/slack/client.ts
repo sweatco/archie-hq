@@ -10,6 +10,7 @@ import type { SlackThreadRef, SlackFile, SlackThread, SlackThreadMessage, SlackA
 import type { PrCardData, SlackMemoryClassification } from '../../types/task.js';
 import { prCardSubtitle, SLACK_PR_CARD_EMOJI } from '../../system/pr-card-format.js';
 import { isMemoryReady } from '../../memory/paths.js';
+import { formatConversationLabel } from './channel-ids.js';
 
 /**
  * Internal raw shape produced by `fetchThreadHistory`. Carries the unresolved
@@ -2473,7 +2474,7 @@ export function formatSlackChannelRef(channelId: string, channelName: string, th
  * e.g., "#bot-test"
  */
 export function formatSlackChannelDisplay(channelName: string): string {
-  return `#${channelName}`;
+  return formatConversationLabel(channelName);
 }
 
 // ============================================================================

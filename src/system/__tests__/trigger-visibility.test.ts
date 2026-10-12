@@ -26,7 +26,7 @@ function dmTrigger(userId: string): Trigger {
     status: 'enabled',
     created_by: userId,
     created_at: '2026-06-24T00:00:00Z',
-    binding: { type: 'user', user_id: userId },
+    binding: { type: 'user', user_id: userId, channel_id: `D${userId}`, channel_name: `DM with ${userId}` },
     conditions: [{ type: 'schedule', tz: 'UTC', cron: '0 9 * * *', next_run_at: '2026-06-25T09:00:00Z' }],
     action: { prompt: 'do the thing' },
   };
@@ -78,6 +78,11 @@ describe('triggerVisibleFrom', () => {
     expect(await triggerVisibleFrom(dmTrigger('U1'), { kind: 'dm', userId: 'U1' }, publicResolver)).toBe(true);
     expect(await triggerVisibleFrom(dmTrigger('U1'), { kind: 'dm', userId: 'U2' }, publicResolver)).toBe(false);
     expect(await triggerVisibleFrom(dmTrigger('U1'), { kind: 'channel', channelId: 'C_PUB' }, publicResolver)).toBe(false);
+  });
+
+  it('DM trigger is hidden from another user\'s DM even when that origin carries a channelId', async () => {
+    const origin: TriggerOrigin = { kind: 'dm', userId: 'U2', channelId: 'DU2', channelName: 'DM with U2' };
+    expect(await triggerVisibleFrom(dmTrigger('U1'), origin, publicResolver)).toBe(false);
   });
 
   it('operator (CLI) sees everything', async () => {

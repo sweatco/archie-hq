@@ -50,7 +50,7 @@ import {
   buildOtherChannelContextSection,
 } from '../connectors/slack/channel-canvas.js';
 import { collectPinnedFileAllowlist } from '../connectors/slack/channel-pins.js';
-import { isDmOrUserId, findMutedTarget, taskSlackChannelIds, taskSlackChannelLabels } from '../connectors/slack/channel-ids.js';
+import { isDmOrUserId, findMutedTarget, taskSlackChannelIds, taskSlackChannelLabels, formatConversationLabel } from '../connectors/slack/channel-ids.js';
 import {
   formatSlackSendError,
   formatSlackPostError,
@@ -82,6 +82,12 @@ function rejectDmTarget(channel: string): string | null {
  */
 function taskChannelIds(task: Task): Set<string> {
   return taskSlackChannelIds(task.metadata);
+}
+
+/** Slack returns no name for a 1:1 DM, so its explore label comes from the task's own channel map. */
+function exploreChannelLabel(task: Task, channelId: string, apiName: string): string {
+  if (apiName && apiName !== channelId) return formatConversationLabel(apiName);
+  return taskSlackChannelLabels(task.metadata).get(channelId) ?? formatConversationLabel(apiName || channelId);
 }
 
 /** Render explore messages in the same `@<id:name> | msg:ts` shape the PM sees elsewhere. */
@@ -457,11 +463,11 @@ function createListChannelsTool(task: Task) {
         // channel / DM origin) — accessible because the task lives there. Other
         // private channels / DMs are never enumerated.
         const seen = new Set(publicChannels.map((c) => c.id));
-        const own: { name: string; id: string }[] = [];
+        const own: { label: string; id: string }[] = [];
         for (const ch of Object.values(task.metadata.channels)) {
           if (ch.type === 'slack' && !seen.has(ch.channel_id)) {
             seen.add(ch.channel_id);
-            own.push({ name: ch.channel_name || ch.channel_id, id: ch.channel_id });
+            own.push({ label: formatConversationLabel(ch.channel_name || ch.channel_id), id: ch.channel_id });
           }
         }
         // A trigger-fired task's home channel counts as its own before it has a thread there, and it must be
@@ -476,14 +482,14 @@ function createListChannelsTool(task: Task) {
         for (const [channelId, label] of taskSlackChannelLabels(task.metadata)) {
           if (seen.has(channelId)) continue;
           seen.add(channelId);
-          own.push({ name: label.replace(/^#/, ''), id: channelId });
+          own.push({ label, id: channelId });
         }
         if (publicChannels.length === 0 && own.length === 0) {
           return ok("Archie isn't a member of any channels you can use yet. Invite it to a channel (`/invite @Archie`) to explore there.");
         }
         const lines = [
           ...publicChannels.map((ch) => `- #${ch.name} — ID: ${ch.id}${ch.topic ? ` — ${ch.topic}` : ''}`),
-          ...own.map((ch) => `- #${ch.name} — ID: ${ch.id} (this task's own channel)`),
+          ...own.map((ch) => `- ${ch.label} — ID: ${ch.id} (this task's own channel)`),
         ];
         return ok(`Channels you can read${own.length ? " (public channels Archie's in, plus this task's own channel)" : ''}:\n${lines.join('\n')}`);
       } catch (e) {
@@ -892,8 +898,9 @@ function createReadChannelHistoryTool(task: Task) {
       }
       try {
         const { channel, messages } = await fetchChannelHistory(args.channel, args.limit ?? 30, allowed);
-        if (messages.length === 0) return ok(`#${channel.name} has no readable recent messages.`);
-        return ok(`#${channel.name} — last ${messages.length} message(s):\n\n${formatExploreMessages(messages)}`);
+        const label = exploreChannelLabel(task, args.channel, channel.name);
+        if (messages.length === 0) return ok(`${label} has no readable recent messages.`);
+        return ok(`${label} — last ${messages.length} message(s):\n\n${formatExploreMessages(messages)}`);
       } catch (e) {
         return ok(formatSlackReadError(e, args.channel));
       }
@@ -920,7 +927,7 @@ function createReadThreadTool(task: Task) {
       try {
         const { channel, messages } = await fetchExploreThread(args.channel, args.thread_ts, allowed);
         if (messages.length === 0) return ok(`No messages found in that thread.`);
-        return ok(`#${channel.name} thread ${args.thread_ts} — ${messages.length} message(s):\n\n${formatExploreMessages(messages)}`);
+        return ok(`${exploreChannelLabel(task, args.channel, channel.name)} thread ${args.thread_ts} — ${messages.length} message(s):\n\n${formatExploreMessages(messages)}`);
       } catch (e) {
         return ok(formatSlackReadError(e, args.channel));
       }
@@ -966,7 +973,7 @@ function createPostToChannelTool(agent: Agent, task: Task) {
       if (task.metadata.home_channel && !task.metadata.default_channel) {
         return ok(
           'Nothing was posted. This task has no channel of its own yet — post the result with `post_to_user` first, which opens this task\'s thread in ' +
-          `#${task.metadata.home_channel.channel_name}. ` +
+          `${formatConversationLabel(task.metadata.home_channel.channel_name)}. ` +
           '`post_to_channel` is available in that channel after that.',
         );
       }
@@ -2185,16 +2192,18 @@ type RawCondition = z.infer<typeof triggerConditionObject>;
 async function resolveTriggerOrigin(task: Task): Promise<TriggerOrigin> {
   const key = task.metadata.default_channel;
   const ch = key ? task.metadata.channels[key] : null;
-  if (!ch || ch.type !== 'slack') return { kind: 'operator' };
+  // A fired task has no Slack default channel until its first post; without the home-channel fallback it would get operator (see-everything) visibility.
+  const conversationId = ch?.type === 'slack' ? ch.channel_id : task.metadata.home_channel?.channel_id;
+  if (!conversationId) return { kind: 'operator' };
   try {
-    const info = await getChannelInfo(ch.channel_id);
-    if (info.isIm) return { kind: 'dm', userId: info.imUserId };
-    return { kind: 'channel', channelId: ch.channel_id };
+    const info = await getChannelInfo(conversationId);
+    if (info.isIm) return { kind: 'dm', userId: info.imUserId, channelId: conversationId, channelName: info.name };
+    return { kind: 'channel', channelId: conversationId };
   } catch {
     // Fail closed: a Slack lookup failure must not widen visibility. Treat the
     // origin as this exact channel (sees public + its own triggers only), never
     // operator. A DM misclassified this way under-permits, which is the safe way.
-    return { kind: 'channel', channelId: ch.channel_id };
+    return { kind: 'channel', channelId: conversationId };
   }
 }
 
@@ -2233,18 +2242,14 @@ function makePrivacyResolver(): (channelId: string) => Promise<boolean> {
   };
 }
 
-/** Best-effort Slack user id of whoever is asking (only known in a DM). */
-async function resolveRequester(task: Task): Promise<string | undefined> {
-  const origin = await resolveTriggerOrigin(task);
-  return origin.kind === 'dm' ? origin.userId : undefined;
-}
-
 /**
  * Validate + normalize tool-supplied conditions into stored TriggerConditions.
  * Recurring schedules are interval-checked (≥1h) and get an initial next_run_at;
  * one-offs parse run_at and must be in the future.
+ *
+ * A message fire replies in the watched thread, not to the binding, so a DM binding is schedule-only.
  */
-function buildConditions(raw: RawCondition[], defaultTz: string): { conditions: TriggerCondition[] } | { error: string } {
+function buildConditions(raw: RawCondition[], defaultTz: string, bindingType: TriggerBinding['type']): { conditions: TriggerCondition[] } | { error: string } {
   const conditions: TriggerCondition[] = [];
   for (const c of raw) {
     if (c.type === 'schedule') {
@@ -2264,6 +2269,9 @@ function buildConditions(raw: RawCondition[], defaultTz: string): { conditions: 
         return { error: 'A schedule condition needs either `cron` (recurring) or `run_at` (one-off).' };
       }
     } else if (c.type === 'channel_message') {
+      if (bindingType === 'user') {
+        return { error: 'A DM trigger can only run on a schedule — it cannot watch a channel for messages. Give it a schedule, or bind it to a channel instead.' };
+      }
       if (!c.channel_id) return { error: 'A channel_message condition needs `channel_id`.' };
       const match: { contains?: string; from_user?: string } = {};
       if (c.contains) match.contains = c.contains;
@@ -2301,13 +2309,13 @@ async function authorizeTriggerChange(task: Task, trigger: Trigger): Promise<str
 function createProposeTriggerTool(task: Task) {
   return tool(
     'propose_trigger',
-    'Propose a persistent trigger ("do Y when X happens") for the user to approve. The trigger is created in a pending state and an Approve/Deny prompt is posted — it will NOT run until the user approves. Use this after you and the user have agreed on the cadence (or channel to watch), what to do, and which channel to deliver to. Results are delivered to a channel; delivery to a user DM is not supported yet. You do not need to pause the task.',
+    'Propose a persistent trigger ("do Y when X happens") for the user to approve. The trigger is created in a pending state and an Approve/Deny prompt is posted — it will NOT run until the user approves. Use this after you and the user have agreed on the cadence (or channel to watch), what to do, and which channel to deliver to. Results are delivered either to a channel or, when you are being asked in a DM, to that DM (binding type "user") — a DM trigger can only be set up from the DM it will deliver to, and can only run on a schedule. You do not need to pause the task.',
     {
       binding: z.object({
-        type: z.enum(['channel']),
-        channel_id: z.string().describe('Slack channel ID where fired results are delivered.'),
-        channel_name: z.string().describe('Channel name without the leading #.'),
-      }).describe('Where fired results are delivered — a channel (DM delivery is not supported yet).'),
+        type: z.enum(['channel', 'user']),
+        channel_id: z.string().optional().describe('Slack channel ID where fired results are delivered. Required for type "channel"; ignored for type "user".'),
+        channel_name: z.string().optional().describe('Channel name without the leading #. Required for type "channel"; ignored for type "user".'),
+      }).describe('Where fired results are delivered — a channel, or "user" to deliver to the DM you are being asked from. "user" is only valid when you are being asked in a DM, it always targets that DM, and it takes no id: pass no channel_id and no channel_name.'),
       conditions: z.array(triggerConditionObject).min(1).describe('One or more conditions; any match fires the trigger.'),
       action_prompt: z.string().describe('The full internal instruction seeded to the task when the trigger fires — detailed and imperative. NOT shown to the user.'),
       summary: z.string().describe('A short, friendly one-liner describing what this does, shown to the user in the approval prompt and announcements, e.g. "Daily summary of #bot-test" or "Reply to messages mentioning Archie". Keep it under ~60 chars; do not restate the schedule (that is rendered automatically).'),
@@ -2315,26 +2323,46 @@ function createProposeTriggerTool(task: Task) {
     async (args) => {
       if (!triggersEnabled()) return ok('Triggers are currently disabled on this instance (ARCHIE_TRIGGERS_ENABLED=false).');
 
-      const b = args.binding;
-      if (!b.channel_id || !b.channel_name) return ok('A trigger needs both channel_id and channel_name for delivery.');
-      // The binding's channel id is model-supplied text, and a fired task is HOMED in that channel: it opens its
-      // own thread there and treats it as its own for reads. So the id has to be a channel. Without this check a
-      // `D…` or `U…` value would hand a fired task DM access that `post_to_channel` and the explore reads both
-      // refuse by prefix everywhere else — and the human approving it sees only the channel NAME on the card.
-      if (isDmOrUserId(b.channel_id)) {
-        return ok('A trigger has to deliver to a channel, not a DM or a user. Pass a channel ID (e.g. "C…"). Delivery to a person\'s DM is not supported yet.');
+      // The approval card has no home-channel fallback, so before the first post it would reach nobody.
+      if (task.metadata.home_channel && !task.metadata.default_channel) {
+        return ok(
+          'Nothing was proposed. This task has no thread of its own yet, and an approval card cannot be delivered until it does — post your result with `post_to_user` first, which opens the thread, then propose the trigger.',
+        );
       }
-      const binding: TriggerBinding = { type: 'channel', channel_id: b.channel_id, channel_name: b.channel_name };
+
+      const origin = await resolveTriggerOrigin(task);
+
+      let binding: TriggerBinding;
+      if (args.binding.type === 'user') {
+        // Never read ids from args here: the DM is always the task's own, so it cannot be aimed at anyone else.
+        if (origin.kind !== 'dm' || !origin.userId || !origin.channelId) {
+          return ok('A DM trigger can only be set up from a DM. Ask the person to set it up in their own DM with me, or pick a channel to deliver to instead.');
+        }
+        binding = {
+          type: 'user',
+          user_id: origin.userId,
+          channel_id: origin.channelId,
+          channel_name: origin.channelName ?? `DM with ${origin.userId}`,
+        };
+      } else {
+        const b = args.binding;
+        if (!b.channel_id || !b.channel_name) return ok('A trigger needs both channel_id and channel_name for delivery.');
+        // The bound id also decides what the fired task may read, so a model-supplied DM or user id is refused.
+        if (isDmOrUserId(b.channel_id)) {
+          return ok('A trigger has to deliver to a channel, not a DM or a user. Pass a channel ID (e.g. "C…"). To deliver to someone\'s DM, set the trigger up from that DM and use binding type "user".');
+        }
+        binding = { type: 'channel', channel_id: b.channel_id, channel_name: b.channel_name };
+      }
 
       // Best-effort creator id (only known in a DM) — used for cap accounting and
-      // failure notices, not for delivery. Triggers deliver to a channel in v1.
-      const createdBy = await resolveRequester(task);
+      // failure notices, not for delivery.
+      const createdBy = origin.kind === 'dm' ? origin.userId : undefined;
       let defaultTz = 'UTC';
       if (createdBy) {
         try { defaultTz = (await getUserInfo(createdBy)).tz || 'UTC'; } catch { /* keep UTC */ }
       }
 
-      const built = buildConditions(args.conditions, defaultTz);
+      const built = buildConditions(args.conditions, defaultTz, binding.type);
       if ('error' in built) return ok(`Could not create the trigger: ${built.error}`);
 
       if (binding.type === 'channel') {
@@ -2413,7 +2441,7 @@ function createListTriggersTool(task: Task) {
       }
       if (visible.length === 0) return ok('There are no triggers set up that are visible from here.');
       const lines = visible.map((t) => {
-        const where = t.binding.type === 'channel' ? `#${t.binding.channel_name}` : 'a DM';
+        const where = triggerWhere(t);
         const last = t.last_fired_at ? `; last fired ${t.last_fired_at}` : '';
         return `• [${t.id}] (${t.status}) ${describeTrigger(t)} — delivers to ${where}${last}`;
       });
@@ -2505,7 +2533,7 @@ function createGetTriggerTool(task: Task) {
 function createUpdateTriggerTool(task: Task) {
   return tool(
     'update_trigger',
-    'Pause, resume, or edit an existing trigger. Read it with `get_trigger` first — `conditions` replaces the whole list, so editing blind silently drops filters. You can only manage triggers visible from this conversation. Posts a one-line change notice to the trigger\'s bound channel.',
+    'Pause, resume, or edit an existing trigger. Read it with `get_trigger` first — `conditions` replaces the whole list, so editing blind silently drops filters. You can only manage triggers visible from this conversation. A channel-bound trigger posts a one-line change notice to its bound channel; a DM trigger announces nothing.',
     {
       id: z.string().describe('Trigger ID (from list_triggers).'),
       status: z.enum(['paused', 'enabled']).optional().describe('"paused" to pause, "enabled" to resume.'),
@@ -2525,7 +2553,7 @@ function createUpdateTriggerTool(task: Task) {
       let nextConditions: TriggerCondition[] | undefined;
       if (args.conditions) {
         const defaultTz = trigger.conditions.find((c): c is Extract<TriggerCondition, { type: 'schedule' }> => c.type === 'schedule')?.tz || 'UTC';
-        const built = buildConditions(args.conditions, defaultTz);
+        const built = buildConditions(args.conditions, defaultTz, trigger.binding.type);
         if ('error' in built) return ok(`Could not update the trigger: ${built.error}`);
         nextConditions = built.conditions;
       }
@@ -2612,7 +2640,7 @@ function createUpdateTriggerTool(task: Task) {
 function createDeleteTriggerTool(task: Task) {
   return tool(
     'delete_trigger',
-    'Delete a trigger permanently. You can only delete triggers visible from this conversation. Posts a one-line notice to the bound channel.',
+    'Delete a trigger permanently. You can only delete triggers visible from this conversation. A channel-bound trigger posts a one-line notice to its bound channel; a DM trigger announces nothing.',
     {
       id: z.string().describe('Trigger ID (from list_triggers).'),
     },

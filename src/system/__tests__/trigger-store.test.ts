@@ -35,7 +35,7 @@ function sampleTrigger(id: string): Trigger {
     status: 'enabled',
     created_by: 'UCREATOR',
     created_at: '2026-08-17T09:00:00.000Z',
-    binding: { type: 'user', user_id: 'UCREATOR' },
+    binding: { type: 'user', user_id: 'UCREATOR', channel_id: 'DCREATOR', channel_name: 'DM with Creator' },
     conditions: [{ type: 'schedule', tz: 'UTC', next_run_at: '2026-08-18T09:00:00.000Z', cron: '0 9 * * *' }],
     action: { prompt: 'do the thing' },
   };

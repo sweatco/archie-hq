@@ -94,8 +94,14 @@ describe('prepareMemoryDelivery', () => {
   it.each([true, false])('authorizes an exact DM trigger recipient when memory readiness is %s', async (ready) => {
     memoryReady.value = ready;
     getChannelInfoMock.mockResolvedValue({ id: 'D1', name: 'DM', isPrivate: true, isIm: true, imUserId: 'U1' });
-    await expect(task('D1').prepareTriggerDelivery({ type: 'user', user_id: 'U1' })).resolves.toBeUndefined();
+    await expect(task('D1').prepareTriggerDelivery({ type: 'user', user_id: 'U1', channel_id: 'D1', channel_name: 'DM with U1' })).resolves.toBeUndefined();
     expect(classifyMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a user trigger whose channel is not the task\'s DM', async () => {
+    getChannelInfoMock.mockResolvedValue({ id: 'D1', name: 'DM', isPrivate: true, isIm: true, imUserId: 'U1' });
+    await expect(task('D1').prepareTriggerDelivery({ type: 'user', user_id: 'U1', channel_id: 'C_SECRET', channel_name: 'secret' }))
+      .rejects.toThrow(/different Slack destination/);
   });
 
   it.each([
@@ -105,7 +111,7 @@ describe('prepareMemoryDelivery', () => {
     ['failed resolution fallback', { id: 'D1', name: 'D1', isPrivate: false, isIm: false }],
   ])('rejects a user trigger for a %s destination resolution', async (_label, channelInfo) => {
     getChannelInfoMock.mockResolvedValue(channelInfo);
-    await expect(task('D1').prepareTriggerDelivery({ type: 'user', user_id: 'U1' }))
+    await expect(task('D1').prepareTriggerDelivery({ type: 'user', user_id: 'U1', channel_id: 'D1', channel_name: 'DM with U1' }))
       .rejects.toThrow(/different Slack destination/);
     expect(classifyMock).not.toHaveBeenCalled();
   });
