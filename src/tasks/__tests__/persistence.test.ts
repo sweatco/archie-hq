@@ -6,7 +6,7 @@
 
 import { describe, it, expect, vi, afterAll } from 'vitest';
 import { mkdir, writeFile, rm } from 'fs/promises';
-import { dirname } from 'path';
+import { dirname, join } from 'path';
 
 const SESSIONS_ROOT = await vi.hoisted(async () => {
   const { mkdtempSync } = await import('node:fs');
@@ -45,7 +45,7 @@ vi.mock('./task.js', () => ({
   activeTasks: new Map(),
 }));
 
-import { renderAttachmentsSuffix, renderEditForContext, loadMetadata, getMetadataPath } from '../persistence.js';
+import { renderAttachmentsSuffix, renderEditForContext, loadMetadata, getMetadataPath, taskExistsOnDisk } from '../persistence.js';
 import { renderMessageBody } from '../../connectors/slack/message-body.js';
 import type { SlackFile } from '../../types/index.js';
 import type { TaskMetadata } from '../../types/task.js';
@@ -152,5 +152,21 @@ describe('renderEditForContext', () => {
   it('preserves multi-line new text verbatim', () => {
     const out = renderEditForContext('line one\nline two');
     expect(out).toBe('[edited] line one\nline two');
+  });
+});
+
+describe('taskExistsOnDisk', () => {
+  it('rejects an id that is not a plain task id, even when the path it would build exists', async () => {
+    // A real metadata.json outside the task folder, reachable only by traversal.
+    const escaped = getMetadataPath('../escaped-task');
+    const escapedRoot = join(SESSIONS_ROOT, '..', 'escaped-task');
+    await mkdir(dirname(escaped), { recursive: true });
+    await writeFile(escaped, '{}');
+    try {
+      expect(taskExistsOnDisk('../escaped-task')).toBe(false);
+      expect(taskExistsOnDisk('')).toBe(false);
+    } finally {
+      await rm(escapedRoot, { recursive: true, force: true });
+    }
   });
 });

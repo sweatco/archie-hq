@@ -429,7 +429,13 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
       }
     }
     if (metadata.reminder) {
-      contextLines.push(`Reminder: ${metadata.reminder.trigger_at} — ${metadata.reminder.reason}`);
+      // Spell out a recurrence: a plain-datetime set_reminder would replace the whole schedule.
+      const r = metadata.reminder;
+      contextLines.push(
+        r.cron
+          ? `Reminder (recurring: ${r.cron} ${r.tz ?? 'UTC'}${r.until ? `, until ${r.until}` : ''}) — next ${r.trigger_at} — ${r.reason}. It re-arms itself; cancel_reminder stops it, and set_reminder with a plain datetime would replace the whole schedule.`
+          : `Reminder: ${r.trigger_at} — ${r.reason}`,
+      );
     }
     // Surface the live plugins-repo version so the PM can tell users when the
     // plugins/agents were last updated. Refreshed on every task start/load.

@@ -157,6 +157,13 @@ export function getMetadataPath(taskId: string): string {
   return join(getSharedPath(taskId), 'metadata.json');
 }
 
+// Unlike loadMetadata() !== null, a torn (unparseable) read still counts as existing.
+export function taskExistsOnDisk(taskId: string): boolean {
+  // Inline, not via isSafeTaskId: CodeQL only treats a literal regexp test here as a sanitizer.
+  if (!/^task-\d{8}-\d{4}-[a-z0-9]+$/.test(taskId)) return false;
+  return existsSync(getMetadataPath(taskId));
+}
+
 /**
  * Get the path to a task's knowledge log
  */

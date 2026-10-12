@@ -101,7 +101,7 @@ export function formatExploreMessages(messages: SlackThreadMessage[]): string {
     })
     .join('\n\n');
 }
-import { scheduleReminder, cancelReminder } from '../system/reminder-scheduler.js';
+import { scheduleReminder, cancelReminder, announceRecurrence } from '../system/reminder-scheduler.js';
 import * as chrono from 'chrono-node';
 import { writeFile } from 'fs/promises';
 import { join } from 'path';
@@ -2047,12 +2047,75 @@ function createParseDatetimeTool() {
 function createSetReminderTool(agent: Agent, task: Task) {
   return tool(
     'set_reminder',
-    'Set a reminder for a future time (within 30 days). Wakes this task later, with everything it already knows. It never starts a new task. Use it for follow-ups and repeated checks that belong to this task. Work that should run as its own task each time, on a schedule or when a Slack message arrives, is a trigger; see the triggers skill. Only one reminder can be pending — calling this replaces any existing one. Use parse_datetime first to get the correct ISO 8601 value.',
+    'Set a reminder for a future time — either once (`datetime`, within 30 days) or on a repeating schedule (`cron` + `tz`, ending at `until`, within 30 days). Wakes this task later, with everything it already knows. It never starts a new task. Use it for follow-ups and repeated checks that belong to this task. Work that should run as its own task each time, on a schedule or when a Slack message arrives, is a trigger; see the triggers skill. For anything repeating, pass `cron` rather than re-arming by hand on each wake: the runtime then owns the cadence, so it cannot drift or be skipped. Recurring reminders fire at most once per hour. Only one reminder can be pending — calling this replaces any existing one; cancel_reminder stops a recurring one. Use parse_datetime first to get a correct ISO 8601 `datetime`.',
     {
-      datetime: z.string().describe('ISO 8601 datetime, e.g. "2026-04-15T10:00:00Z"'),
-      reason: z.string().describe('What to do when woken — this will be shown to you'),
+      datetime: z.string().optional().describe('One-shot: ISO 8601 datetime, e.g. "2026-04-15T10:00:00Z". Mutually exclusive with cron.'),
+      cron: z.string().optional().describe('Recurring: 5-field cron, e.g. "0 5,17 * * *" for 05:00 and 17:00 daily. Must not fire more than once per hour. Requires tz.'),
+      tz: z.string().optional().describe('IANA timezone the cron runs in, e.g. "Europe/London". Required with cron.'),
+      until: z.string().optional().describe('Required with cron: ISO 8601 end, at most 30 days ahead. The schedule stops once the next wake would fall past it. To run longer, ask the user again or use a trigger.'),
+      reason: z.string().describe('What to do when woken — this will be shown to you. For a recurring reminder this is shown on every wake, so write it to be re-read.'),
     },
     async (args) => {
+      const agentName = agent.def.id;
+      // Any new call replaces a recurrence wholesale, so say so: a one-shot ENDS it, a new cron REPLACES it.
+      const prior = task.metadata.reminder;
+      const priorCron = prior?.cron;
+      const priorLabel = priorCron ? `${priorCron} ${task.metadata.reminder?.tz ?? 'UTC'}` : '';
+      const endedRecurrence = priorCron ? ` NOTE: this replaced the recurring schedule that was armed (${priorLabel}); it will no longer repeat.` : '';
+      const supersededRecurrence = priorCron ? ` NOTE: this replaced the previous recurring schedule (${priorLabel}) — only the cadence above is now in effect.` : '';
+
+      if (args.cron && args.datetime) {
+        return { content: [{ type: 'text' as const, text: 'Pass either datetime (one-shot) or cron + tz (recurring), not both.' }] };
+      }
+      if (args.until && !args.cron) {
+        return { content: [{ type: 'text' as const, text: 'until only applies to a recurring reminder (cron + tz). A one-shot already happens exactly once.' }] };
+      }
+
+      if (args.cron) {
+        if (!args.tz) {
+          return { content: [{ type: 'text' as const, text: 'A recurring reminder needs tz — an IANA timezone like "Europe/London". "9am" is meaningless without one.' }] };
+        }
+        // Same once-per-hour floor as triggers: each wake is a full task activation.
+        const valid = validateRecurringInterval(args.cron, args.tz);
+        if (!valid.ok) {
+          const isFloor = /once per hour/i.test(valid.error);
+          return { content: [{ type: 'text' as const, text: isFloor ? `${valid.error} (Reminders use the same once-per-hour floor as triggers.)` : valid.error }] };
+        }
+        if (task.metadata.home_channel && !task.metadata.default_channel) {
+          return { content: [{ type: 'text' as const, text: 'Post to the user first — a recurring reminder announces itself in this task\'s thread, and this task has no thread until its first post.' }] };
+        }
+        if (!args.until) {
+          return { content: [{ type: 'text' as const, text: 'A recurring reminder needs until — every recurring reminder must end, at most 30 days ahead. To run longer, ask the user again or propose a trigger.' }] };
+        }
+        const end = new Date(args.until);
+        if (isNaN(end.getTime())) {
+          return { content: [{ type: 'text' as const, text: `Could not read until "${args.until}". Use parse_datetime to get a valid ISO 8601 value.` }] };
+        }
+        if (end <= new Date()) {
+          return { content: [{ type: 'text' as const, text: 'until must be in the future — otherwise the schedule would end before it ever ran.' }] };
+        }
+        if (end > new Date(Date.now() + 30 * 24 * 60 * 60_000)) {
+          return { content: [{ type: 'text' as const, text: 'until must be within 30 days. To run longer, ask the user again when it ends, or propose a trigger.' }] };
+        }
+        const until = end.toISOString();
+        const first = computeNextRun(args.cron, args.tz);
+        if (!first) {
+          return { content: [{ type: 'text' as const, text: `Could not compute a next run for cron "${args.cron}" in ${args.tz}.` }] };
+        }
+        if (first > new Date(until)) {
+          return { content: [{ type: 'text' as const, text: `That schedule never fires before until (${until}) — its first wake would be ${first.toISOString()}. Widen the window or change the cadence.` }] };
+        }
+
+        scheduleReminder(task, first, args.reason, { cron: args.cron, tz: args.tz, until });
+        announceRecurrence(task, 'set', { cron: args.cron, tz: args.tz, until });
+        logger.agentAction(agentName, 'Setting recurring reminder', `${args.cron} (${args.tz}) until ${until}, next ${first.toISOString()}: ${args.reason}`);
+        const bound = `It re-arms automatically and stops after ${until}; the thread is told when it starts and when it stops.`;
+        return { content: [{ type: 'text' as const, text: `Recurring reminder set: ${args.cron} (${args.tz}). Next wake ${first.toISOString()}. ${bound} Use cancel_reminder to stop it. Reason: ${args.reason}${supersededRecurrence}` }] };
+      }
+
+      if (!args.datetime) {
+        return { content: [{ type: 'text' as const, text: 'Pass datetime for a one-shot reminder, or cron + tz for a recurring one.' }] };
+      }
       const triggerAt = new Date(args.datetime);
       if (isNaN(triggerAt.getTime())) {
         return { content: [{ type: 'text' as const, text: 'Invalid datetime. Use parse_datetime to get a valid ISO 8601 value.' }] };
@@ -2062,14 +2125,14 @@ function createSetReminderTool(agent: Agent, task: Task) {
       }
       const maxFuture = new Date(Date.now() + 30 * 24 * 60 * 60_000);
       if (triggerAt > maxFuture) {
-        return { content: [{ type: 'text' as const, text: 'Datetime must be within 30 days.' }] };
+        return { content: [{ type: 'text' as const, text: 'Datetime must be within 30 days. Beyond that, propose a trigger.' }] };
       }
 
-      const agentName = agent.def.id;
+      if (prior?.cron) announceRecurrence(task, 'cancelled', prior);
       scheduleReminder(task, triggerAt, args.reason);
       logger.agentAction(agentName, 'Setting reminder', `${triggerAt.toISOString()}: ${args.reason}`);
 
-      return { content: [{ type: 'text' as const, text: `Reminder set for ${args.datetime}. Reason: ${args.reason}` }] };
+      return { content: [{ type: 'text' as const, text: `Reminder set for ${args.datetime}. Reason: ${args.reason}${endedRecurrence}` }] };
     },
   );
 }
@@ -2077,7 +2140,7 @@ function createSetReminderTool(agent: Agent, task: Task) {
 function createCancelReminderTool(agent: Agent, task: Task) {
   return tool(
     'cancel_reminder',
-    'Cancel the pending reminder for this task. Use when the reason for the reminder is no longer relevant.',
+    'Cancel the pending reminder for this task — this is also how you stop a recurring one, since it clears the repeat as well as the next wake. Use when the reason for the reminder is no longer relevant.',
     {},
     async () => {
       if (!task.metadata.reminder) {

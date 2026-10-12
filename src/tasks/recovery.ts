@@ -165,6 +165,12 @@ async function triggerRecovery(task: Task): Promise<void> {
       await task.postToUser(PAUSED_NOTICE).catch((err: unknown) =>
         logger.error('recovery', 'Failed to post recovery pause message', err),
       );
+      // A recurring reminder re-activates the task on every slot, and activation resets this budget —
+      // so a looping task would loop again each interval, forever. Stop it with the pause.
+      if (task.metadata.reminder?.cron) {
+        const { cancelReminder } = await import('../system/reminder-scheduler.js');
+        cancelReminder(task);
+      }
       await task.stop();
     } else {
       // Nuclear: reset recovery counter before stop

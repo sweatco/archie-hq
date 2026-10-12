@@ -21,7 +21,7 @@ How Archie routes messages, manages tasks, spawns the PM, and recovers from fail
 | **Task Recovery** | `src/tasks/recovery.ts` | Startup recovery + idle detection + progressive recovery (reinforcement then nuclear restart) |
 | **Task Status** | `src/tasks/status.ts` | Composes the single first-person "Archie is …" line from the PM's tool calls |
 | **Event Bus** | `src/system/event-bus.ts` | Typed in-process EventEmitter for system events (task/agent/message/approval/reminder); SSE clients and JSONL persistence subscribe |
-| **Reminder Scheduler** | `src/system/reminder-scheduler.ts` | In-memory index of pending reminders backed by metadata; 1-minute interval fires due reminders by reactivating tasks |
+| **Reminder Scheduler** | `src/system/reminder-scheduler.ts` | In-memory index of pending reminders backed by metadata; 1-minute interval fires due reminders by reactivating tasks. A recurring reminder (`cron`) is re-armed from its cron after each fire — resolved on the live `Task` instance and flushed before reactivation — instead of being cleared; `until` bounds it |
 | **Trigger Scheduler** | `src/system/trigger-scheduler.ts` | Fires schedule- and channel-message-bound triggers into fresh tasks (see [triggers.md](triggers.md)) |
 | **Shutdown** | `src/system/shutdown.ts` | Process-wide `isShuttingDown` flag; tasks suppress deactivation writes during shutdown so recovery sees the correct pre-shutdown state |
 | **Message Queue** | `src/agents/message-queue.ts` | The PM's async producer-consumer queue with replay support |
