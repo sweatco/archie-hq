@@ -16,7 +16,7 @@
  */
 
 import { mkdir, readFile, rename, unlink, writeFile, appendFile } from 'fs/promises';
-import { createReadStream, existsSync } from 'fs';
+import { createReadStream, existsSync, readdirSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { createInterface } from 'readline';
 import { execFile } from 'child_process';
@@ -159,9 +159,20 @@ export function getMetadataPath(taskId: string): string {
 
 // Unlike loadMetadata() !== null, a torn (unparseable) read still counts as existing.
 export function taskExistsOnDisk(taskId: string): boolean {
-  // Inline, not via isSafeTaskId: CodeQL only treats a literal regexp test here as a sanitizer.
   if (!/^task-\d{8}-\d{4}-[a-z0-9]+$/.test(taskId)) return false;
   return existsSync(getMetadataPath(taskId));
+}
+
+// For request-supplied ids: returns the matching session folder name, so the caller's string never reaches a path.
+export function findTaskOnDisk(taskId: string): string | undefined {
+  let entries: string[];
+  try {
+    entries = readdirSync(SESSIONS_DIR);
+  } catch {
+    return undefined;
+  }
+  const found = entries.find((name) => name === taskId);
+  return found && taskExistsOnDisk(found) ? found : undefined;
 }
 
 /**

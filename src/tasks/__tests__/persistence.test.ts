@@ -45,7 +45,7 @@ vi.mock('./task.js', () => ({
   activeTasks: new Map(),
 }));
 
-import { renderAttachmentsSuffix, renderEditForContext, loadMetadata, getMetadataPath, taskExistsOnDisk } from '../persistence.js';
+import { renderAttachmentsSuffix, renderEditForContext, loadMetadata, getMetadataPath, taskExistsOnDisk, findTaskOnDisk } from '../persistence.js';
 import { renderMessageBody } from '../../connectors/slack/message-body.js';
 import type { SlackFile } from '../../types/index.js';
 import type { TaskMetadata } from '../../types/task.js';
@@ -165,6 +165,11 @@ describe('taskExistsOnDisk', () => {
     try {
       expect(taskExistsOnDisk('../escaped-task')).toBe(false);
       expect(taskExistsOnDisk('')).toBe(false);
+      expect(findTaskOnDisk('../escaped-task')).toBeUndefined();
+      const real = 'task-20261012-1245-abc123';
+      await mkdir(dirname(getMetadataPath(real)), { recursive: true });
+      await writeFile(getMetadataPath(real), '{}');
+      expect(findTaskOnDisk(real)).toBe(real);
     } finally {
       await rm(escapedRoot, { recursive: true, force: true });
     }

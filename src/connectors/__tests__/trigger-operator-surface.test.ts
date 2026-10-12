@@ -40,14 +40,14 @@ vi.mock('../../system/event-bus.js', () => ({ onEvent: vi.fn(), offEvent: vi.fn(
 // chain now reaches `channel-store.ts`, which reads WORKDIR at module scope.
 vi.mock('../../system/workdir.js', () => ({ SESSIONS_DIR: '/tmp/sessions', WORKDIR: '/tmp/workdir' }));
 vi.mock('../../tasks/task.js', () => ({ Task: { get: vi.fn() }, activeTasks: new Map() }));
-const { taskExistsOnDisk } = vi.hoisted(() => ({ taskExistsOnDisk: vi.fn().mockReturnValue(true) }));
+const { findTaskOnDisk } = vi.hoisted(() => ({ findTaskOnDisk: vi.fn((id: string) => (id.startsWith('task-') ? id : undefined)) }));
 vi.mock('../../tasks/persistence.js', () => ({
   findTaskByThread: vi.fn(),
   readKnowledgeLog: vi.fn(),
   loadMetadata: vi.fn(),
   appendCliMessage: vi.fn(),
   readEvents: vi.fn(),
-  taskExistsOnDisk,
+  findTaskOnDisk,
 }));
 vi.mock('../../system/logger.js', () => ({
   logger: {
@@ -373,7 +373,7 @@ describe('DELETE /tasks/:id/reminder — the operator off switch', () => {
   it('answers 404 for an unknown task, like GET /tasks/:id — not a 500', async () => {
     // Task.get throws for a missing task, which surfaced as
     // 500 "Failed to cancel reminder" and read as a server fault rather than a bad id.
-    taskExistsOnDisk.mockReturnValue(false);
+    findTaskOnDisk.mockReturnValueOnce(undefined);
     const route = captureRoute('/tasks/:id/reminder', 'delete');
     const res = makeRes();
 
@@ -381,7 +381,6 @@ describe('DELETE /tasks/:id/reminder — the operator off switch', () => {
 
     expect(res.status).toHaveBeenCalledWith(404);
     expect(cancelReminder).not.toHaveBeenCalled();
-    taskExistsOnDisk.mockReturnValue(true);
   });
 
   it('cancels an armed reminder and reports what it cancelled', async () => {

@@ -18,7 +18,7 @@ import {
   loadMetadata,
   appendCliMessage,
   readEvents,
-  taskExistsOnDisk,
+  findTaskOnDisk,
 } from '../../tasks/persistence.js';
 import { SESSIONS_DIR } from '../../system/workdir.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
@@ -199,10 +199,9 @@ export function mountApiRoutes(app: Application): void {
   // Operator off switch: cancel_reminder is agent-only, and a recurring reminder re-activates a task indefinitely.
   router.delete('/tasks/:id/reminder', async (req: Request, res: Response) => {
     try {
-      const taskId = req.params.id as string;
       // Task.get throws for a missing task; answer 404 rather than a misleading 500.
-      // Inline literal check: CodeQL does not treat a helper's regexp test as a path sanitizer.
-      if (!/^task-\d{8}-\d{4}-[a-z0-9]+$/.test(taskId) || !taskExistsOnDisk(taskId)) {
+      const taskId = findTaskOnDisk(req.params.id as string);
+      if (!taskId) {
         res.status(404).json({ error: 'Task not found' });
         return;
       }
