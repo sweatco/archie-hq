@@ -7,7 +7,7 @@ description: Boot a live Archie instance from the current branch, drive E2E scen
 
 Verify acceptance criteria against a live Archie instance booted from the branch under test. The lifecycle is four steps, each with one documented invocation:
 
-1. **Boot** — `npx tsx tools/e2e/boot.ts` builds and starts the instance detached, waits for `/health`.
+1. **Boot** — `npx tsx tools/e2e/boot.ts` prepares a worktree if needed, builds and starts the instance detached, waits for `/health`.
 2. **Drive** — execute scenario recipes through the `archie-debug` MCP (no scripts; you make the MCP calls).
 3. **Evidence** — pipe a per-scenario payload to `npx tsx tools/e2e/evidence.ts`, which validates and writes the JSON + markdown pair.
 4. **Teardown** — `npx tsx tools/e2e/teardown.ts` stops everything and verifies no project containers remain.
@@ -24,35 +24,32 @@ Verify acceptance criteria against a live Archie instance booted from the branch
 
 ### Booting from a git worktree
 
-A worktree checkout is a fresh tree, so `workdir/` and `claude-data/` do not exist in it and the boot creates empty ones. An instance booted that way has no history and no per-channel state: the CLI task list has nothing to paginate, and — because the channel store is what makes announce-once work — **the instance re-announces every `Archie…` canvas into its real Slack channel on first contact.** That is a live, user-visible post caused purely by test setup.
-
-Before the first boot in a new worktree:
+A worktree checkout is a fresh tree: `.env`, `workdir/`, `claude-data/` and a real `secrets/` are untracked, so none of them exist in it. That is a setup gap, not a missing harness — `boot.ts` closes it itself as step 0 by running:
 
 ```bash
-ln -s /path/to/main/checkout/workdir      workdir
-ln -s /path/to/main/checkout/claude-data  claude-data
-cp -R /path/to/main/checkout/secrets      secrets     # a real copy, NOT a symlink
+npm run e2e:prepare        # tools/e2e/prepare-worktree.ts; --print-plan to inspect first
 ```
 
-**Do all three, and link `workdir` whole — that alone resolves the setup.** In particular it is what supplies the plugins: main's `workdir/plugins` is itself a symlink to a local `archie-plugins` checkout, so linking main's `workdir` gets you the configured agents and their repos for free. Creating `workdir/` yourself instead — or letting the boot create it — leaves `workdir/plugins` empty, and **that does not fail the boot**: `ARCHIE_PLUGINS` is unset in local dev so nothing clones, and `initWorkdir`'s guard only tests that the directory *exists*. The instance comes up healthy with **zero agents**, and the first symptom is a repo-change scenario where the PM never requests edit mode — which reads like a product bug rather than setup.
+It links `workdir` and `claude-data` to the main checkout's, copies `secrets/` for real, and writes `.env` from main's with a free `PORT`. It is idempotent, never overwrites existing local state, writes only untracked files in the current worktree (it never creates a worktree), and touches no network. `boot.ts --no-prepare` skips it.
 
-`workdir` is designed for concurrent access by many containers, so sharing it between checkouts is correct rather than risky — and copying it is not an option at ~20G.
+Why each part matters:
 
-**`secrets/` is the exception and must be a real directory.** `Dockerfile.dev` does `COPY secrets/ /tmp/ca-src/`, and Docker's build context does not follow symlinks at the context root: a symlinked `secrets` fails the build with `"/secrets": not found`. Bind mounts *do* follow host symlinks, which is why `workdir` and `claude-data` are fine. The same asymmetry is why `docker-compose.yml` re-mounts `./workdir/plugins` explicitly — a symlink *inside* a mounted tree does not resolve in the container.
-
-Also set a free `PORT` in the worktree's `.env`. Main's 3000 is usually taken by another checkout's container; `boot.ts` will relocate around a squatter on its own, but the `archie-debug` MCP resolves its URL once at spawn, so an explicit port is one less thing to reconcile.
+- **`workdir` linked whole** supplies the plugins: main's `workdir/plugins` is itself a symlink to a local `archie-plugins` checkout. An empty `workdir/plugins` **does not fail the boot** — `ARCHIE_PLUGINS` is unset in local dev so nothing clones, and `initWorkdir` only tests that the directory exists — so the instance comes up healthy with **zero agents**. And because the channel store is what makes announce-once work, an empty `workdir` **re-announces every `Archie…` canvas into its real Slack channel on first contact**. `workdir` is designed for concurrent access by many containers, so sharing it is correct — and copying it is not an option at ~20G.
+- **`secrets/` must be a real directory.** `Dockerfile.dev` does `COPY secrets/ /tmp/ca-src/`, and Docker's build context does not follow symlinks at the context root: a symlinked `secrets` fails the build with `"/secrets": not found`. Bind mounts *do* follow host symlinks, which is why `workdir` and `claude-data` are fine as links (and why `docker-compose.yml` re-mounts `./workdir/plugins` explicitly).
+- **A free `PORT`**: main's 3000 is usually taken by another checkout's container, and the `archie-debug` MCP resolves its URL once at spawn.
 
 **Rollback:** delete `.claude/skills/archie-e2e/` and `tools/e2e/` — the harness has no side effects and nothing else references them (plus one `e2e-evidence/` line in `.gitignore`).
 
 ## 1. Boot
 
 ```bash
-npx tsx tools/e2e/boot.ts [--timeout-seconds N]
+npx tsx tools/e2e/boot.ts [--timeout-seconds N] [--no-prepare]
 ```
 
 The boot runs a strict ordered sequence; each step gates the next, so no failure ever falls through into the poll loop:
 
-1. **Preflight** (mandatory, first): `.env` exists at the repo root and `ANTHROPIC_API_KEY` is non-empty. Failure exits non-zero naming the missing item, with no compose invocation at all.
+0. **Worktree prerequisites**: `prepare-worktree.ts`, as above; a no-op in the main checkout or an already-prepared worktree. A state it cannot resolve safely exits non-zero naming the fix, before any compose invocation.
+1. **Preflight** (mandatory): `.env` exists at the repo root and `ANTHROPIC_API_KEY` is non-empty. Failure exits non-zero naming the missing item, with no compose invocation at all.
 2. **Port preflight**: the target port is probed before any compose invocation (skipped when `ARCHIE_URL` is set explicitly — that target is the operator's to manage). Free → proceed. Published by **this project's own archie** (checked against the container's published ports, not mere existence) → `docker compose down` first and boot fresh on the same port (the harness never adopts a running instance — it may be stale code; every boot builds from the current checkout). Held by **anything else** (a foreign archie from another worktree, an unrelated service) → a free port is auto-picked and the boot relocates there, leaving the squatter untouched.
 3. **Compose up, exit code trapped**: `docker compose up --build -d` (detached — `npm run docker:dev` is foreground, don't use it here), with `PORT` and `GIT_SHA` passed in the compose environment. A non-zero exit prints the diagnostics block and exits non-zero **before a single `/health` poll** — a failed build never spends any of the wait cap.
 4. **Health poll**: `GET {baseUrl}/health` every 5s until 200. Bounded by a default cap of **600s**, overridable via `--timeout-seconds` or `E2E_BOOT_TIMEOUT_SECONDS` (flag beats env beats default). Each tick also checks `docker compose ps --format json`: an `archie` container that is exited, dead, restarting (crash loop), or missing fails immediately instead of waiting out the cap.

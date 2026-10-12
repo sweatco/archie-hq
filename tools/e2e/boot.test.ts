@@ -189,6 +189,12 @@ describe('parseArgs', () => {
   it('rejects unknown arguments', () => {
     expect(() => parseArgs(['--bogus'])).toThrow(/unknown argument: --bogus/);
   });
+
+  it('accepts --no-prepare, and omits it otherwise so the flag is opt-in', () => {
+    expect(parseArgs(['--no-prepare'])).toEqual({ noPrepare: true });
+    expect(parseArgs(['--timeout-seconds=90', '--no-prepare'])).toEqual({ timeoutFlag: '90', noPrepare: true });
+    expect(parseArgs([])).toEqual({});
+  });
 });
 
 describe('preflight', () => {

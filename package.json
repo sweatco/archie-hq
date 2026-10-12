@@ -19,6 +19,7 @@
     "oauth:list": "tsx src/cli/oauth.ts list",
     "oauth:revoke": "tsx src/cli/oauth.ts revoke",
     "oauth:refresh": "tsx src/cli/oauth.ts refresh",
+    "e2e:prepare": "tsx tools/e2e/prepare-worktree.ts",
     "docker:dev": "docker compose up --build",
     "docker:stop": "docker compose down",
     "test": "vitest run --reporter=verbose",
