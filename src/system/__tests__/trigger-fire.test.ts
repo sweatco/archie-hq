@@ -430,6 +430,57 @@ describe('a schedule fire homes its task in the bound channel', () => {
   });
 });
 
+describe('a schedule fire on a DM-bound trigger homes its task in the DM', () => {
+  const DM_USER = 'U0DANA';
+  const DM_CHANNEL = 'D0DANA';
+  const DM_NAME = 'DM with Dana';
+
+  const dmTrigger = () => makeTrigger({
+    binding: { type: 'user', user_id: DM_USER, channel_id: DM_CHANNEL, channel_name: DM_NAME },
+    conditions: [{ type: 'schedule', tz: 'UTC', cron: '0 9 * * *', next_run_at: '2099-01-01T09:00:00.000Z' }],
+  });
+
+  it('records the bound DM as the task home', async () => {
+    await fireTrigger(dmTrigger(), { kind: 'schedule' });
+
+    expect(createdTasks[0]!.metadata.home_channel).toEqual({
+      channel_id: DM_CHANNEL,
+      channel_name: DM_NAME,
+    });
+  });
+
+  it('never probes a DM for reachability, so a probe failure cannot pause it', async () => {
+    isChannelReachableMock.mockResolvedValue(false);
+
+    await fireTrigger(dmTrigger(), { kind: 'schedule' });
+
+    expect(isChannelReachableMock).not.toHaveBeenCalled();
+    expect(createdTasks[0]!.metadata.home_channel).toEqual({ channel_id: DM_CHANNEL, channel_name: DM_NAME });
+  });
+
+  it('names the DM in the seed without a leading #', async () => {
+    await fireTrigger(dmTrigger(), { kind: 'schedule' });
+
+    const seed = createdTasks[0]!.sendMessage.mock.calls[0]![0] as string;
+    expect(seed).toContain('post_to_user');
+    expect(seed).toContain(DM_NAME);
+    expect(seed).not.toContain(`#${DM_NAME}`);
+  });
+
+  it('scans no canvas and no pin index', async () => {
+    await fireTrigger(dmTrigger(), { kind: 'schedule' });
+
+    expect(ensureChannelCanvasMock).not.toHaveBeenCalled();
+    expect(ensureChannelPinsMock).not.toHaveBeenCalled();
+  });
+
+  it('posts no preamble', async () => {
+    await fireTrigger(dmTrigger(), { kind: 'schedule' });
+
+    expect(postSlackMessageMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('a message fire ingests through the real Task.append', () => {
   // The claims above ride on a spy. This one cannot: "a triggered task obeys the same redaction policy as
   // every other Slack task" is a statement about the real ingestion path, so the fire below runs against a

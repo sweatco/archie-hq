@@ -44,6 +44,7 @@ import {
 } from './message-queue.js';
 import { buildSessionResetNotice } from './prompts.js';
 import { getArchieAttributionIdentity } from '../connectors/github/client.js';
+import { formatConversationLabel } from '../connectors/slack/channel-ids.js';
 import { buildChannelCanvasPromptSection } from '../connectors/slack/channel-canvas.js';
 import { buildChannelPinsPromptSection } from '../connectors/slack/channel-pins.js';
 import { resolvePeopleFromTranscript } from '../connectors/slack/client.js';
@@ -401,7 +402,7 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     const renderChannel = (id: string, ch: typeof metadata.channels[string]): string => {
       if (ch.type === 'slack') {
         const name = ch.channel_name || ch.channel_id;
-        return name.startsWith('DM with ') ? name : `#${name}`;
+        return formatConversationLabel(name);
       }
       if (ch.type === 'cli') return 'CLI session';
       if (ch.type === 'github') return `PR ${ch.repo}#${ch.pr_number}`;
@@ -414,7 +415,7 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
     if (channelEntries.length === 0 && metadata.home_channel) {
       // A trigger-fired task has no thread yet but does have a home channel, so telling it there is nowhere to reply would be exactly backwards: its first user-facing message is what opens the thread this task then lives in.
       contextLines.push(
-        `Channel(s): none yet — this task is homed in #${metadata.home_channel.channel_name} but has no thread of its own. ` +
+        `Channel(s): none yet — this task is homed in ${formatConversationLabel(metadata.home_channel.channel_name)} but has no thread of its own. ` +
         `Your first post_to_user opens this task's own thread there, and every message after that goes into that thread.`
       );
     } else if (channelEntries.length === 0) {

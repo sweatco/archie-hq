@@ -21,10 +21,12 @@ export type TriggerStatus = 'pending' | 'enabled' | 'paused';
  * resolved live at list time (see list_triggers), because a channel can be
  * converted public↔private after the trigger was created and a stale cached
  * value would leak a now-private channel's triggers into public contexts.
+ *
+ * A `user` binding's `channel_id`/`channel_name` are the DM it was set up in, taken from that conversation and never from the model.
  */
 export type TriggerBinding =
   | { type: 'channel'; channel_id: string; channel_name: string }
-  | { type: 'user'; user_id: string };
+  | { type: 'user'; user_id: string; channel_id: string; channel_name: string };
 
 /**
  * A condition that fires the trigger.

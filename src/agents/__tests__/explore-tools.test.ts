@@ -36,14 +36,16 @@ vi.mock('../registry.js', () => ({
 // Partial-mock the Slack client: keep the REAL error classes (format-errors uses
 // `instanceof`) and just stub the network call. `vi.hoisted` makes the mock fn
 // available to the hoisted vi.mock factory.
-const { postSlackMessage, listBotChannels, assertPostableChannel } = vi.hoisted(() => ({
+const { postSlackMessage, listBotChannels, assertPostableChannel, fetchChannelHistory, fetchExploreThread } = vi.hoisted(() => ({
   postSlackMessage: vi.fn(),
   listBotChannels: vi.fn(),
   assertPostableChannel: vi.fn(),
+  fetchChannelHistory: vi.fn(),
+  fetchExploreThread: vi.fn(),
 }));
 vi.mock('../../connectors/slack/client.js', async (importActual) => {
   const actual = await importActual<typeof import('../../connectors/slack/client.js')>();
-  return { ...actual, postSlackMessage, listBotChannels, assertPostableChannel };
+  return { ...actual, postSlackMessage, listBotChannels, assertPostableChannel, fetchChannelHistory, fetchExploreThread };
 });
 
 const {
@@ -521,5 +523,60 @@ describe('fetch_slack_reference allowlist', () => {
 
   it('still lets a CANVAS-referenced file id past, so the union did not replace it', async () => {
     expect(await outcomeOf('FCANVAS')).not.toMatch(/neither referenced .* nor pinned/i);
+  });
+});
+
+describe('an explore read names a DM by its label, not by a #-prefixed id', () => {
+  beforeEach(() => {
+    fetchChannelHistory.mockResolvedValue({
+      channel: { id: 'D0DANA', name: 'D0DANA' },
+      messages: [{ user: { username: 'dana', realName: 'Dana' }, text: 'hi', ts: '1.0' }],
+    });
+  });
+
+  it('uses the home DM\'s own label when the task is homed there', async () => {
+    const task = makeTask();
+    (task.metadata as unknown as { home_channel: unknown }).home_channel = { channel_id: 'D0DANA', channel_name: 'DM with Dana' };
+
+    const out = await textOf(await getHandler('read_channel_history', task)({ channel: 'D0DANA' }));
+
+    expect(out).toContain('DM with Dana');
+    expect(out).not.toContain('#D0DANA');
+  });
+
+  it("uses the home DM's own label in read_thread too", async () => {
+    fetchExploreThread.mockResolvedValue({
+      channel: { id: 'D0DANA', name: 'D0DANA' },
+      messages: [{ user: { username: 'dana', realName: 'Dana' }, text: 'hi', ts: '1.0' }],
+    });
+    const task = makeTask();
+    (task.metadata as unknown as { home_channel: unknown }).home_channel = { channel_id: 'D0DANA', channel_name: 'DM with Dana' };
+
+    const out = await textOf(await getHandler('read_thread', task)({ channel: 'D0DANA', thread_ts: '1.0' }));
+
+    expect(out).toContain('DM with Dana');
+    expect(out).not.toContain('#D0DANA');
+  });
+
+  it('still prefixes an ordinary channel in read_thread', async () => {
+    fetchExploreThread.mockResolvedValue({
+      channel: { id: 'C_PUB', name: 'general' },
+      messages: [{ user: { username: 'dana', realName: 'Dana' }, text: 'hi', ts: '1.0' }],
+    });
+
+    const out = await textOf(await getHandler('read_thread', makeTask('C_PUB'))({ channel: 'C_PUB', thread_ts: '1.0' }));
+
+    expect(out).toContain('#general');
+  });
+
+  it('still prefixes an ordinary channel', async () => {
+    fetchChannelHistory.mockResolvedValue({
+      channel: { id: 'C_PUB', name: 'general' },
+      messages: [{ user: { username: 'dana', realName: 'Dana' }, text: 'hi', ts: '1.0' }],
+    });
+
+    const out = await textOf(await getHandler('read_channel_history', makeTask('C_PUB'))({ channel: 'C_PUB' }));
+
+    expect(out).toContain('#general');
   });
 });

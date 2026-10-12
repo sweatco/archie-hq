@@ -15,10 +15,12 @@ import type { Trigger } from '../types/trigger.js';
 
 export interface TriggerOrigin {
   kind: 'channel' | 'dm' | 'operator';
-  /** For channel origin: the originating Slack channel ID. */
+  /** For channel origin: the originating Slack channel ID. For dm origin: the DM conversation's ID. */
   channelId?: string;
   /** For dm origin: the DM partner's Slack user ID. */
   userId?: string;
+  /** For dm origin: the DM conversation's human label. */
+  channelName?: string;
 }
 
 /**

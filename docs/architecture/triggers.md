@@ -7,7 +7,9 @@ Two condition types ship in v1:
 - **Schedule** — fires on a recurring cadence (hourly / daily / weekdays / weekly at a time) or once at a future time.
 - **Channel-message** — fires on a new **top-level** message in a watched channel matching an optional filter (substring and/or author).
 
-A trigger is **bound** to a delivery target. In v1 that is a **channel** (results posted there). A `user` (DM) binding exists in the type but is **not offered at creation yet** — the fired PM has no DM-capable delivery tool under the current channel model, so `propose_trigger` accepts channel bindings only. User-DM delivery is a planned follow-up.
+A trigger is **bound** to a delivery target: a **channel**, or a **user** (that person's 1:1 DM). Both variants carry `channel_id` and `channel_name` — for a `user` binding those are the DM conversation (`D…`) the trigger was configured in and Slack's label for it (`DM with <real name>`) — so delivery has one shape and one code path rather than two.
+
+A `user` binding can only be created from inside that person's own DM, and **every field of it comes from the conversation the request arrived in**: `propose_trigger` reads no id at all from its arguments for that type. That is what makes it structurally impossible to aim a DM trigger at anyone but the person asking, rather than something enforced by validating an id the model supplied. A DM trigger is also **schedule-only** — see the constraint under Conditions.
 
 > Design bias: reuse, no new scheduling engine. The firing loop is the reminder scheduler's index-and-tick pattern; creation reuses the edit-mode Approve/Deny flow; fired tasks are ordinary read-only tasks. The only added dependency is [`croner`](https://www.npmjs.com/package/croner) (a tiny, DST-correct cron parser) used solely to compute next-run times.
 
@@ -94,7 +96,7 @@ Four properties of that open are load-bearing:
 - **Only an agent's message opens a thread.** `postToUser` takes the open branch only when `sender !== 'system'`. The internal callers that post without an agent name — the inter-agent budget warning, the wall-clock pause notice — would otherwise make an operational notice the thread root, which is the preamble this feature exists to avoid.
 - **One thread per channel.** The open first looks for a thread this task already has in the home channel and posts into it instead of rooting a second one. The whole open is serialized per task by a keyed lock, because an agent can emit two `post_to_user` calls in one turn and both would otherwise root a top-level message.
 - **The linking write is flushed, not debounced.** That record is what routes every future reply, and the message is already live in Slack, so a crash in a debounce window would leave a thread nobody owns.
-- **The destination never comes from the model.** Opening a task-linked thread was removed from the PM deliberately (commit `89f81b7`). It returns here in the narrowest form: no tool takes a destination, and the only writer of `home_channel` is `fireTrigger` reading the binding of a human-approved trigger. `propose_trigger` refuses a binding id that is a DM or a user, because that id also decides what the fired task may later read.
+- **The destination never comes from the model.** Opening a task-linked thread was removed from the PM deliberately (commit `89f81b7`). It returns here in the narrowest form: no tool takes a destination, and the only writer of `home_channel` is `fireTrigger` reading the binding of a human-approved trigger. `propose_trigger` still refuses a **channel** binding whose id is a DM or a user, because that id also decides what the fired task may later read and the approving human sees only a friendly name on the card. Reaching a DM is possible only through the `user` binding, which is not a relaxation of that rule but the same rule applied differently: the id is never read from the model at all, it is taken from the conversation the request arrived in.
 
 #### The home channel is the task's own channel
 
@@ -106,12 +108,12 @@ Because those stores are otherwise refreshed only by inbound Slack events, a sch
 
 **Four rough edges of a task that has not opened its thread yet**, all reachable and none of them fixed here:
 
-- **An approval card reaches nobody.** `postInteractiveToUser` resolves its destination from linked channels only — it has no `home_channel` branch, unlike `postToUser` — so a fired task that follows the seed's advice to request edit mode *before* its first post gets an SSE event and a log line and no buttons in Slack. Post first, then request.
+- **An approval card reaches nobody.** `postInteractiveToUser` resolves its destination from linked channels only — it has no `home_channel` branch, unlike `postToUser` — so a fired task that follows the seed's advice to request edit mode *before* its first post gets an SSE event and a log line and no buttons in Slack. Post first, then request. `propose_trigger` refuses outright in that state, since its card is the only way the trigger can be approved.
 - **A failed first post leaves the task mute, not merely un-threaded.** If the home-channel post throws (the bot is not in the channel, the channel was archived), `default_channel` stays null, so `post_to_channel` keeps refusing and `post_to_user` keeps throwing. A retry can still open the thread, but until one succeeds the task cannot reach anyone. Note `isChannelReachable` passes a public channel the bot is not a member of, so the pre-flight does not catch that case.
 - **`report_completion(message)` can be the message that opens the thread.** It routes through `postToUser` with the agent as sender, so a fired task that says everything in one final message opens its thread with it. That is intended, not an accident.
 - **`post_files_to_user` cannot open a thread**, because Slack's upload carries no text to serve as a root. The PM is told this by its channel context line at spawn, which names the home channel and says the first `post_to_user` is what opens the thread.
 
-**DM (`user`) bindings are still not delivered.** `propose_trigger` accepts channel bindings only, so no DM-bound trigger can exist to deliver to, and the `user` branch of the delivery seed is unchanged and unreachable in practice.
+**DM (`user`) bindings deliver through the same homing path as channels.** A schedule fire sets `home_channel` from the binding whatever its type, and the first `post_to_user` opens the task's own thread there — Slack's `chat.postMessage` takes a `D…` conversation id exactly as it takes a `C…` one, which is already how every ordinary DM reply is posted. A DM-bound fire differs in exactly two ways: it runs no canvas or pin scan (a DM has neither), and it is not reachability-probed (a DM cannot be archived; see the known limitation below).
 
 ## Persistent per-trigger directory
 
@@ -199,7 +201,7 @@ The **operator CLI** (`/api/triggers`, the `t` view) operates at operator trust 
 
 ## Announcements (no silent changes)
 
-Every **configuration change** — created/enabled, edited, paused/resumed, deleted — posts a one-line notice to the channel the trigger is bound to, even when the change was made from a DM. Firing is **not** a config change and is never announced.
+Every **configuration change** to a **channel**-bound trigger — created/enabled, edited, paused/resumed, deleted — posts a one-line notice to the channel it is bound to, even when the change was made from a DM. That is the transparency guarantee: a channel always knows what automation runs in it. A **DM**-bound trigger announces nothing, because a DM's only member is the person who just made the change and the notice would report their own action back to them; `announceTriggerChange` returns early for a `user` binding, which covers all six of its call sites at once. Firing is **not** a config change and is never announced.
 
 ## Protections & limits
 
@@ -208,6 +210,10 @@ Every **configuration change** — created/enabled, edited, paused/resumed, dele
 - **Read-only by default** — a fired task is an ordinary task; any write/push still needs in-the-moment edit-mode approval.
 - **Limits** — recurring schedules ≥1h apart; per-user and per-channel active-trigger caps; a per-account daily fired-run cap (in-memory, reset daily).
 - **Kill switch** — `ARCHIE_TRIGGERS_ENABLED=false` disables all firing and creation globally.
+- **A DM trigger can only be created from the DM it delivers to.** The refusal is not a validation of a supplied id — there is no id to validate, because the `user` branch of `propose_trigger` reads none. It is also the reason a DM trigger cannot carry a `channel_message` condition: a message fire ingests the watched thread and replies *there*, ignoring the binding entirely, so that pairing would deliver into the watched channel instead of the DM. `buildConditions` takes the binding type and refuses it, which covers `propose_trigger` and `update_trigger` with one implementation.
+- **A fired task's visibility tier is the conversation it is homed in.** `resolveTriggerOrigin` falls back to `home_channel` when the task has no Slack `default_channel` (yet), which is exactly a fired task's state on its first turn. Without that fallback the turn resolves to the operator tier, which sees every trigger in the workspace — including other people's DM triggers — and a fired task could read them out into whatever conversation it was homed in.
+
+**Known limitation: a DM binding is never reachability-probed.** A schedule fire pre-flights a *channel* binding with `isChannelReachable` and auto-pauses the trigger when the channel is gone or archived. DM bindings deliberately skip that check. A DM cannot be archived, but it can become unpostable in other ways (the user deactivated, the app uninstalled), and in that state every fire spawns a task whose first post fails, with nothing to pause it. The probe is not simply extended because `isChannelReachable` returns `false` on **any** error including a transient one, and the consequence of a false negative is a permanent pause — silently killing a working automation is the worse failure of the two. Closing this properly needs a probe that distinguishes "gone" from "could not tell".
 
 ## CLI & API surface
 

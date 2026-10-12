@@ -423,8 +423,8 @@ export async function mountSlackApp(
 
     try {
       // Enable first so we have the trigger to describe, then swap the card for a
-      // friendly confirmation (the full details also post to the bound channel
-      // via the announcement inside handleTriggerApproval).
+      // friendly confirmation (for a channel-bound trigger the full details also post
+      // to the bound channel via the announcement inside handleTriggerApproval).
       const taskId = threadId ? await findTaskByThread(threadId) : null;
       let trigger: import('../../types/trigger.js').Trigger | null = null;
       if (taskId) {
