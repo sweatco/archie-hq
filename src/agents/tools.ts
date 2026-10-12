@@ -2047,7 +2047,7 @@ function createParseDatetimeTool() {
 function createSetReminderTool(agent: Agent, task: Task) {
   return tool(
     'set_reminder',
-    'Set a reminder to be woken up at a future time (within 30 days). The task is reactivated and you receive a prompt with the reason. This is the durable way to schedule a follow-up, monitor, or "check back later" — it survives restarts. For recurring monitoring, re-arm on each wake by calling set_reminder again (a self-rescheduling one-shot); native recurring/cron-style triggers are planned but not available yet. Only one reminder can be pending — calling this replaces any existing one. Use parse_datetime first to get the correct ISO 8601 value.',
+    'Set a reminder for a future time (within 30 days). Wakes this task later, with everything it already knows. It never starts a new task. Use it for follow-ups and repeated checks that belong to this task. Work that should run as its own task each time, on a schedule or when a Slack message arrives, is a trigger; see the triggers skill. Only one reminder can be pending — calling this replaces any existing one. Use parse_datetime first to get the correct ISO 8601 value.',
     {
       datetime: z.string().describe('ISO 8601 datetime, e.g. "2026-04-15T10:00:00Z"'),
       reason: z.string().describe('What to do when woken — this will be shown to you'),
