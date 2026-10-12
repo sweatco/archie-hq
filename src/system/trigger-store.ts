@@ -9,12 +9,18 @@
  * module is the durable source of truth.
  */
 
-import { mkdir, readFile, writeFile, readdir, unlink, rm } from 'fs/promises';
+import { mkdir, readFile, writeFile, readdir, unlink, rm, rename } from 'fs/promises';
 import { existsSync } from 'fs';
 import { resolve, sep } from 'path';
 import type { Trigger } from '../types/trigger.js';
 import { TRIGGERS_DIR, TRIGGERS_DATA_DIR } from './workdir.js';
 import { logger } from './logger.js';
+import { createKeyedLock } from './keyed-lock.js';
+
+// Serializes the pending lifecycle (approve, edit, withdraw, delete) per trigger id. Not
+// reentrant: nothing inside a locked section may call another locked function. Edits to
+// live triggers and the scheduler's fire-path writes are NOT covered — only atomicity.
+const triggerLock = createKeyedLock();
 
 /**
  * Generate a unique trigger ID.
@@ -137,10 +143,14 @@ async function ensureTriggersDir(): Promise<void> {
   }
 }
 
-/** Persist a trigger (create or overwrite). */
+// Temp file + rename so a reader never sees a torn record (loadTrigger reports one as
+// missing). The temp name must not end in `.json`, or listTriggers reads an orphan as a trigger.
 export async function saveTrigger(trigger: Trigger): Promise<void> {
   await ensureTriggersDir();
-  await writeFile(getTriggerPath(trigger.id), JSON.stringify(trigger, null, 2));
+  const target = getTriggerPath(trigger.id);
+  const tmp = `${target}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+  await writeFile(tmp, JSON.stringify(trigger, null, 2));
+  await rename(tmp, target);
 }
 
 /** Load a trigger by ID. Returns null if missing or unparseable. */
@@ -170,14 +180,32 @@ export async function listTriggers(): Promise<Trigger[]> {
 }
 
 /** Delete a trigger's file and its persistent data directory. No-op if already gone. */
-export async function deleteTrigger(id: string): Promise<void> {
-  if (!isValidTriggerId(id)) return; // malformed id → nothing to delete
+/** Caller must hold the trigger's lock. */
+async function removeTriggerRecord(id: string): Promise<void> {
   const path = getTriggerPath(id);
   if (existsSync(path)) {
     await unlink(path);
   }
   // Every deletion entry point funnels through here, so no caller has to change.
   await removeTriggerDataDir(id);
+}
+
+export async function deleteTrigger(id: string): Promise<void> {
+  if (!isValidTriggerId(id)) return; // malformed id → nothing to delete
+  await triggerLock(id, () => removeTriggerRecord(id));
+}
+
+// The pending check must happen inside the lock: checking outside let the unlink queue
+// behind a concurrent approval, leaving an indexed trigger with no record.
+export async function withdrawPendingTrigger(id: string): Promise<PendingWithdrawal> {
+  if (!isValidTriggerId(id)) return { outcome: 'gone' };
+  return triggerLock(id, async () => {
+    const trigger = await loadTrigger(id);
+    if (!trigger) return { outcome: 'gone' } as const;
+    if (trigger.status !== 'pending') return { outcome: 'resolved', status: trigger.status } as const;
+    await removeTriggerRecord(id);
+    return { outcome: 'withdrawn' } as const;
+  });
 }
 
 /**
@@ -201,10 +229,38 @@ export async function enableProposedTrigger(
   id: string,
   approverId: string,
 ): Promise<Trigger | null> {
-  const trigger = await loadTrigger(id);
-  if (!trigger || trigger.status !== 'pending') return null;
-  trigger.status = 'enabled';
-  trigger.approved_by = approverId;
-  await saveTrigger(trigger);
-  return trigger;
+  return triggerLock(id, async () => {
+    const trigger = await loadTrigger(id);
+    if (!trigger || trigger.status !== 'pending') return null;
+    trigger.status = 'enabled';
+    trigger.approved_by = approverId;
+    await saveTrigger(trigger);
+    return trigger;
+  });
+}
+
+export type PendingWithdrawal =
+  | { outcome: 'withdrawn' }
+  | { outcome: 'resolved'; status: Trigger['status'] }
+  | { outcome: 'gone' };
+
+export type PendingUpdate =
+  | { outcome: 'updated'; trigger: Trigger }
+  | { outcome: 'resolved'; status: Trigger['status'] }
+  | { outcome: 'gone' };
+
+// `mutate` must be synchronous: nothing but the store may be awaited inside the lock.
+export async function updatePendingTrigger(
+  id: string,
+  mutate: (trigger: Trigger) => void,
+): Promise<PendingUpdate> {
+  return triggerLock(id, async () => {
+    const trigger = await loadTrigger(id);
+    if (!trigger) return { outcome: 'gone' } as const;
+    if (trigger.status !== 'pending') return { outcome: 'resolved', status: trigger.status } as const;
+    mutate(trigger);
+    trigger.updated_at = new Date().toISOString();
+    await saveTrigger(trigger);
+    return { outcome: 'updated', trigger } as const;
+  });
 }

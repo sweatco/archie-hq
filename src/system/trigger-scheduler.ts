@@ -15,7 +15,7 @@ import { Task } from '../tasks/task.js';
 import { appendSlackMessage } from '../tasks/persistence.js';
 import type { SlackThread } from '../types/task.js';
 import type { Trigger, TriggerBinding, TriggerCondition } from '../types/trigger.js';
-import { listTriggers, saveTrigger, deleteTrigger } from './trigger-store.js';
+import { listTriggers, saveTrigger, deleteTrigger, countActiveTriggers } from './trigger-store.js';
 import { AGENT_PROMPTS } from '../agents/prompts.js';
 import { emitEvent } from './event-bus.js';
 import { logger } from './logger.js';
@@ -128,6 +128,11 @@ export async function initTriggerScheduler(): Promise<void> {
 /** Pending proposals older than this are GC'd on the boot scan. */
 const PENDING_TTL_MS = 24 * 60 * 60_000;
 
+// An edit renews the pending TTL, so a revised proposal isn't reaped on its original clock.
+export function pendingSince(trigger: Pick<Trigger, 'created_at' | 'updated_at'>): number {
+  return new Date(trigger.updated_at ?? trigger.created_at).getTime();
+}
+
 /**
  * Rebuild the in-memory index from disk (enabled triggers only). Also GC's
  * stale `pending` proposals — a proposal that was never approved/denied (e.g.
@@ -142,7 +147,7 @@ async function rebuildFromDisk(): Promise<void> {
     for (const trigger of await listTriggers()) {
       if (trigger.status === 'enabled') {
         indexTrigger(trigger);
-      } else if (trigger.status === 'pending' && now - new Date(trigger.created_at).getTime() > PENDING_TTL_MS) {
+      } else if (trigger.status === 'pending' && now - pendingSince(trigger) > PENDING_TTL_MS) {
         await deleteTrigger(trigger.id);
         logger.system(`Trigger ${trigger.id}: GC'd stale pending proposal`);
       }
@@ -636,6 +641,39 @@ export function triggerWhen(trigger: Trigger): string {
 /** WHERE results are delivered ("#general" / "DM with Dana"). Not "your DM": the operator lists everyone's. */
 export function triggerWhere(trigger: Trigger): string {
   return formatConversationLabel(trigger.binding.channel_name);
+}
+
+// Caps count enabled triggers only, so they must be re-checked at approval, not just at proposal.
+export async function triggerCapExceeded(trigger: Trigger): Promise<boolean> {
+  const overChannel = trigger.binding.type === 'channel'
+    && (await countActiveTriggers((t) => t.binding.type === 'channel' && t.binding.channel_id === (trigger.binding as { channel_id: string }).channel_id)) >= MAX_TRIGGERS_PER_CHANNEL;
+  if (overChannel) return true;
+  return Boolean(
+    trigger.created_by && trigger.created_by !== 'unknown'
+    && (await countActiveTriggers((t) => t.created_by === trigger.created_by)) >= MAX_TRIGGERS_PER_USER,
+  );
+}
+
+// `notice` replaces the heading but keeps the buttons: a cap refusal is the one non-terminal outcome.
+export function buildTriggerApprovalBlocks(trigger: Trigger, notice?: string): unknown[] {
+  return [
+    { type: 'section', text: { type: 'mrkdwn', text: notice ?? '*Set up this automation?*' } },
+    {
+      type: 'section',
+      fields: [
+        { type: 'mrkdwn', text: `*What*\n${triggerWhat(trigger)}` },
+        { type: 'mrkdwn', text: `*When*\n${triggerWhen(trigger)}` },
+        { type: 'mrkdwn', text: `*Where*\n${triggerWhere(trigger)}` },
+      ],
+    },
+    {
+      type: 'actions',
+      elements: [
+        { type: 'button', text: { type: 'plain_text', text: 'Approve' }, action_id: 'approve_trigger', value: trigger.id, style: 'primary' },
+        { type: 'button', text: { type: 'plain_text', text: 'Deny' }, action_id: 'deny_trigger', value: trigger.id, style: 'danger' },
+      ],
+    },
+  ];
 }
 
 /** Human-readable one-liner: "<when> → <what>". Used by CLI/API listings. */

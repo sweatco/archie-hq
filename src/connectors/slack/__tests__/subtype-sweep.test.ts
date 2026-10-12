@@ -94,6 +94,8 @@ vi.mock('../../../system/trigger-scheduler.js', () => ({
   getChannelMessageTriggers: vi.fn().mockReturnValue([]),
   fireTrigger: vi.fn().mockResolvedValue(undefined),
   triggerWhat: vi.fn((t: Trigger) => t.summary ?? ''),
+  triggerCapExceeded: vi.fn().mockResolvedValue(false),
+  buildTriggerApprovalBlocks: vi.fn(() => []),
 }));
 
 vi.mock('../../../system/logger.js', () => ({

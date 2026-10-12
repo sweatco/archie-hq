@@ -37,8 +37,9 @@ import { logger } from '../../system/logger.js';
 import { getIsShuttingDown } from '../../system/shutdown.js';
 import { findTaskByThread } from '../../tasks/persistence.js';
 import { rawMessageBody } from './message-body.js';
-import { getChannelMessageTriggers, fireTrigger, triggerWhat } from '../../system/trigger-scheduler.js';
+import { getChannelMessageTriggers, fireTrigger, triggerWhat, buildTriggerApprovalBlocks } from '../../system/trigger-scheduler.js';
 import { messageMatchesTrigger } from '../../system/trigger-match.js';
+import type { Trigger } from '../../types/trigger.js';
 import { generateTaskTitle } from '../../tasks/title-generator.js';
 import { setAssistantThreadTitle } from './title.js';
 import type { SlackThread, SlackAuthor } from '../../types/task.js';
@@ -77,10 +78,11 @@ async function updateTaskApprovalMessage(
   taskId: string | null,
   body: { channel?: { id?: string }; message?: { ts?: string } },
   text: string,
+  blocks: unknown[] = [],
 ): Promise<void> {
   if (!taskId || !body.channel?.id || !body.message?.ts) return;
   const task = await Task.get(taskId);
-  await task.updateSlackMessageSafely(body.channel.id, body.message.ts, text, []);
+  await task.updateSlackMessageSafely(body.channel.id, body.message.ts, text, blocks);
 }
 
 /**
@@ -422,21 +424,35 @@ export async function mountSlackApp(
     logger.server(`Trigger ${triggerId} approved by ${userId}`);
 
     try {
-      // Enable first so we have the trigger to describe, then swap the card for a
-      // friendly confirmation (for a channel-bound trigger the full details also post
-      // to the bound channel via the announcement inside handleTriggerApproval).
       const taskId = threadId ? await findTaskByThread(threadId) : null;
-      let trigger: import('../../types/trigger.js').Trigger | null = null;
+      let trigger: Trigger | null = null;
       if (taskId) {
         const task = await Task.get(taskId);
         trigger = await task.handleTriggerApproval(userId, triggerId);
       } else {
         logger.warn('Server', `approve_trigger: no task found for thread ${threadId}; approval refused`);
       }
-      const text = trigger
-        ? `✅ Approved by <@${userId}> — *${triggerWhat(trigger)}* is now on.`
-        : `⚠️ Approved by <@${userId}>, but the automation couldn't be enabled (it may already be active or a limit was reached).`;
-      await updateTaskApprovalMessage(taskId, body, text);
+      // Cards are never retracted, so a stale click is routine: read the real state.
+      let text: string;
+      let blocks: unknown[] = [];
+      if (trigger) {
+        text = `✅ Approved by <@${userId}> — *${triggerWhat(trigger)}* is now on.`;
+      } else {
+        const { loadTrigger } = await import('../../system/trigger-store.js');
+        const existing = await loadTrigger(triggerId);
+        if (existing?.status === 'enabled') {
+          text = `✅ *${triggerWhat(existing)}* is already on — this was an earlier prompt for the same automation, so nothing changed.`;
+        } else if (existing?.status === 'paused') {
+          text = `ℹ️ *${triggerWhat(existing)}* was already approved and is currently paused — this was an earlier prompt for it, so nothing changed. Ask me to resume it if you want it running.`;
+        } else if (!existing) {
+          text = `ℹ️ This proposal is no longer around — it was withdrawn or replaced, so nothing was set up.`;
+        } else {
+          // Still pending after a cap refusal: keep the buttons so it can be approved later.
+          text = `⚠️ Approved by <@${userId}>, but the automation couldn't be enabled — the active-trigger limit was reached. Remove or pause another automation, then click Approve again.`;
+          blocks = buildTriggerApprovalBlocks(existing, text);
+        }
+      }
+      await updateTaskApprovalMessage(taskId, body, text, blocks);
     } catch (error) {
       logger.error('Server', 'Error handling trigger approval', error);
     }
@@ -451,18 +467,34 @@ export async function mountSlackApp(
     const userId = body.user?.id || 'unknown';
     const threadId = body.message?.thread_ts || body.message?.ts;
 
-    logger.server(`Trigger ${triggerId} denied by ${userId}`);
+    logger.server(`Deny clicked on trigger ${triggerId} by ${userId}`);
 
     try {
+      // Resolve before rendering: a stale card may hit an already-approved trigger.
       const taskId = threadId ? await findTaskByThread(threadId) : null;
-      await updateTaskApprovalMessage(taskId, body, `❌ Declined by <@${userId}> — no automation was set up.`);
+      let result: Awaited<ReturnType<Task['handleTriggerDenial']>>;
       if (taskId) {
         const task = await Task.get(taskId);
-        await task.handleTriggerDenial(triggerId);
+        result = await task.handleTriggerDenial(triggerId);
       } else {
-        const { deleteTrigger } = await import('../../system/trigger-store.js');
-        await deleteTrigger(triggerId);
+        const { withdrawPendingTrigger } = await import('../../system/trigger-store.js');
+        const w = await withdrawPendingTrigger(triggerId);
+        result = w.outcome === 'gone' ? { outcome: 'not_found' }
+          : w.outcome === 'resolved' ? { outcome: 'already_live', status: w.status }
+          : { outcome: 'withdrawn' };
       }
+      let text: string;
+      if (result.outcome === 'withdrawn') {
+        text = `❌ Declined by <@${userId}> — no automation was set up.`;
+      } else if (result.outcome === 'already_live') {
+        text = result.status === 'paused'
+          ? `ℹ️ This proposal was already approved and is currently paused, so nothing was declined. Ask me to remove it if you want it gone.`
+          : `ℹ️ This proposal was already approved and is running, so nothing was declined. Ask me to pause or remove it instead.`;
+      } else {
+        text = `ℹ️ This proposal is no longer around — nothing to decline.`;
+      }
+      await updateTaskApprovalMessage(taskId, body, text);
+      logger.server(`Trigger ${triggerId} deny resolved: ${result.outcome}`);
     } catch (error) {
       logger.error('Server', 'Error handling trigger denial', error);
     }

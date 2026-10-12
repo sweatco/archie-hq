@@ -35,6 +35,8 @@ interface Trigger {
   status: 'pending' | 'enabled' | 'paused';   // pending = proposed, awaiting approval
   created_by: string;                          // Slack user ID who requested it
   created_at: string;
+  updated_at?: string;                         // last edit while pending; the GC clock reads this
+  proposed_in_task?: string;                   // owns the proposal while pending (see below)
   approved_by?: string;                        // who clicked Approve / typed y
   binding: TriggerBinding;                     // channel thread or user DM
   conditions: TriggerCondition[];              // any match fires
@@ -47,7 +49,7 @@ interface Trigger {
 - A **one-off** schedule condition has only `next_run_at` (no `cron`); it auto-pauses after firing once.
 - **Channel privacy is deliberately not stored** on the binding — it's resolved live at list time (see Visibility), so a public↔private conversion can't leak a now-private channel's triggers.
 
-Storage: one JSON file per trigger under `$ARCHIE_WORKDIR/triggers/` (`src/system/trigger-store.ts`), plus — for a trigger that has actually fired — one directory per trigger under `$ARCHIE_WORKDIR/triggers-data/` (see [Persistent per-trigger directory](#persistent-per-trigger-directory) below).
+Storage: one JSON file per trigger under `$ARCHIE_WORKDIR/triggers/` (`src/system/trigger-store.ts`), written **atomically** (temp file + `rename`) and with every read-modify-write **serialized per trigger id** by a keyed lock — [While a proposal is pending](#while-a-proposal-is-pending) explains why an editable proposal makes both necessary. Plus — for a trigger that has actually fired — one directory per trigger under `$ARCHIE_WORKDIR/triggers-data/` (see [Persistent per-trigger directory](#persistent-per-trigger-directory) below).
 
 ## Scheduling: cron, kept internal
 
@@ -62,10 +64,23 @@ User asks in plain language
    → PM agent gathers cadence/channel + what to do + where to deliver
    → propose_trigger  →  status:'pending'  →  Approve/Deny prompt
         Approve → status:'enabled', indexed in the scheduler, announced
-        Deny    → pending file deleted
+        Deny    → pending file deleted (only while still pending — see below)
    → (enabled) condition fires → fireTrigger spawns a fresh read-only task
    → that task does the work and posts the result to the bound channel
 ```
+
+### While a proposal is pending
+
+A `pending` proposal is a live, manageable object, not an invisible interim state. It appears in `list_triggers` and on the operator API marked *awaiting approval — not running*, and the proposing conversation can **edit** it (`update_trigger`, which re-posts a fresh Approve/Deny card carrying the new details) or **withdraw** it (`delete_trigger`). Approval remains the user's exclusive act: a `status` argument on a pending proposal is refused on every surface.
+
+Six consequences worth knowing:
+
+- **Management is scoped to the proposing task** (`Trigger.proposed_in_task`), not to the binding. Binding visibility is wrong in both directions here — `propose_trigger` applies no visibility check, so a DM can bind a proposal to a private channel that binding rules would then hide from that same DM, while a public-bound proposal would otherwise be editable *and* approvable from any other conversation. Operator context sees everything, and a **trigger-fired task is not operator context**: it is homed in the channel its trigger is bound to, so `resolveTriggerOrigin` reports that channel rather than falling through to `operator` merely because no thread has been opened yet.
+- **A proposal predating `proposed_in_task` has no owner recorded**, so it falls back to binding visibility — which is enough to list it and to *withdraw* it, but not to **edit** it from a conversation that did not make it. Listing and withdrawal on those terms keep a pre-existing proposal from becoming unmanageable; editing on those terms would let another conversation rewrite the action prompt behind a card the original requester is still looking at, and they would approve content they never saw. Withdraw and re-propose instead. These age out within 24h anyway.
+- **Editing renews the GC clock.** The boot scan reaps pending proposals older than `PENDING_TTL_MS` (24h), measured from `updated_at` when set (`pendingSince`), so revising a day-old proposal doesn't leave it to be reaped an hour later along with its just-posted card.
+- **Cards are never retracted.** Editing deliberately leaves the earlier card in the thread, so multiple live cards for one trigger are normal. Both resolutions are therefore idempotent by status: a second Approve reports the automation is already on rather than a failure, and a **Deny is refused once the trigger is no longer pending** — it neither deletes the file nor deindexes the running trigger, and the refusal is recorded in the task's knowledge log. (The no-task fallback in `events.ts` — reached when no task can be resolved from the thread — applies the identical status gate and card copy, but writes no knowledge-log finding, because there is no task to write one to.) Withdrawing a proposal leaves its buttons inert. Slack and the CLI/API report the same outcome (the CLI answers `409` with `stale: true`).
+- **Hitting a cap at approval leaves the proposal pending.** The cap is re-checked when Approve is clicked (pending proposals don't count toward it, so several could otherwise be approved past the limit), on **every** approval path — including the fallback taken when no task resolves from the card's thread, which previously applied no cap at all. A refusal is *not* a withdrawal: the file stays, the card says the limit was reached, and — because a refusal is the one non-terminal outcome — that card **keeps its Approve/Deny buttons**, so freeing a slot and clicking Approve enables the same proposal. Every other outcome is decided and does clear them. The 24h GC still reaps it if the user walks away.
+- **Concurrent resolution is serialized, not merely re-checked.** An edit and the user's Approve routinely overlap, since editing re-posts a card and cards are never retracted. Narrowing the window by re-reading before writing is not enough: the write itself still interleaved, and measured against the real store, 117 of 150 such overlaps left the record unparseable — which `loadTrigger` reports as *missing*, so the trigger vanished from every listing and stopped counting toward caps while the scheduler kept firing it from memory. So the whole read-modify-write happens inside the store's per-id lock (`updatePendingTrigger`), used by both the agent and operator edit paths, and writes are atomic. The scheduler's own fire-path writes (`last_fired_at`, a consumed one-off condition, an auto-pause) deliberately stay outside that lock — they act on enabled triggers in the in-memory index, outside this lifecycle — so they get atomicity but not serialization.
 
 A one-off schedule auto-pauses after it fires (its condition is consumed). **Rescheduling a paused trigger auto-resumes it:** `update_trigger` treats new conditions on a paused trigger as intent to make it live again — it re-enables (re-checking caps) and reports the resume back to the PM so the user is told. Editing only the prompt/summary of a paused trigger does *not* resume it (a deliberate pause is respected). An explicit `status: 'paused'` in the same call always wins.
 
@@ -182,7 +197,7 @@ Trigger creation reuses the edit-mode approval mechanism, which is already chann
 
 - `propose_trigger` stashes the proposed id on `task.metadata.pending_trigger_id` and calls `postInteractiveToUser(..., 'trigger')`, which always emits an `approval:requested` event.
 - **Slack** renders Approve/Deny buttons; **the CLI** renders the same request as `[y] approve / [n] deny`.
-- Both converge on the task-level handlers `handleTriggerApproval` / `handleTriggerDenial`. The Slack buttons carry the trigger id; the CLI `POST /tasks/:id/approve` body is just `{ type:'trigger', approve }`, so the handler falls back to `pending_trigger_id`.
+- Both converge on the task-level handlers `handleTriggerApproval` / `handleTriggerDenial`. The Slack buttons carry the trigger id, and so does the CLI: `POST /tasks/:id/approve` echoes the `ref` from the approval event, so the right proposal resolves even when several are outstanding. `pending_trigger_id` is only the fallback for a body that carries no `ref`.
 
 There is **no operator bypass** — approving from the CLI is exactly equivalent to clicking Approve in Slack.
 
@@ -197,11 +212,11 @@ Scoped by the **tier of the space the request comes from** (`src/system/trigger-
 
 Privacy is resolved from the **workspace channel map** (`listWorkspaceChannels()` → `conversations.list`, `id → isPrivate`, a process-wide ~10-min cache shared with the `find_slack_channel` tool), so a listing is O(1) lookups with no per-channel Slack calls. A channel not in the cached map (brand-new, just-converted, or archived) falls through to a live `conversations.info` lookup. Both paths **fail closed** — an unresolved channel is treated as private — so a private trigger is never leaked into a public/DM listing. The trade is a bounded ≤10-min staleness window after a public→private conversion of an already-cached channel.
 
-The **operator CLI** (`/api/triggers`, the `t` view) operates at operator trust and sees all triggers, consistent with the existing CLI task list.
+The **operator CLI** (`/api/triggers`, the `t` view) operates at operator trust and sees all triggers, consistent with the existing CLI task list. Operator origin is inferred from a task having no Slack conversation of its own, so one case is carved out explicitly: a **trigger-fired task** has only a `home_channel` until its first post opens a thread, and its origin is resolved from that conversation — a channel, or the creator's DM — rather than defaulting to operator. Without that it would read every trigger in the workspace and could edit and withdraw proposals made in other people's private conversations.
 
 ## Announcements (no silent changes)
 
-Every **configuration change** to a **channel**-bound trigger — created/enabled, edited, paused/resumed, deleted — posts a one-line notice to the channel it is bound to, even when the change was made from a DM. That is the transparency guarantee: a channel always knows what automation runs in it. A **DM**-bound trigger announces nothing, because a DM's only member is the person who just made the change and the notice would report their own action back to them; `announceTriggerChange` returns early for a `user` binding, which covers all six of its call sites at once. Firing is **not** a config change and is never announced.
+Every **configuration change** to a **channel**-bound trigger — created/enabled, edited, paused/resumed, deleted — posts a one-line notice to the channel it is bound to, even when the change was made from a DM. That is the transparency guarantee: a channel always knows what automation runs in it. A **DM**-bound trigger announces nothing, because a DM's only member is the person who just made the change and the notice would report their own action back to them; `announceTriggerChange` returns early for a `user` binding, which covers all six of its call sites at once. Two other things are deliberately silent: **firing** (not a config change), and any change to a still-`pending` proposal (editing or withdrawing one announces nothing, because nothing is running yet and the channel was never told it existed).
 
 ## Protections & limits
 
@@ -217,8 +232,8 @@ Every **configuration change** to a **channel**-bound trigger — created/enable
 
 ## CLI & API surface
 
-- `GET /api/triggers`, `GET /api/triggers/:id`, `PATCH /api/triggers/:id` (pause/resume/edit prompt), `DELETE /api/triggers/:id` — operator endpoints, mirroring `/api/tasks`.
-- `POST /api/tasks/:id/approve` accepts `type:'trigger'` for the CLI approval gate.
+- `GET /api/triggers`, `GET /api/triggers/:id`, `PATCH /api/triggers/:id` (pause/resume/edit prompt), `DELETE /api/triggers/:id` — operator endpoints, mirroring `/api/tasks`. These include `pending` proposals (distinguished by `status`), so an unapproved proposal is inspectable and withdrawable from here rather than being invisible to the operator; `PATCH` refuses a `status` change on one, since approval belongs to the user.
+- `POST /api/tasks/:id/approve` accepts `type:'trigger'` for the CLI approval gate. A resolution that changed nothing — approving something already enabled, or denying a proposal that has since been approved — answers `409 { ok: false, stale: true }` rather than a false success, matching the merge gate and keeping the CLI and Slack outcomes equivalent.
 - CLI: press `t` from the task list to open the trigger list (status, bound channel, `[p]` pause/resume, `[d]` delete).
 
 ## Key files

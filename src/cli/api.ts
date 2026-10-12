@@ -104,7 +104,10 @@ export async function sendApproval(
       ...(ref ? { ref } : {}),
     }),
   });
-  if (!res.ok) throw new Error(`Failed to send approval: ${res.status}`);
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null) as { error?: string } | null;
+    throw new Error(detail?.error || `Failed to send approval: ${res.status}`);
+  }
 }
 
 // ---- SSE ----

@@ -815,7 +815,7 @@ export class Task {
     channelKey?: string,
     context?: { github: string; pr_number: number },
     ref?: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     // Merge approvals carry the PR identity so CLI/SSE consumers can echo it
     // back on resolution (the API route requires github+pr_number for
     // type:'merge'). `ref` is an opaque id the approval applies to (e.g. a
@@ -836,9 +836,11 @@ export class Task {
         channel_id: ch.channel_id,
         last_processed_ts: ch.last_processed_ts,
       }], text, blocks);
-    } else {
-      logger.slack(`POST (interactive): ${text}`);
+      return true;
     }
+    logger.slack(`POST (interactive): ${text}`);
+    // Reported so callers don't claim a card was posted when none reached Slack.
+    return false;
   }
 
   /**
@@ -1999,12 +2001,13 @@ export class Task {
       logger.warn('task', `handleTriggerApproval on ${this.taskId} with no trigger id`);
       return null;
     }
-    const { loadTrigger, enableProposedTrigger, deleteTrigger, countActiveTriggers } = await import('../system/trigger-store.js');
-    const { indexTrigger, announceTriggerChange, MAX_TRIGGERS_PER_USER, MAX_TRIGGERS_PER_CHANNEL } = await import('../system/trigger-scheduler.js');
+    const { loadTrigger, enableProposedTrigger } = await import('../system/trigger-store.js');
+    const { indexTrigger, announceTriggerChange, triggerCapExceeded } = await import('../system/trigger-scheduler.js');
 
     // Re-check caps at approval: pending proposals don't count toward the caps,
     // so approving several proposed while under the limit could otherwise blow
-    // past it. Refuse (delete the pending file) if enabling would exceed a cap.
+    // past it. Refuse if enabling would exceed a cap — leaving the proposal
+    // pending, for the reasons in the branch below.
     const pending = await loadTrigger(id);
     if (pending && pending.status === 'pending') {
       try {
@@ -2018,15 +2021,10 @@ export class Task {
         );
         return null;
       }
-      const overChannel = pending.binding.type === 'channel'
-        && (await countActiveTriggers((t) => t.binding.type === 'channel' && t.binding.channel_id === (pending.binding as { channel_id: string }).channel_id)) >= MAX_TRIGGERS_PER_CHANNEL;
-      const overUser = pending.created_by && pending.created_by !== 'unknown'
-        && (await countActiveTriggers((t) => t.created_by === pending.created_by)) >= MAX_TRIGGERS_PER_USER;
-      if (overChannel || overUser) {
-        await deleteTrigger(id);
-        if (this.metadata.pending_trigger_id === id) this.metadata.pending_trigger_id = undefined;
-        this.debouncedSave();
-        await appendAgentFinding(this.taskId, 'system', `Trigger ${id} not enabled — active-trigger cap reached`, 'decision');
+      if (await triggerCapExceeded(pending)) {
+        // Left pending so the user can free a slot and approve this same proposal.
+        logger.warn('task', `Trigger ${id} not enabled — active-trigger cap reached (left pending)`);
+        await appendAgentFinding(this.taskId, 'system', `Trigger ${id} not enabled — active-trigger cap reached; proposal left awaiting approval`, 'decision');
         return null;
       }
     }
@@ -2045,15 +2043,39 @@ export class Task {
   /**
    * Deny the trigger this task proposed — delete the pending file. Shared by the
    * Slack `deny_trigger` button and the CLI `/approve` endpoint.
+   * Only a still-`pending` proposal is deleted, so a stale card can't tear down a live trigger.
    */
-  async handleTriggerDenial(triggerId?: string): Promise<void> {
+  async handleTriggerDenial(
+    triggerId?: string,
+  ): Promise<{ outcome: 'withdrawn' | 'not_found' } | { outcome: 'already_live'; status: import('../types/trigger.js').TriggerStatus }> {
     const id = triggerId ?? this.metadata.pending_trigger_id;
-    if (this.metadata.pending_trigger_id === id) this.metadata.pending_trigger_id = undefined;
-    this.debouncedSave();
-    if (!id) return;
-    const { deleteTrigger } = await import('../system/trigger-store.js');
-    await deleteTrigger(id);
+    if (!id) return { outcome: 'not_found' };
+    const { withdrawPendingTrigger } = await import('../system/trigger-store.js');
+    const result = await withdrawPendingTrigger(id);
+    if (result.outcome === 'gone') {
+      if (this.metadata.pending_trigger_id === id) {
+        this.metadata.pending_trigger_id = undefined;
+        this.debouncedSave();
+      }
+      return { outcome: 'not_found' };
+    }
+    if (result.outcome === 'resolved') {
+      // Keep pending_trigger_id: a refused click resolved nothing.
+      logger.warn('task', `Deny on trigger ${id} ignored — it is ${result.status}, not pending (stale approval card)`);
+      await appendAgentFinding(
+        this.taskId,
+        'system',
+        `Deny on trigger ${id} refused — already ${result.status}, not withdrawn (stale approval card)`,
+        'decision',
+      );
+      return { outcome: 'already_live', status: result.status };
+    }
+    if (this.metadata.pending_trigger_id === id) {
+      this.metadata.pending_trigger_id = undefined;
+      this.debouncedSave();
+    }
     await appendAgentFinding(this.taskId, 'system', `Trigger ${id} denied by user`, 'decision');
+    return { outcome: 'withdrawn' };
   }
 
   // ---- Internal methods ----

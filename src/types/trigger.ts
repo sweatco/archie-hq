@@ -47,6 +47,10 @@ export interface Trigger {
   /** Slack user ID who requested it */
   created_by: string;
   created_at: string;
+  /** Last edit while pending; the boot-scan GC measures the pending TTL from it. */
+  updated_at?: string;
+  /** Task that proposed it; scopes management while pending. Absent on older proposals. */
+  proposed_in_task?: string;
   /** Slack user ID who approved it (set when status flips pending → enabled) */
   approved_by?: string;
   binding: TriggerBinding;

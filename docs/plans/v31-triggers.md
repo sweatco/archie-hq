@@ -136,6 +136,8 @@ Triggers must be fully usable from the operator CLI, not only Slack — both the
 
 ### Triggers vs. reminders (no interference)
 
+> **Superseded (2026-07-29).** Two claims below no longer hold: reminders gained a recurring `cron` mode, and the ≥1h floor now applies to a *recurring* reminder (a deliberate reversal, accepted at the time). A one-off reminder is still floor-free, so "remind me in 5 minutes" is unaffected. `docs/architecture/triggers.md` is authoritative for current behaviour. Kept as written for the historical record.
+
 Reminders are a separate, untouched feature: `set_reminder`/`parse_datetime` wake the **current** task later (`reminder-scheduler.ts`). Triggers spawn a **new** task on a saved rule. They share only the index-and-tick *pattern*, not state or limits. So **"remind me in 5 minutes to do X" keeps working exactly as today** — it's a one-off reminder on the live task, not a recurring trigger, so the 1h floor never touches it. The two schedulers run side by side.
 
 ## Other Small Changes
