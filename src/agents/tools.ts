@@ -109,6 +109,8 @@ import type { Trigger, TriggerBinding, TriggerCondition } from '../types/trigger
 import {
   generateTriggerId,
   saveTrigger,
+  updatePendingTrigger,
+  withdrawPendingTrigger,
   loadTrigger,
   listTriggers,
   deleteTrigger,
@@ -128,9 +130,15 @@ import {
   triggersEnabled,
   MAX_TRIGGERS_PER_USER,
   MAX_TRIGGERS_PER_CHANNEL,
+  buildTriggerApprovalBlocks,
 } from '../system/trigger-scheduler.js';
 import { emitEvent } from '../system/event-bus.js';
-import { triggerVisibleFrom, type TriggerOrigin } from '../system/trigger-visibility.js';
+import {
+  triggerVisibleFrom,
+  pendingTriggerOwnedBy,
+  pendingTriggerIsLegacy,
+  type TriggerOrigin,
+} from '../system/trigger-visibility.js';
 import { isSlackAuthorId, isAppAuthorId } from '../system/trigger-match.js';
 
 // Re-export branch state helpers for consumers that import from tools.ts
@@ -2306,6 +2314,20 @@ async function authorizeTriggerChange(task: Task, trigger: Trigger): Promise<str
   return authorizeTriggerBinding(task, trigger.binding);
 }
 
+async function postTriggerApprovalCard(task: Task, trigger: Trigger): Promise<boolean> {
+  const what = triggerWhat(trigger);
+  const when = triggerWhen(trigger);
+  const where = triggerWhere(trigger);
+  return task.postInteractiveToUser(
+    `Set up this automation? ${what} · ${when} · ${where}`,
+    buildTriggerApprovalBlocks(trigger),
+    'trigger',
+    undefined,
+    undefined,
+    trigger.id,
+  );
+}
+
 function createProposeTriggerTool(task: Task) {
   return tool(
     'propose_trigger',
@@ -2387,6 +2409,7 @@ function createProposeTriggerTool(task: Task) {
         status: 'pending',
         created_by: createdBy || 'unknown',
         created_at: new Date().toISOString(),
+        proposed_in_task: task.taskId,
         binding,
         conditions: built.conditions,
         action: { prompt: args.action_prompt },
@@ -2397,30 +2420,7 @@ function createProposeTriggerTool(task: Task) {
       task.debouncedSave();
       await appendAgentFinding(task.taskId, 'system', `Trigger proposed: ${describeTrigger(trigger)}`, 'decision');
 
-      // Scannable approval card: what / when / where as separate fields instead
-      // of dumping the raw cron + internal prompt.
-      const what = triggerWhat(trigger);
-      const when = triggerWhen(trigger);
-      const where = triggerWhere(trigger);
-      const blocks = [
-        { type: 'section', text: { type: 'mrkdwn', text: '*Set up this automation?*' } },
-        {
-          type: 'section',
-          fields: [
-            { type: 'mrkdwn', text: `*What*\n${what}` },
-            { type: 'mrkdwn', text: `*When*\n${when}` },
-            { type: 'mrkdwn', text: `*Where*\n${where}` },
-          ],
-        },
-        {
-          type: 'actions',
-          elements: [
-            { type: 'button', text: { type: 'plain_text', text: 'Approve' }, action_id: 'approve_trigger', value: trigger.id, style: 'primary' },
-            { type: 'button', text: { type: 'plain_text', text: 'Deny' }, action_id: 'deny_trigger', value: trigger.id, style: 'danger' },
-          ],
-        },
-      ];
-      await task.postInteractiveToUser(`Set up this automation? ${what} · ${when} · ${where}`, blocks, 'trigger', undefined, undefined, trigger.id);
+      await postTriggerApprovalCard(task, trigger);
       return ok('Trigger proposed and posted for approval. It will not run until the user approves (or types y in the CLI). No need to pause — continue if there is other work.');
     },
   );
@@ -2429,21 +2429,27 @@ function createProposeTriggerTool(task: Task) {
 function createListTriggersTool(task: Task) {
   return tool(
     'list_triggers',
-    'List the triggers visible from this conversation (per privacy rules), one summary line each. Returns everything visible — filter or narrow it yourself when the user asks for "the ones in this channel", "just the schedules", etc. These lines are summaries, not the stored rule: call `get_trigger` for the exact conditions, filters and action prompt before answering a question about what one watches, and always before editing one.',
+    'List the triggers visible from this conversation (per privacy rules), one summary line each, including any still awaiting the user\'s approval. Returns everything visible — filter or narrow it yourself when the user asks for "the ones in this channel", "just the schedules", etc. Never describe a trigger marked "awaiting approval" as set up or running. These lines are summaries, not the stored rule: call `get_trigger` for the exact conditions, filters and action prompt before answering a question about what one watches, and always before editing one.',
     {},
     async () => {
-      const all = (await listTriggers()).filter((t) => t.status !== 'pending');
+      // A pending proposal is visible to the task that made it, not by its binding.
+      const all = await listTriggers();
       const origin = await resolveTriggerOrigin(task);
       const resolvePrivacy = makePrivacyResolver();
       const visible: Trigger[] = [];
       for (const t of all) {
+        if (t.status === 'pending' && !pendingTriggerIsLegacy(t)) {
+          if (pendingTriggerOwnedBy(t, task.taskId) || origin.kind === 'operator') visible.push(t);
+          continue;
+        }
         if (await triggerVisibleFrom(t, origin, resolvePrivacy)) visible.push(t);
       }
       if (visible.length === 0) return ok('There are no triggers set up that are visible from here.');
       const lines = visible.map((t) => {
         const where = triggerWhere(t);
         const last = t.last_fired_at ? `; last fired ${t.last_fired_at}` : '';
-        return `• [${t.id}] (${t.status}) ${describeTrigger(t)} — delivers to ${where}${last}`;
+        const state = t.status === 'pending' ? 'awaiting approval — not running' : t.status;
+        return `• [${t.id}] (${state}) ${describeTrigger(t)} — delivers to ${where}${last}`;
       });
       return ok(`Triggers visible here (${visible.length}):\n${lines.join('\n')}`);
     },
@@ -2497,9 +2503,12 @@ function createGetTriggerTool(task: Task) {
     },
     async (args) => {
       const trigger = await loadTrigger(args.id);
-      if (!trigger || trigger.status === 'pending') return ok(`No trigger ${args.id} found.`);
+      if (!trigger) return ok(`No trigger ${args.id} found.`);
       const origin = await resolveTriggerOrigin(task);
-      if (!(await triggerVisibleFrom(trigger, origin, makePrivacyResolver()))) {
+      const visible = trigger.status === 'pending' && !pendingTriggerIsLegacy(trigger)
+        ? pendingTriggerOwnedBy(trigger, task.taskId) || origin.kind === 'operator'
+        : await triggerVisibleFrom(trigger, origin, makePrivacyResolver());
+      if (!visible) {
         return ok(`Trigger ${args.id} isn't visible from here, so it can't be read from this conversation.`);
       }
 
@@ -2509,7 +2518,7 @@ function createGetTriggerTool(task: Task) {
       const by = trigger.created_by && trigger.created_by !== 'unknown' ? `<@${trigger.created_by}>` : 'unknown';
 
       const lines = [
-        `Trigger ${trigger.id} — ${trigger.status}`,
+        `Trigger ${trigger.id} — ${trigger.status === 'pending' ? 'awaiting approval — not running' : trigger.status}`,
         `Name shown to users: ${trigger.summary?.trim() || '(none set — listings fall back to a clip of the action prompt)'}`,
         `Delivers to: ${where}`,
         `Created by ${by} at ${trigger.created_at}${trigger.approved_by ? `; approved by <@${trigger.approved_by}>` : ''}`,
@@ -2533,20 +2542,37 @@ function createGetTriggerTool(task: Task) {
 function createUpdateTriggerTool(task: Task) {
   return tool(
     'update_trigger',
-    'Pause, resume, or edit an existing trigger. Read it with `get_trigger` first — `conditions` replaces the whole list, so editing blind silently drops filters. You can only manage triggers visible from this conversation. A channel-bound trigger posts a one-line change notice to its bound channel; a DM trigger announces nothing.',
+    'Pause, resume, or edit an existing trigger — including one still awaiting the user\'s approval, which you can edit freely (that re-posts a fresh Approve/Deny card with the new details). Prefer editing an unapproved proposal over proposing a second one. Only the user\'s approval can turn a pending proposal on, so `status` does not apply to one. Read it with `get_trigger` first — `conditions` replaces the whole list, so editing blind silently drops filters. You can only manage triggers visible from this conversation. A channel-bound trigger posts a one-line change notice to its bound channel; a DM trigger and a pending proposal announce nothing.',
     {
       id: z.string().describe('Trigger ID (from list_triggers).'),
-      status: z.enum(['paused', 'enabled']).optional().describe('"paused" to pause, "enabled" to resume.'),
+      status: z.enum(['paused', 'enabled']).optional().describe('"paused" to pause, "enabled" to resume. Not applicable to a proposal awaiting approval.'),
       action_prompt: z.string().optional().describe('Replace the internal instruction run when the trigger fires (not shown to the user).'),
       summary: z.string().optional().describe('Replace the short, friendly user-facing name. Update this whenever you change action_prompt so the notices stay accurate.'),
       conditions: z.array(triggerConditionObject).optional().describe('REPLACES the condition list entirely (same shape as propose_trigger) — anything you leave out is dropped, including a keyword or author filter you never saw. Call `get_trigger` first and restate every condition you want to keep.'),
     },
     async (args) => {
       const trigger = await loadTrigger(args.id);
-      if (!trigger || trigger.status === 'pending') return ok(`No trigger ${args.id} found.`);
+      if (!trigger) return ok(`No trigger ${args.id} found.`);
       const origin = await resolveTriggerOrigin(task);
-      if (!(await triggerVisibleFrom(trigger, origin, makePrivacyResolver()))) {
-        return ok(`Trigger ${args.id} isn't visible from here, so it can't be managed from this conversation.`);
+      const manageable = trigger.status === 'pending' && !pendingTriggerIsLegacy(trigger)
+        ? pendingTriggerOwnedBy(trigger, task.taskId) || origin.kind === 'operator'
+        : await triggerVisibleFrom(trigger, origin, makePrivacyResolver());
+      if (!manageable) {
+        return ok(
+          trigger.status === 'pending'
+            ? `Trigger ${args.id} is a proposal awaiting approval in another conversation, so it can't be managed from here.`
+            : `Trigger ${args.id} isn't visible from here, so it can't be managed from this conversation.`,
+        );
+      }
+      // A legacy proposal is visible on binding alone, so editing it from elsewhere would let
+      // another conversation rewrite a card its requester is still looking at.
+      if (trigger.status === 'pending' && pendingTriggerIsLegacy(trigger)
+        && !pendingTriggerOwnedBy(trigger, task.taskId) && origin.kind !== 'operator'
+        && (args.action_prompt || args.summary || args.conditions)) {
+        return ok(`Trigger ${args.id} is a proposal from before this conversation, so its details can't be edited from here — the user who asked for it is looking at its original card. Withdraw it with delete_trigger and propose a fresh one if they want it changed.`);
+      }
+      if (trigger.status === 'pending' && args.status) {
+        return ok(`Trigger ${args.id} is still awaiting the user's approval, so it can't be paused or enabled from here — only their Approve turns it on. Nothing was changed, including any other fields in this call. Call update_trigger again with just the details to edit, or delete_trigger to withdraw the proposal.`);
       }
 
       const editedContent = Boolean(args.action_prompt || args.conditions || args.summary);
@@ -2557,6 +2583,30 @@ function createUpdateTriggerTool(task: Task) {
         if ('error' in built) return ok(`Could not update the trigger: ${built.error}`);
         nextConditions = built.conditions;
       }
+
+      if (trigger.status === 'pending') {
+        if (!editedContent) return ok('Nothing to update — pass action_prompt, summary, or conditions.');
+        const deliveryError = await authorizeTriggerChange(task, trigger);
+        if (deliveryError) return err(`Proposal not updated: ${deliveryError}`);
+
+        const result = await updatePendingTrigger(args.id, (t) => {
+          if (args.action_prompt) t.action.prompt = args.action_prompt;
+          if (args.summary) t.summary = args.summary;
+          if (nextConditions) t.conditions = nextConditions;
+        });
+        if (result.outcome === 'resolved') {
+          return ok(`The user acted on proposal ${args.id} while this edit was in flight — it is now ${result.status}, so the edit was not applied. Re-read it with get_trigger and change the live trigger instead.`);
+        }
+        if (result.outcome === 'gone') {
+          return ok(`Proposal ${args.id} was withdrawn while this edit was in flight, so the edit was not applied.`);
+        }
+        const posted = await postTriggerApprovalCard(task, result.trigger);
+        if (!posted) {
+          return ok(`Proposal ${result.trigger.id} was updated, but NO new approval card could be posted from this conversation — the user is still looking at the old card, which now shows superseded details. Do not tell them it was re-posted. Say the proposal changed and ask them to re-request it where they raised it, or withdraw it with delete_trigger.`);
+        }
+        return ok(`Proposal ${result.trigger.id} updated and re-posted for approval — it now reads "${triggerWhat(result.trigger)}" · ${triggerWhen(result.trigger)}. Still not running until the user approves.`);
+      }
+
       // Decide the target state (auto-resume a rescheduled paused trigger, etc.)
       // via the pure planner, then apply the cap check for any (re-)enable.
       const plan = planStatusChange({
@@ -2640,7 +2690,7 @@ function createUpdateTriggerTool(task: Task) {
 function createDeleteTriggerTool(task: Task) {
   return tool(
     'delete_trigger',
-    'Delete a trigger permanently. You can only delete triggers visible from this conversation. A channel-bound trigger posts a one-line notice to its bound channel; a DM trigger announces nothing.',
+    'Delete a trigger permanently, or withdraw a proposal the user has not approved yet (same call — pass its id). You can only delete triggers visible from this conversation, and only withdraw a proposal this conversation made. A channel-bound trigger posts a one-line notice to its bound channel; a DM trigger and a pending proposal announce nothing. An already-posted Approve/Deny card stays on screen after a withdrawal with inert buttons, so tell the user the proposal is gone.',
     {
       id: z.string().describe('Trigger ID (from list_triggers).'),
     },
@@ -2648,13 +2698,31 @@ function createDeleteTriggerTool(task: Task) {
       const trigger = await loadTrigger(args.id);
       if (!trigger) return ok(`No trigger ${args.id} found.`);
       const origin = await resolveTriggerOrigin(task);
-      if (trigger.status !== 'pending' && !(await triggerVisibleFrom(trigger, origin, makePrivacyResolver()))) {
-        return ok(`Trigger ${args.id} isn't visible from here, so it can't be deleted from this conversation.`);
+      // Withdrawal can leak nothing, so a legacy proposal stays withdrawable from anywhere —
+      // binding visibility would strand one bound to a private channel from its own DM.
+      const deletable = trigger.status === 'pending'
+        ? pendingTriggerIsLegacy(trigger) || pendingTriggerOwnedBy(trigger, task.taskId) || origin.kind === 'operator'
+        : await triggerVisibleFrom(trigger, origin, makePrivacyResolver());
+      if (!deletable) {
+        return ok(
+          trigger.status === 'pending'
+            ? `Trigger ${args.id} is a proposal awaiting approval in another conversation, so it can't be withdrawn from here.`
+            : `Trigger ${args.id} isn't visible from here, so it can't be deleted from this conversation.`,
+        );
+      }
+      if (trigger.status === 'pending') {
+        const result = await withdrawPendingTrigger(trigger.id);
+        if (result.outcome === 'resolved') {
+          return ok(`The user approved proposal ${trigger.id} while this withdrawal was in flight — it is now ${result.status}, so it was not withdrawn. Read it with get_trigger and pause or delete the live trigger if that is still wanted.`);
+        }
+        if (result.outcome === 'gone') return ok(`Proposal ${trigger.id} was already gone.`);
+        emitEvent('trigger:deleted', task.taskId, { trigger_id: trigger.id });
+        return ok(`Proposal ${trigger.id} withdrawn. Its Approve/Deny card is still in the thread but its buttons are now inert — say so, so the user doesn't try to approve it.`);
       }
       deindexTrigger(trigger.id);
       await deleteTrigger(trigger.id);
       emitEvent('trigger:deleted', task.taskId, { trigger_id: trigger.id });
-      if (trigger.status !== 'pending') await announceTriggerChange(trigger, 'deleted');
+      await announceTriggerChange(trigger, 'deleted');
       return ok(`Trigger ${trigger.id} deleted.`);
     },
   );

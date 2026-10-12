@@ -44,3 +44,13 @@ export async function triggerVisibleFrom(
   if (!isPrivate) return true; // public-channel trigger — visible from any tier
   return origin.kind === 'channel' && origin.channelId === trigger.binding.channel_id;
 }
+
+// A pending proposal belongs to the task that made it: binding visibility would hide a
+// private-channel proposal from the DM that made it, and expose a public one to everyone.
+export function pendingTriggerOwnedBy(trigger: Trigger, taskId: string): boolean {
+  return trigger.proposed_in_task === taskId;
+}
+
+export function pendingTriggerIsLegacy(trigger: Trigger): boolean {
+  return trigger.proposed_in_task === undefined;
+}

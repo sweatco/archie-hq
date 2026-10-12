@@ -19,6 +19,7 @@ vi.mock('../../system/trigger-scheduler.js', () => ({
   announceTriggerChange: vi.fn(),
   MAX_TRIGGERS_PER_USER: 20,
   MAX_TRIGGERS_PER_CHANNEL: 20,
+  triggerCapExceeded: vi.fn().mockResolvedValue(false),
 }));
 vi.mock('../../agents/spawn.js', () => ({ spawnAgent: vi.fn() }));
 vi.mock('../persistence.js', async (importOriginal) => ({

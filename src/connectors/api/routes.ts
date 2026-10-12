@@ -22,7 +22,7 @@ import {
 import { SESSIONS_DIR } from '../../system/workdir.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
 import { logger } from '../../system/logger.js';
-import { listTriggers, loadTrigger, saveTrigger, deleteTrigger, countActiveTriggers } from '../../system/trigger-store.js';
+import { listTriggers, loadTrigger, saveTrigger, deleteTrigger, countActiveTriggers, updatePendingTrigger, withdrawPendingTrigger } from '../../system/trigger-store.js';
 import { indexTrigger, deindexTrigger, announceTriggerChange, describeTrigger, MAX_TRIGGERS_PER_USER, MAX_TRIGGERS_PER_CHANNEL } from '../../system/trigger-scheduler.js';
 import type { Trigger } from '../../types/trigger.js';
 
@@ -280,9 +280,39 @@ export function mountApiRoutes(app: Application): void {
         // CLI echoes it from the approval event), so the right one resolves even
         // when several proposals are outstanding. Approver is the CLI operator.
         if (approve) {
-          await task.handleTriggerApproval('cli', ref);
+          const trigger = await task.handleTriggerApproval('cli', ref);
+          if (!trigger) {
+            // A cap refusal leaves the proposal approvable, so keep the CLI prompt; anything else is
+            // settled and must emit approval:resolved, the only thing that clears the prompt.
+            const existing = ref ? await loadTrigger(ref) : null;
+            const capBlocked = existing?.status === 'pending';
+            if (!capBlocked) emitEvent('approval:resolved', taskId, { type, approve });
+            res.status(409).json({
+              ok: false,
+              stale: true,
+              capBlocked,
+              error: capBlocked
+                ? `Trigger ${ref ?? '(none)'} was not enabled — the active-trigger limit was reached. Remove or pause another automation, then approve again.`
+                : `Trigger ${ref ?? '(none)'} was not enabled — it is already active or was withdrawn.`,
+            });
+            return;
+          }
         } else {
-          await task.handleTriggerDenial(ref);
+          const result = await task.handleTriggerDenial(ref);
+          if (result.outcome !== 'withdrawn') {
+            emitEvent('approval:resolved', taskId, { type, approve });
+            res.status(409).json({
+              ok: false,
+              stale: true,
+              outcome: result.outcome,
+              error: result.outcome === 'already_live'
+                ? result.status === 'paused'
+                  ? `Trigger ${ref ?? '(none)'} was not declined — it is already approved and currently paused. Delete it if you want it gone.`
+                  : `Trigger ${ref ?? '(none)'} was not declined — it is already approved and running. Pause or delete it instead.`
+                : `Trigger ${ref ?? '(none)'} was not declined — no such proposal is pending.`,
+            });
+            return;
+          }
         }
       } else if (type === 'tool_call') {
         // Same trust model as every other gate's API path: reaching this route
@@ -339,11 +369,10 @@ export function mountApiRoutes(app: Application): void {
     summary: describeTrigger(t),
   });
 
-  // GET /triggers — list all triggers with their bound channel
+  // GET /triggers — list all triggers, pending proposals included
   router.get('/triggers', async (_req: Request, res: Response) => {
     try {
       const triggers = (await listTriggers())
-        .filter((t) => t.status !== 'pending')
         .sort((a, b) => b.created_at.localeCompare(a.created_at));
       res.json({ triggers: triggers.map(shapeTrigger), total: triggers.length });
     } catch (error) {
@@ -356,7 +385,7 @@ export function mountApiRoutes(app: Application): void {
   router.get('/triggers/:id', async (req: Request, res: Response) => {
     try {
       const trigger = await loadTrigger(req.params.id as string);
-      if (!trigger || trigger.status === 'pending') {
+      if (!trigger) {
         res.status(404).json({ error: 'Trigger not found' });
         return;
       }
@@ -373,8 +402,14 @@ export function mountApiRoutes(app: Application): void {
       const id = req.params.id as string;
       const { status, action_prompt } = req.body as { status?: 'paused' | 'enabled'; action_prompt?: string };
       const trigger = await loadTrigger(id);
-      if (!trigger || trigger.status === 'pending') {
+      if (!trigger) {
         res.status(404).json({ error: 'Trigger not found' });
+        return;
+      }
+      if (trigger.status === 'pending' && status) {
+        res.status(409).json({
+          error: 'Trigger is awaiting approval — resolve it via the approval prompt rather than setting status.',
+        });
         return;
       }
 
@@ -409,6 +444,26 @@ export function mountApiRoutes(app: Application): void {
         return;
       }
 
+      if (trigger.status === 'pending') {
+        // No deindex: a pending trigger is never indexed, and after an await this could evict one
+        // a concurrent Approve just enabled.
+        const result = await updatePendingTrigger(id, (t) => {
+          if (editedContent) t.action.prompt = action_prompt as string;
+        });
+        if (result.outcome !== 'updated') {
+          res.status(409).json({
+            ok: false,
+            stale: true,
+            error: result.outcome === 'resolved'
+              ? `Proposal was resolved while this edit was in flight — it is now ${result.status}, so nothing was changed.`
+              : 'Proposal was withdrawn while this edit was in flight, so nothing was changed.',
+          });
+          return;
+        }
+        res.json({ ok: true, trigger: shapeTrigger(result.trigger) });
+        return;
+      }
+
       await saveTrigger(trigger);
       if (trigger.status === 'enabled') indexTrigger(trigger);
       else deindexTrigger(trigger.id);
@@ -433,10 +488,20 @@ export function mountApiRoutes(app: Application): void {
         res.status(404).json({ error: 'Trigger not found' });
         return;
       }
+      if (trigger.status === 'pending') {
+        const result = await withdrawPendingTrigger(id);
+        if (result.outcome === 'resolved') {
+          res.status(409).json({ ok: false, stale: true, error: `Proposal was approved meanwhile — it is now ${result.status}, so it was not withdrawn.` });
+          return;
+        }
+        emitEvent('trigger:deleted', id, { trigger_id: id });
+        res.json({ ok: true });
+        return;
+      }
       deindexTrigger(id);
       await deleteTrigger(id);
       emitEvent('trigger:deleted', id, { trigger_id: id });
-      if (trigger.status !== 'pending') await announceTriggerChange(trigger, 'deleted');
+      await announceTriggerChange(trigger, 'deleted');
       res.json({ ok: true });
     } catch (error) {
       logger.error('api', 'Failed to delete trigger', error);
