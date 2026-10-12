@@ -428,12 +428,7 @@ async function main(): Promise<void> {
 
   const hostExec = makeExec({ cwd: repoRoot });
 
-  // Worktree prerequisites — mandatory, before the preflight reads .env.
-  // A worktree checkout is a fresh tree: no .env, no real secrets/, and no
-  // workdir/claude-data links. That is a two-second setup gap, not a missing
-  // harness, so the boot closes it itself rather than failing the preflight and
-  // sending the operator to a manual recipe. A no-op in the main checkout and on
-  // an already-prepared worktree. `--no-prepare` opts out.
+  // Prepare a fresh worktree before the preflight reads .env; --no-prepare opts out.
   if (noPrepare) {
     console.log('--no-prepare given — skipping the worktree prerequisite check.');
   } else {

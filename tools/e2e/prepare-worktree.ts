@@ -54,8 +54,6 @@ import { makeExec, type ExecFn } from './exec.js';
 /** Names that never make a `secrets/` directory "real" — they are placeholders and OS litter. */
 const SECRETS_PLACEHOLDERS = new Set(['.gitkeep', '.DS_Store']);
 
-// ---- Tree state ----
-
 export type EntryKind = 'absent' | 'symlink' | 'empty-dir' | 'dir' | 'file';
 
 export interface TreeState {
@@ -70,8 +68,6 @@ export interface TreeState {
   /** False when the worktree has no `node_modules` — a note, not a blocker. */
   nodeModules: boolean;
 }
-
-// ---- Pure cores ----
 
 /**
  * Resolve the main checkout from `git rev-parse --path-format=absolute --git-common-dir`.
@@ -183,8 +179,6 @@ export function renderPlan(plan: PreparePlan): string[] {
   return lines;
 }
 
-// ---- Disk (impure) ----
-
 export interface PrepareIo {
   log: (line: string) => void;
   error: (line: string) => void;
@@ -270,11 +264,7 @@ function applyPlan(plan: PreparePlan, repoRoot: string, state: TreeState, io: Pr
   for (const a of plan.actions) {
     const dest = join(repoRoot, a.kind === 'link' ? a.path : a.kind === 'copy-secrets' ? 'secrets' : '.env');
     if (a.kind === 'link') {
-      // A previous boot may have left an empty directory squatting on the name.
-      // `classify` already proved it empty (planPreparation only links over
-      // 'absent' or 'empty-dir'), and rmdirSync refuses a non-empty directory —
-      // so a stale race can never take data with it. `classify` treats a lone
-      // `.DS_Store` as empty, so clear that first or rmdirSync sees ENOTEMPTY.
+      // .DS_Store counts as empty to classify but not to rmdirSync.
       if (classify(dest) === 'empty-dir') {
         for (const litter of readdirSync(dest)) unlinkSync(join(dest, litter));
         rmdirSync(dest);
@@ -357,8 +347,6 @@ export async function runPrepare(
   io.log('Harness prerequisites satisfied — `npx tsx tools/e2e/boot.ts` can boot this worktree.');
   return written ? { code: 0, port: written.port } : { code: 0 };
 }
-
-// ---- CLI main ----
 
 export function parseArgs(argv: string[]): { printPlanOnly: boolean } {
   let printPlanOnly = false;
