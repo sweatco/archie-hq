@@ -359,6 +359,42 @@ export class Task {
   }
 
   /**
+   * Fire a due reminder: apply `next`, flush, then wake — all under the activation lock on the
+   * canonical instance, so the re-arm can't land on a stale copy that a concurrent activation
+   * later overwrites. Returns false without firing if the reminder was cancelled or replaced meanwhile.
+   */
+  async fireReminder(
+    fired: NonNullable<TaskMetadata['reminder']>,
+    next: TaskMetadata['reminder'],
+    beforeWake: () => void,
+    message: string,
+  ): Promise<boolean> {
+    const same = (r: TaskMetadata['reminder']) => !!r
+      && new Date(r.trigger_at).getTime() === new Date(fired.trigger_at).getTime()
+      && r.reason === fired.reason && r.cron === fired.cron && r.tz === fired.tz && r.until === fired.until;
+    let didFire = false;
+    await activationLock(this.taskId, async () => {
+      const active = activeTasks.get(this.taskId);
+      const canonical = active ?? this;
+      // A parked instance must match too: it may have been cancelled in memory before disk caught up.
+      const current = active ? same(active.metadata.reminder) : same(this.metadata.reminder) && same((await loadMetadata(this.taskId))?.reminder);
+      if (!current) return;
+      canonical.metadata.reminder = next;
+      await canonical.save(true);
+      didFire = true;
+      beforeWake();
+      if (active) {
+        await active.deliver(message);
+        return;
+      }
+      const persisted = await loadMetadata(this.taskId);
+      if (persisted) reconcilePersistedMemoryMetadata(persisted, this.metadata);
+      await this.deliver(message);
+    });
+    return didFire;
+  }
+
+  /**
    * The activation + enqueue body, run under {@link activationLock} on the
    * canonical instance. Never call directly — go through `sendMessage`, which
    * holds the lock and picks the canonical instance.

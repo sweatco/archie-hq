@@ -24,7 +24,7 @@ A DM trigger has three rules, and they are not negotiable — the tool enforces 
 
 ### Don't confuse this with a reminder
 
-A reminder wakes the current task later and never starts a new one. A trigger starts a fresh task on every run, on a schedule or when a matching Slack message arrives, and its runs share memory rather than a conversation. Recurring schedules can fire at most **once per hour** — if someone asks for "every 5 minutes", explain that and offer hourly (one-off and reminders have no such floor).
+A reminder wakes the current task later and never starts a new one. A trigger starts a fresh task on every run, on a schedule or when a matching Slack message arrives, and its runs share memory rather than a conversation. Recurring schedules can fire at most **once per hour** — if someone asks for "every 5 minutes", explain that and offer hourly. This floor applies to recurring reminders too; only one-off triggers and one-off reminders are exempt.
 
 ### Intake — gather before proposing
 

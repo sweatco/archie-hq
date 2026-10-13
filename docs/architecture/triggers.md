@@ -19,11 +19,14 @@ These are separate features that share only a pattern:
 
 | | Reminder (`set_reminder`) | Trigger |
 | --- | --- | --- |
-| Effect | Re-wakes the **current** task later | Spawns a **new** task on a saved rule |
-| Lifetime | One-shot, lives on the task | Persistent, lives in the trigger store |
-| Floor | none ("remind me in 5 min" works) | ≥1h, **recurring schedules only** |
+| Effect | Re-wakes the **current** task later, context intact | Spawns a **new** task on every run of a saved rule; runs share memory, not a conversation |
+| Lifetime | One-shot (`datetime`) or recurring (`cron` + `tz`, ending at a required `until`); both within 30 days; lives on the task | Persistent, lives in the trigger store |
+| Floor | none for a one-shot; ≥1h for a recurring cron | ≥1h, **recurring schedules only** |
+| Governance | No approval step. Agent-facing `cancel_reminder`, plus an operator off switch (`DELETE /api/tasks/:id/reminder`) | Propose-then-confirm, listable/pausable, announced, capped, global kill switch |
 
-The two schedulers (`reminder-scheduler.ts`, `trigger-scheduler.ts`) run side by side and never interfere.
+The two schedulers (`reminder-scheduler.ts`, `trigger-scheduler.ts`) run side by side and never interfere, though the reminder scheduler reuses the trigger cron helpers (`computeNextRun`, `validateRecurringInterval`) rather than carrying a second recurrence engine.
+
+**Every recurring reminder ends, and says so.** There is no approval gate, so the engine bounds it instead: `until` is required and at most 30 days ahead (to run longer, ask again or use a trigger), and the engine posts one line in the task's thread when a recurring reminder is set and one when it ends — at its last run, on `cancel_reminder`, on the operator's `DELETE` route, when a one-shot replaces it, or when recovery pauses a task that keeps stalling (a new schedule replacing it just posts its own start line). Nothing is posted per run. A task with no thread yet — a trigger-fired task before its first post — is refused a recurring reminder, since its notices would have nowhere to land.
 
 ## Data model
 

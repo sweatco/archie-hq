@@ -557,8 +557,9 @@ export function describeSchedule(cron: string, tz: string): string {
     return 'on a custom schedule';
   }
 
-  if (!isNum(hour) || !isNum(min)) return 'on a custom schedule';
-  const time = formatClock(Number(hour), Number(min));
+  const hours = hour.split(',');
+  if (!isNum(min) || !hours.every(isNum)) return 'on a custom schedule';
+  const time = hours.map((h) => formatClock(Number(h), Number(min))).join(' and ');
 
   if (dow !== '*') {
     if (dow === '1-5') return `every weekday at ${time}${tzSuffix}`;

@@ -25,6 +25,9 @@ const { findTaskIdsByStatusMock, taskGetMock } = vi.hoisted(() => ({
 }));
 vi.mock('../persistence.js', () => ({ findTaskIdsByStatus: findTaskIdsByStatusMock }));
 vi.mock('../task.js', () => ({ Task: { get: taskGetMock } }));
+vi.mock('../../system/reminder-scheduler.js', () => ({
+  cancelReminder: vi.fn((task: { metadata: { reminder?: unknown } }) => { task.metadata.reminder = undefined; }),
+}));
 
 import { scheduleIdleCheck } from '../recovery.js';
 import { logger } from '../../system/logger.js';
@@ -40,6 +43,8 @@ function fakeStalledTask() {
     completionIntent: false,
     recoveryAttempts: 0,
     nuclearRecoveryCycles: 0,
+    metadata: {} as { reminder?: { trigger_at: string; reason: string; cron?: string; tz?: string } },
+    debouncedSave: vi.fn(),
     agent: {
       isRunning: true,
       pendingTeardown: undefined,
@@ -112,6 +117,31 @@ describe('nuclear recovery cap', () => {
     );
     expect(pauseLog?.[1]).toContain(TASK_ID);
     expect(pauseLog?.[1]).toContain('cycle 4');
+  });
+
+  it('stops a recurring reminder with the pause, so it cannot restart the loop every interval', async () => {
+    // Each reminder wake is a fresh activation, which resets the nuclear budget — so without this a
+    // looping task with an hourly cron would get three more recovery cycles every hour, forever.
+    const task = fakeStalledTask();
+    task.metadata.reminder = { trigger_at: '2026-10-12T10:00:00.000Z', reason: 'r', cron: '0 * * * *', tz: 'UTC' };
+    taskGetMock.mockResolvedValue(task);
+
+    for (let i = 0; i < 4; i++) await runNuclearCycle(task);
+
+    expect(task.metadata.reminder).toBeUndefined();
+    // The pause notice is posted (awaited) before the cancel, so the stop line follows it.
+    const { cancelReminder } = await import('../../system/reminder-scheduler.js');
+    expect(task.postToUser.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(cancelReminder).mock.invocationCallOrder[0]);
+  });
+
+  it('leaves a one-shot reminder alone when pausing', async () => {
+    const task = fakeStalledTask();
+    task.metadata.reminder = { trigger_at: '2026-10-12T10:00:00.000Z', reason: 'r' };
+    taskGetMock.mockResolvedValue(task);
+
+    for (let i = 0; i < 4; i++) await runNuclearCycle(task);
+
+    expect(task.metadata.reminder).toBeDefined();
   });
 
   it('keeps the task paused: no further recovery once it is inactive', async () => {
