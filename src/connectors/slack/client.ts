@@ -192,7 +192,7 @@ export async function postSlackMessage(args: {
    * message (e.g. the task id + PM model). Short and plain — not length-checked.
    */
   footer?: string;
-}): Promise<string | undefined> {
+}, notice = false): Promise<string | undefined> {
   const { channel, text, threadTs, footer } = args;
   if (dryRun) {
     const target = threadTs ? `${channel}:${threadTs}` : channel;
@@ -201,7 +201,14 @@ export async function postSlackMessage(args: {
   }
   const renderedText = restoreMentions(text);
   assertSlackMarkdownLength(renderedText);
-  const client = getSlackClient();
+  const sharedClient = getSlackClient();
+  // A separate client also avoids waiting behind the shared client's retries.
+  const client = notice ? new WebClient(sharedClient.token, {
+    slackApiUrl: sharedClient.slackApiUrl,
+    timeout: 5000,
+    retryConfig: { retries: 0 },
+    rejectRateLimitedCalls: true,
+  }) : sharedClient;
   const blocks = markdownBlock(renderedText);
   if (footer) {
     blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: footer }] });

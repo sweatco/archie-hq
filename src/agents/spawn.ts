@@ -14,11 +14,13 @@ import { mkdir, readdir, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'node:crypto';
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { query, type Query, type SDKAssistantMessage, type SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { Agent } from './agent.js';
 import type { Task } from '../tasks/task.js';
+import type { AgentSessionState } from '../types/task.js';
 import { buildCommitAuthorEnv } from './commit-author.js';
 import { resolveAgentModel, resolveAgentEffort } from './model-label.js';
+import { findRefusalCheckpoint } from './refusal-recovery.js';
 import {
   createCommsMcpServer,
   createOrchestrationMcpServer,
@@ -229,6 +231,7 @@ export async function buildTaskPeopleSection(taskId: string): Promise<string> {
 export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   const { def } = agent;
   const taskId = task.taskId;
+  if (!/^[A-Za-z0-9_-]+$/.test(taskId)) throw new Error('Invalid task ID');
   const metadata = task.metadata;
   const sharedPath = getSharedPath(taskId);
 
@@ -570,12 +573,9 @@ Shared folder: ${sharedPath} [READ-ONLY]
 
   // ---- Build query options (session ID may change on retry) ----
 
-  // One controller per spawn, shared across retry attempts. task.complete()/stop()
-  // calls handle.abort() to hard-kill a subprocess that is mid-turn when its queue
-  // is stopped — otherwise it loops on "Stream closed" control requests. The
-  // control channel (query.interrupt) is dead at that point, so abort is the only
-  // path that reaches the subprocess.
-  const abortController = new AbortController();
+  // A closed attempt must not abort its successor. The handle always targets
+  // the current controller; task teardown also stops the shared input queue.
+  let abortController = new AbortController();
 
   // GIT_AUTHOR_* so repo-agent commits are authored by the human who approved
   // edit mode (the committer stays the GitHub App bot). See buildCommitAuthorEnv.
@@ -594,8 +594,13 @@ Shared folder: ${sharedPath} [READ-ONLY]
     );
   }
 
+  let refusalRecovery: AgentSessionState['refusal_recovery'];
+  let refusalCheckpoint: string | undefined;
+  const refusalRecoveryNotice = 'The previous refused turn has been omitted from this conversation. Do not retry it or reload it from logs or Slack. Continue only with the new request, checking existing files and external state before repeating actions.';
+
   const buildQueryOptions = (sessionId?: string) => ({
     model: model as any,
+    settings: { switchModelsOnFlag: false },
     systemPrompt,
     cwd,
     additionalDirectories: additionalDirectories as any,
@@ -642,6 +647,11 @@ Shared folder: ${sharedPath} [READ-ONLY]
       ...commitAuthorEnv,
     },
     resume: sessionId,
+    ...(sessionId && refusalCheckpoint ? {
+      resumeSessionAt: refusalCheckpoint,
+      resumeDropsTurn: refusalRecovery?.prompt_uuid,
+      forkSession: true,
+    } : {}),
     abortController,
     maxTurns: def.maxTurns ?? 100,
     ...(effort ? { effort } : {}),
@@ -734,21 +744,103 @@ Shared folder: ${sharedPath} [READ-ONLY]
     let sessionId = existingSessionId;
     let hasRetried = false;
     const subagentToolUseIds = new Set<string>();
+    let agentQuery: Query;
+    let refusal: SDKAssistantMessage | undefined;
+    let turnInputId: string | undefined;
+    let lastResult: SDKResultMessage | undefined;
+    let refusalSettlement: Promise<void> | undefined;
+    const pauseAfterRefusal = () => refusalSettlement ??= (async () => {
+      const closedQuery = agentQuery;
+      const timeout = setTimeout(() => closedQuery.close(), 5000);
+      // Send before awaiting the task lock, while queued inputs are cancellable.
+      // SDK 0.3.281 implements this option but omits it from Query's type.
+      const cancellation = handle.isRunning
+        ? (closedQuery.interrupt as (options: { cancelQueued: true }) => ReturnType<Query['interrupt']>)({ cancelQueued: true })
+        : Promise.resolve(undefined);
+      const cancelled = cancellation.then((receipt) => receipt?.cancelled ?? []).catch((error) => {
+        logger.warn(def.id, `Could not confirm cancelled inputs after refusal: ${error}`);
+        return [];
+      }).finally(() => clearTimeout(timeout));
+      const category = refusal?.message.stop_details?.category ?? null;
+      const reason = refusal?.message.stop_details?.explanation?.trim() || category?.replaceAll('_', ' ');
+      const finding = `Model refused a turn${category ? ` (${category})` : ''}`;
+      logger.warn(def.id, finding);
+      emitEvent('agent:log', taskId, {
+        finding, type: 'error', stop_reason: 'refusal', category,
+        model: refusal?.message.model ?? model,
+        request_id: refusal?.request_id ?? null,
+      }, def.id);
+      await task.pauseAfterRefusal(agent, async () => {
+        const confirmed = await cancelled;
+        closedQuery.close();
+        agent.queue.detachWaiters();
+        recoverable.reset(undefined, confirmed);
+      }, reason);
+    })();
+    const runPendingTeardown = async () => {
+      const teardown = agent.pendingTeardown;
+      if (!teardown) return;
+      try {
+        await teardown();
+      } catch (error) {
+        logger.error(def.id, 'Error during deferred teardown', error);
+      } finally {
+        agent.clearPendingTeardown();
+      }
+    };
 
     try {
       while (true) {
         try {
+          const recovery = agent.session.refusal_recovery;
+          if (recovery && recovery !== refusalRecovery) {
+            if (!refusalRecovery) systemPrompt += `\n\n${refusalRecoveryNotice}`;
+            refusalRecovery = recovery;
+            refusalCheckpoint = sessionId ? await findRefusalCheckpoint(
+              useClaudeDirs ? claudeConfigDir : join(process.env.HOME!, '.claude'),
+              sessionId,
+              recovery.prompt_uuid,
+            ).catch((error) => {
+              logger.warn(def.id, `Could not find a safe refusal checkpoint: ${error}`);
+              return undefined;
+            }) : undefined;
+            if (!refusalCheckpoint) {
+              sessionId = undefined;
+              agent.session.session_id = undefined;
+            }
+          }
           // One nonce per query() call, in scope for the whole for-await event
           // loop below — so every `result` event from this call shares an
           // identity that cleanly delimits its (cumulative) cost window.
           const queryNonce = randomUUID();
-          const agentQuery = query({
+          if (agent.queue.isStopped()) return;
+          abortController = new AbortController();
+          lastResult = undefined;
+          refusalSettlement = undefined;
+          agentQuery = query({
             prompt: recoverable.generator() as any,
             options: buildQueryOptions(sessionId),
           });
 
           for await (const event of agentQuery) {
+            if (event.type === 'result') {
+              if (event.uuid === (lastResult as SDKResultMessage | undefined)?.uuid) continue;
+              lastResult = event;
+            }
             if (event.type === 'assistant') recordSubagentToolUses(event, subagentToolUseIds);
+            if (event.type === 'assistant' && !event.parent_tool_use_id) {
+              turnInputId ??= event.user_message_uuids?.[0] ?? event.user_message_uuid;
+              if (event.message.stop_reason === 'refusal') {
+                refusal = event;
+                agent.session.refusal_recovery = { prompt_uuid: turnInputId };
+                // Hold off idle recovery until the refused turn settles.
+                if (!agent.queue.isStopped()) {
+                  agent.deferTeardown(pauseAfterRefusal);
+                  // The deferred runner reports failures from this eager start.
+                  if (agent.pendingTeardown === pauseAfterRefusal) void pauseAfterRefusal().catch(() => {});
+                }
+              }
+            }
             if (event.type === 'system' && event.subtype === 'init') {
               task.updateAgentState(true, event.session_id);
               // Record the concrete model this session resolved the alias to
@@ -845,50 +937,44 @@ Shared folder: ${sharedPath} [READ-ONLY]
             // Derive the Slack "Archie is …" loading status from the session's
             // tool calls. Best-effort and debounced inside the task.
             task.noteActivityFromEvent(event);
+            if (event.type !== 'result') continue;
 
             // Persist SDK-reported usage/cost on every `result` event, stamped
             // with this query() call's nonce so read-time cost aggregation can
             // delimit its cumulative window. Fire-and-forget — never await, the
             // writer never rejects, so this can't block or break the loop.
-            if (event.type === 'result') {
-              void appendUsageRecord({
-                ts: new Date().toISOString(),
-                taskId,
-                agentId: def.id,
-                agentKey: def.key,
-                query_nonce: queryNonce,
-                session_id: event.session_id,
-                subtype: event.subtype,
-                num_turns: event.num_turns,
-                total_cost_usd: event.total_cost_usd,
-                modelUsage: (event as any).modelUsage,
-                usage: (event as any).usage,
-              });
+            void appendUsageRecord({
+              ts: new Date().toISOString(),
+              taskId,
+              agentId: def.id,
+              agentKey: def.key,
+              query_nonce: queryNonce,
+              session_id: event.session_id,
+              subtype: event.subtype,
+              num_turns: event.num_turns,
+              total_cost_usd: event.total_cost_usd,
+              modelUsage: (event as any).modelUsage,
+              usage: (event as any).usage,
+            });
+            if (event.subtype !== 'success' && event.errors?.some((error) => error.startsWith('Resume rejected by --resume-drops-turn:'))) {
+              refusalCheckpoint = undefined;
+              throw new Error(event.errors.join('\n'));
+            }
+            if (event.stop_reason === 'refusal') {
+              if (agent.session.refusal_recovery === refusalRecovery) {
+                agent.session.refusal_recovery = { prompt_uuid: turnInputId ?? event.user_message_uuids?.[0] ?? event.user_message_uuid };
+              }
+              if (!agent.queue.isStopped()) agent.deferTeardown(pauseAfterRefusal);
+            }
+            if (agent.session.refusal_recovery === refusalRecovery && event.stop_reason !== 'refusal' && event.subtype === 'success') {
+              delete agent.session.refusal_recovery;
             }
 
-            // Deferred teardown (report_completion / request_edit_mode / research
-            // budget): now that the turn has fully ended (the SDK `result` event),
-            // run it. The teardown stops this agent's queue, which closes the input
-            // stream and lets the query generator terminate *naturally* on the next
-            // pull — the same path the pre-change code relied on.
-            //
-            // Do NOT `return` here. `Query` is an AsyncGenerator, so returning from
-            // the for-await calls its .return(), abruptly tearing down the SDK
-            // subprocess mid-stream instead of letting it exit gracefully. That left
-            // the session in a state that broke the next `resume`, so the first
-            // attempt completed cleanly but every reopened attempt after it fell
-            // into recovery.
-            if (event.type === 'result' && agent.pendingTeardown) {
-              const teardown = agent.pendingTeardown;
-              agent.clearPendingTeardown();
-              await teardown().catch((err) =>
-                logger.error(def.id, 'Error during deferred teardown', err)
-              );
-            } else if (
-              event.type === 'result' &&
-              event.subtype !== 'success' &&
-              agent.session.active
-            ) {
+            // Ordinary teardown lets the SDK drain naturally. Refusal recovery
+            // closes it explicitly so queued input cannot run in the old context.
+            if (agent.pendingTeardown) {
+              await runPendingTeardown();
+            } else if (event.subtype !== 'success' && agent.session.active) {
               // The turn ended with an ERROR result (API "Overloaded" once the
               // SDK's own retries are exhausted, max_turns, …). Unlike a clean stop
               // this does NOT fire the SDK `Stop` hook, so nothing marks the agent
@@ -907,18 +993,14 @@ Shared folder: ${sharedPath} [READ-ONLY]
               );
               task.updateAgentState(false);
             }
+            if (refusal || event.stop_reason === 'refusal') break;
+            turnInputId = undefined;
           }
-
-          return;
         } catch (error) {
-          // This attempt is over, but the input generator the SDK was holding is
-          // still parked on `queue.nextMessage()` with a resolver registered.
-          // Nothing reads from it again, so detach it before anything else is
-          // enqueued — otherwise the next message goes to the dead generator
-          // instead of the live one (see MessageQueue.detachWaiters).
+          // Detach the closed SDK's input reader before restoring or accepting more messages.
           agent.queue.detachWaiters();
-
-          if (sessionId && !hasRetried) {
+          if (agent.queue.isStopped()) return;
+          if (!refusal && lastResult?.stop_reason !== 'refusal' && sessionId && !hasRetried) {
             logger.warn(def.id, `Agent failed with session ${sessionId}, retrying fresh`);
             try {
               // The retry starts a session with NO transcript, and the only thing
@@ -929,7 +1011,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
               // pass through: the runtime fallback (a resume that failed mid-task)
               // and startup recovery (`recoverActiveTasks` → `sendMessage` →
               // `ensurePm` → spawn with a session id whose file is gone).
-              recoverable.reset(buildSessionResetNotice(task.metadata));
+              recoverable.reset(refusalRecovery ? refusalRecoveryNotice : buildSessionResetNotice(task.metadata));
             } catch {
               // Queue was stopped (task completed/stopped) — bail out
               return;
@@ -956,17 +1038,22 @@ Shared folder: ${sharedPath} [READ-ONLY]
             continue;
           }
 
-          if (!agent.queue.isStopped()) {
+          if (!refusal && lastResult?.stop_reason !== 'refusal') {
             logger.error(def.id, 'Error', error);
+            return;
           }
-          return;
         }
+        if ((!refusal && lastResult?.stop_reason !== 'refusal') || agent.queue.isStopped()) return;
+        await runPendingTeardown();
+        if (!agent.session.refusal_recovery || !agent.queue.hasMessages()) return;
+        refusal = undefined;
+        turnInputId = undefined;
+        agent.backgroundTasks.clear();
+        sessionId = agent.session.session_id;
+        task.updateAgentState(true);
       }
     } finally {
       handle.isRunning = false;
-      // A dead subprocess can't settle these — drain so they don't keep the agent
-      // "busy" forever and wedge the idle-check.
-      agent.backgroundTasks.clear();
       // Backstop for a deferred teardown that the `result` path above never got
       // to run — e.g. the agent crashed after report_completion/request_edit_mode
       // deferred it. Without this the flag stays set, and the idle-check's
@@ -975,13 +1062,9 @@ Shared folder: ${sharedPath} [READ-ONLY]
       // stream is closed (the only reason teardown was deferred), and complete()/
       // stop() are idempotent. The result path clears the flag, so this is a
       // no-op on every normal exit.
-      if (agent.pendingTeardown) {
-        const teardown = agent.pendingTeardown;
-        agent.clearPendingTeardown();
-        await teardown().catch((err) =>
-          logger.error(def.id, 'Error during deferred teardown (exit)', err)
-        );
-      }
+      await runPendingTeardown();
+      // Refusal teardown must see background work before it is discarded.
+      agent.backgroundTasks.clear();
     }
   })();
 
