@@ -35,6 +35,8 @@ vi.mock('../../tasks/persistence.js', async (importOriginal) => ({
 vi.mock('../../connectors/slack/status.js', () => ({ setSlackThreadStatus: vi.fn().mockResolvedValue(undefined) }));
 
 import { Task, activeTasks, RUNTIME_VERSION } from '../../tasks/task.js';
+import { spawnAgent } from '../spawn.js';
+import type { Agent } from '../agent.js';
 import { appendCliMessage, getSharedPath, getTaskPath } from '../../tasks/persistence.js';
 import { logger } from '../../system/logger.js';
 import { postSlackMessage } from '../../connectors/slack/client.js';
@@ -140,6 +142,11 @@ async function writeSession(parentUuid: string | null): Promise<void> {
 }
 
 describe('model refusal in the production SDK loop', () => {
+  it.each(['../outside', '/tmp/outside', 'task-20261014-0000-safe/../../outside'])('rejects unsafe task paths before spawning: %s', async (taskId) => {
+    await expect(spawnAgent({ def: PM } as Agent, { taskId } as Task)).rejects.toThrow('Invalid task ID');
+    expect(queryMock).not.toHaveBeenCalled();
+  });
+
   it.each(['success', 'error_during_execution'])('pauses a %s result without a Stop hook and preserves the session', async (subtype) => {
     scenario = async function* () {
       await vi.advanceTimersByTimeAsync(800);
