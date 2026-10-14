@@ -37,6 +37,7 @@ vi.mock('../../connectors/slack/status.js', () => ({ setSlackThreadStatus: vi.fn
 import { Task, activeTasks, RUNTIME_VERSION } from '../../tasks/task.js';
 import { spawnAgent } from '../spawn.js';
 import type { Agent } from '../agent.js';
+import { findRefusalCheckpoint } from '../refusal-recovery.js';
 import { appendCliMessage, getSharedPath, getTaskPath } from '../../tasks/persistence.js';
 import { logger } from '../../system/logger.js';
 import { postSlackMessage } from '../../connectors/slack/client.js';
@@ -145,6 +146,14 @@ describe('model refusal in the production SDK loop', () => {
   it.each(['../outside', '/tmp/outside', 'task-20261014-0000-safe/../../outside'])('rejects unsafe task paths before spawning: %s', async (taskId) => {
     await expect(spawnAgent({ def: PM } as Agent, { taskId } as Task)).rejects.toThrow('Invalid task ID');
     expect(queryMock).not.toHaveBeenCalled();
+  });
+
+  it.each([`${root}/outside`, `${root}/sessions-other`, `${root}/sessions/../../outside`])('does not scan checkpoint paths outside the sessions root: %s', async (configDir) => {
+    await expect(findRefusalCheckpoint(configDir, 'session-1', 'input-1')).resolves.toBeUndefined();
+  });
+
+  it.each(['../session', '/etc/session', 'session/../../outside'])('rejects session IDs containing paths: %s', async (sessionId) => {
+    await expect(findRefusalCheckpoint(`${getTaskPath(task.taskId)}/claude/pm/session`, sessionId, 'input-1')).resolves.toBeUndefined();
   });
 
   it.each(['success', 'error_during_execution'])('pauses a %s result without a Stop hook and preserves the session', async (subtype) => {

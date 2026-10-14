@@ -1,5 +1,6 @@
 import { readFile, readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
+import { SESSIONS_DIR } from '../system/workdir.js';
 
 /** The prompt's recorded parent also preserves end-turn tool results and attachments. */
 export async function findRefusalCheckpoint(
@@ -7,8 +8,12 @@ export async function findRefusalCheckpoint(
   sessionId: string,
   promptUuid?: string,
 ): Promise<string | undefined> {
-  if (!promptUuid) return;
-  const projects = join(configDir, 'projects');
+  if (!promptUuid || !/^[A-Za-z0-9_-]+$/.test(sessionId)) return;
+  // Older tasks use the shared SDK config instead of a per-task directory.
+  const root = configDir === join(process.env.HOME!, '.claude')
+    ? resolve(process.env.HOME!, '.claude') : resolve(SESSIONS_DIR);
+  const projects = resolve(configDir, 'projects');
+  if (!projects.startsWith(`${root}${sep}`)) return;
   const dirs = await readdir(projects, { withFileTypes: true });
   for (const dir of dirs) {
     if (!dir.isDirectory()) continue;
