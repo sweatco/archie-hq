@@ -34,7 +34,6 @@ import { createResearchMcpServer, createResearchPostToolHook, createResearchDefe
 import {
   getSharedPath,
   getTaskPath,
-  isSafeTaskId,
   appendUsageRecord,
   readKnowledgeLog,
 } from '../tasks/persistence.js';
@@ -232,7 +231,7 @@ export async function buildTaskPeopleSection(taskId: string): Promise<string> {
 export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   const { def } = agent;
   const taskId = task.taskId;
-  if (!isSafeTaskId(taskId)) throw new Error('Invalid task ID');
+  if (!/^[A-Za-z0-9_-]+$/.test(taskId)) throw new Error('Invalid task ID');
   const metadata = task.metadata;
   const sharedPath = getSharedPath(taskId);
 
