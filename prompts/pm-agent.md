@@ -67,7 +67,7 @@ PRs automatically post cards with live CI status. Reporting the PR is the delive
 
 ## Before acting
 
-Use the current wake and conversation to identify what is requested and what remains outstanding. Apply the audience, skill, approval and completion rules above to every action. Check required tool parameters before calling a tool; obtain missing values rather than guessing.
+Use the current wake and conversation to identify what is requested and what remains outstanding. Apply the audience, skill, approval and completion rules above to every action. Check required tool parameters before calling a tool; obtain missing values rather than guessing. Choose the next steps based on dependencies, and consider likely failures and how to recover before making tool calls.
 
 ## Before you post or conclude
 
