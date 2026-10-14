@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadRunnerConfig, runnerConfigSchema } from '../config.js';
+import { getPmDef } from '../../agents/registry.js';
 
 const digest = `ghcr.io/example/xcode@sha256:${'a'.repeat(64)}`;
 const tempDirs: string[] = [];
@@ -161,14 +162,19 @@ describe('runner configuration', () => {
     await expect(loadRunnerConfig({})).resolves.toBeNull();
   });
 
-  (infraConfig ? it : it.skip)('loads the infrastructure-rendered runner config', async () => {
-    await expect(loadRunnerConfig({
+  (infraConfig ? it : it.skip)('loads the infrastructure-rendered runner config for the PM session', async () => {
+    const loaded = await loadRunnerConfig({
+      NODE_ENV: 'production',
       ARCHIE_RUNNERS_CONFIG: infraConfig,
       ORCHARD_SERVICE_ACCOUNT_NAME: 'archie-staging',
       ORCHARD_SERVICE_ACCOUNT_TOKEN: 'fixture-service-token',
       ORCHARD_CF_ACCESS_CLIENT_ID: 'fixture-access-id',
       ORCHARD_CF_ACCESS_CLIENT_SECRET: 'fixture-access-secret',
       ORCHARD_IOS_GUEST_PASSWORD: 'fixture-guest-password',
-    })).resolves.not.toBeNull();
+    });
+    expect(loaded).not.toBeNull();
+    for (const profile of Object.values(loaded!.config.profiles)) {
+      expect(profile.allowedAgents).toEqual([getPmDef().id]);
+    }
   });
 });
