@@ -1222,8 +1222,9 @@ export class Task {
         this.updateAgentState(true);
         return;
       }
-      await this.stop();
-      // Keep all reopen callers on this instance until its SDK has exited.
+      // PR-card delivery must not hold the incoming-message lock.
+      await this.stop(false);
+      // Keep all reopen callers on this instance until its SDK iterator has closed.
       if (agent.handle) {
         activeTasks.set(this.taskId, this);
         void agent.handle.running.then(() => {
@@ -1236,15 +1237,14 @@ export class Task {
   /**
    * Stop the task and tear its agent down.
    */
-  async stop(): Promise<void> {
+  async stop(resurfaceCards = true): Promise<void> {
     if (!this.isActive) {
       logger.system(`Task ${this.taskId} already stopped`);
       return;
     }
 
-    // PM has yielded the turn — (re)post any changed PR cards so they land under
-    // the final message. Best-effort; must never block teardown.
-    await this.resurfacePrCards().catch((e) => logger.warn('task', 'PR card resurface failed on stop', e));
+    // Keep changed PR cards below the PM's final message.
+    if (resurfaceCards) await this.resurfacePrCards().catch((e) => logger.warn('task', 'PR card resurface failed on stop', e));
 
     this.isActive = false;
     activeTasks.delete(this.taskId);

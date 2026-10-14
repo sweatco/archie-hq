@@ -131,10 +131,10 @@ function useSlackChannel(muted = false): void {
   task = new TaskCtor(task.taskId, task.metadata, PM);
 }
 
-async function writeSession(parentUuid: string | null): Promise<void> {
+async function writeSession(parentUuid: string | null, sessionId = 'session-1'): Promise<void> {
   const dir = `${getTaskPath(task.taskId)}/claude/pm/session/projects/fixture`;
   await mkdir(dir, { recursive: true });
-  await writeFile(`${dir}/session-1.jsonl`, [
+  await writeFile(`${dir}/${sessionId}.jsonl`, [
     { type: 'assistant', uuid: 'kept-assistant', message: { content: [{ type: 'tool_use', id: 'completion' }] } },
     { type: 'user', uuid: 'kept-carrier', parentUuid: 'kept-assistant', message: { content: [{ type: 'tool_result', tool_use_id: 'completion', content: 'done' }] } },
     { type: 'attachment', uuid: 'kept-output', parentUuid: 'kept-carrier', attachment: { type: 'structured_output', output: 'done' } },
@@ -251,6 +251,32 @@ describe('model refusal in the production SDK loop', () => {
     expect(logger.error).toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(3000);
     expect(task.metadata.status).toBe('completed');
+  });
+
+  it('pauses and accepts a new wake without waiting for PR-card delivery', async () => {
+    useSlackChannel();
+    task.metadata.repositories = [{ github: 'acme/app', branch_states: { feature: { pr_number: 42 } } }];
+    let releaseCards!: () => void;
+    const cards = vi.spyOn(task, 'resurfacePrCards').mockReturnValue(new Promise<void>((resolve) => { releaseCards = resolve; }));
+    scenario = async function* () { yield assistant(); yield result(); };
+    await task.sendMessage('Investigate this request.');
+    const oldHandle = task.agent!.handle!;
+    try {
+      await vi.waitFor(() => expect(task.metadata.status).toBe('stopped'), { timeout: 1000 });
+      expect(cards).not.toHaveBeenCalled();
+      await oldHandle.running;
+      scenario = async function* () { yield result('end_turn'); };
+      await task.sendMessage('Continue despite stalled PR-card delivery.');
+      await task.agent!.handle!.running;
+      expect(inputs).toEqual(['Investigate this request.', 'Continue despite stalled PR-card delivery.']);
+      releaseCards();
+      await task.stop();
+      expect(cards).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseCards();
+      await oldHandle.running;
+      cards.mockRestore();
+    }
   });
 
   it('opens the task-owned failure thread for a trigger without a thread', async () => {
@@ -694,6 +720,49 @@ describe('model refusal in the production SDK loop', () => {
       expect(inputs.at(-1)).not.toContain('A request that will refuse.');
       expect(inputs.at(-1)).not.toContain('read_thread');
     }
+    expect(task.agent!.session.refusal_recovery).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(task.metadata.status).toBe('completed');
+  });
+
+  it.each([false, true])('keeps the latest checkpoint after consecutive refusals (assistant frame: %s)', async (hasAssistant) => {
+    let firstUuid!: string;
+    let secondUuid!: string;
+    let markerAfterAssistant: Agent['session']['refusal_recovery'];
+    scenario = async function* (options) {
+      const attempt = queryMock.mock.calls.length;
+      if (attempt === 1) {
+        firstUuid = currentInput!.uuid!;
+        await writeSession('kept-output');
+        yield assistant();
+        yield result();
+      } else if (attempt === 2) {
+        expect(options.resumeDropsTurn).toBe(firstUuid);
+        secondUuid = currentInput!.uuid!;
+        await writeSession('kept-output', 'session-2');
+        if (hasAssistant) {
+          yield assistant();
+          markerAfterAssistant = task.agent!.session.refusal_recovery;
+        }
+        yield result();
+      } else {
+        expect(options).toMatchObject({ resume: 'session-2', resumeSessionAt: 'kept-output', resumeDropsTurn: secondUuid, forkSession: true });
+        task.setCompletionIntent();
+        await stopHook(options);
+        yield result('end_turn');
+      }
+    };
+    await run();
+    await task.sendMessage('A second request that also refuses.');
+    await task.agent!.handle!.running;
+    expect(task.agent!.session.refusal_recovery).toEqual({ prompt_uuid: secondUuid });
+    if (hasAssistant) expect(task.agent!.session.refusal_recovery).toBe(markerAfterAssistant);
+    await task.save(true);
+    const metadata = JSON.parse(await readFile(`${getSharedPath(task.taskId)}/metadata.json`, 'utf8')) as TaskMetadata;
+    task = new TaskCtor(task.taskId, metadata, PM);
+    await task.sendMessage('Continue with a safe request.');
+    await task.agent!.handle!.running;
+    expect(queryMock).toHaveBeenCalledTimes(3);
     expect(task.agent!.session.refusal_recovery).toBeUndefined();
     await vi.advanceTimersByTimeAsync(3000);
     expect(task.metadata.status).toBe('completed');

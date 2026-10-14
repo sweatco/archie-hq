@@ -832,7 +832,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
               turnInputId ??= event.user_message_uuids?.[0] ?? event.user_message_uuid;
               if (event.message.stop_reason === 'refusal') {
                 refusal = event;
-                agent.session.refusal_recovery ??= { prompt_uuid: turnInputId };
+                agent.session.refusal_recovery = { prompt_uuid: turnInputId };
                 // Hold off idle recovery until the refused turn settles.
                 if (!agent.queue.isStopped()) {
                   agent.deferTeardown(pauseAfterRefusal);
@@ -961,7 +961,9 @@ Shared folder: ${sharedPath} [READ-ONLY]
               throw new Error(event.errors.join('\n'));
             }
             if (event.stop_reason === 'refusal') {
-              agent.session.refusal_recovery ??= { prompt_uuid: turnInputId ?? event.user_message_uuids?.[0] ?? event.user_message_uuid };
+              if (agent.session.refusal_recovery === refusalRecovery) {
+                agent.session.refusal_recovery = { prompt_uuid: turnInputId ?? event.user_message_uuids?.[0] ?? event.user_message_uuid };
+              }
               if (!agent.queue.isStopped()) agent.deferTeardown(pauseAfterRefusal);
             }
             if (agent.session.refusal_recovery === refusalRecovery && event.stop_reason !== 'refusal' && event.subtype === 'success') {
