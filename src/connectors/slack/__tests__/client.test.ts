@@ -2,9 +2,10 @@
  * Tests for the Slack client behaviours added in the v32 permissions rework:
  *  - fetchSlackThread.rootAuthorWasBot detection + keeping the bot's root message
  *  - fetchChannelHistory / fetchExploreThread accessible-set gate
- *    (assertAccessibleChannel): public, or this task's own channel via allowedIds;
- *    other private/DMs refused. History returned chronologically.
- *  - listBotChannels lists public memberships only
+ *    (assertAccessibleChannel): public, or this task's own channel via allowedIds,
+ *    or (DM task) a private channel the DM person is in; other private/DMs refused.
+ *    History returned chronologically.
+ *  - listBotChannels lists public memberships only (or, for a DM person, the private ones shared with them)
  *  - assertPostableChannel: posting open to public/private channels, closed to DMs/mpims
  *
  * The whole Slack WebClient is faked via @slack/web-api. The module is reset
@@ -934,6 +935,110 @@ describe('fetchExploreThread — accessible-set gate, no bot filtering', () => {
     expect(withFile?.files?.[0]).toMatchObject({ id: 'F1', name: 'log.txt' });
     const withReaction = messages.find((m) => m.reactions?.length);
     expect(withReaction?.reactions?.[0]).toMatchObject({ name: 'eyes', count: 2 });
+  });
+});
+
+describe('DM task — a private channel the DM person is a member of', () => {
+  const sharedInfo = {
+    ok: true,
+    channel: { id: 'C_shared', name: 'shared', is_private: true, is_im: false, is_mpim: false },
+  };
+
+  it('reads history while the DM person is a member', async () => {
+    slackApi.conversations.info.mockResolvedValue(sharedInfo);
+    slackApi.conversations.members.mockResolvedValue({ members: [BOT_USER, 'U_DM'] });
+    slackApi.conversations.history.mockResolvedValue({
+      messages: [rawMsg({ ts: '1.0', user: 'U1', text: 'shared secret' })],
+    });
+
+    const { channel, messages } = await client.fetchChannelHistory('C_shared', 30, new Set(), 'U_DM');
+
+    expect(channel).toMatchObject({ id: 'C_shared', name: 'shared' });
+    expect(messages.map((m) => m.ownText)).toEqual(['shared secret']);
+  });
+
+  it('refuses when the DM person is not a member, before reading any history', async () => {
+    slackApi.conversations.info.mockResolvedValue(sharedInfo);
+    slackApi.conversations.members.mockResolvedValue({ members: [BOT_USER] });
+
+    await expect(client.fetchChannelHistory('C_shared', 30, new Set(), 'U_DM'))
+      .rejects.toBeInstanceOf(client.PrivateChannelError);
+    expect(slackApi.conversations.history).not.toHaveBeenCalled();
+  });
+
+  it('checks membership live on every call', async () => {
+    slackApi.conversations.info.mockResolvedValue(sharedInfo);
+    slackApi.conversations.members
+      .mockResolvedValueOnce({ members: [BOT_USER, 'U_DM'] })
+      .mockResolvedValueOnce({ members: [BOT_USER] });
+    slackApi.conversations.history.mockResolvedValue({ messages: [] });
+
+    await expect(client.fetchChannelHistory('C_shared', 30, new Set(), 'U_DM')).resolves.toBeDefined();
+    await expect(client.fetchChannelHistory('C_shared', 30, new Set(), 'U_DM'))
+      .rejects.toBeInstanceOf(client.PrivateChannelError);
+    expect(slackApi.conversations.members).toHaveBeenCalledTimes(2);
+  });
+
+  it('still refuses a group DM and another DM, without a membership lookup', async () => {
+    slackApi.conversations.info.mockResolvedValue({
+      ok: true, channel: { id: 'G_mpim', name: 'mpdm', is_private: true, is_im: false, is_mpim: true },
+    });
+    await expect(client.fetchChannelHistory('G_mpim', 30, new Set(), 'U_DM'))
+      .rejects.toBeInstanceOf(client.PrivateChannelError);
+
+    slackApi.conversations.info.mockResolvedValue({
+      ok: true, channel: { id: 'D_other', name: 'dm', is_private: true, is_im: true, is_mpim: false },
+    });
+    await expect(client.fetchChannelHistory('D_other', 30, new Set(), 'U_DM'))
+      .rejects.toBeInstanceOf(client.PrivateChannelError);
+
+    expect(slackApi.conversations.members).not.toHaveBeenCalled();
+  });
+
+  it('refuses a private channel without a DM person, without a membership lookup', async () => {
+    slackApi.conversations.info.mockResolvedValue(sharedInfo);
+
+    await expect(client.fetchChannelHistory('C_shared'))
+      .rejects.toBeInstanceOf(client.PrivateChannelError);
+    expect(slackApi.conversations.members).not.toHaveBeenCalled();
+  });
+
+  it('reads a thread while the DM person is a member', async () => {
+    slackApi.conversations.info.mockResolvedValue(sharedInfo);
+    slackApi.conversations.members.mockResolvedValue({ members: [BOT_USER, 'U_DM'] });
+    slackApi.conversations.replies.mockResolvedValue({
+      messages: [rawMsg({ ts: '1.0', user: 'U1', text: 'shared reply' })],
+    });
+
+    const { messages } = await client.fetchExploreThread('C_shared', '1.0', new Set(), 'U_DM');
+
+    expect(messages.map((m) => m.ownText)).toEqual(['shared reply']);
+  });
+
+  it('surfaces Slack\'s own refusal (bot not in the channel) rather than a private-channel error', async () => {
+    const slackErr = Object.assign(new Error('An API error occurred: channel_not_found'), {
+      data: { error: 'channel_not_found' },
+    });
+    slackApi.conversations.info.mockRejectedValue(slackErr);
+
+    const err = await client.fetchChannelHistory('C_shared', 30, new Set(), 'U_DM').catch((e: unknown) => e);
+
+    expect(err).toBe(slackErr);
+    expect(err).not.toBeInstanceOf(client.PrivateChannelError);
+  });
+
+  it('listBotChannels(userId) lists the private channels the bot shares with that user', async () => {
+    slackApi.users.conversations.mockResolvedValue({
+      ok: true,
+      channels: [{ id: 'C_shared', name: 'shared', is_private: true }],
+    });
+
+    const channels = await client.listBotChannels('U_DM');
+
+    expect(slackApi.users.conversations).toHaveBeenCalledWith(
+      expect.objectContaining({ user: 'U_DM', types: 'private_channel', exclude_archived: true }),
+    );
+    expect(channels.map((c) => c.id)).toEqual(['C_shared']);
   });
 });
 
