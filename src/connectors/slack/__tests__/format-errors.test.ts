@@ -76,6 +76,7 @@ describe('formatSlackReadError', () => {
   it('uses DM wording for a private-channel refusal in a DM task', () => {
     expect(formatSlackReadError(new PrivateChannelError('C9'), 'C9', true)).toContain('person in this DM');
   });
+
   it('tells a DM task how to get Archie into a private channel', () => {
     for (const code of ['not_in_channel', 'channel_not_found']) {
       const msg = formatSlackReadError(apiErr(code), 'C1', true);

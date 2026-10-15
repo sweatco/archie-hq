@@ -1539,7 +1539,10 @@ async function assertAccessibleChannel(
   if (!ch) throw new Error('channel_not_found');
   // The task's own channel is always readable, whatever its type.
   if (allowedIds.has(channelId)) return { id: ch.id ?? channelId, name: ch.name ?? channelId };
-  if (dmUserId && ch.is_private === true && !ch.is_im && !ch.is_mpim && (await fetchConversationMemberIds(channelId)).includes(dmUserId)) return { id: ch.id ?? channelId, name: ch.name ?? channelId };
+  if (
+    dmUserId && ch.is_private === true && !ch.is_im && !ch.is_mpim
+    && (await fetchConversationMemberIds(channelId)).includes(dmUserId)
+  ) return { id: ch.id ?? channelId, name: ch.name ?? channelId };
   // Otherwise fail CLOSED: only a channel Slack explicitly marks public passes.
   if (ch.is_private !== false || ch.is_im || ch.is_mpim) throw new PrivateChannelError(channelId);
   return { id: ch.id ?? channelId, name: ch.name ?? channelId };
