@@ -84,6 +84,17 @@ function taskChannelIds(task: Task): Set<string> {
   return taskSlackChannelIds(task.metadata);
 }
 
+/**
+ * The person this task's 1:1 DM is with, read from the task's fixed Slack destination — the one conversation every delivery is confined to, so what a DM task reads from a private channel can only be said back into that DM.
+ * A failed lookup reads as 'not a DM'.
+ */
+async function dmPartnerOf(task: Task): Promise<string | undefined> {
+  const destination = task.metadata.memory_destination?.channel_id;
+  if (!destination?.startsWith('D')) return undefined;
+  const info = await getChannelInfo(destination).catch(() => null);
+  return info?.isIm ? info.imUserId : undefined;
+}
+
 /** Slack returns no name for a 1:1 DM, so its explore label comes from the task's own channel map. */
 function exploreChannelLabel(task: Task, channelId: string, apiName: string): string {
   if (apiName && apiName !== channelId) return formatConversationLabel(apiName);
@@ -461,12 +472,17 @@ function createListChannelsTool(task: Task) {
   return tool(
     'list_channels',
     "List the channels you can read for THIS task — every PUBLIC channel Archie has been added to, plus this task's own channel if it happens to be a private channel or DM. " +
-    'Use this to discover where you can explore instead of guessing channel names. It never lists other private channels or DMs. ' +
+    'In a 1:1 DM it also lists the private channels both Archie and that person are members of. ' +
+    'Use this to discover where you can explore instead of guessing channel names. It never lists any other private channel or DM. ' +
     '(Posting is broader — see post_to_channel — but reading is limited to this list.)',
     {},
     async () => {
       try {
-        const publicChannels = await listBotChannels();
+        const dmUser = await dmPartnerOf(task);
+        const [publicChannels, sharedPrivate] = await Promise.all([
+          listBotChannels(),
+          dmUser ? listBotChannels(dmUser) : Promise.resolve([]),
+        ]);
         // Append this task's OWN channels that aren't already public (its private
         // channel / DM origin) — accessible because the task lives there. Other
         // private channels / DMs are never enumerated.
@@ -492,14 +508,21 @@ function createListChannelsTool(task: Task) {
           seen.add(channelId);
           own.push({ label, id: channelId });
         }
-        if (publicChannels.length === 0 && own.length === 0) {
+        if (publicChannels.length === 0 && sharedPrivate.length === 0 && own.length === 0) {
           return ok("Archie isn't a member of any channels you can use yet. Invite it to a channel (`/invite @Archie`) to explore there.");
         }
         const lines = [
           ...publicChannels.map((ch) => `- #${ch.name} — ID: ${ch.id}${ch.topic ? ` — ${ch.topic}` : ''}`),
+          ...sharedPrivate.map((ch) => `- #${ch.name} — ID: ${ch.id} (private — Archie and the person in this DM are both members)`),
           ...own.map((ch) => `- ${ch.label} — ID: ${ch.id} (this task's own channel)`),
         ];
-        return ok(`Channels you can read${own.length ? " (public channels Archie's in, plus this task's own channel)" : ''}:\n${lines.join('\n')}`);
+        let suffix = '';
+        if (sharedPrivate.length > 0) {
+          suffix = " (public channels Archie's in, private channels Archie shares with the person in this DM, plus this task's own channel)";
+        } else if (own.length > 0) {
+          suffix = " (public channels Archie's in, plus this task's own channel)";
+        }
+        return ok(`Channels you can read${suffix}:\n${lines.join('\n')}`);
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
         return ok(`Couldn't list channels: ${reason}`);
@@ -893,7 +916,7 @@ function createReadChannelHistoryTool(task: Task) {
     'read_channel_history',
     "Read a channel's recent messages to understand what's happening there — exploration only, NOT linked to this task. " +
     'Pass a channel ID (use list_channels or find_slack_channel). Returns messages oldest→newest, including Archie\'s own and other bots\' posts. ' +
-    "Reading never creates or joins a task. Allowed for any PUBLIC channel Archie's in, plus this task's own channel if it is private or a DM — other private channels and DMs are off-limits.",
+    "Reading never creates or joins a task. Allowed for any PUBLIC channel Archie's in, plus this task's own channel if it is private or a DM, plus — in a 1:1 DM — any private channel both Archie and that person are in right now. Other private channels and DMs are off-limits.",
     {
       channel: z.string().describe('Slack channel ID (e.g. "C1234567")'),
       limit: z.number().int().min(1).max(100).optional().describe('How many recent messages to read (default 30, max 100)'),
@@ -904,13 +927,14 @@ function createReadChannelHistoryTool(task: Task) {
         const dm = rejectDmTarget(args.channel);
         if (dm) return ok(dm);
       }
+      const dmUser = await dmPartnerOf(task);
       try {
-        const { channel, messages } = await fetchChannelHistory(args.channel, args.limit ?? 30, allowed);
+        const { channel, messages } = await fetchChannelHistory(args.channel, args.limit ?? 30, allowed, dmUser);
         const label = exploreChannelLabel(task, args.channel, channel.name);
         if (messages.length === 0) return ok(`${label} has no readable recent messages.`);
         return ok(`${label} — last ${messages.length} message(s):\n\n${formatExploreMessages(messages)}`);
       } catch (e) {
-        return ok(formatSlackReadError(e, args.channel));
+        return ok(formatSlackReadError(e, args.channel, dmUser !== undefined));
       }
     },
   );
@@ -921,7 +945,7 @@ function createReadThreadTool(task: Task) {
     'read_thread',
     'Read a specific thread (parent message + all replies) — exploration only, NOT linked to this task. ' +
     'Pass the channel ID and the parent message ts (from read_channel_history). Includes Archie\'s own and other bots\' messages. ' +
-    "Allowed for any PUBLIC channel Archie's in, plus this task's own channel if it is private or a DM — other private channels and DMs are off-limits.",
+    "Allowed for any PUBLIC channel Archie's in, plus this task's own channel if it is private or a DM, plus — in a 1:1 DM — any private channel both Archie and that person are in right now. Other private channels and DMs are off-limits.",
     {
       channel: z.string().describe('Slack channel ID (e.g. "C1234567")'),
       thread_ts: z.string().describe('Parent message ts of the thread (e.g. "1716998400.123456")'),
@@ -932,12 +956,13 @@ function createReadThreadTool(task: Task) {
         const dm = rejectDmTarget(args.channel);
         if (dm) return ok(dm);
       }
+      const dmUser = await dmPartnerOf(task);
       try {
-        const { channel, messages } = await fetchExploreThread(args.channel, args.thread_ts, allowed);
+        const { channel, messages } = await fetchExploreThread(args.channel, args.thread_ts, allowed, dmUser);
         if (messages.length === 0) return ok(`No messages found in that thread.`);
         return ok(`${exploreChannelLabel(task, args.channel, channel.name)} thread ${args.thread_ts} — ${messages.length} message(s):\n\n${formatExploreMessages(messages)}`);
       } catch (e) {
-        return ok(formatSlackReadError(e, args.channel));
+        return ok(formatSlackReadError(e, args.channel, dmUser !== undefined));
       }
     },
   );

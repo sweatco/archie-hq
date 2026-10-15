@@ -36,16 +36,17 @@ vi.mock('../registry.js', () => ({
 // Partial-mock the Slack client: keep the REAL error classes (format-errors uses
 // `instanceof`) and just stub the network call. `vi.hoisted` makes the mock fn
 // available to the hoisted vi.mock factory.
-const { postSlackMessage, listBotChannels, assertPostableChannel, fetchChannelHistory, fetchExploreThread } = vi.hoisted(() => ({
+const { postSlackMessage, listBotChannels, assertPostableChannel, fetchChannelHistory, fetchExploreThread, getChannelInfo } = vi.hoisted(() => ({
   postSlackMessage: vi.fn(),
   listBotChannels: vi.fn(),
   assertPostableChannel: vi.fn(),
   fetchChannelHistory: vi.fn(),
   fetchExploreThread: vi.fn(),
+  getChannelInfo: vi.fn(),
 }));
 vi.mock('../../connectors/slack/client.js', async (importActual) => {
   const actual = await importActual<typeof import('../../connectors/slack/client.js')>();
-  return { ...actual, postSlackMessage, listBotChannels, assertPostableChannel, fetchChannelHistory, fetchExploreThread };
+  return { ...actual, postSlackMessage, listBotChannels, assertPostableChannel, fetchChannelHistory, fetchExploreThread, getChannelInfo };
 });
 
 const {
@@ -69,9 +70,16 @@ vi.mock('../../connectors/slack/channel-pins.js', () => ({
 }));
 
 import { createCommsMcpServer } from '../tools.js';
-import { DmPostError } from '../../connectors/slack/client.js';
+import { DmPostError, PrivateChannelError } from '../../connectors/slack/client.js';
 import type { Agent } from '../agent.js';
 import type { Task } from '../../tasks/task.js';
+
+// The real getChannelInfo rejects here (no Slack client), and post_to_channel's preflight absorbs that with a
+// `.catch`; a bare vi.fn() would return undefined and break it.
+beforeEach(() => {
+  getChannelInfo.mockReset();
+  getChannelInfo.mockRejectedValue(new Error('Slack client not initialized'));
+});
 
 function makeAgent(): Agent {
   return { def: { id: 'pm-agent', key: 'pm', role: 'PM', expertise: '', pluginName: 'pm', isPm: true }, queue: {} as any, session: { active: false } } as unknown as Agent;
@@ -578,5 +586,94 @@ describe('an explore read names a DM by its label, not by a #-prefixed id', () =
     const out = await textOf(await getHandler('read_channel_history', makeTask('C_PUB'))({ channel: 'C_PUB' }));
 
     expect(out).toContain('#general');
+  });
+});
+
+describe('a DM task reads the private channels its person is in', () => {
+  const SHARED = { id: 'C_SHARED', name: 'shared-priv', isPrivate: true, topic: '' };
+
+  function dmTask(): Task {
+    const task = makeTask('D_DM');
+    (task.metadata as any).memory_destination = { channel_id: 'D_DM' };
+    return task;
+  }
+
+  function firedDmTask(): Task {
+    const task = makeTask();
+    (task.metadata as any).home_channel = { channel_id: 'D_DM', channel_name: 'DM with Dana' };
+    (task.metadata as any).memory_destination = { channel_id: 'D_DM' };
+    return task;
+  }
+
+  beforeEach(() => {
+    getChannelInfo.mockReset();
+    getChannelInfo.mockResolvedValue({ id: 'D_DM', name: 'DM with Dana', isPrivate: true, isIm: true, imUserId: 'U_DANA' });
+    listBotChannels.mockReset();
+    listBotChannels.mockImplementation(async (u?: string) =>
+      u ? [SHARED] : [{ id: 'C1', name: 'general', isPrivate: false, topic: '' }]);
+    fetchChannelHistory.mockReset();
+    fetchChannelHistory.mockResolvedValue({ channel: { id: 'C_SHARED', name: 'shared-priv' }, messages: [] });
+    fetchExploreThread.mockReset();
+    fetchExploreThread.mockResolvedValue({ channel: { id: 'C_SHARED', name: 'shared-priv' }, messages: [] });
+  });
+
+  it('list_channels adds the private channels the bot shares with the DM person', async () => {
+    const out = await textOf(await getHandler('list_channels', dmTask())({}));
+
+    expect(out).toContain('#shared-priv');
+    expect(out).toContain('C_SHARED');
+    expect(out).toContain('both members');
+    expect(listBotChannels).toHaveBeenCalledWith('U_DANA');
+  });
+
+  it('read_channel_history passes the DM person to the read gate', async () => {
+    await getHandler('read_channel_history', dmTask())({ channel: 'C_SHARED' });
+
+    expect(fetchChannelHistory).toHaveBeenCalledWith('C_SHARED', 30, expect.any(Set), 'U_DANA');
+  });
+
+  it('read_thread passes the DM person to the read gate', async () => {
+    await getHandler('read_thread', dmTask())({ channel: 'C_SHARED', thread_ts: '1.0' });
+
+    expect(fetchExploreThread).toHaveBeenCalledWith('C_SHARED', '1.0', expect.any(Set), 'U_DANA');
+  });
+
+  it('a trigger-fired DM task, before it has a thread, gets the same access', async () => {
+    const task = firedDmTask();
+
+    const out = await textOf(await getHandler('list_channels', task)({}));
+    expect(out).toContain('#shared-priv');
+    expect(listBotChannels).toHaveBeenCalledWith('U_DANA');
+
+    await getHandler('read_channel_history', task)({ channel: 'C_SHARED' });
+    expect(fetchChannelHistory).toHaveBeenCalledWith('C_SHARED', 30, expect.any(Set), 'U_DANA');
+  });
+
+  it('a task that does not live in a DM asks Slack nothing new', async () => {
+    const task = makeTask('C_priv');
+    (task.metadata as any).memory_destination = { channel_id: 'C_priv' };
+
+    await getHandler('list_channels', task)({});
+    await getHandler('read_channel_history', task)({ channel: 'C_X' });
+
+    expect(getChannelInfo).not.toHaveBeenCalled();
+    expect(listBotChannels.mock.calls).toEqual([[]]);
+    expect(fetchChannelHistory).toHaveBeenCalledWith('C_X', 30, expect.any(Set), undefined);
+  });
+
+  it('a failed DM lookup reads as not a DM', async () => {
+    getChannelInfo.mockResolvedValue({ id: 'D_DM', name: 'D_DM', isPrivate: false, isIm: false });
+
+    await getHandler('list_channels', dmTask())({});
+
+    expect(listBotChannels.mock.calls).toEqual([[]]);
+  });
+
+  it('refuses a channel its person is not in with the DM wording', async () => {
+    fetchChannelHistory.mockRejectedValue(new PrivateChannelError('C_X'));
+
+    const out = await textOf(await getHandler('read_channel_history', dmTask())({ channel: 'C_X' }));
+
+    expect(out).toContain('person in this DM');
   });
 });
