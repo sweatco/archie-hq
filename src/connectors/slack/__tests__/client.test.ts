@@ -1015,6 +1015,17 @@ describe('DM task — a private channel the DM person is a member of', () => {
     expect(messages.map((m) => m.ownText)).toEqual(['shared reply']);
   });
 
+  it('surfaces Slack\'s own refusal (bot not in the channel) rather than a private-channel error', async () => {
+    const slackErr = Object.assign(new Error('An API error occurred: channel_not_found'), {
+      data: { error: 'channel_not_found' },
+    });
+    slackApi.conversations.info.mockRejectedValue(slackErr);
+
+    const err = await client.fetchChannelHistory('C_shared', 30, new Set(), 'U_DM').catch((e: unknown) => e);
+
+    expect(err).toBe(slackErr);
+  });
+
   it('surfaces Slack\'s own refusal of the membership lookup rather than a private-channel error', async () => {
     const slackErr = Object.assign(new Error('An API error occurred: channel_not_found'), {
       data: { error: 'channel_not_found' },

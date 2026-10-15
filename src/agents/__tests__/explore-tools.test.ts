@@ -681,7 +681,8 @@ describe('a DM task reads the private channels its person is in', () => {
     const out = await textOf(await getHandler('list_channels', dmTask())({}));
 
     expect(out).toContain('#general');
-    expect(out).not.toMatch(/couldn't list/i);
+    expect(out).not.toMatch(/couldn't list channels/i);
+    expect(out).toMatch(/couldn't check which private channels.*user_not_found/i);
   });
 
   it('refuses a channel its person is not in with the DM wording', async () => {

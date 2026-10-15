@@ -479,11 +479,13 @@ function createListChannelsTool(task: Task) {
     async () => {
       try {
         const dmUser = await dmPartnerOf(task);
+        let sharedFailure = '';
         const [publicChannels, sharedPrivate] = await Promise.all([
           listBotChannels(),
           dmUser
             ? listBotChannels(dmUser).catch((e) => {
               logger.warn('Slack', `Couldn't list private channels shared with ${dmUser}; listing public ones only`, e);
+              sharedFailure = `\n(Couldn't check which private channels the person in this DM shares with Archie: ${e instanceof Error ? e.message : String(e)}. Reading one by its ID may still work.)`;
               return [];
             })
             : Promise.resolve([]),
@@ -527,7 +529,7 @@ function createListChannelsTool(task: Task) {
         } else if (own.length > 0) {
           suffix = " (public channels Archie's in, plus this task's own channel)";
         }
-        return ok(`Channels you can read${suffix}:\n${lines.join('\n')}`);
+        return ok(`Channels you can read${suffix}:\n${lines.join('\n')}${sharedFailure}`);
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
         return ok(`Couldn't list channels: ${reason}`);

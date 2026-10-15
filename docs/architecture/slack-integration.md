@@ -180,7 +180,7 @@ interface SlackChannel {
 }
 ```
 
-A task's Slack channels are linked by `task.append(thread)` as inbound events arrive (the originating @mention/DM/bot-started thread, plus any thread the bot is later drawn into). The first linked channel is recorded as `default_channel`, the implicit destination when `post_to_user` is called without a target. The PM cannot open new DMs or new task-linked threads; to reach a channel that is NOT part of the task it uses the task-decoupled explore/post tools (`read_channel_history`, `read_thread`, `post_to_channel`), which never register a channel on `metadata.channels`.
+A task's Slack channels are linked by `task.append(thread)` as inbound events arrive (the originating @mention/DM/bot-started thread, plus any later thread in that same conversation — the first one fixes the task's `memory_destination`, and `setMemoryDestination` refuses any other). The first linked channel is recorded as `default_channel`, the implicit destination when `post_to_user` is called without a target. The PM cannot open new DMs or new task-linked threads; to reach a channel that is NOT part of the task it uses the task-decoupled explore/post tools (`read_channel_history`, `read_thread`, `post_to_channel`), which never register a channel on `metadata.channels`. Those reads and `list_channels` reach public channels Archie is in plus the task's own channel; a task whose `memory_destination` is a 1:1 DM also reaches the private channels that both Archie and that person are in, re-checked against `conversations.members` on every read (`assertAccessibleChannel` in `src/connectors/slack/client.ts`).
 
 ## Message Deduplication
 
