@@ -76,7 +76,8 @@ function rejectDmTarget(channel: string): string | null {
  * The Slack channel ids THIS task is linked to (its own origin channel(s)), plus the
  * home channel a trigger-fired task has before it opens its own thread there.
  * Explore reads treat these as accessible regardless of type — so the PM can read
- * the private channel or DM the task itself lives in, but no other private/DM.
+ * the private channel or DM the task itself lives in, but no other private/DM
+ * beyond what the DM rule (`dmPartnerOf`) adds.
  *
  * Delegates to the shared derivation so the channels a task may READ are the same ones whose standing context it was given: a task homed in a private channel is handed that channel's pin index on its first turn, and refusing to let it read the channel that index describes made its own prompt incoherent for exactly one turn.
  */

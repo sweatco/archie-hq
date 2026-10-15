@@ -1517,14 +1517,12 @@ export class DmPostError extends Error {
  * Resolve a channel's {id,name} for an explore READ, enforcing the accessible-set
  * rule: a channel is readable iff it is PUBLIC, or it is one of `allowedIds` —
  * the channels THIS task already lives in (its own origin, which may legitimately
- * be a private channel or a DM). Any other private channel / DM / group-DM is
- * refused (PrivateChannelError). So Archie reads public channels everywhere, plus
- * its own current channel — never some other private channel or DM, not even from
- * a public-channel request. (Task ingestion via fetchSlackThread is a separate,
- * un-gated path — a task may legitimately live in a private channel.) In a task
- * that lives in a 1:1 DM, `dmUserId` is that person, and a private channel (never
- * a DM or group DM) also passes while they are a member, checked on every call;
- * Slack itself refuses a private channel the bot is not in.
+ * be a private channel or a DM) — or, in a task that lives in a 1:1 DM, a private
+ * channel (never a DM or group DM) that `dmUserId`, the DM's person, is a member
+ * of, checked on every call; Slack itself refuses a private channel the bot is not
+ * in. Anything else is refused (PrivateChannelError), not even from a
+ * public-channel request. (Task ingestion via fetchSlackThread is a separate,
+ * un-gated path — a task may legitimately live in a private channel.)
  */
 async function assertAccessibleChannel(
   channelId: string,
