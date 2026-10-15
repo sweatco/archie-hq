@@ -1517,15 +1517,17 @@ export class DmPostError extends Error {
  * Resolve a channel's {id,name} for an explore READ, enforcing the accessible-set
  * rule: a channel is readable iff it is PUBLIC, or it is one of `allowedIds` —
  * the channels THIS task already lives in (its own origin, which may legitimately
- * be a private channel or a DM). Any other private channel / DM / group-DM is
- * refused (PrivateChannelError). So Archie reads public channels everywhere, plus
- * its own current channel — never some other private channel or DM, not even from
- * a public-channel request. (Task ingestion via fetchSlackThread is a separate,
+ * be a private channel or a DM) — or, in a task that lives in a 1:1 DM, a private
+ * channel (never a DM or group DM) that `dmUserId`, the DM's person, is a member
+ * of, checked on every call; Slack itself refuses a private channel the bot is not
+ * in. Anything else is refused (PrivateChannelError), not even from a
+ * public-channel request. (Task ingestion via fetchSlackThread is a separate,
  * un-gated path — a task may legitimately live in a private channel.)
  */
 async function assertAccessibleChannel(
   channelId: string,
   allowedIds: ReadonlySet<string> = new Set(),
+  dmUserId?: string,
 ): Promise<{ id: string; name: string }> {
   const client = getSlackClient();
   const info = await client.conversations.info({ channel: channelId });
@@ -1535,6 +1537,10 @@ async function assertAccessibleChannel(
   if (!ch) throw new Error('channel_not_found');
   // The task's own channel is always readable, whatever its type.
   if (allowedIds.has(channelId)) return { id: ch.id ?? channelId, name: ch.name ?? channelId };
+  if (
+    dmUserId && ch.is_private === true && !ch.is_im && !ch.is_mpim
+    && (await fetchConversationMemberIds(channelId)).includes(dmUserId)
+  ) return { id: ch.id ?? channelId, name: ch.name ?? channelId };
   // Otherwise fail CLOSED: only a channel Slack explicitly marks public passes.
   if (ch.is_private !== false || ch.is_im || ch.is_mpim) throw new PrivateChannelError(channelId);
   return { id: ch.id ?? channelId, name: ch.name ?? channelId };
@@ -1562,18 +1568,20 @@ export async function assertPostableChannel(channelId: string): Promise<void> {
 /**
  * Read a channel's recent top-level messages for exploration (bot token; member
  * channels only — `not_in_channel` otherwise). Allowed for any PUBLIC channel
- * plus the channels in `allowedIds` (this task's own channel, even if private/DM);
- * any other private channel / DM is refused. Returns chronological order (oldest
- * first). Bot messages are NOT filtered — exploration shows everything.
+ * plus the channels in `allowedIds` (this task's own channel, even if private/DM)
+ * or, in a DM task, a private channel that person is in; any other private
+ * channel / DM is refused. Returns chronological order (oldest first). Bot
+ * messages are NOT filtered — exploration shows everything.
  */
 export async function fetchChannelHistory(
   channelId: string,
   limit = 30,
   allowedIds?: ReadonlySet<string>,
+  dmUserId?: string,
 ): Promise<SlackChannelMessages> {
   const client = getSlackClient();
   // Gate BEFORE fetching, so disallowed history is never read into memory.
-  const channelInfo = await assertAccessibleChannel(channelId, allowedIds);
+  const channelInfo = await assertAccessibleChannel(channelId, allowedIds, dmUserId);
   const result = await client.conversations.history({ channel: channelId, limit });
   // conversations.history returns newest-first; reverse to chronological.
   const raw = await resolveRawMessages((result.messages ?? []).slice().reverse() as SlackHistoryMessage[], channelId);
@@ -1583,16 +1591,17 @@ export async function fetchChannelHistory(
 /**
  * Read a specific thread for exploration (bot token; member channels only). Same
  * accessible-set rule as fetchChannelHistory (public, or this task's own channel
- * via `allowedIds`). Unlike fetchSlackThread (task ingestion), does NOT filter
- * bot messages.
+ * via `allowedIds`, or, in a DM task, a private channel that person is in).
+ * Unlike fetchSlackThread (task ingestion), does NOT filter bot messages.
  */
 export async function fetchExploreThread(
   channelId: string,
   threadTs: string,
   allowedIds?: ReadonlySet<string>,
+  dmUserId?: string,
 ): Promise<SlackChannelMessages> {
   const client = getSlackClient();
-  const channelInfo = await assertAccessibleChannel(channelId, allowedIds);
+  const channelInfo = await assertAccessibleChannel(channelId, allowedIds, dmUserId);
   const result = await client.conversations.replies({ channel: channelId, ts: threadTs });
   const raw = await resolveRawMessages((result.messages ?? []) as SlackHistoryMessage[], channelId);
   return { channel: channelInfo, messages: await resolveAuthorsAndMap(raw) };
@@ -2721,12 +2730,13 @@ export async function listWorkspaceChannels(): Promise<SlackChannelInfo[]> {
  * Archived excluded; not cached (membership changes when the bot is
  * invited/removed, and freshness matters right after an invite).
  *
- * PUBLIC channels only — never enumerates private channels. The task's own
- * private channel / DM, when relevant, is appended by the `list_channels` tool
- * from task metadata, so a public-channel or DM requester never learns that
- * other private channels exist.
+ * Without an argument it lists PUBLIC channels only. With `sharedWithUserId` it
+ * lists the private channels the bot shares with that user (for a bot token,
+ * `users.conversations` with `user` returns only conversations both are in); it
+ * never lists other private channels. The task's own private channel / DM, when
+ * relevant, is appended by the `list_channels` tool from task metadata.
  */
-export async function listBotChannels(): Promise<SlackChannelInfo[]> {
+export async function listBotChannels(sharedWithUserId?: string): Promise<SlackChannelInfo[]> {
   const client = getSlackClient();
   const channels: SlackChannelInfo[] = [];
   let cursor: string | undefined;
@@ -2736,7 +2746,7 @@ export async function listBotChannels(): Promise<SlackChannelInfo[]> {
       cursor,
       limit: 200,
       exclude_archived: true,
-      types: 'public_channel',
+      ...(sharedWithUserId ? { user: sharedWithUserId, types: 'private_channel' } : { types: 'public_channel' }),
     });
     for (const ch of result.channels ?? []) {
       channels.push({
