@@ -662,11 +662,26 @@ describe('a DM task reads the private channels its person is in', () => {
   });
 
   it('a failed DM lookup reads as not a DM', async () => {
-    getChannelInfo.mockResolvedValue({ id: 'D_DM', name: 'D_DM', isPrivate: false, isIm: false });
+    getChannelInfo.mockRejectedValue(new Error('Slack client not initialized'));
 
+    const out = await textOf(await getHandler('read_channel_history', dmTask())({ channel: 'C_SHARED' }));
     await getHandler('list_channels', dmTask())({});
 
+    expect(out).toContain('shared-priv');
+    expect(fetchChannelHistory).toHaveBeenCalledWith('C_SHARED', 30, expect.any(Set), undefined);
     expect(listBotChannels.mock.calls).toEqual([[]]);
+  });
+
+  it('keeps the public list when the shared private lookup fails', async () => {
+    listBotChannels.mockImplementation(async (u?: string) => {
+      if (u) throw new Error('An API error occurred: user_not_found');
+      return [{ id: 'C1', name: 'general', isPrivate: false, topic: '' }];
+    });
+
+    const out = await textOf(await getHandler('list_channels', dmTask())({}));
+
+    expect(out).toContain('#general');
+    expect(out).not.toMatch(/couldn't list/i);
   });
 
   it('refuses a channel its person is not in with the DM wording', async () => {

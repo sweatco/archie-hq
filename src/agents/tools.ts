@@ -481,11 +481,16 @@ function createListChannelsTool(task: Task) {
         const dmUser = await dmPartnerOf(task);
         const [publicChannels, sharedPrivate] = await Promise.all([
           listBotChannels(),
-          dmUser ? listBotChannels(dmUser) : Promise.resolve([]),
+          dmUser
+            ? listBotChannels(dmUser).catch((e) => {
+              logger.warn('Slack', `Couldn't list private channels shared with ${dmUser}; listing public ones only`, e);
+              return [];
+            })
+            : Promise.resolve([]),
         ]);
         // Append this task's OWN channels that aren't already public (its private
-        // channel / DM origin) — accessible because the task lives there. Other
-        // private channels / DMs are never enumerated.
+        // channel / DM origin) — accessible because the task lives there. No other
+        // private channel / DM is enumerated beyond the DM person's shared ones above.
         const seen = new Set(publicChannels.map((c) => c.id));
         const own: { label: string; id: string }[] = [];
         for (const ch of Object.values(task.metadata.channels)) {
