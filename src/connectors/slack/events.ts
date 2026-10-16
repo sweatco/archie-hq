@@ -42,6 +42,7 @@ import { messageMatchesTrigger } from '../../system/trigger-match.js';
 import type { Trigger } from '../../types/trigger.js';
 import { generateTaskTitle } from '../../tasks/title-generator.js';
 import { setAssistantThreadTitle } from './title.js';
+import { handleClaudeCommand } from '../claude/dm-commands.js';
 import type { SlackThread, SlackAuthor } from '../../types/task.js';
 
 /**
@@ -794,6 +795,8 @@ export async function handleSlackEvent(event: {
       logger.warn('Slack', `Failed to classify event author ${event.user}`, error);
     }
   }
+
+  if (await handleClaudeCommand(event)) return;
 
   // Instant acknowledgment — react before any LLM processing. Only @mentions
   // and DM messages are acknowledged; plain thread replies in an engaged channel
