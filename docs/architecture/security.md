@@ -59,7 +59,7 @@ Three layers, all fed from the same `SandboxOptions` so they cannot drift:
 
 1. **OS-level sandbox** (bubblewrap on Linux, sandbox-exec on macOS) — restricts `Bash` at the kernel level via `@anthropic-ai/sandbox-runtime`.
 2. **Policy tier** (`managedSettings`) — what actually enforces the egress allowlist.
-3. **PreToolUse hooks** (`createFilesystemGuardHooks`) — the same path boundaries on the in-process tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`), resolved to absolute before checking.
+3. **PreToolUse hooks** (`createFilesystemGuardHooks`) — the same path boundaries on the in-process tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`), with symlinks and missing write targets resolved before checking.
 
 ### Filesystem isolation
 
@@ -76,7 +76,9 @@ On a **trigger-fired** task, that trigger's persistent directory is added to bot
 
 `.git/HEAD` stays deny-write even in edit mode, so branch movement has to go through `switch_branch` / `create_branch` rather than a raw `git checkout`. **Known limitation:** that one deny is still enumerated per clone at spawn time, because the deny lists are prefix-matched and no directory expresses "`.git/HEAD` under any clone" — so a repo mounted mid-session in edit mode has a writable HEAD until the next respawn.
 
-Two `allowRead` entries are holes punched through a broad denial rather than paths outside it: the **plugins repo** (under the denied `$ARCHIE_WORKDIR`) and the **core plugin** (under the denied `/app`). Loading a skill needs neither — `Skill` is in neither the hook's `READ_TOOLS` nor its `WRITE_TOOLS`, and the CLI reads `SKILL.md` in-process rather than through `Bash`. Reading a skill's *file* is what is gated, and both layers block it for different reasons: the hook because the path appears in no allow list, bubblewrap because it resolves back to `/app`.
+Two `allowRead` entries are holes punched through a broad denial rather than paths outside it: the **plugins repo** (under the denied `$ARCHIE_WORKDIR`) and the **core plugin** (under the denied `/app`). Loading a skill needs neither — `Skill` is in neither the hook's `READ_TOOLS` nor its `WRITE_TOOLS`, and the CLI reads `SKILL.md` in-process rather than through `Bash`. Reading a skill's *file* is what is gated. The hook follows symlinks, including dangling links to new write targets, and resolves `..` after symlinks before comparing the destination with the allow and deny roots.
+
+Filesystem hooks are preflight checks, not atomic filesystem operations. They cannot prevent another process from changing a path between the hook and the SDK's later access, or independently confine every path a recursive tool visits. The OS sandbox remains the enforcement boundary for Bash.
 
 **A path can be granted write-only** — present in `allowWrite` without a matching `allowRead`. `CACHES_DIR` is granted that way. It is still fully readable, including from `Bash`: measured under bwrap 0.11.0, `denyRead` emits its `--tmpfs` **before** the `allowWrite --bind`, so the bind sits on top and survives (see Known Limitation 1). But the in-process artifact tools cannot read it — `assertReadable` (`src/agents/artifacts.ts`) validates against `allowReadPaths` alone — so **a path agents are expected to produce shareable output in should be granted in both lists**.
 
@@ -112,7 +114,7 @@ The session runs with `permissionMode: bypassPermissions`. Availability is contr
 - `failIfUnavailable: true` — refuse to run rather than silently degrade to unsandboxed when bwrap/sandbox-exec is missing
 - `allowUnsandboxedCommands: false` — the `dangerouslyDisableSandbox` Bash parameter is ignored
 - `autoAllowBashIfSandboxed: true` — Bash is auto-approved when sandboxed
-- All paths are resolved to absolute before checking, which prevents `../../` traversal
+- Paths, symlinks and missing write targets are resolved before checking; invalid or unresolvable paths fail closed
 
 ## Defense Layer 2: Research pipeline isolation
 
@@ -175,6 +177,7 @@ Layer 1b: Policy tier (managedSettings) — enforces the egress allowlist
   └── allowManagedDomainsOnly: true — user/project/local/flag domain rules ignored
 
 Layer 2: PreToolUse hooks (Read, Write, Edit, Glob, Grep)
+  ├── resolves symlinks, including new write targets, before checking
   └── same boundaries on in-process tools; writable implies readable
 
 Layer 3: disallowedTools (removes tools from model context)
