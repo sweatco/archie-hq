@@ -115,7 +115,7 @@ By default a commit is both authored and committed by the GitHub App bot, becaus
 - On approval, `metadata.edit_approved_by = { id, name, email }` is recorded — first resolved approver wins, so a repeat approval cannot reassign authorship mid-task.
 - At spawn, `buildCommitAuthorEnv` injects `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` from that field (trimmed; a blank name is dropped so authoring falls back to the bot rather than failing `git commit`). Git applies these to the author only. No agent cooperation is needed, and commits replayed by `cherry-pick`/`rebase` keep their original author, which is correct.
 - The author **email** lets GitHub link the commit to a profile when it matches a verified address. Without the `users:read.email` Slack scope a `${slackUserId}@users.noreply.archie.invalid` fallback is used — the name still shows in `git blame`, it just doesn't link.
-- With no resolved approver (CLI/API approvals without one), authoring falls back to the bot.
+- With no resolved approver (CLI/API approvals without one), authoring falls back to the bot. An approval from the Claude card (`/mcp`) passes the connected person as approver.
 
 Because `edit_allowed` is one-way, there is a single author per task.
 

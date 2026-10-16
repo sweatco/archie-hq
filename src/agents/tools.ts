@@ -2484,7 +2484,7 @@ function createProposeTriggerTool(task: Task) {
       await appendAgentFinding(task.taskId, 'system', `Trigger proposed: ${describeTrigger(trigger)}`, 'decision');
 
       await postTriggerApprovalCard(task, trigger);
-      return ok('Trigger proposed and posted for approval. It will not run until the user approves (or types y in the CLI). No need to pause — continue if there is other work.');
+      return ok('Trigger proposed and sent to the user for approval. It will not run until they approve it. No need to pause — continue if there is other work.');
     },
   );
 }

@@ -25,6 +25,7 @@ Max mode follows the same request → pause → approve/deny → resume shape as
 2. **User approves or denies.**
    - Slack: the `approve_max_mode` / `deny_max_mode` actions (`src/connectors/slack/events.ts`).
    - CLI/API: `POST /api/tasks/:id/approve` with `type: 'max_mode'` (`src/connectors/api/routes.ts`), surfaced in the CLI via the `approval:requested` event.
+   - Claude: the approval card or form through `/mcp`, for a task started from Claude (see [Claude Connector](claude-connector.md)).
    - Approve → `task.handleMaxModeApproval()`; deny → `task.handleMaxModeDenial()` (`src/tasks/task.ts`).
 3. **On approval**, `handleMaxModeApproval`:
    - guards idempotency and cancels the PM's deferred stop,

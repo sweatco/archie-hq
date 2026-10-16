@@ -1,6 +1,6 @@
 # Archie Documentation
 
-**Archie** (Autonomous Responsive and Collaborative Hyper Intelligent Employee) is an AI employee built on the Claude Agent SDK. Work arrives from Slack, the CLI or GitHub, becomes a task, and one agent — the PM — handles it, delegating pieces to subagents it spawns.
+**Archie** (Autonomous Responsive and Collaborative Hyper Intelligent Employee) is an AI employee built on the Claude Agent SDK. Work arrives from Slack, Claude, the CLI or GitHub, becomes a task, and one agent — the PM — handles it, delegating pieces to subagents it spawns.
 
 ## Architecture
 
@@ -23,6 +23,7 @@ How the system works today. Each doc describes the actual implementation, verifi
 | [Security](architecture/security.md) | Threat model, defense layers, prompt injection defense |
 | [Secrets](architecture/secrets.md) | OAuth vault, encryption, secret handling |
 | [Memory Layer](architecture/memory.md) | Cross-task persistent knowledge: org facts, user preferences, recent activity |
+| [Claude Connector](architecture/claude-connector.md) | Reaching Archie from Claude Desktop and Claude Code through `/mcp` |
 
 ## Guides
 
@@ -34,6 +35,7 @@ How to work with the system. Setup, deployment, and development patterns.
 | [Deployment](guides/deployment.md) | GCP deployment, CI/CD, monitoring, operations |
 | [SDK Patterns](guides/sdk-patterns.md) | Agent SDK hooks, turn detection, streaming input |
 | [Bedrock Guardrails Setup](guides/bedrock-guardrails-setup.md) | Configuring AWS Bedrock guardrails for prompt injection defense |
+| [Talking to Archie from Claude](guides/claude-extension.md) | Installing the Claude extension and connecting from Slack |
 
 ## Plans
 

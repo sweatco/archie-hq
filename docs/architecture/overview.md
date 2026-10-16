@@ -1,6 +1,6 @@
 # Architecture Overview
 
-Archie (Autonomous Responsive and Collaborative Hyper Intelligent Employee) is an AI employee built on the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk). Work arrives from Slack, the CLI or GitHub, becomes a task, and a single agent — the PM — handles it, delegating pieces of the work to subagents it spawns.
+Archie (Autonomous Responsive and Collaborative Hyper Intelligent Employee) is an AI employee built on the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk). Work arrives from Slack, Claude, the CLI or GitHub, becomes a task, and a single agent — the PM — handles it, delegating pieces of the work to subagents it spawns.
 
 ## Core Principles
 

@@ -76,7 +76,7 @@ The workspace and SDK runtime dirs are created in `src/agents/spawn.ts`, not her
 interface TaskMetadata {
   task_id: string;
   channels: Record<string, Channel>;   // active delivery targets, keyed by channel id
-  default_channel: string | null;      // originating channel (null for CLI-originated tasks)
+  default_channel: string | null;      // originating channel ('cli:local' for CLI- and Claude-originated tasks)
   home_channel?: { channel_id, channel_name };  // trigger-fired and Claude tasks: the conversation the task is homed in
   created_by?: string;                 // Claude tasks: the Slack user who started it; owner-scopes /mcp
   title?: string;                      // Haiku-authored one-liner; absent on pre-feature tasks
@@ -185,6 +185,7 @@ The `type` field (`discovery`, `decision`, `completion`, `blocker`, `artifact`) 
 | `<@{userId}:{name}> in slack:#<{channelId}:{channelName}>:{threadId} \| msg:{ts}` | `appendSlackMessage()` / `appendSlackEdit()` |
 | `@<{author}> in github:{owner}/{repo}/{destination}` | `appendGitHubEvent()` |
 | `cli` | `appendCliMessage()` |
+| `<@{userId}:{name}> in claude` | `appendCliMessage()` for a task started from Claude |
 | `{agentName} in {destination}` | `appendMessageToUser()` (outgoing) |
 | `system` | `appendAgentFinding()` (approvals, budgets, mode changes) |
 

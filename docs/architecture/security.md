@@ -46,6 +46,7 @@ Slack and GitHub events are authenticated at the receiver layer before they reac
 
   **The author bail-out is `event.user`-gated, so it never classifies an app post** — an app post carries no `user`. Any path an app post can reach therefore gates on the bot's own team itself, mirroring thread ingestion's rule (drop a bot from a foreign team, keep internal bots): `channel-pins.ts` for pins, `dispatchChannelMessageTriggers` for triggers.
 - **GitHub:** Webhook payloads are HMAC-SHA256 verified against `GITHUB_WEBHOOK_SECRET` before any routing or task lookup.
+- **Claude (`/mcp`):** every call but the code exchange carries a bearer credential issued from the person's own Slack DM; the person's Slack account is re-checked on every request, and a call reaches only tasks that person started. See [Claude Connector](claude-connector.md).
 
 ## Defense Layer 1: The task sandbox
 

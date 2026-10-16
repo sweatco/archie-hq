@@ -128,7 +128,7 @@ Slack webhook
        not found, reply in a thread the bot didn't start -> ignore
 ```
 
-`handleClaudeCommand` answers a DM whose whole text is `connect claude` or `disconnect claude` with a one-time code or a revocation, and no task is created — see [Claude Connector](claude-connector.md).
+`handleClaudeCommand` answers a DM whose typed text (its `rich_text` blocks; case-insensitive, an optional trailing `.` or `!`) is `connect claude` or `disconnect claude` with a one-time code or a revocation, and no task is created — see [Claude Connector](claude-connector.md).
 
 `rootAuthorWasBot` (computed by `fetchSlackThread` from the raw root message, before bot-message filtering) is true when the thread's root was posted by Archie itself — i.e. a top-level message it made via the task-decoupled `post_to_channel` explore tool. A human reply to such a thread seeds a new task (and the bot's root message is kept in the thread so the task has context); a reply in a thread Archie merely posted into, or never touched, has a non-bot root and is ignored.
 
@@ -199,7 +199,7 @@ There is no `post_to_slack` MCP tool and no event-bus subscription that ferries 
    - `target.channel <key>` → post to a specific already-linked thread
    - no target **and** no `default_channel`, on a trigger-fired task that has a `metadata.home_channel` → post a new **top-level** message in that channel and adopt it as the task's thread, returning its channel key (`openHomeThread`). This is the only path that opens a thread: the destination comes from the approved trigger's binding rather than from any tool argument, only a message sent by an agent takes it (a system notice must not become a thread root), the open is serialized per task, and the linking write is flushed. See [Triggers](triggers.md#a-schedule-fire-homes-its-task-in-the-bound-channel).
 3. Each branch ultimately calls `postSlackMessage()` in `src/connectors/slack/client.ts`, which renders the text as a single Block Kit `markdown` block (`{ type: 'markdown', text }`). Slack renders that natively as CommonMark — headings, tables, fenced code blocks, lists, blockquotes, task lists, and links — without manual conversion. See [Markdown block reference](https://docs.slack.dev/reference/block-kit/blocks/markdown-block/). Per-message payload is capped at 12,000 characters (`SLACK_MARKDOWN_LIMIT`); the function asserts the limit and throws `SlackMarkdownLimitError` on overflow.
-4. On success, `Task.logOutgoingMessage` writes the message to the task's `knowledge.log`, emits a `message` event on the in-process event bus (consumed only by the SSE/CLI streaming endpoint — see `src/system/event-bus.ts`), and logs via the unified logger. On failure, nothing is logged or emitted; the tool returns split-and-retry guidance to the agent via `formatSlackSendError`.
+4. On success, `Task.logOutgoingMessage` writes the message to the task's `knowledge.log`, emits a `message` event on the in-process event bus (consumed by the SSE/CLI streaming endpoint and, through `events.jsonl`, by `/mcp` — see `src/system/event-bus.ts`), and logs via the unified logger. On failure, nothing is logged or emitted; the tool returns split-and-retry guidance to the agent via `formatSlackSendError`.
 
 `@<U…:Real Name>` mention syntax used in agent prompts is converted back to Slack's `<@U…>` form by `restoreMentions` inside `postSlackMessage` so notifications fire correctly.
 

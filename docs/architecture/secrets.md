@@ -30,6 +30,7 @@ All persistent secrets live under `SECRETS_DIR`, which defaults to
 ```
 ${SECRETS_DIR}/
 ├── github-private-key.pem      # deploy-time, hand-placed
+├── claude-connections.json     # Claude connect codes and credentials, sha256 hashes only
 └── oauth/                      # mode 0o700
     ├── notion.json             # vault record (one per MCP server)
     ├── linear.json
