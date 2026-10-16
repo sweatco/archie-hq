@@ -145,6 +145,7 @@ src/
 │   ├── slack/                   # Bolt app, events, client, canvases, pins, status, title sync
 │   ├── github/                  # App auth, webhooks, PR/merge logic, repo-clone, branch state
 │   ├── api/routes.ts            # REST + SSE for the CLI/admin UI
+│   ├── claude/                  # /mcp for the Claude extension: connect codes, sessions, approvals
 │   └── oauth/routes.ts          # OAuth provider redirect endpoints
 ├── agents/
 │   ├── agent.ts                 # Agent class: queue, handle, session, background tasks
@@ -181,6 +182,7 @@ src/
 └── utils/prompt-loader.ts       # Markdown prompt loader with variable substitution
 
 core-plugin/                     # The engine's own plugin: skills that ship with archie-hq
+extension/                       # Local MCP server for Claude Desktop and Claude Code (packed as a .mcpb)
 prompts/
 ├── pm-agent.md                  # The one engine prompt
 ├── memory-extractor.md
@@ -193,6 +195,7 @@ prompts/
 - [Orchestration](orchestration.md) — task runtime, routing, recovery
 - [Persistence](persistence.md) — task storage, metadata, the knowledge log, usage accounting
 - [Slack Integration](slack-integration.md) — Bolt setup, event handling, interactive messages
+- [Claude Connector](claude-connector.md) — reaching Archie from Claude Desktop and Claude Code
 - [GitHub Integration](github-integration.md) — webhooks, PR management, merge orchestrator
 - [Edit Mode](edit-mode.md) — `mount_repo`, the approval gate, the git workflow
 - [Max Mode](max-mode.md) — the PM's per-task, human-approved model/effort upgrade

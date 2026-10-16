@@ -115,6 +115,7 @@ Crucially, `appendSlackEdit` does **not** advance `last_processed_ts`: an edit r
 Slack webhook
   -> routeSlackEvent()                       [drop own bot's messages]
   -> External-author bail-out                [resolve user, skip if external/guest]
+  -> handleClaudeCommand()                   [DM "connect claude" / "disconnect claude": engine replies, stop]
   -> Eyes reaction (ack)                     [@mention/DM: add to current msg, remove from prev]
   -> fetchSlackThread()                      [history + author resolution + shared flag + rootAuthorWasBot]
   -> findTaskByThread(threadId):
@@ -126,6 +127,8 @@ Slack webhook
                    -> task.sendMessage(AGENT_PROMPTS.newTask)
        not found, reply in a thread the bot didn't start -> ignore
 ```
+
+`handleClaudeCommand` answers a DM whose whole text is `connect claude` or `disconnect claude` with a one-time code or a revocation, and no task is created — see [Claude Connector](claude-connector.md).
 
 `rootAuthorWasBot` (computed by `fetchSlackThread` from the raw root message, before bot-message filtering) is true when the thread's root was posted by Archie itself — i.e. a top-level message it made via the task-decoupled `post_to_channel` explore tool. A human reply to such a thread seeds a new task (and the bot's root message is kept in the thread so the task has context); a reply in a thread Archie merely posted into, or never touched, has a non-bot root and is ignored.
 

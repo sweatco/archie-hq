@@ -50,6 +50,7 @@ GitHub access is via a GitHub App installation token (auto-rotating, through Oct
 ### Network Security
 
 - **Inbound:** public IP for webhooks, firewall restricted to Slack IPs on port 443. Not required when running Slack in Socket Mode — events arrive over the bot's outbound WebSocket.
+- **Claude:** `/mcp` reachable from the computers that use the Claude extension (see [Talking to Archie from Claude](claude.md)). Never expose `/api`.
 - **Outbound:** GitHub, Anthropic API, Slack API (all trusted). Socket Mode also relies on a long-lived outbound WebSocket to `wss-primary.slack.com`.
 - Slack webhook signature verification enforced (HTTP mode); Socket Mode events are authenticated by the app-level token used to open the connection.
 - GitHub webhook signature verification enforced

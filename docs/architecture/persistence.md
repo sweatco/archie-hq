@@ -77,7 +77,8 @@ interface TaskMetadata {
   task_id: string;
   channels: Record<string, Channel>;   // active delivery targets, keyed by channel id
   default_channel: string | null;      // originating channel (null for CLI-originated tasks)
-  home_channel?: { channel_id, channel_name };  // trigger-fired tasks: where to open the thread
+  home_channel?: { channel_id, channel_name };  // trigger-fired and Claude tasks: the conversation the task is homed in
+  created_by?: string;                 // Claude tasks: the Slack user who started it; owner-scopes /mcp
   title?: string;                      // Haiku-authored one-liner; absent on pre-feature tasks
   agent_sessions: Record<string, AgentSessionState | string>;  // one entry: 'pm-agent'
   repositories: AttachedRepo[];        // flat — one entry per mounted repo

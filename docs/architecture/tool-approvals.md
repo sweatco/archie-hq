@@ -123,7 +123,7 @@ agent calls mcp__tramline__retry_workflow_run { id: "226284f5…" }
 
 Anyone in the workspace — deliberately the same trust model as the edit-mode and merge gates. Identity is resolved for the audit trail; external/guest clickers resolve with identity omitted, mirroring the other gates. What keeps the button meaningful is what it says and its single-use binding, not who may press it.
 
-Resolution has the same surfaces as every other gate: Slack buttons, and the CLI/API path (`POST /tasks/:id/approve` with `type: 'tool_call'` and `ref` set to the call digest from the approval event). The `/api` router is unauthenticated — the same accepted trade every other approval type makes for dev convenience and e2e drivability; deployments exposing the port must restrict it at the ingress.
+Resolution has the same surfaces as every other gate: Slack buttons, the CLI/API path (`POST /tasks/:id/approve` with `type: 'tool_call'` and `ref` set to the call digest from the approval event), and, for a task started from Claude, the person's own approval card through `/mcp` (see [Claude Connector](claude-connector.md)). The `/api` router is unauthenticated — the same accepted trade every other approval type makes for dev convenience and e2e drivability; deployments exposing the port must restrict it at the ingress and expose only `/mcp`, the webhooks and `/oauth/callback`.
 
 ## Drift to watch
 
