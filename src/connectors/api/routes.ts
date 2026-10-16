@@ -28,6 +28,176 @@ import { indexTrigger, deindexTrigger, announceTriggerChange, describeTrigger, M
 import type { Trigger } from '../../types/trigger.js';
 import { cancelReminder } from '../../system/reminder-scheduler.js';
 
+export async function resolveApproval(
+  taskId: string,
+  body: unknown,
+  via?: { approval_id: number; approver: { id: string; name: string; email?: string } },
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  try {
+    const { type, approve, approver, github, pr_number, ref } = body as {
+      type: string;
+      approve: boolean;
+      // Optional resolved human (id/name/email) to author commits as. CLI/API
+      // callers have no Slack identity by default; when omitted, commits stay
+      // bot-authored.
+      approver?: { id: string; name: string; email?: string };
+      // PR identity — required for merge-type requests, verified against the
+      // pending request inside the Task resolution methods.
+      github?: string;
+      pr_number?: number;
+      // Optional opaque id the approval applies to (e.g. a trigger id), echoed
+      // from the approval event so the right pending item resolves.
+      ref?: string;
+    };
+
+    if (!type || typeof approve !== 'boolean') {
+      return { status: 400, body: { error: 'type and approve are required' } };
+    }
+
+    // Merge-type requests must name the PR being resolved; the Task method
+    // verifies it against the pending request atomically.
+    let mergeExpected: { github: string; pr_number: number } | undefined;
+    if (type === 'merge') {
+      if (typeof github !== 'string' || !github || typeof pr_number !== 'number') {
+        return { status: 400, body: { error: 'merge approval requires github and pr_number' } };
+      }
+      mergeExpected = { github, pr_number };
+    }
+
+    const resolved = { type, approve, ...(via ? { approval_id: via.approval_id, approver_name: via.approver.name } : {}) };
+
+    // Normalize the optional approver: a non-empty name is required (an empty
+    // git author name fatals every commit), so drop the approver entirely when
+    // it's missing/blank rather than persisting garbage — authoring then falls
+    // back to the bot.
+    const cleanApprover = via
+      ? via.approver
+      : (approver && typeof approver.name === 'string' && approver.name.trim()
+        ? {
+            id: typeof approver.id === 'string' ? approver.id : '',
+            name: approver.name.trim(),
+            email:
+              typeof approver.email === 'string' && approver.email.trim()
+                ? approver.email.trim()
+                : undefined,
+          }
+        : undefined);
+
+    const task = await Task.get(taskId);
+
+    if (type === 'edit_mode') {
+      if (approve) {
+        await task.handleEditModeApproval(cleanApprover);
+      } else {
+        await task.handleEditModeDenial();
+      }
+    } else if (type === 'research_budget') {
+      if (approve) {
+        await task.handleResearchBudgetApproval();
+      } else {
+        await task.handleResearchBudgetDenial();
+      }
+    } else if (mergeExpected) {
+      const disposition = approve
+        ? await task.handleMergeApproval(cleanApprover, mergeExpected)
+        : await task.handleMergeDenial(mergeExpected);
+      // A stale disposition means the identity gate rejected the resolution
+      // (empty or mismatched slot) and nothing happened — relay that instead
+      // of a false success, and emit no approval:resolved event.
+      if (disposition === 'stale') {
+        return {
+          status: 409,
+          body: {
+            ok: false,
+            stale: true,
+            error: `No pending merge approval for ${mergeExpected.github}#${mergeExpected.pr_number}`,
+          },
+        };
+      }
+    } else if (type === 'trigger') {
+      // CLI [y]/[n] on a proposed trigger — same task-level handler the Slack
+      // Approve/Deny buttons call. `ref` carries the specific trigger id (the
+      // CLI echoes it from the approval event), so the right one resolves even
+      // when several proposals are outstanding. Approver is the CLI operator.
+      if (approve) {
+        const trigger = await task.handleTriggerApproval(via ? via.approver.id : 'cli', ref);
+        if (!trigger) {
+          // A cap refusal leaves the proposal approvable, so keep the CLI prompt; anything else is
+          // settled and must emit approval:resolved, the only thing that clears the prompt.
+          const existing = ref ? await loadTrigger(ref) : null;
+          const capBlocked = existing?.status === 'pending';
+          if (!capBlocked) emitEvent('approval:resolved', taskId, resolved);
+          return {
+            status: 409,
+            body: {
+              ok: false,
+              stale: true,
+              capBlocked,
+              error: capBlocked
+                ? `Trigger ${ref ?? '(none)'} was not enabled — the active-trigger limit was reached. Remove or pause another automation, then approve again.`
+                : `Trigger ${ref ?? '(none)'} was not enabled — it is already active or was withdrawn.`,
+            },
+          };
+        }
+      } else {
+        const result = await task.handleTriggerDenial(ref);
+        if (result.outcome !== 'withdrawn') {
+          emitEvent('approval:resolved', taskId, resolved);
+          return {
+            status: 409,
+            body: {
+              ok: false,
+              stale: true,
+              outcome: result.outcome,
+              error: result.outcome === 'already_live'
+                ? result.status === 'paused'
+                  ? `Trigger ${ref ?? '(none)'} was not declined — it is already approved and currently paused. Delete it if you want it gone.`
+                  : `Trigger ${ref ?? '(none)'} was not declined — it is already approved and running. Pause or delete it instead.`
+                : `Trigger ${ref ?? '(none)'} was not declined — no such proposal is pending.`,
+            },
+          };
+        }
+      }
+    } else if (type === 'tool_call') {
+      // Same trust model as every other gate's API path: reaching this route
+      // means operator access to the engine. `ref` carries the digest of the
+      // exact (server, tool, arguments) call being resolved — echoed from the
+      // approval event — and is verified against the pending slot inside the
+      // Task methods.
+      if (typeof ref !== 'string' || !ref) {
+        return { status: 400, body: { error: 'tool_call approval requires ref (the call digest)' } };
+      }
+      const disposition = approve
+        ? await task.handleToolCallApproval(cleanApprover, ref)
+        : await task.handleToolCallDenial(ref);
+      if (disposition === 'stale') {
+        return {
+          status: 409,
+          body: {
+            ok: false,
+            stale: true,
+            error: `No pending tool-call approval for ${ref}`,
+          },
+        };
+      }
+    } else if (type === 'max_mode') {
+      if (approve) {
+        await task.handleMaxModeApproval(cleanApprover?.name);
+      } else {
+        await task.handleMaxModeDenial();
+      }
+    } else {
+      return { status: 400, body: { error: `Unknown approval type: ${type}` } };
+    }
+
+    emitEvent('approval:resolved', taskId, resolved);
+    return { status: 200, body: { ok: true } };
+  } catch (error) {
+    logger.error('api', 'Failed to process approval', error);
+    return { status: 500, body: { error: 'Failed to process approval' } };
+  }
+}
+
 /**
  * Mount API routes on an existing Express app.
  */
@@ -224,163 +394,8 @@ export function mountApiRoutes(app: Application): void {
   // ---- POST /tasks/:id/approve — approve/deny edit mode, research budget, or merge ----
 
   router.post('/tasks/:id/approve', async (req: Request, res: Response) => {
-    try {
-      const taskId = req.params.id as string;
-      const { type, approve, approver, github, pr_number, ref } = req.body as {
-        type: string;
-        approve: boolean;
-        // Optional resolved human (id/name/email) to author commits as. CLI/API
-        // callers have no Slack identity by default; when omitted, commits stay
-        // bot-authored.
-        approver?: { id: string; name: string; email?: string };
-        // PR identity — required for merge-type requests, verified against the
-        // pending request inside the Task resolution methods.
-        github?: string;
-        pr_number?: number;
-        // Optional opaque id the approval applies to (e.g. a trigger id), echoed
-        // from the approval event so the right pending item resolves.
-        ref?: string;
-      };
-
-      if (!type || typeof approve !== 'boolean') {
-        res.status(400).json({ error: 'type and approve are required' });
-        return;
-      }
-
-      // Merge-type requests must name the PR being resolved; the Task method
-      // verifies it against the pending request atomically.
-      let mergeExpected: { github: string; pr_number: number } | undefined;
-      if (type === 'merge') {
-        if (typeof github !== 'string' || !github || typeof pr_number !== 'number') {
-          res.status(400).json({ error: 'merge approval requires github and pr_number' });
-          return;
-        }
-        mergeExpected = { github, pr_number };
-      }
-
-      // Normalize the optional approver: a non-empty name is required (an empty
-      // git author name fatals every commit), so drop the approver entirely when
-      // it's missing/blank rather than persisting garbage — authoring then falls
-      // back to the bot.
-      const cleanApprover =
-        approver && typeof approver.name === 'string' && approver.name.trim()
-          ? {
-              id: typeof approver.id === 'string' ? approver.id : '',
-              name: approver.name.trim(),
-              email:
-                typeof approver.email === 'string' && approver.email.trim()
-                  ? approver.email.trim()
-                  : undefined,
-            }
-          : undefined;
-
-      const task = await Task.get(taskId);
-
-      if (type === 'edit_mode') {
-        if (approve) {
-          await task.handleEditModeApproval(cleanApprover);
-        } else {
-          await task.handleEditModeDenial();
-        }
-      } else if (type === 'research_budget') {
-        if (approve) {
-          await task.handleResearchBudgetApproval();
-        } else {
-          await task.handleResearchBudgetDenial();
-        }
-      } else if (mergeExpected) {
-        const disposition = approve
-          ? await task.handleMergeApproval(cleanApprover, mergeExpected)
-          : await task.handleMergeDenial(mergeExpected);
-        // A stale disposition means the identity gate rejected the resolution
-        // (empty or mismatched slot) and nothing happened — relay that instead
-        // of a false success, and emit no approval:resolved event.
-        if (disposition === 'stale') {
-          res.status(409).json({
-            ok: false,
-            stale: true,
-            error: `No pending merge approval for ${mergeExpected.github}#${mergeExpected.pr_number}`,
-          });
-          return;
-        }
-      } else if (type === 'trigger') {
-        // CLI [y]/[n] on a proposed trigger — same task-level handler the Slack
-        // Approve/Deny buttons call. `ref` carries the specific trigger id (the
-        // CLI echoes it from the approval event), so the right one resolves even
-        // when several proposals are outstanding. Approver is the CLI operator.
-        if (approve) {
-          const trigger = await task.handleTriggerApproval('cli', ref);
-          if (!trigger) {
-            // A cap refusal leaves the proposal approvable, so keep the CLI prompt; anything else is
-            // settled and must emit approval:resolved, the only thing that clears the prompt.
-            const existing = ref ? await loadTrigger(ref) : null;
-            const capBlocked = existing?.status === 'pending';
-            if (!capBlocked) emitEvent('approval:resolved', taskId, { type, approve });
-            res.status(409).json({
-              ok: false,
-              stale: true,
-              capBlocked,
-              error: capBlocked
-                ? `Trigger ${ref ?? '(none)'} was not enabled — the active-trigger limit was reached. Remove or pause another automation, then approve again.`
-                : `Trigger ${ref ?? '(none)'} was not enabled — it is already active or was withdrawn.`,
-            });
-            return;
-          }
-        } else {
-          const result = await task.handleTriggerDenial(ref);
-          if (result.outcome !== 'withdrawn') {
-            emitEvent('approval:resolved', taskId, { type, approve });
-            res.status(409).json({
-              ok: false,
-              stale: true,
-              outcome: result.outcome,
-              error: result.outcome === 'already_live'
-                ? result.status === 'paused'
-                  ? `Trigger ${ref ?? '(none)'} was not declined — it is already approved and currently paused. Delete it if you want it gone.`
-                  : `Trigger ${ref ?? '(none)'} was not declined — it is already approved and running. Pause or delete it instead.`
-                : `Trigger ${ref ?? '(none)'} was not declined — no such proposal is pending.`,
-            });
-            return;
-          }
-        }
-      } else if (type === 'tool_call') {
-        // Same trust model as every other gate's API path: reaching this route
-        // means operator access to the engine. `ref` carries the digest of the
-        // exact (server, tool, arguments) call being resolved — echoed from the
-        // approval event — and is verified against the pending slot inside the
-        // Task methods.
-        if (typeof ref !== 'string' || !ref) {
-          res.status(400).json({ error: 'tool_call approval requires ref (the call digest)' });
-          return;
-        }
-        const disposition = approve
-          ? await task.handleToolCallApproval(cleanApprover, ref)
-          : await task.handleToolCallDenial(ref);
-        if (disposition === 'stale') {
-          res.status(409).json({
-            ok: false,
-            stale: true,
-            error: `No pending tool-call approval for ${ref}`,
-          });
-          return;
-        }
-      } else if (type === 'max_mode') {
-        if (approve) {
-          await task.handleMaxModeApproval(cleanApprover?.name);
-        } else {
-          await task.handleMaxModeDenial();
-        }
-      } else {
-        res.status(400).json({ error: `Unknown approval type: ${type}` });
-        return;
-      }
-
-      emitEvent('approval:resolved', taskId, { type, approve });
-      res.json({ ok: true });
-    } catch (error) {
-      logger.error('api', 'Failed to process approval', error);
-      res.status(500).json({ error: 'Failed to process approval' });
-    }
+    const result = await resolveApproval(req.params.id as string, req.body);
+    res.status(result.status).json(result.body);
   });
 
   // ---- Triggers (operator surface — full visibility, mirrors /tasks) ----

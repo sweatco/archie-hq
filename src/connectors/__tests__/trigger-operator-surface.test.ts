@@ -100,7 +100,7 @@ vi.mock('../../system/trigger-scheduler.js', async (importActual) => {
 });
 
 import type { Application, Request, Response } from 'express';
-import { mountApiRoutes } from '../api/routes.js';
+import { mountApiRoutes, resolveApproval } from '../api/routes.js';
 import { Task } from '../../tasks/task.js';
 import { emitEvent } from '../../system/event-bus.js';
 import type { Trigger } from '../../types/trigger.js';
@@ -416,5 +416,38 @@ describe('DELETE /tasks/:id/reminder — the operator off switch', () => {
 
     expect(res.json).toHaveBeenCalledWith({ ok: true, cancelled: false });
     expect(cancelReminder).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolveApproval via', () => {
+  it('approves a trigger as the named approver and names them on approval:resolved', async () => {
+    const task = { handleTriggerApproval: vi.fn().mockResolvedValue(pending({ status: 'enabled' })) };
+    vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
+
+    const result = await resolveApproval(
+      TASK_ID,
+      { type: 'trigger', approve: true, ref: TRIGGER_ID },
+      { approval_id: 7, approver: { id: 'U1', name: 'Dana' } },
+    );
+
+    expect(result).toEqual({ status: 200, body: { ok: true } });
+    expect(task.handleTriggerApproval).toHaveBeenCalledWith('U1', TRIGGER_ID);
+    expect(emitEvent).toHaveBeenCalledWith('approval:resolved', TASK_ID, {
+      type: 'trigger',
+      approve: true,
+      approval_id: 7,
+      approver_name: 'Dana',
+    });
+  });
+
+  it('approves as the CLI operator and emits the bare resolution without via', async () => {
+    const task = { handleTriggerApproval: vi.fn().mockResolvedValue(pending({ status: 'enabled' })) };
+    vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
+
+    const result = await resolveApproval(TASK_ID, { type: 'trigger', approve: true, ref: TRIGGER_ID });
+
+    expect(result).toEqual({ status: 200, body: { ok: true } });
+    expect(task.handleTriggerApproval).toHaveBeenCalledWith('cli', TRIGGER_ID);
+    expect(emitEvent).toHaveBeenCalledWith('approval:resolved', TASK_ID, { type: 'trigger', approve: true });
   });
 });
