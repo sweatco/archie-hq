@@ -38,13 +38,13 @@ Archie's files come back in `check` as their text when they are UTF-8 without NU
 
 ## Approvals
 
-The model cannot approve anything. `show_archie_approval(session_id, approval_id)` only shows the request to the person (it is annotated read-only and cannot decide anything), choosing the UI from what the client declared at `initialize`:
+The model cannot approve anything. `show_archie_approval(session_id, approval_id)` only shows the request to the person and cannot decide anything, choosing the UI from what the client declared at `initialize`:
 
 - **MCP Apps** (Claude Desktop): an in-chat card at `ui://archie/approval-v1.html` with Approve and Deny. The buttons call `archie_decide`, and the card reads its state through `archie_approval_state` on load, so a decided approval shows the decision instead of buttons. Both tools are marked `_meta.ui.visibility: ["app"]`, which hides them from the model. `archie_decide` also refuses any client that did not declare MCP Apps, because only such a host hides it. Claude Desktop caches a card by URI, so the version in the URI changes whenever the card does.
 - **Elicitation** (Claude Code): an Approve/Deny form showing Archie's own request text.
 - **Neither**: refused.
 
-The tool result tells the model the current state either way.
+The tool result tells the model the current state either way, in its text and in `structuredContent`: Claude Desktop's Code tab hands the model only `structuredContent` when a tool returns it, so `ask_archie` and `check_archie` return text alone.
 
 An approval id is the index of its `approval:requested` event in the task's event log. A decision goes through `resolveApproval` (`src/connectors/api/routes.ts`), the same branches as `POST /api/tasks/:id/approve`, with the connected person as approver. That includes trigger approval: `approved_by` is their Slack id. The `approval:resolved` it emits carries `approval_id` and `approver_name`. A refused decision (the engine answers 409 because the request is gone) is still emitted, marked `stale`, and the view shows it as no longer pending. A trigger approval refused because the person is at the active-trigger cap emits nothing and stays pending, so it can be approved once a slot is free. `/mcp` decisions are serialized per task and re-read after queued event writes, so `/mcp` never resolves one approval twice.
 

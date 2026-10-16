@@ -164,7 +164,7 @@ mcp.registerTool(
   },
   guarded(async ({ message, session_id }) => {
     const { session_id: id } = await archie('POST', '/sessions', { message, session_id });
-    return result(`Archie has it. Session ${id}. Call check_archie with this session_id for replies, and keep calling it until Archie replies, asks for an approval, or has finished; pass the session_id to ask_archie to continue the session.`, { session_id: id });
+    return result(`Archie has it. Session ${id}. Call check_archie with this session_id for replies, and keep calling it until Archie replies, asks for an approval, or has finished; pass the session_id to ask_archie to continue the session.`);
   }),
 );
 
@@ -216,19 +216,17 @@ registerAppTool(
   {
     description: "Show the person Archie's pending request in Claude so they can decide it themselves. It only displays the request: it cannot approve or deny anything, and the person decides here, not in Slack.",
     inputSchema: approvalInput,
-    annotations: { readOnlyHint: true, destructiveHint: false },
     _meta: { ui: { resourceUri: UI_URI } },
   },
   guarded(async ({ session_id, approval_id }) => {
     const caps = mcp.server.getClientCapabilities();
     const v = await archie('GET', approvalPath(session_id, approval_id));
     if (getUiCapability(caps)) {
-      return result(
-        v.state === 'pending'
-          ? `Approval ${v.approval_id} is pending: "${v.text}". The card is in front of the person, who decides with its buttons; you cannot. Use check_archie afterwards.`
-          : describeDecision(v),
-        { session_id, approval_id },
-      );
+      const summary = v.state === 'pending'
+        ? `Approval ${v.approval_id} is pending: "${v.text}". The card is in front of the person, who decides with its buttons; you cannot. Use check_archie afterwards.`
+        : describeDecision(v);
+      // Some hosts hand the model only structuredContent, so it carries the state and the summary too.
+      return result(summary, { session_id, approval_id, state: v.state, request: v.text, summary });
     } else if (v.state !== 'pending') {
       return result(describeDecision(v));
     } else if (caps?.elicitation) {
