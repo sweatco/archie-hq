@@ -38,7 +38,7 @@ Archie's files come back in `check` as their text when they are UTF-8 and at mos
 
 ## Approvals
 
-The model cannot approve anything. `approve_archie(session_id, approval_id)` puts the request in front of the person, choosing the UI from what the client declared at `initialize`:
+The model cannot approve anything. `show_archie_approval(session_id, approval_id)` only shows the request to the person (it is annotated read-only and cannot decide anything), choosing the UI from what the client declared at `initialize`:
 
 - **MCP Apps** (Claude Desktop): an in-chat card at `ui://archie/approval-v1.html` with Approve and Deny. The buttons call `archie_decide`, and the card reads its state through `archie_approval_state` on load, so a decided approval shows the decision instead of buttons. Both tools are marked `_meta.ui.visibility: ["app"]`, which hides them from the model. `archie_decide` also refuses any client that did not declare MCP Apps, because only such a host hides it. Claude Desktop caches a card by URI, so the version in the URI changes whenever the card does.
 - **Elicitation** (Claude Code): an Approve/Deny form showing Archie's own request text.

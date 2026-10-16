@@ -40,8 +40,8 @@
       "description": "See what is new in an Archie session since the last check: Archie's replies, whether it is still working or done, and approvals waiting for the person. While Archie is working it waits up to a minute for something new. Keep calling it until Archie replies, asks for an approval, or has finished; never wait with shell commands."
     },
     {
-      "name": "approve_archie",
-      "description": "Put an Archie approval in front of the person so they can approve or deny it. Only the person decides; you cannot."
+      "name": "show_archie_approval",
+      "description": "Show the person Archie's pending request in Claude so they can decide it themselves. It only displays the request: it cannot approve or deny anything, and the person decides here, not in Slack."
     }
   ],
   "compatibility": {

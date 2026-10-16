@@ -182,6 +182,7 @@ mcp.registerTool(
   {
     description: "See what is new in an Archie session since the last check: Archie's replies, whether it is still working or done, and approvals waiting for the person. While Archie is working it waits up to a minute for something new. Keep calling it until Archie replies, asks for an approval, or has finished; never wait with shell commands.",
     inputSchema: { session_id: z.string() },
+    annotations: { readOnlyHint: true, destructiveHint: false },
   },
   guarded(async ({ session_id }) => {
     const deadline = Date.now() + CHECK_WAIT_MS;
@@ -203,7 +204,7 @@ mcp.registerTool(
     }
     if (replies.length === 0) text += '\n\nNo new replies.';
     for (const a of r.approvals) {
-      text += `\n\nWaiting for approval ${a.approval_id}: ${a.text}\nCall approve_archie with this session_id and approval_id ${a.approval_id} to show it to the person. Only the person can decide.`;
+      text += `\n\nWaiting for approval ${a.approval_id}: ${a.text}\nCall show_archie_approval with this session_id and approval_id ${a.approval_id} to show it to the person here in Claude. Only the person can decide.`;
     }
     return result(text);
   }),
@@ -211,10 +212,11 @@ mcp.registerTool(
 
 registerAppTool(
   mcp,
-  'approve_archie',
+  'show_archie_approval',
   {
-    description: 'Put an Archie approval in front of the person so they can approve or deny it. Only the person decides; you cannot.',
+    description: "Show the person Archie's pending request in Claude so they can decide it themselves. It only displays the request: it cannot approve or deny anything, and the person decides here, not in Slack.",
     inputSchema: approvalInput,
+    annotations: { readOnlyHint: true, destructiveHint: false },
     _meta: { ui: { resourceUri: UI_URI } },
   },
   guarded(async ({ session_id, approval_id }) => {
