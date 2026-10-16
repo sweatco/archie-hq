@@ -517,10 +517,11 @@ export async function appendGitHubEvent(
 export async function appendCliMessage(
   taskId: string,
   message: string,
+  author?: { id: string; name: string },
 ): Promise<string> {
   const entry: LogEntry = {
     timestamp: new Date().toISOString(),
-    source: 'cli',
+    source: author ? `<@${author.id}:${author.name}> in claude` : 'cli',
     message,
   };
 
@@ -832,6 +833,11 @@ export async function appendEvent(event: SystemEvent): Promise<void> {
     }
   });
   writeQueues.set(event.taskId, next);
+}
+
+/** Resolves once every event already emitted for this task is on disk. */
+export function eventsFlushed(taskId: string): Promise<void> {
+  return writeQueues.get(taskId) ?? Promise.resolve();
 }
 
 // ---- Usage JSONL persistence ----

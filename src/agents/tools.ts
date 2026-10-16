@@ -2258,7 +2258,7 @@ type RawCondition = z.infer<typeof triggerConditionObject>;
 /**
  * Resolve the task's originating context for trigger visibility. A Slack non-DM
  * channel → channel origin; a Slack DM → dm origin (with the partner's user id);
- * a CLI/absent default → operator (full visibility, matching the CLI surface).
+ * otherwise the home channel decides the same way, and with neither → operator (full visibility, matching the CLI surface).
  */
 async function resolveTriggerOrigin(task: Task): Promise<TriggerOrigin> {
   const key = task.metadata.default_channel;

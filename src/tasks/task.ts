@@ -830,7 +830,7 @@ export class Task {
     const logDest = slackChannel ? Task.formatSlackDest(slackChannel).log : destination;
     const rendered = renderAttachmentsSuffix(filePaths).trimStart();
     logger.agentToSlack(sender, rendered, { destination: display });
-    emitEvent('message', this.taskId, { from: sender, to: 'user', destination: display, message: rendered });
+    emitEvent('message', this.taskId, { from: sender, to: 'user', destination: display, message: rendered, files: [...filePaths] });
     appendMessageToUser(this.taskId, sender, '', logDest, filePaths);
   }
 

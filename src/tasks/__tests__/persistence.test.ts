@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi, afterAll } from 'vitest';
-import { mkdir, writeFile, rm } from 'fs/promises';
+import { mkdir, writeFile, rm, readFile } from 'fs/promises';
 import { dirname, join } from 'path';
 
 const SESSIONS_ROOT = await vi.hoisted(async () => {
@@ -45,7 +45,7 @@ vi.mock('./task.js', () => ({
   activeTasks: new Map(),
 }));
 
-import { renderAttachmentsSuffix, renderEditForContext, loadMetadata, getMetadataPath, taskExistsOnDisk, findTaskOnDisk } from '../persistence.js';
+import { renderAttachmentsSuffix, renderEditForContext, loadMetadata, getMetadataPath, taskExistsOnDisk, findTaskOnDisk, appendCliMessage, getKnowledgeLogPath, appendEvent, eventsFlushed, readEvents } from '../persistence.js';
 import { renderMessageBody } from '../../connectors/slack/message-body.js';
 import type { SlackFile } from '../../types/index.js';
 import type { TaskMetadata } from '../../types/task.js';
@@ -173,5 +173,34 @@ describe('taskExistsOnDisk', () => {
     } finally {
       await rm(escapedRoot, { recursive: true, force: true });
     }
+  });
+});
+
+describe('appendCliMessage', () => {
+  it('names a Claude author in the log source, and keeps cli without one', async () => {
+    const taskId = 'task-cli-author';
+    await mkdir(join(SESSIONS_ROOT, taskId, 'shared'), { recursive: true });
+
+    await appendCliMessage(taskId, 'hello', { id: 'U1', name: 'Dana' });
+    await appendCliMessage(taskId, 'hello');
+
+    const lines = (await readFile(getKnowledgeLogPath(taskId), 'utf-8')).trim().split('\n');
+    expect(lines[0]).toContain('[<@U1:Dana> in claude] hello');
+    expect(lines[1]).toContain('[cli] hello');
+    expect(lines[1]).not.toContain('in claude');
+  });
+});
+
+describe('eventsFlushed', () => {
+  it('resolves once every emitted event is readable', async () => {
+    const taskId = 'task-events-flushed';
+    await mkdir(join(SESSIONS_ROOT, taskId, 'shared'), { recursive: true });
+
+    await appendEvent({ type: 'message', taskId, timestamp: '2026-10-16T00:00:00.000Z', data: { n: 1 } });
+    await appendEvent({ type: 'message', taskId, timestamp: '2026-10-16T00:00:01.000Z', data: { n: 2 } });
+    await eventsFlushed(taskId);
+
+    const { events } = await readEvents(taskId);
+    expect(events.map((e) => e.data)).toEqual([{ n: 1 }, { n: 2 }]);
   });
 });
