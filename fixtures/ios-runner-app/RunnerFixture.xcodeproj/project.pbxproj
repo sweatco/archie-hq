@@ -1,0 +1,503 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		660384A861B529775158F43B /* RunnerViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 406448304102B19161881DAD /* RunnerViewController.swift */; };
+		7A5315F929EBEF132CEBF51B /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 969E0FC5B866902F3CECDE09 /* AppDelegate.swift */; };
+		A527AD397C2D48A0BF8436A8 /* RunnerFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2194D3A478F2A522C160C680 /* RunnerFixtureTests.swift */; };
+		C6175DE5AC521E42216D873D /* DebugCheckpoint.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3169EDD3BC49E48CDBBC0DC9 /* DebugCheckpoint.swift */; };
+		CDC03827FFF11227404FB846 /* RunnerFixtureUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D858CFFB57FC3B1DD3442CD /* RunnerFixtureUITests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		20763BD083969EAD2E530FA9 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 56BC139605E9594AFE7B054A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E6B64D645B2B5DD518A5A000;
+			remoteInfo = RunnerFixture;
+		};
+		F0B76A08CC6EA3C4BC3930EE /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 56BC139605E9594AFE7B054A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E6B64D645B2B5DD518A5A000;
+			remoteInfo = RunnerFixture;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		2194D3A478F2A522C160C680 /* RunnerFixtureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunnerFixtureTests.swift; sourceTree = "<group>"; };
+		3169EDD3BC49E48CDBBC0DC9 /* DebugCheckpoint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugCheckpoint.swift; sourceTree = "<group>"; };
+		32CE7667C0D70BE54CD5A41D /* RunnerFixture.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = RunnerFixture.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		406448304102B19161881DAD /* RunnerViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunnerViewController.swift; sourceTree = "<group>"; };
+		5D858CFFB57FC3B1DD3442CD /* RunnerFixtureUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunnerFixtureUITests.swift; sourceTree = "<group>"; };
+		8DF4C52C8C7DAB976549F20B /* RunnerFixtureTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = RunnerFixtureTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		969E0FC5B866902F3CECDE09 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		ADDCEBDA85C2DA8755B381E9 /* RunnerFixtureUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = RunnerFixtureUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		36C757136EB66917A96E35AB /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				32CE7667C0D70BE54CD5A41D /* RunnerFixture.app */,
+				8DF4C52C8C7DAB976549F20B /* RunnerFixtureTests.xctest */,
+				ADDCEBDA85C2DA8755B381E9 /* RunnerFixtureUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		88F73DAED87147DC721FC075 /* RunnerFixtureUITests */ = {
+			isa = PBXGroup;
+			children = (
+				5D858CFFB57FC3B1DD3442CD /* RunnerFixtureUITests.swift */,
+			);
+			path = RunnerFixtureUITests;
+			sourceTree = "<group>";
+		};
+		C5D551D973CE0D98CC5CC8D8 /* RunnerFixtureTests */ = {
+			isa = PBXGroup;
+			children = (
+				2194D3A478F2A522C160C680 /* RunnerFixtureTests.swift */,
+			);
+			path = RunnerFixtureTests;
+			sourceTree = "<group>";
+		};
+		CDC4794D08C364EA55352D67 = {
+			isa = PBXGroup;
+			children = (
+				D3E6614E39B3EAD59C9066D3 /* RunnerFixture */,
+				C5D551D973CE0D98CC5CC8D8 /* RunnerFixtureTests */,
+				88F73DAED87147DC721FC075 /* RunnerFixtureUITests */,
+				36C757136EB66917A96E35AB /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		D3E6614E39B3EAD59C9066D3 /* RunnerFixture */ = {
+			isa = PBXGroup;
+			children = (
+				969E0FC5B866902F3CECDE09 /* AppDelegate.swift */,
+				3169EDD3BC49E48CDBBC0DC9 /* DebugCheckpoint.swift */,
+				406448304102B19161881DAD /* RunnerViewController.swift */,
+			);
+			path = RunnerFixture;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		DCBC704282456F2B310205A6 /* RunnerFixtureUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 9B8E6B57E49AA82305B978E2 /* Build configuration list for PBXNativeTarget "RunnerFixtureUITests" */;
+			buildPhases = (
+				6FD8F07CF8B8ADA27785F6E3 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				801B9F1D42CDDA542327ABC3 /* PBXTargetDependency */,
+			);
+			name = RunnerFixtureUITests;
+			packageProductDependencies = (
+			);
+			productName = RunnerFixtureUITests;
+			productReference = ADDCEBDA85C2DA8755B381E9 /* RunnerFixtureUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		E6B64D645B2B5DD518A5A000 /* RunnerFixture */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 4E6B906E435376C92D8D5C13 /* Build configuration list for PBXNativeTarget "RunnerFixture" */;
+			buildPhases = (
+				522EC3CD5FA7F13C8F22EC6C /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = RunnerFixture;
+			packageProductDependencies = (
+			);
+			productName = RunnerFixture;
+			productReference = 32CE7667C0D70BE54CD5A41D /* RunnerFixture.app */;
+			productType = "com.apple.product-type.application";
+		};
+		FFAD3B97093CF0525A94B0EF /* RunnerFixtureTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CDBBCC1FE50B4B2CE07645F1 /* Build configuration list for PBXNativeTarget "RunnerFixtureTests" */;
+			buildPhases = (
+				93BD0D5E588B3F36D4F95FF0 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				2536A54CF0E2CF9A2833CB38 /* PBXTargetDependency */,
+			);
+			name = RunnerFixtureTests;
+			packageProductDependencies = (
+			);
+			productName = RunnerFixtureTests;
+			productReference = 8DF4C52C8C7DAB976549F20B /* RunnerFixtureTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		56BC139605E9594AFE7B054A /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					DCBC704282456F2B310205A6 = {
+						TestTargetID = E6B64D645B2B5DD518A5A000;
+					};
+				};
+			};
+			buildConfigurationList = B901FDD6F64FCE668974CB7F /* Build configuration list for PBXProject "RunnerFixture" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = CDC4794D08C364EA55352D67;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 36C757136EB66917A96E35AB /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				E6B64D645B2B5DD518A5A000 /* RunnerFixture */,
+				FFAD3B97093CF0525A94B0EF /* RunnerFixtureTests */,
+				DCBC704282456F2B310205A6 /* RunnerFixtureUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		522EC3CD5FA7F13C8F22EC6C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7A5315F929EBEF132CEBF51B /* AppDelegate.swift in Sources */,
+				C6175DE5AC521E42216D873D /* DebugCheckpoint.swift in Sources */,
+				660384A861B529775158F43B /* RunnerViewController.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6FD8F07CF8B8ADA27785F6E3 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CDC03827FFF11227404FB846 /* RunnerFixtureUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		93BD0D5E588B3F36D4F95FF0 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A527AD397C2D48A0BF8436A8 /* RunnerFixtureTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		2536A54CF0E2CF9A2833CB38 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E6B64D645B2B5DD518A5A000 /* RunnerFixture */;
+			targetProxy = 20763BD083969EAD2E530FA9 /* PBXContainerItemProxy */;
+		};
+		801B9F1D42CDDA542327ABC3 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E6B64D645B2B5DD518A5A000 /* RunnerFixture */;
+			targetProxy = F0B76A08CC6EA3C4BC3930EE /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		01544F343B3CD57A26B14003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = iphonesimulator;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		0AF274AEFC6D8F4002D2E0C4 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.archie.runner-fixture-tests";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/RunnerFixture.app/RunnerFixture";
+			};
+			name = Debug;
+		};
+		4A0BE09AFB12B4087B3BF96B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = RunnerFixture;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.archie.runner-fixture";
+				PRODUCT_NAME = RunnerFixture;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		944820F92DDE0AA5DC41AB35 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.archie.runner-fixture-ui-tests";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = RunnerFixture;
+			};
+			name = Debug;
+		};
+		AACAD1D311554A34910B5991 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.archie.runner-fixture-tests";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/RunnerFixture.app/RunnerFixture";
+			};
+			name = Release;
+		};
+		D236C8E8EF7AA6413E45F964 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = RunnerFixture;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.archie.runner-fixture";
+				PRODUCT_NAME = RunnerFixture;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		DE55FB7504FD521196F50ED3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.archie.runner-fixture-ui-tests";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = RunnerFixture;
+			};
+			name = Release;
+		};
+		FDFD9C44093E1563FD2312FE /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = iphonesimulator;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		4E6B906E435376C92D8D5C13 /* Build configuration list for PBXNativeTarget "RunnerFixture" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D236C8E8EF7AA6413E45F964 /* Debug */,
+				4A0BE09AFB12B4087B3BF96B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		9B8E6B57E49AA82305B978E2 /* Build configuration list for PBXNativeTarget "RunnerFixtureUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				944820F92DDE0AA5DC41AB35 /* Debug */,
+				DE55FB7504FD521196F50ED3 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B901FDD6F64FCE668974CB7F /* Build configuration list for PBXProject "RunnerFixture" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				01544F343B3CD57A26B14003 /* Debug */,
+				FDFD9C44093E1563FD2312FE /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		CDBBCC1FE50B4B2CE07645F1 /* Build configuration list for PBXNativeTarget "RunnerFixtureTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0AF274AEFC6D8F4002D2E0C4 /* Debug */,
+				AACAD1D311554A34910B5991 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 56BC139605E9594AFE7B054A /* Project object */;
+}
