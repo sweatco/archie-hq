@@ -37,6 +37,31 @@ describe('handleClaudeCommand', () => {
     expect(posted().threadTs).toBeUndefined();
   });
 
+  it('reads what the person typed, not the attribution a client adds to text', async () => {
+    const raw = {
+      text: 'connect claude *Sent using* <@U0ABDVDSGPN>',
+      app_id: 'A08SF47R6P4',
+      user: 'U1',
+      thread_ts: '1792152041.935369',
+      blocks: [
+        { type: 'rich_text', block_id: 'wfFXbf', elements: [{ type: 'rich_text_section', elements: [{ type: 'text', text: 'connect claude' }] }] },
+        { type: 'context', block_id: 'KWZTs', elements: [{ type: 'mrkdwn', text: '*Sent using* <@U0ABDVDSGPN>', verbatim: false }] },
+      ],
+    };
+    expect(await handleClaudeCommand({ channel: 'D1', user: 'U1', thread_ts: '1792152041.935369', raw })).toBe(true);
+    expect(issueCode).toHaveBeenCalledTimes(1);
+    expect(posted().threadTs).toBe('1792152041.935369');
+  });
+
+  it('does not treat more typed text as the command', async () => {
+    const raw = {
+      text: 'connect claude to the repo',
+      blocks: [{ type: 'rich_text', elements: [{ type: 'rich_text_section', elements: [{ type: 'text', text: 'connect claude to the repo' }] }] }],
+    };
+    expect(await handleClaudeCommand({ channel: 'D1', user: 'U1', raw })).toBe(false);
+    expect(issueCode).not.toHaveBeenCalled();
+  });
+
   it('issues no code to an external user', async () => {
     vi.mocked(isExternalUser).mockReturnValueOnce(true);
     expect(await handleClaudeCommand({ channel: 'D1', user: 'U9', raw: { text: 'connect claude' } })).toBe(true);
