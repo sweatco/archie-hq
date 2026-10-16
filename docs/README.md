@@ -24,7 +24,6 @@ How the system works today. Each doc describes the actual implementation, verifi
 | [Secrets](architecture/secrets.md) | OAuth vault, encryption, secret handling |
 | [Memory Layer](architecture/memory.md) | Cross-task persistent knowledge: org facts, user preferences, recent activity |
 | [Tart Runners](architecture/runners.md) | Orchard-backed Tart VM execution, persistence, transfers, and VNC handoff |
-| [Architecture Review — 2026-09-06](architecture/review-2026-09-06.md) | Review scope, fixed defects, simplifications, regression evidence, and remaining constraints |
 
 ## Guides
 

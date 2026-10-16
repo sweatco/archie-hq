@@ -5,6 +5,8 @@ import { loadRunnerConfig } from '../config.js';
 import { RunnerManager } from '../manager.js';
 import { OrchardRunnerProvider } from '../orchard-provider.js';
 import { generateTaskId } from '../../tasks/persistence.js';
+import type { RunnerSpec } from '../types.js';
+import { canaryCommands, finishCommand } from './orchard-canary-helpers.js';
 
 const e2e = process.env.ARCHIE_ORCHARD_E2E === 'true' ? it : it.skip;
 
@@ -23,21 +25,31 @@ describe('real Orchard runner', () => {
     if (!publicEndpoint || !blockedHostEndpoint || !blockedIpv6Endpoint) {
       throw new Error('ARCHIE_ORCHARD_E2E_PUBLIC_ENDPOINT, ARCHIE_ORCHARD_E2E_BLOCKED_HOST_ENDPOINT, and ARCHIE_ORCHARD_E2E_BLOCKED_IPV6_ENDPOINT are required');
     }
-    for (const endpoint of [publicEndpoint, blockedHostEndpoint, blockedIpv6Endpoint]) {
+    const endpoints = [publicEndpoint, blockedHostEndpoint, blockedIpv6Endpoint];
+    // Validate before control-side requests and before provisioning any VM.
+    canaryCommands([], endpoints);
+    for (const endpoint of endpoints) {
       const response = await fetch(endpoint, { signal: AbortSignal.timeout(10000) });
       if (!response.ok) throw new Error(`Control-side endpoint is not reachable: ${endpoint} (${response.status})`);
     }
 
-    const commands = process.env.ARCHIE_ORCHARD_E2E_COMMANDS
+    const workload = process.env.ARCHIE_ORCHARD_E2E_COMMANDS
       ? JSON.parse(process.env.ARCHIE_ORCHARD_E2E_COMMANDS) as string[][]
       : [
           ['/usr/bin/xcodebuild', '-version'],
+          ['/usr/bin/xcrun', 'lldb', '--version'],
           ['/bin/sh', '-lc', 'set -eu\ndevice="$(xcrun simctl list devices available | awk -F "[()]" "/iPhone/{print \\$2; exit}")"\ntest -n "$device"\ntrap \'xcrun simctl shutdown "$device" >/dev/null 2>&1 || true\' EXIT\nxcrun simctl boot "$device"\nxcrun simctl bootstatus "$device" -b'],
-          ['/usr/bin/curl', '-fsS', '--max-time', '15', publicEndpoint],
-          ['/bin/sh', '-lc', `! /usr/bin/curl -fsS --max-time 5 ${JSON.stringify(blockedHostEndpoint)}`],
-          ['/bin/sh', '-lc', `! /usr/bin/curl -gfsS --max-time 5 ${JSON.stringify(blockedIpv6Endpoint)}`],
         ];
-    const provider = new OrchardRunnerProvider(
+    const commands = canaryCommands(workload, endpoints);
+    // Record intent before the request: provisioning may create a VM and then throw.
+    const attemptedBackendIds = new Set<string>();
+    class CanaryProvider extends OrchardRunnerProvider {
+      override async provision(spec: RunnerSpec) {
+        attemptedBackendIds.add(spec.id);
+        return super.provision(spec);
+      }
+    }
+    const provider = new CanaryProvider(
       loaded.config.orchard.baseUrl,
       loaded.serviceAccountName,
       loaded.serviceAccountToken,
@@ -53,25 +65,37 @@ describe('real Orchard runner', () => {
       const lease = await manager.ensure(taskId, agentId, profile);
       backendId = lease.backendId;
       await manager.sync(taskId, agentId, profile, github, repoPath);
-      for (const command of commands) {
-        let result = await manager.exec(taskId, agentId, profile, github, command);
-        while (result.state === 'running') {
-          result = await manager.poll(taskId, agentId, profile, result.execId, result.cursor, 30);
-        }
+      const finish = (initial: ReturnType<RunnerManager['exec']>) => finishCommand(
+        initial,
+        (execId, cursor) => manager.poll(taskId, agentId, profile, execId, cursor, 30),
+        Math.min(loaded.config.profiles[profile].execTimeoutSeconds * 1000, 20 * 60_000),
+      );
+      const assertSuccess = (result: Awaited<ReturnType<typeof finish>>) => {
         expect(result.state).toBe('completed');
-        expect(result.exitCode).toBe(0);
+        expect(result.exitCode, result.stderr).toBe(0);
+        expect(result.truncated).toBe(false);
+      };
+      for (const command of commands) {
+        assertSuccess(await finish(manager.exec(taskId, agentId, profile, github, command)));
       }
 
+      const debug = await manager.openDebug(taskId, agentId, profile, 1);
+      expect(debug.backendId).toBe(backendId);
+      expect(debug.context).toBe(loaded.config.orchard.context);
+      expect(Date.parse(debug.expiresAt)).toBeGreaterThan(Date.now());
+      expect(debug.commands).toContain(`orchard vnc vm '${backendId}'`);
+      expect(debug.commands.some((command) => command.startsWith('orchard context default '))).toBe(true);
+
       const artifactContent = `archie-e2e-${Date.now()}`;
-      const artifactCommand = await manager.exec(taskId, agentId, profile, github, ['/bin/sh', '-lc', `printf %s ${JSON.stringify(artifactContent)} > archie-e2e-artifact.txt`]);
-      expect(artifactCommand.exitCode).toBe(0);
+      const artifactCommand = await finish(manager.exec(taskId, agentId, profile, github, ['/bin/sh', '-c', 'printf %s "$1" > archie-e2e-artifact.txt', 'canary-artifact', artifactContent]));
+      assertSuccess(artifactCommand);
       const artifactDir = await manager.collect(taskId, agentId, profile, github, ['archie-e2e-artifact.txt']);
       await expect(readFile(join(artifactDir, 'archie-e2e-artifact.txt'), 'utf8')).resolves.toBe(artifactContent);
 
       const detached = await manager.exec(taskId, agentId, profile, github, ['/bin/sh', '-lc', 'sleep 2; echo reconnected'], '.', {}, 0);
       expect(detached.state).toBe('running');
-      const reconnected = await manager.poll(taskId, agentId, profile, detached.execId, detached.cursor, 10);
-      expect(reconnected.state).toBe('completed');
+      const reconnected = await finish(Promise.resolve(detached));
+      assertSuccess(reconnected);
       expect(reconnected.stdout).toContain('reconnected');
 
     } catch (error) {
@@ -83,15 +107,21 @@ describe('real Orchard runner', () => {
       } catch (error) {
         cleanupErrors.push(error);
       }
-      if (backendId) {
+      if (backendId) attemptedBackendIds.add(backendId);
+      for (const id of attemptedBackendIds) {
         try {
-          expect(await provider.inspect(backendId)).toBeNull();
+          // Normal manager release gets first attempt; fallback covers failed ensure/release.
+          if (await provider.inspect(id)) {
+            cleanupErrors.push(new Error(`Manager release left canary VM behind: ${id}`));
+            await provider.release(id);
+          }
+          expect(await provider.inspect(id), `leftover VM: ${id}`).toBeNull();
         } catch (error) {
           cleanupErrors.push(error);
         }
       }
       try {
-        const leftovers = (await provider.list()).filter((instance) => instance.id.startsWith(`archie-${loaded.config.instanceId}-`) && instance.id === backendId);
+        const leftovers = (await provider.list()).filter((instance) => attemptedBackendIds.has(instance.id));
         expect(leftovers, `leftover VMs: ${leftovers.map((vm) => vm.id).join(', ')}`).toHaveLength(0);
       } catch (error) {
         cleanupErrors.push(error);

@@ -96,6 +96,7 @@ Required environment variables when enabled:
 - `ARCHIE_RUNNERS_CONFIG`: JSON configuration path.
 - `ORCHARD_SERVICE_ACCOUNT_NAME`: Orchard Basic authentication name.
 - `ORCHARD_SERVICE_ACCOUNT_TOKEN`: Orchard Basic authentication token.
+- `ORCHARD_CF_ACCESS_CLIENT_ID` and `ORCHARD_CF_ACCESS_CLIENT_SECRET`: Cloudflare Access service-token pair, required together for non-loopback Orchard URLs. Those URLs must use HTTPS. Loopback labs may omit the pair.
 - Every profile’s `passwordEnv`, such as `ORCHARD_IOS_GUEST_PASSWORD`.
 
 Invalid configuration or missing secrets fails startup. Orchard unavailability during reconciliation marks `runners.degraded` in `/health` but does not take Archie offline.
@@ -167,7 +168,7 @@ Opening `http://127.0.0.1:18080` then shows the live Simulator-only MJPEG feed. 
 
 ## Canary Validation
 
-The opt-in Vitest case `src/runners/__tests__/orchard.e2e.test.ts` exercises a real Orchard deployment and is skipped by default. Run it with `ARCHIE_ORCHARD_E2E=true`, the normal runner configuration and credential variables, `ARCHIE_ORCHARD_E2E_PROFILE`, `ARCHIE_ORCHARD_E2E_AGENT`, and `ARCHIE_ORCHARD_E2E_REPO_PATH`. `ARCHIE_ORCHARD_E2E_COMMANDS` may contain a JSON array of argv arrays for an app-specific Xcode/Simulator/LLDB canary; defaults verify the Xcode, `simctl`, and LLDB toolchains. Use a disposable `ARCHIE_WORKDIR` because the harness writes its lease audit state there.
+The opt-in Vitest case `src/runners/__tests__/orchard.e2e.test.ts` exercises a real Orchard deployment and is skipped by default. Run it with `ARCHIE_ORCHARD_E2E=true`, the normal runner configuration and credential variables, `ARCHIE_ORCHARD_E2E_PROFILE`, `ARCHIE_ORCHARD_E2E_AGENT`, and `ARCHIE_ORCHARD_E2E_REPO_PATH`. Set `ARCHIE_ORCHARD_E2E_PUBLIC_ENDPOINT`, `ARCHIE_ORCHARD_E2E_BLOCKED_HOST_ENDPOINT`, and `ARCHIE_ORCHARD_E2E_BLOCKED_IPV6_ENDPOINT` to HTTP(S) endpoints reachable from the control host. The guest must reach the public endpoint and fail to connect to the worker-host and IPv6 endpoints. Both blocked URLs must use literal IP addresses; the IPv6 URL must use a bracketed IPv6 literal. `ARCHIE_ORCHARD_E2E_COMMANDS` may contain a JSON array of argv arrays replacing the workload commands; defaults verify the Xcode, `simctl`, and LLDB toolchains. Network isolation checks run even with custom commands. Use a disposable `ARCHIE_WORKDIR` because the harness writes its lease audit state there.
 
 The canary provisions and syncs a real repository, runs every configured command, detaches and reconnects to a long command, validates the VNC handoff, releases the lease, and confirms Orchard deleted the VM.
 

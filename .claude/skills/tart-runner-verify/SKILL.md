@@ -36,7 +36,7 @@ TMP=$(mktemp -d) && cat > "$TMP/runners.json" <<'JSON'
 {
   "version": 1,
   "instanceId": "verify-smoke",
-  "orchard": { "baseUrl": "https://orchard.invalid", "context": "default" },
+  "orchard": { "baseUrl": "https://localhost/v1", "context": "default" },
   "profiles": {
     "smoke": {
       "image": "ghcr.io/example/img@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -57,12 +57,18 @@ console.log('OK: disabled when ARCHIE_RUNNERS_CONFIG unset');
 
 await loadRunnerConfig({ ARCHIE_RUNNERS_CONFIG: path }).then(
   () => fail('expected missing-secrets error'),
-  () => console.log('OK: fail-fast on missing Orchard service account'),
+  (error) => {
+    if (!(error instanceof Error) || error.message !== 'ORCHARD_SERVICE_ACCOUNT_NAME and ORCHARD_SERVICE_ACCOUNT_TOKEN are required when runners are enabled') fail('unexpected missing-secrets error');
+    console.log('OK: fail-fast on missing Orchard service account');
+  },
 );
 
 await loadRunnerConfig({ ARCHIE_RUNNERS_CONFIG: path, ORCHARD_SERVICE_ACCOUNT_NAME: 'n', ORCHARD_SERVICE_ACCOUNT_TOKEN: 't' }).then(
   () => fail('expected guest-password error'),
-  () => console.log('OK: fail-fast on missing guest password'),
+  (error) => {
+    if (!(error instanceof Error) || error.message !== 'Runner profile \"smoke\" requires its configured guest password') fail('unexpected guest-password error');
+    console.log('OK: fail-fast on missing guest password');
+  },
 );
 
 const loaded = await loadRunnerConfig({ ARCHIE_RUNNERS_CONFIG: path, ORCHARD_SERVICE_ACCOUNT_NAME: 'n', ORCHARD_SERVICE_ACCOUNT_TOKEN: 't', SMOKE_GUEST_PASSWORD: 'p' });
@@ -104,13 +110,19 @@ Never run without an explicit user request plus real credentials: it provisions 
 ARCHIE_ORCHARD_E2E=true \
 ARCHIE_RUNNERS_CONFIG=<path> \
 ORCHARD_SERVICE_ACCOUNT_NAME=<name> ORCHARD_SERVICE_ACCOUNT_TOKEN=<token> \
+ORCHARD_CF_ACCESS_CLIENT_ID=<id> ORCHARD_CF_ACCESS_CLIENT_SECRET=<secret> \
 <each profile passwordEnv>=<password> \
 ARCHIE_ORCHARD_E2E_PROFILE=<profile> ARCHIE_ORCHARD_E2E_AGENT=<agent-id> ARCHIE_ORCHARD_E2E_REPO_PATH=<local-repo> \
+ARCHIE_ORCHARD_E2E_PUBLIC_ENDPOINT=<public-url> \
+ARCHIE_ORCHARD_E2E_BLOCKED_HOST_ENDPOINT=<worker-host-url> \
+ARCHIE_ORCHARD_E2E_BLOCKED_IPV6_ENDPOINT=<ipv6-url> \
 ARCHIE_WORKDIR=$(mktemp -d) \
 npx vitest run src/runners/__tests__/orchard.e2e.test.ts
 ```
 
-Optional: `ARCHIE_ORCHARD_E2E_COMMANDS` (JSON array of argv arrays for an app-specific canary; defaults verify Xcode, `simctl`, and LLDB toolchains), `ARCHIE_ORCHARD_E2E_GITHUB`. The canary provisions, syncs, execs, detaches/reconnects, validates the VNC handoff, releases, and confirms Orchard deleted the VM.
+The CF Access pair is required for a non-loopback controller URL; omit it for a loopback tunnel. All three endpoint URLs must be reachable from the control host before provisioning. The public endpoint must also be reachable from the guest, while the worker-host and IPv6 endpoints must be blocked there. Both blocked URLs must use literal IP addresses; the IPv6 URL must use a bracketed IPv6 literal.
+
+Optional: `ARCHIE_ORCHARD_E2E_COMMANDS` (JSON array of argv arrays replacing only the workload commands; defaults verify Xcode, `simctl`, and LLDB toolchains), `ARCHIE_ORCHARD_E2E_GITHUB`. Network isolation checks always run, including with custom commands. The canary provisions, syncs, execs, detaches/reconnects, validates the VNC handoff, releases, and confirms Orchard deleted the VM.
 
 ## Report format
 
