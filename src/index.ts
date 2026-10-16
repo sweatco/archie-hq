@@ -26,6 +26,7 @@ import type { Application, Request, Response } from 'express';
 import { mountSlackApp, type SlackLifecycle } from './connectors/slack/events.js';
 import { mountGitHubWebhook } from './connectors/github/events.js';
 import { mountApiRoutes } from './connectors/api/routes.js';
+import { mountClaudeRoutes } from './connectors/claude/routes.js';
 import { mountOAuthRoutes } from './connectors/oauth/routes.js';
 import { getIsShuttingDown, setShuttingDown } from './system/shutdown.js';
 import { getActiveTaskIds } from './tasks/task.js';
@@ -160,6 +161,7 @@ async function main(): Promise<void> {
 
     // Mount API routes (REST + SSE for CLI)
     mountApiRoutes(app);
+    mountClaudeRoutes(app);
 
     // Mount OAuth callback route (provider redirects land here)
     mountOAuthRoutes(app);
