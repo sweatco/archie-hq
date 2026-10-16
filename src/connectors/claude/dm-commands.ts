@@ -1,4 +1,4 @@
-import { getChannelInfo, postSlackMessage } from '../slack/client.js';
+import { getChannelInfo, getUserInfo, isExternalUser, postSlackMessage } from '../slack/client.js';
 import { issueCode, revokeUser } from './connections.js';
 import { logger } from '../../system/logger.js';
 
@@ -9,6 +9,10 @@ export async function handleClaudeCommand(event: { channel: string; user: string
     return false;
   }
   if (!match[1]) {
+    // The external-author bail-out before this fails open on a lookup error; a credential must not.
+    if (isExternalUser(await getUserInfo(event.user))) {
+      return true;
+    }
     const info = await getChannelInfo(event.channel);
     const code = await issueCode({ user_id: event.user, channel_id: event.channel, channel_name: info.name });
     await postSlackMessage({

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdir, rm, writeFile } from 'fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'fs/promises';
+import { tmpdir } from 'os';
 import { join } from 'path';
 import { createRequire } from 'module';
 import type { Server } from 'http';
@@ -35,7 +36,7 @@ vi.mock('../connections.js', () => {
 
 vi.mock('../../slack/client.js', () => ({
   getUserInfo: vi.fn().mockResolvedValue({ realName: 'Dana', name: 'dana', email: 'dana@example.com' }),
-  isExternalUser: () => false,
+  isExternalUser: vi.fn(() => false),
   formatSlackChannelRef: vi.fn(),
   formatSlackChannelDisplay: vi.fn(),
 }));
@@ -59,6 +60,7 @@ import { mountClaudeRoutes } from '../routes.js';
 import { SESSIONS_DIR } from '../../../system/workdir.js';
 import { appendCliMessage } from '../../../tasks/persistence.js';
 import { resolveApproval } from '../../api/routes.js';
+import { getUserInfo, isExternalUser } from '../../slack/client.js';
 
 const express = require('express');
 
@@ -103,13 +105,19 @@ async function writeOwnFixture(status = 'in_progress'): Promise<void> {
   const dir = await writeTask(OWN, 'U1', status);
   const mdPath = join(dir, 'notes.md');
   const binPath = join(dir, 'blob.bin');
+  const bigPath = join(dir, 'big.txt');
+  const linkPath = join(dir, 'link.md');
   await writeFile(mdPath, '# Notes\nhello', 'utf-8');
   await writeFile(binPath, Buffer.from([0x61, 0x00, 0x62]));
+  await writeFile(bigPath, 'x'.repeat(100_001), 'utf-8');
+  const outside = await mkdtemp(join(tmpdir(), 'archie-claude-outside-'));
+  await writeFile(join(outside, 'secret.txt'), 'SERVER SECRET', 'utf-8');
+  await symlink(join(outside, 'secret.txt'), linkPath);
   await writeEvents(OWN, [
     { type: 'message', data: { from: 'cli', to: 'pm-agent', message: 'hi' } },
     { type: 'message', data: { from: 'pm-agent', to: 'user', message: 'first' } },
     { type: 'approval:requested', data: { approvalType: 'trigger', text: 'Set up this automation?', ref: 'trg-1' } },
-    { type: 'message', data: { from: 'pm-agent', to: 'user', message: 'second', files: [mdPath, binPath, join(dir, 'missing.md')] } },
+    { type: 'message', data: { from: 'pm-agent', to: 'user', message: 'second', files: [mdPath, binPath, join(dir, 'missing.md'), bigPath, linkPath] } },
     { type: 'approval:requested', data: { approvalType: 'edit_mode', text: 'Turn on edit mode?' } },
     { type: 'approval:resolved', data: { type: 'edit_mode', approve: true, approval_id: 4, approver_name: 'Dana' } },
   ]);
@@ -174,13 +182,69 @@ describe('/mcp routes', () => {
       const res = await call(`/sessions/${OWN}`, { auth: 'Bearer bad' });
       expect(res.status).toBe(401);
     });
+
+    it('rejects a credential whose Slack account was deactivated', async () => {
+      vi.mocked(getUserInfo).mockResolvedValueOnce({ realName: 'Dana', name: 'dana', deleted: true });
+      const res = await call(`/sessions/${OWN}`);
+      expect(res.status).toBe(401);
+    });
+
+    it('rejects a credential whose Slack account became external', async () => {
+      vi.mocked(isExternalUser).mockReturnValueOnce(true);
+      const res = await call(`/sessions/${OWN}`);
+      expect(res.status).toBe(401);
+    });
+  });
+
+  describe('approval folding', () => {
+    async function viewOf(events: Array<{ type: string; data: Record<string, unknown> }>, aid: number) {
+      await writeEvents(OWN, events);
+      return (await call(`/sessions/${OWN}/approvals/${aid}`)).json();
+    }
+
+    it('settles only the request a decision names, not another proposal of the same type', async () => {
+      const events = [
+        { type: 'approval:requested', data: { approvalType: 'trigger', text: 'One', ref: 'trg-1' } },
+        { type: 'approval:requested', data: { approvalType: 'trigger', text: 'Two', ref: 'trg-2' } },
+        { type: 'approval:resolved', data: { type: 'trigger', approve: true, approval_id: 0, approver_name: 'Dana' } },
+      ];
+      expect(await viewOf(events, 0)).toMatchObject({ state: 'approved', decided_by: 'Dana' });
+      expect(await viewOf(events, 1)).toMatchObject({ state: 'pending' });
+    });
+
+    it('settles a re-asked request for the same item together with the one decided', async () => {
+      const events = [
+        { type: 'approval:requested', data: { approvalType: 'edit_mode', text: 'First ask' } },
+        { type: 'approval:requested', data: { approvalType: 'edit_mode', text: 'Second ask' } },
+        { type: 'approval:resolved', data: { type: 'edit_mode', approve: true, approval_id: 0, approver_name: 'Dana' } },
+      ];
+      expect(await viewOf(events, 1)).toMatchObject({ state: 'approved', decided_by: 'Dana' });
+    });
+
+    it('marks a refused decision as expired with no decider', async () => {
+      const events = [
+        { type: 'approval:requested', data: { approvalType: 'trigger', text: 'One', ref: 'trg-1' } },
+        { type: 'approval:resolved', data: { type: 'trigger', approve: true, approval_id: 0, approver_name: 'Dana', stale: true } },
+      ];
+      const view = await viewOf(events, 0);
+      expect(view).toMatchObject({ state: 'expired' });
+      expect(view).not.toHaveProperty('decided_by');
+    });
+
+    it('applies an operator resolution without an id to earlier requests of that type', async () => {
+      const events = [
+        { type: 'approval:requested', data: { approvalType: 'edit_mode', text: 'Ask' } },
+        { type: 'approval:resolved', data: { type: 'edit_mode', approve: false } },
+      ];
+      expect(await viewOf(events, 0)).toMatchObject({ state: 'denied' });
+    });
   });
 
   describe('POST /connect', () => {
     it('redeems a valid code without an Authorization header', async () => {
       const res = await call('/connect', { method: 'POST', body: { code: 'ABCD-EFGH' }, auth: null });
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ credential: 'good', name: 'Dana' });
+      expect(await res.json()).toEqual({ credential: 'good' });
     });
 
     it('rejects a wrong code', async () => {
@@ -243,6 +307,8 @@ describe('/mcp routes', () => {
             { name: 'notes.md', text: '# Notes\nhello' },
             { name: 'blob.bin', note: 'blob.bin is not a text file, so it is not shown here.' },
             { name: 'missing.md', note: 'missing.md could not be read.' },
+            { name: 'big.txt', note: 'big.txt (100001 bytes) is too large to show here.' },
+            { name: 'link.md', note: 'link.md is outside this session, so it is not shown here.' },
           ],
         },
       ]);

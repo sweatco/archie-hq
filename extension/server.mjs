@@ -65,7 +65,9 @@ const approvalPath = (s, a) => `/sessions/${encodeURIComponent(s)}/approvals/${e
 const describeDecision = (v) =>
   v.state === 'pending'
     ? `Approval ${v.approval_id} is waiting for the person: "${v.text}"`
-    : `Approval ${v.approval_id} ("${v.text}") was ${v.state}${v.decided_by ? ` by ${v.decided_by}` : ''}${v.decided_at ? ` at ${v.decided_at}` : ''}.`;
+    : v.state === 'expired'
+      ? `Approval ${v.approval_id} ("${v.text}") is no longer pending; Archie can ask again.`
+      : `Approval ${v.approval_id} ("${v.text}") was ${v.state}${v.decided_by ? ` by ${v.decided_by}` : ''}${v.decided_at ? ` at ${v.decided_at}` : ''}.`;
 
 const bundle = readFileSync(createRequire(import.meta.url).resolve('@modelcontextprotocol/ext-apps/app-with-deps'), 'utf8');
 const exportsBlock = bundle.match(/export\s*\{([^}]*)\}\s*;?\s*$/);
@@ -92,7 +94,7 @@ const applyCtx = (c) => {
   if (c?.styles?.variables) applyHostStyleVariables(c.styles.variables);
   if (c?.styles?.css?.fonts) applyHostFonts(c.styles.css.fonts);
 };
-const label = { approved: 'Approved', denied: 'Denied' };
+const label = { approved: 'Approved', denied: 'Denied', expired: 'No longer pending' };
 const show = (v, note = '') => {
   $('msg').textContent = v.text;
   if (v.state === 'pending') {
@@ -148,9 +150,9 @@ mcp.registerTool(
     inputSchema: { code: z.string() },
   },
   guarded(async ({ code }) => {
-    const { credential, name } = await archie('POST', '/connect', { code });
+    const { credential } = await archie('POST', '/connect', { code });
     saveCredential(credential);
-    return result(`Connected to Archie as ${name}.`);
+    return result('Connected to Archie.');
   }),
 );
 
@@ -261,6 +263,8 @@ registerAppTool(
     _meta: { ui: { resourceUri: UI_URI, visibility: ['app'] } },
   },
   guarded(async ({ session_id, approval_id, decision }) => {
+    // Only a host that renders the card hides this tool from the model.
+    if (!getUiCapability(mcp.server.getClientCapabilities())) throw new Error('Only the approval card can record a decision.');
     const d = await archie('POST', approvalPath(session_id, approval_id), { approve: decision === 'approve' });
     return result(JSON.stringify(d), d);
   }),

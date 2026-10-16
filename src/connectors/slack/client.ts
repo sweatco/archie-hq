@@ -1611,6 +1611,7 @@ export async function getUserInfo(userId: string): Promise<{
   isUltraRestricted?: boolean;
   isBot?: boolean;
   isAppUser?: boolean;
+  deleted?: boolean;
 }> {
   const client = getSlackClient();
 
@@ -1625,6 +1626,7 @@ export async function getUserInfo(userId: string): Promise<{
     is_ultra_restricted?: boolean;
     is_bot?: boolean;
     is_app_user?: boolean;
+    deleted?: boolean;
   } | undefined;
 
   // External users (Slack Connect) often only populate the name under profile.*
@@ -1648,6 +1650,7 @@ export async function getUserInfo(userId: string): Promise<{
     isUltraRestricted: user?.is_ultra_restricted,
     isBot: user?.is_bot,
     isAppUser: user?.is_app_user,
+    deleted: user?.deleted,
   };
 }
 

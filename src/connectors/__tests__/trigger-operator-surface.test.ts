@@ -450,4 +450,41 @@ describe('resolveApproval via', () => {
     expect(task.handleTriggerApproval).toHaveBeenCalledWith('cli', TRIGGER_ID);
     expect(emitEvent).toHaveBeenCalledWith('approval:resolved', TASK_ID, { type: 'trigger', approve: true });
   });
+
+  it('authors edit mode as the named approver, ignoring a body approver', async () => {
+    const task = { handleEditModeApproval: vi.fn().mockResolvedValue(undefined) };
+    vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
+
+    await resolveApproval(
+      TASK_ID,
+      { type: 'edit_mode', approve: true, approver: { id: 'U2', name: 'Mallory' } },
+      { approval_id: 3, approver: { id: 'U1', name: 'Dana', email: 'dana@example.com' } },
+    );
+
+    expect(task.handleEditModeApproval).toHaveBeenCalledWith({ id: 'U1', name: 'Dana', email: 'dana@example.com' });
+  });
+
+  it('marks a refused tool-call decision stale for /mcp and stays silent without via', async () => {
+    const task = { handleToolCallApproval: vi.fn().mockResolvedValue('stale') };
+    vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
+
+    const viaResult = await resolveApproval(
+      TASK_ID,
+      { type: 'tool_call', approve: true, ref: 'digest-1' },
+      { approval_id: 5, approver: { id: 'U1', name: 'Dana' } },
+    );
+    expect(viaResult.status).toBe(409);
+    expect(emitEvent).toHaveBeenCalledWith('approval:resolved', TASK_ID, {
+      type: 'tool_call',
+      approve: true,
+      approval_id: 5,
+      approver_name: 'Dana',
+      stale: true,
+    });
+
+    vi.mocked(emitEvent).mockClear();
+    const cliResult = await resolveApproval(TASK_ID, { type: 'tool_call', approve: true, ref: 'digest-1' });
+    expect(cliResult.status).toBe(409);
+    expect(emitEvent).not.toHaveBeenCalled();
+  });
 });

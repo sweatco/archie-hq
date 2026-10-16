@@ -65,6 +65,7 @@ export async function resolveApproval(
     }
 
     const resolved = { type, approve, ...(via ? { approval_id: via.approval_id, approver_name: via.approver.name } : {}) };
+    const settledStale = via ? { ...resolved, stale: true } : resolved;
 
     // Normalize the optional approver: a non-empty name is required (an empty
     // git author name fatals every commit), so drop the approver entirely when
@@ -103,8 +104,10 @@ export async function resolveApproval(
         : await task.handleMergeDenial(mergeExpected);
       // A stale disposition means the identity gate rejected the resolution
       // (empty or mismatched slot) and nothing happened — relay that instead
-      // of a false success, and emit no approval:resolved event.
+      // of a false success, and emit no approval:resolved event (`/mcp` gets a
+      // stale one, or its approval view would stay pending forever).
       if (disposition === 'stale') {
+        if (via) emitEvent('approval:resolved', taskId, settledStale);
         return {
           status: 409,
           body: {
@@ -118,7 +121,8 @@ export async function resolveApproval(
       // CLI [y]/[n] on a proposed trigger — same task-level handler the Slack
       // Approve/Deny buttons call. `ref` carries the specific trigger id (the
       // CLI echoes it from the approval event), so the right one resolves even
-      // when several proposals are outstanding. Approver is the CLI operator.
+      // when several proposals are outstanding. Approver is the CLI operator, or
+      // the connected person under `via`.
       if (approve) {
         const trigger = await task.handleTriggerApproval(via ? via.approver.id : 'cli', ref);
         if (!trigger) {
@@ -126,7 +130,7 @@ export async function resolveApproval(
           // settled and must emit approval:resolved, the only thing that clears the prompt.
           const existing = ref ? await loadTrigger(ref) : null;
           const capBlocked = existing?.status === 'pending';
-          if (!capBlocked) emitEvent('approval:resolved', taskId, resolved);
+          if (!capBlocked) emitEvent('approval:resolved', taskId, settledStale);
           return {
             status: 409,
             body: {
@@ -142,7 +146,7 @@ export async function resolveApproval(
       } else {
         const result = await task.handleTriggerDenial(ref);
         if (result.outcome !== 'withdrawn') {
-          emitEvent('approval:resolved', taskId, resolved);
+          emitEvent('approval:resolved', taskId, settledStale);
           return {
             status: 409,
             body: {
@@ -160,7 +164,8 @@ export async function resolveApproval(
       }
     } else if (type === 'tool_call') {
       // Same trust model as every other gate's API path: reaching this route
-      // means operator access to the engine. `ref` carries the digest of the
+      // means operator access to the engine, and `/mcp` reaches it only for the
+      // connected person's own task. `ref` carries the digest of the
       // exact (server, tool, arguments) call being resolved — echoed from the
       // approval event — and is verified against the pending slot inside the
       // Task methods.
@@ -171,6 +176,7 @@ export async function resolveApproval(
         ? await task.handleToolCallApproval(cleanApprover, ref)
         : await task.handleToolCallDenial(ref);
       if (disposition === 'stale') {
+        if (via) emitEvent('approval:resolved', taskId, settledStale);
         return {
           status: 409,
           body: {

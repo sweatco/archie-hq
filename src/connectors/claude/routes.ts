@@ -3,8 +3,8 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const express = require('express');
 
-import { readFile } from 'fs/promises';
-import { basename } from 'path';
+import { open, realpath } from 'fs/promises';
+import { basename, sep } from 'path';
 import { redeemCode, findConnection, type ClaudeConnection } from './connections.js';
 import { resolveApproval } from '../api/routes.js';
 import { Task } from '../../tasks/task.js';
@@ -14,9 +14,10 @@ import {
   loadMetadata,
   findTaskOnDisk,
   eventsFlushed,
+  getTaskPath,
 } from '../../tasks/persistence.js';
 import { AGENT_PROMPTS } from '../../agents/prompts.js';
-import { getUserInfo } from '../slack/client.js';
+import { getUserInfo, isExternalUser } from '../slack/client.js';
 import { createKeyedLock } from '../../system/keyed-lock.js';
 import { logger } from '../../system/logger.js';
 import type { SystemEvent } from '../../system/event-bus.js';
@@ -25,7 +26,7 @@ interface ApprovalView {
   approval_id: number;
   type: string;
   text: string;
-  state: 'pending' | 'approved' | 'denied';
+  state: 'pending' | 'approved' | 'denied' | 'expired';
   decided_by?: string;
   decided_at?: string;
   request: Record<string, unknown>;
@@ -33,9 +34,10 @@ interface ApprovalView {
 
 const decisionLock = createKeyedLock();
 
-async function person(c: ClaudeConnection) {
-  const info = await getUserInfo(c.user_id);
-  return { id: c.user_id, name: info.realName || info.name, email: info.email };
+interface Person {
+  id: string;
+  name: string;
+  email?: string;
 }
 
 async function ownedTask(id: unknown, c: ClaudeConnection) {
@@ -56,14 +58,17 @@ function approvalViews(events: SystemEvent[]): ApprovalView[] {
         request: e.data,
       });
     } else if (e.type === 'approval:resolved') {
+      // A decision settles every earlier request for the same item, as the CLI prompt does, so a re-asked or re-posted request never stays pending to be approved twice.
       const target = typeof e.data.approval_id === 'number'
         ? views.find((v) => v.approval_id === e.data.approval_id)
-        : [...views].reverse().find((v) => v.state === 'pending' && v.type === e.data.type);
-      if (target && target.state === 'pending') {
-        target.state = e.data.approve ? 'approved' : 'denied';
-        target.decided_at = e.timestamp;
-        if (typeof e.data.approver_name === 'string') {
-          target.decided_by = e.data.approver_name;
+        : undefined;
+      const type = target ? target.type : String(e.data.type);
+      for (const v of views) {
+        if (v.state !== 'pending' || v.type !== type || (target && !['ref', 'github', 'pr_number'].every((k) => v.request[k] === target.request[k]))) continue;
+        v.state = e.data.stale ? 'expired' : e.data.approve ? 'approved' : 'denied';
+        v.decided_at = e.timestamp;
+        if (!e.data.stale && typeof e.data.approver_name === 'string') {
+          v.decided_by = e.data.approver_name;
         }
       }
     }
@@ -73,16 +78,27 @@ function approvalViews(events: SystemEvent[]): ApprovalView[] {
 
 const view = ({ request, ...rest }: ApprovalView) => rest;
 
-async function readAttachment(path: string): Promise<{ name: string; text: string } | { name: string; note: string }> {
+// The path was checked against the PM's sandbox when it was posted, but this process is not sandboxed and the file may have become a symlink since.
+async function readAttachment(taskId: string, path: string): Promise<{ name: string; text: string } | { name: string; note: string }> {
   const name = basename(path);
   let buf: Buffer;
   try {
-    buf = await readFile(path);
+    const [real, root] = await Promise.all([realpath(path), realpath(getTaskPath(taskId))]);
+    if (!real.startsWith(root + sep)) {
+      return { name, note: `${name} is outside this session, so it is not shown here.` };
+    }
+    const file = await open(real, 'r');
+    try {
+      const { size } = await file.stat();
+      if (size > 100_000) {
+        return { name, note: `${name} (${size} bytes) is too large to show here.` };
+      }
+      buf = await file.readFile();
+    } finally {
+      await file.close();
+    }
   } catch {
     return { name, note: `${name} could not be read.` };
-  }
-  if (buf.length > 100_000) {
-    return { name, note: `${name} (${buf.length} bytes) is too large to show here.` };
   }
   let text: string;
   try {
@@ -112,9 +128,8 @@ export function mountClaudeRoutes(app: Application): void {
         res.status(401).json({ error: 'That code is invalid, already used or expired. Say "connect claude" to Archie in Slack for a new one.' });
         return;
       }
-      const p = await person(result.connection);
       logger.system(`Claude connected for ${result.connection.user_id}`);
-      res.json({ credential: result.credential, name: p.name });
+      res.json({ credential: result.credential });
     } catch (error) {
       logger.error('claude', 'Failed to connect Claude', error);
       res.status(500).json({ error: 'Archie could not handle that request' });
@@ -130,7 +145,13 @@ export function mountClaudeRoutes(app: Application): void {
         res.status(401).json({ error: 'Not connected to Archie. Say "connect claude" to Archie in Slack, then pass the code to connect_archie.' });
         return;
       }
+      const info = await getUserInfo(connection.user_id);
+      if (info.deleted || isExternalUser(info)) {
+        res.status(401).json({ error: 'This Slack account can no longer use Archie.' });
+        return;
+      }
       res.locals.connection = connection;
+      res.locals.person = { id: connection.user_id, name: info.realName || info.name, email: info.email } satisfies Person;
       next();
     } catch (error) {
       logger.error('claude', 'Failed to check the Claude credential', error);
@@ -153,14 +174,14 @@ export function mountClaudeRoutes(app: Application): void {
           return;
         }
         const { taskId } = owned;
-        const p = await person(c);
+        const p = res.locals.person as Person;
         const line = await appendCliMessage(taskId, message, { id: p.id, name: p.name });
         const task = await Task.get(taskId);
         task.linkCliChannel();
         await task.sendMessage(AGENT_PROMPTS.inboundActivity([line]));
         res.json({ session_id: taskId });
       } else {
-        const p = await person(c);
+        const p = res.locals.person as Person;
         const task = await Task.create();
         task.metadata.created_by = c.user_id;
         task.metadata.home_channel = { channel_id: c.channel_id, channel_name: c.channel_name };
@@ -187,6 +208,7 @@ export function mountClaudeRoutes(app: Application): void {
         return;
       }
       const { taskId, metadata } = owned;
+      await eventsFlushed(taskId);
       const { events } = await readEvents(taskId);
       const after = Math.max(0, Number.parseInt(String(req.query.after ?? '0'), 10) || 0);
       const replies: Array<{ text: string; files: Array<{ name: string; text: string } | { name: string; note: string }> }> = [];
@@ -197,7 +219,7 @@ export function mountClaudeRoutes(app: Application): void {
             files: await Promise.all(
               (Array.isArray(e.data.files) ? e.data.files : [])
                 .filter((f): f is string => typeof f === 'string')
-                .map(readAttachment),
+                .map((f) => readAttachment(taskId, f)),
             ),
           });
         }
@@ -264,7 +286,7 @@ export function mountClaudeRoutes(app: Application): void {
           res.json({ ...view(v), already_decided: true });
           return;
         }
-        const p = await person(c);
+        const p = res.locals.person as Person;
         const r = await resolveApproval(
           taskId,
           { type: v.type, approve, github: v.request.github, pr_number: v.request.pr_number, ref: v.request.ref },

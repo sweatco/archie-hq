@@ -7,6 +7,8 @@ vi.mock('../../../system/logger.js', () => ({
 vi.mock('../../slack/client.js', () => ({
   getChannelInfo: vi.fn().mockResolvedValue({ id: 'D1', name: 'DM with Dana', isPrivate: true, isIm: true, imUserId: 'U1' }),
   postSlackMessage: vi.fn(),
+  getUserInfo: vi.fn().mockResolvedValue({ realName: 'Dana', name: 'dana' }),
+  isExternalUser: vi.fn(() => false),
 }));
 
 vi.mock('../connections.js', () => ({
@@ -15,7 +17,7 @@ vi.mock('../connections.js', () => ({
 }));
 
 import { handleClaudeCommand } from '../dm-commands.js';
-import { postSlackMessage } from '../../slack/client.js';
+import { getUserInfo, isExternalUser, postSlackMessage } from '../../slack/client.js';
 import { issueCode, revokeUser } from '../connections.js';
 
 function posted(): { channel: string; text: string; threadTs?: string } {
@@ -33,6 +35,19 @@ describe('handleClaudeCommand', () => {
     expect(posted().channel).toBe('D1');
     expect(posted().text).toContain('ABCD-EFGH');
     expect(posted().threadTs).toBeUndefined();
+  });
+
+  it('issues no code to an external user', async () => {
+    vi.mocked(isExternalUser).mockReturnValueOnce(true);
+    expect(await handleClaudeCommand({ channel: 'D1', user: 'U9', raw: { text: 'connect claude' } })).toBe(true);
+    expect(issueCode).not.toHaveBeenCalled();
+    expect(postSlackMessage).not.toHaveBeenCalled();
+  });
+
+  it('issues no code when the person cannot be looked up', async () => {
+    vi.mocked(getUserInfo).mockRejectedValueOnce(new Error('slack down'));
+    await expect(handleClaudeCommand({ channel: 'D1', user: 'U1', raw: { text: 'connect claude' } })).rejects.toThrow('slack down');
+    expect(issueCode).not.toHaveBeenCalled();
   });
 
   it('ignores case, surrounding space and a trailing exclamation mark', async () => {
