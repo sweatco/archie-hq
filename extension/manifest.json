@@ -37,7 +37,7 @@
     },
     {
       "name": "check_archie",
-      "description": "See what is new in an Archie session since the last check: Archie's replies, whether it is still working or done, and approvals waiting for the person."
+      "description": "See what is new in an Archie session since the last check: Archie's replies, whether it is still working or done, and approvals waiting for the person. While Archie is working it waits up to a minute for something new. Keep calling it until Archie replies, asks for an approval, or has finished; never wait with shell commands."
     },
     {
       "name": "approve_archie",

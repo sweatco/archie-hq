@@ -164,12 +164,15 @@ mcp.registerTool(
   },
   guarded(async ({ message, session_id }) => {
     const { session_id: id } = await archie('POST', '/sessions', { message, session_id });
-    return result(`Archie has it. Session ${id}. Call check_archie with this session_id for replies; pass it to ask_archie to continue the session.`, { session_id: id });
+    return result(`Archie has it. Session ${id}. Call check_archie with this session_id for replies, and keep calling it until Archie replies, asks for an approval, or has finished; pass the session_id to ask_archie to continue the session.`, { session_id: id });
   }),
 );
 
+const CHECK_WAIT_MS = 60_000;
+const CHECK_POLL_MS = 2_000;
+
 const statusLine = {
-  working: 'Archie is still working. Check again in a little while.',
+  working: 'Archie is still working. Call check_archie again to keep waiting.',
   done: 'Archie has finished. Use ask_archie with this session_id to follow up.',
   paused: 'Archie is paused, waiting for an approval or for you.',
 };
@@ -177,20 +180,28 @@ const statusLine = {
 mcp.registerTool(
   'check_archie',
   {
-    description: "See what is new in an Archie session since the last check: Archie's replies, whether it is still working or done, and approvals waiting for the person.",
+    description: "See what is new in an Archie session since the last check: Archie's replies, whether it is still working or done, and approvals waiting for the person. While Archie is working it waits up to a minute for something new. Keep calling it until Archie replies, asks for an approval, or has finished; never wait with shell commands.",
     inputSchema: { session_id: z.string() },
   },
   guarded(async ({ session_id }) => {
-    const r = await archie('GET', `/sessions/${encodeURIComponent(session_id)}?after=${cursors.get(session_id) ?? 0}`);
-    cursors.set(session_id, r.cursor);
+    const deadline = Date.now() + CHECK_WAIT_MS;
+    const replies = [];
+    let r;
+    for (;;) {
+      r = await archie('GET', `/sessions/${encodeURIComponent(session_id)}?after=${cursors.get(session_id) ?? 0}`);
+      cursors.set(session_id, r.cursor);
+      replies.push(...r.replies);
+      if (replies.length > 0 || r.approvals.length > 0 || r.status !== 'working' || Date.now() >= deadline) break;
+      await new Promise((resolve) => setTimeout(resolve, CHECK_POLL_MS));
+    }
     let text = `Session ${session_id}: ${statusLine[r.status]}`;
-    for (const reply of r.replies) {
+    for (const reply of replies) {
       text += `\n\nArchie: ${reply.text}`;
       for (const f of reply.files) {
         text += 'text' in f ? `\n\n--- ${f.name} ---\n${f.text}` : `\n\n(${f.note})`;
       }
     }
-    if (r.replies.length === 0) text += '\n\nNo new replies.';
+    if (replies.length === 0) text += '\n\nNo new replies.';
     for (const a of r.approvals) {
       text += `\n\nWaiting for approval ${a.approval_id}: ${a.text}\nCall approve_archie with this session_id and approval_id ${a.approval_id} to show it to the person. Only the person can decide.`;
     }

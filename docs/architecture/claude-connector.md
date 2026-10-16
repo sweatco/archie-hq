@@ -16,7 +16,7 @@ Every `/mcp` call except `/connect` carries `Authorization: Bearer <credential>`
 
 ## Sessions
 
-Sessions work like subagents. `ask_archie(message, session_id?)` returns at once: without an id it starts a task, with one it continues that task. `check_archie(session_id)` returns what is new since the previous check: Archie's replies, whether it is working, done or paused, and any approvals waiting for the person.
+Sessions work like subagents. `ask_archie(message, session_id?)` returns at once: without an id it starts a task, with one it continues that task. `check_archie(session_id)` returns what is new since the previous check: Archie's replies, whether it is working, done or paused, and any approvals waiting for the person. While Archie is working with nothing new, the extension keeps polling for up to a minute before it answers, and its description tells the model to keep checking until Archie replies, asks for an approval or finishes.
 
 | route | does |
 |---|---|
