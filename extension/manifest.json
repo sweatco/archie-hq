@@ -1,0 +1,54 @@
+{
+  "manifest_version": "0.3",
+  "name": "archie",
+  "display_name": "Archie",
+  "version": "0.1.0",
+  "description": "Talk to Archie, your team's AI teammate, from Claude.",
+  "author": {
+    "name": "Archie contributors"
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "server.mjs",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server.mjs"],
+      "env": {
+        "ARCHIE_URL": "${user_config.archie_url}"
+      }
+    }
+  },
+  "user_config": {
+    "archie_url": {
+      "type": "string",
+      "title": "Archie URL",
+      "description": "Base URL of your Archie server, e.g. https://archie.example.com",
+      "required": true
+    }
+  },
+  "tools": [
+    {
+      "name": "connect_archie",
+      "description": "Connect Claude to Archie. The person gets a one-time code by saying \"connect claude\" to Archie in a Slack DM; pass that code here. Needed once per computer."
+    },
+    {
+      "name": "ask_archie",
+      "description": "Ask Archie, an AI teammate with access to your company's tools, to do or answer something. Returns at once with a session_id while Archie works in the background, like a subagent. Without session_id it starts a new session; with one it continues that session. Read Archie's replies with check_archie."
+    },
+    {
+      "name": "check_archie",
+      "description": "See what is new in an Archie session since the last check: Archie's replies, whether it is still working or done, and approvals waiting for the person."
+    },
+    {
+      "name": "approve_archie",
+      "description": "Put an Archie approval in front of the person so they can approve or deny it. Only the person decides; you cannot."
+    }
+  ],
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=20.0.0"
+    }
+  },
+  "license": "AGPL-3.0-or-later"
+}

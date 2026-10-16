@@ -20,6 +20,7 @@
     "oauth:revoke": "tsx src/cli/oauth.ts revoke",
     "oauth:refresh": "tsx src/cli/oauth.ts refresh",
     "e2e:prepare": "tsx tools/e2e/prepare-worktree.ts",
+    "extension:pack": "npm ci --prefix extension --omit=dev && npx --yes @anthropic-ai/mcpb pack extension dist/archie.mcpb",
     "docker:dev": "docker compose up --build",
     "docker:stop": "docker compose down",
     "test": "vitest run --reporter=verbose",

@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+extension/node_modules/
 
 # Build output (will be rebuilt in container)
 dist/
