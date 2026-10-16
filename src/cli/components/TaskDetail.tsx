@@ -201,7 +201,9 @@ export function TaskDetail({ taskId, onBack, liveEvents, onConnect }: TaskDetail
       }
       case 'approval:resolved':
         logLines.push({
-          node: <Text>{event.data.approve ? '✅' : '❌'} Approval {event.data.approve ? 'granted' : 'denied'}: {event.data.type as string}</Text>,
+          node: event.data.stale
+            ? <Text>⚠️ Approval no longer pending: {event.data.type as string}</Text>
+            : <Text>{event.data.approve ? '✅' : '❌'} Approval {event.data.approve ? 'granted' : 'denied'}: {event.data.type as string}</Text>,
         });
         break;
       case 'reminder:set':

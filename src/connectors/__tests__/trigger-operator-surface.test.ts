@@ -487,4 +487,42 @@ describe('resolveApproval via', () => {
     expect(cliResult.status).toBe(409);
     expect(emitEvent).not.toHaveBeenCalled();
   });
+
+  it('marks a refused merge decision stale for /mcp', async () => {
+    const task = { handleMergeApproval: vi.fn().mockResolvedValue('stale') };
+    vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
+
+    const result = await resolveApproval(
+      TASK_ID,
+      { type: 'merge', approve: true, github: 'acme/app', pr_number: 7 },
+      { approval_id: 6, approver: { id: 'U1', name: 'Dana' } },
+    );
+    expect(result.status).toBe(409);
+    expect(emitEvent).toHaveBeenCalledWith('approval:resolved', TASK_ID, {
+      type: 'merge',
+      approve: true,
+      approval_id: 6,
+      approver_name: 'Dana',
+      stale: true,
+    });
+  });
+
+  it('marks a refused trigger denial stale for /mcp', async () => {
+    const task = { handleTriggerDenial: vi.fn().mockResolvedValue({ outcome: 'already_live', status: 'enabled' }) };
+    vi.mocked(Task.get).mockResolvedValue(task as unknown as Task);
+
+    const result = await resolveApproval(
+      TASK_ID,
+      { type: 'trigger', approve: false, ref: TRIGGER_ID },
+      { approval_id: 8, approver: { id: 'U1', name: 'Dana' } },
+    );
+    expect(result.status).toBe(409);
+    expect(emitEvent).toHaveBeenCalledWith('approval:resolved', TASK_ID, {
+      type: 'trigger',
+      approve: false,
+      approval_id: 8,
+      approver_name: 'Dana',
+      stale: true,
+    });
+  });
 });

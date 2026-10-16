@@ -3,7 +3,8 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const express = require('express');
 
-import { open, realpath } from 'fs/promises';
+import { constants } from 'fs';
+import { open, realpath, stat } from 'fs/promises';
 import { basename, sep } from 'path';
 import { redeemCode, findConnection, type ClaudeConnection } from './connections.js';
 import { resolveApproval } from '../api/routes.js';
@@ -63,8 +64,11 @@ function approvalViews(events: SystemEvent[]): ApprovalView[] {
         ? views.find((v) => v.approval_id === e.data.approval_id)
         : undefined;
       const type = target ? target.type : String(e.data.type);
-      for (const v of views) {
-        if (v.state !== 'pending' || v.type !== type || (target && !['ref', 'github', 'pr_number'].every((k) => v.request[k] === target.request[k]))) continue;
+      const settled = views.filter((v) => v.state === 'pending' && v.type === type
+        && (!target || ['ref', 'github', 'pr_number'].every((k) => v.request[k] === target.request[k])));
+      // An operator resolution carries no id or ref, so it can only be placed when it is unambiguous.
+      if (!target && settled.length !== 1) return;
+      for (const v of settled) {
         v.state = e.data.stale ? 'expired' : e.data.approve ? 'approved' : 'denied';
         v.decided_at = e.timestamp;
         if (!e.data.stale && typeof e.data.approver_name === 'string') {
@@ -78,22 +82,30 @@ function approvalViews(events: SystemEvent[]): ApprovalView[] {
 
 const view = ({ request, ...rest }: ApprovalView) => rest;
 
-// The path was checked against the PM's sandbox when it was posted, but this process is not sandboxed and the file may have become a symlink since.
+const MAX_ATTACHMENT_BYTES = 100_000;
+
+// The path was checked against the PM's sandbox when it was posted, but this process is not sandboxed and the PM can swap the file for a symlink or a FIFO at any moment. So the file is opened first, without following or blocking, and the opened inode itself must be the one a path inside the task folder names.
 async function readAttachment(taskId: string, path: string): Promise<{ name: string; text: string } | { name: string; note: string }> {
   const name = basename(path);
   let buf: Buffer;
   try {
-    const [real, root] = await Promise.all([realpath(path), realpath(getTaskPath(taskId))]);
-    if (!real.startsWith(root + sep)) {
-      return { name, note: `${name} is outside this session, so it is not shown here.` };
-    }
-    const file = await open(real, 'r');
+    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
-      const { size } = await file.stat();
-      if (size > 100_000) {
-        return { name, note: `${name} (${size} bytes) is too large to show here.` };
+      const opened = await file.stat();
+      const [real, root] = await Promise.all([realpath(path), realpath(getTaskPath(taskId))]);
+      const named = await stat(real);
+      if (!real.startsWith(root + sep) || named.dev !== opened.dev || named.ino !== opened.ino) {
+        return { name, note: `${name} is outside this session, so it is not shown here.` };
       }
-      buf = await file.readFile();
+      if (!opened.isFile()) {
+        return { name, note: `${name} is not a text file, so it is not shown here.` };
+      }
+      buf = Buffer.alloc(MAX_ATTACHMENT_BYTES + 1);
+      const { bytesRead } = await file.read(buf, 0, buf.length, 0);
+      if (bytesRead > MAX_ATTACHMENT_BYTES) {
+        return { name, note: `${name} (${opened.size} bytes) is too large to show here.` };
+      }
+      buf = buf.subarray(0, bytesRead);
     } finally {
       await file.close();
     }

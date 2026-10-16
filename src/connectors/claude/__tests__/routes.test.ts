@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'fs/promises';
-import { tmpdir } from 'os';
+import { mkdir, rm, symlink, writeFile } from 'fs/promises';
+import { execFileSync } from 'child_process';
 import { join } from 'path';
 import { createRequire } from 'module';
 import type { Server } from 'http';
@@ -110,14 +110,17 @@ async function writeOwnFixture(status = 'in_progress'): Promise<void> {
   await writeFile(mdPath, '# Notes\nhello', 'utf-8');
   await writeFile(binPath, Buffer.from([0x61, 0x00, 0x62]));
   await writeFile(bigPath, 'x'.repeat(100_001), 'utf-8');
-  const outside = await mkdtemp(join(tmpdir(), 'archie-claude-outside-'));
+  const outside = join(SESSIONS_DIR, 'outside');
+  await mkdir(outside, { recursive: true });
   await writeFile(join(outside, 'secret.txt'), 'SERVER SECRET', 'utf-8');
   await symlink(join(outside, 'secret.txt'), linkPath);
+  await symlink(outside, join(dir, 'linkdir'));
+  execFileSync('mkfifo', [join(dir, 'pipe')]);
   await writeEvents(OWN, [
     { type: 'message', data: { from: 'cli', to: 'pm-agent', message: 'hi' } },
     { type: 'message', data: { from: 'pm-agent', to: 'user', message: 'first' } },
     { type: 'approval:requested', data: { approvalType: 'trigger', text: 'Set up this automation?', ref: 'trg-1' } },
-    { type: 'message', data: { from: 'pm-agent', to: 'user', message: 'second', files: [mdPath, binPath, join(dir, 'missing.md'), bigPath, linkPath] } },
+    { type: 'message', data: { from: 'pm-agent', to: 'user', message: 'second', files: [mdPath, binPath, join(dir, 'missing.md'), bigPath, linkPath, join(dir, 'linkdir', 'secret.txt'), join(dir, 'pipe')] } },
     { type: 'approval:requested', data: { approvalType: 'edit_mode', text: 'Turn on edit mode?' } },
     { type: 'approval:resolved', data: { type: 'edit_mode', approve: true, approval_id: 4, approver_name: 'Dana' } },
   ]);
@@ -231,7 +234,17 @@ describe('/mcp routes', () => {
       expect(view).not.toHaveProperty('decided_by');
     });
 
-    it('applies an operator resolution without an id to earlier requests of that type', async () => {
+    it('leaves an operator resolution without an id unplaced when several requests of that type are pending', async () => {
+      const events = [
+        { type: 'approval:requested', data: { approvalType: 'trigger', text: 'One', ref: 'trg-1' } },
+        { type: 'approval:requested', data: { approvalType: 'trigger', text: 'Two', ref: 'trg-2' } },
+        { type: 'approval:resolved', data: { type: 'trigger', approve: true } },
+      ];
+      expect(await viewOf(events, 0)).toMatchObject({ state: 'pending' });
+      expect(await viewOf(events, 1)).toMatchObject({ state: 'pending' });
+    });
+
+    it('applies an operator resolution without an id to the one pending request of that type', async () => {
       const events = [
         { type: 'approval:requested', data: { approvalType: 'edit_mode', text: 'Ask' } },
         { type: 'approval:resolved', data: { type: 'edit_mode', approve: false } },
@@ -308,7 +321,9 @@ describe('/mcp routes', () => {
             { name: 'blob.bin', note: 'blob.bin is not a text file, so it is not shown here.' },
             { name: 'missing.md', note: 'missing.md could not be read.' },
             { name: 'big.txt', note: 'big.txt (100001 bytes) is too large to show here.' },
-            { name: 'link.md', note: 'link.md is outside this session, so it is not shown here.' },
+            { name: 'link.md', note: 'link.md could not be read.' },
+            { name: 'secret.txt', note: 'secret.txt is outside this session, so it is not shown here.' },
+            { name: 'pipe', note: 'pipe is not a text file, so it is not shown here.' },
           ],
         },
       ]);
