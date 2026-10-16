@@ -191,6 +191,8 @@ export function mountClaudeRoutes(app: Application): void {
         const task = await Task.get(taskId);
         task.linkCliChannel();
         await task.sendMessage(AGENT_PROMPTS.inboundActivity([line]));
+        // Waking a finished task flips its status in memory and saves it on a debounce; the next check reads the disk.
+        await task.save(true);
         res.json({ session_id: taskId });
       } else {
         const p = res.locals.person as Person;

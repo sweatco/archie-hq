@@ -295,6 +295,8 @@ describe('/mcp routes', () => {
       expect(taskGetMock).toHaveBeenCalledWith(OWN);
       const task = await taskGetMock.mock.results[0].value;
       expect(task.sendMessage).toHaveBeenCalledTimes(1);
+      expect(task.save).toHaveBeenCalledWith(true);
+      expect(appendCliMessage).toHaveBeenCalledWith(OWN, 'more', { id: 'U1', name: 'Dana' });
     });
 
     it.each([FOREIGN, UNKNOWN])('refuses session %s that is not the caller’s', async (id) => {

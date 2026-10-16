@@ -212,7 +212,7 @@ registerAppTool(
     if (getUiCapability(caps)) {
       return result(
         v.state === 'pending'
-          ? `The approval card is in front of the person: "${v.text}". They decide with its buttons; you cannot. Use check_archie afterwards.`
+          ? `Approval ${v.approval_id} is pending: "${v.text}". The card is in front of the person, who decides with its buttons; you cannot. Use check_archie afterwards.`
           : describeDecision(v),
         { session_id, approval_id },
       );
