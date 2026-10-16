@@ -130,7 +130,7 @@ describe('runner configuration', () => {
     await expect(result).rejects.not.toThrow(/IOS_RUNNER_PASSWORD/);
   });
 
-  it('requires paired Access credentials for deployed HTTPS connections', async () => {
+  it('allows deployed HTTPS without Access credentials and validates optional credential pairs', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'archie-runner-config-'));
     tempDirs.push(dir);
     const path = join(dir, 'runners.json');
@@ -141,8 +141,15 @@ describe('runner configuration', () => {
       ORCHARD_SERVICE_ACCOUNT_TOKEN: 'service-secret',
       IOS_RUNNER_PASSWORD: 'guest-secret',
     };
-    await expect(loadRunnerConfig(env)).rejects.toThrow(/HTTPS and Cloudflare Access/);
+    await expect(loadRunnerConfig(env)).resolves.toMatchObject({ serviceAccountName: 'archie', accessClientId: undefined, accessClientSecret: undefined });
     await expect(loadRunnerConfig({ ...env, ORCHARD_CF_ACCESS_CLIENT_ID: 'id' })).rejects.toThrow(/provided together/);
+    await expect(loadRunnerConfig({ ...env, ORCHARD_CF_ACCESS_CLIENT_SECRET: 'secret' })).rejects.toThrow(/provided together/);
+
+    await writeFile(path, JSON.stringify({
+      ...baseConfig(),
+      orchard: { baseUrl: 'http://orchard.example.test/v1', context: 'development', allowInsecureHttp: true },
+    }));
+    await expect(loadRunnerConfig(env)).rejects.toThrow(/require HTTPS/);
   });
 
   it('allows loopback test connections without Access credentials', async () => {

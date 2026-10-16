@@ -107,22 +107,29 @@ export async function appendRunnerExecLog(
   execId: string,
   event: ExecEvent,
   afterCursor: number,
+  metadata: { terminal?: false; outputBytes?: number; outputTruncated?: true } = {},
 ): Promise<number> {
   if (event.type === 'history_end') return afterCursor;
   if (!Number.isSafeInteger(afterCursor) || afterCursor < 0) throw new Error(`Invalid runner delivery cursor: ${afterCursor}`);
   const path = getRunnerExecLogPath(taskId, leaseId, execId);
   await mkdir(join(getRunnerDataPath(taskId, leaseId), 'exec'), { recursive: true });
   const record = event.type === 'stdout' || event.type === 'stderr'
-    ? { type: event.type, data: Buffer.from(event.data).toString('utf8'), watermark: event.watermark }
+    ? { type: event.type, data: Buffer.from(event.data).toString('base64'), encoding: 'base64', watermark: event.watermark }
     : event;
   const cursor = afterCursor + recordDeliverySize(record);
-  await appendFile(path, `\n${JSON.stringify({ timestamp: new Date().toISOString(), cursor, ...record })}\n`, { mode: 0o600 });
+  await appendFile(path, `\n${JSON.stringify({ timestamp: new Date().toISOString(), cursor, ...record, ...metadata })}\n`, { mode: 0o600 });
   return cursor;
 }
 
-function recordDeliverySize(record: { type?: unknown; data?: unknown; error?: unknown }): number {
+interface LogRecord { type?: unknown; data?: unknown; encoding?: unknown; error?: unknown; watermark?: unknown; cursor?: unknown; code?: unknown; timestamp?: unknown; terminal?: unknown; outputBytes?: unknown; outputTruncated?: unknown }
+
+function recordData(record: LogRecord): Buffer {
+  return Buffer.from(String(record.data), record.encoding === 'base64' ? 'base64' : 'utf8');
+}
+
+function recordDeliverySize(record: LogRecord): number {
   if ((record.type === 'stdout' || record.type === 'stderr') && typeof record.data === 'string') {
-    return Math.max(1, Buffer.byteLength(record.data));
+    return Math.max(1, recordData(record).length);
   }
   if (record.type === 'error' && typeof record.error === 'string') {
     return Math.max(1, Buffer.byteLength(record.error));
@@ -133,7 +140,6 @@ function recordDeliverySize(record: { type?: unknown; data?: unknown; error?: un
 
 function utf8PageLength(data: Buffer, offset: number, limit: number, allowSingleScalarOverrun: boolean): number {
   if (offset >= data.length || limit <= 0) return 0;
-  if ((data[offset] & 0xc0) === 0x80) throw new Error('Runner delivery cursor splits a UTF-8 character');
   let end = Math.min(data.length, offset + limit);
   if (end === data.length) return end - offset;
   while (end > offset && (data[end] & 0xc0) === 0x80) end -= 1;
@@ -144,21 +150,36 @@ function utf8PageLength(data: Buffer, offset: number, limit: number, allowSingle
   return Math.min(scalarBytes, data.length - offset);
 }
 
-export async function readRunnerExecLogState(taskId: string, leaseId: string, execId: string): Promise<{ watermark: number; deliveryCursor: number }> {
+export interface RunnerExecLogState {
+  watermark: number;
+  deliveryCursor: number;
+  outputBytes: number;
+  outputTruncated?: boolean;
+  terminal?: { state: 'completed' | 'failed'; exitCode?: number; finishedAt: string };
+}
+
+export async function readRunnerExecLogState(taskId: string, leaseId: string, execId: string): Promise<RunnerExecLogState> {
   const path = getRunnerExecLogPath(taskId, leaseId, execId);
-  if (!existsSync(path)) return { watermark: 0, deliveryCursor: 0 };
+  if (!existsSync(path)) return { watermark: 0, deliveryCursor: 0, outputBytes: 0 };
   let watermark = 0;
+  let outputBytes = 0;
+  let outputTruncated = false;
+  let terminal: RunnerExecLogState['terminal'];
   let deliveryCursor = 0;
   let legacyCursor = 0;
   const lines = createInterface({ input: createReadStream(path), crlfDelay: Infinity });
   for await (const line of lines) {
-    let record: { type?: unknown; data?: unknown; error?: unknown; watermark?: unknown; cursor?: unknown };
+    let record: LogRecord;
     try {
       record = JSON.parse(line) as typeof record;
     } catch {
       continue;
     }
     const expectedCursor = deliveryCursor + recordDeliverySize(record);
+    if (record.type === 'stdout' || record.type === 'stderr') outputBytes += recordData(record).length;
+    else if (record.type === 'error') outputBytes += Buffer.byteLength(String(record.error));
+    if (typeof record.outputBytes === 'number' && Number.isSafeInteger(record.outputBytes) && record.outputBytes >= 0) outputBytes = Math.max(outputBytes, record.outputBytes);
+    outputTruncated ||= record.outputTruncated === true;
     legacyCursor = expectedCursor;
     if (typeof record.watermark === 'number' && Number.isSafeInteger(record.watermark) && record.watermark >= 0) {
       watermark = Math.max(watermark, record.watermark);
@@ -168,8 +189,12 @@ export async function readRunnerExecLogState(taskId: string, leaseId: string, ex
       : legacyCursor;
     if (cursor !== expectedCursor) throw new Error(`Runner exec log cursor gap: expected ${expectedCursor}, found ${cursor}`);
     deliveryCursor = cursor;
+    if ((record.type === 'exit' || record.type === 'error') && record.terminal !== false && typeof record.timestamp === 'string') {
+      if (record.type === 'exit' && (!Number.isSafeInteger(record.code))) throw new Error('Invalid runner exec exit code');
+      terminal = { state: record.type === 'exit' ? 'completed' : 'failed', finishedAt: record.timestamp, ...(record.type === 'exit' ? { exitCode: record.code as number } : {}) };
+    }
   }
-  return { watermark, deliveryCursor };
+  return { watermark, deliveryCursor, outputBytes, ...(outputTruncated ? { outputTruncated } : {}), ...(terminal ? { terminal } : {}) };
 }
 
 export async function readRunnerExecOutput(
@@ -186,68 +211,85 @@ export async function readRunnerExecOutput(
     if (afterCursor > 0) throw new Error(`Runner exec log is missing after delivery cursor ${afterCursor}`);
     return { stdout: '', stderr: '', cursor: 0, hasMore: false, truncated: false };
   }
-  const stdout: Buffer[] = [];
-  const stderr: Buffer[] = [];
+  const output = { stdout: [] as Buffer[], stderr: [] as Buffer[] };
+  const pending = { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
   let cursor = afterCursor;
-  let legacyCursor = 0;
   let logCursor = 0;
   let returnedBytes = 0;
-  let hasMore = false;
   let deliveryBlocked = false;
+  // Replay pending bytes from earlier records on every read, including after restart.
+  const replay = (kind: 'stdout' | 'stderr', data: Buffer) => {
+    const combined = Buffer.concat([pending[kind], data]);
+    pending[kind] = combined.subarray(completeUtf8Length(combined));
+  };
   const lines = createInterface({ input: createReadStream(path), crlfDelay: Infinity });
   for await (const line of lines) {
-    let record: { type?: unknown; data?: unknown; error?: unknown; cursor?: unknown };
-    try {
-      record = JSON.parse(line) as { type?: unknown; data?: unknown; error?: unknown; cursor?: unknown };
-    } catch {
-      continue;
-    }
+    let record: LogRecord;
+    try { record = JSON.parse(line) as LogRecord; } catch { continue; }
     const recordStart = logCursor;
     const expectedCursor = recordStart + recordDeliverySize(record);
-    legacyCursor = expectedCursor;
     const recordCursor = typeof record.cursor === 'number' && Number.isSafeInteger(record.cursor) && record.cursor >= 1
-      ? record.cursor
-      : legacyCursor;
+      ? record.cursor : expectedCursor;
     if (recordCursor !== expectedCursor) throw new Error(`Runner exec log cursor gap: expected ${expectedCursor}, found ${recordCursor}`);
     logCursor = recordCursor;
-    if (recordCursor <= cursor) continue;
-    if (deliveryBlocked) {
-      hasMore = true;
+    const kind = record.type === 'stdout' ? 'stdout' : 'stderr';
+    const data = record.type === 'stdout' || record.type === 'stderr' ? recordData(record)
+      : record.type === 'error' ? Buffer.from(String(record.error)) : undefined;
+    if (recordCursor <= afterCursor) {
+      if (data) replay(kind, data);
+      if (record.type === 'exit' || record.type === 'error') { pending.stdout = Buffer.alloc(0); pending.stderr = Buffer.alloc(0); }
       continue;
     }
-    let data: Buffer | undefined;
-    let target: Buffer[] | undefined;
-    if ((record.type === 'stdout' || record.type === 'stderr') && typeof record.data === 'string') {
-      data = Buffer.from(record.data);
-      target = record.type === 'stdout' ? stdout : stderr;
-    } else if (record.type === 'error' && typeof record.error === 'string') {
-      data = Buffer.from(record.error);
-      target = stderr;
-    }
-    if (data && data.length > 0 && target) {
-      const offset = Math.max(0, cursor - recordStart);
-      const remaining = maxBytes - returnedBytes;
-      const length = utf8PageLength(data, offset, remaining, returnedBytes === 0);
-      const delivered = data.subarray(offset, offset + length);
-      target.push(delivered);
-      returnedBytes += delivered.length;
-      cursor = recordStart + offset + delivered.length;
-      if (cursor < recordCursor) {
-        deliveryBlocked = true;
-        hasMore = true;
+    if (deliveryBlocked) continue;
+    if (data?.length) {
+      const offset = Math.max(0, afterCursor - recordStart);
+      if (offset) {
+        replay(kind, data.subarray(0, offset));
+        if (pending[kind].length) throw new Error('Runner delivery cursor splits a UTF-8 character');
       }
-    } else {
-      cursor = recordCursor;
+      const carried = pending[kind].length;
+      const combined = Buffer.concat([pending[kind], data.subarray(offset)]);
+      const complete = completeUtf8Length(combined);
+      const length = utf8PageLength(combined.subarray(0, complete), 0, maxBytes - returnedBytes, returnedBytes === 0);
+      output[kind].push(combined.subarray(0, length));
+      returnedBytes += length;
+      if (length < complete) {
+        cursor = recordStart + offset + Math.max(0, length - carried);
+        deliveryBlocked = true;
+        continue;
+      }
+      pending[kind] = combined.subarray(complete);
     }
+    if (record.type === 'exit' || record.type === 'error') {
+      const tailBytes = pending.stdout.length + pending.stderr.length;
+      // At most two incomplete scalars; flush with the terminal cursor even if
+      // this slightly exceeds the page budget, rather than replaying emitted bytes.
+      output.stdout.push(pending.stdout);
+      output.stderr.push(pending.stderr);
+      returnedBytes += tailBytes;
+      pending.stdout = Buffer.alloc(0);
+      pending.stderr = Buffer.alloc(0);
+    }
+    cursor = recordCursor;
   }
   if (afterCursor > logCursor) throw new Error(`Delivery cursor ${afterCursor} is beyond runner exec log cursor ${logCursor}`);
   return {
-    stdout: Buffer.concat(stdout).toString('utf8'),
-    stderr: Buffer.concat(stderr).toString('utf8'),
+    stdout: Buffer.concat(output.stdout).toString('utf8'),
+    stderr: Buffer.concat(output.stderr).toString('utf8'),
     cursor,
-    hasMore: hasMore || cursor < logCursor,
+    hasMore: cursor < logCursor,
     truncated: false,
   };
+}
+
+/** Keep only an incomplete trailing scalar; invalid complete bytes decode normally. */
+function completeUtf8Length(data: Buffer): number {
+  if (!data.length) return 0;
+  let start = data.length - 1;
+  while (start > 0 && (data[start] & 0xc0) === 0x80) start--;
+  const lead = data[start];
+  const expected = lead >= 0xc2 && lead <= 0xdf ? 2 : lead >= 0xe0 && lead <= 0xef ? 3 : lead >= 0xf0 && lead <= 0xf4 ? 4 : 1;
+  return data.length - start < expected ? start : data.length;
 }
 
 export function removeRunnerExecLog(taskId: string, leaseId: string, execId: string): Promise<void> {

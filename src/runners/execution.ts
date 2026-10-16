@@ -81,7 +81,7 @@ function fingerprint(command: ExecuteCommand): string {
     github: command.github,
     argv: command.argv,
     cwd: command.cwd,
-    envKeys: Object.keys(command.env).sort(),
+    env: Object.entries(command.env).sort(([left], [right]) => left.localeCompare(right)),
   })).digest('hex');
 }
 
@@ -111,6 +111,13 @@ export class RunnerExecution {
       const state = await readRunnerExecLogState(lease.taskId, lease.id, session.id);
       session.watermark = Math.max(session.watermark, state.watermark);
       session.deliveryCursor = Math.max(session.deliveryCursor, state.deliveryCursor);
+      session.outputBytes = Math.max(session.outputBytes, state.outputBytes);
+      session.outputTruncated ||= state.outputTruncated === true;
+      if (session.state === 'running' && state.terminal) {
+        session.state = state.terminal.state;
+        session.exitCode = state.terminal.exitCode;
+        session.finishedAt = state.terminal.finishedAt;
+      }
     }
   }
 
@@ -302,7 +309,7 @@ export class RunnerExecution {
     }
   }
 
-  private async appendEvent(lease: RunnerLease, session: RunnerExecSession, event: ExecEvent): Promise<void> {
+  private async appendEvent(lease: RunnerLease, session: RunnerExecSession, event: ExecEvent, metadata: { terminal?: false; outputBytes?: number; outputTruncated?: true } = {}): Promise<void> {
     if (event.type === 'history_end' || event.type === 'bootstrap_complete') return;
     session.deliveryCursor = await appendRunnerExecLog(
       lease.taskId,
@@ -310,6 +317,7 @@ export class RunnerExecution {
       session.id,
       event,
       session.deliveryCursor,
+      metadata,
     );
   }
 
@@ -377,7 +385,7 @@ export class RunnerExecution {
           if (session.outputBytes > profile.maxExecOutputBytes) {
             const bounded = `Runner command exceeded the ${profile.maxExecOutputBytes}-byte output limit`;
             session.outputTruncated = true;
-            await this.appendEvent(lease, session, { type: 'error', error: bounded, watermark: event.watermark });
+            await this.appendEvent(lease, session, { type: 'error', error: bounded, watermark: event.watermark }, { terminal: false, outputBytes: session.outputBytes, outputTruncated: true });
             throw new Error(bounded);
           }
           await this.appendEvent(lease, session, event);
@@ -392,7 +400,7 @@ export class RunnerExecution {
           if (session.outputBytes > profile.maxExecOutputBytes) {
             const bounded = `Runner error exceeded the ${profile.maxExecOutputBytes}-byte output limit`;
             session.outputTruncated = true;
-            await this.appendEvent(lease, session, { type: 'error', error: bounded, watermark: event.watermark });
+            await this.appendEvent(lease, session, { type: 'error', error: bounded, watermark: event.watermark }, { outputBytes: session.outputBytes, outputTruncated: true });
           } else {
             await this.appendEvent(lease, session, event);
           }

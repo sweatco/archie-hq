@@ -44,6 +44,7 @@ Secrets are injected via the container's environment file plus the mounted
 - `PORT` — HTTP port (defaults to `3000`)
 - `ARCHIE_RUNNERS_CONFIG` — optional mounted Tart runner profile configuration; absence disables runners
 - `ORCHARD_SERVICE_ACCOUNT_NAME` / `ORCHARD_SERVICE_ACCOUNT_TOKEN` — required when runners are enabled
+- `ORCHARD_CF_ACCESS_CLIENT_ID` / `ORCHARD_CF_ACCESS_CLIENT_SECRET` — optional Access service-token pair; provide both or neither. Non-loopback URLs require HTTPS. WARP can authorize the caller when the Access application permits it; Orchard Basic credentials remain required
 - Profile-specific guest password variables named by each runner profile’s `passwordEnv`
 
 ### Tart Runners
@@ -54,7 +55,7 @@ On macOS 15 and newer, run each Orchard worker through the supported privileged-
 
 Use an official, pinned Orchard release. Do not carry a local transport fork to bypass the privileged-helper requirement; a host without the supported root-installed worker is not runner-ready.
 
-Start with one digest-pinned iOS profile, one allowed mobile agent, and `maxConcurrent: 1`. Verify provisioning, repository sync, `xcodebuild`, Simulator boot/install/launch, artifact collection, reconnectable long-running exec, VNC, task completion, and VM deletion before increasing capacity.
+Start with one digest-pinned iOS profile, the allowed PM session (`pm-agent`), and `maxConcurrent: 1`. Verify provisioning, repository sync, `xcodebuild`, Simulator boot/install/launch, artifact collection, reconnectable long-running exec, VNC, task completion, and VM deletion before increasing capacity.
 
 Run only one runner-enabled Archie replica for an `instanceId` and workdir. Capacity accounting and locks are process-local, and duplicate replicas can delete each other's VMs during orphan reconciliation. Keep the runner controller single-replica until distributed leases and leader election exist.
 
@@ -102,13 +103,14 @@ ExecStart=/usr/bin/docker run --name archie-app \
   --security-opt systempaths=unconfined \
   -v /workdir:/workdir \
   -v /app/secrets:/app/secrets \
-  --mount type=bind,src=/etc/archie/runners.json,dst=/app/config/runners.json,readonly \
   -v /data/claude:/home/archie/.claude \
   -v /data/claude/.claude.json:/home/archie/.claude.json \
   <registry>/archie-hq:latest
 Restart=always
 RestartSec=10
 ```
+
+Only when enabling Tart runners, add `--mount type=bind,src=/etc/archie/runners.json,dst=/app/config/runners.json,readonly` to the container command and set `ARCHIE_RUNNERS_CONFIG=/app/config/runners.json` in its environment file. The default deployment needs no runner mount.
 
 `--init` is required: the entrypoint execs `gosu`, so without it Node runs as PID 1 and never reaps the orphaned bwrap/socat/git processes every agent run leaves behind. They accumulate as zombies until the container hits its `pids` limit and can no longer fork — this took production down on 2026-08-28 (18,631 zombies against a ceiling of 18,707). Restarts reset the count, so frequent deploys masked it for months.
 

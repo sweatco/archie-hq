@@ -12,6 +12,7 @@ vi.mock('../../system/workdir.js', async (importOriginal) => ({
 import {
   appendRunnerExecLog,
   getRunnerStatePath,
+  getRunnerExecLogPath,
   listRunnerTaskIds,
   loadRunnerLeases,
   readRunnerExecLogState,
@@ -62,7 +63,7 @@ describe('runner state store', () => {
     cursor = await appendRunnerExecLog(taskId, leaseId, execId, { type: 'exit', code: 0, watermark: 12 }, cursor);
 
     expect(cursor).toBe(9);
-    await expect(readRunnerExecLogState(taskId, leaseId, execId)).resolves.toEqual({ watermark: 12, deliveryCursor: 9 });
+    await expect(readRunnerExecLogState(taskId, leaseId, execId)).resolves.toMatchObject({ watermark: 12, deliveryCursor: 9, outputBytes: 8, terminal: { state: 'completed', exitCode: 0 } });
     await expect(readRunnerExecOutput(taskId, leaseId, execId, 0, 4)).resolves.toEqual({
       stdout: 'abcd', stderr: '', cursor: 4, hasMore: true, truncated: false,
     });
@@ -97,6 +98,72 @@ describe('runner state store', () => {
     await expect(readRunnerExecOutput(taskId, leaseId, execId, 1, 2)).resolves.toMatchObject({ stdout: '€', cursor: 4, hasMore: true });
     await expect(readRunnerExecOutput(taskId, leaseId, execId, 4, 2)).resolves.toMatchObject({ stdout: 'B', cursor: 6, hasMore: false });
     await expect(readRunnerExecOutput(taskId, leaseId, execId, 2, 2)).rejects.toThrow(/splits a UTF-8 character/);
+  });
+
+  it.each([1, 2])('preserves split UTF-8 across interleaved frames and %i-byte pages', async (pageBytes) => {
+    const taskId = 'task-20260819-1205-split';
+    const leaseId = '99999999-9999-4999-8999-999999999999';
+    const execId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    let cursor = await appendRunnerExecLog(taskId, leaseId, execId, { type: 'stdout', data: Buffer.from([0xe2]), watermark: 1 }, 0);
+    cursor = await appendRunnerExecLog(taskId, leaseId, execId, { type: 'stderr', data: Buffer.from([0xf0, 0x9f]), watermark: 2 }, cursor);
+    const initial = await readRunnerExecOutput(taskId, leaseId, execId, 0, 1);
+    expect(initial).toMatchObject({ stdout: '', stderr: '', cursor: 3, hasMore: false });
+    cursor = await appendRunnerExecLog(taskId, leaseId, execId, { type: 'stdout', data: Buffer.from([0x82, 0xac, 0x42]), watermark: 3 }, cursor);
+    cursor = await appendRunnerExecLog(taskId, leaseId, execId, { type: 'stderr', data: Buffer.from([0x98, 0x80, 0x5a]), watermark: 4 }, cursor);
+    cursor = await appendRunnerExecLog(taskId, leaseId, execId, { type: 'exit', code: 0, watermark: 5 }, cursor);
+    let after = initial.cursor;
+    let stdout = '';
+    let stderr = '';
+    for (let page = 0; page < 10; page++) {
+      const output = await readRunnerExecOutput(taskId, leaseId, execId, after, pageBytes);
+      expect(output.cursor).toBeGreaterThan(after);
+      stdout += output.stdout;
+      stderr += output.stderr;
+      after = output.cursor;
+      if (!output.hasMore) break;
+    }
+    expect({ stdout, stderr, after }).toEqual({ stdout: '€B', stderr: '😀Z', after: cursor });
+    await expect(readRunnerExecLogState(taskId, leaseId, execId)).resolves.toMatchObject({ watermark: 5, outputBytes: 9, terminal: { state: 'completed', exitCode: 0 } });
+  });
+
+  it('does not replay a terminal error page when another stream has an incomplete scalar', async () => {
+    const taskId = 'task-20260819-1207-tail';
+    const leaseId = '99999999-9999-4999-8999-999999999999';
+    const execId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    let cursor = await appendRunnerExecLog(taskId, leaseId, execId, { type: 'stdout', data: Buffer.from([0xe2]), watermark: 1 }, 0);
+    cursor = await appendRunnerExecLog(taskId, leaseId, execId, { type: 'error', error: 'bad', watermark: 2 }, cursor);
+    const first = await readRunnerExecOutput(taskId, leaseId, execId, 0, 3);
+    expect(first).toMatchObject({ stdout: '�', stderr: 'bad', cursor, hasMore: false });
+    await expect(readRunnerExecOutput(taskId, leaseId, execId, cursor, 3)).resolves.toMatchObject({ stdout: '', stderr: '', cursor, hasMore: false });
+    const prefix = await readRunnerExecOutput(taskId, leaseId, execId, 0, 2);
+    const suffix = await readRunnerExecOutput(taskId, leaseId, execId, prefix.cursor, 2);
+    expect(prefix.stdout + suffix.stdout).toBe('�');
+    expect(prefix.stderr + suffix.stderr).toBe('bad');
+    expect(suffix.cursor).toBe(cursor);
+  });
+
+  it('does not recover a synthetic diagnostic as terminal when remote close failed', async () => {
+    const taskId = 'task-20260819-1208-diagnostic';
+    const leaseId = '99999999-9999-4999-8999-999999999999';
+    const execId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await appendRunnerExecLog(taskId, leaseId, execId, { type: 'error', error: 'Output limit exceeded', watermark: 1 }, 0, { terminal: false, outputBytes: 9999, outputTruncated: true });
+    const state = await readRunnerExecLogState(taskId, leaseId, execId);
+    expect(state.terminal).toBeUndefined();
+    expect(state.watermark).toBe(1);
+    expect(state.outputBytes).toBe(9999);
+    expect(state.outputTruncated).toBe(true);
+  });
+
+  it('reads legacy UTF-8 text records together with new raw-byte records', async () => {
+    const taskId = 'task-20260819-1206-mixed';
+    const leaseId = '99999999-9999-4999-8999-999999999999';
+    const execId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await appendRunnerExecLog(taskId, leaseId, execId, { type: 'stdout', data: Buffer.from('x'), watermark: 1 }, 0);
+    await writeFile(getRunnerExecLogPath(taskId, leaseId, execId), JSON.stringify({ type: 'stdout', data: '€', watermark: 1, cursor: 3 }) + '\n');
+    let cursor = await appendRunnerExecLog(taskId, leaseId, execId, { type: 'stdout', data: Buffer.from('new'), watermark: 2 }, 3);
+    cursor = await appendRunnerExecLog(taskId, leaseId, execId, { type: 'error', error: 'failure', watermark: 3 }, cursor);
+    await expect(readRunnerExecOutput(taskId, leaseId, execId, 0, 100)).resolves.toMatchObject({ stdout: '€new', stderr: 'failure', cursor });
+    await expect(readRunnerExecLogState(taskId, leaseId, execId)).resolves.toMatchObject({ watermark: 3, outputBytes: 13, terminal: { state: 'failed' } });
   });
 
   it('migrates persisted sessions created before delivery cursors', async () => {

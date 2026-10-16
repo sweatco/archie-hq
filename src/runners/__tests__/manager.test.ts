@@ -17,7 +17,7 @@ const execLogKey = (taskId: string, leaseId: string, execId: string) => `${taskI
 vi.mock('../store.js', () => ({
   listRunnerTaskIds: vi.fn().mockResolvedValue([]),
   loadRunnerLeases: vi.fn().mockResolvedValue([]),
-  readRunnerExecLogState: vi.fn().mockResolvedValue({ watermark: 0, deliveryCursor: 0 }),
+  readRunnerExecLogState: vi.fn().mockResolvedValue({ watermark: 0, deliveryCursor: 0, outputBytes: 0 }),
   readRunnerExecOutput: vi.fn(async (taskId: string, leaseId: string, execId: string, afterCursor: number, maxBytes: number) => {
     const records = execLogs.get(execLogKey(taskId, leaseId, execId)) ?? [];
     const stdout: Buffer[] = [];
@@ -137,7 +137,7 @@ describe('RunnerManager', () => {
     execLogs.clear();
     vi.mocked(listRunnerTaskIds).mockResolvedValue([]);
     vi.mocked(loadRunnerLeases).mockResolvedValue([]);
-    vi.mocked(readRunnerExecLogState).mockResolvedValue({ watermark: 0, deliveryCursor: 0 });
+    vi.mocked(readRunnerExecLogState).mockResolvedValue({ watermark: 0, deliveryCursor: 0, outputBytes: 0 });
     vi.mocked(removeRunnerExecLog).mockClear();
   });
 
@@ -482,12 +482,13 @@ describe('RunnerManager', () => {
     lease.syncedRepos['org/app'] = { github: 'org/app', remotePath: '/workspace/app', syncedAt: new Date().toISOString() };
     const requestId = '11111111-1111-4111-8111-111111111111';
 
-    const env = { RUNNER_SECRET: 'delivery-secret' };
+    const env = { RUNNER_SECRET: 'delivery-secret', MODE: 'test' };
     const first = await manager.exec('task-1', 'mobile-agent', 'ios', 'org/app', ['/usr/bin/printf', 'ok'], '.', env, 1, requestId);
-    const replayedStart = await manager.exec('task-1', 'mobile-agent', 'ios', 'org/app', ['/usr/bin/printf', 'ok'], '.', env, 1, requestId);
+    const replayedStart = await manager.exec('task-1', 'mobile-agent', 'ios', 'org/app', ['/usr/bin/printf', 'ok'], '.', { MODE: 'test', RUNNER_SECRET: 'delivery-secret' }, 1, requestId);
     const replayedPoll = await manager.poll('task-1', 'mobile-agent', 'ios', requestId, 0, 0);
     const acknowledged = await manager.poll('task-1', 'mobile-agent', 'ios', requestId, first.cursor, 0);
 
+    await expect(manager.exec('task-1', 'mobile-agent', 'ios', 'org/app', ['/usr/bin/printf', 'ok'], '.', { ...env, MODE: 'changed' }, 1, requestId)).rejects.toThrow(/different command/);
     expect(provider.commandStarts).toBe(1);
     expect(replayedStart).toMatchObject({ execId: requestId, stdout: 'ok', cursor: 3, hasMore: false });
     expect(replayedPoll).toMatchObject({ stdout: 'ok', cursor: 3, hasMore: false });
@@ -523,6 +524,7 @@ describe('RunnerManager', () => {
       const watermarks = records.flatMap(({ event }) => 'watermark' in event && event.watermark !== undefined ? [event.watermark] : []);
       return {
         watermark: Math.max(0, ...watermarks),
+        outputBytes: 2,
         deliveryCursor: Math.max(0, ...records.map((record) => record.cursor)),
       };
     });
@@ -534,6 +536,38 @@ describe('RunnerManager', () => {
     expect(provider.commandStarts).toBe(1);
     expect(replayed).toMatchObject({ state: 'completed', stdout: 'ok', cursor: 3, hasMore: false });
     recoveredManager.shutdown();
+  });
+
+  it.each(['exit', 'error'] as const)('recovers a durable %s after crashing before terminal state persistence', async (terminalType) => {
+    const provider = new FakeProvider();
+    const firstManager = new RunnerManager(loadedConfig(), provider);
+    const lease = await firstManager.ensure('task-1', 'mobile-agent', 'ios');
+    lease.syncedRepos['org/app'] = { github: 'org/app', remotePath: '/repo', syncedAt: new Date().toISOString() };
+    const result = await firstManager.exec('task-1', 'mobile-agent', 'ios', 'org/app', ['true']);
+    const recovered = structuredClone(lease);
+    const session = recovered.execSessions[result.execId];
+    session.state = 'running';
+    session.watermark = 1;
+    session.deliveryCursor = 2;
+    delete session.exitCode;
+    delete session.finishedAt;
+    const finishedAt = new Date().toISOString();
+    vi.mocked(listRunnerTaskIds).mockResolvedValue(['task-1']);
+    vi.mocked(loadRunnerLeases).mockResolvedValue([recovered]);
+    vi.mocked(readRunnerExecLogState).mockResolvedValue({
+      watermark: 2, deliveryCursor: 3, outputBytes: 2,
+      terminal: { state: terminalType === 'exit' ? 'completed' : 'failed', finishedAt, ...(terminalType === 'exit' ? { exitCode: 0 } : {}) },
+    });
+    const remoteExec = vi.spyOn(provider, 'exec');
+    const manager = new RunnerManager(loadedConfig(), provider);
+    await manager.initialize();
+    const replayed = await manager.poll('task-1', 'mobile-agent', 'ios', result.execId, 0, 0);
+    expect(replayed).toMatchObject({ state: terminalType === 'exit' ? 'completed' : 'failed', stdout: 'ok' });
+    expect(session.finishedAt).toBe(finishedAt);
+    expect(session.exitCode).toBe(terminalType === 'exit' ? 0 : undefined);
+    expect(remoteExec).not.toHaveBeenCalled();
+    manager.shutdown();
+    firstManager.shutdown();
   });
 
   it('bounds active detached commands', async () => {
@@ -667,11 +701,13 @@ describe('RunnerManager', () => {
     provider.instances.set(lease.backendId, { id: lease.backendId, status: 'running' });
     vi.mocked(listRunnerTaskIds).mockResolvedValue(['task-1']);
     vi.mocked(loadRunnerLeases).mockResolvedValue([lease]);
-    vi.mocked(readRunnerExecLogState).mockResolvedValue({ watermark: 7, deliveryCursor: 4 });
+    vi.mocked(readRunnerExecLogState).mockResolvedValue({ watermark: 7, deliveryCursor: 4, outputBytes: 15, outputTruncated: true });
     const manager = new RunnerManager(loadedConfig(), provider);
     await manager.initialize();
     expect(lease.execSessions.exec.watermark).toBe(7);
     expect(lease.execSessions.exec.deliveryCursor).toBe(4);
+    expect(lease.execSessions.exec.outputBytes).toBe(15);
+    expect(lease.execSessions.exec.outputTruncated).toBe(true);
     manager.shutdown();
   });
 

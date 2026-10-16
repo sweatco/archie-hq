@@ -1,13 +1,13 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runnerProfileSchema } from '../config.js';
 import type { TransferCommand } from '../execution.js';
 import type { RunnerLease } from '../types.js';
-import { RunnerWorkspace } from '../workspace.js';
+import { RunnerWorkspace, runnerRepositoryPath } from '../workspace.js';
 
 const paths = vi.hoisted(() => ({ root: `/tmp/archie-workspace-test-${process.pid}-${Date.now()}` }));
 vi.mock('../../system/workdir.js', () => ({ SESSIONS_DIR: paths.root }));
@@ -98,5 +98,43 @@ describe('runner artifact download', () => {
     await expect(instance.collect(lease, profile, 'org/repo', ['file'], abort.signal)).rejects.toThrow();
     expect(hooks.persist).not.toHaveBeenCalled();
     expect(await readdir(guest)).toEqual(['repo']);
+  });
+});
+
+
+describe('runner repository upload', () => {
+  it.each(['corrupt', 'partial'])('removes staging after a %s archive without replacing the synced repository', async mode => {
+    const source = join(paths.root, 'source');
+    await mkdir(source);
+    await exec('git', ['init', '-q', source]);
+    await writeFile(join(source, 'new.bin'), randomBytes(8192));
+    await exec('git', ['-C', source, 'add', 'new.bin']);
+    const remotePath = runnerRepositoryPath(profile, 'org/repo');
+    await mkdir(remotePath, { recursive: true });
+    await writeFile(join(remotePath, 'previous.txt'), 'previous snapshot');
+    const synced = { github: 'org/repo', remotePath, syncedAt: '2026-01-01T00:00:00.000Z' };
+    const uploadLease = { ...lease, syncedRepos: { 'org/repo': synced } };
+    const hooks = {
+      persist: vi.fn().mockResolvedValue(undefined), touch: vi.fn(),
+      transfer: async (_lease: RunnerLease, _profile: unknown, command: TransferCommand) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of command.stdin!) chunks.push(Buffer.from(chunk));
+        const archive = Buffer.concat(chunks);
+        expect(archive.length).toBeGreaterThan(8192);
+        const bytes = mode === 'corrupt' ? Buffer.from('not a tar archive') : archive.subarray(0, 600);
+        const process = exec(command.argv[0], command.argv.slice(1), { signal: command.signal });
+        process.child.stdin!.end(bytes);
+        await process;
+      },
+    };
+
+    await expect(new RunnerWorkspace(hooks).sync(uploadLease, profile, 'org/repo', source)).rejects.toThrow(/tar/);
+
+    expect(await readFile(join(remotePath, 'previous.txt'), 'utf8')).toBe('previous snapshot');
+    expect(await readdir(remotePath)).toEqual(['previous.txt']);
+    expect(await readdir(dirname(remotePath))).toEqual([remotePath.split('/').at(-1)]);
+    expect(uploadLease.syncedRepos['org/repo']).toBe(synced);
+    expect(hooks.persist).not.toHaveBeenCalled();
+    expect(hooks.touch).not.toHaveBeenCalled();
   });
 });

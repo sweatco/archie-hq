@@ -61,22 +61,34 @@ describe('real Orchard runner', () => {
     const taskId = generateTaskId();
     let backendId: string | undefined;
     let failure: unknown;
+    const deadline = Date.now() + 25 * 60_000;
+    const signal = AbortSignal.timeout(25 * 60_000);
+    const remaining = () => {
+      signal.throwIfAborted();
+      const milliseconds = deadline - Date.now();
+      if (milliseconds <= 0) throw new Error('Canary lifecycle deadline exceeded');
+      return milliseconds;
+    };
     try {
       const lease = await manager.ensure(taskId, agentId, profile);
       backendId = lease.backendId;
-      await manager.sync(taskId, agentId, profile, github, repoPath);
-      const finish = (initial: ReturnType<RunnerManager['exec']>) => finishCommand(
-        initial,
-        (execId, cursor) => manager.poll(taskId, agentId, profile, execId, cursor, 30),
-        Math.min(loaded.config.profiles[profile].execTimeoutSeconds * 1000, 20 * 60_000),
-      );
+      remaining();
+      await manager.sync(taskId, agentId, profile, github, repoPath, signal);
+      const finish = (start: () => ReturnType<RunnerManager['exec']>) => {
+        const timeout = Math.min(remaining(), loaded.config.profiles[profile].execTimeoutSeconds * 1000, 20 * 60_000);
+        return finishCommand(
+          start(),
+          (execId, cursor) => manager.poll(taskId, agentId, profile, execId, cursor, 30),
+          timeout,
+        );
+      };
       const assertSuccess = (result: Awaited<ReturnType<typeof finish>>) => {
         expect(result.state).toBe('completed');
         expect(result.exitCode, result.stderr).toBe(0);
         expect(result.truncated).toBe(false);
       };
       for (const command of commands) {
-        assertSuccess(await finish(manager.exec(taskId, agentId, profile, github, command)));
+        assertSuccess(await finish(() => manager.exec(taskId, agentId, profile, github, command)));
       }
 
       const debug = await manager.openDebug(taskId, agentId, profile, 1);
@@ -87,14 +99,15 @@ describe('real Orchard runner', () => {
       expect(debug.commands.some((command) => command.startsWith('orchard context default '))).toBe(true);
 
       const artifactContent = `archie-e2e-${Date.now()}`;
-      const artifactCommand = await finish(manager.exec(taskId, agentId, profile, github, ['/bin/sh', '-c', 'printf %s "$1" > archie-e2e-artifact.txt', 'canary-artifact', artifactContent]));
+      const artifactCommand = await finish(() => manager.exec(taskId, agentId, profile, github, ['/bin/sh', '-c', 'printf %s "$1" > archie-e2e-artifact.txt', 'canary-artifact', artifactContent]));
       assertSuccess(artifactCommand);
-      const artifactDir = await manager.collect(taskId, agentId, profile, github, ['archie-e2e-artifact.txt']);
+      const artifactDir = await manager.collect(taskId, agentId, profile, github, ['archie-e2e-artifact.txt'], signal);
       await expect(readFile(join(artifactDir, 'archie-e2e-artifact.txt'), 'utf8')).resolves.toBe(artifactContent);
 
+      remaining();
       const detached = await manager.exec(taskId, agentId, profile, github, ['/bin/sh', '-lc', 'sleep 2; echo reconnected'], '.', {}, 0);
       expect(detached.state).toBe('running');
-      const reconnected = await finish(Promise.resolve(detached));
+      const reconnected = await finish(() => Promise.resolve(detached));
       assertSuccess(reconnected);
       expect(reconnected.stdout).toContain('reconnected');
 
@@ -130,5 +143,8 @@ describe('real Orchard runner', () => {
       if (failure || cleanupErrors.length) throw new AggregateError([...(failure ? [failure] : []), ...cleanupErrors], 'Runner lifecycle or cleanup failed');
     }
     expect(backendId).toBeDefined();
-  }, 30 * 60 * 1000);
+  // Provider/provisioning have their own bounds; commands and transfers share a
+  // lifecycle deadline. A Vitest timeout would abandon this function before its
+  // finally cleanup, so let bounded operations settle and release the VM here.
+  }, 0);
 });

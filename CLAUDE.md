@@ -48,8 +48,6 @@ See `docs/guides/local-development.md` for full setup instructions.
 
 A live boot-from-branch E2E harness ships here (the `archie-e2e` skill + `tools/e2e/`). To verify a branch against a running instance, load the `archie-e2e` skill instead of hand-rolling a boot. In a fresh checkout or cloud sandbox it can *look* unavailable (preflight / Docker / TLS errors) until it's prepared — that's a setup gap, not a missing capability, so load the skill; for a cloud sandbox behind a TLS-intercepting proxy the runbook is `docs/guides/e2e-in-cloud-sandbox.md`.
 
-For runner provisioning, execution, persistence, or transfer changes on a prepared Apple Silicon Mac, run the persisted Sweatcoin build scenario after the fast checks: `npm run runner:sweatcoin-e2e -- --repo /absolute/path/to/sweatcoin-mobile`. See `docs/guides/sweatcoin-tart-e2e.md` for prerequisites, scope, and evidence. If unavailable, report the missing prerequisite; do not count an unrun scenario as passed.
-
 In a git worktree, `.env`, `workdir`, `claude-data` and a real `secrets/` are missing (all untracked) until `npm run e2e:prepare` creates them in about a second — and `boot.ts` runs it itself. That is setup, not an unavailable harness. Running it is in bounds even for a probe told not to change anything: it writes only untracked files in the current worktree and touches no network.
 
 ## Logging

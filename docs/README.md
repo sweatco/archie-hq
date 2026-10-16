@@ -32,7 +32,6 @@ How to work with the system. Setup, deployment, and development patterns.
 | Document | Description |
 |----------|-------------|
 | [Local Development](guides/local-development.md) | Prerequisites, setup, running, debugging |
-| [Sweatcoin Tart E2E](guides/sweatcoin-tart-e2e.md) | Repeatable mobile build, manager restart, simulator launch, and cleanup on a local Tart image |
 | [Runner MCP](guides/runner-mcp.md) | Use a repository's MCP tools, including Argent, inside a task VM |
 | [Deployment](guides/deployment.md) | GCP deployment, CI/CD, monitoring, operations |
 | [SDK Patterns](guides/sdk-patterns.md) | Agent SDK hooks, turn detection, streaming input |

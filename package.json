@@ -20,7 +20,6 @@
     "oauth:revoke": "tsx src/cli/oauth.ts revoke",
     "oauth:refresh": "tsx src/cli/oauth.ts refresh",
     "runner:ios-full-cycle-e2e": "node dist/runners/ios-full-cycle-e2e.js",
-    "runner:sweatcoin-e2e": "tsx src/runners/sweatcoin-e2e.ts",
     "e2e:prepare": "tsx tools/e2e/prepare-worktree.ts",
     "docker:dev": "docker compose up --build",
     "docker:stop": "docker compose down",

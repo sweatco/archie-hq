@@ -81,13 +81,14 @@ export function createRunnerToolsMcpServer(agent: Agent, task: Task) {
         {
           profile: z.string().min(1),
           request_id: z.string().uuid(),
+          github: z.string().optional(),
           argv: z.array(z.string()).min(1).max(256),
           cwd: z.string().optional(),
           env: z.record(z.string(), z.string()).optional(),
           wait_seconds: z.number().int().min(0).max(120).optional(),
         },
-        async ({ profile, request_id, argv, cwd, env, wait_seconds }) => runTool(async () => {
-          const attached = attachedRepository(task);
+        async ({ profile, request_id, github, argv, cwd, env, wait_seconds }) => runTool(async () => {
+          const attached = attachedRepository(task, github);
           return JSON.stringify(await manager().exec(task.taskId, agent.def.id, profile, attached.github, argv, cwd, env, wait_seconds, request_id));
         }),
       ),
@@ -97,13 +98,14 @@ export function createRunnerToolsMcpServer(agent: Agent, task: Task) {
         {
           profile: z.string().min(1),
           request_id: z.string().uuid(),
+          github: z.string().optional(),
           server: z.string().min(1).max(128),
           tool: z.string().min(1).max(256).optional(),
           arguments: z.record(z.string(), z.unknown()).optional(),
           timeout_seconds: z.number().int().min(1).max(600).optional(),
         },
-        async ({ profile, request_id, ...request }) => runTool(async () => {
-          const attached = attachedRepository(task);
+        async ({ profile, request_id, github, ...request }) => runTool(async () => {
+          const attached = attachedRepository(task, github);
           return JSON.stringify(await manager().exec(task.taskId, agent.def.id, profile, attached.github, runnerMcpArgv(request_id, request), '.', {}, 5, request_id));
         }),
       ),
@@ -131,10 +133,10 @@ export function createRunnerToolsMcpServer(agent: Agent, task: Task) {
       ),
       tool(
         'runner_collect',
-        'Download relative paths from the synced primary repository into the task shared artifacts directory.',
-        { profile: z.string().min(1), paths: z.array(z.string()).min(1).max(100) },
-        async ({ profile, paths }) => runTool(async () => {
-          const attached = attachedRepository(task);
+        'Download relative paths from the selected synced repository into the task shared artifacts directory.',
+        { profile: z.string().min(1), github: z.string().optional(), paths: z.array(z.string()).min(1).max(100) },
+        async ({ profile, github, paths }) => runTool(async () => {
+          const attached = attachedRepository(task, github);
           const destination = await manager().collect(task.taskId, agent.def.id, profile, attached.github, paths);
           return JSON.stringify({ artifactPath: destination });
         }),

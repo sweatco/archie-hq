@@ -37,8 +37,8 @@ The repository's selected `.mcp.json` entry executes inside the VM and must use 
 
 Every call creates a fresh MCP session. Argent keeps its device state in a separate local service, so this works across calls. Other MCP servers may require a continuous session; that transport is not provided here. Cancellation closes the MCP client and stdio process, but a server's detached work may continue. VM release removes those backend services too.
 
-The guest repository must make `@modelcontextprotocol/sdk` resolvable by Node. Sweatcoin's Argent dependency already provides it. On a fresh image, allow simulator boot and the first app launch to finish before navigation; the Sweatcoin verification needed 101 seconds to reach its initial welcome screen.
+The guest repository must make `@modelcontextprotocol/sdk` resolvable by Node. Sweatcoin's Argent dependency already provides it. On a fresh image, allow simulator boot and the first app launch to finish before navigation.
 
-Request IDs deduplicate runner execution, not a server's internal retries. Argent 0.22.1 retries HTTP calls that exceed 30 seconds unless marked as long-running. Simulator boot hit this limit during verification. The test uses Argent's bundled CLI for boot, accessibility setup, and the initial app launch, since that client has no retry loop, then MCP for the recorded app interaction. An uncertain tool result still requires inspection before another action.
+Request IDs deduplicate runner execution, not a server's internal retries. Argent 0.22.1 retries HTTP calls that exceed 30 seconds unless marked as long-running. For slow startup requests, use Argent's bundled CLI for boot, accessibility setup, and the initial app launch before starting MCP interactions. An uncertain tool result still requires inspection before another action.
 
-No setup command installs system tools. Argent's screen-recording tool requires `ffmpeg` in the image. The Sweatcoin test uses Xcode's `simctl recordVideo` to capture video when that encoder is absent, while its UI interactions use Argent MCP.
+No setup command installs system tools. Argent's screen-recording tool requires `ffmpeg` in the image. Xcode's `simctl recordVideo` can capture video when that encoder is absent; collect the resulting file with `runner_collect`.

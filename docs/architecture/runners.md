@@ -31,7 +31,6 @@ PM session -> runner-tools -> RunnerManager -> Orchard -> Tart VM
 | `mcp.ts` | Guest-side MCP client command; uses the repository's SDK and stdio server configuration |
 | `tools.ts` | Agent-facing MCP adapter only |
 | `ios-full-cycle-e2e.ts` | Destructive acceptance canary; not runtime orchestration |
-| `sweatcoin-e2e.ts` | Local Tart lab and real mobile build scenario; not runtime orchestration |
 
 Runner ownership, capacity reservations, and operation locks are process-local. Run exactly one runner-enabled Archie process for each `instanceId` and workdir. Two processes sharing an `instanceId` can classify each other's VMs as orphans, while two processes sharing a workdir cannot coordinate in-memory locks. Horizontal runner scaling requires distinct instance IDs and stable task routing, or a future distributed lease and leader-election layer.
 
@@ -91,12 +90,12 @@ When `NODE_ENV=production`, startup rejects insecure HTTP and every NAT runner p
 
 On macOS 15 and newer, deploy the Orchard worker using its supported privileged helper path: start `orchard worker run` as root with `--user <regular-host-user>`. Orchard starts the minimal local-network helper and then drops the worker to that user. An unprivileged background worker can create a NAT VM but macOS Local Network privacy may deny the worker's SSH/port-forward connections to it even when an interactive shell can reach the same guest.
 
-Required environment variables when enabled:
+Environment variables when enabled:
 
 - `ARCHIE_RUNNERS_CONFIG`: JSON configuration path.
 - `ORCHARD_SERVICE_ACCOUNT_NAME`: Orchard Basic authentication name.
 - `ORCHARD_SERVICE_ACCOUNT_TOKEN`: Orchard Basic authentication token.
-- `ORCHARD_CF_ACCESS_CLIENT_ID` and `ORCHARD_CF_ACCESS_CLIENT_SECRET`: Cloudflare Access service-token pair, required together for non-loopback Orchard URLs. Those URLs must use HTTPS. Loopback labs may omit the pair.
+- `ORCHARD_CF_ACCESS_CLIENT_ID` and `ORCHARD_CF_ACCESS_CLIENT_SECRET`: optional Cloudflare Access service-token pair; provide both or neither. Non-loopback Orchard URLs must use HTTPS. The pair may be omitted when Access grants the caller access through WARP; WARP enrollment alone does not grant application access. Orchard Basic authentication remains required.
 - Every profile’s `passwordEnv`, such as `ORCHARD_IOS_GUEST_PASSWORD`.
 
 Invalid configuration or missing secrets fails startup. Orchard unavailability during reconciliation marks `runners.degraded` in `/health` but does not take Archie offline.
@@ -131,11 +130,11 @@ Command environment values are sent through the exec WebSocket stdin bootstrap r
 
 Runner state is stored atomically in `sessions/<task>/shared/runners.json`. Output is appended to `shared/runners/<lease>/exec/<exec>.jsonl`; collected artifacts go to `shared/artifacts/runners/<lease>/<collection>/`.
 
-Exec uses two independent monotonic positions. The Orchard watermark records what Archie has durably received and may acknowledge to Orchard. The delivery cursor records what the tool client has received. Each JSONL record stores its ending delivery position; text advances the position by its encoded byte length, so a response can stop and resume inside one large provider frame without skipping the remainder. `runner_exec` returns the current cursor; later polls pass it as `after_cursor`. The client advances its saved cursor only after receiving a response and retries an uncertain poll with the previous value. This provides duplicate-safe, at-least-once output replay across Archie restart while the session remains in retained history. `hasMore` requires another poll, and `truncated` explicitly reports output discarded by the configured command-output limit.
+Exec uses two independent monotonic positions. The Orchard watermark records what Archie has durably received and may acknowledge to Orchard. The delivery cursor records what the tool client has received. Each JSONL record stores its ending delivery position; output advances the position by its original byte length, so a response can stop and resume inside one large provider frame without skipping the remainder. `runner_exec` returns the current cursor; later polls pass it as `after_cursor`. The client advances its saved cursor only after receiving a response and retries an uncertain poll with the previous value. This provides duplicate-safe, at-least-once output replay across Archie restart while the session remains in retained history. `hasMore` requires another poll, and `truncated` explicitly reports output discarded by the configured command-output limit.
 
-The caller must generate one stable UUID per logical command and reuse it when a start result is uncertain. Archie fingerprints the repository, argv, working directory, and environment variable names and rejects reuse for a different command without persisting environment values. Idempotency and replay last for the configured terminal-session retention window; callers must not intentionally recycle request IDs.
+The caller must generate one stable UUID per logical command and reuse it when a start result is uncertain. Archie fingerprints the repository, argv, working directory, and sorted environment key/value pairs with SHA-256 and rejects reuse for a different command. Only the fingerprint is persisted; environment values are not stored in lease state. Idempotency and replay last for the configured terminal-session retention window; callers must not intentionally recycle request IDs.
 
-Startup reconciliation inspects persisted VMs, recovers both reconnectable Orchard watermarks and client delivery cursors from JSONL, closes expired commands, retries releases, and deletes old instance-prefixed Orchard orphans. The minute reaper applies lease, command, and debug deadlines. Transfer reconnect is allowed only after Orchard confirms that the complete stdin bootstrap and EOF reached the remote session; a connection loss during upload fails the staged transfer instead of reconnecting a tar process with incomplete input.
+Startup reconciliation inspects persisted VMs, recovers Orchard watermarks, client delivery cursors, terminal results, and output budgets from JSONL, closes expired commands, retries releases, and deletes old instance-prefixed Orchard orphans. The minute reaper applies lease, command, and debug deadlines. Transfer reconnect is allowed only after Orchard confirms that the complete stdin bootstrap and EOF reached the remote session; a connection loss during upload fails the staged transfer instead of reconnecting a tar process with incomplete input.
 
 After the caller persists a terminal frame, the provider closes the remote exec session to release its retained SSH connection; subsequent output replay uses the local log. Exec history retains a bounded number of terminal sessions and removes their JSONL logs. Active commands are also bounded per lease. Orchard WebSocket handshakes, buffered frames, command output, repository uploads, and artifact downloads all have explicit limits. Stdin is fragmented below Orchard's per-message limit. Transfers reconnect from their last acknowledged Orchard watermark when a subscriber drops before the terminal frame, and any replay gap fails the transfer instead of producing a corrupt repository or artifact. Artifact collection stages a size-limited archive in the guest and downloads it in 1 MiB commands, validating every chunk length and removing the staging file afterward. This keeps each command below [Orchard’s 4 MiB replay buffer](https://github.com/cirruslabs/orchard/blob/3083b54/internal/controller/exec_sessions.go#L15); a single fast tar stream can otherwise overflow that buffer before reconnect. Persisted task, lease, exec, session, and backend ownership identifiers are validated before local log access or remote VM operations; one corrupt task state is isolated and reported as degraded without blocking recovery of other tasks.
 
@@ -156,23 +155,11 @@ orchard vnc vm archie-prod-...
 
 Archie does not proxy VNC or return Orchard credentials.
 
-### Simulator-only live video
-
-Keep binary video out of `runner_exec`, whose durable output contract is textual. Install a pinned AXe release in the Tart image and let the repository-owned iOS workflow start `axe stream-video --format mjpeg` behind a bounded one-shot HTTP listener in the guest. The command emits a complete `multipart/x-mixed-replace` HTTP response. Pass the listener port in `runner_open_debug.ports`; the tool extends the lease and returns the ready-to-run forwarding command through the preconfigured Orchard context:
-
-```bash
-orchard port-forward vm archie-prod-... 18080:18080
-```
-
-Opening `http://127.0.0.1:18080` then shows the live Simulator-only MJPEG feed. VNC remains the zero-setup whole-VM fallback. The stream listener must bind only for the debug lease, accept a bounded number of clients, require a per-session token if exposed beyond localhost, and be terminated during task cleanup. Use `xcrun simctl io <udid> recordVideo --codec=h264 <path>` plus `runner_collect` when a durable MP4 artifact is required.
-
 ## Canary Validation
 
 The opt-in Vitest case `src/runners/__tests__/orchard.e2e.test.ts` exercises a real Orchard deployment and is skipped by default. Run it with `ARCHIE_ORCHARD_E2E=true`, the normal runner configuration and credential variables, `ARCHIE_ORCHARD_E2E_PROFILE`, `ARCHIE_ORCHARD_E2E_AGENT`, and `ARCHIE_ORCHARD_E2E_REPO_PATH`. Set `ARCHIE_ORCHARD_E2E_PUBLIC_ENDPOINT`, `ARCHIE_ORCHARD_E2E_BLOCKED_HOST_ENDPOINT`, and `ARCHIE_ORCHARD_E2E_BLOCKED_IPV6_ENDPOINT` to HTTP(S) endpoints reachable from the control host. The guest must reach the public endpoint and fail to connect to the worker-host and IPv6 endpoints. Both blocked URLs must use literal IP addresses; the IPv6 URL must use a bracketed IPv6 literal. `ARCHIE_ORCHARD_E2E_COMMANDS` may contain a JSON array of argv arrays replacing the workload commands; defaults verify the Xcode, `simctl`, and LLDB toolchains. Network isolation checks run even with custom commands. Use a disposable `ARCHIE_WORKDIR` because the harness writes its lease audit state there.
 
 The canary provisions and syncs a real repository, runs every configured command, detaches and reconnects to a long command, validates the VNC handoff, releases the lease, and confirms Orchard deleted the VM.
-
-For runner changes on a prepared Apple Silicon Mac, `npm run runner:sweatcoin-e2e -- --repo /absolute/path/to/sweatcoin-mobile` starts an isolated local Orchard lab from a cached Tart digest and checks the real mobile build, two Argent UI passes with video, manager restart/retry, transfers, and VM deletion. It uses the image's installed toolchain. The [Sweatcoin Tart E2E runbook](../guides/sweatcoin-tart-e2e.md) describes the TeamCity reference, prerequisites, evidence, and scope.
 
 `npm run runner:ios-full-cycle-e2e` is the source-to-debug acceptance canary. It uses a clean, exact Git commit and a deterministic dependency-free fixture by default, then proves the complete runner cycle:
 
@@ -197,3 +184,9 @@ The harness does not call `RunnerManager.initialize()`, so a disposable canary w
 For the checked fixture, use the committed `RunnerFixture.xcodeproj`, scheme `RunnerFixture`, bundle `dev.archie.runner-fixture`, process `RunnerFixture`, app path `.archie-full-cycle/DerivedData/Build/Products/Debug-iphonesimulator/RunnerFixture.app`, and the runtime identifier installed in the runner image. The canary is compiled into the production image and does not depend on the `tsx` development dependency.
 
 A separate production-container E2E remains required to cover the real task → allowed PM session → MCP tools → task completion path. That test must use an isolated `instanceId`, Orchard pool, workdir, and credentials.
+
+## Rollout and rollback
+
+Start with runners disabled, then enable one allowlisted agent and `maxConcurrent: 1` in an isolated lab. Before production use, verify the container task → PM → runner MCP → completion path, controlled host/IPv6 isolation, and recovery under forced controller restarts. A manager-level iOS canary alone does not cover those gates.
+
+Keep one controller per workdir and instance ID. Admission/drain controls and runner telemetry remain deployment prerequisites; until implemented, stop new runner work manually before maintenance. Inventory and release all owned VMs before disabling runners or rolling back: removing `ARCHIE_RUNNERS_CONFIG` also stops reconciliation. Promote a pinned image digest only after lab verification, and retain the previous digest for rollback.

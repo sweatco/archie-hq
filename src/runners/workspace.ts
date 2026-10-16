@@ -66,6 +66,7 @@ export class RunnerWorkspace {
       `mkdir -p ${shellQuote(posix.dirname(remotePath))}`,
       `rm -rf ${shellQuote(staging)} ${shellQuote(previous)}`,
       `mkdir -p ${shellQuote(staging)}`,
+      `trap ${shellQuote(`rm -rf ${shellQuote(staging)}`)} EXIT`,
       `/usr/bin/tar -xpf - -C ${shellQuote(staging)}`,
       `[ ! -e ${shellQuote(remotePath)} ] || mv ${shellQuote(remotePath)} ${shellQuote(previous)}`,
       `mv ${shellQuote(staging)} ${shellQuote(remotePath)}`,
