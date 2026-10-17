@@ -65,6 +65,7 @@ import {
   getMemoryPath,
   getKnowledgeLogPath,
   getTaskClonePath,
+  getReposPath,
   persistTaskMetadata,
   reconcilePersistedMemoryMetadata,
 } from './persistence.js';
@@ -1534,6 +1535,7 @@ export class Task {
         const result = await ensureTaskClone({
           attached: att,
           clonePath: getTaskClonePath(this.taskId, att.github),
+          reposRoot: getReposPath(this.taskId),
           baseRepoPath: att.base_path || getBaseCachePath(att.github),
           editAllowed: true,
           taskBranch: taskBranchName(this.taskId),

@@ -42,6 +42,7 @@ vi.mock('../../tasks/persistence.js', () => ({
   appendAgentFinding: vi.fn().mockResolvedValue(undefined),
   isThreadMuted: vi.fn().mockResolvedValue(false),
   getTaskClonePath: vi.fn((taskId: string, github: string) => `/sessions/${taskId}/repos/${github}`),
+  getReposPath: vi.fn((taskId: string) => `/sessions/${taskId}/repos`),
 }));
 
 vi.mock('../../system/workdir.js', async (importOriginal) => ({
@@ -136,6 +137,8 @@ describe('mount_repo', () => {
     expect(client.resolveRepo).toHaveBeenCalledWith('org/backend');
     expect(ensureArgs()).toMatchObject({
       clonePath: '/sessions/task-123/repos/org/backend',
+      // The root the clone layer confines its .git/info/exclude write to.
+      reposRoot: '/sessions/task-123/repos',
       baseRepoPath: '/workdir/repos/org/backend',
       baseBranch: 'trunk',
       editAllowed: false,

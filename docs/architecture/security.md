@@ -90,7 +90,7 @@ Two deployment caveats. A host-level IT managed-settings tier (e.g. `/etc/claude
 
 ### Repo isolation: shared clones
 
-Task clones are `git clone --shared` repositories, one per repo per task. Each has a fully independent `.git/` — its own HEAD, index, refs and config — and the only connection to the base repo is a read-only alternates link to `.git/objects/` (immutable, content-addressed blobs). `origin` is rewritten to GitHub, so a push never goes back to the base cache. Git identity is configured on each clone at creation. Bwrap sandbox artifacts (`.bashrc`, `.gitmodules`) are excluded via `.git/info/exclude`.
+Task clones are `git clone --shared` repositories, one per repo per task. Each has a fully independent `.git/` — its own HEAD, index, refs and config — and the only connection to the base repo is a read-only alternates link to `.git/objects/` (immutable, content-addressed blobs). `origin` is rewritten to GitHub, so a push never goes back to the base cache. Git identity is configured on each clone at creation. `ensureTaskClone` also writes a managed block into the clone's `.git/info/exclude` (`excludeSandboxArtifacts`) so the placeholder files the sandbox leaves in a clone cannot be committed — see [Known Sandbox Limitations](#2-the-sandbox-leaves-placeholder-files-in-task-clones) for what is listed and why.
 
 Within a task the clone is *not* an isolation boundary between workers: they share the process and the working tree, which is why the PM's prompt forbids pointing two workers at the same clone at once.
 
@@ -237,11 +237,13 @@ The container must run as the non-root `archie` user — the SDK's `bypassPermis
 
 **Consequence:** no workaround is needed. If a future `sandbox-runtime` upgrade changes mount ordering, re-measure rather than assuming either direction.
 
-### 2. SDK binds sensitive files as /dev/null device nodes
+### 2. The sandbox leaves placeholder files in task clones
 
-The SDK's sandbox replaces certain files (`.gitmodules`, `CLAUDE.md`) with `/dev/null` bind mounts inside bwrap. They appear as character device nodes in the working directory, so `git status` shows them as untracked and `git add` fails with "can only add regular files."
+The Claude CLI protects harness paths it expects to own in each writable directory of the sandbox: a path that exists is bound read-only, and a path that does **not** exist gets `/dev/null` mounted over it so it cannot be created. Mounting over a missing path means creating a placeholder file there first — on the real disk — and the placeholder outlives the command. Inside the sandbox it shows as a character device (1,3), and `git add -A` dies on it with "can only add regular files"; outside the sandbox it is an ordinary regular file that `git add -A` stages and commits into the customer's repository.
 
-**Workaround:** they are added to `.git/info/exclude` on every clone setup via `configureSandboxExcludes()`. **Remove when:** the SDK offers a way to configure which files are `/dev/null`-mounted.
+The masked set is wider in the session's cwd (the agent workspace: `.bashrc`, `.gitconfig`, `.gitmodules`, `CLAUDE.md`, `.vscode`, `.mcp.json`, `.claude/*`, …) than in a task clone, and it changes with the CLI version. What has actually been observed in clones is `.mcp.json` (a placeholder in a sweatcoin-infrastructure clone, which does not track one, October 2026) and a set of `.claude/*` entries (an archie-hq clone, August 2026).
+
+**Workaround:** `ensureTaskClone` calls `excludeSandboxArtifacts()` (`src/connectors/github/repo-clone.ts`) on every clone it creates or reuses, writing exactly the observed paths into a delimited, idempotent block in `.git/info/exclude`. Exclusion never affects a tracked file, so a repo that commits its own `.mcp.json` or `.claude/settings.json` keeps diffing it. Root-level workspace paths such as `CLAUDE.md` and `.gitmodules` are deliberately not listed: they are ordinary repository content and have not been seen in a clone. A clone mounted before this existed gets the block on its next `mount_repo` or edit-mode approval, not on respawn. The clone path is treated as untrusted: the write happens only when the clone resolves (lexically and through `realpath`) strictly inside the task's `repos/` directory, its `.git` and `.git/info` resolve inside it, and `.git/info/exclude` is not a symlink. **Remove when:** the CLI stops leaving mount-point placeholders behind, or lets the embedder configure which paths it masks.
 
 ### 3. `.git/HEAD` deny is per clone at spawn
 

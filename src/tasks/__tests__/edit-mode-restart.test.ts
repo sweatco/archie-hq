@@ -138,6 +138,8 @@ describe('handleEditModeApproval — restart for a writable mount', () => {
       expect(opts.taskBranch).toBe(`archie/${TASK_ID}`);
       // The task-keyed clone path, not a per-agent one.
       expect(opts.clonePath).toContain(`${TASK_ID}/repos/${opts.attached.github}`);
+      // And the task's repos dir as the only place the clone layer may write excludes.
+      expect(opts.reposRoot).toMatch(new RegExp(`${TASK_ID}/repos$`));
       expect(opts.baseRepoPath).toContain(`/repos/${opts.attached.github}`);
     }
     // A clone already on disk is NOT skipped — that skip was the bug.
