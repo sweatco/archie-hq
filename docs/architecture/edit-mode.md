@@ -35,7 +35,7 @@ When the task stops or completes, `cleanupClones()` removes the clones and clear
 
 `merge_pull_request` carries a second gate on top of edit mode: in a repo without `autoMerge: true` in `archie.json` it does not merge, it posts a `merge` approval request, and approving *arms* auto-merge rather than merging on the spot ([github-integration.md](github-integration.md#merge-policy-automerge)).
 
-Each clone's `.git/HEAD` stays in `denyWritePaths` even in edit mode, so branch movement must go through `switch_branch` / `create_branch` rather than a raw `git checkout`. **Known limitation:** that deny is enumerated per clone at spawn, so a repo mounted mid-session in edit mode has a writable `.git/HEAD` until the next respawn — the deny lists are prefix-matched and no directory expresses "`.git/HEAD` under any clone".
+Each clone's `.git/HEAD` stays in `denyWritePaths` even in edit mode, so branch movement must go through `switch_branch` / `create_branch` rather than a raw `git checkout`. **Known limitation:** that deny is enumerated per clone at spawn, so a repo mounted mid-session in edit mode has a writable `.git/HEAD` until the next respawn — the deny lists are prefix-matched and no directory expresses "`.git/HEAD` under any clone". `push_branch` covers the consequence: it refuses to push when the clone's checked-out branch differs from the tracked one, or HEAD is detached.
 
 ## The approval flow
 

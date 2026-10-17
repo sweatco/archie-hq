@@ -5,7 +5,12 @@
  * success paths) by calling handlers directly — no LLM, no MCP transport.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import { mkdtemp, mkdir, rm } from 'fs/promises';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import {
   createRepoToolsMcpServer,
   createCommsMcpServer,
@@ -767,5 +772,126 @@ describe('PR attribution', () => {
     await tool({ pr_number: 42, title: 'New title' }, {});
 
     expect(mockGitHubClient.updatePR.mock.calls[0][2].body).toBeUndefined();
+  });
+});
+
+// ---- push_branch: checked-out branch vs tracked branch ----
+//
+// Against REAL git repos and a real bare origin, not a mocked shell. `git push HEAD:<branch>` takes
+// its commits from HEAD and its destination name from metadata; the bug is those two drifting
+// apart, which a stubbed git cannot exhibit. The sandbox still denies writes to `.git/HEAD`, but
+// only for clones that existed at spawn (TODO(flat) in spawn.ts) — a repo mounted mid-session can
+// be moved by a raw checkout, and this guard is what stops that reaching the remote.
+
+describe('push_branch checked-out branch guard', () => {
+  const execFileAsync = promisify(execFile);
+  const TRACKED = 'feature/task-123';
+  let tmpDir: string;
+  let clonePath: string;
+  let originPath: string;
+
+  async function git(cwd: string, args: string[]): Promise<string> {
+    const { stdout } = await execFileAsync('git', args, { cwd });
+    return stdout.trim();
+  }
+
+  async function remoteBranches(): Promise<string[]> {
+    return (await git(originPath, ['branch', '--format=%(refname:short)'])).split('\n');
+  }
+
+  /** The task's record of the clone: tracking `feature/task-123`. */
+  function taskOnRealClone(): Task {
+    return makeTask({
+      repositories: [
+        {
+          github: 'org/backend',
+          clone_path: clonePath,
+          current_branch: TRACKED,
+          branch_states: { [TRACKED]: { base_branch: 'main' } },
+        },
+      ],
+    });
+  }
+
+  async function push(): Promise<string> {
+    const tool = getRepoTool(makeAgent(), taskOnRealClone(), 'push_branch');
+    const result = await tool({}, {});
+    return result.content[0].text as string;
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    tmpDir = await mkdtemp(join(tmpdir(), 'archie-push-guard-'));
+    originPath = join(tmpDir, 'origin.git');
+    clonePath = join(tmpDir, 'clone');
+    await execFileAsync('git', ['init', '-q', '--bare', '-b', 'main', originPath]);
+    await execFileAsync('git', ['init', '-q', '-b', 'main', clonePath]);
+    await git(clonePath, ['config', 'user.email', 'test@example.com']);
+    await git(clonePath, ['config', 'user.name', 'Test']);
+    await git(clonePath, ['commit', '-q', '--allow-empty', '-m', 'base']);
+    await git(clonePath, ['remote', 'add', 'origin', originPath]);
+    await git(clonePath, ['push', '-q', 'origin', 'main']);
+    await git(clonePath, ['checkout', '-q', '-b', TRACKED]);
+    await git(clonePath, ['commit', '-q', '--allow-empty', '-m', 'work']);
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('refuses when another branch is checked out, naming both, and nothing reaches the remote', async () => {
+    // A raw checkout behind the engine's back: without the guard, `sidequest` commits would be
+    // published under the name `feature/task-123`.
+    await git(clonePath, ['checkout', '-q', '-b', 'sidequest']);
+    await git(clonePath, ['commit', '-q', '--allow-empty', '-m', 'unrelated work']);
+
+    const text = await push();
+
+    expect(text).toMatch(/refusing to push/i);
+    expect(text).toContain("'sidequest'");
+    expect(text).toContain(`'${TRACKED}'`);
+    expect(text).toMatch(/switch_branch/);
+    expect(await remoteBranches()).toEqual(['main']);
+  });
+
+  it('refuses while HEAD is detached, and nothing reaches the remote', async () => {
+    await git(clonePath, ['checkout', '-q', '--detach', 'HEAD']);
+
+    const text = await push();
+
+    expect(text).toMatch(/refusing to push/i);
+    expect(text).toMatch(/detached/i);
+    expect(text).toContain(TRACKED);
+    expect(text).toMatch(/switch_branch/);
+    expect(await remoteBranches()).toEqual(['main']);
+  });
+
+  it('pushes when the checked-out branch is the tracked one', async () => {
+    const text = await push();
+
+    expect(text).toMatch(/successfully pushed/i);
+    expect(await remoteBranches()).toContain(TRACKED);
+    expect(await git(originPath, ['rev-parse', TRACKED])).toBe(await git(clonePath, ['rev-parse', 'HEAD']));
+  });
+
+  it('is not fooled by a tag sharing the branch name', async () => {
+    // `rev-parse --abbrev-ref HEAD` would answer `heads/feature/task-123` here and refuse a correct
+    // push; the guard reads the full ref instead.
+    await git(clonePath, ['tag', TRACKED]);
+
+    const text = await push();
+
+    expect(text).toMatch(/successfully pushed/i);
+  });
+
+  it('refuses when the current branch cannot be read', async () => {
+    // A recorded clone path that is not a git repository: no guess, no push.
+    clonePath = join(tmpDir, 'not-a-repo');
+    await mkdir(clonePath);
+
+    const text = await push();
+
+    expect(text).toMatch(/could not read the current branch/i);
+    expect(await remoteBranches()).toEqual(['main']);
   });
 });

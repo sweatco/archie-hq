@@ -366,6 +366,11 @@ export async function spawnAgent(agent: Agent, task: Task): Promise<void> {
   // branch with nothing recording the move. Closing it needs either a deny
   // pattern the sandbox does not support (the lists are prefix-matched, so no
   // path expresses "`.git/HEAD` under any clone") or a respawn on mount_repo.
+  // The consequence that matters — pushing one branch's history under another
+  // branch's name — is already closed: `push_branch` reads the branch actually
+  // checked out and refuses when it is detached or differs from the tracked one
+  // (`readCheckedOutBranch` in tools.ts). What stays open is only the unrecorded
+  // move itself.
   const cloneGitHeads = clonePaths.map((c) => join(c, '.git', 'HEAD'));
   let sandboxOpts: SandboxOptions = {
     cwd,

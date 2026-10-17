@@ -74,7 +74,7 @@ Grants are keyed on **directories**, not on the clones that happen to exist — 
 
 On a **trigger-fired** task, that trigger's persistent directory is added to both the read and the write lists ([triggers.md](triggers.md#persistent-per-trigger-directory)).
 
-`.git/HEAD` stays deny-write even in edit mode, so branch movement has to go through `switch_branch` / `create_branch` rather than a raw `git checkout`. **Known limitation:** that one deny is still enumerated per clone at spawn time, because the deny lists are prefix-matched and no directory expresses "`.git/HEAD` under any clone" — so a repo mounted mid-session in edit mode has a writable HEAD until the next respawn.
+`.git/HEAD` stays deny-write even in edit mode, so branch movement has to go through `switch_branch` / `create_branch` rather than a raw `git checkout`. **Known limitation:** that one deny is still enumerated per clone at spawn time, because the deny lists are prefix-matched and no directory expresses "`.git/HEAD` under any clone" — so a repo mounted mid-session in edit mode has a writable HEAD until the next respawn. The damaging consequence of that gap is closed where it would happen: `push_branch` reads the branch the clone actually has checked out and refuses to push when HEAD is detached or names a different branch than the one the task is tracking, so a raw checkout can no longer publish one branch's commits under another branch's name. What remains is only that the move itself goes unrecorded until the next push or `switch_branch`.
 
 Two `allowRead` entries are holes punched through a broad denial rather than paths outside it: the **plugins repo** (under the denied `$ARCHIE_WORKDIR`) and the **core plugin** (under the denied `/app`). Loading a skill needs neither — `Skill` is in neither the hook's `READ_TOOLS` nor its `WRITE_TOOLS`, and the CLI reads `SKILL.md` in-process rather than through `Bash`. Reading a skill's *file* is what is gated, and both layers block it for different reasons: the hook because the path appears in no allow list, bubblewrap because it resolves back to `/app`.
 
@@ -144,6 +144,7 @@ The research pipeline is the single channel through which untrusted web content 
 | Push to main | blocked | GitHub branch protection (server-side) |
 | Force push to any branch | blocked | GitHub branch protection (server-side) |
 | Raw `git checkout` in a clone | blocked | `.git/HEAD` in `denyWrite` (per clone at spawn — see the limitation above) |
+| Pushing a branch other than the tracked one | blocked | `push_branch` refuses when the checked-out branch differs from the tracked branch or HEAD is detached |
 
 The `repo-tools` MCP server is the only pathway to GitHub.
 
@@ -245,7 +246,7 @@ The SDK's sandbox replaces certain files (`.gitmodules`, `CLAUDE.md`) with `/dev
 
 ### 3. `.git/HEAD` deny is per clone at spawn
 
-See [Filesystem isolation](#filesystem-isolation): a repo mounted mid-session in edit mode has a writable `.git/HEAD` until the next respawn, because the deny lists are prefix-matched and there is no directory that expresses the rule.
+See [Filesystem isolation](#filesystem-isolation): a repo mounted mid-session in edit mode has a writable `.git/HEAD` until the next respawn, because the deny lists are prefix-matched and there is no directory that expresses the rule. `push_branch`'s check of the checked-out branch against the tracked one means such a move cannot be pushed under the wrong name; it only goes unrecorded.
 
 ## What Is NOT Yet Implemented
 

@@ -140,7 +140,7 @@ All tools below are registered on the same `repo-tools` MCP server. The write-si
 
 | Tool | Description |
 |---|---|
-| `push_branch` | Push commits from the local shared clone to origin via `git push -u origin HEAD:{branch}`. |
+| `push_branch` | Push commits from the local shared clone to origin via `git push -u origin HEAD:{branch}`. Refuses first when the branch actually checked out (`git symbolic-ref HEAD`) differs from the tracked `{branch}` or HEAD is detached, so one branch's commits are never published under another's name. |
 | `create_pull_request` | Create a PR on GitHub. Stores the PR number in the current branch's `BranchState`. |
 | `create_branch` | Create a new branch (auto-named `archie/{taskId}` or `archie/{taskId}-N`) and switch to it. |
 | `update_pr` | Update the title, description, and/or base branch of an existing PR (all fields optional). |
