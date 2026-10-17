@@ -18,7 +18,7 @@ import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { logger } from '../../system/logger.js';
-import { fetchOrigin, configureGitIdentity, getGitHubClient } from './client.js';
+import { fetchOrigin, configureGitIdentity, getGitHubClient, workdirRoot } from './client.js';
 import { hydrateBranchState } from './branch-state.js';
 import type { AttachedRepo, BranchState } from '../../types/task.js';
 
@@ -429,16 +429,18 @@ export async function removeClone(clonePath: string): Promise<void> {
  * Every Bash command an agent runs is wrapped in bubblewrap, and the CLI protects the harness paths
  * it expects to own in each writable directory: one that exists is bound read-only, and one that
  * does NOT exist gets `/dev/null` mounted over it so it cannot be created. Mounting over a missing
- * path means first creating a placeholder file there as the mount point — on the real disk, in the
- * customer's working tree — and that placeholder outlives the command. Inside the sandbox it reads
- * as a character device (1,3) and `git add -A` dies on it ("can only add regular files…"); outside
- * the sandbox it is an ordinary regular file that `git add -A` stages and commits.
+ * path means first creating a placeholder file there as the mount point, in the customer's working
+ * tree. Inside the sandbox every one of them reads as an untracked character device (1,3), and
+ * `git add -A` dies on the first ("can only add regular files…"). The placeholders are normally
+ * removed when the command exits, but not always — and a leftover is an ordinary empty file that
+ * `git add -A` outside the sandbox stages and commits.
  *
  * The list is what has been OBSERVED in task clones, not the CLI's full masked set, which changes
  * between CLI versions and is wider in the session's own cwd:
- *   - `.mcp.json` — a placeholder seen 2026-10-16 in a sweatcoin-infrastructure clone, which does
- *     not track one (repos that do track it get a read-only bind instead, and nothing is left).
- *   - the `.claude/*` entries — seen as character devices in an archie-hq clone in August 2026.
+ *   - `.mcp.json` — a leftover placeholder in a sweatcoin-infrastructure clone (which does not
+ *     track one) since 2026-10-16. Repos that do track it get a read-only bind instead.
+ *   - the `.claude/*` entries — character devices in archie-hq clones, in August 2026 and again in
+ *     October (all but `.cc-writes`, which already existed there and was bound read-only).
  *
  * The root-level paths the CLI masks in the cwd (`.bashrc`, `.gitconfig`, `.gitmodules`,
  * `CLAUDE.md`, `.vscode`, …) are deliberately absent: the cwd is the agent workspace, never a
@@ -502,9 +504,12 @@ function isInside(parent: string, child: string): boolean {
  *   3. `.git/info` likewise resolves inside `.git`, re-checked after creation;
  *   4. `.git/info/exclude` is not itself a symlink — `writeFile` would follow it and write through.
  *
- * Failing any of them logs and returns rather than writing. `allowedRoot` is passed in rather than
- * imported from `system/workdir.js` because that module imports this one, and the import would
- * cycle; it also lets the tests anchor to a temp dir.
+ * `allowedRoot` is not trusted either: callers pass the task's `getReposPath(taskId)`, and a task
+ * id can arrive from an HTTP route parameter (`/api/tasks/:id/…` reaches the edit-mode approval
+ * path). So the root must itself resolve inside the workdir (`workdirRoot`), the same anchor
+ * `configureGitIdentity` already confines clone paths to. Failing any check logs and returns
+ * rather than writing. The task-scoped root is passed in rather than computed here because
+ * `system/workdir.js` imports this module, and importing it back would cycle.
  *
  * A TOCTOU window remains between the checks and the write — inherent without `openat2`, and
  * acceptable here: everything inside `allowedRoot` is already Archie-managed, and the alternative
@@ -519,8 +524,8 @@ export async function excludeSandboxArtifacts(clonePath: string, allowedRoot: st
 
   const block = [
     EXCLUDE_HEADER,
-    '# Claude Code\'s sandbox mounts /dev/null over these paths while an agent works here, leaving',
-    '# placeholder files behind as untracked entries. Without this block `git add -A` commits them.',
+    '# Claude Code\'s sandbox mounts /dev/null over these paths while an agent works here. The',
+    '# placeholders it creates are untracked entries that make `git add -A` fail, or get committed.',
     '# Local to this clone; never committed. Tracked files are unaffected — exclusion only hides',
     '# untracked entries. If an agent genuinely needs to ADD one of these paths, delete its line.',
     ...SANDBOX_ARTIFACT_PATTERNS,
@@ -528,18 +533,23 @@ export async function excludeSandboxArtifacts(clonePath: string, allowedRoot: st
   ].join('\n');
 
   try {
-    // (1) LEXICAL containment first, before the untrusted string touches the filesystem at all.
-    //     `path.resolve` collapses `..` and makes the value absolute; the prefix test then rejects
-    //     anything not strictly below the managed root (a clone is never the root itself). Every fs
-    //     call below uses `cloneLexical` or a value derived from it — the raw argument is never
-    //     passed to the filesystem, so a syntactically escaping path is refused without even a stat.
+    // (1) LEXICAL containment first, before either untrusted string touches the filesystem: the
+    //     root strictly below the workdir, then the clone strictly below the root (a clone is never
+    //     the root itself). `path.resolve` collapses `..` and makes each value absolute. Every fs
+    //     call below uses `rootLexical`, `cloneLexical` or a value derived from them — the raw
+    //     arguments never reach the filesystem, so an escaping path is refused without even a stat.
     //
-    //     Written INLINE, as a single negated `startsWith` on the resolved value, deliberately.
-    //     That is the shape CodeQL's js/path-injection recognises as a sanitiser. It does not follow
-    //     the same test through a boolean-returning helper (alerts 136-137 on the first version of
-    //     this), nor through a compound `x === root || x.startsWith(…)` condition, which left alert
-    //     137 open on the `realpath` below. Keep it this shape when editing.
+    //     Each test is written inline as one negated `startsWith` on the resolved value. What
+    //     CodeQL (js/path-injection) has shown on this function so far: through a boolean helper it
+    //     flagged the first fs call (alerts 136-137); with a compound `x !== root && …` condition it
+    //     still flagged the clone's `realpath` (137); in this single-`startsWith` shape it no longer
+    //     flagged the clone, only the root's `realpath` once the root became task-derived (167),
+    //     which the workdir test is here to answer. Prefer this shape when editing.
+    const workdir = workdirRoot();
     const rootLexical = path.resolve(allowedRoot);
+    if (!rootLexical.startsWith(workdir + path.sep)) {
+      return refuse(`allowed root ${rootLexical} is outside the workdir ${workdir}`);
+    }
     const cloneLexical = path.resolve(clonePath);
     if (!cloneLexical.startsWith(rootLexical + path.sep)) {
       return refuse(`resolves to ${cloneLexical}, outside ${rootLexical}`);

@@ -86,8 +86,8 @@ describe('ensureTaskClone — reusing an existing clone', () => {
 
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'archie-task-clone-'));
     process.env.ARCHIE_WORKDIR = tmpDir;
-    clonePath = path.join(tmpDir, 'clone');
-    await fs.mkdir(clonePath);
+    clonePath = path.join(tmpDir, 'repos', 'clone');
+    await fs.mkdir(clonePath, { recursive: true });
     await execFileAsync('git', ['init', '-q'], { cwd: clonePath });
   });
 
@@ -109,7 +109,7 @@ describe('ensureTaskClone — reusing an existing clone', () => {
     const result = await ensureTaskClone({
       attached,
       clonePath,
-      reposRoot: tmpDir,
+      reposRoot: path.join(tmpDir, 'repos'),
       baseRepoPath: path.join(tmpDir, 'base'),
       editAllowed: false,
       taskBranch: TASK_BRANCH,
@@ -129,7 +129,7 @@ describe('ensureTaskClone — reusing an existing clone', () => {
     await ensureTaskClone({
       attached,
       clonePath,
-      reposRoot: tmpDir,
+      reposRoot: path.join(tmpDir, 'repos'),
       baseRepoPath: path.join(tmpDir, 'base'),
       editAllowed: false,
       taskBranch: TASK_BRANCH,
@@ -149,11 +149,14 @@ describe('ensureTaskClone — reusing an existing clone', () => {
 describe('ensureTaskClone — creating a clone', () => {
   let tmpDir: string;
   const savedLogin = process.env.ARCHIE_GITHUB_LOGIN;
+  const savedWorkdir = process.env.ARCHIE_WORKDIR;
 
   beforeEach(async () => {
     // No attribution identity: configureGitIdentity becomes a no-op, which this test does not need.
     delete process.env.ARCHIE_GITHUB_LOGIN;
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'archie-task-clone-create-'));
+    // The exclude write is confined to the workdir; the task's repos dir sits beneath it.
+    process.env.ARCHIE_WORKDIR = tmpDir;
     const base = path.join(tmpDir, 'base');
     await execFileAsync('git', ['init', '-q', '-b', 'main', base]);
     await execFileAsync('git', ['-c', 'user.name=T', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'base'], { cwd: base });
@@ -162,6 +165,8 @@ describe('ensureTaskClone — creating a clone', () => {
   afterEach(async () => {
     if (savedLogin === undefined) delete process.env.ARCHIE_GITHUB_LOGIN;
     else process.env.ARCHIE_GITHUB_LOGIN = savedLogin;
+    if (savedWorkdir === undefined) delete process.env.ARCHIE_WORKDIR;
+    else process.env.ARCHIE_WORKDIR = savedWorkdir;
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 

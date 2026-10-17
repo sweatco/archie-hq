@@ -3,9 +3,10 @@
  *
  * The hazard being locked in: Claude Code's sandbox mounts `/dev/null` over harness paths it
  * expects to own, and for a path that does not exist it first creates a placeholder file to mount
- * onto — in a task clone, that is a CUSTOMER's working tree. The placeholder outlives the command
- * as an untracked entry, and `git add -A` commits it. `docs/architecture/security.md` claimed this
- * was already excluded; it was not.
+ * onto — in a task clone, that is a CUSTOMER's working tree. Inside the sandbox the placeholder is
+ * an untracked character device that makes `git add -A` fail; one left behind after the command is
+ * an empty file that `git add -A` commits. `docs/architecture/security.md` claimed this was
+ * already excluded; it was not.
  *
  * Assertions go through `git check-ignore` and `git add -A` rather than reading the file back,
  * because what matters is whether git actually hides the path — not whether we wrote a line.
@@ -24,7 +25,10 @@ const execFileAsync = promisify(execFile);
 const HEADER = '# --- Archie: Claude Code sandbox artifacts (managed) ---';
 
 let tmpDir: string;
+/** The allowed root (a task's `repos/` dir), strictly inside the workdir (`ARCHIE_WORKDIR = tmpDir`). */
+let root: string;
 let repoPath: string;
+let savedWorkdir: string | undefined;
 
 async function git(args: string[], cwd = repoPath): Promise<string> {
   const { stdout } = await execFileAsync('git', args, { cwd });
@@ -49,19 +53,24 @@ async function writeFileAt(relPath: string, contents = ''): Promise<void> {
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'archie-exclude-'));
-  repoPath = path.join(tmpDir, 'clone');
+  savedWorkdir = process.env.ARCHIE_WORKDIR;
+  process.env.ARCHIE_WORKDIR = tmpDir;
+  root = path.join(tmpDir, 'repos');
+  repoPath = path.join(root, 'clone');
   await execFileAsync('git', ['init', '-q', '-b', 'main', repoPath]);
   await git(['config', 'user.email', 'test@example.com']);
   await git(['config', 'user.name', 'Test']);
 });
 
 afterEach(async () => {
+  if (savedWorkdir === undefined) delete process.env.ARCHIE_WORKDIR;
+  else process.env.ARCHIE_WORKDIR = savedWorkdir;
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
 
 describe('excludeSandboxArtifacts', () => {
   it('hides the sandbox placeholders from git so `git add -A` cannot commit them', async () => {
-    await excludeSandboxArtifacts(repoPath, tmpDir);
+    await excludeSandboxArtifacts(repoPath, root);
 
     for (const artifact of [
       '.mcp.json',
@@ -93,7 +102,7 @@ describe('excludeSandboxArtifacts', () => {
     await git(['add', 'README.md']);
     await git(['commit', '-q', '-m', 'base']);
 
-    await excludeSandboxArtifacts(repoPath, tmpDir);
+    await excludeSandboxArtifacts(repoPath, root);
     await writeFileAt('.mcp.json');
     await writeFileAt('README.md', 'base\nedited\n');
 
@@ -109,7 +118,7 @@ describe('excludeSandboxArtifacts', () => {
     await git(['add', '-f', '.mcp.json', '.claude/settings.json']);
     await git(['commit', '-q', '-m', 'add project config']);
 
-    await excludeSandboxArtifacts(repoPath, tmpDir);
+    await excludeSandboxArtifacts(repoPath, root);
 
     await writeFileAt('.mcp.json', '{"mcpServers":{"x":{}}}');
     await writeFileAt('.claude/settings.json', '{"real":true,"edited":true}');
@@ -119,7 +128,7 @@ describe('excludeSandboxArtifacts', () => {
   });
 
   it('does not touch unrelated repo content', async () => {
-    await excludeSandboxArtifacts(repoPath, tmpDir);
+    await excludeSandboxArtifacts(repoPath, root);
 
     await writeFileAt('src/index.ts');
     await writeFileAt('.claude/skills/thing/SKILL.md');
@@ -136,9 +145,9 @@ describe('excludeSandboxArtifacts', () => {
   });
 
   it('is idempotent — repeated mounts do not duplicate the block', async () => {
-    await excludeSandboxArtifacts(repoPath, tmpDir);
-    await excludeSandboxArtifacts(repoPath, tmpDir);
-    await excludeSandboxArtifacts(repoPath, tmpDir);
+    await excludeSandboxArtifacts(repoPath, root);
+    await excludeSandboxArtifacts(repoPath, root);
+    await excludeSandboxArtifacts(repoPath, root);
 
     const contents = await fs.readFile(path.join(repoPath, '.git', 'info', 'exclude'), 'utf8');
     expect(contents.split(HEADER).length - 1).toBe(1);
@@ -149,7 +158,7 @@ describe('excludeSandboxArtifacts', () => {
     const excludePath = path.join(repoPath, '.git', 'info', 'exclude');
     await fs.writeFile(excludePath, `/mine\n${HEADER}\n/.claude/settings.json\n# --- end Archie ---\n/also-mine\n`);
 
-    await excludeSandboxArtifacts(repoPath, tmpDir);
+    await excludeSandboxArtifacts(repoPath, root);
 
     const contents = await fs.readFile(excludePath, 'utf8');
     expect(contents.split(HEADER).length - 1).toBe(1);
@@ -163,7 +172,7 @@ describe('excludeSandboxArtifacts', () => {
     const excludePath = path.join(repoPath, '.git', 'info', 'exclude');
     await fs.writeFile(excludePath, '# hand-written\n/scratch-notes.md\n');
 
-    await excludeSandboxArtifacts(repoPath, tmpDir);
+    await excludeSandboxArtifacts(repoPath, root);
 
     const contents = await fs.readFile(excludePath, 'utf8');
     expect(contents).toContain('/scratch-notes.md');
@@ -173,7 +182,7 @@ describe('excludeSandboxArtifacts', () => {
 
   it('does not throw when the clone is missing', async () => {
     // Best-effort by design: a mount must not fail because this could not be written.
-    await expect(excludeSandboxArtifacts(path.join(tmpDir, 'does-not-exist'), tmpDir)).resolves.toBeUndefined();
+    await expect(excludeSandboxArtifacts(path.join(root, 'does-not-exist'), root)).resolves.toBeUndefined();
   });
 });
 
@@ -241,11 +250,41 @@ describe('excludeSandboxArtifacts path containment', () => {
   });
 
   it('refuses the allowed root itself — a clone always sits beneath it', async () => {
-    await execFileAsync('git', ['init', '-q', tmpDir]);
-    const excludePath = path.join(tmpDir, '.git', 'info', 'exclude');
+    await execFileAsync('git', ['init', '-q', root]);
+    const excludePath = path.join(root, '.git', 'info', 'exclude');
     await fs.writeFile(excludePath, 'ORIGINAL');
 
-    await excludeSandboxArtifacts(tmpDir, tmpDir);
+    await excludeSandboxArtifacts(root, root);
+
+    expect(await fs.readFile(excludePath, 'utf8')).toBe('ORIGINAL');
+  });
+
+  it('refuses an allowed root that is outside the workdir, even with a clone inside it', async () => {
+    // The root is task-derived (`getReposPath(taskId)`), and a task id can come from an HTTP route
+    // parameter, so the root is anchored too: a well-formed clone under a root outside the
+    // workdir is still refused.
+    const elsewhere = await fs.mkdtemp(path.join(os.tmpdir(), 'archie-exclude-elsewhere-'));
+    try {
+      const clone = path.join(elsewhere, 'clone');
+      await execFileAsync('git', ['init', '-q', clone]);
+      const excludePath = path.join(clone, '.git', 'info', 'exclude');
+      await fs.writeFile(excludePath, 'ORIGINAL');
+
+      await excludeSandboxArtifacts(clone, elsewhere);
+
+      expect(await fs.readFile(excludePath, 'utf8')).toBe('ORIGINAL');
+    } finally {
+      await fs.rm(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses the workdir itself as the allowed root', async () => {
+    // `startsWith(workdir + sep)` is strict: the root has to be a directory beneath it.
+    await fs.mkdir(path.dirname(repoPath), { recursive: true });
+    const excludePath = path.join(repoPath, '.git', 'info', 'exclude');
+    await fs.writeFile(excludePath, 'ORIGINAL');
+
+    await excludeSandboxArtifacts(repoPath, tmpDir);
 
     expect(await fs.readFile(excludePath, 'utf8')).toBe('ORIGINAL');
   });
@@ -267,7 +306,7 @@ describe('excludeSandboxArtifacts path containment', () => {
     await fs.rm(path.join(repoPath, '.git'), { recursive: true, force: true });
     await fs.symlink(path.join(outside, '.git'), path.join(repoPath, '.git'));
 
-    await excludeSandboxArtifacts(repoPath, tmpDir);
+    await excludeSandboxArtifacts(repoPath, root);
 
     expect(await outsideExclude()).toBe('ORIGINAL');
   });
@@ -280,7 +319,7 @@ describe('excludeSandboxArtifacts path containment', () => {
     await fs.rm(path.join(repoPath, '.git', 'info'), { recursive: true, force: true });
     await fs.symlink(escapeTarget, path.join(repoPath, '.git', 'info'));
 
-    await excludeSandboxArtifacts(repoPath, tmpDir);
+    await excludeSandboxArtifacts(repoPath, root);
 
     expect(await fs.readFile(path.join(escapeTarget, 'exclude'), 'utf8')).toBe('ORIGINAL');
   });
@@ -294,16 +333,16 @@ describe('excludeSandboxArtifacts path containment', () => {
     await fs.rm(excludePath, { force: true });
     await fs.symlink(victim, excludePath);
 
-    await excludeSandboxArtifacts(repoPath, tmpDir);
+    await excludeSandboxArtifacts(repoPath, root);
 
     expect(await fs.readFile(victim, 'utf8')).toBe('ORIGINAL');
   });
 
   it('refuses a directory that is not a git clone, and creates nothing in it', async () => {
-    const notARepo = path.join(tmpDir, 'not-a-repo');
+    const notARepo = path.join(root, 'not-a-repo');
     await fs.mkdir(notARepo, { recursive: true });
 
-    await excludeSandboxArtifacts(notARepo, tmpDir);
+    await excludeSandboxArtifacts(notARepo, root);
 
     await expect(fs.stat(path.join(notARepo, '.git'))).rejects.toThrow();
   });
@@ -321,7 +360,7 @@ describe('excludeSandboxArtifacts path containment', () => {
 
   it('still works for a legitimate clone under the allowed root', async () => {
     // The guards must not be so strict that the real case stops working.
-    await excludeSandboxArtifacts(repoPath, tmpDir);
+    await excludeSandboxArtifacts(repoPath, root);
 
     await writeFileAt('.mcp.json');
     expect(await isIgnored('.mcp.json')).toBe(true);
