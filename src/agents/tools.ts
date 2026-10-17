@@ -9,7 +9,7 @@
  * Replaces: mcp/tools.ts (definitions) + task-runtime.ts closures (implementations)
  */
 
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
@@ -221,6 +221,7 @@ const githubArgSchema = z.string().optional().describe(
 );
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 // ---- Tool result helpers ----
 
@@ -1086,6 +1087,29 @@ function createGetTaskUsageTool(task: Task) {
 
 // ---- GitHub tools (write side gated by edit mode) ----
 
+type CheckedOut = { branch: string } | { detached: true } | { error: string };
+
+/**
+ * The branch a clone actually has checked out, read from git rather than from metadata.
+ *
+ * `symbolic-ref` rather than `rev-parse --abbrev-ref`: it returns the full `refs/heads/…` name, so
+ * a tag that shares the branch's name cannot make git abbreviate it to `heads/<name>` and turn
+ * agreement into a false mismatch, and it reports a detached HEAD as exit status 1 rather than as
+ * the literal string `HEAD`. argv-style, so nothing is interpolated into a shell.
+ */
+async function readCheckedOutBranch(clonePath: string): Promise<CheckedOut> {
+  try {
+    const { stdout } = await execFileAsync('git', ['symbolic-ref', '--quiet', 'HEAD'], { cwd: clonePath });
+    const ref = stdout.trim();
+    if (ref.startsWith('refs/heads/')) return { branch: ref.slice('refs/heads/'.length) };
+    return { error: `HEAD points at ${ref}, which is not a local branch` };
+  } catch (error) {
+    // With --quiet, status 1 means only "HEAD is not a symbolic ref" — i.e. detached.
+    if ((error as { code?: unknown }).code === 1) return { detached: true };
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 function createPushBranchTool(agent: Agent, task: Task) {
   return tool(
     'push_branch',
@@ -1111,6 +1135,30 @@ function createPushBranchTool(agent: Agent, task: Task) {
 
       if (!branch || !state) {
         return err('No branch to push');
+      }
+
+      // The push below is `HEAD:<branch>`: the commits come from wherever HEAD resolves, the
+      // destination name comes from metadata. If those two have drifted — a raw `git checkout` in
+      // a clone whose `.git/HEAD` is still writable (see the TODO(flat) by the deny in spawn.ts) —
+      // the push would publish one branch's history under another branch's name, silently.
+      // Refuse rather than retarget: quietly pushing the other branch would leave the engine's
+      // branch state wrong, and `switch_branch` is what keeps that state honest.
+      const checkedOut = await readCheckedOutBranch(attached.clone_path!);
+      if ('error' in checkedOut) {
+        return err(`Could not read the current branch of ${resolved.github} before pushing: ${checkedOut.error}`);
+      }
+      if ('detached' in checkedOut) {
+        return err(
+          `Refusing to push: HEAD is detached in ${resolved.github}, so there is no branch to push as '${branch}'. ` +
+            `If a rebase or cherry-pick is in progress, finish or abort it; otherwise use switch_branch("${branch}") to get back onto the tracked branch, then push again.`,
+        );
+      }
+      if (checkedOut.branch !== branch) {
+        return err(
+          `Refusing to push: the clone for ${resolved.github} has '${checkedOut.branch}' checked out, but the tracked branch is '${branch}', ` +
+            `so this push would publish '${checkedOut.branch}' commits under the name '${branch}'. ` +
+            `Move between branches with switch_branch — switch_branch("${branch}") to return to the tracked branch, or switch_branch("${checkedOut.branch}") if that is the branch you meant to push.`,
+        );
       }
 
       try {
