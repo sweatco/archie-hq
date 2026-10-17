@@ -1312,9 +1312,10 @@ export function getArchieAttributionIdentity(): ArchieIdentity | null {
 /**
  * Root every repo path must live under. Read per call rather than imported from
  * `system/workdir.ts` (which imports this module transitively) — keep the two
- * in step if the default ever changes.
+ * in step if the default ever changes. Also the anchor for the clone-exclude
+ * write in `repo-clone.ts`, which has the same cycle.
  */
-function workdirRoot(): string {
+export function workdirRoot(): string {
   return path.resolve(process.env.ARCHIE_WORKDIR || path.join(process.cwd(), 'workdir'));
 }
 

@@ -18,7 +18,7 @@ import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { logger } from '../../system/logger.js';
-import { fetchOrigin, configureGitIdentity, getGitHubClient } from './client.js';
+import { fetchOrigin, configureGitIdentity, getGitHubClient, workdirRoot } from './client.js';
 import { hydrateBranchState } from './branch-state.js';
 import type { AttachedRepo, BranchState } from '../../types/task.js';
 
@@ -285,6 +285,10 @@ export interface EnsureTaskCloneResult extends CloneResult {
  * Mutates `attached` in place — `base_path`, `clone_path`, `current_branch`
  * and `branch_states` — so the caller only has to persist metadata afterwards.
  *
+ * Both paths finish the clone the same way: git identity, and the managed
+ * `.git/info/exclude` block that keeps the sandbox's placeholder files out of
+ * `git add -A` (see {@link excludeSandboxArtifacts}).
+ *
  * Idempotent: calling it again for a repo already mounted returns the same
  * clone. When edit mode has since been approved and the reused clone is still
  * parked on the base branch, the task branch is cut in place, so a second
@@ -294,6 +298,12 @@ export async function ensureTaskClone(opts: {
   attached: AttachedRepo;
   /** Canonical task-keyed path for this clone (`getTaskClonePath`). */
   clonePath: string;
+  /**
+   * The task's repos directory (`getReposPath`). Every clone of this task lives
+   * beneath it, and {@link excludeSandboxArtifacts} refuses to write anywhere
+   * else — passed in because importing it would cycle through `system/workdir.js`.
+   */
+  reposRoot: string;
   /** Base cache this clone borrows objects from. */
   baseRepoPath: string;
   editAllowed: boolean;
@@ -321,6 +331,9 @@ export async function ensureTaskClone(opts: {
     // interrupted mount, or one whose config predates the current attribution
     // identity, would otherwise commit as whoever git falls back to.
     await configureGitIdentity(existing);
+    // Reused clones too: they may predate this, and the sandbox leaves its
+    // placeholders while agents work, not at creation.
+    await excludeSandboxArtifacts(existing, opts.reposRoot);
     const branch = attached.current_branch ?? await readCurrentBranch(existing);
     if (branch) attached.current_branch = branch;
     const base = recordedBaseBranch(attached) ?? opts.baseBranch ?? await getDefaultBranch(baseRepoPath);
@@ -358,6 +371,7 @@ export async function ensureTaskClone(opts: {
     attached.current_branch = result.branch;
   }
   await configureGitIdentity(result.clone_path);
+  await excludeSandboxArtifacts(result.clone_path, opts.reposRoot);
   return { ...result, created: true };
 }
 
@@ -405,4 +419,211 @@ export async function cloneExists(clonePath: string): Promise<boolean> {
 export async function removeClone(clonePath: string): Promise<void> {
   await fs.rm(clonePath, { recursive: true, force: true });
   logger.system(`Removed clone at ${clonePath}`);
+}
+
+// ---- Sandbox artifact exclusion ----
+
+/**
+ * Paths Claude Code's sandbox masks inside a task clone, written as `.git/info/exclude` patterns.
+ *
+ * Every Bash command an agent runs is wrapped in bubblewrap, and the CLI protects the harness paths
+ * it expects to own in each writable directory: one that exists is bound read-only, and one that
+ * does NOT exist gets `/dev/null` mounted over it so it cannot be created. Mounting over a missing
+ * path means first creating a placeholder file there as the mount point, in the customer's working
+ * tree. Inside the sandbox every one of them reads as an untracked character device (1,3), and
+ * `git add -A` dies on the first ("can only add regular files…"). The placeholders are normally
+ * removed when the command exits, but not always — and a leftover is an ordinary empty file that
+ * `git add -A` outside the sandbox stages and commits.
+ *
+ * The list is what has been OBSERVED in task clones, not the CLI's full masked set, which changes
+ * between CLI versions and is wider in the session's own cwd:
+ *   - `.mcp.json` — a leftover placeholder in a sweatcoin-infrastructure clone (which does not
+ *     track one) since 2026-10-16. Repos that do track it get a read-only bind instead.
+ *   - the `.claude/*` entries — character devices in archie-hq clones, in August 2026 and again in
+ *     October (all but `.cc-writes`, which already existed there and was bound read-only).
+ *
+ * The root-level paths the CLI masks in the cwd (`.bashrc`, `.gitconfig`, `.gitmodules`,
+ * `CLAUDE.md`, `.vscode`, …) are deliberately absent: the cwd is the agent workspace, never a
+ * clone, and several of them are ordinary repository content an agent may be asked to add.
+ *
+ * Two properties make this safe:
+ *   - Exclusion does NOT affect TRACKED files. A repo that already commits `.mcp.json` or
+ *     `.claude/settings.json` keeps diffing it normally; only untracked entries are hidden.
+ *   - `.git/info/exclude` is local to the clone and never committed, so nothing reaches the repo.
+ *
+ * The residual risk is narrow and called out in the written header: an agent asked to CREATE one of
+ * these exact paths in a repo that does not already track it would find it ignored. For a path the
+ * sandbox masks it could not have written it anyway; for the rest, the comment says how to undo it.
+ */
+const SANDBOX_ARTIFACT_PATTERNS = [
+  '/.mcp.json',
+  '/.claude/settings.json',
+  '/.claude/settings.local.json',
+  '/.claude/launch.json',
+  '/.claude/loop.md',
+  '/.claude/scheduled_tasks.json',
+  '/.claude/hooks',
+  '/.claude/workflows',
+  '/.claude/routines',
+  '/.claude/output-styles',
+  '/.claude/.cc-writes',
+];
+
+const EXCLUDE_HEADER = '# --- Archie: Claude Code sandbox artifacts (managed) ---';
+const EXCLUDE_FOOTER = '# --- end Archie ---';
+
+/**
+ * True when `child` is `parent` itself or sits beneath it. Both sides must already be canonical
+ * (`fs.realpath`), because a plain string prefix test is defeated by a `..` segment or a symlink.
+ */
+function isInside(parent: string, child: string): boolean {
+  const p = path.resolve(parent);
+  const c = path.resolve(child);
+  return c === p || c.startsWith(p + path.sep);
+}
+
+/**
+ * Ensure a clone's `.git/info/exclude` hides the sandbox artifacts described above.
+ *
+ * Called by {@link ensureTaskClone} for every clone it hands back — freshly created or reused — so
+ * a clone that predates this change picks the block up the next time it is mounted. Idempotent:
+ * the managed block is delimited and rewritten in place, so repeat calls neither duplicate it nor
+ * disturb anything else in the file.
+ *
+ * `clonePath` is TREATED AS UNTRUSTED, and `allowedRoot` is the anchor that makes that safe. It is
+ * either a `clone_path` read back from task metadata or `getTaskClonePath(taskId, github)`, where
+ * `github` is the argument a model passed to `mount_repo`. That tool normalises the identifier with
+ * `normalizeGithubRef` and refuses a repo the GitHub App cannot reach, but the normaliser's
+ * character class admits `.`, so a `..` segment passes its shape check — and unchecked, this
+ * function is an arbitrary-file-overwrite primitive: every `..` moves the destination of the
+ * `writeFile` up a directory. Four things have to hold before anything is written, each
+ * canonicalised so neither `..` nor a symlink can slip past a string comparison:
+ *
+ *   1. the clone resolves to a real existing path inside `allowedRoot`;
+ *   2. its `.git` is a real directory that lives inside the clone (not a file, not a link out);
+ *   3. `.git/info` likewise resolves inside `.git`, re-checked after creation;
+ *   4. `.git/info/exclude` is not itself a symlink — `writeFile` would follow it and write through.
+ *
+ * `allowedRoot` is not trusted either: callers pass the task's `getReposPath(taskId)`, and a task
+ * id can arrive from an HTTP route parameter (`/api/tasks/:id/…` reaches the edit-mode approval
+ * path). So the root must itself resolve inside the workdir (`workdirRoot`), the same anchor
+ * `configureGitIdentity` already confines clone paths to. Failing any check logs and returns
+ * rather than writing. The task-scoped root is passed in rather than computed here because
+ * `system/workdir.js` imports this module, and importing it back would cycle.
+ *
+ * A TOCTOU window remains between the checks and the write — inherent without `openat2`, and
+ * acceptable here: everything inside `allowedRoot` is already Archie-managed, and the alternative
+ * primitive it would yield is one this same process could obtain directly.
+ *
+ * Best-effort throughout. A clone we cannot write this into is not a reason to fail a mount — the
+ * work still proceeds, it just keeps the untracked noise — so failures are logged and swallowed.
+ */
+export async function excludeSandboxArtifacts(clonePath: string, allowedRoot: string): Promise<void> {
+  const refuse = (reason: string) =>
+    logger.warn('repo-clone', `Refusing to write sandbox-artifact excludes for ${clonePath}: ${reason}`);
+
+  const block = [
+    EXCLUDE_HEADER,
+    '# Claude Code\'s sandbox mounts /dev/null over these paths while an agent works here. The',
+    '# placeholders it creates are untracked entries that make `git add -A` fail, or get committed.',
+    '# Local to this clone; never committed. Tracked files are unaffected — exclusion only hides',
+    '# untracked entries. If an agent genuinely needs to ADD one of these paths, delete its line.',
+    ...SANDBOX_ARTIFACT_PATTERNS,
+    EXCLUDE_FOOTER,
+  ].join('\n');
+
+  try {
+    // (1) LEXICAL containment first, before either untrusted string touches the filesystem: the
+    //     root strictly below the workdir, then the clone strictly below the root (a clone is never
+    //     the root itself). `path.resolve` collapses `..` and makes each value absolute. Every fs
+    //     call below uses `rootLexical`, `cloneLexical` or a value derived from them — the raw
+    //     arguments never reach the filesystem, so an escaping path is refused without even a stat.
+    //
+    //     Each test is written inline as one negated `startsWith` on the resolved value. What
+    //     CodeQL (js/path-injection) has shown on this function so far: through a boolean helper it
+    //     flagged the first fs call (alerts 136-137); with a compound `x !== root && …` condition it
+    //     still flagged the clone's `realpath` (137); in this single-`startsWith` shape it no longer
+    //     flagged the clone, only the root's `realpath` once the root became task-derived (167),
+    //     which the workdir test is here to answer. Prefer this shape when editing.
+    const workdir = workdirRoot();
+    const rootLexical = path.resolve(allowedRoot);
+    if (!rootLexical.startsWith(workdir + path.sep)) {
+      return refuse(`allowed root ${rootLexical} is outside the workdir ${workdir}`);
+    }
+    const cloneLexical = path.resolve(clonePath);
+    if (!cloneLexical.startsWith(rootLexical + path.sep)) {
+      return refuse(`resolves to ${cloneLexical}, outside ${rootLexical}`);
+    }
+
+    // (2) CANONICAL containment second. Lexical resolution cannot see symlinks, so a link inside
+    //     the root pointing out would pass step 1 — realpath is what catches it. Both are needed:
+    //     step 1 for what the analyser can follow, step 2 for what the filesystem actually does.
+    const rootReal = await fs.realpath(rootLexical);
+    let cloneReal: string;
+    try {
+      cloneReal = await fs.realpath(cloneLexical);
+    } catch {
+      return refuse('path does not exist');
+    }
+    if (!isInside(rootReal, cloneReal) || cloneReal === rootReal) {
+      return refuse(`resolves through a symlink to ${cloneReal}, outside ${rootReal}`);
+    }
+
+    // (3) It must actually be a git clone, with `.git` a real directory inside it.
+    let gitReal: string;
+    try {
+      gitReal = await fs.realpath(path.join(cloneReal, '.git'));
+    } catch {
+      return refuse('no .git directory');
+    }
+    if (!isInside(cloneReal, gitReal) || !(await fs.lstat(gitReal)).isDirectory()) {
+      return refuse('.git is not a directory inside the clone');
+    }
+
+    // (4) `.git/info` must resolve inside `.git` — checked after creation, so a pre-existing
+    //     symlink pointing elsewhere is caught rather than followed.
+    const infoDir = path.join(gitReal, 'info');
+    await fs.mkdir(infoDir, { recursive: true });
+    const infoReal = await fs.realpath(infoDir);
+    if (!isInside(gitReal, infoReal)) {
+      return refuse(`.git/info resolves to ${infoReal}, outside ${gitReal}`);
+    }
+
+    const excludePath = path.join(infoReal, 'exclude');
+
+    // (5) Never write through a symlink.
+    try {
+      if ((await fs.lstat(excludePath)).isSymbolicLink()) {
+        return refuse('.git/info/exclude is a symlink');
+      }
+    } catch {
+      // Absent — it gets created below.
+    }
+
+    let existing = '';
+    try {
+      existing = await fs.readFile(excludePath, 'utf8');
+    } catch {
+      // No exclude file yet — created below.
+    }
+
+    const start = existing.indexOf(EXCLUDE_HEADER);
+    let next: string;
+    if (start === -1) {
+      next = existing.length > 0 && !existing.endsWith('\n')
+        ? `${existing}\n${block}\n`
+        : `${existing}${block}\n`;
+    } else {
+      const endMarker = existing.indexOf(EXCLUDE_FOOTER, start);
+      const end = endMarker === -1 ? existing.length : endMarker + EXCLUDE_FOOTER.length;
+      if (existing.slice(start, end) === block) return; // already correct — no write, no log
+      next = existing.slice(0, start) + block + existing.slice(end);
+    }
+
+    await fs.writeFile(excludePath, next);
+    logger.system(`Excluded Claude Code sandbox artifacts in ${cloneReal}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    logger.warn('repo-clone', `Could not write sandbox-artifact excludes for ${clonePath}: ${message}`);
+  }
 }

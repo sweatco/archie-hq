@@ -70,7 +70,7 @@ There is a second window the restart cannot catch: an agent still **mid-boot** w
 
 `ensureTaskClone` (`src/connectors/github/repo-clone.ts`) is the single entry point, shared by `mount_repo` and the approval path.
 
-**Reuse.** If a clone already exists — at the recorded `clone_path` (a migrated task may hold one elsewhere) or at the canonical path — it is reused, and `configureGitIdentity` is re-run on it unconditionally, so a clone left behind by an interrupted mount (or one whose config predates the current attribution identity) cannot commit as whoever git falls back to. If edit mode is on and the clone is sitting on a branch with no `branch_states` entry (i.e. the base branch), it is moved onto `archie/{taskId}` there and then, joining the branch if it already exists locally rather than resetting it.
+**Reuse.** If a clone already exists — at the recorded `clone_path` (a migrated task may hold one elsewhere) or at the canonical path — it is reused, and `configureGitIdentity` is re-run on it unconditionally, so a clone left behind by an interrupted mount (or one whose config predates the current attribution identity) cannot commit as whoever git falls back to. `excludeSandboxArtifacts` is re-run the same way, so a clone that predates it gets its `.git/info/exclude` block on the next mount (see [Security → Known Sandbox Limitations](./security.md#2-the-sandbox-leaves-placeholder-files-in-task-clones)). If edit mode is on and the clone is sitting on a branch with no `branch_states` entry (i.e. the base branch), it is moved onto `archie/{taskId}` there and then, joining the branch if it already exists locally rather than resetting it.
 
 **Creation.** Otherwise `decideCloneCheckout` picks the checkout — a pure function, so the mount tool and the approval path cannot drift:
 
@@ -83,7 +83,7 @@ type CloneCheckout =
 
 A clone parked on the base branch records that branch in `current_branch` with **no** `branch_states` entry, so the entry's absence is what distinguishes "this is the base branch" from "a feature branch whose base we forgot".
 
-`setupSharedClone` then fetches origin, syncs the base clone's ref, runs `git clone --shared --branch <branch>` from the base cache, initialises submodules best-effort, rewrites `origin` to the GitHub URL so pushes never go back to the base cache, and creates the feature branch for `new_branch`. `configureGitIdentity` runs afterwards on this path too.
+`setupSharedClone` then fetches origin, syncs the base clone's ref, runs `git clone --shared --branch <branch>` from the base cache, initialises submodules best-effort, rewrites `origin` to the GitHub URL so pushes never go back to the base cache, and creates the feature branch for `new_branch`. `configureGitIdentity` and `excludeSandboxArtifacts` run afterwards on this path too.
 
 ### Per-repo record
 

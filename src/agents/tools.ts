@@ -22,7 +22,7 @@ import { buildAttributedBody } from '../connectors/github/pr-attribution.js';
 import { gitExec, ensureTaskClone, recordedBaseBranch } from '../connectors/github/repo-clone.js';
 import { hydrateBranchState, findBranchStateByPR, assignPrNumber } from '../connectors/github/branch-state.js';
 import { taskBranchName } from '../connectors/github/branch-naming.js';
-import { appendAgentFinding, isThreadMuted, getTaskClonePath } from '../tasks/persistence.js';
+import { appendAgentFinding, isThreadMuted, getTaskClonePath, getReposPath } from '../tasks/persistence.js';
 import { getBaseCachePath } from '../system/workdir.js';
 import { exploreBody } from '../connectors/slack/message-body.js';
 import { assertReadable } from './artifacts.js';
@@ -2925,6 +2925,7 @@ function createMountRepoTool(agent: Agent, task: Task) {
         result = await ensureTaskClone({
           attached,
           clonePath: getTaskClonePath(task.taskId, github),
+          reposRoot: getReposPath(task.taskId),
           baseRepoPath: attached.base_path || getBaseCachePath(github),
           editAllowed,
           taskBranch: taskBranchName(task.taskId),
