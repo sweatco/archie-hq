@@ -1,0 +1,4 @@
+# Forge/OpenSpec run artifacts (briefs, plans, verdicts, QA evidence) are an
+# audit trail, not review material — mark them generated so GitHub collapses
+# them in PR diffs and reviewers see only the code expanded.
+openspec/changes/** linguist-generated=true

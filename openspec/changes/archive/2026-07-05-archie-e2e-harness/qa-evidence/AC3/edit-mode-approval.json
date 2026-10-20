@@ -1,0 +1,199 @@
+{
+  "schema": "archie-e2e-evidence/v1",
+  "scenario": "edit-mode-approval",
+  "ac_ids": [
+    "AC3"
+  ],
+  "started_at": "2026-07-04T19:00:05Z",
+  "finished_at": "2026-07-04T19:03:25Z",
+  "environment": {
+    "base_url": "http://localhost:3000",
+    "git_branch": "forge/archie-e2e-harness",
+    "git_commit": "1cb2497"
+  },
+  "nonce": "E2E-5b802fcb",
+  "task_id": "task-20260704-1900-lp6jsq",
+  "terminal_state": "completed",
+  "assertions": [
+    {
+      "id": "approval-requested-detected",
+      "description": "wait_for_task reports the approval_requested state for an edit-mode gate",
+      "expected": "STATE=approval_requested with an approval:requested event of approvalType edit_mode",
+      "observed": "wait_for_task returned STATE=approval_requested; events show approval:requested at 2026-07-04T19:01:49.458Z with data.approvalType='edit_mode'",
+      "pass": true
+    },
+    {
+      "id": "approve-via-api-path",
+      "description": "Approval is granted through the MCP approve tool (POST /api/tasks/:id/approve path)",
+      "expected": "approve(task_id, edit_mode, true) acknowledged and an approval:resolved event recorded",
+      "observed": "MCP approve returned 'Approved edit_mode for task-20260704-1900-lp6jsq'; events show approval:resolved {type:'edit_mode', approve:true} at 2026-07-04T19:02:07.711Z",
+      "pass": true
+    },
+    {
+      "id": "task-resumes-after-approval",
+      "description": "The task resumes after the approval is resolved",
+      "expected": "task:resumed event after approval",
+      "observed": "task:resumed at 2026-07-04T19:02:07.650Z alongside approval:resolved; knowledge log records '[system] [decision] Edit mode approved by user'",
+      "pass": true
+    },
+    {
+      "id": "task-completes",
+      "description": "The task proceeds to the completed terminal state and the edit lands",
+      "expected": "STATE=completed with the worktree edit confirmed",
+      "observed": "task:completed at 2026-07-04T19:02:59.493Z; backend-agent completion log: appended '# archie-e2e touch' to backend README.md, last line confirmed, git status ' M README.md', no push, no PR",
+      "pass": true
+    },
+    {
+      "id": "read-only-before-approval",
+      "description": "Before approval the repo is read-only (the gate is real, not decorative)",
+      "expected": "the specialist's pre-approval edit attempt is blocked",
+      "observed": "backend-agent blocker log at 19:01:32: Edit tool 'Write denied' and Bash append 'Read-only file system' until edit mode was approved",
+      "pass": true
+    }
+  ],
+  "excerpts": {
+    "knowledge_log": [
+      "[2026-07-04T19:00:06.031Z] [cli] [E2E-5b802fcb] In the backend repo, append a comment line '# archie-e2e touch' to the end of the README file in your local worktree. This is an E2E harness verification: make the local edit and confirm it is in place, but do NOT push and do NOT open a PR. Then report done.",
+      "[2026-07-04T19:00:34.064Z] [pm-agent] [decision] Assigned backend-agent as task owner",
+      "[2026-07-04T19:00:37.624Z] [pm-agent] → backend-agent: You are the task owner for this request.",
+      "E2E harness verification [E2E-5b802fcb]. In the backend repo, append a comment line `# archie-e2e touch` to the end of the README file in your local worktree. Make the local edit and confirm it is in place (e.g. show the last line). Do NOT push and do NOT open a PR. Then report done.",
+      "[2026-07-04T19:01:32.250Z] [backend-agent] [blocker] E2E-5b802fcb: Attempted to append `# archie-e2e touch` to README.md in the backend repo local worktree. BLOCKED — the repo is mounted READ-ONLY. Both the Edit tool (\"Write denied: ... outside allowed paths\") and a Bash append (\"Read-only file system\") failed. No local edit could be made. Not pushing / not opening a PR as instructed; also cannot complete the local edit portion.",
+      "[2026-07-04T19:01:38.505Z] [backend-agent] → pm-agent: E2E-5b802fcb result: BLOCKED — could not make the local edit.",
+      "I attempted to append `# archie-e2e touch` to the end of README.md in the backend repo's local worktree (/workdir/.../repos/backend-agent/sweatco/sweatcoin-backend/README.md), but the repository is mounted READ-ONLY in my context:",
+      "- Edit tool → \"Write denied: ... is outside allowed paths\"",
+      "- Bash append (`printf ... >> README.md`) → \"Read-only file system\"",
+      "So no local change was made; the README's last line is unchanged (`[Go to docs](./docs/development/openapi_schemas.md)`). I did NOT push and did NOT open a PR (nothing to push anyway).",
+      "If this E2E check expects the write to succeed, the backend repo needs to be mounted READ-WRITE for this task — right now it's READ-ONLY, which blocks any local worktree edit. Let me know how you'd like to proceed.",
+      "[2026-07-04T19:01:49.047Z] [pm-agent in cli] The backend repo is mounted read-only right now, so the local README edit is blocked. To let me make the change I need edit mode for this task — approve the request below and I'll append the `# archie-e2e touch` line and confirm it's in place (no push, no PR).",
+      "[2026-07-04T19:01:49.457Z] [system] [decision] Edit mode requested: Append comment line `# archie-e2e touch` to the end of the backend repo README in the local worktree (E2E verification — no push, no PR).",
+      "[2026-07-04T19:02:07.649Z] [system] [decision] Edit mode approved by user",
+      "[2026-07-04T19:02:14.110Z] [pm-agent in cli] Approved — making the edit now.",
+      "[2026-07-04T19:02:15.475Z] [pm-agent] → backend-agent: Edit mode is now approved for this task — the backend repo should be writable. Please retry E2E-5b802fcb: append the comment line `# archie-e2e touch` to the end of README.md in your local worktree, confirm it's in place (show the last line), and do NOT push or open a PR. Report done.",
+      "[2026-07-04T19:02:45.188Z] [backend-agent] [completion] E2E-5b802fcb: DONE (after edit mode approval). Appended `# archie-e2e touch` to the end of backend README.md in the local worktree. Confirmed last line is `# archie-e2e touch`; `git status` shows ` M README.md` (unstaged modification). Did NOT push and did NOT open a PR, as instructed.",
+      "[2026-07-04T19:02:48.748Z] [backend-agent] → pm-agent: E2E-5b802fcb: DONE ✅",
+      "With edit mode approved, I appended the comment line to the end of README.md in the backend repo's local worktree. Confirmed the last line is now:",
+      "```",
+      "# archie-e2e touch",
+      "```",
+      "`git status` shows ` M README.md` (unstaged local modification). As instructed, I did NOT push and did NOT open a PR.",
+      "[2026-07-04T19:02:54.498Z] [pm-agent in cli] Done ✅ — E2E-5b802fcb complete. The `# archie-e2e touch` line was appended to the end of README.md in the backend repo's local worktree and confirmed in place (`git status` shows the unstaged modification). As instructed, nothing was pushed and no PR was opened."
+    ],
+    "events": [
+      {
+        "timestamp": "2026-07-04T19:00:06.031Z",
+        "type": "task:created",
+        "data": {}
+      },
+      {
+        "timestamp": "2026-07-04T19:00:06.032Z",
+        "type": "message",
+        "data": {
+          "from": "cli",
+          "to": "pm-agent",
+          "message": "[E2E-5b802fcb] In the backend repo, append a comment line '# archie-e2e touch' to the end of the README file in your local worktree. This is an E2E harness verification: make the local edit and confirm it is in place, but do NOT push and do NOT open a PR. Then report done."
+        }
+      },
+      {
+        "timestamp": "2026-07-04T19:00:06.032Z",
+        "type": "task:resumed",
+        "data": {}
+      },
+      {
+        "timestamp": "2026-07-04T19:00:37.625Z",
+        "type": "message",
+        "data": {
+          "from": "pm-agent",
+          "to": "backend-agent",
+          "message": "You are the task owner for this request.\n\nE2E harness verification [E2E-5b802fcb]. In the backend repo, append a comment line `# archie-e2e touch` to the end of the README file in your local worktree. Make the local edit and confirm it is in place (e.g. show the last line). Do NOT push and do NOT open a PR. Then report done."
+        }
+      },
+      {
+        "timestamp": "2026-07-04T19:01:38.506Z",
+        "type": "message",
+        "data": {
+          "from": "backend-agent",
+          "to": "pm-agent",
+          "message": "E2E-5b802fcb result: BLOCKED — could not make the local edit.\n\nI attempted to append `# archie-e2e touch` to the end of README.md in the backend repo's local worktree (/workdir/.../repos/backend-agent/sweatco/sweatcoin-backend/README.md), but the repository is mounted READ-ONLY in my context:\n- Edit tool → \"Write denied: ... is outside allowed paths\"\n- Bash append (`printf ... >> README.md`) → \"Read-only file system\"\n\nSo no local change was made; the README's last line is unchanged (`[Go to docs](./docs/development/openapi_schemas.md)`). I did NOT push and did NOT open a PR (nothing to push anyway).\n\nIf this E2E check expects the write to succeed, the backend repo needs to be mounted READ-WRITE for this task — right now it's READ-ONLY, which blocks any local worktree edit. Let me know how you'd like to proceed."
+        }
+      },
+      {
+        "timestamp": "2026-07-04T19:01:49.047Z",
+        "type": "message",
+        "data": {
+          "from": "pm-agent",
+          "to": "user",
+          "destination": "cli",
+          "message": "The backend repo is mounted read-only right now, so the local README edit is blocked. To let me make the change I need edit mode for this task — approve the request below and I'll append the `# archie-e2e touch` line and confirm it's in place (no push, no PR).",
+          "footer": "task-20260704-1900-lp6jsq · Opus 4.8"
+        }
+      },
+      {
+        "timestamp": "2026-07-04T19:01:49.458Z",
+        "type": "approval:requested",
+        "data": {
+          "text": "Edit mode request: Append comment line `# archie-e2e touch` to the end of the backend repo README in the local worktree (E2E verification — no push, no PR).",
+          "approvalType": "edit_mode"
+        }
+      },
+      {
+        "timestamp": "2026-07-04T19:02:07.650Z",
+        "type": "task:resumed",
+        "data": {}
+      },
+      {
+        "timestamp": "2026-07-04T19:02:07.711Z",
+        "type": "approval:resolved",
+        "data": {
+          "type": "edit_mode",
+          "approve": true
+        }
+      },
+      {
+        "timestamp": "2026-07-04T19:02:14.110Z",
+        "type": "message",
+        "data": {
+          "from": "pm-agent",
+          "to": "user",
+          "destination": "cli",
+          "message": "Approved — making the edit now.",
+          "footer": "task-20260704-1900-lp6jsq · Opus 4.8"
+        }
+      },
+      {
+        "timestamp": "2026-07-04T19:02:15.476Z",
+        "type": "message",
+        "data": {
+          "from": "pm-agent",
+          "to": "backend-agent",
+          "message": "Edit mode is now approved for this task — the backend repo should be writable. Please retry E2E-5b802fcb: append the comment line `# archie-e2e touch` to the end of README.md in your local worktree, confirm it's in place (show the last line), and do NOT push or open a PR. Report done."
+        }
+      },
+      {
+        "timestamp": "2026-07-04T19:02:48.749Z",
+        "type": "message",
+        "data": {
+          "from": "backend-agent",
+          "to": "pm-agent",
+          "message": "E2E-5b802fcb: DONE ✅\n\nWith edit mode approved, I appended the comment line to the end of README.md in the backend repo's local worktree. Confirmed the last line is now:\n\n```\n# archie-e2e touch\n```\n\n`git status` shows ` M README.md` (unstaged local modification). As instructed, I did NOT push and did NOT open a PR."
+        }
+      },
+      {
+        "timestamp": "2026-07-04T19:02:54.498Z",
+        "type": "message",
+        "data": {
+          "from": "pm-agent",
+          "to": "user",
+          "destination": "cli",
+          "message": "Done ✅ — E2E-5b802fcb complete. The `# archie-e2e touch` line was appended to the end of README.md in the backend repo's local worktree and confirmed in place (`git status` shows the unstaged modification). As instructed, nothing was pushed and no PR was opened.",
+          "footer": "task-20260704-1900-lp6jsq · Opus 4.8"
+        }
+      },
+      {
+        "timestamp": "2026-07-04T19:02:59.493Z",
+        "type": "task:completed",
+        "data": {}
+      }
+    ]
+  },
+  "result": "pass"
+}

@@ -1,0 +1,38 @@
+run: archie-e2e-harness
+source: { type: issue, ref: "175" }
+repo: sweatco/archie-hq
+branch: forge/archie-e2e-harness
+stage: done
+stage_rounds: { plan: 1, implement: 1, qa: 1 }
+acceptance_criteria:
+  - id: AC1
+    text: "From a clean checkout of a branch with valid .env, a single documented invocation boots the instance and reports healthy; a broken branch produces a clear failure, not a hang."
+    method: live-e2e
+    status: verified
+    evidence: openspec/changes/archie-e2e-harness/qa-evidence/AC1/
+  - id: AC2
+    text: "A scenario run creates a task with a nonce through the debug MCP, waits, and returns the task's terminal state plus its knowledge log."
+    method: live-e2e
+    status: verified
+    evidence: openspec/changes/archie-e2e-harness/qa-evidence/AC2/basic-nonce.json
+  - id: AC3
+    text: "An edit-mode scenario detects approval_requested, approves via the API path, and observes the task proceed to completion."
+    method: live-e2e
+    status: verified
+    evidence: openspec/changes/archie-e2e-harness/qa-evidence/AC3/edit-mode-approval.json
+  - id: AC4
+    text: "Each scenario writes an evidence file in the documented format; the file alone is enough for an independent reviewer to judge pass/fail."
+    method: live-e2e
+    status: verified
+    evidence: openspec/changes/archie-e2e-harness/qa-evidence/AC4/format-check.md
+  - id: AC6
+    text: "After a run, no containers from the harness remain (docker compose ps empty for the project)."
+    method: live-e2e
+    status: verified
+    evidence: openspec/changes/archie-e2e-harness/qa-evidence/AC6/teardown-clean.json
+  - id: AC7
+    text: "Any non-trivial helper scripts the harness adds are covered by tests runnable in plain CI (no docker)."
+    method: unit
+    status: verified
+    evidence: "tools/e2e/{config,boot,evidence,teardown}.test.ts — 64 cases, npm test 592/592 green (qa-evidence/AC7/runner-notes.md)"
+pr: 178

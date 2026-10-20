@@ -1,0 +1,57 @@
+# Red-team verdict: pr-merge-policy (round 2)
+
+**Verdict: FAIL — 1 blocking (new, on the supersede surface), 1 non-blocking (new).** All seven round-1 objections are genuinely resolved or honestly recorded — verified against the exact tasks/sections claimed, not the orchestrator's summary. The revision's new surface (D7 supersede-stale-slot) is well-designed except for one atomicity gap that falsifies its own load-bearing safety claim under interleaving.
+
+Attack basis: all seven revised artifacts + brief, plus code reads grounding the new surface: `tools.ts:489-570` (edit-mode request template), `task.ts:1160-1273` (approval handlers, `onResearchBudgetExceeded` pendingTeardown guard), `events.ts:217-300` (Slack action handler shape — `ack` → `updateMessage` → `Task.get` → `getUserInfo` → Task method), `agent.ts:53-88` (`deferTeardown`/`pendingTeardown`/`clearPendingTeardown`), `spawn.ts:644-646, 767-769, 836-838` (turn-end consumption + fresh-run defensive clear), `recovery.ts:100`.
+
+---
+
+## Round-1 objection audit
+
+| # | Round-1 tag | Disposition claimed | Verified? |
+|---|-------------|---------------------|-----------|
+| 1 | blocking | Fixed | **Yes.** tasks.md 8.4 rewrites `pm/skills/engineering-team/SKILL.md:28` and `:78` in the same archie-plugins PR as 8.3, coordinated with the engine deploy; design.md Decision 9 (4th bullet) specifies the rewrite content (ready finding → single relay → delegate on request → buttons → `autoMerge: true` keeps old behavior, green-CI wakeups reframed); proposal.md Impact names the skill and quotes the line that becomes false. |
+| 2 | blocking | Fixed | **Yes.** `specs/debug-mcp-task-waiting/spec.md` exists as a MODIFIED Requirement; the approval-gate scenario now enumerates `edit_mode`, `research_budget`, or `merge`, and the requirement body says "(edit mode, research budget, merge)". proposal.md lists it under Modified Capabilities with an accurate description (enum widens, folding semantics unchanged). Bonus: an `archie-e2e-harness` MODIFIED delta was also added — the old "SHALL approve" text would have contradicted the new deny recipe; correctly generalized to recipe-prescribed decisions. |
+| 3 | non-blocking | Fixed | **Yes.** Task 4.1 updates the tool description string (`tools.ts:1461`) to the policy-gated contract; task 8.5 updates `prompts/repo-agent.md:142`; both in proposal Impact and design D9. |
+| 4 | non-blocking | Accepted as Known trade-off | **Yes, honestly worded.** design.md Known trade-offs bullet 1 ("Approval is not SHA-pinned") states the exposure plainly — new commits can land between prompt and click; approval merges the branch's *current* head after a state-level re-check only — and the mitigation is qualified ("in the common path (a parked task isn't pushing)"), which is accurate: the stranded-slot/supersede path is exactly the uncommon path where the task *is* active, and the wording doesn't overclaim. SHA-pinning named as a compatible later refinement. Round 1 asked for capture-or-accept; accept was taken and recorded. |
+| 5 | non-blocking | Fixed | **Yes.** D7 "Stuck-slot cancel path" paragraph, D6 step 2 narrowed to same-turn-only suppression, task 4.2 implements, task 4.3 tests (same-PR and different-PR supersede), spec scenarios "Stale pending request is superseded on a later turn" + "Click on a superseded prompt is a no-op". This is the new surface attacked below. |
+| 6 | non-blocking | Accepted as Known trade-off | **Yes, honestly worded.** Known trade-offs bullet 2 states an external guest's click *resolves the approval* (only identity recording skipped), names the edit-mode precedent at `events.ts:249-253`, gives the honest rationale (same guest can approve edit mode and drive the task), and routes authorization to issue #168. No euphemism. |
+| 7 | non-blocking | Fixed | **Yes.** verification-plan AC1 row explicitly names the finding+`sendMessage` once-ness as "a proxy for the PM's single Slack post, which is LLM behavior — closed by the updated engineering-team skill (task 8.4) and observed live in the AC9 checklist"; the AC9 row gained the exactly-one-ready-post and skill-conformance observations. |
+
+---
+
+## Fresh attack: the D7 supersede-stale-slot surface
+
+### 1. BLOCKING — slot verification is not atomic with resolution: a supersede racing a stale approve click can merge the wrong PR
+
+**Applies to:** design.md Decision 7 (verification claim), tasks.md 3.3 (`handleMergeApproval(approver?)` signature) and 6.1 (verify-in-handler), spec "Click on a superseded prompt is a no-op" scenario.
+
+The design's safety claim is: "the button payload (`<taskId>|<github>#<pr_number>`) is used only to locate the task and to **verify** the click matches the slot" (D7). But the decomposition splits verify from resolve across await points. Task 6.1 orders the Slack handler: parse value → `Task.get` → **verify PR identity against the slot** → in-place `updateMessage` (Slack API await) → `getUserInfo` (Slack API await) → `task.handleMergeApproval(approver)`. Task 3.3 gives `handleMergeApproval` only `approver?` — no PR identity — and it re-reads the slot itself ("read + clear the slot"). This matches the edit-mode handler template (`events.ts:217-260`: `updateMessage` and `getUserInfo` are real network awaits between handler entry and the Task method).
+
+Supersede makes the slot mutable *while a prompt's buttons are live and the task is active*: a stranded slot means the task was reactivated, so an agent turn can be executing `merge_pull_request` concurrently on the same event loop. Interleaving: old prompt for PR#1, slot=PR#1 (stranded); user clicks Approve on it; handler verifies match (slot=PR#1); during the `updateMessage`/`getUserInfo` awaits the agent's tool call supersedes the slot to PR#2 and posts the new prompt; `handleMergeApproval` then reads slot=PR#2 and **merges PR#2** — a PR the user never approved, whose prompt they may not even have seen render yet. The user's click was the sole human gate (AC5: no review floor), and it gated the wrong PR. Same window lets a stale Deny cancel the fresh PR#2 request (annoying, not dangerous). Note this window is genuinely *new*: without supersede the slot only ever transitions set→cleared, and a post-verify clear makes `handleMergeApproval` warn-and-return on the empty slot — safe. Supersede introduces set→rewritten, which the empty-slot guard does not catch.
+
+The plan's own spec scenario ("a click whose PR identity does not match the current pending request SHALL resolve nothing") is violated under this interleaving, and the 6.3 test exercises the mismatch statically (button value vs. slot at handler entry), so the planned test suite passes while the property fails.
+
+**Fix (small, no structural change):** pass the expected `{github, pr_number}` from the button payload into `handleMergeApproval`/`handleMergeDenial` and perform read-compare-clear on the slot **synchronously** (no await between read, compare, and clear) inside the Task method; mismatch → no-op + stale log (the handler's early check remains purely for the stale-notice UX message update). This also makes the API route (`type: "merge"`) able to optionally assert a PR identity, and it hardens AC8's "identical resolution" claim — today the identity check lives only on the Slack adapter, so the two surfaces are *not* quite identical. Update tasks 3.3/3.4/6.1/6.3 accordingly; add a race-shaped unit test (rewrite the slot between handler verify and resolve — trivial with the Task method owning the compare).
+
+### 2. NON-BLOCKING — "same turn" is per-agent, but the slot is per-task: a concurrent second repo agent misreads a seconds-old request as stale and double-prompts
+
+**Applies to:** design.md D6 step 2 / D7, tasks.md 4.2.
+
+"Same turn" itself is well-defined and testable — verified in code: `agent.pendingTeardown` is set by `deferTeardown` (`agent.ts:69-70`, first-wins), consumed at turn end by the spawn loop (`spawn.ts:767-769`, `836-838`), and defensively cleared at every fresh run start (`spawn.ts:644-646`), so it cannot leak into a later turn; task 4.3's mock-level tests can drive it directly. No objection there.
+
+But the staleness predicate is "slot set AND *my* `pendingTeardown` unset". `pendingTeardown` is per-agent-process; the slot is per-task. In a multi-repo task with two repo agents active (the round-1 dossier already accepted multi-agent-same-repo as real), agent A posts a merge prompt mid-turn (slot=A's PR, A parked); before A's turn ends, concurrently-running agent B calls `merge_pull_request` for its own PR: B's `pendingTeardown` is unset, so B's call takes the supersede branch and rewrites a seconds-old, never-seen-by-the-user request — user gets two prompts back-to-back, and clicking A's (just posted, looks current) hits the mismatch path and gets a confusing "stale prompt" notice. No wrong merge (payload verification holds, modulo objection 1), but the supersede semantics ("task was reactivated without resolution") fire in a case that is neither reactivation nor staleness. Cheap fix: gate the supersede on task-level quiescence — supersede only if **no** agent process in the task has a pending teardown (`recovery.ts:100` already computes exactly this predicate: `agents.some((a) => a.pendingTeardown)`) — and otherwise return the same-turn-style "already pending" informational result. One line in task 4.2 plus one test case.
+
+---
+
+## Attacks on the new surface that did NOT land (for the record)
+
+- **Prompt spam via supersede:** each later-turn call posts at most one prompt and immediately re-parks the task (`deferTeardown` → `task.stop()`), so prompt count = number of explicit reactivated requests, each requiring a user/PM-driven reactivation. The orchestrator cannot drive a loop: the ready notification is suppressed both by the `merge_ready_notified` marker and by a matching pending slot (D4), and the PM lacks the tool (repo-agent-scoped). No engine-side amplification path.
+- **Same-PR old-prompt resurrection** (old PR#1 prompt clicked much later when the slot again holds PR#1): the click is a human intentionally approving exactly that PR — semantically valid; the "content may have moved on" exposure is precisely Known trade-off 1 (no SHA-pinning), already recorded honestly. Not a new objection.
+- **Supersede vs. ready-notification interaction:** a rewritten slot updates the D4 suppression target correctly (match is by current slot `github`+`pr_number`); the old PR's ready notification re-arms only via the marker rules, unchanged.
+- **Rollback with a superseded slot:** identical to the design's recorded rollback caveat (deny pending approvals first) — the supersede adds no new stranding mode.
+- **Double-click on the current prompt:** first click resolves and clears; second finds the slot empty → warn-and-return in the Task method. Safe without objection 1's fix (empty-slot guard covers cleared, not rewritten).
+
+## Bottom line
+
+Round 1 is fully discharged: both blockers fixed for real, both accepted trade-offs recorded with honest wording. The supersede design is the right shape, but its safety claim must hold *atomically*: move the payload-vs-slot compare into the synchronous read-compare-clear inside `handleMergeApproval`/`handleMergeDenial` (objection 1), and gate supersede on task-level (not per-agent) quiescence (objection 2). Both are localized edits to tasks 3.3/3.4/4.2/6.1/6.3 and two design sentences — no structural change.
