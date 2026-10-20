@@ -121,7 +121,7 @@ cat payload.json | npx tsx tools/e2e/evidence.ts --out-dir <dir>
 # or: npx tsx tools/e2e/evidence.ts --in payload.json --out-dir <dir>
 ```
 
-**Destination:** `--out-dir` flag → `E2E_EVIDENCE_DIR` env → default `./e2e-evidence/` at the repo root. The default is **gitignored** local scratch; Forge Stage 4 passes `--out-dir openspec/changes/<change>/qa-evidence/`, which **is** committed. One out-dir with `ac_ids` routing inside the files is the default convention; per-AC directories (`qa-evidence/<AC-id>/`) also work by pointing `--out-dir` per invocation.
+**Destination:** `--out-dir` flag → `E2E_EVIDENCE_DIR` env → default `./e2e-evidence/` at the repo root. The default is **gitignored** local scratch. Use `--out-dir <dir>` when evidence needs a different destination, and publish relevant results in the PR verification section. One out-dir with `ac_ids` routing inside the files is the default convention; per-AC directories (`qa-evidence/<AC-id>/`) also work by pointing `--out-dir` per invocation.
 
 **All-or-nothing semantics:** stdin is read fully before parsing; truncated or malformed JSON produces a classed error ("truncated JSON input from stdin" / "invalid JSON from stdin: …"), a non-zero exit, and no files. An invalid payload exits non-zero naming every validation error and writes nothing. The pair is written atomically (temp-file + rename) and transactionally — both files land or neither. A half-written evidence file is silent poison for the reviewer judging pass/fail from the file alone; the writer makes that state unrepresentable.
 

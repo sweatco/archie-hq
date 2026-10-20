@@ -107,11 +107,11 @@ The impasse → answer → resume round-trip is the hinge of the whole design, s
 - The one-run-at-a-time cross-branch scan — a run is a session; running workflows are visible in the task list and stoppable there.
 - `/forge resume` and `/forge abandon` — session death or TaskStop is abandonment; restart is fresh (branch recreated from base).
 - The "Forge state is not scope creep" rules, `.gitattributes` linguist-collapse, and reviewer exemptions for `openspec/changes/` — nothing is committed, so nothing needs exempting.
-- OpenSpec integration in Forge — replaced by the docs stage updating real documentation in the PR itself (see Relationship to OpenSpec below; the repo's `openspec/` directory itself stays).
+- OpenSpec integration in Forge — replaced by the docs stage updating real documentation in the PR itself (see Relationship to OpenSpec below).
 
 ## Relationship to OpenSpec
 
-Forge v2 stops **using** OpenSpec, but the repo keeps the `openspec/` directory untouched — the archive and specs library remain valuable history, and the `opsx` skills keep working for anyone who wants them. What happens to each thing OpenSpec provided:
+OpenSpec has been removed from the repo, including its specs, archived changes, configuration, and Claude/Codex workflow helpers. Earlier artifacts remain available in Git history. Durable documentation belongs in `docs/`, regression coverage in tests, and verification evidence in PR descriptions. What happens to each thing OpenSpec provided:
 
 - **Artifact shapes** (`proposal.md` / `design.md` / `tasks.md` decomposition discipline) — kept, relocated: the plan stage's agents emit exactly these structures as **schema-enforced structured output**, validated at generation time with retries. That is stronger enforcement than CLI validation of a markdown file after the fact, and the artifacts flow between stages as data instead of being committed.
 - **AC rigor** — was never OpenSpec's; the numbered-testable-ACs-with-declared-method contract is Forge's own inception discipline, now also schema-enforced at the gate, and — unlike anything OpenSpec did — actually *verified* per-AC by the QA stage with evidence published in the PR manifest.
