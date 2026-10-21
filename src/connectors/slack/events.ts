@@ -41,6 +41,7 @@ import { getChannelMessageTriggers, fireTrigger, triggerWhat, buildTriggerApprov
 import { messageMatchesTrigger } from '../../system/trigger-match.js';
 import type { Trigger } from '../../types/trigger.js';
 import { generateTaskTitle } from '../../tasks/title-generator.js';
+import { observeSlack, initiativeAction, initiativeOrigin, attachInitiativeOrigin } from '../../proactivity/index.js';
 import { setAssistantThreadTitle } from './title.js';
 import type { SlackThread, SlackAuthor } from '../../types/task.js';
 
@@ -138,12 +139,13 @@ export async function mountSlackApp(
   });
 
   // Handle app mentions - process inline
-  app!.event('app_mention', async ({ event }) => {
+  app!.event('app_mention', async ({ event, body }) => {
     if (getIsShuttingDown()) {
       logger.system('Ignoring Slack event during shutdown');
       return;
     }
 
+    await observeSlack({ ...event, event_id: body?.event_id } as unknown as Record<string, unknown>);
     const route = routeSlackEvent(event);
     if (route.action === 'discard') {
       return;
@@ -161,7 +163,9 @@ export async function mountSlackApp(
 
   // Handle thread messages (replies without @mention) and DM messages
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  app!.event('message', async ({ event }: { event: any }) => {
+  app!.event('message', async ({ event, body }: { event: any; body?: { event_id?: string } }) => {
+    if (getIsShuttingDown()) return;
+    if (await observeSlack({ ...event, event_id: body?.event_id })) return;
     // Message edits arrive as a `message_changed` subtype carrying both the new
     // (`message`) and prior (`previous_message`) versions. Handle these on a
     // dedicated path: we log the edit and wake the owning task so the agent can
@@ -228,6 +232,11 @@ export async function mountSlackApp(
       ts: event.ts,
       thread_ts: event.thread_ts,
     }).catch((err: unknown) => logger.error('Server', 'Error processing Slack event', err));
+  });
+
+  app!.action(/^initiative_/, async ({ ack, body, action }: any) => {
+    await ack();
+    initiativeAction(body.user?.id ?? '', action.value ?? '').catch((error) => logger.warn('initiative', 'Control failed', error));
   });
 
   // Handle the bot itself being added to a channel — scan for an existing
@@ -818,6 +827,7 @@ export async function handleSlackEvent(event: {
   await Promise.all([ensureChannelCanvas(event.channel), ensureChannelPins(event.channel)]);
 
   const taskId = await findTaskByThread(threadId);
+  const initiative = await initiativeOrigin(event.channel, threadId);
   if (taskId) {
     logger.system(`Processing #${thread.channel.name} (thread: ${threadId})`);
     const task = await Task.get(taskId);
@@ -850,8 +860,11 @@ export async function handleSlackEvent(event: {
       );
     }
     await sendSharedChannelWarnings(task, event.channel, threadId, thread, shared);
-    await task.sendMessage(AGENT_PROMPTS.inboundActivity(entries));
-  } else if (shouldCreateNewTask(event.type, event.channel, thread.rootAuthorWasBot) && thread.messages.length > 0) {
+    const initiativeContext = initiative && task.metadata.initiative_origin?.delivery_id !== initiative.deliveryId
+      ? attachInitiativeOrigin(task.metadata, initiative) : '';
+    if (initiativeContext) task.debouncedSave();
+    await task.sendMessage(AGENT_PROMPTS.inboundActivity(entries) + initiativeContext);
+  } else if (shouldCreateNewTask(event.type, event.channel, thread.rootAuthorWasBot, !!initiative) && thread.messages.length > 0) {
     logger.system(`Processing #${thread.channel.name} (thread: ${threadId})`);
 
     // Start a new task when: the bot was @mentioned, this is a DM, OR a human is
@@ -874,7 +887,9 @@ export async function handleSlackEvent(event: {
       );
     }
     await sendSharedChannelWarnings(task, event.channel, threadId, thread, shared);
-    await task.sendMessage(AGENT_PROMPTS.inboundNewTask(entries));
+    const initiativeContext = initiative ? attachInitiativeOrigin(task.metadata, initiative) : '';
+    if (initiativeContext) task.debouncedSave();
+    await task.sendMessage(AGENT_PROMPTS.inboundNewTask(entries) + initiativeContext);
   } else if (event.type === 'message' && !event.channel.startsWith('D') && !event.thread_ts) {
     // Ambient top-level channel message (no task, not an @mention, not a thread
     // reply) — the only place channel-message triggers fire. @mentions and DMs

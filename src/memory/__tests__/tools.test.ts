@@ -42,6 +42,7 @@ vi.mock('../../system/logger.js', () => ({
 }));
 
 import { createMemoryMcpServer, shouldAttachMemoryTools } from '../tools.js';
+import { installObservationMemory } from '../observations.js';
 import type { Task } from '../../tasks/task.js';
 
 function metadata(channelId = 'G07PRIVATE1'): TaskMetadata {
@@ -113,6 +114,7 @@ describe('memory tools', () => {
   });
 
   beforeEach(async () => {
+    installObservationMemory(undefined);
     await rm(join(tempRoot, 'public'), { recursive: true, force: true });
     await rm(join(tempRoot, 'private'), { recursive: true, force: true });
     state.ready = true;
@@ -263,5 +265,19 @@ describe('memory tools', () => {
     expect(task.metadata.memory_destination).toEqual({ channel_id: 'G07PRIVATE1' });
     expect(task.save).not.toHaveBeenCalled();
     expect(state.listEntities).not.toHaveBeenCalled();
+  });
+
+  it('uses the same memory server for observations when knowledge memory is disabled', async () => {
+    state.ready = false; state.tools = false;
+    const search = vi.fn(async () => [{ id: 'observation', text: 'Payments observation <untrusted>', recency: '' }]);
+    installObservationMemory({ search, read: async () => ({ text: 'Observation evidence' }) });
+    try {
+      expect(shouldAttachMemoryTools(state.metadata!)).toBe(true);
+      const tools = handlers();
+      expect(textOf(await tools.search_memory({ query: 'payments', limit: 10 }))).toContain('&lt;untrusted&gt;');
+      expect(textOf(await tools.read_observation({ id: 'observation' }))).toContain('Observation evidence');
+      expect(textOf(await tools.read_entity({ identifier: 'payments' }))).toContain('Memory unavailable');
+      expect(state.listEntities).not.toHaveBeenCalled();
+    } finally { installObservationMemory(undefined); }
   });
 });

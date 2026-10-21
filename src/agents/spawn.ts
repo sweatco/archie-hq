@@ -57,6 +57,7 @@ import { grantTriggerDataAccess, buildTriggerDataPromptSection } from './trigger
 import { applyOAuthBindings } from '../system/oauth/inject.js';
 import { enrichPromptWithMemory } from '../memory/index.js';
 import { getAuthorizedMemoryAuthors } from '../memory/task-authors.js';
+import { hasObservationMemory } from '../memory/observations.js';
 import { isInjectionEnabled, isMemoryToolsEnabled } from '../memory/paths.js';
 import {
   authorizeTaskMemory,
@@ -540,7 +541,7 @@ Shared folder: ${sharedPath} [READ-ONLY]
     );
   }
 
-  if (memoryAuthorization && shouldAttachMemoryTools(metadata)) {
+  if ((memoryAuthorization || hasObservationMemory()) && shouldAttachMemoryTools(metadata)) {
     mcpServers['memory-tools'] = createMemoryMcpServer(task);
   }
 

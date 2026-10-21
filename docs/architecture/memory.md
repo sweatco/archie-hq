@@ -1,5 +1,7 @@
 # Memory Layer
 
+The memory API also has an independently enabled public-Slack observation backend. `search_memory` combines authorized knowledge results with authorized observations, and observation-specific tools expose evidence and owner-only attention state. Its storage, processing and controls are described in [Proactive observation](proactivity.md). The flags and file layout below describe the existing knowledge backend; disabling it does not disable an explicitly enabled observation backend.
+
 Archie stores durable knowledge under `WORKDIR/memory/`. The store is bound to one authenticated Slack workspace and separates organization-wide memory from exact private conversation history.
 
 The implementation lives in `src/memory/`. Slack audience classification is in `src/connectors/slack/client.ts`; fixed task-destination checks are in `src/tasks/`.

@@ -267,6 +267,7 @@ export interface AgentSessionState {
 
 export interface TaskMetadata {
   task_id: string;
+  initiative_origin?: { delivery_id: string; matter_ids: string[] };
   channels: Record<string, Channel>;   // Active message delivery targets, keyed by channel ID
   default_channel: string | null;      // Channel ID of the originating channel (null for CLI-originated tasks)
   /**
