@@ -152,6 +152,7 @@ describe('learning result lifecycle', () => {
 });
 
 describe('human-labelled activation gate', () => {
+  // Full-cohort production replay exceeds Vitest's 5s default on CI runners.
   it('completes every frozen case through resumable production replay before scoring', async () => {
     const { labels } = await cohort(false);
     const id = learning.freezeCohort('policy1', labels);
@@ -174,7 +175,7 @@ describe('human-labelled activation gate', () => {
     expect(report.passed).toBe(true);
     learning.approve('policy1', report.id, NOW);
     expect(store.setting('rollout_approved')).toBe('policy1');
-  });
+  }, 30_000);
 
   it('binds approval to the complete pipeline cohort and restores approved rollback versions', async () => {
     const { review } = await completedCohort();
