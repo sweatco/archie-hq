@@ -1,5 +1,7 @@
 # Memory Layer
 
+Public Slack observations and attention state belong to the separate [proactive observation subsystem](proactivity.md), with its own API, MCP tools and SQLite store. `search_memory` searches knowledge memory only. The flags, storage and reset lifecycle below do not enable, disable or reset initiative; either subsystem works independently.
+
 Archie stores durable knowledge under `WORKDIR/memory/`. The store is bound to one authenticated Slack workspace and separates organization-wide memory from exact private conversation history.
 
 The implementation lives in `src/memory/`. Slack audience classification is in `src/connectors/slack/client.ts`; fixed task-destination checks are in `src/tasks/`.

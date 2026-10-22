@@ -2,6 +2,8 @@
 
 `src/memory/` is Archie's file-based, workspace-bound memory subsystem. It keeps a global public corpus plus canonical task summaries for exact public and private Slack conversations. All behavior is gated by `ARCHIE_MEMORY`.
 
+Public Slack observation, initiative SQLite state and observation MCP tools belong to `src/proactivity/`. Do not add those responsibilities to knowledge-memory search, initialization or reset.
+
 ## Read before changing this subsystem
 
 - `docs/architecture/memory.md` is the as-built architecture and operator guide. The root repository instructions still apply.
@@ -25,7 +27,7 @@
 - **Public profiles use human Slack IDs only.** New profile and DM paths accept `U…` or `W…` IDs. Bot IDs, fallback IDs, display names, and path-shaped values cannot create or authorize scoped profile files.
 - **Model output is untrusted.** Extraction output passes through `sanitize.ts` before persistence. Memory tool responses are escaped, marked as untrusted evidence, and size-bounded.
 - **Writes are serialized.** Extraction, canonical task replacement, overview rebuilding, pending recovery, and automatic housekeeping use the lifecycle queue. Do not add an independent writer to scoped memory.
-- **Flags are independent and default safe.** `ARCHIE_MEMORY=false` disables every seam. `ARCHIE_MEMORY_INJECT` gates prompt injection and `ARCHIE_MEMORY_TOOLS` gates read and explicit write tools; both default off.
+- **Flags are independent and default safe.** `ARCHIE_MEMORY=false` disables every knowledge-memory seam. `ARCHIE_MEMORY_INJECT` gates prompt injection and `ARCHIE_MEMORY_TOOLS` gates read and explicit write tools; both default off.
 - **No migration or external dependency.** Scoped v1 remains Markdown/JSON on disk. An unmarked old store is wiped instead of migrated.
 
 ## Load-bearing files
