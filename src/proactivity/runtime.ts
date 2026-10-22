@@ -7,12 +7,10 @@ import { postSlackMessage } from '../connectors/slack/client.js';
 import { InitiativeStore } from './store.js';
 import { HandoffRejection, ProposalHandoff } from './handoff.js';
 import { ObservationRecall } from './recall.js';
-import { SourceAccess } from './access.js';
 import { drainObservationReads, installObservationAPI } from './api.js';
 import { InitiativeService, nextMorning } from './service.js';
 import { PublicSlack, normalizeSlackSource } from './slack.js';
 import { ModelGateway } from './model.js';
-import { LearningService } from './learning.js';
 import { getArchieConfig } from '../system/plugin-loader.js';
 import type { InitiativeRuntime } from './index.js';
 
@@ -26,16 +24,12 @@ export async function startInitiative(team: string, mode: 'shadow' | 'live'): Pr
     const slack = new PublicSlack(owner);
     const gateway = new ModelGateway(store);
     const investigationModel = process.env.ARCHIE_PROACTIVITY_INVESTIGATION_MODEL ?? 'claude-sonnet-5-5';
-    const access = new SourceAccess(store, slack);
-    const authorizeChannels = (channels: string[]) => access.all(channels);
-    const learning = new LearningService(store, gateway, investigationModel, Object.keys(getArchieConfig().repos), authorizeChannels);
     const service = new InitiativeService(store, slack, gateway, {
       mode, owner,
       extractionModel: process.env.ARCHIE_PROACTIVITY_EXTRACTION_MODEL ?? 'claude-haiku-5-5',
-      investigationModel,
-    }, Date.now, learning);
+      investigationModel, repositories: Object.keys(getArchieConfig().repos),
+    }, Date.now);
     const handoff = new ProposalHandoff(store, slack, owner, () => Object.keys(getArchieConfig().repos), source => service.refreshEvidence(source));
-    learning.revalidateApproval();
     await slack.ownerDm();
     await gateway.verify([service.config.extractionModel, service.config.investigationModel]);
     if (store.setting('owner') && store.setting('owner') !== owner) throw new Error('Observation owner mismatch');
@@ -70,8 +64,6 @@ export async function startInitiative(team: string, mode: 'shadow' | 'live'): Pr
         running = (async () => {
           try { await gateway.poll(AbortSignal.any([reconciliation.signal, AbortSignal.timeout(45_000)])); }
           catch (error) { logger.warn('initiative', 'Batch reconciliation deferred', error); }
-          await learning.process(Date.now(), reconciliation.signal);
-          learning.expire(Date.now());
           gateway.expire(Date.now());
           if (mode === 'live') await handoff.present(Date.now());
           await service.tick();
@@ -99,21 +91,9 @@ export async function startInitiative(team: string, mode: 'shadow' | 'live'): Pr
         await postSlackMessage({ channel: await slack.ownerDm(), text: 'Recorded the owner-acknowledged outcome and supporting artifact.' });
         return;
       }
-      if (action === 'policy') {
-        const policy = store.learning.policy(parts[1] ?? '');
-        if (policy && !await authorizeChannels(learning.approvalChannels(String(policy.id), String(policy.evaluation ?? '')))) throw new Error('Policy sources unavailable');
-        await postSlackMessage({ channel: await slack.ownerDm(), text: policy ? JSON.stringify(policy) : 'Unknown policy version.' });
-        return;
-      }
-      if (action === 'approve' && parts.length === 3) {
-        if (!await authorizeChannels(learning.approvalChannels(parts[1], parts[2]))) throw new Error('Policy or evaluation sources unavailable');
-        learning.approve(parts[1], parts[2], Date.now());
-        await postSlackMessage({ channel: await slack.ownerDm(), text: `Approved policy ${parts[1]} with evaluation ${parts[2]}.` });
-        return;
-      }
-      if (action === 'rollback' && parts.length === 2) {
-        learning.rollback(parts[1]);
-        await postSlackMessage({ channel: await slack.ownerDm(), text: `Restored policy ${parts[1]}.` });
+      if (action === 'delivery' && parts.length === 2 && ['on', 'off'].includes(parts[1])) {
+        store.set('delivery_enabled', String(parts[1] === 'on'));
+        await postSlackMessage({ channel: await slack.ownerDm(), text: `Proactive delivery ${parts[1]}. Source, audience, budget and interruption checks still apply.` });
         return;
       }
       if (['mute', 'unmute', 'pause', 'resume', 'stop', 'start'].includes(action)) {
@@ -134,7 +114,7 @@ export async function startInitiative(team: string, mode: 'shadow' | 'live'): Pr
         await postSlackMessage({ channel: await slack.ownerDm(), text: `Recorded: ${match[1]}.` });
         return;
       }
-      await postSlackMessage({ channel: await slack.ownerDm(), text: 'Use initiative status, mute/unmute, pause/resume, stop/start, or handled/later/not useful/stop following followed by a matter ID. Inspect a proposal with initiative proposal <id>; record its outcome with initiative outcome <id> <implemented|released|rejected> <repository artifact URL> <acceptance result>.' });
+      await postSlackMessage({ channel: await slack.ownerDm(), text: 'Use initiative status, delivery on/off, mute/unmute, pause/resume, stop/start, or handled/later/not useful/stop following followed by a matter ID. Inspect a proposal with initiative proposal <id>; record its outcome with initiative outcome <id> <implemented|released|rejected> <repository artifact URL> <acceptance result>.' });
     }
 
     async function handleAction(user: string, value: string): Promise<void> {

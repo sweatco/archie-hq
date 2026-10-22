@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import type { Delivery, Observation, Matter } from '../types.js';
-import { SqlOperations, type RevisionRecord, type ChannelRecord, type PolicyRecord } from './sql.js';
+import { SqlOperations, type RevisionRecord, type ChannelRecord } from './sql.js';
 
 export class AttentionRecords extends SqlOperations {
   revision(id: number) { return this.row<RevisionRecord>('SELECT * FROM revisions WHERE id=?', id); }
@@ -91,10 +91,6 @@ export class AttentionRecords extends SqlOperations {
 
   channelStatus() {
     return this.rows<Pick<ChannelRecord, 'id' | 'allowed' | 'gap' | 'checkpoint'>>('SELECT id,allowed,gap,checkpoint FROM channels');
-  }
-
-  proposedPolicies() {
-    return this.rows<Pick<PolicyRecord, 'id' | 'evaluation'>>("SELECT id,evaluation FROM policies WHERE state='proposed' LIMIT 5");
   }
 
   messageKnown(channel: string, timestamp: string) {

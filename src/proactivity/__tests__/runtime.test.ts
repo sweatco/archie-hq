@@ -51,7 +51,7 @@ describe('initiative runtime integration', () => {
       store.channel('C1', true, false);
       const evidence = store.record({ channel: 'C1', thread: ts, ts, version: ts, author: OWNER, text: 'Read-only test' }, NOW)!;
       f.slack.page.mockImplementation(async () => ({ messages: store.snapshot('C1', ts)?.evidence ?? [] }));
-      store.learning.proposeCapability('test', { repository: 'owner/repo', outcome: 'Read-only test', evidence: [evidence] });
+      store.proposeCapability('test', { repository: 'owner/repo', outcome: 'Read-only test', evidence: [evidence] });
       const version = proposalVersion(store.proposal('test')!);
       store.enqueueDelivery({ id: 'card', channel: 'D_OWNER', thread: null, text: 'Proposal and budget context', matters: [], evidence: [evidence], policy: 'base', digest: false, state: 'sent', ts: '1792490401.000001', created: NOW, proposal: { id: 'test', version } });
       store.attention.finishDelivery('sent', '1792490401.000001', 'card');
@@ -168,10 +168,24 @@ describe('initiative runtime integration', () => {
     finally { store.close(); }
   });
 
-  it('consumes rejected review commands without falling through to PM task creation', async () => {
+  it('consumes deferred learning commands without falling through to PM task creation', async () => {
     runtime = await startInitiative('T1', 'shadow');
     expect(await runtime.capture({ channel: 'D_OWNER', user: OWNER, text: 'initiative approve missing missing' })).toBe(true);
-    expect(f.post).toHaveBeenCalledWith(expect.objectContaining({ channel: 'D_OWNER', text: expect.stringContaining('could not be applied') }));
+    expect(f.post).toHaveBeenCalledWith(expect.objectContaining({ channel: 'D_OWNER', text: expect.stringContaining('delivery on/off') }));
+  });
+
+  it('requires an authenticated owner DM to enable delivery and leaves shadow analysis separate', async () => {
+    runtime = await startInitiative('T1', 'shadow');
+    await runtime.capture({ channel: 'D_OWNER', user: 'U000002', text: 'initiative delivery on' });
+    await runtime.capture({ channel: 'D_OTHER', user: OWNER, text: 'initiative delivery on' });
+    const store = openStore();
+    try {
+      expect(store.setting('delivery_enabled')).toBe('false');
+      expect(await runtime.capture({ channel: 'D_OWNER', user: OWNER, text: 'initiative delivery on' })).toBe(true);
+      expect(store.setting('delivery_enabled')).toBe('true');
+      await runtime.capture({ channel: 'D_OWNER', user: OWNER, text: 'initiative delivery off' });
+      expect(store.setting('delivery_enabled')).toBe('false');
+    } finally { store.close(); }
   });
 
   it('recognizes a proactive origin during lookup failures without exposing its cached context', async () => {

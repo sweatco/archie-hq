@@ -83,6 +83,8 @@ export interface CapabilityProposal {
   outcome: string;
   evidence: number[];
   status: string;
+  origin?: 'investigation' | 'evolution';
+  matter?: string;
   acknowledgedOutcome?: { state: 'implemented' | 'released' | 'rejected'; actor: string; at: number; artifact: string; acceptance: string };
 }
 

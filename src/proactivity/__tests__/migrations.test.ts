@@ -36,6 +36,51 @@ beforeEach(() => {
 afterEach(() => { rmSync(root, { recursive: true, force: true }); });
 
 describe('initiative schema ownership', () => {
+  it('defers v8 learning without losing approved tasks, outbox state, feedback or unresolved liability', () => {
+    new InitiativeStore(path, 'T1', NOW).close();
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`PRAGMA user_version=8;
+      UPDATE settings SET value='policy1' WHERE key='policy';
+      INSERT INTO settings VALUES ('rollout_approved','policy1');
+      UPDATE policies SET state='active' WHERE id='policy1';
+      INSERT INTO jobs(kind,target,payload,due) VALUES ('reflection','global','{}',${NOW - 1});
+      INSERT INTO handoffs(proposal,version,actor,approved,task,state,budget,delivery) VALUES ('proposal','v1','U_OWNER',${NOW},'task-1','approved','task','delivery');`);
+    legacy.close();
+    const store = new InitiativeStore(path, 'T1', NOW);
+    try {
+      expect(store.setting('policy')).toBe('base');
+      expect(store.setting('deferred_policy')).toBe('policy1');
+      expect(store.setting('delivery_enabled')).toBe('false');
+      expect(store.setting('rollout_approved')).toBe('policy1');
+      expect(store.handoff('proposal')).toMatchObject({ task: 'task-1', actor: 'U_OWNER', state: 'approved' });
+      expect(store.delivery('delivery')?.state).toBe('pending');
+      expect(store['row']('SELECT action FROM feedback')?.action).toBe('later');
+      expect(store.requests.activeBatches()?.n).toBe(1);
+      expect(store.budget(NOW)).toBe(50_000);
+      expect(store['row']("SELECT * FROM jobs WHERE kind='reflection'")).toBeDefined();
+      expect(store.claim(NOW)?.kind).toBe('extract');
+      expect(store.claim(NOW)?.kind).not.toBe('reflection');
+    } finally { store.close(); }
+    const reopened = new InitiativeStore(path, 'T1', NOW);
+    try { expect(reopened.setting('deferred_policy')).toBe('policy1'); expect(reopened.setting('watermark')).toBe('1792490000'); }
+    finally { reopened.close(); }
+  });
+
+  it('rolls back the scope migration if its delivery-enablement write fails', () => {
+    new InitiativeStore(path, 'T1', NOW).close();
+    const raw = new DatabaseSync(path);
+    raw.exec(`PRAGMA user_version=8; UPDATE settings SET value='policy1' WHERE key='policy';
+      CREATE TRIGGER interrupt_scope BEFORE INSERT ON settings WHEN NEW.key='delivery_enabled' BEGIN SELECT RAISE(ABORT,'interrupted scope'); END;`);
+    raw.close();
+    expect(() => new InitiativeStore(path, 'T1', NOW)).toThrow('interrupted scope');
+    const check = new DatabaseSync(path);
+    try {
+      expect(check.prepare('PRAGMA user_version').get()?.user_version).toBe(8);
+      expect(check.prepare("SELECT value FROM settings WHERE key='policy'").get()?.value).toBe('policy1');
+      expect(check.prepare("SELECT value FROM settings WHERE key='deferred_policy'").get()).toBeUndefined();
+    } finally { check.close(); }
+  });
+
   it('upgrades v7 activated handoffs into the indexed card-repair queue without changing approved work', () => {
     new InitiativeStore(path, 'T1', NOW).close();
     const legacy = new DatabaseSync(path);
@@ -71,7 +116,7 @@ describe('initiative schema ownership', () => {
       expect(store.proposal('proposal')?.evidence).toEqual([7]);
       expect(store.search('Commitment', ['C1']).map(hit => hit.id)).toEqual(['o1']);
       expect(store['row']('SELECT action,created FROM feedback')).toMatchObject({ action: 'later', created: NOW });
-      expect(store.learning.policy('policy1')).toMatchObject({ state: 'proposed', evidence: '[7]' });
+      expect(store['row']("SELECT * FROM policies WHERE id='policy1'")).toMatchObject({ state: 'proposed', evidence: '[7]' });
       first = JSON.stringify(store['rows']("SELECT name,sql FROM sqlite_master ORDER BY name"));
     } finally { store.close(); }
     const reopened = new InitiativeStore(path, 'T1', NOW + 60000, { owner: 'U_OWNER' });
@@ -119,15 +164,4 @@ describe('initiative schema ownership', () => {
     expect(() => new InitiativeStore(path, 'T1', NOW)).toThrow('newer than this binary');
   });
 
-  it('keeps policy, attention and outbox state together when activation is interrupted', () => {
-    const store = new InitiativeStore(path, 'T1', NOW);
-    try {
-      store['run']("CREATE TRIGGER interrupt_activation BEFORE INSERT ON settings WHEN NEW.key='rollout_approved' BEGIN SELECT RAISE(ABORT,'interrupted activation'); END");
-      expect(() => store.learning.activatePolicy('policy1', true)).toThrow('interrupted activation');
-      expect(store.learning.policy('policy1')?.state).toBe('proposed');
-      expect(store.setting('policy')).toBe('base');
-      expect(store.setting('rollout_approved')).toBeUndefined();
-      expect(store.delivery('delivery')?.state).toBe('pending');
-    } finally { store.close(); }
-  });
 });

@@ -49,22 +49,6 @@ export class RequestRecords extends SqlOperations {
     this.run("UPDATE requests SET state=CASE WHEN usage IS NULL THEN 'uncertain' ELSE 'invalid' END,remote=COALESCE(remote,?) WHERE charge=?", remote, charge);
   }
 
-  prepareBatch(id: string, charge: string, request: string, context: string, state: string, created: number) {
-    this.run('INSERT INTO batches VALUES (?,NULL,?,?,?,?,NULL,?)', id, charge, request, context, state, created);
-  }
-
-  undispatchedBatch(id: string) {
-    this.run("UPDATE batches SET state='not dispatched' WHERE id=?", id);
-  }
-
-  submittedBatch(remote: string, id: string) {
-    this.run("UPDATE batches SET remote=?,state='pending' WHERE id=?", remote, id);
-  }
-
-  uncertainBatch(id: string) {
-    this.run("UPDATE batches SET state='uncertain' WHERE id=?", id);
-  }
-
   pendingRemotes() {
     return this.rows<{ remote: string }>("SELECT DISTINCT remote FROM batches WHERE state IN ('pending','retrieving') AND remote IS NOT NULL LIMIT 10");
   }
@@ -79,14 +63,6 @@ export class RequestRecords extends SqlOperations {
 
   failedBatch(result: string, id: string) {
     this.run("UPDATE batches SET result=?,state='failed' WHERE id=?", result, id);
-  }
-
-  completedBatch(id: string) {
-    return this.row<{ result: string }>("SELECT result FROM batches WHERE id=? AND state='complete'", id);
-  }
-
-  invalidBatch(id: string) {
-    this.run("UPDATE batches SET state='invalid' WHERE id=?", id);
   }
 
   allPendingRemotes() {

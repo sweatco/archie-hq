@@ -2,13 +2,10 @@
 import { proposalVersion } from './proposals.js';
 import type { CapabilityProposal, TaskHandoffRecord } from './types.js';
 import { reasonText, type DecisionReason } from './decisions.js';
+import { expireLegacyEvidence } from './persistence/retention.js';
 import { AttentionRecords } from './persistence/attention.js';
-import type { RevisionRecord } from './persistence/sql.js';
 import { RequestRecords } from './persistence/requests.js';
-import { LearningRecords } from './persistence/learning.js';
-import { ReplayRecords } from './persistence/replay.js';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
-import type { DecisionCase } from './replay.js';
 import { migrate, validateCurrentSchema } from './persistence/migrations.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { Delivery, Evidence, Job, Matter, Observation, SourceMessage, ThreadSnapshot } from './types.js';
@@ -21,8 +18,6 @@ export class InitiativeStore {
   private readonly db: DatabaseSync;
   readonly attention: AttentionRecords;
   readonly requests: RequestRecords;
-  readonly learning: LearningRecords;
-  readonly replay: ReplayRecords;
 
   constructor(path: string, team: string, now = Date.now(), options: { readOnly?: boolean; owner?: string } = {}) {
     this.db = new DatabaseSync(path, { readOnly: options.readOnly === true });
@@ -36,48 +31,10 @@ export class InitiativeStore {
       }
       this.attention = new AttentionRecords(this.db);
       this.requests = new RequestRecords(this.db);
-      this.learning = new LearningRecords(this.db);
-      this.replay = new ReplayRecords(this.db);
     } catch (error) {
       this.db.close();
       throw error;
     }
-  }
-
-  restoreReplay(input: DecisionCase, revisions: RevisionRecord[], policy: string, body: string): void {
-    for (const [key, value] of Object.entries(input.controls)) this.set(key, value);
-    this.set('policy', policy); this.set('rollout_approved', policy);
-    if (policy !== 'base') this.run("INSERT INTO policies(id,body,base,evidence,state) VALUES (?,?, 'base','[]','active')", policy, body);
-    const channel = input.roots[0].channel;
-    this.channel(channel, true, false);
-    for (const ref of input.refs) {
-      const row = revisions.find(row => row.id === ref.id)!;
-      const columns = Object.keys(row);
-      this.run(`INSERT INTO revisions(${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`, ...Object.values(row));
-    }
-    for (const s of input.sources) {
-      const root = input.roots.some((r) => r.thread === s.thread);
-      this.run('INSERT INTO threads(channel,thread,generation,processed,changed,gap) VALUES (?,?,?,?,?,?)', channel, s.thread, s.generation, root ? 0 : s.generation, input.now, s.gap);
-      for (const id of s.evidence) {
-        const row = this.row('SELECT ts FROM revisions WHERE id=?', id)!;
-        this.run('INSERT OR REPLACE INTO messages VALUES (?,?,?)', channel, row.ts, id);
-      }
-      for (const removed of s.removed ?? []) {
-        const row = this.row('SELECT id FROM revisions WHERE channel=? AND ts=? AND version=? AND deleted=1 ORDER BY id DESC LIMIT 1', channel, removed.ts, removed.version);
-        if (row) this.run('INSERT OR REPLACE INTO messages VALUES (?,?,?)', channel, removed.ts, row.id);
-      }
-    }
-    for (const m of input.matters) this.run('INSERT INTO matters VALUES (?,?,?,?,?,?)', m.id, m.channel, m.thread, JSON.stringify({ ...m, policy }), Number(m.valid), m.nextCheck);
-    for (const o of input.observations) {
-      this.run('INSERT INTO observations VALUES (?,?,?,?,?,?,1)', o.id, o.channel, o.thread, o.text, JSON.stringify(o.evidence), o.kind);
-      this.run('INSERT INTO observation_search VALUES (?,?)', o.id, o.text);
-    }
-    for (const d of input.deliveries) {
-      this.run('INSERT INTO deliveries(id,channel,thread,text,matters,evidence,policy,digest,state,ts,created,proposal) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-        d.id, d.channel, d.thread, '', JSON.stringify(d.matters), JSON.stringify(d.evidence), policy, Number(d.digest), d.state === 'pending' ? 'cancelled' : d.state, d.ts, d.created, null);
-    }
-    for (const [kind, count] of Object.entries(input.usedSlots)) for (let i = 0; i < count; i++) this.run("INSERT INTO deliveries(id,channel,thread,text,matters,evidence,policy,digest,state,ts,created,slot_day) VALUES (?,?,NULL,'','[]','[]',?,?,'sent',NULL,?,?)",
-      `prior-slot:${kind}:${i}`, 'D_REPLAY', policy, Number(kind === 'digest'), input.now, lisbonDay(input.now));
   }
 
   close(): void { this.db.close(); }
@@ -179,6 +136,20 @@ export class InitiativeStore {
     return { decisions, deliveries, nextJob, handoffs, feedback };
   }
 
+  proposeCapability(id: string, proposal: Pick<CapabilityProposal, 'repository' | 'outcome' | 'evidence' | 'matter'>): void {
+    const versioned = JSON.stringify({ ...proposal, origin: 'investigation', version: proposalVersion(proposal) });
+    this.run(`INSERT INTO proposals(id,body) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body WHERE proposals.status='pending filing' AND NOT EXISTS (SELECT 1 FROM handoffs WHERE proposal=proposals.id)`, id, versioned);
+  }
+
+  acknowledgeDevelopment(id: string, issue: string, status: 'filed' | 'implementing', note?: string): void {
+    const proposal = this.proposal(id);
+    if (!proposal || proposal.acknowledgedOutcome) throw new Error('Unknown proposal or outcome already acknowledged');
+    if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/issues\/\d+$/.test(issue)
+      || !issue.startsWith(`https://github.com/${proposal.repository}/issues/`)) throw new Error('A matching repository issue URL is required');
+    const { id: _id, status: _status, ...body } = proposal;
+    this.run('UPDATE proposals SET status=?,issue=?,body=? WHERE id=?', status, issue, JSON.stringify({ ...body, developmentNote: note }), id);
+  }
+
   proposal(id: string): CapabilityProposal | null {
     const row = this.row('SELECT * FROM proposals WHERE id=?', id);
     if (!row) return null;
@@ -188,7 +159,11 @@ export class InitiativeStore {
   }
 
   proposalCurrent(proposal: CapabilityProposal, now: number, checkAccess = true): boolean {
-    return proposal.status === 'pending filing' && proposal.evidence.length > 0 && proposal.evidence.length <= 20 && proposal.evidence.every(id =>
+    if (proposal.matter) {
+      const matter = this.matter(proposal.matter);
+      if (!matter?.valid || matter.state !== 'open' || this.setting(`unfollow:${matter.channel}:${matter.thread}`) === 'true') return false;
+    }
+    return (proposal.origin === 'investigation' || !!this.handoff(proposal.id)) && proposal.status === 'pending filing' && proposal.evidence.length > 0 && proposal.evidence.length <= 20 && proposal.evidence.every(id =>
       Number.isSafeInteger(id) && this.row(`SELECT r.id FROM revisions r JOIN messages m ON m.revision=r.id JOIN channels c ON c.id=r.channel
         WHERE r.id=? AND r.deleted=0 AND r.bot=0 AND r.own=0 AND r.excerpt!='' AND r.captured>=? AND (?=0 OR c.allowed=1)`, id, now - 90 * DAY, Number(checkAccess)));
   }
@@ -463,7 +438,7 @@ export class InitiativeStore {
 
   claim(now: number, leaseMs = 360_000): Job | null {
     return this.transaction(() => {
-      const row = this.row('SELECT * FROM jobs WHERE due<=? AND lease<=? ORDER BY due LIMIT 1', now, now);
+      const row = this.row("SELECT * FROM jobs WHERE kind!='reflection' AND due<=? AND lease<=? ORDER BY due LIMIT 1", now, now);
       if (!row) return null;
       const token = randomUUID();
       this.run('UPDATE jobs SET token=?,lease=?,attempts=attempts+1 WHERE kind=? AND target=?', token, now + leaseMs, row.kind, row.target);
@@ -568,7 +543,7 @@ export class InitiativeStore {
         const proposal = this.proposal(ref.id);
         if (!proposal || !this.proposalCurrent(proposal, now) || proposalVersion(proposal) !== ref.version || this.handoff(proposal.id)) return false;
       }
-      if (this.setting('mute') === 'true' || this.setting('stop') === 'true' || delivery.policy !== this.setting('policy')) return false;
+      if (this.setting('delivery_enabled') !== 'true' || ['mute', 'pause', 'stop'].some(key => this.setting(key) === 'true') || delivery.policy !== this.setting('policy')) return false;
       const ineligible = this.row(`SELECT 1 FROM json_each(?) j LEFT JOIN matters m ON m.id=j.value LEFT JOIN channels c ON c.id=m.channel
         WHERE m.id IS NULL OR m.valid=0 OR c.allowed!=1 OR json_extract(m.body,'$.state')!='open' LIMIT 1`, delivery.matters);
       if (ineligible) return false;
@@ -592,6 +567,7 @@ export class InitiativeStore {
       this.run(`UPDATE deliveries SET text='',state=CASE WHEN state='pending' THEN 'cancelled' ELSE state END WHERE created<? OR EXISTS
         (SELECT 1 FROM json_each(deliveries.evidence) j LEFT JOIN revisions r ON r.id=j.value WHERE r.excerpt IS NULL OR r.excerpt='')`, now - 90 * DAY);
       this.run('DELETE FROM observation_search WHERE id IN (SELECT id FROM observations WHERE valid=0)');
+      expireLegacyEvidence(this.db, now);
       if (this.row("SELECT name FROM sqlite_master WHERE name='extractions'")) this.run(`DELETE FROM extractions WHERE created<? OR EXISTS
         (SELECT 1 FROM json_tree(extractions.response) j JOIN revisions r ON r.id=j.atom WHERE j.path LIKE '%.evidence' AND r.excerpt='')`, now - 90 * DAY);
     });

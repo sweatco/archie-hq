@@ -42,10 +42,10 @@ beforeEach(() => {
   vi.useFakeTimers(); vi.setSystemTime(NOW);
   root = mkdtempSync(join(tmpdir(), 'archie-handoff-'));
   store = new InitiativeStore(join(root, 'state.sqlite'), 'T1', NOW - 60_000);
-  store.set('owner', 'U_OWNER'); store.set('rollout_approved', 'base');
+  store.set('owner', 'U_OWNER'); store.set('delivery_enabled', 'true');
   store.channel('C1', true, false);
   const evidence = store.record({ channel: 'C1', thread: TS, ts: TS, version: TS, author: 'U_AUTHOR', text: 'We need a release checklist.' }, NOW)!;
-  store.learning.proposeCapability('release', { repository: 'owner/repo', outcome: 'Build a release checklist', evidence: [evidence] });
+  store.proposeCapability('release', { repository: 'owner/repo', outcome: 'Build a release checklist', evidence: [evidence] });
   repositories = ['owner/repo']; records = new Map();
   tasks = {
     prepare: vi.fn(async (input: PreparedTaskInput) => {

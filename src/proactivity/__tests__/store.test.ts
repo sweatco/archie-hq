@@ -196,6 +196,7 @@ describe('durable admission', () => {
   });
 
   it('reserves at most two extra notification slots and reconciles interrupted sending', () => {
+    store.set('delivery_enabled', 'true');
     const matter = populate();
     for (let i = 0; i < 3; i++) store.enqueueDelivery(delivery(String(i), matter));
     expect(store.admitDelivery('0', NOW)).toBe(true);

@@ -25,6 +25,11 @@ import { recoverActiveTasks } from '../recovery.js';
 import { MessageQueue } from '../../agents/message-queue.js';
 import { createCommsMcpServer, createOrchestrationMcpServer } from '../../agents/tools.js';
 import type { TaskMetadata } from '../../types/task.js';
+import { InitiativeStore } from '../../proactivity/store.js';
+import { InitiativeService } from '../../proactivity/service.js';
+import { ProposalHandoff } from '../../proactivity/handoff.js';
+import type { BackgroundModel } from '../../proactivity/model.js';
+import type { ProposalSlack } from '../../proactivity/slack.js';
 
 const input = { taskId: 'task-20261021-1000-prepared', correlation: 'initiative:release', version: 'v1', actor: 'U_OWNER',
   brief: '<proposal_evidence untrusted="true">Prepare the release checklist.</proposal_evidence>',
@@ -48,6 +53,57 @@ describe('durable prepared task starts', () => {
   const comms = (task: Task) => (createCommsMcpServer({ def: { id: 'pm-agent' } } as never, task).instance as any)._registeredTools;
   const call = (entry: any, args: unknown) => (entry.callback ?? entry.handler)(args, {});
   const completion = (task: Task) => (createOrchestrationMcpServer({ def: { id: 'pm-agent' } } as never, task).instance as any)._registeredTools.report_completion;
+
+  it('starts one ordinary replying task from collected evidence and investigation without a learner', async () => {
+    const now = Date.parse('2026-10-20T10:00:00Z');
+    vi.setSystemTime(now);
+    const store = new InitiativeStore(':memory:', 'T1', now);
+    const ts = `${now / 1000}.000001`;
+    const source = { channel: 'C_PUBLIC', thread: ts, ts, version: ts, author: 'U_OWNER', text: 'We need a release checklist in owner/repo.' };
+    const slack: ProposalSlack = {
+      inspect: vi.fn(async () => ({ shared: false, ownerCanRead: true })), channels: async () => ['C_PUBLIC'],
+      page: async () => ({ messages: [source] }), ownerDm: async () => 'D_OWNER', verifyDm: async channel => channel === 'D_OWNER',
+      send: vi.fn(async () => '1792494000.000001'), find: async () => undefined, active: () => false,
+      link: (channel, thread) => `https://slack.test/${channel}/${thread}`, updateProposal: vi.fn(async () => {}),
+    };
+    const model: BackgroundModel = { complete: vi.fn(async request => {
+      const evidence = store.snapshot('C_PUBLIC', ts)!.evidence.map(e => e.id);
+      return 'threads' in (request.input as object)
+        ? { threads: [{ channel: 'C_PUBLIC', thread: ts, observations: [], matters: [{ key: 'release', title: 'Release checklist', detail: source.text, evidence, state: 'open', owner: 'U_OWNER', deadline: null, explicit: true }] }] }
+        : { resolved: false, help: null, public: false, evidence, suggestion: { repository: 'owner/repo', outcome: 'Prepare the release checklist', evidence } };
+    }) as BackgroundModel['complete'] };
+    const service = new InitiativeService(store, slack, model, { mode: 'live', owner: 'U_OWNER', extractionModel: 'test', investigationModel: 'test', repositories: ['owner/repo'] }, Date.now);
+    const handoff = new ProposalHandoff(store, slack, 'U_OWNER', () => ['owner/repo'], source => service.refreshEvidence(source));
+    try {
+      store.set('delivery_enabled', 'true');
+      await service.capture(source, now);
+      service.seed(now);
+      vi.setSystemTime(now + 3_600_000);
+      await service.tick(Date.now(), true);
+      expect(model.complete).toHaveBeenCalledTimes(2);
+      expect(store['rows']('SELECT * FROM episodes')).toEqual([]);
+      expect(store.pendingProposals()).toHaveLength(1);
+      await handoff.present(Date.now());
+      await service.deliver(Date.now());
+      const card = store.deliveries('sent')[0];
+      expect(card.proposal).toBeDefined();
+      const first = await handoff.approve('U_OWNER', card.id, card.proposal!.version);
+      const replay = await handoff.approve('U_OWNER', card.id, card.proposal!.version);
+      await handoff.drainCards();
+      expect(replay.task).toBe(first.task);
+      expect(fixture.spawn).toHaveBeenCalledTimes(1);
+      const task = await Task.get(first.task);
+      expect(task.metadata.approved_start).toMatchObject({ actor: 'U_OWNER', budget: 'task', phase: 'ready' });
+      expect(task.metadata.memory_destination).toEqual({ channel_id: 'D_OWNER' });
+      expect(comms(task).post_to_channel).toBeUndefined();
+      expect((await call(completion(task), {})).content[0].text).toContain('Cannot finish silently');
+      await call(comms(task).post_to_user, { message: 'Checklist ACK' });
+      await call(completion(task), {});
+      expect(fixture.post).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ channel: 'D_OWNER', threadTs: card.ts, text: 'Checklist ACK' }));
+      expect(task.metadata.approved_start?.owner_reply_delivered).toBe(true);
+      expect(slack.updateProposal).toHaveBeenLastCalledWith(expect.objectContaining({ id: card.id }), expect.stringContaining('Task started'), slack.link('D_OWNER', card.ts!));
+    } finally { service.stop(); service.release(); store.close(); }
+  });
 
   it('requires a delivered owner response before silent completion and persists that fact across reload', async () => {
     const task = await Task.prepare(input);

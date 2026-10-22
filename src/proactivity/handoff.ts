@@ -47,7 +47,7 @@ export class ProposalHandoff {
   }
 
   async present(now: number): Promise<void> {
-    if (!notificationWindow(now) || this.store.setting('rollout_approved') !== this.store.setting('policy')
+    if (!notificationWindow(now) || this.store.setting('delivery_enabled') !== 'true'
       || ['stop', 'mute', 'pause'].some(control => this.store.setting(control) === 'true')) return;
     for (const proposal of this.store.pendingProposals()) {
       if (!proposal || this.store.handoff(proposal.id)) continue;

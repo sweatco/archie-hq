@@ -55,12 +55,42 @@ async function investigate(help: string | null = 'I can prepare the release chec
 }
 
 describe('initiative flow', () => {
-  it('extracts unmentioned activity without creating a task and gates delivery on rollout approval', async () => {
+  it('keeps shadow, mute, pause, stop and explicit delivery disablement independent of learning', async () => {
+    await investigate();
+    store.set('delivery_enabled', 'true');
+    for (const key of ['mute', 'pause', 'stop']) {
+      store.set(key, 'true');
+      await service.deliver(NOW + 60_000);
+      expect(slack.send).not.toHaveBeenCalled();
+      store.set(key, 'false');
+    }
+    const shadow = new InitiativeService(store, slack, model, { ...service.config, mode: 'shadow' }, () => NOW);
+    await shadow.deliver(NOW + 60_000);
+    expect(slack.send).not.toHaveBeenCalled();
+    store.set('delivery_enabled', 'false');
+    await service.deliver(NOW + 60_000);
+    expect(slack.send).not.toHaveBeenCalled();
+    store.set('delivery_enabled', 'true');
+    await service.deliver(NOW + 60_000);
+    expect(slack.send).toHaveBeenCalledTimes(1);
+    expect(store['rows']('SELECT * FROM evaluations')).toEqual([]);
+  });
+
+  it('does not admit legacy or new reflection jobs while continuing ordinary work', async () => {
+    store.schedule('reflection', 'global', NOW - 1);
+    service.seed(NOW);
+    await service.tick(NOW, true);
+    expect(model.complete).not.toHaveBeenCalled();
+    expect(store['row']("SELECT attempts FROM jobs WHERE kind='reflection'")?.attempts).toBe(0);
+    expect(store['rows']('SELECT * FROM episodes')).toEqual([]);
+  });
+
+  it('extracts unmentioned activity without creating a task and gates delivery on explicit owner enablement', async () => {
     await investigate();
     expect(store.search('release', ['C1'])).toHaveLength(1);
     expect(store.deliveries('pending')).toHaveLength(1);
     expect(slack.send).not.toHaveBeenCalled();
-    store.set('rollout_approved', 'base');
+    store.set('delivery_enabled', 'true');
     await service.deliver(NOW + 60_000);
     expect(slack.send).toHaveBeenCalledTimes(1);
   });
@@ -114,7 +144,7 @@ describe('initiative flow', () => {
 
   it('lets cancellation invalidate pending delivery before sending', async () => {
     await investigate();
-    store.set('rollout_approved', 'base');
+    store.set('delivery_enabled', 'true');
     vi.mocked(slack.page).mockResolvedValue({ messages: [{ channel: 'C1', thread: TS, ts: TS, version: '1792491000.000001', author: 'U1', text: 'Cancelled' }] });
     await service.deliver(NOW + 60_000);
     expect(slack.send).not.toHaveBeenCalled();
@@ -123,7 +153,7 @@ describe('initiative flow', () => {
 
   it('rechecks mute after asynchronous thread validation', async () => {
     await investigate();
-    store.set('rollout_approved', 'base');
+    store.set('delivery_enabled', 'true');
     vi.mocked(slack.page).mockImplementation(async () => { store.set('mute', 'true'); return { messages: [] }; });
     await service.deliver(NOW + 60_000);
     expect(slack.send).not.toHaveBeenCalled();
@@ -131,7 +161,7 @@ describe('initiative flow', () => {
 
   it('does not race a normal PM task and does not retry uncertain Slack sends', async () => {
     await investigate();
-    store.set('rollout_approved', 'base');
+    store.set('delivery_enabled', 'true');
     vi.mocked(slack.active).mockReturnValue(true);
     await service.deliver(NOW + 60_000);
     expect(slack.send).not.toHaveBeenCalled();
@@ -251,7 +281,7 @@ describe('initiative flow', () => {
 
   it('detects a missed deletion from a fully paginated thread before delivery', async () => {
     const id = await investigate();
-    store.set('rollout_approved', 'base');
+    store.set('delivery_enabled', 'true');
     vi.mocked(slack.page).mockResolvedValue({ messages: [] });
     await service.deliver(NOW + 60_000);
     expect(store.matter(id)?.valid).toBe(false);
@@ -266,7 +296,7 @@ describe('initiative flow', () => {
     const matter = { id: 'old-parent', channel: 'C1', thread: root, title: 'Commitment', detail: 'Old commitment', evidence: snapshot.evidence.map((e) => e.id), state: 'open' as const, owner: 'U1', deadline: null, explicit: true, nextCheck: NOW, valid: true, policy: 'base' };
     store.apply([snapshot], [], [matter], 'base');
     store.enqueueDelivery({ id: 'parent-reminder', channel: 'D1', thread: null, text: 'Follow up', matters: [matter.id], evidence: matter.evidence, policy: 'base', digest: false, state: 'pending', ts: null, created: NOW });
-    store.set('rollout_approved', 'base');
+    store.set('delivery_enabled', 'true');
     vi.mocked(slack.page).mockImplementation(async (_channel, _oldest, _latest, _cursor, thread) => ({ messages: thread ? snapshot.evidence.filter((e) => e.ts !== root) : [] }));
     await service.deliver(NOW + 60_000);
     expect(slack.page).toHaveBeenCalledWith('C1', root, root);

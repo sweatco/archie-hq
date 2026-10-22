@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { proposalVersion } from '../proposals.js';
-import { RUBRIC } from '../rubric.js';
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 export function migrate(db: DatabaseSync, team: string, now: number, owner?: string): void {
   const version = Number(db.prepare('PRAGMA user_version').get()!.user_version);
@@ -32,7 +31,7 @@ export function migrate(db: DatabaseSync, team: string, now: number, owner?: str
           CREATE INDEX IF NOT EXISTS revision_thread ON revisions(channel,thread);
           CREATE INDEX IF NOT EXISTS due_jobs ON jobs(due,lease);
           CREATE INDEX IF NOT EXISTS due_matters ON matters(valid,next_check);
-          
+
         `);
       if (!db.prepare('PRAGMA table_info(threads)').all().some(r => r.name === 'gap')) db.exec('ALTER TABLE threads ADD COLUMN gap TEXT');
       if (!db.prepare('PRAGMA table_info(revisions)').all().some(r => r.name === 'bot')) {
@@ -79,7 +78,16 @@ CREATE TABLE IF NOT EXISTS extractions (id TEXT PRIMARY KEY, created INTEGER NOT
       ALTER TABLE handoffs ADD COLUMN card_retry INTEGER NOT NULL DEFAULT 0;
       CREATE INDEX pending_handoff_cards ON handoffs(card_retry,approved)
         WHERE card_state IS NOT CASE WHEN state IN ('approved','prepared') THEN 'pending' ELSE state END;`);
-    db.prepare("INSERT OR IGNORE INTO settings VALUES ('rubric',?)").run(RUBRIC);
+    if (version < 9) {
+      // Learning state stays recoverable; neither old evaluation nor mode=live enables delivery.
+      db.exec("INSERT OR REPLACE INTO settings VALUES ('delivery_enabled','false')");
+      const policy = db.prepare("SELECT value FROM settings WHERE key='policy'").get()?.value;
+      if (policy && policy !== 'base') {
+        db.prepare("INSERT OR REPLACE INTO settings VALUES ('deferred_policy',?)").run(policy);
+        db.exec("UPDATE settings SET value='base' WHERE key='policy'; UPDATE threads SET generation=generation+1");
+        db.prepare("INSERT INTO jobs(kind,target,payload,due) VALUES ('extract','global','{}',?) ON CONFLICT(kind,target) DO UPDATE SET due=MIN(due,excluded.due),generation=generation+1").run(now);
+      }
+    }
     db.exec('PRAGMA user_version=' + SCHEMA_VERSION);
     db.exec('COMMIT');
   } catch (error) { db.exec('ROLLBACK'); throw error; }

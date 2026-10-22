@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { ObservationRecall } from '../recall.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import Anthropic from '@anthropic-ai/sdk';
-import { z } from 'zod';
 import { InitiativeStore } from '../store.js';
 import type { Matter, SourceMessage } from '../types.js';
 import type { TaskMetadata } from '../../types/task.js';
 import { InitiativeService } from '../service.js';
-import { ModelGateway, type BackgroundModel } from '../model.js';
+import type { BackgroundModel } from '../model.js';
 import type { ObservationSlack } from '../slack.js';
 
 const NOW = Date.parse('2026-10-20T10:00:00Z');
@@ -60,18 +58,6 @@ describe('independent PR review probes', () => {
     expect(store['row']("SELECT allowed FROM channels WHERE id='C1'")!.allowed).toBe(1);
     expect(slack.page).toHaveBeenCalled();
     expect(store.snapshot('C1', TS)!.gap).toBeNull();
-  });
-
-  it('does not retain execution slots forever after uncertain batch submissions', async () => {
-    const batches = { list: vi.fn(async () => ({ data: [], has_more: false, last_id: null })), create: vi.fn(async () => { throw new Error('response lost'); }), retrieve: vi.fn(), results: vi.fn() };
-    const gateway = new ModelGateway(store, { messages: { batches } } as unknown as Anthropic, 'provider-fixture');
-    const request = { model: 'claude-haiku-5-5', system: 'Test', input: 'Evidence', schema: z.object({ answer: z.string() }) };
-    for (let i = 0; i < 3; i++) await expect(gateway.submit(request, {}, new AbortController().signal)).rejects.toThrow('response lost');
-    vi.setSystemTime(NOW + 91 * 86_400_000);
-    gateway.expire(Date.now());
-    await gateway.poll(new AbortController().signal);
-    expect(store.budget(Date.now())).toBeGreaterThan(0);
-    expect(gateway.batchCapacity()).toBeGreaterThan(0);
   });
 
   it('suppresses the same intervention when citation order changes', async () => {
