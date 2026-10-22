@@ -55,8 +55,6 @@ describe('deferred provider work retains its financial responsibility', () => {
     expect(store['rows']('SELECT * FROM policies')).toEqual([]);
     expect(store['rows']('SELECT * FROM proposals')).toEqual([]);
     expect(batches.create).not.toHaveBeenCalled();
-    expect('submit' in gateway).toBe(false);
-    expect('learning' in store).toBe(false);
   });
 
   it('holds missing usage beyond provider retention and only settles an authoritative later result', async () => {

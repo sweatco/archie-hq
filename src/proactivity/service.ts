@@ -41,6 +41,15 @@ export interface InitiativeConfig {
 
 export const decisionConfig = (config: InitiativeConfig): string => JSON.stringify([config.owner, config.extractionModel, config.investigationModel, config.repositories ?? []]);
 
+export class LearningDeferred extends Error {}
+
+export interface InitiativeLearning {
+  observe?(snapshots: ThreadSnapshot[], slack: ObservationSlack, config: InitiativeConfig, now: number): Promise<void>;
+  record(snapshot: ThreadSnapshot, matter: Matter, assessment: z.infer<typeof Assessment>, now: number): void;
+  expire(now: number): void;
+  reflect(job: Job, now: number, signal: AbortSignal): Promise<void>;
+}
+
 export function nextMorning(now: number): number {
   return new Cron('0 9 * * 1-5', { timezone: TZ }).nextRun(new Date(now))!.getTime();
 }
@@ -60,16 +69,27 @@ export class InitiativeService {
   private ticking = false;
   private stopped = false;
 
-  constructor(readonly store: InitiativeStore, private readonly slack: ObservationSlack, private readonly model: BackgroundModel, readonly config: InitiativeConfig, private readonly clock: () => number = Date.now) {
+  constructor(readonly store: InitiativeStore, private readonly slack: ObservationSlack, private readonly model: BackgroundModel, readonly config: InitiativeConfig, private readonly clock: () => number = Date.now, private readonly learning?: InitiativeLearning) {
     this.access = new SourceAccess(store, slack);
     this.collection = new SourceCollector(store, slack, () => this.stopped);
     store.set('decision_config', decisionConfig(config));
+  }
+
+  private learningDeferred(error: unknown, stage: 'capture' | 'record'): void {
+    if (!(error instanceof LearningDeferred)) throw error;
+    logger.warn('initiative', `Optional learning ${stage} deferred; ordinary analysis continues`, error);
+  }
+
+  private instructions(): string {
+    const row = this.store.learning.policy(this.store.setting('policy')!);
+    return row?.state === 'active' ? `${SYSTEM}\nApproved ranking, context and reminder guidance: ${row.body}` : SYSTEM;
   }
 
   seed(now = Date.now()): void {
     for (const [kind, due] of [['reconcile', now], ['extract', now + HOUR], ['retention', now], ['digest', nextMorning(now)]] as const) {
       if (!this.store.attention.scheduledJob(kind, 'global')) this.store.schedule(kind, 'global', due);
     }
+    if (this.learning && !this.store.attention.scheduledJob('reflection', 'global')) this.store.schedule('reflection', 'global', nextMorning(now));
     if (!this.store.setting('review_report') && !this.store.attention.scheduledJob('review', 'global')) this.store.schedule('review', 'global', Number(this.store.setting('watermark')) * 1000 + 14 * DAY);
   }
 
@@ -115,7 +135,7 @@ export class InitiativeService {
   }
 
   private async run(job: Job, now: number, signal: AbortSignal): Promise<number | undefined> {
-    if (job.kind === 'retention') { this.store.expire(now); return now + DAY; }
+    if (job.kind === 'retention') { if (this.learning) this.learning.expire(now); else this.store.expire(now); return now + DAY; }
     if (job.kind === 'reconcile') { await this.collection.reconcile(now, signal); return now + DAY; }
     if (job.kind === 'collect') return await this.collection.collect(job.target, now, signal);
     if (job.kind === 'thread') {
@@ -126,6 +146,7 @@ export class InitiativeService {
     if (job.kind === 'extract') { await this.extract(job, now, signal); return now + (this.store.dirty(1).length ? 60_000 : HOUR); }
     if (job.kind === 'investigate') return await this.investigate(job, now, signal);
     if (job.kind === 'digest') { await this.digest(now); return nextMorning(now); }
+    if (job.kind === 'reflection' && this.learning) { await this.learning.reflect(job, now, signal); return nextMorning(now); }
     if (job.kind === 'review') {
       const stats = this.store.attention.statistics();
       this.store.set('review_report', `Observed ${stats.threads} threads; delivered ${stats.sent} interventions; received ${stats.feedback} feedback actions. Usefulness needs human feedback; operation continues.`);
@@ -139,11 +160,15 @@ export class InitiativeService {
     const snapshots: ThreadSnapshot[] = [];
     for (const source of this.store.dirty()) if (await this.accessible(source.channel)) snapshots.push(source);
     if (!snapshots.length) return;
+    for (const channel of new Set(snapshots.map(s => s.channel))) {
+      try { await this.learning?.observe?.(snapshots.filter(s => s.channel === channel), this.slack, this.config, now); }
+      catch (error) { signal.throwIfAborted(); this.learningDeferred(error, 'capture'); }
+    }
     const previous = snapshots.flatMap((s) => this.store.threadMatters(s.channel, s.thread));
     const carried = new Map<string, z.infer<typeof Findings>['threads'][number]>();
     const supplied = new Map<string, Set<number>>();
     const sourceKey = (s: { channel: string; thread: string }) => `${s.channel}:${s.thread}`;
-    const request = (threads: ThreadSnapshot[]) => ({ model: this.config.extractionModel, system: `${SYSTEM}\nEach part follows earlier context for the same thread. Return its full consolidated state, replacing carried findings. Reuse stable keys and resolve earlier commitments when later evidence cancels them. Set reopen only when new human evidence substantively changes a resolved matter.`, schema: Findings,
+    const request = (threads: ThreadSnapshot[]) => ({ model: this.config.extractionModel, system: `${this.instructions()}\nEach part follows earlier context for the same thread. Return its full consolidated state, replacing carried findings. Reuse stable keys and resolve earlier commitments when later evidence cancels them. Set reopen only when new human evidence substantively changes a resolved matter.`, schema: Findings,
       input: { now: Math.max(...threads.flatMap((s) => s.evidence.map((e) => e.captured)), 0), owner: this.config.owner, policy, threads,
         existing: previous.filter((m) => threads.some((s) => s.channel === m.channel && s.thread === m.thread)).slice(-10)
           .map(({ id, title, state, evidence }) => ({ id, title: title.slice(0, 80), state, evidence: evidence.slice(-4) })),
@@ -264,7 +289,7 @@ export class InitiativeService {
       return next;
     }
     const bounded = sources.map((s) => ({ ...s, evidence: s.evidence.map((e) => ({ ...e })) }));
-    const request = () => ({ model: this.config.investigationModel, system: SYSTEM, scope: `investigate:${job.token}`,
+    const request = () => ({ model: this.config.investigationModel, system: this.instructions(), scope: `investigate:${job.token}`,
       input: { now, matter, thread: bounded[0], related: bounded.slice(1), repositories: this.config.repositories ?? [], instruction: 'Check whether resolved using cited current evidence, never missing context. Offer concrete useful help only. Public follow-ups need an evidenced unresolved request and two business days of inactivity. No help is better than repetition. When ordinary repository work would help, suggest one scoped task with an allowed repository, intended result and supplied human evidence IDs; otherwise suggestion=null. A suggestion never authorizes execution.' },
       schema: Assessment, priority: matter.owner === this.config.owner, authorize: async () => await this.accessible(matter.channel) && this.store.current(sources),
     });
@@ -293,6 +318,8 @@ export class InitiativeService {
     const evidence = bounded.flatMap((s) => s.evidence);
     if (assessment.evidence.some((id) => !evidence.some((e) => e.id === id))
       || !assessment.evidence.some((id) => evidence.some((e) => e.id === id && !e.own && !e.bot))) throw new Error('Unsupported investigation result');
+    try { this.learning?.record({ ...bounded[0], evidence }, matter, assessment, now); }
+    catch (error) { signal.throwIfAborted(); this.learningDeferred(error, 'record'); }
     if (assessment.resolved) {
       this.store.attention.saveMatter({ ...matter, state: 'resolved' });
       explain('resolved');

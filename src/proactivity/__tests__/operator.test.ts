@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { InitiativeStore } from '../store.js';
@@ -16,7 +16,7 @@ beforeEach(() => {
   store.set('delivery_enabled', 'true'); store.set('policy', 'old-guidance'); store.close();
   const db = new DatabaseSync(path); db.exec('PRAGMA user_version=8'); db.close();
 });
-afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); });
 
 function state() {
   const db = new DatabaseSync(path, { readOnly: true });
@@ -49,4 +49,25 @@ it('keeps valid external development acknowledgement while preserving proposal i
   const read = new InitiativeStore(path, 'T1', Date.now(), { readOnly: true });
   try { expect(read.proposal('proposal')).toMatchObject({ outcome: 'Prepare checklist', status: 'filed' }); }
   finally { read.close(); }
+});
+
+
+it.each([
+  ['export', 'policy', 'output.json'], ['cohort', 'policy', 'missing-labels.json'], ['evaluate', 'policy', 'missing-labels.json', 'output.json'],
+])('rejects disabled learning command %j before database opening or input-file reading', async (...args) => {
+  vi.stubEnv('ARCHIE_SELF_EVOLUTION', 'false');
+  await expect(runInitiativeOperator([path, 'T1', ...args])).rejects.toThrow('Self-evolution is disabled');
+  expect(state()).toEqual({ version: 8, delivery: 'true', policy: 'old-guidance' });
+});
+
+it.each(['cohort', 'evaluate'] as const)('validates %s label syntax and shape before writable opening', async command => {
+  vi.stubEnv('ARCHIE_SELF_EVOLUTION', 'true');
+  const labels = join(root, 'labels.json');
+  for (const input of ['{', '{}']) {
+    writeFileSync(labels, input);
+    const args = [path, 'T1', command, 'policy', labels];
+    if (command === 'evaluate') args.push(join(root, 'report.json'));
+    await expect(runInitiativeOperator(args)).rejects.toThrow();
+    expect(state()).toEqual({ version: 8, delivery: 'true', policy: 'old-guidance' });
+  }
 });
