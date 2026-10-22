@@ -81,12 +81,7 @@ CREATE TABLE IF NOT EXISTS extractions (id TEXT PRIMARY KEY, created INTEGER NOT
     if (version < 9) {
       // Learning state stays recoverable; neither old evaluation nor mode=live enables delivery.
       db.exec("INSERT OR REPLACE INTO settings VALUES ('delivery_enabled','false')");
-      const policy = db.prepare("SELECT value FROM settings WHERE key='policy'").get()?.value;
-      if (policy && policy !== 'base') {
-        db.prepare("INSERT OR REPLACE INTO settings VALUES ('deferred_policy',?)").run(policy);
-        db.exec("UPDATE settings SET value='base' WHERE key='policy'; UPDATE threads SET generation=generation+1");
-        db.prepare("INSERT INTO jobs(kind,target,payload,due) VALUES ('extract','global','{}',?) ON CONFLICT(kind,target) DO UPDATE SET due=MIN(due,excluded.due),generation=generation+1").run(now);
-      }
+      selectBaseline(db, now);
     }
     db.exec('PRAGMA user_version=' + SCHEMA_VERSION);
     db.exec('COMMIT');
@@ -100,4 +95,13 @@ export function validateCurrentSchema(db: DatabaseSync, team: string, owner?: st
   if (db.prepare("SELECT value FROM settings WHERE key='team'").get()?.value !== team) throw new Error('Observation workspace mismatch');
   const savedOwner = db.prepare("SELECT value FROM settings WHERE key='owner'").get()?.value;
   if (owner && savedOwner && owner !== savedOwner) throw new Error('Observation owner mismatch');
+}
+
+export function selectBaseline(db: DatabaseSync, now: number): void {
+  const policy = db.prepare("SELECT value FROM settings WHERE key='policy'").get()?.value;
+  if (policy && policy !== 'base') {
+    db.prepare("INSERT OR REPLACE INTO settings VALUES ('deferred_policy',?)").run(policy);
+    db.exec("UPDATE settings SET value='base' WHERE key='policy'; UPDATE threads SET generation=generation+1");
+    db.prepare("INSERT INTO jobs(kind,target,payload,due) VALUES ('extract','global','{}',?) ON CONFLICT(kind,target) DO UPDATE SET due=MIN(due,excluded.due),generation=generation+1").run(now);
+  }
 }

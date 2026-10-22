@@ -68,6 +68,11 @@ beforeEach(() => {
 afterEach(async () => { await handoff.drainCards(); store.close(); vi.useRealTimers(); rmSync(root, { recursive: true, force: true }); });
 
 describe('owner-approved proposal handoff', () => {
+  it('retains the outcome boundary for external development status updates', () => {
+    expect(() => store.acknowledgeDevelopment('release', 'https://github.com/owner/repo/issues/1', 'completed' as never)).toThrow('owner acknowledgement');
+    expect(store.proposal('release')?.acknowledgedOutcome).toBeUndefined();
+    expect(store.proposal('release')?.status).toBe('pending filing');
+  });
   it('uses the ordinary outbox and spending boundary without starting a task at presentation', async () => {
     const delivery = await presented();
     expect(delivery.text).toContain('normal task budgeting');

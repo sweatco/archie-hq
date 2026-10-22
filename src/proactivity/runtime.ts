@@ -24,6 +24,7 @@ export async function startInitiative(team: string, mode: 'shadow' | 'live'): Pr
     const slack = new PublicSlack(owner);
     const gateway = new ModelGateway(store);
     const investigationModel = process.env.ARCHIE_PROACTIVITY_INVESTIGATION_MODEL ?? 'claude-sonnet-5-5';
+    store.useBaseline(Date.now());
     const service = new InitiativeService(store, slack, gateway, {
       mode, owner,
       extractionModel: process.env.ARCHIE_PROACTIVITY_EXTRACTION_MODEL ?? 'claude-haiku-5-5',

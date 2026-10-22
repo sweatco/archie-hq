@@ -43,6 +43,22 @@ afterEach(async () => {
 });
 
 describe('initiative runtime integration', () => {
+  it('returns a current-schema historical learned policy to baseline without losing pending work', async () => {
+    runtime = await startInitiative('T1', 'shadow');
+    await runtime.close(); runtime = undefined;
+    const store = openStore();
+    try {
+      store.set('policy', 'previous-guidance');
+      store.set('delivery_enabled', 'true');
+      store.schedule('reflection', 'global', NOW);
+      runtime = await startInitiative('T1', 'shadow');
+      expect(store.setting('policy')).toBe('base');
+      expect(store.setting('deferred_policy')).toBe('previous-guidance');
+      expect(store.setting('delivery_enabled')).toBe('true');
+      expect(store['row']("SELECT attempts FROM jobs WHERE kind='reflection'")?.attempts).toBe(0);
+    } finally { store.close(); }
+  });
+
   it('updates the original card instead of posting a confirmation for every valid callback', async () => {
     runtime = await startInitiative('T1', 'live');
     const store = openStore();

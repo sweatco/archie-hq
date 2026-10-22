@@ -6,7 +6,7 @@ import { expireLegacyEvidence } from './persistence/retention.js';
 import { AttentionRecords } from './persistence/attention.js';
 import { RequestRecords } from './persistence/requests.js';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
-import { migrate, validateCurrentSchema } from './persistence/migrations.js';
+import { migrate, selectBaseline, validateCurrentSchema } from './persistence/migrations.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { Delivery, Evidence, Job, Matter, Observation, SourceMessage, ThreadSnapshot } from './types.js';
 import { lisbonDay } from './types.js';
@@ -43,6 +43,8 @@ export class InitiativeStore {
   private run(sql: string, ...args: SQLInputValue[]) { return this.db.prepare(sql).run(...args); }
   setting(key: string): string | undefined { return this.row('SELECT value FROM settings WHERE key=?', key)?.value as string | undefined; }
   set(key: string, value: string): void { this.run('INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', key, value); }
+
+  useBaseline(now: number): void { this.transaction(() => selectBaseline(this.db, now)); }
 
   acquireRunner(owner: string, now: number): boolean {
     return this.transaction(() => {
@@ -142,6 +144,7 @@ export class InitiativeStore {
   }
 
   acknowledgeDevelopment(id: string, issue: string, status: 'filed' | 'implementing', note?: string): void {
+    if (status !== 'filed' && status !== 'implementing') throw new Error('An owner acknowledgement with an acceptance result is required for proposal outcomes');
     const proposal = this.proposal(id);
     if (!proposal || proposal.acknowledgedOutcome) throw new Error('Unknown proposal or outcome already acknowledged');
     if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/issues\/\d+$/.test(issue)
