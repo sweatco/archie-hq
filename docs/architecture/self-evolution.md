@@ -1,0 +1,46 @@
+# Optional self-evolution
+
+This stacked draft is outside the current proactive-assistance release. `ARCHIE_SELF_EVOLUTION=false` is the default. Opting in explicitly creates the learning service, captures training episodes and schedules daily reflection. Disabling it holds queued reflection jobs, stops new learning admission and returns decision-making to baseline guidance while retaining previous policy identity, delivery/outbox state and financial responsibility. Turning this flag on is not approval to activate a proposed behavior change.
+
+Ordinary observation, nudges, scoped repository suggestions and owner-approved tasks work without this feature. They retain `initiative delivery on/off` as their operational enablement; no cohort or learned-policy proof is needed for baseline assistance. A behavior candidate still requires the evaluation and human activation below. When its proof no longer matches, guidance falls back to the baseline while ordinary delivery enablement is preserved.
+
+## Integration
+
+The optional service plugs into existing extraction/investigation and the daily retention job. It records evidence-bound episodes, performs daily reflection and progresses persisted batch/replay work. Ordinary investigation continues to generate task suggestions in the base path. Reflection can separately propose evidenced capability or Archie-behavior work; those proposals are marked as evolution-origin and cannot be newly approved while self-evolution is off. They use the same owner-only task start and normal task/edit/external-action approvals; neither reflection nor task completion activates behavior or proves a feature shipped.
+
+Learning persistence and replay operations are added only by this stack. Schema 9 and the shared retention/recovery boundary stay unchanged. Existing provider attempts keep their reservations, provider bindings and recovery identities; this branch adds new learning batch admission through the same $200/day background ledger. Existing confirmed-reply and consumed-card fixes are inherited unchanged.
+
+## Evaluation and behavior activation
+
+Daily reflection proposes small changes to ranking, context selection and reminder wording. It uses forward-collected episodes and explicit feedback, including acknowledgements from the separate development loop. Reflection records every supplied training source, including related context and inherited provenance. Training channels are excluded from evaluation; complete human topic sets for every training and evaluation thread provide a second holdout boundary. A stop changes the responsibility epoch so late results cannot create policies, proposals or completed replay cases under a new responsibility.
+
+Episodes are captured before extraction, including threads that produce no matters. An evaluation case preserves the production source group, recorded clock, bounded related-source read surface, prior attention and delivery history, manual controls, active PM state and already consumed notification slots. Its source bodies are referenced by exact revisions rather than copied into a second raw-message archive.
+
+Before candidate predictions, an operator freezes the first chronological non-overlapping source groups and their human urgency, actionability and topic labels. The immutable manifest binds every case, source input, candidate/base policy, owner/model configuration, responsibility epoch, rubric and decision implementation. At least 100 distinct held-out threads are required, including 20 urgent and 20 non-actionable. Every frozen case must complete; missing results, failed steps, coverage gaps and deleted or expired source material cannot disappear from the denominator.
+
+Replay runs the production extraction, reconciliation, context selection, first-check investigation and delivery checks on isolated SQLite state, with recorded source reads and simulated Slack sends. A zero-matter result is a completed no-action case and can count as an urgent miss. Missing semantic model steps are submitted through the real budget gateway; replay restarts from the original source and clock after their batch results arrive. It never advances time to make a deferred job due. This tests the decision on recorded evidence at that clock; it does not claim to simulate later unobserved discussion.
+
+The baseline uses base-policy extraction and a deterministic title/detail brief instead of model-generated help. Both strategies share the ordinary digest; evaluation compares additional messages under the same chronological two-per-day interruption allowance. Human labels assess every candidate and baseline draft separately, and identify the actionable threads each message covers. Usefulness counts admitted messages; urgency misses count uncovered urgent threads. A candidate must improve usefulness, add no urgent misses, and have zero reported scope, authority, stop or budget violations.
+
+After building, use the local operator commands:
+
+```bash
+node dist/cli/initiative.js <database> <team-id> export <policy-id> before.json
+node dist/cli/initiative.js <database> <team-id> cohort <policy-id> ground-truth.json
+# The running subsystem advances batch replay during its minute ticks.
+node dist/cli/initiative.js <database> <team-id> export <policy-id> after.json
+node dist/cli/initiative.js <database> <team-id> evaluate <policy-id> message-labels.json report.json
+node dist/cli/initiative.js <database> <team-id> proposals proposals.json
+node dist/cli/initiative.js <database> <team-id> ack <proposal-id> <issue-url> filed
+```
+
+The ground-truth file contains `training: [{episode, threads: [{channel, thread, topics: [...]}]}]` and `groups: [{episode, threads: [{channel, thread, topics: [...], urgent, actionable}]}]`. Supply all topics for every training thread, including related context. Use the exported chronological group order without skipping cases. Inherited training labels remain fixed.
+
+After every replay case finishes, the message-label file contains the exported `cohort` ID and `messages: [{episode, strategy, draft, useful, covers, violation}]`. `strategy` is `candidate` or `baseline`; `draft` is the exported content hash; `covers` lists covered actionable thread keys as `channel:thread`. Label every exported message exactly once. The simulator adds urgent misses caused by no output or withheld notification slots. Do not substitute model-generated or synthetic labels for the human rollout review.
+
+The owner previews a candidate with `initiative policy <policy-id>` in the verified DM and activates it with `initiative approve <policy-id> <evaluation-id>`. Offline commands cannot activate policies. Approval rechecks current source access, input availability and exact versions. Code or owner/model configuration changes invalidate behavioral-guidance approval on restart; ordinary delivery remains independently enabled. Raw-input cleanup can invalidate an unfinished cohort; it cannot silently substitute excerpts and reuse an old prediction. Expired/deleted inputs also purge dependent replay content. Initial approval checks every fresh training input, including uncited sources. Inherited topic provenance may survive source cleanup only through the already owner-approved base proof; resupplying that episode to reflection makes it fresh input again. `initiative rollback <policy-id>` restores a previously approved version when its implementation/configuration still matches. Policy approval never enables or disables baseline delivery. Live mode and the owner delivery switch, along with source/audience/budget/interruption checks, remain independently required.
+
+
+## Limits
+
+The held-out evaluation machinery and its synthetic tests do not establish production usefulness. Missing/failed cases remain in the denominator, and no generated policy, activated task or parked PM session is itself success evidence. The known inactivity-cache, earlier-deadline scheduling and provider-discovery progress findings remain open. Publication and opt-in activation require separate explicit approval; this local stack neither deploys nor enables the feature.

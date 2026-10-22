@@ -43,19 +43,25 @@ afterEach(async () => {
 });
 
 describe('initiative runtime integration', () => {
-  it('returns a current-schema historical learned policy to baseline without losing pending work', async () => {
+  it('keeps self-evolution off by default, holds reflection and resumes baseline after a learned policy', async () => {
+    vi.stubEnv('ARCHIE_SELF_EVOLUTION', 'false');
     runtime = await startInitiative('T1', 'shadow');
     await runtime.close(); runtime = undefined;
     const store = openStore();
     try {
       store.set('policy', 'previous-guidance');
       store.set('delivery_enabled', 'true');
-      store.schedule('reflection', 'global', NOW);
+      store.schedule('reflection', 'global', NOW - 1);
       runtime = await startInitiative('T1', 'shadow');
+      runtime.start();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(store.setting('self_evolution')).toBe('false');
       expect(store.setting('policy')).toBe('base');
       expect(store.setting('deferred_policy')).toBe('previous-guidance');
       expect(store.setting('delivery_enabled')).toBe('true');
       expect(store['row']("SELECT attempts FROM jobs WHERE kind='reflection'")?.attempts).toBe(0);
+      expect(store['rows']('SELECT * FROM episodes')).toEqual([]);
+      expect(store['rows']('SELECT * FROM charges')).toEqual([]);
     } finally { store.close(); }
   });
 

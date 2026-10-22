@@ -2,7 +2,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import type { Message, MessageCreateParamsNonStreaming, Usage } from '@anthropic-ai/sdk/resources/messages';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { InitiativeStore } from './store.js';
 
@@ -49,6 +49,7 @@ export class ModelGateway implements BackgroundModel {
   private client?: Anthropic;
   private active = 0;
   private readonly providerIdentity?: string;
+  private readonly submitting = new Set<string>();
 
   constructor(private readonly store: InitiativeStore, client?: Anthropic, providerIdentity?: string) {
     this.client = client;
@@ -87,6 +88,10 @@ export class ModelGateway implements BackgroundModel {
       if (error instanceof Error && error.message.includes('context exceeds')) return false;
       throw error;
     }
+  }
+
+  batchCapacity(): number {
+    return Math.max(0, 3 - this.active - Number(this.store.requests.activeBatches()!.n));
   }
 
   private settle(id: string, usage: Usage, model: string): void {
@@ -131,6 +136,51 @@ export class ModelGateway implements BackgroundModel {
       }
       throw new Error('Unreachable model retry state');
     } finally { this.active--; }
+  }
+
+  async submit(request: ModelRequest, context: unknown, signal: AbortSignal): Promise<string> {
+    return (await this.submitMany([{ request, context }], signal))[0];
+  }
+
+  async submitMany(items: Array<{ request: ModelRequest; context: unknown }>, signal: AbortSignal): Promise<string[]> {
+    if (!items.length || items.length > 100) throw new Error('Batch requires 1–100 items');
+    signal.throwIfAborted();
+    for (const authorize of new Set(items.map((i) => i.request.authorize).filter(Boolean))) {
+      if (!await authorize!()) throw new AdmissionDeferred('Source access changed before batch dispatch');
+    }
+    signal.throwIfAborted();
+    if (this.store.setting('stop') === 'true' || this.store.setting('pause') === 'true') throw new AdmissionDeferred('Background analysis was stopped or paused');
+    if (items.length > this.batchCapacity()) throw new AdmissionDeferred('Batch concurrency reached; keep one slot for direct checks');
+    const requests = items.map((item) => ({ ...this.prepare(item.request), id: randomUUID(), item, charge: '' }));
+    try {
+      for (const r of requests) {
+        const charge = this.store.reserve(r.maximum, false, Date.now(), r.item.request.scope);
+        if (!charge) throw new AdmissionDeferred('Batch allowance unavailable');
+        r.charge = charge;
+        this.store.transaction(() => {
+          this.store.requests.prepareBatch(r.id, charge, JSON.stringify(r.params), JSON.stringify(r.item.context), 'submitting', Date.now());
+          if (this.providerIdentity) this.store.set(`batch-provider:${r.id}`, this.providerIdentity);
+        });
+      }
+    } catch (error) {
+      // These requests have not been dispatched, so their execution cost is provably zero.
+      for (const r of requests.filter((r) => r.charge)) {
+        this.store.settle(r.charge, 0, Date.now());
+        this.store.requests.undispatchedBatch(r.id);
+      }
+      throw error;
+    }
+    for (const request of requests) this.submitting.add(request.id);
+    try {
+      const batch = await this.provider.messages.batches.create({ requests: requests.map((r) => ({ custom_id: r.id, params: r.params })) }, { signal, maxRetries: 0 });
+      this.store.transaction(() => {
+        for (const r of requests) this.store.requests.submittedBatch(batch.id, r.id);
+      });
+    } catch (error) {
+      for (const r of requests) this.store.requests.uncertainBatch(r.id);
+      throw error;
+    } finally { for (const request of requests) this.submitting.delete(request.id); }
+    return requests.map((r) => r.id);
   }
 
   private async receive(remote: string, signal: AbortSignal): Promise<boolean> {
@@ -197,7 +247,7 @@ export class ModelGateway implements BackgroundModel {
       const id = String(row.id);
       const key = `batch-discovery:${id}`;
       const current = this.store.requests.localBatch(id);
-      if (current?.remote || !['submitting', 'uncertain', 'retired'].includes(String(current?.state))) continue;
+      if (this.submitting.has(id) || current?.remote || !['submitting', 'uncertain', 'retired'].includes(String(current?.state))) continue;
       if (!this.providerIdentity || this.store.setting(`batch-provider:${id}`) !== this.providerIdentity) {
         this.store.set(`batch-recovery:${id}`, 'Provider credentials changed or the legacy submission is unbound. Confirm the original provider workspace and use bind-provider before discovery. Liability and execution slots remain reserved.');
         const saved = JSON.parse(this.store.setting(key) ?? '{}');
@@ -273,6 +323,13 @@ export class ModelGateway implements BackgroundModel {
     this.store.requests.endedBatch(batch.id);
     this.store.requests.retryResults(batch.id);
     await this.receive(batch.id, signal);
+  }
+
+  completed<T>(id: string, schema: z.ZodType<T>): T | null {
+    const row = this.store.requests.completedBatch(id);
+    if (!row) return null;
+    try { return this.parse(JSON.parse(String(row.result)) as Message, schema); }
+    catch { this.store.requests.invalidBatch(id); return null; }
   }
 
   async cancel(signal: AbortSignal): Promise<void> {

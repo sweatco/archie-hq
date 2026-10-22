@@ -11,6 +11,7 @@ import { drainObservationReads, installObservationAPI } from './api.js';
 import { InitiativeService, nextMorning } from './service.js';
 import { PublicSlack, normalizeSlackSource } from './slack.js';
 import { ModelGateway } from './model.js';
+import { SourceAccess } from './access.js';
 import { getArchieConfig } from '../system/plugin-loader.js';
 import type { InitiativeRuntime } from './index.js';
 
@@ -24,12 +25,17 @@ export async function startInitiative(team: string, mode: 'shadow' | 'live'): Pr
     const slack = new PublicSlack(owner);
     const gateway = new ModelGateway(store);
     const investigationModel = process.env.ARCHIE_PROACTIVITY_INVESTIGATION_MODEL ?? 'claude-sonnet-5-5';
-    store.useBaseline(Date.now());
+    const enabled = process.env.ARCHIE_SELF_EVOLUTION === 'true';
+    store.set('self_evolution', String(enabled));
+    const authorizeChannels = (channels: string[]) => new SourceAccess(store, slack).all(channels);
+    const learning = enabled ? new (await import('./learning.js')).LearningService(store, gateway, investigationModel, Object.keys(getArchieConfig().repos), authorizeChannels) : undefined;
+    if (learning) learning.revalidateApproval();
+    else store.useBaseline(Date.now());
     const service = new InitiativeService(store, slack, gateway, {
       mode, owner,
       extractionModel: process.env.ARCHIE_PROACTIVITY_EXTRACTION_MODEL ?? 'claude-haiku-5-5',
       investigationModel, repositories: Object.keys(getArchieConfig().repos),
-    }, Date.now);
+    }, Date.now, learning);
     const handoff = new ProposalHandoff(store, slack, owner, () => Object.keys(getArchieConfig().repos), source => service.refreshEvidence(source));
     await slack.ownerDm();
     await gateway.verify([service.config.extractionModel, service.config.investigationModel]);
@@ -65,6 +71,7 @@ export async function startInitiative(team: string, mode: 'shadow' | 'live'): Pr
         running = (async () => {
           try { await gateway.poll(AbortSignal.any([reconciliation.signal, AbortSignal.timeout(45_000)])); }
           catch (error) { logger.warn('initiative', 'Batch reconciliation deferred', error); }
+          await learning?.process(Date.now(), reconciliation.signal);
           gateway.expire(Date.now());
           if (mode === 'live') await handoff.present(Date.now());
           await service.tick();
@@ -90,6 +97,23 @@ export async function startInitiative(team: string, mode: 'shadow' | 'live'): Pr
         if (!['implemented', 'released', 'rejected'].includes(state)) throw new Error('Outcome must be implemented, released or rejected');
         await handoff.acknowledge(user, parts[1], state as 'implemented' | 'released' | 'rejected', parts[3], parts.slice(4).join(' '));
         await postSlackMessage({ channel: await slack.ownerDm(), text: 'Recorded the owner-acknowledged outcome and supporting artifact.' });
+        return;
+      }
+      if (learning && action === 'policy') {
+        const policy = store.learning.policy(parts[1] ?? '');
+        if (policy && !await authorizeChannels(learning.approvalChannels(String(policy.id), String(policy.evaluation ?? '')))) throw new Error('Policy sources unavailable');
+        await postSlackMessage({ channel: await slack.ownerDm(), text: policy ? JSON.stringify(policy) : 'Unknown policy version.' });
+        return;
+      }
+      if (learning && action === 'approve' && parts.length === 3) {
+        if (!await authorizeChannels(learning.approvalChannels(parts[1], parts[2]))) throw new Error('Policy or evaluation sources unavailable');
+        learning.approve(parts[1], parts[2], Date.now());
+        await postSlackMessage({ channel: await slack.ownerDm(), text: `Approved policy ${parts[1]} with evaluation ${parts[2]}.` });
+        return;
+      }
+      if (learning && action === 'rollback' && parts.length === 2) {
+        learning.rollback(parts[1]);
+        await postSlackMessage({ channel: await slack.ownerDm(), text: `Restored policy ${parts[1]}.` });
         return;
       }
       if (action === 'delivery' && parts.length === 2 && ['on', 'off'].includes(parts[1])) {

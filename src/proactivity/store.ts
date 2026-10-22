@@ -3,6 +3,10 @@ import { proposalVersion } from './proposals.js';
 import type { CapabilityProposal, TaskHandoffRecord } from './types.js';
 import { reasonText, type DecisionReason } from './decisions.js';
 import { expireLegacyEvidence } from './persistence/retention.js';
+import type { RevisionRecord } from './persistence/sql.js';
+import { LearningRecords } from './persistence/learning.js';
+import { ReplayRecords } from './persistence/replay.js';
+import type { DecisionCase } from './replay.js';
 import { AttentionRecords } from './persistence/attention.js';
 import { RequestRecords } from './persistence/requests.js';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
@@ -18,6 +22,8 @@ export class InitiativeStore {
   private readonly db: DatabaseSync;
   readonly attention: AttentionRecords;
   readonly requests: RequestRecords;
+  readonly learning: LearningRecords;
+  readonly replay: ReplayRecords;
 
   constructor(path: string, team: string, now = Date.now(), options: { readOnly?: boolean; owner?: string } = {}) {
     this.db = new DatabaseSync(path, { readOnly: options.readOnly === true });
@@ -31,10 +37,48 @@ export class InitiativeStore {
       }
       this.attention = new AttentionRecords(this.db);
       this.requests = new RequestRecords(this.db);
+      this.learning = new LearningRecords(this.db);
+      this.replay = new ReplayRecords(this.db);
     } catch (error) {
       this.db.close();
       throw error;
     }
+  }
+
+  restoreReplay(input: DecisionCase, revisions: RevisionRecord[], policy: string, body: string): void {
+    for (const [key, value] of Object.entries(input.controls)) this.set(key, value);
+    this.set('policy', policy); this.set('delivery_enabled', 'true');
+    if (policy !== 'base') this.run("INSERT INTO policies(id,body,base,evidence,state) VALUES (?,?, 'base','[]','active')", policy, body);
+    const channel = input.roots[0].channel;
+    this.channel(channel, true, false);
+    for (const ref of input.refs) {
+      const row = revisions.find(row => row.id === ref.id)!;
+      const columns = Object.keys(row);
+      this.run(`INSERT INTO revisions(${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`, ...Object.values(row));
+    }
+    for (const s of input.sources) {
+      const root = input.roots.some((r) => r.thread === s.thread);
+      this.run('INSERT INTO threads(channel,thread,generation,processed,changed,gap) VALUES (?,?,?,?,?,?)', channel, s.thread, s.generation, root ? 0 : s.generation, input.now, s.gap);
+      for (const id of s.evidence) {
+        const row = this.row('SELECT ts FROM revisions WHERE id=?', id)!;
+        this.run('INSERT OR REPLACE INTO messages VALUES (?,?,?)', channel, row.ts, id);
+      }
+      for (const removed of s.removed ?? []) {
+        const row = this.row('SELECT id FROM revisions WHERE channel=? AND ts=? AND version=? AND deleted=1 ORDER BY id DESC LIMIT 1', channel, removed.ts, removed.version);
+        if (row) this.run('INSERT OR REPLACE INTO messages VALUES (?,?,?)', channel, removed.ts, row.id);
+      }
+    }
+    for (const m of input.matters) this.run('INSERT INTO matters VALUES (?,?,?,?,?,?)', m.id, m.channel, m.thread, JSON.stringify({ ...m, policy }), Number(m.valid), m.nextCheck);
+    for (const o of input.observations) {
+      this.run('INSERT INTO observations VALUES (?,?,?,?,?,?,1)', o.id, o.channel, o.thread, o.text, JSON.stringify(o.evidence), o.kind);
+      this.run('INSERT INTO observation_search VALUES (?,?)', o.id, o.text);
+    }
+    for (const d of input.deliveries) {
+      this.run('INSERT INTO deliveries(id,channel,thread,text,matters,evidence,policy,digest,state,ts,created,proposal) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+        d.id, d.channel, d.thread, '', JSON.stringify(d.matters), JSON.stringify(d.evidence), policy, Number(d.digest), d.state === 'pending' ? 'cancelled' : d.state, d.ts, d.created, null);
+    }
+    for (const [kind, count] of Object.entries(input.usedSlots)) for (let i = 0; i < count; i++) this.run("INSERT INTO deliveries(id,channel,thread,text,matters,evidence,policy,digest,state,ts,created,slot_day) VALUES (?,?,NULL,'','[]','[]',?,?,'sent',NULL,?,?)",
+      `prior-slot:${kind}:${i}`, 'D_REPLAY', policy, Number(kind === 'digest'), input.now, lisbonDay(input.now));
   }
 
   close(): void { this.db.close(); }
@@ -166,7 +210,7 @@ export class InitiativeStore {
       const matter = this.matter(proposal.matter);
       if (!matter?.valid || matter.state !== 'open' || this.setting(`unfollow:${matter.channel}:${matter.thread}`) === 'true') return false;
     }
-    return (proposal.origin === 'investigation' || !!this.handoff(proposal.id)) && proposal.status === 'pending filing' && proposal.evidence.length > 0 && proposal.evidence.length <= 20 && proposal.evidence.every(id =>
+    return (proposal.origin === 'investigation' || (proposal.origin === 'evolution' && this.setting('self_evolution') === 'true') || !!this.handoff(proposal.id)) && proposal.status === 'pending filing' && proposal.evidence.length > 0 && proposal.evidence.length <= 20 && proposal.evidence.every(id =>
       Number.isSafeInteger(id) && this.row(`SELECT r.id FROM revisions r JOIN messages m ON m.revision=r.id JOIN channels c ON c.id=r.channel
         WHERE r.id=? AND r.deleted=0 AND r.bot=0 AND r.own=0 AND r.excerpt!='' AND r.captured>=? AND (?=0 OR c.allowed=1)`, id, now - 90 * DAY, Number(checkAccess)));
   }
@@ -450,7 +494,7 @@ export class InitiativeStore {
 
   claim(now: number, leaseMs = 360_000): Job | null {
     return this.transaction(() => {
-      const row = this.row("SELECT * FROM jobs WHERE kind!='reflection' AND due<=? AND lease<=? ORDER BY due LIMIT 1", now, now);
+      const row = this.row("SELECT * FROM jobs WHERE (? OR kind!='reflection') AND due<=? AND lease<=? ORDER BY due LIMIT 1", Number(this.setting('self_evolution') === 'true'), now, now);
       if (!row) return null;
       const token = randomUUID();
       this.run('UPDATE jobs SET token=?,lease=?,attempts=attempts+1 WHERE kind=? AND target=?', token, now + leaseMs, row.kind, row.target);
