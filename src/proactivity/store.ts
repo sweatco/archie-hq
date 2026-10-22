@@ -69,6 +69,7 @@ export class InitiativeStore {
       }
     }
     for (const m of input.matters) this.run('INSERT INTO matters VALUES (?,?,?,?,?,?)', m.id, m.channel, m.thread, JSON.stringify({ ...m, policy }), Number(m.valid), m.nextCheck);
+    for (const check of input.checks ?? []) this.run('INSERT INTO matter_checks VALUES (?,?,?,?)', check.matter, check.signature, check.kind, check.checked);
     for (const o of input.observations) {
       this.run('INSERT INTO observations VALUES (?,?,?,?,?,?,1)', o.id, o.channel, o.thread, o.text, JSON.stringify(o.evidence), o.kind);
       this.run('INSERT INTO observation_search VALUES (?,?)', o.id, o.text);
@@ -88,7 +89,10 @@ export class InitiativeStore {
   setting(key: string): string | undefined { return this.row('SELECT value FROM settings WHERE key=?', key)?.value as string | undefined; }
   set(key: string, value: string): void { this.run('INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', key, value); }
 
-  useBaseline(now: number): void { this.transaction(() => selectBaseline(this.db, now)); }
+  useBaseline(now: number): void {
+    if (this.db.isTransaction) selectBaseline(this.db, now);
+    else this.transaction(() => selectBaseline(this.db, now));
+  }
 
   acquireRunner(owner: string, now: number): boolean {
     return this.transaction(() => {

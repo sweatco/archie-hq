@@ -8,9 +8,10 @@ import { InitiativeStore } from './store.js';
 import { HandoffRejection, ProposalHandoff } from './handoff.js';
 import { ObservationRecall } from './recall.js';
 import { drainObservationReads, installObservationAPI } from './api.js';
-import { InitiativeService, nextMorning } from './service.js';
+import { InitiativeService, LearningDeferred, nextMorning } from './service.js';
 import { PublicSlack, normalizeSlackSource } from './slack.js';
-import { ModelGateway } from './model.js';
+import Anthropic from '@anthropic-ai/sdk';
+import { AdmissionDeferred, ModelGateway } from './model.js';
 import { SourceAccess } from './access.js';
 import { getArchieConfig } from '../system/plugin-loader.js';
 import type { InitiativeRuntime } from './index.js';
@@ -29,13 +30,13 @@ export async function startInitiative(team: string, mode: 'shadow' | 'live'): Pr
     store.set('self_evolution', String(enabled));
     const authorizeChannels = (channels: string[]) => new SourceAccess(store, slack).all(channels);
     const learning = enabled ? new (await import('./learning.js')).LearningService(store, gateway, investigationModel, Object.keys(getArchieConfig().repos), authorizeChannels) : undefined;
-    if (learning) learning.revalidateApproval();
-    else store.useBaseline(Date.now());
+    if (!learning) store.useBaseline(Date.now());
     const service = new InitiativeService(store, slack, gateway, {
       mode, owner,
       extractionModel: process.env.ARCHIE_PROACTIVITY_EXTRACTION_MODEL ?? 'claude-haiku-5-5',
       investigationModel, repositories: Object.keys(getArchieConfig().repos),
     }, Date.now, learning);
+    learning?.revalidateApproval();
     const handoff = new ProposalHandoff(store, slack, owner, () => Object.keys(getArchieConfig().repos), source => service.refreshEvidence(source));
     await slack.ownerDm();
     await gateway.verify([service.config.extractionModel, service.config.investigationModel]);
@@ -71,10 +72,14 @@ export async function startInitiative(team: string, mode: 'shadow' | 'live'): Pr
         running = (async () => {
           try { await gateway.poll(AbortSignal.any([reconciliation.signal, AbortSignal.timeout(45_000)])); }
           catch (error) { logger.warn('initiative', 'Batch reconciliation deferred', error); }
-          await learning?.process(Date.now(), reconciliation.signal);
           gateway.expire(Date.now());
           if (mode === 'live') await handoff.present(Date.now());
           await service.tick();
+          try { await learning?.process(Date.now(), reconciliation.signal); }
+          catch (error) {
+            if (reconciliation.signal.aborted || !(error instanceof AdmissionDeferred || error instanceof LearningDeferred || error instanceof Anthropic.APIError)) throw error;
+            logger.warn('initiative', 'Optional learning processing deferred; ordinary work already completed', error);
+          }
         })().catch((error) => logger.warn('initiative', 'Scheduler tick failed', error)).finally(() => { running = undefined; });
       }, 60_000);
       timer.unref();
@@ -112,8 +117,8 @@ export async function startInitiative(team: string, mode: 'shadow' | 'live'): Pr
         return;
       }
       if (learning && action === 'rollback' && parts.length === 2) {
-        learning.rollback(parts[1]);
-        await postSlackMessage({ channel: await slack.ownerDm(), text: `Restored policy ${parts[1]}.` });
+        const restored = learning.rollback(parts[1]);
+        await postSlackMessage({ channel: await slack.ownerDm(), text: restored ? `Restored policy ${parts[1]}.` : 'That behavior version no longer has valid approval. Baseline behavior remains selected; delivery settings are unchanged.' });
         return;
       }
       if (action === 'delivery' && parts.length === 2 && ['on', 'off'].includes(parts[1])) {

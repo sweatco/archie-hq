@@ -5,8 +5,9 @@ import { extname } from 'node:path';
 import { InitiativeStore } from './store.js';
 import type { Delivery, Matter, Observation, ThreadSnapshot } from './types.js';
 import { lisbonDay } from './types.js';
-import { InitiativeService, Assessment, type InitiativeConfig } from './service.js';
+import { InitiativeService, Assessment, LearningDeferred, type InitiativeConfig } from './service.js';
 import { AdmissionDeferred, type BackgroundModel, type ModelRequest, ModelGateway } from './model.js';
+import type { RecordedCheck } from './persistence/replay.js';
 import type { ObservationSlack } from './slack.js';
 
 export const fingerprint = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -26,6 +27,7 @@ export interface DecisionCase {
   sources: Source[];
   refs: Ref[];
   matters: Matter[];
+  checks: RecordedCheck[];
   observations: Observation[];
   deliveries: Delivery[];
   usedSlots: { digest: number; extra: number };
@@ -48,11 +50,13 @@ export async function captureDecision(store: InitiativeStore, slack: Observation
   const ids = new Set([...sources.flatMap((s) => s.evidence.map((e) => e.id)), ...matters.flatMap((m) => m.evidence)]);
   for (const source of sources) for (const row of store.replay.tombstones(channel, source.thread)) ids.add(Number(row.id));
   const controls = Object.fromEntries(store.replay.controls().map((r) => [String(r.key), String(r.value)]));
-  const access = await slack.inspect(channel, true);
+  const access = await slack.inspect(channel, true).catch(cause => {
+    throw new LearningDeferred('Learning snapshot access lookup unavailable', { cause });
+  });
   return { pipeline: PIPELINE, now, config, roots: roots.map(({ channel, thread }) => ({ channel, thread })),
     sources: sources.map(({ evidence, ...s }) => ({ ...s, evidence: evidence.map((e) => e.id) })),
     refs: [...ids].sort((a, b) => a - b).map((id) => ({ id, hash: fingerprint(store.attention.revision(id)) })),
-    matters, observations, controls, ownerCanRead: !!access?.ownerCanRead,
+    matters, checks: store.replay.checks(matters.map(matter => matter.id)), observations, controls, ownerCanRead: !!access?.ownerCanRead,
     active: roots.filter((s) => slack.active(channel, s.thread)).map((s) => s.thread),
     deliveries: ['sent', 'sending', 'uncertain', 'pending'].flatMap((state) => store.deliveries(state as Delivery['state'], matters.map((m) => m.id))).map((d) => ({ ...d, text: '' })),
     usedSlots: { digest: Number(store.replay.digestSlots(lisbonDay(now))!.n),

@@ -117,7 +117,7 @@ export class LearningService {
         for (const capability of result.capabilities) {
           if (!this.repositories.includes(capability.repository) || !capability.evidence.every((id) => allowed.has(id))) continue;
           const id = hash([capability.repository, capability.outcome]).slice(0, 24);
-          this.store.learning.proposeCapability(id, { ...capability, budgetResponsibility: 'initiative', dailyLimitMicrodollars: 200_000_000 });
+          this.store.learning.proposeCapability(id, capability);
         }
       }
       this.store.learning.applyReflection(row.id);
@@ -148,32 +148,46 @@ export class LearningService {
       const result = JSON.parse(String(report.result));
       if (result.pipelineVerified !== 1 || !this.cohorts.valid(policy, result.cohort)) throw new Error('Full pipeline cohort is incomplete or changed');
       this.store.set(`approved:${policy}`, evaluation);
-      this.activate(policy);
+      if (!this.activate(policy)) throw new Error('Policy approval no longer matches its evaluation');
     });
   }
 
-  rollback(policy: string): void {
-    this.store.transaction(() => {
+  rollback(policy: string): boolean {
+    return this.store.transaction(() => {
       if (policy !== 'base' && !this.store.learning.approvedPolicy(policy)) throw new Error('Unknown approved rollback version');
-      this.activate(policy);
+      return this.activate(policy);
     });
+  }
+
+  private approvalMatches(policy: string): boolean {
+    try {
+      const evaluation = this.store.setting(`approved:${policy}`);
+      const candidate = this.store.learning.policy(policy);
+      if (!evaluation || candidate?.evaluation !== evaluation) return false;
+      const report = this.store.learning.passingEvaluation(evaluation, policy, RUBRIC);
+      if (!report || !Guidance.safeParse(JSON.parse(candidate.body)).success) return false;
+      const proof = JSON.parse(report.result);
+      const cohort = this.store.learning.cohort(policy);
+      return proof.pipelineVerified === 1 && cohort?.id === proof.cohort && cohort.state === 'complete'
+        && this.cohorts.valid(policy, proof.cohort, false);
+    } catch { return false; }
   }
 
   revalidateApproval(): void {
     const policy = this.store.setting('policy')!;
-    const report = this.store.learning.evaluationProof(this.store.setting(`approved:${policy}`) ?? '', policy);
-    const proof = report ? JSON.parse(String(report.result)) : null;
-    if (proof?.pipelineVerified !== 1 || !this.cohorts.valid(policy, proof.cohort, false)) {
-      this.store.set('rollout_approved', '');
-      this.store.useBaseline(Date.now());
-    }
+    if (policy !== 'base' && !this.approvalMatches(policy)) this.selectBaseline();
   }
 
-  private activate(policy: string): void {
-    const evaluation = this.store.setting(`approved:${policy}`);
-    const report = evaluation ? this.store.learning.evaluationProof(evaluation, policy) : undefined;
-    const proof = report ? JSON.parse(String(report.result)) : null;
-    this.store.learning.activatePolicy(policy, proof?.pipelineVerified === 1 && this.cohorts.valid(policy, proof.cohort, false));
+  private selectBaseline(): void {
+    this.store.set('rollout_approved', '');
+    this.store.useBaseline(Date.now());
+  }
+
+  private activate(policy: string): boolean {
+    if (policy === 'base') { this.selectBaseline(); return true; }
+    if (!this.approvalMatches(policy)) { this.selectBaseline(); return false; }
+    this.store.learning.selectApprovedGuidance(policy);
+    return true;
   }
 
   expire(now: number): void {

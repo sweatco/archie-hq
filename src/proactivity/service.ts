@@ -41,6 +41,8 @@ export interface InitiativeConfig {
 
 export const decisionConfig = (config: InitiativeConfig): string => JSON.stringify([config.owner, config.extractionModel, config.investigationModel, config.repositories ?? []]);
 
+export class LearningDeferred extends Error {}
+
 export interface InitiativeLearning {
   observe?(snapshots: ThreadSnapshot[], slack: ObservationSlack, config: InitiativeConfig, now: number): Promise<void>;
   record(snapshot: ThreadSnapshot, matter: Matter, assessment: z.infer<typeof Assessment>, now: number): void;
@@ -71,6 +73,11 @@ export class InitiativeService {
     this.access = new SourceAccess(store, slack);
     this.collection = new SourceCollector(store, slack, () => this.stopped);
     store.set('decision_config', decisionConfig(config));
+  }
+
+  private learningDeferred(error: unknown, stage: 'capture' | 'record'): void {
+    if (!(error instanceof LearningDeferred)) throw error;
+    logger.warn('initiative', `Optional learning ${stage} deferred; ordinary analysis continues`, error);
   }
 
   private instructions(): string {
@@ -153,7 +160,10 @@ export class InitiativeService {
     const snapshots: ThreadSnapshot[] = [];
     for (const source of this.store.dirty()) if (await this.accessible(source.channel)) snapshots.push(source);
     if (!snapshots.length) return;
-    for (const channel of new Set(snapshots.map(s => s.channel))) await this.learning?.observe?.(snapshots.filter(s => s.channel === channel), this.slack, this.config, now);
+    for (const channel of new Set(snapshots.map(s => s.channel))) {
+      try { await this.learning?.observe?.(snapshots.filter(s => s.channel === channel), this.slack, this.config, now); }
+      catch (error) { signal.throwIfAborted(); this.learningDeferred(error, 'capture'); }
+    }
     const previous = snapshots.flatMap((s) => this.store.threadMatters(s.channel, s.thread));
     const carried = new Map<string, z.infer<typeof Findings>['threads'][number]>();
     const supplied = new Map<string, Set<number>>();
@@ -308,7 +318,8 @@ export class InitiativeService {
     const evidence = bounded.flatMap((s) => s.evidence);
     if (assessment.evidence.some((id) => !evidence.some((e) => e.id === id))
       || !assessment.evidence.some((id) => evidence.some((e) => e.id === id && !e.own && !e.bot))) throw new Error('Unsupported investigation result');
-    this.learning?.record({ ...bounded[0], evidence }, matter, assessment, now);
+    try { this.learning?.record({ ...bounded[0], evidence }, matter, assessment, now); }
+    catch (error) { signal.throwIfAborted(); this.learningDeferred(error, 'record'); }
     if (assessment.resolved) {
       this.store.attention.saveMatter({ ...matter, state: 'resolved' });
       explain('resolved');

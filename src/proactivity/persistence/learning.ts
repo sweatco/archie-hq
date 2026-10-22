@@ -78,7 +78,7 @@ export class LearningRecords extends SqlOperations {
     return this.rows<{ id: string; context: string }>("SELECT id,context FROM batches WHERE state='complete' AND json_extract(context,'$.kind')='reflection'");
   }
 
-  proposeCapability(id: string, proposal: Pick<CapabilityProposal, 'repository' | 'outcome' | 'evidence'> & { budgetResponsibility?: string; dailyLimitMicrodollars?: number }) {
+  proposeCapability(id: string, proposal: Pick<CapabilityProposal, 'repository' | 'outcome' | 'evidence'>) {
     const versioned = JSON.stringify({ ...proposal, origin: 'evolution', version: proposalVersion(proposal) });
     this.run(`INSERT INTO proposals(id,body) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body WHERE proposals.status='pending filing' AND NOT EXISTS (SELECT 1 FROM handoffs WHERE proposal=proposals.id)`, id, versioned);
   }
@@ -165,13 +165,16 @@ export class LearningRecords extends SqlOperations {
     });
   }
 
-  activatePolicy(policy: string, deliveryApproved: boolean): void {
+  selectApprovedGuidance(policy: string): void {
     this.atomic(() => {
       this.run("UPDATE policies SET state='archived' WHERE state='active'");
       this.run("UPDATE policies SET state='active' WHERE id=?", policy);
       this.run("INSERT INTO settings VALUES ('policy',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", policy);
-      this.run("INSERT INTO settings VALUES ('rollout_approved',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", deliveryApproved ? policy : '');
+      this.run("INSERT INTO settings VALUES ('rollout_approved',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", policy);
       this.run("UPDATE matters SET body=json_set(body,'$.policy',?)", policy);
+      this.run(`DELETE FROM matter_checks WHERE kind='notified' AND matter IN (
+        SELECT j.value FROM deliveries d,json_each(d.matters) j WHERE d.state='pending'
+      )`);
       this.run("UPDATE deliveries SET state='cancelled' WHERE state='pending'");
     });
   }
