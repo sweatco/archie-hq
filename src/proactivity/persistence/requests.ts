@@ -5,7 +5,12 @@ export class RequestRecords extends SqlOperations {
   localBatch(id: string) { return this.row<Pick<BatchRecord, 'id' | 'state' | 'remote'>>('SELECT id,state,remote FROM batches WHERE id=?', id); }
 
   unknownSubmissions() {
-    return this.rows<BatchRecord>("SELECT * FROM batches WHERE remote IS NULL AND state IN ('submitting','uncertain') ORDER BY created LIMIT 3");
+    return this.rows<BatchRecord>(`SELECT b.* FROM batches b
+      JOIN charges c ON c.id=b.charge
+      LEFT JOIN settings s ON s.key='batch-discovery:' || b.id
+      WHERE b.remote IS NULL AND c.settled IS NULL
+        AND b.state IN ('submitting','uncertain','retired')
+      ORDER BY COALESCE(json_extract(s.value,'$.updatedAt'),0),b.created,b.id LIMIT 3`);
   }
 
   correlatedResult(id: string, remote: string) {

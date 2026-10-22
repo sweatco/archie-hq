@@ -12,8 +12,7 @@ export interface ApprovedTaskRuntime {
   read(taskId: string): Promise<TaskMetadata | null>;
 }
 
-// Task creation is reachable only through the owner-approval handoff. Importing
-// the observer or running collection/reflection does not load the task runtime.
+// This adapter creates tasks only after the owner-approval handoff authorizes them.
 export const ordinaryTasks: ApprovedTaskRuntime = {
   async prepare(input) {
     const { Task } = await import('../tasks/task.js');

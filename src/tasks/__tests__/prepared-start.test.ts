@@ -54,7 +54,7 @@ describe('durable prepared task starts', () => {
   const call = (entry: any, args: unknown) => (entry.callback ?? entry.handler)(args, {});
   const completion = (task: Task) => (createOrchestrationMcpServer({ def: { id: 'pm-agent' } } as never, task).instance as any)._registeredTools.report_completion;
 
-  it('starts one ordinary replying task from collected evidence and investigation without a learner', async () => {
+  it.each(['normal', 'access recovery'] as const)('starts one ordinary replying task from investigation without a learner: %s', async scenario => {
     const now = Date.parse('2026-10-20T10:00:00Z');
     vi.setSystemTime(now);
     const store = new InitiativeStore(':memory:', 'T1', now);
@@ -82,8 +82,19 @@ describe('durable prepared task starts', () => {
       await service.tick(Date.now(), true);
       expect(model.complete).toHaveBeenCalledTimes(2);
       expect(store['rows']('SELECT * FROM episodes')).toEqual([]);
-      expect(store.pendingProposals()).toHaveLength(1);
+      expect(store.pendingProposalIds()).toHaveLength(1);
       await handoff.present(Date.now());
+      if (scenario === 'access recovery') {
+        vi.mocked(slack.inspect).mockRejectedValueOnce(new Error('temporary metadata outage'));
+        await service.deliver(Date.now());
+        expect(store.deliveries('cancelled')).toHaveLength(1);
+        const suggestion = store.proposal(store.pendingProposalIds()[0])!;
+        expect(store.matter(suggestion.matter!)?.valid).toBe(false);
+        await service.capture(source, Date.now());
+        vi.setSystemTime(now + 2 * 3_600_000);
+        await service.tick(Date.now(), true);
+        await handoff.present(Date.now());
+      }
       await service.deliver(Date.now());
       const card = store.deliveries('sent')[0];
       expect(card.proposal).toBeDefined();

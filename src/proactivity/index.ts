@@ -18,7 +18,7 @@ export async function initInitiative(team: string | null): Promise<void> {
   const { logger } = await import('../system/logger.js');
   try {
     if (mode !== 'shadow' && mode !== 'live') throw new Error('Invalid ARCHIE_PROACTIVITY_MODE');
-    if (Number(process.versions.node.split('.')[0]) < 24) throw new Error('Observation memory requires Node 24 or later');
+    if (Number(process.versions.node.split('.')[0]) < 24) throw new Error('Proactive observation requires Node 24 or later');
     if (!team) throw new Error('Initiative requires an authenticated Slack workspace');
     const { startInitiative } = await import('./runtime.js');
     runtime = await startInitiative(team, mode);

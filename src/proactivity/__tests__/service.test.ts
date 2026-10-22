@@ -331,7 +331,6 @@ describe('initiative flow', () => {
     expect(store.setting('stop')).toBeUndefined();
     expect(store.setting('pause')).toBeUndefined();
     expect(store['rows']('SELECT kind FROM jobs')).not.toHaveLength(0);
-    expect(store.setting('live_start')).toBe(String(NOW));
   });
 });
 
@@ -343,4 +342,34 @@ describe('Lisbon notification scheduling', () => {
     expect(notificationWindow(Date.parse('2026-10-24T10:00:00Z'))).toBe(false);
     expect(nextMorning(Date.parse('2026-10-23T18:00:00Z'))).toBe(Date.parse('2026-10-26T09:00:00Z'));
   });
+});
+
+it('reconsiders an unsent nudge after a temporary ordinary task leaves the discussion', async () => {
+  await investigate();
+  store.set('delivery_enabled', 'true');
+  vi.mocked(slack.active).mockReturnValue(true);
+  await service.deliver(NOW + 60_000);
+  expect(store.deliveries('cancelled')).toHaveLength(1);
+  expect(slack.send).not.toHaveBeenCalled();
+  vi.mocked(slack.active).mockReturnValue(false);
+  vi.mocked(model.complete).mockClear();
+  vi.mocked(model.complete).mockResolvedValue({ resolved: false, help: 'I can prepare the release checklist.', public: false, evidence: store.matters()[0].evidence });
+  await service.tick(NOW + 3_660_000);
+  expect(model.complete).toHaveBeenCalledTimes(1);
+  expect(slack.send).toHaveBeenCalledTimes(1);
+});
+
+it.each(['sent', 'uncertain'] as const)('keeps %s nudge evidence and cached duplicate suppression across cancellation attempts', async state => {
+  await investigate();
+  store.set('delivery_enabled', 'true');
+  if (state === 'uncertain') vi.mocked(slack.send).mockResolvedValueOnce(undefined);
+  await service.deliver(NOW + 60_000);
+  const delivery = store.deliveries(state)[0];
+  expect(delivery).toBeDefined();
+  store.attention.cancelDelivery(delivery.id);
+  expect(store.delivery(delivery.id)?.state).toBe(state);
+  vi.mocked(model.complete).mockClear();
+  await service.tick(NOW + 3_660_000);
+  expect(model.complete).not.toHaveBeenCalled();
+  expect(slack.send).toHaveBeenCalledTimes(1);
 });

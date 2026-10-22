@@ -297,3 +297,68 @@ describe('owner-approved proposal handoff', () => {
     expect(store.proposal('release')?.status).not.toBe('released');
   });
 });
+
+it('presents an ordinary suggestion despite retained deferred learning history', async () => {
+  const seed = store.proposal('release')!;
+  store['run']('DELETE FROM proposals');
+  for (let n = 0; n < 20; n++) {
+    const { origin: _origin, ...legacy } = seed;
+    store['run']('INSERT INTO proposals(id,body) VALUES (?,?)', `000-${n.toString().padStart(2, '0')}`, JSON.stringify(legacy));
+  }
+  store.proposeCapability('zzz-current', { repository: seed.repository, outcome: seed.outcome, evidence: seed.evidence });
+  await handoff.present(NOW);
+  expect(store.deliveries('pending').map(delivery => delivery.proposal?.id)).toEqual(['zzz-current']);
+  expect(store['row']('SELECT count(*) AS n FROM proposals')?.n).toBe(21);
+});
+
+it('persists bounded queue progress past ineligible rows and wraps for earlier arrivals', async () => {
+  const seed = store.proposal('release')!;
+  store['run']('DELETE FROM proposals');
+  for (let n = 0; n < 20; n++) store.proposeCapability(`000-${n.toString().padStart(2, '0')}`, { ...seed, matter: 'resolved-or-missing' });
+  store.proposeCapability('zzz-current', seed);
+  const reads = vi.spyOn(store, 'proposal');
+  await handoff.present(NOW);
+  expect(reads).toHaveBeenCalledTimes(20);
+  expect(store.deliveries('pending')).toEqual([]);
+  expect(store.setting('proposal_cursor')).toBe('000-19');
+  store.close(); store = new InitiativeStore(join(root, 'state.sqlite'), 'T1', NOW);
+  handoff = freshHandoff();
+  store.proposeCapability('000-00a-new', seed);
+  await handoff.present(NOW);
+  expect(store.deliveries('pending').map(delivery => delivery.proposal?.id)).toEqual(['zzz-current']);
+  await handoff.present(NOW);
+  expect(store.deliveries('pending').map(delivery => delivery.proposal?.id)).toContain('000-00a-new');
+  expect(store['row']('SELECT count(*) AS n FROM proposals')?.n).toBe(22);
+});
+
+it('revalidates and requeues a never-sent cancelled card after transient access recovery', async () => {
+  await handoff.present(NOW);
+  const first = store.deliveries('pending')[0];
+  const service = new InitiativeService(store, slack, { complete: vi.fn() }, { mode: 'live', owner: 'U_OWNER', extractionModel: 'test', investigationModel: 'test' }, () => NOW);
+  try {
+    vi.mocked(slack.inspect).mockRejectedValueOnce(new Error('temporary metadata outage'));
+    await service.deliver(NOW);
+    expect(store.delivery(first.id)?.state).toBe('cancelled');
+    store.channel('C1', true, false);
+    await handoff.present(NOW + 60_000);
+    await service.deliver(NOW + 60_000);
+    expect(store.delivery(first.id)?.state).toBe('sent');
+    expect(slack.send).toHaveBeenCalledTimes(1);
+    await handoff.present(NOW + 120_000);
+    await service.deliver(NOW + 120_000);
+    expect(slack.send).toHaveBeenCalledTimes(1);
+  } finally { service.stop(); service.release(); }
+});
+
+it.each(['sending', 'uncertain', 'sent', 'attempted-cancelled', 'approved'] as const)('never requeues a %s card during recovery', async state => {
+  const delivery = await presented();
+  if (state === 'approved') await handoff.approve('U_OWNER', delivery.id, delivery.proposal!.version);
+  else {
+    store['run']('UPDATE deliveries SET state=?,ts=?,slot_day=? WHERE id=?', state === 'attempted-cancelled' ? 'cancelled' : state,
+      state === 'sent' ? delivery.ts : null, '2026-10-20', delivery.id);
+  }
+  await handoff.present(NOW + 60_000);
+  expect(store.deliveries('pending')).toEqual([]);
+  expect(slack.send).toHaveBeenCalledTimes(1);
+  await handoff.drainCards();
+});

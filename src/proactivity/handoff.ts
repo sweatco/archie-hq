@@ -49,16 +49,22 @@ export class ProposalHandoff {
   async present(now: number): Promise<void> {
     if (!notificationWindow(now) || this.store.setting('delivery_enabled') !== 'true'
       || ['stop', 'mute', 'pause'].some(control => this.store.setting(control) === 'true')) return;
-    for (const proposal of this.store.pendingProposals()) {
+    const page = this.store.pendingProposalIds(this.store.setting('proposal_cursor'));
+    for (const id of page) {
+      this.store.set('proposal_cursor', id);
+      const proposal = this.store.proposal(id);
       if (!proposal || this.store.handoff(proposal.id)) continue;
       const version = proposalVersion(proposal);
-      if (this.store.delivery(`proposal:${proposal.id}:${version}`) || (await this.current(proposal, false)).status !== 'available') continue;
+      const previous = this.store.delivery(`proposal:${proposal.id}:${version}`);
+      if (previous && previous.state !== 'cancelled') continue;
+      if ((await this.current(proposal, false)).status !== 'available') continue;
       const sources = this.store.proposalSources(proposal.id);
       const text = `Feature proposal: ${proposal.outcome}\nRepository: ${proposal.repository}\n\n${sources.map(source => this.slack.link(source.channel, source.thread)).join('\n')}\n\nStart task launches one ordinary Archie task using normal task budgeting, outside the $200/day background allowance. Edit mode and GitHub writes still require their normal approvals.`;
       this.store.enqueueDelivery({ id: `proposal:${proposal.id}:${version}`, channel: await this.slack.ownerDm(), thread: null, text,
         matters: [], evidence: proposal.evidence, policy: this.store.setting('policy')!, digest: false, state: 'pending', ts: null, created: now,
         proposal: { id: proposal.id, version } });
     }
+    if (page.length < 20) this.store.set('proposal_cursor', '');
   }
 
   async approve(actor: string, deliveryId: string, version: string): Promise<TaskHandoffRecord> {

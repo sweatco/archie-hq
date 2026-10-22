@@ -2,7 +2,7 @@
 import type { TaskMetadata } from '../types/task.js';
 
 export interface ObservationAPI {
-  search(metadata: TaskMetadata, query: string, limit: number): Promise<Array<{ id: string; text: string; recency: string }>>;
+  search(metadata: TaskMetadata, query: string, limit: number): Promise<Array<{ id: string; text: string }>>;
   read(metadata: TaskMetadata, kind: 'observation' | 'matter' | 'matters', id?: string): Promise<unknown>;
 }
 

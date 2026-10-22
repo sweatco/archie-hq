@@ -12,6 +12,13 @@ export async function runInitiativeOperator(args: string[]): Promise<void> {
   const [path, team, command, ...values] = args;
   const usage = 'Use initiative <existing database> <Slack team ID> migrate | explain <matter> <output.json> | proposals <output.json> | ack <proposal> <issue URL> <filed|implementing> [note] | bind-provider <local batch ID> | reconcile-batch <provider batch ID>';
   if (!path || !team || !existsSync(path)) throw new Error(usage);
+  const arities = new Map([['migrate', 0], ['explain', 2], ['proposals', 1], ['bind-provider', 1], ['reconcile-batch', 1]]);
+  if (values.some(value => !value.trim())) throw new Error(usage);
+  if (command === 'ack') {
+    if (values.length < 3) throw new Error(usage);
+    z.enum(['filed', 'implementing']).parse(values[2]);
+    if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/issues\/\d+$/.test(values[1])) throw new Error('A repository issue URL is required');
+  } else if (arities.get(command) !== values.length) throw new Error(usage);
   const store = new InitiativeStore(resolve(path), team, Date.now(), { readOnly: ['proposals', 'explain'].includes(command) });
   try {
     const gateway = new ModelGateway(store);

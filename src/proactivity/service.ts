@@ -10,7 +10,7 @@ import { lisbonDay } from './types.js';
 import { logger } from '../system/logger.js';
 import { AdmissionDeferred, type BackgroundModel } from './model.js';
 import type { ObservationSlack } from './slack.js';
-import { deadlinePhase, nextMatterCheck, citationIdentity, reminderPhase, type DecisionReason } from './decisions.js';
+import { deadlinePhase, inactivityPhase, nextInvestigationCheck, nextMatterCheck, reconciledCheck, citationIdentity, reminderPhase, type DecisionReason } from './decisions.js';
 import { partitionThreads } from './context.js';
 import { suggestionId, TaskSuggestion } from './proposals.js';
 
@@ -52,15 +52,6 @@ export function notificationWindow(now: number): boolean {
   return !['Sat', 'Sun'].includes(day) && hour >= 9 && hour < 18;
 }
 
-function businessDaysSince(start: number, end: number): number {
-  let count = 0;
-  for (let cursor = start + DAY; cursor <= end; cursor += DAY) {
-    const day = new Intl.DateTimeFormat('en', { timeZone: TZ, weekday: 'short' }).format(cursor);
-    if (!['Sat', 'Sun'].includes(day)) count++;
-  }
-  return count;
-}
-
 export class InitiativeService {
   private readonly access: SourceAccess;
   private readonly collection: SourceCollector;
@@ -79,7 +70,6 @@ export class InitiativeService {
     for (const [kind, due] of [['reconcile', now], ['extract', now + HOUR], ['retention', now], ['digest', nextMorning(now)]] as const) {
       if (!this.store.attention.scheduledJob(kind, 'global')) this.store.schedule(kind, 'global', due);
     }
-    if (this.config.mode === 'live' && !this.store.setting('live_start')) this.store.set('live_start', String(now));
     if (!this.store.setting('review_report') && !this.store.attention.scheduledJob('review', 'global')) this.store.schedule('review', 'global', Number(this.store.setting('watermark')) * 1000 + 14 * DAY);
   }
 
@@ -223,7 +213,7 @@ export class InitiativeService {
           const identity = prior.find((p) => p.id.endsWith(`:m:${m.key}`)) ?? (overlapping.length === 1 ? overlapping[0] : undefined);
           if (!identity && overlapping.length > 1) throw new Error('Ambiguous reconciliation against existing matters');
           matters.push({ ...m, id: identity?.id ?? `${thread.channel}:${thread.thread}:m:${m.key}`, channel: thread.channel, thread: thread.thread,
-          nextCheck: identity && identity.state !== 'resolved' ? identity.nextCheck : now, valid: true, policy });
+          nextCheck: reconciledCheck(identity, m.deadline, now), valid: true, policy });
         }
       }
       if (this.store.apply(snapshots, observations, matters, policy, job)) {
@@ -266,9 +256,9 @@ export class InitiativeService {
       else snapshot.gap = [snapshot.gap, 'Related discussion could not be completely checked'].filter(Boolean).join('; ');
     }
     const signature = createHash('sha256').update(JSON.stringify([matter.policy, decisionConfig(this.config), matter.title, matter.detail,
-      matter.owner, matter.deadline, deadlinePhase(matter, now), this.store.latestReminder(matter.id), sources.map(source => [source.channel, source.thread, source.generation, source.gap])])).digest('hex');
+      matter.owner, matter.deadline, deadlinePhase(matter, now), inactivityPhase(snapshot, now), this.store.latestReminder(matter.id), sources.map(source => [source.channel, source.thread, source.generation, source.gap])])).digest('hex');
     if (this.store.priorCheck(matter.id, signature)) {
-      const next = nextMatterCheck(matter, now);
+      const next = nextInvestigationCheck(matter, snapshot, now);
       if (next !== undefined) this.store.attention.setNextCheck(next, matter.id);
       explain('unchanged', next);
       return next;
@@ -318,11 +308,10 @@ export class InitiativeService {
         this.store.proposeCapability(suggestionId(suggestion), { ...suggestion, matter: matter.id });
       }
     }
-    const nextCheck = nextMatterCheck(matter, now)!;
+    const nextCheck = nextInvestigationCheck(matter, snapshot, now)!;
     this.store.attention.setNextCheck(nextCheck, matter.id);
     if (!assessment.help) { this.store.rememberCheck(matter.id, signature, 'no_help', now); explain('no_help', nextCheck); return nextCheck; }
-    const lastHuman = Math.max(...snapshot.evidence.filter((e) => !e.own && !e.bot).map((e) => Number(e.ts) * 1000));
-    const publicReply = assessment.public && bounded.every((s) => !s.gap) && businessDaysSince(lastHuman, now) >= 2;
+    const publicReply = assessment.public && bounded.every((s) => !s.gap) && inactivityPhase(snapshot, now) === 'abandoned';
     if (!publicReply && !await this.accessible(matter.channel, true)) return nextCheck;
     const previous = ['pending', 'sending', 'uncertain', 'sent'].flatMap(state => this.store.deliveries(state as Delivery['state'], [matter.id]));
     const reminder = this.store.latestReminder(matter.id);

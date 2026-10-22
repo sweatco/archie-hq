@@ -8,6 +8,9 @@ export class AttentionRecords extends SqlOperations {
   stopAnalysis(): void {
     this.atomic(() => {
       this.run("INSERT INTO settings VALUES ('analysis_epoch','1') ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1");
+      this.run(`DELETE FROM matter_checks WHERE kind='notified' AND matter IN (
+        SELECT j.value FROM deliveries d,json_each(d.matters) j WHERE d.state='pending'
+      )`);
       this.run("UPDATE deliveries SET state='cancelled' WHERE state='pending'");
       this.run("DELETE FROM jobs WHERE kind IN ('extract','investigate','reflection','digest')");
     });
@@ -73,7 +76,12 @@ export class AttentionRecords extends SqlOperations {
   }
 
   cancelDelivery(delivery: string) {
-    this.run("UPDATE deliveries SET state='cancelled' WHERE id=?", delivery);
+    this.atomic(() => {
+      this.run(`DELETE FROM matter_checks WHERE kind='notified' AND matter IN (
+        SELECT j.value FROM deliveries d,json_each(d.matters) j WHERE d.id=? AND d.state='pending'
+      )`, delivery);
+      this.run("UPDATE deliveries SET state='cancelled' WHERE id=? AND state='pending'", delivery);
+    });
   }
 
   finishDelivery(state: Extract<Delivery['state'], 'sent' | 'uncertain'>, timestamp: string | null, delivery: string) {

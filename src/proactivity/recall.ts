@@ -29,7 +29,7 @@ export class ObservationRecall implements ObservationAPI {
     for (const observation of hits) {
       if (!allowed.has(observation.channel)) allowed.set(observation.channel, await this.access.check(observation.channel, scope.owner));
       const current = this.store.attention.observation(observation.id);
-      if (allowed.get(observation.channel) && current) results.push({ id: observation.id, text: `${current.text}\n${this.slack.link(observation.channel, observation.thread)}`, recency: '' });
+      if (allowed.get(observation.channel) && current) results.push({ id: observation.id, text: `${current.text}\n${this.slack.link(observation.channel, observation.thread)}` });
     }
     return results;
   }

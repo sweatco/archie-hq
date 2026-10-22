@@ -15,6 +15,21 @@ const PRICES: Record<string, { input: number; output: number }> = {
 
 export class AdmissionDeferred extends Error {}
 
+interface DiscoveryProgress {
+  version: 2;
+  cursor?: string;
+  page?: { pending: Array<{ id: string; created: number }>; nextCursor?: string; hasMore: boolean };
+  active: boolean;
+  pages: number;
+  checked: number;
+  startedAt: number;
+  updatedAt: number;
+  terminalScanAt?: number;
+  unread: string[];
+  unreadCount: number;
+  lastRound?: { finishedAt: number; unreadCount: number; unreadSample: string[] };
+}
+
 export interface ModelRequest {
   model: string;
   system: string;
@@ -118,11 +133,12 @@ export class ModelGateway implements BackgroundModel {
     } finally { this.active--; }
   }
 
-  private async receive(remote: string, signal: AbortSignal): Promise<void> {
+  private async receive(remote: string, signal: AbortSignal): Promise<boolean> {
     let count = 0;
     for await (const item of await this.provider.messages.batches.results(remote, { signal, maxRetries: 0 })) {
       // Discovery may inspect an unrelated workspace batch. Keep scans bounded.
-      if (++count > 1000) break;
+      signal.throwIfAborted();
+      if (++count > 1000) return false;
       const row = this.store.requests.correlatedResult(item.custom_id, remote);
       if (!row) continue;
       if (item.result.type === 'succeeded') {
@@ -136,48 +152,94 @@ export class ModelGateway implements BackgroundModel {
         this.store.requests.failedBatch(JSON.stringify(item.result), row.id);
       }
     }
+    return true;
+  }
+
+  private async discoverPage(progress: DiscoveryProgress, signal: AbortSignal): Promise<void> {
+    const page = await this.provider.messages.batches.list({ limit: 20, after_id: progress.cursor }, { signal, maxRetries: 0 });
+    if (page.data.length > 20) throw new Error('Provider discovery metadata page exceeded its bound');
+    if (page.has_more && !page.last_id) throw new Error('Provider discovery pagination is incomplete');
+    const pending: Array<{ id: string; created: number }> = [];
+    for (const batch of page.data) {
+      const created = Date.parse(batch.created_at);
+      if (!Number.isFinite(created)) throw new Error('Provider discovery returned invalid creation time');
+      if (batch.processing_status !== 'ended') progress.active = true;
+      else if (Date.now() - created < 29 * 86_400_000) pending.push({ id: batch.id, created });
+    }
+    progress.pages++;
+    progress.checked += page.data.length;
+    progress.page = { pending, nextCursor: page.last_id ?? undefined, hasMore: page.has_more };
+  }
+
+  private advanceDiscoveryPage(id: string, created: number, progress: DiscoveryProgress): void {
+    const page = progress.page!;
+    if (page.pending.length) return;
+    if (page.hasMore) progress.cursor = page.nextCursor;
+    else {
+      if (!progress.active && Date.now() > created + 3_600_000 + 86_400_000) {
+        this.store.requests.retireUnknown(id);
+        progress.terminalScanAt = Date.now();
+        this.store.set(`batch-recovery:${id}`, 'Complete provider scan found no running candidate. Result identity and usage remain unresolved; liability stays reserved.');
+      }
+      progress.lastRound = { finishedAt: Date.now(), unreadCount: progress.unreadCount, unreadSample: progress.unread };
+      progress.cursor = undefined;
+      progress.active = false;
+      progress.unread = [];
+      progress.unreadCount = 0;
+    }
+    progress.page = undefined;
   }
 
   private async discover(signal: AbortSignal): Promise<void> {
     let downloads = 0;
+    const failures: unknown[] = [];
     for (const row of this.store.requests.unknownSubmissions()) {
       const id = String(row.id);
+      const key = `batch-discovery:${id}`;
       const current = this.store.requests.localBatch(id);
-      if (current?.remote || !['submitting', 'uncertain'].includes(String(current?.state))) continue;
+      if (current?.remote || !['submitting', 'uncertain', 'retired'].includes(String(current?.state))) continue;
       if (!this.providerIdentity || this.store.setting(`batch-provider:${id}`) !== this.providerIdentity) {
         this.store.set(`batch-recovery:${id}`, 'Provider credentials changed or the legacy submission is unbound. Confirm the original provider workspace and use bind-provider before discovery. Liability and execution slots remain reserved.');
+        const saved = JSON.parse(this.store.setting(key) ?? '{}');
+        this.store.set(key, JSON.stringify({ ...saved, updatedAt: Date.now() }));
         continue;
       }
-      const key = `batch-discovery:${id}`;
-      const progress = JSON.parse(this.store.setting(key) ?? '{}') as { cursor?: string; active?: boolean; pages?: number; checked?: number; startedAt?: number };
-      progress.startedAt ??= Date.now();
-      const upper = Number(row.created) + 3_600_000;
-      const page = await this.provider.messages.batches.list({ limit: 20, after_id: progress.cursor }, { signal, maxRetries: 0 });
-      const finished = !page.has_more;
-      progress.pages = (progress.pages ?? 0) + 1;
-      progress.checked = (progress.checked ?? 0) + page.data.length;
-      for (const batch of page.data) {
-        const created = Date.parse(batch.created_at);
-        if (!Number.isFinite(created)) throw new Error('Provider discovery returned invalid creation time');
-        if (batch.processing_status === 'ended') {
-          // A missing results file cannot erase liability; terminal metadata still
-          // proves this candidate no longer occupies a remote execution slot.
-          if (downloads < 3 && Date.now() - created < 29 * 86_400_000) {
-            downloads++;
-            await this.receive(batch.id, signal);
+      const saved = JSON.parse(this.store.setting(key) ?? '{}') as Partial<DiscoveryProgress>;
+      // Legacy cursors may already have skipped uninspected candidates; restart their scan once.
+      const progress: DiscoveryProgress = saved.version === 2 ? saved as DiscoveryProgress
+        : { version: 2, active: false, pages: 0, checked: 0, startedAt: Date.now(), updatedAt: 0, unread: [], unreadCount: 0 };
+      progress.unread ??= [];
+      progress.unreadCount ??= 0;
+      try {
+        if (!progress.page) await this.discoverPage(progress, signal);
+        const pending = progress.page!.pending;
+        const candidates = pending.length;
+        for (let attempt = 0; attempt < candidates && downloads < 3; attempt++) {
+          signal.throwIfAborted();
+          const candidate = pending[0];
+          if (Date.now() - candidate.created >= 29 * 86_400_000) { pending.shift(); continue; }
+          downloads++;
+          let inspected = false;
+          try { inspected = await this.receive(candidate.id, signal); }
+          catch (error) { failures.push(error); }
+          pending.shift();
+          if (!inspected) {
+            // Finish this bounded scan before retrying unread streams in the next round.
+            progress.unreadCount++;
+            progress.unread = [...progress.unread, candidate.id].slice(-20);
           }
-        } else progress.active = true;
-      }
-      if (finished) {
-        if (!progress.active && Date.now() > upper + 86_400_000) {
-          this.store.requests.retireUnknown(id);
-          this.store.set(key, JSON.stringify({ terminalScanAt: Date.now(), startedAt: progress.startedAt, pages: progress.pages, checked: progress.checked, liability: 'reserved', explanation: 'Complete provider listing found no possibly running candidate in the complete provider listing. Result identity/usage remains unresolved.' }));
-        } else this.store.set(key, '{}');
-      } else {
-        if (!page.last_id) throw new Error('Provider discovery pagination is incomplete');
-        this.store.set(key, JSON.stringify({ ...progress, cursor: page.last_id, active: progress.active === true }));
+          progress.updatedAt = Date.now();
+          this.store.set(key, JSON.stringify(progress));
+          if (this.store.requests.localBatch(id)?.remote) break;
+        }
+        this.advanceDiscoveryPage(id, Number(row.created), progress);
+      } catch (error) { failures.push(error); }
+      finally {
+        progress.updatedAt = Date.now();
+        this.store.set(key, JSON.stringify(progress));
       }
     }
+    if (failures.length) throw new AggregateError(failures, 'Provider discovery incomplete; unread results retry on a later scan');
   }
 
   async poll(signal: AbortSignal): Promise<void> {

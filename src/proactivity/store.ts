@@ -8,7 +8,7 @@ import { RequestRecords } from './persistence/requests.js';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { migrate, selectBaseline, validateCurrentSchema } from './persistence/migrations.js';
 import { createHash, randomUUID } from 'node:crypto';
-import type { Delivery, Evidence, Job, Matter, Observation, SourceMessage, ThreadSnapshot } from './types.js';
+import type { Delivery, Job, Matter, Observation, SourceMessage, ThreadSnapshot } from './types.js';
 import { lisbonDay } from './types.js';
 
 type Row = Record<string, string | number | null>;
@@ -185,9 +185,18 @@ export class InitiativeStore {
       ts: row.ts as string | null, created: Number(row.created), proposal: row.proposal ? JSON.parse(String(row.proposal)) : undefined };
   }
 
-  pendingProposals(): CapabilityProposal[] {
-    return this.rows("SELECT id FROM proposals WHERE status='pending filing' AND NOT EXISTS (SELECT 1 FROM handoffs WHERE proposal=proposals.id) AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE json_extract(d.proposal,'$.id')=proposals.id AND json_extract(d.proposal,'$.version')=json_extract(proposals.body,'$.version') AND d.state IN ('pending','sending','uncertain','sent')) ORDER BY id LIMIT 20")
-      .map(row => this.proposal(String(row.id))).filter((proposal): proposal is CapabilityProposal => !!proposal);
+  pendingProposalIds(after = ''): string[] {
+    return this.rows(`SELECT p.id FROM proposals p
+      WHERE p.status='pending filing' AND p.id>?
+        AND json_extract(p.body,'$.origin')='investigation'
+        AND NOT EXISTS (SELECT 1 FROM handoffs WHERE proposal=p.id)
+        AND NOT EXISTS (
+          SELECT 1 FROM deliveries d
+          WHERE json_extract(d.proposal,'$.id')=p.id
+            AND json_extract(d.proposal,'$.version')=json_extract(p.body,'$.version')
+            AND d.state IN ('pending','sending','uncertain','sent')
+        )
+      ORDER BY p.id LIMIT 20`, after).map(row => String(row.id));
   }
 
   prepareHandoff(id: string, token: string): boolean {
@@ -515,14 +524,21 @@ export class InitiativeStore {
       if (delivery.policy !== this.setting('policy') || (!delivery.matters.length && !delivery.proposal)) return false;
       if (delivery.proposal) {
         const proposal = this.proposal(delivery.proposal.id);
-        if (!proposal || !this.proposalCurrent(proposal, delivery.created) || proposalVersion(proposal) !== delivery.proposal.version) return false;
+        if (!proposal || !this.proposalCurrent(proposal, delivery.created) || proposalVersion(proposal) !== delivery.proposal.version || this.handoff(proposal.id)) return false;
       }
       if (delivery.matters.some((id) => !this.matter(id)?.valid)) return false;
       if (delivery.matters.some((id) => {
         const matter = this.matter(id)!;
         return this.setting(`unfollow:${matter.channel}:${matter.thread}`) === 'true';
       })) return false;
-      return this.run('INSERT OR IGNORE INTO deliveries(id,channel,thread,text,matters,evidence,policy,digest,state,ts,created,proposal) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+      // A cancelled card is retryable only when it never reserved a send slot or received a timestamp.
+      return this.run(`INSERT INTO deliveries(id,channel,thread,text,matters,evidence,policy,digest,state,ts,created,proposal)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET channel=excluded.channel,thread=excluded.thread,text=excluded.text,
+          matters=excluded.matters,evidence=excluded.evidence,policy=excluded.policy,created=excluded.created,state='pending'
+        WHERE deliveries.state='cancelled' AND excluded.state='pending'
+          AND deliveries.ts IS NULL AND deliveries.slot_day IS NULL
+          AND excluded.proposal IS NOT NULL AND deliveries.proposal=excluded.proposal`,
         delivery.id, delivery.channel, delivery.thread, delivery.text, JSON.stringify(delivery.matters), JSON.stringify(delivery.evidence), delivery.policy, Number(delivery.digest), delivery.state, null, delivery.created, delivery.proposal ? JSON.stringify(delivery.proposal) : null).changes > 0;
     });
   }
